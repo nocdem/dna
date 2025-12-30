@@ -1702,17 +1702,41 @@ void dna_handle_get_contacts(dna_engine_t *engine, dna_task_t *task) {
         for (size_t i = 0; i < list->count; i++) {
             strncpy(contacts[i].fingerprint, list->contacts[i].identity, 128);
 
-            /* Get display name from profile cache */
+            /* Get display name with fallback chain:
+             * 1. DHT profile (profile_manager)
+             * 2. Registered name (keyserver_cache)
+             * 3. Stored notes from contact request
+             * 4. Fingerprint prefix as last resort */
+            bool name_found = false;
+
+            /* Try 1: DHT profile */
             dna_unified_identity_t *identity = NULL;
             if (profile_manager_get_profile(list->contacts[i].identity, &identity) == 0 && identity) {
                 if (identity->display_name[0] != '\0') {
                     strncpy(contacts[i].display_name, identity->display_name, sizeof(contacts[i].display_name) - 1);
-                } else {
-                    snprintf(contacts[i].display_name, sizeof(contacts[i].display_name),
-                             "%.16s...", list->contacts[i].identity);
+                    name_found = true;
                 }
                 dna_identity_free(identity);
-            } else {
+            }
+
+            /* Try 2: Registered name from keyserver cache */
+            if (!name_found) {
+                char cached_name[64] = {0};
+                if (keyserver_cache_get_name(list->contacts[i].identity, cached_name, sizeof(cached_name)) == 0 &&
+                    cached_name[0] != '\0') {
+                    strncpy(contacts[i].display_name, cached_name, sizeof(contacts[i].display_name) - 1);
+                    name_found = true;
+                }
+            }
+
+            /* Try 3: Notes field (stored display name from contact request) */
+            if (!name_found && list->contacts[i].notes[0] != '\0') {
+                strncpy(contacts[i].display_name, list->contacts[i].notes, sizeof(contacts[i].display_name) - 1);
+                name_found = true;
+            }
+
+            /* Fallback: fingerprint prefix */
+            if (!name_found) {
                 snprintf(contacts[i].display_name, sizeof(contacts[i].display_name),
                          "%.16s...", list->contacts[i].identity);
             }
