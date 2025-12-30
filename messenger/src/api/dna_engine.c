@@ -1559,8 +1559,12 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
                      src_len, dst_len, dst_len > 0 ? profile->avatar_base64 : "(empty)");
     }
 
-    /* Display name */
-    strncpy(profile->display_name, identity->display_name, sizeof(profile->display_name) - 1);
+    /* Display name - fallback to registered_name if display_name is empty */
+    if (identity->display_name[0] != '\0') {
+        strncpy(profile->display_name, identity->display_name, sizeof(profile->display_name) - 1);
+    } else if (identity->registered_name[0] != '\0') {
+        strncpy(profile->display_name, identity->registered_name, sizeof(profile->display_name) - 1);
+    }
 
     dna_identity_free(identity);
 

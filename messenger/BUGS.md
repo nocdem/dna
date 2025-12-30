@@ -15,6 +15,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Fixed Bugs
 
+- [x] Profile dialog shows fingerprint instead of username - fallback to registered_name when display_name empty (v0.3.28)
 - [x] Contacts list shows fingerprint instead of username - add fallback chain: DHT profile -> keyserver cache -> stored notes -> fingerprint (v0.3.27)
 - [x] Contact requests show only fingerprint, not username - use keyserver_cache_get_name instead of unreliable name_cache (v0.3.26)
 - [x] Menu drawer: avatar and name should be on same line - changed to Row layout (v0.3.25)
