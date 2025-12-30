@@ -1713,11 +1713,14 @@ void dna_handle_get_contacts(dna_engine_t *engine, dna_task_t *task) {
              * 4. Fingerprint prefix as last resort */
             bool name_found = false;
 
-            /* Try 1: DHT profile */
+            /* Try 1: DHT profile (display_name first, then registered_name) */
             dna_unified_identity_t *identity = NULL;
             if (profile_manager_get_profile(list->contacts[i].identity, &identity) == 0 && identity) {
                 if (identity->display_name[0] != '\0') {
                     strncpy(contacts[i].display_name, identity->display_name, sizeof(contacts[i].display_name) - 1);
+                    name_found = true;
+                } else if (identity->registered_name[0] != '\0') {
+                    strncpy(contacts[i].display_name, identity->registered_name, sizeof(contacts[i].display_name) - 1);
                     name_found = true;
                 }
                 dna_identity_free(identity);
