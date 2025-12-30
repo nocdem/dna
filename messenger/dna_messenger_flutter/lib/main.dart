@@ -80,8 +80,12 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
   }
 
   Future<void> _checkAndLoadIdentity(dynamic engine) async {
+    print('DEBUG: _checkAndLoadIdentity called, engine=$engine, _identityCheckDone=$_identityCheckDone');
     if (_identityCheckDone) return;
-    if (engine == null) return;
+    if (engine == null) {
+      print('DEBUG: engine is NULL, returning early');
+      return;
+    }
 
     _identityCheckDone = true;
 
