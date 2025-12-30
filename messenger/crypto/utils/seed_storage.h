@@ -71,7 +71,7 @@ extern "C" {
  *
  * @param master_seed   64-byte BIP39 master seed to encrypt
  * @param kem_pubkey    1568-byte Kyber1024 public key
- * @param identity_dir  Directory path (e.g., ~/.dna/<fingerprint>)
+ * @param identity_dir  Directory path (e.g., ~/.dna/)
  * @return              0 on success, -1 on error
  */
 int seed_storage_save(
@@ -91,7 +91,7 @@ int seed_storage_save(
  *
  * @param master_seed_out   Output: 64-byte decrypted master seed
  * @param kem_privkey       3168-byte Kyber1024 private key
- * @param identity_dir      Directory path (e.g., ~/.dna/<fingerprint>)
+ * @param identity_dir      Directory path (e.g., ~/.dna/)
  * @return                  0 on success, -1 on error (file not found, decryption failed, etc.)
  */
 int seed_storage_load(
@@ -103,7 +103,7 @@ int seed_storage_load(
 /**
  * Check if encrypted seed file exists
  *
- * @param identity_dir  Directory path (e.g., ~/.dna/<fingerprint>)
+ * @param identity_dir  Directory path (e.g., ~/.dna/)
  * @return              true if master_seed.enc exists, false otherwise
  */
 bool seed_storage_exists(const char *identity_dir);
@@ -113,7 +113,7 @@ bool seed_storage_exists(const char *identity_dir);
  *
  * Securely removes the encrypted seed file.
  *
- * @param identity_dir  Directory path (e.g., ~/.dna/<fingerprint>)
+ * @param identity_dir  Directory path (e.g., ~/.dna/)
  * @return              0 on success, -1 on error
  */
 int seed_storage_delete(const char *identity_dir);
@@ -143,7 +143,7 @@ int seed_storage_delete(const char *identity_dir);
  *
  * @param mnemonic      Null-terminated mnemonic string (max 255 chars)
  * @param kem_pubkey    1568-byte Kyber1024 public key
- * @param identity_dir  Directory path (e.g., ~/.dna/<fingerprint>)
+ * @param identity_dir  Directory path (e.g., ~/.dna/)
  * @return              0 on success, -1 on error
  */
 int mnemonic_storage_save(
@@ -158,7 +158,7 @@ int mnemonic_storage_save(
  * @param mnemonic_out      Output buffer (at least 256 bytes)
  * @param mnemonic_size     Size of output buffer
  * @param kem_privkey       3168-byte Kyber1024 private key
- * @param identity_dir      Directory path (e.g., ~/.dna/<fingerprint>)
+ * @param identity_dir      Directory path (e.g., ~/.dna/)
  * @return                  0 on success, -1 on error
  */
 int mnemonic_storage_load(
@@ -171,7 +171,7 @@ int mnemonic_storage_load(
 /**
  * Check if encrypted mnemonic file exists
  *
- * @param identity_dir  Directory path (e.g., ~/.dna/<fingerprint>)
+ * @param identity_dir  Directory path (e.g., ~/.dna/)
  * @return              true if mnemonic.enc exists, false otherwise
  */
 bool mnemonic_storage_exists(const char *identity_dir);

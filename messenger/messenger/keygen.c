@@ -578,16 +578,15 @@ int messenger_register_name(
     char eth_address[48] = {0};
     char sol_address[48] = {0};
     char trx_address[48] = {0};
-    char identity_dir[512];
-    snprintf(identity_dir, sizeof(identity_dir), "%s/%s", data_dir, fingerprint);
 
+    // v0.3.0: Flat structure - mnemonic.enc in root data_dir
     // Check if mnemonic exists and derive wallet addresses
-    if (mnemonic_storage_exists(identity_dir)) {
+    if (mnemonic_storage_exists(data_dir)) {
         char mnemonic[512] = {0};
 
         // Decrypt mnemonic using Kyber private key
         if (mnemonic_storage_load(mnemonic, sizeof(mnemonic),
-                                   enc_key->private_key, identity_dir) == 0) {
+                                   enc_key->private_key, data_dir) == 0) {
             QGP_LOG_DEBUG(LOG_TAG, "Mnemonic loaded for wallet derivation");
 
             // Convert mnemonic to 64-byte master seed for ETH/SOL

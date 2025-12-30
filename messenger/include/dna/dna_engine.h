@@ -728,14 +728,12 @@ int dna_engine_restore_identity_sync(
 /**
  * Delete identity and all associated local data (synchronous)
  *
- * Deletes all local files for the specified identity:
- * - Keys directory: <data_dir>/<fingerprint>/keys/
- * - Wallets directory: <data_dir>/<fingerprint>/wallets/
- * - Database directory: <data_dir>/<fingerprint>/db/
- * - Identity directory: <data_dir>/<fingerprint>/
- * - Contacts database: <data_dir>/<fingerprint>_contacts.db
- * - Profiles cache: <data_dir>/<fingerprint>_profiles.db
- * - Groups database: <data_dir>/<fingerprint>_groups.db
+ * v0.3.0 flat structure - Deletes all local files:
+ * - Keys directory: <data_dir>/keys/
+ * - Wallets directory: <data_dir>/wallets/
+ * - Database directory: <data_dir>/db/
+ * - Mnemonic file: <data_dir>/mnemonic.enc
+ * - DHT identity: <data_dir>/dht_identity.bin
  *
  * WARNING: This operation is irreversible! The identity cannot be
  * recovered unless the user has backed up their seed phrase.
@@ -939,7 +937,7 @@ dna_request_id_t dna_engine_update_profile(
  * identity's Kyber1024 private key. This allows users to view
  * their recovery phrase in settings.
  *
- * The mnemonic is stored encrypted in ~/.dna/<fingerprint>/mnemonic.enc
+ * v0.3.0 flat structure: mnemonic stored at ~/.dna/mnemonic.enc
  * and can only be decrypted with the identity's private key.
  *
  * @param engine        Engine instance
@@ -967,10 +965,10 @@ int dna_engine_get_mnemonic(
  * - Old password must be correct (or NULL if keys are unencrypted)
  * - New password should be strong (recommended: 12+ characters)
  *
- * Files updated:
- * - ~/.dna/<fingerprint>/keys/<fingerprint>.dsa
- * - ~/.dna/<fingerprint>/keys/<fingerprint>.kem
- * - ~/.dna/<fingerprint>/mnemonic.enc
+ * v0.3.0 flat structure - Files updated:
+ * - ~/.dna/keys/identity.dsa
+ * - ~/.dna/keys/identity.kem
+ * - ~/.dna/mnemonic.enc
  *
  * @param engine        Engine instance
  * @param old_password  Current password (NULL if keys are unencrypted)

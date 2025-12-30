@@ -3556,10 +3556,16 @@ int dna_engine_create_identity_sync(
     /* Step 2: Create temporary messenger context for registration */
     messenger_context_t *temp_ctx = messenger_init(fingerprint_out);
     if (!temp_ctx) {
-        /* Cleanup: delete created identity directory */
-        char identity_dir[512];
-        snprintf(identity_dir, sizeof(identity_dir), "%s/%s", engine->data_dir, fingerprint_out);
-        qgp_platform_rmdir_recursive(identity_dir);
+        /* Cleanup: v0.3.0 flat structure - delete keys/, db/, wallets/, mnemonic.enc */
+        char path[512];
+        snprintf(path, sizeof(path), "%s/keys", engine->data_dir);
+        qgp_platform_rmdir_recursive(path);
+        snprintf(path, sizeof(path), "%s/db", engine->data_dir);
+        qgp_platform_rmdir_recursive(path);
+        snprintf(path, sizeof(path), "%s/wallets", engine->data_dir);
+        qgp_platform_rmdir_recursive(path);
+        snprintf(path, sizeof(path), "%s/mnemonic.enc", engine->data_dir);
+        remove(path);
         QGP_LOG_ERROR(LOG_TAG, "Failed to create messenger context for identity registration");
         return DNA_ERROR_INTERNAL;
     }
@@ -3571,10 +3577,16 @@ int dna_engine_create_identity_sync(
     messenger_free(temp_ctx);
 
     if (rc != 0) {
-        /* Cleanup: delete created identity directory */
-        char identity_dir[512];
-        snprintf(identity_dir, sizeof(identity_dir), "%s/%s", engine->data_dir, fingerprint_out);
-        qgp_platform_rmdir_recursive(identity_dir);
+        /* Cleanup: v0.3.0 flat structure - delete keys/, db/, wallets/, mnemonic.enc */
+        char path[512];
+        snprintf(path, sizeof(path), "%s/keys", engine->data_dir);
+        qgp_platform_rmdir_recursive(path);
+        snprintf(path, sizeof(path), "%s/db", engine->data_dir);
+        qgp_platform_rmdir_recursive(path);
+        snprintf(path, sizeof(path), "%s/wallets", engine->data_dir);
+        qgp_platform_rmdir_recursive(path);
+        snprintf(path, sizeof(path), "%s/mnemonic.enc", engine->data_dir);
+        remove(path);
         QGP_LOG_ERROR(LOG_TAG, "Name registration failed for '%s', identity rolled back", name);
         return DNA_ENGINE_ERROR_NETWORK;
     }
@@ -3889,16 +3901,12 @@ int dna_engine_get_mnemonic(
         return DNA_ENGINE_ERROR_NO_IDENTITY;
     }
 
-    /* Build paths to identity directory and Kyber private key */
-    char identity_dir[512];
+    /* v0.3.0: Flat structure - keys/identity.kem, mnemonic.enc in root */
     char kyber_path[512];
-    snprintf(identity_dir, sizeof(identity_dir), "%s/%s",
-             engine->data_dir, engine->fingerprint);
-    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/%s.kem",
-             identity_dir, engine->fingerprint);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", engine->data_dir);
 
     /* Check if mnemonic file exists */
-    if (!mnemonic_storage_exists(identity_dir)) {
+    if (!mnemonic_storage_exists(engine->data_dir)) {
         QGP_LOG_DEBUG(LOG_TAG, "Mnemonic file not found for identity %s",
                       engine->fingerprint);
         return DNA_ENGINE_ERROR_NOT_FOUND;
@@ -3925,7 +3933,7 @@ int dna_engine_get_mnemonic(
 
     /* Decrypt and load mnemonic */
     int result = mnemonic_storage_load(mnemonic_out, mnemonic_size,
-                                       kem_key->private_key, identity_dir);
+                                       kem_key->private_key, engine->data_dir);
 
     qgp_key_free(kem_key);
 

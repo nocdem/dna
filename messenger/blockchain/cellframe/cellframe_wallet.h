@@ -82,7 +82,7 @@ int wallet_list_cellframe(wallet_list_t **list_out);
 int wallet_list_from_dna_dir(wallet_list_t **list_out);
 
 /**
- * List wallets for a specific identity from ~/.dna/<fingerprint>/wallets/
+ * List wallets for identity - v0.3.0 flat structure: ~/.dna/wallets/
  */
 int wallet_list_for_identity(const char *fingerprint, wallet_list_t **list_out);
 

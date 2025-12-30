@@ -19,9 +19,9 @@ extern "C" {
  * Generate new identity with random BIP39 seed
  *
  * Creates new Dilithium5 + Kyber1024 keypair from random 24-word BIP39 seed.
- * Fingerprint-first approach: keys saved as ~/.dna/<fingerprint>.{dsa,kem}.
+ * v0.3.0 flat structure: keys saved as ~/.dna/keys/identity.{dsa,kem}.
  * Auto-publishes public keys to DHT keyserver (fingerprint-first).
- * Creates encrypted DHT identity backup for permanent DHT operations.
+ * DHT identity is now derived deterministically from BIP39 seed.
  *
  * @param ctx: Messenger context
  * @param identity: Display name (optional, can be NULL for fingerprint-only)
@@ -35,10 +35,10 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity);
  * Deterministically derives Dilithium5 + Kyber1024 keypair from seeds.
  * Used for identity restoration across devices (same seed → same keys).
  * Auto-publishes public keys to DHT keyserver.
- * Creates encrypted DHT identity backup.
+ * DHT identity is derived from BIP39 seed (no backup needed).
  * Stores only mnemonic.enc - wallet keys derived on-demand for transactions.
  *
- * Directory structure: ~/.dna/<fingerprint>/keys/, ~/.dna/<fingerprint>/
+ * v0.3.0 flat structure: ~/.dna/keys/identity.{dsa,kem}, ~/.dna/mnemonic.enc
  *
  * @param name: Identity name (optional display name, can be NULL)
  * @param signing_seed: 32-byte seed for Dilithium5 key derivation

@@ -1,10 +1,10 @@
 /*
  * DNA Messenger - CLI Messenger Module
  *
- * Storage Architecture:
- * - Private keys: ~/.dna/<fingerprint>/keys/<fingerprint>.dsa, .kem (filesystem)
+ * Storage Architecture (v0.3.0 Flat Structure):
+ * - Private keys: ~/.dna/keys/identity.dsa, identity.kem (filesystem)
  * - Public keys: DHT-based keyserver (decentralized, permanent)
- * - Messages: SQLite local database (user owns their data)
+ * - Messages: SQLite local database ~/.dna/db/messages.db (user owns their data)
  *
  * Phase 9.1b: Hybrid P2P Transport
  * - P2P direct messaging when both peers online (via DHT + TCP)
@@ -130,9 +130,9 @@ int messenger_load_dht_identity(const char *fingerprint);
 /**
  * Generate new key pair for identity
  *
- * Creates:
- * - ~/.dna/<fingerprint>/keys/<fingerprint>.dsa (private signing key)
- * - ~/.dna/<fingerprint>/keys/<fingerprint>.kem (private encryption key)
+ * Creates (v0.3.0 flat structure):
+ * - ~/.dna/keys/identity.dsa (private signing key)
+ * - ~/.dna/keys/identity.kem (private encryption key)
  * - Publishes public keys to DHT keyserver
  *
  * @param ctx: Messenger context
@@ -146,9 +146,8 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity);
  *
  * Generates keys deterministically from provided seeds without user prompts.
  * Creates fingerprint-based identity (no name required).
- * Keys are saved as <data_dir>/<fingerprint>.dsa and <data_dir>/<fingerprint>.kem
+ * v0.3.0 flat structure: Keys are saved as <data_dir>/keys/identity.{dsa,kem}
  * Wallet keys are derived on-demand from mnemonic (no plaintext wallet files).
- * Directory structure: ~/.dna/<fingerprint>/keys/
  *
  * @param name: Identity name (optional display name, can be NULL)
  * @param signing_seed: 32-byte seed for Dilithium5 key generation
@@ -227,8 +226,9 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
  *
  * Reads the .dsa file and computes SHA3-512(dilithium_pubkey).
  * This is the primary identity in the fingerprint-first model.
+ * v0.3.0 flat structure: Reads from ~/.dna/keys/identity.dsa
  *
- * @param identity: Fingerprint (used to locate ~/.dna/<fingerprint>/keys/<fingerprint>.dsa)
+ * @param identity: Fingerprint (for reference, key path uses flat structure)
  * @param fingerprint_out: Output buffer (must be 129 bytes: 128 hex + null)
  * @return: 0 on success, -1 on error
  */
