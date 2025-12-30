@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../providers/contact_requests_provider.dart';
@@ -671,7 +672,7 @@ class _ContactRequestsBadge extends ConsumerWidget {
     return Stack(
       children: [
         IconButton(
-          icon: const Icon(Icons.person_add_alt_1),
+          icon: const FaIcon(FontAwesomeIcons.userClock),
           onPressed: onTap,
           tooltip: 'Contact Requests',
         ),
