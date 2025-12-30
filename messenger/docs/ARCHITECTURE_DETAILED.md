@@ -480,11 +480,17 @@ qgp_log_enable_tag("P2P");
 
 **Location:** `<data_dir>/` (see [Data Directory](#data-directory) section)
 
+> **v0.3.0 Breaking Change:** Storage structure flattened to single-user model.
+> Old per-fingerprint directories (`<fingerprint>/keys/`) are no longer used.
+
 | File | Contents | Encryption |
 |------|----------|------------|
-| `<fingerprint>/keys/<fingerprint>.dsa` | Dilithium5 private key (4896 bytes) | Password-based (optional) |
-| `<fingerprint>/keys/<fingerprint>.kem` | Kyber1024 private key (3168 bytes) | Password-based (optional) |
-| `<fingerprint>/mnemonic.enc` | BIP39 mnemonic phrase | KEM + Password (optional) |
+| `keys/identity.dsa` | Dilithium5 private key (4896 bytes) | Password-based (optional) |
+| `keys/identity.kem` | Kyber1024 private key (3168 bytes) | Password-based (optional) |
+| `mnemonic.enc` | BIP39 mnemonic phrase | KEM + Password (optional) |
+| `db/messages.db` | Message history | Plaintext (SQLite) |
+| `db/contacts.db` | Contact list | Plaintext (SQLite) |
+| `wallets/wallet.dwallet` | Cellframe wallet | Password-based |
 
 #### Key Encryption (v1.7.0+)
 

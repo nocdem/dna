@@ -206,10 +206,10 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
 ```
 
 **Screens Implemented:**
-- `IdentitySelectionScreen`: List identities, create with 3-step wizard, restore from seed (3-step: enter 24 words, confirm profile from DHT, proceed)
+- `IdentitySelectionScreen`: Onboarding screen for create/restore identity (v0.3.0: no identity list - single-user model)
 - `ContactsScreen`: List with last seen timestamps, pull-to-refresh, add contact dialog, DHT status indicator
 - `ChatScreen`: Message bubbles, timestamps, status icons, input with send button, view contact profile
-- `HomeScreen`: Routes between identity selection and contacts based on state
+- `HomeScreen`: Main navigation (v0.3.0: identity always loaded before reaching this screen)
 
 **Event Handling:**
 - `EventHandler`: Listens to engine event stream, updates providers
@@ -279,7 +279,7 @@ Future<List<Contact>> _updateContactsPresence(DnaEngine engine, List<Contact> co
 5. **Settings:**
    - Nickname registration works
    - Export seed phrase (placeholder)
-   - Switch identity
+   - Delete Account (v0.3.0: renamed from "Delete Identity")
    - Manage Contacts (view/remove contacts)
 
 **FFI Functions Added (11 new):**
@@ -372,7 +372,7 @@ dna_messenger_flutter/
 **Navigation:**
 - Hamburger drawer navigation
 - Chats is now the default landing page (index 0)
-- Drawer header shows: Avatar + display name + "Switch Identity" button
+- Drawer header shows: Avatar + display name + fingerprint (v0.3.0: Switch Identity removed)
 - Navigation order: Chats, Groups, Wallet, Settings
 
 **Typography:**

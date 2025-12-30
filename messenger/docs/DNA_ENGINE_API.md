@@ -304,7 +304,30 @@ Gets current identity fingerprint.
 
 ## 2. Identity
 
-### dna_engine_list_identities
+### dna_engine_has_identity (v0.3.0+)
+
+```c
+bool dna_engine_has_identity(dna_engine_t *engine);
+```
+
+Checks if an identity exists in the flat storage structure.
+
+**Returns:** `true` if `keys/identity.dsa` exists, `false` otherwise.
+
+**Usage:** Use this to determine if onboarding is needed at app startup.
+
+```c
+if (dna_engine_has_identity(engine)) {
+    // Auto-load identity
+    dna_engine_load_identity(engine, NULL, NULL, callback, user_data);
+} else {
+    // Show onboarding screen
+}
+```
+
+---
+
+### dna_engine_list_identities (deprecated in v0.3.0)
 
 ```c
 dna_request_id_t dna_engine_list_identities(
@@ -313,6 +336,9 @@ dna_request_id_t dna_engine_list_identities(
     void *user_data
 );
 ```
+
+> **v0.3.0:** In single-user model, this returns at most 1 identity.
+> Use `dna_engine_has_identity()` instead for checking identity existence.
 
 Lists available identities by scanning the engine's `data_dir` for `.dsa` key files.
 
@@ -349,9 +375,9 @@ Creates new identity from BIP39 seeds.
 - `signing_seed` - 32-byte seed for Dilithium5 keypair
 - `encryption_seed` - 32-byte seed for Kyber1024 keypair
 
-**Keys saved to:**
-- `<data_dir>/<fingerprint>/keys/<fingerprint>.dsa` (Dilithium5 signing key)
-- `<data_dir>/<fingerprint>/keys/<fingerprint>.kem` (Kyber1024 encryption key)
+**Keys saved to (v0.3.0+ flat structure):**
+- `<data_dir>/keys/identity.dsa` (Dilithium5 signing key)
+- `<data_dir>/keys/identity.kem` (Kyber1024 encryption key)
 
 Where `data_dir` is the platform-specific data directory (see `dna_engine_create()`).
 
