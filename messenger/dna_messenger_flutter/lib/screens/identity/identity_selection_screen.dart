@@ -245,7 +245,6 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   // ==================== STEP 2a: Show Seed ====================
   Widget _buildShowSeedStep() {
     final theme = Theme.of(context);
-    final words = _mnemonic.split(' ');
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24.0),
@@ -273,7 +272,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             ),
           ),
           const SizedBox(height: 24),
-          // Word grid
+          // Word grid - responsive layout
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -281,40 +280,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: theme.colorScheme.outline.withAlpha(77)),
             ),
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: List.generate(words.length, (index) {
-                return Container(
-                  width: 100,
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.primaryContainer.withAlpha(77),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Row(
-                    children: [
-                      Text(
-                        '${index + 1}.',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurface.withAlpha(128),
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      Expanded(
-                        child: Text(
-                          words[index],
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            fontFamily: 'monospace',
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              }),
-            ),
+            child: _buildMnemonicDisplayGrid(theme),
           ),
           const SizedBox(height: 16),
           // Copy button
@@ -350,6 +316,58 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     );
   }
 
+  /// Responsive grid for displaying mnemonic words (read-only)
+  Widget _buildMnemonicDisplayGrid(ThemeData theme) {
+    final words = _mnemonic.split(' ');
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // 2 columns on mobile (<400), 3 on tablet (<600), 4 on desktop
+        final columns = constraints.maxWidth < 400 ? 2 : (constraints.maxWidth < 600 ? 3 : 4);
+        final rows = (words.length / columns).ceil();
+
+        return Column(
+          children: List.generate(rows, (rowIndex) {
+            return Padding(
+              padding: EdgeInsets.only(bottom: rowIndex < rows - 1 ? 8 : 0),
+              child: Row(
+                children: List.generate(columns, (colIndex) {
+                  final wordIndex = rowIndex * columns + colIndex;
+                  if (wordIndex >= words.length) {
+                    return const Expanded(child: SizedBox());
+                  }
+                  final word = words[wordIndex];
+                  final displayIndex = wordIndex + 1;
+
+                  return Expanded(
+                    child: Padding(
+                      padding: EdgeInsets.only(right: colIndex < columns - 1 ? 8 : 0),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: theme.scaffoldBackgroundColor,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: theme.colorScheme.primary.withAlpha(51)),
+                        ),
+                        child: Text(
+                          '$displayIndex. $word',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            fontFamily: 'monospace',
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ),
+            );
+          }),
+        );
+      },
+    );
+  }
+
   // ==================== STEP 2b: Enter Seed ====================
   Widget _buildEnterSeedStep() {
     final theme = Theme.of(context);
@@ -366,13 +384,16 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                   'Enter your 24-word recovery phrase:',
                   style: theme.textTheme.bodyMedium,
                 ),
-                const SizedBox(height: 16),
-                // Word grid
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: List.generate(_wordCount, (index) => _buildWordInput(index)),
+                const SizedBox(height: 8),
+                Text(
+                  'You can paste all words at once.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withAlpha(179),
+                  ),
                 ),
+                const SizedBox(height: 16),
+                // Word grid - responsive layout
+                _buildMnemonicInputGrid(theme),
                 const SizedBox(height: 16),
                 // Paste button
                 OutlinedButton.icon(
@@ -395,51 +416,97 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     );
   }
 
-  Widget _buildWordInput(int index) {
-    final theme = Theme.of(context);
+  /// Responsive grid for entering mnemonic words (editable)
+  Widget _buildMnemonicInputGrid(ThemeData theme) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // 2 columns on mobile (<400), 3 on tablet (<600), 4 on desktop
+        final columns = constraints.maxWidth < 400 ? 2 : (constraints.maxWidth < 600 ? 3 : 4);
+        final rows = (_wordCount / columns).ceil();
 
-    return SizedBox(
-      width: 100,
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: theme.colorScheme.outline.withAlpha(77)),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 28,
-              alignment: Alignment.center,
-              child: Text(
-                '${index + 1}',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurface.withAlpha(128),
-                ),
-              ),
-            ),
-            Expanded(
-              child: TextField(
-                controller: _wordControllers[index],
-                focusNode: _focusNodes[index],
-                decoration: const InputDecoration(
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-                  isDense: true,
-                ),
-                style: theme.textTheme.bodyMedium?.copyWith(fontFamily: 'monospace'),
-                textInputAction: index < _wordCount - 1 ? TextInputAction.next : TextInputAction.done,
-                onChanged: (_) => setState(() {}),
-                onSubmitted: (_) {
-                  if (index < _wordCount - 1) {
-                    _focusNodes[index + 1].requestFocus();
-                  } else if (_allWordsFilled()) {
-                    _processSeed();
+        return Column(
+          children: List.generate(rows, (rowIndex) {
+            return Padding(
+              padding: EdgeInsets.only(bottom: rowIndex < rows - 1 ? 8 : 0),
+              child: Row(
+                children: List.generate(columns, (colIndex) {
+                  final wordIndex = rowIndex * columns + colIndex;
+                  if (wordIndex >= _wordCount) {
+                    return const Expanded(child: SizedBox());
                   }
-                },
+                  return Expanded(
+                    child: Padding(
+                      padding: EdgeInsets.only(right: colIndex < columns - 1 ? 8 : 0),
+                      child: _buildWordField(theme, wordIndex),
+                    ),
+                  );
+                }),
+              ),
+            );
+          }),
+        );
+      },
+    );
+  }
+
+  Widget _buildWordField(ThemeData theme, int index) {
+    final displayIndex = index + 1;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.scaffoldBackgroundColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: _wordControllers[index].text.isNotEmpty
+              ? theme.colorScheme.primary.withAlpha(128)
+              : theme.colorScheme.primary.withAlpha(51),
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 32,
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary.withAlpha(26),
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(7),
+                bottomLeft: Radius.circular(7),
               ),
             ),
-          ],
-        ),
+            child: Text(
+              '$displayIndex',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.primary,
+                fontWeight: FontWeight.bold,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          Expanded(
+            child: TextField(
+              controller: _wordControllers[index],
+              focusNode: _focusNodes[index],
+              decoration: const InputDecoration(
+                border: InputBorder.none,
+                contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                isDense: true,
+              ),
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontFamily: 'monospace',
+              ),
+              textInputAction: index < _wordCount - 1 ? TextInputAction.next : TextInputAction.done,
+              onChanged: (_) => setState(() {}),
+              onSubmitted: (_) {
+                if (index < _wordCount - 1) {
+                  _focusNodes[index + 1].requestFocus();
+                } else if (_allWordsFilled()) {
+                  _processSeed();
+                }
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
