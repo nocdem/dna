@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../../ffi/dna_engine.dart' show UserProfile, decodeBase64WithPadding;
 import '../../providers/providers.dart' show engineProvider;
@@ -120,7 +121,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.error_outline, size: 48, color: DnaColors.textWarning),
+            FaIcon(FontAwesomeIcons.circleExclamation, size: 48, color: DnaColors.textWarning),
             const SizedBox(height: 16),
             Text(
               'Failed to load profile',
@@ -159,7 +160,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
           _buildSection(
             theme,
             'Bio',
-            Icons.info_outline,
+            FontAwesomeIcons.circleInfo,
             [_buildTextItem(profile.bio)],
           ),
           const SizedBox(height: 16),
@@ -170,12 +171,12 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
           _buildSection(
             theme,
             'Info',
-            Icons.location_on_outlined,
+            FontAwesomeIcons.locationDot,
             [
               if (profile.location.isNotEmpty)
-                _buildInfoRow(Icons.location_on_outlined, profile.location),
+                _buildInfoRow(FontAwesomeIcons.locationDot, profile.location),
               if (profile.website.isNotEmpty)
-                _buildLinkRow(Icons.language, profile.website, 'Website'),
+                _buildLinkRow(FontAwesomeIcons.globe, profile.website, 'Website'),
             ],
           ),
           const SizedBox(height: 16),
@@ -186,7 +187,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
           _buildSection(
             theme,
             'Social',
-            Icons.share_outlined,
+            FontAwesomeIcons.shareNodes,
             _buildSocialItems(profile),
           ),
           const SizedBox(height: 16),
@@ -199,7 +200,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
               padding: const EdgeInsets.all(32),
               child: Column(
                 children: [
-                  Icon(Icons.person_off_outlined, size: 48, color: DnaColors.textMuted),
+                  FaIcon(FontAwesomeIcons.userSlash, size: 48, color: DnaColors.textMuted),
                   const SizedBox(height: 16),
                   Text(
                     'No profile published',
@@ -273,7 +274,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
       ),
       child: Row(
         children: [
-          Icon(Icons.fingerprint, color: DnaColors.textMuted),
+          FaIcon(FontAwesomeIcons.fingerprint, color: DnaColors.textMuted),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
@@ -286,7 +287,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
             ),
           ),
           IconButton(
-            icon: const Icon(Icons.copy, size: 20),
+            icon: const FaIcon(FontAwesomeIcons.copy, size: 20),
             onPressed: () {
               Clipboard.setData(ClipboardData(text: widget.fingerprint));
               ScaffoldMessenger.of(context).showSnackBar(
@@ -314,7 +315,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
             padding: const EdgeInsets.all(12),
             child: Row(
               children: [
-                Icon(icon, size: 20, color: DnaColors.primary),
+                FaIcon(icon, size: 20, color: DnaColors.primary),
                 const SizedBox(width: 8),
                 Text(
                   title,
@@ -345,7 +346,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
         children: [
-          Icon(icon, size: 18, color: DnaColors.textMuted),
+          FaIcon(icon, size: 18, color: DnaColors.textMuted),
           const SizedBox(width: 12),
           Expanded(child: Text(text)),
         ],
@@ -360,7 +361,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Row(
           children: [
-            Icon(icon, size: 18, color: DnaColors.primary),
+            FaIcon(icon, size: 18, color: DnaColors.primary),
             const SizedBox(width: 12),
             Expanded(
               child: Text(
@@ -368,7 +369,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
                 style: TextStyle(color: DnaColors.primary),
               ),
             ),
-            Icon(Icons.copy, size: 16, color: DnaColors.textMuted),
+            FaIcon(FontAwesomeIcons.copy, size: 16, color: DnaColors.textMuted),
           ],
         ),
       ),
@@ -432,7 +433,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
                 ],
               ),
             ),
-            Icon(Icons.copy, size: 16, color: DnaColors.textMuted),
+            FaIcon(FontAwesomeIcons.copy, size: 16, color: DnaColors.textMuted),
           ],
         ),
       ),

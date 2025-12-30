@@ -2,6 +2,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../providers/providers.dart';
 import '../providers/event_handler.dart';
 import '../theme/dna_theme.dart';
@@ -90,22 +91,22 @@ class _NavigationDrawer extends ConsumerWidget {
                 padding: EdgeInsets.zero,
                 children: [
                   _DrawerItem(
-                    icon: Icons.chat_outlined,
-                    selectedIcon: Icons.chat,
+                    icon: FontAwesomeIcons.comments,
+                    selectedIcon: FontAwesomeIcons.solidComments,
                     label: 'Chats',
                     selected: currentTab == 0,
                     onTap: () => selectTab(0),
                   ),
                   _DrawerItem(
-                    icon: Icons.groups_outlined,
-                    selectedIcon: Icons.groups,
+                    icon: FontAwesomeIcons.users,
+                    selectedIcon: FontAwesomeIcons.users,
                     label: 'Groups',
                     selected: currentTab == 1,
                     onTap: () => selectTab(1),
                   ),
                   _DrawerItem(
-                    icon: Icons.account_balance_wallet_outlined,
-                    selectedIcon: Icons.account_balance_wallet,
+                    icon: FontAwesomeIcons.wallet,
+                    selectedIcon: FontAwesomeIcons.wallet,
                     label: 'Wallet',
                     selected: currentTab == 2,
                     onTap: () => selectTab(2),
@@ -115,8 +116,8 @@ class _NavigationDrawer extends ConsumerWidget {
                     child: Divider(),
                   ),
                   _DrawerItem(
-                    icon: Icons.settings_outlined,
-                    selectedIcon: Icons.settings,
+                    icon: FontAwesomeIcons.gear,
+                    selectedIcon: FontAwesomeIcons.gear,
                     label: 'Settings',
                     selected: currentTab == 3,
                     onTap: () => selectTab(3),
@@ -153,7 +154,7 @@ class _DrawerItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return ListTile(
-      leading: Icon(
+      leading: FaIcon(
         selected ? selectedIcon : icon,
         color: selected ? theme.colorScheme.primary : null,
       ),
@@ -182,9 +183,9 @@ class _DhtStatusIndicator extends ConsumerWidget {
     final dhtState = ref.watch(dhtConnectionStateProvider);
 
     final (String text, Color color, IconData icon) = switch (dhtState) {
-      DhtConnectionState.connected => ('DHT Connected', Colors.green, Icons.cloud_done),
-      DhtConnectionState.connecting => ('DHT Connecting', Colors.orange, Icons.cloud_sync),
-      DhtConnectionState.disconnected => ('DHT Disconnected', Colors.red, Icons.cloud_off),
+      DhtConnectionState.connected => ('DHT Connected', Colors.green, FontAwesomeIcons.cloud),
+      DhtConnectionState.connecting => ('DHT Connecting', Colors.orange, FontAwesomeIcons.cloudArrowUp),
+      DhtConnectionState.disconnected => ('DHT Disconnected', Colors.red, FontAwesomeIcons.cloudSlash),
     };
 
     return Padding(
@@ -192,7 +193,7 @@ class _DhtStatusIndicator extends ConsumerWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, size: 16, color: color),
+          FaIcon(icon, size: 16, color: color),
           const SizedBox(width: 8),
           Text(
             text,

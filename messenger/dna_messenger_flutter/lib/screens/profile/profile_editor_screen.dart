@@ -201,7 +201,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
             )
           else
             IconButton(
-              icon: const Icon(Icons.save),
+              icon: const FaIcon(FontAwesomeIcons.floppyDisk),
               onPressed: () => _saveProfile(notifier),
               tooltip: 'Save',
             ),
@@ -225,7 +225,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                   // Profile Info section
                   _buildExpansionSection(
                     title: 'Profile Info',
-                    icon: Icons.person,
+                    icon: FontAwesomeIcons.user,
                     isExpanded: _profileExpanded,
                     onExpansionChanged: (expanded) {
                       setState(() => _profileExpanded = expanded);
@@ -259,7 +259,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                   // Wallet Addresses (read-only, derived from identity keys)
                   _buildExpansionSection(
                     title: 'Wallet Addresses',
-                    icon: Icons.account_balance_wallet,
+                    icon: FontAwesomeIcons.wallet,
                     isExpanded: _walletsExpanded,
                     onExpansionChanged: (expanded) {
                       setState(() => _walletsExpanded = expanded);
@@ -292,7 +292,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                   // Social Media Links
                   _buildExpansionSection(
                     title: 'Social Media Links',
-                    icon: Icons.share,
+                    icon: FontAwesomeIcons.shareNodes,
                     isExpanded: _socialsExpanded,
                     onExpansionChanged: (expanded) {
                       setState(() => _socialsExpanded = expanded);
@@ -416,7 +416,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
 
     return Card(
       child: ExpansionTile(
-        leading: Icon(icon, color: theme.colorScheme.primary),
+        leading: FaIcon(icon, color: theme.colorScheme.primary),
         title: Text(title, style: theme.textTheme.titleSmall),
         initiallyExpanded: isExpanded,
         onExpansionChanged: onExpansionChanged,
@@ -444,7 +444,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
         decoration: InputDecoration(
           labelText: label,
           hintText: hint,
-          prefixIcon: prefixIcon != null ? Icon(prefixIcon) : null,
+          prefixIcon: prefixIcon != null ? FaIcon(prefixIcon) : null,
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(8),
           ),
@@ -475,7 +475,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
           ),
           suffixIcon: controller.text.isNotEmpty
               ? IconButton(
-                  icon: const Icon(Icons.copy, size: 20),
+                  icon: const FaIcon(FontAwesomeIcons.copy, size: 20),
                   onPressed: () {
                     Clipboard.setData(ClipboardData(text: controller.text));
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -510,12 +510,12 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
-                leading: const Icon(Icons.camera_alt),
+                leading: const FaIcon(FontAwesomeIcons.camera),
                 title: const Text('Take a Selfie'),
                 onTap: () => Navigator.pop(context, ImageSource.camera),
               ),
               ListTile(
-                leading: const Icon(Icons.photo_library),
+                leading: const FaIcon(FontAwesomeIcons.images),
                 title: const Text('Choose from Gallery'),
                 onTap: () => Navigator.pop(context, ImageSource.gallery),
               ),
@@ -609,8 +609,8 @@ class _AvatarSection extends StatelessWidget {
       avatarWidget = CircleAvatar(
         radius: 48,
         backgroundColor: theme.colorScheme.primary.withAlpha(51),
-        child: Icon(
-          Icons.person,
+        child: FaIcon(
+          FontAwesomeIcons.user,
           size: 48,
           color: theme.colorScheme.primary,
         ),
@@ -630,7 +630,7 @@ class _AvatarSection extends StatelessWidget {
                   radius: 16,
                   backgroundColor: theme.colorScheme.primary,
                   child: IconButton(
-                    icon: const Icon(Icons.camera_alt, size: 16),
+                    icon: const FaIcon(FontAwesomeIcons.camera, size: 16),
                     color: theme.colorScheme.onPrimary,
                     onPressed: onPickImage,
                     padding: EdgeInsets.zero,

@@ -1,6 +1,7 @@
 // Blocked Users Screen - Manage blocked users list
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/contact_requests_provider.dart';
 import '../../theme/dna_theme.dart';
@@ -17,7 +18,7 @@ class BlockedUsersScreen extends ConsumerWidget {
         title: const Text('Blocked Users'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
             onPressed: () => ref.invalidate(blockedUsersProvider),
             tooltip: 'Refresh',
           ),
@@ -40,8 +41,8 @@ class BlockedUsersScreen extends ConsumerWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.block_flipped,
+            FaIcon(
+              FontAwesomeIcons.ban,
               size: 64,
               color: theme.colorScheme.primary.withAlpha(128),
             ),
@@ -86,8 +87,8 @@ class BlockedUsersScreen extends ConsumerWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.error_outline,
+            FaIcon(
+              FontAwesomeIcons.circleExclamation,
               size: 48,
               color: DnaColors.textWarning,
             ),
@@ -183,8 +184,8 @@ class _BlockedUserTile extends StatelessWidget {
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: DnaColors.textWarning.withAlpha(51),
-        child: Icon(
-          Icons.block,
+        child: FaIcon(
+          FontAwesomeIcons.ban,
           color: DnaColors.textWarning,
         ),
       ),

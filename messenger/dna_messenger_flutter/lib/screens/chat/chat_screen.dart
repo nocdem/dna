@@ -2,6 +2,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import '../../ffi/dna_engine.dart';
@@ -188,7 +189,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         actions: [
           // Send CPUNK button
           IconButton(
-            icon: const Icon(Icons.currency_exchange),
+            icon: const FaIcon(FontAwesomeIcons.moneyBillTransfer),
             tooltip: 'Send CPUNK',
             onPressed: () => _showSendCpunk(context, contact),
           ),
@@ -200,12 +201,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Icon(Icons.cloud_download),
+                : const FaIcon(FontAwesomeIcons.cloudArrowDown),
             tooltip: 'Check offline messages',
             onPressed: _isCheckingOffline ? null : _checkOfflineMessages,
           ),
           IconButton(
-            icon: const Icon(Icons.more_vert),
+            icon: const FaIcon(FontAwesomeIcons.ellipsisVertical),
             onPressed: () => _showContactOptions(context),
           ),
         ],
@@ -224,7 +225,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.error_outline, color: DnaColors.textWarning),
+                        FaIcon(FontAwesomeIcons.circleExclamation, color: DnaColors.textWarning),
                         const SizedBox(height: 8),
                         Text('Failed to load messages'),
                         TextButton(
@@ -363,8 +364,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.chat_bubble_outline,
+            FaIcon(
+              FontAwesomeIcons.comment,
               size: 48,
               color: Theme.of(context).colorScheme.primary.withAlpha(128),
             ),
@@ -460,10 +461,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           children: [
             // Emoji button
             IconButton(
-              icon: Icon(
+              icon: FaIcon(
                 _showEmojiPicker
-                    ? Icons.keyboard
-                    : Icons.emoji_emotions_outlined,
+                    ? FontAwesomeIcons.keyboard
+                    : FontAwesomeIcons.faceSmile,
               ),
               onPressed: () {
                 setState(() {
@@ -519,7 +520,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
             // Send button
             IconButton(
-              icon: const Icon(Icons.send),
+              icon: const FaIcon(FontAwesomeIcons.paperPlane),
               onPressed: _messageController.text.trim().isEmpty
                   ? null
                   : () => _sendMessage(contact),
@@ -609,7 +610,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.person),
+              leading: const FaIcon(FontAwesomeIcons.user),
               title: const Text('View Profile'),
               onTap: () {
                 Navigator.pop(context);
@@ -625,7 +626,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.cloud_download),
+              leading: const FaIcon(FontAwesomeIcons.cloudArrowDown),
               title: const Text('Check Offline Messages'),
               subtitle: const Text('Fetch from DHT queue'),
               onTap: () {
@@ -634,7 +635,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.qr_code),
+              leading: const FaIcon(FontAwesomeIcons.qrcode),
               title: const Text('Show QR Code'),
               onTap: () {
                 Navigator.pop(context);
@@ -642,7 +643,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               },
             ),
             ListTile(
-              leading: Icon(Icons.delete, color: DnaColors.textWarning),
+              leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.textWarning),
               title: Text(
                 'Remove Contact',
                 style: TextStyle(color: DnaColors.textWarning),
@@ -667,7 +668,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       builder: (context) => AlertDialog(
         title: Row(
           children: [
-            Icon(Icons.person_remove, color: DnaColors.textWarning),
+            FaIcon(FontAwesomeIcons.userMinus, color: DnaColors.textWarning),
             const SizedBox(width: 8),
             const Text('Remove Contact'),
           ],
@@ -689,7 +690,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ),
               child: Row(
                 children: [
-                  Icon(Icons.info_outline, size: 20, color: DnaColors.textWarning),
+                  FaIcon(FontAwesomeIcons.circleInfo, size: 20, color: DnaColors.textWarning),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -873,14 +874,14 @@ class _MessageBubble extends StatelessWidget {
 
     if (status == MessageStatus.failed) {
       // Show red error icon for failed messages
-      return Icon(
-        Icons.error_outline,
+      return FaIcon(
+        FontAwesomeIcons.circleExclamation,
         size: size,
         color: DnaColors.textWarning,
       );
     }
 
-    return Icon(
+    return FaIcon(
       _getStatusIcon(status),
       size: size,
       color: color,
@@ -890,15 +891,15 @@ class _MessageBubble extends StatelessWidget {
   IconData _getStatusIcon(MessageStatus status) {
     switch (status) {
       case MessageStatus.pending:
-        return Icons.schedule;
+        return FontAwesomeIcons.clock;
       case MessageStatus.sent:
-        return Icons.check;
+        return FontAwesomeIcons.check;
       case MessageStatus.failed:
-        return Icons.error_outline;
+        return FontAwesomeIcons.circleExclamation;
       case MessageStatus.delivered:
-        return Icons.done_all;
+        return FontAwesomeIcons.checkDouble;
       case MessageStatus.read:
-        return Icons.done_all; // Would be colored differently
+        return FontAwesomeIcons.checkDouble; // Would be colored differently
     }
   }
 }
@@ -1083,7 +1084,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
             // Header
             Row(
               children: [
-                const Icon(Icons.currency_exchange, size: 24),
+                const FaIcon(FontAwesomeIcons.moneyBillTransfer, size: 24),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
@@ -1103,7 +1104,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.close),
+                  icon: const FaIcon(FontAwesomeIcons.xmark),
                   onPressed: () => Navigator.pop(context),
                 ),
               ],
@@ -1133,7 +1134,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.error_outline, color: DnaColors.textWarning),
+                    FaIcon(FontAwesomeIcons.circleExclamation, color: DnaColors.textWarning),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
@@ -1155,7 +1156,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.check_circle, color: DnaColors.textSuccess, size: 20),
+                    FaIcon(FontAwesomeIcons.circleCheck, color: DnaColors.textSuccess, size: 20),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -1333,8 +1334,8 @@ class _TransferBubble extends StatelessWidget {
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  isOutgoing ? Icons.arrow_upward : Icons.arrow_downward,
+                FaIcon(
+                  isOutgoing ? FontAwesomeIcons.arrowUp : FontAwesomeIcons.arrowDown,
                   size: 16,
                   color: isOutgoing
                       ? theme.colorScheme.onPrimary
@@ -1395,12 +1396,12 @@ class _TransferBubble extends StatelessWidget {
                 ),
                 if (isOutgoing) ...[
                   const SizedBox(width: 4),
-                  Icon(
+                  FaIcon(
                     message.status == MessageStatus.pending
-                        ? Icons.schedule
+                        ? FontAwesomeIcons.clock
                         : (message.status == MessageStatus.failed
-                            ? Icons.error_outline
-                            : Icons.check),
+                            ? FontAwesomeIcons.circleExclamation
+                            : FontAwesomeIcons.check),
                     size: 14,
                     color: message.status == MessageStatus.failed
                         ? DnaColors.textWarning

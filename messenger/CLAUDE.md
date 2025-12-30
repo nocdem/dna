@@ -78,6 +78,18 @@ The ImGui GUI (`imgui_gui/`) is **NO LONGER USED**. Do not modify or reference i
 - **Ignore**: `imgui_gui/` directory entirely
 - All UI work should be done in Flutter only
 
+## FLUTTER ICONS - FONT AWESOME ONLY
+**ALWAYS use Font Awesome icons in Flutter code.** Do not use Material Icons.
+- **Package**: `font_awesome_flutter` (already in pubspec.yaml)
+- **Import**: `import 'package:font_awesome_flutter/font_awesome_flutter.dart';`
+- **Widget**: Use `FaIcon(FontAwesomeIcons.xxx)` instead of `Icon(Icons.xxx)`
+- **Solid variants**: Use `FontAwesomeIcons.solidXxx` for filled versions
+- **Examples**:
+  - `FaIcon(FontAwesomeIcons.bars)` - menu icon
+  - `FaIcon(FontAwesomeIcons.arrowsRotate)` - refresh icon
+  - `FaIcon(FontAwesomeIcons.user)` - user icon
+  - `FaIcon(FontAwesomeIcons.solidUser)` - filled user icon
+
 ## MULTIPLATFORM PROJECT - ALL PLATFORMS ALWAYS
 This is a multiplatform project targeting Linux, Windows, and Android (iOS planned).
 When writing ANY code:
@@ -257,7 +269,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
 | C Library + CLI | `include/dna/version.h` | v0.3.22 | C code changes (src/, dht/, messenger/, p2p/, crypto/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.1+9901 | Flutter/Dart code changes only |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.3+9903 | Flutter/Dart code changes only |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 | Nodus server changes |
 
 **IMPORTANT: Versions are INDEPENDENT**

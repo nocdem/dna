@@ -3,6 +3,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'providers/providers.dart';
@@ -158,8 +159,8 @@ class _LoadingScreen extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.security,
+            FaIcon(
+              FontAwesomeIcons.shieldHalved,
               size: 64,
               color: theme.colorScheme.primary,
             ),
@@ -198,8 +199,8 @@ class _ErrorScreen extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
-                Icons.error_outline,
+              FaIcon(
+                FontAwesomeIcons.circleExclamation,
                 size: 64,
                 color: DnaColors.textWarning,
               ),

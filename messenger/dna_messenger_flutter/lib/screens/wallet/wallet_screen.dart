@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart' show Contact, Transaction, UserProfile, Wallet;
 import '../../providers/providers.dart' hide UserProfile;
 import '../../theme/dna_theme.dart';
@@ -60,14 +61,14 @@ class WalletScreen extends ConsumerWidget {
       appBar: AppBar(
         leading: onMenuPressed != null
             ? IconButton(
-                icon: const Icon(Icons.menu),
+                icon: const FaIcon(FontAwesomeIcons.bars),
                 onPressed: onMenuPressed,
               )
             : null,
         title: const Text('Wallet'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
             onPressed: () => ref.invalidate(walletsProvider),
             tooltip: 'Refresh',
           ),
@@ -94,8 +95,8 @@ class WalletScreen extends ConsumerWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.account_balance_wallet_outlined,
+            FaIcon(
+              FontAwesomeIcons.wallet,
               size: 64,
               color: theme.colorScheme.primary.withAlpha(128),
             ),
@@ -137,8 +138,8 @@ class WalletScreen extends ConsumerWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.error_outline,
+            FaIcon(
+              FontAwesomeIcons.circleExclamation,
               size: 48,
               color: DnaColors.textWarning,
             ),
@@ -289,8 +290,8 @@ class _WalletCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(
-                  Icons.account_balance_wallet,
+                FaIcon(
+                  FontAwesomeIcons.wallet,
                   color: theme.colorScheme.primary,
                 ),
                 const SizedBox(width: 8),
@@ -303,8 +304,8 @@ class _WalletCard extends StatelessWidget {
                 if (wallet.isProtected)
                   Tooltip(
                     message: 'Protected wallet',
-                    child: Icon(
-                      Icons.lock,
+                    child: FaIcon(
+                      FontAwesomeIcons.lock,
                       size: 20,
                       color: theme.colorScheme.secondary,
                     ),
@@ -336,7 +337,7 @@ class _WalletCard extends StatelessWidget {
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(Icons.copy, size: 18),
+                    icon: const FaIcon(FontAwesomeIcons.copy, size: 18),
                     onPressed: () {
                       Clipboard.setData(ClipboardData(text: wallet.address));
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -476,8 +477,8 @@ class _BalanceTile extends ConsumerWidget {
               ),
             ),
             const SizedBox(width: 4),
-            Icon(
-              Icons.chevron_right,
+            FaIcon(
+              FontAwesomeIcons.chevronRight,
               color: theme.colorScheme.primary.withAlpha(128),
               size: 20,
             ),
@@ -540,7 +541,7 @@ class _ActionButtons extends ConsumerWidget {
           Expanded(
             child: OutlinedButton.icon(
               onPressed: () => _showReceive(context),
-              icon: const Icon(Icons.arrow_downward),
+              icon: const FaIcon(FontAwesomeIcons.arrowDown),
               label: const Text('Receive'),
             ),
           ),
@@ -548,7 +549,7 @@ class _ActionButtons extends ConsumerWidget {
           Expanded(
             child: ElevatedButton.icon(
               onPressed: () => _showSend(context, ref),
-              icon: const Icon(Icons.arrow_upward),
+              icon: const FaIcon(FontAwesomeIcons.arrowUp),
               label: const Text('Send'),
             ),
           ),
@@ -577,8 +578,8 @@ class _ActionButtons extends ConsumerWidget {
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Icon(
-                  Icons.qr_code,
+                child: const FaIcon(
+                  FontAwesomeIcons.qrcode,
                   size: 150,
                   color: Colors.black,
                 ),
@@ -601,7 +602,7 @@ class _ActionButtons extends ConsumerWidget {
                     const SnackBar(content: Text('Address copied')),
                   );
                 },
-                icon: const Icon(Icons.copy),
+                icon: const FaIcon(FontAwesomeIcons.copy),
                 label: const Text('Copy Address'),
               ),
             ],
@@ -958,7 +959,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                   ),
                   const Spacer(),
                   IconButton(
-                    icon: const Icon(Icons.close),
+                    icon: const FaIcon(FontAwesomeIcons.xmark),
                     onPressed: () => Navigator.pop(context),
                   ),
                 ],
@@ -1057,7 +1058,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                   Padding(
                     padding: const EdgeInsets.only(top: 8),
                     child: IconButton(
-                      icon: const Icon(Icons.contacts),
+                      icon: const FaIcon(FontAwesomeIcons.addressBook),
                       tooltip: 'Select contact',
                       onPressed: _showContactPicker,
                     ),
@@ -1070,7 +1071,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                   padding: const EdgeInsets.only(top: 4),
                   child: Row(
                     children: [
-                      Icon(Icons.check_circle, size: 16, color: DnaColors.textSuccess),
+                      FaIcon(FontAwesomeIcons.circleCheck, size: 16, color: DnaColors.textSuccess),
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(
@@ -1089,7 +1090,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                   padding: const EdgeInsets.only(top: 4),
                   child: Row(
                     children: [
-                      Icon(Icons.error_outline, size: 16, color: DnaColors.textWarning),
+                      FaIcon(FontAwesomeIcons.circleExclamation, size: 16, color: DnaColors.textWarning),
                       const SizedBox(width: 4),
                       Text(
                         _resolveError!,
@@ -1462,7 +1463,7 @@ class _TokenDetailSheet extends ConsumerWidget {
                               ),
                             ),
                             IconButton(
-                              icon: const Icon(Icons.refresh),
+                              icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
                               onPressed: () {
                                 ref.invalidate(balancesProvider(walletIndex));
                                 ref.invalidate(transactionsProvider((walletIndex: walletIndex, network: network == 'Ethereum' ? 'Ethereum' : 'Backbone')));
@@ -1506,7 +1507,7 @@ class _TokenDetailSheet extends ConsumerWidget {
                                 ),
                               ),
                               IconButton(
-                                icon: const Icon(Icons.copy, size: 18),
+                                icon: const FaIcon(FontAwesomeIcons.copy, size: 18),
                                 onPressed: () {
                                   Clipboard.setData(ClipboardData(text: walletAddress));
                                   ScaffoldMessenger.of(context).showSnackBar(
@@ -1531,7 +1532,7 @@ class _TokenDetailSheet extends ConsumerWidget {
                       width: double.infinity,
                       child: ElevatedButton.icon(
                         onPressed: () => _showSend(context, ref, balance),
-                        icon: const Icon(Icons.arrow_upward),
+                        icon: const FaIcon(FontAwesomeIcons.arrowUp),
                         label: Text('Send $token'),
                       ),
                     ),
@@ -1564,8 +1565,8 @@ class _TokenDetailSheet extends ConsumerWidget {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(
-                              Icons.receipt_long_outlined,
+                            FaIcon(
+                              FontAwesomeIcons.receipt,
                               size: 48,
                               color: theme.colorScheme.primary.withAlpha(128),
                             ),
@@ -1681,7 +1682,7 @@ class _TransactionHistorySheet extends ConsumerWidget {
                     ),
                     const Spacer(),
                     IconButton(
-                      icon: const Icon(Icons.refresh),
+                      icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
                       onPressed: () => ref.invalidate(
                         transactionsProvider((walletIndex: walletIndex, network: 'Backbone')),
                       ),
@@ -1705,8 +1706,8 @@ class _TransactionHistorySheet extends ConsumerWidget {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(
-                              Icons.receipt_long_outlined,
+                            FaIcon(
+                              FontAwesomeIcons.receipt,
                               size: 64,
                               color: theme.colorScheme.primary.withAlpha(128),
                             ),
@@ -1739,8 +1740,8 @@ class _TransactionHistorySheet extends ConsumerWidget {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(
-                            Icons.error_outline,
+                          FaIcon(
+                            FontAwesomeIcons.circleExclamation,
                             size: 48,
                             color: DnaColors.textWarning,
                           ),
@@ -1791,8 +1792,8 @@ class _TransactionTile extends StatelessWidget {
         backgroundColor: isReceived
             ? const Color(0xFF00D4AA).withAlpha(51)
             : const Color(0xFFFF6B6B).withAlpha(51),
-        child: Icon(
-          isReceived ? Icons.arrow_downward : Icons.arrow_upward,
+        child: FaIcon(
+          isReceived ? FontAwesomeIcons.arrowDown : FontAwesomeIcons.arrowUp,
           color: isReceived ? const Color(0xFF00D4AA) : const Color(0xFFFF6B6B),
         ),
       ),

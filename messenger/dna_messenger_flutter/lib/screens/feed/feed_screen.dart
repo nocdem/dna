@@ -1,6 +1,7 @@
 // Feed Screen - Public social feed via DHT
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import '../../ffi/dna_engine.dart';
@@ -46,13 +47,13 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
         title: Text(selectedChannel?.name ?? 'Feed'),
         leading: isWide ? null : Builder(
           builder: (ctx) => IconButton(
-            icon: const Icon(Icons.menu),
+            icon: const FaIcon(FontAwesomeIcons.bars),
             onPressed: () => Scaffold.of(ctx).openDrawer(),
           ),
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
             onPressed: () {
               ref.invalidate(feedChannelsProvider);
               if (selectedChannel != null) {
@@ -101,7 +102,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
           ),
           child: Row(
             children: [
-              const Icon(Icons.tag, color: DnaColors.primary),
+              const FaIcon(FontAwesomeIcons.hashtag, color: DnaColors.primary),
               const SizedBox(width: 8),
               const Expanded(
                 child: Text(
@@ -110,7 +111,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
                 ),
               ),
               IconButton(
-                icon: const Icon(Icons.add, size: 20),
+                icon: const FaIcon(FontAwesomeIcons.plus, size: 20),
                 onPressed: () => _showCreateChannelDialog(),
                 tooltip: 'Create Channel',
                 padding: EdgeInsets.zero,
@@ -153,7 +154,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
             onPressed: () async {
               await ref.read(feedChannelsProvider.notifier).initDefaultChannels();
             },
-            icon: const Icon(Icons.add_circle_outline, size: 18),
+            icon: const FaIcon(FontAwesomeIcons.circlePlus, size: 18),
             label: const Text('Init Default Channels'),
           ),
         ),
@@ -166,7 +167,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.tag, size: 48, color: DnaColors.primary.withAlpha(80)),
+          FaIcon(FontAwesomeIcons.hashtag, size: 48, color: DnaColors.primary.withAlpha(80)),
           const SizedBox(height: 12),
           const Text('No channels yet'),
           const SizedBox(height: 8),
@@ -186,7 +187,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.forum_outlined, size: 64, color: DnaColors.primary.withAlpha(80)),
+          FaIcon(FontAwesomeIcons.comments, size: 64, color: DnaColors.primary.withAlpha(80)),
           const SizedBox(height: 16),
           const Text('Select a channel'),
           const SizedBox(height: 8),
@@ -281,7 +282,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.chat_bubble_outline, size: 48, color: DnaColors.primary.withAlpha(80)),
+          FaIcon(FontAwesomeIcons.comment, size: 48, color: DnaColors.primary.withAlpha(80)),
           const SizedBox(height: 12),
           const Text('No posts yet'),
           const SizedBox(height: 8),
@@ -444,7 +445,7 @@ class _ChannelTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListTile(
-      leading: const Icon(Icons.tag),
+      leading: const FaIcon(FontAwesomeIcons.hashtag),
       title: Text(
         channel.name,
         maxLines: 1,
@@ -525,13 +526,13 @@ class _PostCard extends ConsumerWidget {
                   if (post.verified)
                     Padding(
                       padding: const EdgeInsets.only(left: 4),
-                      child: Icon(Icons.verified, size: 14, color: DnaColors.textSuccess),
+                      child: FaIcon(FontAwesomeIcons.circleCheck, size: 14, color: DnaColors.textSuccess),
                     ),
                   // Expand indicator
                   Padding(
                     padding: const EdgeInsets.only(left: 8),
-                    child: Icon(
-                      isExpanded ? Icons.expand_less : Icons.expand_more,
+                    child: FaIcon(
+                      isExpanded ? FontAwesomeIcons.chevronUp : FontAwesomeIcons.chevronDown,
                       size: 20,
                       color: DnaColors.textMuted,
                     ),
@@ -550,8 +551,8 @@ class _PostCard extends ConsumerWidget {
                     final votingPostId = ref.watch(votingPostProvider);
                     final isLoading = votingPostId == post.postId;
                     return _VoteButton(
-                      icon: Icons.thumb_up_outlined,
-                      activeIcon: Icons.thumb_up,
+                      icon: FontAwesomeIcons.thumbsUp,
+                      activeIcon: FontAwesomeIcons.solidThumbsUp,
                       count: post.upvotes,
                       isActive: post.userVote == 1,
                       isLoading: isLoading,
@@ -564,8 +565,8 @@ class _PostCard extends ConsumerWidget {
                     final votingPostId = ref.watch(votingPostProvider);
                     final isLoading = votingPostId == post.postId;
                     return _VoteButton(
-                      icon: Icons.thumb_down_outlined,
-                      activeIcon: Icons.thumb_down,
+                      icon: FontAwesomeIcons.thumbsDown,
+                      activeIcon: FontAwesomeIcons.solidThumbsDown,
                       count: post.downvotes,
                       isActive: post.userVote == -1,
                       isNegative: true,
@@ -575,7 +576,7 @@ class _PostCard extends ConsumerWidget {
                   }),
                   const Spacer(),
                   // Comment count
-                  Icon(Icons.comment_outlined, size: 16, color: DnaColors.textMuted),
+                  FaIcon(FontAwesomeIcons.comment, size: 16, color: DnaColors.textMuted),
                   const SizedBox(width: 4),
                   Text(
                     '${post.commentCount}',
@@ -766,7 +767,7 @@ class _CommentsSection extends ConsumerWidget {
                 const SizedBox(width: 8),
                 IconButton(
                   onPressed: onSendComment,
-                  icon: const Icon(Icons.send, size: 20),
+                  icon: const FaIcon(FontAwesomeIcons.paperPlane, size: 20),
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                 ),
@@ -819,7 +820,7 @@ class _CommentCard extends ConsumerWidget {
               if (comment.verified)
                 Padding(
                   padding: const EdgeInsets.only(left: 4),
-                  child: Icon(Icons.verified, size: 12, color: DnaColors.textSuccess),
+                  child: FaIcon(FontAwesomeIcons.circleCheck, size: 12, color: DnaColors.textSuccess),
                 ),
             ],
           ),
@@ -834,8 +835,8 @@ class _CommentCard extends ConsumerWidget {
                 final votingCommentId = ref.watch(votingCommentProvider);
                 final isLoading = votingCommentId == comment.commentId;
                 return _VoteButton(
-                  icon: Icons.thumb_up_outlined,
-                  activeIcon: Icons.thumb_up,
+                  icon: FontAwesomeIcons.thumbsUp,
+                  activeIcon: FontAwesomeIcons.solidThumbsUp,
                   count: comment.upvotes,
                   isActive: comment.userVote == 1,
                   isLoading: isLoading,
@@ -848,8 +849,8 @@ class _CommentCard extends ConsumerWidget {
                 final votingCommentId = ref.watch(votingCommentProvider);
                 final isLoading = votingCommentId == comment.commentId;
                 return _VoteButton(
-                  icon: Icons.thumb_down_outlined,
-                  activeIcon: Icons.thumb_down,
+                  icon: FontAwesomeIcons.thumbsDown,
+                  activeIcon: FontAwesomeIcons.solidThumbsDown,
                   count: comment.downvotes,
                   isActive: comment.userVote == -1,
                   isNegative: true,
@@ -865,7 +866,7 @@ class _CommentCard extends ConsumerWidget {
                 borderRadius: BorderRadius.circular(12),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  child: Icon(Icons.reply, size: 14, color: DnaColors.textMuted),
+                  child: FaIcon(FontAwesomeIcons.reply, size: 14, color: DnaColors.textMuted),
                 ),
               ),
             ],
@@ -962,7 +963,7 @@ class _VoteButton extends StatelessWidget {
                 ),
               )
             else
-              Icon(isActive ? activeIcon : icon, size: iconSize, color: color),
+              FaIcon(isActive ? activeIcon : icon, size: iconSize, color: color),
             if (count > 0) ...[
               const SizedBox(width: 4),
               Text(
@@ -1022,10 +1023,10 @@ class _ComposeArea extends StatelessWidget {
               children: [
                 // Emoji button
                 IconButton(
-                  icon: Icon(
+                  icon: FaIcon(
                     showEmojiPicker
-                        ? Icons.keyboard
-                        : Icons.emoji_emotions_outlined,
+                        ? FontAwesomeIcons.keyboard
+                        : FontAwesomeIcons.faceSmile,
                   ),
                   onPressed: onEmojiToggle,
                 ),
@@ -1061,7 +1062,7 @@ class _ComposeArea extends StatelessWidget {
                 // Send button
                 IconButton(
                   onPressed: onSend,
-                  icon: const Icon(Icons.send),
+                  icon: const FaIcon(FontAwesomeIcons.paperPlane),
                 ),
               ],
             ),
