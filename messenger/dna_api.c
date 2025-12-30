@@ -1198,15 +1198,14 @@ dna_error_t dna_sign_message(
         return DNA_ERROR_INVALID_ARG;
     }
 
-    // Build key file path: <data_dir>/<fingerprint>/keys/<fingerprint>.dsa
+    /* v0.3.0: Flat structure - keys/identity.dsa */
     char key_path[512];
     const char *data_dir = qgp_platform_app_data_dir();
     if (!data_dir) {
         fprintf(stderr, "[DNA API] Failed to get data directory\n");
         return DNA_ERROR_INTERNAL;
     }
-    /* v0.3.0: Flat structure - keys/identity.dsa (signer_key_name ignored) */
-    (void)signer_key_name;  // Unused in v0.3.0 flat structure
+    (void)signer_key_name;  /* Unused in v0.3.0 flat structure */
     snprintf(key_path, sizeof(key_path), "%s/keys/identity.dsa", data_dir);
 
     // Load signing key

@@ -100,9 +100,9 @@ typedef struct {
 
 /**
  * Initialize contacts database for a specific identity
- * Creates database file at ~/.dna/<owner_identity>_contacts.db if it doesn't exist
+ * v0.3.0 flat structure: Creates ~/.dna/db/contacts.db if it doesn't exist
  *
- * @param owner_identity: Identity who owns this contact list (e.g., "alice")
+ * @param owner_identity: Identity who owns this contact list (kept for API compat)
  * @return: 0 on success, -1 on error
  */
 int contacts_db_init(const char *owner_identity);
@@ -179,10 +179,10 @@ void contacts_db_close(void);
 
 /**
  * Migrate contacts from global database to per-identity database
- * Copies all contacts from ~/.dna/contacts.db to ~/.dna/<owner_identity>_contacts.db
- * Only runs if global database exists and per-identity database doesn't
+ * v0.3.0 flat structure: No longer needed (single user model)
+ * Kept for backward compatibility but is a no-op
  *
- * @param owner_identity: Identity to migrate contacts to
+ * @param owner_identity: Identity to migrate contacts to (ignored)
  * @return: Number of contacts migrated, 0 if nothing to migrate, -1 on error
  */
 int contacts_db_migrate_from_global(const char *owner_identity);

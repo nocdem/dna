@@ -491,7 +491,7 @@ int wallet_list_from_dna_dir(wallet_list_t **list_out) {
 }
 
 /**
- * List wallets for a specific identity from <data_dir>/<fingerprint>/wallets/
+ * List wallets for identity - v0.3.0 flat structure: <data_dir>/wallets/
  */
 int wallet_list_for_identity(const char *fingerprint, wallet_list_t **list_out) {
     if (!fingerprint || !list_out) {
