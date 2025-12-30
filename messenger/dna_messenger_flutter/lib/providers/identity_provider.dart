@@ -16,6 +16,17 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
 
   @override
   Future<List<String>> build() async {
+    // v0.3.0: First check if identity actually exists on disk
+    // This prevents using stale cache after account deletion
+    final engine = await ref.watch(engineProvider.future);
+    final hasIdentity = engine.hasIdentity();
+
+    if (!hasIdentity) {
+      // No identity on disk - clear any stale cache and return empty
+      _db.saveIdentityList([]);
+      return [];
+    }
+
     // Step 1: Try to load cached identity list immediately (fast startup)
     List<String> cachedIdentities = [];
     try {
@@ -32,8 +43,7 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
       // Cache not ready, continue to engine
     }
 
-    // Step 2: No cache - wait for engine (first run or cache cleared)
-    final engine = await ref.watch(engineProvider.future);
+    // Step 2: No cache - get from engine
     final identities = await engine.listIdentities();
 
     // Cache the list for next startup
