@@ -40,21 +40,6 @@ static int tests_failed = 0;
     } \
 } while(0)
 
-// ===== Test: Profile Creation and Destruction =====
-void test_profile_creation(void) {
-    TEST_START("Profile Creation and Destruction");
-
-    dna_profile_data_t *profile = dna_profile_create();
-    TEST_ASSERT(profile != NULL, "Profile created successfully");
-
-    if (profile) {
-        TEST_ASSERT(profile->bio[0] == '\0', "Bio initialized to empty");
-        TEST_ASSERT(profile->wallets.backbone[0] == '\0', "Wallet initialized to empty");
-        dna_profile_free(profile);
-        TEST_PASS("Profile freed successfully");
-    }
-}
-
 // ===== Test: Identity Creation and Destruction =====
 void test_identity_creation(void) {
     TEST_START("Identity Creation and Destruction");
@@ -196,53 +181,6 @@ void test_wallet_getters_setters(void) {
     dna_identity_free(identity);
 }
 
-// ===== Test: Profile JSON Serialization =====
-void test_profile_serialization(void) {
-    TEST_START("Profile JSON Serialization");
-
-    dna_profile_data_t *profile = dna_profile_create();
-    if (!profile) {
-        TEST_FAIL("Failed to create profile");
-        return;
-    }
-
-    // Set some data
-    strncpy(profile->bio, "Test bio for DNA profile", sizeof(profile->bio) - 1);
-    strncpy(profile->wallets.backbone, "mHBXVe5rSeAyVmZb3GLLrr56zHkD3b3BzUdqhLYjcgzHZ5e", sizeof(profile->wallets.backbone) - 1);
-    strncpy(profile->wallets.eth, "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb", sizeof(profile->wallets.eth) - 1);
-    strncpy(profile->socials.telegram, "@testuser", sizeof(profile->socials.telegram) - 1);
-
-    // Serialize
-    char *json = dna_profile_to_json(profile);
-    TEST_ASSERT(json != NULL, "Profile serialized to JSON");
-
-    if (json) {
-        // Check JSON contains expected fields
-        TEST_ASSERT(strstr(json, "bio") != NULL, "JSON contains 'bio' field");
-        TEST_ASSERT(strstr(json, "Test bio") != NULL, "JSON contains bio content");
-        TEST_ASSERT(strstr(json, "backbone") != NULL, "JSON contains 'backbone' field");
-        TEST_ASSERT(strstr(json, "telegram") != NULL, "JSON contains 'telegram' field");
-
-        // Deserialize
-        dna_profile_data_t *parsed = NULL;
-        int ret = dna_profile_from_json(json, &parsed);
-        TEST_ASSERT(ret == 0, "Profile deserialized from JSON");
-        TEST_ASSERT(parsed != NULL, "Parsed profile not NULL");
-
-        if (parsed) {
-            TEST_ASSERT(strcmp(parsed->bio, profile->bio) == 0, "Bio matches after deserialization");
-            TEST_ASSERT(strcmp(parsed->wallets.backbone, profile->wallets.backbone) == 0, "Backbone address matches");
-            TEST_ASSERT(strcmp(parsed->wallets.eth, profile->wallets.eth) == 0, "ETH address matches");
-            TEST_ASSERT(strcmp(parsed->socials.telegram, profile->socials.telegram) == 0, "Telegram handle matches");
-            dna_profile_free(parsed);
-        }
-
-        free(json);
-    }
-
-    dna_profile_free(profile);
-}
-
 // ===== Test: Identity JSON Serialization =====
 void test_identity_serialization(void) {
     TEST_START("Identity JSON Serialization");
@@ -291,54 +229,19 @@ void test_identity_serialization(void) {
     dna_identity_free(identity);
 }
 
-// ===== Test: Profile Validation =====
-void test_profile_validation(void) {
-    TEST_START("Profile Validation");
-
-    dna_profile_data_t *profile = dna_profile_create();
-    if (!profile) {
-        TEST_FAIL("Failed to create profile");
-        return;
-    }
-
-    // Empty profile should be valid
-    TEST_ASSERT(dna_profile_validate(profile) == 0, "Empty profile is valid");
-
-    // Valid profile with data
-    strncpy(profile->bio, "Test bio", sizeof(profile->bio) - 1);
-    strncpy(profile->wallets.backbone, "mHBXVe5rSeAyVmZb3GLLrr56zHkD3b3BzUdqhLYjcgzHZ5e", sizeof(profile->wallets.backbone) - 1);
-    TEST_ASSERT(dna_profile_validate(profile) == 0, "Valid profile with data passes validation");
-
-    // Bio too long (>512 chars) - Create a string longer than 512
-    char long_bio[600];
-    memset(long_bio, 'A', sizeof(long_bio) - 1);
-    long_bio[sizeof(long_bio) - 1] = '\0';
-    memcpy(profile->bio, long_bio, sizeof(profile->bio));
-    profile->bio[sizeof(profile->bio) - 1] = '\0';
-    // Now profile->bio has 511 'A's, which is valid. Let's break it differently.
-    // Actually, let's just check that filling it completely is fine:
-    TEST_ASSERT(dna_profile_validate(profile) == 0, "Profile with bio at max length (511) is valid");
-
-    dna_profile_free(profile);
-}
-
 // ===== Main Test Runner =====
 int main(void) {
     printf("\n" COLOR_YELLOW "========================================\n");
     printf("DNA Profile Unit Tests\n");
     printf("========================================" COLOR_RESET "\n");
 
-    test_profile_creation();
     test_identity_creation();
     test_wallet_validation();
     test_ipfs_validation();
     test_name_validation();
     test_network_checking();
     test_wallet_getters_setters();
-    // Skip serialization tests for now - debugging
-    // test_profile_serialization();
-    // test_identity_serialization();
-    test_profile_validation();
+    test_identity_serialization();
 
     printf("\n" COLOR_YELLOW "========================================\n");
     printf("Test Results\n");

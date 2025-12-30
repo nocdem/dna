@@ -1,6 +1,7 @@
 // Contact Requests Screen - ICQ-style incoming contact requests
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../providers/contact_requests_provider.dart';
@@ -18,7 +19,7 @@ class ContactRequestsScreen extends ConsumerWidget {
         title: const Text('Contact Requests'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
             onPressed: () => ref.invalidate(contactRequestsProvider),
             tooltip: 'Refresh',
           ),
@@ -46,7 +47,7 @@ class ContactRequestsScreen extends ConsumerWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons.person_add_disabled,
+              FontAwesomeIcons.userSlash,
               size: 64,
               color: theme.colorScheme.primary.withAlpha(128),
             ),
@@ -94,7 +95,7 @@ class ContactRequestsScreen extends ConsumerWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons.error_outline,
+              FontAwesomeIcons.circleExclamation,
               size: 48,
               color: DnaColors.textWarning,
             ),
@@ -304,7 +305,7 @@ class _RequestTile extends StatelessWidget {
                       value: 'block',
                       child: Row(
                         children: [
-                          Icon(Icons.block, color: Colors.red),
+                          FaIcon(FontAwesomeIcons.ban, color: Colors.red),
                           SizedBox(width: 8),
                           Text('Block User'),
                         ],
@@ -340,7 +341,7 @@ class _RequestTile extends StatelessWidget {
                 const SizedBox(width: 8),
                 FilledButton.icon(
                   onPressed: onApprove,
-                  icon: const Icon(Icons.check),
+                  icon: const FaIcon(FontAwesomeIcons.check),
                   label: const Text('Accept'),
                 ),
               ],

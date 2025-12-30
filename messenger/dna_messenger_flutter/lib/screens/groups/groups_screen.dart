@@ -1,6 +1,7 @@
 // Groups Screen - Group list and invitations
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
@@ -19,14 +20,14 @@ class GroupsScreen extends ConsumerWidget {
       appBar: AppBar(
         leading: onMenuPressed != null
             ? IconButton(
-                icon: const Icon(Icons.menu),
+                icon: const FaIcon(FontAwesomeIcons.bars),
                 onPressed: onMenuPressed,
               )
             : null,
         title: const Text('Groups'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
             onPressed: () {
               ref.invalidate(groupsProvider);
               ref.invalidate(invitationsProvider);
@@ -40,7 +41,7 @@ class GroupsScreen extends ConsumerWidget {
         heroTag: 'groups_fab',
         onPressed: () => _showCreateGroupDialog(context, ref),
         tooltip: 'Create Group',
-        child: const Icon(Icons.group_add),
+        child: const FaIcon(FontAwesomeIcons.userGroup),
       ),
     );
   }
@@ -75,8 +76,8 @@ class GroupsScreen extends ConsumerWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.groups_outlined,
+            FaIcon(
+              FontAwesomeIcons.users,
               size: 64,
               color: theme.colorScheme.primary.withAlpha(128),
             ),
@@ -140,8 +141,8 @@ class GroupsScreen extends ConsumerWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.error_outline,
+            FaIcon(
+              FontAwesomeIcons.circleExclamation,
               size: 48,
               color: DnaColors.textWarning,
             ),
@@ -277,14 +278,14 @@ class _GroupTile extends StatelessWidget {
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: theme.colorScheme.secondary.withAlpha(51),
-        child: Icon(
-          Icons.group,
+        child: FaIcon(
+          FontAwesomeIcons.users,
           color: theme.colorScheme.secondary,
         ),
       ),
       title: Text(group.name),
       subtitle: Text('${group.memberCount} members'),
-      trailing: const Icon(Icons.chevron_right),
+      trailing: const FaIcon(FontAwesomeIcons.chevronRight),
       onTap: onTap,
     );
   }
@@ -316,8 +317,8 @@ class _InvitationTile extends StatelessWidget {
               children: [
                 CircleAvatar(
                   backgroundColor: theme.colorScheme.primary.withAlpha(51),
-                  child: Icon(
-                    Icons.mail,
+                  child: FaIcon(
+                    FontAwesomeIcons.envelope,
                     color: theme.colorScheme.primary,
                   ),
                 ),
@@ -494,7 +495,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.info_outline),
+            icon: const FaIcon(FontAwesomeIcons.circleInfo),
             onPressed: () {
               // Show group info
               ScaffoldMessenger.of(context).showSnackBar(
@@ -515,8 +516,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    Icons.construction_outlined,
+                  FaIcon(
+                    FontAwesomeIcons.screwdriverWrench,
                     size: 64,
                     color: theme.colorScheme.primary.withAlpha(128),
                   ),
@@ -581,7 +582,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
                           height: 20,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : const Icon(Icons.send),
+                      : const FaIcon(FontAwesomeIcons.paperPlane),
                 ),
               ],
             ),

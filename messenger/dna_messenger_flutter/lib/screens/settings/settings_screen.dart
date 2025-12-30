@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -15,6 +17,11 @@ import '../profile/profile_editor_screen.dart';
 import 'blocked_users_screen.dart';
 import 'contacts_management_screen.dart';
 import 'debug_log_screen.dart';
+
+/// Provider for app package info (version from pubspec.yaml)
+final packageInfoProvider = FutureProvider<PackageInfo>((ref) async {
+  return await PackageInfo.fromPlatform();
+});
 
 /// Developer mode state provider - persisted to SharedPreferences
 final developerModeProvider = StateNotifierProvider<DeveloperModeNotifier, bool>((ref) {
@@ -57,7 +64,7 @@ class SettingsScreen extends ConsumerWidget {
         title: const Text('Settings'),
         leading: onMenuPressed != null
             ? IconButton(
-                icon: const Icon(Icons.menu),
+                icon: const FaIcon(FontAwesomeIcons.bars),
                 onPressed: onMenuPressed,
               )
             : null,
@@ -183,8 +190,8 @@ class _ProfileSection extends StatelessWidget {
                     ],
                   ),
                 ),
-                Icon(
-                  Icons.chevron_right,
+                FaIcon(
+                  FontAwesomeIcons.chevronRight,
                   color: DnaColors.textMuted,
                 ),
               ],
@@ -217,7 +224,7 @@ class _ProfileSection extends StatelessWidget {
           radius: 32,
           backgroundColor: theme.colorScheme.primary.withAlpha(51),
           child: Icon(
-            Icons.person,
+            FontAwesomeIcons.user,
             size: 32,
             color: theme.colorScheme.primary,
           ),
@@ -235,8 +242,8 @@ class _ProfileSection extends StatelessWidget {
       error: (e, st) => CircleAvatar(
         radius: 32,
         backgroundColor: theme.colorScheme.primary.withAlpha(51),
-        child: Icon(
-          Icons.person,
+        child: FaIcon(
+          FontAwesomeIcons.user,
           size: 32,
           color: theme.colorScheme.primary,
         ),
@@ -260,10 +267,10 @@ class _ContactsSection extends ConsumerWidget {
       children: [
         const _SectionHeader('Contacts'),
         ListTile(
-          leading: const Icon(Icons.people),
+          leading: const FaIcon(FontAwesomeIcons.users),
           title: const Text('Manage Contacts'),
           subtitle: Text(contactCount > 0 ? '$contactCount contacts' : 'No contacts'),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const FaIcon(FontAwesomeIcons.chevronRight),
           onTap: () {
             Navigator.push(
               context,
@@ -298,17 +305,17 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
       children: [
         const _SectionHeader('Security'),
         ListTile(
-          leading: const Icon(Icons.vpn_key),
+          leading: const FaIcon(FontAwesomeIcons.key),
           title: const Text('Export Seed Phrase'),
           subtitle: const Text('Back up your recovery phrase'),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const FaIcon(FontAwesomeIcons.chevronRight),
           onTap: () => _showExportSeedDialog(context),
         ),
         ListTile(
-          leading: const Icon(Icons.lock),
+          leading: const FaIcon(FontAwesomeIcons.lock),
           title: const Text('App Lock'),
           subtitle: const Text('Require authentication'),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const FaIcon(FontAwesomeIcons.chevronRight),
           onTap: () {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('Coming soon')),
@@ -316,10 +323,10 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
           },
         ),
         ListTile(
-          leading: const Icon(Icons.block),
+          leading: const FaIcon(FontAwesomeIcons.ban),
           title: const Text('Blocked Users'),
           subtitle: Text(blockedCount > 0 ? '$blockedCount blocked' : 'No blocked users'),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const FaIcon(FontAwesomeIcons.chevronRight),
           onTap: () {
             Navigator.push(
               context,
@@ -342,7 +349,7 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons.warning_amber,
+              FontAwesomeIcons.triangleExclamation,
               size: 48,
               color: DnaColors.textWarning,
             ),
@@ -385,7 +392,7 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
             builder: (context) => AlertDialog(
               title: Row(
                 children: [
-                  Icon(Icons.key, color: DnaColors.textWarning),
+                  FaIcon(FontAwesomeIcons.key, color: DnaColors.textWarning),
                   const SizedBox(width: 8),
                   const Expanded(child: Text('Your Seed Phrase')),
                 ],
@@ -453,7 +460,7 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                     const SizedBox(height: 16),
                     Row(
                       children: [
-                        Icon(Icons.warning_amber, size: 16, color: DnaColors.textWarning),
+                        Icon(FontAwesomeIcons.triangleExclamation, size: 16, color: DnaColors.textWarning),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
@@ -547,7 +554,7 @@ class _DataSectionState extends ConsumerState<_DataSection> {
               ),
               child: Row(
                 children: [
-                  Icon(Icons.info_outline, size: 20, color: Theme.of(context).colorScheme.primary),
+                  FaIcon(FontAwesomeIcons.circleInfo, size: 20, color: Theme.of(context).colorScheme.primary),
                   const SizedBox(width: 8),
                   const Expanded(
                     child: Text(
@@ -645,7 +652,7 @@ class _DataSectionState extends ConsumerState<_DataSection> {
               ),
               child: Row(
                 children: [
-                  Icon(Icons.info_outline, size: 20, color: Theme.of(context).colorScheme.primary),
+                  FaIcon(FontAwesomeIcons.circleInfo, size: 20, color: Theme.of(context).colorScheme.primary),
                   const SizedBox(width: 8),
                   const Expanded(
                     child: Text(
@@ -738,10 +745,10 @@ class _DataSectionState extends ConsumerState<_DataSection> {
                   height: 24,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Icon(Icons.cloud_upload),
+              : const FaIcon(FontAwesomeIcons.cloudArrowUp),
           title: const Text('Backup Messages'),
           subtitle: const Text('Upload messages to DHT (7 day TTL)'),
-          trailing: _isBackingUp ? null : const Icon(Icons.chevron_right),
+          trailing: _isBackingUp ? null : const FaIcon(FontAwesomeIcons.chevronRight),
           onTap: _isBackingUp || _isRestoring ? null : () => _backupMessages(context),
         ),
         ListTile(
@@ -751,10 +758,10 @@ class _DataSectionState extends ConsumerState<_DataSection> {
                   height: 24,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Icon(Icons.cloud_download),
+              : const FaIcon(FontAwesomeIcons.cloudArrowDown),
           title: const Text('Restore Messages'),
           subtitle: const Text('Download messages from DHT backup'),
-          trailing: _isRestoring ? null : const Icon(Icons.chevron_right),
+          trailing: _isRestoring ? null : const FaIcon(FontAwesomeIcons.chevronRight),
           onTap: _isBackingUp || _isRestoring ? null : () => _restoreMessages(context),
         ),
       ],
@@ -909,7 +916,7 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
         // Debug Log Toggle
         SwitchListTile(
           secondary: Icon(
-            Icons.article_outlined,
+            FontAwesomeIcons.fileLines,
             color: _debugLogEnabled ? theme.colorScheme.primary : null,
           ),
           title: const Text('Debug Log Capture'),
@@ -919,10 +926,10 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
         ),
         // View Debug Logs
         ListTile(
-          leading: const Icon(Icons.visibility),
+          leading: const FaIcon(FontAwesomeIcons.eye),
           title: const Text('View Debug Logs'),
           subtitle: const Text('Open in-app log viewer'),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const FaIcon(FontAwesomeIcons.chevronRight),
           enabled: _debugLogEnabled,
           onTap: _debugLogEnabled
               ? () {
@@ -937,17 +944,17 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
         ),
         // Export Logs
         ListTile(
-          leading: const Icon(Icons.share),
+          leading: const FaIcon(FontAwesomeIcons.shareNodes),
           title: const Text('Export Logs'),
           subtitle: const Text('Share log file for debugging'),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const FaIcon(FontAwesomeIcons.chevronRight),
           enabled: _debugLogEnabled,
           onTap: _debugLogEnabled ? () => _exportLogs(context) : null,
         ),
         const Divider(),
         // Log Level
         ListTile(
-          leading: const Icon(Icons.bug_report),
+          leading: const FaIcon(FontAwesomeIcons.bug),
           title: const Text('Log Level'),
           subtitle: Text('Current: $_currentLevel'),
           trailing: DropdownButton<String>(
@@ -974,7 +981,7 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
             children: [
               Row(
                 children: [
-                  Icon(Icons.label_outline, size: 20, color: DnaColors.textMuted),
+                  FaIcon(FontAwesomeIcons.tag, size: 20, color: DnaColors.textMuted),
                   const SizedBox(width: 8),
                   Text('Log Tags', style: theme.textTheme.bodyMedium),
                 ],
@@ -1091,7 +1098,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
         const _SectionHeader('Identity'),
         if (fingerprint != null)
           ListTile(
-            leading: const Icon(Icons.fingerprint),
+            leading: const FaIcon(FontAwesomeIcons.fingerprint),
             title: const Text('Fingerprint'),
             subtitle: Text(
               fingerprint,
@@ -1101,7 +1108,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
                 fontFamily: 'monospace',
               ),
             ),
-            trailing: const Icon(Icons.content_copy),
+            trailing: const FaIcon(FontAwesomeIcons.copy),
             onTap: () {
               Clipboard.setData(ClipboardData(text: fingerprint));
               ScaffoldMessenger.of(context).showSnackBar(
@@ -1111,7 +1118,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
           ),
         // v0.3.0: Delete Account (renamed from Delete Identity - single-user model)
         ListTile(
-          leading: Icon(Icons.delete_forever, color: DnaColors.textWarning),
+          leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.textWarning),
           title: Text(
             'Delete Account',
             style: TextStyle(color: DnaColors.textWarning),
@@ -1123,7 +1130,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
                   height: 24,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : Icon(Icons.chevron_right, color: DnaColors.textMuted),
+              : FaIcon(FontAwesomeIcons.chevronRight, color: DnaColors.textMuted),
           onTap: _isDeleting ? null : () => _showDeleteConfirmation(context),
         ),
       ],
@@ -1139,7 +1146,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
       builder: (context) => AlertDialog(
         title: Row(
           children: [
-            Icon(Icons.warning_amber, color: DnaColors.textWarning),
+            FaIcon(FontAwesomeIcons.triangleExclamation, color: DnaColors.textWarning),
             const SizedBox(width: 8),
             const Text('Delete Account?'),
           ],
@@ -1167,7 +1174,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
               ),
               child: Row(
                 children: [
-                  Icon(Icons.info_outline, size: 20, color: DnaColors.textWarning),
+                  FaIcon(FontAwesomeIcons.circleInfo, size: 20, color: DnaColors.textWarning),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -1210,7 +1217,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
       padding: const EdgeInsets.only(left: 8, top: 4),
       child: Row(
         children: [
-          Icon(Icons.circle, size: 6, color: DnaColors.textMuted),
+          FaIcon(FontAwesomeIcons.circle, size: 6, color: DnaColors.textMuted),
           const SizedBox(width: 8),
           Text(text, style: TextStyle(color: DnaColors.textMuted)),
         ],
@@ -1313,10 +1320,16 @@ class _AboutSectionState extends ConsumerState<_AboutSection> {
     final theme = Theme.of(context);
     final developerMode = ref.watch(developerModeProvider);
     final engineAsync = ref.watch(engineProvider);
+    final packageInfoAsync = ref.watch(packageInfoProvider);
 
-    // Get version from native library (single source of truth)
-    final version = engineAsync.whenOrNull(
+    // Get library version from native library
+    final libVersion = engineAsync.whenOrNull(
       data: (engine) => engine.version,
+    ) ?? 'unknown';
+
+    // Get app version from pubspec.yaml
+    final appVersion = packageInfoAsync.whenOrNull(
+      data: (info) => info.version,
     ) ?? 'unknown';
 
     return Column(
@@ -1331,10 +1344,17 @@ class _AboutSectionState extends ConsumerState<_AboutSection> {
               GestureDetector(
                 onTap: _handleVersionTap,
                 child: Text(
-                  'DNA Messenger v$version',
+                  'DNA Messenger v$appVersion',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: developerMode ? DnaColors.textSuccess : null,
                   ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Library v$libVersion',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: DnaColors.textMuted,
                 ),
               ),
               const SizedBox(height: 4),

@@ -15,6 +15,12 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Fixed Bugs
 
+- [x] Menu drawer: avatar and name should be on same line - changed to Row layout (v0.3.25)
+- [x] Menu drawer: profile info misaligned to right - added SizedBox width constraint (v0.3.24)
+- [x] Profile fields (display_name, location, website) not saved to DHT - internal dna_profile_data_t struct was incomplete, removed and now using dna_profile_t everywhere (v0.3.23)
+- [x] Avatar disappears after editing profile settings - cache update now happens directly after save instead of fetching from DHT (v0.3.23)
+- [x] Seed phrase screen Continue button not full width (v0.99.1)
+- [x] Restore flow shows "Creating your identity" instead of "Loading identity" for returning users (v0.3.22)
 - [x] Emoji picker search button turns box gray - fixed with SearchViewConfig (v0.2.119)
 - [x] Social media icons missing - added Font Awesome icons for all social fields (v0.2.125)
 - [x] Take a Selfie button doesn't work on desktop - hidden, opens gallery directly (v0.2.124)

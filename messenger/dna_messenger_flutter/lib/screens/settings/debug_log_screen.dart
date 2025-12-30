@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
@@ -121,8 +122,8 @@ class _DebugLogScreenState extends ConsumerState<DebugLogScreen> {
         actions: [
           // Filter dropdown
           PopupMenuButton<DebugLogLevel?>(
-            icon: Icon(
-              Icons.filter_list,
+            icon: FaIcon(
+              FontAwesomeIcons.filter,
               color: _filterLevel != null ? theme.colorScheme.primary : null,
             ),
             tooltip: 'Filter by level',
@@ -156,8 +157,8 @@ class _DebugLogScreenState extends ConsumerState<DebugLogScreen> {
           ),
           // Auto-refresh toggle
           IconButton(
-            icon: Icon(
-              _autoRefresh ? Icons.sync : Icons.sync_disabled,
+            icon: FaIcon(
+              _autoRefresh ? FontAwesomeIcons.arrowsRotate : FontAwesomeIcons.stop,
               color: _autoRefresh ? theme.colorScheme.primary : null,
             ),
             tooltip: _autoRefresh ? 'Auto-refresh ON' : 'Auto-refresh OFF',
@@ -175,7 +176,7 @@ class _DebugLogScreenState extends ConsumerState<DebugLogScreen> {
                 onTap: _loadEntries,
                 child: const Row(
                   children: [
-                    Icon(Icons.refresh, size: 20),
+                    FaIcon(FontAwesomeIcons.arrowsRotate, size: 20),
                     SizedBox(width: 12),
                     Text('Refresh now'),
                   ],
@@ -185,7 +186,7 @@ class _DebugLogScreenState extends ConsumerState<DebugLogScreen> {
                 onTap: _copyAllLogs,
                 child: const Row(
                   children: [
-                    Icon(Icons.copy, size: 20),
+                    FaIcon(FontAwesomeIcons.copy, size: 20),
                     SizedBox(width: 12),
                     Text('Copy all'),
                   ],
@@ -195,7 +196,7 @@ class _DebugLogScreenState extends ConsumerState<DebugLogScreen> {
                 onTap: _clearLogs,
                 child: Row(
                   children: [
-                    Icon(Icons.delete_outline, size: 20, color: DnaColors.textWarning),
+                    FaIcon(FontAwesomeIcons.trash, size: 20, color: DnaColors.textWarning),
                     const SizedBox(width: 12),
                     Text('Clear logs', style: TextStyle(color: DnaColors.textWarning)),
                   ],
@@ -213,8 +214,8 @@ class _DebugLogScreenState extends ConsumerState<DebugLogScreen> {
             color: theme.colorScheme.surface,
             child: Row(
               children: [
-                Icon(
-                  Icons.circle,
+                FaIcon(
+                  FontAwesomeIcons.circle,
                   size: 8,
                   color: _autoRefresh ? DnaColors.textSuccess : DnaColors.textMuted,
                 ),
@@ -244,8 +245,8 @@ class _DebugLogScreenState extends ConsumerState<DebugLogScreen> {
                 const Spacer(),
                 // Scroll to bottom toggle
                 IconButton(
-                  icon: Icon(
-                    Icons.vertical_align_bottom,
+                  icon: FaIcon(
+                    FontAwesomeIcons.arrowDown,
                     size: 20,
                     color: _scrollToBottom ? theme.colorScheme.primary : DnaColors.textMuted,
                   ),
@@ -267,8 +268,8 @@ class _DebugLogScreenState extends ConsumerState<DebugLogScreen> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(
-                          Icons.article_outlined,
+                        FaIcon(
+                          FontAwesomeIcons.fileLines,
                           size: 64,
                           color: DnaColors.textMuted.withAlpha(102),
                         ),

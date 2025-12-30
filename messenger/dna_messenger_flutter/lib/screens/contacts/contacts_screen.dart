@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../providers/contact_requests_provider.dart';
@@ -24,7 +25,7 @@ class ContactsScreen extends ConsumerWidget {
       appBar: AppBar(
         leading: onMenuPressed != null
             ? IconButton(
-                icon: const Icon(Icons.menu),
+                icon: const FaIcon(FontAwesomeIcons.bars),
                 onPressed: onMenuPressed,
               )
             : null,
@@ -38,7 +39,7 @@ class ContactsScreen extends ConsumerWidget {
             ),
           ),
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
             onPressed: () => ref.invalidate(contactsProvider),
             tooltip: 'Refresh',
           ),
@@ -53,7 +54,7 @@ class ContactsScreen extends ConsumerWidget {
         heroTag: 'contacts_fab',
         onPressed: () => _showAddContactDialog(context, ref),
         tooltip: 'Add Contact',
-        child: const Icon(Icons.person_add),
+        child: const FaIcon(FontAwesomeIcons.userPlus),
       ),
     );
   }
@@ -66,8 +67,8 @@ class ContactsScreen extends ConsumerWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.people_outline,
+            FaIcon(
+              FontAwesomeIcons.users,
               size: 64,
               color: theme.colorScheme.primary.withAlpha(128),
             ),
@@ -113,7 +114,7 @@ class ContactsScreen extends ConsumerWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons.error_outline,
+              FontAwesomeIcons.circleExclamation,
               size: 48,
               color: DnaColors.textWarning,
             ),
@@ -252,7 +253,7 @@ class _ContactTile extends ConsumerWidget {
               ),
             ),
           const SizedBox(width: 4),
-          const Icon(Icons.chevron_right),
+          const FaIcon(FontAwesomeIcons.chevronRight),
         ],
       ),
       onTap: onTap,
@@ -539,7 +540,7 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
                         ),
                       )
                     : _foundFingerprint != null
-                        ? Icon(Icons.check_circle, color: DnaColors.textSuccess)
+                        ? FaIcon(FontAwesomeIcons.circleCheck, color: DnaColors.textSuccess)
                         : null,
               ),
               autofocus: true,
@@ -562,7 +563,7 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
               const SizedBox(height: 8),
               Row(
                 children: [
-                  Icon(Icons.error_outline,
+                  Icon(FontAwesomeIcons.circleExclamation,
                        color: DnaColors.textWarning, size: 16),
                   const SizedBox(width: 8),
                   Expanded(
@@ -671,7 +672,7 @@ class _ContactRequestsBadge extends ConsumerWidget {
     return Stack(
       children: [
         IconButton(
-          icon: const Icon(Icons.person_add_alt_1),
+          icon: const FaIcon(FontAwesomeIcons.userClock),
           onPressed: onTap,
           tooltip: 'Contact Requests',
         ),

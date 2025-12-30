@@ -22,17 +22,6 @@ static const char *DISALLOWED_NAMES[] = {
 
 // ===== Memory Management =====
 
-dna_profile_data_t* dna_profile_create(void) {
-    dna_profile_data_t *profile = calloc(1, sizeof(dna_profile_data_t));
-    return profile;
-}
-
-void dna_profile_free(dna_profile_data_t *profile) {
-    if (profile) {
-        free(profile);
-    }
-}
-
 dna_unified_identity_t* dna_identity_create(void) {
     dna_unified_identity_t *identity = calloc(1, sizeof(dna_unified_identity_t));
     return identity;
@@ -148,85 +137,6 @@ static int hex_to_bytes(const char *hex, uint8_t *bytes_out, size_t bytes_len) {
         if (sscanf(&hex[i * 2], "%02x", &byte) != 1) return -1;
         bytes_out[i] = (uint8_t)byte;
     }
-    return 0;
-}
-
-// ===== Profile Data Serialization =====
-
-char* dna_profile_to_json(const dna_profile_data_t *profile) {
-    if (!profile) return NULL;
-
-    json_object *root = json_object_new_object();
-
-    // Wallets
-    json_object *wallets_obj = wallets_to_json(&profile->wallets);
-    json_object_object_add(root, "wallets", wallets_obj);
-
-    // Socials
-    json_object *socials_obj = socials_to_json(&profile->socials);
-    json_object_object_add(root, "socials", socials_obj);
-
-    // Bio and profile picture
-    if (profile->bio[0]) json_object_object_add(root, "bio",
-        json_object_new_string(profile->bio));
-    if (profile->profile_picture_ipfs[0]) json_object_object_add(root,
-        "profile_picture_ipfs", json_object_new_string(profile->profile_picture_ipfs));
-    if (profile->avatar_base64[0]) json_object_object_add(root,
-        "avatar_base64", json_object_new_string(profile->avatar_base64));
-
-    const char *json_str = json_object_to_json_string_ext(root, JSON_C_TO_STRING_PLAIN);
-    char *result = strdup(json_str);
-    json_object_put(root);
-
-    return result;
-}
-
-int dna_profile_from_json(const char *json, dna_profile_data_t **profile_out) {
-    if (!json || !profile_out) return -1;
-
-    json_object *root = json_tokener_parse(json);
-    if (!root) return -1;
-
-    dna_profile_data_t *profile = dna_profile_create();
-    if (!profile) {
-        json_object_put(root);
-        return -1;
-    }
-
-    json_object *val;
-
-    // Wallets
-    if (json_object_object_get_ex(root, "wallets", &val)) {
-        wallets_from_json(val, &profile->wallets);
-    }
-
-    // Socials
-    if (json_object_object_get_ex(root, "socials", &val)) {
-        socials_from_json(val, &profile->socials);
-    }
-
-    // Bio
-    if (json_object_object_get_ex(root, "bio", &val)) {
-        const char *str = json_object_get_string(val);
-        if (str) strncpy(profile->bio, str, sizeof(profile->bio) - 1);
-    }
-
-    // Profile picture
-    if (json_object_object_get_ex(root, "profile_picture_ipfs", &val)) {
-        const char *str = json_object_get_string(val);
-        if (str) strncpy(profile->profile_picture_ipfs, str,
-                        sizeof(profile->profile_picture_ipfs) - 1);
-    }
-
-    // Avatar (base64)
-    if (json_object_object_get_ex(root, "avatar_base64", &val)) {
-        const char *str = json_object_get_string(val);
-        if (str) strncpy(profile->avatar_base64, str,
-                        sizeof(profile->avatar_base64) - 1);
-    }
-
-    json_object_put(root);
-    *profile_out = profile;
     return 0;
 }
 
@@ -447,37 +357,6 @@ int dna_identity_from_json(const char *json, dna_unified_identity_t **identity_o
 }
 
 // ===== Validation Functions =====
-
-int dna_profile_validate(const dna_profile_data_t *profile) {
-    if (!profile) return -1;
-
-    // Check bio length (max 512 chars, not including null terminator)
-    size_t bio_len = strlen(profile->bio);
-    if (bio_len > 512) return -2;
-
-    // Validate IPFS CID if set
-    if (profile->profile_picture_ipfs[0]) {
-        if (!dna_validate_ipfs_cid(profile->profile_picture_ipfs)) return -3;
-    }
-
-    // Validate wallet addresses
-    // (Skip empty addresses)
-    #define VALIDATE_WALLET(field, network) \
-        if (profile->wallets.field[0]) { \
-            if (!dna_validate_wallet_address(profile->wallets.field, network)) return -4; \
-        }
-
-    VALIDATE_WALLET(backbone, "backbone")
-    VALIDATE_WALLET(alvin, "alvin")
-    VALIDATE_WALLET(btc, "btc")
-    VALIDATE_WALLET(eth, "eth")
-    VALIDATE_WALLET(sol, "sol")
-    VALIDATE_WALLET(trx, "trx")
-
-    #undef VALIDATE_WALLET
-
-    return 0;
-}
 
 bool dna_validate_wallet_address(const char *address, const char *network) {
     if (!address || !address[0] || !network) return false;

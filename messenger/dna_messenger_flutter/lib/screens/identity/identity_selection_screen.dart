@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 
@@ -28,6 +29,7 @@ enum _OnboardingStep {
   confirmProfile,   // Profile found in DHT - confirm
   enterNickname,    // Profile NOT in DHT - enter nickname
   creating,         // Publishing to DHT
+  loading,          // Loading existing identity (post-confirm)
 }
 
 class OnboardingScreen extends ConsumerStatefulWidget {
@@ -89,7 +91,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     return Scaffold(
       appBar: _step != _OnboardingStep.welcome ? AppBar(
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
+          icon: const FaIcon(FontAwesomeIcons.arrowLeft),
           onPressed: _handleBack,
         ),
         title: Text(_getStepTitle()),
@@ -116,6 +118,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         return 'Choose Your Name';
       case _OnboardingStep.creating:
         return 'Creating Identity';
+      case _OnboardingStep.loading:
+        return 'Loading...';
     }
   }
 
@@ -167,6 +171,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         return _buildEnterNicknameStep();
       case _OnboardingStep.creating:
         return _buildCreatingStep();
+      case _OnboardingStep.loading:
+        return _buildLoadingStep();
     }
   }
 
@@ -180,8 +186,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const Spacer(),
-          Icon(
-            Icons.security,
+          FaIcon(
+            FontAwesomeIcons.shieldHalved,
             size: 80,
             color: theme.colorScheme.primary,
           ),
@@ -202,7 +208,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           const Spacer(),
           ElevatedButton.icon(
             onPressed: _generateNewSeed,
-            icon: const Icon(Icons.add),
+            icon: const FaIcon(FontAwesomeIcons.plus),
             label: const Text('Generate New Seed'),
             style: ElevatedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 16),
@@ -211,7 +217,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           const SizedBox(height: 16),
           OutlinedButton.icon(
             onPressed: () => setState(() => _step = _OnboardingStep.enterSeed),
-            icon: const Icon(Icons.key),
+            icon: const FaIcon(FontAwesomeIcons.key),
             label: const Text('I Have a Seed Phrase'),
             style: OutlinedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 16),
@@ -260,7 +266,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             ),
             child: Row(
               children: [
-                Icon(Icons.warning_amber, color: DnaColors.textWarning),
+                FaIcon(FontAwesomeIcons.triangleExclamation, color: DnaColors.textWarning),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
@@ -291,7 +297,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                 const SnackBar(content: Text('Copied to clipboard')),
               );
             },
-            icon: const Icon(Icons.copy, size: 18),
+            icon: const FaIcon(FontAwesomeIcons.copy, size: 18),
             label: const Text('Copy to Clipboard'),
           ),
           const SizedBox(height: 24),
@@ -307,9 +313,12 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             contentPadding: EdgeInsets.zero,
           ),
           const SizedBox(height: 16),
-          ElevatedButton(
-            onPressed: _seedConfirmed ? _processSeed : null,
-            child: const Text('Continue'),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: _seedConfirmed ? _processSeed : null,
+              child: const Text('Continue'),
+            ),
           ),
         ],
       ),
@@ -407,7 +416,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                     // Paste button
                     OutlinedButton.icon(
                       onPressed: _pasteFromClipboard,
-                      icon: const Icon(Icons.paste, size: 18),
+                      icon: const FaIcon(FontAwesomeIcons.paste, size: 18),
                       label: const Text('Paste from Clipboard'),
                     ),
                   ],
@@ -416,9 +425,12 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             ),
             Padding(
               padding: const EdgeInsets.all(24.0),
-              child: ElevatedButton(
-                onPressed: _allWordsFilled() ? _processSeed : null,
-                child: const Text('Continue'),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _allWordsFilled() ? _processSeed : null,
+                  child: const Text('Continue'),
+                ),
               ),
             ),
           ],
@@ -672,7 +684,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                   ? MemoryImage(_decodeAvatar(_existingAvatar!))
                   : null,
               child: _existingAvatar == null || _existingAvatar!.isEmpty
-                  ? Icon(Icons.person, size: 48, color: theme.colorScheme.primary)
+                  ? FaIcon(FontAwesomeIcons.user, size: 48, color: theme.colorScheme.primary)
                   : null,
             ),
           ),
@@ -728,7 +740,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   Future<void> _confirmAndLoad() async {
     if (_fingerprint == null) return;
 
-    setState(() => _step = _OnboardingStep.creating);
+    setState(() => _step = _OnboardingStep.loading);
     await Future.delayed(Duration.zero);
 
     try {
@@ -788,7 +800,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                       ),
                     )
                   : _isNameAvailable && _nicknameController.text.length >= 3
-                      ? const Icon(Icons.check_circle, color: Colors.green)
+                      ? const FaIcon(FontAwesomeIcons.circleCheck, color: Colors.green)
                       : null,
             ),
             textInputAction: TextInputAction.done,
@@ -919,6 +931,25 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           Text(
             'Publishing to the network',
             style: theme.textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ==================== STEP 6: Loading (existing identity) ====================
+  Widget _buildLoadingStep() {
+    final theme = Theme.of(context);
+
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const CircularProgressIndicator(),
+          const SizedBox(height: 24),
+          Text(
+            'Loading identity...',
+            style: theme.textTheme.titleMedium,
           ),
         ],
       ),

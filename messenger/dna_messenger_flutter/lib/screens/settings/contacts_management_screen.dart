@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
@@ -18,7 +19,7 @@ class ContactsManagementScreen extends ConsumerWidget {
         title: const Text('Manage Contacts'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
             onPressed: () => ref.read(contactsProvider.notifier).refresh(),
             tooltip: 'Refresh',
           ),
@@ -41,8 +42,8 @@ class ContactsManagementScreen extends ConsumerWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.people_outline,
+            FaIcon(
+              FontAwesomeIcons.users,
               size: 64,
               color: theme.colorScheme.primary.withAlpha(128),
             ),
@@ -88,8 +89,8 @@ class ContactsManagementScreen extends ConsumerWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.error_outline,
+            FaIcon(
+              FontAwesomeIcons.circleExclamation,
               size: 48,
               color: DnaColors.textWarning,
             ),
@@ -122,7 +123,7 @@ class ContactsManagementScreen extends ConsumerWidget {
       builder: (context) => AlertDialog(
         title: Row(
           children: [
-            Icon(Icons.person_remove, color: DnaColors.textWarning),
+            FaIcon(FontAwesomeIcons.userMinus, color: DnaColors.textWarning),
             const SizedBox(width: 8),
             const Text('Remove Contact'),
           ],
@@ -144,7 +145,7 @@ class ContactsManagementScreen extends ConsumerWidget {
               ),
               child: Row(
                 children: [
-                  Icon(Icons.info_outline, size: 20, color: DnaColors.textWarning),
+                  FaIcon(FontAwesomeIcons.circleInfo, size: 20, color: DnaColors.textWarning),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -229,8 +230,8 @@ class _ContactTile extends StatelessWidget {
         backgroundColor: contact.isOnline
             ? DnaColors.textSuccess.withAlpha(51)
             : theme.colorScheme.primary.withAlpha(51),
-        child: Icon(
-          Icons.person,
+        child: FaIcon(
+          FontAwesomeIcons.user,
           color: contact.isOnline
               ? DnaColors.textSuccess
               : theme.colorScheme.primary,
@@ -269,7 +270,7 @@ class _ContactTile extends StatelessWidget {
             value: 'copy',
             child: Row(
               children: [
-                Icon(Icons.content_copy, size: 20),
+                FaIcon(FontAwesomeIcons.copy, size: 20),
                 SizedBox(width: 8),
                 Text('Copy Fingerprint'),
               ],
@@ -279,7 +280,7 @@ class _ContactTile extends StatelessWidget {
             value: 'remove',
             child: Row(
               children: [
-                Icon(Icons.person_remove, size: 20, color: DnaColors.textWarning),
+                FaIcon(FontAwesomeIcons.userMinus, size: 20, color: DnaColors.textWarning),
                 const SizedBox(width: 8),
                 Text('Remove', style: TextStyle(color: DnaColors.textWarning)),
               ],

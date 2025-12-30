@@ -55,19 +55,6 @@ typedef struct {
 } dna_socials_t;
 
 /**
- * @brief Profile data helper structure
- *
- * Used for profile updates. Contains all user-editable fields.
- */
-typedef struct {
-    dna_wallets_t wallets;      /**< Wallet addresses */
-    dna_socials_t socials;      /**< Social profiles */
-    char bio[512];              /**< User bio (max 512 chars) */
-    char profile_picture_ipfs[64]; /**< IPFS CID for profile picture */
-    char avatar_base64[20484];  /**< Base64-encoded avatar (64x64 PNG, ~20KB max + padding for null term) */
-} dna_profile_data_t;
-
-/**
  * @brief Complete unified identity structure
  *
  * This structure represents a complete DNA identity in the DHT. It includes
@@ -113,23 +100,6 @@ typedef struct {
 } dna_unified_identity_t;
 
 /**
- * @brief Create new profile data structure
- *
- * Allocates and initializes a new profile data structure with all fields
- * set to zero/empty.
- *
- * @return Pointer to new profile data, or NULL on allocation failure
- */
-dna_profile_data_t* dna_profile_create(void);
-
-/**
- * @brief Free profile data structure
- *
- * @param profile Profile data to free (can be NULL)
- */
-void dna_profile_free(dna_profile_data_t *profile);
-
-/**
  * @brief Create new unified identity structure
  *
  * Allocates and initializes a new unified identity with all fields
@@ -145,26 +115,6 @@ dna_unified_identity_t* dna_identity_create(void);
  * @param identity Identity to free (can be NULL)
  */
 void dna_identity_free(dna_unified_identity_t *identity);
-
-/**
- * @brief Serialize profile data to JSON string
- *
- * Converts profile data structure to JSON representation. Caller must
- * free returned string.
- *
- * @param profile Profile data to serialize
- * @return JSON string, or NULL on error
- */
-char* dna_profile_to_json(const dna_profile_data_t *profile);
-
-/**
- * @brief Parse profile data from JSON string
- *
- * @param json JSON string to parse
- * @param profile_out Output parameter for parsed profile (allocated)
- * @return 0 on success, -1 on error
- */
-int dna_profile_from_json(const char *json, dna_profile_data_t **profile_out);
 
 /**
  * @brief Serialize unified identity to JSON string
@@ -196,19 +146,6 @@ char* dna_identity_to_json_unsigned(const dna_unified_identity_t *identity);
  * @return 0 on success, -1 on error
  */
 int dna_identity_from_json(const char *json, dna_unified_identity_t **identity_out);
-
-/**
- * @brief Validate profile data
- *
- * Checks that all fields are valid:
- * - Bio length <= 512 chars
- * - Wallet addresses have correct format
- * - IPFS CID has correct format (if set)
- *
- * @param profile Profile data to validate
- * @return 0 if valid, negative error code on validation failure
- */
-int dna_profile_validate(const dna_profile_data_t *profile);
 
 /**
  * @brief Validate wallet address format
