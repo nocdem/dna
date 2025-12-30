@@ -124,9 +124,11 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     return engine.when(
       data: (eng) {
         print('DEBUG BUILD data: _identityCheckDone=$_identityCheckDone, _hasIdentity=$_hasIdentity');
-        // Trigger identity check on first build
+        // Trigger identity check AFTER build completes (setState during build is ignored)
         if (!_identityCheckDone) {
-          _checkAndLoadIdentity(eng);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _checkAndLoadIdentity(eng);
+          });
           print('DEBUG BUILD: returning LoadingScreen (first build)');
           return const _LoadingScreen();
         }
