@@ -185,7 +185,7 @@ class _DhtStatusIndicator extends ConsumerWidget {
     final (String text, Color color, IconData icon) = switch (dhtState) {
       DhtConnectionState.connected => ('DHT Connected', Colors.green, FontAwesomeIcons.cloud),
       DhtConnectionState.connecting => ('DHT Connecting', Colors.orange, FontAwesomeIcons.cloudArrowUp),
-      DhtConnectionState.disconnected => ('DHT Disconnected', Colors.red, FontAwesomeIcons.cloudSlash),
+      DhtConnectionState.disconnected => ('DHT Disconnected', Colors.red, FontAwesomeIcons.cloudBolt),
     };
 
     return Padding(
