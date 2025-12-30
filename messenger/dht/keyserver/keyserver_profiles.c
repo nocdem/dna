@@ -13,7 +13,7 @@
 int dna_update_profile(
     dht_context_t *dht_ctx,
     const char *fingerprint,
-    const dna_profile_data_t *profile,
+    const dna_profile_t *profile,
     const uint8_t *dilithium_privkey,
     const uint8_t *dilithium_pubkey,
     const uint8_t *kyber_pubkey
@@ -49,15 +49,35 @@ int dna_update_profile(
         QGP_LOG_INFO(LOG_TAG, "Created new identity (old profile signature verification failed)\n");
     }
 
-    // Update profile data
-    memcpy(&identity->wallets, &profile->wallets, sizeof(identity->wallets));
-    memcpy(&identity->socials, &profile->socials, sizeof(identity->socials));
+    // Update profile data from flat dna_profile_t
+    // Wallets
+    strncpy(identity->wallets.backbone, profile->backbone, sizeof(identity->wallets.backbone) - 1);
+    strncpy(identity->wallets.alvin, profile->alvin, sizeof(identity->wallets.alvin) - 1);
+    strncpy(identity->wallets.btc, profile->btc, sizeof(identity->wallets.btc) - 1);
+    strncpy(identity->wallets.eth, profile->eth, sizeof(identity->wallets.eth) - 1);
+    strncpy(identity->wallets.sol, profile->sol, sizeof(identity->wallets.sol) - 1);
+    strncpy(identity->wallets.trx, profile->trx, sizeof(identity->wallets.trx) - 1);
+
+    // Socials
+    strncpy(identity->socials.telegram, profile->telegram, sizeof(identity->socials.telegram) - 1);
+    strncpy(identity->socials.x, profile->twitter, sizeof(identity->socials.x) - 1);
+    strncpy(identity->socials.github, profile->github, sizeof(identity->socials.github) - 1);
+    strncpy(identity->socials.facebook, profile->facebook, sizeof(identity->socials.facebook) - 1);
+    strncpy(identity->socials.instagram, profile->instagram, sizeof(identity->socials.instagram) - 1);
+    strncpy(identity->socials.linkedin, profile->linkedin, sizeof(identity->socials.linkedin) - 1);
+    strncpy(identity->socials.google, profile->google, sizeof(identity->socials.google) - 1);
+
+    // Profile info (previously missing: display_name, location, website)
+    strncpy(identity->display_name, profile->display_name, sizeof(identity->display_name) - 1);
     strncpy(identity->bio, profile->bio, sizeof(identity->bio) - 1);
+    strncpy(identity->location, profile->location, sizeof(identity->location) - 1);
+    strncpy(identity->website, profile->website, sizeof(identity->website) - 1);
     strncpy(identity->avatar_base64, profile->avatar_base64, sizeof(identity->avatar_base64) - 1);
 
-    // DEBUG: Log avatar being saved
+    // DEBUG: Log profile being saved
     size_t avatar_len = identity->avatar_base64[0] ? strlen(identity->avatar_base64) : 0;
-    QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] dna_update_profile: saving avatar_base64 length=%zu\n", avatar_len);
+    QGP_LOG_DEBUG(LOG_TAG, "dna_update_profile: avatar=%zu bytes, location='%s', website='%s'\n",
+                  avatar_len, identity->location, identity->website);
 
     // Update metadata
     identity->timestamp = time(NULL);

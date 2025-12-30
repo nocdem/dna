@@ -86,6 +86,7 @@ target_include_directories(dht_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/shared    # Phase 4: Shared modules
     ${OPENDHT_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_SOURCE_DIR}/include           # For dna/dna_engine.h (dna_profile_t)
     ${CMAKE_CURRENT_SOURCE_DIR}/../crypto
     ${CMAKE_CURRENT_SOURCE_DIR}/../blockchain/cellframe)
 if(WIN32)

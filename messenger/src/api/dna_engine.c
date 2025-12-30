@@ -1158,16 +1158,27 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
                         if (sign_key) {
                             qgp_key_t *enc_key = dna_load_encryption_key(engine);
                             if (enc_key) {
-                                /* Build profile data with wallet addresses */
-                                dna_profile_data_t profile_data = {0};
-                                strncpy(profile_data.wallets.backbone, cf_addr[0] ? cf_addr : identity->wallets.backbone, sizeof(profile_data.wallets.backbone) - 1);
-                                strncpy(profile_data.wallets.eth, eth_addr[0] ? eth_addr : identity->wallets.eth, sizeof(profile_data.wallets.eth) - 1);
-                                strncpy(profile_data.wallets.sol, sol_addr[0] ? sol_addr : identity->wallets.sol, sizeof(profile_data.wallets.sol) - 1);
-                                strncpy(profile_data.wallets.trx, trx_addr[0] ? trx_addr : identity->wallets.trx, sizeof(profile_data.wallets.trx) - 1);
-                                strncpy(profile_data.socials.telegram, identity->socials.telegram, sizeof(profile_data.socials.telegram) - 1);
-                                strncpy(profile_data.socials.x, identity->socials.x, sizeof(profile_data.socials.x) - 1);
-                                strncpy(profile_data.socials.github, identity->socials.github, sizeof(profile_data.socials.github) - 1);
+                                /* Build profile data with wallet addresses (flat dna_profile_t) */
+                                dna_profile_t profile_data = {0};
+                                /* Wallets */
+                                strncpy(profile_data.backbone, cf_addr[0] ? cf_addr : identity->wallets.backbone, sizeof(profile_data.backbone) - 1);
+                                strncpy(profile_data.btc, identity->wallets.btc, sizeof(profile_data.btc) - 1);
+                                strncpy(profile_data.eth, eth_addr[0] ? eth_addr : identity->wallets.eth, sizeof(profile_data.eth) - 1);
+                                strncpy(profile_data.sol, sol_addr[0] ? sol_addr : identity->wallets.sol, sizeof(profile_data.sol) - 1);
+                                strncpy(profile_data.trx, trx_addr[0] ? trx_addr : identity->wallets.trx, sizeof(profile_data.trx) - 1);
+                                /* Socials */
+                                strncpy(profile_data.telegram, identity->socials.telegram, sizeof(profile_data.telegram) - 1);
+                                strncpy(profile_data.twitter, identity->socials.x, sizeof(profile_data.twitter) - 1);
+                                strncpy(profile_data.github, identity->socials.github, sizeof(profile_data.github) - 1);
+                                strncpy(profile_data.facebook, identity->socials.facebook, sizeof(profile_data.facebook) - 1);
+                                strncpy(profile_data.instagram, identity->socials.instagram, sizeof(profile_data.instagram) - 1);
+                                strncpy(profile_data.linkedin, identity->socials.linkedin, sizeof(profile_data.linkedin) - 1);
+                                strncpy(profile_data.google, identity->socials.google, sizeof(profile_data.google) - 1);
+                                /* Profile info */
+                                strncpy(profile_data.display_name, identity->display_name, sizeof(profile_data.display_name) - 1);
                                 strncpy(profile_data.bio, identity->bio, sizeof(profile_data.bio) - 1);
+                                strncpy(profile_data.location, identity->location, sizeof(profile_data.location) - 1);
+                                strncpy(profile_data.website, identity->website, sizeof(profile_data.website) - 1);
                                 strncpy(profile_data.avatar_base64, identity->avatar_base64, sizeof(profile_data.avatar_base64) - 1);
 
                                 int update_rc = dna_update_profile(dht, fingerprint, &profile_data,
@@ -1426,21 +1437,8 @@ populate_wallets:
             if (sign_key) {
                 qgp_key_t *enc_key = dna_load_encryption_key(engine);
                 if (enc_key) {
-                    /* Build profile data */
-                    dna_profile_data_t profile_data = {0};
-                    strncpy(profile_data.wallets.backbone, profile->backbone, sizeof(profile_data.wallets.backbone) - 1);
-                    strncpy(profile_data.wallets.btc, profile->btc, sizeof(profile_data.wallets.btc) - 1);
-                    strncpy(profile_data.wallets.eth, profile->eth, sizeof(profile_data.wallets.eth) - 1);
-                    strncpy(profile_data.wallets.sol, profile->sol, sizeof(profile_data.wallets.sol) - 1);
-                    strncpy(profile_data.wallets.trx, profile->trx, sizeof(profile_data.wallets.trx) - 1);
-                    strncpy(profile_data.socials.telegram, profile->telegram, sizeof(profile_data.socials.telegram) - 1);
-                    strncpy(profile_data.socials.x, profile->twitter, sizeof(profile_data.socials.x) - 1);
-                    strncpy(profile_data.socials.github, profile->github, sizeof(profile_data.socials.github) - 1);
-                    strncpy(profile_data.bio, profile->bio, sizeof(profile_data.bio) - 1);
-                    strncpy(profile_data.avatar_base64, profile->avatar_base64, sizeof(profile_data.avatar_base64) - 1);
-
-                    /* Update profile in DHT */
-                    int update_rc = dna_update_profile(dht, engine->fingerprint, &profile_data,
+                    /* Update profile in DHT - profile is already a dna_profile_t* */
+                    int update_rc = dna_update_profile(dht, engine->fingerprint, profile,
                                                        sign_key->private_key, sign_key->public_key,
                                                        enc_key->public_key);
                     if (update_rc == 0) {
@@ -1599,35 +1597,15 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Build profile data structure */
-    dna_profile_data_t profile_data = {0};
+    /* Pass profile directly to DHT update (no more dna_profile_data_t conversion) */
     const dna_profile_t *p = &task->params.update_profile.profile;
 
-    /* Wallets */
-    strncpy(profile_data.wallets.backbone, p->backbone, sizeof(profile_data.wallets.backbone) - 1);
-    strncpy(profile_data.wallets.btc, p->btc, sizeof(profile_data.wallets.btc) - 1);
-    strncpy(profile_data.wallets.eth, p->eth, sizeof(profile_data.wallets.eth) - 1);
-    strncpy(profile_data.wallets.sol, p->sol, sizeof(profile_data.wallets.sol) - 1);
-    strncpy(profile_data.wallets.trx, p->trx, sizeof(profile_data.wallets.trx) - 1);
-
-    /* Socials */
-    strncpy(profile_data.socials.telegram, p->telegram, sizeof(profile_data.socials.telegram) - 1);
-    strncpy(profile_data.socials.x, p->twitter, sizeof(profile_data.socials.x) - 1);
-    strncpy(profile_data.socials.github, p->github, sizeof(profile_data.socials.github) - 1);
-
-    /* Bio and avatar */
-    strncpy(profile_data.bio, p->bio, sizeof(profile_data.bio) - 1);
-    strncpy(profile_data.avatar_base64, p->avatar_base64, sizeof(profile_data.avatar_base64) - 1);
-
-    /* DEBUG: Log avatar being saved */
-    size_t src_len = p->avatar_base64[0] ? strlen(p->avatar_base64) : 0;
-    size_t dst_len = profile_data.avatar_base64[0] ? strlen(profile_data.avatar_base64) : 0;
-    QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] update_profile: src_len=%zu, dst_len=%zu\n", src_len, dst_len);
-
-    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] update_profile: user-initiated save");
+    size_t avatar_len = p->avatar_base64[0] ? strlen(p->avatar_base64) : 0;
+    QGP_LOG_INFO(LOG_TAG, "update_profile: avatar=%zu bytes, location='%s', website='%s'\n",
+                 avatar_len, p->location, p->website);
 
     /* Update profile in DHT */
-    int rc = dna_update_profile(dht, engine->fingerprint, &profile_data,
+    int rc = dna_update_profile(dht, engine->fingerprint, p,
                                  sign_key->private_key, sign_key->public_key,
                                  enc_key->public_key);
 
@@ -1637,10 +1615,49 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
     if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
     } else {
-        /* Refresh profile cache with the updated profile from DHT
-         * This ensures the cache has the signed profile data */
-        profile_manager_refresh_profile(engine->fingerprint, NULL);
-        QGP_LOG_INFO(LOG_TAG, "Profile cached after DHT update: %.16s...\n", engine->fingerprint);
+        /* Update local cache directly (don't fetch from DHT - propagation delay) */
+        dna_unified_identity_t *cached = NULL;
+        uint64_t cached_at = 0;
+        int cache_rc = profile_cache_get(engine->fingerprint, &cached, &cached_at);
+
+        if (cache_rc != 0 || !cached) {
+            /* No cached profile - create one */
+            cached = (dna_unified_identity_t*)calloc(1, sizeof(dna_unified_identity_t));
+            if (cached) {
+                strncpy(cached->fingerprint, engine->fingerprint, sizeof(cached->fingerprint) - 1);
+                cached->created_at = (uint64_t)time(NULL);
+            }
+        }
+
+        if (cached) {
+            /* Update all profile fields in cache */
+            strncpy(cached->wallets.backbone, p->backbone, sizeof(cached->wallets.backbone) - 1);
+            strncpy(cached->wallets.alvin, p->alvin, sizeof(cached->wallets.alvin) - 1);
+            strncpy(cached->wallets.btc, p->btc, sizeof(cached->wallets.btc) - 1);
+            strncpy(cached->wallets.eth, p->eth, sizeof(cached->wallets.eth) - 1);
+            strncpy(cached->wallets.sol, p->sol, sizeof(cached->wallets.sol) - 1);
+            strncpy(cached->wallets.trx, p->trx, sizeof(cached->wallets.trx) - 1);
+
+            strncpy(cached->socials.telegram, p->telegram, sizeof(cached->socials.telegram) - 1);
+            strncpy(cached->socials.x, p->twitter, sizeof(cached->socials.x) - 1);
+            strncpy(cached->socials.github, p->github, sizeof(cached->socials.github) - 1);
+            strncpy(cached->socials.facebook, p->facebook, sizeof(cached->socials.facebook) - 1);
+            strncpy(cached->socials.instagram, p->instagram, sizeof(cached->socials.instagram) - 1);
+            strncpy(cached->socials.linkedin, p->linkedin, sizeof(cached->socials.linkedin) - 1);
+            strncpy(cached->socials.google, p->google, sizeof(cached->socials.google) - 1);
+
+            strncpy(cached->display_name, p->display_name, sizeof(cached->display_name) - 1);
+            strncpy(cached->bio, p->bio, sizeof(cached->bio) - 1);
+            strncpy(cached->location, p->location, sizeof(cached->location) - 1);
+            strncpy(cached->website, p->website, sizeof(cached->website) - 1);
+            strncpy(cached->avatar_base64, p->avatar_base64, sizeof(cached->avatar_base64) - 1);
+            cached->updated_at = (uint64_t)time(NULL);
+
+            profile_cache_add_or_update(engine->fingerprint, cached);
+            QGP_LOG_INFO(LOG_TAG, "Profile cache updated: %.16s... avatar=%zu bytes\n",
+                        engine->fingerprint, strlen(cached->avatar_base64));
+            dna_identity_free(cached);
+        }
     }
 
 done:
