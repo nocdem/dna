@@ -295,6 +295,20 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
         return;
       }
 
+      // Wait for DHT to connect before checking availability
+      if (!engine.isDhtConnected()) {
+        setState(() {
+          _availabilityStatus = 'Connecting to network...';
+          _isNameAvailable = false;
+        });
+        // Retry after 1 second
+        await Future.delayed(const Duration(seconds: 1));
+        if (!mounted) return;
+        // Check again - recursive call with same name
+        _checkNameAvailability(name);
+        return;
+      }
+
       // lookupName returns fingerprint if taken, empty string if available
       final result = await engine.lookupName(name);
 
@@ -876,6 +890,20 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
           _isNameAvailable = false;
           _isCheckingAvailability = false;
         });
+        return;
+      }
+
+      // Wait for DHT to connect before checking availability
+      if (!engine.isDhtConnected()) {
+        setState(() {
+          _availabilityStatus = 'Connecting to network...';
+          _isNameAvailable = false;
+        });
+        // Retry after 1 second
+        await Future.delayed(const Duration(seconds: 1));
+        if (!mounted) return;
+        // Check again - recursive call with same name
+        _checkNameAvailability(name);
         return;
       }
 
