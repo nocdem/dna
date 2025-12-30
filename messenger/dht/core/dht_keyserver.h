@@ -63,7 +63,8 @@ int dht_keyserver_publish(
     const uint8_t *dilithium_privkey,
     const char *wallet_address,
     const char *eth_address,
-    const char *sol_address
+    const char *sol_address,
+    const char *trx_address
 );
 
 /**

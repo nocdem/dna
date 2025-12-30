@@ -536,7 +536,6 @@ int messenger_register_name(
     QGP_LOG_INFO(LOG_TAG, "  ETH: %s", eth_address[0] ? eth_address : "(none)");
     QGP_LOG_INFO(LOG_TAG, "  SOL: %s", sol_address[0] ? sol_address : "(none)");
     QGP_LOG_INFO(LOG_TAG, "  TRX: %s", trx_address[0] ? trx_address : "(none)");
-    (void)trx_address;  // TRX not yet in dht_keyserver_publish, but derived for future use
 
     // Publish identity to DHT (unified: creates fingerprint:profile and name:lookup)
     QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] keygen calling dht_keyserver_publish for new identity");
@@ -549,7 +548,8 @@ int messenger_register_name(
         sign_key->private_key,
         wallet_address[0] ? wallet_address : NULL,
         eth_address[0] ? eth_address : NULL,
-        sol_address[0] ? sol_address : NULL
+        sol_address[0] ? sol_address : NULL,
+        trx_address[0] ? trx_address : NULL
     );
 
     if (publish_result == -2) {

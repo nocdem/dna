@@ -1041,13 +1041,13 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
                         qgp_key_t *enc_key = dna_load_encryption_key(engine);
                         if (enc_key) {
                             /* Derive wallet addresses from mnemonic (like keygen.c) */
-                            char cf_addr[128] = {0}, eth_addr[48] = {0}, sol_addr[48] = {0};
+                            char cf_addr[128] = {0}, eth_addr[48] = {0}, sol_addr[48] = {0}, trx_addr[48] = {0};
 
                             if (mnemonic_storage_exists(engine->data_dir)) {
                                 char mnemonic[512] = {0};
                                 if (mnemonic_storage_load(mnemonic, sizeof(mnemonic),
                                                          enc_key->private_key, engine->data_dir) == 0) {
-                                    /* Derive ETH/SOL from BIP39 master seed */
+                                    /* Derive ETH/SOL/TRX from BIP39 master seed */
                                     uint8_t master_seed[64];
                                     if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) == 0) {
                                         eth_wallet_t eth_wallet;
@@ -1059,6 +1059,11 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
                                         if (sol_wallet_generate(master_seed, 64, &sol_wallet) == 0) {
                                             strncpy(sol_addr, sol_wallet.address, sizeof(sol_addr) - 1);
                                             sol_wallet_clear(&sol_wallet);
+                                        }
+                                        trx_wallet_t trx_wallet;
+                                        if (trx_wallet_generate(master_seed, 64, &trx_wallet) == 0) {
+                                            strncpy(trx_addr, trx_wallet.address, sizeof(trx_addr) - 1);
+                                            trx_wallet_clear(&trx_wallet);
                                         }
                                         memset(master_seed, 0, sizeof(master_seed));
                                     }
@@ -1079,7 +1084,8 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
                                 sign_key->public_key, enc_key->public_key, sign_key->private_key,
                                 cf_addr[0] ? cf_addr : NULL,
                                 eth_addr[0] ? eth_addr : NULL,
-                                sol_addr[0] ? sol_addr : NULL);
+                                sol_addr[0] ? sol_addr : NULL,
+                                trx_addr[0] ? trx_addr : NULL);
 
                             if (publish_rc == 0) {
                                 QGP_LOG_INFO(LOG_TAG, "Profile republished to DHT successfully");

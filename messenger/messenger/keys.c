@@ -236,7 +236,8 @@ int messenger_store_pubkey(
         key->private_key,
         NULL,  // wallet_address not available here
         NULL,  // eth_address not available here
-        NULL   // sol_address not available here
+        NULL,  // sol_address not available here
+        NULL   // trx_address not available here
     );
 
     qgp_key_free(key);
