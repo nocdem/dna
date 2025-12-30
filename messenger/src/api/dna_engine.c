@@ -654,8 +654,8 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     /* Initialize request ID counter */
     atomic_store(&engine->next_request_id, 0);
 
-    /* Initialize DHT singleton */
-    dht_singleton_init();
+    /* DHT is NOT initialized here - only after identity is created/restored
+     * via dht_singleton_init_with_identity() in messenger/init.c */
 
     /* Initialize global keyserver cache (for display names before login) */
     keyserver_cache_init(NULL);
