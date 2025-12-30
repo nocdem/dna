@@ -764,6 +764,24 @@ int dna_engine_delete_identity_sync(
 bool dna_engine_has_identity(dna_engine_t *engine);
 
 /**
+ * Prepare DHT connection from mnemonic (before identity creation)
+ *
+ * v0.3.0+: Call this when user enters seed phrase and presses "Next".
+ * Starts DHT connection early so it's ready when identity is created.
+ *
+ * Flow:
+ * 1. User enters seed → presses Next
+ * 2. Call prepareDhtFromMnemonic() → DHT starts connecting
+ * 3. User enters nickname (DHT connects in background)
+ * 4. User presses Create → DHT is ready → name registration succeeds
+ *
+ * @param engine   Engine instance
+ * @param mnemonic BIP39 mnemonic (24 words, space-separated)
+ * @return         0 on success, -1 on error
+ */
+int dna_engine_prepare_dht_from_mnemonic(dna_engine_t *engine, const char *mnemonic);
+
+/**
  * Load and activate identity
  *
  * Loads keypairs, bootstraps DHT, registers presence,

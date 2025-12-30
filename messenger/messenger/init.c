@@ -99,6 +99,76 @@ static int resolve_identity_to_fingerprint(const char *identity_input, char *fin
     return 0;
 }
 
+/**
+ * Prepare DHT connection from mnemonic (before identity creation)
+ *
+ * v0.3.0+: Called when user enters seed phrase and presses "Next".
+ * Starts DHT connection early so it's ready when identity is created.
+ *
+ * Flow:
+ * 1. User enters seed → presses Next
+ * 2. This function starts DHT (non-blocking)
+ * 3. User enters nickname (DHT connects in background)
+ * 4. User presses Create → DHT is ready → name registration succeeds
+ */
+int messenger_prepare_dht_from_mnemonic(const char *mnemonic) {
+    if (!mnemonic || strlen(mnemonic) < 10) {
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Invalid mnemonic for DHT preparation");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG_DHT, "Preparing DHT connection from mnemonic...");
+
+    // Convert mnemonic to master seed
+    uint8_t master_seed[64];
+    if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to convert mnemonic to master seed");
+        return -1;
+    }
+
+    // Derive dht_seed = SHA3-512(master_seed + "dht_identity")[0:32]
+    uint8_t dht_seed[32];
+    uint8_t full_hash[64];
+    uint8_t seed_input[64 + 12];
+    memcpy(seed_input, master_seed, 64);
+    memcpy(seed_input + 64, "dht_identity", 12);
+    memset(master_seed, 0, sizeof(master_seed));
+
+    if (qgp_sha3_512(seed_input, sizeof(seed_input), full_hash) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to derive DHT seed");
+        memset(seed_input, 0, sizeof(seed_input));
+        return -1;
+    }
+    memset(seed_input, 0, sizeof(seed_input));
+
+    memcpy(dht_seed, full_hash, 32);
+    memset(full_hash, 0, sizeof(full_hash));
+
+    // Generate DHT identity from derived seed
+    dht_identity_t *dht_identity = NULL;
+    if (dht_identity_generate_from_seed(dht_seed, &dht_identity) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to generate DHT identity from seed");
+        memset(dht_seed, 0, sizeof(dht_seed));
+        return -1;
+    }
+    memset(dht_seed, 0, sizeof(dht_seed));
+
+    QGP_LOG_INFO(LOG_TAG_DHT, "Derived DHT identity from mnemonic (early preparation)");
+
+    // Cleanup any existing DHT
+    dht_singleton_cleanup();
+
+    // Start DHT with derived identity (non-blocking - bootstraps in background)
+    if (dht_singleton_init_with_identity(dht_identity) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to initialize DHT with derived identity");
+        dht_identity_free(dht_identity);
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG_DHT, "DHT connection started (bootstrapping in background)");
+    return 0;
+}
+
 // ============================================================================
 // INITIALIZATION
 // ============================================================================

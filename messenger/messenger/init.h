@@ -52,6 +52,17 @@ void messenger_free(messenger_context_t *ctx);
  */
 int messenger_load_dht_identity(const char *fingerprint);
 
+/**
+ * Prepare DHT connection from mnemonic (before identity creation)
+ *
+ * v0.3.0+: Called when user enters seed phrase and presses "Next".
+ * Starts DHT connection early so it's ready when identity is created.
+ *
+ * @param mnemonic: BIP39 mnemonic (24 words)
+ * @return: 0 on success, -1 on error
+ */
+int messenger_prepare_dht_from_mnemonic(const char *mnemonic);
+
 #ifdef __cplusplus
 }
 #endif

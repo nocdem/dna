@@ -1286,6 +1286,28 @@ class DnaEngine {
     return _bindings.dna_engine_has_identity(_engine);
   }
 
+  /// Prepare DHT connection from mnemonic (before identity creation)
+  ///
+  /// v0.3.0+: Call this when user enters seed phrase and presses "Next".
+  /// Starts DHT connection early so it's ready when identity is created.
+  ///
+  /// Flow:
+  /// 1. User enters seed → presses Next
+  /// 2. Call prepareDhtFromMnemonic() → DHT starts connecting
+  /// 3. User enters nickname (DHT connects in background)
+  /// 4. User presses Create → DHT is ready → name registration succeeds
+  void prepareDhtFromMnemonic(String mnemonic) {
+    final mnemonicPtr = mnemonic.toNativeUtf8();
+    try {
+      final result = _bindings.dna_engine_prepare_dht_from_mnemonic(_engine, mnemonicPtr);
+      if (result != 0) {
+        debugLog('DHT', 'Failed to prepare DHT from mnemonic: $result');
+      }
+    } finally {
+      calloc.free(mnemonicPtr);
+    }
+  }
+
   /// Load and activate identity (v0.3.0 single-user model)
   ///
   /// [fingerprint] - Optional identity fingerprint (empty string = auto-detect)

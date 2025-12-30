@@ -1023,6 +1023,16 @@ class DnaBindings {
     return _dna_engine_has_identity(engine);
   }
 
+  late final _dna_engine_prepare_dht_from_mnemonic = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>)>('dna_engine_prepare_dht_from_mnemonic');
+
+  /// Prepare DHT connection from mnemonic (before identity creation)
+  /// Call this when user validates seed phrase, before creating identity
+  int dna_engine_prepare_dht_from_mnemonic(Pointer<dna_engine_t> engine, Pointer<Utf8> mnemonic) {
+    return _dna_engine_prepare_dht_from_mnemonic(engine, mnemonic);
+  }
+
   late final _dna_engine_load_identity = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
           Pointer<DnaCompletionCb>, Pointer<Void>),

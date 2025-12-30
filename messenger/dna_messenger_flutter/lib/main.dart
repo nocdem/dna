@@ -80,24 +80,14 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
   }
 
   Future<void> _checkAndLoadIdentity(dynamic engine) async {
-    print('DEBUG: _checkAndLoadIdentity called, engine=$engine, _identityCheckDone=$_identityCheckDone');
     if (_identityCheckDone) return;
-    if (engine == null) {
-      print('DEBUG: engine is NULL, returning early');
-      return;
-    }
+    if (engine == null) return;
 
     _identityCheckDone = true;
-    print('DEBUG: _identityCheckDone set to true');
 
     // v0.3.0: Check if identity exists and auto-load
-    print('DEBUG: calling hasIdentity()...');
     final hasIdentity = engine.hasIdentity();
-    print('DEBUG: hasIdentity() returned: $hasIdentity');
-
-    print('DEBUG: calling debugLog...');
     engine.debugLog('STARTUP', 'v0.3.0: hasIdentity=$hasIdentity');
-    print('DEBUG: debugLog done');
 
     if (hasIdentity) {
       engine.debugLog('STARTUP', 'v0.3.0: Identity exists, auto-loading...');
@@ -107,50 +97,39 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
       engine.debugLog('STARTUP', 'v0.3.0: No identity, showing onboarding');
     }
 
-    print('DEBUG: about to call setState, mounted=$mounted');
     if (mounted) {
       setState(() {
         _hasIdentity = hasIdentity;
       });
-      print('DEBUG: setState called');
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    print('DEBUG BUILD: _identityCheckDone=$_identityCheckDone, _hasIdentity=$_hasIdentity');
     final engine = ref.watch(engineProvider);
 
     return engine.when(
       data: (eng) {
-        print('DEBUG BUILD data: _identityCheckDone=$_identityCheckDone, _hasIdentity=$_hasIdentity');
         // Trigger identity check AFTER build completes (setState during build is ignored)
         if (!_identityCheckDone) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _checkAndLoadIdentity(eng);
           });
-          print('DEBUG BUILD: returning LoadingScreen (first build)');
           return const _LoadingScreen();
         }
 
         // v0.3.0: Route based on identity existence
-        print('DEBUG BUILD: checking _hasIdentity=$_hasIdentity');
         if (_hasIdentity) {
           // Only activate providers AFTER identity is loaded
           ref.watch(eventHandlerActiveProvider);
           ref.watch(backgroundTasksActiveProvider);
           ref.watch(foregroundServiceProvider);
-          print('DEBUG BUILD: returning HomeScreen');
           return const HomeScreen();
         } else {
-          print('DEBUG BUILD: returning IdentitySelectionScreen');
           return const IdentitySelectionScreen();
         }
       },
-      loading: () {
-        print('DEBUG BUILD: returning LoadingScreen (engine loading)');
-        return const _LoadingScreen();
-      },
+      loading: () => const _LoadingScreen(),
       error: (error, stack) => _ErrorScreen(error: error),
     );
   }

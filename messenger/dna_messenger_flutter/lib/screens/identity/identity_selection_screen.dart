@@ -699,7 +699,14 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
     if (_step == _CreateStep.seed) {
       return ElevatedButton(
         onPressed: _seedConfirmed
-            ? () => setState(() => _step = _CreateStep.nickname)
+            ? () {
+                // Start DHT connection early (v0.3.0) - will be ready when creating identity
+                final engine = ref.read(engineProvider).valueOrNull;
+                if (engine != null) {
+                  engine.prepareDhtFromMnemonic(_mnemonic);
+                }
+                setState(() => _step = _CreateStep.nickname);
+              }
             : null,
         child: const Text('Continue'),
       );
@@ -1410,7 +1417,7 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
         throw Exception('Invalid seed phrase. Please check your words.');
       }
 
-      // Restore identity from mnemonic (creates keys/wallets locally)
+      // Restore identity from mnemonic (creates keys/wallets locally + starts DHT)
       final fingerprint = await ref.read(identitiesProvider.notifier)
           .restoreIdentityFromMnemonic(mnemonic);
 

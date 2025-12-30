@@ -55,6 +55,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 
 #include "dna_engine_internal.h"
 #include "dna_api.h"
+#include "messenger/init.h"
 #include "messenger_p2p.h"
 #include "message_backup.h"
 #include "messenger/status.h"
@@ -3745,6 +3746,14 @@ bool dna_engine_has_identity(dna_engine_t *engine) {
     char path[512];
     snprintf(path, sizeof(path), "%s/keys/identity.dsa", engine->data_dir);
     return qgp_platform_file_exists(path);
+}
+
+/**
+ * Prepare DHT connection from mnemonic (before identity creation)
+ */
+int dna_engine_prepare_dht_from_mnemonic(dna_engine_t *engine, const char *mnemonic) {
+    (void)engine;  // Engine not needed for this operation
+    return messenger_prepare_dht_from_mnemonic(mnemonic);
 }
 
 dna_request_id_t dna_engine_load_identity(
