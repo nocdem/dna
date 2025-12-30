@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -15,6 +16,11 @@ import '../profile/profile_editor_screen.dart';
 import 'blocked_users_screen.dart';
 import 'contacts_management_screen.dart';
 import 'debug_log_screen.dart';
+
+/// Provider for app package info (version from pubspec.yaml)
+final packageInfoProvider = FutureProvider<PackageInfo>((ref) async {
+  return await PackageInfo.fromPlatform();
+});
 
 /// Developer mode state provider - persisted to SharedPreferences
 final developerModeProvider = StateNotifierProvider<DeveloperModeNotifier, bool>((ref) {
@@ -1313,10 +1319,16 @@ class _AboutSectionState extends ConsumerState<_AboutSection> {
     final theme = Theme.of(context);
     final developerMode = ref.watch(developerModeProvider);
     final engineAsync = ref.watch(engineProvider);
+    final packageInfoAsync = ref.watch(packageInfoProvider);
 
-    // Get version from native library (single source of truth)
-    final version = engineAsync.whenOrNull(
+    // Get library version from native library
+    final libVersion = engineAsync.whenOrNull(
       data: (engine) => engine.version,
+    ) ?? 'unknown';
+
+    // Get app version from pubspec.yaml
+    final appVersion = packageInfoAsync.whenOrNull(
+      data: (info) => info.version,
     ) ?? 'unknown';
 
     return Column(
@@ -1331,10 +1343,17 @@ class _AboutSectionState extends ConsumerState<_AboutSection> {
               GestureDetector(
                 onTap: _handleVersionTap,
                 child: Text(
-                  'DNA Messenger v$version',
+                  'DNA Messenger v$appVersion',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: developerMode ? DnaColors.textSuccess : null,
                   ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Library v$libVersion',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: DnaColors.textMuted,
                 ),
               ),
               const SizedBox(height: 4),

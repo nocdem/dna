@@ -2,7 +2,7 @@ name: dna_messenger
 description: "Post-quantum encrypted P2P messenger with integrated cryptocurrency wallet"
 publish_to: 'none'
 
-version: 0.3.22+322
+version: 0.99.0+9900
 
 environment:
   sdk: ^3.10.0
@@ -37,6 +37,9 @@ dependencies:
 
   # Date formatting
   intl: ^0.19.0
+
+  # App info
+  package_info_plus: ^8.0.0
 
 dev_dependencies:
   flutter_test:
