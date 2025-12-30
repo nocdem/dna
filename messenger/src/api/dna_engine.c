@@ -1863,16 +1863,13 @@ void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Get our display name from cache (optional) */
+    /* Get our registered display name from keyserver cache */
+    char display_name_buf[64] = {0};
     char *display_name = NULL;
-    pthread_mutex_lock(&engine->name_cache_mutex);
-    for (int i = 0; i < engine->name_cache_count; i++) {
-        if (strcmp(engine->name_cache[i].fingerprint, engine->fingerprint) == 0) {
-            display_name = engine->name_cache[i].display_name;
-            break;
-        }
+    if (keyserver_cache_get_name(engine->fingerprint, display_name_buf, sizeof(display_name_buf)) == 0 &&
+        display_name_buf[0] != '\0') {
+        display_name = display_name_buf;
     }
-    pthread_mutex_unlock(&engine->name_cache_mutex);
 
     /* Send the contact request via DHT */
     int rc = dht_send_contact_request(
@@ -2033,16 +2030,13 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
     if (dht_ctx) {
         qgp_key_t *privkey = dna_load_private_key(engine);
         if (privkey) {
-            /* Get our display name from cache (optional) */
+            /* Get our registered display name from keyserver cache */
+            char display_name_buf[64] = {0};
             char *display_name = NULL;
-            pthread_mutex_lock(&engine->name_cache_mutex);
-            for (int i = 0; i < engine->name_cache_count; i++) {
-                if (strcmp(engine->name_cache[i].fingerprint, engine->fingerprint) == 0) {
-                    display_name = engine->name_cache[i].display_name;
-                    break;
-                }
+            if (keyserver_cache_get_name(engine->fingerprint, display_name_buf, sizeof(display_name_buf)) == 0 &&
+                display_name_buf[0] != '\0') {
+                display_name = display_name_buf;
             }
-            pthread_mutex_unlock(&engine->name_cache_mutex);
 
             dht_send_contact_request(
                 dht_ctx,

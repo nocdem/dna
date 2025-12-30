@@ -8,7 +8,6 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-- [ ] Contact requests show only fingerprint, not username (P3)
 - [ ] Show QR Code button in chat doesn't show anything (P4)
 - [ ] AddressSanitizer: ~4KB memory leak in Dilithium key cleanup during identity creation - `dap_return_if_pass` macro inverted in `dap_crypto_common.h`, delete functions return early without freeing. Debug build only. (P4)
 - [ ] AddressSanitizer: 16 byte leak in `contacts_db_list()` - debug build only (P4)
@@ -16,6 +15,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Fixed Bugs
 
+- [x] Contact requests show only fingerprint, not username - use keyserver_cache_get_name instead of unreliable name_cache (v0.3.26)
 - [x] Menu drawer: avatar and name should be on same line - changed to Row layout (v0.3.25)
 - [x] Menu drawer: profile info misaligned to right - added SizedBox width constraint (v0.3.24)
 - [x] Profile fields (display_name, location, website) not saved to DHT - internal dna_profile_data_t struct was incomplete, removed and now using dna_profile_t everywhere (v0.3.23)
