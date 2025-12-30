@@ -691,44 +691,50 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             Expanded(child: Text(displayName, overflow: TextOverflow.ellipsis)),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: QrImageView(
-                data: contact.fingerprint,
-                version: QrVersions.auto,
-                size: 200,
-                backgroundColor: Colors.white,
-              ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Scan to add contact',
-              style: theme.textTheme.bodySmall,
-            ),
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: SelectableText(
-                contact.fingerprint,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  fontFamily: 'NotoSansMono',
-                  fontSize: 10,
+        content: SizedBox(
+          width: 250,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 232,
+                height: 232,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
                 ),
-                textAlign: TextAlign.center,
+                child: QrImageView(
+                  data: contact.fingerprint,
+                  version: QrVersions.auto,
+                  size: 200,
+                  backgroundColor: Colors.white,
+                ),
               ),
-            ),
-          ],
+              const SizedBox(height: 16),
+              Text(
+                'Scan to add contact',
+                style: theme.textTheme.bodySmall,
+              ),
+              const SizedBox(height: 8),
+              Container(
+                width: 250,
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  contact.fingerprint,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontFamily: 'NotoSansMono',
+                    fontSize: 9,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
