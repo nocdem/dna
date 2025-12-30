@@ -417,9 +417,6 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
 void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
     switch (task->type) {
         /* Identity */
-        case TASK_LIST_IDENTITIES:
-            dna_handle_list_identities(engine, task);
-            break;
         case TASK_CREATE_IDENTITY:
             dna_handle_create_identity(engine, task);
             break;
@@ -794,144 +791,12 @@ static bool is_valid_fingerprint_dsa(const char *filename) {
     return true;
 }
 
-int dna_scan_identities(const char *data_dir, char ***fingerprints_out, int *count_out) {
-    DIR *base_dir = opendir(data_dir);
-    if (!base_dir) {
-        *fingerprints_out = NULL;
-        *count_out = 0;
-        return 0; /* Empty result, not an error */
-    }
-
-    /* Dynamic array for fingerprints */
-    int capacity = 16;
-    int count = 0;
-    char **fingerprints = calloc(capacity, sizeof(char*));
-    if (!fingerprints) {
-        closedir(base_dir);
-        return -1;
-    }
-
-    /* Scan each subdirectory in <data_dir>/ */
-    struct dirent *identity_entry;
-    while ((identity_entry = readdir(base_dir)) != NULL) {
-        /* Skip . and .. */
-        if (strcmp(identity_entry->d_name, ".") == 0 ||
-            strcmp(identity_entry->d_name, "..") == 0) {
-            continue;
-        }
-
-        /* Build path to keys directory: <data_dir>/<name>/keys/ */
-        char keys_path[512];
-        snprintf(keys_path, sizeof(keys_path), "%s/%s/keys", data_dir, identity_entry->d_name);
-
-        DIR *keys_dir = opendir(keys_path);
-        if (!keys_dir) {
-            continue; /* No keys directory, skip */
-        }
-
-        /* Scan for .dsa files in keys directory */
-        struct dirent *key_entry;
-        while ((key_entry = readdir(keys_dir)) != NULL) {
-            if (is_valid_fingerprint_dsa(key_entry->d_name)) {
-                /* Expand array if needed */
-                if (count >= capacity) {
-                    capacity *= 2;
-                    char **new_fps = realloc(fingerprints, capacity * sizeof(char*));
-                    if (!new_fps) {
-                        for (int i = 0; i < count; i++) free(fingerprints[i]);
-                        free(fingerprints);
-                        closedir(keys_dir);
-                        closedir(base_dir);
-                        return -1;
-                    }
-                    fingerprints = new_fps;
-                }
-
-                /* Extract fingerprint (first 128 chars of filename) */
-                fingerprints[count] = strndup(key_entry->d_name, 128);
-                if (!fingerprints[count]) {
-                    for (int i = 0; i < count; i++) free(fingerprints[i]);
-                    free(fingerprints);
-                    closedir(keys_dir);
-                    closedir(base_dir);
-                    return -1;
-                }
-                count++;
-            }
-        }
-        closedir(keys_dir);
-    }
-
-    closedir(base_dir);
-
-    if (count == 0) {
-        free(fingerprints);
-        *fingerprints_out = NULL;
-        *count_out = 0;
-        return 0;
-    }
-
-    *fingerprints_out = fingerprints;
-    *count_out = count;
-    return 0;
-}
-
 /* ============================================================================
  * IDENTITY TASK HANDLERS
  * ============================================================================ */
 
-void dna_handle_list_identities(dna_engine_t *engine, dna_task_t *task) {
-    char **fingerprints = NULL;
-    int count = 0;
-
-    int rc = dna_scan_identities(engine->data_dir, &fingerprints, &count);
-
-    /* Prefetch and cache display names for all identities */
-    if (rc == 0 && count > 0) {
-        dht_context_t *dht = dna_get_dht_ctx(engine);
-        if (dht) {
-            pthread_mutex_lock(&engine->name_cache_mutex);
-
-            for (int i = 0; i < count && i < DNA_NAME_CACHE_MAX; i++) {
-                /* Check if already cached */
-                bool found = false;
-                for (int j = 0; j < engine->name_cache_count; j++) {
-                    if (strcmp(engine->name_cache[j].fingerprint, fingerprints[i]) == 0) {
-                        found = true;
-                        break;
-                    }
-                }
-
-                if (!found) {
-                    /* Fetch from DHT and cache */
-                    char *display_name = NULL;
-                    if (dna_get_display_name(dht, fingerprints[i], &display_name) == 0 && display_name) {
-                        /* Only cache if it's a real name (not just shortened fingerprint) */
-                        if (strlen(display_name) < 20 || strstr(display_name, "...") == NULL) {
-                            if (engine->name_cache_count < DNA_NAME_CACHE_MAX) {
-                                strncpy(engine->name_cache[engine->name_cache_count].fingerprint,
-                                        fingerprints[i], 128);
-                                strncpy(engine->name_cache[engine->name_cache_count].display_name,
-                                        display_name, 63);
-                                engine->name_cache_count++;
-                                QGP_LOG_INFO(LOG_TAG, "Cached name: %s -> %s\n",
-                                       fingerprints[i], display_name);
-                            }
-                        }
-                        free(display_name);
-                    }
-                }
-            }
-
-            pthread_mutex_unlock(&engine->name_cache_mutex);
-        }
-    }
-
-    int error = (rc == 0) ? DNA_OK : DNA_ENGINE_ERROR_DATABASE;
-    task->callback.identities(task->request_id, error, fingerprints, count, task->user_data);
-
-    /* Caller is responsible for freeing via dna_free_strings */
-}
+/* v0.3.0: dna_scan_identities() and dna_handle_list_identities() removed
+ * Single-user model - use dna_engine_has_identity() instead */
 
 void dna_handle_create_identity(dna_engine_t *engine, dna_task_t *task) {
     char fingerprint_buf[129] = {0};
@@ -3491,17 +3356,8 @@ done:
  * PUBLIC API FUNCTIONS
  * ============================================================================ */
 
-/* Identity */
-dna_request_id_t dna_engine_list_identities(
-    dna_engine_t *engine,
-    dna_identities_cb callback,
-    void *user_data
-) {
-    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
-
-    dna_task_callback_t cb = { .identities = callback };
-    return dna_submit_task(engine, TASK_LIST_IDENTITIES, NULL, cb, user_data);
-}
+/* v0.3.0: dna_engine_list_identities() removed - single-user model
+ * Use dna_engine_has_identity() instead */
 
 dna_request_id_t dna_engine_create_identity(
     dna_engine_t *engine,

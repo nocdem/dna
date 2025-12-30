@@ -67,14 +67,7 @@ void cli_wait_destroy(cli_wait_t *wait);
  */
 int cli_wait_for(cli_wait_t *wait);
 
-/**
- * List identities and return them (for auto-load)
- * @param engine DNA engine instance
- * @param fingerprints_out Output array of fingerprints (caller frees)
- * @param count_out Output count
- * @return 0 on success, negative on error
- */
-int cli_list_identities(dna_engine_t *engine, char ***fingerprints_out, int *count_out);
+/* v0.3.0: cli_list_identities removed - single-user model, use dna_engine_has_identity() */
 
 /* ============================================================================
  * BASIC COMMANDS (existing)

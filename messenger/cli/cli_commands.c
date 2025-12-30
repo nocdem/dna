@@ -83,32 +83,7 @@ static void on_completion(dna_request_id_t request_id, int error, void *user_dat
     cli_wait_signal(wait, error);
 }
 
-static void on_identities_listed(dna_request_id_t request_id, int error,
-                                  char **fingerprints, int count, void *user_data) {
-    (void)request_id;
-    cli_wait_t *wait = (cli_wait_t *)user_data;
-
-    pthread_mutex_lock(&wait->mutex);
-    wait->result = error;
-
-    if (error == 0 && fingerprints && count > 0) {
-        wait->fingerprints = malloc(count * sizeof(char *));
-        if (wait->fingerprints) {
-            wait->fingerprint_count = count;
-            for (int i = 0; i < count; i++) {
-                wait->fingerprints[i] = strdup(fingerprints[i]);
-            }
-        }
-    }
-
-    wait->done = true;
-    pthread_cond_signal(&wait->cond);
-    pthread_mutex_unlock(&wait->mutex);
-
-    if (fingerprints) {
-        dna_free_strings(fingerprints, count);
-    }
-}
+/* v0.3.0: on_identities_listed callback removed - single-user model */
 
 static void on_display_name(dna_request_id_t request_id, int error,
                             const char *display_name, void *user_data) {
@@ -413,69 +388,24 @@ int cmd_create(dna_engine_t *engine, const char *name) {
     return 0;
 }
 
+/* v0.3.0: cmd_list simplified - single-user model */
 int cmd_list(dna_engine_t *engine) {
     if (!engine) {
         printf("Error: Engine not initialized\n");
         return -1;
     }
 
-    cli_wait_t wait;
-    cli_wait_init(&wait);
-
-    dna_engine_list_identities(engine, on_identities_listed, &wait);
-    int result = cli_wait_for(&wait);
-
-    if (result != 0) {
-        printf("Error: Failed to list identities: %s\n", dna_engine_error_string(result));
-        cli_wait_destroy(&wait);
-        return result;
-    }
-
-    if (wait.fingerprint_count == 0) {
-        printf("No identities found. Use 'create <name>' to create one.\n");
-    } else {
+    if (dna_engine_has_identity(engine)) {
         const char *current_fp = dna_engine_get_fingerprint(engine);
-
-        printf("\nAvailable identities (%d):\n", wait.fingerprint_count);
-        for (int i = 0; i < wait.fingerprint_count; i++) {
-            bool is_loaded = current_fp && strcmp(current_fp, wait.fingerprints[i]) == 0;
-            printf("  %d. %.16s...%s\n", i + 1, wait.fingerprints[i],
-                   is_loaded ? " (loaded)" : "");
-            free(wait.fingerprints[i]);
+        if (current_fp) {
+            printf("\nIdentity: %.16s... (loaded)\n\n", current_fp);
+        } else {
+            printf("\nIdentity exists. Use 'load' to load it.\n\n");
         }
-        free(wait.fingerprints);
-        printf("\n");
+    } else {
+        printf("No identity found. Use 'create <name>' to create one.\n");
     }
 
-    cli_wait_destroy(&wait);
-    return 0;
-}
-
-int cli_list_identities(dna_engine_t *engine, char ***fingerprints_out, int *count_out) {
-    if (!engine || !fingerprints_out || !count_out) {
-        return -1;
-    }
-
-    cli_wait_t wait;
-    cli_wait_init(&wait);
-
-    dna_engine_list_identities(engine, on_identities_listed, &wait);
-    int result = cli_wait_for(&wait);
-
-    if (result != 0) {
-        cli_wait_destroy(&wait);
-        *fingerprints_out = NULL;
-        *count_out = 0;
-        return result;
-    }
-
-    /* Transfer ownership to caller */
-    *fingerprints_out = wait.fingerprints;
-    *count_out = wait.fingerprint_count;
-    wait.fingerprints = NULL;
-    wait.fingerprint_count = 0;
-
-    cli_wait_destroy(&wait);
     return 0;
 }
 

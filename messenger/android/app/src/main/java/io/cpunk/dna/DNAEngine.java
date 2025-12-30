@@ -87,13 +87,7 @@ public class DNAEngine {
     }
 
     // ========== IDENTITY ==========
-
-    /**
-     * List available identities
-     */
-    public long listIdentities(IdentitiesCallback callback) {
-        return nativeListIdentities(callback);
-    }
+    // v0.3.0: listIdentities() removed - single-user model, use hasIdentity() instead
 
     /**
      * Create new identity from BIP39 seeds
@@ -259,9 +253,7 @@ public class DNAEngine {
         void onCompletion(long requestId, int error);
     }
 
-    public interface IdentitiesCallback {
-        void onIdentities(long requestId, int error, String[] fingerprints);
-    }
+    // v0.3.0: IdentitiesCallback removed - single-user model
 
     public interface IdentityCreatedCallback {
         void onIdentityCreated(long requestId, int error, String fingerprint);
@@ -314,7 +306,7 @@ public class DNAEngine {
     private native void nativeSetEventListener(EventListener listener);
     private native String nativeGetFingerprint();
 
-    private native long nativeListIdentities(IdentitiesCallback callback);
+    // v0.3.0: nativeListIdentities removed - single-user model
     private native long nativeCreateIdentity(byte[] signingSeed, byte[] encryptionSeed, IdentityCreatedCallback callback);
     private native long nativeLoadIdentity(String fingerprint, CompletionCallback callback);
     private native long nativeRegisterName(String name, CompletionCallback callback);

@@ -76,10 +76,7 @@ int wallet_read_cellframe(const char *filename, cellframe_wallet_t **wallet_out)
  */
 int wallet_list_cellframe(wallet_list_t **list_out);
 
-/**
- * List wallets from ~/.dna/wallets directory (all identities)
- */
-int wallet_list_from_dna_dir(wallet_list_t **list_out);
+/* v0.3.0: wallet_list_from_dna_dir() removed - use wallet_list_for_identity() */
 
 /**
  * List wallets for identity - v0.3.0 flat structure: ~/.dna/wallets/

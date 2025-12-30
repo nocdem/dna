@@ -628,30 +628,16 @@ void dna_engine_destroy(dna_engine_t *engine);
 const char* dna_engine_get_fingerprint(dna_engine_t *engine);
 
 /* ============================================================================
- * 2. IDENTITY (5 async functions)
+ * 2. IDENTITY (v0.3.0: single-user model)
  * ============================================================================ */
 
-/**
- * List available identities
- *
- * Scans ~/.dna for .dsa key files and returns fingerprints.
- *
- * @param engine    Engine instance
- * @param callback  Called with list of fingerprints
- * @param user_data User data for callback
- * @return          Request ID (0 on immediate error)
- */
-dna_request_id_t dna_engine_list_identities(
-    dna_engine_t *engine,
-    dna_identities_cb callback,
-    void *user_data
-);
+/* v0.3.0: dna_engine_list_identities() removed - use dna_engine_has_identity() */
 
 /**
  * Create new identity from BIP39 seeds
  *
  * Generates Dilithium5 + Kyber1024 keypairs deterministically
- * from provided seeds. Saves keys to ~/.dna/<name>/keys/
+ * from provided seeds. v0.3.0: Saves keys to ~/.dna/keys/identity.{dsa,kem}
  *
  * @param engine          Engine instance
  * @param name            Identity name (required, used for directory structure)

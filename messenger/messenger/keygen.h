@@ -17,17 +17,8 @@ extern "C" {
 
 /**
  * Generate new identity with random BIP39 seed
- *
- * Creates new Dilithium5 + Kyber1024 keypair from random 24-word BIP39 seed.
- * v0.3.0 flat structure: keys saved as ~/.dna/keys/identity.{dsa,kem}.
- * Auto-publishes public keys to DHT keyserver (fingerprint-first).
- * DHT identity is now derived deterministically from BIP39 seed.
- *
- * @param ctx: Messenger context
- * @param identity: Display name (optional, can be NULL for fingerprint-only)
- * @return: 0 on success, -1 on error
+ * v0.3.0: messenger_generate_keys() removed - use messenger_generate_keys_from_seeds()
  */
-int messenger_generate_keys(messenger_context_t *ctx, const char *identity);
 
 /**
  * Generate identity from existing seed (deterministic)

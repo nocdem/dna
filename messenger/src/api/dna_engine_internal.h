@@ -41,8 +41,7 @@ extern "C" {
  * ============================================================================ */
 
 typedef enum {
-    /* Identity */
-    TASK_LIST_IDENTITIES,
+    /* Identity (v0.3.0: TASK_LIST_IDENTITIES removed - single-user model) */
     TASK_CREATE_IDENTITY,
     TASK_LOAD_IDENTITY,
     TASK_REGISTER_NAME,
@@ -553,8 +552,7 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event);
  * INTERNAL FUNCTIONS - Task Handlers
  * ============================================================================ */
 
-/* Identity */
-void dna_handle_list_identities(dna_engine_t *engine, dna_task_t *task);
+/* Identity (v0.3.0: dna_handle_list_identities removed - single-user model) */
 void dna_handle_create_identity(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_register_name(dna_engine_t *engine, dna_task_t *task);
@@ -624,14 +622,8 @@ void dna_handle_get_comment_votes(dna_engine_t *engine, dna_task_t *task);
  * INTERNAL FUNCTIONS - Helpers
  * ============================================================================ */
 
-/**
- * Scan ~/.dna for identity files
- * @param data_dir Data directory path
- * @param fingerprints_out Output array of fingerprints (caller frees)
- * @param count_out Number of fingerprints found
- * @return 0 on success, -1 on error
- */
-int dna_scan_identities(const char *data_dir, char ***fingerprints_out, int *count_out);
+/* v0.3.0: dna_scan_identities() removed - single-user model
+ * Use dna_engine_has_identity() instead */
 
 /**
  * Free task parameters (heap-allocated parts)

@@ -127,19 +127,7 @@ int messenger_load_dht_identity(const char *fingerprint);
 // KEY GENERATION
 // ============================================================================
 
-/**
- * Generate new key pair for identity
- *
- * Creates (v0.3.0 flat structure):
- * - ~/.dna/keys/identity.dsa (private signing key)
- * - ~/.dna/keys/identity.kem (private encryption key)
- * - Publishes public keys to DHT keyserver
- *
- * @param ctx: Messenger context
- * @param identity: Identity name (e.g., "alice")
- * @return: 0 on success, -1 on error
- */
-int messenger_generate_keys(messenger_context_t *ctx, const char *identity);
+/* v0.3.0: messenger_generate_keys() removed - use messenger_generate_keys_from_seeds() */
 
 /**
  * Generate key pair from BIP39-derived seeds (non-interactive, for GUI)

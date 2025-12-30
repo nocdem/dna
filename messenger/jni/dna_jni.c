@@ -137,37 +137,7 @@ static void jni_completion_callback(dna_request_id_t request_id, int error, void
     free_callback_ctx(env, ctx);
 }
 
-/* Identities callback */
-static void jni_identities_callback(dna_request_id_t request_id, int error,
-                                    char **fingerprints, int count, void *user_data) {
-    jni_callback_ctx_t *ctx = (jni_callback_ctx_t*)user_data;
-    JNIEnv *env = get_env();
-    if (!env || !ctx || !ctx->callback_obj) {
-        if (fingerprints) dna_free_strings(fingerprints, count);
-        if (ctx) free(ctx);
-        return;
-    }
-
-    jobjectArray arr = NULL;
-    if (error == 0 && fingerprints && count > 0) {
-        jclass string_class = (*env)->FindClass(env, "java/lang/String");
-        arr = (*env)->NewObjectArray(env, count, string_class, NULL);
-        for (int i = 0; i < count; i++) {
-            jstring str = (*env)->NewStringUTF(env, fingerprints[i]);
-            (*env)->SetObjectArrayElement(env, arr, i, str);
-            (*env)->DeleteLocalRef(env, str);
-        }
-    }
-
-    jclass cls = (*env)->GetObjectClass(env, ctx->callback_obj);
-    jmethodID method = (*env)->GetMethodID(env, cls, "onIdentities", "(JI[Ljava/lang/String;)V");
-    if (method) {
-        (*env)->CallVoidMethod(env, ctx->callback_obj, method, (jlong)request_id, (jint)error, arr);
-    }
-
-    if (fingerprints) dna_free_strings(fingerprints, count);
-    free_callback_ctx(env, ctx);
-}
+/* v0.3.0: jni_identities_callback removed - single-user model */
 
 /* Identity created callback */
 static void jni_identity_created_callback(dna_request_id_t request_id, int error,
@@ -647,13 +617,7 @@ Java_io_cpunk_dna_DNAEngine_nativeGetFingerprint(JNIEnv *env, jobject thiz) {
 }
 
 /* 2. IDENTITY */
-
-JNIEXPORT jlong JNICALL
-Java_io_cpunk_dna_DNAEngine_nativeListIdentities(JNIEnv *env, jobject thiz, jobject callback) {
-    if (!g_engine || !callback) return 0;
-    jni_callback_ctx_t *ctx = create_callback_ctx(env, callback);
-    return (jlong)dna_engine_list_identities(g_engine, jni_identities_callback, ctx);
-}
+/* v0.3.0: nativeListIdentities removed - single-user model, use hasIdentity() instead */
 
 JNIEXPORT jlong JNICALL
 Java_io_cpunk_dna_DNAEngine_nativeCreateIdentity(JNIEnv *env, jobject thiz,

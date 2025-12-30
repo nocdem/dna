@@ -80,11 +80,11 @@ static dna_config_t g_config;
 // MODULARIZATION: Moved to messenger/keygen.{c,h}
 
 /*
- * messenger_generate_keys() - MOVED to messenger/keygen.c
- * messenger_generate_keys_from_seeds() - MOVED to messenger/keygen.c
- * messenger_register_name() - MOVED to messenger/keygen.c
- * messenger_restore_keys() - MOVED to messenger/keygen.c
- * messenger_restore_keys_from_file() - MOVED to messenger/keygen.c
+ * v0.3.0: messenger_generate_keys() REMOVED - use messenger_generate_keys_from_seeds()
+ * messenger_generate_keys_from_seeds() - in messenger/keygen.c
+ * messenger_register_name() - in messenger/keygen.c
+ * messenger_restore_keys() - in messenger/keygen.c
+ * messenger_restore_keys_from_file() - in messenger/keygen.c
  */
 
 // ============================================================================
