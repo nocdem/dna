@@ -224,48 +224,51 @@ class _DrawerHeader extends ConsumerWidget {
         ? '${fingerprint.substring(0, 8)}...${fingerprint.substring(fingerprint.length - 8)}'
         : fingerprint;
 
-    return Container(
-      padding: const EdgeInsets.fromLTRB(16, 48, 16, 16),
-      decoration: const BoxDecoration(
-        color: DnaColors.surface,
-        border: Border(bottom: BorderSide(color: DnaColors.border)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Avatar
-          _buildAvatar(fullProfile, userProfile.valueOrNull?.nickname ?? shortFp, ref),
-          const SizedBox(height: 12),
-          // Display name
-          userProfile.when(
-            data: (profile) => Text(
-              profile?.nickname?.isNotEmpty == true ? profile!.nickname! : 'Anonymous',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
+    return SizedBox(
+      width: double.infinity,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
+        decoration: const BoxDecoration(
+          color: DnaColors.surface,
+          border: Border(bottom: BorderSide(color: DnaColors.border)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Avatar
+            _buildAvatar(fullProfile, userProfile.valueOrNull?.nickname ?? shortFp, ref),
+            const SizedBox(height: 12),
+            // Display name
+            userProfile.when(
+              data: (profile) => Text(
+                profile?.nickname?.isNotEmpty == true ? profile!.nickname! : 'Anonymous',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              loading: () => const SizedBox(
+                height: 20,
+                width: 100,
+                child: LinearProgressIndicator(),
+              ),
+              error: (e, st) => const Text('Anonymous'),
+            ),
+            const SizedBox(height: 4),
+            // Fingerprint
+            Text(
+              shortFp,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: DnaColors.textMuted,
+                fontFamily: 'monospace',
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-            loading: () => const SizedBox(
-              height: 20,
-              width: 100,
-              child: LinearProgressIndicator(),
-            ),
-            error: (e, st) => const Text('Anonymous'),
-          ),
-          const SizedBox(height: 4),
-          // Fingerprint
-          Text(
-            shortFp,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: DnaColors.textMuted,
-              fontFamily: 'monospace',
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          // v0.3.0: Switch Identity button removed - single-user model
-        ],
+            // v0.3.0: Switch Identity button removed - single-user model
+          ],
+        ),
       ),
     );
   }
