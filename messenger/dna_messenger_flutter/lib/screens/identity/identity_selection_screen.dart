@@ -512,8 +512,14 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         displayName = '';
       }
 
-      if (displayName.isNotEmpty) {
-        // Profile found in DHT
+      // Check if it's a real registered name (not just a shortened fingerprint)
+      // getDisplayName returns "abc123..." when no name is registered
+      final hasRegisteredName = displayName.isNotEmpty &&
+          !displayName.endsWith('...') &&
+          !displayName.startsWith(fingerprint.substring(0, 8));
+
+      if (hasRegisteredName) {
+        // Profile found in DHT with registered name
         _existingName = displayName;
         try {
           _existingAvatar = await engine.getAvatar(fingerprint);
