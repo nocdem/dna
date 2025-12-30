@@ -55,14 +55,18 @@ class EventHandler {
     _subscription = engine.events.listen(_handleEvent);
 
     // Sync initial DHT status - event may have been missed during startup race
+    // Use Future.microtask to defer state modification until after provider build completes
+    // (Riverpod doesn't allow modifying other providers during initialization)
     if (engine.isDhtConnected()) {
-      _ref.read(dhtConnectionStateProvider.notifier).state =
-          DhtConnectionState.connected;
-      // Start polling since we're connected
-      _startContactRequestsPolling();
-      _startPresencePolling();
-      // Refresh identity profiles (display names/avatars) now that DHT is connected
-      _refreshIdentityProfiles();
+      Future.microtask(() {
+        _ref.read(dhtConnectionStateProvider.notifier).state =
+            DhtConnectionState.connected;
+        // Start polling since we're connected
+        _startContactRequestsPolling();
+        _startPresencePolling();
+        // Refresh identity profiles (display names/avatars) now that DHT is connected
+        _refreshIdentityProfiles();
+      });
     }
   }
 
