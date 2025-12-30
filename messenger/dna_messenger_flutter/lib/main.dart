@@ -79,16 +79,16 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     super.dispose();
   }
 
-  Future<void> _checkAndLoadIdentity() async {
+  Future<void> _checkAndLoadIdentity(dynamic engine) async {
     if (_identityCheckDone) return;
-
-    final engine = ref.read(engineProvider).valueOrNull;
     if (engine == null) return;
 
     _identityCheckDone = true;
 
     // v0.3.0: Check if identity exists and auto-load
     final hasIdentity = engine.hasIdentity();
+    engine.debugLog('STARTUP', 'v0.3.0: hasIdentity=$hasIdentity');
+
     if (hasIdentity) {
       engine.debugLog('STARTUP', 'v0.3.0: Identity exists, auto-loading...');
       await ref.read(identitiesProvider.notifier).loadIdentity();
@@ -109,10 +109,10 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     final engine = ref.watch(engineProvider);
 
     return engine.when(
-      data: (_) {
+      data: (eng) {
         // Trigger identity check on first build
         if (!_identityCheckDone) {
-          _checkAndLoadIdentity();
+          _checkAndLoadIdentity(eng);
           return const _LoadingScreen();
         }
 
