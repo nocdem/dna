@@ -169,17 +169,34 @@ class GroupsScreen extends ConsumerWidget {
   }
 
   void _showCreateGroupDialog(BuildContext context, WidgetRef ref) {
-    showDialog(
-      context: context,
-      builder: (context) => _CreateGroupDialog(ref: ref),
-    );
+    _showComingSoonDialog(context);
   }
 
   void _openGroupChat(BuildContext context, WidgetRef ref, Group group) {
-    ref.read(selectedGroupProvider.notifier).state = group;
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => GroupChatScreen(group: group),
+    _showComingSoonDialog(context);
+  }
+
+  void _showComingSoonDialog(BuildContext context) {
+    final theme = Theme.of(context);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        icon: FaIcon(
+          FontAwesomeIcons.userGroup,
+          size: 48,
+          color: theme.colorScheme.primary,
+        ),
+        title: const Text('Group Chat'),
+        content: const Text(
+          'Group messaging is coming in a future version.\n\nStay tuned for updates!',
+          textAlign: TextAlign.center,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
       ),
     );
   }
