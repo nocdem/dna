@@ -118,28 +118,37 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
 
   @override
   Widget build(BuildContext context) {
+    print('DEBUG BUILD: _identityCheckDone=$_identityCheckDone, _hasIdentity=$_hasIdentity');
     final engine = ref.watch(engineProvider);
 
     return engine.when(
       data: (eng) {
+        print('DEBUG BUILD data: _identityCheckDone=$_identityCheckDone, _hasIdentity=$_hasIdentity');
         // Trigger identity check on first build
         if (!_identityCheckDone) {
           _checkAndLoadIdentity(eng);
+          print('DEBUG BUILD: returning LoadingScreen (first build)');
           return const _LoadingScreen();
         }
 
         // v0.3.0: Route based on identity existence
+        print('DEBUG BUILD: checking _hasIdentity=$_hasIdentity');
         if (_hasIdentity) {
           // Only activate providers AFTER identity is loaded
           ref.watch(eventHandlerActiveProvider);
           ref.watch(backgroundTasksActiveProvider);
           ref.watch(foregroundServiceProvider);
+          print('DEBUG BUILD: returning HomeScreen');
           return const HomeScreen();
         } else {
+          print('DEBUG BUILD: returning IdentitySelectionScreen');
           return const IdentitySelectionScreen();
         }
       },
-      loading: () => const _LoadingScreen(),
+      loading: () {
+        print('DEBUG BUILD: returning LoadingScreen (engine loading)');
+        return const _LoadingScreen();
+      },
       error: (error, stack) => _ErrorScreen(error: error),
     );
   }
