@@ -88,10 +88,16 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     }
 
     _identityCheckDone = true;
+    print('DEBUG: _identityCheckDone set to true');
 
     // v0.3.0: Check if identity exists and auto-load
+    print('DEBUG: calling hasIdentity()...');
     final hasIdentity = engine.hasIdentity();
+    print('DEBUG: hasIdentity() returned: $hasIdentity');
+
+    print('DEBUG: calling debugLog...');
     engine.debugLog('STARTUP', 'v0.3.0: hasIdentity=$hasIdentity');
+    print('DEBUG: debugLog done');
 
     if (hasIdentity) {
       engine.debugLog('STARTUP', 'v0.3.0: Identity exists, auto-loading...');
@@ -101,10 +107,12 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
       engine.debugLog('STARTUP', 'v0.3.0: No identity, showing onboarding');
     }
 
+    print('DEBUG: about to call setState, mounted=$mounted');
     if (mounted) {
       setState(() {
         _hasIdentity = hasIdentity;
       });
+      print('DEBUG: setState called');
     }
   }
 
