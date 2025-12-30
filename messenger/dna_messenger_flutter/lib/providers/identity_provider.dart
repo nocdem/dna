@@ -179,20 +179,6 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     return engine.hasIdentity();
   }
 
-  /// Load existing identity and return fingerprint (v0.3.0 single-user model)
-  ///
-  /// Use this when identity already exists and we just need to load it.
-  /// Returns fingerprint on success, null on failure.
-  Future<String?> loadExistingIdentity() async {
-    try {
-      await loadIdentity();
-      final engine = await ref.read(engineProvider.future);
-      return engine.fingerprint;
-    } catch (e) {
-      return null;
-    }
-  }
-
   /// Load identity (v0.3.0 single-user model)
   ///
   /// [fingerprint] - Optional. If not provided, fingerprint is computed from flat key file.
