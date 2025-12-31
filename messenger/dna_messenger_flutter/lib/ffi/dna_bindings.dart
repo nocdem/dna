@@ -910,6 +910,18 @@ class DnaBindings {
     _dna_engine_set_event_callback(engine, callback, user_data);
   }
 
+  /// Free a heap-allocated event after processing
+  ///
+  /// Events passed to the event callback are heap-allocated to ensure they
+  /// remain valid for async Dart processing. Must be called after processing.
+  late final _dna_free_event = _lib.lookupFunction<
+      Void Function(Pointer<dna_event_t>),
+      void Function(Pointer<dna_event_t>)>('dna_free_event');
+
+  void dna_free_event(Pointer<dna_event_t> event) {
+    _dna_free_event(event);
+  }
+
   late final _dna_engine_get_fingerprint = _lib.lookupFunction<
       Pointer<Utf8> Function(Pointer<dna_engine_t>),
       Pointer<Utf8> Function(Pointer<dna_engine_t>)>('dna_engine_get_fingerprint');

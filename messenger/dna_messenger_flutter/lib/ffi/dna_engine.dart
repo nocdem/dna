@@ -933,7 +933,11 @@ class DnaEngine {
   }
 
   void _onEventReceived(Pointer<dna_event_t> eventPtr, Pointer<Void> userData) {
-    if (_isDisposed) return;
+    // Always free the event at the end, even if disposed
+    if (_isDisposed) {
+      _bindings.dna_free_event(eventPtr);
+      return;
+    }
 
     final event = eventPtr.ref;
     final type = event.type;
@@ -1034,6 +1038,11 @@ class DnaEngine {
     } else {
       print('[FLUTTER-EVENT] Event type $type not handled, dartEvent is null');
     }
+
+    // Free the heap-allocated event (events are heap-allocated in C to ensure
+    // they remain valid when Dart's NativeCallable.listener processes them
+    // asynchronously on the event loop)
+    _bindings.dna_free_event(eventPtr);
   }
 
   /// Get current identity fingerprint

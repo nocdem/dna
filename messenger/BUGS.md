@@ -13,6 +13,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Fixed Bugs
 
+- [x] Double free crash after DHT_LISTEN receives values - heap-allocate events for async Flutter callbacks, Dart now frees after processing (v0.99.14)
 - [x] Profile editor input field icons misaligned - wrapped FaIcon in SizedBox with Center for proper alignment (v0.99.12)
 - [x] AddressSanitizer: ~4KB memory leak in Dilithium key cleanup - `dap_return_if_pass` macro was inverted, fixed in `dap_crypto_common.h` (v0.3.37)
 - [x] AddressSanitizer: 16 byte leak in `contacts_db_list()` - missing free in `transport_offline.c` when count == 0 (v0.3.37)
