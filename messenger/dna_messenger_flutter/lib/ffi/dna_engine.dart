@@ -1045,9 +1045,12 @@ class DnaEngine {
     // Free the heap-allocated event (events are heap-allocated in C to ensure
     // they remain valid when Dart's NativeCallable.listener processes them
     // asynchronously on the event loop)
-    print('[FLUTTER-EVENT] Calling dna_free_event(ptr=${eventPtr.address.toRadixString(16)})');
-    _bindings.dna_free_event(eventPtr);
-    print('[FLUTTER-EVENT] dna_free_event returned');
+    //
+    // TEMPORARILY DISABLED to debug double-free crash
+    // print('[FLUTTER-EVENT] Calling dna_free_event(ptr=${eventPtr.address.toRadixString(16)})');
+    // _bindings.dna_free_event(eventPtr);
+    // print('[FLUTTER-EVENT] dna_free_event returned');
+    print('[FLUTTER-EVENT] DEBUG: Skipping dna_free_event to test if crash persists');
   }
 
   /// Get current identity fingerprint
