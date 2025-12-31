@@ -16,6 +16,7 @@ workflow:
 stages:
   - build-native
   - build-flutter
+  - deploy
 
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
@@ -564,3 +565,27 @@ build:flutter-macos:
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
       when: manual  # Manual trigger for macOS builds
+
+# =============================================================================
+# STAGE 3: Deploy Artifacts to artifacts.cpunk.io
+# =============================================================================
+
+deploy:artifacts:
+  stage: deploy
+  tags:
+    - linux
+  image: alpine:latest
+  needs:
+    - job: build:flutter-linux
+      artifacts: true
+    - job: build:flutter-android
+      artifacts: true
+    - job: build:windows
+      artifacts: true
+      optional: true
+  script:
+    - chmod +x scripts/deploy-artifacts.sh
+    - sh scripts/deploy-artifacts.sh
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: on_success

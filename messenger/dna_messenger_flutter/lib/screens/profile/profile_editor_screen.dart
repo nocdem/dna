@@ -449,7 +449,12 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
         decoration: InputDecoration(
           labelText: label,
           hintText: hint,
-          prefixIcon: prefixIcon != null ? FaIcon(prefixIcon) : null,
+          prefixIcon: prefixIcon != null
+              ? SizedBox(
+                  width: 48,
+                  child: Center(child: FaIcon(prefixIcon, size: 18)),
+                )
+              : null,
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(8),
           ),
