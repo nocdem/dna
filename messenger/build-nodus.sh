@@ -1,12 +1,12 @@
 #!/bin/bash
 # DNA Nodus Build Script
-# Builds dna-nodus and handles first-time installation
+# Builds dna-nodus and installs to /opt/dna-nodus/
 
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVICE_FILE="$PROJECT_ROOT/vendor/opendht-pq/tools/systemd/dna-nodus.service"
 CONFIG_EXAMPLE="$PROJECT_ROOT/vendor/opendht-pq/tools/dna-nodus.conf.example"
+INSTALL_DIR="/opt/dna-nodus"
 
 # Parse arguments
 DEBUG_BUILD=0
@@ -22,6 +22,15 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+# Set binary name and service name based on build type
+if [ $DEBUG_BUILD -eq 1 ]; then
+    BINARY_NAME="dna-nodus-debug"
+    SERVICE_NAME="dna-nodus-debug"
+else
+    BINARY_NAME="dna-nodus"
+    SERVICE_NAME="dna-nodus"
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -99,15 +108,19 @@ build_nodus() {
     echo ""
 }
 
-# Verify binary exists
-verify_binary() {
-    if [ ! -f "$BUILD_DIR/vendor/opendht-pq/tools/dna-nodus" ]; then
-        echo -e "${RED}Error: Binary not found at $BUILD_DIR/vendor/opendht-pq/tools/dna-nodus${NC}"
-        exit 1
-    fi
+# Install binary to /opt/dna-nodus/
+install_binary() {
+    echo -e "${YELLOW}Installing to ${INSTALL_DIR}/${NC}"
 
-    SIZE=$(ls -lh "$BUILD_DIR/vendor/opendht-pq/tools/dna-nodus" | awk '{print $5}')
-    echo -e "${GREEN}Binary ready: $BUILD_DIR/vendor/opendht-pq/tools/dna-nodus ($SIZE)${NC}"
+    # Create install directory
+    sudo mkdir -p "${INSTALL_DIR}/bin"
+
+    # Copy binary
+    sudo cp "$BUILD_DIR/vendor/opendht-pq/tools/dna-nodus" "${INSTALL_DIR}/bin/${BINARY_NAME}"
+    sudo chmod +x "${INSTALL_DIR}/bin/${BINARY_NAME}"
+
+    SIZE=$(ls -lh "${INSTALL_DIR}/bin/${BINARY_NAME}" | awk '{print $5}')
+    echo -e "${GREEN}Installed: ${INSTALL_DIR}/bin/${BINARY_NAME} ($SIZE)${NC}"
     echo ""
 }
 
@@ -139,7 +152,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=$BUILD_DIR/vendor/opendht-pq/tools/dna-nodus
+ExecStart=${INSTALL_DIR}/bin/${BINARY_NAME}
 Restart=on-failure
 RestartSec=5
 Environment="ASAN_OPTIONS=detect_leaks=1:log_path=/var/log/dna-nodus-asan"
@@ -148,7 +161,35 @@ Environment="ASAN_OPTIONS=detect_leaks=1:log_path=/var/log/dna-nodus-asan"
 WantedBy=multi-user.target
 EOF
     else
-        sudo cp "$SERVICE_FILE" /etc/systemd/system/${SERVICE_NAME}.service
+        # Create release service
+        sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null << EOF
+[Unit]
+Description=DNA Nodus - Post-Quantum DHT Bootstrap + STUN/TURN Server
+Documentation=https://gitlab.cpunk.io/cpunk/dna-messenger
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=${INSTALL_DIR}/bin/${BINARY_NAME}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/dna-dht
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dna-nodus
+LimitNOFILE=65535
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target
+EOF
     fi
     sudo systemctl daemon-reload
 
@@ -168,30 +209,7 @@ EOF
 update_install() {
     echo -e "${YELLOW}Updating existing installation...${NC}"
 
-    # Update systemd service file if changed
-    if [ $DEBUG_BUILD -eq 1 ]; then
-        # Recreate debug service with updated paths
-        sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null << EOF
-[Unit]
-Description=DNA Nodus Bootstrap Server (Debug+ASAN)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=$BUILD_DIR/vendor/opendht-pq/tools/dna-nodus
-Restart=on-failure
-RestartSec=5
-Environment="ASAN_OPTIONS=detect_leaks=1:log_path=/var/log/dna-nodus-asan"
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    else
-        sudo cp "$SERVICE_FILE" /etc/systemd/system/${SERVICE_NAME}.service
-    fi
-    sudo systemctl daemon-reload
-
-    # Restart service
+    # Restart service (binary already updated by install_binary)
     echo "Restarting ${SERVICE_NAME} service..."
     sudo systemctl restart ${SERVICE_NAME}
     sleep 2
@@ -211,15 +229,9 @@ main() {
     check_dependencies
     pull_latest
     build_nodus
-    verify_binary
+    install_binary
 
     # Check if first-time install or update
-    if [ $DEBUG_BUILD -eq 1 ]; then
-        SERVICE_NAME="dna-nodus-debug"
-    else
-        SERVICE_NAME="dna-nodus"
-    fi
-
     if [ ! -f /etc/systemd/system/${SERVICE_NAME}.service ]; then
         first_time_install
     else
@@ -233,22 +245,22 @@ main() {
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "Usage: $0 [OPTIONS]"
     echo ""
-    echo "Builds dna-nodus and manages systemd service."
-    echo "Binary runs directly from build directory (no copy needed)."
+    echo "Builds dna-nodus and installs to ${INSTALL_DIR}/"
     echo ""
     echo "First-time install:"
     echo "  - Creates /var/lib/dna-dht"
     echo "  - Copies config to /etc/dna-nodus.conf"
+    echo "  - Installs binary to ${INSTALL_DIR}/bin/"
     echo "  - Installs systemd service"
     echo "  - Enables and starts service"
     echo ""
     echo "Update:"
     echo "  - Pulls latest code"
-    echo "  - Rebuilds binary in place"
+    echo "  - Rebuilds and reinstalls binary"
     echo "  - Restarts service"
     echo ""
     echo "Options:"
-    echo "  --debug       Build with AddressSanitizer (debug build in build-debug/)"
+    echo "  --debug       Build with AddressSanitizer (installs as dna-nodus-debug)"
     echo "                Creates separate dna-nodus-debug systemd service"
     echo "  -h, --help    Show this help message"
     exit 0
