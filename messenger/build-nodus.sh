@@ -5,9 +5,23 @@
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="$PROJECT_ROOT/build"
 SERVICE_FILE="$PROJECT_ROOT/vendor/opendht-pq/tools/systemd/dna-nodus.service"
 CONFIG_EXAMPLE="$PROJECT_ROOT/vendor/opendht-pq/tools/dna-nodus.conf.example"
+
+# Parse arguments
+DEBUG_BUILD=0
+BUILD_TYPE="Release"
+BUILD_DIR="$PROJECT_ROOT/build"
+
+for arg in "$@"; do
+    case $arg in
+        --debug)
+            DEBUG_BUILD=1
+            BUILD_TYPE="Debug"
+            BUILD_DIR="$PROJECT_ROOT/build-debug"
+            ;;
+    esac
+done
 
 # Colors for output
 RED='\033[0;31m'
@@ -15,7 +29,11 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-echo -e "${GREEN}=== DNA Nodus Build Script ===${NC}"
+if [ $DEBUG_BUILD -eq 1 ]; then
+    echo -e "${GREEN}=== DNA Nodus Build Script (Debug+ASAN) ===${NC}"
+else
+    echo -e "${GREEN}=== DNA Nodus Build Script ===${NC}"
+fi
 echo ""
 
 # Check for required tools
@@ -51,13 +69,22 @@ pull_latest() {
 
 # Build dna-nodus
 build_nodus() {
-    echo -e "${YELLOW}Building dna-nodus...${NC}"
+    echo -e "${YELLOW}Building dna-nodus (${BUILD_TYPE})...${NC}"
 
     mkdir -p "$BUILD_DIR"
     cd "$BUILD_DIR"
 
     # Configure headless build
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF "$PROJECT_ROOT"
+    if [ $DEBUG_BUILD -eq 1 ]; then
+        echo -e "${YELLOW}Debug build with AddressSanitizer${NC}"
+        cmake -DCMAKE_BUILD_TYPE=Debug \
+              -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" \
+              -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" \
+              -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address" \
+              -DBUILD_GUI=OFF "$PROJECT_ROOT"
+    else
+        cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF "$PROJECT_ROOT"
+    fi
 
     # Build dependencies and dna-nodus
     make -j$(nproc) dht_lib
@@ -101,18 +128,37 @@ first_time_install() {
         echo -e "${YELLOW}NOTE: Edit /etc/dna-nodus.conf to set public_ip for this server${NC}"
     fi
 
-    # Copy systemd service
-    echo "Installing systemd service..."
-    sudo cp "$SERVICE_FILE" /etc/systemd/system/dna-nodus.service
+    # Install systemd service
+    echo "Installing systemd service (${SERVICE_NAME})..."
+    if [ $DEBUG_BUILD -eq 1 ]; then
+        # Create debug service with ASAN environment
+        sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null << EOF
+[Unit]
+Description=DNA Nodus Bootstrap Server (Debug+ASAN)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$BUILD_DIR/vendor/opendht-pq/tools/dna-nodus
+Restart=on-failure
+RestartSec=5
+Environment="ASAN_OPTIONS=detect_leaks=1:log_path=/var/log/dna-nodus-asan"
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    else
+        sudo cp "$SERVICE_FILE" /etc/systemd/system/${SERVICE_NAME}.service
+    fi
     sudo systemctl daemon-reload
 
     # Enable service
-    echo "Enabling dna-nodus service..."
-    sudo systemctl enable dna-nodus
+    echo "Enabling ${SERVICE_NAME} service..."
+    sudo systemctl enable ${SERVICE_NAME}
 
     # Start service
-    echo "Starting dna-nodus service..."
-    sudo systemctl start dna-nodus
+    echo "Starting ${SERVICE_NAME} service..."
+    sudo systemctl start ${SERVICE_NAME}
 
     echo -e "${GREEN}First-time installation complete${NC}"
     echo ""
@@ -123,12 +169,31 @@ update_install() {
     echo -e "${YELLOW}Updating existing installation...${NC}"
 
     # Update systemd service file if changed
-    sudo cp "$SERVICE_FILE" /etc/systemd/system/dna-nodus.service
+    if [ $DEBUG_BUILD -eq 1 ]; then
+        # Recreate debug service with updated paths
+        sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null << EOF
+[Unit]
+Description=DNA Nodus Bootstrap Server (Debug+ASAN)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$BUILD_DIR/vendor/opendht-pq/tools/dna-nodus
+Restart=on-failure
+RestartSec=5
+Environment="ASAN_OPTIONS=detect_leaks=1:log_path=/var/log/dna-nodus-asan"
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    else
+        sudo cp "$SERVICE_FILE" /etc/systemd/system/${SERVICE_NAME}.service
+    fi
     sudo systemctl daemon-reload
 
     # Restart service
-    echo "Restarting dna-nodus service..."
-    sudo systemctl restart dna-nodus
+    echo "Restarting ${SERVICE_NAME} service..."
+    sudo systemctl restart ${SERVICE_NAME}
     sleep 2
 
     echo -e "${GREEN}Service restarted${NC}"
@@ -138,7 +203,7 @@ update_install() {
 # Show status
 show_status() {
     echo -e "${YELLOW}Service status:${NC}"
-    sudo systemctl status dna-nodus --no-pager -l | head -15
+    sudo systemctl status ${SERVICE_NAME} --no-pager -l | head -15
 }
 
 # Main
@@ -149,7 +214,13 @@ main() {
     verify_binary
 
     # Check if first-time install or update
-    if [ ! -f /etc/systemd/system/dna-nodus.service ]; then
+    if [ $DEBUG_BUILD -eq 1 ]; then
+        SERVICE_NAME="dna-nodus-debug"
+    else
+        SERVICE_NAME="dna-nodus"
+    fi
+
+    if [ ! -f /etc/systemd/system/${SERVICE_NAME}.service ]; then
         first_time_install
     else
         update_install
@@ -177,6 +248,8 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "  - Restarts service"
     echo ""
     echo "Options:"
+    echo "  --debug       Build with AddressSanitizer (debug build in build-debug/)"
+    echo "                Creates separate dna-nodus-debug systemd service"
     echo "  -h, --help    Show this help message"
     exit 0
 fi
