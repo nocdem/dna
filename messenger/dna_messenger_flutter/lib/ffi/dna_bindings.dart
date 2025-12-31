@@ -1748,6 +1748,14 @@ class DnaBindings {
   // MEMORY MANAGEMENT
   // ---------------------------------------------------------------------------
 
+  late final _dna_free_event = _lib.lookupFunction<
+      Void Function(Pointer<dna_event_t>),
+      void Function(Pointer<dna_event_t>)>('dna_free_event');
+
+  void dna_free_event(Pointer<dna_event_t> event) {
+    _dna_free_event(event);
+  }
+
   late final _dna_free_strings = _lib.lookupFunction<
       Void Function(Pointer<Pointer<Utf8>>, Int32),
       void Function(Pointer<Pointer<Utf8>>, int)>('dna_free_strings');

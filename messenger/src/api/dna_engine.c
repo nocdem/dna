@@ -407,7 +407,19 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
     pthread_mutex_unlock(&engine->event_mutex);
 
     if (callback) {
-        callback(event, user_data);
+        /* Heap-allocate a copy for async callbacks (Dart NativeCallable.listener)
+         * The caller (Dart) must call dna_free_event() after processing */
+        dna_event_t *heap_event = calloc(1, sizeof(dna_event_t));
+        if (heap_event) {
+            memcpy(heap_event, event, sizeof(dna_event_t));
+            callback(heap_event, user_data);
+        }
+    }
+}
+
+void dna_free_event(dna_event_t *event) {
+    if (event) {
+        free(event);
     }
 }
 

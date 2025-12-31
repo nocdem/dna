@@ -1034,6 +1034,9 @@ class DnaEngine {
     } else {
       print('[FLUTTER-EVENT] Event type $type not handled, dartEvent is null');
     }
+
+    // Free the heap-allocated event from C
+    _bindings.dna_free_event(eventPtr);
   }
 
   /// Get current identity fingerprint
