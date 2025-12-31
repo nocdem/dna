@@ -427,7 +427,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
         onExpansionChanged: onExpansionChanged,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             child: Column(children: children),
           ),
         ],
