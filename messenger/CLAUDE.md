@@ -1,8 +1,8 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-12-29 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
+**Last Updated:** 2025-12-31 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
 
-**Versions:** App v0.3.28 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
+**Versions:** Library v0.3.37 | Flutter v0.99.12 | Nodus v0.4.3
 
 ---
 
@@ -268,20 +268,22 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library + CLI | `include/dna/version.h` | v0.3.37 | C code changes (src/, dht/, messenger/, p2p/, crypto/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.11+9911 | Flutter/Dart code changes only |
-| Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 | Nodus server changes |
+| C Library | `include/dna/version.h` | v0.3.37 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.12+9912 | Flutter/Dart code changes (lib/, assets/) |
+| Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 | Nodus server changes (vendor/opendht-pq/tools/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
-- C library and Flutter app have **separate version numbers**
-- Do NOT bump `version.h` for Flutter-only changes
-- Do NOT bump `pubspec.yaml` for C-only changes
+- Each component has its **own version number** - they do NOT need to match
+- **C Library changes** → bump `version.h` only
+- **Flutter/Dart changes** → bump `pubspec.yaml` only
+- **Nodus server changes** → bump `nodus_version.h` only
+- **Build scripts, CI, docs** → no version bump needed
 - Flutter app displays **both versions** in Settings:
   - App version: from `pubspec.yaml`
   - Library version: via `dna_engine_get_version()` FFI call
 
 **pubspec.yaml format:** `X.Y.Z+NNN` where NNN = versionCode for Android Play Store
-- versionCode = MAJOR×10000 + MINOR×100 + PATCH (e.g., 0.3.22 → 322)
+- versionCode = MAJOR×10000 + MINOR×100 + PATCH (e.g., 0.99.12 → 9912)
 
 **Which Number to Bump:**
 - **PATCH** (0.3.X → 0.3.23): Bug fixes, small features, improvements
@@ -289,14 +291,14 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 - **MAJOR** (X.0.0 → 1.0.0): Breaking changes, production release
 
 **Procedure:**
-1. **IDENTIFY** which component(s) changed
-2. **BUMP** only the affected version file(s)
+1. **IDENTIFY** which component(s) changed (C library, Flutter, or Nodus)
+2. **BUMP** only the affected version file(s) - do NOT bump unrelated versions
 3. **UPDATE** the "Current" column in this section
-4. **UPDATE** the version in CLAUDE.md header line (use C library version)
-6. **COMMIT** with version in commit message
-7. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
+4. **UPDATE** the version in CLAUDE.md header line
+5. **COMMIT** with version in commit message (e.g., "fix: Something (v0.3.38)")
+6. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
 
-**IMPORTANT:** Never push code changes without bumping version. This ensures deployed servers always show correct version.
+**IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.
 
 **ENFORCEMENT**: Each checkpoint requires explicit completion statement. Missing ANY checkpoint statement indicates protocol violation and requires restart.
 
