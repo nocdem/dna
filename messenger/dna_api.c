@@ -985,7 +985,8 @@ dna_error_t dna_decrypt_message(
     uint8_t **plaintext_out,
     size_t *plaintext_len_out,
     uint8_t **sender_pubkey_out,
-    size_t *sender_pubkey_len_out)
+    size_t *sender_pubkey_len_out,
+    uint64_t *timestamp_out)
 {
     if (!ctx || !ciphertext || !recipient_key_name ||
         !plaintext_out || !plaintext_len_out ||
@@ -1148,8 +1149,12 @@ dna_error_t dna_decrypt_message(
     }
     memcpy(*sender_pubkey_out, decrypted, 64);
 
-    // Extract timestamp (bytes 64-71, big-endian) - ignored in this function
-    // (dna_decrypt_message doesn't expose timestamp, use dna_decrypt_message_raw if needed)
+    // Extract timestamp (bytes 64-71, big-endian)
+    if (timestamp_out) {
+        uint64_t timestamp_be;
+        memcpy(&timestamp_be, decrypted + 64, 8);
+        *timestamp_out = be64toh(timestamp_be);
+    }
 
     // Extract actual plaintext (everything after fingerprint + timestamp)
     size_t actual_plaintext_len = decrypted_size - 72;  // 64 + 8
