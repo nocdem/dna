@@ -21,6 +21,17 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+/* DLL Export/Import macros for Windows */
+#ifdef _WIN32
+    #ifdef DNA_LIB_EXPORTS
+        #define DNA_API __declspec(dllexport)
+    #else
+        #define DNA_API __declspec(dllimport)
+    #endif
+#else
+    #define DNA_API
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -36,7 +47,7 @@ extern "C" {
  *
  * @return Version string (e.g., "0.2.5") - do not free
  */
-const char* dna_engine_get_version(void);
+DNA_API const char* dna_engine_get_version(void);
 
 /* ============================================================================
  * OPAQUE TYPES
@@ -72,7 +83,7 @@ typedef uint64_t dna_request_id_t;
 /**
  * Get human-readable error message for engine errors
  */
-const char* dna_engine_error_string(int error);
+DNA_API const char* dna_engine_error_string(int error);
 
 /* ============================================================================
  * PUBLIC DATA TYPES
@@ -588,7 +599,7 @@ typedef void (*dna_event_cb)(dna_event_t *event, void *user_data);
  *
  * @param event Event to free (can be NULL)
  */
-void dna_free_event(dna_event_t *event);
+DNA_API void dna_free_event(dna_event_t *event);
 
 /* ============================================================================
  * 1. LIFECYCLE (4 functions)
@@ -606,7 +617,7 @@ void dna_free_event(dna_event_t *event);
  * @param data_dir  Path to data directory (NULL for default ~/.dna)
  * @return          Engine instance or NULL on error
  */
-dna_engine_t* dna_engine_create(const char *data_dir);
+DNA_API dna_engine_t* dna_engine_create(const char *data_dir);
 
 /**
  * Set event callback for pushed events
@@ -618,7 +629,7 @@ dna_engine_t* dna_engine_create(const char *data_dir);
  * @param callback  Event callback function (NULL to disable)
  * @param user_data User data passed to callback
  */
-void dna_engine_set_event_callback(
+DNA_API void dna_engine_set_event_callback(
     dna_engine_t *engine,
     dna_event_cb callback,
     void *user_data
@@ -632,7 +643,7 @@ void dna_engine_set_event_callback(
  *
  * @param engine    Engine instance (can be NULL)
  */
-void dna_engine_destroy(dna_engine_t *engine);
+DNA_API void dna_engine_destroy(dna_engine_t *engine);
 
 /**
  * Get current identity fingerprint
@@ -640,7 +651,7 @@ void dna_engine_destroy(dna_engine_t *engine);
  * @param engine    Engine instance
  * @return          Fingerprint string (128 hex chars) or NULL if no identity loaded
  */
-const char* dna_engine_get_fingerprint(dna_engine_t *engine);
+DNA_API const char* dna_engine_get_fingerprint(dna_engine_t *engine);
 
 /* ============================================================================
  * 2. IDENTITY (v0.3.0: single-user model)
@@ -663,7 +674,7 @@ const char* dna_engine_get_fingerprint(dna_engine_t *engine);
  * @param user_data       User data for callback
  * @return                Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_create_identity(
+DNA_API dna_request_id_t dna_engine_create_identity(
     dna_engine_t *engine,
     const char *name,
     const uint8_t signing_seed[32],
@@ -689,7 +700,7 @@ dna_request_id_t dna_engine_create_identity(
  * @param fingerprint_out Output buffer for fingerprint (129 bytes min)
  * @return                0 on success, error code on failure
  */
-int dna_engine_create_identity_sync(
+DNA_API int dna_engine_create_identity_sync(
     dna_engine_t *engine,
     const char *name,
     const uint8_t signing_seed[32],
@@ -716,7 +727,7 @@ int dna_engine_create_identity_sync(
  * @param fingerprint_out Output buffer for fingerprint (129 bytes min)
  * @return                0 on success, error code on failure
  */
-int dna_engine_restore_identity_sync(
+DNA_API int dna_engine_restore_identity_sync(
     dna_engine_t *engine,
     const uint8_t signing_seed[32],
     const uint8_t encryption_seed[32],
@@ -746,7 +757,7 @@ int dna_engine_restore_identity_sync(
  * @param fingerprint Identity fingerprint to delete (128 hex chars)
  * @return            0 on success, error code on failure
  */
-int dna_engine_delete_identity_sync(
+DNA_API int dna_engine_delete_identity_sync(
     dna_engine_t *engine,
     const char *fingerprint
 );
@@ -760,7 +771,7 @@ int dna_engine_delete_identity_sync(
  * @param engine Engine instance
  * @return       true if identity exists, false otherwise
  */
-bool dna_engine_has_identity(dna_engine_t *engine);
+DNA_API bool dna_engine_has_identity(dna_engine_t *engine);
 
 /**
  * Prepare DHT connection from mnemonic (before identity creation)
@@ -778,7 +789,7 @@ bool dna_engine_has_identity(dna_engine_t *engine);
  * @param mnemonic BIP39 mnemonic (24 words, space-separated)
  * @return         0 on success, -1 on error
  */
-int dna_engine_prepare_dht_from_mnemonic(dna_engine_t *engine, const char *mnemonic);
+DNA_API int dna_engine_prepare_dht_from_mnemonic(dna_engine_t *engine, const char *mnemonic);
 
 /**
  * Load and activate identity
@@ -793,7 +804,7 @@ int dna_engine_prepare_dht_from_mnemonic(dna_engine_t *engine, const char *mnemo
  * @param user_data   User data for callback
  * @return            Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_load_identity(
+DNA_API dna_request_id_t dna_engine_load_identity(
     dna_engine_t *engine,
     const char *fingerprint,
     const char *password,
@@ -813,7 +824,7 @@ dna_request_id_t dna_engine_load_identity(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_register_name(
+DNA_API dna_request_id_t dna_engine_register_name(
     dna_engine_t *engine,
     const char *name,
     dna_completion_cb callback,
@@ -832,7 +843,7 @@ dna_request_id_t dna_engine_register_name(
  * @param user_data   User data for callback
  * @return            Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_display_name(
+DNA_API dna_request_id_t dna_engine_get_display_name(
     dna_engine_t *engine,
     const char *fingerprint,
     dna_display_name_cb callback,
@@ -851,7 +862,7 @@ dna_request_id_t dna_engine_get_display_name(
  * @param user_data   User data for callback
  * @return            Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_avatar(
+DNA_API dna_request_id_t dna_engine_get_avatar(
     dna_engine_t *engine,
     const char *fingerprint,
     dna_display_name_cb callback,
@@ -870,7 +881,7 @@ dna_request_id_t dna_engine_get_avatar(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_lookup_name(
+DNA_API dna_request_id_t dna_engine_lookup_name(
     dna_engine_t *engine,
     const char *name,
     dna_display_name_cb callback,
@@ -887,7 +898,7 @@ dna_request_id_t dna_engine_lookup_name(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_profile(
+DNA_API dna_request_id_t dna_engine_get_profile(
     dna_engine_t *engine,
     dna_profile_cb callback,
     void *user_data
@@ -905,7 +916,7 @@ dna_request_id_t dna_engine_get_profile(
  * @param user_data   User data for callback
  * @return            Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_lookup_profile(
+DNA_API dna_request_id_t dna_engine_lookup_profile(
     dna_engine_t *engine,
     const char *fingerprint,
     dna_profile_cb callback,
@@ -924,7 +935,7 @@ dna_request_id_t dna_engine_lookup_profile(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_update_profile(
+DNA_API dna_request_id_t dna_engine_update_profile(
     dna_engine_t *engine,
     const dna_profile_t *profile,
     dna_completion_cb callback,
@@ -948,7 +959,7 @@ dna_request_id_t dna_engine_update_profile(
  *                      Returns DNA_ENGINE_ERROR_NOT_FOUND if mnemonic not stored
  *                      (identities created before this feature won't have it)
  */
-int dna_engine_get_mnemonic(
+DNA_API int dna_engine_get_mnemonic(
     dna_engine_t *engine,
     char *mnemonic_out,
     size_t mnemonic_size
@@ -978,7 +989,7 @@ int dna_engine_get_mnemonic(
  *                      DNA_ENGINE_ERROR_WRONG_PASSWORD if old password is incorrect
  *                      DNA_ENGINE_ERROR_NOT_INITIALIZED if no identity loaded
  */
-int dna_engine_change_password_sync(
+DNA_API int dna_engine_change_password_sync(
     dna_engine_t *engine,
     const char *old_password,
     const char *new_password
@@ -998,7 +1009,7 @@ int dna_engine_change_password_sync(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_contacts(
+DNA_API dna_request_id_t dna_engine_get_contacts(
     dna_engine_t *engine,
     dna_contacts_cb callback,
     void *user_data
@@ -1015,7 +1026,7 @@ dna_request_id_t dna_engine_get_contacts(
  * @param user_data  User data for callback
  * @return           Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_add_contact(
+DNA_API dna_request_id_t dna_engine_add_contact(
     dna_engine_t *engine,
     const char *identifier,
     dna_completion_cb callback,
@@ -1031,7 +1042,7 @@ dna_request_id_t dna_engine_add_contact(
  * @param user_data   User data for callback
  * @return            Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_remove_contact(
+DNA_API dna_request_id_t dna_engine_remove_contact(
     dna_engine_t *engine,
     const char *fingerprint,
     dna_completion_cb callback,
@@ -1056,7 +1067,7 @@ dna_request_id_t dna_engine_remove_contact(
  * @param user_data            User data for callback
  * @return                     Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_send_contact_request(
+DNA_API dna_request_id_t dna_engine_send_contact_request(
     dna_engine_t *engine,
     const char *recipient_fingerprint,
     const char *message,
@@ -1075,7 +1086,7 @@ dna_request_id_t dna_engine_send_contact_request(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_contact_requests(
+DNA_API dna_request_id_t dna_engine_get_contact_requests(
     dna_engine_t *engine,
     dna_contact_requests_cb callback,
     void *user_data
@@ -1089,7 +1100,7 @@ dna_request_id_t dna_engine_get_contact_requests(
  * @param engine Engine instance
  * @return       Number of pending requests, or -1 on error
  */
-int dna_engine_get_contact_request_count(dna_engine_t *engine);
+DNA_API int dna_engine_get_contact_request_count(dna_engine_t *engine);
 
 /**
  * Approve a contact request (makes mutual contact)
@@ -1104,7 +1115,7 @@ int dna_engine_get_contact_request_count(dna_engine_t *engine);
  * @param user_data   User data for callback
  * @return            Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_approve_contact_request(
+DNA_API dna_request_id_t dna_engine_approve_contact_request(
     dna_engine_t *engine,
     const char *fingerprint,
     dna_completion_cb callback,
@@ -1123,7 +1134,7 @@ dna_request_id_t dna_engine_approve_contact_request(
  * @param user_data   User data for callback
  * @return            Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_deny_contact_request(
+DNA_API dna_request_id_t dna_engine_deny_contact_request(
     dna_engine_t *engine,
     const char *fingerprint,
     dna_completion_cb callback,
@@ -1143,7 +1154,7 @@ dna_request_id_t dna_engine_deny_contact_request(
  * @param user_data   User data for callback
  * @return            Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_block_user(
+DNA_API dna_request_id_t dna_engine_block_user(
     dna_engine_t *engine,
     const char *fingerprint,
     const char *reason,
@@ -1162,7 +1173,7 @@ dna_request_id_t dna_engine_block_user(
  * @param user_data   User data for callback
  * @return            Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_unblock_user(
+DNA_API dna_request_id_t dna_engine_unblock_user(
     dna_engine_t *engine,
     const char *fingerprint,
     dna_completion_cb callback,
@@ -1177,7 +1188,7 @@ dna_request_id_t dna_engine_unblock_user(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_blocked_users(
+DNA_API dna_request_id_t dna_engine_get_blocked_users(
     dna_engine_t *engine,
     dna_blocked_users_cb callback,
     void *user_data
@@ -1192,7 +1203,7 @@ dna_request_id_t dna_engine_get_blocked_users(
  * @param fingerprint Fingerprint to check
  * @return            true if blocked, false otherwise
  */
-bool dna_engine_is_user_blocked(dna_engine_t *engine, const char *fingerprint);
+DNA_API bool dna_engine_is_user_blocked(dna_engine_t *engine, const char *fingerprint);
 
 /* ============================================================================
  * 4. MESSAGING (3 async functions)
@@ -1211,7 +1222,7 @@ bool dna_engine_is_user_blocked(dna_engine_t *engine, const char *fingerprint);
  * @param user_data            User data for callback
  * @return                     Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_send_message(
+DNA_API dna_request_id_t dna_engine_send_message(
     dna_engine_t *engine,
     const char *recipient_fingerprint,
     const char *message,
@@ -1233,7 +1244,7 @@ dna_request_id_t dna_engine_send_message(
  *                             -1: queue full (DNA_ENGINE_ERROR_BUSY)
  *                             -2: invalid args (DNA_ENGINE_ERROR_NOT_INITIALIZED)
  */
-int dna_engine_queue_message(
+DNA_API int dna_engine_queue_message(
     dna_engine_t *engine,
     const char *recipient_fingerprint,
     const char *message
@@ -1245,7 +1256,7 @@ int dna_engine_queue_message(
  * @param engine Engine instance
  * @return       Maximum number of messages that can be queued
  */
-int dna_engine_get_message_queue_capacity(dna_engine_t *engine);
+DNA_API int dna_engine_get_message_queue_capacity(dna_engine_t *engine);
 
 /**
  * Get current message queue size
@@ -1253,7 +1264,7 @@ int dna_engine_get_message_queue_capacity(dna_engine_t *engine);
  * @param engine Engine instance
  * @return       Number of messages currently in queue
  */
-int dna_engine_get_message_queue_size(dna_engine_t *engine);
+DNA_API int dna_engine_get_message_queue_size(dna_engine_t *engine);
 
 /**
  * Set message queue capacity (default: 20)
@@ -1262,7 +1273,7 @@ int dna_engine_get_message_queue_size(dna_engine_t *engine);
  * @param capacity New capacity (1-100)
  * @return         0 on success, -1 on invalid capacity
  */
-int dna_engine_set_message_queue_capacity(dna_engine_t *engine, int capacity);
+DNA_API int dna_engine_set_message_queue_capacity(dna_engine_t *engine, int capacity);
 
 /**
  * Get conversation with contact
@@ -1275,7 +1286,7 @@ int dna_engine_set_message_queue_capacity(dna_engine_t *engine, int capacity);
  * @param user_data           User data for callback
  * @return                    Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_conversation(
+DNA_API dna_request_id_t dna_engine_get_conversation(
     dna_engine_t *engine,
     const char *contact_fingerprint,
     dna_messages_cb callback,
@@ -1292,7 +1303,7 @@ dna_request_id_t dna_engine_get_conversation(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_check_offline_messages(
+DNA_API dna_request_id_t dna_engine_check_offline_messages(
     dna_engine_t *engine,
     dna_completion_cb callback,
     void *user_data
@@ -1307,7 +1318,7 @@ dna_request_id_t dna_engine_check_offline_messages(
  * @param contact_fingerprint Contact fingerprint
  * @return                    Unread count (>=0), or -1 on error
  */
-int dna_engine_get_unread_count(
+DNA_API int dna_engine_get_unread_count(
     dna_engine_t *engine,
     const char *contact_fingerprint
 );
@@ -1323,7 +1334,7 @@ int dna_engine_get_unread_count(
  * @param user_data           User data for callback
  * @return                    Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_mark_conversation_read(
+DNA_API dna_request_id_t dna_engine_mark_conversation_read(
     dna_engine_t *engine,
     const char *contact_fingerprint,
     dna_completion_cb callback,
@@ -1342,7 +1353,7 @@ dna_request_id_t dna_engine_mark_conversation_read(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_groups(
+DNA_API dna_request_id_t dna_engine_get_groups(
     dna_engine_t *engine,
     dna_groups_cb callback,
     void *user_data
@@ -1361,7 +1372,7 @@ dna_request_id_t dna_engine_get_groups(
  * @param user_data           User data for callback
  * @return                    Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_create_group(
+DNA_API dna_request_id_t dna_engine_create_group(
     dna_engine_t *engine,
     const char *name,
     const char **member_fingerprints,
@@ -1382,7 +1393,7 @@ dna_request_id_t dna_engine_create_group(
  * @param user_data  User data for callback
  * @return           Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_send_group_message(
+DNA_API dna_request_id_t dna_engine_send_group_message(
     dna_engine_t *engine,
     const char *group_uuid,
     const char *message,
@@ -1398,7 +1409,7 @@ dna_request_id_t dna_engine_send_group_message(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_invitations(
+DNA_API dna_request_id_t dna_engine_get_invitations(
     dna_engine_t *engine,
     dna_invitations_cb callback,
     void *user_data
@@ -1413,7 +1424,7 @@ dna_request_id_t dna_engine_get_invitations(
  * @param user_data  User data for callback
  * @return           Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_accept_invitation(
+DNA_API dna_request_id_t dna_engine_accept_invitation(
     dna_engine_t *engine,
     const char *group_uuid,
     dna_completion_cb callback,
@@ -1429,7 +1440,7 @@ dna_request_id_t dna_engine_accept_invitation(
  * @param user_data  User data for callback
  * @return           Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_reject_invitation(
+DNA_API dna_request_id_t dna_engine_reject_invitation(
     dna_engine_t *engine,
     const char *group_uuid,
     dna_completion_cb callback,
@@ -1450,7 +1461,7 @@ dna_request_id_t dna_engine_reject_invitation(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_list_wallets(
+DNA_API dna_request_id_t dna_engine_list_wallets(
     dna_engine_t *engine,
     dna_wallets_cb callback,
     void *user_data
@@ -1467,7 +1478,7 @@ dna_request_id_t dna_engine_list_wallets(
  * @param user_data    User data for callback
  * @return             Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_balances(
+DNA_API dna_request_id_t dna_engine_get_balances(
     dna_engine_t *engine,
     int wallet_index,
     dna_balances_cb callback,
@@ -1501,7 +1512,7 @@ typedef struct {
  * @param estimate_out  Output: gas estimate
  * @return              0 on success, -1 on error
  */
-int dna_engine_estimate_eth_gas(int gas_speed, dna_gas_estimate_t *estimate_out);
+DNA_API int dna_engine_estimate_eth_gas(int gas_speed, dna_gas_estimate_t *estimate_out);
 
 /**
  * Send tokens
@@ -1519,7 +1530,7 @@ int dna_engine_estimate_eth_gas(int gas_speed, dna_gas_estimate_t *estimate_out)
  * @param user_data         User data for callback
  * @return                  Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_send_tokens(
+DNA_API dna_request_id_t dna_engine_send_tokens(
     dna_engine_t *engine,
     int wallet_index,
     const char *recipient_address,
@@ -1541,7 +1552,7 @@ dna_request_id_t dna_engine_send_tokens(
  * @param user_data    User data for callback
  * @return             Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_transactions(
+DNA_API dna_request_id_t dna_engine_get_transactions(
     dna_engine_t *engine,
     int wallet_index,
     const char *network,
@@ -1563,7 +1574,7 @@ dna_request_id_t dna_engine_get_transactions(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_refresh_presence(
+DNA_API dna_request_id_t dna_engine_refresh_presence(
     dna_engine_t *engine,
     dna_completion_cb callback,
     void *user_data
@@ -1576,7 +1587,7 @@ dna_request_id_t dna_engine_refresh_presence(
  * @param fingerprint Peer fingerprint
  * @return            true if peer is online, false otherwise
  */
-bool dna_engine_is_peer_online(dna_engine_t *engine, const char *fingerprint);
+DNA_API bool dna_engine_is_peer_online(dna_engine_t *engine, const char *fingerprint);
 
 /**
  * Lookup peer presence from DHT
@@ -1590,7 +1601,7 @@ bool dna_engine_is_peer_online(dna_engine_t *engine, const char *fingerprint);
  * @param user_data   User data for callback
  * @return            Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_lookup_presence(
+DNA_API dna_request_id_t dna_engine_lookup_presence(
     dna_engine_t *engine,
     const char *fingerprint,
     dna_presence_cb callback,
@@ -1605,7 +1616,7 @@ dna_request_id_t dna_engine_lookup_presence(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_sync_contacts_to_dht(
+DNA_API dna_request_id_t dna_engine_sync_contacts_to_dht(
     dna_engine_t *engine,
     dna_completion_cb callback,
     void *user_data
@@ -1619,7 +1630,7 @@ dna_request_id_t dna_engine_sync_contacts_to_dht(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_sync_contacts_from_dht(
+DNA_API dna_request_id_t dna_engine_sync_contacts_from_dht(
     dna_engine_t *engine,
     dna_completion_cb callback,
     void *user_data
@@ -1633,7 +1644,7 @@ dna_request_id_t dna_engine_sync_contacts_from_dht(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_sync_groups(
+DNA_API dna_request_id_t dna_engine_sync_groups(
     dna_engine_t *engine,
     dna_completion_cb callback,
     void *user_data
@@ -1649,7 +1660,7 @@ dna_request_id_t dna_engine_sync_groups(
  * @param timeout_ms  Timeout in milliseconds (0 for default 10s)
  * @return            0 on success, negative on error
  */
-int dna_engine_request_turn_credentials(dna_engine_t *engine, int timeout_ms);
+DNA_API int dna_engine_request_turn_credentials(dna_engine_t *engine, int timeout_ms);
 
 /**
  * Get registered name for current identity
@@ -1661,7 +1672,7 @@ int dna_engine_request_turn_credentials(dna_engine_t *engine, int timeout_ms);
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_registered_name(
+DNA_API dna_request_id_t dna_engine_get_registered_name(
     dna_engine_t *engine,
     dna_display_name_cb callback,
     void *user_data
@@ -1684,7 +1695,7 @@ dna_request_id_t dna_engine_get_registered_name(
  * @param contact_fingerprint Contact's fingerprint (128 hex chars)
  * @return                    Listener token (> 0 on success, 0 on failure)
  */
-size_t dna_engine_listen_outbox(
+DNA_API size_t dna_engine_listen_outbox(
     dna_engine_t *engine,
     const char *contact_fingerprint
 );
@@ -1697,7 +1708,7 @@ size_t dna_engine_listen_outbox(
  * @param engine              Engine instance
  * @param contact_fingerprint Contact's fingerprint
  */
-void dna_engine_cancel_outbox_listener(
+DNA_API void dna_engine_cancel_outbox_listener(
     dna_engine_t *engine,
     const char *contact_fingerprint
 );
@@ -1711,7 +1722,7 @@ void dna_engine_cancel_outbox_listener(
  * @param engine    Engine instance
  * @return          Number of listeners started
  */
-int dna_engine_listen_all_contacts(
+DNA_API int dna_engine_listen_all_contacts(
     dna_engine_t *engine
 );
 
@@ -1720,7 +1731,7 @@ int dna_engine_listen_all_contacts(
  *
  * @param engine    Engine instance
  */
-void dna_engine_cancel_all_outbox_listeners(
+DNA_API void dna_engine_cancel_all_outbox_listeners(
     dna_engine_t *engine
 );
 
@@ -1742,7 +1753,7 @@ void dna_engine_cancel_all_outbox_listeners(
  * @param recipient_fingerprint Recipient's fingerprint (128 hex chars)
  * @return                     0 on success, negative on error
  */
-int dna_engine_track_delivery(
+DNA_API int dna_engine_track_delivery(
     dna_engine_t *engine,
     const char *recipient_fingerprint
 );
@@ -1755,7 +1766,7 @@ int dna_engine_track_delivery(
  * @param engine               Engine instance
  * @param recipient_fingerprint Recipient's fingerprint
  */
-void dna_engine_untrack_delivery(
+DNA_API void dna_engine_untrack_delivery(
     dna_engine_t *engine,
     const char *recipient_fingerprint
 );
@@ -1765,7 +1776,7 @@ void dna_engine_untrack_delivery(
  *
  * @param engine    Engine instance
  */
-void dna_engine_cancel_all_delivery_trackers(
+DNA_API void dna_engine_cancel_all_delivery_trackers(
     dna_engine_t *engine
 );
 
@@ -1781,7 +1792,7 @@ void dna_engine_cancel_all_delivery_trackers(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_feed_channels(
+DNA_API dna_request_id_t dna_engine_get_feed_channels(
     dna_engine_t *engine,
     dna_feed_channels_cb callback,
     void *user_data
@@ -1800,7 +1811,7 @@ dna_request_id_t dna_engine_get_feed_channels(
  * @param user_data   User data for callback
  * @return            Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_create_feed_channel(
+DNA_API dna_request_id_t dna_engine_create_feed_channel(
     dna_engine_t *engine,
     const char *name,
     const char *description,
@@ -1818,7 +1829,7 @@ dna_request_id_t dna_engine_create_feed_channel(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_init_default_channels(
+DNA_API dna_request_id_t dna_engine_init_default_channels(
     dna_engine_t *engine,
     dna_completion_cb callback,
     void *user_data
@@ -1836,7 +1847,7 @@ dna_request_id_t dna_engine_init_default_channels(
  * @param user_data  User data for callback
  * @return           Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_feed_posts(
+DNA_API dna_request_id_t dna_engine_get_feed_posts(
     dna_engine_t *engine,
     const char *channel_id,
     const char *date,
@@ -1857,7 +1868,7 @@ dna_request_id_t dna_engine_get_feed_posts(
  * @param user_data  User data for callback
  * @return           Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_create_feed_post(
+DNA_API dna_request_id_t dna_engine_create_feed_post(
     dna_engine_t *engine,
     const char *channel_id,
     const char *text,
@@ -1878,7 +1889,7 @@ dna_request_id_t dna_engine_create_feed_post(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_add_feed_comment(
+DNA_API dna_request_id_t dna_engine_add_feed_comment(
     dna_engine_t *engine,
     const char *post_id,
     const char *text,
@@ -1895,7 +1906,7 @@ dna_request_id_t dna_engine_add_feed_comment(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_feed_comments(
+DNA_API dna_request_id_t dna_engine_get_feed_comments(
     dna_engine_t *engine,
     const char *post_id,
     dna_feed_comments_cb callback,
@@ -1915,7 +1926,7 @@ dna_request_id_t dna_engine_get_feed_comments(
  * @param user_data  User data for callback
  * @return           Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_cast_feed_vote(
+DNA_API dna_request_id_t dna_engine_cast_feed_vote(
     dna_engine_t *engine,
     const char *post_id,
     int8_t vote_value,
@@ -1934,7 +1945,7 @@ dna_request_id_t dna_engine_cast_feed_vote(
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_feed_votes(
+DNA_API dna_request_id_t dna_engine_get_feed_votes(
     dna_engine_t *engine,
     const char *post_id,
     dna_feed_post_cb callback,
@@ -1954,7 +1965,7 @@ dna_request_id_t dna_engine_get_feed_votes(
  * @param user_data   User data for callback
  * @return            Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_cast_comment_vote(
+DNA_API dna_request_id_t dna_engine_cast_comment_vote(
     dna_engine_t *engine,
     const char *comment_id,
     int8_t vote_value,
@@ -1973,7 +1984,7 @@ dna_request_id_t dna_engine_cast_comment_vote(
  * @param user_data   User data for callback
  * @return            Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_comment_votes(
+DNA_API dna_request_id_t dna_engine_get_comment_votes(
     dna_engine_t *engine,
     const char *comment_id,
     dna_feed_comment_cb callback,
@@ -2019,7 +2030,7 @@ void* dna_engine_get_dht_context(dna_engine_t *engine);
  * @param engine    Engine instance
  * @return          1 if connected, 0 if not connected
  */
-int dna_engine_is_dht_connected(dna_engine_t *engine);
+DNA_API int dna_engine_is_dht_connected(dna_engine_t *engine);
 
 /* ============================================================================
  * LOG CONFIGURATION
@@ -2030,7 +2041,7 @@ int dna_engine_is_dht_connected(dna_engine_t *engine);
  *
  * @return Log level string: "DEBUG", "INFO", "WARN", "ERROR", or "NONE"
  */
-const char* dna_engine_get_log_level(void);
+DNA_API const char* dna_engine_get_log_level(void);
 
 /**
  * Set log level
@@ -2038,14 +2049,14 @@ const char* dna_engine_get_log_level(void);
  * @param level  Log level: "DEBUG", "INFO", "WARN", "ERROR", or "NONE"
  * @return       0 on success, -1 on error
  */
-int dna_engine_set_log_level(const char *level);
+DNA_API int dna_engine_set_log_level(const char *level);
 
 /**
  * Get current log tags filter
  *
  * @return Comma-separated tags string (empty = show all)
  */
-const char* dna_engine_get_log_tags(void);
+DNA_API const char* dna_engine_get_log_tags(void);
 
 /**
  * Set log tags filter
@@ -2053,7 +2064,7 @@ const char* dna_engine_get_log_tags(void);
  * @param tags  Comma-separated tags to show (empty = show all)
  * @return      0 on success, -1 on error
  */
-int dna_engine_set_log_tags(const char *tags);
+DNA_API int dna_engine_set_log_tags(const char *tags);
 
 /* ============================================================================
  * MEMORY MANAGEMENT
@@ -2062,82 +2073,82 @@ int dna_engine_set_log_tags(const char *tags);
 /**
  * Free string array returned by callbacks
  */
-void dna_free_strings(char **strings, int count);
+DNA_API void dna_free_strings(char **strings, int count);
 
 /**
  * Free contacts array returned by callbacks
  */
-void dna_free_contacts(dna_contact_t *contacts, int count);
+DNA_API void dna_free_contacts(dna_contact_t *contacts, int count);
 
 /**
  * Free messages array returned by callbacks
  */
-void dna_free_messages(dna_message_t *messages, int count);
+DNA_API void dna_free_messages(dna_message_t *messages, int count);
 
 /**
  * Free groups array returned by callbacks
  */
-void dna_free_groups(dna_group_t *groups, int count);
+DNA_API void dna_free_groups(dna_group_t *groups, int count);
 
 /**
  * Free invitations array returned by callbacks
  */
-void dna_free_invitations(dna_invitation_t *invitations, int count);
+DNA_API void dna_free_invitations(dna_invitation_t *invitations, int count);
 
 /**
  * Free contact requests array returned by callbacks
  */
-void dna_free_contact_requests(dna_contact_request_t *requests, int count);
+DNA_API void dna_free_contact_requests(dna_contact_request_t *requests, int count);
 
 /**
  * Free blocked users array returned by callbacks
  */
-void dna_free_blocked_users(dna_blocked_user_t *blocked, int count);
+DNA_API void dna_free_blocked_users(dna_blocked_user_t *blocked, int count);
 
 /**
  * Free wallets array returned by callbacks
  */
-void dna_free_wallets(dna_wallet_t *wallets, int count);
+DNA_API void dna_free_wallets(dna_wallet_t *wallets, int count);
 
 /**
  * Free balances array returned by callbacks
  */
-void dna_free_balances(dna_balance_t *balances, int count);
+DNA_API void dna_free_balances(dna_balance_t *balances, int count);
 
 /**
  * Free transactions array returned by callbacks
  */
-void dna_free_transactions(dna_transaction_t *transactions, int count);
+DNA_API void dna_free_transactions(dna_transaction_t *transactions, int count);
 
 /**
  * Free feed channels array returned by callbacks
  */
-void dna_free_feed_channels(dna_channel_info_t *channels, int count);
+DNA_API void dna_free_feed_channels(dna_channel_info_t *channels, int count);
 
 /**
  * Free feed posts array returned by callbacks
  */
-void dna_free_feed_posts(dna_post_info_t *posts, int count);
+DNA_API void dna_free_feed_posts(dna_post_info_t *posts, int count);
 
 /**
  * Free single feed post returned by callbacks
  */
-void dna_free_feed_post(dna_post_info_t *post);
+DNA_API void dna_free_feed_post(dna_post_info_t *post);
 
 /**
  * Free feed comments array returned by callbacks
  */
-void dna_free_feed_comments(dna_comment_info_t *comments, int count);
+DNA_API void dna_free_feed_comments(dna_comment_info_t *comments, int count);
 
 /**
  * Free single feed comment returned by callbacks
  */
-void dna_free_feed_comment(dna_comment_info_t *comment);
+DNA_API void dna_free_feed_comment(dna_comment_info_t *comment);
 
 /**
  * Free profile returned by callbacks
  */
-void dna_free_profile(dna_profile_t *profile);
+DNA_API void dna_free_profile(dna_profile_t *profile);
 
 /* ============================================================================
  * GLOBAL ENGINE ACCESS (for event dispatch from messenger layer)
@@ -2151,7 +2162,7 @@ void dna_free_profile(dna_profile_t *profile);
  *
  * @param engine    Engine instance (or NULL to clear)
  */
-void dna_engine_set_global(dna_engine_t *engine);
+DNA_API void dna_engine_set_global(dna_engine_t *engine);
 
 /**
  * Get the global engine instance
@@ -2160,7 +2171,7 @@ void dna_engine_set_global(dna_engine_t *engine);
  *
  * @return          Engine instance, or NULL if not set
  */
-dna_engine_t* dna_engine_get_global(void);
+DNA_API dna_engine_t* dna_engine_get_global(void);
 
 /**
  * Dispatch an event to Flutter/GUI layer
@@ -2195,14 +2206,14 @@ typedef struct {
  *
  * @param enabled   true to enable, false to disable
  */
-void dna_engine_debug_log_enable(bool enabled);
+DNA_API void dna_engine_debug_log_enable(bool enabled);
 
 /**
  * Check if debug logging is enabled
  *
  * @return true if debug log ring buffer is active
  */
-bool dna_engine_debug_log_is_enabled(void);
+DNA_API bool dna_engine_debug_log_is_enabled(void);
 
 /**
  * Get debug log entries from ring buffer
@@ -2214,33 +2225,33 @@ bool dna_engine_debug_log_is_enabled(void);
  * @param max_entries   Maximum entries to return
  * @return              Number of entries actually filled
  */
-int dna_engine_debug_log_get_entries(dna_debug_log_entry_t *entries, int max_entries);
+DNA_API int dna_engine_debug_log_get_entries(dna_debug_log_entry_t *entries, int max_entries);
 
 /**
  * Get number of entries in debug log buffer
  *
  * @return Number of log entries currently stored
  */
-int dna_engine_debug_log_count(void);
+DNA_API int dna_engine_debug_log_count(void);
 
 /**
  * Clear all debug log entries
  */
-void dna_engine_debug_log_clear(void);
+DNA_API void dna_engine_debug_log_clear(void);
 
 /**
  * Add a log message from external code (e.g., Dart/Flutter)
  * @param tag Log tag (e.g., "FLUTTER")
  * @param message Log message
  */
-void dna_engine_debug_log_message(const char *tag, const char *message);
+DNA_API void dna_engine_debug_log_message(const char *tag, const char *message);
 
 /**
  * Export debug logs to a file
  * @param filepath Path to write log file
  * @return 0 on success, -1 on error
  */
-int dna_engine_debug_log_export(const char *filepath);
+DNA_API int dna_engine_debug_log_export(const char *filepath);
 
 /* ============================================================================
  * MESSAGE BACKUP/RESTORE API
@@ -2276,7 +2287,7 @@ typedef void (*dna_backup_result_cb)(
  * @param user_data  User data for callback
  * @return           Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_backup_messages(
+DNA_API dna_request_id_t dna_engine_backup_messages(
     dna_engine_t *engine,
     dna_backup_result_cb callback,
     void *user_data
@@ -2293,7 +2304,7 @@ dna_request_id_t dna_engine_backup_messages(
  * @param user_data  User data for callback
  * @return           Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_restore_messages(
+DNA_API dna_request_id_t dna_engine_restore_messages(
     dna_engine_t *engine,
     dna_backup_result_cb callback,
     void *user_data

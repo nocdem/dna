@@ -114,6 +114,11 @@ else()
     set(DNA_LIB_TYPE STATIC)
 endif()
 
+# Windows DLL export macro
+if(BUILD_SHARED_LIB AND WIN32)
+    add_compile_definitions(DNA_LIB_EXPORTS)
+endif()
+
 add_library(dna_lib ${DNA_LIB_TYPE}
     dna_api.c
     # Unified Engine API (Core/GUI separation)
