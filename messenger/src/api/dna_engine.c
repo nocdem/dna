@@ -398,10 +398,6 @@ void dna_stop_workers(dna_engine_t *engine) {
 
 /* ============================================================================
  * EVENT DISPATCH
- *
- * Events are heap-allocated to ensure they remain valid when Flutter's
- * NativeCallable.listener processes them asynchronously. The caller is
- * responsible for calling dna_free_event() after processing.
  * ============================================================================ */
 
 void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
@@ -411,28 +407,7 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
     pthread_mutex_unlock(&engine->event_mutex);
 
     if (callback) {
-        /* Heap-allocate a copy of the event so it persists until Dart processes it.
-         * This is necessary because NativeCallable.listener in Dart processes
-         * callbacks asynchronously on the event loop - by the time Dart reads
-         * the event data, the stack-allocated event would be invalid. */
-        dna_event_t *heap_event = malloc(sizeof(dna_event_t));
-        if (heap_event) {
-            memcpy(heap_event, event, sizeof(dna_event_t));
-            QGP_LOG_WARN(LOG_TAG, "[EVENT] Allocated event ptr=%p type=%d sizeof=%zu",
-                        (void*)heap_event, heap_event->type, sizeof(dna_event_t));
-            callback(heap_event, user_data);
-            /* Note: Dart must call dna_free_event() after processing */
-        } else {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to allocate event for dispatch");
-        }
-    }
-}
-
-void dna_free_event(dna_event_t *event) {
-    QGP_LOG_WARN(LOG_TAG, "[EVENT] dna_free_event called with ptr=%p", (void*)event);
-    if (event) {
-        free(event);
-        QGP_LOG_WARN(LOG_TAG, "[EVENT] Event freed OK");
+        callback(event, user_data);
     }
 }
 
