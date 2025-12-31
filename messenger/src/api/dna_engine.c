@@ -418,6 +418,8 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
         dna_event_t *heap_event = malloc(sizeof(dna_event_t));
         if (heap_event) {
             memcpy(heap_event, event, sizeof(dna_event_t));
+            QGP_LOG_WARN(LOG_TAG, "[EVENT] Allocated event ptr=%p type=%d sizeof=%zu",
+                        (void*)heap_event, heap_event->type, sizeof(dna_event_t));
             callback(heap_event, user_data);
             /* Note: Dart must call dna_free_event() after processing */
         } else {
@@ -427,8 +429,10 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
 }
 
 void dna_free_event(dna_event_t *event) {
+    QGP_LOG_WARN(LOG_TAG, "[EVENT] dna_free_event called with ptr=%p", (void*)event);
     if (event) {
         free(event);
+        QGP_LOG_WARN(LOG_TAG, "[EVENT] Event freed OK");
     }
 }
 
