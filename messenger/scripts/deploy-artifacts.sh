@@ -46,3 +46,10 @@ echo "=== Deployed artifacts ==="
 ls -la /artifacts/dna-messenger/android/ 2>/dev/null || echo "No Android artifacts"
 ls -la /artifacts/dna-messenger/linux/ 2>/dev/null || echo "No Linux artifacts"
 ls -la /artifacts/dna-messenger/windows/ 2>/dev/null || echo "No Windows artifacts"
+
+# Cleanup artifacts older than 7 days (keep latest.json)
+echo "=== Cleaning up artifacts older than 7 days ==="
+find /artifacts/dna-messenger/android -type f -mtime +7 -delete 2>/dev/null || true
+find /artifacts/dna-messenger/linux -type f -mtime +7 -delete 2>/dev/null || true
+find /artifacts/dna-messenger/windows -type f -mtime +7 -delete 2>/dev/null || true
+echo "Cleanup complete"
