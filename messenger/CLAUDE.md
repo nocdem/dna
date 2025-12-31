@@ -2,7 +2,7 @@
 
 **Last Updated:** 2025-12-31 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
 
-**Versions:** Library v0.3.38 | Flutter v0.99.12 | Nodus v0.4.3
+**Versions:** Library v0.3.39 | Flutter v0.99.12 | Nodus v0.4.3
 
 ---
 
@@ -268,7 +268,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.3.38 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
+| C Library | `include/dna/version.h` | v0.3.39 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
 | Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.12+9912 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 | Nodus server changes (vendor/opendht-pq/tools/) |
 
@@ -295,7 +295,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 2. **BUMP** only the affected version file(s) - do NOT bump unrelated versions
 3. **UPDATE** the "Current" column in this section
 4. **UPDATE** the version in CLAUDE.md header line
-5. **COMMIT** with version in commit message (e.g., "fix: Something (v0.3.38)")
+5. **COMMIT** with version in commit message (e.g., "fix: Something (v0.3.39)")
 6. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
 
 **IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.

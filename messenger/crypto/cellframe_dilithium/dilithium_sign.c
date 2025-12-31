@@ -81,13 +81,13 @@ void challenge(poly *c, const unsigned char mu[CRHBYTES], const polyveck *w1, di
 void dilithium_private_key_delete(void *private_key)
 {
     dap_return_if_pass(!private_key);
-    DAP_DEL_MULTY(((dilithium_private_key_t *)private_key)->data, private_key);
+    DAP_DEL_Z(((dilithium_private_key_t *)private_key)->data);  /* Only free internal data, not struct */
 }
 
 void dilithium_public_key_delete(void *public_key)
 {
     dap_return_if_pass(!public_key);
-    DAP_DEL_MULTY(((dilithium_public_key_t *)public_key)->data, public_key);
+    DAP_DEL_Z(((dilithium_public_key_t *)public_key)->data);  /* Only free internal data, not struct */
 }
 
 void dilithium_private_and_public_keys_delete(void *a_skey, void *a_pkey)
