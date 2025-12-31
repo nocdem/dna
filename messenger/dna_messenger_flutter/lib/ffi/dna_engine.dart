@@ -933,11 +933,7 @@ class DnaEngine {
   }
 
   void _onEventReceived(Pointer<dna_event_t> eventPtr, Pointer<Void> userData) {
-    // Always free the event at the end, even if disposed
-    if (_isDisposed) {
-      _bindings.dna_free_event(eventPtr);
-      return;
-    }
+    if (_isDisposed) return;
 
     final event = eventPtr.ref;
     final type = event.type;
@@ -1012,13 +1008,10 @@ class DnaEngine {
         // TODO: Parse contact request from union data
         break;
       case DnaEventType.DNA_EVENT_OUTBOX_UPDATED:
-        // Parse contact fingerprint from union data
-        // NOTE: On 64-bit, C union is 8-byte aligned, but Dart data array starts at
-        // offset 4 (after the 4-byte type). So union data is at Dart offset 4.
-        print('[FLUTTER-EVENT] DNA_EVENT_OUTBOX_UPDATED received from C (ptr=${eventPtr.address.toRadixString(16)})');
-        const unionOffset = 4; // Padding between type and union in C on 64-bit
+        // Parse contact fingerprint from union data (at offset 0, 129 bytes)
+        print('[FLUTTER-EVENT] DNA_EVENT_OUTBOX_UPDATED received from C');
         final fpBytes = <int>[];
-        for (var i = unionOffset; i < unionOffset + 128; i++) {
+        for (var i = 0; i < 128; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           fpBytes.add(byte);
@@ -1041,16 +1034,6 @@ class DnaEngine {
     } else {
       print('[FLUTTER-EVENT] Event type $type not handled, dartEvent is null');
     }
-
-    // Free the heap-allocated event (events are heap-allocated in C to ensure
-    // they remain valid when Dart's NativeCallable.listener processes them
-    // asynchronously on the event loop)
-    //
-    // TEMPORARILY DISABLED to debug double-free crash
-    // print('[FLUTTER-EVENT] Calling dna_free_event(ptr=${eventPtr.address.toRadixString(16)})');
-    // _bindings.dna_free_event(eventPtr);
-    // print('[FLUTTER-EVENT] dna_free_event returned');
-    print('[FLUTTER-EVENT] DEBUG: Skipping dna_free_event to test if crash persists');
   }
 
   /// Get current identity fingerprint

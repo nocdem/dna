@@ -583,12 +583,8 @@ typedef struct {
 
 /**
  * Event callback (called from engine thread, must be thread-safe)
- *
- * IMPORTANT: The event pointer is heap-allocated and MUST be freed by calling
- * dna_free_event() after processing. This is necessary because NativeCallable
- * in Dart processes callbacks asynchronously.
  */
-typedef void (*dna_event_cb)(dna_event_t *event, void *user_data);
+typedef void (*dna_event_cb)(const dna_event_t *event, void *user_data);
 
 /**
  * Free a heap-allocated event after processing
