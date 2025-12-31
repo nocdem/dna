@@ -10,7 +10,7 @@ set(CELLFRAME_DILITHIUM_SOURCES
     dilithium_rounding_reduce.c
     dilithium_sign.c
     cellframe_dilithium_api.c
-    dap_compat.c
+    dna_compat.c
 )
 
 add_library(cellframe_dilithium STATIC ${CELLFRAME_DILITHIUM_SOURCES})

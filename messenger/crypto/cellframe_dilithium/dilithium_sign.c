@@ -4,7 +4,7 @@
 //#include "KeccakHash.h"
 #include "fips202.h"
 
-#define LOG_TAG "dap_crypto_sign_dilithium"
+#define LOG_TAG "DNA_DILITHIUM"
 
 /********************************************************************************************/
 void expand_mat(polyvecl mat[], const unsigned char rho[SEEDBYTES], dilithium_param_t *p)
@@ -80,14 +80,14 @@ void challenge(poly *c, const unsigned char mu[CRHBYTES], const polyveck *w1, di
 /********************************************************************************************/
 void dilithium_private_key_delete(void *private_key)
 {
-    dap_return_if_pass(!private_key);
-    DAP_DEL_Z(((dilithium_private_key_t *)private_key)->data);  /* Only free internal data, not struct */
+    DNA_RETURN_IF_NULL(private_key);
+    DNA_DEL_Z(((dilithium_private_key_t *)private_key)->data);
 }
 
 void dilithium_public_key_delete(void *public_key)
 {
-    dap_return_if_pass(!public_key);
-    DAP_DEL_Z(((dilithium_public_key_t *)public_key)->data);  /* Only free internal data, not struct */
+    DNA_RETURN_IF_NULL(public_key);
+    DNA_DEL_Z(((dilithium_public_key_t *)public_key)->data);
 }
 
 void dilithium_private_and_public_keys_delete(void *a_skey, void *a_pkey)
@@ -201,7 +201,7 @@ int dilithium_crypto_sign_keypair(dilithium_public_key_t *public_key, dilithium_
 /*************************************************/
 int dilithium_crypto_sign( dilithium_signature_t *sig, const unsigned char *m, unsigned long long mlen, const dilithium_private_key_t *private_key)
 {
-    dilithium_param_t *p = DAP_NEW_Z(dilithium_param_t);
+    dilithium_param_t *p = DNA_NEW_Z(dilithium_param_t);
     if (!p) {
         return -1;
     }
@@ -227,7 +227,7 @@ int dilithium_crypto_sign( dilithium_signature_t *sig, const unsigned char *m, u
     dilithium_unpack_sk(rho, key, tr, &s1, &s2, &t0, private_key->data, p);
 
     sig->sig_len = mlen + p->CRYPTO_BYTES;
-    sig->sig_data = DAP_NEW_Z_SIZE(unsigned char, sig->sig_len);
+    sig->sig_data = DNA_NEW_Z_SIZE(unsigned char, sig->sig_len);
 
     memcpy(sig->sig_data + p->CRYPTO_BYTES, m, mlen);
     memcpy(sig->sig_data + p->CRYPTO_BYTES - CRHBYTES, tr, CRHBYTES);
@@ -313,7 +313,7 @@ int dilithium_crypto_sign( dilithium_signature_t *sig, const unsigned char *m, u
 
     return 0;
 }
-#include "dap_hash.h"
+#include "dna_hash.h"
 /*************************************************/
 int dilithium_crypto_sign_open( unsigned char *m, unsigned long long mlen, dilithium_signature_t *sig, const dilithium_public_key_t * public_key)
 {
@@ -404,6 +404,6 @@ int dilithium_crypto_sign_open( unsigned char *m, unsigned long long mlen, dilit
 
 /*************************************************/
 void dilithium_signature_delete(void *sig){
-    dap_return_if_pass(!sig);
-    DAP_DEL_Z(((dilithium_signature_t *)sig)->sig_data);
+    DNA_RETURN_IF_NULL(sig);
+    DNA_DEL_Z(((dilithium_signature_t *)sig)->sig_data);
 }

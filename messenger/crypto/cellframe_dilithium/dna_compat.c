@@ -1,4 +1,4 @@
-#include "dap_crypto_common.h"
+#include "dna_crypto_common.h"
 #include <openssl/evp.h>
 
 // SHA3-256 implementation using OpenSSL

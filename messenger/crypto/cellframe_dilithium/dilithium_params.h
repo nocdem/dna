@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
-#include "dap_crypto_common.h"
+#include "dna_crypto_common.h"
 
 #define SEEDBYTES		32U
 #define CRHBYTES		48U
