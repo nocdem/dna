@@ -268,7 +268,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library + CLI | `include/dna/version.h` | v0.3.28 | C code changes (src/, dht/, messenger/, p2p/, crypto/) |
+| C Library + CLI | `include/dna/version.h` | v0.3.37 | C code changes (src/, dht/, messenger/, p2p/, crypto/) |
 | Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.11+9911 | Flutter/Dart code changes only |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 | Nodus server changes |
 

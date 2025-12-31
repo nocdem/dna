@@ -89,6 +89,7 @@ int p2p_check_offline_messages(
     contact_list_t *contacts = NULL;
     if (contacts_db_list(&contacts) != 0 || !contacts || contacts->count == 0) {
         QGP_LOG_DEBUG(LOG_TAG, "No contacts in database\n");
+        if (contacts) contacts_db_free_list(contacts);
         if (messages_received) *messages_received = 0;
         return 0;
     }

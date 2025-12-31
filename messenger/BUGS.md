@@ -7,11 +7,14 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 ---
 
 ## Open Bugs
-- [ ] AddressSanitizer: ~4KB memory leak in Dilithium key cleanup during identity creation - `dap_return_if_pass` macro inverted in `dap_crypto_common.h`, delete functions return early without freeing. Debug build only. (P4)
-- [ ] AddressSanitizer: 16 byte leak in `contacts_db_list()` - debug build only (P4)
+
+(none)
 
 
 ## Fixed Bugs
+
+- [x] AddressSanitizer: ~4KB memory leak in Dilithium key cleanup - `dap_return_if_pass` macro was inverted, fixed in `dap_crypto_common.h` (v0.3.37)
+- [x] AddressSanitizer: 16 byte leak in `contacts_db_list()` - missing free in `transport_offline.c` when count == 0 (v0.3.37)
 
 - [x] Show QR Code button in chat doesn't show anything - implemented QR dialog with contact fingerprint (v0.3.34)
 - [x] Contact requests show fingerprint instead of username - _RequestTile now uses cached profile displayName fallback (v0.3.32)
