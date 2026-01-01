@@ -19,9 +19,12 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra)
     # Suppress some noisy warnings that are not useful
     add_compile_options(-Wno-unused-parameter)       # Many callback functions have unused params
+    add_compile_options(-Wno-unused-function)        # Many "ready for future" helper functions
+endif()
+# GCC-specific warnings (not supported by Clang)
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     add_compile_options(-Wno-stringop-truncation)    # strncpy used correctly with sized buffers
     add_compile_options(-Wno-format-truncation)      # snprintf used correctly with sized buffers
-    add_compile_options(-Wno-unused-function)        # Many "ready for future" helper functions
 endif()
 
 # =============================================================================

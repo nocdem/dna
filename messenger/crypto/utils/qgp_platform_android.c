@@ -360,6 +360,18 @@ void qgp_secure_memzero(void *ptr, size_t len) {
 }
 
 /* ============================================================================
+ * Timing / Delay Operations (Android Implementation)
+ * ============================================================================ */
+
+void qgp_platform_sleep(unsigned int seconds) {
+    sleep(seconds);
+}
+
+void qgp_platform_sleep_ms(unsigned int milliseconds) {
+    usleep(milliseconds * 1000);
+}
+
+/* ============================================================================
  * Network State (Android Implementation)
  * Actual network state should be queried from Java and pushed via callback
  * ============================================================================ */
