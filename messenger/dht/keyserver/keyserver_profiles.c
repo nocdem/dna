@@ -241,10 +241,10 @@ int dna_load_identity(
     }
 
     QGP_LOG_INFO(LOG_TAG, "✓ Profile loaded and verified (timestamp=%lu, version=%u)\n",
-           identity->timestamp, identity->version);
+           (unsigned long)identity->timestamp, identity->version);
     if (identity->has_registered_name) {
         QGP_LOG_INFO(LOG_TAG, "Name: %s (expires: %lu)\n",
-               identity->registered_name, identity->name_expires_at);
+               identity->registered_name, (unsigned long)identity->name_expires_at);
     }
 
     *identity_out = identity;

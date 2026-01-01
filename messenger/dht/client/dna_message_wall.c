@@ -769,7 +769,7 @@ int dna_wall_make_post_id(const char *fingerprint, uint64_t timestamp, char *pos
         return -1;
     }
 
-    snprintf(post_id_out, 160, "%s_%lu", fingerprint, timestamp);
+    snprintf(post_id_out, 160, "%s_%lu", fingerprint, (unsigned long)timestamp);
     return 0;
 }
 

@@ -443,7 +443,7 @@ int dht_contactlist_fetch(
     // Check expiry
     uint64_t now = (uint64_t)time(NULL);
     if (expiry < now) {
-        QGP_LOG_INFO(LOG_TAG, "Contact list expired (expiry=%lu, now=%lu)\n", expiry, now);
+        QGP_LOG_INFO(LOG_TAG, "Contact list expired (expiry=%lu, now=%lu)\n", (unsigned long)expiry, (unsigned long)now);
         free(blob);
         return -2;  // Expired
     }
@@ -478,7 +478,7 @@ int dht_contactlist_fetch(
     // Note: signature at (blob + offset) is validated during decryption
 
     QGP_LOG_INFO(LOG_TAG, "Parsed header: timestamp=%lu, expiry=%lu, encrypted_len=%u, sig_len=%u\n",
-           timestamp, expiry, encrypted_len, sig_len);
+           (unsigned long)timestamp, (unsigned long)expiry, encrypted_len, sig_len);
 
     // Step 4: Decrypt JSON
     dna_context_t *dna_ctx = dna_context_new();
