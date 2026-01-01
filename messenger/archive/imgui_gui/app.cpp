@@ -6,7 +6,6 @@
 #include "theme_colors.h"
 #include "settings_manager.h"
 #include <GLFW/glfw3.h>
-#include "helpers/identity_helpers.h"
 #include "screens/register_name_screen.h"
 #include "screens/message_wall_screen.h"
 #include "screens/profile_editor_screen.h"
@@ -53,13 +52,13 @@ extern "C" {
     #include "../crypto/utils/qgp_platform.h"  // For qgp_platform_home_dir
     #include "../database/contacts_db.h"  // For contacts_db_add, contacts_db_exists
     #include "../database/profile_manager.h"  // For profile caching and fetching
-    #include "../blockchain/wallet.h"  // For wallet functions
-    #include "../blockchain/blockchain_rpc.h"  // For RPC calls
-    #include "../blockchain/blockchain_tx_builder_minimal.h"  // Transaction builder
-    #include "../blockchain/blockchain_sign_minimal.h"  // Transaction signing
-    #include "../blockchain/blockchain_addr.h"  // Address utilities
-    #include "../blockchain/blockchain_json_minimal.h"  // JSON conversion
-    #include "../blockchain/blockchain_minimal.h"  // TSD types
+    #include "../blockchain/cellframe/cellframe_wallet.h"  // For wallet functions
+    #include "../blockchain/cellframe/cellframe_rpc.h"  // For RPC calls
+    #include "../blockchain/cellframe/cellframe_tx_builder.h"  // Transaction builder
+    #include "../blockchain/cellframe/cellframe_sign.h"  // Transaction signing
+    #include "../blockchain/cellframe/cellframe_addr.h"  // Address utilities
+    #include "../blockchain/cellframe/cellframe_json.h"  // JSON conversion
+    #include "../blockchain/cellframe/cellframe_minimal.h"  // TSD types
     #include "../crypto/utils/base58.h"  // Base58 encoding
     #include <time.h>
 }
@@ -182,7 +181,7 @@ void DNAMessengerApp::render() {
 
 
 void DNAMessengerApp::handlePostLoginEvents() {
-    // Model E: No continuous polling - offline messages checked once on login
+    // Spillway: No continuous polling - offline messages checked once on login
     if (state.identity_loaded) {
         // Reload current conversation if new messages arrived
         if (state.new_messages_received && state.selected_contact >= 0) {
@@ -234,7 +233,8 @@ void DNAMessengerApp::processPendingRegistration() {
                         state.pending_registration_name.c_str(),
                         sign_key->public_key,
                         enc_key->public_key,
-                        sign_key->private_key
+                        sign_key->private_key,
+                        nullptr  // wallet_address - loaded separately
                     );
 
                     qgp_key_free(sign_key);
@@ -348,20 +348,4 @@ void DNAMessengerApp::renderDialogs() {
 
     // Register DNA Name dialog
     RegisterNameScreen::render(state);
-}
-
-
-
-// Static method: Input filter callback for identity name
-int DNAMessengerApp::IdentityNameInputFilter(ImGuiInputTextCallbackData* data) {
-    if (data->EventChar < 256) {
-        char c = (char)data->EventChar;
-        if ((c >= 'a' && c <= 'z') ||
-            (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') ||
-            c == '_') {
-            return 0; // Accept
-        }
-    }
-    return 1; // Reject
 }

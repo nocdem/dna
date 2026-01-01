@@ -35,10 +35,6 @@ static uint64_t htonll(uint64_t value) {
     return value;  // Big endian
 }
 
-static uint64_t ntohll(uint64_t value) {
-    return htonll(value);  // Same operation
-}
-
 /**
  * Generate base key for votes (chunked layer handles hashing)
  */

@@ -6,8 +6,8 @@
 #include "../font_awesome.h"
 #include "../helpers/file_browser.h"
 #include "wallet_transaction_history_dialog.h"
-#include "../../blockchain/wallet.h"
-#include "../../blockchain/blockchain_rpc.h"
+#include "../../blockchain/cellframe/cellframe_wallet.h"
+#include "../../blockchain/cellframe/cellframe_rpc.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -84,70 +84,33 @@ void loadWallet(AppState& state) {
     state.wallet_loading = true;
     state.wallet_error.clear();
 
-    wallet_list_t *cellframe_wallets = nullptr;
-    wallet_list_t *dna_wallets = nullptr;
-    
-    // Load from cellframe node directory
-    int ret1 = wallet_list_cellframe(&cellframe_wallets);
-    
-    // Load from DNA directory
-    int ret2 = wallet_list_from_dna_dir(&dna_wallets);
-    
-    // Count total wallets
-    size_t total_count = 0;
-    if (ret1 == 0 && cellframe_wallets) total_count += cellframe_wallets->count;
-    if (ret2 == 0 && dna_wallets) total_count += dna_wallets->count;
-    
-    if (total_count == 0) {
-        state.wallet_error = "No wallets found. Create one with cellframe-node-cli or browse for existing wallet files.";
+    // Load wallet for current identity only
+    if (state.current_identity.empty()) {
+        state.wallet_error = "No identity selected.";
         state.wallet_loaded = false;
         state.wallet_loading = false;
-        if (cellframe_wallets) wallet_list_free(cellframe_wallets);
-        if (dna_wallets) wallet_list_free(dna_wallets);
         return;
     }
-    
-    // Merge wallet lists
-    wallet_list_t *merged = (wallet_list_t*)malloc(sizeof(wallet_list_t));
-    merged->count = total_count;
-    merged->wallets = (cellframe_wallet_t*)malloc(sizeof(cellframe_wallet_t) * total_count);
-    
-    size_t index = 0;
-    
-    // Copy cellframe wallets
-    if (ret1 == 0 && cellframe_wallets) {
-        for (size_t i = 0; i < cellframe_wallets->count; i++) {
-            merged->wallets[index++] = cellframe_wallets->wallets[i];
-        }
-        printf("[Wallet] Loaded %zu wallet(s) from cellframe-node\n", cellframe_wallets->count);
-    }
-    
-    // Copy DNA wallets
-    if (ret2 == 0 && dna_wallets) {
-        for (size_t i = 0; i < dna_wallets->count; i++) {
-            merged->wallets[index++] = dna_wallets->wallets[i];
-        }
-        printf("[Wallet] Loaded %zu wallet(s) from DNA directory\n", dna_wallets->count);
-    }
-    
-    // Free original lists (but not the wallet data which we copied)
-    if (cellframe_wallets) {
-        free(cellframe_wallets->wallets);
-        free(cellframe_wallets);
-    }
-    if (dna_wallets) {
-        free(dna_wallets->wallets);
-        free(dna_wallets);
+
+    wallet_list_t *identity_wallets = nullptr;
+    int ret = wallet_list_for_identity(state.current_identity.c_str(), &identity_wallets);
+
+    if (ret != 0 || !identity_wallets || identity_wallets->count == 0) {
+        state.wallet_error = "No wallet found for this identity.";
+        state.wallet_loaded = false;
+        state.wallet_loading = false;
+        if (identity_wallets) wallet_list_free(identity_wallets);
+        return;
     }
 
-    // Store merged wallet list
-    state.wallet_list = merged;
+    // Store wallet list (should be single wallet per identity)
+    state.wallet_list = identity_wallets;
     state.current_wallet_index = 0;
-    state.wallet_name = std::string(merged->wallets[0].name);
+    state.wallet_name = std::string(identity_wallets->wallets[0].name);
     state.wallet_loaded = true;
     state.wallet_loading = false;
 
-    printf("[Wallet] Total: %zu wallet(s) loaded\n", total_count);
+    printf("[Wallet] Loaded wallet for identity: %s\n", state.current_identity.substr(0, 16).c_str());
 }
 
 void preloadAllBalances(AppState& state) {
@@ -444,53 +407,7 @@ void render(AppState& state) {
         return;
     }
 
-    // Header with wallet selector
-    wallet_list_t *wallets = (wallet_list_t*)state.wallet_list;
-    if (wallets && wallets->count > 1) {
-        // Show collapsing header with tree nodes for multiple wallets
-        if (ImGui::CollapsingHeader("Wallets", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Spacing();  // Top padding
-            
-            // Add padding to selectable items
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 8.0f));
-            
-            for (int i = 0; i < wallets->count; i++) {
-                bool is_selected = (state.current_wallet_index == i);
-                
-                // Add indentation (increased from 10.0f to 20.0f)
-                ImGui::Indent(20.0f);
-                
-                // Use Selectable instead of TreeNode for better clickability
-                if (ImGui::Selectable(wallets->wallets[i].name, is_selected, 0, ImVec2(0, 0))) {
-                    state.current_wallet_index = i;
-                    state.wallet_name = std::string(wallets->wallets[i].name);
-                    
-                    // Use cached balances (should always be available from preload)
-                    if (state.all_wallet_balances.count(i)) {
-                        state.token_balances = state.all_wallet_balances[i];
-                        printf("[Wallet] Switched to wallet %d (using cached balances)\n", i);
-                    }
-                    
-                    static double last_refresh_time = 0.0;
-                    last_refresh_time = ImGui::GetTime();  // Reset timer on manual wallet change
-                }
-                
-                ImGui::Unindent(20.0f);
-                
-                // Add small spacing between wallets
-                ImGui::Spacing();
-            }
-            
-            ImGui::PopStyleVar();  // Pop FramePadding
-            ImGui::Spacing();  // Bottom padding
-        }
-    } else {
-        // Single wallet, just show name
-        ImGui::Text(ICON_FA_WALLET " %s", state.wallet_name.c_str());
-    }
-    
-    ImGui::Spacing();
-    ImGui::Separator();
+    // Single wallet per identity - no selector needed
     ImGui::Spacing();
 
     // Token balance display (borderless table)

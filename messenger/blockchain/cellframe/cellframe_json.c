@@ -438,7 +438,6 @@ int cellframe_tx_to_json(const uint8_t *tx_data, size_t tx_size, char **json_out
     // Parse header
     cellframe_tx_header_t *header = (cellframe_tx_header_t*)tx_data;
     uint64_t timestamp = header->ts_created;
-    uint32_t items_size = header->tx_items_size;
 
     // Calculate datum_hash (SHA3-256 of entire transaction)
     uint8_t datum_hash_raw[32];

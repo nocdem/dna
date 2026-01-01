@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(dna C CXX)  # C for core library, C++ for ImGui GUI
+project(dna C CXX)  # C for core library, C++ for DHT components
 
 # =============================================================================
 # Build Options
@@ -10,6 +10,18 @@ option(BUILD_DNA_SEND "Build dna-send CLI tool" OFF)
 # Enable Position Independent Code for shared library builds
 if(BUILD_SHARED_LIB)
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
+# =============================================================================
+# Compiler Warnings
+# =============================================================================
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-Wall -Wextra)
+    # Suppress some noisy warnings that are not useful
+    add_compile_options(-Wno-unused-parameter)       # Many callback functions have unused params
+    add_compile_options(-Wno-stringop-truncation)    # strncpy used correctly with sized buffers
+    add_compile_options(-Wno-format-truncation)      # snprintf used correctly with sized buffers
+    add_compile_options(-Wno-unused-function)        # Many "ready for future" helper functions
 endif()
 
 # =============================================================================

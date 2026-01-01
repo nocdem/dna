@@ -85,7 +85,7 @@ extern "C" {
 #include "../dna_api.h"
 #include "../messenger_p2p.h"
 #include "../messenger.h"
-#include "../blockchain/wallet.h"
+#include "../blockchain/cellframe/cellframe_wallet.h"
 #include "../crypto/bip39/bip39.h"
 #include "../dht/client/dna_message_wall.h"
 #include "../dht/client/dna_profile.h"

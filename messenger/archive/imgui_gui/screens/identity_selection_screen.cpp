@@ -600,16 +600,17 @@ void renderCreateIdentityStep2(AppState& state) {
 void createIdentityWithSeed(AppState& state, const char* mnemonic) {
     printf("[Identity] Creating identity (fingerprint-only, no name registration)\n");
 
-    // Derive cryptographic seeds from BIP39 mnemonic
+    // Derive cryptographic seeds AND master seed from BIP39 mnemonic
     uint8_t signing_seed[32];
     uint8_t encryption_seed[32];
+    uint8_t master_seed[64];  // For multi-chain wallet derivation (ETH, BTC, etc.)
 
-    if (qgp_derive_seeds_from_mnemonic(mnemonic, "", signing_seed, encryption_seed, NULL) != 0) {
+    if (qgp_derive_seeds_with_master(mnemonic, "", signing_seed, encryption_seed, master_seed) != 0) {
         printf("[Identity] ERROR: Failed to derive seeds from mnemonic\n");
         return;
     }
 
-    printf("[Identity] Derived seeds from mnemonic\n");
+    printf("[Identity] Derived seeds from mnemonic (including master seed for multi-chain wallets)\n");
 
     // Ensure ~/.dna directory exists
     const char* home = qgp_platform_home_dir();
@@ -630,13 +631,16 @@ void createIdentityWithSeed(AppState& state, const char* mnemonic) {
     mkdir(dna_dir.c_str(), 0700);
 #endif
 
-    // Generate keys from seeds (returns fingerprint)
+    // Generate keys from seeds (returns fingerprint) - also creates blockchain wallets (CF + ETH + SOL)
+    // Pass NULL for name to use fingerprint as directory name (ImGui doesn't require name-first flow)
+    // Cellframe wallet uses SHA3-256(mnemonic) to match official Cellframe wallet app
     char fingerprint[129];
-    int result = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, NULL, dna_dir.c_str(), fingerprint);
+    int result = messenger_generate_keys_from_seeds(nullptr, signing_seed, encryption_seed, master_seed, mnemonic, dna_dir.c_str(), fingerprint);
 
     // Securely wipe seeds from memory
     memset(signing_seed, 0, sizeof(signing_seed));
     memset(encryption_seed, 0, sizeof(encryption_seed));
+    memset(master_seed, 0, sizeof(master_seed));
 
     if (result != 0) {
         printf("[Identity] ERROR: Failed to generate keys\n");
@@ -846,17 +850,18 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
 
     printf("[Identity] Seed phrase validated\n");
 
-    // Derive seeds from mnemonic (no passphrase)
+    // Derive seeds AND master seed from mnemonic (no passphrase)
     uint8_t signing_seed[32];
     uint8_t encryption_seed[32];
+    uint8_t master_seed[64];  // For multi-chain wallet derivation (ETH, BTC, etc.)
 
-    if (qgp_derive_seeds_from_mnemonic(normalized.c_str(), "", signing_seed, encryption_seed, NULL) != 0) {
+    if (qgp_derive_seeds_with_master(normalized.c_str(), "", signing_seed, encryption_seed, master_seed) != 0) {
         printf("[Identity] ERROR: Failed to derive seeds from mnemonic\n");
         state.restore_error_message = "Failed to derive seeds from mnemonic. Please try again.";
         return;
     }
 
-    printf("[Identity] Derived seeds from mnemonic\n");
+    printf("[Identity] Derived seeds from mnemonic (including master seed for multi-chain wallets)\n");
     printf("[Identity] Generating keys from seeds...\n");
 
     // Get data directory (~/.dna)
@@ -872,13 +877,16 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
     std::string dna_dir = std::string(home) + "/.dna";
 #endif
 
-    // Generate keys from seeds (fingerprint-first, no name required)
+    // Generate keys from seeds (fingerprint-first, no name required) - also creates blockchain wallets (CF + ETH + SOL)
+    // Pass NULL for name to use fingerprint as directory name
+    // Cellframe wallet uses SHA3-256(mnemonic) to match official Cellframe wallet app
     char fingerprint[129];
-    int result = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, NULL, dna_dir.c_str(), fingerprint);
+    int result = messenger_generate_keys_from_seeds(nullptr, signing_seed, encryption_seed, master_seed, normalized.c_str(), dna_dir.c_str(), fingerprint);
 
     // Securely wipe seeds from memory
     memset(signing_seed, 0, sizeof(signing_seed));
     memset(encryption_seed, 0, sizeof(encryption_seed));
+    memset(master_seed, 0, sizeof(master_seed));
 
     if (result != 0) {
         printf("[Identity] ERROR: Failed to generate keys from seeds\n");
@@ -887,7 +895,7 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
 
     printf("[OK] Identity restored successfully!\n");
     printf("[OK] Fingerprint: %s\n", fingerprint);
-    printf("[OK] Keys saved to: ~/.dna/%s.dsa and ~/.dna/%s.kem\n", fingerprint, fingerprint);
+    printf("[OK] Keys saved to: ~/.dna/%s/keys/%s.dsa and ~/.dna/%s/keys/%s.kem\n", fingerprint, fingerprint, fingerprint, fingerprint);
 
     // Try to fetch registered name via DHT reverse lookup
     dht_context_t *dht_ctx = dht_singleton_get();

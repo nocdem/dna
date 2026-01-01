@@ -418,12 +418,10 @@ int dht_profile_fetch(
         return -1;
     }
 
-    // Read signature
-    uint8_t *signature = ptr;
-
     // Note: We can't verify signature without public key
     // Signature verification should be done by caller if needed
     // For now, we trust DHT (signed puts provide some authenticity)
+    // signature starts at ptr, length is sig_len (unused for now)
 
     QGP_LOG_INFO(LOG_TAG, "Signature present (%lu bytes), skipping verification\n",
            (unsigned long)sig_len);

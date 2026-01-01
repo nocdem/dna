@@ -75,23 +75,6 @@ static void hash_to_hex(const uint8_t *hash, size_t len, char *hex_out) {
     hex_out[len * 2] = '\0';
 }
 
-/**
- * @brief Helper: Convert hex string to binary bytes
- */
-static size_t hex_to_bytes(const char *hex, uint8_t *bytes_out, size_t max_len) {
-    size_t hex_len = strlen(hex);
-    size_t byte_len = hex_len / 2;
-
-    if (byte_len > max_len) {
-        byte_len = max_len;
-    }
-
-    for (size_t i = 0; i < byte_len; i++) {
-        sscanf(hex + (i * 2), "%2hhx", &bytes_out[i]);
-    }
-
-    return byte_len;
-}
 
 /**
  * @brief Helper: Get file size

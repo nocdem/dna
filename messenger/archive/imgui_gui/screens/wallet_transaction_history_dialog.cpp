@@ -5,8 +5,8 @@
 #include "../theme_colors.h"
 #include "../settings_manager.h"
 #include "../font_awesome.h"
-#include "../../blockchain/wallet.h"
-#include "../../blockchain/blockchain_rpc.h"
+#include "../../blockchain/cellframe/cellframe_wallet.h"
+#include "../../blockchain/cellframe/cellframe_rpc.h"
 
 #include <ctime>
 #include <cstring>

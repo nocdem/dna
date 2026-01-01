@@ -94,7 +94,7 @@ extern "C" size_t dht_listen(
         {
             std::lock_guard<std::mutex> lock(listeners_mutex);
             if (active_listeners.size() >= DHT_MAX_LISTENERS) {
-                QGP_LOG_ERROR(LOG_TAG, "Maximum listeners reached (%zu)", DHT_MAX_LISTENERS);
+                QGP_LOG_ERROR(LOG_TAG, "Maximum listeners reached (%d)", DHT_MAX_LISTENERS);
                 return 0;
             }
         }
@@ -289,7 +289,7 @@ extern "C" size_t dht_listen_ex(
         {
             std::lock_guard<std::mutex> lock(listeners_mutex);
             if (active_listeners.size() >= DHT_MAX_LISTENERS) {
-                QGP_LOG_ERROR(LOG_TAG, "Maximum listeners reached (%zu)", DHT_MAX_LISTENERS);
+                QGP_LOG_ERROR(LOG_TAG, "Maximum listeners reached (%d)", DHT_MAX_LISTENERS);
                 return 0;
             }
         }

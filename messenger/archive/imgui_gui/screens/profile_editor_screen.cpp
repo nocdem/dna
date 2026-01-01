@@ -69,9 +69,6 @@ void loadProfile(AppState& state, bool force_reload) {
 
         // Load wallet addresses
         if (profile->wallets.backbone[0] != '\0') strncpy(state.profile_backbone, profile->wallets.backbone, sizeof(state.profile_backbone) - 1);
-        if (profile->wallets.kelvpn[0] != '\0') strncpy(state.profile_kelvpn, profile->wallets.kelvpn, sizeof(state.profile_kelvpn) - 1);
-        if (profile->wallets.subzero[0] != '\0') strncpy(state.profile_subzero, profile->wallets.subzero, sizeof(state.profile_subzero) - 1);
-        if (profile->wallets.cpunk_testnet[0] != '\0') strncpy(state.profile_testnet, profile->wallets.cpunk_testnet, sizeof(state.profile_testnet) - 1);
         if (profile->wallets.btc[0] != '\0') strncpy(state.profile_btc, profile->wallets.btc, sizeof(state.profile_btc) - 1);
         if (profile->wallets.eth[0] != '\0') strncpy(state.profile_eth, profile->wallets.eth, sizeof(state.profile_eth) - 1);
         if (profile->wallets.sol[0] != '\0') strncpy(state.profile_sol, profile->wallets.sol, sizeof(state.profile_sol) - 1);
@@ -144,9 +141,6 @@ void saveProfile(AppState& state) {
 
     // Wallet addresses
     if (state.profile_backbone[0]) strncpy(profile_data.wallets.backbone, state.profile_backbone, sizeof(profile_data.wallets.backbone) - 1);
-    if (state.profile_kelvpn[0]) strncpy(profile_data.wallets.kelvpn, state.profile_kelvpn, sizeof(profile_data.wallets.kelvpn) - 1);
-    if (state.profile_subzero[0]) strncpy(profile_data.wallets.subzero, state.profile_subzero, sizeof(profile_data.wallets.subzero) - 1);
-    if (state.profile_testnet[0]) strncpy(profile_data.wallets.cpunk_testnet, state.profile_testnet, sizeof(profile_data.wallets.cpunk_testnet) - 1);
     if (state.profile_btc[0]) strncpy(profile_data.wallets.btc, state.profile_btc, sizeof(profile_data.wallets.btc) - 1);
     if (state.profile_eth[0]) strncpy(profile_data.wallets.eth, state.profile_eth, sizeof(profile_data.wallets.eth) - 1);
     if (state.profile_sol[0]) strncpy(profile_data.wallets.sol, state.profile_sol, sizeof(profile_data.wallets.sol) - 1);
@@ -190,7 +184,7 @@ void saveProfile(AppState& state) {
     // Load private key for signing
     const char *home = qgp_platform_home_dir();
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home, ctx->identity);
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s/keys/%s.dsa", home, ctx->identity, ctx->identity);
 
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {
@@ -200,7 +194,7 @@ void saveProfile(AppState& state) {
 
     // Also load encryption key for kyber public key
     char enc_key_path[512];
-    snprintf(enc_key_path, sizeof(enc_key_path), "%s/.dna/%s.kem", home, ctx->identity);
+    snprintf(enc_key_path, sizeof(enc_key_path), "%s/.dna/%s/keys/%s.kem", home, ctx->identity, ctx->identity);
     qgp_key_t *enc_key = NULL;
     if (qgp_key_load(enc_key_path, &enc_key) != 0 || !enc_key) {
         state.profile_status = "Failed to load encryption key";

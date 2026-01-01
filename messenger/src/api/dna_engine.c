@@ -858,27 +858,6 @@ const char* dna_engine_get_fingerprint(dna_engine_t *engine) {
 }
 
 /* ============================================================================
- * IDENTITY SCAN HELPER
- * Scans <data_dir>/<name>/keys/ directories for identity key files
- * ============================================================================ */
-
-/* Helper to check if filename is a valid fingerprint.dsa */
-static bool is_valid_fingerprint_dsa(const char *filename) {
-    size_t len = strlen(filename);
-    if (len != 132 || strcmp(filename + 128, ".dsa") != 0) {
-        return false;
-    }
-    /* Check first 128 chars are hex */
-    for (int i = 0; i < 128; i++) {
-        char c = filename[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
-            return false;
-        }
-    }
-    return true;
-}
-
-/* ============================================================================
  * IDENTITY TASK HANDLERS
  * ============================================================================ */
 
@@ -2045,7 +2024,7 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                 }
 
                 /* Auto-approve reciprocal requests (they accepted our request) */
-                if (dht_requests[i].message &&
+                if (dht_requests[i].message[0] &&
                     strcmp(dht_requests[i].message, "Contact request accepted") == 0) {
                     QGP_LOG_INFO(LOG_TAG, "Auto-approving reciprocal request from %.20s...",
                                  dht_requests[i].sender_fingerprint);

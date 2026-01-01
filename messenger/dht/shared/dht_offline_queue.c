@@ -719,7 +719,7 @@ int dht_retrieve_queued_messages_from_contacts(
 
     // Iterate through all senders (contacts)
     for (size_t contact_idx = 0; contact_idx < sender_count; contact_idx++) {
-        struct timespec loop_start, dht_get_start, deserialize_start, loop_end;
+        struct timespec loop_start, dht_get_start, deserialize_start;
         clock_gettime(CLOCK_MONOTONIC, &loop_start);
 
         const char *sender = sender_list[contact_idx];

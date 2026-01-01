@@ -69,7 +69,6 @@ add_executable(dna-messenger
     helpers/data_loader.cpp
     helpers/avatar_helpers.cpp
     helpers/notification_manager.cpp
-    helpers/background_tasks.cpp
     helpers/file_browser.cpp
     helpers/engine_wrapper.cpp
     screens/register_name_screen.cpp

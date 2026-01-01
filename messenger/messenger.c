@@ -60,9 +60,6 @@
 #include "messenger/keygen.h"    // Phase: Modularization - Key generation
 #include "messenger/messages.h"  // Phase: Modularization - Message operations
 
-// Global configuration
-static dna_config_t g_config;
-
 // ============================================================================
 // INITIALIZATION
 // ============================================================================

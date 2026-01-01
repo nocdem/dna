@@ -9,11 +9,11 @@
 #include "../modal_helper.h"
 
 extern "C" {
-#include "../../blockchain/wallet.h"
-#include "../../blockchain/blockchain_rpc.h"
-#include "../../blockchain/blockchain_tx_builder_minimal.h"
-#include "../../blockchain/blockchain_sign_minimal.h"
-#include "../../blockchain/blockchain_json_minimal.h"
+#include "../../blockchain/cellframe/cellframe_wallet.h"
+#include "../../blockchain/cellframe/cellframe_rpc.h"
+#include "../../blockchain/cellframe/cellframe_tx_builder.h"
+#include "../../blockchain/cellframe/cellframe_sign.h"
+#include "../../blockchain/cellframe/cellframe_json.h"
 #include "../../crypto/utils/base58.h"
 #include <string.h>
 #include <time.h>
@@ -132,7 +132,8 @@ void buildAndSendTransaction(AppState& state) {
                                         sscanf(hash_str + 2 + (j * 2), "%2hhx", &all_utxos[valid_utxos].hash.raw[j]);
                                     }
                                     all_utxos[valid_utxos].idx = json_object_get_int(jidx);
-                                    cellframe_uint256_from_str(value_str, &all_utxos[valid_utxos].value);
+                                    // UTXO values from RPC are already in datoshi - use raw parser
+                                    cellframe_uint256_scan_uninteger(value_str, &all_utxos[valid_utxos].value);
                                     valid_utxos++;
                                 }
                             }

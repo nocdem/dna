@@ -4,13 +4,26 @@ This directory contains deprecated legacy code that is no longer actively mainta
 
 ## Contents
 
+### imgui_gui/
+**ImGui Desktop GUI (DEPRECATED)**
+- Status: Archived as of 2026-01-01
+- Replaced by: Flutter UI (`dna_messenger_flutter/`)
+- Reason: Flutter provides better cross-platform support, native mobile apps, and modern UI
+- **Do not use for new development**
+
 ### legacy-gui/
 **Qt5 GUI (DEPRECATED)**
 - Status: Archived as of 2025-11-21
-- Replaced by: ImGui GUI (`imgui_gui/`)
-- Reason: ImGui provides better cross-platform support, simpler codebase, and faster development
-- Last working version: v0.8.x
+- Replaced by: ImGui GUI (now also deprecated) → Flutter UI
+- Reason: ImGui provided better cross-platform support at the time
 - **Do not use for new development**
+
+### dht-tools/
+**DHT Debug Tools (ARCHIVED)**
+- Status: Archived as of 2026-01-01
+- Contains: quick_lookup.c, clear_outbox.c, query_outbox.c
+- Replaced by: `dna-messenger-cli` tool (lookup-profile command)
+- **For reference only - not built automatically**
 
 ### legacy-tools/
 **Legacy CLI Tools (REMOVED)**
@@ -28,30 +41,29 @@ These components were moved to `archive/` to:
 1. **Clean up root directory** - Reduce clutter and improve code organization
 2. **Signal deprecation** - Make it clear these are not maintained
 3. **Preserve history** - Keep code available for reference, but separate from active development
-4. **Focus development** - All new work goes into ImGui GUI
+4. **Focus development** - All new work goes into Flutter UI
 
 ## Migration Guide
 
-### For Qt5 GUI Users
-If you were using the old Qt5 GUI:
-1. Switch to ImGui GUI: `./build/imgui_gui/dna_messenger_imgui`
-2. All features are available in the new GUI
+### For ImGui GUI Users
+If you were using the ImGui GUI:
+1. Switch to Flutter UI: `dna_messenger_flutter/`
+2. All features are available in the new Flutter app
 3. Settings and data are preserved (same database format)
 
 ### For CLI Tool Users
-If you were using legacy CLI tools directly:
-1. Use the ImGui GUI instead (provides all functionality)
+If you need CLI functionality:
+1. Use `dna-messenger-cli` for testing and debugging
 2. Or use the DNA Messenger API (`dna_api.h`) for programmatic access
-3. CLI functionality is still available via internal functions in `dna_lib`
 
 ## Build System
 
-Legacy-tools has been removed from the build. Functions have been moved to appropriate modules:
-- Key restoration: `messenger/keygen.c`
-- Public key export: `crypto/utils/qgp_key.c`
-- File I/O: `crypto/utils/qgp_platform_*.c` (all platforms)
+Archived components are NOT included in the main build:
+- ImGui GUI: Standalone CMakeLists.txt (not linked from root)
+- Legacy-tools: Functions moved to appropriate modules
+- Legacy-gui: Qt5 dependencies no longer required
 
 ---
 
 **Last Updated:** 2026-01-01
-**Status:** legacy-tools REMOVED, legacy-gui archived
+**Status:** imgui_gui archived, dht-tools archived, legacy-tools REMOVED, legacy-gui archived

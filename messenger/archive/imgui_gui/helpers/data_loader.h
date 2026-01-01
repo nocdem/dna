@@ -19,9 +19,6 @@ namespace DataLoader {
     // Load messages for a specific contact from database (async)
     void loadMessagesForContact(AppState& state, int contact_index);
 
-    // Check DHT offline queue for new messages (async)
-    void checkForNewMessages(AppState& state);
-
     // Fetch registered DNA name for current identity (async)
     void fetchRegisteredName(AppState& state);
 }

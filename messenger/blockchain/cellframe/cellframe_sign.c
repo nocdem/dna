@@ -57,7 +57,6 @@ int cellframe_build_dap_sign_t(const uint8_t *pub_key, size_t pub_key_size,
 
     // Prepare serialized public key (1196 bytes)
     uint8_t *serialized_pubkey = NULL;
-    size_t serialized_pubkey_size = 1196;
 
     if (pub_key_size == 1196) {
         // Already serialized
@@ -80,7 +79,6 @@ int cellframe_build_dap_sign_t(const uint8_t *pub_key, size_t pub_key_size,
 
     // Prepare serialized signature (2096 bytes)
     uint8_t *serialized_sig = NULL;
-    size_t serialized_sig_size = 2096;
 
     if (sig_size == 2096) {
         // Already serialized
@@ -190,7 +188,6 @@ int cellframe_sign_transaction(const uint8_t *tx_data, size_t tx_size,
 
     // Step 2: Extract raw private key (skip serialization header if present)
     const uint8_t *raw_priv_key = priv_key;
-    size_t raw_priv_key_size = priv_key_size;
 
     if (priv_key_size >= 12) {
         // Check for serialization header [8-byte length][4-byte type]
@@ -200,7 +197,6 @@ int cellframe_sign_transaction(const uint8_t *tx_data, size_t tx_size,
         if (serialized_len == priv_key_size) {
             // Has serialization header, skip it
             raw_priv_key = priv_key + 12;
-            raw_priv_key_size = priv_key_size - 12;
         }
     }
 

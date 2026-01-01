@@ -75,7 +75,7 @@ void castVote(AppState& state, const std::string& post_id, int8_t vote_value) {
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home_dir, ctx->identity);
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s/keys/%s.dsa", home_dir, ctx->identity, ctx->identity);
 
     qgp_key_t *key = nullptr;
     int ret = qgp_key_load(key_path, &key);
@@ -300,7 +300,7 @@ void postToMessageWall(AppState& state) {
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home_dir, ctx->identity);
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s/keys/%s.dsa", home_dir, ctx->identity, ctx->identity);
 
     qgp_key_t *key = nullptr;
     int ret = qgp_key_load(key_path, &key);

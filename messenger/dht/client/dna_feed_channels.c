@@ -19,91 +19,11 @@
 
 #define LOG_TAG "DNA_CHANNELS"
 
-/* Base64 encoding/decoding (reuse from dna_message_wall.c pattern) */
-static char *base64_encode(const uint8_t *data, size_t len);
-static uint8_t *base64_decode(const char *str, size_t *out_len);
-
 /* Dilithium5 functions */
 extern int pqcrystals_dilithium5_ref_signature(uint8_t *sig, size_t *siglen,
                                                 const uint8_t *m, size_t mlen,
                                                 const uint8_t *ctx, size_t ctxlen,
                                                 const uint8_t *sk);
-
-/* ============================================================================
- * Base64 Helpers
- * ========================================================================== */
-
-static char *base64_encode(const uint8_t *data, size_t len) {
-    static const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    size_t out_len = 4 * ((len + 2) / 3) + 1;
-    char *out = malloc(out_len);
-    if (!out) return NULL;
-
-    size_t i, j;
-    for (i = 0, j = 0; i < len;) {
-        uint32_t octet_a = i < len ? data[i++] : 0;
-        uint32_t octet_b = i < len ? data[i++] : 0;
-        uint32_t octet_c = i < len ? data[i++] : 0;
-        uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
-
-        out[j++] = base64_chars[(triple >> 18) & 0x3F];
-        out[j++] = base64_chars[(triple >> 12) & 0x3F];
-        out[j++] = base64_chars[(triple >> 6) & 0x3F];
-        out[j++] = base64_chars[triple & 0x3F];
-    }
-
-    size_t padding = len % 3;
-    if (padding == 1) {
-        out[j - 2] = '=';
-        out[j - 1] = '=';
-    } else if (padding == 2) {
-        out[j - 1] = '=';
-    }
-
-    out[j] = '\0';
-    return out;
-}
-
-static uint8_t *base64_decode(const char *str, size_t *out_len) {
-    static const uint8_t base64_table[256] = {
-        ['A'] = 0,  ['B'] = 1,  ['C'] = 2,  ['D'] = 3,  ['E'] = 4,  ['F'] = 5,  ['G'] = 6,  ['H'] = 7,
-        ['I'] = 8,  ['J'] = 9,  ['K'] = 10, ['L'] = 11, ['M'] = 12, ['N'] = 13, ['O'] = 14, ['P'] = 15,
-        ['Q'] = 16, ['R'] = 17, ['S'] = 18, ['T'] = 19, ['U'] = 20, ['V'] = 21, ['W'] = 22, ['X'] = 23,
-        ['Y'] = 24, ['Z'] = 25, ['a'] = 26, ['b'] = 27, ['c'] = 28, ['d'] = 29, ['e'] = 30, ['f'] = 31,
-        ['g'] = 32, ['h'] = 33, ['i'] = 34, ['j'] = 35, ['k'] = 36, ['l'] = 37, ['m'] = 38, ['n'] = 39,
-        ['o'] = 40, ['p'] = 41, ['q'] = 42, ['r'] = 43, ['s'] = 44, ['t'] = 45, ['u'] = 46, ['v'] = 47,
-        ['w'] = 48, ['x'] = 49, ['y'] = 50, ['z'] = 51, ['0'] = 52, ['1'] = 53, ['2'] = 54, ['3'] = 55,
-        ['4'] = 56, ['5'] = 57, ['6'] = 58, ['7'] = 59, ['8'] = 60, ['9'] = 61, ['+'] = 62, ['/'] = 63
-    };
-
-    size_t len = strlen(str);
-    size_t padding = 0;
-    if (len >= 2 && str[len - 1] == '=') {
-        padding++;
-        if (str[len - 2] == '=') padding++;
-    }
-
-    *out_len = (len / 4) * 3 - padding;
-    uint8_t *out = malloc(*out_len);
-    if (!out) return NULL;
-
-    size_t i, j;
-    for (i = 0, j = 0; i < len;) {
-        uint32_t sextet_a = str[i] == '=' ? 0 : base64_table[(uint8_t)str[i]]; i++;
-        uint32_t sextet_b = str[i] == '=' ? 0 : base64_table[(uint8_t)str[i]]; i++;
-        uint32_t sextet_c = str[i] == '=' ? 0 : base64_table[(uint8_t)str[i]]; i++;
-        uint32_t sextet_d = str[i] == '=' ? 0 : base64_table[(uint8_t)str[i]]; i++;
-
-        uint32_t triple = (sextet_a << 18) + (sextet_b << 12) + (sextet_c << 6) + sextet_d;
-
-        if (j < *out_len) out[j++] = (triple >> 16) & 0xFF;
-        if (j < *out_len) out[j++] = (triple >> 8) & 0xFF;
-        if (j < *out_len) out[j++] = triple & 0xFF;
-    }
-
-    return out;
-}
 
 /* ============================================================================
  * DHT Key Generation

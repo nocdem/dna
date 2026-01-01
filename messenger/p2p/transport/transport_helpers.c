@@ -269,7 +269,7 @@ int create_presence_json(const char *ips, uint16_t port, char *json_out, size_t 
     int written = snprintf(json_out, len,
                           "{\"ips\":\"%s\",\"port\":%d,\"timestamp\":%ld}",
                           ips, port, time(NULL));
-    return (written < len) ? 0 : -1;
+    return (written >= 0 && (size_t)written < len) ? 0 : -1;
 }
 
 /**
