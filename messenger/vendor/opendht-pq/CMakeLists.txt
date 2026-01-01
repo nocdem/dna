@@ -518,9 +518,9 @@ if (Restinio_INCLUDE_DIR)
     include_directories (SYSTEM "${Restinio_INCLUDE_DIR}")
 endif ()
 
-# DILITHIUM5: Add DNA Messenger crypto library path
+# DILITHIUM5: Add DNA Messenger crypto library path (relative to vendor/opendht-pq)
 include_directories (
-    /opt/dna-messenger/crypto/dsa
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../crypto/dsa
 )
 
 include_directories (

@@ -289,7 +289,6 @@ static int messenger_encrypt_multi_recipient(
 
     // Signature
     memcpy(output_buffer + offset, signature_data, signature_size);
-    offset += signature_size;
 
     *ciphertext_out = output_buffer;
     *ciphertext_len_out = total_size;
@@ -776,7 +775,6 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
         return -1;
     }
 
-    const char *sender = target_msg->sender;
     const uint8_t *ciphertext = target_msg->encrypted_message;
     size_t ciphertext_len = target_msg->encrypted_len;
 

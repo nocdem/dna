@@ -109,7 +109,7 @@ void* listener_thread(void *arg) {
         close(client_sock);
 
 next_connection:
-        continue;
+        ; // Label requires statement; loop continues naturally
     }
 
     return NULL;

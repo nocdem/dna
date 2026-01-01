@@ -366,7 +366,7 @@ int messenger_load_pubkey(
     return 0;
 }
 
-int messenger_list_pubkeys(messenger_context_t *ctx) {
+int messenger_list_pubkeys(const messenger_context_t *ctx) {
     if (!ctx) {
         return -1;
     }

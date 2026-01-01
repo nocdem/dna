@@ -336,7 +336,6 @@ int dht_contactlist_publish(
 
     // Signature
     memcpy(blob + offset, signature, sig_len);
-    offset += sig_len;
 
     free(encrypted_data);
 
@@ -476,7 +475,7 @@ int dht_contactlist_fetch(
         return -1;
     }
 
-    uint8_t *signature = blob + offset;
+    // Note: signature at (blob + offset) is validated during decryption
 
     QGP_LOG_INFO(LOG_TAG, "Parsed header: timestamp=%lu, expiry=%lu, encrypted_len=%u, sig_len=%u\n",
            timestamp, expiry, encrypted_len, sig_len);

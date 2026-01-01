@@ -183,7 +183,6 @@ int messenger_generate_keys_from_seeds(
     }
     memcpy(dilithium_pubkey_copy, sign_key->public_key, sign_key->public_key_size);
     memcpy(dilithium_privkey_copy, sign_key->private_key, sign_key->private_key_size);
-    size_t dilithium_pubkey_size = sign_key->public_key_size;
     size_t dilithium_privkey_size = sign_key->private_key_size;
 
     qgp_key_free(sign_key);
@@ -248,7 +247,6 @@ int messenger_generate_keys_from_seeds(
         return -1;
     }
     memcpy(kyber_pubkey_copy, enc_key->public_key, enc_key->public_key_size);
-    size_t kyber_pubkey_size = enc_key->public_key_size;
 
     // Create DHT identity from master seed (deterministic - same seed = same DHT identity)
     // This eliminates the need for DHT identity backup - just derive from BIP39 seed

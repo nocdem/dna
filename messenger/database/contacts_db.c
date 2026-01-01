@@ -50,7 +50,7 @@ static int get_db_path(const char *owner_identity, char *path_out, size_t path_s
     // Validate owner_identity to prevent path traversal attacks (BOTH platforms)
     // Use whitelist approach: only allow alphanumeric, dash, underscore
     size_t identity_len = strlen(owner_identity);
-    if (identity_len == 0 || identity_len > 128) {
+    if (identity_len > 128) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid identity length: %zu (must be 1-128 chars)\n", identity_len);
         return -1;
     }

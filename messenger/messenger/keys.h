@@ -73,7 +73,7 @@ int messenger_load_pubkey(
  * @param ctx: Messenger context
  * @return: 0 on success, -1 on error
  */
-int messenger_list_pubkeys(messenger_context_t *ctx);
+int messenger_list_pubkeys(const messenger_context_t *ctx);
 
 /**
  * Get contact list from local database

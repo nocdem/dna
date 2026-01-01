@@ -206,11 +206,12 @@ int read_armored_file(
             // Store header
             if (header_count >= header_capacity) {
                 header_capacity *= 2;
-                headers = (char**)realloc(headers, header_capacity * sizeof(char*));
-                if (!headers) {
+                char **new_headers = (char**)realloc(headers, header_capacity * sizeof(char*));
+                if (!new_headers) {
                     fprintf(stderr, "Error: Memory allocation failed\n");
                     goto cleanup;
                 }
+                headers = new_headers;
             }
             headers[header_count] = strdup(line);
             header_count++;
@@ -222,11 +223,12 @@ int read_armored_file(
             // Grow buffer if needed
             if (b64_length + len + 1 > b64_capacity) {
                 b64_capacity *= 2;
-                b64_data = (char*)realloc(b64_data, b64_capacity);
-                if (!b64_data) {
+                char *new_b64_data = (char*)realloc(b64_data, b64_capacity);
+                if (!new_b64_data) {
                     fprintf(stderr, "Error: Memory allocation failed\n");
                     goto cleanup;
                 }
+                b64_data = new_b64_data;
             }
             // Append line to base64 data
             strcpy(b64_data + b64_length, line);
