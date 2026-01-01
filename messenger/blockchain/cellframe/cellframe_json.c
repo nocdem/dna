@@ -308,10 +308,10 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
 
             ret = snprintf(json + json_len, remaining,
                 "    {\"type\":\"out_cond\", \"subtype\":\"%s\", "
-                "\"value\":\"%s\", \"ts_expires\":\"%s\", \"service_id\":\"0x%016lX\"}",
+                "\"value\":\"%s\", \"ts_expires\":\"%s\", \"service_id\":\"0x%016llX\"}",
                 subtype_str, value_str,
                 cond_item->ts_expires == 0 ? "never" : "timestamp",
-                cond_item->srv_uid);
+                (unsigned long long)cond_item->srv_uid);
             if (ret < 0 || (size_t)ret >= remaining) {
                 free(json);
                 return -1;
@@ -467,11 +467,11 @@ int cellframe_tx_to_json(const uint8_t *tx_data, size_t tx_size, char **json_out
     sprintf(json,
         "{\n"
         "  \"datum_hash\": \"%s\",\n"
-        "  \"ts_created\": %lu,\n"
+        "  \"ts_created\": %llu,\n"
         "  \"datum_type\": \"tx\",\n"
         "%s\n"
         "}",
-        datum_hash_hex, timestamp, items_json);
+        datum_hash_hex, (unsigned long long)timestamp, items_json);
 
     free(items_json);
 
