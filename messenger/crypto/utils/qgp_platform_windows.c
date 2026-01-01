@@ -11,7 +11,9 @@
 #include <direct.h>  /* _mkdir */
 
 /* Link against bcrypt.lib for BCryptGenRandom */
+#ifdef _MSC_VER
 #pragma comment(lib, "bcrypt.lib")
+#endif
 
 /* ============================================================================
  * Random Number Generation (Windows Implementation)

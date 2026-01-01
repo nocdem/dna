@@ -793,8 +793,8 @@ int dht_retrieve_queued_messages_from_contacts(
                 all_messages[all_count++] = sender_messages[i];
             } else {
                 // Expired message - free it
-                QGP_LOG_INFO(LOG_TAG, "Message %zu expired (expiry=%lu, now=%lu)\n",
-                       i, sender_messages[i].expiry, now);
+                QGP_LOG_INFO(LOG_TAG, "Message %zu expired (expiry=%llu, now=%llu)\n",
+                       i, (unsigned long long)sender_messages[i].expiry, (unsigned long long)now);
                 dht_offline_message_free(&sender_messages[i]);
             }
         }
