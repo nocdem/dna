@@ -18,6 +18,19 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+/* DLL Export/Import macros for Windows (same as dna_engine.h) */
+#ifndef DNA_API
+    #ifdef _WIN32
+        #ifdef DNA_LIB_EXPORTS
+            #define DNA_API __declspec(dllexport)
+        #else
+            #define DNA_API __declspec(dllimport)
+        #endif
+    #else
+        #define DNA_API
+    #endif
+#endif
+
 /**
  * BIP39 mnemonic word count options
  */
@@ -82,7 +95,7 @@ int bip39_mnemonic_from_entropy(
  * Generates a random BIP39 mnemonic with the specified word count.
  * Uses cryptographically secure random number generator.
  */
-int bip39_generate_mnemonic(
+DNA_API int bip39_generate_mnemonic(
     int word_count,
     char *mnemonic,
     size_t mnemonic_size
@@ -99,7 +112,7 @@ int bip39_generate_mnemonic(
  * 2. Verifying all words exist in BIP39 wordlist
  * 3. Verifying checksum bits
  */
-bool bip39_validate_mnemonic(const char *mnemonic);
+DNA_API bool bip39_validate_mnemonic(const char *mnemonic);
 
 /**
  * Derive BIP39 seed from mnemonic
@@ -168,7 +181,7 @@ int bip39_pbkdf2_hmac_sha512(
  * - signing_seed = SHAKE256(master_seed || "qgp-signing-v1", 32)
  * - encryption_seed = SHAKE256(master_seed || "qgp-encryption-v1", 32)
  */
-int qgp_derive_seeds_from_mnemonic(
+DNA_API int qgp_derive_seeds_from_mnemonic(
     const char *mnemonic,
     const char *passphrase,
     uint8_t signing_seed[32],
@@ -188,7 +201,7 @@ int qgp_derive_seeds_from_mnemonic(
  * @param master_seed_out Output buffer for 64-byte master seed (for ETH/BTC), or NULL
  * @return 0 on success, -1 on error
  */
-int qgp_derive_seeds_with_master(
+DNA_API int qgp_derive_seeds_with_master(
     const char *mnemonic,
     const char *passphrase,
     uint8_t signing_seed[32],
