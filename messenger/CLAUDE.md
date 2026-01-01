@@ -2,7 +2,7 @@
 
 **Last Updated:** 2025-12-31 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
 
-**Versions:** Library v0.3.45 | Flutter v0.99.13 | Nodus v0.4.3
+**Versions:** Library v0.3.54 | Flutter v0.99.14 | Nodus v0.4.3
 
 ---
 
@@ -101,6 +101,32 @@ When writing ANY code:
 - Bug fixes must work on ALL platforms, not just the one where bug was found
 - New features must be designed for ALL platforms from the start
 - Use `#ifdef` guards only in platform abstraction files, not in business logic
+
+**Platform Abstraction Layer (`qgp_platform_*.c`):**
+When adding NEW functions to the platform layer:
+- **MUST** implement in ALL THREE files: `qgp_platform_linux.c`, `qgp_platform_windows.c`, `qgp_platform_android.c`
+- **MUST** declare in `qgp_platform.h`
+- Missing implementations cause linker errors on that platform
+
+**Windows-Specific Requirements:**
+- **Format specifiers**: Use `%llu`/`%lld` with casts for `uint64_t`/`int64_t` (Windows `long` is 32-bit!)
+  ```c
+  QGP_LOG_INFO(TAG, "value=%llu", (unsigned long long)my_uint64);
+  ```
+- **MSVC pragmas**: Wrap in `#ifdef _MSC_VER` (MinGW doesn't support them)
+  ```c
+  #ifdef _MSC_VER
+  #pragma comment(lib, "ws2_32.lib")
+  #endif
+  ```
+- **Include order**: `winsock2.h` MUST come before `windows.h`
+  ```c
+  #ifdef _WIN32
+  #include <winsock2.h>  // MUST be first!
+  #endif
+  ```
+- **DLL exports**: Public API functions need proper export macros for shared library builds
+- **Path separators**: Preserve original separator (`\` vs `/`) when manipulating paths
 
 ## LOCAL TESTING POLICY
 - **BUILD ONLY**: Only verify that the build succeeds locally (`cmake .. && make`)
