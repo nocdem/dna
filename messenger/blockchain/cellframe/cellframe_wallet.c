@@ -286,7 +286,7 @@ int wallet_list_cellframe(wallet_list_t **list_out) {
     if (hFind == INVALID_HANDLE_VALUE) {
         free(list->wallets);
         free(list);
-        *list_out = list;
+        *list_out = NULL;
         return 0;
     }
 
@@ -318,7 +318,7 @@ int wallet_list_cellframe(wallet_list_t **list_out) {
     if (!dir) {
         free(list->wallets);
         free(list);
-        *list_out = list;
+        *list_out = NULL;
         return 0;
     }
 
