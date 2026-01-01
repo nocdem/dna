@@ -349,11 +349,10 @@ int cmd_create(dna_engine_t *engine, const char *name) {
 
     uint8_t signing_seed[32];
     uint8_t encryption_seed[32];
-    uint8_t wallet_seed[32];
     uint8_t master_seed[64];
 
     if (qgp_derive_seeds_with_master(mnemonic, "", signing_seed, encryption_seed,
-                                      wallet_seed, master_seed) != 0) {
+                                      master_seed) != 0) {
         printf("Error: Failed to derive seeds from mnemonic\n");
         return -1;
     }
@@ -367,12 +366,11 @@ int cmd_create(dna_engine_t *engine, const char *name) {
     char fingerprint[129];
     int result = dna_engine_create_identity_sync(
         engine, name, signing_seed, encryption_seed,
-        wallet_seed, master_seed, mnemonic, fingerprint
+        master_seed, mnemonic, fingerprint
     );
 
     memset(signing_seed, 0, sizeof(signing_seed));
     memset(encryption_seed, 0, sizeof(encryption_seed));
-    memset(wallet_seed, 0, sizeof(wallet_seed));
     memset(master_seed, 0, sizeof(master_seed));
     memset(mnemonic, 0, sizeof(mnemonic));
 
@@ -605,11 +603,10 @@ int cmd_restore(dna_engine_t *engine, const char *mnemonic) {
 
     uint8_t signing_seed[32];
     uint8_t encryption_seed[32];
-    uint8_t wallet_seed[32];
     uint8_t master_seed[64];
 
     if (qgp_derive_seeds_with_master(mnemonic, "", signing_seed, encryption_seed,
-                                      wallet_seed, master_seed) != 0) {
+                                      master_seed) != 0) {
         printf("Error: Failed to derive seeds from mnemonic\n");
         return -1;
     }
@@ -617,12 +614,11 @@ int cmd_restore(dna_engine_t *engine, const char *mnemonic) {
     char fingerprint[129];
     int result = dna_engine_restore_identity_sync(
         engine, signing_seed, encryption_seed,
-        wallet_seed, master_seed, mnemonic, fingerprint
+        master_seed, mnemonic, fingerprint
     );
 
     memset(signing_seed, 0, sizeof(signing_seed));
     memset(encryption_seed, 0, sizeof(encryption_seed));
-    memset(wallet_seed, 0, sizeof(wallet_seed));
     memset(master_seed, 0, sizeof(master_seed));
 
     if (result != 0) {

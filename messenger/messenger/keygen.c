@@ -59,14 +59,12 @@ int messenger_generate_keys_from_seeds(
     const char *name,
     const uint8_t *signing_seed,
     const uint8_t *encryption_seed,
-    const uint8_t *wallet_seed,
     const uint8_t *master_seed,
     const char *mnemonic,
     const char *data_dir,
     const char *password,
     char *fingerprint_out)
 {
-    (void)wallet_seed;  /* Deprecated, unused */
     if (!signing_seed || !encryption_seed || !data_dir || !fingerprint_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to messenger_generate_keys_from_seeds");
         return -1;
@@ -780,7 +778,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
 
     /* Step 4: Derive seeds */
     printf("\n[Step 4/4] Deriving seeds from mnemonic...\n");
-    if (qgp_derive_seeds_from_mnemonic(mnemonic, passphrase, signing_seed, encryption_seed, NULL) != 0) {
+    if (qgp_derive_seeds_from_mnemonic(mnemonic, passphrase, signing_seed, encryption_seed) != 0) {
         fprintf(stderr, "Error: Seed derivation failed\n");
         memset(mnemonic, 0, sizeof(mnemonic));
         memset(passphrase, 0, sizeof(passphrase));

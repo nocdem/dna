@@ -34,7 +34,6 @@ extern "C" {
  * @param name: Identity name (optional display name, can be NULL)
  * @param signing_seed: 32-byte seed for Dilithium5 key derivation
  * @param encryption_seed: 32-byte seed for Kyber1024 key derivation
- * @param wallet_seed: 32-byte seed for Cellframe wallet (DEPRECATED, use mnemonic)
  * @param master_seed: 64-byte BIP39 master seed for multi-chain wallets (optional, can be NULL)
  * @param mnemonic: Space-separated BIP39 mnemonic (for recovery, optional)
  * @param data_dir: Base directory (e.g., ~/.dna)
@@ -46,7 +45,6 @@ int messenger_generate_keys_from_seeds(
     const char *name,
     const uint8_t *signing_seed,
     const uint8_t *encryption_seed,
-    const uint8_t *wallet_seed,
     const uint8_t *master_seed,
     const char *mnemonic,
     const char *data_dir,

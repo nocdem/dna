@@ -406,8 +406,8 @@ int dna_engine_create_identity_sync(
     const char *name,
     const uint8_t signing_seed[32],
     const uint8_t encryption_seed[32],
-    const uint8_t wallet_seed[32],
     const uint8_t master_seed[64],
+    const char *mnemonic,
     char fingerprint_out[129]
 );
 ```
@@ -418,8 +418,8 @@ int dna_engine_create_identity_sync(
 - `name` - Display name to register (3-20 chars, alphanumeric + underscore)
 - `signing_seed` - 32-byte seed for Dilithium5 keypair
 - `encryption_seed` - 32-byte seed for Kyber1024 keypair
-- `wallet_seed` - 32-byte seed for wallet keys (can be NULL)
-- `master_seed` - 64-byte BIP39 master seed (can be NULL)
+- `master_seed` - 64-byte BIP39 master seed for multi-chain wallets (can be NULL)
+- `mnemonic` - BIP39 mnemonic for Cellframe wallet creation (can be NULL)
 - `fingerprint_out` - Buffer for 128-char hex fingerprint + null terminator
 
 **Returns:**
@@ -436,7 +436,7 @@ This function is atomic - if name registration fails, the identity directory is 
 ```c
 char fingerprint[129];
 int rc = dna_engine_create_identity_sync(engine, "alice",
-    signing_seed, encryption_seed, wallet_seed, master_seed, fingerprint);
+    signing_seed, encryption_seed, master_seed, mnemonic, fingerprint);
 if (rc == DNA_OK) {
     printf("Identity created: %s\n", fingerprint);
 } else if (rc == DNA_ENGINE_ERROR_NETWORK) {
@@ -453,8 +453,8 @@ int dna_engine_restore_identity_sync(
     dna_engine_t *engine,
     const uint8_t signing_seed[32],
     const uint8_t encryption_seed[32],
-    const uint8_t wallet_seed[32],
     const uint8_t master_seed[64],
+    const char *mnemonic,
     char fingerprint_out[129]
 );
 ```
@@ -464,8 +464,8 @@ Synchronous identity restoration from BIP39 seeds. Creates keys and wallets loca
 **Parameters:**
 - `signing_seed` - 32-byte seed for Dilithium5 keypair
 - `encryption_seed` - 32-byte seed for Kyber1024 keypair
-- `wallet_seed` - 32-byte seed for wallet keys (can be NULL)
-- `master_seed` - 64-byte BIP39 master seed (can be NULL)
+- `master_seed` - 64-byte BIP39 master seed for multi-chain wallets (can be NULL)
+- `mnemonic` - BIP39 mnemonic for Cellframe wallet creation (can be NULL)
 - `fingerprint_out` - Buffer for 128-char hex fingerprint + null terminator
 
 **Returns:**
@@ -477,7 +477,7 @@ Synchronous identity restoration from BIP39 seeds. Creates keys and wallets loca
 ```c
 char fingerprint[129];
 int rc = dna_engine_restore_identity_sync(engine,
-    signing_seed, encryption_seed, wallet_seed, master_seed, fingerprint);
+    signing_seed, encryption_seed, master_seed, mnemonic, fingerprint);
 if (rc == DNA_OK) {
     printf("Identity restored: %s\n", fingerprint);
     // Now lookup name/profile from DHT using fingerprint

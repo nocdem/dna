@@ -892,7 +892,6 @@ void dna_handle_create_identity(dna_engine_t *engine, dna_task_t *task) {
         task->params.create_identity.name,
         task->params.create_identity.signing_seed,
         task->params.create_identity.encryption_seed,
-        task->params.create_identity.wallet_seed,  /* wallet_seed - DEPRECATED */
         task->params.create_identity.master_seed,  /* master_seed - for ETH/SOL wallets */
         task->params.create_identity.mnemonic,     /* mnemonic - for Cellframe wallet */
         engine->data_dir,
@@ -3537,7 +3536,6 @@ dna_request_id_t dna_engine_create_identity(
     const char *name,
     const uint8_t signing_seed[32],
     const uint8_t encryption_seed[32],
-    const uint8_t *wallet_seed,
     dna_identity_created_cb callback,
     void *user_data
 ) {
@@ -3549,12 +3547,6 @@ dna_request_id_t dna_engine_create_identity(
     strncpy(params.create_identity.name, name, sizeof(params.create_identity.name) - 1);
     memcpy(params.create_identity.signing_seed, signing_seed, 32);
     memcpy(params.create_identity.encryption_seed, encryption_seed, 32);
-    if (wallet_seed) {
-        params.create_identity.wallet_seed = malloc(32);
-        if (params.create_identity.wallet_seed) {
-            memcpy(params.create_identity.wallet_seed, wallet_seed, 32);
-        }
-    }
 
     dna_task_callback_t cb = { .identity_created = callback };
     return dna_submit_task(engine, TASK_CREATE_IDENTITY, &params, cb, user_data);
@@ -3565,7 +3557,6 @@ int dna_engine_create_identity_sync(
     const char *name,
     const uint8_t signing_seed[32],
     const uint8_t encryption_seed[32],
-    const uint8_t wallet_seed[32],
     const uint8_t master_seed[64],
     const char *mnemonic,
     char fingerprint_out[129]
@@ -3576,7 +3567,7 @@ int dna_engine_create_identity_sync(
 
     /* Step 1: Create keys locally */
     int rc = messenger_generate_keys_from_seeds(name, signing_seed, encryption_seed,
-                                                 wallet_seed, master_seed, mnemonic,
+                                                 master_seed, mnemonic,
                                                  engine->data_dir, NULL, fingerprint_out);
     if (rc != 0) {
         return DNA_ERROR_CRYPTO;
@@ -3631,7 +3622,6 @@ int dna_engine_restore_identity_sync(
     dna_engine_t *engine,
     const uint8_t signing_seed[32],
     const uint8_t encryption_seed[32],
-    const uint8_t wallet_seed[32],
     const uint8_t master_seed[64],
     const char *mnemonic,
     char fingerprint_out[129]
@@ -3642,7 +3632,7 @@ int dna_engine_restore_identity_sync(
 
     /* Step 1: Create keys locally (uses fingerprint as directory name) */
     int rc = messenger_generate_keys_from_seeds(NULL, signing_seed, encryption_seed,
-                                                 wallet_seed, master_seed, mnemonic,
+                                                 master_seed, mnemonic,
                                                  engine->data_dir, NULL, fingerprint_out);
     if (rc != 0) {
         return DNA_ERROR_CRYPTO;

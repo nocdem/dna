@@ -603,10 +603,9 @@ void createIdentityWithSeed(AppState& state, const char* mnemonic) {
     // Derive cryptographic seeds AND master seed from BIP39 mnemonic
     uint8_t signing_seed[32];
     uint8_t encryption_seed[32];
-    uint8_t wallet_seed[32];
     uint8_t master_seed[64];  // For multi-chain wallet derivation (ETH, BTC, etc.)
 
-    if (qgp_derive_seeds_with_master(mnemonic, "", signing_seed, encryption_seed, wallet_seed, master_seed) != 0) {
+    if (qgp_derive_seeds_with_master(mnemonic, "", signing_seed, encryption_seed, master_seed) != 0) {
         printf("[Identity] ERROR: Failed to derive seeds from mnemonic\n");
         return;
     }
@@ -636,12 +635,11 @@ void createIdentityWithSeed(AppState& state, const char* mnemonic) {
     // Pass NULL for name to use fingerprint as directory name (ImGui doesn't require name-first flow)
     // Cellframe wallet uses SHA3-256(mnemonic) to match official Cellframe wallet app
     char fingerprint[129];
-    int result = messenger_generate_keys_from_seeds(nullptr, signing_seed, encryption_seed, wallet_seed, master_seed, mnemonic, dna_dir.c_str(), fingerprint);
+    int result = messenger_generate_keys_from_seeds(nullptr, signing_seed, encryption_seed, master_seed, mnemonic, dna_dir.c_str(), fingerprint);
 
     // Securely wipe seeds from memory
     memset(signing_seed, 0, sizeof(signing_seed));
     memset(encryption_seed, 0, sizeof(encryption_seed));
-    memset(wallet_seed, 0, sizeof(wallet_seed));
     memset(master_seed, 0, sizeof(master_seed));
 
     if (result != 0) {
@@ -855,10 +853,9 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
     // Derive seeds AND master seed from mnemonic (no passphrase)
     uint8_t signing_seed[32];
     uint8_t encryption_seed[32];
-    uint8_t wallet_seed[32];
     uint8_t master_seed[64];  // For multi-chain wallet derivation (ETH, BTC, etc.)
 
-    if (qgp_derive_seeds_with_master(normalized.c_str(), "", signing_seed, encryption_seed, wallet_seed, master_seed) != 0) {
+    if (qgp_derive_seeds_with_master(normalized.c_str(), "", signing_seed, encryption_seed, master_seed) != 0) {
         printf("[Identity] ERROR: Failed to derive seeds from mnemonic\n");
         state.restore_error_message = "Failed to derive seeds from mnemonic. Please try again.";
         return;
@@ -884,12 +881,11 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
     // Pass NULL for name to use fingerprint as directory name
     // Cellframe wallet uses SHA3-256(mnemonic) to match official Cellframe wallet app
     char fingerprint[129];
-    int result = messenger_generate_keys_from_seeds(nullptr, signing_seed, encryption_seed, wallet_seed, master_seed, normalized.c_str(), dna_dir.c_str(), fingerprint);
+    int result = messenger_generate_keys_from_seeds(nullptr, signing_seed, encryption_seed, master_seed, normalized.c_str(), dna_dir.c_str(), fingerprint);
 
     // Securely wipe seeds from memory
     memset(signing_seed, 0, sizeof(signing_seed));
     memset(encryption_seed, 0, sizeof(encryption_seed));
-    memset(wallet_seed, 0, sizeof(wallet_seed));
     memset(master_seed, 0, sizeof(master_seed));
 
     if (result != 0) {

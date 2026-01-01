@@ -665,7 +665,6 @@ DNA_API const char* dna_engine_get_fingerprint(dna_engine_t *engine);
  * @param name            Identity name (required, used for directory structure)
  * @param signing_seed    32-byte seed for Dilithium5
  * @param encryption_seed 32-byte seed for Kyber1024
- * @param wallet_seed     32-byte seed for Cellframe wallet (can be NULL)
  * @param callback        Called with new fingerprint
  * @param user_data       User data for callback
  * @return                Request ID (0 on immediate error)
@@ -675,7 +674,6 @@ DNA_API dna_request_id_t dna_engine_create_identity(
     const char *name,
     const uint8_t signing_seed[32],
     const uint8_t encryption_seed[32],
-    const uint8_t *wallet_seed,
     dna_identity_created_cb callback,
     void *user_data
 );
@@ -690,7 +688,6 @@ DNA_API dna_request_id_t dna_engine_create_identity(
  * @param name            Identity name (required, used for directory structure)
  * @param signing_seed    32-byte seed for Dilithium5
  * @param encryption_seed 32-byte seed for Kyber1024
- * @param wallet_seed     32-byte seed for Cellframe wallet (DEPRECATED, use mnemonic)
  * @param master_seed     64-byte BIP39 master seed for multi-chain wallets (can be NULL)
  * @param mnemonic        Space-separated BIP39 mnemonic (for Cellframe wallet, can be NULL)
  * @param fingerprint_out Output buffer for fingerprint (129 bytes min)
@@ -701,7 +698,6 @@ DNA_API int dna_engine_create_identity_sync(
     const char *name,
     const uint8_t signing_seed[32],
     const uint8_t encryption_seed[32],
-    const uint8_t wallet_seed[32],
     const uint8_t master_seed[64],
     const char *mnemonic,
     char fingerprint_out[129]
@@ -717,7 +713,6 @@ DNA_API int dna_engine_create_identity_sync(
  * @param engine          Engine instance
  * @param signing_seed    32-byte seed for Dilithium5
  * @param encryption_seed 32-byte seed for Kyber1024
- * @param wallet_seed     32-byte seed for Cellframe wallet (DEPRECATED, use mnemonic)
  * @param master_seed     64-byte BIP39 master seed for multi-chain wallets (can be NULL)
  * @param mnemonic        Space-separated BIP39 mnemonic (for Cellframe wallet, can be NULL)
  * @param fingerprint_out Output buffer for fingerprint (129 bytes min)
@@ -727,7 +722,6 @@ DNA_API int dna_engine_restore_identity_sync(
     dna_engine_t *engine,
     const uint8_t signing_seed[32],
     const uint8_t encryption_seed[32],
-    const uint8_t wallet_seed[32],
     const uint8_t master_seed[64],
     const char *mnemonic,
     char fingerprint_out[129]
