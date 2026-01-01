@@ -399,10 +399,11 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
               ),
               content: SizedBox(
                 width: double.maxFinite,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
@@ -476,7 +477,8 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                   ],
                 ),
               ),
-              actions: [
+            ),
+            actions: [
                 TextButton(
                   onPressed: () {
                     Clipboard.setData(ClipboardData(text: mnemonic));

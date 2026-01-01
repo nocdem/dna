@@ -116,6 +116,7 @@ static int ensure_directory(const char *db_path) {
 
     for (p = tmp + 1; *p; p++) {
         if (*p == '/' || *p == '\\') {
+            char sep = *p;  // Save original separator
             *p = '\0';
             struct stat st;
             if (stat(tmp, &st) != 0) {
@@ -124,7 +125,7 @@ static int ensure_directory(const char *db_path) {
                     return -1;
                 }
             }
-            *p = '/';
+            *p = sep;  // Restore original separator (important for Windows)
         }
     }
 

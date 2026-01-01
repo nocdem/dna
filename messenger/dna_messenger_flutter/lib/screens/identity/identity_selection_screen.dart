@@ -791,16 +791,19 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               border: const OutlineInputBorder(),
               errorText: _nameError,
               suffixIcon: _isCheckingName
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: Padding(
-                        padding: EdgeInsets.all(12),
+                  ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: SizedBox(
+                        width: 20,
+                        height: 20,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       ),
                     )
                   : _isNameAvailable && _nicknameController.text.length >= 3
-                      ? const FaIcon(FontAwesomeIcons.circleCheck, color: Colors.green)
+                      ? const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: FaIcon(FontAwesomeIcons.circleCheck, color: Colors.green, size: 20),
+                        )
                       : null,
             ),
             textInputAction: TextInputAction.done,
