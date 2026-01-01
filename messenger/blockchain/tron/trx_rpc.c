@@ -55,11 +55,7 @@ void trx_rate_limit_delay(void) {
     if (elapsed < TRX_RPC_MIN_DELAY_MS && g_trx_last_request_ms > 0) {
         uint64_t delay = TRX_RPC_MIN_DELAY_MS - elapsed;
         QGP_LOG_DEBUG(LOG_TAG, "Rate limiting: waiting %lu ms", (unsigned long)delay);
-#ifdef _WIN32
-        Sleep((DWORD)delay);
-#else
-        usleep((useconds_t)(delay * 1000));
-#endif
+        qgp_platform_sleep_ms((unsigned int)delay);
     }
     g_trx_last_request_ms = trx_get_current_ms();
 }

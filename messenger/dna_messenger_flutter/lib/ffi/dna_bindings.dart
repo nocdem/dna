@@ -1681,6 +1681,24 @@ class DnaBindings {
     return _dna_engine_is_peer_online(engine, fingerprint);
   }
 
+  /// Pause presence updates (call when app goes to background)
+  late final _dna_engine_pause_presence = _lib.lookupFunction<
+      Void Function(Pointer<dna_engine_t>),
+      void Function(Pointer<dna_engine_t>)>('dna_engine_pause_presence');
+
+  void dna_engine_pause_presence(Pointer<dna_engine_t> engine) {
+    _dna_engine_pause_presence(engine);
+  }
+
+  /// Resume presence updates (call when app comes to foreground)
+  late final _dna_engine_resume_presence = _lib.lookupFunction<
+      Void Function(Pointer<dna_engine_t>),
+      void Function(Pointer<dna_engine_t>)>('dna_engine_resume_presence');
+
+  void dna_engine_resume_presence(Pointer<dna_engine_t> engine) {
+    _dna_engine_resume_presence(engine);
+  }
+
   late final _dna_engine_lookup_presence = _lib.lookupFunction<
       Uint64 Function(
           Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<DnaPresenceCb>, Pointer<Void>),

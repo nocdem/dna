@@ -55,6 +55,10 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     try {
       final engine = await ref.read(engineProvider.future);
 
+      // Resume presence heartbeat (marks us as online)
+      print('AppLifecycle: Resuming presence');
+      engine.resumePresence();
+
       // Refresh presence so others know we're online
       print('AppLifecycle: Refreshing presence');
       await engine.refreshPresence();
@@ -67,10 +71,25 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
   }
 
   /// Called when app goes to background
-  void _onPause() {
+  void _onPause() async {
     print('AppLifecycle: App paused');
-    // ForegroundService continues running in background
-    // No action needed here
+
+    // Check if identity is loaded
+    final fingerprint = ref.read(currentFingerprintProvider);
+    if (fingerprint == null || fingerprint.isEmpty) {
+      print('AppLifecycle: No identity loaded, skipping pause');
+      return;
+    }
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+
+      // Pause presence heartbeat (stops marking us as online)
+      print('AppLifecycle: Pausing presence');
+      engine.pausePresence();
+    } catch (e) {
+      print('AppLifecycle: Error during pause - $e');
+    }
   }
 
   /// Called when app is being killed

@@ -128,6 +128,34 @@ char* qgp_platform_join_path(const char *dir, const char *file);
 void qgp_secure_memzero(void *ptr, size_t len);
 
 /* ============================================================================
+ * Timing / Delay Operations
+ * ============================================================================ */
+
+/**
+ * Sleep for specified number of seconds
+ *
+ * Cross-platform wrapper for sleep functionality.
+ *
+ * Linux: Uses sleep()
+ * Windows: Uses Sleep()
+ *
+ * @param seconds Number of seconds to sleep
+ */
+void qgp_platform_sleep(unsigned int seconds);
+
+/**
+ * Sleep for specified number of milliseconds
+ *
+ * Cross-platform wrapper for millisecond sleep.
+ *
+ * Linux: Uses usleep() or nanosleep()
+ * Windows: Uses Sleep()
+ *
+ * @param milliseconds Number of milliseconds to sleep
+ */
+void qgp_platform_sleep_ms(unsigned int milliseconds);
+
+/* ============================================================================
  * Application Data Directories (Mobile-Ready)
  * ============================================================================ */
 

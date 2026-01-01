@@ -5,7 +5,9 @@
  * - Message received → Sender online
  * - P2P connection → Peer online
  * - P2P disconnection → Peer offline
- * - No explicit DHT queries (zero overhead)
+ * - Fires events on status transitions
+ *
+ * Online = lastSeen within 5 minutes (derived, not stored)
  *
  * @file presence_cache.h
  */
@@ -26,9 +28,7 @@ extern "C" {
  */
 typedef struct {
     char fingerprint[129];    // 128 hex chars + null
-    bool is_online;           // Current online status
     time_t last_seen;         // Last time we saw them (message/connection)
-    time_t last_updated;      // When this entry was last updated
 } presence_entry_t;
 
 /**
@@ -42,12 +42,15 @@ int presence_cache_init(void);
  * Update presence for a contact (passive detection)
  *
  * Called when:
- * - Message received from contact
- * - P2P connection established
- * - P2P connection lost
+ * - Message received from contact → is_online=true
+ * - P2P connection established → is_online=true
+ * - P2P connection lost → is_online=false
+ *
+ * Automatically fires DNA_EVENT_CONTACT_ONLINE or DNA_EVENT_CONTACT_OFFLINE
+ * when status transitions between online/offline.
  *
  * @param fingerprint Contact fingerprint (128 hex chars)
- * @param is_online Online status
+ * @param is_online Online status (true=seen now, false=went offline)
  * @param timestamp Current time (or message timestamp)
  */
 void presence_cache_update(const char *fingerprint, bool is_online, time_t timestamp);
@@ -55,15 +58,11 @@ void presence_cache_update(const char *fingerprint, bool is_online, time_t times
 /**
  * Get cached presence status
  *
- * Strategy:
- * 1. Check cache for entry
- * 2. If not found or too old (>5 min): return false (assume offline)
- * 3. Otherwise: return cached status
- *
- * NO DHT queries (fast!)
+ * Online = lastSeen within last 5 minutes
+ * NO DHT queries (fast O(1) lookup!)
  *
  * @param fingerprint Contact fingerprint
- * @return true if online, false if offline/unknown
+ * @return true if online (seen < 5 min ago), false if offline/unknown
  */
 bool presence_cache_get(const char *fingerprint);
 

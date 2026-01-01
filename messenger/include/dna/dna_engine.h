@@ -1586,6 +1586,26 @@ DNA_API dna_request_id_t dna_engine_refresh_presence(
 DNA_API bool dna_engine_is_peer_online(dna_engine_t *engine, const char *fingerprint);
 
 /**
+ * Pause presence heartbeat (for background/inactive state)
+ *
+ * Call when app goes to background (Android onPause/onStop).
+ * Stops announcing presence so we appear offline to others.
+ *
+ * @param engine    Engine instance
+ */
+DNA_API void dna_engine_pause_presence(dna_engine_t *engine);
+
+/**
+ * Resume presence heartbeat (for foreground/active state)
+ *
+ * Call when app returns to foreground (Android onResume).
+ * Resumes announcing presence so we appear online to others.
+ *
+ * @param engine    Engine instance
+ */
+DNA_API void dna_engine_resume_presence(dna_engine_t *engine);
+
+/**
  * Lookup peer presence from DHT
  *
  * Queries DHT for peer's presence record and returns the timestamp

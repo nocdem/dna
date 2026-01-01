@@ -12,14 +12,7 @@
 #include "../core/dht_context.h"
 #include "../client/dna_profile.h"
 #include "crypto/utils/qgp_log.h"
-
-#ifdef _WIN32
-#include <windows.h>
-#define SLEEP_MS(ms) Sleep((DWORD)(ms))
-#else
-#include <unistd.h>
-#define SLEEP_MS(ms) usleep((useconds_t)((ms) * 1000))
-#endif
+#include "crypto/utils/qgp_platform.h"
 
 #define LOG_TAG "KEYSERVER"
 
@@ -56,7 +49,7 @@ int dht_keyserver_publish(
         QGP_LOG_INFO(LOG_TAG, "Waiting for DHT to connect (max %d seconds)...\n", DHT_READY_TIMEOUT_SECONDS);
         int wait_seconds = 0;
         while (!dht_context_is_ready(dht_ctx) && wait_seconds < DHT_READY_TIMEOUT_SECONDS) {
-            SLEEP_MS(1000);  // Sleep 1 second
+            qgp_platform_sleep_ms(1000);  // Sleep 1 second
             wait_seconds++;
         }
         if (!dht_context_is_ready(dht_ctx)) {

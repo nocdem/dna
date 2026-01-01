@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <windows.h>
 #define platform_mkdir(path, mode) _mkdir(path)
 
 /* Windows doesn't have strndup */
@@ -397,6 +398,73 @@ void dna_stop_workers(dna_engine_t *engine) {
 }
 
 /* ============================================================================
+ * PRESENCE HEARTBEAT (announces our presence every 4 minutes)
+ * ============================================================================ */
+
+#define PRESENCE_HEARTBEAT_INTERVAL_SECONDS 240  /* 4 minutes */
+
+static void* presence_heartbeat_thread(void *arg) {
+    dna_engine_t *engine = (dna_engine_t*)arg;
+
+    QGP_LOG_INFO(LOG_TAG, "Presence heartbeat thread started");
+
+    while (!atomic_load(&engine->shutdown_requested)) {
+        /* Sleep in short intervals to respond quickly to shutdown */
+        for (int i = 0; i < PRESENCE_HEARTBEAT_INTERVAL_SECONDS; i++) {
+            if (atomic_load(&engine->shutdown_requested)) {
+                break;
+            }
+            qgp_platform_sleep(1);
+        }
+
+        if (atomic_load(&engine->shutdown_requested)) {
+            break;
+        }
+
+        /* Only announce presence if active (foreground) */
+        if (atomic_load(&engine->presence_active) && engine->messenger) {
+            QGP_LOG_DEBUG(LOG_TAG, "Heartbeat: refreshing presence");
+            messenger_p2p_refresh_presence(engine->messenger);
+        }
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Presence heartbeat thread stopped");
+    return NULL;
+}
+
+static int dna_start_presence_heartbeat(dna_engine_t *engine) {
+    int rc = pthread_create(&engine->presence_heartbeat_thread, NULL,
+                           presence_heartbeat_thread, engine);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to start presence heartbeat thread");
+        return -1;
+    }
+    return 0;
+}
+
+static void dna_stop_presence_heartbeat(dna_engine_t *engine) {
+    /* Thread will exit when shutdown_requested is true */
+    pthread_join(engine->presence_heartbeat_thread, NULL);
+}
+
+void dna_engine_pause_presence(dna_engine_t *engine) {
+    if (!engine) return;
+    atomic_store(&engine->presence_active, false);
+    QGP_LOG_INFO(LOG_TAG, "Presence heartbeat paused (app in background)");
+}
+
+void dna_engine_resume_presence(dna_engine_t *engine) {
+    if (!engine) return;
+    atomic_store(&engine->presence_active, true);
+    QGP_LOG_INFO(LOG_TAG, "Presence heartbeat resumed (app in foreground)");
+
+    /* Immediately refresh presence on resume */
+    if (engine->messenger) {
+        messenger_p2p_refresh_presence(engine->messenger);
+    }
+}
+
+/* ============================================================================
  * EVENT DISPATCH
  * ============================================================================ */
 
@@ -665,6 +733,9 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     /* Initialize request ID counter */
     atomic_store(&engine->next_request_id, 0);
 
+    /* Initialize presence heartbeat as active (will start thread after identity load) */
+    atomic_store(&engine->presence_active, true);
+
     /* DHT is NOT initialized here - only after identity is created/restored
      * via dht_singleton_init_with_identity() in messenger/init.c */
 
@@ -720,6 +791,9 @@ void dna_engine_destroy(dna_engine_t *engine) {
 
     /* Stop worker threads */
     dna_stop_workers(engine);
+
+    /* Stop presence heartbeat thread */
+    dna_stop_presence_heartbeat(engine);
 
     /* Free messenger context */
     if (engine->messenger) {
@@ -975,6 +1049,10 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
             QGP_LOG_INFO(LOG_TAG, "Warning: Failed to check offline messages\n");
         }
 
+        /* Start presence heartbeat thread (announces our presence every 4 minutes) */
+        if (dna_start_presence_heartbeat(engine) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "Warning: Failed to start presence heartbeat");
+        }
     }
 
     /* Mark identity as loaded BEFORE starting listeners (they check this flag) */

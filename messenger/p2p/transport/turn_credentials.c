@@ -11,6 +11,7 @@
 #include "../../crypto/utils/qgp_dilithium.h"
 #include "../../crypto/utils/qgp_random.h"
 #include "../../crypto/utils/qgp_log.h"
+#include "../../crypto/utils/qgp_platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -688,11 +689,7 @@ int turn_credentials_request(
         }
 
         // Wait before next poll
-#ifdef _WIN32
-        Sleep(1000);
-#else
-        sleep(1);
-#endif
+        qgp_platform_sleep(1);
     }
 
     QGP_LOG_ERROR("TURN", "Timeout waiting for credentials");

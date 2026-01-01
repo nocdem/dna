@@ -50,11 +50,7 @@ void sol_rpc_rate_limit_delay(void) {
     uint64_t elapsed = now - g_last_request_ms;
     if (elapsed < SOL_RPC_MIN_DELAY_MS && g_last_request_ms > 0) {
         uint64_t delay = SOL_RPC_MIN_DELAY_MS - elapsed;
-#ifdef _WIN32
-        Sleep((DWORD)delay);
-#else
-        usleep((useconds_t)(delay * 1000));
-#endif
+        qgp_platform_sleep_ms((unsigned int)delay);
     }
     g_last_request_ms = get_current_ms();
 }

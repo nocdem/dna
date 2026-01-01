@@ -995,11 +995,28 @@ class DnaEngine {
         dartEvent = MessageSentEvent(messageId);
         break;
       case DnaEventType.DNA_EVENT_CONTACT_ONLINE:
-        // Parse fingerprint from union data
-        dartEvent = ContactOnlineEvent('');
+        // Parse fingerprint from contact_status.fingerprint (offset 0, 129 bytes)
+        final onlineFpBytes = <int>[];
+        for (var i = 0; i < 128; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          onlineFpBytes.add(byte);
+        }
+        final onlineFingerprint = String.fromCharCodes(onlineFpBytes);
+        print('[FLUTTER-EVENT] CONTACT_ONLINE: ${onlineFingerprint.length > 16 ? onlineFingerprint.substring(0, 16) : onlineFingerprint}...');
+        dartEvent = ContactOnlineEvent(onlineFingerprint);
         break;
       case DnaEventType.DNA_EVENT_CONTACT_OFFLINE:
-        dartEvent = ContactOfflineEvent('');
+        // Parse fingerprint from contact_status.fingerprint (offset 0, 129 bytes)
+        final offlineFpBytes = <int>[];
+        for (var i = 0; i < 128; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          offlineFpBytes.add(byte);
+        }
+        final offlineFingerprint = String.fromCharCodes(offlineFpBytes);
+        print('[FLUTTER-EVENT] CONTACT_OFFLINE: ${offlineFingerprint.length > 16 ? offlineFingerprint.substring(0, 16) : offlineFingerprint}...');
+        dartEvent = ContactOfflineEvent(offlineFingerprint);
         break;
       case DnaEventType.DNA_EVENT_IDENTITY_LOADED:
         dartEvent = IdentityLoadedEvent('');
@@ -3578,6 +3595,22 @@ class DnaEngine {
     }
 
     return completer.future;
+  }
+
+  /// Pause presence updates (call when app goes to background)
+  ///
+  /// Stops the heartbeat thread that announces our presence.
+  /// Should be called when Android app goes to background.
+  void pausePresence() {
+    _bindings.dna_engine_pause_presence(_engine);
+  }
+
+  /// Resume presence updates (call when app comes to foreground)
+  ///
+  /// Restarts the heartbeat thread that announces our presence.
+  /// Should be called when Android app comes back to foreground.
+  void resumePresence() {
+    _bindings.dna_engine_resume_presence(_engine);
   }
 
   // ---------------------------------------------------------------------------

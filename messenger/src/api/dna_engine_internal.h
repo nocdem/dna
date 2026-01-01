@@ -466,6 +466,10 @@ struct dna_engine {
     pthread_mutex_t task_mutex;
     pthread_cond_t task_cond;
 
+    /* Presence heartbeat (announces our presence every 4 minutes) */
+    pthread_t presence_heartbeat_thread;
+    atomic_bool presence_active;  /* false when app in background (Android) */
+
     /* Request ID generation */
     atomic_uint_fast64_t next_request_id;
 };

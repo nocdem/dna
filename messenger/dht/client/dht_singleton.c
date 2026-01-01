@@ -5,11 +5,11 @@
 #include "dht_singleton.h"
 #include "../core/dht_context.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 #include "dna_config.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
-#include <unistd.h>
 
 #define LOG_TAG "DHT"
 
@@ -104,7 +104,7 @@ dht_context_t* dht_singleton_get(void)
                 QGP_LOG_INFO(LOG_TAG, "DHT became ready after %d00ms wait", wait_count);
                 break;
             }
-            usleep(100000);  // 100ms
+            qgp_platform_sleep_ms(100);  // 100ms
             wait_count++;
         }
 
@@ -197,7 +197,7 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
     QGP_LOG_WARN(LOG_TAG, "Waiting for DHT connection...");
     int wait_count = 0;
     while (!dht_context_is_ready(g_dht_context) && wait_count < 50) {
-        usleep(100000);  // 100ms
+        qgp_platform_sleep_ms(100);  // 100ms
         wait_count++;
     }
 

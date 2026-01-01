@@ -310,4 +310,16 @@ int qgp_platform_set_app_dirs(const char *data_dir, const char *cache_dir) {
     return 0;
 }
 
+/* ============================================================================
+ * Timing / Delay Operations (Windows Implementation)
+ * ============================================================================ */
+
+void qgp_platform_sleep(unsigned int seconds) {
+    Sleep(seconds * 1000);
+}
+
+void qgp_platform_sleep_ms(unsigned int milliseconds) {
+    Sleep(milliseconds);
+}
+
 #endif /* _WIN32 */

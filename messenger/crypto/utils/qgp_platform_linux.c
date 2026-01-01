@@ -369,3 +369,15 @@ const char* qgp_platform_ca_bundle_path(void) {
      * Return NULL to let curl use system defaults */
     return NULL;
 }
+
+/* ============================================================================
+ * Timing / Delay Operations (Linux Implementation)
+ * ============================================================================ */
+
+void qgp_platform_sleep(unsigned int seconds) {
+    sleep(seconds);
+}
+
+void qgp_platform_sleep_ms(unsigned int milliseconds) {
+    usleep(milliseconds * 1000);
+}

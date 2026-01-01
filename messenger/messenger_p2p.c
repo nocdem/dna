@@ -33,11 +33,8 @@
 #include <pthread.h>
 #include <time.h>
 
-// Platform-specific headers
-#ifdef _WIN32
-#include <windows.h>
-#define sleep(s) Sleep((s) * 1000)
-#else
+// Platform-specific headers (qgp_platform.h provides cross-platform sleep)
+#ifndef _WIN32
 #include <unistd.h>
 #include <pwd.h>
 #include <sys/types.h>
