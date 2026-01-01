@@ -383,4 +383,16 @@ void qgp_platform_sleep_ms(unsigned int milliseconds) {
     Sleep(milliseconds);
 }
 
+/* ============================================================================
+ * Secure Memory Wiping (Windows Implementation)
+ * ============================================================================ */
+
+void qgp_secure_memzero(void *ptr, size_t len) {
+    if (!ptr || len == 0) {
+        return;
+    }
+    /* Use Windows SecureZeroMemory - guaranteed not to be optimized away */
+    SecureZeroMemory(ptr, len);
+}
+
 #endif /* _WIN32 */
