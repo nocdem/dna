@@ -136,8 +136,8 @@ int dna_feed_make_comment_id(const char *fingerprint, char *comment_id_out) {
     }
 
     /* Format: fingerprint_timestamp_random */
-    snprintf(comment_id_out, 200, "%s_%lu_%02x%02x%02x%02x",
-             fingerprint, timestamp_ms,
+    snprintf(comment_id_out, 200, "%s_%llu_%02x%02x%02x%02x",
+             fingerprint, (unsigned long long)timestamp_ms,
              random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3]);
 
     return 0;
@@ -489,7 +489,7 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
     }
 
     const char *json_data = json_object_to_json_string(arr);
-    QGP_LOG_INFO(LOG_TAG, "Publishing %zu comments to DHT (value_id=%lu)...\n", my_count + 1, my_value_id);
+    QGP_LOG_INFO(LOG_TAG, "Publishing %zu comments to DHT (value_id=%llu)...\n", my_count + 1, (unsigned long long)my_value_id);
 
     /* Publish as multi-owner signed value */
     ret = dht_put_signed(dht_ctx, (const uint8_t *)comments_key, strlen(comments_key),

@@ -311,8 +311,8 @@ int dht_verify_contact_request(const dht_contact_request_t *request) {
     /* Check expiry */
     uint64_t now = (uint64_t)time(NULL);
     if (request->expiry < now) {
-        QGP_LOG_WARN(LOG_TAG, "Request expired (expiry=%lu, now=%lu)\n",
-                request->expiry, now);
+        QGP_LOG_WARN(LOG_TAG, "Request expired (expiry=%llu, now=%llu)\n",
+                (unsigned long long)request->expiry, (unsigned long long)now);
         return -1;
     }
 
@@ -560,7 +560,7 @@ int dht_send_contact_request(
     /* Generate value_id from sender's fingerprint (ensures unique per-sender) */
     uint64_t value_id = dht_fingerprint_to_value_id(sender_fingerprint);
 
-    QGP_LOG_INFO(LOG_TAG, "Publishing request to inbox with value_id=0x%lX\n", value_id);
+    QGP_LOG_INFO(LOG_TAG, "Publishing request to inbox with value_id=0x%llX\n", (unsigned long long)value_id);
 
     /* Publish to DHT with signed put */
     int put_result = dht_put_signed(

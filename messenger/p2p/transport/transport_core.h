@@ -22,8 +22,10 @@
     #include <ws2tcpip.h>
     #include <windows.h>
     #include <iphlpapi.h>
+    #ifdef _MSC_VER
     #pragma comment(lib, "ws2_32.lib")
     #pragma comment(lib, "iphlpapi.lib")
+    #endif
 
     #define close closesocket
     typedef int socklen_t;

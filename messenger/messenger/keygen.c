@@ -2,6 +2,11 @@
  * DNA Messenger - Key Generation Module Implementation
  */
 
+// Windows: winsock2.h must be included before windows.h (pulled in by other headers)
+#ifdef _WIN32
+#include <winsock2.h>
+#endif
+
 #include "keygen.h"
 #include <stdio.h>
 #include <stdlib.h>

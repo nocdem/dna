@@ -14,7 +14,7 @@ int optind = 1;
 int opterr = 1;
 int optopt = 0;
 
-static char *nextchar = NULL;
+/* nextchar reserved for future getopt_long support */
 
 int getopt(int argc, char * const argv[], const char *optstring) {
     static int sp = 1;

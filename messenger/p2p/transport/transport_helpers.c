@@ -267,8 +267,8 @@ int stun_get_public_ip(char *ip_out, size_t len) {
  */
 int create_presence_json(const char *ips, uint16_t port, char *json_out, size_t len) {
     int written = snprintf(json_out, len,
-                          "{\"ips\":\"%s\",\"port\":%d,\"timestamp\":%ld}",
-                          ips, port, time(NULL));
+                          "{\"ips\":\"%s\",\"port\":%d,\"timestamp\":%lld}",
+                          ips, port, (long long)time(NULL));
     return (written >= 0 && (size_t)written < len) ? 0 : -1;
 }
 

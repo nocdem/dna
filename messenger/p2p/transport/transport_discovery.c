@@ -282,14 +282,14 @@ int p2p_send_message(
             int sockfd = socket(AF_INET, SOCK_STREAM, 0);
             if (sockfd >= 0) {
                 // Set connection timeout (1 second per IP - faster fallback)
-                struct timeval timeout;
-                timeout.tv_sec = 1;
-                timeout.tv_usec = 0;
 #ifdef _WIN32
                 DWORD timeout_ms = 1000;
                 setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout_ms, sizeof(timeout_ms));
                 setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout_ms, sizeof(timeout_ms));
 #else
+                struct timeval timeout;
+                timeout.tv_sec = 1;
+                timeout.tv_usec = 0;
                 setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
                 setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 #endif

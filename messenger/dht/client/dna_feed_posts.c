@@ -158,8 +158,8 @@ int dna_feed_make_post_id(const char *fingerprint, char *post_id_out) {
     }
 
     /* Format: fingerprint_timestamp_random */
-    snprintf(post_id_out, 200, "%s_%lu_%02x%02x%02x%02x",
-             fingerprint, timestamp_ms,
+    snprintf(post_id_out, 200, "%s_%llu_%02x%02x%02x%02x",
+             fingerprint, (unsigned long long)timestamp_ms,
              random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3]);
 
     return 0;
@@ -611,7 +611,7 @@ static int save_poster_bucket(dht_context_t *dht_ctx, const char *channel_id, co
     uint64_t contrib_value_id = 1;
     dht_get_owner_value_id(dht_ctx, &contrib_value_id);
 
-    QGP_LOG_INFO(LOG_TAG, "Registering contributor in bucket index (value_id=%lu)\n", contrib_value_id);
+    QGP_LOG_INFO(LOG_TAG, "Registering contributor in bucket index (value_id=%llu)\n", (unsigned long long)contrib_value_id);
     ret = dht_put_signed(dht_ctx, (const uint8_t *)contrib_key, strlen(contrib_key),
                          (const uint8_t *)poster_fingerprint, strlen(poster_fingerprint),
                          contrib_value_id, DNA_FEED_TTL_SECONDS);
