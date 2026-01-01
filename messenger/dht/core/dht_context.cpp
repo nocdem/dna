@@ -912,8 +912,8 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
             sprintf(&key_hex_start[i * 2], "%02x", key[i]);
         }
         key_hex_start[40] = '\0';
-        QGP_LOG_DEBUG("DHT", "PUT_SIGNED: key=%s... (%zu bytes, TTL=%us, type=0x%x, id=%lu)",
-                     key_hex_start, value_len, ttl_seconds, dht_value->type, value_id);
+        QGP_LOG_DEBUG("DHT", "PUT_SIGNED: key=%s... (%zu bytes, TTL=%us, type=0x%x, id=%llu)",
+                     key_hex_start, value_len, ttl_seconds, dht_value->type, (unsigned long long)value_id);
 
         // Use putSigned() instead of put() to enable editing/replacement
         // Note: putSigned() doesn't support creation_time parameter (uses current time)
@@ -1002,8 +1002,8 @@ extern "C" int dht_republish_packed(dht_context_t *ctx,
 
         // Log details about what we're republishing
         bool is_signed = value->owner && !value->signature.empty();
-        QGP_LOG_DEBUG("DHT", "REPUBLISH_PACKED: %s (type=0x%x, id=%lu, data=%zu bytes, signed=%s)",
-                     hash.toString().c_str(), value->type, value->id, value->data.size(), is_signed ? "YES" : "no");
+        QGP_LOG_DEBUG("DHT", "REPUBLISH_PACKED: %s (type=0x%x, id=%llu, data=%zu bytes, signed=%s)",
+                     hash.toString().c_str(), value->type, (unsigned long long)value->id, value->data.size(), is_signed ? "YES" : "no");
 
         // Put the value back to the DHT network exactly as-is
         // permanent=true so it maintains storage behavior
@@ -1085,7 +1085,7 @@ extern "C" int dht_get(dht_context_t *ctx,
         if (status == std::future_status::timeout) {
             auto network_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start_network).count();
-            QGP_LOG_INFO("DHT", "GET: Timeout after %ldms", network_ms);
+            QGP_LOG_INFO("DHT", "GET: Timeout after %lldms", (long long)network_ms);
             return -2;  // Timeout error
         }
 
@@ -1094,14 +1094,14 @@ extern "C" int dht_get(dht_context_t *ctx,
             std::chrono::steady_clock::now() - start_network).count();
 
         if (values.empty()) {
-            QGP_LOG_INFO("DHT", "Value not found (took %ldms)", network_ms);
+            QGP_LOG_INFO("DHT", "Value not found (took %lldms)", (long long)network_ms);
             return -1;
         }
 
         // Get first value
         auto val = values[0];
         if (!val || val->data.empty()) {
-            QGP_LOG_INFO("DHT", "Value empty (took %ldms)", network_ms);
+            QGP_LOG_INFO("DHT", "Value empty (took %lldms)", (long long)network_ms);
             return -1;
         }
 
@@ -1122,8 +1122,8 @@ extern "C" int dht_get(dht_context_t *ctx,
         auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start_total).count();
 
-        QGP_LOG_INFO("DHT", "GET successful: %zu bytes (network: %ldms, copy: %ldms, total: %ldms)",
-                     val->data.size(), network_ms, copy_ms, total_ms);
+        QGP_LOG_INFO("DHT", "GET successful: %zu bytes (network: %lldms, copy: %lldms, total: %lldms)",
+                     val->data.size(), (long long)network_ms, (long long)copy_ms, (long long)total_ms);
 
         return 0;
     } catch (const std::exception& e) {
@@ -1279,12 +1279,12 @@ extern "C" int dht_get_all(dht_context_t *ctx,
 
             // Debug: show value details including owner
             if (val->owner && val->owner->getId()) {
-                QGP_LOG_INFO("DHT", "  Value %zu: %zu bytes, owner=%s..., id=%lu, type=0x%x",
+                QGP_LOG_INFO("DHT", "  Value %zu: %zu bytes, owner=%s..., id=%llu, type=0x%x",
                              i+1, val->data.size(), val->owner->getId().toString().substr(0, 16).c_str(),
-                             val->id, val->type);
+                             (unsigned long long)val->id, val->type);
             } else {
-                QGP_LOG_INFO("DHT", "  Value %zu: %zu bytes, id=%lu, type=0x%x",
-                             i+1, val->data.size(), val->id, val->type);
+                QGP_LOG_INFO("DHT", "  Value %zu: %zu bytes, id=%llu, type=0x%x",
+                             i+1, val->data.size(), (unsigned long long)val->id, val->type);
             }
         }
 
