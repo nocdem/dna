@@ -82,6 +82,30 @@ int qgp_platform_is_directory(const char *path);
  */
 int qgp_platform_rmdir_recursive(const char *path);
 
+/**
+ * Read entire file into memory
+ *
+ * Allocates buffer and reads file contents. Caller must free() the buffer.
+ *
+ * @param path File path to read
+ * @param data Output pointer to allocated buffer (caller must free)
+ * @param size Output size of data read
+ * @return 0 on success, -1 on failure
+ */
+int qgp_platform_read_file(const char *path, uint8_t **data, size_t *size);
+
+/**
+ * Write data to file
+ *
+ * Creates or overwrites file with given data.
+ *
+ * @param path File path to write
+ * @param data Data to write
+ * @param size Size of data
+ * @return 0 on success, -1 on failure
+ */
+int qgp_platform_write_file(const char *path, const uint8_t *data, size_t size);
+
 /* ============================================================================
  * Path Operations
  * ============================================================================ */

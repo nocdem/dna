@@ -8,9 +8,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_compiler.h"
 #include "crypto/utils/key_encryption.h"
+#include "qgp.h"  /* For write_armored_file */
+
+#define LOG_TAG "KEY"
 
 // ============================================================================
 // KEY MEMORY MANAGEMENT
@@ -350,16 +356,6 @@ int qgp_pubkey_load(const char *path, qgp_key_t **key_out) {
 // ============================================================================
 
 /**
- * Securely wipe memory
- */
-static void qgp_secure_memzero(void *ptr, size_t len) {
-    volatile uint8_t *p = (volatile uint8_t *)ptr;
-    while (len--) {
-        *p++ = 0;
-    }
-}
-
-/**
  * Save private key with optional password encryption
  *
  * @param key: Key to save
@@ -542,4 +538,196 @@ cleanup:
  */
 bool qgp_key_file_is_encrypted(const char *path) {
     return key_file_is_encrypted(path);
+}
+
+// ============================================================================
+// PUBLIC KEY EXPORT
+// ============================================================================
+
+/* Public key bundle file format */
+#define PQSIGNUM_PUBKEY_MAGIC "PQPUBKEY"
+#define PQSIGNUM_PUBKEY_VERSION 0x02  /* Version 2: Category 5 key sizes */
+
+PACK_STRUCT_BEGIN
+typedef struct {
+    char magic[8];              /* "PQPUBKEY" */
+    uint8_t version;            /* 0x02 (Category 5) */
+    uint8_t sign_key_type;      /* Signing algorithm type */
+    uint8_t enc_key_type;       /* Encryption algorithm type */
+    uint8_t reserved;           /* Reserved */
+    uint32_t sign_pubkey_size;  /* Signing public key size */
+    uint32_t enc_pubkey_size;   /* Encryption public key size */
+} PACK_STRUCT_END pqsignum_pubkey_header_t;
+
+static const char* get_sign_algorithm_name(qgp_key_type_t type) {
+    switch (type) {
+        case QGP_KEY_TYPE_DSA87:
+            return "ML-DSA-87";
+        case QGP_KEY_TYPE_KEM1024:
+            return "ML-KEM-1024";
+        default:
+            return "Unknown";
+    }
+}
+
+/**
+ * Export public keys to shareable file
+ *
+ * Creates a .pub file containing bundled signing + encryption public keys.
+ *
+ * @param name: Key name (without extension)
+ * @param key_dir: Directory containing .dsa and .kem files
+ * @param output_file: Output .pub file path
+ * @return: 0 on success, non-zero on error
+ */
+int qgp_key_export_pubkey(const char *name, const char *key_dir, const char *output_file) {
+    qgp_key_t *sign_key = NULL;
+    qgp_key_t *enc_key = NULL;
+    uint8_t *sign_pubkey = NULL;
+    uint8_t *enc_pubkey = NULL;
+    uint64_t sign_pubkey_size = 0;
+    uint64_t enc_pubkey_size = 0;
+    int ret = -1;
+
+    QGP_LOG_INFO(LOG_TAG, "Exporting public keys for: %s", name);
+
+    /* Load signing key */
+    char sign_filename[512];
+    snprintf(sign_filename, sizeof(sign_filename), "%s.dsa", name);
+    char *sign_key_path = qgp_platform_join_path(key_dir, sign_filename);
+    if (!sign_key_path) {
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for sign key path");
+        return -1;
+    }
+
+    if (!qgp_platform_file_exists(sign_key_path)) {
+        QGP_LOG_ERROR(LOG_TAG, "Signing key not found: %s", sign_key_path);
+        free(sign_key_path);
+        return -1;
+    }
+
+    if (qgp_key_load(sign_key_path, &sign_key) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load signing key");
+        free(sign_key_path);
+        return -1;
+    }
+    free(sign_key_path);
+
+    /* Load encryption key */
+    char enc_filename[512];
+    snprintf(enc_filename, sizeof(enc_filename), "%s.kem", name);
+    char *enc_key_path = qgp_platform_join_path(key_dir, enc_filename);
+    if (!enc_key_path) {
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for enc key path");
+        goto cleanup;
+    }
+
+    if (!qgp_platform_file_exists(enc_key_path)) {
+        QGP_LOG_ERROR(LOG_TAG, "Encryption key not found: %s", enc_key_path);
+        free(enc_key_path);
+        goto cleanup;
+    }
+
+    if (qgp_key_load(enc_key_path, &enc_key) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load encryption key");
+        free(enc_key_path);
+        goto cleanup;
+    }
+    free(enc_key_path);
+
+    /* Extract public keys */
+    if (sign_key->type == QGP_KEY_TYPE_DSA87) {
+        sign_pubkey_size = sign_key->public_key_size;
+        sign_pubkey = malloc(sign_pubkey_size);
+        if (!sign_pubkey) {
+            QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
+            goto cleanup;
+        }
+        memcpy(sign_pubkey, sign_key->public_key, sign_pubkey_size);
+    }
+
+    enc_pubkey_size = enc_key->public_key_size;
+    if (enc_pubkey_size != 1568) {  /* Kyber1024 public key size */
+        QGP_LOG_ERROR(LOG_TAG, "Invalid Kyber1024 public key size");
+        goto cleanup;
+    }
+    enc_pubkey = malloc(enc_pubkey_size);
+    if (!enc_pubkey) {
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
+        goto cleanup;
+    }
+    memcpy(enc_pubkey, enc_key->public_key, enc_pubkey_size);
+
+    /* Build header */
+    pqsignum_pubkey_header_t header;
+    memset(&header, 0, sizeof(header));
+    memcpy(header.magic, PQSIGNUM_PUBKEY_MAGIC, 8);
+    header.version = PQSIGNUM_PUBKEY_VERSION;
+    header.sign_key_type = (uint8_t)sign_key->type;
+    header.enc_key_type = (uint8_t)enc_key->type;
+    header.reserved = 0;
+    header.sign_pubkey_size = (uint32_t)sign_pubkey_size;
+    header.enc_pubkey_size = (uint32_t)enc_pubkey_size;
+
+    /* Calculate total size and build bundle */
+    size_t total_size = sizeof(header) + sign_pubkey_size + enc_pubkey_size;
+    uint8_t *bundle = malloc(total_size);
+    if (!bundle) {
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
+        goto cleanup;
+    }
+
+    memcpy(bundle, &header, sizeof(header));
+    memcpy(bundle + sizeof(header), sign_pubkey, sign_pubkey_size);
+    memcpy(bundle + sizeof(header) + sign_pubkey_size, enc_pubkey, enc_pubkey_size);
+
+    /* Build armor headers */
+    static char header_buf[5][128];
+    const char *armor_headers[5];
+    size_t header_count = 0;
+
+    snprintf(header_buf[0], sizeof(header_buf[0]), "Version: qgp 1.1");
+    armor_headers[header_count++] = header_buf[0];
+
+    snprintf(header_buf[1], sizeof(header_buf[1]), "Name: %s", name);
+    armor_headers[header_count++] = header_buf[1];
+
+    snprintf(header_buf[2], sizeof(header_buf[2]), "SigningAlgorithm: %s",
+             get_sign_algorithm_name(sign_key->type));
+    armor_headers[header_count++] = header_buf[2];
+
+    snprintf(header_buf[3], sizeof(header_buf[3]), "EncryptionAlgorithm: ML-KEM-1024");
+    armor_headers[header_count++] = header_buf[3];
+
+    time_t now = time(NULL);
+    struct tm *tm_info = gmtime(&now);
+    char time_str[64];
+    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S UTC", tm_info);
+    snprintf(header_buf[4], sizeof(header_buf[4]), "Created: %s", time_str);
+    armor_headers[header_count++] = header_buf[4];
+
+    /* Write armored file */
+    if (write_armored_file(output_file, "PUBLIC KEY", bundle, total_size,
+                          armor_headers, header_count) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to write ASCII armored file");
+        free(bundle);
+        goto cleanup;
+    }
+
+    free(bundle);
+    QGP_LOG_INFO(LOG_TAG, "Public keys exported to: %s", output_file);
+    ret = 0;
+
+cleanup:
+    if (sign_pubkey) free(sign_pubkey);
+    if (enc_pubkey) free(enc_pubkey);
+    if (sign_key) qgp_key_free(sign_key);
+    if (enc_key) qgp_key_free(enc_key);
+
+    return ret;
+}
+
+/* Legacy wrapper for compatibility */
+int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_file) {
+    return qgp_key_export_pubkey(name, key_dir, output_file);
 }

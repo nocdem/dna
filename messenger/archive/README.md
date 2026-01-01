@@ -13,12 +13,14 @@ This directory contains deprecated legacy code that is no longer actively mainta
 - **Do not use for new development**
 
 ### legacy-tools/
-**Legacy CLI Tools**
-- Status: Archived as of 2025-11-21
-- Contains: keygen, sign, verify, encrypt, decrypt, export, keyring, lookup_name, utils
-- Replaced by: ImGui GUI provides all functionality through UI
-- Still compiled: Yes (linked into `dna_lib` for internal use)
-- **Do not use directly - use GUI instead**
+**Legacy CLI Tools (REMOVED)**
+- Status: **DELETED** as of 2026-01-01
+- Previously contained: keygen, sign, verify, encrypt, decrypt, export, keyring, lookup_name, utils
+- Functions moved to:
+  - `cmd_restore_key_from_seed` → `messenger/keygen.c`
+  - `cmd_export_pubkey` → `crypto/utils/qgp_key.c`
+  - `read_file_data/write_file_data` → `crypto/utils/qgp_platform_*.c`
+  - All other functions were unused and removed
 
 ## Why Archived?
 
@@ -44,23 +46,12 @@ If you were using legacy CLI tools directly:
 
 ## Build System
 
-Legacy code is still compiled as part of `dna_lib` (for internal use), but paths are updated:
-```cmake
-# CMakeLists.txt references
-archive/legacy-tools/keygen.c
-archive/legacy-tools/sign.c
-# etc.
-```
-
-## Future
-
-These components may be removed entirely in a future major version. If you depend on any of this code:
-1. Migrate to ImGui GUI now
-2. Or copy the code into your own project (it's open source)
-3. Check ROADMAP.md for deprecation timeline
+Legacy-tools has been removed from the build. Functions have been moved to appropriate modules:
+- Key restoration: `messenger/keygen.c`
+- Public key export: `crypto/utils/qgp_key.c`
+- File I/O: `crypto/utils/qgp_platform_*.c` (all platforms)
 
 ---
 
-**Last Updated:** 2025-11-21
-**Status:** Archived, not maintained
-**Replacement:** ImGui GUI (`imgui_gui/`)
+**Last Updated:** 2026-01-01
+**Status:** legacy-tools REMOVED, legacy-gui archived

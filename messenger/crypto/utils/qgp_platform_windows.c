@@ -138,6 +138,67 @@ int qgp_platform_rmdir_recursive(const char *path) {
     return result;
 }
 
+int qgp_platform_read_file(const char *path, uint8_t **data, size_t *size) {
+    if (!path || !data || !size) {
+        return -1;
+    }
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        return -1;
+    }
+
+    /* Get file size */
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (file_size < 0) {
+        fclose(f);
+        return -1;
+    }
+
+    /* Allocate buffer */
+    *data = malloc((size_t)file_size);
+    if (!*data) {
+        fclose(f);
+        return -1;
+    }
+
+    /* Read data */
+    size_t read_bytes = fread(*data, 1, (size_t)file_size, f);
+    fclose(f);
+
+    if (read_bytes != (size_t)file_size) {
+        free(*data);
+        *data = NULL;
+        return -1;
+    }
+
+    *size = (size_t)file_size;
+    return 0;
+}
+
+int qgp_platform_write_file(const char *path, const uint8_t *data, size_t size) {
+    if (!path || !data) {
+        return -1;
+    }
+
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        return -1;
+    }
+
+    size_t written = fwrite(data, 1, size, f);
+    fclose(f);
+
+    if (written != size) {
+        return -1;
+    }
+
+    return 0;
+}
+
 /* ============================================================================
  * Path Operations (Windows Implementation)
  * ============================================================================ */

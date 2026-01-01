@@ -132,7 +132,7 @@ dna_context_t* dna_context_new(void) {
     }
 
     // Use QGP keyring for Phase 2
-    const char *home = get_home_dir();
+    const char *home = qgp_platform_home_dir();
     if (!home) {
         free(ctx);
         return NULL;
@@ -333,7 +333,7 @@ dna_error_t dna_encrypt_message(
             }
         } else {
             // Binary format - read entire file
-            if (read_file_data(pubkey_path, &bundle_data, &bundle_size) != 0) {
+            if (qgp_platform_read_file(pubkey_path, &bundle_data, &bundle_size) != 0) {
                 free(pubkey_path);
                 result = DNA_ERROR_KEY_LOAD;
                 goto cleanup;
@@ -1679,4 +1679,22 @@ dna_error_t dna_decrypt_message_gsk(
     *plaintext_out = plaintext;
     *plaintext_len_out = plaintext_len;
     return DNA_OK;
+}
+
+// ============================================================================
+// LEGACY KEYRING STUBS
+// ============================================================================
+// These functions existed in archive/legacy-tools/keyring.c but are no longer
+// used in DNA Messenger (which uses per-identity key storage, not a keyring).
+// They return NULL to indicate "not found" for API compatibility.
+
+char* keyring_find_key(const char *name) {
+    (void)name;
+    return NULL;
+}
+
+char* keyring_find_private_key(const char *name, const char *key_type) {
+    (void)name;
+    (void)key_type;
+    return NULL;
 }

@@ -693,3 +693,240 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
 }
 
 // NOTE: messenger_restore_keys_from_file() was removed - dead code using old path structure
+
+// ============================================================================
+// KEY RESTORATION FROM BIP39 SEED
+// ============================================================================
+
+static qgp_key_type_t get_sign_key_type(const char *algo) {
+    if (strcasecmp(algo, "dilithium") == 0) {
+        return QGP_KEY_TYPE_DSA87;
+    } else {
+        fprintf(stderr, "Error: Unknown algorithm '%s'\n", algo);
+        return QGP_KEY_TYPE_INVALID;
+    }
+}
+
+/**
+ * Restore keys from BIP39 recovery seed
+ *
+ * Prompts user for mnemonic and passphrase via stdin, then regenerates
+ * the signing and encryption keys deterministically.
+ *
+ * @param name: Identity name
+ * @param algo: Signing algorithm ("dilithium")
+ * @param output_dir: Directory to save keys
+ * @return: 0 on success, non-zero on error
+ */
+int cmd_restore_key_from_seed(const char *name, const char *algo, const char *output_dir) {
+    qgp_key_t *sign_key = NULL;
+    qgp_key_t *enc_key = NULL;
+    char *sign_key_path = NULL;
+    char *enc_key_path = NULL;
+    int ret = -1;
+
+    char mnemonic[BIP39_MAX_MNEMONIC_LENGTH];
+    char passphrase[256];
+    uint8_t signing_seed[32];
+    uint8_t encryption_seed[32];
+
+    printf("Restoring keypair from BIP39 recovery seed for: %s\n", name);
+    printf("  Signing algorithm: %s\n", algo);
+    printf("  Encryption: ML-KEM-1024 (post-quantum)\n");
+    printf("  Output directory: %s\n", output_dir);
+    printf("\n");
+
+    qgp_key_type_t sign_key_type = get_sign_key_type(algo);
+    if (sign_key_type == QGP_KEY_TYPE_INVALID) {
+        return -1;
+    }
+
+    /* Step 1: Prompt for BIP39 mnemonic */
+    printf("[Step 1/4] Enter your 24-word BIP39 recovery seed\n");
+    printf("(separated by spaces)\n\n");
+
+    if (!fgets(mnemonic, sizeof(mnemonic), stdin)) {
+        fprintf(stderr, "Error: Failed to read mnemonic\n");
+        return -1;
+    }
+
+    size_t len = strlen(mnemonic);
+    if (len > 0 && mnemonic[len - 1] == '\n') {
+        mnemonic[len - 1] = '\0';
+    }
+
+    /* Step 2: Validate mnemonic */
+    printf("\n[Step 2/4] Validating mnemonic...\n");
+    if (!bip39_validate_mnemonic(mnemonic)) {
+        fprintf(stderr, "Error: Invalid mnemonic\n");
+        memset(mnemonic, 0, sizeof(mnemonic));
+        return -1;
+    }
+    printf("  Mnemonic valid\n");
+
+    /* Step 3: Prompt for passphrase */
+    printf("\n[Step 3/4] Enter passphrase (if you used one during generation)\n");
+    printf("Press Enter if no passphrase was used:\n");
+    if (!fgets(passphrase, sizeof(passphrase), stdin)) {
+        fprintf(stderr, "Error: Failed to read passphrase\n");
+        memset(mnemonic, 0, sizeof(mnemonic));
+        return -1;
+    }
+
+    len = strlen(passphrase);
+    if (len > 0 && passphrase[len - 1] == '\n') {
+        passphrase[len - 1] = '\0';
+    }
+
+    /* Step 4: Derive seeds */
+    printf("\n[Step 4/4] Deriving seeds from mnemonic...\n");
+    if (qgp_derive_seeds_from_mnemonic(mnemonic, passphrase, signing_seed, encryption_seed, NULL) != 0) {
+        fprintf(stderr, "Error: Seed derivation failed\n");
+        memset(mnemonic, 0, sizeof(mnemonic));
+        memset(passphrase, 0, sizeof(passphrase));
+        return -1;
+    }
+
+    memset(mnemonic, 0, sizeof(mnemonic));
+    memset(passphrase, 0, sizeof(passphrase));
+
+    printf("  Seeds derived\n");
+    printf("\nRegenerating keys from seed...\n");
+
+    /* Create output directory */
+    if (!qgp_platform_is_directory(output_dir)) {
+        if (qgp_platform_mkdir(output_dir) != 0) {
+            fprintf(stderr, "Error: Cannot create directory: %s\n", output_dir);
+            goto cleanup;
+        }
+    }
+
+    /* Build key paths */
+    char sign_filename[512];
+    char enc_filename[512];
+    snprintf(sign_filename, sizeof(sign_filename), "%s.dsa", name);
+    snprintf(enc_filename, sizeof(enc_filename), "%s.kem", name);
+
+    sign_key_path = qgp_platform_join_path(output_dir, sign_filename);
+    enc_key_path = qgp_platform_join_path(output_dir, enc_filename);
+
+    if (!sign_key_path || !enc_key_path) {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        goto cleanup;
+    }
+
+    if (qgp_platform_file_exists(sign_key_path)) {
+        fprintf(stderr, "Error: Signing key already exists: %s\n", sign_key_path);
+        goto cleanup;
+    }
+
+    if (qgp_platform_file_exists(enc_key_path)) {
+        fprintf(stderr, "Error: Encryption key already exists: %s\n", enc_key_path);
+        goto cleanup;
+    }
+
+    /* Generate signing key */
+    printf("\n  [1/2] Regenerating signing key from seed...\n");
+
+    sign_key = qgp_key_new(QGP_KEY_TYPE_DSA87, QGP_KEY_PURPOSE_SIGNING);
+    if (!sign_key) {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        goto cleanup;
+    }
+
+    strncpy(sign_key->name, name, sizeof(sign_key->name) - 1);
+
+    uint8_t *dilithium_pk = calloc(1, QGP_DSA87_PUBLICKEYBYTES);
+    uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
+
+    if (!dilithium_pk || !dilithium_sk) {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        free(dilithium_pk);
+        free(dilithium_sk);
+        goto cleanup;
+    }
+
+    if (qgp_dsa87_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
+        fprintf(stderr, "Error: DSA-87 key regeneration failed\n");
+        free(dilithium_pk);
+        free(dilithium_sk);
+        goto cleanup;
+    }
+
+    sign_key->public_key = dilithium_pk;
+    sign_key->public_key_size = QGP_DSA87_PUBLICKEYBYTES;
+    sign_key->private_key = dilithium_sk;
+    sign_key->private_key_size = QGP_DSA87_SECRETKEYBYTES;
+
+    if (qgp_key_save(sign_key, sign_key_path) != 0) {
+        fprintf(stderr, "Error: Failed to save signing key\n");
+        goto cleanup;
+    }
+    printf("  Signing key saved: %s\n", sign_key_path);
+
+    /* Verify signing key */
+    const char *test_data = "verification-test";
+    size_t test_len = strlen(test_data);
+    uint8_t test_sig[QGP_DSA87_SIGNATURE_BYTES];
+    size_t test_siglen = 0;
+
+    if (qgp_dsa87_sign(test_sig, &test_siglen, (const uint8_t*)test_data, test_len, sign_key->private_key) != 0 ||
+        qgp_dsa87_verify(test_sig, test_siglen, (const uint8_t*)test_data, test_len, sign_key->public_key) != 0) {
+        fprintf(stderr, "Error: Signing key verification failed\n");
+        goto cleanup;
+    }
+    printf("  Signing key verified\n");
+
+    /* Generate encryption key */
+    printf("\n  [2/2] Regenerating encryption key from seed...\n");
+
+    enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
+    if (!enc_key) {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        goto cleanup;
+    }
+
+    strncpy(enc_key->name, name, sizeof(enc_key->name) - 1);
+
+    uint8_t *kyber_pk = calloc(1, 1568);
+    uint8_t *kyber_sk = calloc(1, 3168);
+
+    if (!kyber_pk || !kyber_sk) {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        free(kyber_pk);
+        free(kyber_sk);
+        goto cleanup;
+    }
+
+    if (crypto_kem_keypair_derand(kyber_pk, kyber_sk, encryption_seed) != 0) {
+        fprintf(stderr, "Error: KEM-1024 key regeneration failed\n");
+        free(kyber_pk);
+        free(kyber_sk);
+        goto cleanup;
+    }
+
+    enc_key->public_key = kyber_pk;
+    enc_key->public_key_size = 1568;
+    enc_key->private_key = kyber_sk;
+    enc_key->private_key_size = 3168;
+
+    if (qgp_key_save(enc_key, enc_key_path) != 0) {
+        fprintf(stderr, "Error: Failed to save encryption key\n");
+        goto cleanup;
+    }
+    printf("  Encryption key saved: %s\n", enc_key_path);
+
+    printf("\nKeys successfully restored from recovery seed!\n");
+    ret = 0;
+
+cleanup:
+    memset(signing_seed, 0, sizeof(signing_seed));
+    memset(encryption_seed, 0, sizeof(encryption_seed));
+
+    if (sign_key_path) free(sign_key_path);
+    if (enc_key_path) free(enc_key_path);
+    if (sign_key) qgp_key_free(sign_key);
+    if (enc_key) qgp_key_free(enc_key);
+
+    return ret;
+}

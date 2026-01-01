@@ -72,14 +72,11 @@ endif()
 # Common Source Files
 # =============================================================================
 set(COMMON_SOURCES
-    archive/legacy-tools/keygen.c
-    archive/legacy-tools/sign.c
-    archive/legacy-tools/verify.c
-    archive/legacy-tools/export.c
-    archive/legacy-tools/encrypt.c
-    archive/legacy-tools/decrypt.c
-    archive/legacy-tools/keyring.c
-    archive/legacy-tools/utils.c
+    # NOTE: archive/legacy-tools/ removed - functions moved to:
+    #   cmd_export_pubkey → crypto/utils/qgp_key.c
+    #   cmd_restore_key_from_seed → messenger/keygen.c
+    #   read_file_data → qgp_platform_*.c
+    #   get_home_dir, build_path, file_exists → replaced with qgp_platform_* calls
     crypto/utils/armor.c
     crypto/utils/aes_keywrap.c
     crypto/bip39/bip39.c
