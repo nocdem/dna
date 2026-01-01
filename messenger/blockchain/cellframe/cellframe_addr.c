@@ -8,10 +8,13 @@
 #include "cellframe_minimal.h"  // For cellframe_addr_t (77 bytes)
 #include "../../crypto/utils/base58.h"
 #include "../../crypto/utils/qgp_platform.h"
+#include "../../crypto/utils/qgp_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <openssl/evp.h>
+
+#define LOG_TAG "CELLFRAME"
 
 /**
  * Calculate SHA3-256 hash using OpenSSL
@@ -55,7 +58,7 @@ static int sha3_256(const uint8_t *data, size_t data_len, uint8_t *hash_out) {
 int cellframe_addr_from_pubkey(const uint8_t *pubkey, size_t pubkey_size,
                                  uint64_t net_id, char *address_out) {
     if (!pubkey || pubkey_size < 12 || !address_out) {
-        fprintf(stderr, "cellframe_addr_from_pubkey: Invalid arguments\n");
+        QGP_LOG_ERROR(LOG_TAG, "cellframe_addr_from_pubkey: Invalid arguments");
         return -1;
     }
 
@@ -73,21 +76,21 @@ int cellframe_addr_from_pubkey(const uint8_t *pubkey, size_t pubkey_size,
 
     // Hash the serialized public key with SHA3-256
     if (sha3_256(pubkey, pubkey_size, addr.data.hash) != 0) {
-        fprintf(stderr, "cellframe_addr_from_pubkey: Failed to hash public key\n");
+        QGP_LOG_ERROR(LOG_TAG, "cellframe_addr_from_pubkey: Failed to hash public key");
         return -1;
     }
 
     // Calculate checksum (SHA3-256 of everything except checksum field)
     size_t data_size = sizeof(addr) - sizeof(addr.checksum);  // 45 bytes (77 - 32)
     if (sha3_256((uint8_t*)&addr, data_size, addr.checksum.raw) != 0) {
-        fprintf(stderr, "cellframe_addr_from_pubkey: Failed to calculate checksum\n");
+        QGP_LOG_ERROR(LOG_TAG, "cellframe_addr_from_pubkey: Failed to calculate checksum");
         return -1;
     }
 
     // Base58 encode the entire structure
     size_t encoded_len = base58_encode(&addr, sizeof(addr), address_out);
     if (encoded_len == 0) {
-        fprintf(stderr, "cellframe_addr_from_pubkey: Base58 encoding failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "cellframe_addr_from_pubkey: Base58 encoding failed");
         return -1;
     }
 
@@ -99,14 +102,14 @@ int cellframe_addr_from_pubkey(const uint8_t *pubkey, size_t pubkey_size,
  */
 int cellframe_addr_for_identity(const char *identity, uint64_t net_id, char *address_out) {
     if (!identity || !address_out) {
-        fprintf(stderr, "cellframe_addr_for_identity: Invalid arguments\n");
+        QGP_LOG_ERROR(LOG_TAG, "cellframe_addr_for_identity: Invalid arguments");
         return -1;
     }
 
     // Build path to public key file
     const char *data_dir = qgp_platform_app_data_dir();
     if (!data_dir) {
-        fprintf(stderr, "cellframe_addr_for_identity: Cannot get data directory\n");
+        QGP_LOG_ERROR(LOG_TAG, "cellframe_addr_for_identity: Cannot get data directory");
         return -1;
     }
 
@@ -117,7 +120,7 @@ int cellframe_addr_for_identity(const char *identity, uint64_t net_id, char *add
     // Read public key file
     FILE *fp = fopen(pubkey_path, "rb");
     if (!fp) {
-        fprintf(stderr, "cellframe_addr_for_identity: Cannot open public key file: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "cellframe_addr_for_identity: Cannot open public key file: %s",
                 pubkey_path);
         return -1;
     }
@@ -128,7 +131,7 @@ int cellframe_addr_for_identity(const char *identity, uint64_t net_id, char *add
     fseek(fp, 0, SEEK_SET);
 
     if (file_size <= 0 || file_size > 100000) {
-        fprintf(stderr, "cellframe_addr_for_identity: Invalid file size: %ld\n", file_size);
+        QGP_LOG_ERROR(LOG_TAG, "cellframe_addr_for_identity: Invalid file size: %ld", file_size);
         fclose(fp);
         return -1;
     }
@@ -136,13 +139,13 @@ int cellframe_addr_for_identity(const char *identity, uint64_t net_id, char *add
     // Read public key data
     uint8_t *pubkey = malloc(file_size);
     if (!pubkey) {
-        fprintf(stderr, "cellframe_addr_for_identity: Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "cellframe_addr_for_identity: Memory allocation failed");
         fclose(fp);
         return -1;
     }
 
     if (fread(pubkey, 1, file_size, fp) != (size_t)file_size) {
-        fprintf(stderr, "cellframe_addr_for_identity: Failed to read public key\n");
+        QGP_LOG_ERROR(LOG_TAG, "cellframe_addr_for_identity: Failed to read public key");
         free(pubkey);
         fclose(fp);
         return -1;
@@ -188,7 +191,7 @@ int cellframe_addr_from_str(const char *str, void *addr_out) {
     // Decode base58 string to binary (should be 49 bytes - matches Cellframe SDK)
     size_t decoded_len = base58_decode(str, (uint8_t *)addr_out);
     if (decoded_len != sizeof(cellframe_addr_t)) {
-        fprintf(stderr, "cellframe_addr_from_str: Invalid address length: %zu (expected %zu)\n",
+        QGP_LOG_ERROR(LOG_TAG, "cellframe_addr_from_str: Invalid address length: %zu (expected %zu)",
                 decoded_len, sizeof(cellframe_addr_t));
         return -1;
     }

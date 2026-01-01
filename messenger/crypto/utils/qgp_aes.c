@@ -6,10 +6,13 @@
 
 #include "crypto/utils/qgp_aes.h"
 #include "crypto/utils/qgp_random.h"
+#include "crypto/utils/qgp_log.h"
 #include <stdio.h>
 #include <string.h>
 #include <openssl/evp.h>
 #include <openssl/err.h>
+
+#define LOG_TAG "AES"
 
 /**
  * Calculate required buffer size for AES-256-GCM encryption
@@ -36,12 +39,12 @@ int qgp_aes256_encrypt(const uint8_t *key,
                        uint8_t *nonce,
                        uint8_t *tag) {
     if (!key || !plaintext || !ciphertext || !ciphertext_len || !nonce || !tag) {
-        fprintf(stderr, "qgp_aes256_encrypt: NULL parameter\n");
+        QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_encrypt: NULL parameter");
         return -1;
     }
 
     if (plaintext_len == 0) {
-        fprintf(stderr, "qgp_aes256_encrypt: Empty plaintext\n");
+        QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_encrypt: Empty plaintext");
         return -1;
     }
 
@@ -52,53 +55,48 @@ int qgp_aes256_encrypt(const uint8_t *key,
 
     // Generate random 12-byte nonce (GCM standard)
     if (qgp_randombytes(nonce, 12) != 0) {
-        fprintf(stderr, "qgp_aes256_encrypt: Failed to generate nonce\n");
+        QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_encrypt: Failed to generate nonce");
         goto cleanup;
     }
 
     // Create and initialize context
     ctx = EVP_CIPHER_CTX_new();
     if (!ctx) {
-        fprintf(stderr, "qgp_aes256_encrypt: Failed to create context\n");
+        QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_encrypt: Failed to create context");
         goto cleanup;
     }
 
     // Initialize encryption: AES-256-GCM
     if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, key, nonce) != 1) {
-        fprintf(stderr, "qgp_aes256_encrypt: EVP_EncryptInit_ex failed\n");
-        ERR_print_errors_fp(stderr);
+        QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_encrypt: EVP_EncryptInit_ex failed");
         goto cleanup;
     }
 
     // Set AAD (Additional Authenticated Data) - if provided
     if (aad && aad_len > 0) {
         if (EVP_EncryptUpdate(ctx, NULL, &len, aad, aad_len) != 1) {
-            fprintf(stderr, "qgp_aes256_encrypt: Failed to set AAD\n");
-            ERR_print_errors_fp(stderr);
+            QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_encrypt: Failed to set AAD");
             goto cleanup;
         }
     }
 
     // Encrypt plaintext
     if (EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len) != 1) {
-        fprintf(stderr, "qgp_aes256_encrypt: EVP_EncryptUpdate failed\n");
-        ERR_print_errors_fp(stderr);
+        QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_encrypt: EVP_EncryptUpdate failed");
         goto cleanup;
     }
     ciphertext_len_tmp = len;
 
     // Finalize encryption (GCM has no padding, so this just finalizes)
     if (EVP_EncryptFinal_ex(ctx, ciphertext + len, &len) != 1) {
-        fprintf(stderr, "qgp_aes256_encrypt: EVP_EncryptFinal_ex failed\n");
-        ERR_print_errors_fp(stderr);
+        QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_encrypt: EVP_EncryptFinal_ex failed");
         goto cleanup;
     }
     ciphertext_len_tmp += len;
 
     // Get authentication tag (16 bytes)
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, tag) != 1) {
-        fprintf(stderr, "qgp_aes256_encrypt: Failed to get GCM tag\n");
-        ERR_print_errors_fp(stderr);
+        QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_encrypt: Failed to get GCM tag");
         goto cleanup;
     }
 
@@ -127,12 +125,12 @@ int qgp_aes256_decrypt(const uint8_t *key,
                        const uint8_t *tag,
                        uint8_t *plaintext, size_t *plaintext_len) {
     if (!key || !ciphertext || !nonce || !tag || !plaintext || !plaintext_len) {
-        fprintf(stderr, "qgp_aes256_decrypt: NULL parameter\n");
+        QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_decrypt: NULL parameter");
         return -1;
     }
 
     if (ciphertext_len == 0) {
-        fprintf(stderr, "qgp_aes256_decrypt: Empty ciphertext\n");
+        QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_decrypt: Empty ciphertext");
         return -1;
     }
 
@@ -144,38 +142,34 @@ int qgp_aes256_decrypt(const uint8_t *key,
     // Create and initialize context
     ctx = EVP_CIPHER_CTX_new();
     if (!ctx) {
-        fprintf(stderr, "qgp_aes256_decrypt: Failed to create context\n");
+        QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_decrypt: Failed to create context");
         goto cleanup;
     }
 
     // Initialize decryption: AES-256-GCM
     if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, key, nonce) != 1) {
-        fprintf(stderr, "qgp_aes256_decrypt: EVP_DecryptInit_ex failed\n");
-        ERR_print_errors_fp(stderr);
+        QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_decrypt: EVP_DecryptInit_ex failed");
         goto cleanup;
     }
 
     // Set AAD (must match encryption AAD)
     if (aad && aad_len > 0) {
         if (EVP_DecryptUpdate(ctx, NULL, &len, aad, aad_len) != 1) {
-            fprintf(stderr, "qgp_aes256_decrypt: Failed to set AAD\n");
-            ERR_print_errors_fp(stderr);
+            QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_decrypt: Failed to set AAD");
             goto cleanup;
         }
     }
 
     // Decrypt ciphertext
     if (EVP_DecryptUpdate(ctx, plaintext, &len, ciphertext, ciphertext_len) != 1) {
-        fprintf(stderr, "qgp_aes256_decrypt: EVP_DecryptUpdate failed\n");
-        ERR_print_errors_fp(stderr);
+        QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_decrypt: EVP_DecryptUpdate failed");
         goto cleanup;
     }
     plaintext_len_tmp = len;
 
     // Set expected authentication tag
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16, (void*)tag) != 1) {
-        fprintf(stderr, "qgp_aes256_decrypt: Failed to set GCM tag\n");
-        ERR_print_errors_fp(stderr);
+        QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_decrypt: Failed to set GCM tag");
         goto cleanup;
     }
 
@@ -186,8 +180,8 @@ int qgp_aes256_decrypt(const uint8_t *key,
     // - Wrong key/nonce
     if (EVP_DecryptFinal_ex(ctx, plaintext + len, &len) != 1) {
         // Authentication failed - data was tampered with
-        fprintf(stderr, "qgp_aes256_decrypt: Authentication failed (tag verification failed)\n");
-        fprintf(stderr, "Ciphertext or AAD has been tampered with\n");
+        QGP_LOG_ERROR(LOG_TAG, "qgp_aes256_decrypt: Authentication failed (tag verification)");
+        QGP_LOG_ERROR(LOG_TAG, "Ciphertext or AAD has been tampered with");
 
         // Wipe partial plaintext (it's invalid)
         memset(plaintext, 0, plaintext_len_tmp);
