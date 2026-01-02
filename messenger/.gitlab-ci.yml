@@ -497,6 +497,10 @@ build:windows:
   variables:
     GIT_SUBMODULE_STRATEGY: recursive
     MSYS2_PATH: C:\tools\msys64
+    GIT_CONFIG_PARAMETERS: "'core.longPaths=true'"
+  before_script:
+    # Clean Flutter build to avoid long path issues with cached files
+    - if (Test-Path dna_messenger_flutter\build) { Remove-Item -Recurse -Force dna_messenger_flutter\build -ErrorAction SilentlyContinue }
   script:
     # Build native library with MSYS2/MinGW
     - $env:MSYSTEM = "MINGW64"
