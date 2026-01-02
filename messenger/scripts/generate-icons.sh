@@ -7,6 +7,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LOGO="$PROJECT_DIR/logo.svg"
+LOGO_ICON="$PROJECT_DIR/logo-icon.svg"
 FLUTTER_DIR="$PROJECT_DIR/dna_messenger_flutter"
 
 if [ ! -f "$LOGO" ]; then
@@ -82,5 +83,13 @@ svg_to_png "$LOGO" "$FLUTTER_DIR/linux/icons/dna-messenger.png" 256
 convert "$FLUTTER_DIR/linux/icons/dna-messenger.png" "$FLUTTER_DIR/windows/runner/resources/app_icon.ico"
 echo "  Created Windows app_icon.ico (256x256)"
 echo "  Created Linux icon (256x256)"
+
+# Copy logo-icon.svg (transparent version for in-app use)
+if [ -f "$LOGO_ICON" ]; then
+    cp "$LOGO_ICON" "$FLUTTER_DIR/assets/logo-icon.svg"
+    echo "  Copied logo-icon.svg to assets/"
+else
+    echo "  Warning: logo-icon.svg not found, skipping"
+fi
 
 echo "Done! All icons generated."
