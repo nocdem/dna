@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -862,35 +863,73 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
 
   Future<void> _exportLogs(BuildContext context) async {
     final engineAsync = ref.read(engineProvider);
+    final isDesktop = Platform.isLinux || Platform.isWindows || Platform.isMacOS;
 
     await engineAsync.whenData((engine) async {
       try {
-        // Get temp directory for export file
-        final tempDir = await getTemporaryDirectory();
         final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-        final filepath = '${tempDir.path}/dna_messenger_logs_$timestamp.txt';
+        final filename = 'dna_messenger_logs_$timestamp.txt';
 
-        // Export logs to file
-        final success = engine.debugLogExport(filepath);
-        if (!success) {
+        if (isDesktop) {
+          // Desktop: Show native file save dialog
+          final outputPath = await FilePicker.platform.saveFile(
+            dialogTitle: 'Save Logs',
+            fileName: filename,
+            type: FileType.custom,
+            allowedExtensions: ['txt'],
+          );
+
+          if (outputPath == null) return; // User cancelled
+
+          // Export logs directly to chosen path
+          final success = engine.debugLogExport(outputPath);
+          if (!success) {
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: const Text('Failed to export logs'),
+                  backgroundColor: DnaColors.snackbarError,
+                ),
+              );
+            }
+            return;
+          }
+
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: const Text('Failed to export logs'),
-                backgroundColor: DnaColors.snackbarError,
+                content: Text('Logs saved to: $outputPath'),
+                backgroundColor: DnaColors.snackbarSuccess,
               ),
             );
           }
-          return;
-        }
+        } else {
+          // Mobile: Use share sheet
+          final tempDir = await getTemporaryDirectory();
+          final filepath = '${tempDir.path}/$filename';
 
-        // Share the file
-        final file = XFile(filepath);
-        await Share.shareXFiles(
-          [file],
-          subject: 'DNA Messenger Logs',
-          text: 'Debug logs from DNA Messenger',
-        );
+          // Export logs to temp file
+          final success = engine.debugLogExport(filepath);
+          if (!success) {
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: const Text('Failed to export logs'),
+                  backgroundColor: DnaColors.snackbarError,
+                ),
+              );
+            }
+            return;
+          }
+
+          // Share the file
+          final file = XFile(filepath);
+          await Share.shareXFiles(
+            [file],
+            subject: 'DNA Messenger Logs',
+            text: 'Debug logs from DNA Messenger',
+          );
+        }
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
