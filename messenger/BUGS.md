@@ -17,7 +17,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 - [x] Avatar cropping: Add Telegram-style circular crop/pan/zoom when selecting avatar. Increased size from 64x64 to 128x128. Using `crop_your_image` package for cross-platform support. (v0.99.16)
 
-- [x] Profile not loaded after creating identity on Android - need app restart - DHT propagation delay, fixed by caching locally after publish (v0.3.56)
+- [x] Profile not loaded after creating identity on Android - need app restart - DHT propagation delay, fixed by caching locally after publish (v0.3.56). Additional fix: profile_cache_close() before identity deletion to release stale file handles (v0.3.58)
 
 - [x] Profile editor floating label clipped by dropdown header - added top padding to ExpansionTile content (v0.99.13)
 - [x] Double free crash - Dilithium key delete tried to free stack-allocated struct address, fixed to only free internal data buffer (v0.3.39)

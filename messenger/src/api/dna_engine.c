@@ -3686,6 +3686,9 @@ int dna_engine_delete_identity_sync(
     }
 
     /* 2. Delete db directory: <data_dir>/db/ */
+    /* Close profile cache first to release file handles before deletion */
+    profile_cache_close();
+
     char db_dir[512];
     snprintf(db_dir, sizeof(db_dir), "%s/db", data_dir);
     if (qgp_platform_file_exists(db_dir)) {
