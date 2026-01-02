@@ -22,6 +22,7 @@ class _LockScreenState extends ConsumerState<LockScreen>
   String? _error;
   late AnimationController _shakeController;
   late Animation<double> _shakeAnimation;
+  final FocusNode _focusNode = FocusNode();
 
   @override
   void initState() {
@@ -37,13 +38,51 @@ class _LockScreenState extends ConsumerState<LockScreen>
     // Auto-trigger biometric auth on load
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _tryBiometricAuth();
+      // Request focus for keyboard input on desktop
+      _focusNode.requestFocus();
     });
   }
 
   @override
   void dispose() {
     _shakeController.dispose();
+    _focusNode.dispose();
     super.dispose();
+  }
+
+  /// Handle keyboard input for desktop
+  void _handleKeyEvent(KeyEvent event) {
+    if (event is! KeyDownEvent) return;
+    if (_isAuthenticating) return;
+
+    final key = event.logicalKey;
+
+    // Digits 0-9
+    if (key == LogicalKeyboardKey.digit0 || key == LogicalKeyboardKey.numpad0) {
+      _onKeyPressed('0');
+    } else if (key == LogicalKeyboardKey.digit1 || key == LogicalKeyboardKey.numpad1) {
+      _onKeyPressed('1');
+    } else if (key == LogicalKeyboardKey.digit2 || key == LogicalKeyboardKey.numpad2) {
+      _onKeyPressed('2');
+    } else if (key == LogicalKeyboardKey.digit3 || key == LogicalKeyboardKey.numpad3) {
+      _onKeyPressed('3');
+    } else if (key == LogicalKeyboardKey.digit4 || key == LogicalKeyboardKey.numpad4) {
+      _onKeyPressed('4');
+    } else if (key == LogicalKeyboardKey.digit5 || key == LogicalKeyboardKey.numpad5) {
+      _onKeyPressed('5');
+    } else if (key == LogicalKeyboardKey.digit6 || key == LogicalKeyboardKey.numpad6) {
+      _onKeyPressed('6');
+    } else if (key == LogicalKeyboardKey.digit7 || key == LogicalKeyboardKey.numpad7) {
+      _onKeyPressed('7');
+    } else if (key == LogicalKeyboardKey.digit8 || key == LogicalKeyboardKey.numpad8) {
+      _onKeyPressed('8');
+    } else if (key == LogicalKeyboardKey.digit9 || key == LogicalKeyboardKey.numpad9) {
+      _onKeyPressed('9');
+    } else if (key == LogicalKeyboardKey.backspace) {
+      _onKeyPressed('backspace');
+    } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
+      _onKeyPressed('confirm');
+    }
   }
 
   Future<void> _tryBiometricAuth() async {
@@ -127,28 +166,31 @@ class _LockScreenState extends ConsumerState<LockScreen>
 
     return Scaffold(
       backgroundColor: DnaColors.background,
-      body: SafeArea(
-        child: Column(
-          children: [
-            const Spacer(flex: 2),
-            // App icon and branding
-            _buildHeader(),
-            const Spacer(),
-            // Biometric button (if available)
-            if (appLock.biometricsEnabled) ...[
-              _buildBiometricButton(),
-              const SizedBox(height: 24),
-              Text(
-                '- OR -',
-                style: TextStyle(
-                  color: DnaColors.textMuted,
-                  fontSize: 12,
+      body: KeyboardListener(
+        focusNode: _focusNode,
+        onKeyEvent: _handleKeyEvent,
+        child: SafeArea(
+          child: Column(
+            children: [
+              const Spacer(flex: 2),
+              // App icon and branding
+              _buildHeader(),
+              const Spacer(),
+              // Biometric button (if available)
+              if (appLock.biometricsEnabled) ...[
+                _buildBiometricButton(),
+                const SizedBox(height: 24),
+                Text(
+                  '- OR -',
+                  style: TextStyle(
+                    color: DnaColors.textMuted,
+                    fontSize: 12,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 24),
-            ],
-            // PIN dots
-            AnimatedBuilder(
+                const SizedBox(height: 24),
+              ],
+              // PIN dots
+              AnimatedBuilder(
               animation: _shakeAnimation,
               builder: (context, child) {
                 return Transform.translate(
@@ -173,10 +215,11 @@ class _LockScreenState extends ConsumerState<LockScreen>
               ),
             ],
             const SizedBox(height: 32),
-            // Number pad
+            // Number pad (constrained width for desktop)
             _buildNumberPad(),
             const Spacer(flex: 2),
           ],
+          ),
         ),
       ),
     );
@@ -283,20 +326,23 @@ class _LockScreenState extends ConsumerState<LockScreen>
       ['backspace', '0', 'confirm'],
     ];
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 48),
-      child: Column(
-        children: keys.map((row) {
-          return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: row.map((key) {
-                return _buildKey(key);
-              }).toList(),
-            ),
-          );
-        }).toList(),
+    // Fixed width keypad - doesn't stretch on desktop
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 280),
+        child: Column(
+          children: keys.map((row) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: row.map((key) {
+                  return _buildKey(key);
+                }).toList(),
+              ),
+            );
+          }).toList(),
+        ),
       ),
     );
   }
@@ -329,11 +375,11 @@ class _LockScreenState extends ConsumerState<LockScreen>
     return GestureDetector(
       onTap: _isAuthenticating ? null : () => _onKeyPressed(key),
       child: Container(
-        width: 72,
-        height: 72,
+        width: 64,
+        height: 64,
         decoration: BoxDecoration(
           color: DnaColors.surface,
-          borderRadius: BorderRadius.circular(36),
+          borderRadius: BorderRadius.circular(32),
           border: Border.all(color: DnaColors.border),
         ),
         child: Center(child: child),
