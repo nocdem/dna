@@ -114,7 +114,18 @@ static int ensure_directory(const char *db_path) {
         tmp[len - 1] = '\0';
     }
 
-    for (p = tmp + 1; *p; p++) {
+    // Start after first slash (Unix) or after drive letter (Windows C:\)
+    p = tmp;
+#ifdef _WIN32
+    // Skip drive letter on Windows (e.g., "C:\")
+    if (len >= 3 && tmp[1] == ':' && (tmp[2] == '\\' || tmp[2] == '/')) {
+        p = tmp + 3;
+    }
+#else
+    p = tmp + 1;
+#endif
+
+    for (; *p; p++) {
         if (*p == '/' || *p == '\\') {
             char sep = *p;  // Save original separator
             *p = '\0';

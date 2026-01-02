@@ -9,6 +9,7 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include <direct.h>  /* _mkdir */
+#include <io.h>      /* _access */
 
 /* Link against bcrypt.lib for BCryptGenRandom */
 #ifdef _MSC_VER
@@ -270,12 +271,54 @@ char* qgp_platform_join_path(const char *dir, const char *file) {
 
 /* ============================================================================
  * SSL/TLS Certificate Bundle (Windows Implementation)
- * On Windows, curl uses the Windows certificate store via Schannel
+ * On Windows with OpenSSL backend, we need to provide a CA bundle
  * ============================================================================ */
 
+static char g_ca_bundle_path[MAX_PATH] = {0};
+
 const char* qgp_platform_ca_bundle_path(void) {
-    /* On Windows, curl can use the Windows certificate store when built
-     * with Schannel SSL backend. Return NULL to use system defaults. */
+    /* Return cached path if already computed */
+    if (g_ca_bundle_path[0]) {
+        return g_ca_bundle_path;
+    }
+
+    /* Need app data directory to be set */
+    if (!g_dirs_initialized || !g_app_data_dir[0]) {
+        QGP_LOG_DEBUG(LOG_TAG, "CA bundle requested before app dirs initialized");
+        return NULL;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Searching for CA bundle (data_dir=%s)", g_app_data_dir);
+
+    /* Try multiple possible locations for CA bundle */
+    char test_path[MAX_PATH];
+
+    /* Location 1: In app data dir */
+    snprintf(test_path, sizeof(test_path), "%s\\cacert.pem", g_app_data_dir);
+    QGP_LOG_DEBUG(LOG_TAG, "Checking: %s", test_path);
+    if (_access(test_path, 04) == 0) {  /* 04 = read permission */
+        strncpy(g_ca_bundle_path, test_path, sizeof(g_ca_bundle_path) - 1);
+        QGP_LOG_INFO(LOG_TAG, "Found CA bundle: %s", g_ca_bundle_path);
+        return g_ca_bundle_path;
+    }
+
+    /* Location 2: Next to executable (Flutter bundles assets there) */
+    char exe_path[MAX_PATH];
+    if (GetModuleFileNameA(NULL, exe_path, sizeof(exe_path))) {
+        char *last_slash = strrchr(exe_path, '\\');
+        if (last_slash) {
+            *last_slash = '\0';
+            snprintf(test_path, sizeof(test_path), "%s\\data\\flutter_assets\\assets\\cacert.pem", exe_path);
+            QGP_LOG_DEBUG(LOG_TAG, "Checking: %s", test_path);
+            if (_access(test_path, 04) == 0) {
+                strncpy(g_ca_bundle_path, test_path, sizeof(g_ca_bundle_path) - 1);
+                QGP_LOG_INFO(LOG_TAG, "Found CA bundle: %s", g_ca_bundle_path);
+                return g_ca_bundle_path;
+            }
+        }
+    }
+
+    QGP_LOG_WARN(LOG_TAG, "CA bundle NOT FOUND - HTTPS may fail");
     return NULL;
 }
 
