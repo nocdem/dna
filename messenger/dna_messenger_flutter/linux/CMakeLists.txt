@@ -41,8 +41,8 @@ endif()
 # of modifying this function.
 function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_features(${TARGET} PUBLIC cxx_std_14)
-  target_compile_options(${TARGET} PRIVATE -Wall -Werror)
-  # Suppress deprecated-literal-operator warning from flutter_secure_storage_linux
+  target_compile_options(${TARGET} PRIVATE -Wall -Werror -Wno-unknown-warning-option)
+  # Suppress deprecated-literal-operator warning from flutter_secure_storage_linux (clang 16+)
   target_compile_options(${TARGET} PRIVATE -Wno-deprecated-literal-operator)
   target_compile_options(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-O3>")
   target_compile_definitions(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:NDEBUG>")
