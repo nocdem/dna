@@ -497,6 +497,8 @@ build:windows:
   variables:
     GIT_SUBMODULE_STRATEGY: recursive
     MSYS2_PATH: C:\tools\msys64
+    # Shorter path to avoid Windows MAX_PATH (260 char) limit with flutter_secure_storage
+    GIT_CLONE_PATH: C:\b\dna
   script:
     # Build native library with MSYS2/MinGW
     - $env:MSYSTEM = "MINGW64"
