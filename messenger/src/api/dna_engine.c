@@ -1446,6 +1446,17 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
     strncpy(profile->bio, identity->bio, sizeof(profile->bio) - 1);
     strncpy(profile->avatar_base64, identity->avatar_base64, sizeof(profile->avatar_base64) - 1);
 
+    /* Display name - fallback to registered_name if display_name is empty */
+    if (identity->display_name[0] != '\0') {
+        strncpy(profile->display_name, identity->display_name, sizeof(profile->display_name) - 1);
+    } else if (identity->registered_name[0] != '\0') {
+        strncpy(profile->display_name, identity->registered_name, sizeof(profile->display_name) - 1);
+    }
+
+    /* Location and website */
+    strncpy(profile->location, identity->location, sizeof(profile->location) - 1);
+    strncpy(profile->website, identity->website, sizeof(profile->website) - 1);
+
     /* DEBUG: Log avatar data after copy to profile (WARN level to ensure visibility) */
     {
         size_t src_len = identity->avatar_base64[0] ? strlen(identity->avatar_base64) : 0;

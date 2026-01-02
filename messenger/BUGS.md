@@ -4,47 +4,21 @@ Bug reports for Claude to fix. Format: `- [ ] Description (priority)`
 
 Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
+**Debug Categories:**
+- `[CLI]` = Can debug via CLI tool (`dna-messenger-cli`)
+- `[FLUTTER]` = Requires human testing in Flutter app
+- `[MIXED]` = Partially CLI-debuggable, may need Flutter verification
+
 ---
 
 ## Open Bugs
 
-- [ ] **Profile shows "Anonymous" after identity creation** (P1)
-
-  **Root Cause:** Multiple profile types exist in the codebase causing confusion:
-  - `dna_unified_identity_t` (dht/client/dna_profile.h) - has BOTH `registered_name` AND `display_name` fields
-  - `dna_profile_t` (include/dna/dna_engine.h) - only has `display_name` field
-  - `dht_profile_t` (dht/shared/dht_profile.h) - another profile type
-  - Flutter `UserProfile` class (dna_engine.dart) - has `displayName`
-  - Flutter `UserProfile` class (identity_provider.dart) - has `nickname` (DIFFERENT class!)
-
-  **Bug:** In `dna_handle_get_profile()` (dna_engine.c:1445), when copying from `dna_unified_identity_t` to `dna_profile_t`, the code never copied:
-  - `display_name` / `registered_name`
-  - `location`
-  - `website`
-
-  So even though the profile cache has the correct name from DHT, it's never returned to Flutter.
-
-  **Fix Required:**
-  1. Consolidate all profile types into ONE authoritative structure
-  2. Remove redundant profile classes/structs (especially the two Flutter `UserProfile` classes)
-  3. Ensure `registered_name` is always used for identity display (not `display_name` which is optional)
-  4. Clean up Flutter providers - currently there are 5+ profile-related providers:
-     - `userProfileProvider` (identity_provider.dart)
-     - `fullProfileProvider` (profile_provider.dart)
-     - `identityProfileCacheProvider` (identity_profile_cache_provider.dart)
-     - `contactProfileCacheProvider` (contact_profile_cache_provider.dart)
-     - `profileEditorProvider` (profile_provider.dart)
-
-  **Files to audit:**
-  - C: dht/client/dna_profile.h, dht/shared/dht_profile.h, include/dna/dna_engine.h
-  - C: src/api/dna_engine.c (dna_handle_get_profile, dna_handle_lookup_profile)
-  - Flutter: lib/ffi/dna_engine.dart (UserProfile class)
-  - Flutter: lib/providers/identity_provider.dart (UserProfile class - DUPLICATE!)
-  - Flutter: lib/providers/profile_provider.dart
-  - Flutter: lib/providers/identity_profile_cache_provider.dart
+(none)
 
 
 ## Fixed Bugs
+
+- [x] **[MIXED] Profile shows "Anonymous" after identity creation** - `dna_handle_get_profile()` was missing copy of display_name/registered_name, location, website fields. Added fallback logic matching `dna_handle_lookup_profile()`. Flutter provider cleanup (5+ redundant providers) still recommended as separate task. (v0.3.61)
 
 - [x] Log sharing: Works on mobile but didn't work on PC (share_plus not supported). PC now shows native file save dialog using `file_picker` package. (v0.99.17)
 
