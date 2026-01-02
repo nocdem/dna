@@ -13,6 +13,7 @@
 #include "../client/dna_profile.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
+#include "database/profile_cache.h"
 
 #define LOG_TAG "KEYSERVER"
 
@@ -171,14 +172,22 @@ int dht_keyserver_publish(
                                   (uint8_t*)json, strlen(json),
                                   DHT_CHUNK_TTL_365DAY);
     free(json);
-    dna_identity_free(identity);
 
     if (ret != DHT_CHUNK_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to publish identity: %s\n", dht_chunked_strerror(ret));
+        dna_identity_free(identity);
         return -1;
     }
 
     QGP_LOG_INFO(LOG_TAG, "✓ Identity published to fingerprint:profile\n");
+
+    // Cache locally to avoid DHT propagation delay issues
+    // This ensures getProfile() returns correct data immediately after publish
+    if (profile_cache_add_or_update(fingerprint, identity) == 0) {
+        QGP_LOG_INFO(LOG_TAG, "✓ Identity cached locally\n");
+    }
+
+    dna_identity_free(identity);
 
     // Publish name:lookup alias
     ret = dht_chunked_publish(dht_ctx, alias_base_key,
