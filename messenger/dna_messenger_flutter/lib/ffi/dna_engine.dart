@@ -659,7 +659,6 @@ class UserProfile {
   bool get isEmpty =>
       backbone.isEmpty &&
       alvin.isEmpty &&
-      btc.isEmpty &&
       eth.isEmpty &&
       sol.isEmpty &&
       trx.isEmpty &&
