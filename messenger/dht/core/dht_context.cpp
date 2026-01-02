@@ -918,21 +918,14 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         // Use putSigned() instead of put() to enable editing/replacement
         // Note: putSigned() doesn't support creation_time parameter (uses current time)
         // Permanent flag controls whether value expires based on ValueType
-        // Capture key for debugging failures
-        char key_hex_debug[41];
-        for (int i = 0; i < 20 && i < 64; i++) {
-            sprintf(&key_hex_debug[i * 2], "%02x", key[i]);
-        }
-        key_hex_debug[40] = '\0';
-
         // Fire-and-forget publish - don't block on network confirmation
         // Race conditions prevented by local outbox cache in dht_queue_message
         ctx->runner.putSigned(hash, dht_value,
-                             [key_hex_debug](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
+                             [key_hex_start](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
                                  if (success) {
                                      QGP_LOG_DEBUG("DHT", "PUT_SIGNED: Stored on %zu node(s)", nodes.size());
                                  } else {
-                                     QGP_LOG_WARN("DHT", "PUT_SIGNED: Failed to store on any node (key=%s...)", key_hex_debug);
+                                     QGP_LOG_WARN("DHT", "PUT_SIGNED: Failed to store on any node (key=%s...)", key_hex_start);
                                  }
                              },
                              true);  // permanent=true for maintain_storage behavior

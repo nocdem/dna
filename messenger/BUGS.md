@@ -8,7 +8,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-(none)
+- [ ] Avatar cropping: Add Telegram-style circular crop/pan/zoom when selecting avatar. Increase size from 64x64 to 128x128. Use `crop_your_image` package for cross-platform support. (P3)
 
 
 ## Fixed Bugs
