@@ -3,6 +3,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -169,10 +170,10 @@ class _LoadingScreen extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            FaIcon(
-              FontAwesomeIcons.shieldHalved,
-              size: 64,
-              color: theme.colorScheme.primary,
+            SvgPicture.asset(
+              'assets/logo-icon.svg',
+              width: 128,
+              height: 128,
             ),
             const SizedBox(height: 24),
             Text(
