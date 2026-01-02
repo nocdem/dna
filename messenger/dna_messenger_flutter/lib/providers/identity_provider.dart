@@ -137,6 +137,11 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     );
 
     await refresh();
+
+    // Invalidate profile providers to fetch fresh profile with name
+    ref.invalidate(userProfileProvider);
+    ref.invalidate(fullProfileProvider);
+
     return fingerprint;
   }
 
@@ -159,6 +164,11 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     );
 
     await refresh();
+
+    // Invalidate profile providers to fetch fresh profile from DHT
+    ref.invalidate(userProfileProvider);
+    ref.invalidate(fullProfileProvider);
+
     return fingerprint;
   }
 
@@ -166,6 +176,11 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     final engine = await ref.read(engineProvider.future);
     final fingerprint = await engine.createIdentity(name, signingSeed, encryptionSeed);
     await refresh();
+
+    // Invalidate profile providers to fetch fresh profile with name
+    ref.invalidate(userProfileProvider);
+    ref.invalidate(fullProfileProvider);
+
     return fingerprint;
   }
 
@@ -202,6 +217,10 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     // and lose the loaded identity state
     ref.read(currentFingerprintProvider.notifier).state = loadedFp;
     engine.debugLog('IDENTITY', 'loadIdentity - currentFingerprintProvider set');
+
+    // Invalidate profile providers to fetch fresh profile from DHT
+    ref.invalidate(userProfileProvider);
+    ref.invalidate(fullProfileProvider);
   }
 
   /// Register a nickname for the current identity
