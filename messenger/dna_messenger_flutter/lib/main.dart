@@ -8,6 +8,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'providers/providers.dart';
 import 'screens/screens.dart';
+import 'screens/lock/lock_screen.dart';
 import 'theme/dna_theme.dart';
 import 'utils/window_state.dart';
 import 'utils/lifecycle_observer.dart';
@@ -114,8 +115,17 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     // This is set by loadIdentity() after successful load, and by createIdentity() path
     final currentFingerprint = ref.watch(currentFingerprintProvider);
 
+    // App lock state
+    final appLock = ref.watch(appLockProvider);
+    final isLocked = ref.watch(appLockedProvider);
+
     return engine.when(
       data: (eng) {
+        // Check app lock first - before any other logic
+        if (appLock.enabled && isLocked) {
+          return const LockScreen();
+        }
+
         // Trigger auto-load once at startup (for existing identities)
         if (!_autoLoadStarted) {
           WidgetsBinding.instance.addPostFrameCallback((_) {

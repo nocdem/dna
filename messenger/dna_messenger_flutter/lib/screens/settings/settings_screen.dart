@@ -15,6 +15,7 @@ import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 import '../profile/profile_editor_screen.dart';
+import 'app_lock_settings_screen.dart';
 import 'blocked_users_screen.dart';
 import 'contacts_management_screen.dart';
 import 'debug_log_screen.dart';
@@ -318,8 +319,11 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
           subtitle: const Text('Require authentication'),
           trailing: const FaIcon(FontAwesomeIcons.chevronRight),
           onTap: () {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Coming soon')),
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const AppLockSettingsScreen(),
+              ),
             );
           },
         ),

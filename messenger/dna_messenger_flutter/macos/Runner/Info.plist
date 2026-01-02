@@ -28,5 +28,7 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Use Touch ID to unlock DNA Messenger</string>
 </dict>
 </plist>
