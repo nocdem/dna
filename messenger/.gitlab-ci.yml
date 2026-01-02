@@ -497,8 +497,6 @@ build:windows:
   variables:
     GIT_SUBMODULE_STRATEGY: recursive
     MSYS2_PATH: C:\tools\msys64
-    # Shorter path to avoid Windows MAX_PATH (260 char) limit with flutter_secure_storage
-    GIT_CLONE_PATH: C:\b\dna
   script:
     # Build native library with MSYS2/MinGW
     - $env:MSYSTEM = "MINGW64"
@@ -506,7 +504,7 @@ build:windows:
     # Copy native library to Flutter
     - mkdir -p dna_messenger_flutter\windows\libs
     - copy build-windows\libdna_lib.dll dna_messenger_flutter\windows\libs\dna_lib.dll
-    # Build Flutter Windows app
+    # Build Flutter Windows app (requires LongPathsEnabled in registry)
     - cd dna_messenger_flutter
     - flutter pub upgrade
     - flutter pub get
