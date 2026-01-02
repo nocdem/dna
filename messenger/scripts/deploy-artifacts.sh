@@ -4,22 +4,23 @@ set -e
 
 VERSION=$(grep '^version:' dna_messenger_flutter/pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
 BUILD_CODE=$(grep '^version:' dna_messenger_flutter/pubspec.yaml | sed 's/version: //' | cut -d'+' -f2)
-echo "Deploying version ${VERSION} (build ${BUILD_CODE})"
+SHORT_SHA="${CI_COMMIT_SHORT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')}"
+echo "Deploying version ${VERSION} (build ${BUILD_CODE}, commit ${SHORT_SHA})"
 
 mkdir -p /artifacts/dna-messenger/android
 mkdir -p /artifacts/dna-messenger/linux
 mkdir -p /artifacts/dna-messenger/windows
 
-# Copy artifacts
-cp dist/*.AppImage /artifacts/dna-messenger/linux/dna-messenger-${VERSION}-x86_64.AppImage 2>/dev/null || true
-cp dist/*.tar.gz /artifacts/dna-messenger/linux/dna-messenger-${VERSION}-linux-x64.tar.gz 2>/dev/null || true
-cp dist/*.apk /artifacts/dna-messenger/android/dna-messenger-${VERSION}.apk 2>/dev/null || true
-cp dist/dna-messenger-setup-*.exe /artifacts/dna-messenger/windows/dna-messenger-${VERSION}-setup.exe 2>/dev/null || true
+# Copy artifacts (include commit hash in filename)
+cp dist/*.AppImage /artifacts/dna-messenger/linux/dna-messenger-${VERSION}-${SHORT_SHA}-x86_64.AppImage 2>/dev/null || true
+cp dist/*.tar.gz /artifacts/dna-messenger/linux/dna-messenger-${VERSION}-${SHORT_SHA}-linux-x64.tar.gz 2>/dev/null || true
+cp dist/*.apk /artifacts/dna-messenger/android/dna-messenger-${VERSION}-${SHORT_SHA}.apk 2>/dev/null || true
+cp dist/dna-messenger-setup-*.exe /artifacts/dna-messenger/windows/dna-messenger-${VERSION}-${SHORT_SHA}-setup.exe 2>/dev/null || true
 
 # Determine Windows URL
 WINURL="null"
-if [ -f "/artifacts/dna-messenger/windows/dna-messenger-${VERSION}-setup.exe" ]; then
-    WINURL="https://artifacts.cpunk.io/dna-messenger/windows/dna-messenger-${VERSION}-setup.exe"
+if [ -f "/artifacts/dna-messenger/windows/dna-messenger-${VERSION}-${SHORT_SHA}-setup.exe" ]; then
+    WINURL="https://artifacts.cpunk.io/dna-messenger/windows/dna-messenger-${VERSION}-${SHORT_SHA}-setup.exe"
 fi
 
 # Create latest.json
@@ -27,13 +28,13 @@ cat > /artifacts/dna-messenger/latest.json << EOF
 {
   "version": "${VERSION}",
   "build_code": "${BUILD_CODE}",
-  "commit": "${CI_COMMIT_SHORT_SHA}",
+  "commit": "${SHORT_SHA}",
   "date": "$(date -Iseconds)",
   "pipeline": "${CI_PIPELINE_ID}",
   "downloads": {
-    "android": "https://artifacts.cpunk.io/dna-messenger/android/dna-messenger-${VERSION}.apk",
-    "linux_appimage": "https://artifacts.cpunk.io/dna-messenger/linux/dna-messenger-${VERSION}-x86_64.AppImage",
-    "linux_tarball": "https://artifacts.cpunk.io/dna-messenger/linux/dna-messenger-${VERSION}-linux-x64.tar.gz",
+    "android": "https://artifacts.cpunk.io/dna-messenger/android/dna-messenger-${VERSION}-${SHORT_SHA}.apk",
+    "linux_appimage": "https://artifacts.cpunk.io/dna-messenger/linux/dna-messenger-${VERSION}-${SHORT_SHA}-x86_64.AppImage",
+    "linux_tarball": "https://artifacts.cpunk.io/dna-messenger/linux/dna-messenger-${VERSION}-${SHORT_SHA}-linux-x64.tar.gz",
     "windows": "${WINURL}"
   }
 }
