@@ -1,4 +1,5 @@
 #include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_log.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +11,8 @@
 #include <bcrypt.h>
 #include <direct.h>  /* _mkdir */
 #include <io.h>      /* _access */
+
+#define LOG_TAG "PLATFORM"
 
 /* Link against bcrypt.lib for BCryptGenRandom */
 #ifdef _MSC_VER
@@ -270,6 +273,14 @@ char* qgp_platform_join_path(const char *dir, const char *file) {
 }
 
 /* ============================================================================
+ * App Directory Storage (declared early for use by CA bundle)
+ * ============================================================================ */
+
+static char g_app_data_dir[MAX_PATH] = {0};
+static char g_app_cache_dir[MAX_PATH] = {0};
+static int g_dirs_initialized = 0;
+
+/* ============================================================================
  * SSL/TLS Certificate Bundle (Windows Implementation)
  * On Windows with OpenSSL backend, we need to provide a CA bundle
  * ============================================================================ */
@@ -325,11 +336,6 @@ const char* qgp_platform_ca_bundle_path(void) {
 /* ============================================================================
  * App Directory Management (Windows Implementation)
  * ============================================================================ */
-
-/* Static storage for app directories (set via qgp_platform_set_app_dirs) */
-static char g_app_data_dir[MAX_PATH] = {0};
-static char g_app_cache_dir[MAX_PATH] = {0};
-static int g_dirs_initialized = 0;
 
 const char* qgp_platform_app_data_dir(void) {
     /* If already set via qgp_platform_set_app_dirs, return that */
