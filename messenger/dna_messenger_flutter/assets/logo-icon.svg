@@ -2,9 +2,9 @@
 <!-- Created with Inkscape (http://www.inkscape.org/) -->
 
 <svg
-   width="1024"
-   height="1024"
-   viewBox="0 0 270.93334 270.93334"
+   width="622.9469"
+   height="708.15674"
+   viewBox="0 0 164.82137 187.36647"
    version="1.1"
    id="svg1"
    inkscape:version="1.4.3 (0d15f75042, 2025-12-25)"
@@ -26,8 +26,8 @@
      inkscape:antialias-rendering="true"
      inkscape:clip-to-page="false"
      inkscape:zoom="0.49953305"
-     inkscape:cx="320.29913"
-     inkscape:cy="311.29071"
+     inkscape:cx="122.11404"
+     inkscape:cy="153.14302"
      inkscape:window-width="1920"
      inkscape:window-height="1011"
      inkscape:window-x="0"
@@ -37,7 +37,7 @@
   <defs
      id="defs1">
     <filter
-       style="color-interpolation-filters:sRGB;"
+       style="color-interpolation-filters:sRGB"
        inkscape:label="Blur"
        id="filter12"
        x="-0.02747917"
@@ -50,11 +50,11 @@
          id="feGaussianBlur12" />
     </filter>
     <filter
-       style="color-interpolation-filters:sRGB;"
+       style="color-interpolation-filters:sRGB"
        inkscape:label="Blur"
        id="filter27"
-       x="-0.040244406"
-       y="-0.034849072"
+       x="-0.040244404"
+       y="-0.034849074"
        width="1.0804888"
        height="1.0696981">
       <feGaussianBlur
@@ -63,7 +63,7 @@
          id="feGaussianBlur27" />
     </filter>
     <filter
-       style="color-interpolation-filters:sRGB;"
+       style="color-interpolation-filters:sRGB"
        inkscape:label="Blur"
        id="filter1"
        x="-0.065924393"
@@ -80,7 +80,7 @@
      inkscape:label="Layer 1"
      inkscape:groupmode="layer"
      id="layer1"
-     transform="translate(-38.629172,-62.441667)">
+     transform="translate(-91.685158,-104.2251)">
     <g
        id="g1-3"
        transform="translate(9.004226,-1.0593305)"

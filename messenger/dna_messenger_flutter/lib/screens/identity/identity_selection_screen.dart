@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
@@ -186,10 +187,10 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const Spacer(),
-          FaIcon(
-            FontAwesomeIcons.shieldHalved,
-            size: 80,
-            color: theme.colorScheme.primary,
+          SvgPicture.asset(
+            'assets/logo-icon.svg',
+            width: 128,
+            height: 128,
           ),
           const SizedBox(height: 24),
           Text(

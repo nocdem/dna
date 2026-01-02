@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../../providers/app_lock_provider.dart';
@@ -192,11 +193,11 @@ class _LockScreenState extends ConsumerState<LockScreen>
             borderRadius: BorderRadius.circular(20),
             border: Border.all(color: DnaColors.borderAccent),
           ),
-          child: const Center(
-            child: FaIcon(
-              FontAwesomeIcons.shieldHalved,
-              size: 40,
-              color: DnaColors.primary,
+          child: Center(
+            child: SvgPicture.asset(
+              'assets/logo-icon.svg',
+              width: 48,
+              height: 48,
             ),
           ),
         ),
