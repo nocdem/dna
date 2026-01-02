@@ -1,6 +1,7 @@
 // Profile Editor Screen - Edit user profile (wallets, socials, bio, avatar)
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -13,6 +14,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
+import 'avatar_crop_screen.dart';
 
 class ProfileEditorScreen extends ConsumerStatefulWidget {
   const ProfileEditorScreen({super.key});
@@ -547,29 +549,39 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     if (image != null) {
       final bytes = await File(image.path).readAsBytes();
 
-      // Decode, resize to 64x64, and compress as JPEG
-      // image_picker's maxWidth/maxHeight doesn't work reliably on all platforms
-      final decoded = img.decodeImage(bytes);
+      // Navigate to crop screen for Telegram-style circular cropping
+      if (!mounted) return;
+      final croppedBytes = await Navigator.of(context).push<Uint8List>(
+        MaterialPageRoute(
+          builder: (context) => AvatarCropScreen(imageBytes: bytes),
+        ),
+      );
+
+      // User cancelled cropping
+      if (croppedBytes == null) return;
+
+      // Decode cropped image and resize to 128x128
+      final decoded = img.decodeImage(croppedBytes);
       if (decoded == null) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Failed to decode image')),
+            const SnackBar(content: Text('Failed to decode cropped image')),
           );
         }
         return;
       }
 
-      // Resize to 64x64 (avatar size)
-      final resized = img.copyResize(decoded, width: 64, height: 64);
+      // Resize to 128x128 (avatar size)
+      final resized = img.copyResize(decoded, width: 128, height: 128);
 
-      // Encode as JPEG with 70% quality (small file size)
-      final compressed = img.encodeJpg(resized, quality: 70);
+      // Encode as JPEG with 80% quality (good quality for 128x128)
+      final compressed = img.encodeJpg(resized, quality: 80);
 
-      // Base64 encode - should be ~2-5KB for 64x64 JPEG
+      // Base64 encode - should be ~10-15KB for 128x128 JPEG
       final base64 = base64Encode(compressed);
 
-      // Sanity check: avatar should be under 15KB base64 (buffer is 20KB)
-      if (base64.length > 15000) {
+      // Sanity check: avatar should be under 18KB base64 (buffer is 20KB)
+      if (base64.length > 18000) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Avatar too large, please try a smaller image')),
@@ -651,7 +663,7 @@ class _AvatarSection extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Avatar (64x64)',
+            'Avatar (128x128)',
             style: theme.textTheme.bodySmall,
           ),
           if (hasAvatar)
