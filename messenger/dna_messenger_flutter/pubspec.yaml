@@ -63,6 +63,7 @@ flutter:
 
   assets:
     - assets/icon.png
+    - assets/logo-icon.svg
     - assets/icons/crypto/
     - assets/cacert.pem
 
