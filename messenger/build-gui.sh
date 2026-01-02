@@ -122,7 +122,8 @@ run_flutter() {
 
     cd "$FLUTTER_DIR"
 
-    # Get Flutter dependencies if needed
+    # Upgrade and get Flutter dependencies (ensures cached deps are updated)
+    flutter pub upgrade
     flutter pub get
 
     # Run the app

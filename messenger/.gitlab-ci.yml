@@ -392,6 +392,7 @@ build:flutter-linux:
     - mkdir -p linux/libs
     - cp ${CI_PROJECT_DIR}/native-libs/linux-x64/libdna_lib.so linux/libs/
     # Build Flutter Linux app
+    - flutter pub upgrade
     - flutter pub get
     - flutter build linux --release
     # Package as tarball
@@ -473,6 +474,7 @@ build:flutter-android:
     - mkdir -p android/app/src/main/jniLibs/arm64-v8a
     - cp ${CI_PROJECT_DIR}/native-libs/android-arm64/libdna_lib.so android/app/src/main/jniLibs/arm64-v8a/
     # Build APK
+    - flutter pub upgrade
     - flutter pub get
     - flutter build apk --release
     # Package
@@ -504,6 +506,7 @@ build:windows:
     - copy build-windows\libdna_lib.dll dna_messenger_flutter\windows\libs\dna_lib.dll
     # Build Flutter Windows app
     - cd dna_messenger_flutter
+    - flutter pub upgrade
     - flutter pub get
     - flutter build windows --release
     # Package
@@ -550,6 +553,7 @@ build:flutter-macos:
     - mkdir -p macos/Frameworks
     - cp ${CI_PROJECT_DIR}/build-macos/libdna_lib.dylib macos/Frameworks/
     # Build Flutter macOS app
+    - flutter pub upgrade
     - flutter pub get
     - flutter build macos --release
     # Package
