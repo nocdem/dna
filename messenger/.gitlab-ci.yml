@@ -46,7 +46,7 @@ build:native-linux-x64:
     # OpenDHT build dependencies
     - apt-get install -y -qq libgnutls28-dev libargon2-dev libmsgpack-dev libreadline-dev libncurses5-dev nettle-dev libjsoncpp-dev libfmt-dev libasio-dev libhttp-parser-dev libcppunit-dev
     # Flutter Linux desktop dependencies
-    - apt-get install -y -qq libgtk-3-dev libblkid-dev liblzma-dev
+    - apt-get install -y -qq libgtk-3-dev libblkid-dev liblzma-dev libsecret-1-dev
     # Build OpenDHT from source
     - |
       export HOME="${CI_PROJECT_DIR}"
@@ -385,7 +385,7 @@ build:flutter-linux:
     PUB_CACHE: "${CI_PROJECT_DIR}/.pub-cache"
   before_script:
     - apt-get update -qq
-    - apt-get install -y -qq libgtk-3-dev libblkid-dev liblzma-dev clang llvm lld cmake ninja-build pkg-config libfuse2 file binutils
+    - apt-get install -y -qq libgtk-3-dev libblkid-dev liblzma-dev libsecret-1-dev clang llvm lld cmake ninja-build pkg-config libfuse2 file binutils
   script:
     - cd dna_messenger_flutter
     # Copy native library
