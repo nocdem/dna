@@ -13,6 +13,8 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Fixed Bugs
 
+- [x] Profile not loaded after creating identity on Android - need app restart - fullProfileProvider not invalidated after registerName() (v0.99.15)
+
 - [x] Profile editor floating label clipped by dropdown header - added top padding to ExpansionTile content (v0.99.13)
 - [x] Double free crash - Dilithium key delete tried to free stack-allocated struct address, fixed to only free internal data buffer (v0.3.39)
 - [x] Heap-allocate events for async Dart callbacks - dna_free_event added (v0.3.38)

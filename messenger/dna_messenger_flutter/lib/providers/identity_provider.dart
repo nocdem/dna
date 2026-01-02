@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../services/cache_database.dart';
 import 'engine_provider.dart';
 import 'identity_profile_cache_provider.dart';
+import 'profile_provider.dart' show fullProfileProvider;
 
 /// List of available identities (fingerprints)
 /// v0.3.0: In single-user model, this returns at most 1 identity.
@@ -216,8 +217,9 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
       ref.read(identityNameCacheProvider.notifier).state = newCache;
     }
 
-    // Invalidate user profile to refresh
+    // Invalidate profile providers to refresh with new name
     ref.invalidate(userProfileProvider);
+    ref.invalidate(fullProfileProvider);
   }
 
   /// v0.3.0: Deprecated - in single-user model, unloading is only used
