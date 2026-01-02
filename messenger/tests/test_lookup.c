@@ -116,7 +116,6 @@ int main(int argc, char **argv) {
     if (identity->wallets.kelvpn[0]) printf("KelVPN:   %s\n", identity->wallets.kelvpn);
     if (identity->wallets.removed_subzero[0]) printf("Subzero:  %s\n", identity->wallets.subzero);
     if (identity->wallets.removed_riemann[0]) printf("Riemann:  %s\n", identity->wallets.riemann);
-    if (identity->wallets.btc[0]) printf("Bitcoin:  %s\n", identity->wallets.btc);
     if (identity->wallets.eth[0]) printf("Ethereum: %s\n", identity->wallets.eth);
 
     printf("\n--- Social Links ---\n");

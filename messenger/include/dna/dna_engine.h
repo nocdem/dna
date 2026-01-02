@@ -243,7 +243,6 @@ typedef struct {
     char alvin[120];            /* Alvin (cpunk mainnet) */
 
     /* External wallet addresses */
-    char btc[128];
     char eth[128];              /* Also works for BSC, Polygon, etc. */
     char sol[128];
     char trx[128];              /* TRON address (T...) */

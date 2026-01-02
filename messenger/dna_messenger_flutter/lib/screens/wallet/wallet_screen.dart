@@ -813,8 +813,6 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     final network = _selectedNetwork.toLowerCase();
     if (network == 'ethereum') {
       return profile.eth.isNotEmpty ? profile.eth : null;
-    } else if (network == 'bitcoin') {
-      return profile.btc.isNotEmpty ? profile.btc : null;
     } else if (network == 'solana') {
       return profile.sol.isNotEmpty ? profile.sol : null;
     } else if (network == 'tron') {
@@ -830,8 +828,6 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     final network = _selectedNetwork.toLowerCase();
     if (network == 'ethereum') {
       return 'ETH';
-    } else if (network == 'bitcoin') {
-      return 'BTC';
     } else if (network == 'solana') {
       return 'SOL';
     } else if (network == 'tron') {

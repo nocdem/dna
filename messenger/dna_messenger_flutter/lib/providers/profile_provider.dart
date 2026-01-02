@@ -132,9 +132,6 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
       case 'alvin':
         newProfile = p.copyWith(alvin: value);
         break;
-      case 'btc':
-        newProfile = p.copyWith(btc: value);
-        break;
       case 'eth':
         newProfile = p.copyWith(eth: value);
         break;

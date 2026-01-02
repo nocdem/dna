@@ -1230,7 +1230,6 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
                                 dna_profile_t profile_data = {0};
                                 /* Wallets */
                                 strncpy(profile_data.backbone, cf_addr[0] ? cf_addr : identity->wallets.backbone, sizeof(profile_data.backbone) - 1);
-                                strncpy(profile_data.btc, identity->wallets.btc, sizeof(profile_data.btc) - 1);
                                 strncpy(profile_data.eth, eth_addr[0] ? eth_addr : identity->wallets.eth, sizeof(profile_data.eth) - 1);
                                 strncpy(profile_data.sol, sol_addr[0] ? sol_addr : identity->wallets.sol, sizeof(profile_data.sol) - 1);
                                 strncpy(profile_data.trx, trx_addr[0] ? trx_addr : identity->wallets.trx, sizeof(profile_data.trx) - 1);
@@ -1432,7 +1431,6 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
 
     /* Wallets - copy from DHT identity */
     strncpy(profile->backbone, identity->wallets.backbone, sizeof(profile->backbone) - 1);
-    strncpy(profile->btc, identity->wallets.btc, sizeof(profile->btc) - 1);
     strncpy(profile->eth, identity->wallets.eth, sizeof(profile->eth) - 1);
     strncpy(profile->sol, identity->wallets.sol, sizeof(profile->sol) - 1);
     strncpy(profile->trx, identity->wallets.trx, sizeof(profile->trx) - 1);
@@ -1616,7 +1614,6 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
         }
     }
 
-    strncpy(profile->btc, identity->wallets.btc, sizeof(profile->btc) - 1);
     strncpy(profile->eth, identity->wallets.eth, sizeof(profile->eth) - 1);
     strncpy(profile->sol, identity->wallets.sol, sizeof(profile->sol) - 1);
     strncpy(profile->trx, identity->wallets.trx, sizeof(profile->trx) - 1);
@@ -1716,7 +1713,6 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
             /* Update all profile fields in cache */
             strncpy(cached->wallets.backbone, p->backbone, sizeof(cached->wallets.backbone) - 1);
             strncpy(cached->wallets.alvin, p->alvin, sizeof(cached->wallets.alvin) - 1);
-            strncpy(cached->wallets.btc, p->btc, sizeof(cached->wallets.btc) - 1);
             strncpy(cached->wallets.eth, p->eth, sizeof(cached->wallets.eth) - 1);
             strncpy(cached->wallets.sol, p->sol, sizeof(cached->wallets.sol) - 1);
             strncpy(cached->wallets.trx, p->trx, sizeof(cached->wallets.trx) - 1);

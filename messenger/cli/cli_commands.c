@@ -916,8 +916,6 @@ int cmd_lookup_profile(dna_engine_t *engine, const char *identifier) {
     printf("\n--- Wallet Addresses ---\n");
     if (identity->wallets.backbone[0])
         printf("Backbone: %s\n", identity->wallets.backbone);
-    if (identity->wallets.btc[0])
-        printf("Bitcoin: %s\n", identity->wallets.btc);
     if (identity->wallets.eth[0])
         printf("Ethereum: %s\n", identity->wallets.eth);
     if (identity->wallets.sol[0])

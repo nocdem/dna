@@ -557,7 +557,6 @@ class UserProfile {
   String alvin;
 
   // External wallets
-  String btc;
   String eth; // Also works for BSC, Polygon, etc.
   String sol;
   String trx; // TRON address (T...)
@@ -581,7 +580,6 @@ class UserProfile {
   UserProfile({
     this.backbone = '',
     this.alvin = '',
-    this.btc = '',
     this.eth = '',
     this.sol = '',
     this.trx = '',
@@ -609,7 +607,6 @@ class UserProfile {
     return UserProfile(
       backbone: native.backbone.toDartString(120),
       alvin: native.alvin.toDartString(120),
-      btc: native.btc.toDartString(128),
       eth: native.eth.toDartString(128),
       sol: native.sol.toDartString(128),
       trx: native.trx.toDartString(128),
@@ -632,7 +629,6 @@ class UserProfile {
   void toNative(Pointer<dna_profile_t> native) {
     _copyStringToArray(backbone, native.ref.backbone, 120);
     _copyStringToArray(alvin, native.ref.alvin, 120);
-    _copyStringToArray(btc, native.ref.btc, 128);
     _copyStringToArray(eth, native.ref.eth, 128);
     _copyStringToArray(sol, native.ref.sol, 128);
     _copyStringToArray(trx, native.ref.trx, 128);
@@ -684,7 +680,6 @@ class UserProfile {
   UserProfile copyWith({
     String? backbone,
     String? alvin,
-    String? btc,
     String? eth,
     String? sol,
     String? trx,
@@ -704,7 +699,6 @@ class UserProfile {
     return UserProfile(
       backbone: backbone ?? this.backbone,
       alvin: alvin ?? this.alvin,
-      btc: btc ?? this.btc,
       eth: eth ?? this.eth,
       sol: sol ?? this.sol,
       trx: trx ?? this.trx,

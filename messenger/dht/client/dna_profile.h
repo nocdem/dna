@@ -33,7 +33,6 @@ typedef struct {
     char alvin[120];            /**< Alvin testnet address (not active) */
 
     // External blockchains
-    char btc[128];              /**< Bitcoin address */
     char eth[128];              /**< Ethereum address (also works for BSC, Polygon, etc.) */
     char sol[128];              /**< Solana address */
     char trx[128];              /**< TRON address (T...) */
@@ -158,7 +157,7 @@ int dna_identity_from_json(const char *json, dna_unified_identity_t **identity_o
  * - TON (EQ.../UQ... base64 format)
  *
  * @param address Address to validate
- * @param network Network identifier (e.g., "backbone", "eth", "btc")
+ * @param network Network identifier (e.g., "backbone", "eth", "sol")
  * @return true if valid, false otherwise
  */
 bool dna_validate_wallet_address(const char *address, const char *network);

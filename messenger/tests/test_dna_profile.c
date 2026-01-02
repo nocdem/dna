@@ -68,10 +68,6 @@ void test_wallet_validation(void) {
     const char *valid_eth = "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0";
     TEST_ASSERT(dna_validate_wallet_address(valid_eth, "eth"), "Valid Ethereum address accepted");
 
-    // Valid Bitcoin address
-    const char *valid_btc = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa";
-    TEST_ASSERT(dna_validate_wallet_address(valid_btc, "btc"), "Valid Bitcoin address accepted");
-
     // Invalid addresses
     TEST_ASSERT(!dna_validate_wallet_address("", "backbone"), "Empty address rejected");
     TEST_ASSERT(!dna_validate_wallet_address("invalid", "eth"), "Invalid Ethereum address rejected");
@@ -130,7 +126,6 @@ void test_network_checking(void) {
     TEST_ASSERT(!dna_network_is_cellframe("eth"), "ETH is not Cellframe");
 
     // External blockchains
-    TEST_ASSERT(dna_network_is_external("btc"), "BTC is external");
     TEST_ASSERT(dna_network_is_external("eth"), "ETH is external");
     TEST_ASSERT(dna_network_is_external("sol"), "SOL is external");
     TEST_ASSERT(!dna_network_is_external("backbone"), "Backbone is not external");
@@ -171,7 +166,7 @@ void test_wallet_getters_setters(void) {
     TEST_ASSERT(strcmp(retrieved, eth_addr) == 0, "Retrieved ETH address matches");
 
     // Get unset wallet
-    retrieved = dna_identity_get_wallet(identity, "btc");
+    retrieved = dna_identity_get_wallet(identity, "sol");
     TEST_ASSERT(retrieved != NULL && strlen(retrieved) == 0, "Unset wallet returns empty string");
 
     // Invalid network (returns -2 because address validation fails first for unknown networks)

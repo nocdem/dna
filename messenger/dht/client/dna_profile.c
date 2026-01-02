@@ -45,8 +45,6 @@ static json_object* wallets_to_json(const dna_wallets_t *wallets) {
         json_object_new_string(wallets->alvin));
 
     // External blockchains
-    if (wallets->btc[0]) json_object_object_add(obj, "btc",
-        json_object_new_string(wallets->btc));
     if (wallets->eth[0]) json_object_object_add(obj, "eth",
         json_object_new_string(wallets->eth));
     if (wallets->sol[0]) json_object_object_add(obj, "sol",
@@ -69,7 +67,6 @@ static int wallets_from_json(json_object *obj, dna_wallets_t *wallets) {
 
     PARSE_WALLET(backbone, "backbone")
     PARSE_WALLET(alvin, "alvin")
-    PARSE_WALLET(btc, "btc")
     PARSE_WALLET(eth, "eth")
     PARSE_WALLET(sol, "sol")
     PARSE_WALLET(trx, "trx")
@@ -381,17 +378,6 @@ bool dna_validate_wallet_address(const char *address, const char *network) {
         return true;
     }
 
-    // Bitcoin (legacy: 1/3 + 25-34 chars, SegWit: bc1 + 39-59 chars)
-    if (strcmp(network, "btc") == 0) {
-        if ((address[0] == '1' || address[0] == '3') && len >= 26 && len <= 35) {
-            return true;
-        }
-        if (strncmp(address, "bc1", 3) == 0 && len >= 42 && len <= 62) {
-            return true;
-        }
-        return false;
-    }
-
     // Ethereum (0x + 40 hex chars) - also works for BSC, Polygon, etc.
     if (strcmp(network, "eth") == 0) {
         if (len != 42 || strncmp(address, "0x", 2) != 0) return false;
@@ -502,8 +488,7 @@ bool dna_network_is_cellframe(const char *network) {
 bool dna_network_is_external(const char *network) {
     if (!network) return false;
 
-    return (strcmp(network, "btc") == 0 ||
-            strcmp(network, "eth") == 0 ||
+    return (strcmp(network, "eth") == 0 ||
             strcmp(network, "sol") == 0 ||
             strcmp(network, "trx") == 0);
 }
@@ -533,7 +518,6 @@ const char* dna_identity_get_wallet(const dna_unified_identity_t *identity,
 
     CHECK_WALLET(backbone, "backbone")
     CHECK_WALLET(alvin, "alvin")
-    CHECK_WALLET(btc, "btc")
     CHECK_WALLET(eth, "eth")
     CHECK_WALLET(sol, "sol")
     CHECK_WALLET(trx, "trx")
@@ -563,7 +547,6 @@ int dna_identity_set_wallet(dna_unified_identity_t *identity,
 
     SET_WALLET(backbone, "backbone")
     SET_WALLET(alvin, "alvin")
-    SET_WALLET(btc, "btc")
     SET_WALLET(eth, "eth")
     SET_WALLET(sol, "sol")
     SET_WALLET(trx, "trx")

@@ -280,7 +280,7 @@ bool dna_is_name_expired(const dna_unified_identity_t *identity);
  *
  * @param dht_ctx: DHT context
  * @param name: DNA name or fingerprint
- * @param network: Network identifier (e.g., "backbone", "eth", "btc")
+ * @param network: Network identifier (e.g., "backbone", "eth", "sol")
  * @param address_out: Output address (caller must free)
  * @return: 0 on success, -1 on error, -2 if not found, -3 if no address for network
  */

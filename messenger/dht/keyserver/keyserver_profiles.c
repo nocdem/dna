@@ -53,7 +53,6 @@ int dna_update_profile(
     // Wallets
     strncpy(identity->wallets.backbone, profile->backbone, sizeof(identity->wallets.backbone) - 1);
     strncpy(identity->wallets.alvin, profile->alvin, sizeof(identity->wallets.alvin) - 1);
-    strncpy(identity->wallets.btc, profile->btc, sizeof(identity->wallets.btc) - 1);
     strncpy(identity->wallets.eth, profile->eth, sizeof(identity->wallets.eth) - 1);
     strncpy(identity->wallets.sol, profile->sol, sizeof(identity->wallets.sol) - 1);
     strncpy(identity->wallets.trx, profile->trx, sizeof(identity->wallets.trx) - 1);
