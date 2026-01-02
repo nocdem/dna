@@ -129,14 +129,24 @@ class AppLockNotifier extends StateNotifier<AppLockState> {
   /// Authenticate with biometrics
   Future<bool> authenticateWithBiometrics() async {
     try {
+      // Check if device supports biometrics first
+      final canAuth = await _localAuth.canCheckBiometrics;
+      final isDeviceSupported = await _localAuth.isDeviceSupported();
+
+      if (!canAuth || !isDeviceSupported) {
+        return false;
+      }
+
       return await _localAuth.authenticate(
         localizedReason: 'Unlock DNA Messenger',
         options: const AuthenticationOptions(
           stickyAuth: true,
-          biometricOnly: true,
+          biometricOnly: false, // Allow device credentials as fallback
         ),
       );
-    } catch (_) {
+    } catch (e) {
+      // Log error for debugging
+      print('Biometric auth error: $e');
       return false;
     }
   }
