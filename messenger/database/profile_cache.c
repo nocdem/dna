@@ -32,6 +32,9 @@
 
 static sqlite3 *g_db = NULL;
 
+// Forward declaration for lazy init
+int profile_cache_init(void);
+
 // Get global database path
 static int get_db_path(char *path_out, size_t path_size) {
     const char *data_dir = qgp_platform_app_data_dir();
@@ -133,8 +136,8 @@ int profile_cache_init(void) {
  * Add or update profile in cache (Phase 5: Unified Identity)
  */
 int profile_cache_add_or_update(const char *user_fingerprint, const dna_unified_identity_t *identity) {
-    if (!g_db) {
-        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+    if (profile_cache_init() != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize database\n");
         return -1;
     }
 
@@ -186,8 +189,8 @@ int profile_cache_add_or_update(const char *user_fingerprint, const dna_unified_
  * Get profile from cache (Phase 5: Unified Identity)
  */
 int profile_cache_get(const char *user_fingerprint, dna_unified_identity_t **identity_out, uint64_t *cached_at_out) {
-    if (!g_db) {
-        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+    if (profile_cache_init() != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize database\n");
         return -1;
     }
 
@@ -244,7 +247,7 @@ int profile_cache_get(const char *user_fingerprint, dna_unified_identity_t **ide
  * Check if profile exists in cache
  */
 bool profile_cache_exists(const char *user_fingerprint) {
-    if (!g_db || !user_fingerprint) {
+    if (!user_fingerprint || profile_cache_init() != 0) {
         return false;
     }
 
@@ -271,7 +274,7 @@ bool profile_cache_exists(const char *user_fingerprint) {
  * Check if cached profile is expired (>7 days old)
  */
 bool profile_cache_is_expired(const char *user_fingerprint) {
-    if (!g_db || !user_fingerprint) {
+    if (!user_fingerprint || profile_cache_init() != 0) {
         return true;  // Treat as expired if error
     }
 
@@ -302,8 +305,8 @@ bool profile_cache_is_expired(const char *user_fingerprint) {
  * Delete profile from cache
  */
 int profile_cache_delete(const char *user_fingerprint) {
-    if (!g_db) {
-        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+    if (profile_cache_init() != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize database\n");
         return -1;
     }
 
@@ -338,7 +341,7 @@ int profile_cache_delete(const char *user_fingerprint) {
  * Get list of all expired profiles
  */
 int profile_cache_list_expired(char ***fingerprints_out, size_t *count_out) {
-    if (!g_db || !fingerprints_out || !count_out) {
+    if (!fingerprints_out || !count_out || profile_cache_init() != 0) {
         return -1;
     }
 
@@ -395,7 +398,7 @@ int profile_cache_list_expired(char ***fingerprints_out, size_t *count_out) {
  * Get all cached profiles
  */
 int profile_cache_list_all(profile_cache_list_t **list_out) {
-    if (!g_db || !list_out) {
+    if (!list_out || profile_cache_init() != 0) {
         return -1;
     }
 
@@ -477,7 +480,7 @@ int profile_cache_list_all(profile_cache_list_t **list_out) {
  * Get profile count
  */
 int profile_cache_count(void) {
-    if (!g_db) {
+    if (profile_cache_init() != 0) {
         return -1;
     }
 
@@ -502,8 +505,8 @@ int profile_cache_count(void) {
  * Clear all cached profiles
  */
 int profile_cache_clear_all(void) {
-    if (!g_db) {
-        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+    if (profile_cache_init() != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize database\n");
         return -1;
     }
 
