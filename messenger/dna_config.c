@@ -36,6 +36,11 @@ int dna_config_load(dna_config_t *config) {
         strcpy(config->log_level, "DEBUG");
         config->log_tags[0] = '\0';  // Empty = show all
 
+        // File logging defaults
+        config->log_file_enabled = 1;   // Enabled by default
+        config->log_max_size_kb = 5120; // 5 MB
+        config->log_max_files = 3;      // Keep 3 rotated files
+
         // Default bootstrap nodes
         strcpy(config->bootstrap_nodes[0], "154.38.182.161:4000");
         strcpy(config->bootstrap_nodes[1], "164.68.105.227:4000");
@@ -72,6 +77,14 @@ int dna_config_load(dna_config_t *config) {
             strncpy(config->log_level, value, sizeof(config->log_level) - 1);
         } else if (strcmp(key, "log_tags") == 0) {
             strncpy(config->log_tags, value, sizeof(config->log_tags) - 1);
+        } else if (strcmp(key, "log_file_enabled") == 0) {
+            config->log_file_enabled = (atoi(value) != 0) ? 1 : 0;
+        } else if (strcmp(key, "log_max_size_kb") == 0) {
+            int val = atoi(value);
+            if (val > 0) config->log_max_size_kb = val;
+        } else if (strcmp(key, "log_max_files") == 0) {
+            int val = atoi(value);
+            if (val > 0 && val <= 10) config->log_max_files = val;
         } else if (strcmp(key, "bootstrap_nodes") == 0) {
             // Parse comma-separated bootstrap nodes
             config->bootstrap_count = 0;
@@ -99,6 +112,13 @@ int dna_config_load(dna_config_t *config) {
     // Set defaults if not in config
     if (config->log_level[0] == '\0') {
         strcpy(config->log_level, "DEBUG");
+    }
+
+    // File logging defaults if not in config
+    if (config->log_max_size_kb == 0) {
+        config->log_file_enabled = 1;   // Enabled by default
+        config->log_max_size_kb = 5120; // 5 MB
+        config->log_max_files = 3;      // Keep 3 rotated files
     }
 
     // Default bootstrap nodes if none specified
@@ -143,6 +163,15 @@ int dna_config_save(const dna_config_t *config) {
 
     fprintf(f, "# Log tags: comma-separated list (empty = show all)\n");
     fprintf(f, "log_tags=%s\n\n", config->log_tags);
+
+    fprintf(f, "# File logging: 0=disabled, 1=enabled\n");
+    fprintf(f, "log_file_enabled=%d\n\n", config->log_file_enabled);
+
+    fprintf(f, "# Max log file size in KB before rotation (default: 5120 = 5MB)\n");
+    fprintf(f, "log_max_size_kb=%d\n\n", config->log_max_size_kb);
+
+    fprintf(f, "# Max number of rotated log files to keep (1-10, default: 3)\n");
+    fprintf(f, "log_max_files=%d\n\n", config->log_max_files);
 
     fprintf(f, "# Bootstrap nodes: comma-separated list (ip:port)\n");
     fprintf(f, "bootstrap_nodes=");
@@ -201,4 +230,8 @@ void dna_config_apply_log_settings(const dna_config_t *config) {
         }
     }
     // If log_tags is empty, default blacklist mode shows all
+
+    // Apply file logging settings
+    qgp_log_file_set_options(config->log_max_size_kb, config->log_max_files);
+    qgp_log_file_enable(config->log_file_enabled != 0);
 }
