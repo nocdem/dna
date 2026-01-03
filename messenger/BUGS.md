@@ -13,7 +13,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-(none)
+- [ ] **[FLUTTER] P2 - Presence system has duplicate calls and ignores app lifecycle** - Issues: (1) Double-call to presence refresh on app resume causes network errors, (2) Presence timer continues firing when app is in background causing unhandled exceptions. Needs proper pause/resume of presence polling based on app focus state. Must fix before beta.
 
 
 ## Fixed Bugs
