@@ -23,6 +23,53 @@
 
 #define LOG_TAG "DHT_GROUPS"
 
+// Helper: Escape string for JSON (prevents injection attacks)
+// Caller must free() the returned string
+static char* json_escape_string(const char *str) {
+    if (!str) return strdup("");
+
+    size_t len = strlen(str);
+    // Worst case: every char needs escaping (e.g., \n -> \\n = 2 chars)
+    char *escaped = malloc(len * 2 + 1);
+    if (!escaped) return NULL;
+
+    size_t j = 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)str[i];
+        switch (c) {
+            case '"':
+                escaped[j++] = '\\';
+                escaped[j++] = '"';
+                break;
+            case '\\':
+                escaped[j++] = '\\';
+                escaped[j++] = '\\';
+                break;
+            case '\n':
+                escaped[j++] = '\\';
+                escaped[j++] = 'n';
+                break;
+            case '\r':
+                escaped[j++] = '\\';
+                escaped[j++] = 'r';
+                break;
+            case '\t':
+                escaped[j++] = '\\';
+                escaped[j++] = 't';
+                break;
+            default:
+                // Skip other control characters (< 0x20) for safety
+                if (c >= 0x20) {
+                    escaped[j++] = c;
+                }
+                break;
+        }
+    }
+    escaped[j] = '\0';
+
+    return escaped;
+}
+
 // Global database connection for group cache
 static sqlite3 *g_db = NULL;
 
@@ -82,23 +129,36 @@ static void make_base_key(const char *group_uuid, char *key_out, size_t key_out_
 
 // Helper: Serialize metadata to JSON string
 static char* serialize_metadata(const dht_group_metadata_t *meta) {
-    // Calculate required buffer size more accurately
-    size_t base_size = 512 + strlen(meta->name) + strlen(meta->description);
-    
-    // Calculate actual members size: each member can be up to 32 chars + quotes (2) + comma (1) = 35
+    // Escape user-provided strings to prevent JSON injection
+    char *escaped_name = json_escape_string(meta->name);
+    char *escaped_desc = json_escape_string(meta->description);
+    if (!escaped_name || !escaped_desc) {
+        free(escaped_name);
+        free(escaped_desc);
+        return NULL;
+    }
+
+    // Calculate required buffer size with escaped strings
+    size_t base_size = 512 + strlen(escaped_name) + strlen(escaped_desc);
+
+    // Calculate actual members size: each member can be up to 128 chars + quotes (2) + comma (1)
     size_t members_size = 0;
     for (uint32_t i = 0; i < meta->member_count; i++) {
         members_size += strlen(meta->members[i]) + 3;  // +3 for quotes and comma
     }
     members_size += 16;  // Extra margin for array brackets and final member
-    
+
     char *json = malloc(base_size + members_size);
-    if (!json) return NULL;
+    if (!json) {
+        free(escaped_name);
+        free(escaped_desc);
+        return NULL;
+    }
 
     char *ptr = json;
     ptr += sprintf(ptr, "{\"group_uuid\":\"%s\",", meta->group_uuid);
-    ptr += sprintf(ptr, "\"name\":\"%s\",", meta->name);
-    ptr += sprintf(ptr, "\"description\":\"%s\",", meta->description);
+    ptr += sprintf(ptr, "\"name\":\"%s\",", escaped_name);
+    ptr += sprintf(ptr, "\"description\":\"%s\",", escaped_desc);
     ptr += sprintf(ptr, "\"creator\":\"%s\",", meta->creator);
     ptr += sprintf(ptr, "\"created_at\":%lu,", (unsigned long)meta->created_at);
     ptr += sprintf(ptr, "\"version\":%u,", meta->version);
@@ -110,6 +170,9 @@ static char* serialize_metadata(const dht_group_metadata_t *meta) {
         ptr += sprintf(ptr, "\"%s\"", meta->members[i]);
     }
     ptr += sprintf(ptr, "]}");
+
+    free(escaped_name);
+    free(escaped_desc);
 
     return json;
 }
