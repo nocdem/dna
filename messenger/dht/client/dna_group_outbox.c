@@ -972,19 +972,18 @@ int dna_group_outbox_db_get_messages(
         return -1;
     }
 
-    char sql[512];
-    if (limit > 0) {
-        snprintf(sql, sizeof(sql),
-                 "SELECT message_id, group_uuid, sender_fingerprint, gsk_version, nonce, ciphertext, "
-                 "ciphertext_len, tag, signature, signature_len, timestamp_ms, decrypted_text "
-                 "FROM group_messages WHERE group_uuid = ? ORDER BY timestamp_ms DESC LIMIT %zu OFFSET %zu",
-                 limit, offset);
-    } else {
-        snprintf(sql, sizeof(sql),
-                 "SELECT message_id, group_uuid, sender_fingerprint, gsk_version, nonce, ciphertext, "
-                 "ciphertext_len, tag, signature, signature_len, timestamp_ms, decrypted_text "
-                 "FROM group_messages WHERE group_uuid = ? ORDER BY timestamp_ms DESC");
-    }
+    /* M8: Use parameterized queries for LIMIT/OFFSET (SQL injection prevention) */
+    const char *sql_with_limit =
+        "SELECT message_id, group_uuid, sender_fingerprint, gsk_version, nonce, ciphertext, "
+        "ciphertext_len, tag, signature, signature_len, timestamp_ms, decrypted_text "
+        "FROM group_messages WHERE group_uuid = ? ORDER BY timestamp_ms DESC LIMIT ? OFFSET ?";
+
+    const char *sql_no_limit =
+        "SELECT message_id, group_uuid, sender_fingerprint, gsk_version, nonce, ciphertext, "
+        "ciphertext_len, tag, signature, signature_len, timestamp_ms, decrypted_text "
+        "FROM group_messages WHERE group_uuid = ? ORDER BY timestamp_ms DESC";
+
+    const char *sql = (limit > 0) ? sql_with_limit : sql_no_limit;
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(group_outbox_db, sql, -1, &stmt, NULL);
@@ -993,6 +992,10 @@ int dna_group_outbox_db_get_messages(
     }
 
     sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_TRANSIENT);
+    if (limit > 0) {
+        sqlite3_bind_int64(stmt, 2, (sqlite3_int64)limit);
+        sqlite3_bind_int64(stmt, 3, (sqlite3_int64)offset);
+    }
 
     /* Count rows first */
     dna_group_message_t *messages = NULL;
