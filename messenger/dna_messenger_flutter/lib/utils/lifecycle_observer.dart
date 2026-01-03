@@ -4,8 +4,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/engine_provider.dart';
-import '../providers/foreground_service_provider.dart';
-import '../providers/contacts_provider.dart';
+import '../providers/event_handler.dart';
 
 /// Observer for app lifecycle state changes
 ///
@@ -15,7 +14,6 @@ import '../providers/contacts_provider.dart';
 /// - onDetached: Service may continue if logged in
 class AppLifecycleObserver extends WidgetsBindingObserver {
   final WidgetRef ref;
-  bool _initialized = false;
 
   AppLifecycleObserver(this.ref);
 
@@ -55,13 +53,14 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     try {
       final engine = await ref.read(engineProvider.future);
 
-      // Resume presence heartbeat (marks us as online)
-      print('AppLifecycle: Resuming presence');
+      // Resume C-side presence heartbeat (marks us as online)
+      print('AppLifecycle: Resuming C-side presence heartbeat');
       engine.resumePresence();
 
-      // Refresh presence so others know we're online
-      print('AppLifecycle: Refreshing presence');
-      await engine.refreshPresence();
+      // Resume Dart-side polling timers (handles presence refresh + contact requests)
+      // This also triggers an immediate presence refresh, so no need to call it separately
+      print('AppLifecycle: Resuming polling timers');
+      ref.read(eventHandlerProvider).resumePolling();
 
       // Note: Offline messages are handled by C-side push notification callback
       // (messenger_push_notification_callback) which triggers poll on DHT listen events
@@ -74,18 +73,22 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
   void _onPause() async {
     print('AppLifecycle: App paused');
 
+    // Pause Dart-side polling timers FIRST (prevents timer exceptions in background)
+    print('AppLifecycle: Pausing polling timers');
+    ref.read(eventHandlerProvider).pausePolling();
+
     // Check if identity is loaded
     final fingerprint = ref.read(currentFingerprintProvider);
     if (fingerprint == null || fingerprint.isEmpty) {
-      print('AppLifecycle: No identity loaded, skipping pause');
+      print('AppLifecycle: No identity loaded, skipping C-side pause');
       return;
     }
 
     try {
       final engine = await ref.read(engineProvider.future);
 
-      // Pause presence heartbeat (stops marking us as online)
-      print('AppLifecycle: Pausing presence');
+      // Pause C-side presence heartbeat (stops marking us as online)
+      print('AppLifecycle: Pausing C-side presence heartbeat');
       engine.pausePresence();
     } catch (e) {
       print('AppLifecycle: Error during pause - $e');

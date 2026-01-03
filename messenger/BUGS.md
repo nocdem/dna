@@ -13,10 +13,13 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-- [ ] **[FLUTTER] P2 - Presence system has duplicate calls and ignores app lifecycle** - Issues: (1) Double-call to presence refresh on app resume causes network errors, (2) Presence timer continues firing when app is in background causing unhandled exceptions. Needs proper pause/resume of presence polling based on app focus state. Must fix before beta.
+(none)
 
 
 ## Fixed Bugs
+
+- [x] **[FLUTTER] P2 - Presence system has duplicate calls and ignores app lifecycle** - Fixed by adding pausePolling()/resumePolling() to EventHandler that lifecycle_observer calls on app pause/resume. Timers now properly stop in background. (v0.99.28)
+
 
 - [x] **[MIXED] Profile shows "Anonymous" after identity creation** - `dna_handle_get_profile()` was missing copy of display_name/registered_name, location, website fields. Added fallback logic matching `dna_handle_lookup_profile()`. Flutter provider cleanup (5+ redundant providers) still recommended as separate task. (v0.3.61)
 

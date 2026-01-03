@@ -241,6 +241,36 @@ class EventHandler {
     });
   }
 
+  /// Pause all polling timers (call when app goes to background)
+  ///
+  /// Prevents network calls while app is not active, avoiding:
+  /// - Unnecessary battery/data usage
+  /// - Exceptions from timer firing when app state is invalid
+  void pausePolling() {
+    print('[EventHandler] Pausing polling timers');
+    _presenceTimer?.cancel();
+    _presenceTimer = null;
+    _contactRequestsTimer?.cancel();
+    _contactRequestsTimer = null;
+  }
+
+  /// Resume all polling timers (call when app comes to foreground)
+  ///
+  /// Restarts periodic polling if DHT is connected.
+  /// Also triggers an immediate presence refresh.
+  void resumePolling() {
+    print('[EventHandler] Resuming polling timers');
+    final dhtState = _ref.read(dhtConnectionStateProvider);
+    if (dhtState == DhtConnectionState.connected) {
+      _startContactRequestsPolling();
+      _startPresencePolling();
+      // Immediate presence refresh on resume
+      _ref.read(engineProvider).whenData((engine) async {
+        await engine.refreshPresence();
+      });
+    }
+  }
+
   /// Refresh identity profiles from DHT
   /// Called when DHT connects to fetch display names/avatars that may have
   /// failed during startup (race condition: prefetch before DHT ready)
