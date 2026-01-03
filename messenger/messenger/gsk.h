@@ -131,6 +131,29 @@ int gsk_cleanup_expired(void);
 int gsk_init(void *backup_ctx);
 
 /**
+ * Set KEM keys for GSK encryption/decryption
+ *
+ * Must be called after identity is loaded and before any GSK store/load operations.
+ * The GSK subsystem will use these keys to encrypt GSKs before storing in database
+ * and decrypt them when loading.
+ *
+ * Keys are copied internally - caller may free original buffers.
+ *
+ * @param kem_pubkey    1568-byte Kyber1024 public key (for encryption)
+ * @param kem_privkey   3168-byte Kyber1024 private key (for decryption)
+ * @return 0 on success, -1 on error
+ */
+int gsk_set_kem_keys(const uint8_t *kem_pubkey, const uint8_t *kem_privkey);
+
+/**
+ * Clear KEM keys from GSK subsystem
+ *
+ * Should be called when identity is unloaded or on shutdown.
+ * Securely wipes the stored keys from memory.
+ */
+void gsk_clear_kem_keys(void);
+
+/**
  * Rotate GSK when a member is added to the group
  *
  * Automatically called by messenger_add_group_member().

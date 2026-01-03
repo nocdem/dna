@@ -144,6 +144,7 @@ add_library(dna_lib ${DNA_LIB_TYPE}
     messenger/keygen.c
     messenger/messages.c
     messenger/gsk.c             # Group Symmetric Key (v0.09)
+    messenger/gsk_encryption.c  # GSK KEM encryption (H3 security fix)
     messenger/gsk_packet.c      # GSK packet builder
     # Messenger facade (delegates to messenger/ modules)
     messenger.c

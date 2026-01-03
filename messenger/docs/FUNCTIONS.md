@@ -403,6 +403,30 @@ Core messenger functionality including identity management, key generation, mess
 | `int messenger_load_group_messages(...)` | Load group conversation messages |
 | `void messenger_free_groups(group_info_t*, int)` | Free group array |
 
+### 3.8 Group Symmetric Key (GSK)
+
+**File:** `messenger/gsk.h`, `messenger/gsk_encryption.h`
+
+GSK provides AES-256 symmetric encryption for group messaging (faster than per-recipient Kyber).
+GSKs are now encrypted at rest using Kyber1024 KEM (H3 security fix).
+
+| Function | Description |
+|----------|-------------|
+| `int gsk_init(void *backup_ctx)` | Initialize GSK subsystem |
+| `int gsk_set_kem_keys(const uint8_t*, const uint8_t*)` | Set KEM keys for GSK encryption |
+| `void gsk_clear_kem_keys(void)` | Clear KEM keys from memory |
+| `int gsk_generate(const char*, uint32_t, uint8_t[32])` | Generate new random GSK |
+| `int gsk_store(const char*, uint32_t, const uint8_t[32])` | Store GSK (encrypted with KEM) |
+| `int gsk_load(const char*, uint32_t, uint8_t[32])` | Load GSK by version (decrypted) |
+| `int gsk_load_active(const char*, uint8_t[32], uint32_t*)` | Load latest active GSK |
+| `int gsk_rotate(const char*, uint32_t*, uint8_t[32])` | Rotate GSK (generate new version) |
+| `int gsk_get_current_version(const char*, uint32_t*)` | Get current GSK version |
+| `int gsk_cleanup_expired(void)` | Delete expired GSKs |
+| `int gsk_rotate_on_member_add(...)` | Rotate GSK when member added |
+| `int gsk_rotate_on_member_remove(...)` | Rotate GSK when member removed |
+| `int gsk_encrypt(const uint8_t[32], const uint8_t*, uint8_t*)` | Encrypt GSK with KEM |
+| `int gsk_decrypt(const uint8_t*, size_t, const uint8_t*, uint8_t[32])` | Decrypt GSK with KEM |
+
 ---
 
 ## 4. Message Backup

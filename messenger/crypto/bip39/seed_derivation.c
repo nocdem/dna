@@ -21,6 +21,7 @@
 
 #include "crypto/kem/fips202_kyber.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 
 /**
  * Derive QGP signing and encryption seeds from BIP39 mnemonic
@@ -74,6 +75,7 @@ int qgp_derive_seeds_from_mnemonic(
         memcpy(input + BIP39_SEED_SIZE, signing_context, context_len);
 
         shake256(signing_seed, 32, input, input_len);
+        qgp_secure_memzero(input, input_len);
         free(input);
     }
 
@@ -93,11 +95,12 @@ int qgp_derive_seeds_from_mnemonic(
         memcpy(input + BIP39_SEED_SIZE, encryption_context, context_len);
 
         shake256(encryption_seed, 32, input, input_len);
+        qgp_secure_memzero(input, input_len);
         free(input);
     }
 
     // Clear master seed from memory (security)
-    memset(master_seed, 0, BIP39_SEED_SIZE);
+    qgp_secure_memzero(master_seed, BIP39_SEED_SIZE);
 
     return 0;
 }
@@ -146,7 +149,7 @@ int qgp_derive_seeds_with_master(
         uint8_t *input = malloc(input_len);
         if (!input) {
             QGP_LOG_ERROR("SEED", "Memory allocation failed");
-            memset(master_seed, 0, BIP39_SEED_SIZE);
+            qgp_secure_memzero(master_seed, BIP39_SEED_SIZE);
             return -1;
         }
 
@@ -154,6 +157,7 @@ int qgp_derive_seeds_with_master(
         memcpy(input + BIP39_SEED_SIZE, signing_context, context_len);
 
         shake256(signing_seed, 32, input, input_len);
+        qgp_secure_memzero(input, input_len);
         free(input);
     }
 
@@ -166,7 +170,7 @@ int qgp_derive_seeds_with_master(
         uint8_t *input = malloc(input_len);
         if (!input) {
             QGP_LOG_ERROR("SEED", "Memory allocation failed");
-            memset(master_seed, 0, BIP39_SEED_SIZE);
+            qgp_secure_memzero(master_seed, BIP39_SEED_SIZE);
             return -1;
         }
 
@@ -174,12 +178,13 @@ int qgp_derive_seeds_with_master(
         memcpy(input + BIP39_SEED_SIZE, encryption_context, context_len);
 
         shake256(encryption_seed, 32, input, input_len);
+        qgp_secure_memzero(input, input_len);
         free(input);
     }
 
     // Clear master seed from memory (security) - unless returned to caller
     if (!master_seed_out) {
-        memset(master_seed, 0, BIP39_SEED_SIZE);
+        qgp_secure_memzero(master_seed, BIP39_SEED_SIZE);
     }
 
     return 0;

@@ -222,7 +222,7 @@ static int messenger_encrypt_multi_recipient(
         // Kyber1024 encapsulation (ML-KEM-1024)
         if (qgp_kem1024_encapsulate(kyber_ciphertext, kek, recipient_enc_pubkeys[i]) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "KEM-1024 encapsulation failed for recipient %zu", i+1);
-            memset(kek, 0, 32);
+            qgp_secure_memzero(kek, 32);
             goto cleanup;
         }
 
@@ -230,7 +230,7 @@ static int messenger_encrypt_multi_recipient(
         uint8_t wrapped_dek[40];
         if (aes256_wrap_key(dek, 32, kek, wrapped_dek) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to wrap DEK for recipient %zu", i+1);
-            memset(kek, 0, 32);
+            qgp_secure_memzero(kek, 32);
             goto cleanup;
         }
 
@@ -239,7 +239,7 @@ static int messenger_encrypt_multi_recipient(
         memcpy(recipient_entries[i].wrapped_dek, wrapped_dek, 40);
 
         // Wipe KEK
-        memset(kek, 0, 32);
+        qgp_secure_memzero(kek, 32);
     }
 
     // Step 5: Build output buffer
@@ -296,7 +296,7 @@ static int messenger_encrypt_multi_recipient(
 
 cleanup:
     if (dek) {
-        memset(dek, 0, 32);
+        qgp_secure_memzero(dek, 32);
         free(dek);
     }
     if (payload) free(payload);

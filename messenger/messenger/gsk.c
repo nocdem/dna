@@ -11,6 +11,7 @@
 
 #include "gsk.h"
 #include "gsk_packet.h"
+#include "gsk_encryption.h"
 #include "../message_backup.h"
 #include "../crypto/utils/qgp_random.h"
 #include "../crypto/utils/qgp_sha3.h"
@@ -30,6 +31,10 @@
 
 // Database handle (set during gsk_init)
 static sqlite3 *msg_db = NULL;
+
+// KEM keys for GSK encryption (set via gsk_set_kem_keys)
+static uint8_t *gsk_kem_pubkey = NULL;   // 1568 bytes (Kyber1024)
+static uint8_t *gsk_kem_privkey = NULL;  // 3168 bytes (Kyber1024)
 
 /**
  * Generate a new random GSK for a group
@@ -51,7 +56,7 @@ int gsk_generate(const char *group_uuid, uint32_t version, uint8_t gsk_out[GSK_K
 }
 
 /**
- * Store GSK in local database
+ * Store GSK in local database (encrypted with Kyber1024 KEM)
  */
 int gsk_store(const char *group_uuid, uint32_t version, const uint8_t gsk[GSK_KEY_SIZE]) {
     if (!group_uuid || !gsk) {
@@ -61,6 +66,18 @@ int gsk_store(const char *group_uuid, uint32_t version, const uint8_t gsk[GSK_KE
 
     if (!msg_db) {
         QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    if (!gsk_kem_pubkey) {
+        QGP_LOG_ERROR(LOG_TAG, "KEM keys not set - call gsk_set_kem_keys() first\n");
+        return -1;
+    }
+
+    /* Encrypt GSK with Kyber1024 KEM + AES-256-GCM */
+    uint8_t encrypted_gsk[GSK_ENC_TOTAL_SIZE];
+    if (gsk_encrypt(gsk, gsk_kem_pubkey, encrypted_gsk) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to encrypt GSK\n");
         return -1;
     }
 
@@ -80,7 +97,7 @@ int gsk_store(const char *group_uuid, uint32_t version, const uint8_t gsk[GSK_KE
 
     sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 2, (int)version);
-    sqlite3_bind_blob(stmt, 3, gsk, GSK_KEY_SIZE, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmt, 3, encrypted_gsk, GSK_ENC_TOTAL_SIZE, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 4, (sqlite3_int64)now);
     sqlite3_bind_int64(stmt, 5, (sqlite3_int64)expires_at);
 
@@ -92,13 +109,13 @@ int gsk_store(const char *group_uuid, uint32_t version, const uint8_t gsk[GSK_KE
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Stored GSK for group %s v%u (expires in %d days)\n",
+    QGP_LOG_INFO(LOG_TAG, "Stored encrypted GSK for group %s v%u (expires in %d days)\n",
            group_uuid, version, GSK_DEFAULT_EXPIRY / (24 * 3600));
     return 0;
 }
 
 /**
- * Load GSK from local database by version
+ * Load GSK from local database by version (decrypted with Kyber1024 KEM)
  */
 int gsk_load(const char *group_uuid, uint32_t version, uint8_t gsk_out[GSK_KEY_SIZE]) {
     if (!group_uuid || !gsk_out) {
@@ -108,6 +125,11 @@ int gsk_load(const char *group_uuid, uint32_t version, uint8_t gsk_out[GSK_KEY_S
 
     if (!msg_db) {
         QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    if (!gsk_kem_privkey) {
+        QGP_LOG_ERROR(LOG_TAG, "KEM keys not set - call gsk_set_kem_keys() first\n");
         return -1;
     }
 
@@ -132,16 +154,16 @@ int gsk_load(const char *group_uuid, uint32_t version, uint8_t gsk_out[GSK_KEY_S
         const void *blob = sqlite3_column_blob(stmt, 0);
         int blob_size = sqlite3_column_bytes(stmt, 0);
 
-        if (blob_size != GSK_KEY_SIZE) {
-            QGP_LOG_ERROR(LOG_TAG, "Invalid GSK size: %d (expected %d)\n", blob_size, GSK_KEY_SIZE);
+        /* Decrypt encrypted GSK */
+        if (gsk_decrypt((const uint8_t *)blob, (size_t)blob_size, gsk_kem_privkey, gsk_out) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to decrypt GSK for group %s v%u\n", group_uuid, version);
             sqlite3_finalize(stmt);
             return -1;
         }
 
-        memcpy(gsk_out, blob, GSK_KEY_SIZE);
         sqlite3_finalize(stmt);
 
-        QGP_LOG_INFO(LOG_TAG, "Loaded GSK for group %s v%u\n", group_uuid, version);
+        QGP_LOG_INFO(LOG_TAG, "Loaded and decrypted GSK for group %s v%u\n", group_uuid, version);
         return 0;
     }
 
@@ -157,7 +179,7 @@ int gsk_load(const char *group_uuid, uint32_t version, uint8_t gsk_out[GSK_KEY_S
 }
 
 /**
- * Load active (latest non-expired) GSK from local database
+ * Load active (latest non-expired) GSK from local database (decrypted with Kyber1024 KEM)
  */
 int gsk_load_active(const char *group_uuid, uint8_t gsk_out[GSK_KEY_SIZE], uint32_t *version_out) {
     if (!group_uuid || !gsk_out) {
@@ -167,6 +189,11 @@ int gsk_load_active(const char *group_uuid, uint8_t gsk_out[GSK_KEY_SIZE], uint3
 
     if (!msg_db) {
         QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    if (!gsk_kem_privkey) {
+        QGP_LOG_ERROR(LOG_TAG, "KEM keys not set - call gsk_set_kem_keys() first\n");
         return -1;
     }
 
@@ -192,20 +219,20 @@ int gsk_load_active(const char *group_uuid, uint8_t gsk_out[GSK_KEY_SIZE], uint3
         int blob_size = sqlite3_column_bytes(stmt, 0);
         uint32_t version = (uint32_t)sqlite3_column_int(stmt, 1);
 
-        if (blob_size != GSK_KEY_SIZE) {
-            QGP_LOG_ERROR(LOG_TAG, "Invalid GSK size: %d (expected %d)\n", blob_size, GSK_KEY_SIZE);
+        /* Decrypt encrypted GSK */
+        if (gsk_decrypt((const uint8_t *)blob, (size_t)blob_size, gsk_kem_privkey, gsk_out) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to decrypt active GSK for group %s\n", group_uuid);
             sqlite3_finalize(stmt);
             return -1;
         }
 
-        memcpy(gsk_out, blob, GSK_KEY_SIZE);
         if (version_out) {
             *version_out = version;
         }
 
         sqlite3_finalize(stmt);
 
-        QGP_LOG_INFO(LOG_TAG, "Loaded active GSK for group %s v%u\n", group_uuid, version);
+        QGP_LOG_INFO(LOG_TAG, "Loaded and decrypted active GSK for group %s v%u\n", group_uuid, version);
         return 0;
     }
 
@@ -389,6 +416,58 @@ int gsk_init(void *backup_ctx) {
     gsk_cleanup_expired();
 
     return 0;
+}
+
+/**
+ * Set KEM keys for GSK encryption/decryption
+ */
+int gsk_set_kem_keys(const uint8_t *kem_pubkey, const uint8_t *kem_privkey) {
+    if (!kem_pubkey || !kem_privkey) {
+        QGP_LOG_ERROR(LOG_TAG, "gsk_set_kem_keys: NULL parameter\n");
+        return -1;
+    }
+
+    /* Clear existing keys if any */
+    gsk_clear_kem_keys();
+
+    /* Allocate and copy public key (1568 bytes) */
+    gsk_kem_pubkey = malloc(1568);
+    if (!gsk_kem_pubkey) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate KEM pubkey\n");
+        return -1;
+    }
+    memcpy(gsk_kem_pubkey, kem_pubkey, 1568);
+
+    /* Allocate and copy private key (3168 bytes) */
+    gsk_kem_privkey = malloc(3168);
+    if (!gsk_kem_privkey) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate KEM privkey\n");
+        qgp_secure_memzero(gsk_kem_pubkey, 1568);
+        free(gsk_kem_pubkey);
+        gsk_kem_pubkey = NULL;
+        return -1;
+    }
+    memcpy(gsk_kem_privkey, kem_privkey, 3168);
+
+    QGP_LOG_INFO(LOG_TAG, "KEM keys set for GSK encryption\n");
+    return 0;
+}
+
+/**
+ * Clear KEM keys from GSK subsystem
+ */
+void gsk_clear_kem_keys(void) {
+    if (gsk_kem_pubkey) {
+        qgp_secure_memzero(gsk_kem_pubkey, 1568);
+        free(gsk_kem_pubkey);
+        gsk_kem_pubkey = NULL;
+    }
+    if (gsk_kem_privkey) {
+        qgp_secure_memzero(gsk_kem_privkey, 3168);
+        free(gsk_kem_privkey);
+        gsk_kem_privkey = NULL;
+    }
+    QGP_LOG_DEBUG(LOG_TAG, "KEM keys cleared\n");
 }
 
 /**
