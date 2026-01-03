@@ -132,26 +132,26 @@ int messenger_prepare_dht_from_mnemonic(const char *mnemonic) {
     uint8_t seed_input[64 + 12];
     memcpy(seed_input, master_seed, 64);
     memcpy(seed_input + 64, "dht_identity", 12);
-    memset(master_seed, 0, sizeof(master_seed));
+    qgp_secure_memzero(master_seed, sizeof(master_seed));
 
     if (qgp_sha3_512(seed_input, sizeof(seed_input), full_hash) != 0) {
         QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to derive DHT seed");
-        memset(seed_input, 0, sizeof(seed_input));
+        qgp_secure_memzero(seed_input, sizeof(seed_input));
         return -1;
     }
-    memset(seed_input, 0, sizeof(seed_input));
+    qgp_secure_memzero(seed_input, sizeof(seed_input));
 
     memcpy(dht_seed, full_hash, 32);
-    memset(full_hash, 0, sizeof(full_hash));
+    qgp_secure_memzero(full_hash, sizeof(full_hash));
 
     // Generate DHT identity from derived seed
     dht_identity_t *dht_identity = NULL;
     if (dht_identity_generate_from_seed(dht_seed, &dht_identity) != 0) {
         QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to generate DHT identity from seed");
-        memset(dht_seed, 0, sizeof(dht_seed));
+        qgp_secure_memzero(dht_seed, sizeof(dht_seed));
         return -1;
     }
-    memset(dht_seed, 0, sizeof(dht_seed));
+    qgp_secure_memzero(dht_seed, sizeof(dht_seed));
 
     QGP_LOG_INFO(LOG_TAG_DHT, "Derived DHT identity from mnemonic (early preparation)");
 
@@ -297,7 +297,7 @@ void messenger_free(messenger_context_t *ctx) {
 
     // Securely clear and free session password (v0.2.17+)
     if (ctx->session_password) {
-        memset(ctx->session_password, 0, strlen(ctx->session_password));
+        qgp_secure_memzero(ctx->session_password, strlen(ctx->session_password));
         free(ctx->session_password);
     }
 
@@ -317,7 +317,7 @@ void messenger_set_session_password(messenger_context_t *ctx, const char *passwo
 
     // Clear existing password if any
     if (ctx->session_password) {
-        memset(ctx->session_password, 0, strlen(ctx->session_password));
+        qgp_secure_memzero(ctx->session_password, strlen(ctx->session_password));
         free(ctx->session_password);
         ctx->session_password = NULL;
     }
@@ -407,10 +407,10 @@ int messenger_load_dht_identity(const char *fingerprint) {
         uint8_t master_seed[64];
         if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
             QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to convert mnemonic to master seed");
-            memset(mnemonic, 0, sizeof(mnemonic));
+            qgp_secure_memzero(mnemonic, sizeof(mnemonic));
             return -1;
         }
-        memset(mnemonic, 0, sizeof(mnemonic));
+        qgp_secure_memzero(mnemonic, sizeof(mnemonic));
 
         // Derive dht_seed = SHA3-512(master_seed + "dht_identity")[0:32]
         // Use SHA3-512 truncated to 32 bytes (cryptographically sound)
@@ -419,26 +419,26 @@ int messenger_load_dht_identity(const char *fingerprint) {
         uint8_t seed_input[64 + 12];  // 64-byte master_seed + "dht_identity" (12 bytes)
         memcpy(seed_input, master_seed, 64);
         memcpy(seed_input + 64, "dht_identity", 12);
-        memset(master_seed, 0, sizeof(master_seed));
+        qgp_secure_memzero(master_seed, sizeof(master_seed));
 
         if (qgp_sha3_512(seed_input, sizeof(seed_input), full_hash) != 0) {
             QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to derive DHT seed");
-            memset(seed_input, 0, sizeof(seed_input));
+            qgp_secure_memzero(seed_input, sizeof(seed_input));
             return -1;
         }
-        memset(seed_input, 0, sizeof(seed_input));
+        qgp_secure_memzero(seed_input, sizeof(seed_input));
 
         // Truncate to 32 bytes for DHT seed
         memcpy(dht_seed, full_hash, 32);
-        memset(full_hash, 0, sizeof(full_hash));
+        qgp_secure_memzero(full_hash, sizeof(full_hash));
 
         // Generate DHT identity from derived seed
         if (dht_identity_generate_from_seed(dht_seed, &dht_identity) != 0) {
             QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to generate DHT identity from seed");
-            memset(dht_seed, 0, sizeof(dht_seed));
+            qgp_secure_memzero(dht_seed, sizeof(dht_seed));
             return -1;
         }
-        memset(dht_seed, 0, sizeof(dht_seed));
+        qgp_secure_memzero(dht_seed, sizeof(dht_seed));
 
         QGP_LOG_INFO(LOG_TAG_DHT, "Derived DHT identity from mnemonic (deterministic)");
 

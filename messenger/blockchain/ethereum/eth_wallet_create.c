@@ -284,7 +284,7 @@ int eth_wallet_save(
     if (!fp) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to open file for writing: %s", file_path);
         json_object_put(root);
-        memset(privkey_hex, 0, sizeof(privkey_hex));
+        qgp_secure_memzero(privkey_hex, sizeof(privkey_hex));
         return -1;
     }
 
@@ -299,7 +299,7 @@ int eth_wallet_save(
 
     /* Cleanup */
     json_object_put(root);
-    memset(privkey_hex, 0, sizeof(privkey_hex));
+    qgp_secure_memzero(privkey_hex, sizeof(privkey_hex));
 
     QGP_LOG_DEBUG(LOG_TAG, "Saved wallet to: %s", file_path);
     return 0;

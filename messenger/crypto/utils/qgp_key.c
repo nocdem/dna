@@ -68,7 +68,7 @@ void qgp_key_free(qgp_key_t *key) {
     }
 
     // Wipe and free key structure
-    memset(key, 0, sizeof(qgp_key_t));
+    qgp_secure_memzero(key, sizeof(qgp_key_t));
     QGP_FREE(key);
 }
 

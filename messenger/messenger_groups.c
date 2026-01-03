@@ -910,7 +910,7 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
     );
 
     // Secure wipe private key
-    memset(dilithium_privkey, 0, sizeof(dilithium_privkey));
+    qgp_secure_memzero(dilithium_privkey, sizeof(dilithium_privkey));
 
     if (result == DNA_GROUP_OUTBOX_OK) {
         QGP_LOG_INFO(LOG_TAG, "Message sent via group outbox: %s\n", message_id);

@@ -177,7 +177,7 @@ int blockchain_create_all_wallets(
                 QGP_LOG_INFO(LOG_TAG, "Created Cellframe wallet: %s", address);
             }
             /* Securely clear seed */
-            memset(cf_seed, 0, sizeof(cf_seed));
+            qgp_secure_memzero(cf_seed, sizeof(cf_seed));
         } else {
             QGP_LOG_ERROR(LOG_TAG, "Failed to derive Cellframe seed from mnemonic");
         }
@@ -897,7 +897,7 @@ int blockchain_derive_wallets_from_seed(
                 QGP_LOG_WARN(LOG_TAG, "Failed to derive Cellframe address");
             }
             /* Securely clear seed */
-            memset(cf_seed, 0, sizeof(cf_seed));
+            qgp_secure_memzero(cf_seed, sizeof(cf_seed));
         } else {
             QGP_LOG_WARN(LOG_TAG, "Failed to derive Cellframe seed from mnemonic");
         }
@@ -1049,12 +1049,12 @@ int blockchain_send_tokens_with_seed(
             cellframe_wallet_t *wallet = NULL;
             if (cellframe_wallet_derive_keys(cf_seed, &wallet) != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "Failed to derive Cellframe wallet keys");
-                memset(cf_seed, 0, sizeof(cf_seed));
+                qgp_secure_memzero(cf_seed, sizeof(cf_seed));
                 return -1;
             }
 
             /* Clear seed immediately */
-            memset(cf_seed, 0, sizeof(cf_seed));
+            qgp_secure_memzero(cf_seed, sizeof(cf_seed));
 
             QGP_LOG_INFO(LOG_TAG, "Derived Cellframe wallet: %s", wallet->address);
 
@@ -1070,7 +1070,7 @@ int blockchain_send_tokens_with_seed(
 
             /* Securely clear and free wallet */
             if (wallet->private_key) {
-                memset(wallet->private_key, 0, wallet->private_key_size);
+                qgp_secure_memzero(wallet->private_key, wallet->private_key_size);
             }
             wallet_free(wallet);
             break;

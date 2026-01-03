@@ -302,7 +302,7 @@ void dna_free_task_params(dna_task_t *task) {
         case TASK_CREATE_IDENTITY:
             if (task->params.create_identity.password) {
                 /* Secure clear password before freeing */
-                memset(task->params.create_identity.password, 0,
+                qgp_secure_memzero(task->params.create_identity.password,
                        strlen(task->params.create_identity.password));
                 free(task->params.create_identity.password);
             }
@@ -310,7 +310,7 @@ void dna_free_task_params(dna_task_t *task) {
         case TASK_LOAD_IDENTITY:
             if (task->params.load_identity.password) {
                 /* Secure clear password before freeing */
-                memset(task->params.load_identity.password, 0,
+                qgp_secure_memzero(task->params.load_identity.password,
                        strlen(task->params.load_identity.password));
                 free(task->params.load_identity.password);
             }
@@ -843,7 +843,7 @@ void dna_engine_destroy(dna_engine_t *engine) {
 
     /* Securely clear session password */
     if (engine->session_password) {
-        memset(engine->session_password, 0, strlen(engine->session_password));
+        qgp_secure_memzero(engine->session_password, strlen(engine->session_password));
         free(engine->session_password);
         engine->session_password = NULL;
     }
@@ -922,7 +922,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     /* Free existing session password if any */
     if (engine->session_password) {
         /* Secure clear before freeing */
-        memset(engine->session_password, 0, strlen(engine->session_password));
+        qgp_secure_memzero(engine->session_password, strlen(engine->session_password));
         free(engine->session_password);
         engine->session_password = NULL;
     }
@@ -1163,15 +1163,15 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
                                             strncpy(trx_addr, trx_wallet.address, sizeof(trx_addr) - 1);
                                             trx_wallet_clear(&trx_wallet);
                                         }
-                                        memset(master_seed, 0, sizeof(master_seed));
+                                        qgp_secure_memzero(master_seed, sizeof(master_seed));
                                     }
                                     /* Derive Cellframe address from mnemonic (different derivation) */
                                     uint8_t cf_seed[CF_WALLET_SEED_SIZE];
                                     if (cellframe_derive_seed_from_mnemonic(mnemonic, cf_seed) == 0) {
                                         cellframe_wallet_derive_address(cf_seed, cf_addr);
-                                        memset(cf_seed, 0, sizeof(cf_seed));
+                                        qgp_secure_memzero(cf_seed, sizeof(cf_seed));
                                     }
-                                    memset(mnemonic, 0, sizeof(mnemonic));
+                                    qgp_secure_memzero(mnemonic, sizeof(mnemonic));
                                     QGP_LOG_INFO(LOG_TAG, "Derived wallet addresses from mnemonic for republish");
                                 }
                             }
@@ -1234,16 +1234,16 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
                                 trx_wallet_clear(&trx_wallet);
                                 if (identity->wallets.trx[0] == '\0' && trx_addr[0]) need_publish = true;
                             }
-                            memset(master_seed, 0, sizeof(master_seed));
+                            qgp_secure_memzero(master_seed, sizeof(master_seed));
                         }
                         /* Derive Cellframe address from mnemonic */
                         uint8_t cf_seed[CF_WALLET_SEED_SIZE];
                         if (cellframe_derive_seed_from_mnemonic(mnemonic, cf_seed) == 0) {
                             cellframe_wallet_derive_address(cf_seed, cf_addr);
-                            memset(cf_seed, 0, sizeof(cf_seed));
+                            qgp_secure_memzero(cf_seed, sizeof(cf_seed));
                             if (identity->wallets.backbone[0] == '\0' && cf_addr[0]) need_publish = true;
                         }
-                        memset(mnemonic, 0, sizeof(mnemonic));
+                        qgp_secure_memzero(mnemonic, sizeof(mnemonic));
                     }
                     qgp_key_free(enc_key_check);
                 }
@@ -2722,7 +2722,7 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
         uint8_t master_seed[64];
         if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to derive master seed from mnemonic");
-            memset(mnemonic, 0, sizeof(mnemonic));
+            qgp_secure_memzero(mnemonic, sizeof(mnemonic));
             error = DNA_ERROR_CRYPTO;
             goto done;
         }
@@ -2733,8 +2733,8 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
         rc = blockchain_derive_wallets_from_seed(master_seed, mnemonic, engine->fingerprint, &engine->blockchain_wallets);
 
         /* Clear sensitive data from memory */
-        memset(mnemonic, 0, sizeof(mnemonic));
-        memset(master_seed, 0, sizeof(master_seed));
+        qgp_secure_memzero(mnemonic, sizeof(mnemonic));
+        qgp_secure_memzero(master_seed, sizeof(master_seed));
 
         if (rc != 0 || !engine->blockchain_wallets) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to derive wallets from seed");
@@ -3083,7 +3083,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         uint8_t master_seed[64];
         if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to derive master seed from mnemonic");
-            memset(mnemonic, 0, sizeof(mnemonic));
+            qgp_secure_memzero(mnemonic, sizeof(mnemonic));
             error = DNA_ERROR_CRYPTO;
             goto done;
         }
@@ -3103,8 +3103,8 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         );
 
         /* Clear sensitive data from memory */
-        memset(mnemonic, 0, sizeof(mnemonic));
-        memset(master_seed, 0, sizeof(master_seed));
+        qgp_secure_memzero(mnemonic, sizeof(mnemonic));
+        qgp_secure_memzero(master_seed, sizeof(master_seed));
 
         if (send_rc != 0) {
             QGP_LOG_ERROR(LOG_TAG, "%s send failed (on-demand)", chain_name);

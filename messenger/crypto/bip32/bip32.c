@@ -16,6 +16,7 @@
 #include <openssl/evp.h>
 #include <secp256k1.h>
 #include "../utils/qgp_log.h"
+#include "../utils/qgp_platform.h"
 
 #define LOG_TAG "BIP32"
 
@@ -173,8 +174,8 @@ int bip32_master_key_from_seed(
     /* Verify private key is valid */
     if (!is_valid_private_key(master_out->private_key)) {
         QGP_LOG_ERROR(LOG_TAG, "Derived master key is invalid - extremely rare, try different seed");
-        memset(master_out, 0, sizeof(*master_out));
-        memset(hmac_output, 0, sizeof(hmac_output));
+        qgp_secure_memzero(master_out, sizeof(*master_out));
+        qgp_secure_memzero(hmac_output, sizeof(hmac_output));
         return -1;
     }
 
@@ -184,7 +185,7 @@ int bip32_master_key_from_seed(
     memset(master_out->parent_fingerprint, 0, 4);
 
     /* Clear intermediate data */
-    memset(hmac_output, 0, sizeof(hmac_output));
+    qgp_secure_memzero(hmac_output, sizeof(hmac_output));
 
     QGP_LOG_DEBUG(LOG_TAG, "Master key derived from seed");
     return 0;
@@ -214,24 +215,24 @@ int bip32_derive_hardened(
     /* HMAC-SHA512(key=chain_code, data=data) */
     uint8_t hmac_output[64];
     if (hmac_sha512(parent->chain_code, 32, data, 37, hmac_output) != 0) {
-        memset(data, 0, sizeof(data));
+        qgp_secure_memzero(data, sizeof(data));
         return -1;
     }
 
     /* Clear sensitive data */
-    memset(data, 0, sizeof(data));
+    qgp_secure_memzero(data, sizeof(data));
 
     /* Child private key = (IL + parent_key) mod n */
     if (add_private_keys(parent->private_key, hmac_output, child_out->private_key) != 0) {
-        memset(hmac_output, 0, sizeof(hmac_output));
+        qgp_secure_memzero(hmac_output, sizeof(hmac_output));
         return -1;
     }
 
     /* Verify child key is valid */
     if (!is_valid_private_key(child_out->private_key)) {
         QGP_LOG_ERROR(LOG_TAG, "Derived child key is invalid - try next index");
-        memset(hmac_output, 0, sizeof(hmac_output));
-        memset(child_out, 0, sizeof(*child_out));
+        qgp_secure_memzero(hmac_output, sizeof(hmac_output));
+        qgp_secure_memzero(child_out, sizeof(*child_out));
         return -1;
     }
 
@@ -248,13 +249,13 @@ int bip32_derive_hardened(
         uint8_t hash160_out[20];
         hash160(parent_pubkey, 33, hash160_out);
         memcpy(child_out->parent_fingerprint, hash160_out, 4);
-        memset(hash160_out, 0, sizeof(hash160_out));
+        qgp_secure_memzero(hash160_out, sizeof(hash160_out));
     } else {
         memset(child_out->parent_fingerprint, 0, 4);
     }
 
-    memset(hmac_output, 0, sizeof(hmac_output));
-    memset(parent_pubkey, 0, sizeof(parent_pubkey));
+    qgp_secure_memzero(hmac_output, sizeof(hmac_output));
+    qgp_secure_memzero(parent_pubkey, sizeof(parent_pubkey));
 
     return 0;
 }
@@ -291,26 +292,26 @@ int bip32_derive_normal(
     /* HMAC-SHA512(key=chain_code, data=data) */
     uint8_t hmac_output[64];
     if (hmac_sha512(parent->chain_code, 32, data, 37, hmac_output) != 0) {
-        memset(data, 0, sizeof(data));
-        memset(parent_pubkey, 0, sizeof(parent_pubkey));
+        qgp_secure_memzero(data, sizeof(data));
+        qgp_secure_memzero(parent_pubkey, sizeof(parent_pubkey));
         return -1;
     }
 
     /* Child private key = (IL + parent_key) mod n */
     if (add_private_keys(parent->private_key, hmac_output, child_out->private_key) != 0) {
-        memset(hmac_output, 0, sizeof(hmac_output));
-        memset(data, 0, sizeof(data));
-        memset(parent_pubkey, 0, sizeof(parent_pubkey));
+        qgp_secure_memzero(hmac_output, sizeof(hmac_output));
+        qgp_secure_memzero(data, sizeof(data));
+        qgp_secure_memzero(parent_pubkey, sizeof(parent_pubkey));
         return -1;
     }
 
     /* Verify child key is valid */
     if (!is_valid_private_key(child_out->private_key)) {
         QGP_LOG_ERROR(LOG_TAG, "Derived child key is invalid - try next index");
-        memset(hmac_output, 0, sizeof(hmac_output));
-        memset(data, 0, sizeof(data));
-        memset(parent_pubkey, 0, sizeof(parent_pubkey));
-        memset(child_out, 0, sizeof(*child_out));
+        qgp_secure_memzero(hmac_output, sizeof(hmac_output));
+        qgp_secure_memzero(data, sizeof(data));
+        qgp_secure_memzero(parent_pubkey, sizeof(parent_pubkey));
+        qgp_secure_memzero(child_out, sizeof(*child_out));
         return -1;
     }
 
@@ -327,10 +328,10 @@ int bip32_derive_normal(
     memcpy(child_out->parent_fingerprint, hash160_out, 4);
 
     /* Clear sensitive data */
-    memset(hmac_output, 0, sizeof(hmac_output));
-    memset(data, 0, sizeof(data));
-    memset(parent_pubkey, 0, sizeof(parent_pubkey));
-    memset(hash160_out, 0, sizeof(hash160_out));
+    qgp_secure_memzero(hmac_output, sizeof(hmac_output));
+    qgp_secure_memzero(data, sizeof(data));
+    qgp_secure_memzero(parent_pubkey, sizeof(parent_pubkey));
+    qgp_secure_memzero(hash160_out, sizeof(hash160_out));
 
     return 0;
 }
@@ -408,7 +409,7 @@ int bip32_derive_path(
         /* Move to child */
         bip32_clear_key(&current);
         memcpy(&current, &child, sizeof(current));
-        memset(&child, 0, sizeof(child));
+        qgp_secure_memzero(&child, sizeof(child));
 
         p = endptr;
     }
@@ -468,6 +469,6 @@ int bip32_get_public_key_compressed(
 
 void bip32_clear_key(bip32_extended_key_t *key) {
     if (key) {
-        memset(key, 0, sizeof(*key));
+        qgp_secure_memzero(key, sizeof(*key));
     }
 }

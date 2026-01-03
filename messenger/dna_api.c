@@ -461,19 +461,19 @@ dna_error_t dna_encrypt_message(
         uint8_t kek[QGP_KEM1024_SHAREDSECRET_BYTES];
 
         if (qgp_kem1024_encapsulate(kyber_ct, kek, recipient_pubkeys[i]) != 0) {
-            memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
+            qgp_secure_memzero(kek, QGP_KEM1024_SHAREDSECRET_BYTES);
             result = DNA_ERROR_CRYPTO;
             goto cleanup;
         }
 
         if (aes256_wrap_key(dek, 32, kek, recipient_entries[i].wrapped_dek) != 0) {
-            memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
+            qgp_secure_memzero(kek, QGP_KEM1024_SHAREDSECRET_BYTES);
             result = DNA_ERROR_CRYPTO;
             goto cleanup;
         }
 
         memcpy(recipient_entries[i].kyber_ciphertext, kyber_ct, 1568);  // Kyber1024 ciphertext size
-        memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
+        qgp_secure_memzero(kek, QGP_KEM1024_SHAREDSECRET_BYTES);
     }
 
     // Serialize signature
@@ -543,7 +543,7 @@ cleanup:
     if (sign_key) qgp_key_free(sign_key);
     if (signature) qgp_signature_free(signature);
     if (dek) {
-        memset(dek, 0, 32);
+        qgp_secure_memzero(dek, 32);
         free(dek);
     }
     if (encrypted_data) free(encrypted_data);
@@ -634,7 +634,7 @@ dna_error_t dna_encrypt_message_raw(
     // Generate random DEK (32 bytes)
     dek = malloc(32);
     if (!dek || qgp_randombytes(dek, 32) != 0) {
-        memset(payload, 0, payload_len);
+        qgp_secure_memzero(payload, payload_len);
         free(payload);
         result = DNA_ERROR_CRYPTO;
         goto cleanup;
@@ -653,7 +653,7 @@ dna_error_t dna_encrypt_message_raw(
 
     encrypted_data = malloc(payload_len);
     if (!encrypted_data) {
-        memset(payload, 0, payload_len);
+        qgp_secure_memzero(payload, payload_len);
         free(payload);
         result = DNA_ERROR_MEMORY;
         goto cleanup;
@@ -663,14 +663,14 @@ dna_error_t dna_encrypt_message_raw(
                            (uint8_t*)&header_for_aad, sizeof(header_for_aad),
                            encrypted_data, &encrypted_size,
                            nonce, tag) != 0) {
-        memset(payload, 0, payload_len);
+        qgp_secure_memzero(payload, payload_len);
         free(payload);
         result = DNA_ERROR_CRYPTO;
         goto cleanup;
     }
 
     // Clean up payload (contains fingerprint)
-    memset(payload, 0, payload_len);
+    qgp_secure_memzero(payload, payload_len);
     free(payload);
 
     // Create recipient entry (wrap DEK for recipient)
@@ -678,19 +678,19 @@ dna_error_t dna_encrypt_message_raw(
     uint8_t kek[QGP_KEM1024_SHAREDSECRET_BYTES];
 
     if (qgp_kem1024_encapsulate(kyber_ct, kek, recipient_enc_pubkey) != 0) {
-        memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
+        qgp_secure_memzero(kek, QGP_KEM1024_SHAREDSECRET_BYTES);
         result = DNA_ERROR_CRYPTO;
         goto cleanup;
     }
 
     if (aes256_wrap_key(dek, 32, kek, recipient_entry.wrapped_dek) != 0) {
-        memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
+        qgp_secure_memzero(kek, QGP_KEM1024_SHAREDSECRET_BYTES);
         result = DNA_ERROR_CRYPTO;
         goto cleanup;
     }
 
     memcpy(recipient_entry.kyber_ciphertext, kyber_ct, 1568);  // Kyber1024 ciphertext size
-    memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
+    qgp_secure_memzero(kek, QGP_KEM1024_SHAREDSECRET_BYTES);
 
     // Serialize signature
     uint8_t *sig_bytes = malloc(signature_size);
@@ -750,7 +750,7 @@ dna_error_t dna_encrypt_message_raw(
 cleanup:
     if (signature) qgp_signature_free(signature);
     if (dek) {
-        memset(dek, 0, 32);
+        qgp_secure_memzero(dek, 32);
         free(dek);
     }
     if (encrypted_data) free(encrypted_data);
@@ -843,11 +843,11 @@ dna_error_t dna_decrypt_message_raw(
                             recipient_enc_privkey) == 0) {
             if (aes256_unwrap_key(recipient_entries[i].wrapped_dek, 40, kek, dek) == 0) {
                 found_entry = i;
-                memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
+                qgp_secure_memzero(kek, QGP_KEM1024_SHAREDSECRET_BYTES);
                 break;
             }
         }
-        memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
+        qgp_secure_memzero(kek, QGP_KEM1024_SHAREDSECRET_BYTES);
     }
 
     if (found_entry == -1) {
@@ -965,7 +965,7 @@ cleanup:
     if (recipient_entries) free(recipient_entries);
     if (signature) qgp_signature_free(signature);
     if (dek) {
-        memset(dek, 0, 32);
+        qgp_secure_memzero(dek, 32);
         free(dek);
     }
     if (decrypted) free(decrypted);
@@ -1073,11 +1073,11 @@ dna_error_t dna_decrypt_message(
                             enc_key->private_key) == 0) {
             if (aes256_unwrap_key(recipient_entries[i].wrapped_dek, 40, kek, dek) == 0) {
                 found_entry = i;
-                memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
+                qgp_secure_memzero(kek, QGP_KEM1024_SHAREDSECRET_BYTES);
                 break;
             }
         }
-        memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
+        qgp_secure_memzero(kek, QGP_KEM1024_SHAREDSECRET_BYTES);
     }
 
     if (found_entry == -1) {
@@ -1173,7 +1173,7 @@ cleanup:
     if (enc_key) qgp_key_free(enc_key);
     if (signature) qgp_signature_free(signature);
     if (dek) {
-        memset(dek, 0, 32);
+        qgp_secure_memzero(dek, 32);
         free(dek);
     }
     if (decrypted) free(decrypted);

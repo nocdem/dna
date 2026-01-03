@@ -7,6 +7,7 @@
 #include "crypto/utils/qgp_aes.h"
 #include "crypto/utils/qgp_random.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 #include <stdio.h>
 #include <string.h>
 #include <openssl/evp.h>
@@ -184,7 +185,7 @@ int qgp_aes256_decrypt(const uint8_t *key,
         QGP_LOG_ERROR(LOG_TAG, "Ciphertext or AAD has been tampered with");
 
         // Wipe partial plaintext (it's invalid)
-        memset(plaintext, 0, plaintext_len_tmp);
+        qgp_secure_memzero(plaintext, plaintext_len_tmp);
 
         goto cleanup;
     }

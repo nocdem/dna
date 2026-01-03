@@ -271,7 +271,7 @@ int messenger_generate_keys_from_seeds(
         } else {
             // Truncate to 32 bytes for DHT seed
             memcpy(dht_seed, full_hash, 32);
-            memset(full_hash, 0, sizeof(full_hash));
+            qgp_secure_memzero(full_hash, sizeof(full_hash));
 
             // Generate DHT identity deterministically from derived seed
             dht_identity_t *dht_identity = NULL;
@@ -302,8 +302,8 @@ int messenger_generate_keys_from_seeds(
             }
 
             // Securely wipe seed data
-            memset(dht_seed, 0, sizeof(dht_seed));
-            memset(seed_input, 0, sizeof(seed_input));
+            qgp_secure_memzero(dht_seed, sizeof(dht_seed));
+            qgp_secure_memzero(seed_input, sizeof(seed_input));
         }
     } else {
         QGP_LOG_WARN(LOG_TAG, "No master_seed provided - DHT identity not created");
@@ -333,7 +333,7 @@ int messenger_generate_keys_from_seeds(
 
     // Securely wipe and free key copies
     if (dilithium_privkey_copy) {
-        memset(dilithium_privkey_copy, 0, dilithium_privkey_size);
+        qgp_secure_memzero(dilithium_privkey_copy, dilithium_privkey_size);
         free(dilithium_privkey_copy);
     }
     free(dilithium_pubkey_copy);
@@ -510,7 +510,7 @@ int messenger_register_name(
                 }
 
                 // Clear master seed
-                memset(master_seed, 0, sizeof(master_seed));
+                qgp_secure_memzero(master_seed, sizeof(master_seed));
             }
 
             // Derive Cellframe address (uses SHA3-256 of mnemonic, not BIP39 seed)
@@ -519,11 +519,11 @@ int messenger_register_name(
                 if (cellframe_wallet_derive_address(cf_seed, wallet_address) == 0) {
                     QGP_LOG_DEBUG(LOG_TAG, "Derived Cellframe address: %s", wallet_address);
                 }
-                memset(cf_seed, 0, sizeof(cf_seed));
+                qgp_secure_memzero(cf_seed, sizeof(cf_seed));
             }
 
             // Clear mnemonic from memory
-            memset(mnemonic, 0, sizeof(mnemonic));
+            qgp_secure_memzero(mnemonic, sizeof(mnemonic));
         } else {
             QGP_LOG_WARN(LOG_TAG, "Failed to decrypt mnemonic for wallet derivation");
         }
@@ -760,7 +760,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     printf("\n[Step 2/4] Validating mnemonic...\n");
     if (!bip39_validate_mnemonic(mnemonic)) {
         fprintf(stderr, "Error: Invalid mnemonic\n");
-        memset(mnemonic, 0, sizeof(mnemonic));
+        qgp_secure_memzero(mnemonic, sizeof(mnemonic));
         return -1;
     }
     printf("  Mnemonic valid\n");
@@ -770,7 +770,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     printf("Press Enter if no passphrase was used:\n");
     if (!fgets(passphrase, sizeof(passphrase), stdin)) {
         fprintf(stderr, "Error: Failed to read passphrase\n");
-        memset(mnemonic, 0, sizeof(mnemonic));
+        qgp_secure_memzero(mnemonic, sizeof(mnemonic));
         return -1;
     }
 
@@ -783,13 +783,13 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     printf("\n[Step 4/4] Deriving seeds from mnemonic...\n");
     if (qgp_derive_seeds_from_mnemonic(mnemonic, passphrase, signing_seed, encryption_seed) != 0) {
         fprintf(stderr, "Error: Seed derivation failed\n");
-        memset(mnemonic, 0, sizeof(mnemonic));
-        memset(passphrase, 0, sizeof(passphrase));
+        qgp_secure_memzero(mnemonic, sizeof(mnemonic));
+        qgp_secure_memzero(passphrase, sizeof(passphrase));
         return -1;
     }
 
-    memset(mnemonic, 0, sizeof(mnemonic));
-    memset(passphrase, 0, sizeof(passphrase));
+    qgp_secure_memzero(mnemonic, sizeof(mnemonic));
+    qgp_secure_memzero(passphrase, sizeof(passphrase));
 
     printf("  Seeds derived\n");
     printf("\nRegenerating keys from seed...\n");
@@ -921,8 +921,8 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     ret = 0;
 
 cleanup:
-    memset(signing_seed, 0, sizeof(signing_seed));
-    memset(encryption_seed, 0, sizeof(encryption_seed));
+    qgp_secure_memzero(signing_seed, sizeof(signing_seed));
+    qgp_secure_memzero(encryption_seed, sizeof(encryption_seed));
 
     if (sign_key_path) free(sign_key_path);
     if (enc_key_path) free(enc_key_path);

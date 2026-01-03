@@ -121,8 +121,8 @@ static int slip10_derive_solana(
     for (int i = 0; i < 4; i++) {
         uint8_t new_key[32], new_chain[32];
         if (slip10_derive_child(key, chain_code, path[i], new_key, new_chain) != 0) {
-            memset(key, 0, 32);
-            memset(chain_code, 0, 32);
+            qgp_secure_memzero(key, 32);
+            qgp_secure_memzero(chain_code, 32);
             return -1;
         }
         memcpy(key, new_key, 32);
@@ -132,8 +132,8 @@ static int slip10_derive_solana(
     memcpy(private_key_out, key, 32);
 
     /* Clear intermediate values */
-    memset(key, 0, 32);
-    memset(chain_code, 0, 32);
+    qgp_secure_memzero(key, 32);
+    qgp_secure_memzero(chain_code, 32);
 
     return 0;
 }

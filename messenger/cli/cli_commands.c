@@ -7,6 +7,7 @@
 #include "cli_commands.h"
 #include "bip39.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 #include "dht/core/dht_keyserver.h"
 #include "dht/client/dht_singleton.h"
 #include "p2p/transport/transport_core.h"
@@ -369,10 +370,10 @@ int cmd_create(dna_engine_t *engine, const char *name) {
         master_seed, mnemonic, fingerprint
     );
 
-    memset(signing_seed, 0, sizeof(signing_seed));
-    memset(encryption_seed, 0, sizeof(encryption_seed));
-    memset(master_seed, 0, sizeof(master_seed));
-    memset(mnemonic, 0, sizeof(mnemonic));
+    qgp_secure_memzero(signing_seed, sizeof(signing_seed));
+    qgp_secure_memzero(encryption_seed, sizeof(encryption_seed));
+    qgp_secure_memzero(master_seed, sizeof(master_seed));
+    qgp_secure_memzero(mnemonic, sizeof(mnemonic));
 
     if (result != 0) {
         printf("Error: Failed to create identity: %s\n", dna_engine_error_string(result));
@@ -548,12 +549,12 @@ void cmd_change_password(dna_engine_t *engine) {
 
         if (strcmp(new_password, confirm_password) != 0) {
             printf("Error: Passwords do not match\n");
-            memset(old_password, 0, sizeof(old_password));
-            memset(new_password, 0, sizeof(new_password));
-            memset(confirm_password, 0, sizeof(confirm_password));
+            qgp_secure_memzero(old_password, sizeof(old_password));
+            qgp_secure_memzero(new_password, sizeof(new_password));
+            qgp_secure_memzero(confirm_password, sizeof(confirm_password));
             return;
         }
-        memset(confirm_password, 0, sizeof(confirm_password));
+        qgp_secure_memzero(confirm_password, sizeof(confirm_password));
     }
 
     /* Change password */
@@ -563,8 +564,8 @@ void cmd_change_password(dna_engine_t *engine) {
     int result = dna_engine_change_password_sync(engine, old_pwd, new_pwd);
 
     /* Clear passwords from memory */
-    memset(old_password, 0, sizeof(old_password));
-    memset(new_password, 0, sizeof(new_password));
+    qgp_secure_memzero(old_password, sizeof(old_password));
+    qgp_secure_memzero(new_password, sizeof(new_password));
 
     if (result == 0) {
         if (new_pwd) {
@@ -617,9 +618,9 @@ int cmd_restore(dna_engine_t *engine, const char *mnemonic) {
         master_seed, mnemonic, fingerprint
     );
 
-    memset(signing_seed, 0, sizeof(signing_seed));
-    memset(encryption_seed, 0, sizeof(encryption_seed));
-    memset(master_seed, 0, sizeof(master_seed));
+    qgp_secure_memzero(signing_seed, sizeof(signing_seed));
+    qgp_secure_memzero(encryption_seed, sizeof(encryption_seed));
+    qgp_secure_memzero(master_seed, sizeof(master_seed));
 
     if (result != 0) {
         printf("Error: Failed to restore identity: %s\n", dna_engine_error_string(result));

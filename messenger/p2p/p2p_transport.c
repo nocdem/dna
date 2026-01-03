@@ -19,6 +19,7 @@
 #include "p2p_transport.h"
 #include "transport/transport_core.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 
 #define LOG_TAG "P2P"
 
@@ -252,8 +253,8 @@ void p2p_transport_free(p2p_transport_t *ctx) {
     pthread_mutex_destroy(&ctx->callback_mutex);
 
     // Clear sensitive keys
-    memset(ctx->my_private_key, 0, sizeof(ctx->my_private_key));
-    memset(ctx->my_kyber_key, 0, sizeof(ctx->my_kyber_key));
+    qgp_secure_memzero(ctx->my_private_key, sizeof(ctx->my_private_key));
+    qgp_secure_memzero(ctx->my_kyber_key, sizeof(ctx->my_kyber_key));
 
     free(ctx);
 }
