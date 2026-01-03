@@ -307,9 +307,6 @@ final class dna_profile_t extends Struct {
 
   // External wallets
   @Array(128)
-  external Array<Char> btc;
-
-  @Array(128)
   external Array<Char> eth;
 
   @Array(128)
