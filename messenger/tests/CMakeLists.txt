@@ -98,6 +98,7 @@ set(TEST_LIBS
     zstd
     z
     msgpackc
+    ${DNA_BUILD}/secp256k1/lib/libsecp256k1.a
     pthread
     m
 )
@@ -149,12 +150,14 @@ message(STATUS "  - test_dht_listen      : DHT listen() basic functionality")
 message(STATUS "  - test_aes256_gcm      : AES-256-GCM encryption/decryption")
 message(STATUS "  - test_key_encryption  : Key encryption (PBKDF2 + AES-256-GCM)")
 message(STATUS "  - test_kyber1024       : Kyber1024 (ML-KEM-1024) post-quantum KEM")
+message(STATUS "  - test_bip39_bip32     : BIP39/BIP32 mnemonic and HD key derivation")
 message(STATUS "")
 message(STATUS "Run tests:")
 message(STATUS "  ./test_dht_listen")
 message(STATUS "  ./test_aes256_gcm")
 message(STATUS "  ./test_key_encryption")
 message(STATUS "  ./test_kyber1024")
+message(STATUS "  ./test_bip39_bip32")
 message(STATUS "")
 
 # =============================================================================
@@ -183,6 +186,15 @@ add_executable(test_kyber1024
 )
 set_target_properties(test_kyber1024 PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_kyber1024 ${TEST_LIBS} stdc++)
+
+# =============================================================================
+# Test: BIP39/BIP32 Mnemonic and HD Key Derivation - P1-2
+# =============================================================================
+add_executable(test_bip39_bip32
+    test_bip39_bip32.c
+)
+set_target_properties(test_bip39_bip32 PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_bip39_bip32 ${TEST_LIBS} stdc++)
 
 # =============================================================================
 # Fuzzing Configuration (libFuzzer)

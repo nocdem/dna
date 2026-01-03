@@ -250,6 +250,7 @@ bool dna_task_queue_empty(dna_task_queue_t *queue) {
  * ============================================================================ */
 
 dna_request_id_t dna_next_request_id(dna_engine_t *engine) {
+    if (!engine) return DNA_REQUEST_ID_INVALID;
     dna_request_id_t id = atomic_fetch_add(&engine->next_request_id, 1) + 1;
     /* Ensure never returns 0 (invalid) */
     if (id == DNA_REQUEST_ID_INVALID) {
@@ -298,6 +299,7 @@ dna_request_id_t dna_submit_task(
  * ============================================================================ */
 
 void dna_free_task_params(dna_task_t *task) {
+    if (!task) return;
     switch (task->type) {
         case TASK_CREATE_IDENTITY:
             if (task->params.create_identity.password) {
@@ -369,6 +371,7 @@ void* dna_worker_thread(void *arg) {
 }
 
 int dna_start_workers(dna_engine_t *engine) {
+    if (!engine) return -1;
     atomic_store(&engine->shutdown_requested, false);
 
     for (int i = 0; i < DNA_WORKER_THREAD_COUNT; i++) {
@@ -387,6 +390,7 @@ int dna_start_workers(dna_engine_t *engine) {
 }
 
 void dna_stop_workers(dna_engine_t *engine) {
+    if (!engine) return;
     atomic_store(&engine->shutdown_requested, true);
 
     pthread_mutex_lock(&engine->task_mutex);
