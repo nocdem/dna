@@ -725,7 +725,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Save to file
+    // Save to file (debug builds only - L3 security fix)
+#ifndef NDEBUG
     FILE *f = fopen("/tmp/unsigned_tx.json", "w");
     if (f) {
         fprintf(f, "%s\n", unsigned_json);
@@ -734,6 +735,7 @@ int main(int argc, char **argv) {
     } else {
         QGP_LOG_ERROR(LOG_TAG, "Could not save unsigned transaction to file\n");
     }
+#endif
 
     if (args.verbose) {
         printf("\n=== UNSIGNED TRANSACTION JSON ===\n");
@@ -836,13 +838,15 @@ int main(int argc, char **argv) {
 
     printf("      JSON size: %zu bytes\n", strlen(json));
 
-    // Save signed JSON to file
+    // Save signed JSON to file (debug builds only - L3 security fix)
+#ifndef NDEBUG
     FILE *f_signed = fopen("/tmp/signed_tx.json", "w");
     if (f_signed) {
         fprintf(f_signed, "%s\n", json);
         fclose(f_signed);
         printf("      Signed JSON saved: /tmp/signed_tx.json\n\n");
     }
+#endif
 
     // Print JSON
     printf("=== SIGNED TRANSACTION JSON ===\n");
