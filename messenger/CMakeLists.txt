@@ -28,6 +28,36 @@ if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
 endif()
 
 # =============================================================================
+# Security Hardening (L1 - SECURITY_AUDIT.md)
+# =============================================================================
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    # Stack buffer overflow protection
+    add_compile_options(-fstack-protector-strong)
+
+    # Format string vulnerability warnings
+    add_compile_options(-Wformat -Wformat-security)
+
+    # Position Independent Executables (ASLR support)
+    if(NOT BUILD_SHARED_LIB)
+        add_compile_options(-fPIE)
+        add_link_options(-pie)
+    endif()
+
+    # Full RELRO - makes GOT read-only after relocation (Linux only)
+    if(NOT WIN32 AND NOT ANDROID AND NOT APPLE)
+        add_link_options(-Wl,-z,relro,-z,now)
+    endif()
+endif()
+
+# FORTIFY_SOURCE requires optimization level >= -O1
+# Only enable for Release builds (Debug uses -O0 with AddressSanitizer)
+if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        add_compile_definitions(_FORTIFY_SOURCE=2)
+    endif()
+endif()
+
+# =============================================================================
 # CMake Module Includes
 # =============================================================================
 # Version and build metadata
