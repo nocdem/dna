@@ -491,4 +491,18 @@ int qgp_platform_sanitize_filename(const char *filename) {
     return 1;  /* Filename is safe */
 }
 
+/* ============================================================================
+ * Network State Monitoring (Windows Implementation)
+ * ============================================================================ */
+
+static qgp_network_callback_t g_network_callback = NULL;
+static void *g_network_callback_data = NULL;
+
+void qgp_platform_set_network_callback(qgp_network_callback_t callback, void *user_data) {
+    g_network_callback = callback;
+    g_network_callback_data = user_data;
+    /* On Windows desktop, callback is never called (network state not tracked) */
+    /* Mobile implementations (Android) call this on state changes */
+}
+
 #endif /* _WIN32 */
