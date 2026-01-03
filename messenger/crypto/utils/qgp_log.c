@@ -26,7 +26,12 @@
 #define QGP_LOG_MAX_TAG_LEN 32
 
 /* Global log configuration */
+/* Release builds (NDEBUG defined) default to INFO level */
+#ifdef NDEBUG
+static qgp_log_level_t g_log_level = QGP_LOG_LEVEL_INFO;
+#else
 static qgp_log_level_t g_log_level = QGP_LOG_LEVEL_DEBUG;
+#endif
 static qgp_log_filter_mode_t g_filter_mode = QGP_LOG_FILTER_BLACKLIST;
 static bool g_config_loaded = false;
 
