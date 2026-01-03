@@ -32,7 +32,7 @@ extern "C" {
  * Maximum number of members per group
  * Prevents memory exhaustion from malicious packets claiming large member counts
  */
-#define GSK_MAX_MEMBERS 100
+#define GSK_MAX_MEMBERS 16
 
 /**
  * Per-member entry size in Initial Key Packet
