@@ -10,8 +10,12 @@
 #include <errno.h>
 
 #include "crypto/utils/qgp_log.h"
+#include "messenger/messages.h"  /* DNA_MESSAGE_MAX_CIPHERTEXT_SIZE */
 
 #define LOG_TAG "DHT_OFFLINE"
+
+/* M6: Maximum messages per outbox (DoS prevention) */
+#define DHT_OFFLINE_MAX_MESSAGES_PER_OUTBOX 1000
 
 // Mutex to serialize DHT queue read-modify-write operations
 // Prevents race conditions when sending multiple messages quickly
@@ -330,6 +334,13 @@ int dht_deserialize_messages(
         return 0;
     }
 
+    // M6: Sanity check message count (DoS prevention)
+    if (count > DHT_OFFLINE_MAX_MESSAGES_PER_OUTBOX) {
+        QGP_LOG_ERROR(LOG_TAG, "Too many messages in outbox: %u (max %d)\n",
+                      count, DHT_OFFLINE_MAX_MESSAGES_PER_OUTBOX);
+        return -1;
+    }
+
     // Allocate message array
     dht_offline_message_t *messages = (dht_offline_message_t*)calloc(count, sizeof(dht_offline_message_t));
     if (!messages) {
@@ -427,6 +438,13 @@ int dht_deserialize_messages(
         memcpy(&ciphertext_len_network, ptr, sizeof(uint32_t));
         msg->ciphertext_len = (size_t)ntohl(ciphertext_len_network);
         ptr += sizeof(uint32_t);
+
+        // M6: Sanity check ciphertext size (DoS prevention)
+        if (msg->ciphertext_len > DNA_MESSAGE_MAX_CIPHERTEXT_SIZE) {
+            QGP_LOG_ERROR(LOG_TAG, "Ciphertext too large: %zu bytes (max %d)\n",
+                          msg->ciphertext_len, DNA_MESSAGE_MAX_CIPHERTEXT_SIZE);
+            goto error;
+        }
 
         if (ptr + msg->ciphertext_len > end) goto truncated;
         msg->ciphertext = (uint8_t*)malloc(msg->ciphertext_len);

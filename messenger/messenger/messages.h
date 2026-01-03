@@ -16,6 +16,26 @@
 extern "C" {
 #endif
 
+/* ============================================================================
+ * Message Size Limits (M6 - SECURITY_AUDIT.md)
+ *
+ * Centralized constants for DoS prevention across all transports.
+ * These limits prevent memory exhaustion from oversized messages.
+ * ============================================================================ */
+
+/** Maximum plaintext message size (512 KB)
+ *  - Validated on sending side before encryption
+ *  - ~500,000 characters of UTF-8 text
+ */
+#define DNA_MESSAGE_MAX_PLAINTEXT_SIZE   (512 * 1024)
+
+/** Maximum ciphertext message size (10 MB)
+ *  - Validated on receiving side (TCP, ICE, DHT)
+ *  - Includes encryption overhead: header + recipient entries + signature
+ *  - Matches existing TCP limit for backward compatibility
+ */
+#define DNA_MESSAGE_MAX_CIPHERTEXT_SIZE  (10 * 1024 * 1024)
+
 /**
  * Send encrypted message to recipients
  *

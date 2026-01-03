@@ -47,6 +47,7 @@
 #endif
 
 #include "crypto/utils/qgp_log.h"
+#include "messenger/messages.h"  /* DNA_MESSAGE_MAX_CIPHERTEXT_SIZE */
 
 #define LOG_TAG "P2P_ICE"
 
@@ -299,9 +300,10 @@ static void on_juice_recv(juice_agent_t *agent, const char *data, size_t size, v
         return;
     }
 
-    // Check message size (reject oversized messages)
-    if (size == 0 || size > 65536) {
-        QGP_LOG_ERROR(LOG_TAG, "Receive callback: Invalid message size (%zu bytes)\n", size);
+    // M6: Check message size (DoS prevention)
+    if (size == 0 || size > DNA_MESSAGE_MAX_CIPHERTEXT_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Receive callback: Invalid message size (%zu bytes, max %d)\n",
+                      size, DNA_MESSAGE_MAX_CIPHERTEXT_SIZE);
         return;
     }
 

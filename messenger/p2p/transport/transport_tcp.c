@@ -5,6 +5,7 @@
 
 #include "transport_core.h"
 #include "crypto/utils/qgp_log.h"
+#include "messenger/messages.h"  /* DNA_MESSAGE_MAX_CIPHERTEXT_SIZE */
 
 #define LOG_TAG "P2P_TCP"
 
@@ -56,9 +57,10 @@ void* listener_thread(void *arg) {
 
         uint32_t msg_len = ntohl(msg_len_network);
 
-        // Sanity check: max 10MB message
-        if (msg_len == 0 || msg_len > 10 * 1024 * 1024) {
-            QGP_LOG_INFO(LOG_TAG, "Invalid message length: %u bytes\n", msg_len);
+        // M6: Sanity check message size (DoS prevention)
+        if (msg_len == 0 || msg_len > DNA_MESSAGE_MAX_CIPHERTEXT_SIZE) {
+            QGP_LOG_INFO(LOG_TAG, "Invalid message length: %u bytes (max %d)\n",
+                         msg_len, DNA_MESSAGE_MAX_CIPHERTEXT_SIZE);
             close(client_sock);
             continue;
         }

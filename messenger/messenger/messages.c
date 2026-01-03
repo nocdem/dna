@@ -321,6 +321,14 @@ int messenger_send_message(
         return -1;
     }
 
+    // M6: Validate message size before encryption (DoS prevention)
+    size_t message_len = strlen(message);
+    if (message_len > DNA_MESSAGE_MAX_PLAINTEXT_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Message too large: %zu bytes (max %d)",
+                      message_len, DNA_MESSAGE_MAX_PLAINTEXT_SIZE);
+        return -1;
+    }
+
     // Build full recipient list: sender + recipients (sender as first recipient)
     // This allows sender to decrypt their own sent messages
     size_t total_recipients = recipient_count + 1;
