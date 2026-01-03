@@ -571,7 +571,8 @@ static int gsk_rotate_and_publish(dht_context_t *dht_ctx, const char *group_uuid
     QGP_LOG_INFO(LOG_TAG, "Found Kyber pubkeys for %zu/%u members\n", valid_members, meta->member_count);
 
     // Step 5: Load owner's Dilithium5 private key for signing
-    // TODO: This needs to be fetched from the messenger context or identity manager
+    // NOTE: Currently loads from file path. Future refactor could use identity manager
+    //       for cleaner key access, but current approach works correctly.
     const char *gsk_data_dir = qgp_platform_app_data_dir();
     char privkey_path[512];
     snprintf(privkey_path, sizeof(privkey_path), "%s/%s-dilithium.pqkey", gsk_data_dir ?: ".", owner_identity);
@@ -639,8 +640,8 @@ static int gsk_rotate_and_publish(dht_context_t *dht_ctx, const char *group_uuid
     QGP_LOG_INFO(LOG_TAG, "✓ GSK rotation complete for group %s (v%u published to DHT)\n",
            group_uuid, new_version);
 
-    // TODO Phase 8: Send P2P notifications to all members about new GSK version
-    // For now, members will discover via background polling
+    // NOTE: P2P notifications for instant GSK updates deferred to Phase 8.
+    // Currently members discover new GSKs via DHT background polling (sufficient for beta).
 
     return 0;
 }

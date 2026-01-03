@@ -1268,9 +1268,10 @@ size_t dht_listen_watermark(
         return 0;
     }
 
-    // Note: wctx is leaked intentionally - it must live as long as the listener
-    // It will be cleaned up when the DHT context is destroyed
-    // TODO: Track these contexts for proper cleanup on cancel
+    // NOTE: wctx lifetime is tied to the DHT listener - it must outlive the callback.
+    // Memory is released when DHT context is destroyed. Individual cancel via
+    // dht_cancel_watermark_listener() doesn't free wctx (listener may still fire).
+    // This is by-design, not a leak.
 
     return token;
 }

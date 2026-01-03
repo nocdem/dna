@@ -29,6 +29,12 @@ extern "C" {
 #endif
 
 /**
+ * Maximum number of members per group
+ * Prevents memory exhaustion from malicious packets claiming large member counts
+ */
+#define GSK_MAX_MEMBERS 100
+
+/**
  * Per-member entry size in Initial Key Packet
  * fingerprint(64) + kyber_ct(1568) + wrapped_gsk(40) = 1672 bytes
  */

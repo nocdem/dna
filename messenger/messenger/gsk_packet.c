@@ -48,6 +48,13 @@ int gsk_packet_build(const char *group_uuid,
         return -1;
     }
 
+    // Validate member count to prevent memory exhaustion
+    if (member_count > GSK_MAX_MEMBERS) {
+        QGP_LOG_ERROR(LOG_TAG, "build: member_count %zu exceeds maximum %d\n",
+                      member_count, GSK_MAX_MEMBERS);
+        return -1;
+    }
+
     // Calculate packet size
     size_t packet_size = gsk_packet_calculate_size(member_count);
     uint8_t *packet = (uint8_t *)malloc(packet_size);
@@ -184,6 +191,13 @@ int gsk_packet_extract(const uint8_t *packet,
     uint8_t member_count = packet[offset];
     offset += 1;
 
+    // Validate member count to prevent malicious packets
+    if (member_count == 0 || member_count > GSK_MAX_MEMBERS) {
+        QGP_LOG_ERROR(LOG_TAG, "extract: invalid member_count %u (max=%d)\n",
+                      member_count, GSK_MAX_MEMBERS);
+        return -1;
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Extracting from packet: group=%s v%u members=%u\n",
            group_uuid, version, member_count);
 
@@ -259,6 +273,13 @@ int gsk_packet_verify(const uint8_t *packet,
 
     // Parse header to get member count
     uint8_t member_count = packet[GSK_PACKET_HEADER_SIZE - 1];
+
+    // Validate member count
+    if (member_count == 0 || member_count > GSK_MAX_MEMBERS) {
+        QGP_LOG_ERROR(LOG_TAG, "verify: invalid member_count %u (max=%d)\n",
+                      member_count, GSK_MAX_MEMBERS);
+        return -1;
+    }
 
     // Calculate where signature starts
     size_t signature_offset = GSK_PACKET_HEADER_SIZE + (GSK_MEMBER_ENTRY_SIZE * member_count);

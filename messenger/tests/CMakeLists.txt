@@ -121,12 +121,8 @@ endif()
 
 # =============================================================================
 # Test: DHT listen() Update Detection
+# NOTE: test_listen_updates.c was removed, using test_dht_listen.c instead
 # =============================================================================
-add_executable(test_listen_updates
-    test_listen_updates.c
-)
-set_target_properties(test_listen_updates PROPERTIES LINKER_LANGUAGE CXX)
-target_link_libraries(test_listen_updates ${TEST_LIBS} stdc++)
 
 # =============================================================================
 # Test: DHT listen() Basic Functionality
@@ -149,12 +145,22 @@ message(STATUS "========================")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "")
 message(STATUS "Test executables:")
-message(STATUS "  - test_listen_updates  : DHT listen() update detection (key test)")
 message(STATUS "  - test_dht_listen      : DHT listen() basic functionality")
+message(STATUS "  - test_aes256_gcm      : AES-256-GCM encryption/decryption")
 message(STATUS "")
 message(STATUS "Run tests:")
-message(STATUS "  ./test_listen_updates")
+message(STATUS "  ./test_dht_listen")
+message(STATUS "  ./test_aes256_gcm")
 message(STATUS "")
+
+# =============================================================================
+# Test: AES-256-GCM Encryption/Decryption
+# =============================================================================
+add_executable(test_aes256_gcm
+    test_aes256_gcm.c
+)
+set_target_properties(test_aes256_gcm PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_aes256_gcm ${TEST_LIBS} stdc++)
 
 # =============================================================================
 # Fuzzing Configuration (libFuzzer)
