@@ -58,7 +58,7 @@ void qgp_key_free(qgp_key_t *key) {
 
     // Securely wipe private key before freeing
     if (key->private_key) {
-        memset(key->private_key, 0, key->private_key_size);
+        qgp_secure_memzero(key->private_key, key->private_key_size);
         QGP_FREE(key->private_key);
     }
 
