@@ -147,10 +147,14 @@ message(STATUS "")
 message(STATUS "Test executables:")
 message(STATUS "  - test_dht_listen      : DHT listen() basic functionality")
 message(STATUS "  - test_aes256_gcm      : AES-256-GCM encryption/decryption")
+message(STATUS "  - test_key_encryption  : Key encryption (PBKDF2 + AES-256-GCM)")
+message(STATUS "  - test_kyber1024       : Kyber1024 (ML-KEM-1024) post-quantum KEM")
 message(STATUS "")
 message(STATUS "Run tests:")
 message(STATUS "  ./test_dht_listen")
 message(STATUS "  ./test_aes256_gcm")
+message(STATUS "  ./test_key_encryption")
+message(STATUS "  ./test_kyber1024")
 message(STATUS "")
 
 # =============================================================================
@@ -161,6 +165,24 @@ add_executable(test_aes256_gcm
 )
 set_target_properties(test_aes256_gcm PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_aes256_gcm ${TEST_LIBS} stdc++)
+
+# =============================================================================
+# Test: Key Encryption (PBKDF2 + AES-256-GCM) - P1-1
+# =============================================================================
+add_executable(test_key_encryption
+    test_key_encryption.c
+)
+set_target_properties(test_key_encryption PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_key_encryption ${TEST_LIBS} stdc++)
+
+# =============================================================================
+# Test: Kyber1024 (ML-KEM-1024) Post-Quantum KEM - P1-4
+# =============================================================================
+add_executable(test_kyber1024
+    test_kyber1024.c
+)
+set_target_properties(test_kyber1024 PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_kyber1024 ${TEST_LIBS} stdc++)
 
 # =============================================================================
 # Fuzzing Configuration (libFuzzer)
