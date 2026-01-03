@@ -606,6 +606,7 @@ Low-level cryptographic primitives and platform abstraction layer.
 | `qgp_network_state_t qgp_platform_network_state(void)` | Get current network state |
 | `void qgp_platform_set_network_callback(...)` | Set network state change callback |
 | `const char* qgp_platform_ca_bundle_path(void)` | Get CA certificate bundle path |
+| `int qgp_platform_sanitize_filename(const char *filename)` | Validate filename for path traversal safety |
 
 ### 5.14 QGP Types (`qgp_types.h`)
 

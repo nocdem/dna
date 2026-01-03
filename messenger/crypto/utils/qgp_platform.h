@@ -285,6 +285,27 @@ void qgp_platform_set_network_callback(qgp_network_callback_t callback, void *us
 const char* qgp_platform_ca_bundle_path(void);
 
 /* ============================================================================
+ * Path Security (M9 - Path Traversal Prevention)
+ * ============================================================================ */
+
+/**
+ * Sanitize a filename to prevent path traversal attacks
+ *
+ * Validates that a filename is safe for use in file path construction.
+ * Rejects filenames containing:
+ * - Path traversal sequences (..)
+ * - Directory separators (/ or \)
+ * - Null bytes
+ * - Empty strings
+ *
+ * Only allows: alphanumeric characters, dash (-), underscore (_), and dot (.)
+ *
+ * @param filename The filename to validate
+ * @return 1 if filename is safe, 0 if unsafe (contains dangerous characters)
+ */
+int qgp_platform_sanitize_filename(const char *filename);
+
+/* ============================================================================
  * Platform Detection Macros
  * ============================================================================ */
 

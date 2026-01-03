@@ -258,6 +258,12 @@ int trx_wallet_save(
         return -1;
     }
 
+    /* M9: Validate wallet name to prevent path traversal attacks */
+    if (!qgp_platform_sanitize_filename(name)) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid wallet name (contains unsafe characters): %s", name);
+        return -1;
+    }
+
     /* Create wallet directory if needed */
     if (!qgp_platform_is_directory(wallet_dir)) {
         if (qgp_platform_mkdir(wallet_dir) != 0) {

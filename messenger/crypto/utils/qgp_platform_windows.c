@@ -446,4 +446,49 @@ void qgp_secure_memzero(void *ptr, size_t len) {
     SecureZeroMemory(ptr, len);
 }
 
+/* ============================================================================
+ * Path Security (M9 - Path Traversal Prevention)
+ * ============================================================================ */
+
+int qgp_platform_sanitize_filename(const char *filename) {
+    if (!filename || filename[0] == '\0') {
+        return 0;  /* Empty or NULL filename is unsafe */
+    }
+
+    /* Check for path traversal sequences and dangerous characters */
+    for (const char *p = filename; *p != '\0'; p++) {
+        char c = *p;
+
+        /* Check for directory separators */
+        if (c == '/' || c == '\\') {
+            return 0;  /* Contains directory separator */
+        }
+
+        /* Check for null byte (shouldn't happen with strlen, but defensive) */
+        if (c == '\0') {
+            break;
+        }
+
+        /* Only allow: alphanumeric, dash, underscore, dot */
+        if (!((c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') ||
+              c == '-' || c == '_' || c == '.')) {
+            return 0;  /* Contains unsafe character */
+        }
+    }
+
+    /* Check for ".." path traversal sequence */
+    if (strstr(filename, "..") != NULL) {
+        return 0;  /* Contains path traversal */
+    }
+
+    /* Check that filename doesn't start with a dot (hidden file prevention) */
+    if (filename[0] == '.') {
+        return 0;  /* Starts with dot */
+    }
+
+    return 1;  /* Filename is safe */
+}
+
 #endif /* _WIN32 */
