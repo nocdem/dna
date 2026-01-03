@@ -650,6 +650,12 @@ Low-level cryptographic primitives and platform abstraction layer.
 | `void qgp_log_ring_clear(void)` | Clear all ring buffer entries |
 | `int qgp_log_export_to_file(const char *filepath)` | Export ring buffer to file |
 | `void qgp_log_ring_add(qgp_log_level_t, const char*, const char*, ...)` | Add entry to ring buffer |
+| `void qgp_log_file_enable(bool enabled)` | Enable/disable persistent file logging |
+| `bool qgp_log_file_is_enabled(void)` | Check if file logging is enabled |
+| `void qgp_log_file_set_options(int max_size_kb, int max_files)` | Set rotation options |
+| `void qgp_log_file_close(void)` | Flush and close log file |
+| `const char* qgp_log_file_get_path(void)` | Get current log file path |
+| `void qgp_log_file_write(qgp_log_level_t, const char*, const char*, ...)` | Write entry to log file |
 
 ---
 

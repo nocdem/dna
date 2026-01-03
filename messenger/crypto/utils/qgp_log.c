@@ -8,17 +8,23 @@
  */
 
 #include "qgp_log.h"
+#include "qgp_platform.h"
 #include "dna_config.h"
 #include <string.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <time.h>
 #include <pthread.h>
+#include <errno.h>
 
 #ifdef _WIN32
 #include <windows.h>
+#include <io.h>
+#define stat _stat
 #else
 #include <sys/time.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 /* Maximum number of tags in filter list */
@@ -399,4 +405,256 @@ int qgp_log_export_to_file(const char *filepath) {
 
     fclose(f);
     return 0;
+}
+
+/* ============================================================================
+ * File Logging Implementation - Cross-platform with rotation
+ * ============================================================================ */
+
+#define QGP_LOG_FILE_DEFAULT_MAX_SIZE_KB 5120  /* 5 MB default */
+#define QGP_LOG_FILE_DEFAULT_MAX_FILES 3       /* Keep 3 rotated files */
+#define QGP_LOG_FILE_PATH_MAX 512
+
+static FILE *g_log_file = NULL;
+static bool g_file_logging_enabled = false;
+static int g_file_max_size_kb = QGP_LOG_FILE_DEFAULT_MAX_SIZE_KB;
+static int g_file_max_files = QGP_LOG_FILE_DEFAULT_MAX_FILES;
+static char g_log_file_path[QGP_LOG_FILE_PATH_MAX] = {0};
+static char g_log_dir_path[QGP_LOG_FILE_PATH_MAX] = {0};
+static pthread_mutex_t g_file_mutex = PTHREAD_MUTEX_INITIALIZER;
+static bool g_file_init_attempted = false;
+
+/* Get file size in bytes (cross-platform) */
+static long get_file_size(FILE *f) {
+    if (!f) return 0;
+    long current_pos = ftell(f);
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, current_pos, SEEK_SET);
+    return size;
+}
+
+/* Build log directory and file paths */
+static void build_log_paths(void) {
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        return;
+    }
+
+    /* Build logs directory path */
+#ifdef _WIN32
+    snprintf(g_log_dir_path, sizeof(g_log_dir_path), "%s\\logs", data_dir);
+    snprintf(g_log_file_path, sizeof(g_log_file_path), "%s\\dna.log", g_log_dir_path);
+#else
+    snprintf(g_log_dir_path, sizeof(g_log_dir_path), "%s/logs", data_dir);
+    snprintf(g_log_file_path, sizeof(g_log_file_path), "%s/dna.log", g_log_dir_path);
+#endif
+}
+
+/* Rotate log files: dna.log -> dna.1.log -> dna.2.log -> ... -> delete oldest */
+static void rotate_log_files(void) {
+    if (g_log_file_path[0] == '\0') {
+        return;
+    }
+
+    char old_path[QGP_LOG_FILE_PATH_MAX];
+    char new_path[QGP_LOG_FILE_PATH_MAX];
+
+    /* Close current file before rotation */
+    if (g_log_file) {
+        fclose(g_log_file);
+        g_log_file = NULL;
+    }
+
+    /* Delete oldest file if it exists (e.g., dna.3.log when max_files=3) */
+#ifdef _WIN32
+    snprintf(old_path, sizeof(old_path), "%s\\dna.%d.log", g_log_dir_path, g_file_max_files);
+#else
+    snprintf(old_path, sizeof(old_path), "%s/dna.%d.log", g_log_dir_path, g_file_max_files);
+#endif
+    remove(old_path);
+
+    /* Shift existing rotated files: dna.2.log -> dna.3.log, dna.1.log -> dna.2.log, etc. */
+    for (int i = g_file_max_files - 1; i >= 1; i--) {
+#ifdef _WIN32
+        snprintf(old_path, sizeof(old_path), "%s\\dna.%d.log", g_log_dir_path, i);
+        snprintf(new_path, sizeof(new_path), "%s\\dna.%d.log", g_log_dir_path, i + 1);
+#else
+        snprintf(old_path, sizeof(old_path), "%s/dna.%d.log", g_log_dir_path, i);
+        snprintf(new_path, sizeof(new_path), "%s/dna.%d.log", g_log_dir_path, i + 1);
+#endif
+        rename(old_path, new_path);  /* Fails silently if old_path doesn't exist */
+    }
+
+    /* Rotate current log: dna.log -> dna.1.log */
+#ifdef _WIN32
+    snprintf(new_path, sizeof(new_path), "%s\\dna.1.log", g_log_dir_path);
+#else
+    snprintf(new_path, sizeof(new_path), "%s/dna.1.log", g_log_dir_path);
+#endif
+    rename(g_log_file_path, new_path);
+
+    /* Reopen fresh log file */
+    g_log_file = fopen(g_log_file_path, "a");
+}
+
+/* Initialize file logging (called on first write) */
+static bool init_file_logging(void) {
+    if (g_file_init_attempted) {
+        return g_log_file != NULL;
+    }
+    g_file_init_attempted = true;
+
+    /* Build paths if not already done */
+    if (g_log_file_path[0] == '\0') {
+        build_log_paths();
+    }
+
+    if (g_log_file_path[0] == '\0') {
+        return false;  /* No data directory available */
+    }
+
+    /* Create logs directory if it doesn't exist */
+    if (qgp_platform_mkdir(g_log_dir_path) != 0 && errno != EEXIST) {
+        /* Check if it already exists (mkdir returns error if exists) */
+        if (!qgp_platform_file_exists(g_log_dir_path)) {
+            return false;
+        }
+    }
+
+    /* Open log file in append mode */
+    g_log_file = fopen(g_log_file_path, "a");
+    if (!g_log_file) {
+        return false;
+    }
+
+    /* Write startup marker */
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char time_buf[32];
+    strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+    fprintf(g_log_file, "\n=== DNA Messenger Log Started: %s ===\n", time_buf);
+    fflush(g_log_file);
+
+    return true;
+}
+
+void qgp_log_file_enable(bool enabled) {
+    pthread_mutex_lock(&g_file_mutex);
+    g_file_logging_enabled = enabled;
+
+    if (enabled && !g_log_file) {
+        init_file_logging();
+    } else if (!enabled && g_log_file) {
+        fclose(g_log_file);
+        g_log_file = NULL;
+    }
+    pthread_mutex_unlock(&g_file_mutex);
+}
+
+bool qgp_log_file_is_enabled(void) {
+    return g_file_logging_enabled;
+}
+
+void qgp_log_file_set_options(int max_size_kb, int max_files) {
+    pthread_mutex_lock(&g_file_mutex);
+    if (max_size_kb > 0) {
+        g_file_max_size_kb = max_size_kb;
+    }
+    if (max_files > 0 && max_files <= 10) {
+        g_file_max_files = max_files;
+    }
+    pthread_mutex_unlock(&g_file_mutex);
+}
+
+void qgp_log_file_close(void) {
+    pthread_mutex_lock(&g_file_mutex);
+    if (g_log_file) {
+        /* Write shutdown marker */
+        time_t now = time(NULL);
+        struct tm *tm_info = localtime(&now);
+        char time_buf[32];
+        strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+        fprintf(g_log_file, "=== DNA Messenger Log Closed: %s ===\n\n", time_buf);
+
+        fflush(g_log_file);
+        fclose(g_log_file);
+        g_log_file = NULL;
+    }
+    g_file_init_attempted = false;
+    pthread_mutex_unlock(&g_file_mutex);
+}
+
+const char* qgp_log_file_get_path(void) {
+    if (!g_file_logging_enabled || g_log_file_path[0] == '\0') {
+        return NULL;
+    }
+    return g_log_file_path;
+}
+
+void qgp_log_file_write(qgp_log_level_t level, const char *tag, const char *fmt, ...) {
+    if (!g_file_logging_enabled) {
+        return;
+    }
+
+    pthread_mutex_lock(&g_file_mutex);
+
+    /* Initialize on first write */
+    if (!g_log_file && !init_file_logging()) {
+        pthread_mutex_unlock(&g_file_mutex);
+        return;
+    }
+
+    /* Check file size and rotate if needed */
+    long current_size = get_file_size(g_log_file);
+    if (current_size > (long)g_file_max_size_kb * 1024) {
+        rotate_log_files();
+        if (!g_log_file) {
+            pthread_mutex_unlock(&g_file_mutex);
+            return;
+        }
+    }
+
+    /* Get timestamp */
+    uint64_t timestamp_ms;
+#ifdef _WIN32
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    timestamp_ms = (t / 10000) - 11644473600000ULL;
+#else
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    timestamp_ms = (uint64_t)tv.tv_sec * 1000 + (uint64_t)tv.tv_usec / 1000;
+#endif
+
+    /* Format timestamp */
+    time_t secs = (time_t)(timestamp_ms / 1000);
+    int ms = (int)(timestamp_ms % 1000);
+    struct tm *tm_info = localtime(&secs);
+    char time_buf[32];
+    strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+
+    /* Level string */
+    const char *level_str;
+    switch (level) {
+        case QGP_LOG_LEVEL_DEBUG: level_str = "DEBUG"; break;
+        case QGP_LOG_LEVEL_INFO:  level_str = "INFO "; break;
+        case QGP_LOG_LEVEL_WARN:  level_str = "WARN "; break;
+        case QGP_LOG_LEVEL_ERROR: level_str = "ERROR"; break;
+        default: level_str = "?????"; break;
+    }
+
+    /* Write log entry */
+    fprintf(g_log_file, "%s.%03d [%s] %s: ", time_buf, ms, level_str, tag);
+
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(g_log_file, fmt, args);
+    va_end(args);
+
+    fprintf(g_log_file, "\n");
+    fflush(g_log_file);
+
+    pthread_mutex_unlock(&g_file_mutex);
 }

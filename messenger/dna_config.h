@@ -21,6 +21,11 @@ typedef struct {
     char log_level[16];        // DEBUG, INFO, WARN, ERROR, NONE
     char log_tags[512];        // Comma-separated tags to show (empty = all)
 
+    // File logging settings (cross-platform)
+    int log_file_enabled;      // 0=disabled, 1=enabled (default: 1)
+    int log_max_size_kb;       // Max file size before rotation (default: 5120 = 5MB)
+    int log_max_files;         // Max rotated files to keep (default: 3)
+
     // Bootstrap nodes
     char bootstrap_nodes[DNA_MAX_BOOTSTRAP_NODES][64];  // "ip:port" format
     int bootstrap_count;
