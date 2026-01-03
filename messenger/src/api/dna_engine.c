@@ -1493,6 +1493,7 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
     {
         size_t src_len = identity->avatar_base64[0] ? strlen(identity->avatar_base64) : 0;
         size_t dst_len = profile->avatar_base64[0] ? strlen(profile->avatar_base64) : 0;
+        (void)src_len; (void)dst_len;  // Used only in debug builds
         QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] get_profile: src_len=%zu, dst_len=%zu (first 20: %.20s)\n",
                      src_len, dst_len, dst_len > 0 ? profile->avatar_base64 : "(empty)");
     }
@@ -1568,6 +1569,7 @@ done:
     /* DEBUG: Log before callback */
     if (profile) {
         size_t avatar_len = profile->avatar_base64[0] ? strlen(profile->avatar_base64) : 0;
+        (void)avatar_len;  // Used only in debug builds
         QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] get_profile CALLBACK: error=%d, avatar_len=%zu\n", error, avatar_len);
     } else {
         QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] get_profile CALLBACK: error=%d, profile=NULL\n", error);
@@ -1665,6 +1667,7 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
     {
         size_t src_len = identity->avatar_base64[0] ? strlen(identity->avatar_base64) : 0;
         size_t dst_len = profile->avatar_base64[0] ? strlen(profile->avatar_base64) : 0;
+        (void)src_len; (void)dst_len;  // Used only in debug builds
         QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] lookup_profile: src_len=%zu, dst_len=%zu (first 20: %.20s)\n",
                      src_len, dst_len, dst_len > 0 ? profile->avatar_base64 : "(empty)");
     }

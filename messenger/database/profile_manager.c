@@ -66,6 +66,7 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
         if (!profile_cache_is_expired(user_fingerprint)) {
             // Cache hit (fresh) - log full profile data
             size_t avatar_len = cached_identity->avatar_base64[0] ? strlen(cached_identity->avatar_base64) : 0;
+            (void)avatar_len;  // Used only in debug builds
             QGP_LOG_DEBUG(LOG_TAG, "Cache hit (fresh): %.16s...\n", user_fingerprint);
             QGP_LOG_DEBUG(LOG_TAG, "  name='%s' bio='%.50s' location='%s' website='%s'\n",
                         cached_identity->display_name, cached_identity->bio,
@@ -142,6 +143,7 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
     // Step 4: Update cache with fresh data - log full profile
     {
         size_t avatar_len = fresh_identity->avatar_base64[0] ? strlen(fresh_identity->avatar_base64) : 0;
+        (void)avatar_len;  // Used only in debug builds
         QGP_LOG_DEBUG(LOG_TAG, "Fetched from DHT: %.16s...\n", user_fingerprint);
         QGP_LOG_DEBUG(LOG_TAG, "  name='%s' bio='%.50s' location='%s' website='%s'\n",
                     fresh_identity->display_name, fresh_identity->bio,

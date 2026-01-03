@@ -995,6 +995,7 @@ extern "C" int dht_republish_packed(dht_context_t *ctx,
 
         // Log details about what we're republishing
         bool is_signed = value->owner && !value->signature.empty();
+        (void)is_signed;  // Used only in debug builds
         QGP_LOG_DEBUG("DHT", "REPUBLISH_PACKED: %s (type=0x%x, id=%llu, data=%zu bytes, signed=%s)",
                      hash.toString().c_str(), value->type, (unsigned long long)value->id, value->data.size(), is_signed ? "YES" : "no");
 

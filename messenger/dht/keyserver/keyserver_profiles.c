@@ -75,6 +75,7 @@ int dna_update_profile(
 
     // DEBUG: Log profile being saved
     size_t avatar_len = identity->avatar_base64[0] ? strlen(identity->avatar_base64) : 0;
+    (void)avatar_len;  // Used only in debug builds
     QGP_LOG_DEBUG(LOG_TAG, "dna_update_profile: avatar=%zu bytes, location='%s', website='%s'\n",
                   avatar_len, identity->location, identity->website);
 
@@ -184,6 +185,7 @@ int dna_load_identity(
     {
         const char *avatar_key = "\"avatar_base64\"";
         const char *found = strstr(json_str, avatar_key);
+        (void)found;  // Used only in debug builds
         QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] Raw JSON has avatar_base64 key: %s\n",
                      found ? "YES" : "NO");
     }
@@ -199,6 +201,7 @@ int dna_load_identity(
 
     // DEBUG: Log avatar data after JSON parse (WARN level to ensure visibility)
     size_t avatar_len = identity->avatar_base64[0] ? strlen(identity->avatar_base64) : 0;
+    (void)avatar_len;  // Used only in debug builds
     QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] dna_load_identity: avatar_base64 length=%zu (first 20 chars: %.20s)\n",
                  avatar_len, avatar_len > 0 ? identity->avatar_base64 : "(empty)");
 

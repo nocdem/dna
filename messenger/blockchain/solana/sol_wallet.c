@@ -332,9 +332,14 @@ int sol_wallet_load(
         return -1;
     }
 
-    fread(json_str, 1, fsize, f);
-    json_str[fsize] = '\0';
+    size_t read_bytes = fread(json_str, 1, fsize, f);
     fclose(f);
+    if (read_bytes != (size_t)fsize) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to read wallet file: expected %ld, got %zu", fsize, read_bytes);
+        free(json_str);
+        return -1;
+    }
+    json_str[fsize] = '\0';
 
     /* Parse JSON */
     json_object *root = json_tokener_parse(json_str);

@@ -90,6 +90,7 @@ dht_context_t* dht_singleton_get(void)
     // Debug: log every call
     bool ctx_exists = (g_dht_context != NULL);
     bool ctx_running = ctx_exists ? dht_context_is_running(g_dht_context) : false;
+    (void)ctx_running;  // Used only in debug builds
     QGP_LOG_DEBUG(LOG_TAG, "dht_singleton_get: ctx=%p exists=%d running=%d",
                   (void*)g_dht_context, ctx_exists, ctx_running);
 

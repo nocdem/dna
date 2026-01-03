@@ -558,6 +558,7 @@ int dht_queue_message(
                 clock_gettime(CLOCK_MONOTONIC, &deserialize_end);
                 long deserialize_ms = (deserialize_end.tv_sec - deserialize_start.tv_sec) * 1000 +
                                       (deserialize_end.tv_nsec - deserialize_start.tv_nsec) / 1000000;
+                (void)deserialize_ms;  // Used only in debug builds
                 QGP_LOG_DEBUG(LOG_TAG, "Deserialized %zu messages in %ld ms", existing_count, deserialize_ms);
             }
             free(existing_data);

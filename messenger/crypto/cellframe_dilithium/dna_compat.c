@@ -14,7 +14,14 @@ void SHA3_256(unsigned char *output, const unsigned char *input, size_t len) {
 void randombytes(unsigned char *out, size_t len) {
     FILE *fp = fopen("/dev/urandom", "rb");
     if (fp) {
-        fread(out, 1, len, fp);
+        size_t read = fread(out, 1, len, fp);
         fclose(fp);
+        // Zero remaining buffer if partial read (shouldn't happen with urandom)
+        if (read < len) {
+            memset(out + read, 0, len - read);
+        }
+    } else {
+        // Fallback: zero the buffer if urandom unavailable
+        memset(out, 0, len);
     }
 }
