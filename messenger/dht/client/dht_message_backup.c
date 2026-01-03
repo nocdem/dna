@@ -12,6 +12,7 @@
 #include "../crypto/utils/qgp_kyber.h"
 #include "../dna_api.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_types.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,99 +37,6 @@
 #ifndef ntohll
 #define ntohll(x) ((1==ntohl(1)) ? (x) : ((uint64_t)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
 #endif
-
-// Base64 encoding table
-static const char base64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-// ============================================================================
-// BASE64 HELPERS
-// ============================================================================
-
-/**
- * Base64 encode binary data
- * Returns allocated string, caller must free
- */
-static char* base64_encode(const uint8_t *data, size_t len) {
-    if (!data || len == 0) return strdup("");
-
-    size_t out_len = 4 * ((len + 2) / 3);
-    char *out = malloc(out_len + 1);
-    if (!out) return NULL;
-
-    size_t i, j;
-    for (i = 0, j = 0; i < len;) {
-        uint32_t octet_a = i < len ? data[i++] : 0;
-        uint32_t octet_b = i < len ? data[i++] : 0;
-        uint32_t octet_c = i < len ? data[i++] : 0;
-
-        uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
-
-        out[j++] = base64_table[(triple >> 18) & 0x3F];
-        out[j++] = base64_table[(triple >> 12) & 0x3F];
-        out[j++] = base64_table[(triple >> 6) & 0x3F];
-        out[j++] = base64_table[triple & 0x3F];
-    }
-
-    // Padding
-    size_t mod = len % 3;
-    if (mod > 0) {
-        out[out_len - 1] = '=';
-        if (mod == 1) out[out_len - 2] = '=';
-    }
-
-    out[out_len] = '\0';
-    return out;
-}
-
-/**
- * Base64 decode string to binary
- * Returns allocated buffer, caller must free
- */
-static uint8_t* base64_decode(const char *data, size_t *out_len) {
-    if (!data || !out_len) return NULL;
-
-    size_t in_len = strlen(data);
-    if (in_len == 0) {
-        *out_len = 0;
-        return malloc(1);  // Return empty buffer
-    }
-
-    // Build decode table
-    static int decode_table[256] = {-1};
-    static int table_init = 0;
-    if (!table_init) {
-        memset(decode_table, -1, sizeof(decode_table));
-        for (int i = 0; i < 64; i++) {
-            decode_table[(unsigned char)base64_table[i]] = i;
-        }
-        table_init = 1;
-    }
-
-    // Calculate output length
-    size_t padding = 0;
-    if (in_len >= 1 && data[in_len - 1] == '=') padding++;
-    if (in_len >= 2 && data[in_len - 2] == '=') padding++;
-
-    *out_len = (in_len / 4) * 3 - padding;
-    uint8_t *out = malloc(*out_len);
-    if (!out) return NULL;
-
-    size_t i, j;
-    for (i = 0, j = 0; i < in_len;) {
-        uint32_t sextet_a = data[i] == '=' ? 0 : decode_table[(unsigned char)data[i]]; i++;
-        uint32_t sextet_b = data[i] == '=' ? 0 : decode_table[(unsigned char)data[i]]; i++;
-        uint32_t sextet_c = data[i] == '=' ? 0 : decode_table[(unsigned char)data[i]]; i++;
-        uint32_t sextet_d = data[i] == '=' ? 0 : decode_table[(unsigned char)data[i]]; i++;
-
-        uint32_t triple = (sextet_a << 18) + (sextet_b << 12) + (sextet_c << 6) + sextet_d;
-
-        if (j < *out_len) out[j++] = (triple >> 16) & 0xFF;
-        if (j < *out_len) out[j++] = (triple >> 8) & 0xFF;
-        if (j < *out_len) out[j++] = triple & 0xFF;
-    }
-
-    return out;
-}
 
 // ============================================================================
 // INTERNAL HELPER FUNCTIONS
@@ -225,7 +133,7 @@ static char* serialize_messages_to_json(
             json_object_object_add(msg_obj, "recipient", json_object_new_string(messages[m].recipient));
 
             // Base64 encode the encrypted message
-            char *enc_b64 = base64_encode(messages[m].encrypted_message, messages[m].encrypted_len);
+            char *enc_b64 = qgp_base64_encode(messages[m].encrypted_message, messages[m].encrypted_len, NULL);
             if (enc_b64) {
                 json_object_object_add(msg_obj, "encrypted_message_base64", json_object_new_string(enc_b64));
                 free(enc_b64);
@@ -339,7 +247,7 @@ static int deserialize_and_import_messages(
 
         // Decode base64 encrypted message
         size_t enc_len = 0;
-        uint8_t *encrypted_message = base64_decode(enc_b64, &enc_len);
+        uint8_t *encrypted_message = qgp_base64_decode(enc_b64, &enc_len);
         if (!encrypted_message || enc_len == 0) {
             QGP_LOG_WARN(LOG_TAG, "Skipping message %zu: failed to decode base64", i);
             if (encrypted_message) free(encrypted_message);

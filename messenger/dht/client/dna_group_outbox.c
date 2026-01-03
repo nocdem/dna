@@ -29,6 +29,7 @@
 #endif
 
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_types.h"
 #define LOG_TAG "DNA_OUTBOX"
 
 /* External DHT functions */
@@ -59,76 +60,6 @@ static inline uint64_t htonll_outbox(uint64_t value) {
         return ((uint64_t)htonl(value & 0xFFFFFFFF) << 32) | htonl(value >> 32);
     }
     return value;
-}
-
-/*============================================================================
- * Base64 Encoding/Decoding
- *============================================================================*/
-
-static char *base64_encode(const uint8_t *data, size_t len) {
-    static const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    size_t out_len = 4 * ((len + 2) / 3) + 1;
-    char *out = malloc(out_len);
-    if (!out) return NULL;
-
-    size_t i, j;
-    for (i = 0, j = 0; i < len;) {
-        uint32_t octet_a = i < len ? data[i++] : 0;
-        uint32_t octet_b = i < len ? data[i++] : 0;
-        uint32_t octet_c = i < len ? data[i++] : 0;
-        uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
-
-        out[j++] = base64_chars[(triple >> 18) & 0x3F];
-        out[j++] = base64_chars[(triple >> 12) & 0x3F];
-        out[j++] = base64_chars[(triple >> 6) & 0x3F];
-        out[j++] = base64_chars[triple & 0x3F];
-    }
-
-    size_t padding = len % 3;
-    if (padding == 1) { out[j - 2] = '='; out[j - 1] = '='; }
-    else if (padding == 2) { out[j - 1] = '='; }
-    out[j] = '\0';
-    return out;
-}
-
-static uint8_t *base64_decode(const char *str, size_t *out_len) {
-    static const uint8_t base64_table[256] = {
-        ['A'] = 0,  ['B'] = 1,  ['C'] = 2,  ['D'] = 3,  ['E'] = 4,  ['F'] = 5,  ['G'] = 6,  ['H'] = 7,
-        ['I'] = 8,  ['J'] = 9,  ['K'] = 10, ['L'] = 11, ['M'] = 12, ['N'] = 13, ['O'] = 14, ['P'] = 15,
-        ['Q'] = 16, ['R'] = 17, ['S'] = 18, ['T'] = 19, ['U'] = 20, ['V'] = 21, ['W'] = 22, ['X'] = 23,
-        ['Y'] = 24, ['Z'] = 25, ['a'] = 26, ['b'] = 27, ['c'] = 28, ['d'] = 29, ['e'] = 30, ['f'] = 31,
-        ['g'] = 32, ['h'] = 33, ['i'] = 34, ['j'] = 35, ['k'] = 36, ['l'] = 37, ['m'] = 38, ['n'] = 39,
-        ['o'] = 40, ['p'] = 41, ['q'] = 42, ['r'] = 43, ['s'] = 44, ['t'] = 45, ['u'] = 46, ['v'] = 47,
-        ['w'] = 48, ['x'] = 49, ['y'] = 50, ['z'] = 51, ['0'] = 52, ['1'] = 53, ['2'] = 54, ['3'] = 55,
-        ['4'] = 56, ['5'] = 57, ['6'] = 58, ['7'] = 59, ['8'] = 60, ['9'] = 61, ['+'] = 62, ['/'] = 63
-    };
-
-    size_t len = strlen(str);
-    size_t padding = 0;
-    if (len >= 2 && str[len - 1] == '=') {
-        padding++;
-        if (str[len - 2] == '=') padding++;
-    }
-
-    *out_len = (len / 4) * 3 - padding;
-    uint8_t *out = malloc(*out_len);
-    if (!out) return NULL;
-
-    size_t i, j;
-    for (i = 0, j = 0; i < len;) {
-        uint32_t sextet_a = str[i] == '=' ? 0 : base64_table[(uint8_t)str[i]]; i++;
-        uint32_t sextet_b = str[i] == '=' ? 0 : base64_table[(uint8_t)str[i]]; i++;
-        uint32_t sextet_c = str[i] == '=' ? 0 : base64_table[(uint8_t)str[i]]; i++;
-        uint32_t sextet_d = str[i] == '=' ? 0 : base64_table[(uint8_t)str[i]]; i++;
-
-        uint32_t triple = (sextet_a << 18) + (sextet_b << 12) + (sextet_c << 6) + sextet_d;
-
-        if (j < *out_len) out[j++] = (triple >> 16) & 0xFF;
-        if (j < *out_len) out[j++] = (triple >> 8) & 0xFF;
-        if (j < *out_len) out[j++] = triple & 0xFF;
-    }
-    return out;
 }
 
 /*============================================================================
@@ -206,7 +137,7 @@ static int message_to_json(const dna_group_message_t *msg, json_object **json_ou
     json_object_object_add(root, "gsk_version", json_object_new_int(msg->gsk_version));
 
     /* Nonce (base64) */
-    char *nonce_b64 = base64_encode(msg->nonce, DNA_GROUP_OUTBOX_NONCE_SIZE);
+    char *nonce_b64 = qgp_base64_encode(msg->nonce, DNA_GROUP_OUTBOX_NONCE_SIZE, NULL);
     if (nonce_b64) {
         json_object_object_add(root, "nonce", json_object_new_string(nonce_b64));
         free(nonce_b64);
@@ -214,7 +145,7 @@ static int message_to_json(const dna_group_message_t *msg, json_object **json_ou
 
     /* Ciphertext (base64) */
     if (msg->ciphertext && msg->ciphertext_len > 0) {
-        char *ct_b64 = base64_encode(msg->ciphertext, msg->ciphertext_len);
+        char *ct_b64 = qgp_base64_encode(msg->ciphertext, msg->ciphertext_len, NULL);
         if (ct_b64) {
             json_object_object_add(root, "ciphertext", json_object_new_string(ct_b64));
             free(ct_b64);
@@ -222,7 +153,7 @@ static int message_to_json(const dna_group_message_t *msg, json_object **json_ou
     }
 
     /* Tag (base64) */
-    char *tag_b64 = base64_encode(msg->tag, DNA_GROUP_OUTBOX_TAG_SIZE);
+    char *tag_b64 = qgp_base64_encode(msg->tag, DNA_GROUP_OUTBOX_TAG_SIZE, NULL);
     if (tag_b64) {
         json_object_object_add(root, "tag", json_object_new_string(tag_b64));
         free(tag_b64);
@@ -230,7 +161,7 @@ static int message_to_json(const dna_group_message_t *msg, json_object **json_ou
 
     /* Signature (base64) */
     if (msg->signature_len > 0) {
-        char *sig_b64 = base64_encode(msg->signature, msg->signature_len);
+        char *sig_b64 = qgp_base64_encode(msg->signature, msg->signature_len, NULL);
         if (sig_b64) {
             json_object_object_add(root, "signature", json_object_new_string(sig_b64));
             free(sig_b64);
@@ -264,7 +195,7 @@ static int message_from_json(json_object *root, dna_group_message_t *msg) {
     /* Nonce (base64) */
     if (json_object_object_get_ex(root, "nonce", &j_val)) {
         size_t nonce_len = 0;
-        uint8_t *nonce = base64_decode(json_object_get_string(j_val), &nonce_len);
+        uint8_t *nonce = qgp_base64_decode(json_object_get_string(j_val), &nonce_len);
         if (nonce && nonce_len == DNA_GROUP_OUTBOX_NONCE_SIZE) {
             memcpy(msg->nonce, nonce, DNA_GROUP_OUTBOX_NONCE_SIZE);
         }
@@ -274,7 +205,7 @@ static int message_from_json(json_object *root, dna_group_message_t *msg) {
     /* Ciphertext (base64) */
     if (json_object_object_get_ex(root, "ciphertext", &j_val)) {
         size_t ct_len = 0;
-        uint8_t *ct = base64_decode(json_object_get_string(j_val), &ct_len);
+        uint8_t *ct = qgp_base64_decode(json_object_get_string(j_val), &ct_len);
         if (ct && ct_len > 0) {
             msg->ciphertext = ct;
             msg->ciphertext_len = ct_len;
@@ -284,7 +215,7 @@ static int message_from_json(json_object *root, dna_group_message_t *msg) {
     /* Tag (base64) */
     if (json_object_object_get_ex(root, "tag", &j_val)) {
         size_t tag_len = 0;
-        uint8_t *tag = base64_decode(json_object_get_string(j_val), &tag_len);
+        uint8_t *tag = qgp_base64_decode(json_object_get_string(j_val), &tag_len);
         if (tag && tag_len == DNA_GROUP_OUTBOX_TAG_SIZE) {
             memcpy(msg->tag, tag, DNA_GROUP_OUTBOX_TAG_SIZE);
         }
@@ -294,7 +225,7 @@ static int message_from_json(json_object *root, dna_group_message_t *msg) {
     /* Signature (base64) */
     if (json_object_object_get_ex(root, "signature", &j_val)) {
         size_t sig_len = 0;
-        uint8_t *sig = base64_decode(json_object_get_string(j_val), &sig_len);
+        uint8_t *sig = qgp_base64_decode(json_object_get_string(j_val), &sig_len);
         if (sig && sig_len <= DNA_GROUP_OUTBOX_SIG_SIZE) {
             memcpy(msg->signature, sig, sig_len);
             msg->signature_len = sig_len;
