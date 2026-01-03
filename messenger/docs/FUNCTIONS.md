@@ -771,14 +771,6 @@ Internal Kyber1024 (ML-KEM-1024) implementation from pq-crystals reference.
 | `void sha256(uint8_t out[32], const uint8_t*, size_t)` | SHA-256 hash |
 | `void sha512(uint8_t out[64], const uint8_t*, size_t)` | SHA-512 hash |
 
-### 6.11 AES-256-CTR (`aes256ctr.h`)
-
-| Function | Description |
-|----------|-------------|
-| `void aes256ctr_prf(uint8_t*, size_t, const uint8_t key[32], const uint8_t nonce[12])` | AES-256-CTR PRF |
-| `void aes256ctr_init(aes256ctr_ctx*, const uint8_t key[32], const uint8_t nonce[12])` | Initialize AES-256-CTR |
-| `void aes256ctr_squeezeblocks(uint8_t*, size_t, aes256ctr_ctx*)` | Squeeze blocks from AES-CTR |
-
 ---
 
 ## 7. Cryptography DSA (Dilithium Internals)
