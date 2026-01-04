@@ -75,6 +75,8 @@ class EventHandler {
       case DhtConnectedEvent():
         _ref.read(dhtConnectionStateProvider.notifier).state =
             DhtConnectionState.connected;
+        // Start DHT listeners for contacts' outboxes (push notifications)
+        _startDhtListeners();
         // Refresh contacts when DHT connects
         _ref.invalidate(contactsProvider);
         // Refresh contact requests when DHT connects
@@ -98,9 +100,13 @@ class EventHandler {
 
       case ContactOnlineEvent(fingerprint: final fp):
         _ref.read(contactsProvider.notifier).updateContactStatus(fp, true);
+        // Also update selectedContactProvider if this contact is selected
+        _updateSelectedContactPresence(fp, true);
 
       case ContactOfflineEvent(fingerprint: final fp):
         _ref.read(contactsProvider.notifier).updateContactStatus(fp, false);
+        // Also update selectedContactProvider if this contact is selected
+        _updateSelectedContactPresence(fp, false);
 
       case MessageReceivedEvent(message: final msg):
         // New message received - refresh conversation from DB (decrypts messages)
@@ -219,6 +225,14 @@ class EventHandler {
     });
   }
 
+  /// Start DHT listeners for contacts' outboxes (push notifications)
+  void _startDhtListeners() {
+    _ref.read(engineProvider).whenData((engine) {
+      final count = engine.listenAllContacts();
+      print('[EventHandler] Started $count DHT outbox listeners');
+    });
+  }
+
   /// Start periodic polling for contact requests (every 60 seconds)
   void _startContactRequestsPolling() {
     _contactRequestsTimer?.cancel();
@@ -274,6 +288,19 @@ class EventHandler {
     final identities = _ref.read(identitiesProvider).valueOrNull;
     if (identities != null && identities.isNotEmpty) {
       _ref.read(identityProfileCacheProvider.notifier).prefetchIdentities(identities);
+    }
+  }
+
+  /// Update selectedContactProvider when presence changes
+  void _updateSelectedContactPresence(String fingerprint, bool isOnline) {
+    final selectedContact = _ref.read(selectedContactProvider);
+    if (selectedContact != null && selectedContact.fingerprint == fingerprint) {
+      _ref.read(selectedContactProvider.notifier).state = Contact(
+        fingerprint: selectedContact.fingerprint,
+        displayName: selectedContact.displayName,
+        isOnline: isOnline,
+        lastSeen: isOnline ? DateTime.now() : selectedContact.lastSeen,
+      );
     }
   }
 

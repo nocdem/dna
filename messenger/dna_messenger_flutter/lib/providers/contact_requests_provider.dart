@@ -16,11 +16,14 @@ class ContactRequestsNotifier extends AsyncNotifier<List<ContactRequest>> {
   Future<List<ContactRequest>> build() async {
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
+      print('[ContactRequests] Skipping - identity not loaded');
       return [];
     }
 
     final engine = await ref.watch(engineProvider.future);
+    print('[ContactRequests] Fetching contact requests from DHT...');
     final requests = await engine.getContactRequests();
+    print('[ContactRequests] Fetched ${requests.length} requests');
 
     // Refresh contacts - reciprocal requests may have been auto-approved
     ref.invalidate(contactsProvider);
