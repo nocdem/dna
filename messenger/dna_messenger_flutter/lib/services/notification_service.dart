@@ -64,6 +64,12 @@ class NotificationService {
     // Create Android notification channel
     if (Platform.isAndroid) {
       await _createAndroidChannel();
+      // Request notification permission (required for Android 13+)
+      final granted = await _notifications
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>()
+          ?.requestNotificationsPermission();
+      debugPrint('[Notifications] Android permission granted: $granted');
     }
 
     debugPrint('[Notifications] Initialized');
