@@ -54,13 +54,33 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     try {
       final engine = await ref.read(engineProvider.future);
 
-      // Resume C-side presence heartbeat (marks us as online)
-      print('AppLifecycle: Resuming C-side presence heartbeat');
-      engine.resumePresence();
+      // Check if DHT is actually still connected (may have dropped while idle)
+      final isDhtConnected = engine.isDhtConnected();
+      print('AppLifecycle: DHT connected = $isDhtConnected');
 
-      // Resume Dart-side polling timers (handles presence refresh + contact requests)
-      print('AppLifecycle: Resuming polling timers');
-      ref.read(eventHandlerProvider).resumePolling();
+      if (!isDhtConnected) {
+        // DHT disconnected while idle - trigger reconnection
+        print('AppLifecycle: DHT disconnected, triggering reconnection...');
+        ref.read(dhtConnectionStateProvider.notifier).state =
+            DhtConnectionState.connecting;
+
+        final result = engine.networkChanged();
+        if (result == 0) {
+          print('AppLifecycle: DHT reconnection initiated successfully');
+        } else {
+          print('AppLifecycle: DHT reconnection failed with code $result');
+        }
+        // DHT connected event will update state and restart listeners
+      } else {
+        // DHT still connected - just resume normal operations
+        // Resume C-side presence heartbeat (marks us as online)
+        print('AppLifecycle: Resuming C-side presence heartbeat');
+        engine.resumePresence();
+
+        // Resume Dart-side polling timers (handles presence refresh + contact requests)
+        print('AppLifecycle: Resuming polling timers');
+        ref.read(eventHandlerProvider).resumePolling();
+      }
 
       // Refresh contacts to get updated presence status
       print('AppLifecycle: Refreshing contacts for presence update');
