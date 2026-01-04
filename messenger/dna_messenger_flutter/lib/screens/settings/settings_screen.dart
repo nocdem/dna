@@ -1,6 +1,7 @@
 // Settings Screen - App settings and profile management
 import 'dart:convert';
 import 'dart:io';
+import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -865,86 +866,141 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
     _setLogTags(newTags);
   }
 
-  Future<void> _exportLogs(BuildContext context) async {
-    final engineAsync = ref.read(engineProvider);
+  /// Get the logs directory path
+  String _getLogsDir() {
+    if (Platform.isLinux || Platform.isMacOS) {
+      final home = Platform.environment['HOME'] ?? '/tmp';
+      return '$home/.dna/logs';
+    } else if (Platform.isWindows) {
+      final appData = Platform.environment['APPDATA'] ?? 'C:\\Users';
+      return '$appData\\.dna\\logs';
+    } else {
+      // Android - use app-specific directory
+      // This will be set after we get the actual path
+      return '';
+    }
+  }
+
+  Future<void> _openOrShareLogs(BuildContext context) async {
     final isDesktop = Platform.isLinux || Platform.isWindows || Platform.isMacOS;
 
-    await engineAsync.whenData((engine) async {
-      try {
-        final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-        final filename = 'dna_messenger_logs_$timestamp.txt';
+    try {
+      if (isDesktop) {
+        // Desktop: Open file manager at logs folder
+        final logsDir = _getLogsDir();
+        final dir = Directory(logsDir);
 
-        if (isDesktop) {
-          // Desktop: Show native file save dialog
-          final outputPath = await FilePicker.platform.saveFile(
-            dialogTitle: 'Save Logs',
-            fileName: filename,
-            type: FileType.custom,
-            allowedExtensions: ['txt'],
-          );
-
-          if (outputPath == null) return; // User cancelled
-
-          // Export logs directly to chosen path
-          final success = engine.debugLogExport(outputPath);
-          if (!success) {
-            if (context.mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: const Text('Failed to export logs'),
-                  backgroundColor: DnaColors.snackbarError,
-                ),
-              );
-            }
-            return;
-          }
-
+        if (!await dir.exists()) {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('Logs saved to: $outputPath'),
-                backgroundColor: DnaColors.snackbarSuccess,
+                content: const Text('Logs folder does not exist yet'),
+                backgroundColor: DnaColors.snackbarWarning,
               ),
             );
           }
-        } else {
-          // Mobile: Use share sheet
-          final tempDir = await getTemporaryDirectory();
-          final filepath = '${tempDir.path}/$filename';
-
-          // Export logs to temp file
-          final success = engine.debugLogExport(filepath);
-          if (!success) {
-            if (context.mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: const Text('Failed to export logs'),
-                  backgroundColor: DnaColors.snackbarError,
-                ),
-              );
-            }
-            return;
-          }
-
-          // Share the file
-          final file = XFile(filepath);
-          await Share.shareXFiles(
-            [file],
-            subject: 'DNA Messenger Logs',
-            text: 'Debug logs from DNA Messenger',
-          );
+          return;
         }
-      } catch (e) {
-        if (context.mounted) {
+
+        // Open file manager using platform-specific command
+        ProcessResult result;
+        if (Platform.isLinux) {
+          result = await Process.run('xdg-open', [logsDir]);
+        } else if (Platform.isWindows) {
+          result = await Process.run('explorer', [logsDir]);
+        } else {
+          // macOS
+          result = await Process.run('open', [logsDir]);
+        }
+
+        if (result.exitCode != 0 && context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Export failed: $e'),
+              content: Text('Could not open folder: ${result.stderr}'),
               backgroundColor: DnaColors.snackbarError,
             ),
           );
         }
+      } else {
+        // Mobile: Zip log files and share
+        final appDir = await getApplicationDocumentsDirectory();
+        final logsDir = Directory('${appDir.parent.path}/dna_messenger/logs');
+
+        if (!await logsDir.exists()) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('No logs available yet'),
+                backgroundColor: DnaColors.snackbarWarning,
+              ),
+            );
+          }
+          return;
+        }
+
+        // Find all log files
+        final logFiles = await logsDir
+            .list()
+            .where((f) => f is File && f.path.contains('dna') && f.path.endsWith('.log'))
+            .cast<File>()
+            .toList();
+
+        if (logFiles.isEmpty) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('No log files found'),
+                backgroundColor: DnaColors.snackbarWarning,
+              ),
+            );
+          }
+          return;
+        }
+
+        // Create zip archive
+        final archive = Archive();
+        for (final file in logFiles) {
+          final bytes = await file.readAsBytes();
+          final filename = file.path.split('/').last;
+          archive.addFile(ArchiveFile(filename, bytes.length, bytes));
+        }
+
+        // Encode zip
+        final zipData = ZipEncoder().encode(archive);
+        if (zipData == null) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('Failed to create zip archive'),
+                backgroundColor: DnaColors.snackbarError,
+              ),
+            );
+          }
+          return;
+        }
+
+        // Save to temp and share
+        final tempDir = await getTemporaryDirectory();
+        final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+        final zipPath = '${tempDir.path}/dna_logs_$timestamp.zip';
+        await File(zipPath).writeAsBytes(zipData);
+
+        await Share.shareXFiles(
+          [XFile(zipPath)],
+          subject: 'DNA Messenger Logs',
+          text: 'Debug logs from DNA Messenger',
+        );
       }
-    });
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    }
   }
 
   @override
@@ -987,14 +1043,25 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
                 }
               : null,
         ),
-        // Export Logs
+        // Open/Share Logs
         ListTile(
-          leading: const FaIcon(FontAwesomeIcons.shareNodes),
-          title: const Text('Export Logs'),
-          subtitle: const Text('Share log file for debugging'),
+          leading: FaIcon(
+            Platform.isLinux || Platform.isWindows || Platform.isMacOS
+                ? FontAwesomeIcons.folderOpen
+                : FontAwesomeIcons.shareNodes,
+          ),
+          title: Text(
+            Platform.isLinux || Platform.isWindows || Platform.isMacOS
+                ? 'Open Logs Folder'
+                : 'Share Logs',
+          ),
+          subtitle: Text(
+            Platform.isLinux || Platform.isWindows || Platform.isMacOS
+                ? 'Open file manager at logs directory'
+                : 'Zip and share log files',
+          ),
           trailing: const FaIcon(FontAwesomeIcons.chevronRight),
-          enabled: _debugLogEnabled,
-          onTap: _debugLogEnabled ? () => _exportLogs(context) : null,
+          onTap: () => _openOrShareLogs(context),
         ),
         const Divider(),
         // Log Level
