@@ -8,6 +8,7 @@
 #endif
 
 #include "keygen.h"
+#include "messenger_core.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -349,29 +350,6 @@ int messenger_generate_keys_from_seeds(
     return 0;
 }
 
-/**
- * Get the path to a key file (.dsa or .kem)
- * v0.3.0: Flat structure - always keys/identity.{dsa,kem}
- * fingerprint parameter kept for API compatibility but ignored
- */
-static int keygen_find_key_path(const char *data_dir, const char *fingerprint,
-                                const char *extension, char *path_out) {
-    (void)fingerprint;  // Unused in v0.3.0 flat structure
-
-    char test_path[512];
-    snprintf(test_path, sizeof(test_path), "%s/keys/identity%s", data_dir, extension);
-
-    FILE *f = fopen(test_path, "r");
-    if (f) {
-        fclose(f);
-        strncpy(path_out, test_path, 511);
-        path_out[511] = '\0';
-        return 0;
-    }
-
-    return -1;
-}
-
 int messenger_register_name(
     messenger_context_t *ctx,
     const char *fingerprint,
@@ -425,11 +403,11 @@ int messenger_register_name(
     // Find key files in <data_dir>/*/keys/ structure
     char dilithium_path[512];
     char kyber_path[512];
-    if (keygen_find_key_path(data_dir, fingerprint, ".dsa", dilithium_path) != 0) {
+    if (messenger_find_key_path(data_dir, fingerprint, ".dsa", dilithium_path) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Signing key not found for fingerprint: %.16s...", fingerprint);
         return -1;
     }
-    if (keygen_find_key_path(data_dir, fingerprint, ".kem", kyber_path) != 0) {
+    if (messenger_find_key_path(data_dir, fingerprint, ".kem", kyber_path) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Encryption key not found for fingerprint: %.16s...", fingerprint);
         return -1;
     }

@@ -346,6 +346,7 @@ Core messenger functionality including identity management, key generation, mess
 | `int messenger_compute_identity_fingerprint(const char*, char*)` | Compute fingerprint from Dilithium5 key file |
 | `bool messenger_is_fingerprint(const char *str)` | Check if string is valid fingerprint |
 | `int messenger_get_display_name(...)` | Get display name for identity |
+| `int messenger_find_key_path(const char*, const char*, const char*, char*)` | Find key file path (.dsa or .kem) |
 
 ### 3.4 Public Key Management
 

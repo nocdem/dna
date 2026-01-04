@@ -25,29 +25,20 @@
 #include "../dht/client/dna_group_outbox.h"
 #include "../dht/shared/dht_groups.h"
 
-// Helper function to check if file exists
-static bool file_exists(const char *path) {
-    FILE *f = fopen(path, "r");
-    if (f) {
-        fclose(f);
-        return true;
-    }
-    return false;
-}
-
 /**
  * Get the path to a key file (.dsa or .kem)
  * v0.3.0: Flat structure - always keys/identity.{dsa,kem}
- * fingerprint parameter kept for API compatibility but ignored
+ *
+ * Shared implementation for all messenger modules.
  */
-static int init_find_key_path(const char *data_dir, const char *fingerprint,
-                              const char *extension, char *path_out) {
+int messenger_find_key_path(const char *data_dir, const char *fingerprint,
+                            const char *extension, char *path_out) {
     (void)fingerprint;  // Unused in v0.3.0 flat structure
 
     char test_path[512];
     snprintf(test_path, sizeof(test_path), "%s/keys/identity%s", data_dir, extension);
 
-    if (file_exists(test_path)) {
+    if (qgp_platform_file_exists(test_path)) {
         strncpy(path_out, test_path, 511);
         path_out[511] = '\0';
         return 0;
@@ -85,7 +76,7 @@ static int resolve_identity_to_fingerprint(const char *identity_input, char *fin
     snprintf(key_path, sizeof(key_path), "%s/keys/identity.dsa", data_dir);
 
     // Check if key file exists (no error message - expected for new identities)
-    if (!file_exists(key_path)) {
+    if (!qgp_platform_file_exists(key_path)) {
         return -1;
     }
 
@@ -381,7 +372,7 @@ int messenger_load_dht_identity(const char *fingerprint) {
 
         // Load Kyber private key (for mnemonic decryption)
         char kyber_path[512];
-        if (init_find_key_path(data_dir, fingerprint, ".kem", kyber_path) != 0) {
+        if (messenger_find_key_path(data_dir, fingerprint, ".kem", kyber_path) != 0) {
             QGP_LOG_ERROR(LOG_TAG_DHT, "Kyber key not found for fingerprint: %.16s...", fingerprint);
             return -1;
         }

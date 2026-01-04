@@ -3,6 +3,7 @@
  */
 
 #include "keys.h"
+#include "messenger_core.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,40 +52,6 @@ static size_t keys_curl_write_cb(void *contents, size_t size, size_t nmemb, void
     buf->data[buf->size] = 0;
 
     return realsize;
-}
-
-// ============================================================================
-// KEY PATH FINDER
-// Finds key files in <data_dir>/<name>/keys/ structure
-// ============================================================================
-
-/**
- * Get the path to a key file (.dsa or .kem)
- * v0.3.0: Flat structure - always keys/identity.{dsa,kem}
- * fingerprint parameter kept for API compatibility but ignored
- * @param dna_dir Base data directory (from qgp_platform_app_data_dir())
- * @param fingerprint Ignored in v0.3.0 flat structure
- * @param extension The file extension (e.g., ".dsa" or ".kem")
- * @param path_out Output buffer for found path (must be at least 512 bytes)
- * @return 0 on success, -1 if not found
- */
-static int find_key_path(const char *dna_dir, const char *fingerprint,
-                         const char *extension, char *path_out) {
-    (void)fingerprint;  // Unused in v0.3.0 flat structure
-
-    char test_path[512];
-    snprintf(test_path, sizeof(test_path), "%s/keys/identity%s", dna_dir, extension);
-
-    /* Check if file exists */
-    FILE *f = fopen(test_path, "r");
-    if (f) {
-        fclose(f);
-        strncpy(path_out, test_path, 511);
-        path_out[511] = '\0';
-        return 0;
-    }
-
-    return -1;
 }
 
 // ============================================================================
@@ -139,7 +106,7 @@ int messenger_store_pubkey(
 
     // Find and load private key for signing (searches <data_dir>/*/keys/)
     char key_path[512];
-    if (find_key_path(data_dir, fingerprint, ".dsa", key_path) != 0) {
+    if (messenger_find_key_path(data_dir, fingerprint, ".dsa", key_path) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Signing key not found for fingerprint: %.16s...", fingerprint);
         return -1;
     }
