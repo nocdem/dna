@@ -38,8 +38,8 @@ int dna_config_load(dna_config_t *config) {
 
         // File logging defaults
         config->log_file_enabled = 1;   // Enabled by default
-        config->log_max_size_kb = 5120; // 5 MB
-        config->log_max_files = 3;      // Keep 3 rotated files
+        config->log_max_size_kb = 51200; // 50 MB
+        config->log_max_files = 3;       // Keep 3 rotated files
 
         // Default bootstrap nodes
         strcpy(config->bootstrap_nodes[0], "154.38.182.161:4000");
@@ -117,8 +117,8 @@ int dna_config_load(dna_config_t *config) {
     // File logging defaults if not in config
     if (config->log_max_size_kb == 0) {
         config->log_file_enabled = 1;   // Enabled by default
-        config->log_max_size_kb = 5120; // 5 MB
-        config->log_max_files = 3;      // Keep 3 rotated files
+        config->log_max_size_kb = 51200; // 50 MB
+        config->log_max_files = 3;       // Keep 3 rotated files
     }
 
     // Default bootstrap nodes if none specified

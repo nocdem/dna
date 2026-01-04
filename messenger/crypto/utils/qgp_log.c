@@ -411,7 +411,7 @@ int qgp_log_export_to_file(const char *filepath) {
  * File Logging Implementation - Cross-platform with rotation
  * ============================================================================ */
 
-#define QGP_LOG_FILE_DEFAULT_MAX_SIZE_KB 5120  /* 5 MB default */
+#define QGP_LOG_FILE_DEFAULT_MAX_SIZE_KB 51200  /* 50 MB default */
 #define QGP_LOG_FILE_DEFAULT_MAX_FILES 3       /* Keep 3 rotated files */
 #define QGP_LOG_FILE_PATH_MAX 512
 
