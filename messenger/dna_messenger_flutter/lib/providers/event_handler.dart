@@ -2,6 +2,8 @@
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
+import '../services/notification_service.dart';
+import 'contact_profile_cache_provider.dart';
 import 'engine_provider.dart';
 import 'contacts_provider.dart';
 import 'messages_provider.dart';
@@ -130,6 +132,9 @@ class EventHandler {
         if (!isChatOpen && !msg.isOutgoing) {
           // Increment unread count for incoming messages when chat not open
           _ref.read(unreadCountsProvider.notifier).incrementCount(contactFp);
+
+          // Show notification for incoming message
+          _showMessageNotification(contactFp, msg.plaintext);
         }
 
         // Always refresh contacts to update last message preview
@@ -302,6 +307,30 @@ class EventHandler {
         lastSeen: isOnline ? DateTime.now() : selectedContact.lastSeen,
       );
     }
+  }
+
+  /// Show notification for incoming message
+  void _showMessageNotification(String contactFingerprint, String messageText) {
+    // Get sender display name from profile cache
+    final profileCache = _ref.read(contactProfileCacheProvider);
+    final profile = profileCache[contactFingerprint];
+
+    // Use display name if available, otherwise truncated fingerprint
+    String senderName;
+    if (profile != null && profile.displayName.isNotEmpty) {
+      senderName = profile.displayName;
+    } else if (profile != null && profile.registeredName.isNotEmpty) {
+      senderName = profile.registeredName;
+    } else {
+      senderName = '${contactFingerprint.substring(0, 8)}...';
+    }
+
+    // Show the notification
+    NotificationService.showMessageNotification(
+      senderName: senderName,
+      messagePreview: messageText.isNotEmpty ? messageText : 'New message',
+      contactFingerprint: contactFingerprint,
+    );
   }
 
   void dispose() {

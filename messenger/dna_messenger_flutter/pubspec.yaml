@@ -2,7 +2,7 @@ name: dna_messenger
 description: "Post-quantum encrypted P2P messenger with integrated cryptocurrency wallet"
 publish_to: 'none'
 
-version: 0.99.48+9948
+version: 0.99.49+9949
 
 environment:
   sdk: ^3.10.0
@@ -28,6 +28,9 @@ dependencies:
   window_manager: ^0.4.0
   sqflite: ^2.3.0  # Local SQLite for caching (Android/iOS)
   sqflite_common_ffi: ^2.3.0  # SQLite FFI for desktop (Linux/Windows/macOS)
+
+  # Notifications (cross-platform: Android, iOS, Linux, Windows, macOS)
+  flutter_local_notifications: ^18.0.1
 
   # UI components
   qr_flutter: ^4.1.0

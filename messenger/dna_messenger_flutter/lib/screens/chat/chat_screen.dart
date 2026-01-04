@@ -8,6 +8,7 @@ import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
+import '../../services/notification_service.dart';
 import '../../theme/dna_theme.dart';
 import '../../widgets/emoji_shortcode_field.dart';
 import '../../widgets/formatted_text.dart';
@@ -49,6 +50,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       await engine.markConversationRead(contact.fingerprint);
       // Clear unread count in the provider
       ref.read(unreadCountsProvider.notifier).clearCount(contact.fingerprint);
+      // Cancel any notification for this contact
+      await NotificationService.cancelForContact(contact.fingerprint);
     } catch (e) {
       debugPrint('[CHAT] Failed to mark messages as read: $e');
     }

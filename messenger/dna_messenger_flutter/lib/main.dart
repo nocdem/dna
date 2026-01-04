@@ -10,6 +10,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'providers/providers.dart';
 import 'screens/screens.dart';
 import 'screens/lock/lock_screen.dart';
+import 'services/notification_service.dart';
 import 'theme/dna_theme.dart';
 import 'utils/window_state.dart';
 import 'utils/lifecycle_observer.dart';
@@ -22,6 +23,9 @@ void main() async {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
   }
+
+  // Initialize notification service (cross-platform)
+  await NotificationService.initialize();
 
   // Initialize window manager on desktop (restores position/size)
   if (WindowStateManager.isDesktop) {
