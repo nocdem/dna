@@ -1369,7 +1369,7 @@ class _AboutSection extends ConsumerWidget {
       builder: (context) => AlertDialog(
         title: Row(
           children: [
-            FaIcon(FontAwesomeIcons.triangleExclamation, color: DnaColors.warning, size: 20),
+            FaIcon(FontAwesomeIcons.triangleExclamation, color: DnaColors.textWarning, size: 20),
             const SizedBox(width: 8),
             const Text('Update Available'),
           ],
@@ -1431,7 +1431,7 @@ class _AboutSection extends ConsumerWidget {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Card(
-              color: DnaColors.warning.withOpacity(0.15),
+              color: DnaColors.textWarning.withOpacity(0.15),
               child: InkWell(
                 onTap: () => _showUpdateDialog(context, versionCheck, appVersion, libVersion),
                 borderRadius: BorderRadius.circular(12),
@@ -1439,7 +1439,7 @@ class _AboutSection extends ConsumerWidget {
                   padding: const EdgeInsets.all(12),
                   child: Row(
                     children: [
-                      FaIcon(FontAwesomeIcons.triangleExclamation, color: DnaColors.warning, size: 20),
+                      FaIcon(FontAwesomeIcons.triangleExclamation, color: DnaColors.textWarning, size: 20),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
