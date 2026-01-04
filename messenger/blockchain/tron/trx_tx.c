@@ -13,6 +13,7 @@
 #include "trx_wallet.h"
 #include "trx_base58.h"
 #include "../../crypto/utils/qgp_log.h"
+#include "../../crypto/utils/qgp_platform.h"
 #include <secp256k1.h>
 #include <secp256k1_recovery.h>
 #include <stdio.h>
@@ -82,6 +83,12 @@ static int trongrid_post(const char *endpoint, json_object *body, json_object **
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "DNA-Messenger/1.0");
+
+    /* Configure SSL CA bundle (required for Android) */
+    const char *ca_bundle = qgp_platform_ca_bundle_path();
+    if (ca_bundle) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    }
 
     CURLcode res = curl_easy_perform(curl);
 
