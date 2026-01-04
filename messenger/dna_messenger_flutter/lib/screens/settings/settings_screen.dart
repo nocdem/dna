@@ -890,7 +890,9 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           result = await Process.run('open', [logsDir]);
         }
 
-        if (result.exitCode != 0 && context.mounted) {
+        // Note: Windows explorer.exe returns exit code 1 even on success,
+        // so we only check exit code on non-Windows platforms
+        if (!Platform.isWindows && result.exitCode != 0 && context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('Could not open folder: ${result.stderr}'),

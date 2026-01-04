@@ -377,10 +377,12 @@ build:flutter-linux:
   needs:
     - build:native-linux-x64
   cache:
-    key: flutter-linux-v1
-    policy: pull-push
-    paths:
-      - .pub-cache/
+    - key:
+        files:
+          - dna_messenger_flutter/pubspec.lock
+        prefix: flutter-pub-linux-v1
+      paths:
+        - .pub-cache/
   variables:
     PUB_CACHE: "${CI_PROJECT_DIR}/.pub-cache"
   before_script:
@@ -460,11 +462,20 @@ build:flutter-android:
   needs:
     - build:native-android-arm64
   cache:
-    key: flutter-android-v1
-    policy: pull-push
-    paths:
-      - .gradle/
-      - .pub-cache/
+    - key:
+        files:
+          - dna_messenger_flutter/pubspec.lock
+        prefix: flutter-pub-android-v1
+      paths:
+        - .pub-cache/
+    - key:
+        files:
+          - dna_messenger_flutter/android/gradle/wrapper/gradle-wrapper.properties
+          - dna_messenger_flutter/android/build.gradle
+          - dna_messenger_flutter/android/app/build.gradle
+        prefix: gradle-v1
+      paths:
+        - .gradle/
   variables:
     GRADLE_USER_HOME: "${CI_PROJECT_DIR}/.gradle"
     PUB_CACHE: "${CI_PROJECT_DIR}/.pub-cache"
