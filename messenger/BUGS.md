@@ -17,6 +17,8 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Fixed Bugs
 
+- [x] **[CLI] P2 - TRON transactions fail on Android with SSL error** - `trx_tx.c` and `trx_trc20.c` were missing `CURLOPT_CAINFO` configuration. Linux uses system certs automatically but Android requires explicit CA bundle path. (v0.3.107)
+
 - [x] **[FLUTTER] P3 - Rapid message sending delays message delivery** - When sending multiple messages quickly, receiver would trigger parallel `checkOfflineMessages()` calls causing race conditions. Fixed by debouncing `OutboxUpdatedEvent` with 400ms delay to coalesce rapid events into single DHT fetch. (v0.99.57)
 
 - [x] **[FLUTTER] P2 - Presence system has duplicate calls and ignores app lifecycle** - Fixed by adding pausePolling()/resumePolling() to EventHandler that lifecycle_observer calls on app pause/resume. Timers now properly stop in background. (v0.99.28)
