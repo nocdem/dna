@@ -5157,22 +5157,30 @@ void dna_engine_cancel_outbox_listener(
 
 int dna_engine_listen_all_contacts(dna_engine_t *engine)
 {
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] dna_engine_listen_all_contacts() called");
+    QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] dna_engine_listen_all_contacts() called");
 
     if (!engine) {
         QGP_LOG_ERROR(LOG_TAG, "[LISTEN] engine is NULL");
         return 0;
     }
     if (!engine->identity_loaded) {
-        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] identity not loaded yet");
+        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] identity not loaded yet");
         return 0;
     }
 
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] identity=%s", engine->fingerprint);
+    /* Race condition prevention: only one listener setup at a time */
+    if (engine->listeners_starting) {
+        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Listener setup already in progress, skipping duplicate call");
+        return 0;
+    }
+    engine->listeners_starting = true;
+
+    QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] identity=%s", engine->fingerprint);
 
     /* Initialize contacts database for current identity */
     if (contacts_db_init(engine->fingerprint) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to initialize contacts database");
+        engine->listeners_starting = false;
         return 0;
     }
 
@@ -5182,15 +5190,17 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     if (db_result != 0) {
         QGP_LOG_ERROR(LOG_TAG, "[LISTEN] contacts_db_list failed: %d", db_result);
         if (list) contacts_db_free_list(list);
+        engine->listeners_starting = false;
         return 0;
     }
     if (!list || list->count == 0) {
-        QGP_LOG_WARN(LOG_TAG, "[LISTEN] No contacts in database (count=%zu)", list ? list->count : 0);
+        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] No contacts in database (count=%zu)", list ? list->count : 0);
         if (list) contacts_db_free_list(list);
+        engine->listeners_starting = false;
         return 0;
     }
 
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Found %zu contacts in database", list->count);
+    QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Found %zu contacts in database", list->count);
 
     /* Start listener for each contact (outbox + presence) */
     int started = 0;
@@ -5199,32 +5209,33 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     for (size_t i = 0; i < count; i++) {
         const char *contact_id = list->contacts[i].identity;
         size_t id_len = contact_id ? strlen(contact_id) : 0;
-        QGP_LOG_WARN(LOG_TAG, "[LISTEN] Contact[%zu]: %.32s... (len=%zu)",
+        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Contact[%zu]: %.32s... (len=%zu)",
                      i, contact_id ? contact_id : "(null)", id_len);
 
         /* Start outbox listener (for messages) */
         size_t token = dna_engine_listen_outbox(engine, contact_id);
         if (token > 0) {
-            QGP_LOG_WARN(LOG_TAG, "[LISTEN] ✓ Outbox listener started for contact[%zu], token=%zu", i, token);
+            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Outbox listener started for contact[%zu], token=%zu", i, token);
             started++;
         } else {
-            QGP_LOG_ERROR(LOG_TAG, "[LISTEN] ✗ Failed to start outbox listener for contact[%zu]", i);
+            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Failed to start outbox listener for contact[%zu]", i);
         }
 
         /* Start presence listener (for online status) */
         size_t presence_token = dna_engine_start_presence_listener(engine, contact_id);
         if (presence_token > 0) {
-            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] ✓ Presence listener started for contact[%zu], token=%zu", i, presence_token);
+            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Presence listener started for contact[%zu], token=%zu", i, presence_token);
             presence_started++;
         } else {
-            QGP_LOG_WARN(LOG_TAG, "[LISTEN] ✗ Failed to start presence listener for contact[%zu] (fp_len=%zu)", i, id_len);
+            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Failed to start presence listener for contact[%zu] (fp_len=%zu)", i, id_len);
         }
     }
 
     /* Cleanup */
     contacts_db_free_list(list);
 
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] RESULT: Started %d/%zu outbox + %d/%zu presence listeners",
+    engine->listeners_starting = false;
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Started %d/%zu outbox + %d/%zu presence listeners",
                  started, count, presence_started, count);
     return started;
 }
