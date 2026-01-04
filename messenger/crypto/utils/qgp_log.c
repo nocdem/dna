@@ -517,13 +517,20 @@ static bool init_file_logging(void) {
     }
 
     if (g_log_file_path[0] == '\0') {
-        return false;  /* No data directory available */
+        /* Log to ring buffer (viewable in-app) even if file logging fails */
+        qgp_log_ring_add(QGP_LOG_LEVEL_ERROR, "LOG", "init_file_logging: No data directory");
+        return false;
     }
+
+    /* Log paths to ring buffer for debugging */
+    qgp_log_ring_add(QGP_LOG_LEVEL_DEBUG, "LOG", "init_file_logging: dir='%s' file='%s'",
+                     g_log_dir_path, g_log_file_path);
 
     /* Create logs directory if it doesn't exist */
     if (qgp_platform_mkdir(g_log_dir_path) != 0 && errno != EEXIST) {
-        /* Check if it already exists (mkdir returns error if exists) */
         if (!qgp_platform_file_exists(g_log_dir_path)) {
+            qgp_log_ring_add(QGP_LOG_LEVEL_ERROR, "LOG", "mkdir failed: dir='%s' errno=%d",
+                             g_log_dir_path, errno);
             return false;
         }
     }
@@ -531,8 +538,12 @@ static bool init_file_logging(void) {
     /* Open log file in append mode */
     g_log_file = fopen(g_log_file_path, "a");
     if (!g_log_file) {
+        qgp_log_ring_add(QGP_LOG_LEVEL_ERROR, "LOG", "fopen failed: file='%s' errno=%d",
+                         g_log_file_path, errno);
         return false;
     }
+
+    qgp_log_ring_add(QGP_LOG_LEVEL_INFO, "LOG", "File logging started: %s", g_log_file_path);
 
     /* Write startup marker */
     time_t now = time(NULL);

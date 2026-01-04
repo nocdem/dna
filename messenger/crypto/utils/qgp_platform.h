@@ -186,8 +186,8 @@ void qgp_platform_sleep_ms(unsigned int milliseconds);
 /**
  * Get the application data directory
  *
- * Desktop (Linux): ~/.dna/
- * Desktop (Windows): %APPDATA%/dna/
+ * Desktop (Linux/macOS): ~/.dna/
+ * Desktop (Windows): %USERPROFILE%\.dna\
  * Mobile (Android): Set via qgp_platform_set_app_dirs() -> Context.getFilesDir()
  * Mobile (iOS): Set via qgp_platform_set_app_dirs() -> ~/Library/Application Support/dna/
  *
@@ -201,8 +201,8 @@ const char* qgp_platform_app_data_dir(void);
 /**
  * Get the application cache directory
  *
- * Desktop (Linux): ~/.cache/dna/
- * Desktop (Windows): %LOCALAPPDATA%/dna/cache/
+ * Desktop (Linux/macOS): ~/.dna/cache/
+ * Desktop (Windows): %USERPROFILE%\.dna\cache\
  * Mobile (Android): Set via qgp_platform_set_app_dirs() -> Context.getCacheDir()
  * Mobile (iOS): Set via qgp_platform_set_app_dirs() -> ~/Library/Caches/dna/
  *
