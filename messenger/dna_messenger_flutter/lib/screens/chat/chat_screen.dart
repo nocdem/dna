@@ -207,7 +207,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     style: theme.textTheme.titleMedium,
                   ),
                   Text(
-                    contact.isOnline ? 'Online' : 'Offline',
+                    contact.isOnline
+                        ? 'Online'
+                        : 'Last seen ${_formatLastSeen(contact.lastSeen)}',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: contact.isOnline
                           ? DnaColors.textSuccess
@@ -872,6 +874,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   bool _isSameDay(DateTime a, DateTime b) {
     return a.year == b.year && a.month == b.month && a.day == b.day;
+  }
+
+  String _formatLastSeen(DateTime lastSeen) {
+    // Epoch (0) means never seen
+    if (lastSeen.millisecondsSinceEpoch == 0) return 'never';
+
+    final now = DateTime.now();
+    final diff = now.difference(lastSeen);
+
+    if (diff.inMinutes < 1) return 'just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    if (diff.inDays < 7) return '${diff.inDays}d ago';
+    return '${lastSeen.day}/${lastSeen.month}/${lastSeen.year}';
   }
 }
 
