@@ -470,7 +470,6 @@ build:flutter-android:
         - .pub-cache/
     - key:
         files:
-          - dna_messenger_flutter/android/gradle/wrapper/gradle-wrapper.properties
           - dna_messenger_flutter/android/build.gradle
           - dna_messenger_flutter/android/app/build.gradle
         prefix: gradle-v1
