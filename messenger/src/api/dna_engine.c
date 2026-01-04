@@ -494,8 +494,8 @@ int dna_engine_network_changed(dna_engine_t *engine) {
         int count = dna_engine_listen_all_contacts(engine);
         QGP_LOG_INFO(LOG_TAG, "Restarted %d outbox listeners", count);
 
-        /* Refresh presence on new network */
-        if (engine->messenger) {
+        /* Refresh presence on new network (only if app is in foreground) */
+        if (engine->messenger && atomic_load(&engine->presence_active)) {
             messenger_p2p_refresh_presence(engine->messenger);
         }
     }

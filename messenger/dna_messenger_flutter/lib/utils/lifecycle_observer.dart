@@ -33,9 +33,11 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
         break;
       case AppLifecycleState.inactive:
         // App is inactive (e.g., phone call overlay)
+        // Don't pause here - might just be a brief interruption
         break;
       case AppLifecycleState.hidden:
-        // App is hidden (Android 14+)
+        // App is hidden (Android 14+) - treat same as paused
+        _onPause();
         break;
     }
   }
