@@ -126,6 +126,11 @@ run_flutter() {
     flutter pub upgrade
     flutter pub get
 
+    # GLYCIN_DISABLE_SANDBOX: Prevents glycin SVG loader from using bwrap sandbox
+    # which crashes on some systems (fails to load image-missing.svg icon)
+    # Required for both debug and release modes on affected systems
+    export GLYCIN_DISABLE_SANDBOX=1
+
     # Run the app
     if [ "$DEBUG_MODE" = true ]; then
         # Find ASAN library path for LD_PRELOAD
@@ -133,9 +138,9 @@ run_flutter() {
         if [ -f "$ASAN_LIB" ]; then
             echo -e "${YELLOW}Preloading ASAN runtime: $ASAN_LIB${NC}"
             # Disable LeakSanitizer - Dart VM has leaks we can't control
-            # GLYCIN_DISABLE_SANDBOX: Prevents glycin SVG loader from using bwrap sandbox
-            # which crashes when ASAN is preloaded (sandbox child process inherits LD_PRELOAD)
-            GLYCIN_DISABLE_SANDBOX=1 ASAN_OPTIONS=detect_leaks=0 LD_PRELOAD="$ASAN_LIB" flutter run -d linux "${FLUTTER_ARGS[@]}"
+            # GDK_PIXBUF_DISABLE_GLYCIN: Alternative way to disable glycin loaders
+            # that cause sandbox crashes with LD_PRELOAD/ASAN
+            GDK_PIXBUF_DISABLE_GLYCIN=1 ASAN_OPTIONS=detect_leaks=0 LD_PRELOAD="$ASAN_LIB" flutter run -d linux "${FLUTTER_ARGS[@]}"
         else
             echo -e "${RED}Warning: ASAN library not found, running without preload${NC}"
             flutter run -d linux "${FLUTTER_ARGS[@]}"
