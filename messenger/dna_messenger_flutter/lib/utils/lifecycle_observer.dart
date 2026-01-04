@@ -5,6 +5,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/engine_provider.dart';
 import '../providers/event_handler.dart';
+import '../providers/contacts_provider.dart';
 
 /// Observer for app lifecycle state changes
 ///
@@ -60,6 +61,10 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Resume Dart-side polling timers (handles presence refresh + contact requests)
       print('AppLifecycle: Resuming polling timers');
       ref.read(eventHandlerProvider).resumePolling();
+
+      // Refresh contacts to get updated presence status
+      print('AppLifecycle: Refreshing contacts for presence update');
+      ref.invalidate(contactsProvider);
 
       // Note: Offline messages are handled by C-side push notification callback
       // (messenger_push_notification_callback) which triggers poll on DHT listen events

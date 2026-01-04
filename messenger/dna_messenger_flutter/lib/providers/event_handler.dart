@@ -242,15 +242,15 @@ class EventHandler {
   }
 
   /// Start periodic presence refresh (every 30 seconds)
-  /// Announces our presence to DHT (contact presence updated on demand)
+  /// Announces our presence AND refreshes contact presence from DHT
   void _startPresencePolling() {
     _presenceTimer?.cancel();
     _presenceTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _ref.read(engineProvider).whenData((engine) async {
         // Announce our presence to DHT
         await engine.refreshPresence();
-        // Note: Don't invalidate contactsProvider here - it causes excessive rebuilds
-        // Contact presence is updated on demand when viewing contacts
+        // Refresh contacts to get updated presence status
+        _ref.invalidate(contactsProvider);
       });
     });
   }
