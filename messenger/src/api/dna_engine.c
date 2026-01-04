@@ -5671,6 +5671,15 @@ void dna_handle_refresh_presence(dna_engine_t *engine, dna_task_t *task) {
 
     int error = DNA_OK;
 
+    /* Don't announce presence if app is in background (defense in depth) */
+    if (!atomic_load(&engine->presence_active)) {
+        QGP_LOG_DEBUG(LOG_TAG, "Skipping presence refresh - app in background");
+        if (task->callback.completion) {
+            task->callback.completion(task->request_id, DNA_OK, task->user_data);
+        }
+        return;
+    }
+
     if (!engine->messenger) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
