@@ -1,6 +1,7 @@
 // Chat Screen - Conversation with message bubbles
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
@@ -1491,17 +1492,42 @@ class _TransferBubble extends StatelessWidget {
               ),
             ),
 
-            // Transaction hash
-            if (shortTxHash != null) ...[
+            // Transaction hash (tap to copy full hash)
+            if (shortTxHash != null && txHash != null) ...[
               const SizedBox(height: 2),
-              Text(
-                shortTxHash,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  fontSize: 9,
-                  fontFamily: 'NotoSansMono',
-                  color: isOutgoing
-                      ? theme.colorScheme.onPrimary.withAlpha(150)
-                      : DnaColors.textMuted,
+              GestureDetector(
+                onTap: () {
+                  Clipboard.setData(ClipboardData(text: txHash));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Copied: $txHash'),
+                      backgroundColor: DnaColors.snackbarSuccess,
+                      duration: const Duration(seconds: 3),
+                    ),
+                  );
+                },
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      shortTxHash,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontSize: 9,
+                        fontFamily: 'NotoSansMono',
+                        color: isOutgoing
+                            ? theme.colorScheme.onPrimary.withAlpha(150)
+                            : DnaColors.textMuted,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    FaIcon(
+                      FontAwesomeIcons.copy,
+                      size: 10,
+                      color: isOutgoing
+                          ? theme.colorScheme.onPrimary.withAlpha(150)
+                          : DnaColors.textMuted,
+                    ),
+                  ],
                 ),
               ),
             ],
