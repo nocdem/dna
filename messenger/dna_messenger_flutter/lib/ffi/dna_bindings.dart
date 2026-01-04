@@ -1750,6 +1750,15 @@ class DnaBindings {
     _dna_engine_resume_presence(engine);
   }
 
+  /// Handle network connectivity change (reinitialize DHT)
+  late final _dna_engine_network_changed = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>),
+      int Function(Pointer<dna_engine_t>)>('dna_engine_network_changed');
+
+  int dna_engine_network_changed(Pointer<dna_engine_t> engine) {
+    return _dna_engine_network_changed(engine);
+  }
+
   late final _dna_engine_lookup_presence = _lib.lookupFunction<
       Uint64 Function(
           Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<DnaPresenceCb>, Pointer<Void>),

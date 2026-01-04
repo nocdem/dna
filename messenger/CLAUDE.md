@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-01-04 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.3.96 | Flutter v0.99.37 | Nodus v0.4.3
+**Versions:** Library v0.3.99 | Flutter v0.99.37 | Nodus v0.4.3
 
 ---
 
@@ -65,28 +65,12 @@ QGP_LOG_ERROR(LOG_TAG, "Error message: %s", error_str);
 - **ALWAYS** define `LOG_TAG` at top of file: `#define LOG_TAG "MODULE_NAME"`
 - Log levels: DEBUG < INFO < WARN < ERROR
 
-## BETA PROJECT - BRANCHING WORKFLOW
-This project is now in **BETA**. Use proper branching:
-
-**For Bug Fixes:**
-1. Create a new branch from `main`: `git checkout -b fix/description main`
-2. Implement and test the fix
-3. Merge to `main` only when confirmed working
-4. Delete the fix branch after merge
-
-**For New Features:**
-1. Work on `dev` branch for ongoing development
-2. Create feature branches from `dev`: `git checkout -b feature/name dev`
-3. Merge completed features back to `dev`
-4. `dev` is merged to `main` for releases
-
-**Branch Naming:**
-- `fix/short-description` - Bug fixes
-- `feature/short-description` - New features
-- `dev` - Development branch
-- `main` - Stable release branch
-
-**NEVER push untested code directly to `main`.**
+## ALPHA PROJECT - HARD CUTOFFS ONLY
+This project is in ALPHA. We use hard cutoffs for all changes:
+- NO backward compatibility
+- NO migration scripts
+- NO legacy support
+- Breaking changes are expected and acceptable
 
 ## IMGUI IS DEPRECATED
 The ImGui GUI (`imgui_gui/`) is **NO LONGER USED**. Do not modify or reference it.
@@ -310,7 +294,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.3.96 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
+| C Library | `include/dna/version.h` | v0.3.99 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
 | Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.37+9937 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 | Nodus server changes (vendor/opendht-pq/tools/) |
 

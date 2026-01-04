@@ -3667,6 +3667,17 @@ class DnaEngine {
     _bindings.dna_engine_resume_presence(_engine);
   }
 
+  /// Handle network connectivity change
+  ///
+  /// Reinitializes the DHT connection when network changes (e.g., WiFi to cellular).
+  /// This is called automatically by the Android ForegroundService when
+  /// ConnectivityManager detects a network change.
+  ///
+  /// Returns 0 on success, -1 on error.
+  int networkChanged() {
+    return _bindings.dna_engine_network_changed(_engine);
+  }
+
   // ---------------------------------------------------------------------------
   // VERSION
   // ---------------------------------------------------------------------------

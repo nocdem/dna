@@ -1616,6 +1616,28 @@ DNA_API void dna_engine_pause_presence(dna_engine_t *engine);
 DNA_API void dna_engine_resume_presence(dna_engine_t *engine);
 
 /**
+ * Handle network connectivity change
+ *
+ * Call when network connectivity changes (e.g., WiFi to cellular switch on mobile).
+ * This reinitializes the DHT connection with a fresh socket bound to the new IP.
+ *
+ * On Android, call this from ConnectivityManager.NetworkCallback when:
+ * - onAvailable() is called (new network connected)
+ * - onLost() followed by onAvailable() (network switch)
+ *
+ * The function:
+ * 1. Cancels all DHT listeners
+ * 2. Stops the current DHT connection
+ * 3. Creates a new DHT connection with the same identity
+ * 4. Resubscribes all listeners
+ * 5. Fires DNA_EVENT_DHT_CONNECTED when reconnected
+ *
+ * @param engine    Engine instance
+ * @return          0 on success, -1 on error
+ */
+DNA_API int dna_engine_network_changed(dna_engine_t *engine);
+
+/**
  * Lookup peer presence from DHT
  *
  * Queries DHT for peer's presence record and returns the timestamp

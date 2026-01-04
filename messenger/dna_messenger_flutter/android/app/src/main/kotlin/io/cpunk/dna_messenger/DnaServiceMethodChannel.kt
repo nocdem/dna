@@ -93,4 +93,13 @@ class DnaServiceMethodChannel(
             "senderName" to senderName
         ))
     }
+
+    /**
+     * Notify Flutter about network connectivity change
+     * Call this when network changes (WiFi <-> Cellular) to trigger DHT reinit
+     */
+    fun notifyNetworkChanged() {
+        android.util.Log.i(TAG, "Notifying Flutter: network changed, DHT reinit needed")
+        channel.invokeMethod("onNetworkChanged", null)
+    }
 }

@@ -104,6 +104,24 @@ bool dht_singleton_is_ready(void);
 void dht_singleton_cleanup(void);
 
 /**
+ * Reinitialize DHT singleton after network change
+ *
+ * Restarts the DHT with the current identity when network connectivity
+ * changes (e.g., WiFi to cellular switch on mobile). This is necessary
+ * because the underlying UDP socket becomes invalid when IP changes.
+ *
+ * Flow:
+ * 1. Cancel all active listeners
+ * 2. Stop current DHT context
+ * 3. Create new DHT context with same identity
+ * 4. Bootstrap to seed nodes
+ * 5. Resubscribe all listeners
+ *
+ * @return: 0 on success, -1 on error
+ */
+int dht_singleton_reinit(void);
+
+/**
  * Set callback for DHT connection status changes
  *
  * The callback will be invoked from OpenDHT's internal thread when the

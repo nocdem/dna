@@ -473,6 +473,36 @@ void dna_engine_resume_presence(dna_engine_t *engine) {
     }
 }
 
+int dna_engine_network_changed(dna_engine_t *engine) {
+    if (!engine) {
+        QGP_LOG_ERROR(LOG_TAG, "network_changed: NULL engine");
+        return -1;
+    }
+
+    QGP_LOG_WARN(LOG_TAG, "Network change detected - reinitializing DHT connection");
+
+    /* Reinitialize DHT singleton with stored identity */
+    int result = dht_singleton_reinit();
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT reinit failed");
+        return -1;
+    }
+
+    /* Restart outbox listeners for all contacts */
+    if (engine->identity_loaded) {
+        QGP_LOG_INFO(LOG_TAG, "Restarting outbox listeners after network change");
+        int count = dna_engine_listen_all_contacts(engine);
+        QGP_LOG_INFO(LOG_TAG, "Restarted %d outbox listeners", count);
+
+        /* Refresh presence on new network */
+        if (engine->messenger) {
+            messenger_p2p_refresh_presence(engine->messenger);
+        }
+    }
+
+    return 0;
+}
+
 /* ============================================================================
  * EVENT DISPATCH
  * ============================================================================ */
@@ -5184,7 +5214,10 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
         /* Start presence listener (for online status) */
         size_t presence_token = dna_engine_start_presence_listener(engine, contact_id);
         if (presence_token > 0) {
+            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] ✓ Presence listener started for contact[%zu], token=%zu", i, presence_token);
             presence_started++;
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN] ✗ Failed to start presence listener for contact[%zu] (fp_len=%zu)", i, id_len);
         }
     }
 
