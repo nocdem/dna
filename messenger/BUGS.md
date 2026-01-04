@@ -20,6 +20,14 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
   2. **Receiver side:** Multiple `OUTBOX_UPDATED` events fire in rapid succession. Each triggers `checkOfflineMessages()` which starts parallel async DHT fetches. The receiver may poll before all messages are in DHT, or race conditions in parallel fetches cause delays.
   3. **Possible fix:** Debounce `OutboxUpdatedEvent` handling in `event_handler.dart` - coalesce rapid events into single `checkOfflineMessages()` call with 300-500ms delay after last event.
 
+- [ ] **[FLUTTER] P3 - Contacts briefly show as online during DHT fetch** - When fetching messages or presence info from DHT, all contacts briefly appear online then revert to correct status. Causes visual "bouncing" in the contact list that looks unprofessional.
+
+  **Likely cause:** Presence data being reset/cleared before DHT response arrives, or initial state defaults to online.
+
+- [ ] **[FLUTTER] P4 - Full contact list refresh on single message** - When one contact receives a new message, the entire contact list is refreshed/rebuilt instead of just updating that contact's entry. Causes unnecessary UI churn.
+
+  **Likely cause:** `_ref.invalidate(contactsProvider)` in event_handler.dart triggers full rebuild. Should use targeted state update instead.
+
 
 ## Fixed Bugs
 
