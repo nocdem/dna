@@ -563,7 +563,7 @@ int ice_gather_candidates(ice_context_t *ctx, const char *stun_server, uint16_t 
     }
 
     // Set log level and custom handler for consistent QGP_LOG format
-    juice_set_log_level(JUICE_LOG_LEVEL_DEBUG);
+    juice_set_log_level(JUICE_LOG_LEVEL_WARN);
     juice_set_log_handler(juice_log_handler);
 
     QGP_LOG_INFO(LOG_TAG, "libjuice agent created%s\n",
