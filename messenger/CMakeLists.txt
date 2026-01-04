@@ -142,7 +142,6 @@ set(COMMON_SOURCES
     crypto/utils/key_encryption.c
     crypto/utils/qgp_signature.c
     crypto/utils/qgp_utils_standalone.c
-    crypto/utils/avatar_utils.c     # Avatar processing (stb_image)
     # Cross-platform abstraction layer
     ${PLATFORM_SOURCES}
 )
