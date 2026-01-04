@@ -296,6 +296,12 @@ void qgp_log_ring_add(qgp_log_level_t level, const char *tag, const char *fmt, .
     vsnprintf(entry->message, sizeof(entry->message), fmt, args);
     va_end(args);
 
+    /* Strip trailing newlines */
+    size_t len = strlen(entry->message);
+    while (len > 0 && (entry->message[len - 1] == '\n' || entry->message[len - 1] == '\r')) {
+        entry->message[--len] = '\0';
+    }
+
     /* Advance head (circular) */
     g_ring_head = (g_ring_head + 1) % QGP_LOG_RING_SIZE;
     if (g_ring_count < QGP_LOG_RING_SIZE) {
@@ -645,15 +651,21 @@ void qgp_log_file_write(qgp_log_level_t level, const char *tag, const char *fmt,
         default: level_str = "?????"; break;
     }
 
-    /* Write log entry */
-    fprintf(g_log_file, "%s.%03d [%s] %s: ", time_buf, ms, level_str, tag);
-
+    /* Format message to buffer first so we can strip trailing newlines */
+    char msg_buf[1024];
     va_list args;
     va_start(args, fmt);
-    vfprintf(g_log_file, fmt, args);
+    vsnprintf(msg_buf, sizeof(msg_buf), fmt, args);
     va_end(args);
 
-    fprintf(g_log_file, "\n");
+    /* Strip trailing newlines/whitespace */
+    size_t len = strlen(msg_buf);
+    while (len > 0 && (msg_buf[len - 1] == '\n' || msg_buf[len - 1] == '\r')) {
+        msg_buf[--len] = '\0';
+    }
+
+    /* Write log entry with single newline */
+    fprintf(g_log_file, "%s.%03d [%s] %s: %s\n", time_buf, ms, level_str, tag, msg_buf);
     fflush(g_log_file);
 
     pthread_mutex_unlock(&g_file_mutex);

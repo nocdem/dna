@@ -6956,7 +6956,7 @@ int dna_engine_publish_version(
         return DNA_ENGINE_ERROR_INVALID_PARAM;
     }
 
-    if (!engine->fingerprint || strlen(engine->fingerprint) == 0) {
+    if (engine->fingerprint[0] == '\0') {
         QGP_LOG_ERROR(LOG_TAG, "publish_version: no identity loaded");
         return DNA_ENGINE_ERROR_NO_IDENTITY;
     }

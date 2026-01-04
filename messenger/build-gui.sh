@@ -12,6 +12,7 @@ FLUTTER_LIBS_DIR="$FLUTTER_DIR/linux/libs"
 # Default to Release build
 BUILD_TYPE="Release"
 DEBUG_MODE=false
+USE_ASAN=false
 
 # Parse arguments
 FLUTTER_ARGS=()
@@ -20,6 +21,12 @@ for arg in "$@"; do
         --debug)
             BUILD_TYPE="Debug"
             DEBUG_MODE=true
+            USE_ASAN=true
+            ;;
+        --debug-no-asan)
+            BUILD_TYPE="Debug"
+            DEBUG_MODE=true
+            USE_ASAN=false
             ;;
         *)
             FLUTTER_ARGS+=("$arg")
@@ -85,10 +92,15 @@ build_native_lib() {
     cd "$BUILD_DIR"
 
     # Configure with shared library option
-    cmake "$PROJECT_ROOT" -DBUILD_SHARED_LIB=ON -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
-
-    if [ "$DEBUG_MODE" = true ]; then
+    if [ "$USE_ASAN" = true ]; then
         echo -e "${YELLOW}Building with AddressSanitizer (ASAN) enabled${NC}"
+        cmake "$PROJECT_ROOT" -DBUILD_SHARED_LIB=ON -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+    else
+        # Disable ASAN explicitly for debug-no-asan mode
+        cmake "$PROJECT_ROOT" -DBUILD_SHARED_LIB=ON -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -DENABLE_ASAN=OFF
+        if [ "$DEBUG_MODE" = true ]; then
+            echo -e "${YELLOW}Building Debug without ASAN (debug symbols only)${NC}"
+        fi
     fi
 
     # Build just the dna_lib target
@@ -127,7 +139,7 @@ run_flutter() {
     flutter pub get
 
     # Run the app
-    if [ "$DEBUG_MODE" = true ]; then
+    if [ "$USE_ASAN" = true ]; then
         # Find ASAN library path for LD_PRELOAD
         ASAN_LIB=$(gcc -print-file-name=libasan.so)
         if [ -f "$ASAN_LIB" ]; then
@@ -135,7 +147,6 @@ run_flutter() {
             # Disable LeakSanitizer - Dart VM has leaks we can't control
             # GSK_RENDERER=cairo: Use Cairo renderer instead of GL (avoids some icon loading paths)
             # GTK_A11Y=none: Disable accessibility (can trigger icon loads)
-            # GDK_DEBUG=portals: Disable portal usage that can trigger sandbox
             # NO_AT_BRIDGE=1: Disable AT-SPI bridge
             export ASAN_OPTIONS=detect_leaks=0
             export GSK_RENDERER=cairo
@@ -168,12 +179,14 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "Use dna_messenger_flutter/run_linux.sh for faster iterations without git pull."
     echo ""
     echo "Options:"
-    echo "  --debug          Build with Debug mode (enables AddressSanitizer)"
+    echo "  --debug          Build with Debug mode + AddressSanitizer (ASAN)"
+    echo "  --debug-no-asan  Build with Debug mode without ASAN (debug symbols only)"
     echo "  -h, --help       Show this help message"
     echo ""
     echo "Examples:"
     echo "  $0                    # Pull, build, and run (Release)"
     echo "  $0 --debug            # Pull, build with ASAN, and run"
+    echo "  $0 --debug-no-asan    # Pull, build with debug symbols (no ASAN)"
     echo "  $0 --release          # Pull, build, and run Flutter in release mode"
     exit 0
 fi

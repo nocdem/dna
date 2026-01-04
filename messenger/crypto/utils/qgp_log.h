@@ -161,17 +161,13 @@ void qgp_log_file_write(qgp_log_level_t level, const char *tag, const char *fmt,
     #include <android/log.h>
 
     /* All DNA logs use "DNA/" prefix for easy filtering: adb logcat -s "DNA/" */
-    /* In Release builds (NDEBUG defined), DEBUG logs compile to nothing */
-    #ifdef NDEBUG
-    #define QGP_LOG_DEBUG(tag, fmt, ...) ((void)0)
-    #else
+    /* DEBUG logs are always compiled in and filtered at runtime via qgp_log_should_log() */
     #define QGP_LOG_DEBUG(tag, fmt, ...) \
         do { if (qgp_log_should_log(QGP_LOG_LEVEL_DEBUG, tag)) { \
             __android_log_print(ANDROID_LOG_DEBUG, "DNA/" tag, fmt, ##__VA_ARGS__); \
             qgp_log_ring_add(QGP_LOG_LEVEL_DEBUG, tag, fmt, ##__VA_ARGS__); \
             qgp_log_file_write(QGP_LOG_LEVEL_DEBUG, tag, fmt, ##__VA_ARGS__); \
         } } while(0)
-    #endif
     #define QGP_LOG_INFO(tag, fmt, ...) \
         do { if (qgp_log_should_log(QGP_LOG_LEVEL_INFO, tag)) { \
             __android_log_print(ANDROID_LOG_INFO, "DNA/" tag, fmt, ##__VA_ARGS__); \
@@ -194,17 +190,13 @@ void qgp_log_file_write(qgp_log_level_t level, const char *tag, const char *fmt,
 #else
     /* Non-Android: use standard stdio with filtering + ring buffer + file logging */
 
-    /* In Release builds (NDEBUG defined), DEBUG logs compile to nothing */
-    #ifdef NDEBUG
-    #define QGP_LOG_DEBUG(tag, fmt, ...) ((void)0)
-    #else
+    /* DEBUG logs are always compiled in and filtered at runtime via qgp_log_should_log() */
     #define QGP_LOG_DEBUG(tag, fmt, ...) \
         do { if (qgp_log_should_log(QGP_LOG_LEVEL_DEBUG, tag)) { \
             fprintf(stdout, "[%s] DEBUG: " fmt "\n", tag, ##__VA_ARGS__); \
             qgp_log_ring_add(QGP_LOG_LEVEL_DEBUG, tag, fmt, ##__VA_ARGS__); \
             qgp_log_file_write(QGP_LOG_LEVEL_DEBUG, tag, fmt, ##__VA_ARGS__); \
         } } while(0)
-    #endif
     #define QGP_LOG_INFO(tag, fmt, ...) \
         do { if (qgp_log_should_log(QGP_LOG_LEVEL_INFO, tag)) { \
             fprintf(stdout, "[%s] " fmt "\n", tag, ##__VA_ARGS__); \
