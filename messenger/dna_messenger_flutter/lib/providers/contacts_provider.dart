@@ -29,6 +29,11 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     final contacts = await engine.getContacts();
     engine.debugLog('CONTACTS', 'Got ${contacts.length} contacts');
 
+    // Debug: log initial online status from C engine
+    for (final c in contacts) {
+      print('[Contacts] Loaded: ${c.fingerprint.substring(0, 16)}... isOnline=${c.isOnline} lastSeen=${c.lastSeen}');
+    }
+
     // Stable sort: online first, then by name (won't change on presence updates)
     final sortedContacts = List<Contact>.from(contacts);
     sortedContacts.sort((a, b) {
@@ -203,13 +208,19 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
   }
 
   void updateContactStatus(String fingerprint, bool isOnline) {
+    print('[Contacts] updateContactStatus: ${fingerprint.substring(0, 16)}... -> ${isOnline ? "ONLINE" : "OFFLINE"}');
+
     state.whenData((contacts) {
       final index = contacts.indexWhere((c) => c.fingerprint == fingerprint);
       if (index != -1) {
         final contact = contacts[index];
 
         // Skip update if status hasn't actually changed
-        if (contact.isOnline == isOnline) return;
+        if (contact.isOnline == isOnline) {
+          print('[Contacts] Status unchanged, skipping update');
+          return;
+        }
+        print('[Contacts] Status CHANGED: ${contact.isOnline} -> $isOnline');
 
         final updated = List<Contact>.from(contacts);
         updated[index] = Contact(
