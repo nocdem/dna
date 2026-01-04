@@ -2790,6 +2790,53 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Refresh contact's profile from DHT (force, bypass cache)
+  /// Use this when viewing a contact's profile to ensure up-to-date data
+  Future<UserProfile?> refreshContactProfile(String fingerprint) async {
+    final completer = Completer<UserProfile?>();
+    final localId = _nextLocalId++;
+
+    final fingerprintPtr = fingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<dna_profile_t> profile,
+                    Pointer<Void> userData) {
+      calloc.free(fingerprintPtr);
+      if (error == 0) {
+        if (profile != nullptr) {
+          final result = UserProfile.fromNative(profile.ref);
+          _bindings.dna_free_profile(profile);
+          completer.complete(result);
+        } else {
+          completer.complete(null);
+        }
+      } else if (error == 5) {
+        // DNA_ENGINE_ERROR_NOT_FOUND - return null instead of error
+        completer.complete(null);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaProfileCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_refresh_contact_profile(
+      _engine,
+      fingerprintPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fingerprintPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
   /// Update current identity's profile in DHT
   Future<void> updateProfile(UserProfile profile) async {
     final completer = Completer<void>();

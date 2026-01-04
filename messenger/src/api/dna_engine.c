@@ -495,6 +495,9 @@ void dna_free_event(dna_event_t *event) {
  * TASK EXECUTION DISPATCH
  * ============================================================================ */
 
+/* Forward declaration for handler defined later */
+void dna_handle_refresh_contact_profile(dna_engine_t *engine, dna_task_t *task);
+
 void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
     switch (task->type) {
         /* Identity */
@@ -521,6 +524,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_LOOKUP_PROFILE:
             dna_handle_lookup_profile(engine, task);
+            break;
+        case TASK_REFRESH_CONTACT_PROFILE:
+            dna_handle_refresh_contact_profile(engine, task);
             break;
         case TASK_UPDATE_PROFILE:
             dna_handle_update_profile(engine, task);
@@ -1668,6 +1674,85 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Display name - fallback to registered_name if display_name is empty */
+    if (identity->display_name[0] != '\0') {
+        strncpy(profile->display_name, identity->display_name, sizeof(profile->display_name) - 1);
+    } else if (identity->registered_name[0] != '\0') {
+        strncpy(profile->display_name, identity->registered_name, sizeof(profile->display_name) - 1);
+    }
+
+    dna_identity_free(identity);
+
+done:
+    task->callback.profile(task->request_id, error, profile, task->user_data);
+}
+
+void dna_handle_refresh_contact_profile(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+    dna_profile_t *profile = NULL;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+        goto done;
+    }
+
+    const char *fingerprint = task->params.lookup_profile.fingerprint;
+    if (!fingerprint || strlen(fingerprint) != 128) {
+        error = DNA_ENGINE_ERROR_INVALID_PARAM;
+        goto done;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Force refresh contact profile: %.16s...\n", fingerprint);
+
+    /* Force refresh from DHT (bypass cache) */
+    dna_unified_identity_t *identity = NULL;
+    int rc = profile_manager_refresh_profile(fingerprint, &identity);
+
+    if (rc != 0 || !identity) {
+        if (rc == -2) {
+            error = DNA_ENGINE_ERROR_NOT_FOUND;
+        } else if (rc == -3) {
+            QGP_LOG_WARN(LOG_TAG, "Invalid signature for %.16s... - auto-removing from contacts", fingerprint);
+            contacts_db_remove(fingerprint);
+            error = DNA_ENGINE_ERROR_INVALID_SIGNATURE;
+        } else {
+            error = DNA_ENGINE_ERROR_NETWORK;
+        }
+        goto done;
+    }
+
+    /* Copy identity data to profile struct */
+    profile = (dna_profile_t*)calloc(1, sizeof(dna_profile_t));
+    if (!profile) {
+        error = DNA_ERROR_INTERNAL;
+        dna_identity_free(identity);
+        goto done;
+    }
+
+    /* Wallets */
+    strncpy(profile->backbone, identity->wallets.backbone, sizeof(profile->backbone) - 1);
+    strncpy(profile->eth, identity->wallets.eth, sizeof(profile->eth) - 1);
+    strncpy(profile->sol, identity->wallets.sol, sizeof(profile->sol) - 1);
+    strncpy(profile->trx, identity->wallets.trx, sizeof(profile->trx) - 1);
+
+    /* Socials */
+    strncpy(profile->telegram, identity->socials.telegram, sizeof(profile->telegram) - 1);
+    strncpy(profile->twitter, identity->socials.x, sizeof(profile->twitter) - 1);
+    strncpy(profile->github, identity->socials.github, sizeof(profile->github) - 1);
+
+    /* Bio and avatar */
+    strncpy(profile->bio, identity->bio, sizeof(profile->bio) - 1);
+    strncpy(profile->avatar_base64, identity->avatar_base64, sizeof(profile->avatar_base64) - 1);
+
+    QGP_LOG_INFO(LOG_TAG, "Refreshed profile avatar: %zu bytes\n",
+                 identity->avatar_base64[0] ? strlen(identity->avatar_base64) : 0);
+
+    /* Display name */
     if (identity->display_name[0] != '\0') {
         strncpy(profile->display_name, identity->display_name, sizeof(profile->display_name) - 1);
     } else if (identity->registered_name[0] != '\0') {
@@ -3911,6 +3996,23 @@ dna_request_id_t dna_engine_lookup_profile(
 
     dna_task_callback_t cb = { .profile = callback };
     return dna_submit_task(engine, TASK_LOOKUP_PROFILE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_refresh_contact_profile(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_profile_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+    if (!engine->identity_loaded) return DNA_REQUEST_ID_INVALID;
+    if (strlen(fingerprint) != 128) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.lookup_profile.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .profile = callback };
+    return dna_submit_task(engine, TASK_REFRESH_CONTACT_PROFILE, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_update_profile(

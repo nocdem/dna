@@ -1151,6 +1151,21 @@ class DnaBindings {
     return _dna_engine_lookup_profile(engine, fingerprint, callback, user_data);
   }
 
+  late final _dna_engine_refresh_contact_profile = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaProfileCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaProfileCb>, Pointer<Void>)>('dna_engine_refresh_contact_profile');
+
+  int dna_engine_refresh_contact_profile(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+    Pointer<DnaProfileCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_refresh_contact_profile(engine, fingerprint, callback, user_data);
+  }
+
   late final _dna_engine_update_profile = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Pointer<dna_profile_t>,
           Pointer<DnaCompletionCb>, Pointer<Void>),

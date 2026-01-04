@@ -69,6 +69,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_lookup_name(...)` | Lookup name availability (name -> fingerprint) |
 | `dna_request_id_t dna_engine_get_profile(...)` | Get current identity's profile from DHT |
 | `dna_request_id_t dna_engine_lookup_profile(...)` | Lookup any user's profile by fingerprint |
+| `dna_request_id_t dna_engine_refresh_contact_profile(...)` | Force refresh contact's profile from DHT (bypass cache) |
 | `dna_request_id_t dna_engine_update_profile(...)` | Update current identity's profile in DHT |
 | `int dna_engine_get_mnemonic(...)` | Get encrypted mnemonic (recovery phrase) |
 | `int dna_engine_change_password_sync(...)` | Change password for identity keys |

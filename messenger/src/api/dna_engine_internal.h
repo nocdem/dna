@@ -50,6 +50,7 @@ typedef enum {
     TASK_LOOKUP_NAME,
     TASK_GET_PROFILE,
     TASK_LOOKUP_PROFILE,
+    TASK_REFRESH_CONTACT_PROFILE,
     TASK_UPDATE_PROFILE,
 
     /* Contacts */

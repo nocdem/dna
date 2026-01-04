@@ -54,7 +54,8 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
   Future<void> _loadProfile() async {
     try {
       final engine = await ref.read(engineProvider.future);
-      final profile = await engine.lookupProfile(widget.fingerprint);
+      // Force refresh from DHT to get latest profile (bypass cache)
+      final profile = await engine.refreshContactProfile(widget.fingerprint);
       // DEBUG: Log avatar data for contact profile
       print('[AVATAR_DEBUG] ContactProfileDialog._loadProfile: fp=${widget.fingerprint.substring(0, 16)}..., '
             'avatarBase64.length=${profile?.avatarBase64.length ?? 0}');

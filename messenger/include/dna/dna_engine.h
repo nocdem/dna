@@ -911,6 +911,25 @@ DNA_API dna_request_id_t dna_engine_lookup_profile(
 );
 
 /**
+ * Refresh contact's profile from DHT (force, bypass cache)
+ *
+ * Forces a fresh fetch from DHT, ignoring cached data.
+ * Use this when viewing a contact's profile to ensure up-to-date data.
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Contact's fingerprint (128 hex chars)
+ * @param callback    Called with profile data (NULL if not found)
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_refresh_contact_profile(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_profile_cb callback,
+    void *user_data
+);
+
+/**
  * Update current identity's profile in DHT
  *
  * Saves wallet addresses, social links, bio, and avatar.
