@@ -63,6 +63,9 @@ class EventHandler {
       Future.microtask(() {
         _ref.read(dhtConnectionStateProvider.notifier).state =
             DhtConnectionState.connected;
+        // Start DHT listeners for contacts' outboxes (push notifications)
+        // CRITICAL: Must be called here too, not just in DhtConnectedEvent handler
+        _startDhtListeners();
         // Start polling since we're connected
         _startContactRequestsPolling();
         _startPresencePolling();
