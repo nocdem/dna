@@ -311,6 +311,12 @@ void cmd_help(void) {
     printf("  turn-test                  - Test TURN relay with all servers\n");
     printf("\n");
 
+    printf("VERSION:\n");
+    printf("  publish-version            - Publish version info to DHT\n");
+    printf("    --lib <ver> --lib-min <ver> --app <ver> --app-min <ver> --nodus <ver> --nodus-min <ver>\n");
+    printf("  check-version              - Check latest version from DHT\n");
+    printf("\n");
+
     printf("OTHER:\n");
     printf("  help                       - Show this help message\n");
     printf("  quit / exit                - Exit the CLI\n");
@@ -1757,6 +1763,117 @@ int cmd_turn_test(dna_engine_t *engine) {
 }
 
 /* ============================================================================
+ * VERSION COMMANDS
+ * ============================================================================ */
+
+int cmd_publish_version(dna_engine_t *engine,
+                        const char *lib_ver, const char *lib_min,
+                        const char *app_ver, const char *app_min,
+                        const char *nodus_ver, const char *nodus_min) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    const char *fp = dna_engine_get_fingerprint(engine);
+    if (!fp) {
+        printf("Error: No identity loaded. Use 'load' first.\n");
+        return -1;
+    }
+
+    if (!lib_ver || !app_ver || !nodus_ver) {
+        printf("Error: All version parameters required\n");
+        return -1;
+    }
+
+    printf("Publishing version info to DHT...\n");
+    printf("  Library: %s (min: %s)\n", lib_ver, lib_min ? lib_min : lib_ver);
+    printf("  App:     %s (min: %s)\n", app_ver, app_min ? app_min : app_ver);
+    printf("  Nodus:   %s (min: %s)\n", nodus_ver, nodus_min ? nodus_min : nodus_ver);
+    printf("  Publisher: %.16s...\n", fp);
+
+    int result = dna_engine_publish_version(
+        engine,
+        lib_ver, lib_min,
+        app_ver, app_min,
+        nodus_ver, nodus_min
+    );
+
+    if (result != 0) {
+        printf("Error: Failed to publish version: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    /* Wait for DHT propagation */
+    printf("Waiting for DHT propagation...\n");
+    struct timespec ts = {.tv_sec = 3, .tv_nsec = 0};
+    nanosleep(&ts, NULL);
+
+    printf("✓ Version info published successfully!\n");
+    return 0;
+}
+
+int cmd_check_version(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Checking version info from DHT...\n");
+
+    dna_version_check_result_t result;
+    int check_result = dna_engine_check_version_dht(engine, &result);
+
+    if (check_result == -2) {
+        printf("No version info found in DHT.\n");
+        printf("Use 'publish-version' to publish version info.\n");
+        return 0;
+    }
+
+    if (check_result != 0) {
+        printf("Error: Failed to check version: %s\n", dna_engine_error_string(check_result));
+        return check_result;
+    }
+
+    /* Get local library version for comparison */
+    const char *local_lib = dna_engine_get_version();
+
+    printf("\nVersion Info from DHT:\n");
+    printf("  Library: %s (min: %s)", result.info.library_current, result.info.library_minimum);
+    if (result.library_update_available) {
+        printf(" [UPDATE AVAILABLE - local: %s]", local_lib);
+    } else {
+        printf(" [local: %s]", local_lib);
+    }
+    printf("\n");
+
+    printf("  App:     %s (min: %s)", result.info.app_current, result.info.app_minimum);
+    if (result.app_update_available) {
+        printf(" [UPDATE AVAILABLE]");
+    }
+    printf("\n");
+
+    printf("  Nodus:   %s (min: %s)", result.info.nodus_current, result.info.nodus_minimum);
+    if (result.nodus_update_available) {
+        printf(" [UPDATE AVAILABLE]");
+    }
+    printf("\n");
+
+    if (result.info.published_at > 0) {
+        time_t ts = (time_t)result.info.published_at;
+        char time_str[32];
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M UTC", gmtime(&ts));
+        printf("  Published: %s\n", time_str);
+    }
+
+    if (strlen(result.info.publisher) > 0) {
+        printf("  Publisher: %.16s...\n", result.info.publisher);
+    }
+
+    return 0;
+}
+
+/* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */
 
@@ -1972,6 +2089,40 @@ bool execute_command(dna_engine_t *engine, const char *line) {
     }
     else if (strcmp(cmd, "turn-test") == 0) {
         cmd_turn_test(engine);
+    }
+    /* Version Commands */
+    else if (strcmp(cmd, "publish-version") == 0) {
+        /* Parse arguments: --lib X --lib-min Y --app X --app-min Y --nodus X --nodus-min Y */
+        char *lib_ver = NULL, *lib_min = NULL;
+        char *app_ver = NULL, *app_min = NULL;
+        char *nodus_ver = NULL, *nodus_min = NULL;
+
+        char *arg;
+        while ((arg = strtok(NULL, " \t")) != NULL) {
+            if (strcmp(arg, "--lib") == 0) {
+                lib_ver = strtok(NULL, " \t");
+            } else if (strcmp(arg, "--lib-min") == 0) {
+                lib_min = strtok(NULL, " \t");
+            } else if (strcmp(arg, "--app") == 0) {
+                app_ver = strtok(NULL, " \t");
+            } else if (strcmp(arg, "--app-min") == 0) {
+                app_min = strtok(NULL, " \t");
+            } else if (strcmp(arg, "--nodus") == 0) {
+                nodus_ver = strtok(NULL, " \t");
+            } else if (strcmp(arg, "--nodus-min") == 0) {
+                nodus_min = strtok(NULL, " \t");
+            }
+        }
+
+        if (!lib_ver || !app_ver || !nodus_ver) {
+            printf("Usage: publish-version --lib <ver> --app <ver> --nodus <ver>\n");
+            printf("       [--lib-min <ver>] [--app-min <ver>] [--nodus-min <ver>]\n");
+        } else {
+            cmd_publish_version(engine, lib_ver, lib_min, app_ver, app_min, nodus_ver, nodus_min);
+        }
+    }
+    else if (strcmp(cmd, "check-version") == 0) {
+        cmd_check_version(engine);
     }
     else {
         printf("Unknown command: %s\n", cmd);

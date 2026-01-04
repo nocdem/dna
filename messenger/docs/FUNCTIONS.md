@@ -250,6 +250,17 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_backup_messages(...)` | Backup all messages to DHT |
 | `dna_request_id_t dna_engine_restore_messages(...)` | Restore messages from DHT |
 
+### 1.18 Version Check API
+
+| Function | Description |
+|----------|-------------|
+| `int dna_engine_publish_version(engine, lib_ver, lib_min, app_ver, app_min, nodus_ver, nodus_min)` | Publish version info to DHT (signed with loaded identity) |
+| `int dna_engine_check_version_dht(engine, result_out)` | Check version info from DHT and compare with local |
+
+**Structures:**
+- `dna_version_info_t` - Version info from DHT (library/app/nodus current+minimum, publisher, timestamp)
+- `dna_version_check_result_t` - Check result with update_available flags
+
 ---
 
 ## 2. DNA API

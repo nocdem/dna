@@ -2,7 +2,7 @@
 
 **Last Updated:** 2025-12-31 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
 
-**Versions:** Library v0.3.91 | Flutter v0.99.31 | Nodus v0.4.3
+**Versions:** Library v0.3.92 | Flutter v0.99.33 | Nodus v0.4.3
 
 ---
 
@@ -294,8 +294,8 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.3.91 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.31+9931 | Flutter/Dart code changes (lib/, assets/) |
+| C Library | `include/dna/version.h` | v0.3.92 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.33+9933 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 | Nodus server changes (vendor/opendht-pq/tools/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
@@ -325,6 +325,34 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 6. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
 
 **IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.
+
+### CHECKPOINT 9: VERSION PUBLISH TO DHT (After Release Push)
+**After pushing a release, publish the new version info to DHT so clients can check for updates.**
+
+**When to publish:**
+- After pushing a significant release (not every commit)
+- When you want users to see an update notification in the app
+
+**CLI Command:**
+```bash
+CLI=/opt/dna-messenger/build/cli/dna-messenger-cli
+$CLI load                             # Load Claude's identity
+$CLI publish-version --lib 0.3.92 --app 0.99.29 --nodus 0.4.3 \
+    --lib-min 0.3.50 --app-min 0.99.0 --nodus-min 0.4.0
+```
+
+**Notes:**
+- Uses Claude's identity (first publisher owns the DHT key)
+- Minimum versions define compatibility - apps below minimum may show warnings
+- DHT key: `SHA3-512("dna:system:version")`
+- Version info is signed with Dilithium5
+
+**Procedure:**
+1. **BUILD** the CLI: `cd build && make dna-messenger-cli`
+2. **LOAD** identity: `$CLI load`
+3. **PUBLISH** with current versions from header files
+4. **VERIFY**: `$CLI check-version`
+5. **STATE**: "CHECKPOINT 9 COMPLETE - Version published to DHT: lib=X.Y.Z app=X.Y.Z nodus=X.Y.Z"
 
 **ENFORCEMENT**: Each checkpoint requires explicit completion statement. Missing ANY checkpoint statement indicates protocol violation and requires restart.
 

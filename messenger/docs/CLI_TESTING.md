@@ -76,6 +76,10 @@ $CLI stun-test                        # Test STUN, show public IP
 $CLI ice-status                       # Show ICE connection status
 $CLI turn-creds                       # Show cached TURN credentials
 $CLI turn-creds --force               # Force request TURN credentials
+
+# Version Management
+$CLI publish-version --lib 0.3.91 --app 0.99.30 --nodus 0.4.4   # Publish version to DHT
+$CLI check-version                    # Check latest version from DHT
 ```
 
 ---
@@ -603,6 +607,72 @@ TURN credentials are also obtained automatically when:
 - Credentials have 7-day TTL
 - Credentials are signed with Dilithium5
 - Uses UDP port 3479 for fast credential requests
+
+---
+
+## Version Commands
+
+### `publish-version` - Publish Version Info to DHT
+
+Publishes version information to a well-known DHT key. The first publisher "owns" the key - only that identity can update it.
+
+```bash
+dna-messenger-cli publish-version --lib 0.3.91 --app 0.99.30 --nodus 0.4.4
+```
+
+**Required Arguments:**
+- `--lib <version>` - Library version (e.g., "0.3.91")
+- `--app <version>` - Flutter app version (e.g., "0.99.30")
+- `--nodus <version>` - Nodus server version (e.g., "0.4.4")
+
+**Optional Arguments:**
+- `--lib-min <version>` - Minimum supported library version
+- `--app-min <version>` - Minimum supported app version
+- `--nodus-min <version>` - Minimum supported nodus version
+
+**Sample Output:**
+```
+Publishing version info to DHT...
+  Library: 0.3.91 (min: 0.3.50)
+  App:     0.99.30 (min: 0.99.0)
+  Nodus:   0.4.4 (min: 0.4.0)
+  Publisher: 71194ec906913bb7...
+Waiting for DHT propagation...
+✓ Version info published successfully!
+```
+
+**Notes:**
+- Requires identity loaded (`load` command)
+- First publisher owns the DHT key permanently
+- Subsequent publishes must use the same identity
+- Data is signed with Dilithium5
+
+---
+
+### `check-version` - Check Latest Version from DHT
+
+Fetches version info from DHT and compares with local library version.
+
+```bash
+dna-messenger-cli check-version
+```
+
+**Sample Output:**
+```
+Checking version info from DHT...
+
+Version Info from DHT:
+  Library: 0.3.91 (min: 0.3.50) [UPDATE AVAILABLE - local: 0.3.90]
+  App:     0.99.30 (min: 0.99.0)
+  Nodus:   0.4.4 (min: 0.4.0)
+  Published: 2026-01-04 12:00 UTC
+  Publisher: 71194ec906913bb7...
+```
+
+**Notes:**
+- Does not require identity loaded (read-only operation)
+- Shows [UPDATE AVAILABLE] if newer version exists
+- Returns -2 if no version info has been published yet
 
 ---
 

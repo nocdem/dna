@@ -733,6 +733,54 @@ class UserProfile {
   }
 }
 
+/// Version check result from DHT
+class VersionCheckResult {
+  final bool libraryUpdateAvailable;
+  final bool appUpdateAvailable;
+  final bool nodusUpdateAvailable;
+  final String libraryCurrent;
+  final String libraryMinimum;
+  final String appCurrent;
+  final String appMinimum;
+  final String nodusCurrent;
+  final String nodusMinimum;
+  final int publishedAt;
+  final String publisher;
+
+  VersionCheckResult({
+    required this.libraryUpdateAvailable,
+    required this.appUpdateAvailable,
+    required this.nodusUpdateAvailable,
+    required this.libraryCurrent,
+    required this.libraryMinimum,
+    required this.appCurrent,
+    required this.appMinimum,
+    required this.nodusCurrent,
+    required this.nodusMinimum,
+    required this.publishedAt,
+    required this.publisher,
+  });
+
+  factory VersionCheckResult.fromNative(dna_version_check_result_t native) {
+    return VersionCheckResult(
+      libraryUpdateAvailable: native.library_update_available,
+      appUpdateAvailable: native.app_update_available,
+      nodusUpdateAvailable: native.nodus_update_available,
+      libraryCurrent: native.info.library_current.toDartString(32),
+      libraryMinimum: native.info.library_minimum.toDartString(32),
+      appCurrent: native.info.app_current.toDartString(32),
+      appMinimum: native.info.app_minimum.toDartString(32),
+      nodusCurrent: native.info.nodus_current.toDartString(32),
+      nodusMinimum: native.info.nodus_minimum.toDartString(32),
+      publishedAt: native.info.published_at,
+      publisher: native.info.publisher.toDartString(129),
+    );
+  }
+
+  /// Check if any update is available
+  bool get hasUpdate => libraryUpdateAvailable || appUpdateAvailable || nodusUpdateAvailable;
+}
+
 /// Decode base64 string with padding fix for truncated avatar data
 /// C buffer limit is 20484 bytes, strncpy copies max 20483, which may truncate padding
 Uint8List? decodeBase64WithPadding(String base64Str) {
@@ -3637,6 +3685,23 @@ class DnaEngine {
     final ptr = _bindings.dna_engine_get_version();
     if (ptr == nullptr) return 'unknown';
     return ptr.toDartString();
+  }
+
+  /// Check for version updates from DHT
+  ///
+  /// Returns null if the check failed (e.g., no DHT connection or no version published).
+  /// Returns VersionCheckResult with update flags if successful.
+  VersionCheckResult? checkVersionDht() {
+    final resultPtr = calloc<dna_version_check_result_t>();
+    try {
+      final ret = _bindings.dna_engine_check_version_dht(_engine, resultPtr);
+      if (ret != 0) {
+        return null;
+      }
+      return VersionCheckResult.fromNative(resultPtr.ref);
+    } finally {
+      calloc.free(resultPtr);
+    }
   }
 
   // ---------------------------------------------------------------------------
