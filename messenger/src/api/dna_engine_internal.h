@@ -400,6 +400,17 @@ typedef struct {
 } dna_outbox_listener_t;
 
 /**
+ * Presence listener entry (for real-time contact online status)
+ */
+#define DNA_MAX_PRESENCE_LISTENERS 128
+
+typedef struct {
+    char contact_fingerprint[129];  /* Contact we're listening to */
+    size_t dht_token;               /* Token from dht_listen() */
+    bool active;                    /* True if listener is active */
+} dna_presence_listener_t;
+
+/**
  * Delivery tracker entry (for message delivery confirmation)
  *
  * Tracks watermark updates from recipients to confirm message delivery.
@@ -448,6 +459,11 @@ struct dna_engine {
     dna_outbox_listener_t outbox_listeners[DNA_MAX_OUTBOX_LISTENERS];
     int outbox_listener_count;
     pthread_mutex_t outbox_listeners_mutex;
+
+    /* Presence listeners (for real-time contact online status) */
+    dna_presence_listener_t presence_listeners[DNA_MAX_PRESENCE_LISTENERS];
+    int presence_listener_count;
+    pthread_mutex_t presence_listeners_mutex;
 
     /* Delivery trackers (for message delivery confirmation) */
     dna_delivery_tracker_t delivery_trackers[DNA_MAX_DELIVERY_TRACKERS];
