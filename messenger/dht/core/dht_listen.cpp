@@ -85,7 +85,7 @@ extern "C" size_t dht_listen(
         dht::InfoHash hash = dht::InfoHash::get(key, key_len);
         std::string hash_str = hash.toString().substr(0, 16);
 
-        QGP_LOG_DEBUG(LOG_TAG, "Starting subscription for key %s...", hash_str.c_str());
+        QGP_LOG_WARN(LOG_TAG, "[DHT_LISTEN] Starting subscription for key %s...", hash_str.c_str());
 
         // Generate unique token for this subscription
         size_t token = next_listen_token.fetch_add(1);
@@ -135,7 +135,7 @@ extern "C" size_t dht_listen(
                 return true;  // Continue listening (no values yet)
             }
 
-            QGP_LOG_DEBUG(LOG_TAG, "Token %zu received %zu value(s)", token, values.size());
+            QGP_LOG_WARN(LOG_TAG, "[DHT_LISTEN] >>> CALLBACK from OpenDHT! Token %zu received %zu value(s)", token, values.size());
 
             // Invoke C callback for each value
             bool continue_listening = true;
@@ -170,7 +170,7 @@ extern "C" size_t dht_listen(
         try {
             listener_ctx->opendht_token = listener_ctx->future_token.get();
 
-            QGP_LOG_DEBUG(LOG_TAG, "Subscription active for token %zu (OpenDHT: %zu)",
+            QGP_LOG_WARN(LOG_TAG, "[DHT_LISTEN] Subscription active: token=%zu, OpenDHT_token=%zu",
                           token, listener_ctx->opendht_token);
         } catch (const std::exception& e) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to get OpenDHT token: %s", e.what());
@@ -337,7 +337,7 @@ extern "C" size_t dht_listen_ex(
                 return true;
             }
 
-            QGP_LOG_DEBUG(LOG_TAG, "Token %zu received %zu value(s)", token, values.size());
+            QGP_LOG_WARN(LOG_TAG, "[DHT_LISTEN] >>> CALLBACK from OpenDHT! Token %zu received %zu value(s)", token, values.size());
 
             // Invoke C callback for each value
             bool continue_listening = true;
