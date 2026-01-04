@@ -592,34 +592,6 @@ int dht_contactlist_fetch(
 }
 
 /**
- * Clear contact list from DHT (best-effort, not guaranteed)
- *
- * DEPRECATED: With chunked storage, this function publishes empty chunks to overwrite.
- * Use dht_contactlist_publish() with an empty contact array instead, which will
- * replace the old contact list with an empty one.
- *
- * Note: DHT doesn't support true deletion. Chunks will fully expire via TTL.
- */
-int dht_contactlist_clear(dht_context_t *dht_ctx, const char *identity) {
-    if (!dht_ctx || !identity) {
-        return -1;
-    }
-
-    char base_key[512];
-    if (make_base_key(identity, base_key, sizeof(base_key)) != 0) {
-        return -1;
-    }
-
-    // Note: dht_chunked_delete overwrites with empty chunks
-    // Chunks will fully expire via TTL
-    dht_chunked_delete(dht_ctx, base_key, 0);
-
-    QGP_LOG_INFO(LOG_TAG, "Attempted to clear contact list for '%s' (best-effort, deprecated)\n", identity);
-    QGP_LOG_INFO(LOG_TAG, "Recommend using dht_contactlist_publish() with empty array for reliable clearing\n");
-    return 0;
-}
-
-/**
  * Free contacts array
  */
 void dht_contactlist_free_contacts(char **contacts, size_t count) {

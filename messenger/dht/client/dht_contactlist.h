@@ -147,19 +147,6 @@ int dht_contactlist_fetch(
 );
 
 /**
- * Clear contact list from DHT (best-effort)
- * Note: DHT deletion is not guaranteed, values expire naturally
- *
- * @param dht_ctx DHT context
- * @param identity Owner identity
- * @return 0 on success (best-effort), -1 on error
- */
-int dht_contactlist_clear(
-    dht_context_t *dht_ctx,
-    const char *identity
-);
-
-/**
  * Free contact list array
  *
  * @param contacts Array of contact identity strings

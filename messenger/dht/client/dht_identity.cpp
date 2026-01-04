@@ -254,13 +254,3 @@ extern "C" void dht_identity_free(dht_identity_t *identity) {
         delete identity;
     }
 }
-
-/**
- * Legacy RSA function - kept for backward compatibility, redirects to Dilithium5
- * DEPRECATED: Use dht_identity_generate_dilithium5() instead
- */
-extern "C" int dht_identity_generate_random(dht_identity_t **identity_out) {
-    QGP_LOG_WARN(LOG_TAG, "dht_identity_generate_random() is deprecated");
-    QGP_LOG_WARN(LOG_TAG, "Generating Dilithium5 identity instead of RSA");
-    return dht_identity_generate_dilithium5(identity_out);
-}

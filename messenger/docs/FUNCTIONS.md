@@ -1204,7 +1204,6 @@ High-level DHT client operations including singleton management, identity backup
 | Function | Description |
 |----------|-------------|
 | `int dht_identity_generate_dilithium5(dht_identity_t**)` | Generate Dilithium5 DHT identity |
-| `int dht_identity_generate_random(dht_identity_t**)` | Generate random DHT identity (legacy) |
 | `int dht_identity_generate_from_seed(const uint8_t* seed, dht_identity_t**)` | Generate DHT identity deterministically from 32-byte seed (v0.3.0+) |
 | `int dht_identity_export_to_buffer(dht_identity_t*, uint8_t**, size_t*)` | Export identity to binary buffer |
 | `int dht_identity_import_from_buffer(const uint8_t*, size_t, dht_identity_t**)` | Import identity from buffer |
@@ -1227,7 +1226,6 @@ Files removed:
 | `void dht_contactlist_cleanup(void)` | Cleanup contact list subsystem |
 | `int dht_contactlist_publish(dht_context_t*, const char*, const char**, size_t, ...)` | Publish encrypted contact list |
 | `int dht_contactlist_fetch(dht_context_t*, const char*, char***, size_t*, ...)` | Fetch and decrypt contact list |
-| `int dht_contactlist_clear(dht_context_t*, const char*)` | Clear contact list (best-effort) |
 | `void dht_contactlist_free_contacts(char**, size_t)` | Free contacts array |
 | `void dht_contactlist_free(dht_contactlist_t*)` | Free contact list structure |
 | `bool dht_contactlist_exists(dht_context_t*, const char*)` | Check if contact list exists |

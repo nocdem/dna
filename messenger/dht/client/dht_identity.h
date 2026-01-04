@@ -43,17 +43,6 @@ int dht_identity_generate_dilithium5(dht_identity_t **identity_out);
 int dht_identity_generate_from_seed(const uint8_t *seed, dht_identity_t **identity_out);
 
 /**
- * Generate random DHT identity (legacy wrapper)
- *
- * DEPRECATED: This function now generates Dilithium5 identities instead of RSA
- * Use dht_identity_generate_dilithium5() for new code
- *
- * @param identity_out Output pointer for new identity
- * @return 0 on success, -1 on error
- */
-int dht_identity_generate_random(dht_identity_t **identity_out);
-
-/**
  * Export identity to buffer (binary format - Dilithium5)
  *
  * Format: [key_size(4)][dilithium5_key][cert_size(4)][dilithium5_cert]
