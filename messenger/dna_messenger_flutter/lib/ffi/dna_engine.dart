@@ -1036,27 +1036,31 @@ class DnaEngine {
         dartEvent = MessageSentEvent(messageId);
         break;
       case DnaEventType.DNA_EVENT_CONTACT_ONLINE:
-        // Parse fingerprint from contact_status.fingerprint (offset 0, 129 bytes)
+        // Parse fingerprint from contact_status.fingerprint
+        // baseOffset=4 for padding between type (int) and union in C struct (64-bit alignment)
+        const onlineBaseOffset = 4;
         final onlineFpBytes = <int>[];
-        for (var i = 0; i < 128; i++) {
+        for (var i = onlineBaseOffset; i < onlineBaseOffset + 128; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           onlineFpBytes.add(byte);
         }
         final onlineFingerprint = String.fromCharCodes(onlineFpBytes);
-        print('[FLUTTER-EVENT] CONTACT_ONLINE: ${onlineFingerprint.length > 16 ? onlineFingerprint.substring(0, 16) : onlineFingerprint}...');
+        print('[FLUTTER-EVENT] CONTACT_ONLINE: ${onlineFingerprint.length > 16 ? onlineFingerprint.substring(0, 16) : onlineFingerprint}... (len=${onlineFingerprint.length})');
         dartEvent = ContactOnlineEvent(onlineFingerprint);
         break;
       case DnaEventType.DNA_EVENT_CONTACT_OFFLINE:
-        // Parse fingerprint from contact_status.fingerprint (offset 0, 129 bytes)
+        // Parse fingerprint from contact_status.fingerprint
+        // baseOffset=4 for padding between type (int) and union in C struct (64-bit alignment)
+        const offlineBaseOffset = 4;
         final offlineFpBytes = <int>[];
-        for (var i = 0; i < 128; i++) {
+        for (var i = offlineBaseOffset; i < offlineBaseOffset + 128; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           offlineFpBytes.add(byte);
         }
         final offlineFingerprint = String.fromCharCodes(offlineFpBytes);
-        print('[FLUTTER-EVENT] CONTACT_OFFLINE: ${offlineFingerprint.length > 16 ? offlineFingerprint.substring(0, 16) : offlineFingerprint}...');
+        print('[FLUTTER-EVENT] CONTACT_OFFLINE: ${offlineFingerprint.length > 16 ? offlineFingerprint.substring(0, 16) : offlineFingerprint}... (len=${offlineFingerprint.length})');
         dartEvent = ContactOfflineEvent(offlineFingerprint);
         break;
       case DnaEventType.DNA_EVENT_IDENTITY_LOADED:
@@ -1066,10 +1070,12 @@ class DnaEngine {
         // TODO: Parse contact request from union data
         break;
       case DnaEventType.DNA_EVENT_OUTBOX_UPDATED:
-        // Parse contact fingerprint from union data (at offset 0, 129 bytes)
+        // Parse contact fingerprint from union data
+        // baseOffset=4 for padding between type (int) and union in C struct (64-bit alignment)
+        const outboxBaseOffset = 4;
         print('[FLUTTER-EVENT] DNA_EVENT_OUTBOX_UPDATED received from C');
         final fpBytes = <int>[];
-        for (var i = 0; i < 128; i++) {
+        for (var i = outboxBaseOffset; i < outboxBaseOffset + 128; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           fpBytes.add(byte);

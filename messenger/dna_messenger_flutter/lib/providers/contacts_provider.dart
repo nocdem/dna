@@ -208,7 +208,13 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
   }
 
   void updateContactStatus(String fingerprint, bool isOnline) {
-    print('[Contacts] updateContactStatus: ${fingerprint.substring(0, 16)}... -> ${isOnline ? "ONLINE" : "OFFLINE"}');
+    final fpShort = fingerprint.length >= 16 ? fingerprint.substring(0, 16) : fingerprint;
+    print('[Contacts] updateContactStatus: $fpShort... -> ${isOnline ? "ONLINE" : "OFFLINE"}');
+
+    if (fingerprint.isEmpty) {
+      print('[Contacts] ERROR: Empty fingerprint, ignoring');
+      return;
+    }
 
     state.whenData((contacts) {
       final index = contacts.indexWhere((c) => c.fingerprint == fingerprint);
