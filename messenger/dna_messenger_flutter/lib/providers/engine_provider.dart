@@ -17,11 +17,13 @@ class EngineNotifier extends AsyncNotifier<DnaEngine> {
     // Desktop: use ~/.dna for consistency with ImGui app
     // Mobile: use app-specific files directory
     final String dataDir;
-    if (Platform.isLinux || Platform.isMacOS || Platform.isWindows) {
-      final home = Platform.environment['HOME'] ??
-          Platform.environment['USERPROFILE'] ??
-          '.';
+    if (Platform.isLinux || Platform.isMacOS) {
+      final home = Platform.environment['HOME'] ?? '.';
       dataDir = '$home/.dna';
+    } else if (Platform.isWindows) {
+      // Windows: use USERPROFILE with backslashes
+      final home = Platform.environment['USERPROFILE'] ?? 'C:\\Users';
+      dataDir = '$home\\.dna';
     } else if (Platform.isAndroid) {
       // Android: use getApplicationSupportDirectory() which maps to filesDir
       // This matches where MainActivity.kt copies cacert.pem for SSL

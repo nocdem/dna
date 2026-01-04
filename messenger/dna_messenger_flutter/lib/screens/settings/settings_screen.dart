@@ -848,8 +848,9 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
       final home = Platform.environment['HOME'] ?? '/tmp';
       return '$home/.dna/logs';
     } else if (Platform.isWindows) {
-      final appData = Platform.environment['APPDATA'] ?? 'C:\\Users';
-      return '$appData\\.dna\\logs';
+      // Match engine_provider.dart: use USERPROFILE\.dna
+      final home = Platform.environment['USERPROFILE'] ?? 'C:\\Users';
+      return '$home\\.dna\\logs';
     } else {
       // Android - use app-specific directory
       // This will be set after we get the actual path
