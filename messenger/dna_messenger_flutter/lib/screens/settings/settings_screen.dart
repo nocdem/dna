@@ -902,8 +902,9 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
         }
       } else {
         // Mobile: Zip log files and share
-        final appDir = await getApplicationDocumentsDirectory();
-        final logsDir = Directory('${appDir.parent.path}/dna_messenger/logs');
+        // Use getApplicationSupportDirectory() to match engine_provider.dart
+        final appDir = await getApplicationSupportDirectory();
+        final logsDir = Directory('${appDir.path}/dna_messenger/logs');
 
         if (!await logsDir.exists()) {
           if (context.mounted) {

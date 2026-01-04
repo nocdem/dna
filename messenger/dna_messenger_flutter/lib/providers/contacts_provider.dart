@@ -250,7 +250,9 @@ class UnreadCountsNotifier extends AsyncNotifier<Map<String, int>> {
     }
 
     final engine = await ref.watch(engineProvider.future);
-    final contacts = await ref.watch(contactsProvider.future);
+    // Use ref.read instead of ref.watch to prevent automatic rebuilds
+    // when contacts change. We manage unread counts via incrementCount/clearCount.
+    final contacts = await ref.read(contactsProvider.future);
 
     final counts = <String, int>{};
     for (final contact in contacts) {
