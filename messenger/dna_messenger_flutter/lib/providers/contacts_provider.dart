@@ -161,6 +161,12 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     final engine = await ref.read(engineProvider.future);
     await engine.addContact(identifier);
     await refresh();
+
+    // Start DHT listener for the new contact's outbox (for push notifications)
+    // This is needed because listenAllContacts() was called when DHT connected,
+    // but this new contact wasn't in the list yet
+    final listenerCount = engine.listenAllContacts();
+    engine.debugLog('CONTACTS', 'Started $listenerCount DHT listeners after addContact');
   }
 
   Future<void> removeContact(String fingerprint) async {

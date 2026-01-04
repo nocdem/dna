@@ -55,6 +55,12 @@ class ContactRequestsNotifier extends AsyncNotifier<List<ContactRequest>> {
     final engine = await ref.read(engineProvider.future);
     await engine.approveContactRequest(fingerprint);
     await refresh();
+
+    // Start DHT listener for the new contact's outbox (for push notifications)
+    // This is needed because listenAllContacts() was called when DHT connected,
+    // but this new contact wasn't in the list yet
+    final listenerCount = engine.listenAllContacts();
+    print('[ContactRequests] Started $listenerCount DHT listeners after approve');
   }
 
   /// Deny a contact request (can retry later)
