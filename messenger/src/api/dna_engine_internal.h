@@ -436,6 +436,7 @@ struct dna_engine {
     messenger_context_t *messenger;  /* Core messenger context */
     char fingerprint[129];           /* Current identity fingerprint */
     bool identity_loaded;            /* True if identity is active */
+    bool listeners_starting;         /* True if listener setup in progress (race prevention) */
     time_t profile_published_at;     /* Timestamp when profile was last published (0 = never) */
 
     /* Password protection (session state) */
