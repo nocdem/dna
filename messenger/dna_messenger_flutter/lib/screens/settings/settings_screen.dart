@@ -26,30 +26,6 @@ final packageInfoProvider = FutureProvider<PackageInfo>((ref) async {
   return await PackageInfo.fromPlatform();
 });
 
-/// Developer mode state provider - persisted to SharedPreferences
-final developerModeProvider = StateNotifierProvider<DeveloperModeNotifier, bool>((ref) {
-  return DeveloperModeNotifier();
-});
-
-class DeveloperModeNotifier extends StateNotifier<bool> {
-  static const _key = 'developer_mode_enabled';
-
-  DeveloperModeNotifier() : super(false) {
-    _load();
-  }
-
-  Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    state = prefs.getBool(_key) ?? false;
-  }
-
-  Future<void> setEnabled(bool enabled) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_key, enabled);
-    state = enabled;
-  }
-}
-
 class SettingsScreen extends ConsumerWidget {
   final VoidCallback? onMenuPressed;
 
@@ -60,7 +36,6 @@ class SettingsScreen extends ConsumerWidget {
     final fingerprint = ref.watch(currentFingerprintProvider);
     final simpleProfile = ref.watch(userProfileProvider);
     final fullProfile = ref.watch(fullProfileProvider);
-    final developerMode = ref.watch(developerModeProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -86,9 +61,9 @@ class SettingsScreen extends ConsumerWidget {
           _SecuritySection(),
           // Data (backup/restore)
           _DataSection(),
-          // Developer settings (hidden by default)
-          if (developerMode) _LogSettingsSection(),
-          // Identity (tap fingerprint 5x to enable developer mode)
+          // Logs settings
+          _LogSettingsSection(),
+          // Identity
           _IdentitySection(fingerprint: fingerprint),
           // About
           _AboutSection(),
@@ -895,7 +870,7 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: const Text('Logs folder does not exist yet'),
-                backgroundColor: DnaColors.snackbarWarning,
+                backgroundColor: DnaColors.snackbarInfo,
               ),
             );
           }
@@ -931,7 +906,7 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: const Text('No logs available yet'),
-                backgroundColor: DnaColors.snackbarWarning,
+                backgroundColor: DnaColors.snackbarInfo,
               ),
             );
           }
@@ -950,7 +925,7 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: const Text('No log files found'),
-                backgroundColor: DnaColors.snackbarWarning,
+                backgroundColor: DnaColors.snackbarInfo,
               ),
             );
           }
@@ -1013,7 +988,7 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader('Developer'),
+        const _SectionHeader('Logs'),
         // Debug Log Toggle
         SwitchListTile(
           secondary: Icon(
@@ -1072,6 +1047,7 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           trailing: DropdownButton<String>(
             value: _currentLevel,
             underline: const SizedBox(),
+            padding: const EdgeInsets.symmetric(horizontal: 12),
             items: _logLevels.map((level) {
               return DropdownMenuItem(
                 value: level,
@@ -1383,54 +1359,10 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
   }
 }
 
-class _AboutSection extends ConsumerStatefulWidget {
+class _AboutSection extends ConsumerWidget {
   @override
-  ConsumerState<_AboutSection> createState() => _AboutSectionState();
-}
-
-class _AboutSectionState extends ConsumerState<_AboutSection> {
-  int _tapCount = 0;
-  DateTime? _lastTapTime;
-  static const _requiredTaps = 5;
-  static const _tapTimeout = Duration(seconds: 2);
-
-  void _handleVersionTap() {
-    final now = DateTime.now();
-    final developerMode = ref.read(developerModeProvider);
-
-    // If already enabled, disable on tap
-    if (developerMode) {
-      ref.read(developerModeProvider.notifier).setEnabled(false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Developer mode disabled')),
-      );
-      return;
-    }
-
-    // Reset tap count if too much time has passed
-    if (_lastTapTime != null && now.difference(_lastTapTime!) > _tapTimeout) {
-      _tapCount = 0;
-    }
-
-    _lastTapTime = now;
-    _tapCount++;
-
-    if (_tapCount >= _requiredTaps) {
-      ref.read(developerModeProvider.notifier).setEnabled(true);
-      _tapCount = 0;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Developer mode enabled'),
-          backgroundColor: DnaColors.snackbarSuccess,
-        ),
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final developerMode = ref.watch(developerModeProvider);
     final engineAsync = ref.watch(engineProvider);
     final packageInfoAsync = ref.watch(packageInfoProvider);
 
@@ -1453,14 +1385,9 @@ class _AboutSectionState extends ConsumerState<_AboutSection> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              GestureDetector(
-                onTap: _handleVersionTap,
-                child: Text(
-                  'DNA Messenger v$appVersion',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: developerMode ? DnaColors.textSuccess : null,
-                  ),
-                ),
+              Text(
+                'DNA Messenger v$appVersion',
+                style: theme.textTheme.bodyMedium,
               ),
               const SizedBox(height: 4),
               Text(
