@@ -53,14 +53,22 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     try {
       final engine = await ref.read(engineProvider.future);
 
-      // Resume C-side presence heartbeat (marks us as online)
-      print('AppLifecycle: Resuming C-side presence heartbeat');
-      engine.resumePresence();
-
-      // Resume Dart-side polling timers (handles presence refresh + contact requests)
-      // This also triggers an immediate presence refresh, so no need to call it separately
+      // Resume Dart-side polling timers FIRST (starts 30-second periodic refresh)
       print('AppLifecycle: Resuming polling timers');
       ref.read(eventHandlerProvider).resumePolling();
+
+      // Small delay to let DHT routing table stabilize after background resume
+      // DHT may need time to reconnect to nodes after app was in background
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      // Only push presence if DHT is actually connected
+      if (engine.isDhtConnected()) {
+        print('AppLifecycle: DHT connected, resuming C-side presence');
+        engine.resumePresence();
+      } else {
+        print('AppLifecycle: DHT not connected, skipping immediate presence refresh');
+        // Presence will be pushed when DHT connects (via DhtConnectedEvent handler)
+      }
 
       // Note: Offline messages are handled by C-side push notification callback
       // (messenger_push_notification_callback) which triggers poll on DHT listen events

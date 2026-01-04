@@ -257,17 +257,13 @@ class EventHandler {
   /// Resume all polling timers (call when app comes to foreground)
   ///
   /// Restarts periodic polling if DHT is connected.
-  /// Also triggers an immediate presence refresh.
+  /// Note: Immediate presence refresh is handled by C-side resumePresence().
   void resumePolling() {
     print('[EventHandler] Resuming polling timers');
     final dhtState = _ref.read(dhtConnectionStateProvider);
     if (dhtState == DhtConnectionState.connected) {
       _startContactRequestsPolling();
       _startPresencePolling();
-      // Immediate presence refresh on resume
-      _ref.read(engineProvider).whenData((engine) async {
-        await engine.refreshPresence();
-      });
     }
   }
 
