@@ -34,16 +34,6 @@
  * ============================================================================ */
 
 /**
- * Securely wipe memory
- */
-static void secure_memzero(void *ptr, size_t len) {
-    volatile uint8_t *p = (volatile uint8_t *)ptr;
-    while (len--) {
-        *p++ = 0;
-    }
-}
-
-/**
  * Derive AES-256 key from password using PBKDF2-SHA256
  */
 static int derive_key_from_password(
@@ -305,10 +295,10 @@ int key_encrypt(
                   key_data_size, *encrypted_size);
 
 cleanup:
-    secure_memzero(salt, sizeof(salt));
-    secure_memzero(nonce, sizeof(nonce));
-    secure_memzero(derived_key, sizeof(derived_key));
-    secure_memzero(tag, sizeof(tag));
+    qgp_secure_memzero(salt, sizeof(salt));
+    qgp_secure_memzero(nonce, sizeof(nonce));
+    qgp_secure_memzero(derived_key, sizeof(derived_key));
+    qgp_secure_memzero(tag, sizeof(tag));
 
     return result;
 }
@@ -387,7 +377,7 @@ int key_decrypt(
     QGP_LOG_DEBUG(LOG_TAG, "Key decrypted successfully (size: %zu)", *key_size);
 
 cleanup:
-    secure_memzero(derived_key, sizeof(derived_key));
+    qgp_secure_memzero(derived_key, sizeof(derived_key));
 
     return result;
 }
@@ -457,7 +447,7 @@ cleanup:
         set_file_permissions(file_path);
     }
     if (buffer) {
-        secure_memzero(buffer, key_data_size + KEY_ENC_HEADER_SIZE);
+        qgp_secure_memzero(buffer, key_data_size + KEY_ENC_HEADER_SIZE);
         free(buffer);
     }
 
@@ -544,7 +534,7 @@ cleanup:
         fclose(fp);
     }
     if (buffer) {
-        secure_memzero(buffer, (size_t)file_size);
+        qgp_secure_memzero(buffer, (size_t)file_size);
         free(buffer);
     }
 
@@ -611,7 +601,7 @@ int key_change_password(
 
 cleanup:
     if (key_data) {
-        secure_memzero(key_data, buffer_size);
+        qgp_secure_memzero(key_data, buffer_size);
         free(key_data);
     }
 
@@ -633,7 +623,7 @@ int key_verify_password(
     int result = key_load_encrypted(file_path, password, key_data, sizeof(key_data), &key_size);
 
     /* Always wipe the buffer */
-    secure_memzero(key_data, sizeof(key_data));
+    qgp_secure_memzero(key_data, sizeof(key_data));
 
     return result;
 }

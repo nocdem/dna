@@ -217,16 +217,6 @@ int blockchain_create_all_wallets(
  * ============================================================================ */
 
 /**
- * Securely wipe memory
- */
-static void blockchain_secure_memzero(void *ptr, size_t len) {
-    volatile uint8_t *p = (volatile uint8_t *)ptr;
-    while (len--) {
-        *p++ = 0;
-    }
-}
-
-/**
  * Check if wallet file exists for a blockchain type
  */
 static bool wallet_file_exists(const char *wallet_dir, const char *fingerprint, blockchain_type_t type) {
@@ -345,7 +335,7 @@ int blockchain_create_missing_wallets(
     }
 
     /* Securely wipe master seed from memory */
-    blockchain_secure_memzero(master_seed, sizeof(master_seed));
+    qgp_secure_memzero(master_seed, sizeof(master_seed));
 
     if (wallets_created) {
         *wallets_created = created;

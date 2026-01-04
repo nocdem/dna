@@ -33,16 +33,6 @@
  * ============================================================================ */
 
 /**
- * Securely wipe memory
- */
-static void secure_memzero(void *ptr, size_t len) {
-    volatile uint8_t *p = (volatile uint8_t *)ptr;
-    while (len--) {
-        *p++ = 0;
-    }
-}
-
-/**
  * Build full path to seed file
  */
 static int build_seed_path(const char *identity_dir, char *path_out, size_t path_size) {
@@ -174,10 +164,10 @@ int seed_storage_save(
 
 cleanup:
     /* Securely wipe sensitive data */
-    secure_memzero(shared_secret, sizeof(shared_secret));
-    secure_memzero(encrypted_seed, sizeof(encrypted_seed));
+    qgp_secure_memzero(shared_secret, sizeof(shared_secret));
+    qgp_secure_memzero(encrypted_seed, sizeof(encrypted_seed));
     if (file_buffer) {
-        secure_memzero(file_buffer, SEED_STORAGE_TOTAL_SIZE);
+        qgp_secure_memzero(file_buffer, SEED_STORAGE_TOTAL_SIZE);
         free(file_buffer);
     }
     if (fp) {
@@ -267,13 +257,13 @@ int seed_storage_load(
             master_seed_out, &decrypted_len) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "AES-256-GCM decryption failed (auth tag mismatch?)");
         /* Wipe output on failure */
-        secure_memzero(master_seed_out, 64);
+        qgp_secure_memzero(master_seed_out, 64);
         goto cleanup;
     }
 
     if (decrypted_len != 64) {
         QGP_LOG_ERROR(LOG_TAG, "Unexpected decrypted length: %zu (expected 64)", decrypted_len);
-        secure_memzero(master_seed_out, 64);
+        qgp_secure_memzero(master_seed_out, 64);
         goto cleanup;
     }
 
@@ -282,9 +272,9 @@ int seed_storage_load(
 
 cleanup:
     /* Securely wipe sensitive data */
-    secure_memzero(shared_secret, sizeof(shared_secret));
+    qgp_secure_memzero(shared_secret, sizeof(shared_secret));
     if (file_buffer) {
-        secure_memzero(file_buffer, SEED_STORAGE_TOTAL_SIZE);
+        qgp_secure_memzero(file_buffer, SEED_STORAGE_TOTAL_SIZE);
         free(file_buffer);
     }
     if (fp) {
@@ -455,11 +445,11 @@ int mnemonic_storage_save(
     result = 0;
 
 cleanup:
-    secure_memzero(shared_secret, sizeof(shared_secret));
-    secure_memzero(plaintext, sizeof(plaintext));
-    secure_memzero(encrypted_data, sizeof(encrypted_data));
+    qgp_secure_memzero(shared_secret, sizeof(shared_secret));
+    qgp_secure_memzero(plaintext, sizeof(plaintext));
+    qgp_secure_memzero(encrypted_data, sizeof(encrypted_data));
     if (file_buffer) {
-        secure_memzero(file_buffer, MNEMONIC_STORAGE_TOTAL_SIZE);
+        qgp_secure_memzero(file_buffer, MNEMONIC_STORAGE_TOTAL_SIZE);
         free(file_buffer);
     }
     if (fp) {
@@ -549,13 +539,13 @@ int mnemonic_storage_load(
             nonce, tag,
             decrypted_data, &decrypted_len) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "AES-256-GCM decryption failed");
-        secure_memzero(mnemonic_out, mnemonic_size);
+        qgp_secure_memzero(mnemonic_out, mnemonic_size);
         goto cleanup;
     }
 
     if (decrypted_len != MNEMONIC_STORAGE_DATA_SIZE) {
         QGP_LOG_ERROR(LOG_TAG, "Unexpected decrypted length: %zu", decrypted_len);
-        secure_memzero(mnemonic_out, mnemonic_size);
+        qgp_secure_memzero(mnemonic_out, mnemonic_size);
         goto cleanup;
     }
 
@@ -567,10 +557,10 @@ int mnemonic_storage_load(
     result = 0;
 
 cleanup:
-    secure_memzero(shared_secret, sizeof(shared_secret));
-    secure_memzero(decrypted_data, sizeof(decrypted_data));
+    qgp_secure_memzero(shared_secret, sizeof(shared_secret));
+    qgp_secure_memzero(decrypted_data, sizeof(decrypted_data));
     if (file_buffer) {
-        secure_memzero(file_buffer, MNEMONIC_STORAGE_TOTAL_SIZE);
+        qgp_secure_memzero(file_buffer, MNEMONIC_STORAGE_TOTAL_SIZE);
         free(file_buffer);
     }
     if (fp) {
