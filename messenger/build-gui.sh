@@ -133,9 +133,15 @@ run_flutter() {
         if [ -f "$ASAN_LIB" ]; then
             echo -e "${YELLOW}Preloading ASAN runtime: $ASAN_LIB${NC}"
             # Disable LeakSanitizer - Dart VM has leaks we can't control
-            # GLYCIN_DISABLE_SANDBOX: Prevents glycin SVG loader from using bwrap sandbox
-            # which crashes when ASAN is preloaded (sandbox child process inherits LD_PRELOAD)
-            GLYCIN_DISABLE_SANDBOX=1 ASAN_OPTIONS=detect_leaks=0 LD_PRELOAD="$ASAN_LIB" flutter run -d linux "${FLUTTER_ARGS[@]}"
+            # GSK_RENDERER=cairo: Use Cairo renderer instead of GL (avoids some icon loading paths)
+            # GTK_A11Y=none: Disable accessibility (can trigger icon loads)
+            # GDK_DEBUG=portals: Disable portal usage that can trigger sandbox
+            # NO_AT_BRIDGE=1: Disable AT-SPI bridge
+            export ASAN_OPTIONS=detect_leaks=0
+            export GSK_RENDERER=cairo
+            export GTK_A11Y=none
+            export NO_AT_BRIDGE=1
+            LD_PRELOAD="$ASAN_LIB" flutter run -d linux "${FLUTTER_ARGS[@]}"
         else
             echo -e "${RED}Warning: ASAN library not found, running without preload${NC}"
             flutter run -d linux "${FLUTTER_ARGS[@]}"

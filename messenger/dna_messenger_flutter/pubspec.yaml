@@ -2,7 +2,7 @@ name: dna_messenger
 description: "Post-quantum encrypted P2P messenger with integrated cryptocurrency wallet"
 publish_to: 'none'
 
-version: 0.99.30+9930
+version: 0.99.33+9933
 
 environment:
   sdk: ^3.10.0
@@ -23,6 +23,7 @@ dependencies:
   path_provider: ^2.1.0
   shared_preferences: ^2.2.0
   share_plus: ^10.0.0
+  archive: ^3.6.0  # For zipping log files
   file_picker: ^8.0.0  # For desktop file save dialogs
   window_manager: ^0.4.0
   sqflite: ^2.3.0  # Local SQLite for caching (Android/iOS)

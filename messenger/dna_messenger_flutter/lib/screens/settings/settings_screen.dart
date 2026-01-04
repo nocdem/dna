@@ -1,6 +1,7 @@
 // Settings Screen - App settings and profile management
 import 'dart:convert';
 import 'dart:io';
+import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -26,30 +27,6 @@ final packageInfoProvider = FutureProvider<PackageInfo>((ref) async {
   return await PackageInfo.fromPlatform();
 });
 
-/// Developer mode state provider - persisted to SharedPreferences
-final developerModeProvider = StateNotifierProvider<DeveloperModeNotifier, bool>((ref) {
-  return DeveloperModeNotifier();
-});
-
-class DeveloperModeNotifier extends StateNotifier<bool> {
-  static const _key = 'developer_mode_enabled';
-
-  DeveloperModeNotifier() : super(false) {
-    _load();
-  }
-
-  Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    state = prefs.getBool(_key) ?? false;
-  }
-
-  Future<void> setEnabled(bool enabled) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_key, enabled);
-    state = enabled;
-  }
-}
-
 class SettingsScreen extends ConsumerWidget {
   final VoidCallback? onMenuPressed;
 
@@ -60,7 +37,6 @@ class SettingsScreen extends ConsumerWidget {
     final fingerprint = ref.watch(currentFingerprintProvider);
     final simpleProfile = ref.watch(userProfileProvider);
     final fullProfile = ref.watch(fullProfileProvider);
-    final developerMode = ref.watch(developerModeProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -86,9 +62,9 @@ class SettingsScreen extends ConsumerWidget {
           _SecuritySection(),
           // Data (backup/restore)
           _DataSection(),
-          // Developer settings (hidden by default)
-          if (developerMode) _LogSettingsSection(),
-          // Identity (tap fingerprint 5x to enable developer mode)
+          // Logs settings
+          _LogSettingsSection(),
+          // Identity
           _IdentitySection(fingerprint: fingerprint),
           // About
           _AboutSection(),
@@ -866,86 +842,141 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
     _setLogTags(newTags);
   }
 
-  Future<void> _exportLogs(BuildContext context) async {
-    final engineAsync = ref.read(engineProvider);
+  /// Get the logs directory path
+  String _getLogsDir() {
+    if (Platform.isLinux || Platform.isMacOS) {
+      final home = Platform.environment['HOME'] ?? '/tmp';
+      return '$home/.dna/logs';
+    } else if (Platform.isWindows) {
+      final appData = Platform.environment['APPDATA'] ?? 'C:\\Users';
+      return '$appData\\.dna\\logs';
+    } else {
+      // Android - use app-specific directory
+      // This will be set after we get the actual path
+      return '';
+    }
+  }
+
+  Future<void> _openOrShareLogs(BuildContext context) async {
     final isDesktop = Platform.isLinux || Platform.isWindows || Platform.isMacOS;
 
-    await engineAsync.whenData((engine) async {
-      try {
-        final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-        final filename = 'dna_messenger_logs_$timestamp.txt';
+    try {
+      if (isDesktop) {
+        // Desktop: Open file manager at logs folder
+        final logsDir = _getLogsDir();
+        final dir = Directory(logsDir);
 
-        if (isDesktop) {
-          // Desktop: Show native file save dialog
-          final outputPath = await FilePicker.platform.saveFile(
-            dialogTitle: 'Save Logs',
-            fileName: filename,
-            type: FileType.custom,
-            allowedExtensions: ['txt'],
-          );
-
-          if (outputPath == null) return; // User cancelled
-
-          // Export logs directly to chosen path
-          final success = engine.debugLogExport(outputPath);
-          if (!success) {
-            if (context.mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: const Text('Failed to export logs'),
-                  backgroundColor: DnaColors.snackbarError,
-                ),
-              );
-            }
-            return;
-          }
-
+        if (!await dir.exists()) {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('Logs saved to: $outputPath'),
-                backgroundColor: DnaColors.snackbarSuccess,
+                content: const Text('Logs folder does not exist yet'),
+                backgroundColor: DnaColors.snackbarInfo,
               ),
             );
           }
-        } else {
-          // Mobile: Use share sheet
-          final tempDir = await getTemporaryDirectory();
-          final filepath = '${tempDir.path}/$filename';
-
-          // Export logs to temp file
-          final success = engine.debugLogExport(filepath);
-          if (!success) {
-            if (context.mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: const Text('Failed to export logs'),
-                  backgroundColor: DnaColors.snackbarError,
-                ),
-              );
-            }
-            return;
-          }
-
-          // Share the file
-          final file = XFile(filepath);
-          await Share.shareXFiles(
-            [file],
-            subject: 'DNA Messenger Logs',
-            text: 'Debug logs from DNA Messenger',
-          );
+          return;
         }
-      } catch (e) {
-        if (context.mounted) {
+
+        // Open file manager using platform-specific command
+        ProcessResult result;
+        if (Platform.isLinux) {
+          result = await Process.run('xdg-open', [logsDir]);
+        } else if (Platform.isWindows) {
+          result = await Process.run('explorer', [logsDir]);
+        } else {
+          // macOS
+          result = await Process.run('open', [logsDir]);
+        }
+
+        if (result.exitCode != 0 && context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Export failed: $e'),
+              content: Text('Could not open folder: ${result.stderr}'),
               backgroundColor: DnaColors.snackbarError,
             ),
           );
         }
+      } else {
+        // Mobile: Zip log files and share
+        final appDir = await getApplicationDocumentsDirectory();
+        final logsDir = Directory('${appDir.parent.path}/dna_messenger/logs');
+
+        if (!await logsDir.exists()) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('No logs available yet'),
+                backgroundColor: DnaColors.snackbarInfo,
+              ),
+            );
+          }
+          return;
+        }
+
+        // Find all log files
+        final logFiles = await logsDir
+            .list()
+            .where((f) => f is File && f.path.contains('dna') && f.path.endsWith('.log'))
+            .cast<File>()
+            .toList();
+
+        if (logFiles.isEmpty) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('No log files found'),
+                backgroundColor: DnaColors.snackbarInfo,
+              ),
+            );
+          }
+          return;
+        }
+
+        // Create zip archive
+        final archive = Archive();
+        for (final file in logFiles) {
+          final bytes = await file.readAsBytes();
+          final filename = file.path.split('/').last;
+          archive.addFile(ArchiveFile(filename, bytes.length, bytes));
+        }
+
+        // Encode zip
+        final zipData = ZipEncoder().encode(archive);
+        if (zipData == null) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('Failed to create zip archive'),
+                backgroundColor: DnaColors.snackbarError,
+              ),
+            );
+          }
+          return;
+        }
+
+        // Save to temp and share
+        final tempDir = await getTemporaryDirectory();
+        final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+        final zipPath = '${tempDir.path}/dna_logs_$timestamp.zip';
+        await File(zipPath).writeAsBytes(zipData);
+
+        await Share.shareXFiles(
+          [XFile(zipPath)],
+          subject: 'DNA Messenger Logs',
+          text: 'Debug logs from DNA Messenger',
+        );
       }
-    });
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    }
   }
 
   @override
@@ -958,7 +989,7 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader('Developer'),
+        const _SectionHeader('Logs'),
         // Debug Log Toggle
         SwitchListTile(
           secondary: Icon(
@@ -988,14 +1019,25 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
                 }
               : null,
         ),
-        // Export Logs
+        // Open/Share Logs
         ListTile(
-          leading: const FaIcon(FontAwesomeIcons.shareNodes),
-          title: const Text('Export Logs'),
-          subtitle: const Text('Share log file for debugging'),
+          leading: FaIcon(
+            Platform.isLinux || Platform.isWindows || Platform.isMacOS
+                ? FontAwesomeIcons.folderOpen
+                : FontAwesomeIcons.shareNodes,
+          ),
+          title: Text(
+            Platform.isLinux || Platform.isWindows || Platform.isMacOS
+                ? 'Open Logs Folder'
+                : 'Share Logs',
+          ),
+          subtitle: Text(
+            Platform.isLinux || Platform.isWindows || Platform.isMacOS
+                ? 'Open file manager at logs directory'
+                : 'Zip and share log files',
+          ),
           trailing: const FaIcon(FontAwesomeIcons.chevronRight),
-          enabled: _debugLogEnabled,
-          onTap: _debugLogEnabled ? () => _exportLogs(context) : null,
+          onTap: () => _openOrShareLogs(context),
         ),
         const Divider(),
         // Log Level
@@ -1006,6 +1048,7 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           trailing: DropdownButton<String>(
             value: _currentLevel,
             underline: const SizedBox(),
+            padding: const EdgeInsets.symmetric(horizontal: 12),
             items: _logLevels.map((level) {
               return DropdownMenuItem(
                 value: level,
@@ -1317,49 +1360,8 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
   }
 }
 
-class _AboutSection extends ConsumerStatefulWidget {
-  @override
-  ConsumerState<_AboutSection> createState() => _AboutSectionState();
-}
-
-class _AboutSectionState extends ConsumerState<_AboutSection> {
-  int _tapCount = 0;
-  DateTime? _lastTapTime;
-  static const _requiredTaps = 5;
-  static const _tapTimeout = Duration(seconds: 2);
-
-  void _handleVersionTap() {
-    final now = DateTime.now();
-    final developerMode = ref.read(developerModeProvider);
-
-    // If already enabled, disable on tap
-    if (developerMode) {
-      ref.read(developerModeProvider.notifier).setEnabled(false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Developer mode disabled')),
-      );
-      return;
-    }
-
-    // Reset tap count if too much time has passed
-    if (_lastTapTime != null && now.difference(_lastTapTime!) > _tapTimeout) {
-      _tapCount = 0;
-    }
-
-    _lastTapTime = now;
-    _tapCount++;
-
-    if (_tapCount >= _requiredTaps) {
-      ref.read(developerModeProvider.notifier).setEnabled(true);
-      _tapCount = 0;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Developer mode enabled'),
-          backgroundColor: DnaColors.snackbarSuccess,
-        ),
-      );
-    }
-  }
+class _AboutSection extends ConsumerWidget {
+  const _AboutSection();
 
   void _showUpdateDialog(BuildContext context, engine.VersionCheckResult versionCheck, String currentAppVersion, String currentLibVersion) {
     showDialog(
@@ -1400,9 +1402,8 @@ class _AboutSectionState extends ConsumerState<_AboutSection> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final developerMode = ref.watch(developerModeProvider);
     final engineAsync = ref.watch(engineProvider);
     final packageInfoAsync = ref.watch(packageInfoProvider);
     final versionCheckAsync = ref.watch(versionCheckProvider);
@@ -1472,14 +1473,9 @@ class _AboutSectionState extends ConsumerState<_AboutSection> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              GestureDetector(
-                onTap: _handleVersionTap,
-                child: Text(
-                  'DNA Messenger v$appVersion',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: developerMode ? DnaColors.textSuccess : null,
-                  ),
-                ),
+              Text(
+                'DNA Messenger v$appVersion',
+                style: theme.textTheme.bodyMedium,
               ),
               const SizedBox(height: 4),
               Text(
