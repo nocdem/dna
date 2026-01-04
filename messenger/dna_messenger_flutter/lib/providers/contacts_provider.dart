@@ -283,11 +283,22 @@ class UnreadCountsNotifier extends AsyncNotifier<Map<String, int>> {
 
   /// Update count for a single contact (used when message received)
   void incrementCount(String fingerprint) {
-    state.whenData((counts) {
+    print('[UnreadCounts] incrementCount called for ${fingerprint.substring(0, 16)}...');
+    print('[UnreadCounts] Current state: $state');
+
+    final currentState = state;
+    if (currentState is AsyncData<Map<String, int>>) {
+      final counts = currentState.value;
       final updated = Map<String, int>.from(counts);
       updated[fingerprint] = (updated[fingerprint] ?? 0) + 1;
       state = AsyncValue.data(updated);
-    });
+      print('[UnreadCounts] Updated count to ${updated[fingerprint]}');
+    } else {
+      // State not ready (loading/error) - initialize with this count
+      // This ensures we don't lose the increment during startup race
+      state = AsyncValue.data({fingerprint: 1});
+      print('[UnreadCounts] State was not ready, initialized with count=1');
+    }
   }
 
   /// Clear count for a contact (used when conversation opened)
