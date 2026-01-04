@@ -375,30 +375,6 @@ int dht_get_batch_sync(
 void dht_batch_results_free(dht_batch_result_t *results, size_t count);
 
 /**
- * Delete value from DHT (DEPRECATED - NO-OP)
- *
- * NOTE: This function is a no-op. OpenDHT does not support direct deletion.
- * DHT values automatically expire based on their TTL (Time To Live):
- *   - PERMANENT keys (identity keys, contact lists): Never expire
- *   - 365-day TTL (name registrations): Expire after 1 year
- *   - 7-day TTL (profiles, groups, offline queue): Expire after 7 days
- *
- * To "delete" a value, either:
- *   1. Wait for natural TTL expiration (recommended)
- *   2. Publish an empty/null value to overwrite (for mutable data)
- *
- * This function exists for API compatibility but returns success without
- * performing any operation.
- *
- * @param ctx DHT context
- * @param key Key (will be hashed to 160-bit infohash)
- * @param key_len Key length
- * @return 0 (always succeeds, but does nothing)
- */
-int dht_delete(dht_context_t *ctx,
-               const uint8_t *key, size_t key_len);
-
-/**
  * Get DHT statistics
  *
  * @param ctx DHT context

@@ -150,19 +150,7 @@ void dht_keyserver_reverse_lookup_async(
     void *userdata
 );
 
-/**
- * Delete public keys from DHT
- * Note: DHT doesn't support true deletion, this is for completeness
- *
- * @param dht_ctx: DHT context
- * @param identity: DNA identity name
- * @return: 0 on success, -1 on error
- */
-int dht_keyserver_delete(
-    dht_context_t *dht_ctx,
-    const char *identity
-);
-
+// NOTE: dht_keyserver_delete removed - DHT doesn't support deletion (values expire via TTL)
 // NOTE: dht_keyserver_free_entry removed - use dna_identity_free instead
 
 // ===== DNA Name System Functions =====

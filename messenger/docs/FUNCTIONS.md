@@ -1000,7 +1000,6 @@ Core DHT (Distributed Hash Table) operations for decentralized storage.
 | `void dht_get_batch(dht_context_t*, const uint8_t**, const size_t*, size_t, dht_batch_callback_t, void*)` | Batch GET (parallel) |
 | `int dht_get_batch_sync(dht_context_t*, const uint8_t**, const size_t*, size_t, dht_batch_result_t**)` | Batch GET (blocking) |
 | `void dht_batch_results_free(dht_batch_result_t*, size_t)` | Free batch results |
-| `int dht_delete(dht_context_t*, const uint8_t*, size_t)` | Delete value (NO-OP) |
 
 ### 9.4 DHT Node Info (`dht_context.h`)
 
@@ -1030,7 +1029,6 @@ Core DHT (Distributed Hash Table) operations for decentralized storage.
 | `int dht_keyserver_update(dht_context_t*, const char*, const uint8_t*, const uint8_t*, const uint8_t*)` | Update public keys |
 | `int dht_keyserver_reverse_lookup(dht_context_t*, const char*, char**)` | Reverse lookup by fingerprint |
 | `void dht_keyserver_reverse_lookup_async(dht_context_t*, const char*, void(*)(char*, void*), void*)` | Async reverse lookup |
-| `int dht_keyserver_delete(dht_context_t*, const char*)` | Delete keys (NO-OP) |
 
 ### 9.7 DNA Name System (`dht_keyserver.h`)
 

@@ -1490,45 +1490,6 @@ extern "C" void dht_batch_results_free(dht_batch_result_t *results, size_t count
 }
 
 /**
- * Delete value from DHT
- */
-extern "C" int dht_delete(dht_context_t *ctx,
-                          const uint8_t *key, size_t key_len) {
-    if (!ctx || !key) {
-        QGP_LOG_ERROR("DHT", "NULL parameter in dht_delete");
-        return -1;
-    }
-
-    if (!ctx->running) {
-        QGP_LOG_ERROR("DHT", "Node not running in dht_delete");
-        return -1;
-    }
-
-    try {
-        // Hash the key
-        auto hash = dht::InfoHash::get(key, key_len);
-
-        // Phase 6.5: dht_delete() is a NO-OP - documented behavior
-        // OpenDHT does not support direct deletion. Values expire naturally based on TTL:
-        //   - PERMANENT: Never expire (identity keys, contact lists)
-        //   - 365-day TTL: Name registrations
-        //   - 7-day TTL: Profiles, groups, offline queue
-        //
-        // To "delete" a value:
-        //   1. Wait for natural TTL expiration (recommended)
-        //   2. Publish empty/null value to overwrite (for mutable data)
-
-        QGP_LOG_WARN("DHT", "dht_delete() is a no-op (key=%s)", hash.toString().c_str());
-        QGP_LOG_WARN("DHT", "Values expire automatically based on TTL. See dht_context.h documentation.");
-
-        return 0;  // Always succeed (no-op is intentional)
-    } catch (const std::exception& e) {
-        QGP_LOG_ERROR("DHT", "Exception in dht_delete: %s", e.what());
-        return -1;
-    }
-}
-
-/**
  * Get this DHT node's ID (SHA3-512 hash of public key)
  */
 extern "C" int dht_get_node_id(dht_context_t *ctx, char *node_id_out) {

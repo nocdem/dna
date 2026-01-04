@@ -332,33 +332,5 @@ int dht_keyserver_update(
     return 0;
 }
 
-// Delete public keys from DHT
-int dht_keyserver_delete(
-    dht_context_t *dht_ctx,
-    const char *identity
-) {
-    if (!dht_ctx || !identity) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments\n");
-        return -1;
-    }
-
-    // Compute DHT key (use fingerprint if valid, otherwise treat as name for lookup)
-    char dht_key[129];
-    if (is_valid_fingerprint(identity)) {
-        // Direct fingerprint
-        compute_dht_key_by_fingerprint(identity, dht_key);
-    } else {
-        // Name - resolve to fingerprint first
-        // For now, just fail since deletion without fingerprint is ambiguous
-        QGP_LOG_ERROR(LOG_TAG, "Delete requires fingerprint (128 hex chars), not name\n");
-        return -1;
-    }
-
-    // Note: DHT doesn't support true deletion, but we can try to overwrite with tombstone
-    // For now, just return success (keys will expire naturally if DHT implementation supports it)
-    QGP_LOG_INFO(LOG_TAG, "Delete not fully supported by DHT (keys remain until natural expiry)\n");
-
-    return 0;
-}
-
+// NOTE: dht_keyserver_delete removed - DHT doesn't support deletion (values expire via TTL)
 // NOTE: dht_keyserver_free_entry removed - use dna_identity_free instead
