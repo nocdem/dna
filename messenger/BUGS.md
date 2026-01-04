@@ -13,7 +13,12 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-(none)
+- [ ] **[FLUTTER] P3 - Rapid message sending delays message delivery** - When sending multiple messages quickly from laptop to phone, messages don't arrive promptly. Messages eventually appear but with significant delay. Slow-paced messages (1 per second) arrive reliably within 1 second.
+
+  **Root cause analysis:**
+  1. **Sender side:** `dht_queue_message()` uses global mutex `g_queue_mutex` - each message must wait for previous DHT PUT to complete (hundreds of ms each). This serializes rapid sends correctly but adds latency.
+  2. **Receiver side:** Multiple `OUTBOX_UPDATED` events fire in rapid succession. Each triggers `checkOfflineMessages()` which starts parallel async DHT fetches. The receiver may poll before all messages are in DHT, or race conditions in parallel fetches cause delays.
+  3. **Possible fix:** Debounce `OutboxUpdatedEvent` handling in `event_handler.dart` - coalesce rapid events into single `checkOfflineMessages()` call with 300-500ms delay after last event.
 
 
 ## Fixed Bugs
