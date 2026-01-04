@@ -316,14 +316,9 @@ class EventHandler {
     final profile = profileCache[contactFingerprint];
 
     // Use display name if available, otherwise truncated fingerprint
-    String senderName;
-    if (profile != null && profile.displayName.isNotEmpty) {
-      senderName = profile.displayName;
-    } else if (profile != null && profile.registeredName.isNotEmpty) {
-      senderName = profile.registeredName;
-    } else {
-      senderName = '${contactFingerprint.substring(0, 8)}...';
-    }
+    final senderName = (profile != null && profile.displayName.isNotEmpty)
+        ? profile.displayName
+        : '${contactFingerprint.substring(0, 8)}...';
 
     // Show the notification
     NotificationService.showMessageNotification(
