@@ -5,6 +5,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import '../ffi/dna_engine.dart';
+import '../utils/logger.dart';
 
 /// Main engine provider - singleton instance
 final engineProvider = AsyncNotifierProvider<EngineNotifier, DnaEngine>(
@@ -47,6 +48,9 @@ class EngineNotifier extends AsyncNotifier<DnaEngine> {
     }
 
     final engine = await DnaEngine.create(dataDir: dataDir);
+
+    // Initialize logger with engine for Flutter -> dna.log logging
+    logSetEngine(engine);
 
     ref.onDispose(() {
       engine.dispose();

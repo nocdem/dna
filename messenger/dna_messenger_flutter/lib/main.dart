@@ -14,9 +14,13 @@ import 'services/notification_service.dart';
 import 'theme/dna_theme.dart';
 import 'utils/window_state.dart';
 import 'utils/lifecycle_observer.dart';
+import 'utils/logger.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Setup error handlers to capture exceptions to log file
+  setupErrorHandlers();
 
   // Initialize SQLite FFI for desktop platforms
   if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
@@ -32,11 +36,14 @@ void main() async {
     await windowStateManager.init();
   }
 
-  runApp(
-    const ProviderScope(
-      child: DnaMessengerApp(),
-    ),
-  );
+  // Run app with error zone to capture uncaught exceptions
+  runAppWithErrorLogging(() {
+    runApp(
+      const ProviderScope(
+        child: DnaMessengerApp(),
+      ),
+    );
+  });
 }
 
 class DnaMessengerApp extends ConsumerWidget {
