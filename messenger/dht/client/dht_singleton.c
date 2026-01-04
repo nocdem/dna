@@ -3,11 +3,14 @@
  */
 
 #include "dht_singleton.h"
+#include "dht_identity.h"
 #include "../core/dht_context.h"
+#include "../core/dht_listen.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 #include "dna_config.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 
@@ -23,6 +26,10 @@ static bool g_config_loaded = false;
 // Stored callback for re-registration after reinit
 static dht_status_callback_t g_status_callback = NULL;
 static void *g_status_callback_user_data = NULL;
+
+// Stored identity buffer for reinit after network change
+static uint8_t *g_identity_buffer = NULL;
+static size_t g_identity_buffer_size = 0;
 
 static void ensure_config(void) {
     if (!g_config_loaded) {
@@ -148,6 +155,20 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 
     QGP_LOG_INFO(LOG_TAG, "Initializing global DHT with user identity...");
 
+    // Store identity for reinit after network change
+    // Export BEFORE starting DHT (which takes ownership of identity)
+    if (g_identity_buffer) {
+        free(g_identity_buffer);
+        g_identity_buffer = NULL;
+        g_identity_buffer_size = 0;
+    }
+    if (dht_identity_export_to_buffer(user_identity, &g_identity_buffer, &g_identity_buffer_size) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to store identity for reinit (will need app restart on network change)");
+        // Continue anyway - just means reinit won't work
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "Stored identity for network change reinit (%zu bytes)", g_identity_buffer_size);
+    }
+
     // Configure DHT
     dht_config_t dht_config = {0};
     dht_config.port = 0;  // Let OS assign random port (clients don't need fixed port)
@@ -226,6 +247,114 @@ void dht_singleton_cleanup(void)
         QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP DONE <<<");
     } else {
         QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP: no context to clean <<<");
+    }
+
+    // Free stored identity buffer
+    if (g_identity_buffer) {
+        free(g_identity_buffer);
+        g_identity_buffer = NULL;
+        g_identity_buffer_size = 0;
+    }
+}
+
+int dht_singleton_reinit(void)
+{
+    QGP_LOG_WARN(LOG_TAG, ">>> REINIT: Network change detected, restarting DHT <<<");
+
+    // Check if we have a stored identity
+    if (!g_identity_buffer || g_identity_buffer_size == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "No stored identity for reinit - cannot restart DHT");
+        return -1;
+    }
+
+    // Cancel all DHT listeners before stopping
+    if (g_dht_context) {
+        dht_cancel_all_listeners(g_dht_context);
+    }
+
+    // Stop and free current DHT context (but keep identity buffer)
+    if (g_dht_context) {
+        QGP_LOG_INFO(LOG_TAG, "Stopping current DHT context...");
+        dht_context_free(g_dht_context);
+        g_dht_context = NULL;
+    }
+
+    // Small delay to allow network to stabilize
+    qgp_platform_sleep_ms(500);
+
+    // Import identity from stored buffer
+    dht_identity_t *identity = NULL;
+    if (dht_identity_import_from_buffer(g_identity_buffer, g_identity_buffer_size, &identity) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to restore identity from buffer");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Identity restored, creating new DHT context...");
+
+    // Configure new DHT
+    dht_config_t dht_config = {0};
+    dht_config.port = 0;
+    dht_config.is_bootstrap = false;
+    strncpy(dht_config.identity, "dna-user", sizeof(dht_config.identity) - 1);
+
+    if (g_config.bootstrap_count > 0) {
+        strncpy(dht_config.bootstrap_nodes[0], g_config.bootstrap_nodes[0],
+                sizeof(dht_config.bootstrap_nodes[0]) - 1);
+        dht_config.bootstrap_count = 1;
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "No bootstrap nodes configured");
+        dht_identity_free(identity);
+        return -1;
+    }
+
+    dht_config.persistence_path[0] = '\0';
+
+    // Create new DHT context
+    g_dht_context = dht_context_new(&dht_config);
+    if (!g_dht_context) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create new DHT context");
+        dht_identity_free(identity);
+        return -1;
+    }
+
+    // Start DHT with restored identity
+    if (dht_context_start_with_identity(g_dht_context, identity) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT with restored identity");
+        dht_context_free(g_dht_context);
+        g_dht_context = NULL;
+        // Note: identity is freed by dht_context_free on failure
+        return -1;
+    }
+
+    // Re-register status callback
+    if (g_status_callback) {
+        dht_context_set_status_callback(g_dht_context, g_status_callback, g_status_callback_user_data);
+        QGP_LOG_INFO(LOG_TAG, "Re-registered status callback");
+    }
+
+    // Wait for DHT to connect
+    QGP_LOG_INFO(LOG_TAG, "Waiting for DHT reconnection...");
+    int wait_count = 0;
+    while (!dht_context_is_ready(g_dht_context) && wait_count < 50) {
+        qgp_platform_sleep_ms(100);
+        wait_count++;
+    }
+
+    if (dht_context_is_ready(g_dht_context)) {
+        QGP_LOG_WARN(LOG_TAG, ">>> REINIT SUCCESS: DHT reconnected after %d00ms <<<", wait_count);
+
+        // Resubscribe all listeners
+        size_t resubscribed = dht_resubscribe_all_listeners(g_dht_context);
+        QGP_LOG_INFO(LOG_TAG, "Resubscribed %zu listeners", resubscribed);
+
+        // Fire connected callback
+        if (g_status_callback) {
+            g_status_callback(true, g_status_callback_user_data);
+        }
+        return 0;
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "DHT not connected after 5s (will retry in background)");
+        return 0;  // Still return success - connection may happen later
     }
 }
 

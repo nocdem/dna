@@ -908,3 +908,17 @@ Java_io_cpunk_dna_DNAEngine_nativeRefreshPresence(JNIEnv *env, jobject thiz, job
     jni_callback_ctx_t *ctx = create_callback_ctx(env, callback);
     return (jlong)dna_engine_refresh_presence(g_engine, jni_completion_callback, ctx);
 }
+
+/* ============================================================================
+ * NETWORK CHANGE HANDLING
+ * ============================================================================ */
+
+JNIEXPORT jint JNICALL
+Java_io_cpunk_dna_DNAEngine_nativeNetworkChanged(JNIEnv *env, jobject thiz) {
+    if (!g_engine) {
+        LOGE("nativeNetworkChanged: engine not initialized");
+        return -1;
+    }
+    LOGI("Network change detected - reinitializing DHT");
+    return dna_engine_network_changed(g_engine);
+}

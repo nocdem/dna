@@ -247,6 +247,18 @@ public class DNAEngine {
         return nativeRefreshPresence(callback);
     }
 
+    /**
+     * Handle network connectivity change
+     *
+     * Call when network connectivity changes (WiFi to cellular, etc.).
+     * Reinitializes the DHT connection with a fresh socket.
+     *
+     * @return 0 on success, -1 on error
+     */
+    public int networkChanged() {
+        return nativeNetworkChanged();
+    }
+
     // ========== CALLBACKS ==========
 
     public interface CompletionCallback {
@@ -333,4 +345,5 @@ public class DNAEngine {
 
     private native boolean nativeIsPeerOnline(String fingerprint);
     private native long nativeRefreshPresence(CompletionCallback callback);
+    private native int nativeNetworkChanged();
 }

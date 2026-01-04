@@ -143,6 +143,9 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_sync_groups(...)` | Sync groups from DHT |
 | `int dna_engine_request_turn_credentials(dna_engine_t*, int)` | Request TURN relay credentials |
 | `dna_request_id_t dna_engine_get_registered_name(...)` | Get registered name for current identity |
+| `void dna_engine_pause_presence(dna_engine_t*)` | Pause presence updates (app backgrounded) |
+| `void dna_engine_resume_presence(dna_engine_t*)` | Resume presence updates (app foregrounded) |
+| `int dna_engine_network_changed(dna_engine_t*)` | Reinitialize DHT after network change (WiFi↔Cellular) |
 
 ### 1.9 Outbox Listeners
 
@@ -1209,6 +1212,7 @@ High-level DHT client operations including singleton management, identity backup
 | `bool dht_singleton_is_initialized(void)` | Check if singleton is initialized |
 | `bool dht_singleton_is_ready(void)` | Check if DHT is connected and ready |
 | `void dht_singleton_cleanup(void)` | Cleanup global DHT singleton |
+| `int dht_singleton_reinit(void)` | Reinitialize DHT after network change (restarts with same identity) |
 | `void dht_singleton_set_status_callback(dht_status_callback_t, void*)` | Set connection status callback |
 
 ### 11.2 DHT Identity (`dht_identity.h`)

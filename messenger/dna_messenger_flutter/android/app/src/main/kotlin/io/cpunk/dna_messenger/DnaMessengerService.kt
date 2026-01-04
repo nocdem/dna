@@ -4,6 +4,10 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -16,6 +20,7 @@ import java.util.TimerTask
  *
  * Keeps the DHT connection alive when the app is backgrounded.
  * Polls for offline messages every 60 seconds.
+ * Monitors network changes and notifies Flutter to reinitialize DHT.
  *
  * Phase 14: Android background execution for reliable DHT-only messaging.
  */
@@ -25,6 +30,7 @@ class DnaMessengerService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "dna_messenger_service"
         private const val POLL_INTERVAL_MS = 60_000L  // 60 seconds
+        private const val NETWORK_CHANGE_DEBOUNCE_MS = 2000L  // 2 seconds debounce
 
         @Volatile
         private var isRunning = false
@@ -34,6 +40,10 @@ class DnaMessengerService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var pollTimer: Timer? = null
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var lastNetworkChangeTime: Long = 0
+    private var currentNetworkId: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -77,10 +87,12 @@ class DnaMessengerService : Service() {
 
         acquireWakeLock()
         startPolling()
+        registerNetworkCallback()
     }
 
     private fun stopForegroundService() {
         android.util.Log.i(TAG, "Stopping foreground service")
+        unregisterNetworkCallback()
         stopPolling()
         releaseWakeLock()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -192,5 +204,94 @@ class DnaMessengerService : Service() {
         android.os.Handler(mainLooper).postDelayed({
             updateNotification("DNA Messenger running")
         }, 2000)
+    }
+
+    // ========== NETWORK MONITORING ==========
+
+    private fun registerNetworkCallback() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+            android.util.Log.w(TAG, "Network monitoring not available on API < 21")
+            return
+        }
+
+        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                val networkId = network.toString()
+                android.util.Log.i(TAG, "Network available: $networkId (previous: $currentNetworkId)")
+
+                // Only trigger reconnect if we're switching networks (not initial connect)
+                if (currentNetworkId != null && currentNetworkId != networkId) {
+                    handleNetworkChange(networkId)
+                }
+                currentNetworkId = networkId
+            }
+
+            override fun onLost(network: Network) {
+                val networkId = network.toString()
+                android.util.Log.i(TAG, "Network lost: $networkId")
+
+                // Clear current network if it's the one that was lost
+                if (currentNetworkId == networkId) {
+                    currentNetworkId = null
+                }
+            }
+
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                // Log network type changes (WiFi <-> Cellular)
+                val hasWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                val hasCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                android.util.Log.d(TAG, "Network capabilities changed: wifi=$hasWifi, cellular=$hasCellular")
+            }
+        }
+
+        try {
+            connectivityManager?.registerNetworkCallback(request, networkCallback!!)
+            android.util.Log.i(TAG, "Network callback registered")
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Failed to register network callback: ${e.message}")
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        networkCallback?.let { callback ->
+            try {
+                connectivityManager?.unregisterNetworkCallback(callback)
+                android.util.Log.i(TAG, "Network callback unregistered")
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "Failed to unregister network callback: ${e.message}")
+            }
+        }
+        networkCallback = null
+        connectivityManager = null
+        currentNetworkId = null
+    }
+
+    private fun handleNetworkChange(newNetworkId: String) {
+        val now = System.currentTimeMillis()
+
+        // Debounce rapid network changes (e.g., WiFi disconnect/cellular connect)
+        if (now - lastNetworkChangeTime < NETWORK_CHANGE_DEBOUNCE_MS) {
+            android.util.Log.d(TAG, "Network change debounced (too soon after previous)")
+            return
+        }
+        lastNetworkChangeTime = now
+
+        android.util.Log.i(TAG, "Network changed to $newNetworkId - notifying Flutter to reinit DHT")
+        updateNotification("Reconnecting...")
+
+        // Broadcast intent to Flutter to trigger DHT reconnect
+        val intent = Intent("io.cpunk.dna_messenger.NETWORK_CHANGED")
+        sendBroadcast(intent)
+
+        // Reset notification after delay
+        android.os.Handler(mainLooper).postDelayed({
+            updateNotification("DNA Messenger running")
+        }, 3000)
     }
 }

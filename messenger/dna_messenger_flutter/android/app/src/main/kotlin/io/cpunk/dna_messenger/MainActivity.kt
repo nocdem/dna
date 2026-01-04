@@ -28,6 +28,15 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
+    // Broadcast receiver for network change notifications
+    private val networkReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            android.util.Log.i("MainActivity", "Received network change broadcast from service")
+            // Notify Flutter to reinitialize DHT connection
+            serviceChannel?.notifyNetworkChanged()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -35,11 +44,15 @@ class MainActivity : FlutterFragmentActivity() {
         copyCACertificateBundle()
 
         // Register broadcast receiver for service messages
-        val filter = IntentFilter("io.cpunk.dna_messenger.POLL_MESSAGES")
+        val pollFilter = IntentFilter("io.cpunk.dna_messenger.POLL_MESSAGES")
+        val networkFilter = IntentFilter("io.cpunk.dna_messenger.NETWORK_CHANGED")
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(messageReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(messageReceiver, pollFilter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(networkReceiver, networkFilter, Context.RECEIVER_NOT_EXPORTED)
         } else {
-            registerReceiver(messageReceiver, filter)
+            registerReceiver(messageReceiver, pollFilter)
+            registerReceiver(networkReceiver, networkFilter)
         }
     }
 
@@ -54,8 +67,9 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onDestroy() {
         try {
             unregisterReceiver(messageReceiver)
+            unregisterReceiver(networkReceiver)
         } catch (e: Exception) {
-            // Receiver may not be registered
+            // Receivers may not be registered
         }
         super.onDestroy()
     }

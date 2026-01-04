@@ -365,6 +365,40 @@ void dht_cancel_all_listeners(ctx);
 size_t dht_resubscribe_all_listeners(ctx);
 ```
 
+**Network Change Handling (v0.3.93+):**
+
+When network connectivity changes (WiFi ↔ Cellular), the DHT UDP socket becomes invalid.
+The ForegroundService monitors network changes and triggers DHT reinitialization:
+
+```kotlin
+// DnaMessengerService.kt - Network monitoring
+private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+    override fun onAvailable(network: Network) {
+        if (currentNetworkId != null && currentNetworkId != network.toString()) {
+            // Network switched - notify Flutter to reinit DHT
+            sendBroadcast(Intent("io.cpunk.dna_messenger.NETWORK_CHANGED"))
+        }
+        currentNetworkId = network.toString()
+    }
+}
+```
+
+```c
+// C Layer - DHT Reinit
+int dht_singleton_reinit(void);       // Restart DHT with stored identity
+int dna_engine_network_changed(engine); // High-level API for network change
+```
+
+```dart
+// Flutter - Handle network change
+void _handleNetworkChange() async {
+  final result = engine.networkChanged();
+  if (result == 0) {
+    await _pollOfflineMessages();  // Check for messages during switch
+  }
+}
+```
+
 ---
 
 ## Remaining Work

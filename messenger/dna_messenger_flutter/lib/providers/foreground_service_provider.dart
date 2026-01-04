@@ -111,8 +111,32 @@ class ForegroundServiceNotifier extends StateNotifier<bool> {
         // Refresh contacts to update UI
         _ref.invalidate(contactsProvider);
         break;
+      case 'onNetworkChanged':
+        // Network changed (WiFi <-> Cellular) - reinitialize DHT
+        print('ForegroundService: Network changed - reinitializing DHT');
+        await _handleNetworkChange();
+        break;
     }
     return null;
+  }
+
+  /// Handle network connectivity change
+  Future<void> _handleNetworkChange() async {
+    try {
+      final engine = await _ref.read(engineProvider.future);
+      final result = engine.networkChanged();
+      if (result == 0) {
+        print('ForegroundService: DHT reinitialized successfully');
+        // Poll for any messages that arrived during network switch
+        await _pollOfflineMessages();
+        // Refresh contacts to update UI
+        _ref.invalidate(contactsProvider);
+      } else {
+        print('ForegroundService: DHT reinit failed with code $result');
+      }
+    } catch (e) {
+      print('ForegroundService: Network change error - $e');
+    }
   }
 
   /// Start the foreground service

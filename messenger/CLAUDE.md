@@ -1,8 +1,8 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-01-04 | **Status:** BETA | **Phase:** 7 (Flutter UI)
+**Last Updated:** 2025-12-31 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
 
-**Versions:** Library v0.3.95 | Flutter v0.99.36 | Nodus v0.4.3
+**Versions:** Library v0.3.97 | Flutter v0.99.34 | Nodus v0.4.3
 
 ---
 
@@ -65,28 +65,12 @@ QGP_LOG_ERROR(LOG_TAG, "Error message: %s", error_str);
 - **ALWAYS** define `LOG_TAG` at top of file: `#define LOG_TAG "MODULE_NAME"`
 - Log levels: DEBUG < INFO < WARN < ERROR
 
-## BETA PROJECT - BRANCHING WORKFLOW
-This project is now in **BETA**. Use proper branching:
-
-**For Bug Fixes:**
-1. Create a new branch from `main`: `git checkout -b fix/description main`
-2. Implement and test the fix
-3. Merge to `main` only when confirmed working
-4. Delete the fix branch after merge
-
-**For New Features:**
-1. Work on `dev` branch for ongoing development
-2. Create feature branches from `dev`: `git checkout -b feature/name dev`
-3. Merge completed features back to `dev`
-4. `dev` is merged to `main` for releases
-
-**Branch Naming:**
-- `fix/short-description` - Bug fixes
-- `feature/short-description` - New features
-- `dev` - Development branch
-- `main` - Stable release branch
-
-**NEVER push untested code directly to `main`.**
+## ALPHA PROJECT - HARD CUTOFFS ONLY
+This project is in ALPHA. We use hard cutoffs for all changes:
+- NO backward compatibility
+- NO migration scripts
+- NO legacy support
+- Breaking changes are expected and acceptable
 
 ## IMGUI IS DEPRECATED
 The ImGui GUI (`imgui_gui/`) is **NO LONGER USED**. Do not modify or reference it.
@@ -310,8 +294,8 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.3.95 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.36+9936 | Flutter/Dart code changes (lib/, assets/) |
+| C Library | `include/dna/version.h` | v0.3.97 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.34+9934 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 | Nodus server changes (vendor/opendht-pq/tools/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
