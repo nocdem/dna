@@ -47,8 +47,8 @@ static int g_dirs_initialized = 0;
 
 const char* qgp_platform_app_data_dir(void) {
     if (!g_dirs_initialized || !g_app_data_dir[0]) {
-        fprintf(stderr, "[DNA] ERROR: qgp_platform_set_app_dirs() not called!\n");
-        fprintf(stderr, "[DNA] Android apps must call this during JNI initialization\n");
+        QGP_LOG_ERROR(LOG_TAG, "qgp_platform_set_app_dirs() not called!");
+        QGP_LOG_ERROR(LOG_TAG, "Android apps must call this during JNI initialization");
         return NULL;
     }
     return g_app_data_dir;
@@ -56,7 +56,7 @@ const char* qgp_platform_app_data_dir(void) {
 
 const char* qgp_platform_cache_dir(void) {
     if (!g_dirs_initialized || !g_app_cache_dir[0]) {
-        fprintf(stderr, "[DNA] ERROR: qgp_platform_set_app_dirs() not called!\n");
+        QGP_LOG_ERROR(LOG_TAG, "qgp_platform_set_app_dirs() not called!");
         return NULL;
     }
     return g_app_cache_dir;
@@ -64,14 +64,14 @@ const char* qgp_platform_cache_dir(void) {
 
 int qgp_platform_set_app_dirs(const char *data_dir, const char *cache_dir) {
     if (!data_dir) {
-        fprintf(stderr, "[DNA] ERROR: data_dir cannot be NULL\n");
+        QGP_LOG_ERROR(LOG_TAG, "data_dir cannot be NULL");
         return -1;
     }
 
     /* Copy data directory */
     size_t data_len = strlen(data_dir);
     if (data_len >= sizeof(g_app_data_dir)) {
-        fprintf(stderr, "[DNA] ERROR: data_dir path too long\n");
+        QGP_LOG_ERROR(LOG_TAG, "data_dir path too long");
         return -1;
     }
     memcpy(g_app_data_dir, data_dir, data_len + 1);
@@ -80,7 +80,7 @@ int qgp_platform_set_app_dirs(const char *data_dir, const char *cache_dir) {
     if (cache_dir) {
         size_t cache_len = strlen(cache_dir);
         if (cache_len >= sizeof(g_app_cache_dir)) {
-            fprintf(stderr, "[DNA] ERROR: cache_dir path too long\n");
+            QGP_LOG_ERROR(LOG_TAG, "cache_dir path too long");
             return -1;
         }
         memcpy(g_app_cache_dir, cache_dir, cache_len + 1);
@@ -95,9 +95,7 @@ int qgp_platform_set_app_dirs(const char *data_dir, const char *cache_dir) {
 
     g_dirs_initialized = 1;
 
-    fprintf(stderr, "[DNA] Initialized:\n");
-    fprintf(stderr, "[DNA]   Data: %s\n", g_app_data_dir);
-    fprintf(stderr, "[DNA]   Cache: %s\n", g_app_cache_dir);
+    QGP_LOG_INFO(LOG_TAG, "Initialized: Data=%s Cache=%s", g_app_data_dir, g_app_cache_dir);
 
     return 0;
 }
@@ -122,7 +120,7 @@ int qgp_platform_random(uint8_t *buf, size_t len) {
     /* Fallback: /dev/urandom */
     FILE *fp = fopen("/dev/urandom", "rb");
     if (!fp) {
-        perror("[DNA] Failed to open /dev/urandom");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open /dev/urandom: %s", strerror(errno));
         return -1;
     }
 
@@ -130,7 +128,7 @@ int qgp_platform_random(uint8_t *buf, size_t len) {
     fclose(fp);
 
     if (bytes_read != len) {
-        fprintf(stderr, "[DNA] Failed to read %zu bytes from /dev/urandom\n", len);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to read %zu bytes from /dev/urandom", len);
         return -1;
     }
 
@@ -304,7 +302,7 @@ const char* qgp_platform_home_dir(void) {
         return home;
     }
 
-    fprintf(stderr, "[DNA] WARNING: qgp_platform_home_dir() called before initialization\n");
+    QGP_LOG_WARN(LOG_TAG, "qgp_platform_home_dir() called before initialization");
     return "/data/local/tmp";  /* Emergency fallback */
 }
 

@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "crypto/utils/qgp_types.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "SIGNATURE"
 
 // ============================================================================
 // SIGNATURE MEMORY MANAGEMENT
@@ -89,7 +92,7 @@ int qgp_signature_verify_size(const qgp_signature_t *sig, size_t expected_size) 
 
     size_t actual_size = qgp_signature_get_size(sig);
     if (actual_size != expected_size) {
-        fprintf(stderr, "qgp_signature_verify_size: Size mismatch (expected %zu, got %zu)\n",
+        QGP_LOG_ERROR(LOG_TAG, "verify_size: Size mismatch (expected %zu, got %zu)",
                 expected_size, actual_size);
         return -1;
     }
@@ -141,7 +144,7 @@ size_t qgp_signature_serialize(const qgp_signature_t *sig, uint8_t *buffer) {
  */
 int qgp_signature_deserialize(const uint8_t *buffer, size_t buffer_size, qgp_signature_t **sig_out) {
     if (!buffer || !sig_out || buffer_size < 3) {
-        fprintf(stderr, "qgp_signature_deserialize: Invalid arguments\n");
+        QGP_LOG_ERROR(LOG_TAG, "deserialize: Invalid arguments");
         return -1;
     }
 
@@ -157,7 +160,7 @@ int qgp_signature_deserialize(const uint8_t *buffer, size_t buffer_size, qgp_sig
     // Validate size
     size_t expected_total = 3 + sig_size;
     if (buffer_size < expected_total) {
-        fprintf(stderr, "qgp_signature_deserialize: Buffer too small (expected %zu, got %zu)\n",
+        QGP_LOG_ERROR(LOG_TAG, "deserialize: Buffer too small (expected %zu, got %zu)",
                 expected_total, buffer_size);
         return -1;
     }
@@ -165,7 +168,7 @@ int qgp_signature_deserialize(const uint8_t *buffer, size_t buffer_size, qgp_sig
     // Create signature structure (no public key, pkey_size = 0)
     qgp_signature_t *sig = qgp_signature_new(type, 0, sig_size);
     if (!sig) {
-        fprintf(stderr, "qgp_signature_deserialize: Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "deserialize: Memory allocation failed");
         return -1;
     }
 

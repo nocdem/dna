@@ -6,7 +6,10 @@
 
 #include "qgp.h"
 #include "crypto/utils/qgp_types.h"  // For qgp_base64_encode/decode
+#include "crypto/utils/qgp_log.h"
 #include <time.h>
+
+#define LOG_TAG "ARMOR"
 
 #define ARMOR_LINE_LENGTH 64  // Standard base64 line length
 
@@ -62,7 +65,7 @@ int write_armored_file(
     // Open output file
     f = fopen(output_path, "w");
     if (!f) {
-        fprintf(stderr, "Error: Cannot open file for writing: %s\n", output_path);
+        QGP_LOG_ERROR(LOG_TAG, "Cannot open file for writing: %s", output_path);
         return -1;
     }
 
@@ -79,7 +82,7 @@ int write_armored_file(
     b64_data = qgp_base64_encode(data, data_size, &encoded);
 
     if (!b64_data || encoded == 0) {
-        fprintf(stderr, "Error: Base64 encoding failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Base64 encoding failed");
         goto cleanup;
     }
 
@@ -143,7 +146,7 @@ int read_armored_file(
     // Open file
     f = fopen(input_path, "r");
     if (!f) {
-        fprintf(stderr, "Error: Cannot open file: %s\n", input_path);
+        QGP_LOG_ERROR(LOG_TAG, "Cannot open file: %s", input_path);
         return -1;
     }
 
@@ -151,7 +154,7 @@ int read_armored_file(
     headers = (char**)calloc(header_capacity, sizeof(char*));
     b64_data = (char*)malloc(b64_capacity);
     if (!headers || !b64_data) {
-        fprintf(stderr, "Error: Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
         goto cleanup;
     }
 
@@ -174,13 +177,13 @@ int read_armored_file(
             const char *type_start = line + 15;
             const char *type_end = strstr(type_start, "-----");
             if (!type_end) {
-                fprintf(stderr, "Error: Invalid armor begin marker\n");
+                QGP_LOG_ERROR(LOG_TAG, "Invalid armor begin marker");
                 goto cleanup;
             }
             size_t type_len = type_end - type_start;
             type = (char*)malloc(type_len + 1);
             if (!type) {
-                fprintf(stderr, "Error: Memory allocation failed\n");
+                QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
                 goto cleanup;
             }
             strncpy(type, type_start, type_len);
@@ -208,7 +211,7 @@ int read_armored_file(
                 header_capacity *= 2;
                 char **new_headers = (char**)realloc(headers, header_capacity * sizeof(char*));
                 if (!new_headers) {
-                    fprintf(stderr, "Error: Memory allocation failed\n");
+                    QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
                     goto cleanup;
                 }
                 headers = new_headers;
@@ -225,7 +228,7 @@ int read_armored_file(
                 b64_capacity *= 2;
                 char *new_b64_data = (char*)realloc(b64_data, b64_capacity);
                 if (!new_b64_data) {
-                    fprintf(stderr, "Error: Memory allocation failed\n");
+                    QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
                     goto cleanup;
                 }
                 b64_data = new_b64_data;
@@ -239,7 +242,7 @@ int read_armored_file(
     decoded_data = qgp_base64_decode(b64_data, &decoded_size);
 
     if (!decoded_data || decoded_size == 0) {
-        fprintf(stderr, "Error: Base64 decoding failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Base64 decoding failed");
         goto cleanup;
     }
 
