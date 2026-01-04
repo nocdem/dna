@@ -69,8 +69,6 @@ typedef uint64_t dna_request_id_t;
 #define DNA_ENGINE_ERROR_NOT_INITIALIZED (-101)
 #define DNA_ENGINE_ERROR_NETWORK        (-102)
 #define DNA_ENGINE_ERROR_DATABASE       (-103)
-#define DNA_ENGINE_ERROR_TIMEOUT        (-104)
-#define DNA_ENGINE_ERROR_BUSY           (-105)
 #define DNA_ENGINE_ERROR_NO_IDENTITY    (-106)
 #define DNA_ENGINE_ERROR_ALREADY_EXISTS (-107)
 #define DNA_ENGINE_ERROR_PERMISSION     (-108)
@@ -1230,7 +1228,7 @@ DNA_API dna_request_id_t dna_engine_send_message(
  * @param recipient_fingerprint Recipient fingerprint
  * @param message              Message text
  * @return                     >= 0: queue slot ID (success)
- *                             -1: queue full (DNA_ENGINE_ERROR_BUSY)
+ *                             -1: queue full
  *                             -2: invalid args (DNA_ENGINE_ERROR_NOT_INITIALIZED)
  */
 DNA_API int dna_engine_queue_message(

@@ -188,8 +188,6 @@ const char* dna_engine_error_string(int error) {
     if (error == DNA_ENGINE_ERROR_NOT_INITIALIZED) return "Not initialized";
     if (error == DNA_ENGINE_ERROR_NETWORK) return "Network error";
     if (error == DNA_ENGINE_ERROR_DATABASE) return "Database error";
-    if (error == DNA_ENGINE_ERROR_TIMEOUT) return "Operation timed out";
-    if (error == DNA_ENGINE_ERROR_BUSY) return "Engine busy";
     if (error == DNA_ENGINE_ERROR_NO_IDENTITY) return "No identity loaded";
     if (error == DNA_ENGINE_ERROR_ALREADY_EXISTS) return "Already exists";
     if (error == DNA_ENGINE_ERROR_PERMISSION) return "Permission denied";

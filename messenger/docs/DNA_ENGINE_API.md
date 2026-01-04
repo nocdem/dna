@@ -1049,7 +1049,7 @@ Use this for fire-and-forget messaging with optimistic UI patterns.
 
 **Returns:**
 - `>= 0` - Queue slot ID (success)
-- `-1` - Queue full (`DNA_ENGINE_ERROR_BUSY`)
+- `-1` - Queue full
 - `-2` - Invalid args or not initialized
 
 **Usage (Optimistic UI):**
@@ -1460,8 +1460,6 @@ engine.debugLogClear();
 | -101 | `DNA_ENGINE_ERROR_NOT_INITIALIZED` | Engine not initialized |
 | -102 | `DNA_ENGINE_ERROR_NETWORK` | Network error |
 | -103 | `DNA_ENGINE_ERROR_DATABASE` | Database error |
-| -104 | `DNA_ENGINE_ERROR_TIMEOUT` | Operation timed out |
-| -105 | `DNA_ENGINE_ERROR_BUSY` | Engine busy |
 | -106 | `DNA_ENGINE_ERROR_NO_IDENTITY` | No identity loaded |
 | -107 | `DNA_ENGINE_ERROR_ALREADY_EXISTS` | Already exists |
 | -108 | `DNA_ENGINE_ERROR_PERMISSION` | Permission denied |
