@@ -561,6 +561,9 @@ void qgp_log_file_enable(bool enabled) {
     g_file_logging_enabled = enabled;
 
     if (enabled && !g_log_file) {
+        /* Reset init flag to allow retry - important for Android where
+         * ensure_config_loaded() may be called before app dirs are set */
+        g_file_init_attempted = false;
         init_file_logging();
     } else if (!enabled && g_log_file) {
         fclose(g_log_file);
