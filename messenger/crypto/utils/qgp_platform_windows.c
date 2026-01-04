@@ -343,18 +343,12 @@ const char* qgp_platform_app_data_dir(void) {
         return g_app_data_dir;
     }
 
-    /* Default for Windows: %APPDATA%\DNA */
-    const char *appdata = getenv("APPDATA");
-    if (!appdata) {
-        /* Fallback to home directory */
-        const char *home = qgp_platform_home_dir();
-        if (!home) {
-            return NULL;
-        }
-        snprintf(g_app_data_dir, sizeof(g_app_data_dir), "%s\\.dna", home);
-    } else {
-        snprintf(g_app_data_dir, sizeof(g_app_data_dir), "%s\\DNA", appdata);
+    /* Default for Windows: %USERPROFILE%\.dna (same as Linux ~/.dna) */
+    const char *home = qgp_platform_home_dir();
+    if (!home) {
+        return NULL;
     }
+    snprintf(g_app_data_dir, sizeof(g_app_data_dir), "%s\\.dna", home);
 
     /* Create directory if it doesn't exist */
     qgp_platform_mkdir(g_app_data_dir);
@@ -368,21 +362,12 @@ const char* qgp_platform_cache_dir(void) {
         return g_app_cache_dir;
     }
 
-    /* Default for Windows: %LOCALAPPDATA%\DNA\cache */
-    const char *localappdata = getenv("LOCALAPPDATA");
-    if (!localappdata) {
-        /* Fallback to app data dir */
-        const char *data_dir = qgp_platform_app_data_dir();
-        if (!data_dir) {
-            return NULL;
-        }
-        snprintf(g_app_cache_dir, sizeof(g_app_cache_dir), "%s\\cache", data_dir);
-    } else {
-        char parent[MAX_PATH];
-        snprintf(parent, sizeof(parent), "%s\\DNA", localappdata);
-        qgp_platform_mkdir(parent);
-        snprintf(g_app_cache_dir, sizeof(g_app_cache_dir), "%s\\cache", parent);
+    /* Default for Windows: %USERPROFILE%\.dna\cache (same as Linux ~/.dna/cache) */
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        return NULL;
     }
+    snprintf(g_app_cache_dir, sizeof(g_app_cache_dir), "%s\\cache", data_dir);
 
     /* Create cache directory */
     qgp_platform_mkdir(g_app_cache_dir);

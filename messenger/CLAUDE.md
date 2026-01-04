@@ -1,8 +1,8 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-12-31 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
+**Last Updated:** 2026-01-04 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.3.97 | Flutter v0.99.34 | Nodus v0.4.3
+**Versions:** Library v0.3.99 | Flutter v0.99.37 | Nodus v0.4.3
 
 ---
 
@@ -294,8 +294,8 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.3.97 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.34+9934 | Flutter/Dart code changes (lib/, assets/) |
+| C Library | `include/dna/version.h` | v0.3.99 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.37+9937 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 | Nodus server changes (vendor/opendht-pq/tools/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
