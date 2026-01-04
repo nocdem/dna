@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/providers.dart';
+import '../../providers/version_check_provider.dart';
 import '../../theme/dna_theme.dart';
 import '../profile/profile_editor_screen.dart';
 import 'app_lock_settings_screen.dart';
@@ -1360,12 +1361,51 @@ class _AboutSectionState extends ConsumerState<_AboutSection> {
     }
   }
 
+  void _showUpdateDialog(BuildContext context, engine.VersionCheckResult versionCheck, String currentAppVersion, String currentLibVersion) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            FaIcon(FontAwesomeIcons.triangleExclamation, color: DnaColors.warning, size: 20),
+            const SizedBox(width: 8),
+            const Text('Update Available'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('A new version is available. Please update to the latest version.'),
+            const SizedBox(height: 16),
+            if (versionCheck.appUpdateAvailable) ...[
+              Text('App: $currentAppVersion \u2192 ${versionCheck.appCurrent}',
+                style: const TextStyle(fontFamily: 'monospace')),
+              const SizedBox(height: 4),
+            ],
+            if (versionCheck.libraryUpdateAvailable) ...[
+              Text('Library: $currentLibVersion \u2192 ${versionCheck.libraryCurrent}',
+                style: const TextStyle(fontFamily: 'monospace')),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final developerMode = ref.watch(developerModeProvider);
     final engineAsync = ref.watch(engineProvider);
     final packageInfoAsync = ref.watch(packageInfoProvider);
+    final versionCheckAsync = ref.watch(versionCheckProvider);
 
     // Get library version from native library
     final libVersion = engineAsync.whenOrNull(
@@ -1377,10 +1417,56 @@ class _AboutSectionState extends ConsumerState<_AboutSection> {
       data: (info) => info.version,
     ) ?? 'unknown';
 
+    // Check if update is available
+    final versionCheck = versionCheckAsync.valueOrNull;
+    final hasUpdate = versionCheck?.hasUpdate ?? false;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader('About'),
+        // Update warning card
+        if (hasUpdate && versionCheck != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Card(
+              color: DnaColors.warning.withOpacity(0.15),
+              child: InkWell(
+                onTap: () => _showUpdateDialog(context, versionCheck, appVersion, libVersion),
+                borderRadius: BorderRadius.circular(12),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      FaIcon(FontAwesomeIcons.triangleExclamation, color: DnaColors.warning, size: 20),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Update Available',
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Tap for details',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: DnaColors.textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      FaIcon(FontAwesomeIcons.chevronRight, size: 14, color: DnaColors.textMuted),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Column(

@@ -442,6 +442,47 @@ final class dna_event_t extends Struct {
   external Array<Uint8> data;
 }
 
+/// Version info from DHT
+final class dna_version_info_t extends Struct {
+  @Array(32)
+  external Array<Char> library_current;
+
+  @Array(32)
+  external Array<Char> library_minimum;
+
+  @Array(32)
+  external Array<Char> app_current;
+
+  @Array(32)
+  external Array<Char> app_minimum;
+
+  @Array(32)
+  external Array<Char> nodus_current;
+
+  @Array(32)
+  external Array<Char> nodus_minimum;
+
+  @Uint64()
+  external int published_at;
+
+  @Array(129)
+  external Array<Char> publisher;
+}
+
+/// Version check result
+final class dna_version_check_result_t extends Struct {
+  @Bool()
+  external bool library_update_available;
+
+  @Bool()
+  external bool app_update_available;
+
+  @Bool()
+  external bool nodus_update_available;
+
+  external dna_version_info_t info;
+}
+
 // =============================================================================
 // CALLBACK TYPEDEFS - Native (FFI) types
 // =============================================================================
@@ -2236,6 +2277,14 @@ class DnaBindings {
 
   Pointer<Utf8> dna_engine_get_version() {
     return _dna_engine_get_version();
+  }
+
+  late final _dna_engine_check_version_dht = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<dna_version_check_result_t>),
+      int Function(Pointer<dna_engine_t>, Pointer<dna_version_check_result_t>)>('dna_engine_check_version_dht');
+
+  int dna_engine_check_version_dht(Pointer<dna_engine_t> engine, Pointer<dna_version_check_result_t> result) {
+    return _dna_engine_check_version_dht(engine, result);
   }
 
   // ---------------------------------------------------------------------------

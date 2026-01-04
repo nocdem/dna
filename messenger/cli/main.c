@@ -104,6 +104,11 @@ static void print_usage(const char *prog_name) {
     printf("  turn-creds [--force]        Show/request TURN credentials\n");
     printf("  turn-test                   Test TURN relay with all servers\n");
     printf("\n");
+    printf("VERSION COMMANDS:\n");
+    printf("  publish-version             Publish version info to DHT\n");
+    printf("    --lib <ver> --app <ver> --nodus <ver> [--lib-min <ver>] [--app-min <ver>] [--nodus-min <ver>]\n");
+    printf("  check-version               Check latest version from DHT\n");
+    printf("\n");
     printf("Examples:\n");
     printf("  %s create alice\n", prog_name);
     printf("  %s restore abandon ability able about ...\n", prog_name);
@@ -483,6 +488,41 @@ int main(int argc, char *argv[]) {
     }
     else if (strcmp(command, "turn-test") == 0) {
         result = cmd_turn_test(g_engine);
+    }
+
+    /* ====== VERSION COMMANDS ====== */
+    else if (strcmp(command, "publish-version") == 0) {
+        /* Parse --lib, --app, --nodus and their -min variants */
+        char *lib_ver = NULL, *lib_min = NULL;
+        char *app_ver = NULL, *app_min = NULL;
+        char *nodus_ver = NULL, *nodus_min = NULL;
+
+        for (int i = optind + 1; i < argc; i++) {
+            if (strcmp(argv[i], "--lib") == 0 && i + 1 < argc) {
+                lib_ver = argv[++i];
+            } else if (strcmp(argv[i], "--lib-min") == 0 && i + 1 < argc) {
+                lib_min = argv[++i];
+            } else if (strcmp(argv[i], "--app") == 0 && i + 1 < argc) {
+                app_ver = argv[++i];
+            } else if (strcmp(argv[i], "--app-min") == 0 && i + 1 < argc) {
+                app_min = argv[++i];
+            } else if (strcmp(argv[i], "--nodus") == 0 && i + 1 < argc) {
+                nodus_ver = argv[++i];
+            } else if (strcmp(argv[i], "--nodus-min") == 0 && i + 1 < argc) {
+                nodus_min = argv[++i];
+            }
+        }
+
+        if (!lib_ver || !app_ver || !nodus_ver) {
+            fprintf(stderr, "Usage: publish-version --lib <ver> --app <ver> --nodus <ver>\n");
+            fprintf(stderr, "       [--lib-min <ver>] [--app-min <ver>] [--nodus-min <ver>]\n");
+            result = 1;
+        } else {
+            result = cmd_publish_version(g_engine, lib_ver, lib_min, app_ver, app_min, nodus_ver, nodus_min);
+        }
+    }
+    else if (strcmp(command, "check-version") == 0) {
+        result = cmd_check_version(g_engine);
     }
 
     /* ====== UNKNOWN COMMAND ====== */

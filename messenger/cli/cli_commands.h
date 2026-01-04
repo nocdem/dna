@@ -283,6 +283,33 @@ int cmd_turn_creds(dna_engine_t *engine, bool request);
 int cmd_turn_test(dna_engine_t *engine);
 
 /* ============================================================================
+ * VERSION COMMANDS
+ * ============================================================================ */
+
+/**
+ * Publish version info to DHT (requires identity loaded)
+ * @param engine DNA engine instance
+ * @param lib_ver Library version (e.g., "0.3.90")
+ * @param lib_min Library minimum version
+ * @param app_ver App version (e.g., "0.99.29")
+ * @param app_min App minimum version
+ * @param nodus_ver Nodus version (e.g., "0.4.3")
+ * @param nodus_min Nodus minimum version
+ * @return 0 on success, negative on error
+ */
+int cmd_publish_version(dna_engine_t *engine,
+                        const char *lib_ver, const char *lib_min,
+                        const char *app_ver, const char *app_min,
+                        const char *nodus_ver, const char *nodus_min);
+
+/**
+ * Check version info from DHT
+ * @param engine DNA engine instance
+ * @return 0 on success, negative on error
+ */
+int cmd_check_version(dna_engine_t *engine);
+
+/* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */
 

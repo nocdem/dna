@@ -2336,6 +2336,76 @@ DNA_API dna_request_id_t dna_engine_restore_messages(
     void *user_data
 );
 
+/* ============================================================================
+ * VERSION CHECK API - DHT-based version announcements
+ * ============================================================================ */
+
+/**
+ * Version information from DHT
+ */
+typedef struct {
+    char library_current[32];   /* Latest library version (e.g., "0.3.90") */
+    char library_minimum[32];   /* Minimum supported library version */
+    char app_current[32];       /* Latest app version (e.g., "0.99.29") */
+    char app_minimum[32];       /* Minimum supported app version */
+    char nodus_current[32];     /* Latest nodus version (e.g., "0.4.3") */
+    char nodus_minimum[32];     /* Minimum supported nodus version */
+    uint64_t published_at;      /* Unix timestamp when published */
+    char publisher[129];        /* Fingerprint of publisher */
+} dna_version_info_t;
+
+/**
+ * Version check result
+ */
+typedef struct {
+    bool library_update_available;  /* true if library_current > local version */
+    bool app_update_available;      /* true if app_current > local version */
+    bool nodus_update_available;    /* true if nodus_current > local version */
+    dna_version_info_t info;        /* Version info from DHT */
+} dna_version_check_result_t;
+
+/**
+ * Publish version info to DHT (signed with loaded identity)
+ *
+ * Publishes version information to a well-known DHT key. The first publisher
+ * "owns" the key - only the same identity can update it (signed PUT).
+ *
+ * DHT Key: SHA3-512("dna:system:version")
+ *
+ * @param engine          Engine instance (must have identity loaded)
+ * @param library_version Current library version (e.g., "0.3.90")
+ * @param library_minimum Minimum supported library version
+ * @param app_version     Current app version (e.g., "0.99.29")
+ * @param app_minimum     Minimum supported app version
+ * @param nodus_version   Current nodus version (e.g., "0.4.3")
+ * @param nodus_minimum   Minimum supported nodus version
+ * @return                0 on success, negative on error
+ */
+DNA_API int dna_engine_publish_version(
+    dna_engine_t *engine,
+    const char *library_version,
+    const char *library_minimum,
+    const char *app_version,
+    const char *app_minimum,
+    const char *nodus_version,
+    const char *nodus_minimum
+);
+
+/**
+ * Check version info from DHT
+ *
+ * Fetches version information from DHT and compares against local versions.
+ * Sets update_available flags if newer versions exist.
+ *
+ * @param engine     Engine instance
+ * @param result_out Output: version check result (caller provides buffer)
+ * @return           0 on success, -1 on error, -2 if not found
+ */
+DNA_API int dna_engine_check_version_dht(
+    dna_engine_t *engine,
+    dna_version_check_result_t *result_out
+);
+
 #ifdef __cplusplus
 }
 #endif
