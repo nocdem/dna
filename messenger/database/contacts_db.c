@@ -6,6 +6,7 @@
 #include "contacts_db.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_log.h"
+#include "dht/keyserver/keyserver_core.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,20 +23,6 @@
 #endif
 
 #define LOG_TAG "MSG_CONTACTS"
-
-// Validate fingerprint: must be exactly 128 hex characters
-static bool is_valid_fingerprint(const char *fp) {
-    if (!fp) return false;
-    size_t len = strlen(fp);
-    if (len != 128) return false;
-    for (size_t i = 0; i < 128; i++) {
-        char c = fp[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
-            return false;
-        }
-    }
-    return true;
-}
 
 static sqlite3 *g_db = NULL;
 static char g_owner_identity[256] = {0};  // Current database owner

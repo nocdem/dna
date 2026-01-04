@@ -12,31 +12,12 @@
 #include "../dht/client/dht_contactlist.h"
 #include "../dht/client/dht_singleton.h"
 #include "../dht/core/dht_context.h"
+#include "../dht/keyserver/keyserver_core.h"
 #include "../database/contacts_db.h"
 #include "../p2p/p2p_transport.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "MSG_CONTACTS"
-
-// ============================================================================
-// VALIDATION HELPERS
-// ============================================================================
-
-/**
- * Validate a fingerprint string (must be 128 hex characters)
- */
-static bool is_valid_fingerprint(const char *fp) {
-    if (!fp) return false;
-    size_t len = strlen(fp);
-    if (len != 128) return false;
-    for (size_t i = 0; i < 128; i++) {
-        char c = fp[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
-            return false;
-        }
-    }
-    return true;
-}
 
 // ============================================================================
 // DHT CONTACT SYNCHRONIZATION
