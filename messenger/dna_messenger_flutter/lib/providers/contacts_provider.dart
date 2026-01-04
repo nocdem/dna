@@ -29,9 +29,14 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     final contacts = await engine.getContacts();
     engine.debugLog('CONTACTS', 'Got ${contacts.length} contacts');
 
-    // Sort by name initially (presence will update sort order later)
+    // Stable sort: online first, then by name (won't change on presence updates)
     final sortedContacts = List<Contact>.from(contacts);
-    sortedContacts.sort((a, b) => a.displayName.compareTo(b.displayName));
+    sortedContacts.sort((a, b) {
+      if (a.isOnline != b.isOnline) {
+        return a.isOnline ? -1 : 1;
+      }
+      return a.displayName.compareTo(b.displayName);
+    });
 
     // Prefetch contact profiles in background (for avatars, display names)
     if (sortedContacts.isNotEmpty) {
@@ -91,7 +96,8 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     });
   }
 
-  /// Apply all pending presence updates and re-sort once
+  /// Apply all pending presence updates WITHOUT re-sorting
+  /// This prevents the "bouncing" effect when presence data arrives
   void _applyPendingPresenceUpdates() {
     if (_pendingPresenceUpdates.isEmpty) return;
 
@@ -101,9 +107,32 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
       return;
     }
 
-    final updated = List<Contact>.from(currentState);
+    // Check if any presence data actually changed
+    bool hasChanges = false;
+    for (final entry in _pendingPresenceUpdates.entries) {
+      final fingerprint = entry.key;
+      final lastSeen = entry.value;
+      final contact = currentState.firstWhere(
+        (c) => c.fingerprint == fingerprint,
+        orElse: () => Contact(fingerprint: '', displayName: '', isOnline: false, lastSeen: DateTime.fromMillisecondsSinceEpoch(0)),
+      );
+      // Only count as change if lastSeen differs by more than 1 minute
+      // This prevents unnecessary updates for small time differences
+      if (contact.fingerprint.isNotEmpty &&
+          (contact.lastSeen.millisecondsSinceEpoch == 0 ||
+           (lastSeen.difference(contact.lastSeen).inMinutes.abs() > 1))) {
+        hasChanges = true;
+        break;
+      }
+    }
 
-    // Apply all pending updates
+    if (!hasChanges) {
+      _pendingPresenceUpdates.clear();
+      return;
+    }
+
+    // Apply updates without changing order (preserve current sort)
+    final updated = List<Contact>.from(currentState);
     for (final entry in _pendingPresenceUpdates.entries) {
       final fingerprint = entry.key;
       final lastSeen = entry.value;
@@ -122,15 +151,8 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
 
     _pendingPresenceUpdates.clear();
 
-    // Re-sort once: by last seen (most recent first), then by name
-    updated.sort((a, b) {
-      final lastSeenCompare = b.lastSeen.compareTo(a.lastSeen);
-      if (lastSeenCompare != 0) {
-        return lastSeenCompare;
-      }
-      return a.displayName.compareTo(b.displayName);
-    });
-
+    // DON'T re-sort here - keep stable order to prevent bouncing
+    // Sort is only done on initial load and when online status changes
     state = AsyncValue.data(updated);
   }
 
@@ -140,9 +162,14 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
       final engine = await ref.read(engineProvider.future);
       final contacts = await engine.getContacts();
 
-      // Sort by name initially
+      // Stable sort: online first, then by name
       final sortedContacts = List<Contact>.from(contacts);
-      sortedContacts.sort((a, b) => a.displayName.compareTo(b.displayName));
+      sortedContacts.sort((a, b) {
+        if (a.isOnline != b.isOnline) {
+          return a.isOnline ? -1 : 1;
+        }
+        return a.displayName.compareTo(b.displayName);
+      });
 
       // Prefetch contact profiles in background
       if (sortedContacts.isNotEmpty) {
@@ -179,15 +206,20 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     state.whenData((contacts) {
       final index = contacts.indexWhere((c) => c.fingerprint == fingerprint);
       if (index != -1) {
+        final contact = contacts[index];
+
+        // Skip update if status hasn't actually changed
+        if (contact.isOnline == isOnline) return;
+
         final updated = List<Contact>.from(contacts);
-        final contact = updated[index];
         updated[index] = Contact(
           fingerprint: contact.fingerprint,
           displayName: contact.displayName,
           isOnline: isOnline,
           lastSeen: isOnline ? DateTime.now() : contact.lastSeen,
         );
-        // Re-sort
+
+        // Only re-sort when online status changes (stable sort: online first, then by name)
         updated.sort((a, b) {
           if (a.isOnline != b.isOnline) {
             return a.isOnline ? -1 : 1;
