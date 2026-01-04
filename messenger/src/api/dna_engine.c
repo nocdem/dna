@@ -6,12 +6,14 @@
 
 #define _XOPEN_SOURCE 700  /* For strptime */
 
-#ifdef _WIN32
-#include <direct.h>
+/* Standard library includes (all platforms) */
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+#ifdef _WIN32
+#include <direct.h>
 #include <windows.h>
 #define platform_mkdir(path, mode) _mkdir(path)
 
@@ -100,11 +102,6 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "crypto/utils/seed_storage.h"
 #include "crypto/bip39/bip39.h"
 #include "messenger/gsk.h"
-#include <time.h>
-
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <errno.h>
