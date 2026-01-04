@@ -138,6 +138,10 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
 
     await refresh();
 
+    // Cache own profile immediately so UI shows name without waiting for DHT propagation
+    // (DHT PUT is async and may not be queryable yet)
+    await ref.read(identityProfileCacheProvider.notifier).updateIdentity(fingerprint, name, '');
+
     // Invalidate profile providers to fetch fresh profile with name
     ref.invalidate(userProfileProvider);
     ref.invalidate(fullProfileProvider);
@@ -305,6 +309,14 @@ final userProfileProvider = FutureProvider<UserProfile?>((ref) async {
   final fingerprint = ref.watch(currentFingerprintProvider);
   if (fingerprint == null) return null;
 
+  // Check local cache first (faster, and works before DHT propagation)
+  final cache = ref.watch(identityProfileCacheProvider);
+  final cached = cache[fingerprint];
+  if (cached != null && cached.displayName.isNotEmpty) {
+    return UserProfile(nickname: cached.displayName, avatar: cached.avatarBase64);
+  }
+
+  // Fall back to DHT lookup
   final engine = await ref.read(engineProvider.future);
   try {
     final registeredName = await engine.getRegisteredName();
