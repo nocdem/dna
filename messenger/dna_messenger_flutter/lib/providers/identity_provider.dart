@@ -232,9 +232,13 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     final engine = await ref.read(engineProvider.future);
     await engine.registerName(name);
 
-    // Update identity name cache so it shows immediately in identity selection
+    // Cache profile locally so UI shows name without waiting for DHT propagation
     final fingerprint = ref.read(currentFingerprintProvider);
     if (fingerprint != null && name.isNotEmpty) {
+      // Update SQLite-backed cache (used by userProfileProvider)
+      await ref.read(identityProfileCacheProvider.notifier).updateIdentity(fingerprint, name, '');
+
+      // Also update legacy in-memory cache for backwards compatibility
       final newCache = Map<String, String>.from(ref.read(identityNameCacheProvider));
       newCache[fingerprint] = name;
       ref.read(identityNameCacheProvider.notifier).state = newCache;
