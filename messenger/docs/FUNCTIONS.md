@@ -591,14 +591,7 @@ Low-level cryptographic primitives and platform abstraction layer.
 | `int mnemonic_storage_load(...)` | Load mnemonic decrypted with Kyber1024 KEM |
 | `bool mnemonic_storage_exists(const char *identity_dir)` | Check if encrypted mnemonic file exists |
 
-### 5.12 Avatar Utils (`avatar_utils.h`)
-
-| Function | Description |
-|----------|-------------|
-| `int avatar_load_and_encode(const char*, char*, size_t)` | Load image, resize to 64x64, encode to base64 |
-| `unsigned char* avatar_decode_base64(const char*, int*, int*, int*)` | Decode base64 avatar to RGBA pixel data |
-
-### 5.13 Platform Abstraction (`qgp_platform.h`)
+### 5.12 Platform Abstraction (`qgp_platform.h`)
 
 | Function | Description |
 |----------|-------------|
