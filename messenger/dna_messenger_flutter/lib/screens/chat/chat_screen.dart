@@ -55,6 +55,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     // Refresh contact profile in background (for latest avatar/name)
     ref.read(contactProfileCacheProvider.notifier).refreshProfile(contact.fingerprint);
+
+    // Auto-check offline messages when chat opens (silent, no snackbar)
+    _checkOfflineMessagesSilent();
+  }
+
+  /// Check offline messages silently (no UI feedback)
+  /// Called automatically when chat opens
+  Future<void> _checkOfflineMessagesSilent() async {
+    final contact = ref.read(selectedContactProvider);
+    if (contact == null) return;
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      debugPrint('[CHAT] Auto-checking offline messages for ${contact.fingerprint.substring(0, 16)}...');
+      await engine.checkOfflineMessages();
+
+      // Refresh conversation to show any new messages
+      if (mounted) {
+        ref.invalidate(conversationProvider(contact.fingerprint));
+      }
+    } catch (e) {
+      debugPrint('[CHAT] Silent offline check failed: $e');
+    }
   }
 
   @override
