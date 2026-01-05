@@ -874,8 +874,10 @@ static void p2p_message_received_internal(
     if (sender_identity) {
         QGP_LOG_INFO("P2P", "Received P2P message from %s (%zu bytes)\n", sender_identity, message_len);
 
-        // Passive presence detection: message received = sender online
-        presence_cache_update(sender_identity, true, time(NULL));
+        // NOTE: Do NOT update presence here. In DHT-only messaging (Phase 14),
+        // receiving a queued message does NOT mean sender is online - they may
+        // have sent it hours/days ago. Presence comes only from DHT presence
+        // listeners and explicit lookups.
     } else {
         QGP_LOG_INFO("P2P", "Received P2P message from unknown peer (%zu bytes)\n", message_len);
         QGP_LOG_DEBUG("P2P", "Hint: Add sender as contact to see their identity");
