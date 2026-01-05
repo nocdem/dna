@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/engine_provider.dart';
 import '../providers/event_handler.dart';
 import '../providers/contacts_provider.dart';
+import '../providers/contact_profile_cache_provider.dart';
 
 /// Provider that tracks whether the app is currently in foreground (resumed)
 /// Used by event_handler to determine whether to show notifications
@@ -95,6 +96,11 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
         ref.read(eventHandlerProvider).resumePolling();
       }
 
+      // Force refresh contact profiles from DHT (fixes stale display names)
+      // This ensures users see up-to-date names when they open the app
+      print('AppLifecycle: Refreshing contact profiles from DHT');
+      await _refreshContactProfiles(engine);
+
       // Refresh contacts to get updated presence status
       print('AppLifecycle: Refreshing contacts for presence update');
       ref.invalidate(contactsProvider);
@@ -103,6 +109,46 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // (messenger_push_notification_callback) which triggers poll on DHT listen events
     } catch (e) {
       print('AppLifecycle: Error during resume - $e');
+    }
+  }
+
+  /// Refresh all contact profiles from DHT
+  /// Called on app resume to ensure display names are up-to-date
+  Future<void> _refreshContactProfiles(dynamic engine) async {
+    try {
+      // Get current contacts
+      final contacts = ref.read(contactsProvider).valueOrNull;
+      if (contacts == null || contacts.isEmpty) {
+        print('AppLifecycle: No contacts to refresh');
+        return;
+      }
+
+      print('AppLifecycle: Refreshing ${contacts.length} contact profiles');
+
+      // Refresh profiles in parallel (batched to avoid overloading DHT)
+      const batchSize = 5;
+      for (var i = 0; i < contacts.length; i += batchSize) {
+        final batch = contacts.skip(i).take(batchSize).toList();
+        await Future.wait(
+          batch.map((contact) async {
+            try {
+              // Force refresh from DHT (bypasses cache)
+              final profile = await engine.refreshContactProfile(contact.fingerprint);
+              if (profile != null) {
+                // Update Flutter-side cache too
+                ref.read(contactProfileCacheProvider.notifier)
+                    .updateProfile(contact.fingerprint, profile);
+              }
+            } catch (e) {
+              // Individual profile refresh failed - continue with others
+              print('AppLifecycle: Failed to refresh ${contact.fingerprint.substring(0, 16)}...: $e');
+            }
+          }),
+        );
+      }
+      print('AppLifecycle: Contact profile refresh complete');
+    } catch (e) {
+      print('AppLifecycle: Error refreshing contact profiles: $e');
     }
   }
 
