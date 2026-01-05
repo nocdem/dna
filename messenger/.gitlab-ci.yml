@@ -486,10 +486,10 @@ build:flutter-android:
     # Build APK
     - flutter pub upgrade
     - flutter pub get
-    - flutter build apk --debug
+    - flutter build apk --release
     # Package
     - mkdir -p ${CI_PROJECT_DIR}/dist
-    - cp build/app/outputs/flutter-apk/app-debug.apk ${CI_PROJECT_DIR}/dist/dna-messenger-android-${CI_COMMIT_SHORT_SHA}.apk
+    - cp build/app/outputs/flutter-apk/app-release.apk ${CI_PROJECT_DIR}/dist/dna-messenger-android-${CI_COMMIT_SHORT_SHA}.apk
   artifacts:
     name: "dna-messenger-android-${CI_COMMIT_SHORT_SHA}"
     paths:
