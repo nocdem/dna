@@ -3950,6 +3950,11 @@ class DnaEngine {
     _isDisposed = true;
 
     _eventController.close();
+
+    // IMPORTANT: Clear the C callback pointer BEFORE closing the Dart callback
+    // This prevents the C code from invoking a deleted callback when the app
+    // goes to background but the background service is still running
+    _bindings.dna_engine_set_event_callback(_engine, nullptr, nullptr);
     _eventCallback?.close();
 
     // Clean up pending requests

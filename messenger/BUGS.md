@@ -13,6 +13,10 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
+- [ ] **[FLUTTER] P3 - Contacts show lastSeen=1970-01-01** - Contacts display Unix epoch (1970-01-01) as last seen timestamp instead of actual last seen time. Log shows: `[Contacts] Loaded: a9975a8b9ee680f9... isOnline=false lastSeen=1970-01-01 02:00:00.000`. Observed on Linux and Android.
+
+  **Likely cause:** Last seen timestamp is stored as 0 (or not set) in database/presence cache, defaults to epoch when displayed.
+
 - [ ] **[FLUTTER] P3 - Contacts briefly show as online during DHT fetch** - When fetching messages or presence info from DHT, all contacts briefly appear online then revert to correct status. Causes visual "bouncing" in the contact list that looks unprofessional.
 
   **Likely cause:** Presence data being reset/cleared before DHT response arrives, or initial state defaults to online.

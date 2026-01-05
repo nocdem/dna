@@ -511,9 +511,12 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
     pthread_mutex_lock(&engine->event_mutex);
     dna_event_cb callback = engine->event_callback;
     void *user_data = engine->event_user_data;
+    bool disposing = engine->callback_disposing;
     pthread_mutex_unlock(&engine->event_mutex);
 
-    if (callback) {
+    /* Don't invoke callback if it's being disposed (prevents crash when
+     * Dart NativeCallable is closed while C still holds the pointer) */
+    if (callback && !disposing) {
         /* Heap-allocate a copy for async callbacks (Dart NativeCallable.listener)
          * The caller (Dart) must call dna_free_event() after processing */
         dna_event_t *heap_event = calloc(1, sizeof(dna_event_t));
@@ -747,6 +750,7 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
 
     /* Initialize synchronization */
     pthread_mutex_init(&engine->event_mutex, NULL);
+    engine->callback_disposing = false;  /* Explicit init for callback race protection */
     pthread_mutex_init(&engine->task_mutex, NULL);
     pthread_mutex_init(&engine->name_cache_mutex, NULL);
     pthread_cond_init(&engine->task_cond, NULL);
@@ -825,6 +829,13 @@ void dna_engine_set_event_callback(
     if (!engine) return;
 
     pthread_mutex_lock(&engine->event_mutex);
+    /* If clearing the callback, set disposing flag FIRST to prevent races
+     * where another thread copies the callback before we clear it */
+    if (callback == NULL && engine->event_callback != NULL) {
+        engine->callback_disposing = true;
+    } else {
+        engine->callback_disposing = false;
+    }
     engine->event_callback = callback;
     engine->event_user_data = user_data;
     pthread_mutex_unlock(&engine->event_mutex);

@@ -474,6 +474,7 @@ struct dna_engine {
     /* Event callback */
     dna_event_cb event_callback;
     void *event_user_data;
+    bool callback_disposing;     /* Set when callback is being cleared (prevents race) */
     pthread_mutex_t event_mutex;
 
     /* Threading */
