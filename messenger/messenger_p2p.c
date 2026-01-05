@@ -1067,18 +1067,78 @@ int messenger_p2p_list_online_peers(
 
 int messenger_p2p_refresh_presence(messenger_context_t *ctx)
 {
-    if (!ctx || !ctx->p2p_enabled || !ctx->p2p_transport) {
+    if (!ctx) {
         return -1;
     }
 
-    QGP_LOG_DEBUG("P2P", "Refreshing presence in DHT for %s\n", ctx->identity);
+    // If P2P transport is available, use it (includes ICE candidates)
+    if (ctx->p2p_enabled && ctx->p2p_transport) {
+        QGP_LOG_DEBUG("P2P", "Refreshing presence via P2P transport for %s", ctx->identity);
+        if (p2p_register_presence(ctx->p2p_transport) != 0) {
+            QGP_LOG_ERROR("P2P", "Failed to refresh presence via P2P transport");
+            return -1;
+        }
+        QGP_LOG_DEBUG("P2P", "Presence refreshed successfully via P2P transport");
+        return 0;
+    }
 
-    if (p2p_register_presence(ctx->p2p_transport) != 0) {
-        QGP_LOG_ERROR("P2P", "Failed to refresh presence");
+    // Phase 14: DHT-only mode - register presence directly via DHT singleton
+    // This allows presence to work even when P2P is disabled
+    QGP_LOG_DEBUG("P2P", "Refreshing presence via DHT singleton for %s", ctx->identity);
+
+    dht_context_t *dht = dht_singleton_get();
+    if (!dht) {
+        QGP_LOG_ERROR("P2P", "DHT not available for presence refresh");
         return -1;
     }
 
-    QGP_LOG_DEBUG("P2P", "Presence refreshed successfully");
+    // Load my Dilithium public key to compute DHT key
+    uint8_t *pubkey = NULL;
+    size_t pubkey_len = 0;
+    if (load_my_dilithium_pubkey(ctx, &pubkey, &pubkey_len) != 0) {
+        QGP_LOG_ERROR("P2P", "Failed to load public key for presence refresh");
+        return -1;
+    }
+
+    // Get public IP via STUN
+    char my_ip[64] = {0};
+    if (stun_get_public_ip(my_ip, sizeof(my_ip)) != 0) {
+        QGP_LOG_ERROR("P2P", "STUN query failed - cannot register presence without public IP");
+        free(pubkey);
+        return -1;
+    }
+    QGP_LOG_DEBUG("P2P", "STUN discovered public IP: %s", my_ip);
+
+    // Create presence JSON (port=0 since we're not listening for P2P connections)
+    char presence_data[512];
+    if (create_presence_json(my_ip, 0, presence_data, sizeof(presence_data)) != 0) {
+        QGP_LOG_ERROR("P2P", "Failed to create presence JSON");
+        free(pubkey);
+        return -1;
+    }
+
+    // Compute DHT key: SHA3-512(public_key)
+    uint8_t dht_key[64];  // SHA3-512 = 64 bytes
+    sha3_512_hash(pubkey, pubkey_len, dht_key);
+    free(pubkey);
+
+    QGP_LOG_DEBUG("P2P", "Registering presence in DHT (DHT-only mode)");
+    QGP_LOG_DEBUG("P2P", "DHT key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x",
+           dht_key[0], dht_key[1], dht_key[2], dht_key[3],
+           dht_key[4], dht_key[5], dht_key[6], dht_key[7]);
+
+    // Store in DHT (signed, 7-day TTL, value_id=1 for replacement)
+    unsigned int ttl_7days = 7 * 24 * 3600;  // 604800 seconds
+    int result = dht_put_signed(dht, dht_key, sizeof(dht_key),
+                                (const uint8_t*)presence_data, strlen(presence_data),
+                                1, ttl_7days);
+
+    if (result != 0) {
+        QGP_LOG_ERROR("P2P", "Failed to register presence in DHT");
+        return -1;
+    }
+
+    QGP_LOG_DEBUG("P2P", "Presence refreshed successfully via DHT singleton");
     return 0;
 }
 

@@ -284,14 +284,8 @@ class EventHandler {
     _presenceTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _ref.read(engineProvider).whenData((engine) async {
         // Announce our presence to DHT
-        // Note: C heartbeat thread also handles presence refresh, so this is non-critical
-        // Wrapped in try-catch to prevent errors when P2P transport is not initialized
-        try {
-          await engine.refreshPresence();
-        } catch (e) {
-          // Silently ignore - C heartbeat thread handles presence refresh
-          // This can fail if P2P transport is not fully initialized
-        }
+        // Phase 14: Works in DHT-only mode (no P2P transport required)
+        await engine.refreshPresence();
         // Refresh contacts to get updated presence status
         _ref.invalidate(contactsProvider);
       });
