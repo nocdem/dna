@@ -7,6 +7,8 @@
 #include "messenger_p2p.h"
 #include "messenger.h"
 #include "p2p/p2p_transport.h"
+#include "p2p/transport/transport_core.h"  // For parse_presence_json
+#include "dht/client/dht_singleton.h"      // For DHT-only presence lookup
 #include "dht/shared/dht_offline_queue.h"
 #include "dht/shared/dht_chunked.h"
 #include "dht/shared/dht_groups.h"
@@ -1091,12 +1093,58 @@ int messenger_p2p_lookup_presence(
 
     *last_seen_out = 0;
 
-    if (!ctx->p2p_enabled || !ctx->p2p_transport) {
-        QGP_LOG_ERROR("P2P", "P2P not enabled or transport not initialized");
+    // Use DHT singleton for presence lookup - doesn't require P2P transport
+    // This allows presence to work even when P2P is disabled (Phase 14: DHT-only messaging)
+    dht_context_t *dht = dht_singleton_get();
+    if (!dht) {
+        QGP_LOG_ERROR("P2P", "DHT not available for presence lookup");
         return -1;
     }
 
-    return p2p_lookup_presence_by_fingerprint(ctx->p2p_transport, fingerprint, last_seen_out);
+    // Validate fingerprint length (128 hex chars)
+    size_t fp_len = strlen(fingerprint);
+    if (fp_len != 128) {
+        QGP_LOG_DEBUG("P2P", "Invalid fingerprint length: %zu (expected 128)", fp_len);
+        return -1;
+    }
+
+    // Convert hex fingerprint to binary DHT key (64 bytes)
+    uint8_t dht_key[64];
+    for (int i = 0; i < 64; i++) {
+        unsigned int byte;
+        if (sscanf(fingerprint + (i * 2), "%02x", &byte) != 1) {
+            QGP_LOG_DEBUG("P2P", "Invalid fingerprint hex at position %d", i * 2);
+            return -1;
+        }
+        dht_key[i] = (uint8_t)byte;
+    }
+
+    QGP_LOG_DEBUG("P2P", "Looking up presence for: %.16s...", fingerprint);
+
+    // Query DHT
+    uint8_t *value = NULL;
+    size_t value_len = 0;
+
+    if (dht_get(dht, dht_key, sizeof(dht_key), &value, &value_len) != 0 || !value) {
+        QGP_LOG_DEBUG("P2P", "Presence not found in DHT for %.16s...", fingerprint);
+        return -1;
+    }
+
+    // Parse JSON to extract timestamp
+    peer_info_t peer_info;
+    memset(&peer_info, 0, sizeof(peer_info));
+
+    if (parse_presence_json((const char*)value, &peer_info) != 0) {
+        QGP_LOG_DEBUG("P2P", "Failed to parse presence JSON");
+        free(value);
+        return -1;
+    }
+
+    *last_seen_out = peer_info.last_seen;
+    free(value);
+
+    QGP_LOG_DEBUG("P2P", "Presence lookup successful: last_seen=%lu", (unsigned long)*last_seen_out);
+    return 0;
 }
 
 // ============================================================================
