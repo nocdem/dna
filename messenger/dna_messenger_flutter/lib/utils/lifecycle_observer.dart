@@ -7,6 +7,10 @@ import '../providers/engine_provider.dart';
 import '../providers/event_handler.dart';
 import '../providers/contacts_provider.dart';
 
+/// Provider that tracks whether the app is currently in foreground (resumed)
+/// Used by event_handler to determine whether to show notifications
+final appInForegroundProvider = StateProvider<bool>((ref) => true);
+
 /// Observer for app lifecycle state changes
 ///
 /// Handles:
@@ -45,6 +49,9 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
   /// Called when app comes to foreground
   void _onResume() async {
     print('AppLifecycle: App resumed');
+
+    // Mark app as in foreground (for notification logic)
+    ref.read(appInForegroundProvider.notifier).state = true;
 
     // Check if identity is loaded
     final fingerprint = ref.read(currentFingerprintProvider);
@@ -98,6 +105,9 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
   /// Called when app goes to background
   void _onPause() async {
     print('AppLifecycle: App paused');
+
+    // Mark app as in background (for notification logic - always show notifications when backgrounded)
+    ref.read(appInForegroundProvider.notifier).state = false;
 
     // Pause Dart-side polling timers FIRST (prevents timer exceptions in background)
     print('AppLifecycle: Pausing polling timers');

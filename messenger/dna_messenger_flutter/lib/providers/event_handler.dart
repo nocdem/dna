@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
 import '../services/notification_service.dart';
+import '../utils/lifecycle_observer.dart';
 import 'contact_profile_cache_provider.dart';
 import 'engine_provider.dart';
 import 'contacts_provider.dart';
@@ -121,11 +122,12 @@ class EventHandler {
         final selectedContact = _ref.read(selectedContactProvider);
         final isChatOpen = selectedContact != null &&
             selectedContact.fingerprint == contactFp;
+        final appInForeground = _ref.read(appInForegroundProvider);
 
         // Debug: log fingerprint comparison
         print('[EVENT] MessageReceived: contactFp=${contactFp.length > 16 ? contactFp.substring(0, 16) : contactFp}...');
         print('[EVENT] selectedContact fp=${selectedContact?.fingerprint.substring(0, 16) ?? "null"}...');
-        print('[EVENT] isChatOpen=$isChatOpen (match=${selectedContact?.fingerprint == contactFp})');
+        print('[EVENT] isChatOpen=$isChatOpen, appInForeground=$appInForeground');
 
         // Always invalidate the conversation provider
         _ref.invalidate(conversationProvider(contactFp));
@@ -134,7 +136,10 @@ class EventHandler {
         _ref.read(conversationRefreshTriggerProvider.notifier).state++;
         print('[EVENT] Incremented refresh trigger');
 
-        if (!isChatOpen && !msg.isOutgoing) {
+        // Show notification for incoming messages when:
+        // - App is in background (always), OR
+        // - App is in foreground but chat is not open
+        if (!msg.isOutgoing && (!appInForeground || !isChatOpen)) {
           // Increment unread count for incoming messages when chat not open
           _ref.read(unreadCountsProvider.notifier).incrementCount(contactFp);
 
