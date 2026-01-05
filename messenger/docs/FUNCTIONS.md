@@ -304,8 +304,8 @@ Low-level cryptographic API for message encryption/decryption with post-quantum 
 
 | Function | Description |
 |----------|-------------|
-| `dna_error_t dna_decrypt_message(...)` | Decrypt message using keyring name |
-| `dna_error_t dna_decrypt_message_raw(...)` | Decrypt message with raw keys |
+| `dna_error_t dna_decrypt_message(...)` | Decrypt message using keyring name (v0.08: returns sender timestamp) |
+| `dna_error_t dna_decrypt_message_raw(...)` | Decrypt message with raw keys (v0.08: returns sender timestamp) |
 
 ### 2.6 Signature Operations
 
