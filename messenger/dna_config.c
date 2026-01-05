@@ -17,6 +17,11 @@ int dna_config_save(const dna_config_t *config);
 
 static void get_config_path(char *path, size_t size) {
     const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        /* App directories not set yet (e.g., during library load on Android) */
+        path[0] = '\0';
+        return;
+    }
 #ifdef _WIN32
     snprintf(path, size, "%s\\%s", data_dir, CONFIG_FILE_NAME);
 #else
