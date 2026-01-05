@@ -2195,6 +2195,21 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                     continue;
                 }
 
+                /* If sender_name is empty, lookup from DHT profile (reverse lookup) */
+                char *looked_up_name = NULL;
+                const char *sender_name = dht_requests[i].sender_name;
+                if (sender_name[0] == '\0') {
+                    QGP_LOG_INFO(LOG_TAG, "Sender name empty, doing reverse lookup for %.20s...",
+                                 dht_requests[i].sender_fingerprint);
+                    if (dht_keyserver_reverse_lookup(dht_ctx, dht_requests[i].sender_fingerprint,
+                                                     &looked_up_name) == 0 && looked_up_name) {
+                        sender_name = looked_up_name;
+                        /* Cache the name for future use */
+                        keyserver_cache_put_name(dht_requests[i].sender_fingerprint, looked_up_name, 0);
+                        QGP_LOG_INFO(LOG_TAG, "Reverse lookup found: %s", looked_up_name);
+                    }
+                }
+
                 /* Auto-approve reciprocal requests (they accepted our request) */
                 if (dht_requests[i].message[0] &&
                     strcmp(dht_requests[i].message, "Contact request accepted") == 0) {
@@ -2203,17 +2218,22 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                     /* Add directly as contact (notes = display name) */
                     contacts_db_add(
                         dht_requests[i].sender_fingerprint,
-                        dht_requests[i].sender_name
+                        sender_name
                     );
                     contacts_changed = true;  /* Mark for sync AFTER loop */
                 } else {
                     /* Regular request - add to pending */
                     contacts_db_add_incoming_request(
                         dht_requests[i].sender_fingerprint,
-                        dht_requests[i].sender_name,
+                        sender_name,
                         dht_requests[i].message,
                         dht_requests[i].timestamp
                     );
+                }
+
+                /* Free looked up name if allocated */
+                if (looked_up_name) {
+                    free(looked_up_name);
                 }
             }
             dht_contact_requests_free(dht_requests, dht_count);
@@ -2246,8 +2266,29 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
         for (int i = 0; i < db_count; i++) {
             strncpy(requests[i].fingerprint, db_requests[i].fingerprint, 128);
             requests[i].fingerprint[128] = '\0';
-            strncpy(requests[i].display_name, db_requests[i].display_name, 63);
-            requests[i].display_name[63] = '\0';
+
+            /* If display_name is empty, try reverse lookup from DHT */
+            if (db_requests[i].display_name[0] == '\0' && dht_ctx) {
+                char *looked_up_name = NULL;
+                QGP_LOG_INFO("DNA_ENGINE", "DB request[%d] has empty name, doing reverse lookup", i);
+                if (dht_keyserver_reverse_lookup(dht_ctx, db_requests[i].fingerprint,
+                                                 &looked_up_name) == 0 && looked_up_name) {
+                    strncpy(requests[i].display_name, looked_up_name, 63);
+                    requests[i].display_name[63] = '\0';
+                    /* Update the database for future retrievals */
+                    contacts_db_update_request_name(db_requests[i].fingerprint, looked_up_name);
+                    /* Cache for future use */
+                    keyserver_cache_put_name(db_requests[i].fingerprint, looked_up_name, 0);
+                    QGP_LOG_INFO("DNA_ENGINE", "Reverse lookup found: %s", looked_up_name);
+                    free(looked_up_name);
+                } else {
+                    requests[i].display_name[0] = '\0';
+                }
+            } else {
+                strncpy(requests[i].display_name, db_requests[i].display_name, 63);
+                requests[i].display_name[63] = '\0';
+            }
+
             strncpy(requests[i].message, db_requests[i].message, 255);
             requests[i].message[255] = '\0';
             requests[i].requested_at = db_requests[i].requested_at;

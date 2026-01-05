@@ -1051,6 +1051,41 @@ void contacts_db_free_requests(incoming_request_t *requests, int count) {
     }
 }
 
+// Update display name for an existing contact request
+int contacts_db_update_request_name(const char *fingerprint, const char *display_name) {
+    if (!g_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    if (!fingerprint || !display_name) {
+        return -1;
+    }
+
+    const char *sql = "UPDATE contact_requests SET display_name = ? WHERE fingerprint = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, display_name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, fingerprint, -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update request name: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Updated display_name for request %.20s...\n", fingerprint);
+    return 0;
+}
+
 /* ============================================================================
  * BLOCKED USER FUNCTIONS
  * ============================================================================ */

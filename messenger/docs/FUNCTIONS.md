@@ -1489,6 +1489,7 @@ Local SQLite databases for contacts, caching, and profiles.
 | `int contacts_db_remove_request(const char*)` | Remove contact request |
 | `bool contacts_db_request_exists(const char*)` | Check if request exists |
 | `void contacts_db_free_requests(incoming_request_t*, int)` | Free requests array |
+| `int contacts_db_update_request_name(const char*, const char*)` | Update display name for request |
 
 #### Blocked Users
 

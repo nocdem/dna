@@ -263,6 +263,15 @@ bool contacts_db_request_exists(const char *fingerprint);
  */
 void contacts_db_free_requests(incoming_request_t *requests, int count);
 
+/**
+ * Update display name for an existing contact request
+ *
+ * @param fingerprint: Requester's fingerprint
+ * @param display_name: New display name to set
+ * @return: 0 on success, -1 on error
+ */
+int contacts_db_update_request_name(const char *fingerprint, const char *display_name);
+
 /* ============================================================================
  * BLOCKED USER FUNCTIONS
  * ============================================================================ */
