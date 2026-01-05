@@ -1071,20 +1071,8 @@ int messenger_p2p_refresh_presence(messenger_context_t *ctx)
         return -1;
     }
 
-    // If P2P transport is available, use it (includes ICE candidates)
-    if (ctx->p2p_enabled && ctx->p2p_transport) {
-        QGP_LOG_DEBUG("P2P", "Refreshing presence via P2P transport for %s", ctx->identity);
-        if (p2p_register_presence(ctx->p2p_transport) != 0) {
-            QGP_LOG_ERROR("P2P", "Failed to refresh presence via P2P transport");
-            return -1;
-        }
-        QGP_LOG_DEBUG("P2P", "Presence refreshed successfully via P2P transport");
-        return 0;
-    }
-
-    // Phase 14: DHT-only mode - register presence directly via DHT singleton
-    // This allows presence to work even when P2P is disabled
-    QGP_LOG_DEBUG("P2P", "Refreshing presence via DHT singleton for %s", ctx->identity);
+    // Phase 14: DHT-only messaging - P2P transport reserved for voice/video only
+    QGP_LOG_DEBUG("P2P", "Refreshing presence in DHT for %s", ctx->identity);
 
     dht_context_t *dht = dht_singleton_get();
     if (!dht) {
@@ -1122,7 +1110,7 @@ int messenger_p2p_refresh_presence(messenger_context_t *ctx)
     sha3_512_hash(pubkey, pubkey_len, dht_key);
     free(pubkey);
 
-    QGP_LOG_DEBUG("P2P", "Registering presence in DHT (DHT-only mode)");
+    QGP_LOG_DEBUG("P2P", "Registering presence in DHT");
     QGP_LOG_DEBUG("P2P", "DHT key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x",
            dht_key[0], dht_key[1], dht_key[2], dht_key[3],
            dht_key[4], dht_key[5], dht_key[6], dht_key[7]);
@@ -1138,7 +1126,7 @@ int messenger_p2p_refresh_presence(messenger_context_t *ctx)
         return -1;
     }
 
-    QGP_LOG_DEBUG("P2P", "Presence refreshed successfully via DHT singleton");
+    QGP_LOG_DEBUG("P2P", "Presence refreshed successfully");
     return 0;
 }
 
