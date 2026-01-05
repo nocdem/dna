@@ -44,6 +44,13 @@ android {
         }
         release {
             signingConfig = signingConfigs.getByName("shared")
+            // Enable R8 minification with ProGuard rules
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 }
