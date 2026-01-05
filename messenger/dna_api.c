@@ -9,6 +9,9 @@
 #include "qgp.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DNA_API"
 #include "crypto/utils/qgp_random.h"
 #include "crypto/utils/qgp_aes.h"
 #include "crypto/utils/qgp_kyber.h"
@@ -1202,7 +1205,7 @@ dna_error_t dna_sign_message(
     char key_path[512];
     const char *data_dir = qgp_platform_app_data_dir();
     if (!data_dir) {
-        fprintf(stderr, "[DNA API] Failed to get data directory\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory");
         return DNA_ERROR_INTERNAL;
     }
     (void)signer_key_name;  /* Unused in v0.3.0 flat structure */
@@ -1211,13 +1214,13 @@ dna_error_t dna_sign_message(
     // Load signing key
     qgp_key_t *sign_key = NULL;
     if (qgp_key_load(key_path, &sign_key) != 0 || !sign_key) {
-        fprintf(stderr, "[DNA API] Failed to load signing key from %s\n", key_path);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load signing key from %s", key_path);
         return DNA_ERROR_KEY_LOAD;
     }
 
     // Verify key type
     if (sign_key->type != QGP_KEY_TYPE_DSA87 || sign_key->purpose != QGP_KEY_PURPOSE_SIGNING) {
-        fprintf(stderr, "[DNA API] Invalid key type (expected DSA87 signing key)\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid key type (expected DSA87 signing key)");
         qgp_key_free(sign_key);
         return DNA_ERROR_INTERNAL;
     }
@@ -1235,7 +1238,7 @@ dna_error_t dna_sign_message(
     qgp_key_free(sign_key);
 
     if (result != 0) {
-        fprintf(stderr, "[DNA API] Signature generation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Signature generation failed");
         free(sig);
         return DNA_ERROR_INTERNAL;
     }
@@ -1261,7 +1264,7 @@ dna_error_t dna_verify_message(
 
     // Verify public key size (Dilithium5)
     if (signer_pubkey_len != QGP_DSA87_PUBLICKEYBYTES) {
-        fprintf(stderr, "[DNA API] Invalid public key size: %zu (expected %d)\n",
+        QGP_LOG_ERROR(LOG_TAG, "Invalid public key size: %zu (expected %d)",
                 signer_pubkey_len, QGP_DSA87_PUBLICKEYBYTES);
         return DNA_ERROR_INVALID_ARG;
     }

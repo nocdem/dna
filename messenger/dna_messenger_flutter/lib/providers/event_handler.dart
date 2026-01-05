@@ -46,6 +46,8 @@ class EventHandler {
   Timer? _refreshTimer;
   Timer? _contactRequestsTimer;
   Timer? _presenceTimer;
+  Timer? _outboxDebounceTimer;
+  final Set<String> _pendingOutboxFingerprints = {};
 
   EventHandler(this._ref);
 
@@ -175,34 +177,9 @@ class EventHandler {
         break;
 
       case OutboxUpdatedEvent(contactFingerprint: final contactFp):
-        // Contact's outbox has new messages - fetch them
+        // Contact's outbox has new messages - debounce to coalesce rapid events
         print('[EVENT] OutboxUpdatedEvent received for: ${contactFp.length > 16 ? contactFp.substring(0, 16) : contactFp}...');
-
-        // Check if chat is open for this contact BEFORE fetching
-        final selectedContact = _ref.read(selectedContactProvider);
-        final isChatOpen = selectedContact != null &&
-            selectedContact.fingerprint == contactFp;
-        print('[EVENT] isChatOpen for this contact: $isChatOpen');
-
-        // Trigger offline message check, then refresh UI AFTER messages are in DB
-        _ref.read(engineProvider).whenData((engine) async {
-          print('[EVENT] Calling checkOfflineMessages...');
-          await engine.checkOfflineMessages();
-          print('[EVENT] checkOfflineMessages complete');
-
-          // If chat is open, mark messages as read immediately
-          // This prevents unread badge from showing for messages user is viewing
-          if (isChatOpen) {
-            print('[EVENT] Chat is open, marking messages as read');
-            await engine.markConversationRead(contactFp);
-            _ref.read(unreadCountsProvider.notifier).clearCount(contactFp);
-          }
-
-          // Refresh conversation UI
-          _ref.invalidate(conversationProvider(contactFp));
-          _ref.read(conversationRefreshTriggerProvider.notifier).state++;
-          print('[EVENT] Conversation refreshed');
-        });
+        _scheduleOutboxCheck(contactFp);
         break;
 
       case ErrorEvent(message: final errorMsg):
@@ -230,6 +207,52 @@ class EventHandler {
       if (selectedContact != null) {
         _ref.invalidate(conversationProvider(selectedContact.fingerprint));
       }
+    });
+  }
+
+  /// Schedule a debounced outbox check
+  /// Coalesces rapid OutboxUpdatedEvents into a single checkOfflineMessages() call
+  /// This prevents race conditions when multiple events fire in quick succession
+  void _scheduleOutboxCheck(String contactFp) {
+    // Collect fingerprints during debounce window
+    _pendingOutboxFingerprints.add(contactFp);
+
+    // Reset debounce timer
+    _outboxDebounceTimer?.cancel();
+    _outboxDebounceTimer = Timer(const Duration(milliseconds: 400), () {
+      // Capture fingerprints and clear pending set
+      final fingerprints = Set<String>.from(_pendingOutboxFingerprints);
+      _pendingOutboxFingerprints.clear();
+
+      print('[EVENT] Debounced outbox check for ${fingerprints.length} contact(s)');
+
+      // Check which chats are open BEFORE fetching
+      final selectedContact = _ref.read(selectedContactProvider);
+      final openChatFp = selectedContact?.fingerprint;
+
+      // Single checkOfflineMessages call for all pending contacts
+      _ref.read(engineProvider).whenData((engine) async {
+        print('[EVENT] Calling checkOfflineMessages...');
+        await engine.checkOfflineMessages();
+        print('[EVENT] checkOfflineMessages complete');
+
+        // Process each contact that had updates
+        for (final fp in fingerprints) {
+          // If chat is open for this contact, mark as read
+          if (openChatFp == fp) {
+            print('[EVENT] Chat is open for $fp, marking messages as read');
+            await engine.markConversationRead(fp);
+            _ref.read(unreadCountsProvider.notifier).clearCount(fp);
+          }
+
+          // Refresh conversation UI for this contact
+          _ref.invalidate(conversationProvider(fp));
+        }
+
+        // Single refresh trigger increment after all processing
+        _ref.read(conversationRefreshTriggerProvider.notifier).state++;
+        print('[EVENT] Conversations refreshed for ${fingerprints.length} contact(s)');
+      });
     });
   }
 
@@ -336,6 +359,7 @@ class EventHandler {
     _refreshTimer?.cancel();
     _contactRequestsTimer?.cancel();
     _presenceTimer?.cancel();
+    _outboxDebounceTimer?.cancel();
   }
 }
 

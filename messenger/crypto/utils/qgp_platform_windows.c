@@ -40,7 +40,7 @@ int qgp_platform_random(uint8_t *buf, size_t len) {
     );
 
     if (!BCRYPT_SUCCESS(status)) {
-        fprintf(stderr, "BCryptGenRandom failed: 0x%08lx\n", (unsigned long)status);
+        QGP_LOG_ERROR(LOG_TAG, "BCryptGenRandom failed: 0x%08lx", (unsigned long)status);
         return -1;
     }
 

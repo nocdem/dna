@@ -1,4 +1,7 @@
 #include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "PLATFORM"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,7 +37,7 @@ int qgp_platform_random(uint8_t *buf, size_t len) {
     /* If getrandom() failed (older kernel), fall through to /dev/urandom */
     if (ret < 0 && errno != ENOSYS) {
         /* Real error, not just "syscall not available" */
-        perror("getrandom() failed");
+        QGP_LOG_ERROR(LOG_TAG, "getrandom() failed: %s", strerror(errno));
         /* Continue to fallback */
     }
 #endif
@@ -42,7 +45,7 @@ int qgp_platform_random(uint8_t *buf, size_t len) {
     /* Fallback: /dev/urandom (always available on Linux) */
     FILE *fp = fopen("/dev/urandom", "rb");
     if (!fp) {
-        perror("Failed to open /dev/urandom");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open /dev/urandom: %s", strerror(errno));
         return -1;
     }
 
@@ -50,7 +53,7 @@ int qgp_platform_random(uint8_t *buf, size_t len) {
     fclose(fp);
 
     if (bytes_read != len) {
-        fprintf(stderr, "Failed to read %zu bytes from /dev/urandom (got %zu)\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to read %zu bytes from /dev/urandom (got %zu)",
                 len, bytes_read);
         return -1;
     }
@@ -224,7 +227,7 @@ const char* qgp_platform_home_dir(void) {
 
     if (!home) {
         /* CRITICAL: Cannot determine home directory */
-        fprintf(stderr, "FATAL: Cannot determine home directory (HOME not set and getpwuid failed)\n");
+        QGP_LOG_ERROR(LOG_TAG, "FATAL: Cannot determine home directory (HOME not set and getpwuid failed)");
         return NULL;
     }
 
