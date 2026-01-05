@@ -240,7 +240,11 @@ void dna_config_apply_log_settings(const dna_config_t *config) {
     }
     // If log_tags is empty, default blacklist mode shows all
 
-    // Apply file logging settings
-    qgp_log_file_set_options(config->log_max_size_kb, config->log_max_files);
-    qgp_log_file_enable(config->log_file_enabled != 0);
+    // Apply file logging settings (only if data directory is available)
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (data_dir) {
+        qgp_log_file_set_options(config->log_max_size_kb, config->log_max_files);
+        qgp_log_file_enable(config->log_file_enabled != 0);
+    }
+    // File logging will be enabled later when dna_engine_create() sets up directories
 }
