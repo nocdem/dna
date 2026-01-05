@@ -3251,16 +3251,22 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     /* Check if wallet has a file (legacy) or needs on-demand derivation */
     if (bc_wallet_info->file_path[0] != '\0') {
         /* Legacy: use wallet file */
-        if (blockchain_send_tokens(
+        int send_rc = blockchain_send_tokens(
                 bc_type,
                 bc_wallet_info->file_path,
                 recipient,
                 amount_str,
                 token,
                 gas_speed,
-                tx_hash) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s send failed (wallet file)", chain_name);
-            error = DNA_ENGINE_ERROR_NETWORK;
+                tx_hash);
+        if (send_rc != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s send failed (wallet file), rc=%d", chain_name, send_rc);
+            /* Map blockchain error codes to engine errors */
+            if (send_rc == -2) {
+                error = DNA_ENGINE_ERROR_INSUFFICIENT_BALANCE;
+            } else {
+                error = DNA_ENGINE_ERROR_NETWORK;
+            }
             goto done;
         }
     } else {

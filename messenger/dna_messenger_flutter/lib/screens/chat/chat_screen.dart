@@ -1046,6 +1046,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
   bool _isSending = false;
   String? _resolvedAddress;
   String? _resolveError;
+  String? _sendError;  // Error message to display in dialog
   bool _isResolving = true;
   int _selectedGasSpeed = 1; // 0=slow, 1=normal, 2=fast
 
@@ -1136,25 +1137,48 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
   }
 
   Future<void> _send() async {
-    setState(() => _isSending = true);
+    // Clear previous error
+    setState(() {
+      _sendError = null;
+      _isSending = true;
+    });
+
+    // Validate amount against balance before sending
+    final amountStr = _amountController.text.trim();
+    final amount = double.tryParse(amountStr);
+    final maxAmount = _calculateMaxAmount();
+
+    if (amount == null || amount <= 0) {
+      setState(() {
+        _isSending = false;
+        _sendError = 'Please enter a valid amount';
+      });
+      return;
+    }
+
+    if (maxAmount != null && amount > maxAmount) {
+      setState(() {
+        _isSending = false;
+        _sendError = 'Insufficient CPUNK balance';
+      });
+      return;
+    }
 
     try {
       final txHash = await ref.read(walletsProvider.notifier).sendTokens(
         walletIndex: 0, // Current identity's wallet
         recipientAddress: _resolvedAddress!,
-        amount: _amountController.text.trim(),
+        amount: amountStr,
         token: 'CPUNK',
         network: 'Backbone',
         gasSpeed: _selectedGasSpeed,
       );
 
       if (mounted) {
-        Navigator.pop(context);
-
         // Create transfer message in chat with tx hash
         final transferData = jsonEncode({
           'type': 'cpunk_transfer',
-          'amount': _amountController.text.trim(),
+          'amount': amountStr,
           'token': 'CPUNK',
           'network': 'Backbone',
           'txHash': txHash,
@@ -1166,26 +1190,23 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
         ref.read(conversationProvider(widget.contact.fingerprint).notifier)
             .sendMessage(transferData);
 
+        // Close dialog and show success
+        Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Sent ${_amountController.text.trim()} CPUNK'),
+            content: Text('Sent $amountStr CPUNK'),
             backgroundColor: DnaColors.snackbarSuccess,
           ),
         );
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _isSending = false);
-        // Close the dialog first, then show the snackbar
-        Navigator.pop(context);
-        // Extract user-friendly message from exception
+        // Show error in dialog - don't close
         final message = e is DnaEngineException ? e.message : e.toString();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to send: $message'),
-            backgroundColor: DnaColors.snackbarError,
-          ),
-        );
+        setState(() {
+          _isSending = false;
+          _sendError = message;
+        });
       }
     }
   }
@@ -1347,7 +1368,32 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                   _buildSpeedChip('Fast', _backboneValidatorFast + _backboneNetworkFee, 2),
                 ],
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 16),
+
+              // Error display
+              if (_sendError != null)
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: DnaColors.textError.withAlpha(20),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: DnaColors.textError.withAlpha(50)),
+                  ),
+                  child: Row(
+                    children: [
+                      FaIcon(FontAwesomeIcons.circleExclamation,
+                             color: DnaColors.textError, size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _sendError!,
+                          style: TextStyle(color: DnaColors.textError, fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
 
               // Send button
               ElevatedButton(
