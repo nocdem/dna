@@ -68,6 +68,7 @@ typedef struct {
     uint64_t added_timestamp;  /* When added to contacts */
     char notes[512];           /* Optional notes */
     int status;                /* contact_status_t: 0=mutual, 1=pending_outgoing */
+    uint64_t last_seen;        /* Last seen timestamp (0 = never seen) */
 } contact_entry_t;
 
 /**
@@ -170,6 +171,15 @@ int contacts_db_clear_all(void);
  * @param list: Contact list to free
  */
 void contacts_db_free_list(contact_list_t *list);
+
+/**
+ * Update last_seen timestamp for a contact
+ *
+ * @param identity: Contact fingerprint (128 hex chars)
+ * @param last_seen: Unix timestamp of last seen
+ * @return: 0 on success, -1 on error
+ */
+int contacts_db_update_last_seen(const char *identity, uint64_t last_seen);
 
 /**
  * Close database

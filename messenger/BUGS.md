@@ -13,10 +13,6 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-- [ ] **[FLUTTER] P3 - Contacts show lastSeen=1970-01-01** - Contacts display Unix epoch (1970-01-01) as last seen timestamp instead of actual last seen time. Log shows: `[Contacts] Loaded: a9975a8b9ee680f9... isOnline=false lastSeen=1970-01-01 02:00:00.000`. Observed on Linux and Android.
-
-  **Likely cause:** Last seen timestamp is stored as 0 (or not set) in database/presence cache, defaults to epoch when displayed.
-
 - [ ] **[FLUTTER] P3 - Contacts briefly show as online during DHT fetch** - When fetching messages or presence info from DHT, all contacts briefly appear online then revert to correct status. Causes visual "bouncing" in the contact list that looks unprofessional.
 
   **Likely cause:** Presence data being reset/cleared before DHT response arrives, or initial state defaults to online.
@@ -27,6 +23,8 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 
 ## Fixed Bugs
+
+- [x] **[FLUTTER] P3 - Contacts show lastSeen=1970-01-01** - Presence cache was in-memory only, lost on app restart. Added `last_seen` column to contacts table, presence updates now persist to database. On startup, fallback to database value when cache is empty. (v0.3.110)
 
 - [x] **[CLI] P2 - TRON transactions fail on Android with SSL error** - `trx_tx.c` and `trx_trc20.c` were missing `CURLOPT_CAINFO` configuration. Linux uses system certs automatically but Android requires explicit CA bundle path. (v0.3.107)
 

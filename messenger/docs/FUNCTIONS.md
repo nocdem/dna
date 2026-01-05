@@ -1490,6 +1490,7 @@ Local SQLite databases for contacts, caching, and profiles.
 | `bool contacts_db_request_exists(const char*)` | Check if request exists |
 | `void contacts_db_free_requests(incoming_request_t*, int)` | Free requests array |
 | `int contacts_db_update_request_name(const char*, const char*)` | Update display name for request |
+| `int contacts_db_update_last_seen(const char*, uint64_t)` | Update last_seen timestamp for contact |
 
 #### Blocked Users
 
