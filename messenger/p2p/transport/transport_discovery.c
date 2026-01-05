@@ -6,6 +6,7 @@
 #include "transport_core.h"
 #include "transport_ice.h"  // Phase 11: ICE NAT traversal
 #include "crypto/utils/qgp_log.h"
+#include "dht/client/dht_singleton.h"  // Phase 14: Direct DHT access
 
 #define LOG_TAG "P2P_DISC"
 
@@ -53,8 +54,13 @@ int p2p_register_presence(p2p_transport_t *ctx) {
 
     // Store in DHT (signed, 7-day TTL, value_id=1 for replacement)
     // Presence data is ephemeral and refreshed regularly
+    dht_context_t *dht = dht_singleton_get();
+    if (!dht) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available for presence registration\n");
+        return -1;
+    }
     unsigned int ttl_7days = 7 * 24 * 3600;  // 604800 seconds
-    int result = dht_put_signed(ctx->dht, dht_key, sizeof(dht_key),
+    int result = dht_put_signed(dht, dht_key, sizeof(dht_key),
                                 (const uint8_t*)presence_data, strlen(presence_data),
                                 1, ttl_7days);
 
@@ -105,10 +111,15 @@ int p2p_lookup_peer(
            dht_key[4], dht_key[5], dht_key[6], dht_key[7]);
 
     // Query DHT
+    dht_context_t *dht = dht_singleton_get();
+    if (!dht) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available for peer lookup\n");
+        return -1;
+    }
     uint8_t *value = NULL;
     size_t value_len = 0;
 
-    if (dht_get(ctx->dht, dht_key, sizeof(dht_key), &value, &value_len) != 0 || !value) {
+    if (dht_get(dht, dht_key, sizeof(dht_key), &value, &value_len) != 0 || !value) {
         QGP_LOG_INFO(LOG_TAG, "Peer not found in DHT\n");
         return -1;
     }
@@ -180,10 +191,15 @@ int p2p_lookup_presence_by_fingerprint(
     QGP_LOG_INFO(LOG_TAG, "Looking up presence for fingerprint: %.16s...\n", fingerprint);
 
     // Query DHT
+    dht_context_t *dht = dht_singleton_get();
+    if (!dht) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available for presence lookup\n");
+        return -1;
+    }
     uint8_t *value = NULL;
     size_t value_len = 0;
 
-    if (dht_get(ctx->dht, dht_key, sizeof(dht_key), &value, &value_len) != 0 || !value) {
+    if (dht_get(dht, dht_key, sizeof(dht_key), &value, &value_len) != 0 || !value) {
         QGP_LOG_INFO(LOG_TAG, "Presence not found in DHT\n");
         return -1;
     }

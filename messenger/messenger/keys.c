@@ -79,22 +79,11 @@ int messenger_store_pubkey(
         QGP_LOG_INFO(LOG_TAG, "Publishing public keys for fingerprint '%.16s...' to DHT keyserver", fingerprint);
     }
 
-    // Use global DHT singleton (initialized at app startup)
-    // This eliminates the need for temporary DHT contexts
-    dht_context_t *dht_ctx = NULL;
-
-    if (ctx->p2p_transport) {
-        // Use existing P2P transport's DHT (when logged in)
-        dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
-        QGP_LOG_INFO(LOG_TAG, "Using P2P transport DHT for key publishing\n");
-    } else {
-        // Use global DHT singleton (during identity creation, before login)
-        dht_ctx = dht_singleton_get();
-        if (!dht_ctx) {
-            QGP_LOG_ERROR(LOG_TAG, "Global DHT not initialized! Call dht_singleton_init() at app startup.");
-            return -1;
-        }
-        QGP_LOG_INFO(LOG_TAG, "Using global DHT singleton for key publishing\n");
+    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available for key publishing");
+        return -1;
     }
 
     // Get data directory
@@ -199,18 +188,10 @@ int messenger_load_pubkey(
     // Cache miss - fetch from DHT keyserver
     QGP_LOG_INFO(LOG_TAG, "Fetching public keys for '%s' from DHT keyserver...", identity);
 
-    // Get DHT context - prefer P2P transport, fallback to global singleton
-    // Phase 14: DHT-only messaging doesn't require P2P transport
-    dht_context_t *dht_ctx = NULL;
-    if (ctx->p2p_transport) {
-        dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
-    }
+    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        // Fallback to global DHT singleton (Phase 14: DHT-only messaging)
-        dht_ctx = dht_singleton_get();
-    }
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available (singleton not initialized)");
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available");
         return -1;
     }
 

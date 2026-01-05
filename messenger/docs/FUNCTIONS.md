@@ -1426,8 +1426,9 @@ Peer-to-peer transport layer for direct TCP messaging with DHT-based peer discov
 | `int p2p_transport_start(p2p_transport_t*)` | Start DHT bootstrap + TCP listener |
 | `void p2p_transport_stop(p2p_transport_t*)` | Stop transport and close connections |
 | `void p2p_transport_free(p2p_transport_t*)` | Free transport context |
-| `struct dht_context* p2p_transport_get_dht_context(p2p_transport_t*)` | Get DHT context from transport |
 | `int p2p_transport_deliver_message(p2p_transport_t*, const uint8_t*, const uint8_t*, size_t)` | Deliver message via callback |
+
+> **Note:** `p2p_transport_get_dht_context()` was removed in Phase 14 (v0.3.122). Use `dht_singleton_get()` directly.
 
 #### Peer Discovery
 

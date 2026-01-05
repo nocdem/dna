@@ -5,6 +5,7 @@
 
 #include "transport_core.h"
 #include "crypto/utils/qgp_log.h"
+#include "dht/client/dht_singleton.h"  // Phase 14: Direct DHT access
 
 #define LOG_TAG "SPILLWAY_OUTBOX"
 
@@ -40,11 +41,17 @@ int p2p_queue_offline_message(
         return -1;
     }
 
+    dht_context_t *dht = dht_singleton_get();
+    if (!dht) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available for offline queue\n");
+        return -1;
+    }
+
     QGP_LOG_DEBUG(LOG_TAG, "Calling dht_queue_message (seq=%lu, ttl=%u)\n",
                   (unsigned long)seq_num, ctx->config.offline_ttl_seconds);
 
     int result = dht_queue_message(
-        ctx->dht,
+        dht,
         sender,
         recipient,
         message,
@@ -111,12 +118,21 @@ int p2p_check_offline_messages(
 
     // 3. Query all contacts' outboxes
     // For each contact: Key = SHA3-512(contact_fp + ":outbox:" + my_fp)
+    dht_context_t *dht = dht_singleton_get();
+    if (!dht) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available for offline message check\n");
+        free(sender_fps);
+        contacts_db_free_list(contacts);
+        if (messages_received) *messages_received = 0;
+        return -1;
+    }
+
     dht_offline_message_t *messages = NULL;
     size_t count = 0;
 
     // Use parallel version for 10-100× speedup
     int result = dht_retrieve_queued_messages_from_contacts_parallel(
-        ctx->dht,
+        dht,
         ctx->config.identity,  // My fingerprint (recipient)
         sender_fps,
         contacts->count,
@@ -206,7 +222,7 @@ int p2p_check_offline_messages(
         QGP_LOG_INFO(LOG_TAG, "Publishing watermark for sender %.20s...: seq=%lu\n",
                watermarks[i].sender, (unsigned long)watermarks[i].max_seq_num);
         dht_publish_watermark_async(
-            ctx->dht,
+            dht,                      // Use dht from singleton above
             ctx->config.identity,     // My fingerprint (recipient/watermark owner)
             watermarks[i].sender,     // Sender fingerprint
             watermarks[i].max_seq_num

@@ -10,7 +10,7 @@
 #include "../crypto/utils/qgp_types.h"
 #include "../crypto/utils/qgp_log.h"
 #include "../dht/core/dht_keyserver.h"
-#include "../p2p/p2p_transport.h"
+#include "../dht/client/dht_singleton.h"  // Phase 14: Direct DHT access
 
 #define LOG_TAG "IDENTITY"
 
@@ -86,7 +86,8 @@ int messenger_get_display_name(messenger_context_t *ctx, const char *identifier,
     // Check if identifier is a fingerprint
     if (messenger_is_fingerprint(identifier)) {
         // Try to resolve to registered name via DHT (using reverse lookup, not full profile)
-        dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+        // Phase 14: Use global DHT singleton directly
+        dht_context_t *dht_ctx = dht_singleton_get();
         if (dht_ctx) {
             char *registered_name = NULL;
             int ret = dht_keyserver_reverse_lookup(dht_ctx, identifier, &registered_name);

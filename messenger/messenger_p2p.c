@@ -387,10 +387,10 @@ static char* extract_sender_from_encrypted(
     }
     fingerprint[128] = '\0';  // Null-terminate at position 128
 
-    // Get DHT context from P2P transport
-    dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
+    // Phase 14: Use global DHT singleton directly
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        QGP_LOG_WARN("P2P", "No DHT context available for reverse lookup");
+        QGP_LOG_WARN("P2P", "DHT not available for reverse lookup");
         return NULL;
     }
 
@@ -461,10 +461,10 @@ static char* lookup_identity_for_pubkey(
     }
     fingerprint[128] = '\0';  // Null-terminate at position 128
 
-    // Get DHT context from P2P transport
-    dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
+    // Phase 14: Use global DHT singleton directly
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        return NULL;  // No DHT context
+        return NULL;  // DHT not available
     }
 
     // Query DHT for reverse mapping (fingerprint → identity)
@@ -758,15 +758,8 @@ int messenger_queue_to_dht(
         return -1;
     }
 
-    // Phase 14: DHT-only messaging - get DHT context directly from singleton
-    // P2P transport is NOT required for DHT messaging
-    dht_context_t *dht_ctx = NULL;
-    if (ctx->p2p_transport) {
-        dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
-    }
-    if (!dht_ctx) {
-        dht_ctx = dht_singleton_get();
-    }
+    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
         QGP_LOG_ERROR("P2P", "DHT not available for message queue\n");
         return -1;
