@@ -945,7 +945,7 @@ static void p2p_message_received_internal(
 
     // v0.08 requires sender timestamp - reject messages without it
     if (sender_timestamp == 0) {
-        QGP_LOG_WARN("P2P", "Rejecting message: no sender timestamp (decryption failed or pre-v0.08 format)");
+        QGP_LOG_WARN("P2P", "Rejecting message: decryption failed (no sender timestamp extracted)");
         free(sender_identity);
         return;
     }
