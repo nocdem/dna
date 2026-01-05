@@ -13,7 +13,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-None currently.
+- [ ] **[FLUTTER] P2 - CPUNK sending broken in chat window** - Send CPUNK dialog in chat needs complete overhaul. Current implementation has error handling issues (toast appears behind dialog), insufficient balance shows as "Network error", and general UX problems. Needs proper redesign.
 
 
 ## Fixed Bugs
