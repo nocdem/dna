@@ -239,7 +239,7 @@ int sol_tx_send_lamports(
             "Recipient needs at least %.6f SOL but would have %.6f SOL. "
             "Send at least %.6f SOL to a new account.",
             need_sol, have_sol, need_sol);
-        return -1;
+        return -3;  /* Rent-exempt minimum error */
     }
 
     /* Get recent blockhash */

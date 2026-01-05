@@ -201,6 +201,7 @@ const char* dna_engine_error_string(int error) {
     if (error == DNA_ENGINE_ERROR_WRONG_PASSWORD) return "Incorrect password";
     if (error == DNA_ENGINE_ERROR_INVALID_SIGNATURE) return "Profile signature verification failed (corrupted or stale DHT data)";
     if (error == DNA_ENGINE_ERROR_INSUFFICIENT_BALANCE) return "Insufficient balance";
+    if (error == DNA_ENGINE_ERROR_RENT_MINIMUM) return "Amount too small - Solana requires minimum ~0.00089 SOL for new accounts";
     /* Fall back to base dna_api.h error strings */
     if (error == DNA_ERROR_INVALID_ARG) return "Invalid argument";
     if (error == DNA_ERROR_NOT_FOUND) return "Not found";
@@ -3264,6 +3265,8 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
             /* Map blockchain error codes to engine errors */
             if (send_rc == -2) {
                 error = DNA_ENGINE_ERROR_INSUFFICIENT_BALANCE;
+            } else if (send_rc == -3) {
+                error = DNA_ENGINE_ERROR_RENT_MINIMUM;
             } else {
                 error = DNA_ENGINE_ERROR_NETWORK;
             }
@@ -3313,6 +3316,8 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
             /* Map blockchain error codes to engine errors */
             if (send_rc == -2) {
                 error = DNA_ENGINE_ERROR_INSUFFICIENT_BALANCE;
+            } else if (send_rc == -3) {
+                error = DNA_ENGINE_ERROR_RENT_MINIMUM;
             } else {
                 error = DNA_ENGINE_ERROR_NETWORK;
             }
