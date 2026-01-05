@@ -77,6 +77,7 @@ typedef uint64_t dna_request_id_t;
 #define DNA_ENGINE_ERROR_PASSWORD_REQUIRED (-111)
 #define DNA_ENGINE_ERROR_WRONG_PASSWORD (-112)
 #define DNA_ENGINE_ERROR_INVALID_SIGNATURE (-113)  /* DHT profile signature verification failed */
+#define DNA_ENGINE_ERROR_INSUFFICIENT_BALANCE (-114)  /* Insufficient token balance for transaction */
 
 /**
  * Get human-readable error message for engine errors

@@ -326,6 +326,7 @@ static int cell_chain_send_with_wallet_core(
     int all_count = 0;
     if (parse_utxos_from_response(utxo_resp, &all_utxos, &all_count) != 0 || all_count == 0) {
         QGP_LOG_ERROR(LOG_TAG, "No %s UTXOs available", utxo_token);
+        ret = -2;  /* Insufficient balance (zero) */
         goto done;
     }
 
@@ -333,6 +334,7 @@ static int cell_chain_send_with_wallet_core(
     uint256_t total_input = uint256_0;
     if (select_utxos(all_utxos, all_count, required, &selected_utxos, &selected_count, &total_input) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Insufficient %s balance", utxo_token);
+        ret = -2;  /* Insufficient balance - distinct from generic -1 error */
         goto done;
     }
 
@@ -349,11 +351,13 @@ static int cell_chain_send_with_wallet_core(
         int all_cell_count = 0;
         if (parse_utxos_from_response(cell_utxo_resp, &all_cell_utxos, &all_cell_count) != 0 || all_cell_count == 0) {
             QGP_LOG_ERROR(LOG_TAG, "No CELL UTXOs for fees");
+            ret = -2;  /* Insufficient CELL for fees */
             goto done;
         }
 
         if (select_utxos(all_cell_utxos, all_cell_count, required_cell, &selected_cell_utxos, &selected_cell_count, &total_cell_input) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Insufficient CELL for fees");
+            ret = -2;  /* Insufficient CELL for fees */
             goto done;
         }
     }

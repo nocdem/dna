@@ -1176,9 +1176,13 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
     } catch (e) {
       if (mounted) {
         setState(() => _isSending = false);
+        // Close the dialog first, then show the snackbar
+        Navigator.pop(context);
+        // Extract user-friendly message from exception
+        final message = e is DnaEngineException ? e.message : e.toString();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to send: $e'),
+            content: Text('Failed to send: $message'),
             backgroundColor: DnaColors.snackbarError,
           ),
         );

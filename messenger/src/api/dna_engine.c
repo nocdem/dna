@@ -200,6 +200,7 @@ const char* dna_engine_error_string(int error) {
     if (error == DNA_ENGINE_ERROR_PASSWORD_REQUIRED) return "Password required for encrypted keys";
     if (error == DNA_ENGINE_ERROR_WRONG_PASSWORD) return "Incorrect password";
     if (error == DNA_ENGINE_ERROR_INVALID_SIGNATURE) return "Profile signature verification failed (corrupted or stale DHT data)";
+    if (error == DNA_ENGINE_ERROR_INSUFFICIENT_BALANCE) return "Insufficient balance";
     /* Fall back to base dna_api.h error strings */
     if (error == DNA_ERROR_INVALID_ARG) return "Invalid argument";
     if (error == DNA_ERROR_NOT_FOUND) return "Not found";
@@ -3302,8 +3303,13 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         qgp_secure_memzero(master_seed, sizeof(master_seed));
 
         if (send_rc != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s send failed (on-demand)", chain_name);
-            error = DNA_ENGINE_ERROR_NETWORK;
+            QGP_LOG_ERROR(LOG_TAG, "%s send failed (on-demand), rc=%d", chain_name, send_rc);
+            /* Map blockchain error codes to engine errors */
+            if (send_rc == -2) {
+                error = DNA_ENGINE_ERROR_INSUFFICIENT_BALANCE;
+            } else {
+                error = DNA_ENGINE_ERROR_NETWORK;
+            }
             goto done;
         }
     }
