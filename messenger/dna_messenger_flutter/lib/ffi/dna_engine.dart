@@ -3953,6 +3953,26 @@ class DnaEngine {
     request?.callback.close();
   }
 
+  /// Detach the event callback (call when app goes to background)
+  /// This prevents crashes when native code tries to invoke a deleted Dart callback
+  /// after Flutter is killed but ForegroundService continues running.
+  void detachEventCallback() {
+    if (_isDisposed) return;
+    print('[DnaEngine] Detaching event callback');
+    _bindings.dna_engine_set_event_callback(_engine, nullptr, nullptr);
+  }
+
+  /// Re-attach the event callback (call when app comes back to foreground)
+  void attachEventCallback() {
+    if (_isDisposed || _eventCallback == null) return;
+    print('[DnaEngine] Attaching event callback');
+    _bindings.dna_engine_set_event_callback(
+      _engine,
+      _eventCallback!.nativeFunction.cast(),
+      nullptr,
+    );
+  }
+
   /// Dispose the engine and release all resources
   void dispose() {
     if (_isDisposed) return;

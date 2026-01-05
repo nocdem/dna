@@ -63,6 +63,10 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     try {
       final engine = await ref.read(engineProvider.future);
 
+      // Re-attach event callback (was detached in _onPause to prevent crashes)
+      print('AppLifecycle: Re-attaching event callback');
+      engine.attachEventCallback();
+
       // Check if DHT is actually still connected (may have dropped while idle)
       final isDhtConnected = engine.isDhtConnected();
       print('AppLifecycle: DHT connected = $isDhtConnected');
@@ -126,6 +130,12 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Pause C-side presence heartbeat (stops marking us as online)
       print('AppLifecycle: Pausing C-side presence heartbeat');
       engine.pausePresence();
+
+      // CRITICAL: Detach event callback to prevent crashes if Flutter is killed
+      // while ForegroundService keeps the native library running. Events from
+      // DHT listeners would try to invoke a deleted Dart callback.
+      print('AppLifecycle: Detaching event callback');
+      engine.detachEventCallback();
     } catch (e) {
       print('AppLifecycle: Error during pause - $e');
     }
