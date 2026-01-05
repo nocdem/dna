@@ -14,7 +14,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/providers.dart';
+import '../../providers/notification_settings_provider.dart';
 import '../../providers/version_check_provider.dart';
+import '../../services/notification_service.dart';
 import '../../theme/dna_theme.dart';
 import '../profile/profile_editor_screen.dart';
 import 'app_lock_settings_screen.dart';
@@ -58,6 +60,8 @@ class SettingsScreen extends ConsumerWidget {
           ),
           // Contacts
           _ContactsSection(),
+          // Notifications
+          _NotificationsSection(),
           // Security
           _SecuritySection(),
           // Data (backup/restore)
@@ -258,6 +262,53 @@ class _ContactsSection extends ConsumerWidget {
               ),
             );
           },
+        ),
+      ],
+    );
+  }
+}
+
+class _NotificationsSection extends ConsumerStatefulWidget {
+  @override
+  ConsumerState<_NotificationsSection> createState() => _NotificationsSectionState();
+}
+
+class _NotificationsSectionState extends ConsumerState<_NotificationsSection> {
+  Future<void> _toggleNotifications(bool enabled) async {
+    if (enabled) {
+      // Request permission when enabling
+      final granted = await NotificationService.requestPermissions();
+      if (!granted && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Notification permission denied'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+        return; // Don't enable if permission denied
+      }
+    } else {
+      // Cancel all notifications when disabling
+      await NotificationService.cancelAll();
+    }
+
+    ref.read(notificationSettingsProvider.notifier).setEnabled(enabled);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = ref.watch(notificationSettingsProvider);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader('Notifications'),
+        SwitchListTile(
+          secondary: const FaIcon(FontAwesomeIcons.bell),
+          title: const Text('Enable Notifications'),
+          subtitle: const Text('Show alerts for new messages'),
+          value: settings.enabled,
+          onChanged: _toggleNotifications,
         ),
       ],
     );

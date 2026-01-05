@@ -12,6 +12,7 @@ import 'groups_provider.dart';
 import 'contact_requests_provider.dart';
 import 'identity_provider.dart';
 import 'identity_profile_cache_provider.dart';
+import 'notification_settings_provider.dart';
 
 /// Connection state for DHT
 enum DhtConnectionState { disconnected, connecting, connected }
@@ -347,6 +348,12 @@ class EventHandler {
 
   /// Show notification for incoming message
   void _showMessageNotification(String contactFingerprint, String messageText) {
+    // Check if notifications are enabled
+    final notificationSettings = _ref.read(notificationSettingsProvider);
+    if (!notificationSettings.enabled) {
+      return;
+    }
+
     // Get sender display name from profile cache
     final profileCache = _ref.read(contactProfileCacheProvider);
     final profile = profileCache[contactFingerprint];
