@@ -6,33 +6,53 @@ Secure messaging using **NIST Category 5 post-quantum cryptography** (Kyber1024 
 
 ## Status
 
-**Alpha v0.1.x** - Breaking changes expected
+**Alpha** - Breaking changes expected
 
-- **Version:** 0.1.x (x = git commit count)
+- **Library Version:** v0.3.112
+- **Flutter App Version:** v0.99.61
 - **Security:** NIST Category 5 (256-bit quantum resistance)
-- **Platforms:** Linux, Windows (cross-compiled)
+- **Platforms:** Android, Linux, Windows
 
 ---
 
-## Binaries
+## Applications
 
-DNA Messenger builds **two binaries only**:
+### DNA Messenger (Flutter)
 
-### dna-messenger
+Cross-platform messenger application.
 
-Desktop GUI application for end-to-end encrypted messaging.
-
-- **UI:** ImGui (OpenGL3 + GLFW3)
-- **Features:** E2E messaging, groups, user profiles, cpunk wallet, DNA Board
+- **UI:** Flutter/Dart (Android, Linux, Windows)
+- **Features:** E2E messaging, groups, user profiles, cpunk wallet
 - **Crypto:** Kyber1024 encryption + Dilithium5 signatures + AES-256-GCM
 - **Storage:** Local SQLite (no centralized server)
-- **Network:** P2P via DHT with ICE NAT traversal
+- **Network:** DHT-based messaging with offline queue
 
 ```bash
-./build/imgui_gui/dna-messenger
+# Desktop (Linux/Windows)
+cd dna_messenger_flutter && flutter run
+
+# Android
+flutter build apk
 ```
 
-### dna-nodus (v0.3)
+### DNA Messenger CLI
+
+Command-line interface for debugging and testing.
+
+```bash
+# Build
+cd build && make dna-messenger-cli
+
+# Usage
+./cli/dna-messenger-cli --help
+./cli/dna-messenger-cli send <name> "message"
+./cli/dna-messenger-cli contacts
+./cli/dna-messenger-cli whoami
+```
+
+See [docs/CLI_TESTING.md](docs/CLI_TESTING.md) for full documentation.
+
+### dna-nodus (v0.4)
 
 DHT bootstrap + STUN/TURN server for the DNA network infrastructure.
 
@@ -86,7 +106,7 @@ See [docs/DNA_NODUS.md](docs/DNA_NODUS.md) for full documentation.
 ### User Profiles
 - Display name, bio, location, website, avatar
 - DHT storage with 7-day cache
-- Avatar system (64x64 JPEG, circular display)
+- Avatar system (128x128 JPEG, circular display with crop/pan/zoom)
 
 ### DNA Board (Social)
 - Decentralized message wall per user
@@ -105,6 +125,7 @@ See [docs/DNA_NODUS.md](docs/DNA_NODUS.md) for full documentation.
 - Per-identity contact lists with DHT sync
 - Cryptographically signed reverse mappings
 - No centralized message storage
+- App lock (biometric + PIN) for mobile
 
 ---
 
@@ -118,35 +139,41 @@ Download from GitLab CI/CD:
 ### Build from Source (Linux)
 
 ```bash
-# Install dependencies (Debian/Ubuntu)
+# Install C library dependencies (Debian/Ubuntu)
 sudo apt install git cmake g++ libssl-dev libsqlite3-dev libcurl4-openssl-dev \
                  libjson-c-dev libargon2-dev libfmt-dev libreadline-dev \
                  libasio-dev libmsgpack-cxx-dev
 
-# For GUI (optional): add OpenGL/GLFW
-sudo apt install libglfw3-dev libgl1-mesa-dev libglu1-mesa-dev
-
-# Clone and build
+# Build C library
 git clone https://github.com/nocdem/dna-messenger.git
 cd dna-messenger
 mkdir build && cd build
 cmake .. && make -j$(nproc)
 
-# Run GUI
-./imgui_gui/dna-messenger
-
-# Or CLI only (no GUI deps needed)
-make dna-messenger-cli
-./cli/dna-messenger-cli --help
+# Build Flutter app (requires Flutter SDK)
+cd ../dna_messenger_flutter
+flutter pub get
+flutter run
 ```
 
-### Cross-Compile for Windows
+### Build for Android
 
 ```bash
-# Requires MXE (M cross environment)
-./build-cross-compile.sh windows-x64
+# Build C library for Android (requires Android NDK)
+./build-cross-compile.sh android-arm64
 
-# Output: dist/windows-x64/dna-messenger.exe
+# Build Flutter APK
+cd dna_messenger_flutter
+flutter build apk
+```
+
+### CLI Tool
+
+```bash
+# Build CLI (no Flutter required)
+cd build
+make dna-messenger-cli
+./cli/dna-messenger-cli --help
 ```
 
 ---
@@ -190,34 +217,43 @@ DNA Messenger includes a **forked OpenDHT** with post-quantum cryptography:
 ## Architecture
 
 ```
-┌─────────────────┐     ┌─────────────────┐
-│  dna-messenger  │────▶│   dna-nodus     │
-│   (GUI Client)  │     │ (Bootstrap Node)│
-└────────┬────────┘     └────────┬────────┘
-         │                       │
-         ▼                       ▼
-┌─────────────────────────────────────────┐
-│              OpenDHT-PQ Network         │
-│   (Post-Quantum Distributed Hash Table) │
-└─────────────────────────────────────────┘
+┌─────────────────────┐     ┌─────────────────┐
+│   DNA Messenger     │────▶│   dna-nodus     │
+│  (Flutter + C lib)  │     │ (Bootstrap Node)│
+└─────────┬───────────┘     └────────┬────────┘
+          │                          │
+          ▼                          ▼
+┌─────────────────────────────────────────────┐
+│              OpenDHT-PQ Network             │
+│   (Post-Quantum Distributed Hash Table)     │
+└─────────────────────────────────────────────┘
 ```
+
+**Components:**
+- **Flutter App:** Cross-platform UI (Android, Linux, Windows)
+- **C Library:** Core cryptography, DHT, database (libdna_engine.so)
+- **FFI Bindings:** Dart-to-C interface via dart:ffi
 
 **Data Storage:**
 - Messages: Local SQLite (`~/.dna/messages.db`)
 - Contacts: Per-identity SQLite (`~/.dna/<identity>_contacts.db`)
 - Keys: Local encrypted (`~/.dna/<fingerprint>/keys/*.dsa`, `*.kem`)
+- Logs: Persistent logs (`~/.dna/logs/`)
 - Public data: DHT with local cache
 
 ---
 
 ## Documentation
 
-- **[Architecture](docs/ARCHITECTURE.md)** - System design
-- **[Development](docs/DEVELOPMENT.md)** - Code guidelines
-- **[API Reference](docs/API.md)** - Quick API reference
+- **[Architecture](docs/ARCHITECTURE_DETAILED.md)** - System design and directory structure
+- **[Flutter UI](docs/FLUTTER_UI.md)** - Flutter app documentation
+- **[CLI Testing](docs/CLI_TESTING.md)** - CLI tool reference
+- **[DNA Engine API](docs/DNA_ENGINE_API.md)** - Core engine API
+- **[Functions Reference](docs/FUNCTIONS.md)** - All function signatures
+- **[DHT System](docs/DHT_SYSTEM.md)** - DHT architecture
+- **[Message System](docs/MESSAGE_SYSTEM.md)** - Message handling
+- **[DNA Nodus](docs/DNA_NODUS.md)** - Bootstrap server
 - **[Roadmap](ROADMAP.md)** - Development phases
-- **[GSK Implementation](docs/GSK_IMPLEMENTATION.md)** - Group encryption
-- **[ICE NAT Traversal](docs/ICE_NAT_TRAVERSAL_FIXES.md)** - NAT traversal
 
 ---
 

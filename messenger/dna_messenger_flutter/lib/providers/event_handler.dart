@@ -147,8 +147,10 @@ class EventHandler {
           _showMessageNotification(contactFp, msg.plaintext);
         }
 
-        // Always refresh contacts to update last message preview
-        _ref.invalidate(contactsProvider);
+        // NOTE: We intentionally do NOT invalidate(contactsProvider) here.
+        // Contact tiles don't show message previews - only avatar, name, online status, and unread count.
+        // Unread counts are already updated via incrementCount() above.
+        // Full contact list rebuilds cause unnecessary UI churn and presence bouncing.
 
       case MessageSentEvent():
         // Debounced refresh - only once after last message sent
@@ -278,7 +280,7 @@ class EventHandler {
   }
 
   /// Start periodic presence refresh (every 30 seconds)
-  /// Announces our presence AND refreshes contact presence from DHT
+  /// Announces our presence to DHT
   void _startPresencePolling() {
     _presenceTimer?.cancel();
     _presenceTimer = Timer.periodic(const Duration(seconds: 30), (_) {
@@ -286,8 +288,10 @@ class EventHandler {
         // Announce our presence to DHT
         // Phase 14: Works in DHT-only mode (no P2P transport required)
         await engine.refreshPresence();
-        // Refresh contacts to get updated presence status
-        _ref.invalidate(contactsProvider);
+        // NOTE: We do NOT invalidate(contactsProvider) here.
+        // Contact presence updates come through via ContactOnline/ContactOffline events
+        // which are handled by updateContactStatus() in ContactsNotifier.
+        // Full invalidation causes unnecessary rebuilds and visual bouncing.
       });
     });
   }

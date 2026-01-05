@@ -13,16 +13,14 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-- [ ] **[FLUTTER] P3 - Contacts briefly show as online during DHT fetch** - When fetching messages or presence info from DHT, all contacts briefly appear online then revert to correct status. Causes visual "bouncing" in the contact list that looks unprofessional.
-
-  **Likely cause:** Presence data being reset/cleared before DHT response arrives, or initial state defaults to online.
-
-- [ ] **[FLUTTER] P4 - Full contact list refresh on single message** - When one contact receives a new message, the entire contact list is refreshed/rebuilt instead of just updating that contact's entry. Causes unnecessary UI churn.
-
-  **Likely cause:** `_ref.invalidate(contactsProvider)` in event_handler.dart triggers full rebuild. Should use targeted state update instead.
+None currently.
 
 
 ## Fixed Bugs
+
+- [x] **[FLUTTER] P3 - Contacts briefly show as online during DHT fetch** - Caused by unnecessary `_ref.invalidate(contactsProvider)` calls triggering full rebuilds with `_updatePresenceInBackground()`. Fixed by removing invalidate from presence polling (every 30s) since presence updates already come through via ContactOnline/ContactOffline events handled by `updateContactStatus()`. (v0.99.61)
+
+- [x] **[FLUTTER] P4 - Full contact list refresh on single message** - Comment said "refresh contacts to update last message preview" but contact tiles don't show message previews - only avatar, name, online status, and unread count. Removed unnecessary `_ref.invalidate(contactsProvider)` from MessageReceivedEvent handler. Unread counts already updated via `incrementCount()`. (v0.99.61)
 
 - [x] **[FLUTTER] P3 - Contacts show lastSeen=1970-01-01** - Presence cache was in-memory only, lost on app restart. Added `last_seen` column to contacts table, presence updates now persist to database. On startup, fallback to database value when cache is empty. (v0.3.110)
 
