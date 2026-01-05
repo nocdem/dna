@@ -943,8 +943,14 @@ static void p2p_message_received_internal(
         free(plaintext);
     }
 
-    // Use sender's timestamp if available, otherwise fall back to local time
-    time_t msg_timestamp = sender_timestamp ? (time_t)sender_timestamp : time(NULL);
+    // v0.08 requires sender timestamp - reject messages without it
+    if (sender_timestamp == 0) {
+        QGP_LOG_WARN("P2P", "Rejecting message: no sender timestamp (decryption failed or pre-v0.08 format)");
+        free(sender_identity);
+        return;
+    }
+
+    time_t msg_timestamp = (time_t)sender_timestamp;
 
     int result = message_backup_save(
         ctx->backup_ctx,
