@@ -23,8 +23,9 @@ class DnaColors {
 
   // Status colors (for text/icons)
   static const textSuccess = Color(0xFF40FF86);
-  static const textWarning = Color(0xFFFF8080);
-  static const textInfo = Color(0xFFFFCC66);
+  static const textWarning = Color(0xFFFF8080);  // Red/pink for warnings
+  static const textError = Color(0xFFFF6B6B);    // Red for errors (slightly different)
+  static const textInfo = Color(0xFFFFCC66);     // Yellow/amber for info
   static const offline = Color(0xFF6B7280); // Gray for offline status
 
   // Snackbar backgrounds (dark, muted variants)
