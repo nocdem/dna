@@ -161,9 +161,10 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     state = AsyncValue.data(updated);
   }
 
+  /// Refresh contacts without showing loading state (seamless update)
+  /// Keeps existing data visible while fetching new data to prevent "bouncing"
   Future<void> refresh() async {
-    state = const AsyncValue.loading();
-    state = await AsyncValue.guard(() async {
+    try {
       final engine = await ref.read(engineProvider.future);
       final contacts = await engine.getContacts();
 
@@ -185,8 +186,15 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
       // Start presence lookups in background (non-blocking)
       _updatePresenceInBackground(engine, sortedContacts);
 
-      return sortedContacts;
-    });
+      // Atomic swap - only update state once we have new data
+      state = AsyncValue.data(sortedContacts);
+    } catch (e, st) {
+      // Only set error if we don't have existing data
+      if (state.valueOrNull == null) {
+        state = AsyncValue.error(e, st);
+      }
+      // Otherwise keep showing existing data (silent failure)
+    }
   }
 
   Future<void> addContact(String identifier) async {

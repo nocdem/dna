@@ -101,9 +101,9 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       print('AppLifecycle: Refreshing contact profiles from DHT');
       await _refreshContactProfiles(engine);
 
-      // Refresh contacts to get updated presence status
+      // Refresh contacts to get updated presence status (seamless update)
       print('AppLifecycle: Refreshing contacts for presence update');
-      ref.invalidate(contactsProvider);
+      await ref.read(contactsProvider.notifier).refresh();
 
       // Note: Offline messages are handled by C-side push notification callback
       // (messenger_push_notification_callback) which triggers poll on DHT listen events

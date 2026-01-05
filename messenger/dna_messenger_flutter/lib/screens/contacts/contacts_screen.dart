@@ -40,7 +40,7 @@ class ContactsScreen extends ConsumerWidget {
           ),
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
-            onPressed: () => ref.invalidate(contactsProvider),
+            onPressed: () => ref.read(contactsProvider.notifier).refresh(),
             tooltip: 'Refresh',
           ),
         ],
@@ -131,7 +131,7 @@ class ContactsScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 16),
             ElevatedButton(
-              onPressed: () => ref.invalidate(contactsProvider),
+              onPressed: () => ref.read(contactsProvider.notifier).refresh(),
               child: const Text('Retry'),
             ),
           ],

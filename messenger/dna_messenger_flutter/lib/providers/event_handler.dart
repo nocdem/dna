@@ -86,8 +86,8 @@ class EventHandler {
             DhtConnectionState.connected;
         // Start DHT listeners for contacts' outboxes (push notifications)
         _startDhtListeners();
-        // Refresh contacts when DHT connects
-        _ref.invalidate(contactsProvider);
+        // Refresh contacts when DHT connects (seamless update)
+        _ref.read(contactsProvider.notifier).refresh();
         // Refresh contact requests when DHT connects
         _ref.invalidate(contactRequestsProvider);
         // Refresh identity profiles (display names/avatars) now that DHT is connected
@@ -177,8 +177,8 @@ class EventHandler {
         break;
 
       case IdentityLoadedEvent():
-        // Identity loaded - refresh all data
-        _ref.invalidate(contactsProvider);
+        // Identity loaded - refresh all data (seamless update for contacts)
+        _ref.read(contactsProvider.notifier).refresh();
         _ref.invalidate(groupsProvider);
         _ref.invalidate(invitationsProvider);
         _ref.invalidate(contactRequestsProvider);
