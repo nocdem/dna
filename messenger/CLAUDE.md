@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-01-05 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.3.122 | Flutter v0.99.68 | Nodus v0.4.3
+**Versions:** Library v0.3.123 | Flutter v0.99.68 | Nodus v0.4.3
 
 ---
 
@@ -65,12 +65,23 @@ QGP_LOG_ERROR(LOG_TAG, "Error message: %s", error_str);
 - **ALWAYS** define `LOG_TAG` at top of file: `#define LOG_TAG "MODULE_NAME"`
 - Log levels: DEBUG < INFO < WARN < ERROR
 
-## ALPHA PROJECT - HARD CUTOFFS ONLY
-This project is in ALPHA. We use hard cutoffs for all changes:
-- NO backward compatibility
-- NO migration scripts
-- NO legacy support
-- Breaking changes are expected and acceptable
+## BETA PROJECT - NO BREAKING CHANGES
+This project is in **BETA**. Users have real data. Breaking changes require careful handling:
+
+**Before any breaking change, you MUST:**
+1. **WARN** the user explicitly: "This is a breaking change that affects [X]"
+2. **ASK** what the correct procedure is:
+   - Migration script (preferred for user data)
+   - Backward compatibility layer
+   - Hard cutover (ONLY with explicit user permission)
+3. **NEVER** do a hard cutover without explicit approval
+
+**Examples of breaking changes:**
+- Database schema changes
+- Message format changes
+- Key/crypto format changes
+- API signature changes that affect Flutter FFI
+- DHT key format changes
 
 ## IMGUI IS DEPRECATED
 The ImGui GUI (`imgui_gui/`) is **NO LONGER USED**. Do not modify or reference it.
@@ -294,7 +305,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.3.122 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
+| C Library | `include/dna/version.h` | v0.3.123 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
 | Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.68+9968 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 | Nodus server changes (vendor/opendht-pq/tools/) |
 
