@@ -920,21 +920,30 @@ class DnaEngine {
 
   /// Create and initialize the DNA engine
   static Future<DnaEngine> create({String? dataDir}) async {
+    print('[DnaEngine] create() called with dataDir: $dataDir');
+
     final engine = DnaEngine._();
+    print('[DnaEngine] Loading library...');
     engine._bindings = DnaBindings(_loadLibrary());
+    print('[DnaEngine] Library loaded');
 
     final dataDirPtr = dataDir?.toNativeUtf8() ?? nullptr;
+    print('[DnaEngine] Calling dna_engine_create...');
     engine._engine = engine._bindings.dna_engine_create(dataDirPtr.cast());
+    print('[DnaEngine] dna_engine_create returned: ${engine._engine}');
 
     if (dataDir != null) {
       calloc.free(dataDirPtr);
     }
 
     if (engine._engine == nullptr) {
+      print('[DnaEngine] ERROR: Engine is nullptr!');
       throw DnaEngineException(-100, 'Failed to create engine');
     }
 
+    print('[DnaEngine] Setting up event callback...');
     engine._setupEventCallback();
+    print('[DnaEngine] Engine created successfully');
     return engine;
   }
 
