@@ -716,7 +716,7 @@ int message_backup_search_by_identity(message_backup_context_t *ctx,
         "SELECT id, sender, recipient, encrypted_message, encrypted_len, timestamp, delivered, read "
         "FROM messages "
         "WHERE sender = ? OR recipient = ? "
-        "ORDER BY timestamp DESC LIMIT 100";
+        "ORDER BY timestamp DESC";
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
