@@ -199,15 +199,18 @@ int messenger_load_pubkey(
     // Cache miss - fetch from DHT keyserver
     QGP_LOG_INFO(LOG_TAG, "Fetching public keys for '%s' from DHT keyserver...", identity);
 
-    // Get DHT context from P2P transport
-    if (!ctx->p2p_transport) {
-        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized");
-        return -1;
+    // Get DHT context - prefer P2P transport, fallback to global singleton
+    // Phase 14: DHT-only messaging doesn't require P2P transport
+    dht_context_t *dht_ctx = NULL;
+    if (ctx->p2p_transport) {
+        dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
     }
-
-    dht_context_t *dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
     if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT context not available");
+        // Fallback to global DHT singleton (Phase 14: DHT-only messaging)
+        dht_ctx = dht_singleton_get();
+    }
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available (singleton not initialized)");
         return -1;
     }
 

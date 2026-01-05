@@ -758,9 +758,17 @@ int messenger_queue_to_dht(
         return -1;
     }
 
-    // Require P2P transport for DHT access (transport layer provides DHT connection)
-    if (!ctx->p2p_enabled || !ctx->p2p_transport) {
-        QGP_LOG_WARN("P2P", "P2P transport not available, cannot queue to DHT for %s\n", recipient);
+    // Phase 14: DHT-only messaging - get DHT context directly from singleton
+    // P2P transport is NOT required for DHT messaging
+    dht_context_t *dht_ctx = NULL;
+    if (ctx->p2p_transport) {
+        dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    }
+    if (!dht_ctx) {
+        dht_ctx = dht_singleton_get();
+    }
+    if (!dht_ctx) {
+        QGP_LOG_ERROR("P2P", "DHT not available for message queue\n");
         return -1;
     }
 
@@ -777,14 +785,16 @@ int messenger_queue_to_dht(
         seq_num = message_backup_get_next_seq(ctx->backup_ctx, recipient_fingerprint);
     }
 
-    // Queue directly to DHT (Spillway) - no P2P attempt
-    int queue_result = p2p_queue_offline_message(
-        ctx->p2p_transport,
+    // Queue directly to DHT (Spillway) - call dht_queue_message directly
+    // Default TTL: 7 days (604800 seconds)
+    int queue_result = dht_queue_message(
+        dht_ctx,
         ctx->identity,           // sender (fingerprint)
         recipient_fingerprint,   // recipient (fingerprint)
         encrypted_message,
         encrypted_len,
-        seq_num
+        seq_num,
+        604800  // 7-day TTL
     );
 
     if (queue_result == 0) {
