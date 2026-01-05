@@ -257,6 +257,15 @@ int contacts_db_init(const char *owner_identity) {
         sqlite3_free(err_msg);
     }
 
+    // Add last_seen column to contacts table if it doesn't exist (migration v0.3.110)
+    const char *sql_add_last_seen =
+        "ALTER TABLE contacts ADD COLUMN last_seen INTEGER DEFAULT 0;";
+    rc = sqlite3_exec(g_db, sql_add_last_seen, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        /* Ignore error - column may already exist */
+        sqlite3_free(err_msg);
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Initialized for identity '%s': %s\n", owner_identity, db_path);
     return 0;
 }
@@ -446,8 +455,8 @@ int contacts_db_list(contact_list_t **list_out) {
         return -1;
     }
 
-    // Query contacts
-    const char *sql = "SELECT identity, added_timestamp, notes FROM contacts ORDER BY identity;";
+    // Query contacts (including last_seen from database)
+    const char *sql = "SELECT identity, added_timestamp, notes, last_seen FROM contacts ORDER BY identity;";
     sqlite3_stmt *stmt = NULL;
 
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
@@ -463,6 +472,7 @@ int contacts_db_list(contact_list_t **list_out) {
         const char *identity = (const char*)sqlite3_column_text(stmt, 0);
         uint64_t timestamp = sqlite3_column_int64(stmt, 1);
         const char *notes = (const char*)sqlite3_column_text(stmt, 2);
+        uint64_t last_seen = sqlite3_column_int64(stmt, 3);
 
         // Skip invalid fingerprints (corrupted data protection)
         if (!is_valid_fingerprint(identity)) {
@@ -473,6 +483,7 @@ int contacts_db_list(contact_list_t **list_out) {
 
         strncpy(list->contacts[i].identity, identity, sizeof(list->contacts[i].identity) - 1);
         list->contacts[i].added_timestamp = timestamp;
+        list->contacts[i].last_seen = last_seen;
 
         if (notes) {
             strncpy(list->contacts[i].notes, notes, sizeof(list->contacts[i].notes) - 1);
@@ -544,6 +555,39 @@ void contacts_db_free_list(contact_list_t *list) {
         }
         free(list);
     }
+}
+
+// Update last_seen timestamp for a contact
+int contacts_db_update_last_seen(const char *identity, uint64_t last_seen) {
+    if (!g_db) {
+        return -1;  // Silently fail if DB not initialized (startup race)
+    }
+
+    if (!identity || strlen(identity) != 128) {
+        return -1;  // Invalid fingerprint
+    }
+
+    const char *sql = "UPDATE contacts SET last_seen = ? WHERE identity = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare last_seen update: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)last_seen);
+    sqlite3_bind_text(stmt, 2, identity, -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update last_seen: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    return 0;
 }
 
 // Close database

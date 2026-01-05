@@ -7,6 +7,7 @@
  */
 
 #include "presence_cache.h"
+#include "contacts_db.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -100,7 +101,7 @@ int presence_cache_init(void) {
 }
 
 /**
- * Update presence (with automatic event firing)
+ * Update presence (with automatic event firing and database persistence)
  */
 void presence_cache_update(const char *fingerprint, bool is_online, time_t timestamp) {
     if (!fingerprint || strlen(fingerprint) != 128) {
@@ -134,6 +135,11 @@ void presence_cache_update(const char *fingerprint, bool is_online, time_t times
             bool now_online = is_within_ttl(node->entry.last_seen);
 
             pthread_mutex_unlock(&cache_mutex);
+
+            // Persist to database when online (so it survives app restart)
+            if (is_online) {
+                contacts_db_update_last_seen(fingerprint, (uint64_t)timestamp);
+            }
 
             // Fire event if status changed
             if (was_online != now_online) {
@@ -170,6 +176,11 @@ void presence_cache_update(const char *fingerprint, bool is_online, time_t times
     bool now_online = is_within_ttl(new_node->entry.last_seen);
 
     pthread_mutex_unlock(&cache_mutex);
+
+    // Persist to database when online (so it survives app restart)
+    if (is_online) {
+        contacts_db_update_last_seen(fingerprint, (uint64_t)timestamp);
+    }
 
     // Fire event for new entry if online
     if (now_online) {
