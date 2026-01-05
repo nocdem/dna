@@ -483,18 +483,73 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   Widget _buildInputArea(BuildContext context, Contact contact) {
     final theme = Theme.of(context);
+    final dhtState = ref.watch(dhtConnectionStateProvider);
+    final isConnected = dhtState == DhtConnectionState.connected;
+    final isConnecting = dhtState == DhtConnectionState.connecting;
 
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        border: Border(
-          top: BorderSide(
-            color: theme.colorScheme.primary.withAlpha(51),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // DHT Status Banner - shows when not connected
+        if (!isConnected)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            color: isConnecting
+                ? DnaColors.textWarning.withAlpha(30)
+                : DnaColors.textError.withAlpha(30),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (isConnecting) ...[
+                  SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: DnaColors.textWarning,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Connecting to network...',
+                    style: TextStyle(
+                      color: DnaColors.textWarning,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ] else ...[
+                  FaIcon(
+                    FontAwesomeIcons.cloudBolt,
+                    size: 14,
+                    color: DnaColors.textError,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Disconnected - messages will queue',
+                    style: TextStyle(
+                      color: DnaColors.textError,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ],
+            ),
           ),
-        ),
-      ),
-      child: SafeArea(
+        // Input area
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface,
+            border: Border(
+              top: BorderSide(
+                color: theme.colorScheme.primary.withAlpha(51),
+              ),
+            ),
+          ),
+          child: SafeArea(
         top: false,
         child: Row(
           children: [
@@ -566,7 +621,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
           ],
         ),
+        ),
       ),
+      ],
     );
   }
 
