@@ -28,7 +28,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _showEmojiPicker = false;
   bool _isCheckingOffline = false;
   bool _justInsertedEmoji = false;
-  bool _hasText = false; // Track empty/non-empty to minimize rebuilds
 
   @override
   void initState() {
@@ -93,17 +92,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   void _onTextChanged() {
     // Close emoji picker when user types (but not when emoji was just inserted)
-    final shouldCloseEmoji = _showEmojiPicker && !_justInsertedEmoji;
-    _justInsertedEmoji = false;
-
-    // Only rebuild when empty<->non-empty changes (for send button state)
-    final hasTextNow = _messageController.text.trim().isNotEmpty;
-    if (hasTextNow != _hasText || shouldCloseEmoji) {
-      setState(() {
-        _hasText = hasTextNow;
-        if (shouldCloseEmoji) _showEmojiPicker = false;
-      });
+    if (_showEmojiPicker && !_justInsertedEmoji) {
+      setState(() => _showEmojiPicker = false);
     }
+    _justInsertedEmoji = false;
+    // Note: send button state handled by ValueListenableBuilder - no setState needed
   }
 
   Future<void> _checkOfflineMessages() async {
@@ -526,7 +519,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 minLines: 1,
                 maxLines: 5,
                 onEnterPressed: () {
-                  if (_hasText) {
+                  if (_messageController.text.trim().isNotEmpty) {
                     _sendMessage(contact);
                   }
                 },
@@ -555,10 +548,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
             const SizedBox(width: 8),
 
-            // Send button
-            IconButton(
-              icon: const FaIcon(FontAwesomeIcons.paperPlane),
-              onPressed: _hasText ? () => _sendMessage(contact) : null,
+            // Send button - uses ValueListenableBuilder for zero parent rebuilds
+            ValueListenableBuilder<TextEditingValue>(
+              valueListenable: _messageController,
+              builder: (context, value, child) {
+                final hasText = value.text.trim().isNotEmpty;
+                return IconButton(
+                  icon: const FaIcon(FontAwesomeIcons.paperPlane),
+                  onPressed: hasText ? () => _sendMessage(contact) : null,
+                );
+              },
             ),
           ],
         ),
