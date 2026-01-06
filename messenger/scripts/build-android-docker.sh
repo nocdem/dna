@@ -292,7 +292,10 @@ echo "==> Step 2/2: Building Flutter APK..."
 
 # Build in isolated directory to avoid corrupting local dev environment
 BUILD_WORK_DIR="$CACHE_DIR/flutter-build"
-rm -rf "$BUILD_WORK_DIR"
+# Clean up using docker (handles root-owned files without sudo)
+if [ -d "$BUILD_WORK_DIR" ]; then
+    docker run --rm -v "$CACHE_DIR:/cache" alpine rm -rf /cache/flutter-build
+fi
 mkdir -p "$BUILD_WORK_DIR"
 
 # Copy only what's needed for Android build
@@ -305,7 +308,7 @@ docker run --rm --network=host \
     -v "$BUILD_WORK_DIR/dna_messenger_flutter:/app" \
     -w /app \
     "$FLUTTER_IMAGE" \
-    bash -c "flutter config --no-analytics && flutter pub get && flutter build apk --release && chown -R $(id -u):$(id -g) /app/build"
+    bash -c "flutter config --no-analytics && flutter pub get && flutter build apk --release && chown -R $(id -u):$(id -g) /app"
 
 APK_PATH="$BUILD_WORK_DIR/dna_messenger_flutter/build/app/outputs/flutter-apk/app-release.apk"
 
