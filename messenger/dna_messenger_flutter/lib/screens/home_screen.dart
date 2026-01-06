@@ -281,11 +281,13 @@ class _DrawerHeader extends ConsumerWidget {
 
   String _getInitials(String name) {
     if (name.isEmpty) return '?';
-    final parts = name.split(' ');
-    if (parts.length >= 2) {
-      return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
+    // Filter out empty strings from split (handles multiple spaces)
+    final words = name.split(' ').where((w) => w.isNotEmpty).toList();
+    if (words.isEmpty) return '?';
+    if (words.length >= 2) {
+      return '${words[0][0]}${words[1][0]}'.toUpperCase();
     }
-    return name[0].toUpperCase();
+    return words[0].substring(0, words[0].length.clamp(0, 2)).toUpperCase();
   }
 
   Widget _buildAvatar(AsyncValue<dynamic> fullProfile, String fallbackName, WidgetRef ref) {
