@@ -260,8 +260,11 @@ if(WIN32)
     # Windows system libraries (from WindowsBuild.cmake)
     target_link_libraries(dna_lib ${WINDOWS_SYSTEM_LIBS})
 elseif(ANDROID)
+    # Android: Include JNI bindings in dna_lib
+    target_sources(dna_lib PRIVATE ${CMAKE_SOURCE_DIR}/jni/dna_jni.c)
+    target_include_directories(dna_lib PRIVATE ${CMAKE_SOURCE_DIR}/jni)
     # Android: Link GnuTLS and its dependencies (from AndroidBuild.cmake)
-    target_link_libraries(dna_lib ${ANDROID_GNUTLS_LIBS} m)
+    target_link_libraries(dna_lib ${ANDROID_GNUTLS_LIBS} m log)
     # C++ STL is handled by ANDROID_STL=c++_static in the toolchain
     # Don't explicitly link stdc++ on Android - it will pull in libc++_shared.so
 else()
