@@ -700,6 +700,31 @@ Java_io_cpunk_dna_DNAEngine_nativeSetNotificationHelper(JNIEnv *env, jobject thi
     }
 }
 
+/**
+ * Flutter app version - package io.cpunk.dna_messenger
+ * Note: underscore in package name becomes _1 in JNI naming
+ */
+JNIEXPORT void JNICALL
+Java_io_cpunk_dna_1messenger_DnaNotificationHelper_nativeSetNotificationHelper(JNIEnv *env, jobject thiz, jobject helper) {
+    LOGI("Flutter: Setting notification helper: %p", helper);
+
+    /* Clear existing helper */
+    if (g_notification_helper) {
+        (*env)->DeleteGlobalRef(env, g_notification_helper);
+        g_notification_helper = NULL;
+        dna_engine_set_android_notification_callback(NULL, NULL);
+    }
+
+    /* Set new helper */
+    if (helper) {
+        g_notification_helper = (*env)->NewGlobalRef(env, helper);
+        dna_engine_set_android_notification_callback(jni_android_notification_callback, NULL);
+        LOGI("Flutter: Notification helper registered successfully");
+    } else {
+        LOGI("Flutter: Notification helper cleared");
+    }
+}
+
 JNIEXPORT jstring JNICALL
 Java_io_cpunk_dna_DNAEngine_nativeGetFingerprint(JNIEnv *env, jobject thiz) {
     if (!g_engine) return NULL;
