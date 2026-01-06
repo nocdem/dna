@@ -1,6 +1,7 @@
 // App Lifecycle Observer - handles app state changes
 // Phase 14: DHT-only messaging with reliable Android background support
 
+import 'dart:io' show Platform;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/engine_provider.dart';
@@ -64,9 +65,12 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     try {
       final engine = await ref.read(engineProvider.future);
 
-      // Re-attach event callback (was detached on pause for JNI to handle background)
-      print('AppLifecycle: Re-attaching event callback');
-      engine.attachEventCallback();
+      // Re-attach event callback on Android (was detached on pause for JNI to handle background)
+      // Desktop platforms keep callback attached since they don't have JNI fallback
+      if (Platform.isAndroid) {
+        print('AppLifecycle: Re-attaching event callback');
+        engine.attachEventCallback();
+      }
 
       // Check if DHT is actually still connected (may have dropped while idle)
       final isDhtConnected = engine.isDhtConnected();
@@ -177,10 +181,13 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       print('AppLifecycle: Pausing C-side presence heartbeat');
       engine.pausePresence();
 
-      // Detach Flutter event callback - JNI notification helper handles background
-      // notifications directly via native Android NotificationManager.
-      print('AppLifecycle: Detaching event callback (JNI handles background)');
-      engine.detachEventCallback();
+      // On Android: Detach Flutter event callback - JNI notification helper handles
+      // background notifications directly via native Android NotificationManager.
+      // On Desktop: Keep callback attached since there's no JNI fallback.
+      if (Platform.isAndroid) {
+        print('AppLifecycle: Detaching event callback (JNI handles background)');
+        engine.detachEventCallback();
+      }
     } catch (e) {
       print('AppLifecycle: Error during pause - $e');
     }
