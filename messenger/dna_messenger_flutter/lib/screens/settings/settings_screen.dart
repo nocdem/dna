@@ -16,7 +16,6 @@ import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/providers.dart';
 import '../../providers/notification_settings_provider.dart';
 import '../../providers/version_check_provider.dart';
-import '../../services/notification_service.dart';
 import '../../theme/dna_theme.dart';
 import '../profile/profile_editor_screen.dart';
 import 'app_lock_settings_screen.dart';
@@ -274,24 +273,9 @@ class _NotificationsSection extends ConsumerStatefulWidget {
 }
 
 class _NotificationsSectionState extends ConsumerState<_NotificationsSection> {
-  Future<void> _toggleNotifications(bool enabled) async {
-    if (enabled) {
-      // Request permission when enabling
-      final granted = await NotificationService.requestPermissions();
-      if (!granted && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Notification permission denied'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-        return; // Don't enable if permission denied
-      }
-    } else {
-      // Cancel all notifications when disabling
-      await NotificationService.cancelAll();
-    }
-
+  void _toggleNotifications(bool enabled) {
+    // Android notifications are handled by native JNI (DnaNotificationHelper)
+    // Desktop notifications not yet implemented (see MISSING_FEATURES.md)
     ref.read(notificationSettingsProvider.notifier).setEnabled(enabled);
   }
 
