@@ -36,6 +36,14 @@ class DnaMessengerService : Service() {
         private var isRunning = false
 
         fun isServiceRunning(): Boolean = isRunning
+
+        /**
+         * Direct DHT reinit via JNI - doesn't need Flutter/engine.
+         * Called when network changes while app is backgrounded.
+         * Returns: 0 success, -1 DHT not initialized, -2 reinit failed
+         */
+        @JvmStatic
+        external fun nativeReinitDht(): Int
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -338,10 +346,22 @@ class DnaMessengerService : Service() {
         }
         lastNetworkChangeTime = now
 
-        android.util.Log.i(TAG, "Network changed to $newNetworkId - notifying Flutter to reinit DHT")
+        android.util.Log.i(TAG, "Network changed to $newNetworkId - reinitializing DHT")
         updateNotification("Reconnecting...")
 
-        // Broadcast intent to Flutter to trigger DHT reconnect
+        // Reinit DHT directly via JNI (works even when Flutter isn't running)
+        try {
+            val result = nativeReinitDht()
+            when (result) {
+                0 -> android.util.Log.i(TAG, "DHT reinit successful")
+                -1 -> android.util.Log.d(TAG, "DHT not initialized yet, skipping reinit")
+                else -> android.util.Log.e(TAG, "DHT reinit failed: $result")
+            }
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "DHT reinit error: ${e.message}")
+        }
+
+        // Also broadcast to Flutter (if running) to refresh listeners
         val intent = Intent("io.cpunk.dna_messenger.NETWORK_CHANGED")
         sendBroadcast(intent)
 

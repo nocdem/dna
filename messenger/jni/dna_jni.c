@@ -1034,3 +1034,27 @@ Java_io_cpunk_dna_DNAEngine_nativeNetworkChanged(JNIEnv *env, jobject thiz) {
     LOGI("Network change detected - reinitializing DHT");
     return dna_engine_network_changed(g_engine);
 }
+
+/**
+ * Direct DHT reinit for DnaMessengerService (foreground service).
+ * Called when network changes and Flutter isn't running.
+ * Uses dht_singleton_reinit() directly - doesn't need g_engine.
+ * Returns: 0 on success, -1 if DHT not initialized, -2 on reinit failure
+ */
+JNIEXPORT jint JNICALL
+Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReinitDht(JNIEnv *env, jobject thiz) {
+    if (!dht_singleton_is_initialized()) {
+        LOGD("nativeReinitDht: DHT not initialized, skipping");
+        return -1;
+    }
+
+    LOGI("nativeReinitDht: Network change - reinitializing DHT singleton");
+    int result = dht_singleton_reinit();
+    if (result != 0) {
+        LOGE("nativeReinitDht: DHT reinit failed");
+        return -2;
+    }
+
+    LOGI("nativeReinitDht: DHT reinit successful");
+    return 0;
+}
