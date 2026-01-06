@@ -47,6 +47,9 @@ set -e
 
 export DEBIAN_FRONTEND=noninteractive
 export HOME=/cache
+export NPROC=$(nproc)
+export JOBS=$((NPROC * 3))  # 3x cores for I/O bound builds
+echo "Using $JOBS parallel jobs ($NPROC cores detected)"
 
 echo "Installing build dependencies..."
 apt-get update -qq
@@ -84,7 +87,7 @@ if [ ! -f "${DEPS_DIR}/gmp-arm64/lib/libgmp.a" ]; then
     ./configure --host=aarch64-linux-android --prefix="${DEPS_DIR}/gmp-arm64" \
         --enable-static --disable-shared --with-pic \
         CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" CFLAGS="-fPIC" >/dev/null
-    make -j$(nproc) >/dev/null && make install >/dev/null
+    make -j$JOBS >/dev/null && make install >/dev/null
 fi
 
 # Build Nettle
@@ -100,7 +103,7 @@ if [ ! -f "${DEPS_DIR}/nettle-arm64/lib/libnettle.a" ]; then
         CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" \
         CFLAGS="-fPIC -I${DEPS_DIR}/gmp-arm64/include" \
         LDFLAGS="-L${DEPS_DIR}/gmp-arm64/lib" >/dev/null
-    make -j$(nproc) >/dev/null && make install >/dev/null
+    make -j$JOBS >/dev/null && make install >/dev/null
 fi
 
 # Build libtasn1
@@ -112,7 +115,7 @@ if [ ! -f "${DEPS_DIR}/libtasn1-arm64/lib/libtasn1.a" ]; then
     ./configure --host=aarch64-linux-android --prefix="${DEPS_DIR}/libtasn1-arm64" \
         --enable-static --disable-shared \
         CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" CFLAGS="-fPIC" >/dev/null
-    make -j$(nproc) >/dev/null && make install >/dev/null
+    make -j$JOBS >/dev/null && make install >/dev/null
 fi
 
 # Build GnuTLS
@@ -137,7 +140,7 @@ if [ ! -f "${DEPS_DIR}/gnutls-arm64/lib/libgnutls.a" ]; then
         CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" \
         CFLAGS="-fPIC -I${DEPS_DIR}/gmp-arm64/include -I${DEPS_DIR}/nettle-arm64/include -I${DEPS_DIR}/libtasn1-arm64/include" \
         LDFLAGS="-L${DEPS_DIR}/gmp-arm64/lib -L${DEPS_DIR}/nettle-arm64/lib -L${DEPS_DIR}/libtasn1-arm64/lib" >/dev/null
-    make -j$(nproc) >/dev/null && make install >/dev/null
+    make -j$JOBS >/dev/null && make install >/dev/null
 fi
 
 # Build argon2
@@ -161,7 +164,7 @@ if [ ! -f "${DEPS_DIR}/fmt-arm64/lib/libfmt.a" ]; then
     cmake .. -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
         -DANDROID_ABI=${ANDROID_ABI} -DANDROID_PLATFORM=android-${API} -DANDROID_STL=c++_static \
         -DCMAKE_INSTALL_PREFIX="${DEPS_DIR}/fmt-arm64" -DBUILD_SHARED_LIBS=OFF -DFMT_TEST=OFF >/dev/null
-    make -j$(nproc) >/dev/null && make install >/dev/null
+    make -j$JOBS >/dev/null && make install >/dev/null
 fi
 
 # Download ASIO (header-only)
@@ -192,7 +195,7 @@ if [ ! -f "${DEPS_DIR}/openssl-arm64/lib/libcrypto.a" ]; then
     tar xzf openssl-3.3.2.tar.gz && cd openssl-3.3.2
     export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}"
     ./Configure android-arm64 no-shared no-tests --prefix="${DEPS_DIR}/openssl-arm64" -D__ANDROID_API__=${API} >/dev/null
-    make -j$(nproc) >/dev/null 2>&1
+    make -j$JOBS >/dev/null 2>&1
     make install_sw >/dev/null
 fi
 
@@ -205,7 +208,7 @@ if [ ! -f "${DEPS_DIR}/sqlite-arm64/lib/libsqlite3.a" ]; then
     ./configure --host=aarch64-linux-android --prefix="${DEPS_DIR}/sqlite-arm64" \
         --enable-static --disable-shared \
         CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" CFLAGS="-fPIC" >/dev/null
-    make -j$(nproc) >/dev/null && make install >/dev/null
+    make -j$JOBS >/dev/null && make install >/dev/null
 fi
 
 # Build json-c
@@ -218,7 +221,7 @@ if [ ! -f "${DEPS_DIR}/jsonc-arm64/lib/libjson-c.a" ]; then
     cmake .. -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
         -DANDROID_ABI=${ANDROID_ABI} -DANDROID_PLATFORM=android-${API} -DANDROID_STL=c++_static \
         -DCMAKE_INSTALL_PREFIX="${DEPS_DIR}/jsonc-arm64" -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON >/dev/null
-    make -j$(nproc) >/dev/null && make install >/dev/null
+    make -j$JOBS >/dev/null && make install >/dev/null
 fi
 
 # Build libcurl
@@ -237,7 +240,7 @@ if [ ! -f "${DEPS_DIR}/curl-arm64/lib/libcurl.a" ]; then
         CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" \
         CFLAGS="-fPIC -I${DEPS_DIR}/openssl-arm64/include" \
         LDFLAGS="-L${DEPS_DIR}/openssl-arm64/lib" >/dev/null
-    make -j$(nproc) >/dev/null && make install >/dev/null
+    make -j$JOBS >/dev/null && make install >/dev/null
 fi
 
 # Build zstd
@@ -250,7 +253,7 @@ if [ ! -f "${DEPS_DIR}/zstd-arm64/lib/libzstd.a" ]; then
         -DANDROID_ABI=${ANDROID_ABI} -DANDROID_PLATFORM=android-${API} -DANDROID_STL=c++_static \
         -DCMAKE_INSTALL_PREFIX="${DEPS_DIR}/zstd-arm64" \
         -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_SHARED=OFF -DZSTD_BUILD_STATIC=ON >/dev/null
-    make -j$(nproc) >/dev/null && make install >/dev/null
+    make -j$JOBS >/dev/null && make install >/dev/null
 fi
 
 echo "Building libdna_lib.so..."
@@ -264,7 +267,7 @@ cmake .. \
     -DANDROID_STL=c++_static \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SHARED_LIB=ON >/dev/null
-make -j$(nproc) dna_lib
+make -j$JOBS dna_lib
 
 # Copy to output
 mkdir -p /output/arm64-v8a
