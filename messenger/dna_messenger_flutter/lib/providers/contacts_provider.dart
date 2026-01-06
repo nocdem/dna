@@ -346,6 +346,31 @@ class UnreadCountsNotifier extends AsyncNotifier<Map<String, int>> {
     }
   }
 
+  /// Set count for a contact to a specific value (used when syncing from DB)
+  void setCount(String fingerprint, int count) {
+    final currentState = state;
+    if (currentState is AsyncData<Map<String, int>>) {
+      final counts = currentState.value;
+      final currentCount = counts[fingerprint] ?? 0;
+      // Only update if DB count is different (avoid unnecessary rebuilds)
+      if (currentCount != count) {
+        final updated = Map<String, int>.from(counts);
+        if (count > 0) {
+          updated[fingerprint] = count;
+        } else {
+          updated.remove(fingerprint);
+        }
+        state = AsyncValue.data(updated);
+        print('[UnreadCounts] Set count for ${fingerprint.substring(0, 16)}... to $count');
+      }
+    } else {
+      // State not ready - initialize with this count
+      if (count > 0) {
+        state = AsyncValue.data({fingerprint: count});
+      }
+    }
+  }
+
   /// Clear count for a contact (used when conversation opened)
   void clearCount(String fingerprint) {
     state.whenData((counts) {

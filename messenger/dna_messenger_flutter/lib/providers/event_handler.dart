@@ -248,6 +248,14 @@ class EventHandler {
             print('[EVENT] Chat is open for $fp, marking messages as read');
             await engine.markConversationRead(fp);
             _ref.read(unreadCountsProvider.notifier).clearCount(fp);
+          } else {
+            // Sync unread count from database (fixes race condition where
+            // MESSAGE_RECEIVED doesn't fire for messages already fetched
+            // by a previous poll, but OUTBOX_UPDATED still triggered)
+            final dbCount = engine.getUnreadCount(fp);
+            if (dbCount > 0) {
+              _ref.read(unreadCountsProvider.notifier).setCount(fp, dbCount);
+            }
           }
 
           // Refresh conversation UI for this contact
