@@ -897,8 +897,10 @@ static void p2p_message_received_internal(
     // Try to decrypt message to check if it's an invitation and extract sender's timestamp
     uint8_t *plaintext = NULL;
     size_t plaintext_len = 0;
-    if (dna_decrypt_message(ctx->dna_ctx, message, message_len, ctx->identity,
-                            &plaintext, &plaintext_len, NULL, NULL, &sender_timestamp) == DNA_OK && plaintext) {
+    dna_error_t decrypt_result = dna_decrypt_message(ctx->dna_ctx, message, message_len, ctx->identity,
+                            &plaintext, &plaintext_len, NULL, NULL, &sender_timestamp);
+
+    if (decrypt_result == DNA_OK && plaintext) {
         // Check if it's JSON with "type": "group_invite"
         json_object *j_msg = json_tokener_parse((const char*)plaintext);
         if (j_msg) {
@@ -941,16 +943,26 @@ static void p2p_message_received_internal(
             json_object_put(j_msg);
         }
         free(plaintext);
+    } else {
+        // DEBUG: Log why decryption failed
+        QGP_LOG_WARN("P2P", "DEBUG: Decryption failed for message from %s (len=%zu, error=%d)",
+                     sender_identity ? sender_identity : "unknown", message_len, decrypt_result);
+        // Log first 32 bytes of message header for debugging
+        if (message_len >= 32) {
+            QGP_LOG_WARN("P2P", "DEBUG: Header bytes: %02x%02x%02x%02x%02x%02x%02x%02x %02x%02x%02x%02x%02x%02x%02x%02x",
+                         message[0], message[1], message[2], message[3],
+                         message[4], message[5], message[6], message[7],
+                         message[8], message[9], message[10], message[11],
+                         message[12], message[13], message[14], message[15]);
+        }
     }
 
-    // v0.08 requires sender timestamp - reject messages without it
+    // Use sender's timestamp if available, otherwise fall back to local time
+    // (fallback needed for messages we can't decrypt - e.g., GSK group messages)
+    time_t msg_timestamp = sender_timestamp ? (time_t)sender_timestamp : time(NULL);
     if (sender_timestamp == 0) {
-        QGP_LOG_WARN("P2P", "Rejecting message: decryption failed (no sender timestamp extracted)");
-        free(sender_identity);
-        return;
+        QGP_LOG_WARN("P2P", "DEBUG: Using local timestamp (sender_timestamp=0)");
     }
-
-    time_t msg_timestamp = (time_t)sender_timestamp;
 
     int result = message_backup_save(
         ctx->backup_ctx,
