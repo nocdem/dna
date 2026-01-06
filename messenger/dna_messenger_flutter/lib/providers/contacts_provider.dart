@@ -138,6 +138,8 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
 
     // Apply updates without changing order (preserve current sort)
     final updated = List<Contact>.from(currentState);
+    final selectedContact = ref.read(selectedContactProvider);
+
     for (final entry in _pendingPresenceUpdates.entries) {
       final fingerprint = entry.key;
       final lastSeen = entry.value;
@@ -145,12 +147,18 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
       final index = updated.indexWhere((c) => c.fingerprint == fingerprint);
       if (index != -1) {
         final contact = updated[index];
-        updated[index] = Contact(
+        final updatedContact = Contact(
           fingerprint: contact.fingerprint,
           displayName: contact.displayName,
           isOnline: contact.isOnline,
           lastSeen: lastSeen,
         );
+        updated[index] = updatedContact;
+
+        // Also update selectedContactProvider if this is the currently selected contact
+        if (selectedContact != null && selectedContact.fingerprint == fingerprint) {
+          ref.read(selectedContactProvider.notifier).state = updatedContact;
+        }
       }
     }
 
@@ -185,6 +193,18 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
 
       // Start presence lookups in background (non-blocking)
       _updatePresenceInBackground(engine, sortedContacts);
+
+      // Sync selectedContactProvider with refreshed data (prevents showing stale lastSeen)
+      final selectedContact = ref.read(selectedContactProvider);
+      if (selectedContact != null) {
+        final refreshedContact = sortedContacts.firstWhere(
+          (c) => c.fingerprint == selectedContact.fingerprint,
+          orElse: () => selectedContact,
+        );
+        if (refreshedContact.fingerprint == selectedContact.fingerprint) {
+          ref.read(selectedContactProvider.notifier).state = refreshedContact;
+        }
+      }
 
       // Atomic swap - only update state once we have new data
       state = AsyncValue.data(sortedContacts);
