@@ -64,7 +64,7 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     try {
       final engine = await ref.read(engineProvider.future);
 
-      // Re-attach event callback (was detached in _onPause to prevent crashes)
+      // Re-attach event callback (was detached on pause for JNI to handle background)
       print('AppLifecycle: Re-attaching event callback');
       engine.attachEventCallback();
 
@@ -177,10 +177,9 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       print('AppLifecycle: Pausing C-side presence heartbeat');
       engine.pausePresence();
 
-      // CRITICAL: Detach event callback to prevent crashes if Flutter is killed
-      // while ForegroundService keeps the native library running. Events from
-      // DHT listeners would try to invoke a deleted Dart callback.
-      print('AppLifecycle: Detaching event callback');
+      // Detach Flutter event callback - JNI notification helper handles background
+      // notifications directly via native Android NotificationManager.
+      print('AppLifecycle: Detaching event callback (JNI handles background)');
       engine.detachEventCallback();
     } catch (e) {
       print('AppLifecycle: Error during pause - $e');

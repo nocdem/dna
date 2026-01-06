@@ -151,6 +151,12 @@ size_t dna_engine_start_presence_listener(dna_engine_t *engine, const char *cont
  * Set during create, cleared during destroy. Used by messenger_p2p.c to emit events. */
 static dna_engine_t *g_dht_callback_engine = NULL;
 
+/* Android notification callback - separate from Flutter's event callback.
+ * This is called when DNA_EVENT_OUTBOX_UPDATED fires, allowing Android
+ * to show native notifications even when Flutter's callback is detached. */
+static dna_android_notification_cb g_android_notification_cb = NULL;
+static void *g_android_notification_data = NULL;
+
 /* Global engine accessors (for messenger layer event dispatch) */
 void dna_engine_set_global(dna_engine_t *engine) {
     g_dht_callback_engine = engine;
@@ -545,6 +551,33 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
             callback(heap_event, user_data);
         }
     }
+
+    /* Android notification callback - called for OUTBOX_UPDATED events
+     * regardless of whether Flutter's callback is attached. This allows
+     * Android to show native notifications when app is backgrounded. */
+    if (event->type == DNA_EVENT_OUTBOX_UPDATED && g_android_notification_cb) {
+        const char *fp = event->data.outbox_updated.contact_fingerprint;
+        const char *display_name = NULL;
+        char name_buf[256] = {0};
+
+        /* Try to get display name from profile cache */
+        dna_unified_identity_t *cached = NULL;
+        uint64_t cached_at = 0;
+        if (profile_cache_get(fp, &cached, &cached_at) == 0 && cached) {
+            if (cached->display_name[0]) {
+                strncpy(name_buf, cached->display_name, sizeof(name_buf) - 1);
+                display_name = name_buf;
+            } else if (cached->registered_name[0]) {
+                strncpy(name_buf, cached->registered_name, sizeof(name_buf) - 1);
+                display_name = name_buf;
+            }
+            profile_cache_free_identity(cached);
+        }
+
+        QGP_LOG_INFO(LOG_TAG, "[ANDROID-NOTIFY] Calling callback: fp=%.16s... name=%s",
+                     fp, display_name ? display_name : "(unknown)");
+        g_android_notification_cb(fp, display_name, g_android_notification_data);
+    }
 }
 
 void dna_free_event(dna_event_t *event) {
@@ -859,6 +892,16 @@ void dna_engine_set_event_callback(
     engine->event_callback = callback;
     engine->event_user_data = user_data;
     pthread_mutex_unlock(&engine->event_mutex);
+}
+
+void dna_engine_set_android_notification_callback(
+    dna_android_notification_cb callback,
+    void *user_data
+) {
+    g_android_notification_cb = callback;
+    g_android_notification_data = user_data;
+    QGP_LOG_INFO(LOG_TAG, "Android notification callback %s",
+                 callback ? "registered" : "cleared");
 }
 
 void dna_engine_destroy(dna_engine_t *engine) {

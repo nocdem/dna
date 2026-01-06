@@ -631,6 +631,32 @@ DNA_API void dna_engine_set_event_callback(
 );
 
 /**
+ * Android notification callback type
+ *
+ * Called when a contact's outbox has new messages (for showing Android notifications).
+ * This is separate from the main event callback and is NOT affected by Flutter lifecycle.
+ *
+ * @param contact_fingerprint  Fingerprint of contact who sent the message
+ * @param display_name         Display name of contact (from profile/registered name) or NULL
+ * @param user_data           User data passed when setting callback
+ */
+typedef void (*dna_android_notification_cb)(const char *contact_fingerprint, const char *display_name, void *user_data);
+
+/**
+ * Set Android notification callback
+ *
+ * This callback is called when DNA_EVENT_OUTBOX_UPDATED fires, allowing Android
+ * to show native notifications even when Flutter's event callback is detached.
+ *
+ * @param callback  Notification callback function (NULL to disable)
+ * @param user_data User data passed to callback
+ */
+DNA_API void dna_engine_set_android_notification_callback(
+    dna_android_notification_cb callback,
+    void *user_data
+);
+
+/**
  * Destroy engine and release all resources
  *
  * Stops all worker threads, closes network connections,

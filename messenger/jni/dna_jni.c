@@ -553,6 +553,62 @@ static void jni_event_callback(const dna_event_t *event, void *user_data) {
 }
 
 /* ============================================================================
+ * ANDROID NOTIFICATION CALLBACK
+ * Called when contact's outbox has new messages (for background notifications)
+ * ============================================================================ */
+
+static jobject g_notification_helper = NULL;
+
+/**
+ * Native callback invoked by dna_engine when DNA_EVENT_OUTBOX_UPDATED fires.
+ * Calls the Java NotificationHelper.onOutboxUpdated() method.
+ */
+static void jni_android_notification_callback(const char *contact_fingerprint, const char *display_name, void *user_data) {
+    (void)user_data;
+
+    if (!g_notification_helper || !contact_fingerprint) {
+        LOGD("Android notification callback: no helper or fingerprint");
+        return;
+    }
+
+    JNIEnv *env = get_env();
+    if (!env) {
+        LOGE("Failed to get JNIEnv for notification callback");
+        return;
+    }
+
+    LOGI("[NOTIFY] Calling Java notification helper for %.16s... (name=%s)",
+         contact_fingerprint, display_name ? display_name : "(null)");
+
+    jclass cls = (*env)->GetObjectClass(env, g_notification_helper);
+    if (!cls) {
+        LOGE("Failed to get notification helper class");
+        return;
+    }
+
+    jmethodID method = (*env)->GetMethodID(env, cls, "onOutboxUpdated", "(Ljava/lang/String;Ljava/lang/String;)V");
+    if (!method) {
+        LOGE("Failed to get onOutboxUpdated method");
+        (*env)->DeleteLocalRef(env, cls);
+        return;
+    }
+
+    jstring fp_str = (*env)->NewStringUTF(env, contact_fingerprint);
+    jstring name_str = display_name ? (*env)->NewStringUTF(env, display_name) : NULL;
+
+    if (fp_str) {
+        (*env)->CallVoidMethod(env, g_notification_helper, method, fp_str, name_str);
+        (*env)->DeleteLocalRef(env, fp_str);
+    }
+    if (name_str) {
+        (*env)->DeleteLocalRef(env, name_str);
+    }
+    (*env)->DeleteLocalRef(env, cls);
+
+    LOGI("[NOTIFY] Java notification helper called successfully");
+}
+
+/* ============================================================================
  * JNI NATIVE METHODS
  * ============================================================================ */
 
@@ -592,6 +648,10 @@ Java_io_cpunk_dna_DNAEngine_nativeDestroy(JNIEnv *env, jobject thiz) {
         (*env)->DeleteGlobalRef(env, g_event_listener);
         g_event_listener = NULL;
     }
+    if (g_notification_helper) {
+        (*env)->DeleteGlobalRef(env, g_notification_helper);
+        g_notification_helper = NULL;
+    }
 }
 
 JNIEXPORT void JNICALL
@@ -606,6 +666,37 @@ Java_io_cpunk_dna_DNAEngine_nativeSetEventListener(JNIEnv *env, jobject thiz, jo
         dna_engine_set_event_callback(g_engine, jni_event_callback, NULL);
     } else {
         dna_engine_set_event_callback(g_engine, NULL, NULL);
+    }
+}
+
+/**
+ * Set the Android notification helper
+ *
+ * The helper object must implement onOutboxUpdated(String contactFingerprint).
+ * This is called when a contact's outbox has new messages, allowing Android
+ * to show native notifications even when Flutter's event callback is detached.
+ *
+ * This is separate from the event listener and is NOT cleared when Flutter
+ * backgrounds - it persists as long as the native library is loaded.
+ */
+JNIEXPORT void JNICALL
+Java_io_cpunk_dna_DNAEngine_nativeSetNotificationHelper(JNIEnv *env, jobject thiz, jobject helper) {
+    LOGI("Setting notification helper: %p", helper);
+
+    /* Clear existing helper */
+    if (g_notification_helper) {
+        (*env)->DeleteGlobalRef(env, g_notification_helper);
+        g_notification_helper = NULL;
+        dna_engine_set_android_notification_callback(NULL, NULL);
+    }
+
+    /* Set new helper */
+    if (helper) {
+        g_notification_helper = (*env)->NewGlobalRef(env, helper);
+        dna_engine_set_android_notification_callback(jni_android_notification_callback, NULL);
+        LOGI("Notification helper registered successfully");
+    } else {
+        LOGI("Notification helper cleared");
     }
 }
 

@@ -44,6 +44,7 @@ class DnaMessengerService : Service() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var lastNetworkChangeTime: Long = 0
     private var currentNetworkId: String? = null
+    private var notificationHelper: DnaNotificationHelper? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -88,10 +89,23 @@ class DnaMessengerService : Service() {
         acquireWakeLock()
         startPolling()
         registerNetworkCallback()
+
+        // Initialize native notification helper for background message notifications
+        try {
+            notificationHelper = DnaNotificationHelper(this)
+            android.util.Log.i(TAG, "Notification helper initialized")
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Failed to initialize notification helper: ${e.message}")
+        }
     }
 
     private fun stopForegroundService() {
         android.util.Log.i(TAG, "Stopping foreground service")
+
+        // Unregister notification helper
+        notificationHelper?.unregister()
+        notificationHelper = null
+
         unregisterNetworkCallback()
         stopPolling()
         releaseWakeLock()
