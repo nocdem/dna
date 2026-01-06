@@ -2752,8 +2752,10 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
     /* Check DHT offline queue for messages from contacts */
     size_t offline_count = 0;
     int rc = messenger_p2p_check_offline_messages(engine->messenger, &offline_count);
-    if (rc == 0 && offline_count > 0) {
-        QGP_LOG_INFO("DNA_ENGINE", "Retrieved %zu offline messages from DHT\n", offline_count);
+    if (rc == 0) {
+        QGP_LOG_WARN("DNA_ENGINE", "[OFFLINE] Check complete: %zu new messages", offline_count);
+    } else {
+        QGP_LOG_WARN("DNA_ENGINE", "[OFFLINE] Check failed with rc=%d", rc);
     }
 
 done:
