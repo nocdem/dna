@@ -1,11 +1,8 @@
 // Event Handler - Listens to engine events and updates UI state
 import 'dart:async';
-import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
-import '../services/notification_service.dart';
 import '../utils/lifecycle_observer.dart';
-import 'contact_profile_cache_provider.dart';
 import 'engine_provider.dart';
 import 'contacts_provider.dart';
 import 'messages_provider.dart';
@@ -13,7 +10,6 @@ import 'groups_provider.dart';
 import 'contact_requests_provider.dart';
 import 'identity_provider.dart';
 import 'identity_profile_cache_provider.dart';
-import 'notification_settings_provider.dart';
 
 /// Connection state for DHT
 enum DhtConnectionState { disconnected, connecting, connected }
@@ -349,35 +345,13 @@ class EventHandler {
 
   /// Show notification for incoming message
   /// NOTE: On Android, notifications are handled by native JNI service (DnaMessengerService)
-  /// This method is only used for desktop platforms (Linux, Windows, macOS)
+  /// TODO: Add native notifications for Linux (libnotify) and Windows (Win32 Toast)
+  /// For now, desktop notifications are disabled until native support is added
   void _showMessageNotification(String contactFingerprint, String messageText) {
-    // Android uses native JNI notifications via DnaMessengerService
-    // Skip Flutter notifications on Android to avoid duplicates
-    if (Platform.isAndroid) {
-      return;
-    }
-
-    // Check if notifications are enabled
-    final notificationSettings = _ref.read(notificationSettingsProvider);
-    if (!notificationSettings.enabled) {
-      return;
-    }
-
-    // Get sender display name from profile cache
-    final profileCache = _ref.read(contactProfileCacheProvider);
-    final profile = profileCache[contactFingerprint];
-
-    // Use display name if available, otherwise truncated fingerprint
-    final senderName = (profile != null && profile.displayName.isNotEmpty)
-        ? profile.displayName
-        : '${contactFingerprint.substring(0, 8)}...';
-
-    // Show the notification (desktop only)
-    NotificationService.showMessageNotification(
-      senderName: senderName,
-      messagePreview: messageText.isNotEmpty ? messageText : 'New message',
-      contactFingerprint: contactFingerprint,
-    );
+    // Android: JNI handles notifications natively via DnaNotificationHelper
+    // Desktop: Disabled for now - Flutter notifications don't work when app unfocused
+    // Future: Add libnotify (Linux) and Win32 Toast (Windows) in C code
+    return;
   }
 
   void dispose() {

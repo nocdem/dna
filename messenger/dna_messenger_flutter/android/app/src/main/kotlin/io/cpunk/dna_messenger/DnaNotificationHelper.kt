@@ -86,14 +86,15 @@ class DnaNotificationHelper(private val context: Context) {
         )
 
         val notification = NotificationCompat.Builder(context, MESSAGE_CHANNEL_ID)
-            .setContentTitle("New message")
-            .setContentText("From $senderName")
+            .setContentTitle(senderName)
+            .setContentText("You have received a new message!")
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVibrate(longArrayOf(0, 250, 250, 250))
+            .setLocalOnly(false)  // Enable bridging to Wear OS watches
             .build()
 
         val notificationManager = context.getSystemService(NotificationManager::class.java)

@@ -81,3 +81,42 @@ User taps notification, app opens directly to the chat with that contact.
 - `lib/main.dart` or navigation handler
 
 ---
+
+## Native Desktop Notifications
+
+**Priority:** High
+**Status:** Not Started
+
+### Current State
+- Android notifications work via JNI (DnaNotificationHelper)
+- Desktop (Linux/Windows) has no working notifications
+- Flutter notifications don't work when app is unfocused (Flutter pauses event loop)
+
+### What's Missing
+1. Linux: libnotify integration in C code
+2. Windows: Win32 Toast notification integration in C code
+3. Callback mechanism similar to Android JNI
+
+### Desired Behavior
+Native system notifications on all platforms when messages arrive, even when app is unfocused/minimized.
+
+### Implementation Plan
+
+**Linux (libnotify):**
+1. Add libnotify dependency to CMakeLists.txt
+2. Create `notification_linux.c` with `notify_init()`, `notify_notification_new()`, etc.
+3. Call from message receive callback in C engine
+
+**Windows (Win32 Toast):**
+1. Use WinToast library or raw Win32 Shell_NotifyIcon API
+2. Create `notification_windows.c`
+3. Call from message receive callback in C engine
+
+### Files to Create/Modify
+- `src/notifications/notification_linux.c` (new)
+- `src/notifications/notification_windows.c` (new)
+- `src/notifications/notification.h` (new - cross-platform interface)
+- `CMakeLists.txt` - add libnotify dependency for Linux
+- `src/api/dna_engine.c` - call notification functions on message receive
+
+---
