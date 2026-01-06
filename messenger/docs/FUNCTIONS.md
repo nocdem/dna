@@ -244,6 +244,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `int dna_engine_debug_log_count(void)` | Get number of log entries |
 | `void dna_engine_debug_log_clear(void)` | Clear all debug log entries |
 | `void dna_engine_debug_log_message(const char*, const char*)` | Add log message from external code |
+| `void dna_engine_debug_log_message_level(const char*, const char*, int)` | Add log message with level (0=DEBUG,1=INFO,2=WARN,3=ERROR) |
 | `int dna_engine_debug_log_export(const char *filepath)` | Export debug logs to file |
 
 ### 1.17 Message Backup/Restore

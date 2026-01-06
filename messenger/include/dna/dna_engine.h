@@ -2323,6 +2323,14 @@ DNA_API void dna_engine_debug_log_clear(void);
 DNA_API void dna_engine_debug_log_message(const char *tag, const char *message);
 
 /**
+ * Add a log message with explicit level from external code
+ * @param tag Log tag (e.g., "FLUTTER")
+ * @param message Log message
+ * @param level Log level: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
+ */
+DNA_API void dna_engine_debug_log_message_level(const char *tag, const char *message, int level);
+
+/**
  * Export debug logs to a file
  * @param filepath Path to write log file
  * @return 0 on success, -1 on error

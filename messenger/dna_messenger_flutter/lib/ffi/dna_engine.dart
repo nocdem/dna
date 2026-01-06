@@ -1191,7 +1191,7 @@ class DnaEngine {
         sigSeedPtr,
         encSeedPtr,
         masterSeedPtr,
-        mnemonicPtr?.cast() ?? nullptr,
+        mnemonicPtr.cast(),
         fingerprintPtr.cast(),
       );
 
@@ -1207,7 +1207,7 @@ class DnaEngine {
       if (masterSeed != null) {
         calloc.free(masterSeedPtr);
       }
-      if (mnemonicPtr != null) {
+      if (mnemonic != null) {
         calloc.free(mnemonicPtr);
       }
       calloc.free(fingerprintPtr);
@@ -1257,7 +1257,7 @@ class DnaEngine {
         sigSeedPtr,
         encSeedPtr,
         masterSeedPtr,
-        mnemonicPtr?.cast() ?? nullptr,
+        mnemonicPtr.cast(),
         fingerprintPtr.cast(),
       );
 
@@ -1272,7 +1272,7 @@ class DnaEngine {
       if (masterSeed != null) {
         calloc.free(masterSeedPtr);
       }
-      if (mnemonicPtr != null) {
+      if (mnemonic != null) {
         calloc.free(mnemonicPtr);
       }
       calloc.free(fingerprintPtr);
@@ -2421,7 +2421,7 @@ class DnaEngine {
   }
 
   /// Derive signing and encryption seeds from BIP39 mnemonic
-  /// Returns a record with (signingSeed, encryptionSeed) as List<int>
+  /// Returns a record with (signingSeed, encryptionSeed) as `List<int>`
   ({List<int> signingSeed, List<int> encryptionSeed}) deriveSeeds(
     String mnemonic, {
     String passphrase = '',
@@ -3807,6 +3807,12 @@ class DnaEngine {
   /// Log a message to the debug ring buffer (visible in in-app log viewer)
   void debugLog(String tag, String message) {
     _bindings.dna_engine_debug_log_message(tag, message);
+  }
+
+  /// Log a message with explicit level to the debug ring buffer
+  /// Level: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
+  void debugLogLevel(String tag, String message, int level) {
+    _bindings.dna_engine_debug_log_message_level(tag, message, level);
   }
 
   /// Export debug logs to a file

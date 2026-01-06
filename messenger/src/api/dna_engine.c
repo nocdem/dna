@@ -6936,6 +6936,13 @@ void dna_engine_debug_log_message(const char *tag, const char *message) {
     qgp_log_file_write(QGP_LOG_LEVEL_INFO, tag, "%s", message);
 }
 
+void dna_engine_debug_log_message_level(const char *tag, const char *message, int level) {
+    if (!tag || !message) return;
+    qgp_log_level_t log_level = (level >= 0 && level <= 3) ? (qgp_log_level_t)level : QGP_LOG_LEVEL_INFO;
+    qgp_log_ring_add(log_level, tag, "%s", message);
+    qgp_log_file_write(log_level, tag, "%s", message);
+}
+
 int dna_engine_debug_log_export(const char *filepath) {
     if (!filepath) return -1;
     return qgp_log_export_to_file(filepath);

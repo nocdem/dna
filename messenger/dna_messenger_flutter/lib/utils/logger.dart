@@ -2,6 +2,7 @@
 ///
 /// Usage: Replace `print('[TAG] message')` with `log('TAG', 'message')`
 /// All logs go to Settings > Debug Log (viewable in-app)
+library;
 
 import 'dart:async';
 import 'package:flutter/foundation.dart';
@@ -10,19 +11,24 @@ import '../ffi/dna_engine.dart';
 DnaEngine? _engine;
 final List<_BufferedLog> _bufferedLogs = [];
 
+/// Log levels matching C enum: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
+const int _logLevelInfo = 1;
+const int _logLevelError = 3;
+
 class _BufferedLog {
   final String tag;
   final String message;
-  _BufferedLog(this.tag, this.message);
+  final int level;
+  _BufferedLog(this.tag, this.message, [this.level = _logLevelInfo]);
 }
 
 /// Set the engine instance for logging (call once at app startup)
 void logSetEngine(DnaEngine engine) {
   _engine = engine;
 
-  // Flush any buffered logs
+  // Flush any buffered logs with their original level
   for (final log in _bufferedLogs) {
-    _engine?.debugLog(log.tag, log.message);
+    _engine?.debugLogLevel(log.tag, log.message, log.level);
   }
   _bufferedLogs.clear();
 }
@@ -60,15 +66,16 @@ void logPrint(String message) {
 }
 
 /// Log an error with stack trace - for exception handling
+/// Uses ERROR level (3) so it appears correctly in log viewer
 void logError(String tag, Object error, [StackTrace? stack]) {
   final message = stack != null
       ? '$error\n$stack'
       : error.toString();
 
   if (_engine != null) {
-    _engine!.debugLog(tag, 'ERROR: $message');
+    _engine!.debugLogLevel(tag, 'ERROR: $message', _logLevelError);
   } else {
-    _bufferedLogs.add(_BufferedLog(tag, 'ERROR: $message'));
+    _bufferedLogs.add(_BufferedLog(tag, 'ERROR: $message', _logLevelError));
   }
 }
 
