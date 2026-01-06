@@ -1175,6 +1175,11 @@ class DnaEngine {
     if (name.isEmpty) {
       throw ArgumentError('Name is required');
     }
+    // Validate identity name: lowercase only (a-z, 0-9, underscore, hyphen)
+    final validNameRegex = RegExp(r'^[a-z0-9_-]+$');
+    if (!validNameRegex.hasMatch(name)) {
+      throw ArgumentError('Identity name must be lowercase (a-z, 0-9, underscore, hyphen only). Use your profile to set a display name with any case.');
+    }
     if (signingSeed.length != 32 || encryptionSeed.length != 32) {
       throw ArgumentError('Seeds must be 32 bytes each');
     }
