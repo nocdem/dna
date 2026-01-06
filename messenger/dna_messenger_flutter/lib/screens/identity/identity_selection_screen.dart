@@ -847,12 +847,21 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       return;
     }
 
-    // Check for valid characters
-    final validChars = RegExp(r'^[a-zA-Z0-9_]+$');
+    // Check for uppercase letters (specific error message)
+    if (trimmed.contains(RegExp(r'[A-Z]'))) {
+      setState(() {
+        _isNameAvailable = false;
+        _nameError = 'Lowercase only. You can set a display name in your profile later.';
+      });
+      return;
+    }
+
+    // Check for valid characters (a-z, 0-9, underscore, hyphen)
+    final validChars = RegExp(r'^[a-z0-9_-]+$');
     if (!validChars.hasMatch(trimmed)) {
       setState(() {
         _isNameAvailable = false;
-        _nameError = 'Only letters, numbers, and underscore';
+        _nameError = 'Only lowercase letters, numbers, underscore, hyphen';
       });
       return;
     }
