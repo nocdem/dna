@@ -547,13 +547,26 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
 
     /* Don't invoke callback if it's being disposed (prevents crash when
      * Dart NativeCallable is closed while C still holds the pointer) */
-    if (callback && !disposing) {
+    bool flutter_attached = (callback && !disposing);
+
+    if (flutter_attached) {
         /* Heap-allocate a copy for async callbacks (Dart NativeCallable.listener)
          * The caller (Dart) must call dna_free_event() after processing */
         dna_event_t *heap_event = calloc(1, sizeof(dna_event_t));
         if (heap_event) {
             memcpy(heap_event, event, sizeof(dna_event_t));
             callback(heap_event, user_data);
+        }
+    }
+
+    /* When Flutter is detached (app backgrounded/closed) and OUTBOX_UPDATED fires,
+     * automatically check offline messages so MESSAGE_RECEIVED can trigger notifications */
+    if (!flutter_attached && event->type == DNA_EVENT_OUTBOX_UPDATED && g_android_notification_cb) {
+        QGP_LOG_INFO(LOG_TAG, "[BACKGROUND] Flutter detached, auto-checking offline messages...");
+        size_t offline_count = 0;
+        if (engine->messenger && engine->identity_loaded) {
+            messenger_p2p_check_offline_messages(engine->messenger, &offline_count);
+            QGP_LOG_INFO(LOG_TAG, "[BACKGROUND] Auto-check complete: %zu messages processed", offline_count);
         }
     }
 
