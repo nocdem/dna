@@ -821,20 +821,7 @@ class _LogSettingsSection extends ConsumerStatefulWidget {
 }
 
 class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
-  String _currentLevel = 'WARN';
-  String _currentTags = '';
   bool _debugLogEnabled = false;
-
-  static const _logLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'NONE'];
-  static const _commonTags = [
-    'DHT',
-    'ICE',
-    'TURN',
-    'MESSENGER',
-    'WALLET',
-    'MSG',
-    'IDENTITY',
-  ];
 
   @override
   void initState() {
@@ -847,8 +834,6 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
     engineAsync.whenData((engine) {
       if (mounted) {
         setState(() {
-          _currentLevel = engine.getLogLevel();
-          _currentTags = engine.getLogTags();
           _debugLogEnabled = engine.debugLogIsEnabled();
         });
       }
@@ -865,43 +850,6 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
         });
       }
     });
-  }
-
-  Future<void> _setLogLevel(String level) async {
-    final engineAsync = ref.read(engineProvider);
-    engineAsync.whenData((engine) {
-      if (engine.setLogLevel(level)) {
-        setState(() {
-          _currentLevel = level;
-        });
-      }
-    });
-  }
-
-  Future<void> _setLogTags(String tags) async {
-    final engineAsync = ref.read(engineProvider);
-    engineAsync.whenData((engine) {
-      if (engine.setLogTags(tags)) {
-        setState(() {
-          _currentTags = tags;
-        });
-      }
-    });
-  }
-
-  void _toggleTag(String tag) {
-    final currentSet = _currentTags.isEmpty
-        ? <String>{}
-        : _currentTags.split(',').map((t) => t.trim()).toSet();
-
-    if (currentSet.contains(tag)) {
-      currentSet.remove(tag);
-    } else {
-      currentSet.add(tag);
-    }
-
-    final newTags = currentSet.join(',');
-    _setLogTags(newTags);
   }
 
   /// Get the logs directory path
@@ -1059,9 +1007,6 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final selectedTags = _currentTags.isEmpty
-        ? <String>{}
-        : _currentTags.split(',').map((t) => t.trim()).toSet();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1115,74 +1060,6 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           ),
           trailing: const FaIcon(FontAwesomeIcons.chevronRight),
           onTap: () => _openOrShareLogs(context),
-        ),
-        const Divider(),
-        // Log Level
-        ListTile(
-          leading: const FaIcon(FontAwesomeIcons.bug),
-          title: const Text('Log Level'),
-          subtitle: Text('Current: $_currentLevel'),
-          trailing: DropdownButton<String>(
-            value: _currentLevel,
-            underline: const SizedBox(),
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            items: _logLevels.map((level) {
-              return DropdownMenuItem(
-                value: level,
-                child: Text(level),
-              );
-            }).toList(),
-            onChanged: (value) {
-              if (value != null) {
-                _setLogLevel(value);
-              }
-            },
-          ),
-        ),
-        // Log Tags
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  FaIcon(FontAwesomeIcons.tag, size: 20, color: DnaColors.textMuted),
-                  const SizedBox(width: 8),
-                  Text('Log Tags', style: theme.textTheme.bodyMedium),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Filter logs by tag (none = show all)',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: DnaColors.textMuted,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  ..._commonTags.map((tag) {
-                    final isSelected = selectedTags.contains(tag);
-                    return _PillButton(
-                      label: tag,
-                      isSelected: isSelected,
-                      onTap: () => _toggleTag(tag),
-                    );
-                  }),
-                  if (_currentTags.isNotEmpty)
-                    _PillButton(
-                      label: 'Clear',
-                      isSelected: false,
-                      isDestructive: true,
-                      onTap: () => _setLogTags(''),
-                    ),
-                ],
-              ),
-            ],
-          ),
         ),
       ],
     );

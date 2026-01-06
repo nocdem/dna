@@ -24,11 +24,76 @@ class _DebugLogScreenState extends ConsumerState<DebugLogScreen> {
   final _scrollController = ScrollController();
   bool _scrollToBottom = true;
 
+  // Log settings (moved from Settings screen)
+  String _currentLevel = 'WARN';
+  String _currentTags = '';
+
+  static const _logLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'NONE'];
+  static const _commonTags = [
+    'DHT',
+    'ICE',
+    'TURN',
+    'MESSENGER',
+    'WALLET',
+    'MSG',
+    'IDENTITY',
+  ];
+
   @override
   void initState() {
     super.initState();
+    _loadLogSettings();
     _loadEntries();
     _startAutoRefresh();
+  }
+
+  void _loadLogSettings() {
+    final engineAsync = ref.read(engineProvider);
+    engineAsync.whenData((engine) {
+      if (mounted) {
+        setState(() {
+          _currentLevel = engine.getLogLevel();
+          _currentTags = engine.getLogTags();
+        });
+      }
+    });
+  }
+
+  void _setLogLevel(String level) {
+    final engineAsync = ref.read(engineProvider);
+    engineAsync.whenData((engine) {
+      if (engine.setLogLevel(level)) {
+        setState(() {
+          _currentLevel = level;
+        });
+      }
+    });
+  }
+
+  void _setLogTags(String tags) {
+    final engineAsync = ref.read(engineProvider);
+    engineAsync.whenData((engine) {
+      if (engine.setLogTags(tags)) {
+        setState(() {
+          _currentTags = tags;
+        });
+      }
+    });
+  }
+
+  void _toggleTag(String tag) {
+    final currentSet = _currentTags.isEmpty
+        ? <String>{}
+        : _currentTags.split(',').map((t) => t.trim()).toSet();
+
+    if (currentSet.contains(tag)) {
+      currentSet.remove(tag);
+    } else {
+      currentSet.add(tag);
+    }
+
+    final newTags = currentSet.join(',');
+    _setLogTags(newTags);
   }
 
   @override
@@ -111,6 +176,163 @@ class _DebugLogScreenState extends ConsumerState<DebugLogScreen> {
     }
   }
 
+  void _showLogSettings() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final theme = Theme.of(context);
+            final currentSelectedTags = _currentTags.isEmpty
+                ? <String>{}
+                : _currentTags.split(',').map((t) => t.trim()).toSet();
+
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 16,
+                right: 16,
+                top: 16,
+                bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Header
+                  Row(
+                    children: [
+                      const FaIcon(FontAwesomeIcons.gear, size: 20),
+                      const SizedBox(width: 12),
+                      Text(
+                        'Log Settings',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        icon: const FaIcon(FontAwesomeIcons.xmark, size: 20),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
+                  ),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  // Log Level
+                  Row(
+                    children: [
+                      const FaIcon(FontAwesomeIcons.layerGroup, size: 18),
+                      const SizedBox(width: 12),
+                      Text('Log Level', style: theme.textTheme.bodyMedium),
+                      const Spacer(),
+                      DropdownButton<String>(
+                        value: _currentLevel,
+                        underline: const SizedBox(),
+                        items: _logLevels.map((level) {
+                          return DropdownMenuItem(
+                            value: level,
+                            child: Text(level),
+                          );
+                        }).toList(),
+                        onChanged: (value) {
+                          if (value != null) {
+                            _setLogLevel(value);
+                            setSheetState(() {});
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  // Log Tags
+                  Row(
+                    children: [
+                      FaIcon(FontAwesomeIcons.tag, size: 18, color: DnaColors.textMuted),
+                      const SizedBox(width: 12),
+                      Text('Log Tags', style: theme.textTheme.bodyMedium),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Filter by module (none = show all)',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: DnaColors.textMuted,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      ..._commonTags.map((tag) {
+                        final isSelected = currentSelectedTags.contains(tag);
+                        return GestureDetector(
+                          onTap: () {
+                            _toggleTag(tag);
+                            setSheetState(() {});
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: isSelected ? theme.colorScheme.primary.withAlpha(26) : Colors.transparent,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: isSelected
+                                    ? theme.colorScheme.primary.withAlpha(128)
+                                    : DnaColors.textMuted.withAlpha(51),
+                                width: isSelected ? 1.5 : 1,
+                              ),
+                            ),
+                            child: Text(
+                              tag,
+                              style: TextStyle(
+                                color: isSelected
+                                    ? theme.colorScheme.primary
+                                    : DnaColors.textMuted.withAlpha(179),
+                                fontSize: 12,
+                                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        );
+                      }),
+                      if (_currentTags.isNotEmpty)
+                        GestureDetector(
+                          onTap: () {
+                            _setLogTags('');
+                            setSheetState(() {});
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: DnaColors.textWarning.withAlpha(51),
+                              ),
+                            ),
+                            child: Text(
+                              'Clear',
+                              style: TextStyle(
+                                color: DnaColors.textWarning.withAlpha(179),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -120,7 +342,18 @@ class _DebugLogScreenState extends ConsumerState<DebugLogScreen> {
       appBar: AppBar(
         title: const Text('Debug Logs'),
         actions: [
-          // Filter dropdown
+          // Log settings (level + tags)
+          IconButton(
+            icon: FaIcon(
+              FontAwesomeIcons.gear,
+              color: (_currentLevel != 'WARN' || _currentTags.isNotEmpty)
+                  ? theme.colorScheme.primary
+                  : null,
+            ),
+            tooltip: 'Log settings',
+            onPressed: _showLogSettings,
+          ),
+          // Filter dropdown (view filter)
           PopupMenuButton<DebugLogLevel?>(
             icon: FaIcon(
               FontAwesomeIcons.filter,
