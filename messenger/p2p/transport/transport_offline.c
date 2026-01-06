@@ -140,7 +140,7 @@ int p2p_check_offline_messages(
         &count
     );
 
-    QGP_LOG_DEBUG(LOG_TAG, "DHT retrieve: result=%d, count=%zu\n", result, count);
+    QGP_LOG_WARN(LOG_TAG, "[OFFLINE] DHT retrieve: result=%d, messages_from_dht=%zu\n", result, count);
 
     free(sender_fps);
     contacts_db_free_list(contacts);
