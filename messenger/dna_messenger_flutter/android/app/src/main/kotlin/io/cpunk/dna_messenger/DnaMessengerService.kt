@@ -76,6 +76,35 @@ class DnaMessengerService : Service() {
         super.onDestroy()
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        android.util.Log.i(TAG, "Task removed - scheduling service restart")
+
+        // Only restart if notifications are enabled
+        val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        val notificationsEnabled = prefs.getBoolean("flutter.notifications_enabled", true)
+
+        if (notificationsEnabled) {
+            // Schedule restart via AlarmManager for immediate restart
+            val restartIntent = Intent(this, DnaMessengerService::class.java).apply {
+                action = "START"
+            }
+            val pendingIntent = PendingIntent.getService(
+                this, 1, restartIntent,
+                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            alarmManager.set(
+                AlarmManager.RTC_WAKEUP,
+                System.currentTimeMillis() + 1000, // 1 second delay
+                pendingIntent
+            )
+            android.util.Log.i(TAG, "Service restart scheduled")
+        }
+
+        super.onTaskRemoved(rootIntent)
+    }
+
     private fun startForegroundService() {
         android.util.Log.i(TAG, "Starting foreground service")
         val notification = createNotification("DNA Messenger running")
