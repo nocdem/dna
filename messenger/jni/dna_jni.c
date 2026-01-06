@@ -28,32 +28,6 @@
 static JavaVM *g_jvm = NULL;
 static dna_engine_t *g_engine = NULL;
 
-/* Callback classes and methods (cached for performance) */
-static jclass g_callback_class = NULL;
-static jmethodID g_on_completion_method = NULL;
-static jmethodID g_on_identities_method = NULL;
-static jmethodID g_on_identity_created_method = NULL;
-static jmethodID g_on_display_name_method = NULL;
-static jmethodID g_on_contacts_method = NULL;
-static jmethodID g_on_messages_method = NULL;
-static jmethodID g_on_groups_method = NULL;
-static jmethodID g_on_group_created_method = NULL;
-static jmethodID g_on_invitations_method = NULL;
-static jmethodID g_on_wallets_method = NULL;
-static jmethodID g_on_balances_method = NULL;
-static jmethodID g_on_transactions_method = NULL;
-static jmethodID g_on_event_method = NULL;
-
-/* Data classes */
-static jclass g_contact_class = NULL;
-static jclass g_message_class = NULL;
-static jclass g_group_class = NULL;
-static jclass g_invitation_class = NULL;
-static jclass g_wallet_class = NULL;
-static jclass g_balance_class = NULL;
-static jclass g_transaction_class = NULL;
-static jclass g_event_class = NULL;
-
 /* ============================================================================
  * JNI LIFECYCLE
  * ============================================================================ */
