@@ -34,7 +34,7 @@ mkdir -p "$CACHE_DIR"
 # Step 1: Build native library
 echo "==> Step 1/2: Building native library (libdna_lib.so)..."
 
-docker run --rm \
+docker run --rm --network=host \
     -v "$PROJECT_DIR:/src:ro" \
     -v "$CACHE_DIR:/cache" \
     -v "$PROJECT_DIR/dna_messenger_flutter/android/app/src/main/jniLibs:/output" \
@@ -284,7 +284,7 @@ echo "==> Native library: $NATIVE_LIB ($(du -h "$NATIVE_LIB" | cut -f1))"
 echo ""
 echo "==> Step 2/2: Building Flutter APK..."
 
-docker run --rm \
+docker run --rm --network=host \
     -v "$PROJECT_DIR:/app" \
     -w /app/dna_messenger_flutter \
     "$FLUTTER_IMAGE" \
