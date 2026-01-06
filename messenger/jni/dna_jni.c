@@ -137,6 +137,26 @@ static void jni_completion_callback(dna_request_id_t request_id, int error, void
     free_callback_ctx(env, ctx);
 }
 
+/* Send tokens callback - includes tx_hash */
+static void jni_send_tokens_callback(dna_request_id_t request_id, int error, const char *tx_hash, void *user_data) {
+    jni_callback_ctx_t *ctx = (jni_callback_ctx_t*)user_data;
+    JNIEnv *env = get_env();
+    if (!env || !ctx || !ctx->callback_obj) {
+        if (ctx) free(ctx);
+        return;
+    }
+
+    jclass cls = (*env)->GetObjectClass(env, ctx->callback_obj);
+    jmethodID method = (*env)->GetMethodID(env, cls, "onSendTokens", "(JILjava/lang/String;)V");
+    if (method) {
+        jstring jtx_hash = tx_hash ? (*env)->NewStringUTF(env, tx_hash) : NULL;
+        (*env)->CallVoidMethod(env, ctx->callback_obj, method, (jlong)request_id, (jint)error, jtx_hash);
+        if (jtx_hash) (*env)->DeleteLocalRef(env, jtx_hash);
+    }
+
+    free_callback_ctx(env, ctx);
+}
+
 /* v0.3.0: jni_identities_callback removed - single-user model */
 
 /* Identity created callback */
@@ -746,7 +766,8 @@ Java_io_cpunk_dna_DNAEngine_nativeCreateIdentity(JNIEnv *env, jobject thiz,
     jbyte *enc_bytes = (*env)->GetByteArrayElements(env, encryption_seed, NULL);
 
     jni_callback_ctx_t *ctx = create_callback_ctx(env, callback);
-    dna_request_id_t req_id = dna_engine_create_identity(g_engine,
+    /* Pass NULL for name - can be registered later with nativeRegisterName */
+    dna_request_id_t req_id = dna_engine_create_identity(g_engine, NULL,
         (const uint8_t*)sign_bytes, (const uint8_t*)enc_bytes,
         jni_identity_created_callback, ctx);
 
@@ -763,7 +784,8 @@ Java_io_cpunk_dna_DNAEngine_nativeLoadIdentity(JNIEnv *env, jobject thiz,
 
     const char *fp = (*env)->GetStringUTFChars(env, fingerprint, NULL);
     jni_callback_ctx_t *ctx = create_callback_ctx(env, callback);
-    dna_request_id_t req_id = dna_engine_load_identity(g_engine, fp, jni_completion_callback, ctx);
+    /* Pass NULL for password - identity files are not password-protected on Android */
+    dna_request_id_t req_id = dna_engine_load_identity(g_engine, fp, NULL, jni_completion_callback, ctx);
     (*env)->ReleaseStringUTFChars(env, fingerprint, fp);
 
     return (jlong)req_id;
@@ -981,7 +1003,7 @@ Java_io_cpunk_dna_DNAEngine_nativeSendTokens(JNIEnv *env, jobject thiz,
 
     jni_callback_ctx_t *ctx = create_callback_ctx(env, callback);
     dna_request_id_t req_id = dna_engine_send_tokens(g_engine, wallet_index, r, a, t, n,
-                                                      gas_speed, jni_completion_callback, ctx);
+                                                      gas_speed, jni_send_tokens_callback, ctx);
 
     (*env)->ReleaseStringUTFChars(env, recipient, r);
     (*env)->ReleaseStringUTFChars(env, amount, a);
