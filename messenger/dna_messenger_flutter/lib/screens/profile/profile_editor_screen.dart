@@ -731,7 +731,7 @@ class _QrCodeSection extends ConsumerWidget {
               child: Text(
                 fingerprint,
                 style: theme.textTheme.bodySmall?.copyWith(
-                  fontFamily: 'NotoSansMono',
+                  fontFamily: 'monospace',
                   fontSize: 8,
                 ),
                 textAlign: TextAlign.center,

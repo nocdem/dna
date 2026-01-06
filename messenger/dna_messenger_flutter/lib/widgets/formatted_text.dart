@@ -119,7 +119,7 @@ class FormattedText extends StatelessWidget {
           spans.add(TextSpan(
             text: code,
             style: baseStyle.copyWith(
-              fontFamily: 'NotoSansMono',
+              fontFamily: 'monospace',
               backgroundColor: Colors.grey.withValues(alpha: 0.2),
             ),
           ));
@@ -142,7 +142,7 @@ class FormattedText extends StatelessWidget {
           spans.add(TextSpan(
             text: code,
             style: baseStyle.copyWith(
-              fontFamily: 'NotoSansMono',
+              fontFamily: 'monospace',
               backgroundColor: Colors.grey.withValues(alpha: 0.2),
             ),
           ));

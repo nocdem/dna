@@ -813,7 +813,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 child: Text(
                   contact.fingerprint,
                   style: theme.textTheme.bodySmall?.copyWith(
-                    fontFamily: 'NotoSansMono',
+                    fontFamily: 'monospace',
                     fontSize: 9,
                   ),
                   textAlign: TextAlign.center,
@@ -1373,7 +1373,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                       child: Text(
                         '${_resolvedAddress!.substring(0, 12)}...${_resolvedAddress!.substring(_resolvedAddress!.length - 8)}',
                         style: theme.textTheme.bodySmall?.copyWith(
-                          fontFamily: 'NotoSansMono',
+                          fontFamily: 'monospace',
                         ),
                       ),
                     ),
@@ -1622,7 +1622,7 @@ class _TransferBubble extends StatelessWidget {
                       shortTxHash,
                       style: theme.textTheme.bodySmall?.copyWith(
                         fontSize: 9,
-                        fontFamily: 'NotoSansMono',
+                        fontFamily: 'monospace',
                         color: isOutgoing
                             ? theme.colorScheme.onPrimary.withAlpha(150)
                             : DnaColors.textMuted,
