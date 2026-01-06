@@ -300,12 +300,12 @@ cp -r "$PROJECT_DIR/dna_messenger_flutter" "$BUILD_WORK_DIR/dna_messenger_flutte
 # Copy native lib to isolated build
 cp "$NATIVE_LIB" "$BUILD_WORK_DIR/dna_messenger_flutter/android/app/src/main/jniLibs/arm64-v8a/"
 
+# Run as root so Flutter can install NDK if needed, fix permissions after
 docker run --rm --network=host \
     -v "$BUILD_WORK_DIR/dna_messenger_flutter:/app" \
     -w /app \
-    -u "$(id -u):$(id -g)" \
     "$FLUTTER_IMAGE" \
-    bash -c "flutter pub get && flutter build apk --release"
+    bash -c "flutter config --no-analytics && flutter pub get && flutter build apk --release && chown -R $(id -u):$(id -g) /app/build"
 
 APK_PATH="$BUILD_WORK_DIR/dna_messenger_flutter/build/app/outputs/flutter-apk/app-release.apk"
 
