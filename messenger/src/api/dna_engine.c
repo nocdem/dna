@@ -553,31 +553,35 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
         }
     }
 
-    /* Android notification callback - called for OUTBOX_UPDATED events
-     * regardless of whether Flutter's callback is attached. This allows
-     * Android to show native notifications when app is backgrounded. */
-    if (event->type == DNA_EVENT_OUTBOX_UPDATED && g_android_notification_cb) {
-        const char *fp = event->data.outbox_updated.contact_fingerprint;
-        const char *display_name = NULL;
-        char name_buf[256] = {0};
+    /* Android notification callback - called for MESSAGE_RECEIVED events
+     * when a NEW incoming message is stored. Only fires for actual new messages,
+     * not duplicates or outgoing messages. This allows Android to show native
+     * notifications when app is backgrounded. */
+    if (event->type == DNA_EVENT_MESSAGE_RECEIVED && g_android_notification_cb) {
+        /* Only notify for incoming messages (not outgoing) */
+        if (!event->data.message_received.message.is_outgoing) {
+            const char *fp = event->data.message_received.message.sender;
+            const char *display_name = NULL;
+            char name_buf[256] = {0};
 
-        /* Try to get display name from profile cache */
-        dna_unified_identity_t *cached = NULL;
-        uint64_t cached_at = 0;
-        if (profile_cache_get(fp, &cached, &cached_at) == 0 && cached) {
-            if (cached->display_name[0]) {
-                strncpy(name_buf, cached->display_name, sizeof(name_buf) - 1);
-                display_name = name_buf;
-            } else if (cached->registered_name[0]) {
-                strncpy(name_buf, cached->registered_name, sizeof(name_buf) - 1);
-                display_name = name_buf;
+            /* Try to get display name from profile cache */
+            dna_unified_identity_t *cached = NULL;
+            uint64_t cached_at = 0;
+            if (profile_cache_get(fp, &cached, &cached_at) == 0 && cached) {
+                if (cached->display_name[0]) {
+                    strncpy(name_buf, cached->display_name, sizeof(name_buf) - 1);
+                    display_name = name_buf;
+                } else if (cached->registered_name[0]) {
+                    strncpy(name_buf, cached->registered_name, sizeof(name_buf) - 1);
+                    display_name = name_buf;
+                }
+                dna_identity_free(cached);
             }
-            dna_identity_free(cached);
-        }
 
-        QGP_LOG_INFO(LOG_TAG, "[ANDROID-NOTIFY] Calling callback: fp=%.16s... name=%s",
-                     fp, display_name ? display_name : "(unknown)");
-        g_android_notification_cb(fp, display_name, g_android_notification_data);
+            QGP_LOG_INFO(LOG_TAG, "[ANDROID-NOTIFY] New message from %.16s... name=%s",
+                         fp, display_name ? display_name : "(unknown)");
+            g_android_notification_cb(fp, display_name, g_android_notification_data);
+        }
     }
 }
 
