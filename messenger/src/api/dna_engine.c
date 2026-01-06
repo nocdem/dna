@@ -127,6 +127,24 @@ static void init_log_config(void);
 /* Forward declarations for listener management */
 void dna_engine_cancel_all_outbox_listeners(dna_engine_t *engine);
 void dna_engine_cancel_all_presence_listeners(dna_engine_t *engine);
+
+/**
+ * Validate identity name - must be lowercase only
+ * Allowed: a-z, 0-9, underscore, hyphen
+ * Not allowed: uppercase letters, spaces, special chars
+ */
+static int is_valid_identity_name(const char *name) {
+    if (!name || !*name) return 0;
+    for (const char *p = name; *p; p++) {
+        char c = *p;
+        if (c >= 'A' && c <= 'Z') return 0;  /* Reject uppercase */
+        if (c >= 'a' && c <= 'z') continue;  /* Allow lowercase */
+        if (c >= '0' && c <= '9') continue;  /* Allow digits */
+        if (c == '_' || c == '-') continue;  /* Allow underscore/hyphen */
+        return 0;  /* Reject other chars */
+    }
+    return 1;
+}
 size_t dna_engine_start_presence_listener(dna_engine_t *engine, const char *contact_fingerprint);
 
 /* Global engine pointer for DHT status callback and event dispatch from lower layers
@@ -3771,6 +3789,12 @@ dna_request_id_t dna_engine_create_identity(
         return DNA_REQUEST_ID_INVALID;
     }
 
+    /* Enforce lowercase-only identity names */
+    if (!is_valid_identity_name(name)) {
+        QGP_LOG_ERROR(LOG_TAG, "Identity name must be lowercase (a-z, 0-9, underscore, hyphen only)");
+        return DNA_REQUEST_ID_INVALID;
+    }
+
     dna_task_params_t params = {0};
     strncpy(params.create_identity.name, name, sizeof(params.create_identity.name) - 1);
     memcpy(params.create_identity.signing_seed, signing_seed, 32);
@@ -3790,6 +3814,12 @@ int dna_engine_create_identity_sync(
     char fingerprint_out[129]
 ) {
     if (!engine || !name || !signing_seed || !encryption_seed || !fingerprint_out) {
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    /* Enforce lowercase-only identity names */
+    if (!is_valid_identity_name(name)) {
+        QGP_LOG_ERROR(LOG_TAG, "Identity name must be lowercase (a-z, 0-9, underscore, hyphen only)");
         return DNA_ERROR_INVALID_ARG;
     }
 
