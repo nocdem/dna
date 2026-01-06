@@ -290,17 +290,27 @@ echo "==> Native library: $NATIVE_LIB ($(du -h "$NATIVE_LIB" | cut -f1))"
 echo ""
 echo "==> Step 2/2: Building Flutter APK..."
 
+# Build in isolated directory to avoid corrupting local dev environment
+BUILD_WORK_DIR="$CACHE_DIR/flutter-build"
+rm -rf "$BUILD_WORK_DIR"
+mkdir -p "$BUILD_WORK_DIR"
+
+# Copy only what's needed for Android build
+cp -r "$PROJECT_DIR/dna_messenger_flutter" "$BUILD_WORK_DIR/dna_messenger_flutter"
+# Copy native lib to isolated build
+cp "$NATIVE_LIB" "$BUILD_WORK_DIR/dna_messenger_flutter/android/app/src/main/jniLibs/arm64-v8a/"
+
 docker run --rm --network=host \
-    -v "$PROJECT_DIR:/app" \
-    -w /app/dna_messenger_flutter \
+    -v "$BUILD_WORK_DIR/dna_messenger_flutter:/app" \
+    -w /app \
     -u "$(id -u):$(id -g)" \
     "$FLUTTER_IMAGE" \
     bash -c "flutter pub get && flutter build apk --release"
 
-APK_PATH="dna_messenger_flutter/build/app/outputs/flutter-apk/app-release.apk"
+APK_PATH="$BUILD_WORK_DIR/dna_messenger_flutter/build/app/outputs/flutter-apk/app-release.apk"
 
 if [ -f "$APK_PATH" ]; then
-    cp "$APK_PATH" "dna-messenger-android.apk"
+    cp "$APK_PATH" "$PROJECT_DIR/dna-messenger-android.apk"
     echo ""
     echo "=========================================="
     echo "BUILD SUCCESSFUL!"
