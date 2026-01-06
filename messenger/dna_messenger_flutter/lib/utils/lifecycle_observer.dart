@@ -26,7 +26,6 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    print('AppLifecycle: State changed to $state');
     switch (state) {
       case AppLifecycleState.resumed:
         _onResume();
@@ -50,15 +49,12 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
   /// Called when app comes to foreground
   void _onResume() async {
-    print('AppLifecycle: App resumed');
-
     // Mark app as in foreground (for notification logic)
     ref.read(appInForegroundProvider.notifier).state = true;
 
     // Check if identity is loaded
     final fingerprint = ref.read(currentFingerprintProvider);
     if (fingerprint == null || fingerprint.isEmpty) {
-      print('AppLifecycle: No identity loaded, skipping refresh');
       return;
     }
 
@@ -68,51 +64,39 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Re-attach event callback on Android (was detached on pause for JNI to handle background)
       // Desktop platforms keep callback attached since they don't have JNI fallback
       if (Platform.isAndroid) {
-        print('AppLifecycle: Re-attaching event callback');
         engine.attachEventCallback();
       }
 
       // Check if DHT is actually still connected (may have dropped while idle)
       final isDhtConnected = engine.isDhtConnected();
-      print('AppLifecycle: DHT connected = $isDhtConnected');
 
       if (!isDhtConnected) {
         // DHT disconnected while idle - trigger reconnection
-        print('AppLifecycle: DHT disconnected, triggering reconnection...');
         ref.read(dhtConnectionStateProvider.notifier).state =
             DhtConnectionState.connecting;
 
-        final result = engine.networkChanged();
-        if (result == 0) {
-          print('AppLifecycle: DHT reconnection initiated successfully');
-        } else {
-          print('AppLifecycle: DHT reconnection failed with code $result');
-        }
+        engine.networkChanged();
         // DHT connected event will update state and restart listeners
       } else {
         // DHT still connected - just resume normal operations
         // Resume C-side presence heartbeat (marks us as online)
-        print('AppLifecycle: Resuming C-side presence heartbeat');
         engine.resumePresence();
 
         // Resume Dart-side polling timers (handles presence refresh + contact requests)
-        print('AppLifecycle: Resuming polling timers');
         ref.read(eventHandlerProvider).resumePolling();
       }
 
       // Force refresh contact profiles from DHT (fixes stale display names)
       // This ensures users see up-to-date names when they open the app
-      print('AppLifecycle: Refreshing contact profiles from DHT');
       await _refreshContactProfiles(engine);
 
       // Refresh contacts to get updated presence status (seamless update)
-      print('AppLifecycle: Refreshing contacts for presence update');
       await ref.read(contactsProvider.notifier).refresh();
 
       // Note: Offline messages are handled by C-side push notification callback
       // (messenger_push_notification_callback) which triggers poll on DHT listen events
-    } catch (e) {
-      print('AppLifecycle: Error during resume - $e');
+    } catch (_) {
+      // Error during resume - silently continue
     }
   }
 
@@ -123,11 +107,8 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Get current contacts
       final contacts = ref.read(contactsProvider).valueOrNull;
       if (contacts == null || contacts.isEmpty) {
-        print('AppLifecycle: No contacts to refresh');
         return;
       }
-
-      print('AppLifecycle: Refreshing ${contacts.length} contact profiles');
 
       // Refresh profiles in parallel (batched to avoid overloading DHT)
       const batchSize = 5;
@@ -143,34 +124,28 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
                 ref.read(contactProfileCacheProvider.notifier)
                     .updateProfile(contact.fingerprint, profile);
               }
-            } catch (e) {
+            } catch (_) {
               // Individual profile refresh failed - continue with others
-              print('AppLifecycle: Failed to refresh ${contact.fingerprint.substring(0, 16)}...: $e');
             }
           }),
         );
       }
-      print('AppLifecycle: Contact profile refresh complete');
-    } catch (e) {
-      print('AppLifecycle: Error refreshing contact profiles: $e');
+    } catch (_) {
+      // Error refreshing contact profiles - silently continue
     }
   }
 
   /// Called when app goes to background
   void _onPause() async {
-    print('AppLifecycle: App paused');
-
     // Mark app as in background (for notification logic - always show notifications when backgrounded)
     ref.read(appInForegroundProvider.notifier).state = false;
 
     // Pause Dart-side polling timers FIRST (prevents timer exceptions in background)
-    print('AppLifecycle: Pausing polling timers');
     ref.read(eventHandlerProvider).pausePolling();
 
     // Check if identity is loaded
     final fingerprint = ref.read(currentFingerprintProvider);
     if (fingerprint == null || fingerprint.isEmpty) {
-      print('AppLifecycle: No identity loaded, skipping C-side pause');
       return;
     }
 
@@ -178,24 +153,21 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       final engine = await ref.read(engineProvider.future);
 
       // Pause C-side presence heartbeat (stops marking us as online)
-      print('AppLifecycle: Pausing C-side presence heartbeat');
       engine.pausePresence();
 
       // On Android: Detach Flutter event callback - JNI notification helper handles
       // background notifications directly via native Android NotificationManager.
       // On Desktop: Keep callback attached since there's no JNI fallback.
       if (Platform.isAndroid) {
-        print('AppLifecycle: Detaching event callback (JNI handles background)');
         engine.detachEventCallback();
       }
-    } catch (e) {
-      print('AppLifecycle: Error during pause - $e');
+    } catch (_) {
+      // Error during pause - silently continue
     }
   }
 
   /// Called when app is being killed
   void _onDetached() {
-    print('AppLifecycle: App detached');
     // ForegroundService may continue running if logged in
     // System will eventually kill it if needed
   }

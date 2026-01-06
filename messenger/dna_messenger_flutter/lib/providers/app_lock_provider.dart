@@ -144,9 +144,7 @@ class AppLockNotifier extends StateNotifier<AppLockState> {
           biometricOnly: false, // Allow device credentials as fallback
         ),
       );
-    } catch (e) {
-      // Log error for debugging
-      print('Biometric auth error: $e');
+    } catch (_) {
       return false;
     }
   }

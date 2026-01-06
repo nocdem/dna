@@ -92,7 +92,7 @@ class EventHandler {
         _refreshIdentityProfiles();
         // Start periodic contact request polling (every 60 seconds)
         _startContactRequestsPolling();
-        // Start periodic presence refresh (every 5 seconds)
+        // Start periodic presence refresh (every 30 seconds)
         _startPresencePolling();
 
       case DhtDisconnectedEvent():
@@ -122,17 +122,11 @@ class EventHandler {
             selectedContact.fingerprint == contactFp;
         final appInForeground = _ref.read(appInForegroundProvider);
 
-        // Debug: log fingerprint comparison
-        print('[EVENT] MessageReceived: contactFp=${contactFp.length > 16 ? contactFp.substring(0, 16) : contactFp}...');
-        print('[EVENT] selectedContact fp=${selectedContact?.fingerprint.substring(0, 16) ?? "null"}...');
-        print('[EVENT] isChatOpen=$isChatOpen, appInForeground=$appInForeground');
-
         // Always invalidate the conversation provider
         _ref.invalidate(conversationProvider(contactFp));
 
         // Always increment refresh trigger when message received (regardless of chat state)
         _ref.read(conversationRefreshTriggerProvider.notifier).state++;
-        print('[EVENT] Incremented refresh trigger');
 
         // Show notification for incoming messages when:
         // - App is in background (always), OR
@@ -183,7 +177,6 @@ class EventHandler {
 
       case OutboxUpdatedEvent(contactFingerprint: final contactFp):
         // Contact's outbox has new messages - debounce to coalesce rapid events
-        print('[EVENT] OutboxUpdatedEvent received for: ${contactFp.length > 16 ? contactFp.substring(0, 16) : contactFp}...');
         _scheduleOutboxCheck(contactFp);
         break;
 
@@ -229,23 +222,18 @@ class EventHandler {
       final fingerprints = Set<String>.from(_pendingOutboxFingerprints);
       _pendingOutboxFingerprints.clear();
 
-      print('[EVENT] Debounced outbox check for ${fingerprints.length} contact(s)');
-
       // Check which chats are open BEFORE fetching
       final selectedContact = _ref.read(selectedContactProvider);
       final openChatFp = selectedContact?.fingerprint;
 
       // Single checkOfflineMessages call for all pending contacts
       _ref.read(engineProvider).whenData((engine) async {
-        print('[EVENT] Calling checkOfflineMessages...');
         await engine.checkOfflineMessages();
-        print('[EVENT] checkOfflineMessages complete');
 
         // Process each contact that had updates
         for (final fp in fingerprints) {
           // If chat is open for this contact, mark as read
           if (openChatFp == fp) {
-            print('[EVENT] Chat is open for $fp, marking messages as read');
             await engine.markConversationRead(fp);
             _ref.read(unreadCountsProvider.notifier).clearCount(fp);
           } else {
@@ -264,7 +252,6 @@ class EventHandler {
 
         // Single refresh trigger increment after all processing
         _ref.read(conversationRefreshTriggerProvider.notifier).state++;
-        print('[EVENT] Conversations refreshed for ${fingerprints.length} contact(s)');
       });
     });
   }
@@ -272,8 +259,7 @@ class EventHandler {
   /// Start DHT listeners for contacts' outboxes (push notifications)
   void _startDhtListeners() {
     _ref.read(engineProvider).whenData((engine) {
-      final count = engine.listenAllContacts();
-      print('[EventHandler] Started $count DHT outbox listeners');
+      engine.listenAllContacts();
     });
   }
 
@@ -308,7 +294,6 @@ class EventHandler {
   /// - Unnecessary battery/data usage
   /// - Exceptions from timer firing when app state is invalid
   void pausePolling() {
-    print('[EventHandler] Pausing polling timers');
     _presenceTimer?.cancel();
     _presenceTimer = null;
     _contactRequestsTimer?.cancel();
@@ -320,7 +305,6 @@ class EventHandler {
   /// Restarts periodic polling if DHT is connected.
   /// Note: Immediate presence refresh is handled by C-side resumePresence().
   void resumePolling() {
-    print('[EventHandler] Resuming polling timers');
     final dhtState = _ref.read(dhtConnectionStateProvider);
     if (dhtState == DhtConnectionState.connected) {
       _startContactRequestsPolling();

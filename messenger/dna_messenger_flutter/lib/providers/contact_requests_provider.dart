@@ -16,14 +16,11 @@ class ContactRequestsNotifier extends AsyncNotifier<List<ContactRequest>> {
   Future<List<ContactRequest>> build() async {
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
-      print('[ContactRequests] Skipping - identity not loaded');
       return [];
     }
 
     final engine = await ref.watch(engineProvider.future);
-    print('[ContactRequests] Fetching contact requests from DHT...');
     final requests = await engine.getContactRequests();
-    print('[ContactRequests] Fetched ${requests.length} requests');
 
     // Refresh contacts - reciprocal requests may have been auto-approved
     ref.invalidate(contactsProvider);
@@ -59,8 +56,7 @@ class ContactRequestsNotifier extends AsyncNotifier<List<ContactRequest>> {
     // Start DHT listener for the new contact's outbox (for push notifications)
     // This is needed because listenAllContacts() was called when DHT connected,
     // but this new contact wasn't in the list yet
-    final listenerCount = engine.listenAllContacts();
-    print('[ContactRequests] Started $listenerCount DHT listeners after approve');
+    engine.listenAllContacts();
   }
 
   /// Deny a contact request (can retry later)

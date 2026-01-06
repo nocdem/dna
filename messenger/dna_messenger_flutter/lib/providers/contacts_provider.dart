@@ -25,14 +25,7 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     }
 
     final engine = await ref.watch(engineProvider.future);
-    engine.debugLog('CONTACTS', 'build() - fetching contacts');
     final contacts = await engine.getContacts();
-    engine.debugLog('CONTACTS', 'Got ${contacts.length} contacts');
-
-    // Debug: log initial online status from C engine
-    for (final c in contacts) {
-      print('[Contacts] Loaded: ${c.fingerprint.substring(0, 16)}... isOnline=${c.isOnline} lastSeen=${c.lastSeen}');
-    }
 
     // Stable sort: online first, then by name (won't change on presence updates)
     final sortedContacts = List<Contact>.from(contacts);
@@ -46,7 +39,6 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     // Prefetch contact profiles in background (for avatars, display names)
     if (sortedContacts.isNotEmpty) {
       final fingerprints = sortedContacts.map((c) => c.fingerprint).toList();
-      engine.debugLog('CONTACTS', 'Prefetching ${fingerprints.length} profiles');
       ref.read(contactProfileCacheProvider.notifier).prefetchProfiles(fingerprints);
     }
 
@@ -225,8 +217,7 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     // Start DHT listener for the new contact's outbox (for push notifications)
     // This is needed because listenAllContacts() was called when DHT connected,
     // but this new contact wasn't in the list yet
-    final listenerCount = engine.listenAllContacts();
-    engine.debugLog('CONTACTS', 'Started $listenerCount DHT listeners after addContact');
+    engine.listenAllContacts();
   }
 
   Future<void> removeContact(String fingerprint) async {
@@ -236,11 +227,7 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
   }
 
   void updateContactStatus(String fingerprint, bool isOnline) {
-    final fpShort = fingerprint.length >= 16 ? fingerprint.substring(0, 16) : fingerprint;
-    print('[Contacts] updateContactStatus: $fpShort... -> ${isOnline ? "ONLINE" : "OFFLINE"}');
-
     if (fingerprint.isEmpty) {
-      print('[Contacts] ERROR: Empty fingerprint, ignoring');
       return;
     }
 
@@ -251,10 +238,8 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
 
         // Skip update if status hasn't actually changed
         if (contact.isOnline == isOnline) {
-          print('[Contacts] Status unchanged, skipping update');
           return;
         }
-        print('[Contacts] Status CHANGED: ${contact.isOnline} -> $isOnline');
 
         final updated = List<Contact>.from(contacts);
         updated[index] = Contact(
@@ -328,21 +313,16 @@ class UnreadCountsNotifier extends AsyncNotifier<Map<String, int>> {
 
   /// Update count for a single contact (used when message received)
   void incrementCount(String fingerprint) {
-    print('[UnreadCounts] incrementCount called for ${fingerprint.substring(0, 16)}...');
-    print('[UnreadCounts] Current state: $state');
-
     final currentState = state;
     if (currentState is AsyncData<Map<String, int>>) {
       final counts = currentState.value;
       final updated = Map<String, int>.from(counts);
       updated[fingerprint] = (updated[fingerprint] ?? 0) + 1;
       state = AsyncValue.data(updated);
-      print('[UnreadCounts] Updated count to ${updated[fingerprint]}');
     } else {
       // State not ready (loading/error) - initialize with this count
       // This ensures we don't lose the increment during startup race
       state = AsyncValue.data({fingerprint: 1});
-      print('[UnreadCounts] State was not ready, initialized with count=1');
     }
   }
 
@@ -361,7 +341,6 @@ class UnreadCountsNotifier extends AsyncNotifier<Map<String, int>> {
           updated.remove(fingerprint);
         }
         state = AsyncValue.data(updated);
-        print('[UnreadCounts] Set count for ${fingerprint.substring(0, 16)}... to $count');
       }
     } else {
       // State not ready - initialize with this count

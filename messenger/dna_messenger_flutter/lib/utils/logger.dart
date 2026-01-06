@@ -1,7 +1,7 @@
-/// Unified logger that writes to both stdout and dna.log file
+/// Unified logger - writes ONLY to in-app debug log (engine.debugLog)
 ///
 /// Usage: Replace `print('[TAG] message')` with `log('TAG', 'message')`
-/// Or use `logPrint('[TAG] message')` for drop-in replacement of print()
+/// All logs go to Settings > Debug Log (viewable in-app)
 
 import 'dart:async';
 import 'package:flutter/foundation.dart';
@@ -27,10 +27,8 @@ void logSetEngine(DnaEngine engine) {
   _bufferedLogs.clear();
 }
 
-/// Log with explicit tag - writes to stdout AND dna.log
+/// Log with explicit tag - writes to in-app debug log only
 void log(String tag, String message) {
-  print('[$tag] $message');
-
   if (_engine != null) {
     _engine!.debugLog(tag, message);
   } else {
@@ -42,8 +40,6 @@ void log(String tag, String message) {
 /// Drop-in replacement for print() - parses [TAG] from message
 /// If message starts with [TAG], extracts it; otherwise uses 'FLUTTER' tag
 void logPrint(String message) {
-  print(message);
-
   // Parse tag from message if present: "[TAG] rest of message"
   String tag = 'FLUTTER';
   String msg = message;
@@ -68,8 +64,6 @@ void logError(String tag, Object error, [StackTrace? stack]) {
   final message = stack != null
       ? '$error\n$stack'
       : error.toString();
-
-  print('[$tag] ERROR: $message');
 
   if (_engine != null) {
     _engine!.debugLog(tag, 'ERROR: $message');

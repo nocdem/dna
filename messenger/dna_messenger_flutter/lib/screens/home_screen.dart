@@ -291,17 +291,10 @@ class _DrawerHeader extends ConsumerWidget {
   }
 
   Widget _buildAvatar(AsyncValue<dynamic> fullProfile, String fallbackName, WidgetRef ref) {
-    // DEBUG: Log what state fullProfile is in
-    final engine = ref.read(engineProvider).valueOrNull;
-    engine?.debugLog('FLUTTER', '[AVATAR_DEBUG] _buildAvatar: fullProfile.isLoading=${fullProfile.isLoading}, hasValue=${fullProfile.hasValue}');
-
     return fullProfile.when(
       data: (profile) {
-        final avatarBase64 = profile?.avatarBase64 ?? '';
-        engine?.debugLog('FLUTTER', '[AVATAR_DEBUG] _buildAvatar data: avatarBase64.length=${avatarBase64.length}');
         final avatarBytes = profile?.decodeAvatar();
         if (avatarBytes != null) {
-          engine?.debugLog('FLUTTER', '[AVATAR_DEBUG] _buildAvatar: decoded ${avatarBytes.length} bytes, showing avatar');
           return CircleAvatar(
             radius: 32,
             backgroundImage: MemoryImage(avatarBytes),
@@ -321,7 +314,6 @@ class _DrawerHeader extends ConsumerWidget {
         );
       },
       loading: () {
-        engine?.debugLog('FLUTTER', '[AVATAR_DEBUG] _buildAvatar: LOADING state');
         return CircleAvatar(
           radius: 32,
           backgroundColor: DnaColors.primarySoft,

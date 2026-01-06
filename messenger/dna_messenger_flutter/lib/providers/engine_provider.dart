@@ -15,8 +15,6 @@ final engineProvider = AsyncNotifierProvider<EngineNotifier, DnaEngine>(
 class EngineNotifier extends AsyncNotifier<DnaEngine> {
   @override
   Future<DnaEngine> build() async {
-    print('[EngineProvider] build() started');
-
     // Desktop: use ~/.dna for consistency with ImGui app
     // Mobile: use app-specific files directory
     final String dataDir;
@@ -30,10 +28,8 @@ class EngineNotifier extends AsyncNotifier<DnaEngine> {
     } else if (Platform.isAndroid) {
       // Android: use getApplicationSupportDirectory() which maps to filesDir
       // This matches where MainActivity.kt copies cacert.pem for SSL
-      print('[EngineProvider] Getting Android app directory...');
       final appDir = await getApplicationSupportDirectory();
       dataDir = '${appDir.path}/dna_messenger';
-      print('[EngineProvider] Android dataDir: $dataDir');
     } else {
       // iOS: use documents directory
       final appDir = await getApplicationDocumentsDirectory();
@@ -41,7 +37,6 @@ class EngineNotifier extends AsyncNotifier<DnaEngine> {
     }
 
     // Ensure directory exists
-    print('[EngineProvider] Creating directory: $dataDir');
     final dir = Directory(dataDir);
     if (!await dir.exists()) {
       await dir.create(recursive: true);
@@ -49,13 +44,10 @@ class EngineNotifier extends AsyncNotifier<DnaEngine> {
 
     // Copy CA certificate bundle for Android HTTPS (curl needs this)
     if (Platform.isAndroid) {
-      print('[EngineProvider] Copying CA cert bundle...');
       await _copyCACertBundle(dataDir);
     }
 
-    print('[EngineProvider] Creating DnaEngine...');
     final engine = await DnaEngine.create(dataDir: dataDir);
-    print('[EngineProvider] DnaEngine created successfully');
 
     // Initialize logger with engine for Flutter -> dna.log logging
     logSetEngine(engine);
@@ -84,11 +76,8 @@ class EngineNotifier extends AsyncNotifier<DnaEngine> {
       // Load from Flutter assets
       final data = await rootBundle.load('assets/cacert.pem');
       await destFile.writeAsBytes(data.buffer.asUint8List());
-      // ignore: avoid_print
-      print('[DNA] Copied cacert.pem to $dataDir (${data.lengthInBytes} bytes)');
-    } catch (e) {
-      // ignore: avoid_print
-      print('[DNA] Failed to copy cacert.pem: $e');
+    } catch (_) {
+      // Silently ignore CA cert copy failures
     }
   }
 }

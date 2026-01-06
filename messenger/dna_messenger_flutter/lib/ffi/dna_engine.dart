@@ -600,10 +600,6 @@ class UserProfile {
   factory UserProfile.fromNative(dna_profile_t native) {
     final avatarBase64 = native.avatar_base64.toDartString(20484);
 
-    // DEBUG: Log avatar data received from native
-    print('[AVATAR_DEBUG] UserProfile.fromNative: avatarBase64.length=${avatarBase64.length}, '
-          'first20=${avatarBase64.length > 0 ? avatarBase64.substring(0, avatarBase64.length > 20 ? 20 : avatarBase64.length) : "(empty)"}');
-
     return UserProfile(
       backbone: native.backbone.toDartString(120),
       alvin: native.alvin.toDartString(120),
@@ -920,30 +916,21 @@ class DnaEngine {
 
   /// Create and initialize the DNA engine
   static Future<DnaEngine> create({String? dataDir}) async {
-    print('[DnaEngine] create() called with dataDir: $dataDir');
-
     final engine = DnaEngine._();
-    print('[DnaEngine] Loading library...');
     engine._bindings = DnaBindings(_loadLibrary());
-    print('[DnaEngine] Library loaded');
 
     final dataDirPtr = dataDir?.toNativeUtf8() ?? nullptr;
-    print('[DnaEngine] Calling dna_engine_create...');
     engine._engine = engine._bindings.dna_engine_create(dataDirPtr.cast());
-    print('[DnaEngine] dna_engine_create returned: ${engine._engine}');
 
     if (dataDir != null) {
       calloc.free(dataDirPtr);
     }
 
     if (engine._engine == nullptr) {
-      print('[DnaEngine] ERROR: Engine is nullptr!');
       throw DnaEngineException(-100, 'Failed to create engine');
     }
 
-    print('[DnaEngine] Setting up event callback...');
     engine._setupEventCallback();
-    print('[DnaEngine] Engine created successfully');
     return engine;
   }
 
@@ -1055,7 +1042,6 @@ class DnaEngine {
           onlineFpBytes.add(byte);
         }
         final onlineFingerprint = String.fromCharCodes(onlineFpBytes);
-        print('[FLUTTER-EVENT] CONTACT_ONLINE: ${onlineFingerprint.length > 16 ? onlineFingerprint.substring(0, 16) : onlineFingerprint}... (len=${onlineFingerprint.length})');
         dartEvent = ContactOnlineEvent(onlineFingerprint);
         break;
       case DnaEventType.DNA_EVENT_CONTACT_OFFLINE:
@@ -1069,7 +1055,6 @@ class DnaEngine {
           offlineFpBytes.add(byte);
         }
         final offlineFingerprint = String.fromCharCodes(offlineFpBytes);
-        print('[FLUTTER-EVENT] CONTACT_OFFLINE: ${offlineFingerprint.length > 16 ? offlineFingerprint.substring(0, 16) : offlineFingerprint}... (len=${offlineFingerprint.length})');
         dartEvent = ContactOfflineEvent(offlineFingerprint);
         break;
       case DnaEventType.DNA_EVENT_IDENTITY_LOADED:
@@ -1082,7 +1067,6 @@ class DnaEngine {
         // Parse contact fingerprint from union data
         // baseOffset=4 for padding between type (int) and union in C struct (64-bit alignment)
         const outboxBaseOffset = 4;
-        print('[FLUTTER-EVENT] DNA_EVENT_OUTBOX_UPDATED received from C');
         final fpBytes = <int>[];
         for (var i = outboxBaseOffset; i < outboxBaseOffset + 128; i++) {
           final byte = event.data[i];
@@ -1090,7 +1074,6 @@ class DnaEngine {
           fpBytes.add(byte);
         }
         final contactFp = String.fromCharCodes(fpBytes);
-        print('[FLUTTER-EVENT] Parsed contactFp: ${contactFp.length > 16 ? contactFp.substring(0, 16) : contactFp}... (len=${contactFp.length})');
         dartEvent = OutboxUpdatedEvent(contactFp);
         break;
       case DnaEventType.DNA_EVENT_ERROR:
@@ -1102,10 +1085,7 @@ class DnaEngine {
     }
 
     if (dartEvent != null) {
-      print('[FLUTTER-EVENT] Broadcasting event: ${dartEvent.runtimeType}');
       _eventController.add(dartEvent);
-    } else {
-      print('[FLUTTER-EVENT] Event type $type not handled, dartEvent is null');
     }
 
     // Free the heap-allocated event from C
@@ -2219,20 +2199,15 @@ class DnaEngine {
     required String network,
     int gasSpeed = 1,
   }) async {
-    print('[DART] sendTokens: wallet=$walletIndex to=$recipientAddress amount=$amount token=$token network=$network gas=$gasSpeed');
-
     final completer = Completer<String>();
     final localId = _nextLocalId++;
 
-    print('[DART] Creating native pointers...');
     final recipientPtr = recipientAddress.toNativeUtf8();
     final amountPtr = amount.toNativeUtf8();
     final tokenPtr = token.toNativeUtf8();
     final networkPtr = network.toNativeUtf8();
-    print('[DART] Pointers created');
 
     void onComplete(int requestId, int error, Pointer<Utf8> txHashPtr, Pointer<Void> userData) {
-      print('[DART] onComplete callback: requestId=$requestId error=$error');
       calloc.free(recipientPtr);
       calloc.free(amountPtr);
       calloc.free(tokenPtr);
@@ -2240,7 +2215,6 @@ class DnaEngine {
 
       if (error == 0) {
         final txHash = txHashPtr != nullptr ? txHashPtr.toDartString() : '';
-        print('[DART] Transaction hash: $txHash');
         completer.complete(txHash);
       } else {
         completer.completeError(DnaEngineException.fromCode(error, _bindings));
@@ -2248,10 +2222,8 @@ class DnaEngine {
       _cleanupRequest(localId);
     }
 
-    print('[DART] Creating NativeCallable...');
     final callback = NativeCallable<DnaSendTokensCbNative>.listener(onComplete);
     _pendingRequests[localId] = _PendingRequest(callback: callback);
-    print('[DART] Calling FFI dna_engine_send_tokens...');
 
     final requestId = _bindings.dna_engine_send_tokens(
       _engine,
@@ -2264,7 +2236,6 @@ class DnaEngine {
       callback.nativeFunction.cast(),
       nullptr,
     );
-    print('[DART] FFI returned requestId=$requestId');
 
     if (requestId == 0) {
       calloc.free(recipientPtr);
@@ -3963,14 +3934,12 @@ class DnaEngine {
   /// after Flutter is killed but ForegroundService continues running.
   void detachEventCallback() {
     if (_isDisposed) return;
-    print('[DnaEngine] Detaching event callback');
     _bindings.dna_engine_set_event_callback(_engine, nullptr, nullptr);
   }
 
   /// Re-attach the event callback (call when app comes back to foreground)
   void attachEventCallback() {
     if (_isDisposed || _eventCallback == null) return;
-    print('[DnaEngine] Attaching event callback');
     _bindings.dna_engine_set_event_callback(
       _engine,
       _eventCallback!.nativeFunction.cast(),

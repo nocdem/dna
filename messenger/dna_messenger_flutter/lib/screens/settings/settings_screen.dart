@@ -968,10 +968,6 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
         final appDir = await getApplicationSupportDirectory();
         final logsDir = Directory('${appDir.path}/dna_messenger/logs');
 
-        // Debug: print path being checked
-        print('[ShareLogs] Checking logs dir: ${logsDir.path}');
-        print('[ShareLogs] Dir exists: ${await logsDir.exists()}');
-
         if (!await logsDir.exists()) {
           // Try to list parent directory to see what's there
           final parentDir = Directory('${appDir.path}/dna_messenger');
@@ -979,10 +975,8 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           if (await parentDir.exists()) {
             final contents = await parentDir.list().map((e) => e.path.split('/').last).toList();
             debugInfo += '\nParent contents: ${contents.join(", ")}';
-            print('[ShareLogs] Parent dir contents: $contents');
           } else {
             debugInfo += '\nParent dir does not exist: ${parentDir.path}';
-            print('[ShareLogs] Parent dir does not exist: ${parentDir.path}');
           }
 
           if (context.mounted) {

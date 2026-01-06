@@ -20,8 +20,7 @@ class ForegroundServiceManager {
     try {
       final result = await _channel.invokeMethod<bool>('startService');
       return result ?? false;
-    } on PlatformException catch (e) {
-      print('ForegroundService: Failed to start - ${e.message}');
+    } on PlatformException {
       return false;
     }
   }
@@ -32,8 +31,7 @@ class ForegroundServiceManager {
     try {
       final result = await _channel.invokeMethod<bool>('stopService');
       return result ?? false;
-    } on PlatformException catch (e) {
-      print('ForegroundService: Failed to stop - ${e.message}');
+    } on PlatformException {
       return false;
     }
   }
@@ -44,8 +42,7 @@ class ForegroundServiceManager {
     try {
       final result = await _channel.invokeMethod<bool>('isServiceRunning');
       return result ?? false;
-    } on PlatformException catch (e) {
-      print('ForegroundService: Failed to check status - ${e.message}');
+    } on PlatformException {
       return false;
     }
   }
@@ -55,8 +52,8 @@ class ForegroundServiceManager {
     if (!isSupported) return;
     try {
       await _channel.invokeMethod<void>('pollNow');
-    } on PlatformException catch (e) {
-      print('ForegroundService: Failed to poll - ${e.message}');
+    } on PlatformException {
+      // Silently ignore
     }
   }
 
@@ -106,14 +103,12 @@ class ForegroundServiceNotifier extends StateNotifier<bool> {
     switch (call.method) {
       case 'onNewMessages':
         // Service detected new messages or requested poll
-        print('ForegroundService: Poll requested from service');
         await _pollOfflineMessages();
         // Refresh contacts to update UI
         _ref.invalidate(contactsProvider);
         break;
       case 'onNetworkChanged':
         // Network changed (WiFi <-> Cellular) - reinitialize DHT
-        print('ForegroundService: Network changed - reinitializing DHT');
         await _handleNetworkChange();
         break;
     }
@@ -126,36 +121,26 @@ class ForegroundServiceNotifier extends StateNotifier<bool> {
       final engine = await _ref.read(engineProvider.future);
       final result = engine.networkChanged();
       if (result == 0) {
-        print('ForegroundService: DHT reinitialized successfully');
         // Poll for any messages that arrived during network switch
         await _pollOfflineMessages();
         // Refresh contacts to update UI
         _ref.invalidate(contactsProvider);
-      } else {
-        print('ForegroundService: DHT reinit failed with code $result');
       }
-    } catch (e) {
-      print('ForegroundService: Network change error - $e');
+    } catch (_) {
+      // Silently ignore network change errors
     }
   }
 
   /// Start the foreground service
   Future<void> _startService() async {
     if (!ForegroundServiceManager.isSupported) return;
-    print('ForegroundService: Starting service');
     final success = await ForegroundServiceManager.startService();
     state = success;
-    if (success) {
-      print('ForegroundService: Service started successfully');
-    } else {
-      print('ForegroundService: Failed to start service');
-    }
   }
 
   /// Stop the foreground service
   Future<void> _stopService() async {
     if (!ForegroundServiceManager.isSupported) return;
-    print('ForegroundService: Stopping service');
     await ForegroundServiceManager.stopService();
     state = false;
   }
@@ -165,9 +150,8 @@ class ForegroundServiceNotifier extends StateNotifier<bool> {
     try {
       final engine = await _ref.read(engineProvider.future);
       await engine.checkOfflineMessages();
-    } catch (e) {
+    } catch (_) {
       // Ignore errors during background poll
-      print('ForegroundService: Poll error - $e');
     }
   }
 
