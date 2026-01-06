@@ -21,6 +21,7 @@
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_types.h"  // For qgp_key_t, qgp_key_load, qgp_key_free
 #include "database/presence_cache.h"
 #include "database/profile_manager.h"
 #include "database/profile_cache.h"
@@ -895,10 +896,45 @@ static void p2p_message_received_internal(
     int message_type = MESSAGE_TYPE_CHAT;  // default
 
     // Try to decrypt message to check if it's an invitation and extract sender's timestamp
+    // Load recipient's private Kyber1024 key from filesystem (not deprecated keyring)
+    const char *app_data = qgp_platform_app_data_dir();
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", app_data);
+
+    qgp_key_t *kyber_key = NULL;
     uint8_t *plaintext = NULL;
     size_t plaintext_len = 0;
-    dna_error_t decrypt_result = dna_decrypt_message(ctx->dna_ctx, message, message_len, ctx->identity,
-                            &plaintext, &plaintext_len, NULL, NULL, &sender_timestamp);
+    dna_error_t decrypt_result = DNA_ERROR_KEY_LOAD;
+
+    if (qgp_key_load(kyber_path, &kyber_key) == 0 && kyber_key && kyber_key->private_key_size == 3168) {
+        // Decrypt using raw key (dna_decrypt_message_raw works, dna_decrypt_message uses deprecated keyring)
+        uint8_t *sender_fp_from_msg = NULL;
+        size_t sender_fp_len = 0;
+        uint8_t *signature = NULL;
+        size_t signature_len = 0;
+
+        decrypt_result = dna_decrypt_message_raw(
+            ctx->dna_ctx,
+            message,
+            message_len,
+            kyber_key->private_key,
+            &plaintext,
+            &plaintext_len,
+            &sender_fp_from_msg,
+            &sender_fp_len,
+            &signature,
+            &signature_len,
+            &sender_timestamp
+        );
+
+        // Free outputs we don't need for invitation detection
+        if (sender_fp_from_msg) free(sender_fp_from_msg);
+        if (signature) free(signature);
+        qgp_key_free(kyber_key);
+    } else {
+        if (kyber_key) qgp_key_free(kyber_key);
+        QGP_LOG_WARN("P2P", "Could not load encryption key from %s", kyber_path);
+    }
 
     if (decrypt_result == DNA_OK && plaintext) {
         // Check if it's JSON with "type": "group_invite"
@@ -943,18 +979,9 @@ static void p2p_message_received_internal(
             json_object_put(j_msg);
         }
         free(plaintext);
-    } else {
-        // DEBUG: Log why decryption failed
-        QGP_LOG_WARN("P2P", "DEBUG: Decryption failed for message from %s (len=%zu, error=%d)",
-                     sender_identity ? sender_identity : "unknown", message_len, decrypt_result);
-        // Log first 32 bytes of message header for debugging
-        if (message_len >= 32) {
-            QGP_LOG_WARN("P2P", "DEBUG: Header bytes: %02x%02x%02x%02x%02x%02x%02x%02x %02x%02x%02x%02x%02x%02x%02x%02x",
-                         message[0], message[1], message[2], message[3],
-                         message[4], message[5], message[6], message[7],
-                         message[8], message[9], message[10], message[11],
-                         message[12], message[13], message[14], message[15]);
-        }
+    } else if (decrypt_result != DNA_OK) {
+        // Only log at DEBUG level - this is expected for GSK group messages
+        QGP_LOG_DEBUG("P2P", "Could not decrypt for invitation check (error=%d, may be GSK message)", decrypt_result);
     }
 
     // Use sender's timestamp if available, otherwise fall back to local time
