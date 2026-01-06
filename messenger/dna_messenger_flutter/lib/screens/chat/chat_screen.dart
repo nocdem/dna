@@ -28,6 +28,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _showEmojiPicker = false;
   bool _isCheckingOffline = false;
   bool _justInsertedEmoji = false;
+  bool _hasText = false; // Track empty/non-empty to minimize rebuilds
 
   @override
   void initState() {
@@ -92,12 +93,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   void _onTextChanged() {
     // Close emoji picker when user types (but not when emoji was just inserted)
-    if (_showEmojiPicker && !_justInsertedEmoji) {
-      _showEmojiPicker = false;
-    }
+    final shouldCloseEmoji = _showEmojiPicker && !_justInsertedEmoji;
     _justInsertedEmoji = false;
-    // Rebuild to update send button enabled state
-    setState(() {});
+
+    // Only rebuild when empty<->non-empty changes (for send button state)
+    final hasTextNow = _messageController.text.trim().isNotEmpty;
+    if (hasTextNow != _hasText || shouldCloseEmoji) {
+      setState(() {
+        _hasText = hasTextNow;
+        if (shouldCloseEmoji) _showEmojiPicker = false;
+      });
+    }
   }
 
   Future<void> _checkOfflineMessages() async {
@@ -197,7 +203,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         titleSpacing: 0,
         title: Row(
           children: [
-            _buildAvatar(contact, theme),
+            _ContactAvatar(contact: contact),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -334,63 +340,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
         ],
       ),
-    );
-  }
-
-  Widget _buildAvatar(Contact contact, ThemeData theme) {
-    // Get cached avatar
-    final profileCache = ref.watch(contactProfileCacheProvider);
-    final cachedProfile = profileCache[contact.fingerprint];
-    final avatarBytes = cachedProfile?.decodeAvatar();
-
-    // Trigger fetch if not cached
-    if (cachedProfile == null) {
-      Future.microtask(() {
-        ref.read(contactProfileCacheProvider.notifier).fetchAndCache(contact.fingerprint);
-      });
-    }
-
-    Widget avatarWidget;
-    if (avatarBytes != null) {
-      avatarWidget = CircleAvatar(
-        radius: 18,
-        backgroundImage: MemoryImage(avatarBytes),
-      );
-    } else {
-      avatarWidget = CircleAvatar(
-        radius: 18,
-        backgroundColor: theme.colorScheme.primary.withAlpha(51),
-        child: Text(
-          _getInitials(contact.displayName),
-          style: TextStyle(
-            color: theme.colorScheme.primary,
-            fontWeight: FontWeight.bold,
-            fontSize: 14,
-          ),
-        ),
-      );
-    }
-
-    return Stack(
-      children: [
-        avatarWidget,
-        Positioned(
-          right: 0,
-          bottom: 0,
-          child: Container(
-            width: 10,
-            height: 10,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: contact.isOnline ? DnaColors.textSuccess : DnaColors.offline,
-              border: Border.all(
-                color: theme.scaffoldBackgroundColor,
-                width: 2,
-              ),
-            ),
-          ),
-        ),
-      ],
     );
   }
 
@@ -577,14 +526,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 minLines: 1,
                 maxLines: 5,
                 onEnterPressed: () {
-                  if (_messageController.text.trim().isNotEmpty) {
+                  if (_hasText) {
                     _sendMessage(contact);
                   }
                 },
-                onChanged: (_) {
-                  // Rebuild to update send button enabled state
-                  setState(() {});
-                },
+                // Note: onChanged not needed - _messageController.addListener handles state
                 decoration: InputDecoration(
                   hintText: 'Type a message...',
                   border: OutlineInputBorder(
@@ -612,9 +558,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             // Send button
             IconButton(
               icon: const FaIcon(FontAwesomeIcons.paperPlane),
-              onPressed: _messageController.text.trim().isEmpty
-                  ? null
-                  : () => _sendMessage(contact),
+              onPressed: _hasText ? () => _sendMessage(contact) : null,
             ),
           ],
         ),
@@ -683,7 +627,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
     // Keep focus on the text field after emoji insert
     _focusNode.requestFocus();
-    setState(() {});
+    // Note: setState not needed - listener handles _hasText updates
   }
 
   void _showSendCpunk(BuildContext context, Contact contact) {
@@ -916,17 +860,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
-  String _getInitials(String name) {
-    if (name.isEmpty) return '?';
-    // Filter out empty strings from split (handles multiple spaces)
-    final words = name.split(' ').where((w) => w.isNotEmpty).toList();
-    if (words.isEmpty) return '?';
-    if (words.length >= 2) {
-      return '${words[0][0]}${words[1][0]}'.toUpperCase();
-    }
-    return words[0].substring(0, words[0].length.clamp(0, 2)).toUpperCase();
-  }
-
   String _shortenFingerprint(String fingerprint) {
     if (fingerprint.length <= 16) return fingerprint;
     return '${fingerprint.substring(0, 8)}...${fingerprint.substring(fingerprint.length - 8)}';
@@ -948,6 +881,83 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (diff.inHours < 24) return '${diff.inHours}h ago';
     if (diff.inDays < 7) return '${diff.inDays}d ago';
     return '${lastSeen.day}/${lastSeen.month}/${lastSeen.year}';
+  }
+}
+
+/// Separate widget for contact avatar to prevent rebuilds on text input
+class _ContactAvatar extends ConsumerWidget {
+  final Contact contact;
+
+  const _ContactAvatar({required this.contact});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+
+    // Get cached avatar
+    final profileCache = ref.watch(contactProfileCacheProvider);
+    final cachedProfile = profileCache[contact.fingerprint];
+    final avatarBytes = cachedProfile?.decodeAvatar();
+
+    // Trigger fetch if not cached
+    if (cachedProfile == null) {
+      Future.microtask(() {
+        ref.read(contactProfileCacheProvider.notifier).fetchAndCache(contact.fingerprint);
+      });
+    }
+
+    Widget avatarWidget;
+    if (avatarBytes != null) {
+      avatarWidget = CircleAvatar(
+        radius: 18,
+        backgroundImage: MemoryImage(avatarBytes),
+      );
+    } else {
+      avatarWidget = CircleAvatar(
+        radius: 18,
+        backgroundColor: theme.colorScheme.primary.withAlpha(51),
+        child: Text(
+          _getInitials(contact.displayName),
+          style: TextStyle(
+            color: theme.colorScheme.primary,
+            fontWeight: FontWeight.bold,
+            fontSize: 14,
+          ),
+        ),
+      );
+    }
+
+    return Stack(
+      children: [
+        avatarWidget,
+        Positioned(
+          right: 0,
+          bottom: 0,
+          child: Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: contact.isOnline ? DnaColors.textSuccess : DnaColors.offline,
+              border: Border.all(
+                color: theme.scaffoldBackgroundColor,
+                width: 2,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _getInitials(String name) {
+    if (name.isEmpty) return '?';
+    final words = name.split(' ').where((w) => w.isNotEmpty).toList();
+    if (words.isEmpty) return '?';
+    if (words.length >= 2) {
+      return '${words[0][0]}${words[1][0]}'.toUpperCase();
+    }
+    return words[0].substring(0, words[0].length.clamp(0, 2)).toUpperCase();
   }
 }
 
