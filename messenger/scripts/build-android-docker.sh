@@ -322,11 +322,10 @@ if [ -f "$APK_PATH" ]; then
     echo "=========================================="
     echo "APK: dna-messenger-android.apk ($APK_SIZE)"
 
-    # Copy to shared builds directory if available
+    # Copy to shared builds directory if available (fixed name, overwrites old)
     BUILDS_DIR="/home/mika/Storage/Builds"
     if [ -d "$BUILDS_DIR" ]; then
-        VERSION=$(grep "^version:" "$PROJECT_DIR/dna_messenger_flutter/pubspec.yaml" | sed 's/version: //' | cut -d'+' -f1)
-        DEST_APK="$BUILDS_DIR/dna-messenger-v${VERSION}.apk"
+        DEST_APK="$BUILDS_DIR/dna-messenger.apk"
         cp "$PROJECT_DIR/dna-messenger-android.apk" "$DEST_APK"
         chmod 666 "$DEST_APK"  # Allow moving/deleting from other users
         echo "Copied to: $DEST_APK"
