@@ -52,6 +52,8 @@ Anything against protocol mode breaks the blockchain / encryption.
 **Sections:** Public API → DNA API → Messenger → Crypto → DHT → P2P → Database → Blockchain → Engine
 
 ## LOGGING STANDARD
+
+### C Code Logging
 When adding debug/logging to C code, ALWAYS use QGP_LOG macros:
 ```c
 #include "crypto/utils/qgp_log.h"
@@ -64,6 +66,34 @@ QGP_LOG_ERROR(LOG_TAG, "Error message: %s", error_str);
 - **NEVER** use `printf()`, `fprintf()`, or raw `stdout`/`stderr` for logging
 - **ALWAYS** define `LOG_TAG` at top of file: `#define LOG_TAG "MODULE_NAME"`
 - Log levels: DEBUG < INFO < WARN < ERROR
+
+### Flutter/Dart Code Logging
+**ONE logging system only:** `engine.debugLog()` via the DnaLogger wrapper.
+
+```dart
+import '../utils/logger.dart';
+
+// Use the global logger (writes to in-app debug log)
+DnaLogger.log('TAG', 'Message here');
+DnaLogger.engine('Engine-related message');
+DnaLogger.dht('DHT-related message');
+DnaLogger.p2p('P2P-related message');
+DnaLogger.error('ERROR', 'Error message');
+```
+
+**Rules:**
+- **NEVER** use `print()` - it's expensive (especially Android logcat) and not viewable in-app
+- **NEVER** use `debugPrint()` or `developer.log()` - same problem
+- **ALWAYS** use `DnaLogger` functions which route to `engine.debugLog()`
+- Logs go to: ring buffer (200 entries) + file (`dna.log`, 50MB rotation)
+- Users view logs in: **Settings > Debug Log**
+- Toggle logging: **Settings > Debug Log > Enable/Disable**
+
+**When to add logging:**
+- Error conditions (with context)
+- State transitions (connect/disconnect, login/logout)
+- **NOT** for routine operations (message send/receive, UI rebuilds)
+- **NOT** for debugging that will be removed later (use breakpoints instead)
 
 ## BETA PROJECT - NO BREAKING CHANGES
 This project is in **BETA**. Users have real data. Breaking changes require careful handling:
