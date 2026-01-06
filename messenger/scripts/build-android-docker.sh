@@ -275,6 +275,9 @@ cp libdna_lib.so /output/arm64-v8a/
 echo "Native library built: /output/arm64-v8a/libdna_lib.so"
 '
 
+# Fix permissions (Docker runs as root)
+sudo chown -R "$(id -u):$(id -g)" "$PROJECT_DIR/dna_messenger_flutter/android/app/src/main/jniLibs" 2>/dev/null || true
+
 # Verify native lib
 NATIVE_LIB="dna_messenger_flutter/android/app/src/main/jniLibs/arm64-v8a/libdna_lib.so"
 if [ ! -f "$NATIVE_LIB" ]; then
@@ -290,6 +293,7 @@ echo "==> Step 2/2: Building Flutter APK..."
 docker run --rm --network=host \
     -v "$PROJECT_DIR:/app" \
     -w /app/dna_messenger_flutter \
+    -u "$(id -u):$(id -g)" \
     "$FLUTTER_IMAGE" \
     bash -c "flutter pub get && flutter build apk --release"
 
