@@ -988,11 +988,11 @@ dna_error_t dna_decrypt_message(
     uint8_t **plaintext_out,
     size_t *plaintext_len_out,
     uint8_t **sender_pubkey_out,
-    size_t *sender_pubkey_len_out)
+    size_t *sender_pubkey_len_out,
+    uint64_t *timestamp_out)
 {
     if (!ctx || !ciphertext || !recipient_key_name ||
-        !plaintext_out || !plaintext_len_out ||
-        !sender_pubkey_out || !sender_pubkey_len_out) {
+        !plaintext_out || !plaintext_len_out) {
         return DNA_ERROR_INVALID_ARG;
     }
 
@@ -1142,25 +1142,33 @@ dna_error_t dna_decrypt_message(
         goto cleanup;
     }
 
-    // Extract sender fingerprint (first 64 bytes)
-    *sender_pubkey_len_out = 64;
-    *sender_pubkey_out = malloc(64);
-    if (!*sender_pubkey_out) {
-        result = DNA_ERROR_MEMORY;
-        goto cleanup;
+    // Extract sender fingerprint (first 64 bytes) - optional
+    if (sender_pubkey_out && sender_pubkey_len_out) {
+        *sender_pubkey_len_out = 64;
+        *sender_pubkey_out = malloc(64);
+        if (!*sender_pubkey_out) {
+            result = DNA_ERROR_MEMORY;
+            goto cleanup;
+        }
+        memcpy(*sender_pubkey_out, decrypted, 64);
     }
-    memcpy(*sender_pubkey_out, decrypted, 64);
 
-    // Extract timestamp (bytes 64-71, big-endian) - ignored in this function
-    // (dna_decrypt_message doesn't expose timestamp, use dna_decrypt_message_raw if needed)
+    // Extract timestamp (bytes 64-71, big-endian) - optional
+    if (timestamp_out) {
+        uint64_t timestamp_be;
+        memcpy(&timestamp_be, decrypted + 64, 8);
+        *timestamp_out = be64toh(timestamp_be);
+    }
 
     // Extract actual plaintext (everything after fingerprint + timestamp)
     size_t actual_plaintext_len = decrypted_size - 72;  // 64 + 8
     *plaintext_len_out = actual_plaintext_len;
     *plaintext_out = malloc(actual_plaintext_len);
     if (!*plaintext_out) {
-        free(*sender_pubkey_out);
-        *sender_pubkey_out = NULL;
+        if (sender_pubkey_out && *sender_pubkey_out) {
+            free(*sender_pubkey_out);
+            *sender_pubkey_out = NULL;
+        }
         result = DNA_ERROR_MEMORY;
         goto cleanup;
     }

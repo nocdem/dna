@@ -102,8 +102,8 @@ struct p2p_transport {
     // Configuration
     p2p_config_t config;
 
-    // DHT layer
-    dht_context_t *dht;
+    // NOTE: DHT access via dht_singleton_get() - P2P transport is for TCP/ICE only
+    // DHT field removed in Phase 14 refactoring (v0.3.122)
 
     // My cryptographic keys (NIST Category 5: ML-DSA-87 + ML-KEM-1024)
     uint8_t my_private_key[4896];       // Dilithium5 private key (ML-DSA-87)

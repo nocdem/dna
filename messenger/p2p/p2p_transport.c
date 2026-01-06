@@ -76,16 +76,15 @@ p2p_transport_t* p2p_transport_init(
     ctx->ice_context = NULL;
     ctx->ice_ready = false;
 
-    // Use global DHT singleton (initialized at app startup)
-    // No need to create/start DHT here - it's already running
-    ctx->dht = dht_singleton_get();
-    if (!ctx->dht) {
-        QGP_LOG_INFO(LOG_TAG, "ERROR: Global DHT not initialized! Call dht_singleton_init() at app startup.\n");
+    // Verify DHT singleton is available (required for ICE candidate publishing)
+    // DHT is accessed via dht_singleton_get() - not stored in p2p_transport
+    if (!dht_singleton_is_initialized()) {
+        QGP_LOG_ERROR(LOG_TAG, "Global DHT not initialized! Call dht_singleton_init() at app startup.\n");
         free(ctx);
         return NULL;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Using global DHT singleton for P2P transport\n");
+    QGP_LOG_INFO(LOG_TAG, "DHT singleton available for P2P transport\n");
 
     ctx->listen_sockfd = -1;
     ctx->running = false;
@@ -245,8 +244,7 @@ void p2p_transport_free(p2p_transport_t *ctx) {
 
     p2p_transport_stop(ctx);
 
-    // Don't free DHT - it's a global singleton managed at app level
-    ctx->dht = NULL;
+    // DHT is a global singleton - not stored in p2p_transport, nothing to clean up
 
     // Destroy mutexes
     pthread_mutex_destroy(&ctx->connections_mutex);
@@ -259,12 +257,8 @@ void p2p_transport_free(p2p_transport_t *ctx) {
     free(ctx);
 }
 
-dht_context_t* p2p_transport_get_dht_context(p2p_transport_t *ctx) {
-    if (!ctx) {
-        return NULL;
-    }
-    return ctx->dht;
-}
+// NOTE: p2p_transport_get_dht_context() removed in Phase 14 refactoring (v0.3.122)
+// Use dht_singleton_get() directly instead
 
 int p2p_transport_deliver_message(
     p2p_transport_t *ctx,

@@ -137,14 +137,8 @@ void p2p_transport_stop(p2p_transport_t *ctx);
  */
 void p2p_transport_free(p2p_transport_t *ctx);
 
-/**
- * Get DHT context from P2P transport
- * Used for accessing DHT directly (e.g., for group management)
- *
- * @param ctx P2P transport context
- * @return DHT context pointer (do not free)
- */
-struct dht_context* p2p_transport_get_dht_context(p2p_transport_t *ctx);
+// NOTE: p2p_transport_get_dht_context() removed in Phase 14 refactoring (v0.3.122)
+// Use dht_singleton_get() directly instead for DHT access
 
 /**
  * Deliver message via P2P transport callback

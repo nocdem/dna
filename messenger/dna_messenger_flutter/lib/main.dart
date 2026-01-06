@@ -105,6 +105,12 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     engine.debugLog('STARTUP', 'v0.3.0: hasIdentity=$hasIdentity');
 
     if (hasIdentity) {
+      // Pre-warm: Set DHT state to "connecting" immediately for UI feedback
+      // This shows "Connecting to network..." banner while DHT bootstraps
+      ref.read(dhtConnectionStateProvider.notifier).state =
+          DhtConnectionState.connecting;
+      engine.debugLog('STARTUP', 'v0.3.0: DHT pre-warm - state set to connecting');
+
       engine.debugLog('STARTUP', 'v0.3.0: Identity exists, auto-loading...');
       await ref.read(identitiesProvider.notifier).loadIdentity();
       engine.debugLog('STARTUP', 'v0.3.0: Identity auto-loaded');

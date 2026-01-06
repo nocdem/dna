@@ -30,7 +30,7 @@
 #include "../dht/client/dht_singleton.h"
 #include "../dht/client/dht_identity.h"
 #include "../database/keyserver_cache.h"
-#include "../p2p/p2p_transport.h"
+// p2p_transport.h no longer needed - Phase 14 uses dht_singleton_get() directly
 #include "../dna_config.h"
 #include "keys.h"
 #include "../blockchain/cellframe/cellframe_wallet_create.h"
@@ -427,14 +427,8 @@ int messenger_register_name(
         return -1;
     }
 
-    // Get DHT context
-    dht_context_t *dht_ctx = NULL;
-    if (ctx->p2p_transport) {
-        dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
-    } else {
-        dht_ctx = dht_singleton_get();
-    }
-
+    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
         QGP_LOG_ERROR(LOG_TAG, "DHT not available, cannot register name");
         qgp_key_free(sign_key);

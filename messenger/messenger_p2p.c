@@ -387,10 +387,10 @@ static char* extract_sender_from_encrypted(
     }
     fingerprint[128] = '\0';  // Null-terminate at position 128
 
-    // Get DHT context from P2P transport
-    dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
+    // Phase 14: Use global DHT singleton directly
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        QGP_LOG_WARN("P2P", "No DHT context available for reverse lookup");
+        QGP_LOG_WARN("P2P", "DHT not available for reverse lookup");
         return NULL;
     }
 
@@ -461,10 +461,10 @@ static char* lookup_identity_for_pubkey(
     }
     fingerprint[128] = '\0';  // Null-terminate at position 128
 
-    // Get DHT context from P2P transport
-    dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
+    // Phase 14: Use global DHT singleton directly
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        return NULL;  // No DHT context
+        return NULL;  // DHT not available
     }
 
     // Query DHT for reverse mapping (fingerprint → identity)
@@ -758,9 +758,10 @@ int messenger_queue_to_dht(
         return -1;
     }
 
-    // Require P2P transport for DHT access (transport layer provides DHT connection)
-    if (!ctx->p2p_enabled || !ctx->p2p_transport) {
-        QGP_LOG_WARN("P2P", "P2P transport not available, cannot queue to DHT for %s\n", recipient);
+    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR("P2P", "DHT not available for message queue\n");
         return -1;
     }
 
@@ -777,14 +778,16 @@ int messenger_queue_to_dht(
         seq_num = message_backup_get_next_seq(ctx->backup_ctx, recipient_fingerprint);
     }
 
-    // Queue directly to DHT (Spillway) - no P2P attempt
-    int queue_result = p2p_queue_offline_message(
-        ctx->p2p_transport,
+    // Queue directly to DHT (Spillway) - call dht_queue_message directly
+    // Default TTL: 7 days (604800 seconds)
+    int queue_result = dht_queue_message(
+        dht_ctx,
         ctx->identity,           // sender (fingerprint)
         recipient_fingerprint,   // recipient (fingerprint)
         encrypted_message,
         encrypted_len,
-        seq_num
+        seq_num,
+        604800  // 7-day TTL
     );
 
     if (queue_result == 0) {
@@ -886,16 +889,16 @@ static void p2p_message_received_internal(
 
     // Store in SQLite local database so messenger_list_messages() can retrieve it
     // The message is already encrypted at this point
-    time_t now = time(NULL);
+    uint64_t sender_timestamp = 0;
 
     // Phase 6.2: Detect group invitations by decrypting and checking JSON
     int message_type = MESSAGE_TYPE_CHAT;  // default
 
-    // Try to decrypt message to check if it's an invitation
+    // Try to decrypt message to check if it's an invitation and extract sender's timestamp
     uint8_t *plaintext = NULL;
     size_t plaintext_len = 0;
     if (dna_decrypt_message(ctx->dna_ctx, message, message_len, ctx->identity,
-                            &plaintext, &plaintext_len, NULL, NULL) == DNA_OK && plaintext) {
+                            &plaintext, &plaintext_len, NULL, NULL, &sender_timestamp) == DNA_OK && plaintext) {
         // Check if it's JSON with "type": "group_invite"
         json_object *j_msg = json_tokener_parse((const char*)plaintext);
         if (j_msg) {
@@ -919,7 +922,7 @@ static void p2p_message_received_internal(
                         strncpy(invitation.group_uuid, json_object_get_string(j_uuid), sizeof(invitation.group_uuid) - 1);
                         strncpy(invitation.group_name, json_object_get_string(j_name), sizeof(invitation.group_name) - 1);
                         strncpy(invitation.inviter, json_object_get_string(j_inviter), sizeof(invitation.inviter) - 1);
-                        invitation.invited_at = now;
+                        invitation.invited_at = sender_timestamp ? (time_t)sender_timestamp : time(NULL);
                         invitation.status = INVITATION_STATUS_PENDING;
                         invitation.member_count = j_count ? json_object_get_int(j_count) : 0;
 
@@ -940,13 +943,22 @@ static void p2p_message_received_internal(
         free(plaintext);
     }
 
+    // v0.08 requires sender timestamp - reject messages without it
+    if (sender_timestamp == 0) {
+        QGP_LOG_WARN("P2P", "Rejecting message: decryption failed (no sender timestamp extracted)");
+        free(sender_identity);
+        return;
+    }
+
+    time_t msg_timestamp = (time_t)sender_timestamp;
+
     int result = message_backup_save(
         ctx->backup_ctx,
         sender_identity,    // sender
         ctx->identity,      // recipient (us)
         message,            // encrypted message
         message_len,        // encrypted length
-        now,                // timestamp
+        msg_timestamp,      // sender's timestamp (v0.08)
         false,              // is_outgoing = false (we're receiving)
         0,                  // group_id = 0 (direct messages for invitations)
         message_type        // message_type (chat or invitation)
@@ -969,7 +981,7 @@ static void p2p_message_received_internal(
             strncpy(event.data.message_received.message.recipient,
                     ctx->identity,
                     sizeof(event.data.message_received.message.recipient) - 1);
-            event.data.message_received.message.timestamp = (uint64_t)now;
+            event.data.message_received.message.timestamp = (uint64_t)msg_timestamp;
             event.data.message_received.message.is_outgoing = false;
             event.data.message_received.message.message_type = message_type;
             // plaintext is NULL (stored encrypted, decrypted on demand)

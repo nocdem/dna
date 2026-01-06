@@ -15,7 +15,7 @@
 #include "dna_api.h"  // For dna_decrypt_message_raw
 #include "crypto/utils/qgp_types.h"  // For qgp_key_load/free
 #include "crypto/utils/qgp_platform.h"  // For qgp_platform_home_dir
-#include "p2p/p2p_transport.h"  // For p2p_transport_get_dht_context
+// p2p_transport.h no longer needed - Phase 14 uses dht_singleton_get() directly
 #include <json-c/json.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,9 +68,10 @@ int messenger_create_group(messenger_context_t *ctx, const char *name, const cha
         return -1;
     }
 
-    dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
+    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
         return -1;
     }
 
@@ -201,9 +202,10 @@ int messenger_get_group_info(messenger_context_t *ctx, int group_id, group_info_
         return -1;
     }
 
-    dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
+    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
         return -1;
     }
 
@@ -241,9 +243,10 @@ int messenger_get_group_members(messenger_context_t *ctx, int group_id, char ***
         return -1;
     }
 
-    dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
+    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
         return -1;
     }
 
@@ -289,9 +292,10 @@ int messenger_add_group_member(messenger_context_t *ctx, int group_id, const cha
         return -1;
     }
 
-    dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
+    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
         return -1;
     }
 
@@ -348,9 +352,10 @@ int messenger_remove_group_member(messenger_context_t *ctx, int group_id, const 
         return -1;
     }
 
-    dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
+    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
         return -1;
     }
 
@@ -397,9 +402,10 @@ int messenger_delete_group(messenger_context_t *ctx, int group_id) {
         return -1;
     }
 
-    dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
+    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
         return -1;
     }
 
@@ -426,9 +432,10 @@ int messenger_update_group_info(messenger_context_t *ctx, int group_id, const ch
         return -1;
     }
 
-    dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
+    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
         return -1;
     }
 

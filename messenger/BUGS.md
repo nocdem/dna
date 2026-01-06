@@ -13,10 +13,12 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-- [ ] **[FLUTTER] P2 - CPUNK sending broken in chat window** - Send CPUNK dialog in chat needs complete overhaul. Current implementation has error handling issues (toast appears behind dialog), insufficient balance shows as "Network error", and general UX problems. Needs proper redesign.
+(none)
 
 
 ## Fixed Bugs
+
+- [x] **[FLUTTER] P2 - CPUNK sending broken in chat window** - Fixed error mapping in C code (insufficient balance was incorrectly returned as "Network error"). Improved Flutter dialog UX: errors now display in-dialog instead of snackbar, added pre-send balance validation, dialog stays open on error. (v0.3.118, v0.99.68)
 
 - [x] **[FLUTTER] P3 - Contacts briefly show as online during DHT fetch** - Caused by unnecessary `_ref.invalidate(contactsProvider)` calls triggering full rebuilds with `_updatePresenceInBackground()`. Fixed by removing invalidate from presence polling (every 30s) since presence updates already come through via ContactOnline/ContactOffline events handled by `updateContactStatus()`. (v0.99.61)
 

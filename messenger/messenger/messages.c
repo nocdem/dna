@@ -469,28 +469,19 @@ int messenger_send_message(
     }
 
     // Phase 14: DHT-only messaging - queue directly to DHT (Spillway)
-    // P2P infrastructure is kept for future audio/video, but messages bypass P2P
+    // P2P transport is NOT required - messenger_queue_to_dht uses DHT singleton
     // This is more reliable on mobile platforms with background execution restrictions
     size_t dht_success = 0;
-    if (ctx->p2p_enabled && ctx->p2p_transport) {
-        for (size_t i = 0; i < recipient_count; i++) {
-            // Queue directly to DHT - no P2P attempt for messaging
-            if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len) == 0) {
-                dht_success++;
-                // Update status to SENT (1) - queued in DHT
-                if (message_ids[i] > 0) {
-                    message_backup_update_status(ctx->backup_ctx, message_ids[i], 1);
-                }
-            } else {
-                // Update status to FAILED (2) - DHT queue failed
-                if (message_ids[i] > 0) {
-                    message_backup_update_status(ctx->backup_ctx, message_ids[i], 2);
-                }
+    for (size_t i = 0; i < recipient_count; i++) {
+        // Queue directly to DHT - no P2P attempt for messaging
+        if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len) == 0) {
+            dht_success++;
+            // Update status to SENT (1) - queued in DHT
+            if (message_ids[i] > 0) {
+                message_backup_update_status(ctx->backup_ctx, message_ids[i], 1);
             }
-        }
-    } else {
-        // P2P transport not available - mark all as FAILED since no delivery attempted
-        for (size_t i = 0; i < recipient_count; i++) {
+        } else {
+            // Update status to FAILED (2) - DHT queue failed
             if (message_ids[i] > 0) {
                 message_backup_update_status(ctx->backup_ctx, message_ids[i], 2);
             }
