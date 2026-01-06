@@ -64,6 +64,12 @@ class MainActivity : FlutterFragmentActivity() {
         android.util.Log.i("MainActivity", "Service MethodChannel configured")
     }
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        // Forward permission results to service channel
+        serviceChannel?.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    }
+
     override fun onDestroy() {
         try {
             unregisterReceiver(messageReceiver)

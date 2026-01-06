@@ -22,6 +22,10 @@ class DnaNotificationHelper(private val context: Context) {
         private const val MESSAGE_CHANNEL_ID = "dna_messages"
         private const val MESSAGE_NOTIFICATION_ID = 2001
 
+        // Flutter SharedPreferences file and key
+        private const val FLUTTER_PREFS_FILE = "FlutterSharedPreferences"
+        private const val NOTIFICATIONS_ENABLED_KEY = "flutter.notifications_enabled"
+
         init {
             // Load the native library (may already be loaded by Flutter FFI)
             try {
@@ -31,6 +35,15 @@ class DnaNotificationHelper(private val context: Context) {
                 android.util.Log.e(TAG, "Failed to load native library: ${e.message}")
             }
         }
+    }
+
+    /**
+     * Check if notifications are enabled in user settings
+     */
+    private fun areNotificationsEnabled(): Boolean {
+        val prefs = context.getSharedPreferences(FLUTTER_PREFS_FILE, Context.MODE_PRIVATE)
+        // Default to true if not set
+        return prefs.getBoolean(NOTIFICATIONS_ENABLED_KEY, true)
     }
 
     // Native method to register this helper
@@ -72,6 +85,12 @@ class DnaNotificationHelper(private val context: Context) {
      */
     fun onOutboxUpdated(contactFingerprint: String, displayName: String?) {
         android.util.Log.i(TAG, "onOutboxUpdated: fp=${contactFingerprint.take(16)}... name=$displayName")
+
+        // Check if user has notifications enabled
+        if (!areNotificationsEnabled()) {
+            android.util.Log.i(TAG, "Notifications disabled by user, skipping")
+            return
+        }
 
         // Show notification
         val senderName = displayName ?: "${contactFingerprint.take(8)}..."

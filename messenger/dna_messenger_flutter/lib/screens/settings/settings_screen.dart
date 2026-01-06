@@ -273,14 +273,41 @@ class _NotificationsSection extends ConsumerStatefulWidget {
 }
 
 class _NotificationsSectionState extends ConsumerState<_NotificationsSection> {
-  void _toggleNotifications(bool enabled) {
-    // Android notifications are handled by native JNI (DnaNotificationHelper)
-    // Desktop notifications not yet implemented (see MISSING_FEATURES.md)
+  static const _channel = MethodChannel('io.cpunk.dna_messenger/service');
+
+  Future<void> _toggleNotifications(bool enabled) async {
+    if (enabled) {
+      // Request notification permission on Android 13+
+      try {
+        final granted = await _channel.invokeMethod<bool>('requestNotificationPermission');
+        if (granted != true) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Notification permission denied'),
+                duration: Duration(seconds: 2),
+              ),
+            );
+          }
+          return; // Don't enable if permission denied
+        }
+      } catch (e) {
+        // Method channel not available (shouldn't happen on Android)
+        debugPrint('[Settings] Error requesting notification permission: $e');
+      }
+    }
+
     ref.read(notificationSettingsProvider.notifier).setEnabled(enabled);
   }
 
   @override
   Widget build(BuildContext context) {
+    // Only show notifications section on Android
+    // Desktop notifications not yet implemented (see MISSING_FEATURES.md)
+    if (!Platform.isAndroid) {
+      return const SizedBox.shrink();
+    }
+
     final settings = ref.watch(notificationSettingsProvider);
 
     return Column(
