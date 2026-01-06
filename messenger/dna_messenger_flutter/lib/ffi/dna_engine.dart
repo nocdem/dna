@@ -2745,20 +2745,16 @@ class DnaEngine {
 
     void onComplete(int requestId, int error, Pointer<dna_profile_t> profile,
                     Pointer<Void> userData) {
-      debugLog('FLUTTER', '[AVATAR_DEBUG] getProfile callback: error=$error, profile=${profile != nullptr}');
       if (error == 0) {
         if (profile != nullptr) {
           final result = UserProfile.fromNative(profile.ref);
-          debugLog('FLUTTER', '[AVATAR_DEBUG] getProfile: avatarBase64.length=${result.avatarBase64.length}');
           _bindings.dna_free_profile(profile);
           completer.complete(result);
         } else {
-          debugLog('FLUTTER', '[AVATAR_DEBUG] getProfile: profile is null, returning empty');
           // No profile found, return empty profile
           completer.complete(UserProfile());
         }
       } else {
-        debugLog('FLUTTER', '[AVATAR_DEBUG] getProfile: error $error');
         completer.completeError(DnaEngineException.fromCode(error, _bindings));
       }
       _cleanupRequest(localId);

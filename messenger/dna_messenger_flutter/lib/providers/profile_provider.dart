@@ -19,13 +19,9 @@ class ProfileNotifier extends AsyncNotifier<UserProfile?> {
     }
 
     final engine = await ref.watch(engineProvider.future);
-    engine.debugLog('FLUTTER', '[AVATAR_DEBUG] ProfileNotifier.build: calling getProfile');
     try {
-      final profile = await engine.getProfile();
-      engine.debugLog('FLUTTER', '[AVATAR_DEBUG] ProfileNotifier.build: DONE avatarBase64.length=${profile.avatarBase64.length}');
-      return profile;
-    } catch (e) {
-      engine.debugLog('FLUTTER', '[AVATAR_DEBUG] ProfileNotifier.build: FAILED error=$e');
+      return await engine.getProfile();
+    } catch (_) {
       return UserProfile();
     }
   }
@@ -188,10 +184,6 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
 
   /// Set avatar base64
   void setAvatar(String base64) {
-    // DEBUG: Log avatar being set
-    _ref.read(engineProvider).whenData((engine) {
-      engine.debugLog('FLUTTER', '[AVATAR_DEBUG] setAvatar: length=${base64.length}');
-    });
     state = state.copyWith(
       profile: state.profile.copyWith(avatarBase64: base64),
       successMessage: null,
@@ -211,9 +203,7 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
     state = state.copyWith(isSaving: true, error: null, successMessage: null);
     try {
       final engine = await _ref.read(engineProvider.future);
-      engine.debugLog('FLUTTER', '[AVATAR_DEBUG] save(): sending avatar length=${state.profile.avatarBase64.length}');
       await engine.updateProfile(state.profile);
-      engine.debugLog('FLUTTER', '[AVATAR_DEBUG] save(): updateProfile completed');
 
       // Optimistic update: use local data instead of re-fetching from DHT
       // This avoids race condition where GET happens before PUT propagates

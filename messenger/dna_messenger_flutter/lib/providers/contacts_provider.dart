@@ -15,6 +15,9 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
   Timer? _presenceDebounceTimer;
   // Pending presence updates to apply
   final Map<String, DateTime> _pendingPresenceUpdates = {};
+  // Throttle presence lookups - don't re-lookup if recent
+  static DateTime? _lastPresenceLookup;
+  static const _presenceLookupThrottle = Duration(minutes: 5);
 
   @override
   Future<List<Contact>> build() async {
@@ -49,21 +52,29 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
   }
 
   /// Update presence for contacts in background, updating state as data arrives
+  /// Throttled to avoid excessive DHT lookups on frequent provider rebuilds
   Future<void> _updatePresenceInBackground(
     DnaEngine engine,
-    List<Contact> contacts,
-  ) async {
+    List<Contact> contacts, {
+    bool forceRefresh = false,
+  }) async {
     if (contacts.isEmpty) return;
 
-    // Track which contacts have been updated
-    final presenceMap = <String, DateTime>{};
+    // Throttle: skip if we did a lookup recently (unless forced)
+    final now = DateTime.now();
+    if (!forceRefresh && _lastPresenceLookup != null) {
+      final elapsed = now.difference(_lastPresenceLookup!);
+      if (elapsed < _presenceLookupThrottle) {
+        return; // Skip - too soon since last lookup
+      }
+    }
+    _lastPresenceLookup = now;
 
     // Query presence for all contacts in parallel
     for (final contact in contacts) {
       // Fire and forget - each lookup updates state independently
       _lookupSinglePresence(engine, contact.fingerprint).then((lastSeen) {
         if (lastSeen != null && lastSeen.millisecondsSinceEpoch > 0) {
-          presenceMap[contact.fingerprint] = lastSeen;
           _updateContactPresence(contact.fingerprint, lastSeen);
         }
       });
@@ -184,7 +195,8 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
       }
 
       // Start presence lookups in background (non-blocking)
-      _updatePresenceInBackground(engine, sortedContacts);
+      // Force refresh on manual refresh to bypass throttle
+      _updatePresenceInBackground(engine, sortedContacts, forceRefresh: true);
 
       // Sync selectedContactProvider with refreshed data (prevents showing stale lastSeen)
       final selectedContact = ref.read(selectedContactProvider);

@@ -22,8 +22,8 @@ class ContactRequestsNotifier extends AsyncNotifier<List<ContactRequest>> {
     final engine = await ref.watch(engineProvider.future);
     final requests = await engine.getContactRequests();
 
-    // Refresh contacts - reciprocal requests may have been auto-approved
-    ref.invalidate(contactsProvider);
+    // NOTE: Do NOT invalidate contactsProvider here - causes cascade rebuild every 60s
+    // Contacts are refreshed when user approves/denies requests via approve()/deny()
 
     // Sort by requested_at (most recent first)
     requests.sort((a, b) => b.requestedAt.compareTo(a.requestedAt));
