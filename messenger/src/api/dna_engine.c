@@ -153,8 +153,8 @@ size_t dna_engine_start_presence_listener(dna_engine_t *engine, const char *cont
 static dna_engine_t *g_dht_callback_engine = NULL;
 
 /* Android notification callback - separate from Flutter's event callback.
- * This is called when DNA_EVENT_OUTBOX_UPDATED fires, allowing Android
- * to show native notifications even when Flutter's callback is detached. */
+ * This is called when DNA_EVENT_MESSAGE_RECEIVED fires for incoming messages,
+ * allowing Android to show native notifications even when Flutter is detached. */
 static dna_android_notification_cb g_android_notification_cb = NULL;
 static void *g_android_notification_data = NULL;
 
@@ -553,31 +553,34 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
         }
     }
 
-    /* Android notification callback - called for OUTBOX_UPDATED events
-     * regardless of whether Flutter's callback is attached. This allows
-     * Android to show native notifications when app is backgrounded. */
-    if (event->type == DNA_EVENT_OUTBOX_UPDATED && g_android_notification_cb) {
-        const char *fp = event->data.outbox_updated.contact_fingerprint;
-        const char *display_name = NULL;
-        char name_buf[256] = {0};
+    /* Android notification callback - called for MESSAGE_RECEIVED events
+     * (incoming messages only). This allows Android to show native
+     * notifications when app is backgrounded. */
+    if (event->type == DNA_EVENT_MESSAGE_RECEIVED && g_android_notification_cb) {
+        /* Only notify for incoming messages, not our own sent messages */
+        if (!event->data.message_received.message.is_outgoing) {
+            const char *fp = event->data.message_received.message.sender;
+            const char *display_name = NULL;
+            char name_buf[256] = {0};
 
-        /* Try to get display name from profile cache */
-        dna_unified_identity_t *cached = NULL;
-        uint64_t cached_at = 0;
-        if (profile_cache_get(fp, &cached, &cached_at) == 0 && cached) {
-            if (cached->display_name[0]) {
-                strncpy(name_buf, cached->display_name, sizeof(name_buf) - 1);
-                display_name = name_buf;
-            } else if (cached->registered_name[0]) {
-                strncpy(name_buf, cached->registered_name, sizeof(name_buf) - 1);
-                display_name = name_buf;
+            /* Try to get display name from profile cache */
+            dna_unified_identity_t *cached = NULL;
+            uint64_t cached_at = 0;
+            if (profile_cache_get(fp, &cached, &cached_at) == 0 && cached) {
+                if (cached->display_name[0]) {
+                    strncpy(name_buf, cached->display_name, sizeof(name_buf) - 1);
+                    display_name = name_buf;
+                } else if (cached->registered_name[0]) {
+                    strncpy(name_buf, cached->registered_name, sizeof(name_buf) - 1);
+                    display_name = name_buf;
+                }
+                dna_identity_free(cached);
             }
-            dna_identity_free(cached);
-        }
 
-        QGP_LOG_INFO(LOG_TAG, "[ANDROID-NOTIFY] Calling callback: fp=%.16s... name=%s",
-                     fp, display_name ? display_name : "(unknown)");
-        g_android_notification_cb(fp, display_name, g_android_notification_data);
+            QGP_LOG_INFO(LOG_TAG, "[ANDROID-NOTIFY] Calling callback: fp=%.16s... name=%s",
+                         fp, display_name ? display_name : "(unknown)");
+            g_android_notification_cb(fp, display_name, g_android_notification_data);
+        }
     }
 }
 
@@ -5229,6 +5232,11 @@ size_t dna_engine_listen_outbox(
         pthread_mutex_unlock(&engine->outbox_listeners_mutex);
         return 0;
     }
+
+    /* Log chunk0_key for debugging key mismatch issues */
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] chunk0_key=%02x%02x%02x%02x%02x%02x%02x%02x...",
+                 chunk0_key[0], chunk0_key[1], chunk0_key[2], chunk0_key[3],
+                 chunk0_key[4], chunk0_key[5], chunk0_key[6], chunk0_key[7]);
 
     /* Create callback context (will be freed when listener is cancelled) */
     outbox_listener_ctx_t *ctx = malloc(sizeof(outbox_listener_ctx_t));

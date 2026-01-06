@@ -470,6 +470,13 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
             return DHT_CHUNK_ERR_ALLOC;
         }
 
+        // Log chunk key for debugging (only for chunk 0 to avoid spam)
+        if (i == 0) {
+            QGP_LOG_INFO(LOG_TAG, "[CHUNK_PUBLISH] PUT key=%02x%02x%02x%02x%02x%02x%02x%02x... base_key=%s\n",
+                   dht_key[0], dht_key[1], dht_key[2], dht_key[3],
+                   dht_key[4], dht_key[5], dht_key[6], dht_key[7], base_key);
+        }
+
         // Publish to DHT
         if (dht_put_signed(ctx, dht_key, DHT_CHUNK_KEY_SIZE,
                           serialized, serialized_len,
