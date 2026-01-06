@@ -571,7 +571,7 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
                 strncpy(name_buf, cached->registered_name, sizeof(name_buf) - 1);
                 display_name = name_buf;
             }
-            profile_cache_free_identity(cached);
+            dna_identity_free(cached);
         }
 
         QGP_LOG_INFO(LOG_TAG, "[ANDROID-NOTIFY] Calling callback: fp=%.16s... name=%s",

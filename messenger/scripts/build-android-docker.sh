@@ -311,11 +311,24 @@ APK_PATH="$BUILD_WORK_DIR/dna_messenger_flutter/build/app/outputs/flutter-apk/ap
 
 if [ -f "$APK_PATH" ]; then
     cp "$APK_PATH" "$PROJECT_DIR/dna-messenger-android.apk"
+    APK_SIZE="$(du -h "$PROJECT_DIR/dna-messenger-android.apk" | cut -f1)"
+
     echo ""
     echo "=========================================="
     echo "BUILD SUCCESSFUL!"
     echo "=========================================="
-    echo "APK: dna-messenger-android.apk ($(du -h dna-messenger-android.apk | cut -f1))"
+    echo "APK: dna-messenger-android.apk ($APK_SIZE)"
+
+    # Copy to shared builds directory if available
+    BUILDS_DIR="/home/mika/Storage/Builds"
+    if [ -d "$BUILDS_DIR" ]; then
+        VERSION=$(grep "^version:" "$PROJECT_DIR/dna_messenger_flutter/pubspec.yaml" | sed 's/version: //' | cut -d'+' -f1)
+        DEST_APK="$BUILDS_DIR/dna-messenger-v${VERSION}.apk"
+        cp "$PROJECT_DIR/dna-messenger-android.apk" "$DEST_APK"
+        chmod 666 "$DEST_APK"  # Allow moving/deleting from other users
+        echo "Copied to: $DEST_APK"
+    fi
+
     echo ""
     echo "Install: adb install -r dna-messenger-android.apk"
 else
