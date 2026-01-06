@@ -515,8 +515,12 @@ int dna_engine_network_changed(dna_engine_t *engine) {
         return -1;
     }
 
-    /* Restart outbox listeners for all contacts */
+    /* Cancel and restart all listeners (stale listeners won't work after network change) */
     if (engine->identity_loaded) {
+        QGP_LOG_INFO(LOG_TAG, "Cancelling stale listeners before restart");
+        dna_engine_cancel_all_outbox_listeners(engine);
+        dna_engine_cancel_all_presence_listeners(engine);
+
         QGP_LOG_INFO(LOG_TAG, "Restarting outbox listeners after network change");
         int count = dna_engine_listen_all_contacts(engine);
         QGP_LOG_INFO(LOG_TAG, "Restarted %d outbox listeners", count);
