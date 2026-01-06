@@ -71,6 +71,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/client/dna_profile.h"
 #include "dht/shared/dht_chunked.h"
 #include "p2p/p2p_transport.h"
+#include "p2p/transport/transport_core.h"  /* For parse_presence_json */
 #include "p2p/transport/turn_credentials.h"
 #include "database/presence_cache.h"
 #include "database/keyserver_cache.h"
@@ -5449,10 +5450,25 @@ static bool presence_listen_callback(
         return true;  /* Keep listening */
     }
 
-    /* Presence received - mark contact as online */
-    presence_cache_update(ctx->contact_fingerprint, true, time(NULL));
-    QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Contact %.16s... is online",
-                  ctx->contact_fingerprint);
+    /* Parse presence JSON to get actual timestamp */
+    /* Format: {"ips":"...","port":...,"timestamp":1234567890} */
+    char json_buf[512];
+    size_t copy_len = value_len < sizeof(json_buf) - 1 ? value_len : sizeof(json_buf) - 1;
+    memcpy(json_buf, value, copy_len);
+    json_buf[copy_len] = '\0';
+
+    peer_info_t peer_info;
+    memset(&peer_info, 0, sizeof(peer_info));
+
+    time_t presence_timestamp = time(NULL);  /* Fallback to now if parse fails */
+    if (parse_presence_json(json_buf, &peer_info) == 0 && peer_info.last_seen > 0) {
+        presence_timestamp = (time_t)peer_info.last_seen;
+    }
+
+    /* Update cache with actual timestamp from presence data */
+    presence_cache_update(ctx->contact_fingerprint, true, presence_timestamp);
+    QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Contact %.16s... is online (timestamp=%lld)",
+                  ctx->contact_fingerprint, (long long)presence_timestamp);
 
     return true;  /* Keep listening */
 }

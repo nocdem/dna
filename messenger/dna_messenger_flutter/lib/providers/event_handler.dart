@@ -1,5 +1,6 @@
 // Event Handler - Listens to engine events and updates UI state
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
 import '../services/notification_service.dart';
@@ -347,7 +348,15 @@ class EventHandler {
   }
 
   /// Show notification for incoming message
+  /// NOTE: On Android, notifications are handled by native JNI service (DnaMessengerService)
+  /// This method is only used for desktop platforms (Linux, Windows, macOS)
   void _showMessageNotification(String contactFingerprint, String messageText) {
+    // Android uses native JNI notifications via DnaMessengerService
+    // Skip Flutter notifications on Android to avoid duplicates
+    if (Platform.isAndroid) {
+      return;
+    }
+
     // Check if notifications are enabled
     final notificationSettings = _ref.read(notificationSettingsProvider);
     if (!notificationSettings.enabled) {
@@ -363,7 +372,7 @@ class EventHandler {
         ? profile.displayName
         : '${contactFingerprint.substring(0, 8)}...';
 
-    // Show the notification
+    // Show the notification (desktop only)
     NotificationService.showMessageNotification(
       senderName: senderName,
       messagePreview: messageText.isNotEmpty ? messageText : 'New message',

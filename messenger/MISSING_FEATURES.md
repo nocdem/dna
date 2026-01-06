@@ -48,3 +48,36 @@ User scans QR code with any scanner app, tapping result opens DNA Messenger with
 - Add contact dialog: `lib/screens/contacts/contacts_screen.dart:297-515`
 
 ---
+
+## Notification Tap Navigation
+
+**Priority:** Medium
+**Status:** Not Started
+
+### Current State
+- Android notifications work via JNI (DnaNotificationHelper)
+- Tapping notification opens the app
+- Does NOT navigate to the correct chat - just opens main screen
+
+### What's Missing
+1. Notification PendingIntent doesn't include contact fingerprint
+2. MainActivity doesn't handle intent extras
+3. No MethodChannel to pass fingerprint to Flutter
+4. Flutter doesn't listen for navigation requests from native
+
+### Desired Behavior
+User taps notification, app opens directly to the chat with that contact.
+
+### Implementation Plan
+1. `DnaNotificationHelper.kt` - Put fingerprint in Intent extras
+2. `MainActivity.kt` - Override `onNewIntent()`, forward fingerprint via MethodChannel
+3. `DnaServiceMethodChannel.kt` - Add method to send navigation request to Flutter
+4. Flutter - Listen on MethodChannel, navigate to ChatScreen with correct contact
+
+### Files to Modify
+- `android/app/src/main/kotlin/.../DnaNotificationHelper.kt`
+- `android/app/src/main/kotlin/.../MainActivity.kt`
+- `android/app/src/main/kotlin/.../DnaServiceMethodChannel.kt`
+- `lib/main.dart` or navigation handler
+
+---
