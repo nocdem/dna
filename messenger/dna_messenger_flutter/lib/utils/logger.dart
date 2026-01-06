@@ -94,7 +94,7 @@ void setupErrorHandlers() {
 }
 
 /// Run app with error zone that captures uncaught exceptions
-void runAppWithErrorLogging(void Function() appRunner) {
+void runAppWithErrorLogging(FutureOr<void> Function() appRunner) {
   runZonedGuarded(
     appRunner,
     (error, stack) {

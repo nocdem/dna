@@ -15,25 +15,26 @@ import 'utils/window_state.dart';
 import 'utils/lifecycle_observer.dart';
 import 'utils/logger.dart';
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-
-  // Setup error handlers to capture exceptions to log file
-  setupErrorHandlers();
-
-  // Initialize SQLite FFI for desktop platforms
-  if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
-    sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
-  }
-
-  // Initialize window manager on desktop (restores position/size)
-  if (WindowStateManager.isDesktop) {
-    await windowStateManager.init();
-  }
-
+void main() {
   // Run app with error zone to capture uncaught exceptions
-  runAppWithErrorLogging(() {
+  // All initialization must be inside the zone to avoid zone mismatch
+  runAppWithErrorLogging(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+
+    // Setup error handlers to capture exceptions to log file
+    setupErrorHandlers();
+
+    // Initialize SQLite FFI for desktop platforms
+    if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
+      sqfliteFfiInit();
+      databaseFactory = databaseFactoryFfi;
+    }
+
+    // Initialize window manager on desktop (restores position/size)
+    if (WindowStateManager.isDesktop) {
+      await windowStateManager.init();
+    }
+
     runApp(
       const ProviderScope(
         child: DnaMessengerApp(),
