@@ -802,12 +802,16 @@ dna_error_t dna_decrypt_message_raw(
 
     // Validate header
     if (memcmp(header.magic, DNA_ENC_MAGIC, 8) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: invalid magic (expected PQSIGENC)");
         return DNA_ERROR_DECRYPT;
     }
     if (header.version != DNA_ENC_VERSION) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: version mismatch (got 0x%02x, expected 0x%02x)",
+                     header.version, DNA_ENC_VERSION);
         return DNA_ERROR_DECRYPT;
     }
     if (header.message_type != MSG_TYPE_DIRECT_PQC) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: invalid message type (got %d)", header.message_type);
         return DNA_ERROR_DECRYPT;
     }
 
@@ -854,12 +858,15 @@ dna_error_t dna_decrypt_message_raw(
     }
 
     if (found_entry == -1) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: no matching recipient entry (tried %d entries)", recipient_count);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
 
     // Read nonce, encrypted data, tag
     if (offset + 12 + encrypted_size + 16 > ciphertext_len) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: truncated message (need %zu, have %zu)",
+                     offset + 12 + encrypted_size + 16, ciphertext_len);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
@@ -879,11 +886,14 @@ dna_error_t dna_decrypt_message_raw(
     if (signature_size > 0 && offset + signature_size <= ciphertext_len) {
         if (qgp_signature_deserialize(ciphertext + offset, signature_size,
                                        &signature) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "Decrypt failed: signature deserialization failed (sig_size=%zu)", signature_size);
             result = DNA_ERROR_DECRYPT;
             goto cleanup;
         }
         offset += signature_size;
     } else {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: no signature in message (sig_size=%zu, offset=%zu, len=%zu)",
+                     signature_size, offset, ciphertext_len);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
@@ -902,12 +912,14 @@ dna_error_t dna_decrypt_message_raw(
     if (qgp_aes256_decrypt(dek, encrypted_data, encrypted_size,
                            (uint8_t*)&header_for_aad, sizeof(header_for_aad),
                            nonce, tag, decrypted, &decrypted_size) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: AES-256-GCM decrypt failed (enc_size=%zu)", encrypted_size);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
 
     // v0.08: Extract fingerprint + timestamp from decrypted payload
     if (decrypted_size < 72) {  // 64 (fingerprint) + 8 (timestamp)
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: payload too small (got %zu, need >= 72)", decrypted_size);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
@@ -1031,16 +1043,19 @@ dna_error_t dna_decrypt_message(
     // Load recipient's encryption key
     char *enc_key_path = keyring_find_private_key(recipient_key_name, "encryption");
     if (!enc_key_path) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: encryption key not found for '%s'", recipient_key_name);
         return DNA_ERROR_NOT_FOUND;
     }
 
     if (qgp_key_load(enc_key_path, &enc_key) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: could not load encryption key from '%s'", enc_key_path);
         free(enc_key_path);
         return DNA_ERROR_KEY_LOAD;
     }
     free(enc_key_path);
 
     if (enc_key->type != QGP_KEY_TYPE_KEM1024) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: key type mismatch (expected KEM1024)");
         result = DNA_ERROR_KEY_INVALID;
         goto cleanup;
     }
@@ -1048,6 +1063,8 @@ dna_error_t dna_decrypt_message(
     // Read recipient entries
     size_t entries_size = sizeof(dna_recipient_entry_t) * recipient_count;
     if (offset + entries_size > ciphertext_len) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: recipient entries overflow (need %zu, have %zu)",
+                     offset + entries_size, ciphertext_len);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
@@ -1084,12 +1101,15 @@ dna_error_t dna_decrypt_message(
     }
 
     if (found_entry == -1) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: no matching recipient entry (tried %d entries)", recipient_count);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
 
     // Read nonce, encrypted data, tag
     if (offset + 12 + encrypted_size + 16 > ciphertext_len) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: truncated message (need %zu, have %zu)",
+                     offset + 12 + encrypted_size + 16, ciphertext_len);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
@@ -1109,11 +1129,14 @@ dna_error_t dna_decrypt_message(
     if (signature_size > 0 && offset + signature_size <= ciphertext_len) {
         if (qgp_signature_deserialize(ciphertext + offset, signature_size,
                                        &signature) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "Decrypt failed: signature deserialization failed (sig_size=%zu)", signature_size);
             result = DNA_ERROR_DECRYPT;
             goto cleanup;
         }
         offset += signature_size;
     } else {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: no signature in message (sig_size=%zu, offset=%zu, len=%zu)",
+                     signature_size, offset, ciphertext_len);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
@@ -1132,12 +1155,14 @@ dna_error_t dna_decrypt_message(
     if (qgp_aes256_decrypt(dek, encrypted_data, encrypted_size,
                            (uint8_t*)&header_for_aad, sizeof(header_for_aad),
                            nonce, tag, decrypted, &decrypted_size) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: AES-256-GCM decrypt failed (enc_size=%zu)", encrypted_size);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
 
     // v0.08: Extract fingerprint + timestamp from decrypted payload
     if (decrypted_size < 72) {  // 64 (fingerprint) + 8 (timestamp)
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: payload too small (got %zu, need >= 72)", decrypted_size);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
