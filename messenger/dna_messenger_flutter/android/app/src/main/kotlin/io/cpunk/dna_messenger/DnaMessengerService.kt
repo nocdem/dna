@@ -44,6 +44,7 @@ class DnaMessengerService : Service() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var lastNetworkChangeTime: Long = 0
     private var currentNetworkId: String? = null
+    private var hadPreviousNetwork: Boolean = false  // Track if we had a network before disconnect
     private var notificationHelper: DnaNotificationHelper? = null
 
     override fun onCreate() {
@@ -266,13 +267,23 @@ class DnaMessengerService : Service() {
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 val networkId = network.toString()
-                android.util.Log.i(TAG, "Network available: $networkId (previous: $currentNetworkId)")
+                android.util.Log.i(TAG, "Network available: $networkId (previous: $currentNetworkId, hadPrevious: $hadPreviousNetwork)")
 
-                // Only trigger reconnect if we're switching networks (not initial connect)
-                if (currentNetworkId != null && currentNetworkId != networkId) {
+                // Trigger reconnect if:
+                // 1. We're switching directly between networks (currentNetworkId != null && different)
+                // 2. We lost previous network and got a new one (hadPreviousNetwork && currentNetworkId == null)
+                val shouldReconnect = when {
+                    currentNetworkId != null && currentNetworkId != networkId -> true  // Direct switch
+                    hadPreviousNetwork && currentNetworkId == null -> true  // Reconnect after disconnect
+                    else -> false  // Initial connect, no need to reinit
+                }
+
+                if (shouldReconnect) {
                     handleNetworkChange(networkId)
                 }
+
                 currentNetworkId = networkId
+                hadPreviousNetwork = true  // We now have a network
             }
 
             override fun onLost(network: Network) {
@@ -282,6 +293,7 @@ class DnaMessengerService : Service() {
                 // Clear current network if it's the one that was lost
                 if (currentNetworkId == networkId) {
                     currentNetworkId = null
+                    // Don't clear hadPreviousNetwork - we want to trigger reconnect when new network appears
                 }
             }
 
@@ -313,6 +325,7 @@ class DnaMessengerService : Service() {
         networkCallback = null
         connectivityManager = null
         currentNetworkId = null
+        hadPreviousNetwork = false
     }
 
     private fun handleNetworkChange(newNetworkId: String) {
