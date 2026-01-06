@@ -195,32 +195,36 @@ class _ContactTile extends ConsumerWidget {
     }
 
     return ListTile(
-      leading: Stack(
-        children: [
-          _ContactAvatar(
-            avatarBytes: avatarBytes,
-            displayName: displayName,
-            theme: theme,
-          ),
-          Positioned(
-            right: 0,
-            bottom: 0,
-            child: Container(
-              width: 12,
-              height: 12,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: contact.isOnline
-                    ? DnaColors.textSuccess
-                    : DnaColors.offline,
-                border: Border.all(
-                  color: theme.scaffoldBackgroundColor,
-                  width: 2,
+      leading: SizedBox(
+        width: 40,
+        height: 40,
+        child: Stack(
+          children: [
+            _ContactAvatar(
+              avatarBytes: avatarBytes,
+              displayName: displayName,
+              theme: theme,
+            ),
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: Container(
+                width: 12,
+                height: 12,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: contact.isOnline
+                      ? DnaColors.textSuccess
+                      : DnaColors.offline,
+                  border: Border.all(
+                    color: theme.scaffoldBackgroundColor,
+                    width: 2,
+                  ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
       title: Text(
         displayName,

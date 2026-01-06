@@ -921,11 +921,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   String _getInitials(String name) {
     if (name.isEmpty) return '?';
-    final words = name.split(' ');
+    // Filter out empty strings from split (handles multiple spaces)
+    final words = name.split(' ').where((w) => w.isNotEmpty).toList();
+    if (words.isEmpty) return '?';
     if (words.length >= 2) {
       return '${words[0][0]}${words[1][0]}'.toUpperCase();
     }
-    return name.substring(0, name.length.clamp(0, 2)).toUpperCase();
+    return words[0].substring(0, words[0].length.clamp(0, 2)).toUpperCase();
   }
 
   String _shortenFingerprint(String fingerprint) {
