@@ -54,9 +54,8 @@ class ContactRequestsNotifier extends AsyncNotifier<List<ContactRequest>> {
     await refresh();
 
     // Start DHT listener for the new contact's outbox (for push notifications)
-    // This is needed because listenAllContacts() was called when DHT connected,
-    // but this new contact wasn't in the list yet
-    engine.listenAllContacts();
+    // Only setup listener for this specific contact, not all contacts
+    engine.listenOutbox(fingerprint);
   }
 
   /// Deny a contact request (can retry later)
