@@ -587,12 +587,13 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
         }
     }
 
-    /* When Flutter is detached (app backgrounded/closed) and OUTBOX_UPDATED fires,
-     * spawn a background thread to check offline messages.
+    /* When OUTBOX_UPDATED fires, spawn a background thread to check offline messages.
      * IMPORTANT: Must NOT block the DHT callback thread - that causes ANR when
-     * app resumes because Flutter's DHT operations block on the same mutex. */
-    if (!flutter_attached && event->type == DNA_EVENT_OUTBOX_UPDATED && g_android_notification_cb) {
-        QGP_LOG_INFO(LOG_TAG, "[BACKGROUND] Flutter detached, spawning async message fetch...");
+     * app resumes because Flutter's DHT operations block on the same mutex.
+     * Always spawn regardless of Flutter state - Flutter's handler on Android
+     * expects native code to fetch messages. */
+    if (event->type == DNA_EVENT_OUTBOX_UPDATED && g_android_notification_cb) {
+        QGP_LOG_INFO(LOG_TAG, "[AUTO-FETCH] Spawning async message fetch...");
         if (engine->messenger && engine->identity_loaded) {
             /* Spawn detached thread for non-blocking fetch */
             pthread_t fetch_thread;
@@ -600,9 +601,9 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
             pthread_attr_init(&attr);
             pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
             if (pthread_create(&fetch_thread, &attr, background_fetch_thread, engine) == 0) {
-                QGP_LOG_DEBUG(LOG_TAG, "[BACKGROUND] Fetch thread spawned");
+                QGP_LOG_DEBUG(LOG_TAG, "[AUTO-FETCH] Fetch thread spawned");
             } else {
-                QGP_LOG_WARN(LOG_TAG, "[BACKGROUND] Failed to spawn fetch thread");
+                QGP_LOG_WARN(LOG_TAG, "[AUTO-FETCH] Failed to spawn fetch thread");
             }
             pthread_attr_destroy(&attr);
         }
