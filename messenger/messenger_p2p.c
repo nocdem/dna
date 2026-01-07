@@ -936,7 +936,14 @@ static void p2p_message_received_internal(
         QGP_LOG_WARN("P2P", "Could not load encryption key from %s", kyber_path);
     }
 
-    if (decrypt_result == DNA_OK && plaintext) {
+    if (decrypt_result == DNA_OK && plaintext && plaintext_len > 0) {
+        // Null-terminate plaintext for safe JSON parsing
+        uint8_t *plaintext_z = realloc(plaintext, plaintext_len + 1);
+        if (plaintext_z) {
+            plaintext = plaintext_z;
+            plaintext[plaintext_len] = '\0';
+        }
+
         // Check if it's JSON with "type": "group_invite"
         json_object *j_msg = json_tokener_parse((const char*)plaintext);
         if (j_msg) {
