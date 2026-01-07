@@ -1074,8 +1074,8 @@ extern "C" int dht_get(dht_context_t *ctx,
         auto start_network = std::chrono::steady_clock::now();
         auto future = ctx->runner.get(hash);
 
-        // Wait with 30 second timeout (prevents hanging on unresponsive DHT)
-        auto status = future.wait_for(std::chrono::seconds(30));
+        // Wait with 10 second timeout (30s was too long for mobile UX)
+        auto status = future.wait_for(std::chrono::seconds(10));
         if (status == std::future_status::timeout) {
             auto network_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start_network).count();
@@ -1220,10 +1220,10 @@ extern "C" int dht_get_all(dht_context_t *ctx,
         // Get all values using future-based API
         auto future = ctx->runner.get(hash);
 
-        // Wait with 30 second timeout (prevents hanging on unresponsive DHT)
-        auto status = future.wait_for(std::chrono::seconds(30));
+        // Wait with 10 second timeout (30s was too long for mobile UX)
+        auto status = future.wait_for(std::chrono::seconds(10));
         if (status == std::future_status::timeout) {
-            QGP_LOG_INFO("DHT", "GET_ALL: Timeout after 30 seconds");
+            QGP_LOG_INFO("DHT", "GET_ALL: Timeout after 10 seconds");
             return -2;  // Timeout error
         }
 
