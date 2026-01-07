@@ -544,6 +544,28 @@ int dna_engine_network_changed(dna_engine_t *engine) {
  * EVENT DISPATCH
  * ============================================================================ */
 
+/* Background thread for non-blocking message fetch.
+ * Called when OUTBOX_UPDATED fires while Flutter is detached (app backgrounded).
+ * Runs on detached thread so it doesn't block DHT callback thread. */
+static void *background_fetch_thread(void *arg) {
+    dna_engine_t *engine = (dna_engine_t *)arg;
+
+    /* Small delay to let DHT callback complete first */
+    qgp_platform_sleep_ms(100);
+
+    if (!engine || !engine->messenger || !engine->identity_loaded) {
+        QGP_LOG_WARN(LOG_TAG, "[BACKGROUND-THREAD] Engine not ready, aborting fetch");
+        return NULL;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Starting async message fetch...");
+    size_t offline_count = 0;
+    messenger_p2p_check_offline_messages(engine->messenger, &offline_count);
+    QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetch complete: %zu messages processed", offline_count);
+
+    return NULL;
+}
+
 void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
     pthread_mutex_lock(&engine->event_mutex);
     dna_event_cb callback = engine->event_callback;
@@ -566,13 +588,23 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
     }
 
     /* When Flutter is detached (app backgrounded/closed) and OUTBOX_UPDATED fires,
-     * automatically check offline messages so MESSAGE_RECEIVED can trigger notifications */
+     * spawn a background thread to check offline messages.
+     * IMPORTANT: Must NOT block the DHT callback thread - that causes ANR when
+     * app resumes because Flutter's DHT operations block on the same mutex. */
     if (!flutter_attached && event->type == DNA_EVENT_OUTBOX_UPDATED && g_android_notification_cb) {
-        QGP_LOG_INFO(LOG_TAG, "[BACKGROUND] Flutter detached, auto-checking offline messages...");
-        size_t offline_count = 0;
+        QGP_LOG_INFO(LOG_TAG, "[BACKGROUND] Flutter detached, spawning async message fetch...");
         if (engine->messenger && engine->identity_loaded) {
-            messenger_p2p_check_offline_messages(engine->messenger, &offline_count);
-            QGP_LOG_INFO(LOG_TAG, "[BACKGROUND] Auto-check complete: %zu messages processed", offline_count);
+            /* Spawn detached thread for non-blocking fetch */
+            pthread_t fetch_thread;
+            pthread_attr_t attr;
+            pthread_attr_init(&attr);
+            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+            if (pthread_create(&fetch_thread, &attr, background_fetch_thread, engine) == 0) {
+                QGP_LOG_DEBUG(LOG_TAG, "[BACKGROUND] Fetch thread spawned");
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "[BACKGROUND] Failed to spawn fetch thread");
+            }
+            pthread_attr_destroy(&attr);
         }
     }
 
