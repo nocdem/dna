@@ -1259,197 +1259,21 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         }
     }
 
-    /* Check if DHT profile exists and has wallet addresses - auto-republish if needed */
-    /* Track if we already published to avoid redundant PUTs */
-    bool profile_published = false;
-    {
-        /* Skip DHT verification if profile was just published (within last 30 seconds)
-         * DHT propagation takes time - immediate lookup after publish often fails */
-        time_t now = time(NULL);
-        if (engine->profile_published_at > 0 && (now - engine->profile_published_at) < 30) {
-            QGP_LOG_INFO(LOG_TAG, "Skipping DHT profile check (published %ld seconds ago)",
-                         (long)(now - engine->profile_published_at));
-            profile_published = true;  /* Assume it's there, don't verify */
-        }
-
-        dht_context_t *dht = dna_get_dht_ctx(engine);
-        if (dht && !profile_published) {
-            /* Lookup own profile from DHT */
-            dna_unified_identity_t *identity = NULL;
-            int lookup_rc = dht_keyserver_lookup(dht, fingerprint, &identity);
-
-            if (lookup_rc != 0 || !identity) {
-                /* Profile NOT found in DHT - this is the bug we're fixing!
-                 * Identity was created locally but never published to DHT.
-                 * Try to republish using cached name. */
-                char cached_name[64] = {0};
-                if (keyserver_cache_get_name(fingerprint, cached_name, sizeof(cached_name)) == 0 &&
-                    cached_name[0] != '\0') {
-                    QGP_LOG_WARN(LOG_TAG, "Profile not found in DHT - republishing for '%s'", cached_name);
-
-                    /* Load keys for republishing */
-                    qgp_key_t *sign_key = dna_load_private_key(engine);
-                    if (sign_key) {
-                        qgp_key_t *enc_key = dna_load_encryption_key(engine);
-                        if (enc_key) {
-                            /* Derive wallet addresses from mnemonic (like keygen.c) */
-                            char cf_addr[128] = {0}, eth_addr[48] = {0}, sol_addr[48] = {0}, trx_addr[48] = {0};
-
-                            if (mnemonic_storage_exists(engine->data_dir)) {
-                                char mnemonic[512] = {0};
-                                if (mnemonic_storage_load(mnemonic, sizeof(mnemonic),
-                                                         enc_key->private_key, engine->data_dir) == 0) {
-                                    /* Derive ETH/SOL/TRX from BIP39 master seed */
-                                    uint8_t master_seed[64];
-                                    if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) == 0) {
-                                        eth_wallet_t eth_wallet;
-                                        if (eth_wallet_generate(master_seed, 64, &eth_wallet) == 0) {
-                                            strncpy(eth_addr, eth_wallet.address_hex, sizeof(eth_addr) - 1);
-                                            eth_wallet_clear(&eth_wallet);
-                                        }
-                                        sol_wallet_t sol_wallet;
-                                        if (sol_wallet_generate(master_seed, 64, &sol_wallet) == 0) {
-                                            strncpy(sol_addr, sol_wallet.address, sizeof(sol_addr) - 1);
-                                            sol_wallet_clear(&sol_wallet);
-                                        }
-                                        trx_wallet_t trx_wallet;
-                                        if (trx_wallet_generate(master_seed, 64, &trx_wallet) == 0) {
-                                            strncpy(trx_addr, trx_wallet.address, sizeof(trx_addr) - 1);
-                                            trx_wallet_clear(&trx_wallet);
-                                        }
-                                        qgp_secure_memzero(master_seed, sizeof(master_seed));
-                                    }
-                                    /* Derive Cellframe address from mnemonic (different derivation) */
-                                    uint8_t cf_seed[CF_WALLET_SEED_SIZE];
-                                    if (cellframe_derive_seed_from_mnemonic(mnemonic, cf_seed) == 0) {
-                                        cellframe_wallet_derive_address(cf_seed, cf_addr);
-                                        qgp_secure_memzero(cf_seed, sizeof(cf_seed));
-                                    }
-                                    qgp_secure_memzero(mnemonic, sizeof(mnemonic));
-                                    QGP_LOG_INFO(LOG_TAG, "Derived wallet addresses from mnemonic for republish");
-                                }
-                            }
-
-                            /* Republish identity to DHT */
-                            QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] load_identity: profile NOT in DHT, republishing");
-                            int publish_rc = dht_keyserver_publish(dht, fingerprint, cached_name,
-                                sign_key->public_key, enc_key->public_key, sign_key->private_key,
-                                cf_addr[0] ? cf_addr : NULL,
-                                eth_addr[0] ? eth_addr : NULL,
-                                sol_addr[0] ? sol_addr : NULL,
-                                trx_addr[0] ? trx_addr : NULL);
-
-                            if (publish_rc == 0) {
-                                QGP_LOG_INFO(LOG_TAG, "Profile republished to DHT successfully");
-                                profile_published = true;
-                            } else if (publish_rc == -2) {
-                                QGP_LOG_WARN(LOG_TAG, "Name '%s' already taken by another user", cached_name);
-                            } else if (publish_rc == -3) {
-                                QGP_LOG_WARN(LOG_TAG, "DHT not ready - will retry on next login");
-                            } else {
-                                QGP_LOG_WARN(LOG_TAG, "Failed to republish profile to DHT: %d", publish_rc);
-                            }
-                            qgp_key_free(enc_key);
-                        }
-                        qgp_key_free(sign_key);
-                    }
-                } else {
-                    QGP_LOG_WARN(LOG_TAG, "Profile not in DHT and no cached name - cannot republish");
-                }
-            } else {
-                /* Profile found in DHT - check if wallet addresses need updating */
-                /* Derive wallet addresses from mnemonic (like keygen.c) */
-                bool need_publish = false;
-                char eth_addr[48] = {0}, sol_addr[48] = {0}, trx_addr[48] = {0}, cf_addr[128] = {0};
-
-                qgp_key_t *enc_key_check = dna_load_encryption_key(engine);
-                if (enc_key_check && mnemonic_storage_exists(engine->data_dir)) {
-                    char mnemonic[512] = {0};
-                    if (mnemonic_storage_load(mnemonic, sizeof(mnemonic),
-                                             enc_key_check->private_key, engine->data_dir) == 0) {
-                        /* Derive ETH/SOL from BIP39 master seed */
-                        uint8_t master_seed[64];
-                        if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) == 0) {
-                            eth_wallet_t eth_wallet;
-                            if (eth_wallet_generate(master_seed, 64, &eth_wallet) == 0) {
-                                strncpy(eth_addr, eth_wallet.address_hex, sizeof(eth_addr) - 1);
-                                eth_wallet_clear(&eth_wallet);
-                                if (identity->wallets.eth[0] == '\0' && eth_addr[0]) need_publish = true;
-                            }
-                            sol_wallet_t sol_wallet;
-                            if (sol_wallet_generate(master_seed, 64, &sol_wallet) == 0) {
-                                strncpy(sol_addr, sol_wallet.address, sizeof(sol_addr) - 1);
-                                sol_wallet_clear(&sol_wallet);
-                                if (identity->wallets.sol[0] == '\0' && sol_addr[0]) need_publish = true;
-                            }
-                            trx_wallet_t trx_wallet;
-                            if (trx_wallet_generate(master_seed, 64, &trx_wallet) == 0) {
-                                strncpy(trx_addr, trx_wallet.address, sizeof(trx_addr) - 1);
-                                trx_wallet_clear(&trx_wallet);
-                                if (identity->wallets.trx[0] == '\0' && trx_addr[0]) need_publish = true;
-                            }
-                            qgp_secure_memzero(master_seed, sizeof(master_seed));
-                        }
-                        /* Derive Cellframe address from mnemonic */
-                        uint8_t cf_seed[CF_WALLET_SEED_SIZE];
-                        if (cellframe_derive_seed_from_mnemonic(mnemonic, cf_seed) == 0) {
-                            cellframe_wallet_derive_address(cf_seed, cf_addr);
-                            qgp_secure_memzero(cf_seed, sizeof(cf_seed));
-                            if (identity->wallets.backbone[0] == '\0' && cf_addr[0]) need_publish = true;
-                        }
-                        qgp_secure_memzero(mnemonic, sizeof(mnemonic));
-                    }
-                    qgp_key_free(enc_key_check);
-                }
-
-                if (need_publish && !profile_published) {
-                        QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] load_identity: DHT profile has empty wallet addresses");
-
-                        /* Load keys for signing */
-                        qgp_key_t *sign_key = dna_load_private_key(engine);
-                        if (sign_key) {
-                            qgp_key_t *enc_key = dna_load_encryption_key(engine);
-                            if (enc_key) {
-                                /* Build profile data with wallet addresses (flat dna_profile_t) */
-                                dna_profile_t profile_data = {0};
-                                /* Wallets */
-                                strncpy(profile_data.backbone, cf_addr[0] ? cf_addr : identity->wallets.backbone, sizeof(profile_data.backbone) - 1);
-                                strncpy(profile_data.eth, eth_addr[0] ? eth_addr : identity->wallets.eth, sizeof(profile_data.eth) - 1);
-                                strncpy(profile_data.sol, sol_addr[0] ? sol_addr : identity->wallets.sol, sizeof(profile_data.sol) - 1);
-                                strncpy(profile_data.trx, trx_addr[0] ? trx_addr : identity->wallets.trx, sizeof(profile_data.trx) - 1);
-                                /* Socials */
-                                strncpy(profile_data.telegram, identity->socials.telegram, sizeof(profile_data.telegram) - 1);
-                                strncpy(profile_data.twitter, identity->socials.x, sizeof(profile_data.twitter) - 1);
-                                strncpy(profile_data.github, identity->socials.github, sizeof(profile_data.github) - 1);
-                                strncpy(profile_data.facebook, identity->socials.facebook, sizeof(profile_data.facebook) - 1);
-                                strncpy(profile_data.instagram, identity->socials.instagram, sizeof(profile_data.instagram) - 1);
-                                strncpy(profile_data.linkedin, identity->socials.linkedin, sizeof(profile_data.linkedin) - 1);
-                                strncpy(profile_data.google, identity->socials.google, sizeof(profile_data.google) - 1);
-                                /* Profile info */
-                                strncpy(profile_data.display_name, identity->display_name, sizeof(profile_data.display_name) - 1);
-                                strncpy(profile_data.bio, identity->bio, sizeof(profile_data.bio) - 1);
-                                strncpy(profile_data.location, identity->location, sizeof(profile_data.location) - 1);
-                                strncpy(profile_data.website, identity->website, sizeof(profile_data.website) - 1);
-                                strncpy(profile_data.avatar_base64, identity->avatar_base64, sizeof(profile_data.avatar_base64) - 1);
-
-                                int update_rc = dna_update_profile(dht, fingerprint, &profile_data,
-                                                                   sign_key->private_key, sign_key->public_key,
-                                                                   enc_key->public_key);
-                                if (update_rc == 0) {
-                                    QGP_LOG_INFO(LOG_TAG, "Profile auto-published with wallet addresses on login");
-                                    profile_published = true;
-                                } else {
-                                    QGP_LOG_WARN(LOG_TAG, "Failed to auto-publish profile on login: %d", update_rc);
-                                }
-                                qgp_key_free(enc_key);
-                            }
-                            qgp_key_free(sign_key);
-                        }
-                }
-                dna_identity_free(identity);
-            }
-        }
-    }
+    /* NOTE: Removed blocking DHT profile verification (v0.3.141)
+     *
+     * Previously, this code did a blocking 30-second DHT lookup of OUR OWN
+     * profile to verify it exists and has wallet addresses. This caused the
+     * app to hang for 30 seconds on startup if the profile wasn't in DHT.
+     *
+     * Profile is now published on:
+     * - Account creation (keygen)
+     * - Name registration
+     * - Profile edit
+     *
+     * If the profile is missing from DHT, user can re-register name or
+     * edit profile to republish. No need for blocking verification on startup.
+     */
+    (void)0;  /* Empty statement to satisfy compiler */
 
     /* Dispatch identity loaded event */
     dna_event_t event = {0};
