@@ -9,6 +9,7 @@ import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
+import '../../utils/logger.dart';
 import '../../theme/dna_theme.dart';
 import '../../widgets/emoji_shortcode_field.dart';
 import '../../widgets/formatted_text.dart';
@@ -51,7 +52,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       // Clear unread count in the provider
       ref.read(unreadCountsProvider.notifier).clearCount(contact.fingerprint);
     } catch (e) {
-      debugPrint('[CHAT] Failed to mark messages as read: $e');
+      log('CHAT', 'Failed to mark messages as read: $e');
     }
 
     // Refresh contact profile in background (for latest avatar/name)
@@ -69,7 +70,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     try {
       final engine = await ref.read(engineProvider.future);
-      debugPrint('[CHAT] Auto-checking offline messages for ${contact.fingerprint.substring(0, 16)}...');
+      log('CHAT', 'Auto-checking offline messages for ${contact.fingerprint.substring(0, 16)}...');
       await engine.checkOfflineMessages();
 
       // Refresh conversation to show any new messages
@@ -77,7 +78,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ref.invalidate(conversationProvider(contact.fingerprint));
       }
     } catch (e) {
-      debugPrint('[CHAT] Silent offline check failed: $e');
+      log('CHAT', 'Silent offline check failed: $e');
     }
   }
 
@@ -103,22 +104,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (_isCheckingOffline) return;
 
     setState(() => _isCheckingOffline = true);
-    debugPrint('[OFFLINE_CHECK] Starting offline message check...');
+    log('OFFLINE', 'Starting offline message check...');
 
     try {
       final engineAsync = ref.read(engineProvider);
       await engineAsync.when(
         data: (engine) async {
-          debugPrint('[OFFLINE_CHECK] Engine ready, calling checkOfflineMessages()');
+          log('OFFLINE', 'Engine ready, calling checkOfflineMessages()');
           final startTime = DateTime.now();
           await engine.checkOfflineMessages();
           final elapsed = DateTime.now().difference(startTime);
-          debugPrint('[OFFLINE_CHECK] Check completed in ${elapsed.inMilliseconds}ms');
+          log('OFFLINE', 'Check completed in ${elapsed.inMilliseconds}ms');
 
           // Refresh conversation to show any new messages
           final contact = ref.read(selectedContactProvider);
           if (contact != null) {
-            debugPrint('[OFFLINE_CHECK] Refreshing conversation for ${contact.fingerprint.substring(0, 16)}...');
+            log('OFFLINE', 'Refreshing conversation for ${contact.fingerprint.substring(0, 16)}...');
             ref.invalidate(conversationProvider(contact.fingerprint));
           }
 
@@ -133,10 +134,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           }
         },
         loading: () {
-          debugPrint('[OFFLINE_CHECK] Engine still loading...');
+          log('OFFLINE', 'Engine still loading...');
         },
         error: (e, st) {
-          debugPrint('[OFFLINE_CHECK] Engine error: $e');
+          logError('OFFLINE', e, st);
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
@@ -148,7 +149,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         },
       );
     } catch (e, st) {
-      debugPrint('[OFFLINE_CHECK] Exception: $e\n$st');
+      logError('OFFLINE', e, st);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -160,7 +161,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     } finally {
       if (mounted) {
         setState(() => _isCheckingOffline = false);
-        debugPrint('[OFFLINE_CHECK] Check finished');
+        log('OFFLINE', 'Check finished');
       }
     }
   }

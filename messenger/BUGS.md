@@ -18,6 +18,8 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Fixed Bugs
 
+- [x] **[CLI] P1 - Heap-buffer-overflow in offline message JSON parsing** - `messenger_p2p.c:941` called `json_tokener_parse()` on plaintext buffer from `dna_decrypt_message_raw()` without null-termination. When decrypted content was small (e.g., 4 bytes from corrupted message), ASAN detected read past buffer. Fixed by realloc+null-terminate before parsing. (v0.3.139)
+
 - [x] **[FLUTTER] P2 - CPUNK sending broken in chat window** - Fixed error mapping in C code (insufficient balance was incorrectly returned as "Network error"). Improved Flutter dialog UX: errors now display in-dialog instead of snackbar, added pre-send balance validation, dialog stays open on error. (v0.3.118, v0.99.68)
 
 - [x] **[FLUTTER] P3 - Contacts briefly show as online during DHT fetch** - Caused by unnecessary `_ref.invalidate(contactsProvider)` calls triggering full rebuilds with `_updatePresenceInBackground()`. Fixed by removing invalidate from presence polling (every 30s) since presence updates already come through via ContactOnline/ContactOffline events handled by `updateContactStatus()`. (v0.99.61)

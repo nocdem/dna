@@ -64,9 +64,7 @@ class EventHandler {
       Future.microtask(() {
         _ref.read(dhtConnectionStateProvider.notifier).state =
             DhtConnectionState.connected;
-        // Start DHT listeners for contacts' outboxes (push notifications)
-        // CRITICAL: Must be called here too, not just in DhtConnectedEvent handler
-        _startDhtListeners();
+        // DHT listeners are started by C engine on DHT connect (dna_engine.c:195)
         // Start polling since we're connected
         _startContactRequestsPolling();
         _startPresencePolling();
@@ -81,8 +79,7 @@ class EventHandler {
       case DhtConnectedEvent():
         _ref.read(dhtConnectionStateProvider.notifier).state =
             DhtConnectionState.connected;
-        // Start DHT listeners for contacts' outboxes (push notifications)
-        _startDhtListeners();
+        // DHT listeners are started by C engine on DHT connect (dna_engine.c:195)
         // Refresh contacts when DHT connects (seamless update)
         _ref.read(contactsProvider.notifier).refresh();
         // Refresh contact requests when DHT connects
@@ -253,13 +250,6 @@ class EventHandler {
         // Single refresh trigger increment after all processing
         _ref.read(conversationRefreshTriggerProvider.notifier).state++;
       });
-    });
-  }
-
-  /// Start DHT listeners for contacts' outboxes (push notifications)
-  void _startDhtListeners() {
-    _ref.read(engineProvider).whenData((engine) {
-      engine.listenAllContacts();
     });
   }
 

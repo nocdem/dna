@@ -17,6 +17,7 @@ import '../../providers/providers.dart';
 import '../../providers/notification_settings_provider.dart';
 import '../../providers/version_check_provider.dart';
 import '../../theme/dna_theme.dart';
+import '../../utils/logger.dart';
 import '../profile/profile_editor_screen.dart';
 import 'app_lock_settings_screen.dart';
 import 'blocked_users_screen.dart';
@@ -293,7 +294,7 @@ class _NotificationsSectionState extends ConsumerState<_NotificationsSection> {
         }
       } catch (e) {
         // Method channel not available (shouldn't happen on Android)
-        debugPrint('[Settings] Error requesting notification permission: $e');
+        log('SETTINGS', 'Error requesting notification permission: $e');
       }
     }
 
