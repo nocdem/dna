@@ -139,7 +139,7 @@ dna_error_t dna_encrypt_message(
 );
 
 /**
- * Encrypt message with raw keys (for PostgreSQL integration)
+ * Encrypt message with raw keys (for offline delivery)
  *
  * v0.08: Added timestamp parameter (encrypted in payload)
  *
@@ -206,7 +206,7 @@ dna_error_t dna_decrypt_message(
 );
 
 /**
- * Decrypt message with raw keys (for PostgreSQL integration)
+ * Decrypt message with raw keys (for offline delivery)
  *
  * v0.07: sender_sign_pubkey_out now contains 64-byte SHA3-512 fingerprint (not full pubkey)
  * v0.08: Added timestamp_out parameter (extracted from encrypted payload)

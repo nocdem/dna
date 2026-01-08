@@ -1277,7 +1277,6 @@ Files removed:
 | `int dna_identity_from_json(const char*, dna_unified_identity_t**)` | Parse identity from JSON |
 | `int dna_profile_validate(const dna_profile_data_t*)` | Validate profile data |
 | `bool dna_validate_wallet_address(const char*, const char*)` | Validate wallet address format |
-| `bool dna_validate_ipfs_cid(const char*)` | Validate IPFS CID format |
 | `bool dna_validate_name(const char*)` | Validate DNA name format |
 | `bool dna_network_is_cellframe(const char*)` | Check if Cellframe network |
 | `bool dna_network_is_external(const char*)` | Check if external blockchain |

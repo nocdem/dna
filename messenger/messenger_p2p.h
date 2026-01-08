@@ -6,7 +6,7 @@
  * This module bridges the messenger core (messenger.c) with the P2P transport layer (p2p_transport.h).
  * It implements a hybrid messaging approach:
  * - P2P direct messaging when both peers are online (via DHT + TCP)
- * - PostgreSQL fallback for offline message delivery
+ * - DHT offline queue (Spillway) for offline message delivery
  *
  * Architecture:
  * ┌──────────────────────────────────────────────┐
@@ -15,14 +15,14 @@
  * │  messenger_send_p2p() [THIS MODULE]          │
  * │  ├─ Check if recipient online (DHT)          │
  * │  ├─ If online: p2p_send() → TCP direct       │
- * │  └─ If offline: PostgreSQL INSERT (fallback) │
+ * │  └─ If offline: DHT Spillway queue           │
  * └──────────────────────────────────────────────┘
  *
  * Message Flow:
  * 1. Sender: messenger_send_p2p() tries P2P first
  * 2. If P2P succeeds: message delivered instantly
- * 3. If P2P fails: message stored in PostgreSQL
- * 4. Receiver: p2p_message_callback() → store in PostgreSQL for retrieval
+ * 3. If P2P fails: message queued in DHT (Spillway)
+ * 4. Receiver: DHT listen callback → store in local SQLite
  */
 
 #ifndef MESSENGER_P2P_H
@@ -60,7 +60,7 @@ int messenger_p2p_init(messenger_context_t *ctx);
 void messenger_p2p_shutdown(messenger_context_t *ctx);
 
 // ============================================================================
-// HYBRID MESSAGING (P2P + PostgreSQL Fallback)
+// HYBRID MESSAGING (P2P + DHT Offline Queue)
 // ============================================================================
 
 /**
@@ -114,7 +114,7 @@ int messenger_queue_to_dht(
  * Broadcast message to multiple recipients via P2P
  *
  * Sends to each recipient using messenger_send_p2p() logic.
- * Some may go via P2P, others via PostgreSQL fallback.
+ * Some may go via P2P, others via DHT offline queue.
  *
  * @param ctx: Messenger context
  * @param recipients: Array of recipient identities
@@ -139,7 +139,7 @@ int messenger_broadcast_p2p(
  * P2P message received callback
  *
  * Called by p2p_transport when a message arrives via P2P.
- * Stores the message in PostgreSQL for retrieval via messenger_list_messages().
+ * Stores the message in SQLite for retrieval via messenger_list_messages().
  *
  * This callback is registered with p2p_set_message_callback() during init.
  *
@@ -223,7 +223,7 @@ int messenger_p2p_lookup_presence(
  * Check for offline messages in DHT
  *
  * Retrieves messages that were queued in DHT while recipient was offline.
- * Messages are automatically delivered to PostgreSQL via the message callback.
+ * Messages are automatically stored in SQLite via the message callback.
  * Queue is cleared after retrieval.
  *
  * This should be called periodically (e.g., every 2 minutes) by GUI timer.

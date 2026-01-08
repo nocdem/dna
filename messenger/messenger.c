@@ -1,8 +1,8 @@
 /*
- * DNA Messenger - PostgreSQL Implementation
+ * DNA Messenger - Core Implementation
  *
- * Phase 3: Local PostgreSQL (localhost)
- * Phase 4: Network PostgreSQL (remote server)
+ * Message handling, encryption, and storage.
+ * Uses SQLite for local storage and DHT for offline queue.
  */
 
 #include <stdio.h>

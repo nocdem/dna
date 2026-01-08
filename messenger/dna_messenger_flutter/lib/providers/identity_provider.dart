@@ -237,11 +237,6 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     if (fingerprint != null && name.isNotEmpty) {
       // Update SQLite-backed cache (used by userProfileProvider)
       await ref.read(identityProfileCacheProvider.notifier).updateIdentity(fingerprint, name, '');
-
-      // Also update legacy in-memory cache for backwards compatibility
-      final newCache = Map<String, String>.from(ref.read(identityNameCacheProvider));
-      newCache[fingerprint] = name;
-      ref.read(identityNameCacheProvider.notifier).state = newCache;
     }
 
     // Invalidate profile providers to refresh with new name
@@ -331,10 +326,6 @@ final userProfileProvider = FutureProvider<UserProfile?>((ref) async {
   }
 });
 
-/// Cache for identity display names (fingerprint -> registered name)
-/// v0.3.0: Still used for profile display in drawer and settings
-final identityNameCacheProvider = StateProvider<Map<String, String>>((ref) => {});
-
 /// Cache for identity avatars (fingerprint -> base64 avatar)
 final identityAvatarCacheProvider = StateProvider<Map<String, String>>((ref) => {});
 
@@ -345,12 +336,6 @@ final identityDisplayNameProvider = FutureProvider.family<String?, String>((ref,
   final cached = cache[fingerprint];
   if (cached != null && cached.displayName.isNotEmpty) {
     return cached.displayName;
-  }
-
-  // Also check legacy in-memory cache for backwards compatibility
-  final legacyCache = ref.watch(identityNameCacheProvider);
-  if (legacyCache.containsKey(fingerprint)) {
-    return legacyCache[fingerprint];
   }
 
   // Fetch from DHT via cache provider

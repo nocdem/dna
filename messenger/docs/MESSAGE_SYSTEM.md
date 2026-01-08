@@ -164,7 +164,7 @@ USER INPUT                     ENCRYPTION                      STORAGE          
                                                         or STATUS_FAILED (error)
 ```
 
-**Source:** `messenger/messages.c:309-499`, `imgui_gui/screens/chat_screen.cpp:244-436`
+**Source:** `messenger/messages.c:309-499`, `dna_messenger_flutter/lib/screens/chat/`
 
 ### 2.2 Receive Flow
 
@@ -227,7 +227,7 @@ TRANSPORT                         STORAGE                        DECRYPTION     
 | `STATUS_SENT` | 1 | Checkmark | Successfully sent (P2P or DHT queued) |
 | `STATUS_FAILED` | 2 | Error | Send failed (retry available) |
 
-**Source:** `imgui_gui/core/data_types.h:7-12`
+**Source:** `messenger.h` (message_info_t), `dna_messenger_flutter/lib/models/`
 
 ---
 
@@ -958,7 +958,7 @@ CREATE INDEX IF NOT EXISTS idx_sender_fingerprint ON messages(sender_fingerprint
 | `messenger/messages.c` | 57-60 | `messenger_recipient_entry_t` |
 | `messenger.h` | 66-76 | `message_info_t` |
 | `message_backup.h` | 48-61 | `backup_message_t` |
-| `imgui_gui/core/data_types.h` | 14-22 | `Message` (GUI) |
+| `dna_messenger_flutter/lib/models/` | - | Flutter message models |
 
 ### 11.3 Cryptographic Functions
 

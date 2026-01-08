@@ -848,7 +848,6 @@ typedef struct {
     dna_wallet_list_t wallets;                // Linked wallet addresses
     dna_social_list_t socials;                // Social links
     char bio[512];
-    char profile_picture_ipfs[128];
     uint64_t timestamp;
     uint32_t version;
     uint8_t signature[4627];                  // Dilithium5 signature over JSON

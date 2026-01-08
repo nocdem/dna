@@ -113,12 +113,6 @@ This project is in **BETA**. Users have real data. Breaking changes require care
 - API signature changes that affect Flutter FFI
 - DHT key format changes
 
-## IMGUI IS DEPRECATED
-The ImGui GUI (`imgui_gui/`) is **NO LONGER USED**. Do not modify or reference it.
-- **Current UI**: Flutter (`user_interface/`)
-- **Ignore**: `imgui_gui/` directory entirely
-- All UI work should be done in Flutter only
-
 ## FLUTTER ICONS - FONT AWESOME ONLY
 **ALWAYS use Font Awesome icons in Flutter code.** Do not use Material Icons.
 - **Package**: `font_awesome_flutter` (already in pubspec.yaml)
@@ -446,9 +440,9 @@ cmake .. && make -j$(nproc)
 ./build-cross-compile.sh windows-x64
 ```
 
-**Run:**
+**Run Flutter App:**
 ```bash
-./build/imgui_gui/dna-messenger
+cd dna_messenger_flutter && flutter run
 ```
 
 ---

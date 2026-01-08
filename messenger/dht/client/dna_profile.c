@@ -411,45 +411,6 @@ bool dna_validate_wallet_address(const char *address, const char *network) {
     return false;
 }
 
-bool dna_validate_ipfs_cid(const char *cid) {
-    if (!cid || !cid[0]) return false;
-
-    size_t len = strlen(cid);
-    if (len < 46 || len > 64) return false;
-
-    // CIDv0 starts with 'Qm' (base58)
-    if (len == 46 && strncmp(cid, "Qm", 2) == 0) {
-        const char *base58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-        for (size_t i = 0; i < len; i++) {
-            if (strchr(base58, cid[i]) == NULL) return false;
-        }
-        return true;
-    }
-
-    // CIDv1: 'b' prefix = base32, 'z' prefix = base58
-    if (cid[0] == 'b') {
-        // Base32 (lowercase a-z and digits 2-7)
-        for (size_t i = 0; i < len; i++) {
-            char c = cid[i];
-            if (!((c >= 'a' && c <= 'z') || (c >= '2' && c <= '7'))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    if (cid[0] == 'z') {
-        // Base58
-        const char *base58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-        for (size_t i = 0; i < len; i++) {
-            if (strchr(base58, cid[i]) == NULL) return false;
-        }
-        return true;
-    }
-
-    return false;
-}
-
 bool dna_validate_name(const char *name) {
     if (!name || !name[0]) return false;
 

@@ -2,7 +2,7 @@
  * Local Message Backup - SQLite Database
  *
  * Saves all messages to local SQLite database for data sovereignty.
- * Users own their message history, not dependent on remote PostgreSQL.
+ * Users own their message history with local-first storage.
  *
  * v0.3.0 flat structure: ~/.dna/db/messages.db
  *

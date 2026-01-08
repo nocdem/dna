@@ -556,7 +556,7 @@ cleanup:
 }
 
 /**
- * Encrypt message with raw keys (for PostgreSQL integration)
+ * Encrypt message with raw keys (for offline delivery)
  * Single recipient version
  */
 dna_error_t dna_encrypt_message_raw(
@@ -763,7 +763,7 @@ cleanup:
 }
 
 /**
- * Decrypt message with raw keys (for PostgreSQL integration)
+ * Decrypt message with raw keys (for offline delivery)
  */
 dna_error_t dna_decrypt_message_raw(
     dna_context_t *ctx,

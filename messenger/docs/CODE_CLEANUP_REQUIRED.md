@@ -62,34 +62,7 @@ The following critical issues have been resolved:
 - [ ] Integrate proper key loading from messenger context (line 491)
 - [ ] Implement P2P notifications for GSK rotation (line 559) or document as Phase 8
 
-### 1.2 ImGui GUI
-
-**File:** `imgui_gui/screens/chat_screen.cpp`
-| Line | Issue |
-|------|-------|
-| 163 | TODO: Add group message retry functionality |
-
-**File:** `imgui_gui/screens/feed_screen.cpp`
-| Line | Issue |
-|------|-------|
-| 515 | TODO: Expand to show comments (Phase 9) |
-
-**File:** `imgui_gui/helpers/data_loader.cpp`
-| Line | Issue |
-|------|-------|
-| 250 | TODO: Query member count from dht_group_members table |
-
-**File:** `imgui_gui/helpers/file_browser.cpp`
-| Line | Issue |
-|------|-------|
-| 294 | TODO: Implement NFD multiple selection (Windows) |
-
-**File:** `imgui_gui/helpers/notification_manager.cpp`
-| Line | Issue |
-|------|-------|
-| 64 | TODO: Implement proper focus detection for Windows/macOS |
-
-### 1.3 Database
+### 1.2 Database
 
 **File:** `database/cache_manager.c`
 | Line | Issue |
@@ -244,12 +217,7 @@ if (!_disposed && mounted) {  // ERROR: 'mounted' doesn't exist on StateNotifier
 6. `blockchain/cellframe/cellframe_tx_builder.c` - ✅ active debug FIXED
 7. `blockchain/cellframe/cellframe_wallet_create.c` - ✅ active debug FIXED
 8. `blockchain/cellframe/cellframe_send.c` - conditional debug (retained, guarded)
-9. `imgui_gui/screens/chat_screen.cpp` - 1 TODO
-10. `imgui_gui/screens/feed_screen.cpp` - 1 TODO
-11. `imgui_gui/helpers/data_loader.cpp` - 1 TODO
-12. `imgui_gui/helpers/file_browser.cpp` - 1 TODO
-13. `imgui_gui/helpers/notification_manager.cpp` - 1 TODO
-14. `database/cache_manager.c` - 1 TODO
+9. `database/cache_manager.c` - 1 TODO
 
 ### Dart Files Requiring Cleanup
 1. `lib/screens/chat/chat_screen.dart` - 3 TODOs

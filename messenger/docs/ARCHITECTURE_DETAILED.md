@@ -153,14 +153,6 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 │   ├── cli_commands.c/h      # Command implementations
 │   └── CMakeLists.txt        # Build configuration
 │
-├── imgui_gui/                # GUI application (DEPRECATED)
-│   ├── main.cpp              # Entry point
-│   ├── app.cpp/h             # Application logic
-│   ├── core/                 # AppState, engine wrapper
-│   ├── screens/              # UI screens/dialogs
-│   ├── helpers/              # DataLoader, async tasks
-│   └── vendor/               # ImGui, qrcodegen
-│
 ├── vendor/                   # Third-party libraries
 │   ├── opendht-pq/           # OpenDHT with Dilithium5
 │   ├── secp256k1/            # Bitcoin's EC library (for ETH/BTC)
@@ -1350,72 +1342,51 @@ dna_request_id_t dna_engine_get_registered_name(engine, callback, user_data);
 
 ---
 
-## 11. GUI Application
+## 11. GUI Application (Flutter)
 
 ### 11.1 Framework
 
-**Location:** `imgui_gui/`
+**Location:** `dna_messenger_flutter/`
 
 **Stack:**
-- ImGui (Immediate Mode GUI)
-- OpenGL 3.0+ (rendering)
-- GLFW3 (window/input)
-- FreeType (fonts + emoji)
+- Flutter (cross-platform UI)
+- Dart FFI (native library bindings)
+- Riverpod (state management)
+- SQLite (local cache)
 
 ### 11.2 State Management
 
-**Centralized State:** `AppState` in `core/app_state.h`
+**Provider-based State:** Riverpod providers in `lib/providers/`
 
-**Categories:**
-- View state (current_view, selected_contact/group)
-- Identity state (fingerprint, identities list)
-- Data (contacts, groups, messages)
-- Async tasks (DHT operations, message sends)
-- Dialog visibility flags
-- Wallet state
-- Profile editor state
+**Key Providers:**
+- `engineProvider` - DNA engine instance
+- `identityProvider` - Current identity state
+- `contactsProvider` - Contact list
+- `messagesProvider` - Message history
+- `walletProvider` - Wallet balances
 
 ### 11.3 Screens
 
-| Screen | File | Purpose |
-|--------|------|---------|
-| Contacts | `contacts_sidebar.h` | Contact list, recent chats |
-| Chat | `chat_screen.h` | Message history, input |
-| Wallet | `wallet_screen.h` | Balances, transactions |
-| Settings | `settings_screen.h` | Theme, preferences |
-| Identity Selection | `identity_selection_screen.h` | Create/select identity |
-| Add Contact | `add_contact_dialog.h` | DHT lookup, add |
-| Create Group | `create_group_dialog.h` | Group creation |
-| Group Invitation | `group_invitation_dialog.h` | Accept/reject |
-| Message Wall | `message_wall_screen.h` | Public posts |
-| Profile Editor | `profile_editor_screen.h` | Edit profile |
-| Register Name | `register_name_screen.h` | DNA name registration |
-| Wallet Send | `wallet_send_dialog.h` | Token transfer |
-| Wallet Receive | `wallet_receive_dialog.h` | QR code, address |
+| Screen | Location | Purpose |
+|--------|----------|---------|
+| Home | `lib/screens/home/` | Main navigation |
+| Chat | `lib/screens/chat/` | Message history, input |
+| Contacts | `lib/screens/contacts/` | Contact list |
+| Wallet | `lib/screens/wallet/` | Balances, transactions |
+| Settings | `lib/screens/settings/` | Preferences, debug |
+| Profile | `lib/screens/profile/` | Edit profile |
 
-### 11.4 Async Pattern
+### 11.4 FFI Bindings
 
-```cpp
-// Single task
-state.dht_publish_task.start([](AsyncTask* task) {
-    // Background work
-    task->addMessage("Status update");
-});
-
-// Task queue
-state.message_send_queue.enqueue(
-    []() { messenger_p2p_send(...); },
-    message_index
-);
-```
+Native library bindings generated via `ffigen`:
+- `lib/ffi/dna_bindings.dart` - Auto-generated bindings
+- `lib/ffi/dna_engine.dart` - High-level Dart wrapper
 
 ### 11.5 Theming
 
-**Two Themes:**
-1. **DNA Theme** (default) - Dark blue/cyan
-2. **Club Theme** - Dark brown/orange
+**Material Design 3** with custom DNA theme colors.
 
-**Settings persistence:** `dna_messenger.ini`
+**Settings persistence:** SQLite database
 
 ---
 
@@ -1730,11 +1701,15 @@ All messages are signed with Dilithium5 before transmission:
 
 ### 14.1 Client Installation
 
-**Linux Build:**
+**Linux Build (C Library):**
 ```bash
 mkdir build && cd build
 cmake .. && make -j$(nproc)
-./imgui_gui/dna_messenger_imgui
+```
+
+**Flutter App:**
+```bash
+cd dna_messenger_flutter && flutter run
 ```
 
 **Windows Cross-Compile:**

@@ -330,7 +330,7 @@ int messenger_contacts_auto_sync(messenger_context_t *ctx);
  *
  * Encrypts message and stores in messages table.
  * Sender is automatically added as first recipient so they can decrypt their own sent messages.
- * In Phase 3, messages are stored in PostgreSQL (ready for network access).
+ * Messages are stored in local SQLite and queued to DHT for offline delivery.
  *
  * @param ctx: Messenger context
  * @param recipients: Array of recipient identities (1-254, sender is added automatically)

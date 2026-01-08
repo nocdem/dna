@@ -34,13 +34,13 @@ The DNA Engine provides a unified async C API for DNA Messenger core functionali
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                     GUI Layer                           │
-│  (ImGui Desktop / React Native / WebAssembly)           │
+│  (Flutter / WebAssembly)                                │
 └─────────────────────────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────┐
-│              DNA::EngineWrapper (C++)                   │
-│  imgui_gui/helpers/engine_wrapper.h                     │
+│              DNA Engine Dart FFI Wrapper                │
+│  dna_messenger_flutter/lib/ffi/dna_engine.dart          │
 └─────────────────────────────────────────────────────────┘
                           │
                           ▼
@@ -1503,8 +1503,8 @@ Use `dna_engine_error_string(error)` for human-readable messages.
 | `include/dna/dna_engine.h` | Public C API header |
 | `src/api/dna_engine.c` | Engine implementation |
 | `src/api/dna_engine_internal.h` | Internal structures |
-| `imgui_gui/helpers/engine_wrapper.h` | C++ wrapper header |
-| `imgui_gui/helpers/engine_wrapper.cpp` | C++ wrapper implementation |
+| `dna_messenger_flutter/lib/ffi/dna_engine.dart` | Flutter FFI wrapper |
+| `dna_messenger_flutter/lib/ffi/dna_bindings.dart` | Generated FFI bindings |
 
 ---
 

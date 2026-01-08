@@ -130,10 +130,6 @@ int main(int argc, char **argv) {
         printf("Bio: (empty)\n");
     }
 
-    if (identity->profile_picture_ipfs[0]) {
-        printf("Profile Picture: %s\n", identity->profile_picture_ipfs);
-    }
-
     printf("\n--- Metadata ---\n");
     printf("Timestamp: %lu\n", identity->timestamp);
     printf("Version:   %u\n", identity->version);

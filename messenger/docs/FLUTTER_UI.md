@@ -509,10 +509,8 @@ class DnaTheme {
 | File | Purpose |
 |------|---------|
 | `include/dna/dna_engine.h` | C API - FFI binding source |
-| `imgui_gui/core/app_state.h` | State structure reference |
-| `imgui_gui/helpers/engine_wrapper.h` | Callback patterns reference |
-| `imgui_gui/screens/*.cpp` | UI reference for screens |
-| `imgui_gui/theme_colors.h` | Theme colors to port |
+| `lib/providers/*.dart` | State management |
+| `lib/screens/**/*.dart` | UI implementation |
 | `build-android.sh` | Android NDK build |
 
 ---

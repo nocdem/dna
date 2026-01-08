@@ -79,7 +79,6 @@ typedef struct {
     char display_name[128];              /**< Display name (optional, defaults to name or fingerprint) */
     char bio[512];                       /**< User bio */
     char avatar_hash[128];               /**< SHA3-512 hash of avatar (for quick comparisons) */
-    char profile_picture_ipfs[64];       /**< IPFS CID for avatar (legacy/future) */
     char avatar_base64[20484];           /**< Base64-encoded avatar (64x64 PNG/JPEG, ~20KB max + padding) */
     char location[128];                  /**< Geographic location (optional) */
     char website[256];                   /**< Personal website URL (optional) */
@@ -161,16 +160,6 @@ int dna_identity_from_json(const char *json, dna_unified_identity_t **identity_o
  * @return true if valid, false otherwise
  */
 bool dna_validate_wallet_address(const char *address, const char *network);
-
-/**
- * @brief Validate IPFS CID format
- *
- * Checks if string is a valid IPFS CIDv1.
- *
- * @param cid IPFS CID string to validate
- * @return true if valid, false otherwise
- */
-bool dna_validate_ipfs_cid(const char *cid);
 
 /**
  * @brief Validate DNA name format
