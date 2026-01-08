@@ -544,25 +544,38 @@ int dna_engine_network_changed(dna_engine_t *engine) {
  * EVENT DISPATCH
  * ============================================================================ */
 
+/* Context for background fetch thread */
+typedef struct {
+    dna_engine_t *engine;
+    char sender_fp[129];  /* Contact fingerprint to fetch from (empty = all) */
+} fetch_thread_ctx_t;
+
 /* Background thread for non-blocking message fetch.
- * Called when OUTBOX_UPDATED fires while Flutter is detached (app backgrounded).
+ * Called when OUTBOX_UPDATED fires - fetches only from the specific contact.
  * Runs on detached thread so it doesn't block DHT callback thread. */
 static void *background_fetch_thread(void *arg) {
-    dna_engine_t *engine = (dna_engine_t *)arg;
+    fetch_thread_ctx_t *ctx = (fetch_thread_ctx_t *)arg;
+    if (!ctx) return NULL;
+
+    dna_engine_t *engine = ctx->engine;
+    const char *sender_fp = ctx->sender_fp[0] ? ctx->sender_fp : NULL;
 
     /* Small delay to let DHT callback complete first */
     qgp_platform_sleep_ms(100);
 
     if (!engine || !engine->messenger || !engine->identity_loaded) {
         QGP_LOG_WARN(LOG_TAG, "[BACKGROUND-THREAD] Engine not ready, aborting fetch");
+        free(ctx);
         return NULL;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Starting async message fetch...");
+    QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetching from %s...",
+                 sender_fp ? sender_fp : "ALL contacts");
     size_t offline_count = 0;
-    messenger_p2p_check_offline_messages(engine->messenger, &offline_count);
-    QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetch complete: %zu messages processed", offline_count);
+    messenger_p2p_check_offline_messages(engine->messenger, sender_fp, &offline_count);
+    QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetch complete: %zu messages", offline_count);
 
+    free(ctx);
     return NULL;
 }
 
@@ -587,25 +600,33 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
         }
     }
 
-    /* When OUTBOX_UPDATED fires, spawn a background thread to check offline messages.
+    /* When OUTBOX_UPDATED fires, spawn a background thread to fetch from that contact only.
      * IMPORTANT: Must NOT block the DHT callback thread - that causes ANR when
-     * app resumes because Flutter's DHT operations block on the same mutex.
-     * Always spawn regardless of Flutter state - Flutter's handler on Android
-     * expects native code to fetch messages. */
+     * app resumes because Flutter's DHT operations block on the same mutex. */
     if (event->type == DNA_EVENT_OUTBOX_UPDATED && g_android_notification_cb) {
-        QGP_LOG_INFO(LOG_TAG, "[AUTO-FETCH] Spawning async message fetch...");
+        const char *contact_fp = event->data.outbox_updated.contact_fingerprint;
+        QGP_LOG_INFO(LOG_TAG, "[AUTO-FETCH] Spawning fetch for %.20s...", contact_fp);
+
         if (engine->messenger && engine->identity_loaded) {
-            /* Spawn detached thread for non-blocking fetch */
-            pthread_t fetch_thread;
-            pthread_attr_t attr;
-            pthread_attr_init(&attr);
-            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-            if (pthread_create(&fetch_thread, &attr, background_fetch_thread, engine) == 0) {
-                QGP_LOG_DEBUG(LOG_TAG, "[AUTO-FETCH] Fetch thread spawned");
-            } else {
-                QGP_LOG_WARN(LOG_TAG, "[AUTO-FETCH] Failed to spawn fetch thread");
+            /* Create context with contact fingerprint */
+            fetch_thread_ctx_t *ctx = calloc(1, sizeof(fetch_thread_ctx_t));
+            if (ctx) {
+                ctx->engine = engine;
+                strncpy(ctx->sender_fp, contact_fp, sizeof(ctx->sender_fp) - 1);
+
+                /* Spawn detached thread for non-blocking fetch */
+                pthread_t fetch_thread;
+                pthread_attr_t attr;
+                pthread_attr_init(&attr);
+                pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+                if (pthread_create(&fetch_thread, &attr, background_fetch_thread, ctx) == 0) {
+                    QGP_LOG_DEBUG(LOG_TAG, "[AUTO-FETCH] Fetch thread spawned");
+                } else {
+                    QGP_LOG_WARN(LOG_TAG, "[AUTO-FETCH] Failed to spawn fetch thread");
+                    free(ctx);
+                }
+                pthread_attr_destroy(&attr);
             }
-            pthread_attr_destroy(&attr);
         }
     }
 
@@ -1234,7 +1255,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
 
         /* 1. Check for offline messages (Spillway: query contacts' outboxes) */
         size_t offline_count = 0;
-        if (messenger_p2p_check_offline_messages(engine->messenger, &offline_count) == 0) {
+        if (messenger_p2p_check_offline_messages(engine->messenger, NULL, &offline_count) == 0) {
             if (offline_count > 0) {
                 QGP_LOG_INFO(LOG_TAG, "Received %zu offline messages\n", offline_count);
             } else {
@@ -2627,7 +2648,7 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
 
     /* Check DHT offline queue for messages from contacts */
     size_t offline_count = 0;
-    int rc = messenger_p2p_check_offline_messages(engine->messenger, &offline_count);
+    int rc = messenger_p2p_check_offline_messages(engine->messenger, NULL, &offline_count);
     if (rc == 0) {
         QGP_LOG_WARN("DNA_ENGINE", "[OFFLINE] Check complete: %zu new messages", offline_count);
     } else {

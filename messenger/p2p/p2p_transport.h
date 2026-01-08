@@ -243,11 +243,13 @@ int p2p_send_message(
  * This should be called periodically (every 1-5 minutes)
  *
  * @param ctx P2P transport context
+ * @param sender_fp If non-NULL, fetch only from this contact's outbox. If NULL, fetch from all contacts.
  * @param messages_received Output - number of messages retrieved (can be NULL)
  * @return 0 on success, -1 on failure
  */
 int p2p_check_offline_messages(
     p2p_transport_t *ctx,
+    const char *sender_fp,
     size_t *messages_received
 );
 

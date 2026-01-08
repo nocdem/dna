@@ -229,11 +229,13 @@ int messenger_p2p_lookup_presence(
  * This should be called periodically (e.g., every 2 minutes) by GUI timer.
  *
  * @param ctx: Messenger context
+ * @param sender_fp: If non-NULL, fetch only from this contact's outbox. If NULL, fetch from all contacts.
  * @param messages_received: Output - number of messages retrieved (optional)
  * @return: 0 on success, -1 on error
  */
 int messenger_p2p_check_offline_messages(
     messenger_context_t *ctx,
+    const char *sender_fp,
     size_t *messages_received
 );
 

@@ -1457,7 +1457,7 @@ Peer-to-peer transport layer for direct TCP messaging with DHT-based peer discov
 | Function | Description |
 |----------|-------------|
 | `int p2p_send_message(p2p_transport_t*, const uint8_t*, const uint8_t*, size_t)` | Send encrypted message to peer |
-| `int p2p_check_offline_messages(p2p_transport_t*, size_t*)` | Check for offline messages in DHT |
+| `int p2p_check_offline_messages(p2p_transport_t*, const char* sender_fp, size_t*)` | Check for offline messages in DHT (sender_fp=NULL for all contacts) |
 | `int p2p_queue_offline_message(p2p_transport_t*, const char*, const char*, const uint8_t*, size_t, uint64_t)` | Queue message for offline recipient |
 
 #### Connection Management

@@ -1,5 +1,6 @@
 // Event Handler - Listens to engine events and updates UI state
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
 import '../utils/lifecycle_observer.dart';
@@ -206,8 +207,9 @@ class EventHandler {
   }
 
   /// Schedule a debounced outbox check
-  /// Coalesces rapid OutboxUpdatedEvents into a single checkOfflineMessages() call
-  /// This prevents race conditions when multiple events fire in quick succession
+  /// On Android: Native code already fetched messages and shows JNI notifications.
+  ///             Flutter just syncs unread counts from DB and refreshes UI.
+  /// On Desktop: Flutter must call checkOfflineMessages() to fetch.
   void _scheduleOutboxCheck(String contactFp) {
     // Collect fingerprints during debounce window
     _pendingOutboxFingerprints.add(contactFp);
@@ -219,13 +221,16 @@ class EventHandler {
       final fingerprints = Set<String>.from(_pendingOutboxFingerprints);
       _pendingOutboxFingerprints.clear();
 
-      // Check which chats are open BEFORE fetching
+      // Check which chats are open BEFORE processing
       final selectedContact = _ref.read(selectedContactProvider);
       final openChatFp = selectedContact?.fingerprint;
 
-      // Single checkOfflineMessages call for all pending contacts
       _ref.read(engineProvider).whenData((engine) async {
-        await engine.checkOfflineMessages();
+        // On Desktop, we need to fetch messages ourselves.
+        // On Android, native code already fetched via background_fetch_thread.
+        if (!Platform.isAndroid) {
+          await engine.checkOfflineMessages();
+        }
 
         // Process each contact that had updates
         for (final fp in fingerprints) {
@@ -234,9 +239,7 @@ class EventHandler {
             await engine.markConversationRead(fp);
             _ref.read(unreadCountsProvider.notifier).clearCount(fp);
           } else {
-            // Sync unread count from database (fixes race condition where
-            // MESSAGE_RECEIVED doesn't fire for messages already fetched
-            // by a previous poll, but OUTBOX_UPDATED still triggered)
+            // Sync unread count from database
             final dbCount = engine.getUnreadCount(fp);
             if (dbCount > 0) {
               _ref.read(unreadCountsProvider.notifier).setCount(fp, dbCount);

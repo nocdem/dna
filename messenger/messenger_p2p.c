@@ -1261,6 +1261,7 @@ int messenger_p2p_lookup_presence(
 
 int messenger_p2p_check_offline_messages(
     messenger_context_t *ctx,
+    const char *sender_fp,
     size_t *messages_received)
 {
     if (!ctx || !ctx->p2p_enabled || !ctx->p2p_transport) {
@@ -1268,17 +1269,14 @@ int messenger_p2p_check_offline_messages(
         return -1;
     }
 
-    QGP_LOG_DEBUG("P2P", "Checking for offline messages in DHT...");
+    QGP_LOG_DEBUG("P2P", "Checking for offline messages in DHT (sender=%s)...",
+                  sender_fp ? sender_fp : "ALL");
 
     size_t count = 0;
-    int result = p2p_check_offline_messages(ctx->p2p_transport, &count);
+    int result = p2p_check_offline_messages(ctx->p2p_transport, sender_fp, &count);
 
     if (result == 0 && count > 0) {
         QGP_LOG_INFO("P2P", "Retrieved %zu offline messages from DHT\n", count);
-        // Messages are automatically delivered via p2p_message_received_internal()
-        // which stores them in SQLite for GUI retrieval
-        // Note: Group sync is handled separately by messenger_sync_groups() which
-        // calls this function internally to avoid circular dependencies
     } else if (result == 0 && count == 0) {
         QGP_LOG_DEBUG("P2P", "No offline messages in DHT");
     } else {

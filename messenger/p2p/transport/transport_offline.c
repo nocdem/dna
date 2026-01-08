@@ -72,14 +72,17 @@ int p2p_queue_offline_message(
  * Check offline messages from contacts' outboxes (Spillway)
  * Queries each contact's outbox for messages addressed to this user
  * @param ctx: P2P transport context
+ * @param sender_fp: If non-NULL, fetch only from this contact. If NULL, fetch from all contacts.
  * @param messages_received: Output number of messages delivered (optional)
  * @return: 0 on success, -1 on error
  */
 int p2p_check_offline_messages(
     p2p_transport_t *ctx,
+    const char *sender_fp,
     size_t *messages_received)
 {
-    QGP_LOG_DEBUG(LOG_TAG, "Checking offline messages\n");
+    QGP_LOG_DEBUG(LOG_TAG, "Checking offline messages (sender=%s)\n",
+                  sender_fp ? sender_fp : "ALL");
 
     if (!ctx) {
         QGP_LOG_ERROR(LOG_TAG, "Context is NULL\n");
@@ -92,37 +95,54 @@ int p2p_check_offline_messages(
         return 0;
     }
 
-    // 1. Load contacts from database
+    // Build sender fingerprint array
+    const char **sender_fps_array = NULL;
+    size_t sender_count = 0;
     contact_list_t *contacts = NULL;
-    if (contacts_db_list(&contacts) != 0 || !contacts || contacts->count == 0) {
-        QGP_LOG_DEBUG(LOG_TAG, "No contacts in database\n");
-        if (contacts) contacts_db_free_list(contacts);
-        if (messages_received) *messages_received = 0;
-        return 0;
+
+    if (sender_fp) {
+        // Single contact mode - just use the provided fingerprint
+        sender_fps_array = (const char**)malloc(sizeof(char*));
+        if (!sender_fps_array) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to allocate sender array\n");
+            if (messages_received) *messages_received = 0;
+            return -1;
+        }
+        sender_fps_array[0] = sender_fp;
+        sender_count = 1;
+        QGP_LOG_DEBUG(LOG_TAG, "Single contact fetch: %.20s...\n", sender_fp);
+    } else {
+        // All contacts mode - load from database
+        if (contacts_db_list(&contacts) != 0 || !contacts || contacts->count == 0) {
+            QGP_LOG_DEBUG(LOG_TAG, "No contacts in database\n");
+            if (contacts) contacts_db_free_list(contacts);
+            if (messages_received) *messages_received = 0;
+            return 0;
+        }
+
+        QGP_LOG_DEBUG(LOG_TAG, "Checking %zu contact outboxes\n", contacts->count);
+
+        sender_fps_array = (const char**)malloc(contacts->count * sizeof(char*));
+        if (!sender_fps_array) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to allocate sender fingerprint array\n");
+            contacts_db_free_list(contacts);
+            if (messages_received) *messages_received = 0;
+            return -1;
+        }
+
+        for (size_t i = 0; i < contacts->count; i++) {
+            sender_fps_array[i] = contacts->contacts[i].identity;
+        }
+        sender_count = contacts->count;
     }
 
-    QGP_LOG_DEBUG(LOG_TAG, "Checking %zu contact outboxes\n", contacts->count);
-
-    // 2. Build array of sender fingerprints
-    const char **sender_fps = (const char**)malloc(contacts->count * sizeof(char*));
-    if (!sender_fps) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate sender fingerprint array\n");
-        contacts_db_free_list(contacts);
-        if (messages_received) *messages_received = 0;
-        return -1;
-    }
-
-    for (size_t i = 0; i < contacts->count; i++) {
-        sender_fps[i] = contacts->contacts[i].identity;  // Fingerprint
-    }
-
-    // 3. Query all contacts' outboxes
+    // Query contact outboxes
     // For each contact: Key = SHA3-512(contact_fp + ":outbox:" + my_fp)
     dht_context_t *dht = dht_singleton_get();
     if (!dht) {
         QGP_LOG_ERROR(LOG_TAG, "DHT not available for offline message check\n");
-        free(sender_fps);
-        contacts_db_free_list(contacts);
+        free(sender_fps_array);
+        if (contacts) contacts_db_free_list(contacts);
         if (messages_received) *messages_received = 0;
         return -1;
     }
@@ -134,16 +154,17 @@ int p2p_check_offline_messages(
     int result = dht_retrieve_queued_messages_from_contacts_parallel(
         dht,
         ctx->config.identity,  // My fingerprint (recipient)
-        sender_fps,
-        contacts->count,
+        sender_fps_array,
+        sender_count,
         &messages,
         &count
     );
 
-    QGP_LOG_WARN(LOG_TAG, "[OFFLINE] DHT retrieve: result=%d, messages_from_dht=%zu\n", result, count);
+    QGP_LOG_INFO(LOG_TAG, "[OFFLINE] DHT retrieve: result=%d, count=%zu (from %zu senders)\n",
+                 result, count, sender_count);
 
-    free(sender_fps);
-    contacts_db_free_list(contacts);
+    free(sender_fps_array);
+    if (contacts) contacts_db_free_list(contacts);
 
     if (result != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to retrieve offline messages from contacts' outboxes\n");
