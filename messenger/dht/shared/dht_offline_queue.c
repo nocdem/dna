@@ -1228,6 +1228,18 @@ static bool watermark_listen_callback(
 }
 
 /**
+ * Cleanup callback for watermark listener - frees context when listener is cancelled
+ */
+static void watermark_listener_cleanup(void *user_data) {
+    watermark_listener_ctx_t *wctx = (watermark_listener_ctx_t *)user_data;
+    if (wctx) {
+        QGP_LOG_DEBUG(LOG_TAG, "Watermark listener cleanup: freeing context for %.20s... → %.20s...\n",
+                      wctx->recipient, wctx->sender);
+        free(wctx);
+    }
+}
+
+/**
  * Listen for watermark updates from a recipient
  */
 size_t dht_listen_watermark(
@@ -1261,18 +1273,13 @@ size_t dht_listen_watermark(
     QGP_LOG_INFO(LOG_TAG, "Starting watermark listener: %.20s... → %.20s...\n",
            recipient, sender);
 
-    // Start DHT listen
-    size_t token = dht_listen(ctx, key, 64, watermark_listen_callback, wctx);
+    // Start DHT listen with cleanup callback for proper memory management
+    size_t token = dht_listen_ex(ctx, key, 64, watermark_listen_callback, wctx, watermark_listener_cleanup);
     if (token == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT listen for watermark\n");
         free(wctx);
         return 0;
     }
-
-    // NOTE: wctx lifetime is tied to the DHT listener - it must outlive the callback.
-    // Memory is released when DHT context is destroyed. Individual cancel via
-    // dht_cancel_watermark_listener() doesn't free wctx (listener may still fire).
-    // This is by-design, not a leak.
 
     return token;
 }
@@ -1290,5 +1297,5 @@ void dht_cancel_watermark_listener(
 
     QGP_LOG_INFO(LOG_TAG, "Cancelling watermark listener (token=%zu)\n", token);
     dht_cancel_listen(ctx, token);
-    // Note: The watermark_listener_ctx_t is leaked - tracked for future cleanup
+    // Cleanup callback (watermark_listener_cleanup) frees the context
 }
