@@ -23,7 +23,7 @@ extern "C" {
 typedef struct dht_context dht_context_t;
 
 // Maximum number of simultaneous listeners (Phase 14)
-#define DHT_MAX_LISTENERS 256
+#define DHT_MAX_LISTENERS 1024
 
 /**
  * Callback invoked when DHT values are received or expired

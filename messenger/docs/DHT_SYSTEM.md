@@ -278,7 +278,7 @@ Real-time notifications when DHT values change.
 
 ```c
 // Maximum number of simultaneous listeners
-#define DHT_MAX_LISTENERS 256
+#define DHT_MAX_LISTENERS 1024
 ```
 
 #### Basic API
