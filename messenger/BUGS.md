@@ -13,7 +13,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-(none)
+- [ ] **[FLUTTER] P2 - Contact not added to sender after recipient accepts request** - When B accepts A's contact request, A doesn't see B in their contacts until app restart. The reciprocal request listener fires (contact request notification is instant on B side), but A's contacts list doesn't update. Auto-approval logic in `dna_handle_get_contact_requests()` should add B as contact, and Flutter should refresh via `ContactRequestReceivedEvent`. Needs investigation.
 
 ## Fixed Bugs
 
