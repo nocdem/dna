@@ -373,9 +373,9 @@ int dht_singleton_reinit(void)
     if (dht_context_is_ready(g_dht_context)) {
         QGP_LOG_WARN(LOG_TAG, ">>> REINIT SUCCESS: DHT reconnected after %d00ms <<<", wait_count);
 
-        // Resubscribe all listeners
-        size_t resubscribed = dht_resubscribe_all_listeners(g_dht_context);
-        QGP_LOG_INFO(LOG_TAG, "Resubscribed %zu listeners", resubscribed);
+        // Clear suspended listeners - engine callback will recreate them
+        // (Engine has the contact list and creates fresh listener contexts)
+        dht_cancel_all_listeners(g_dht_context);
 
         // Start background discovery to find new/updated bootstrap nodes
         dht_bootstrap_discovery_start(g_dht_context);
