@@ -128,6 +128,8 @@ static void init_log_config(void);
 /* Forward declarations for listener management */
 void dna_engine_cancel_all_outbox_listeners(dna_engine_t *engine);
 void dna_engine_cancel_all_presence_listeners(dna_engine_t *engine);
+void dna_engine_cancel_contact_request_listener(dna_engine_t *engine);
+size_t dna_engine_start_contact_request_listener(dna_engine_t *engine);
 
 /**
  * Validate identity name - must be lowercase only
@@ -168,6 +170,29 @@ dna_engine_t* dna_engine_get_global(void) {
 }
 
 /**
+ * Background thread for listener setup
+ * Runs on separate thread to avoid blocking OpenDHT's callback thread.
+ */
+static void *dna_engine_setup_listeners_thread(void *arg) {
+    dna_engine_t *engine = (dna_engine_t *)arg;
+    if (!engine) return NULL;
+
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: starting listener setup...");
+
+    /* Cancel stale engine-level listener tracking before creating new ones.
+     * After network change + DHT reinit, global listeners are suspended but
+     * engine-level arrays still show active=true, blocking new listener creation. */
+    dna_engine_cancel_all_outbox_listeners(engine);
+    dna_engine_cancel_all_presence_listeners(engine);
+    dna_engine_cancel_contact_request_listener(engine);
+
+    int count = dna_engine_listen_all_contacts(engine);
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: started %d listeners", count);
+
+    return NULL;
+}
+
+/**
  * DHT status change callback - dispatches DHT_CONNECTED/DHT_DISCONNECTED events
  * Called from OpenDHT's internal thread when connection status changes.
  */
@@ -188,18 +213,21 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
         }
 
         /* Restart outbox listeners on DHT connect (handles reconnection)
-         * Listeners fire DNA_EVENT_OUTBOX_UPDATED -> Flutter polls + refreshes UI */
+         * Listeners fire DNA_EVENT_OUTBOX_UPDATED -> Flutter polls + refreshes UI
+         *
+         * IMPORTANT: Run listener setup on a background thread!
+         * This callback runs on OpenDHT's internal thread. If we block here with
+         * dht_listen_ex()'s future.get(), we deadlock (OpenDHT needs this thread). */
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT connected, identity_loaded=%d", engine->identity_loaded);
         if (engine->identity_loaded) {
-            /* Cancel stale engine-level listener tracking before creating new ones.
-             * After network change + DHT reinit, global listeners are suspended but
-             * engine-level arrays still show active=true, blocking new listener creation. */
-            dna_engine_cancel_all_outbox_listeners(engine);
-            dna_engine_cancel_all_presence_listeners(engine);
-
-            QGP_LOG_WARN(LOG_TAG, "[LISTEN] Starting outbox listeners from DHT callback...");
-            int count = dna_engine_listen_all_contacts(engine);
-            QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT callback: started %d listeners", count);
+            /* Spawn background thread for listener setup to avoid deadlock */
+            pthread_t listener_thread;
+            if (pthread_create(&listener_thread, NULL, dna_engine_setup_listeners_thread, engine) == 0) {
+                pthread_detach(listener_thread);
+                QGP_LOG_INFO(LOG_TAG, "[LISTEN] Spawned background thread for listener setup");
+            } else {
+                QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to spawn listener setup thread");
+            }
         } else {
             QGP_LOG_WARN(LOG_TAG, "[LISTEN] Skipping listeners (no identity loaded yet)");
         }
@@ -916,6 +944,11 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     engine->presence_listener_count = 0;
     memset(engine->presence_listeners, 0, sizeof(engine->presence_listeners));
 
+    /* Initialize contact request listener */
+    pthread_mutex_init(&engine->contact_request_listener_mutex, NULL);
+    engine->contact_request_listener.dht_token = 0;
+    engine->contact_request_listener.active = false;
+
     /* Initialize delivery trackers */
     pthread_mutex_init(&engine->delivery_trackers_mutex, NULL);
     engine->delivery_tracker_count = 0;
@@ -1027,6 +1060,10 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* Cancel all presence listeners */
     dna_engine_cancel_all_presence_listeners(engine);
     pthread_mutex_destroy(&engine->presence_listeners_mutex);
+
+    /* Cancel contact request listener */
+    dna_engine_cancel_contact_request_listener(engine);
+    pthread_mutex_destroy(&engine->contact_request_listener_mutex);
 
     /* Cancel all delivery trackers */
     dna_engine_cancel_all_delivery_trackers(engine);
@@ -5031,6 +5068,18 @@ typedef struct {
 } outbox_listener_ctx_t;
 
 /**
+ * Cleanup callback for outbox listeners - frees the context when listener cancelled
+ */
+static void outbox_listener_cleanup(void *user_data) {
+    outbox_listener_ctx_t *ctx = (outbox_listener_ctx_t *)user_data;
+    if (ctx) {
+        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Cleanup: freeing outbox listener ctx for %.16s...",
+                      ctx->contact_fingerprint);
+        free(ctx);
+    }
+}
+
+/**
  * DHT listen callback - fires DNA_EVENT_OUTBOX_UPDATED when contact's outbox changes
  *
  * Called from DHT worker thread when:
@@ -5110,10 +5159,20 @@ size_t dna_engine_listen_outbox(
     for (int i = 0; i < engine->outbox_listener_count; i++) {
         if (engine->outbox_listeners[i].active &&
             strcmp(engine->outbox_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
-            QGP_LOG_WARN(LOG_TAG, "[LISTEN] Already listening (existing token=%zu)",
-                         engine->outbox_listeners[i].dht_token);
-            pthread_mutex_unlock(&engine->outbox_listeners_mutex);
-            return engine->outbox_listeners[i].dht_token;
+            /* Verify listener is actually active in DHT layer */
+            if (dht_is_listener_active(engine->outbox_listeners[i].dht_token)) {
+                QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Already listening (token=%zu verified active)",
+                             engine->outbox_listeners[i].dht_token);
+                pthread_mutex_unlock(&engine->outbox_listeners_mutex);
+                return engine->outbox_listeners[i].dht_token;
+            } else {
+                /* Stale entry - DHT listener was suspended/cancelled but engine not updated */
+                QGP_LOG_WARN(LOG_TAG, "[LISTEN] Stale entry (token=%zu inactive in DHT), recreating",
+                             engine->outbox_listeners[i].dht_token);
+                engine->outbox_listeners[i].active = false;
+                /* Don't return - continue to create new listener */
+                break;
+            }
         }
     }
 
@@ -5157,11 +5216,12 @@ size_t dna_engine_listen_outbox(
     ctx->contact_fingerprint[sizeof(ctx->contact_fingerprint) - 1] = '\0';
 
     /* Start DHT listen on chunk[0] key */
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Calling dht_listen()...");
-    size_t token = dht_listen(dht_ctx, chunk0_key, DHT_CHUNK_KEY_SIZE, outbox_listen_callback, ctx);
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Calling dht_listen_ex() with cleanup callback...");
+    size_t token = dht_listen_ex(dht_ctx, chunk0_key, DHT_CHUNK_KEY_SIZE,
+                                  outbox_listen_callback, ctx, outbox_listener_cleanup);
     if (token == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] dht_listen() returned 0 (failed)");
-        free(ctx);
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] dht_listen_ex() returned 0 (failed)");
+        free(ctx);  /* Cleanup not called on failure, free manually */
         pthread_mutex_unlock(&engine->outbox_listeners_mutex);
         return 0;
     }
@@ -5300,8 +5360,16 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     /* Cleanup */
     contacts_db_free_list(list);
 
+    /* Start contact request listener (for real-time contact request notifications) */
+    size_t contact_req_token = dna_engine_start_contact_request_listener(engine);
+    if (contact_req_token > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Contact request listener started, token=%zu", contact_req_token);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN] Failed to start contact request listener");
+    }
+
     engine->listeners_starting = false;
-    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Started %d/%zu outbox + %d/%zu presence listeners",
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Started %d/%zu outbox + %d/%zu presence + contact_req listeners",
                  started, count, presence_started, count);
     return started;
 }
@@ -5342,6 +5410,18 @@ typedef struct {
     dna_engine_t *engine;
     char contact_fingerprint[129];
 } presence_listener_ctx_t;
+
+/**
+ * Cleanup callback for presence listeners - frees the context when listener cancelled
+ */
+static void presence_listener_cleanup(void *user_data) {
+    presence_listener_ctx_t *ctx = (presence_listener_ctx_t *)user_data;
+    if (ctx) {
+        QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Cleanup: freeing presence listener ctx for %.16s...",
+                      ctx->contact_fingerprint);
+        free(ctx);
+    }
+}
 
 /**
  * DHT listen callback for presence - fires when contact publishes their presence
@@ -5417,8 +5497,20 @@ size_t dna_engine_start_presence_listener(
     for (int i = 0; i < engine->presence_listener_count; i++) {
         if (engine->presence_listeners[i].active &&
             strcmp(engine->presence_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
-            pthread_mutex_unlock(&engine->presence_listeners_mutex);
-            return engine->presence_listeners[i].dht_token;
+            /* Verify listener is actually active in DHT layer */
+            if (dht_is_listener_active(engine->presence_listeners[i].dht_token)) {
+                QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Already listening (token=%zu verified active)",
+                             engine->presence_listeners[i].dht_token);
+                pthread_mutex_unlock(&engine->presence_listeners_mutex);
+                return engine->presence_listeners[i].dht_token;
+            } else {
+                /* Stale entry - DHT listener was suspended/cancelled but engine not updated */
+                QGP_LOG_WARN(LOG_TAG, "[PRESENCE] Stale entry (token=%zu inactive in DHT), recreating",
+                             engine->presence_listeners[i].dht_token);
+                engine->presence_listeners[i].active = false;
+                /* Don't return - continue to create new listener */
+                break;
+            }
         }
     }
 
@@ -5452,10 +5544,11 @@ size_t dna_engine_start_presence_listener(
     ctx->contact_fingerprint[sizeof(ctx->contact_fingerprint) - 1] = '\0';
 
     /* Start DHT listen on presence key */
-    size_t token = dht_listen(dht_ctx, presence_key, 64, presence_listen_callback, ctx);
+    size_t token = dht_listen_ex(dht_ctx, presence_key, 64,
+                                  presence_listen_callback, ctx, presence_listener_cleanup);
     if (token == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "[PRESENCE] dht_listen() failed for %.16s...", contact_fingerprint);
-        free(ctx);
+        QGP_LOG_ERROR(LOG_TAG, "[PRESENCE] dht_listen_ex() failed for %.16s...", contact_fingerprint);
+        free(ctx);  /* Cleanup not called on failure, free manually */
         pthread_mutex_unlock(&engine->presence_listeners_mutex);
         return 0;
     }
@@ -5537,6 +5630,189 @@ void dna_engine_cancel_all_presence_listeners(dna_engine_t *engine)
     QGP_LOG_INFO(LOG_TAG, "Cancelled all presence listeners");
 
     pthread_mutex_unlock(&engine->presence_listeners_mutex);
+}
+
+/**
+ * Refresh all listeners (cancel stale and restart)
+ *
+ * Clears engine-level listener tracking and restarts for all contacts.
+ * Use after network changes when DHT is reconnected.
+ */
+int dna_engine_refresh_listeners(dna_engine_t *engine)
+{
+    if (!engine || !engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "[REFRESH] Cannot refresh - engine=%p identity_loaded=%d",
+                      (void*)engine, engine ? engine->identity_loaded : 0);
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[REFRESH] Refreshing all listeners...");
+
+    /* Get listener stats before refresh for debugging */
+    size_t total = 0, active = 0, suspended = 0;
+    dht_get_listener_stats(&total, &active, &suspended);
+    QGP_LOG_INFO(LOG_TAG, "[REFRESH] DHT layer: total=%zu active=%zu suspended=%zu",
+                 total, active, suspended);
+
+    /* Cancel all engine-level listener tracking (clears arrays) */
+    dna_engine_cancel_all_outbox_listeners(engine);
+    dna_engine_cancel_all_presence_listeners(engine);
+    dna_engine_cancel_contact_request_listener(engine);
+
+    /* Restart listeners for all contacts (includes contact request listener) */
+    int count = dna_engine_listen_all_contacts(engine);
+    QGP_LOG_INFO(LOG_TAG, "[REFRESH] Restarted %d listeners", count);
+
+    return count;
+}
+
+/* ============================================================================
+ * CONTACT REQUEST LISTENER (Real-time contact request notifications)
+ * ============================================================================ */
+
+/**
+ * Context passed to DHT contact request listen callback
+ */
+typedef struct {
+    dna_engine_t *engine;
+} contact_request_listener_ctx_t;
+
+/**
+ * Cleanup callback for contact request listener - frees the context when listener cancelled
+ */
+static void contact_request_listener_cleanup(void *user_data) {
+    contact_request_listener_ctx_t *ctx = (contact_request_listener_ctx_t *)user_data;
+    if (ctx) {
+        QGP_LOG_DEBUG(LOG_TAG, "[CONTACT_REQ] Cleanup: freeing contact request listener ctx");
+        free(ctx);
+    }
+}
+
+/**
+ * DHT callback when contact request data changes
+ * Fires DNA_EVENT_CONTACT_REQUEST_RECEIVED when new request arrives
+ */
+static bool contact_request_listen_callback(
+    const uint8_t *value,
+    size_t value_len,
+    bool expired,
+    void *user_data)
+{
+    contact_request_listener_ctx_t *ctx = (contact_request_listener_ctx_t *)user_data;
+    if (!ctx || !ctx->engine) {
+        return false;  /* Stop listening */
+    }
+
+    /* Don't fire events for expirations or empty values */
+    if (expired || !value || value_len == 0) {
+        return true;  /* Continue listening */
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[CONTACT_REQ] DHT listener fired - new contact request data (%zu bytes)",
+                 value_len);
+
+    /* Dispatch event to notify UI */
+    dna_event_t event = {0};
+    event.type = DNA_EVENT_CONTACT_REQUEST_RECEIVED;
+    dna_dispatch_event(ctx->engine, &event);
+
+    return true;  /* Continue listening */
+}
+
+/**
+ * Start contact request listener
+ *
+ * Listens on our contact request inbox key: SHA3-512(my_fingerprint + ":requests")
+ * When someone sends us a contact request, the listener fires and we emit
+ * DNA_EVENT_CONTACT_REQUEST_RECEIVED to refresh the UI.
+ *
+ * @return Listen token (> 0 on success, 0 on failure or already listening)
+ */
+size_t dna_engine_start_contact_request_listener(dna_engine_t *engine)
+{
+    if (!engine || !engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "[CONTACT_REQ] Cannot start listener - no identity loaded");
+        return 0;
+    }
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "[CONTACT_REQ] DHT not available");
+        return 0;
+    }
+
+    pthread_mutex_lock(&engine->contact_request_listener_mutex);
+
+    /* Check if already listening */
+    if (engine->contact_request_listener.active) {
+        /* Verify listener is actually active in DHT layer */
+        if (dht_is_listener_active(engine->contact_request_listener.dht_token)) {
+            QGP_LOG_DEBUG(LOG_TAG, "[CONTACT_REQ] Already listening (token=%zu verified active)",
+                         engine->contact_request_listener.dht_token);
+            pthread_mutex_unlock(&engine->contact_request_listener_mutex);
+            return engine->contact_request_listener.dht_token;
+        } else {
+            /* Stale entry - DHT listener was suspended/cancelled but engine not updated */
+            QGP_LOG_WARN(LOG_TAG, "[CONTACT_REQ] Stale entry (token=%zu inactive in DHT), recreating",
+                         engine->contact_request_listener.dht_token);
+            engine->contact_request_listener.active = false;
+        }
+    }
+
+    /* Generate inbox key: SHA3-512(fingerprint + ":requests") */
+    uint8_t inbox_key[64];
+    dht_generate_requests_inbox_key(engine->fingerprint, inbox_key);
+
+    /* Create callback context */
+    contact_request_listener_ctx_t *ctx = malloc(sizeof(contact_request_listener_ctx_t));
+    if (!ctx) {
+        pthread_mutex_unlock(&engine->contact_request_listener_mutex);
+        return 0;
+    }
+    ctx->engine = engine;
+
+    /* Start DHT listen on inbox key */
+    size_t token = dht_listen_ex(dht_ctx, inbox_key, 64,
+                                  contact_request_listen_callback, ctx, contact_request_listener_cleanup);
+    if (token == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[CONTACT_REQ] dht_listen_ex() failed");
+        free(ctx);  /* Cleanup not called on failure, free manually */
+        pthread_mutex_unlock(&engine->contact_request_listener_mutex);
+        return 0;
+    }
+
+    /* Store listener info */
+    engine->contact_request_listener.dht_token = token;
+    engine->contact_request_listener.active = true;
+
+    QGP_LOG_INFO(LOG_TAG, "[CONTACT_REQ] Listener started (token=%zu)", token);
+
+    pthread_mutex_unlock(&engine->contact_request_listener_mutex);
+    return token;
+}
+
+/**
+ * Cancel contact request listener
+ */
+void dna_engine_cancel_contact_request_listener(dna_engine_t *engine)
+{
+    if (!engine) {
+        return;
+    }
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+
+    pthread_mutex_lock(&engine->contact_request_listener_mutex);
+
+    if (engine->contact_request_listener.active && dht_ctx) {
+        dht_cancel_listen(dht_ctx, engine->contact_request_listener.dht_token);
+        QGP_LOG_INFO(LOG_TAG, "[CONTACT_REQ] Listener cancelled (token=%zu)",
+                     engine->contact_request_listener.dht_token);
+    }
+    engine->contact_request_listener.active = false;
+    engine->contact_request_listener.dht_token = 0;
+
+    pthread_mutex_unlock(&engine->contact_request_listener_mutex);
 }
 
 /* ============================================================================

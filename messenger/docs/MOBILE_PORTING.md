@@ -353,7 +353,7 @@ The DHT listen API was extended to support reliable Android background operation
 
 ```c
 // Maximum simultaneous listeners (prevents resource exhaustion)
-#define DHT_MAX_LISTENERS 256
+#define DHT_MAX_LISTENERS 1024
 
 // Extended listen with cleanup callback
 size_t dht_listen_ex(ctx, key, key_len, callback, user_data, cleanup_fn);
@@ -582,7 +582,7 @@ export ANDROID_NDK=/path/to/ndk
 - Added Android `DnaMessengerService` ForegroundService
 - Background polling every 60 seconds with WakeLock
 - Extended DHT listen API: `dht_listen_ex()`, `dht_cancel_all_listeners()`, `dht_resubscribe_all_listeners()`
-- Added `DHT_MAX_LISTENERS` limit (256)
+- Added `DHT_MAX_LISTENERS` limit (1024)
 - P2P infrastructure preserved for future audio/video
 
 ### 2025-11-28: Android SDK Complete (v0.1.130+)

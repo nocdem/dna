@@ -44,7 +44,6 @@ class EventHandler {
   final Ref _ref;
   StreamSubscription<DnaEvent>? _subscription;
   Timer? _refreshTimer;
-  Timer? _contactRequestsTimer;
   Timer? _presenceTimer;
   Timer? _outboxDebounceTimer;
   final Set<String> _pendingOutboxFingerprints = {};
@@ -66,8 +65,7 @@ class EventHandler {
         _ref.read(dhtConnectionStateProvider.notifier).state =
             DhtConnectionState.connected;
         // DHT listeners are started by C engine on DHT connect (dna_engine.c:195)
-        // Start polling since we're connected
-        _startContactRequestsPolling();
+        // Start presence polling since we're connected
         _startPresencePolling();
         // Refresh identity profiles (display names/avatars) now that DHT is connected
         _refreshIdentityProfiles();
@@ -88,8 +86,6 @@ class EventHandler {
         // Refresh identity profiles (display names/avatars) now that DHT is connected
         // This fixes the race condition where prefetch fails on startup before DHT ready
         _refreshIdentityProfiles();
-        // Start periodic contact request polling (every 60 seconds)
-        _startContactRequestsPolling();
         // Start periodic presence refresh (every 30 seconds)
         _startPresencePolling();
 
@@ -97,8 +93,6 @@ class EventHandler {
         _ref.read(dhtConnectionStateProvider.notifier).state =
             DhtConnectionState.disconnected;
         // Stop polling when disconnected
-        _contactRequestsTimer?.cancel();
-        _contactRequestsTimer = null;
         _presenceTimer?.cancel();
         _presenceTimer = null;
 
@@ -176,6 +170,13 @@ class EventHandler {
       case OutboxUpdatedEvent(contactFingerprint: final contactFp):
         // Contact's outbox has new messages - debounce to coalesce rapid events
         _scheduleOutboxCheck(contactFp);
+        break;
+
+      case ContactRequestReceivedEvent():
+        // New contact request received via DHT listener - refresh contact requests
+        // Also refresh contacts since reciprocal requests are auto-approved (adds contact)
+        _ref.invalidate(contactRequestsProvider);
+        _ref.read(contactsProvider.notifier).refresh();
         break;
 
       case ErrorEvent(message: final errorMsg):
@@ -256,14 +257,6 @@ class EventHandler {
     });
   }
 
-  /// Start periodic polling for contact requests (every 60 seconds)
-  void _startContactRequestsPolling() {
-    _contactRequestsTimer?.cancel();
-    _contactRequestsTimer = Timer.periodic(const Duration(seconds: 60), (_) {
-      _ref.invalidate(contactRequestsProvider);
-    });
-  }
-
   /// Start periodic presence refresh (every 30 seconds)
   /// Announces our presence to DHT
   void _startPresencePolling() {
@@ -289,8 +282,6 @@ class EventHandler {
   void pausePolling() {
     _presenceTimer?.cancel();
     _presenceTimer = null;
-    _contactRequestsTimer?.cancel();
-    _contactRequestsTimer = null;
   }
 
   /// Resume all polling timers (call when app comes to foreground)
@@ -300,7 +291,6 @@ class EventHandler {
   void resumePolling() {
     final dhtState = _ref.read(dhtConnectionStateProvider);
     if (dhtState == DhtConnectionState.connected) {
-      _startContactRequestsPolling();
       _startPresencePolling();
     }
   }
@@ -342,7 +332,6 @@ class EventHandler {
   void dispose() {
     _subscription?.cancel();
     _refreshTimer?.cancel();
-    _contactRequestsTimer?.cancel();
     _presenceTimer?.cancel();
     _outboxDebounceTimer?.cancel();
   }

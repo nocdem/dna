@@ -1811,6 +1811,20 @@ DNA_API void dna_engine_cancel_all_outbox_listeners(
     dna_engine_t *engine
 );
 
+/**
+ * Refresh all listeners (cancel stale and restart)
+ *
+ * Clears engine-level listener tracking arrays and restarts listeners
+ * for all contacts. Use after network changes when DHT is reconnected
+ * to ensure listeners are properly resubscribed.
+ *
+ * @param engine    Engine instance
+ * @return          Number of listeners started, or -1 on error
+ */
+DNA_API int dna_engine_refresh_listeners(
+    dna_engine_t *engine
+);
+
 /* ============================================================================
  * 7.6 DELIVERY TRACKERS (Message delivery confirmation)
  * ============================================================================ */

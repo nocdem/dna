@@ -13,6 +13,8 @@
 #include <mutex>
 #include <memory>
 #include <atomic>
+#include <chrono>
+#include <future>
 
 // Unified logging (respects config log level)
 extern "C" {
@@ -75,120 +77,9 @@ extern "C" size_t dht_listen(
     dht_listen_callback_t callback,
     void *user_data)
 {
-    if (!ctx || !key || key_len == 0 || !callback) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters");
-        return 0;
-    }
-
-    try {
-        // Convert C key to InfoHash
-        dht::InfoHash hash = dht::InfoHash::get(key, key_len);
-        std::string hash_str = hash.toString().substr(0, 16);
-
-        QGP_LOG_DEBUG(LOG_TAG, "Starting subscription for key %s...", hash_str.c_str());
-
-        // Generate unique token for this subscription
-        size_t token = next_listen_token.fetch_add(1);
-
-        // Check listener limit (Phase 14)
-        {
-            std::lock_guard<std::mutex> lock(listeners_mutex);
-            if (active_listeners.size() >= DHT_MAX_LISTENERS) {
-                QGP_LOG_ERROR(LOG_TAG, "Maximum listeners reached (%d)", DHT_MAX_LISTENERS);
-                return 0;
-            }
-        }
-
-        // Create listener context
-        auto listener_ctx = std::make_shared<ListenerContext>();
-        listener_ctx->callback = callback;
-        listener_ctx->user_data = user_data;
-        listener_ctx->cleanup = nullptr;  // No cleanup for basic API
-        listener_ctx->active = true;
-        listener_ctx->ctx = ctx;
-        listener_ctx->key_len = 0;  // No key storage for basic API
-
-        // Create C++ callback that wraps the C callback
-        // We need to capture the token and listener_ctx by value (shared_ptr)
-        auto cpp_callback = [token, listener_ctx](
-            const std::vector<std::shared_ptr<dht::Value>>& values,
-            bool expired
-        ) -> bool {
-            // Check if listener is still active
-            std::lock_guard<std::mutex> lock(listeners_mutex);
-            if (!listener_ctx->active) {
-                QGP_LOG_DEBUG(LOG_TAG, "Token %zu is no longer active, stopping", token);
-                return false;  // Stop listening
-            }
-
-            // Handle expiration notification
-            if (expired) {
-                QGP_LOG_DEBUG(LOG_TAG, "Token %zu received expiration notification", token);
-                bool continue_listening = listener_ctx->callback(
-                    nullptr, 0, true, listener_ctx->user_data
-                );
-                return continue_listening;
-            }
-
-            // Handle value notifications
-            if (values.empty()) {
-                return true;  // Continue listening (no values yet)
-            }
-
-            QGP_LOG_DEBUG(LOG_TAG, "Token %zu received %zu value(s)", token, values.size());
-
-            // Invoke C callback for each value
-            bool continue_listening = true;
-            for (const auto& val : values) {
-                if (!val || val->data.empty()) {
-                    continue;
-                }
-
-                // Call C callback (thread-safe - callback must handle threading)
-                bool result = listener_ctx->callback(
-                    val->data.data(),
-                    val->data.size(),
-                    false,
-                    listener_ctx->user_data
-                );
-
-                if (!result) {
-                    QGP_LOG_DEBUG(LOG_TAG, "Token %zu callback returned false, stopping", token);
-                    continue_listening = false;
-                    break;
-                }
-            }
-
-            return continue_listening;
-        };
-
-        // Start listening via OpenDHT
-        // This returns a std::future<size_t> containing the OpenDHT token
-        listener_ctx->future_token = ctx->runner.listen(hash, cpp_callback);
-
-        // Wait for the OpenDHT token (may block briefly during DHT startup)
-        try {
-            listener_ctx->opendht_token = listener_ctx->future_token.get();
-
-            QGP_LOG_DEBUG(LOG_TAG, "Subscription active for token %zu (OpenDHT: %zu)",
-                          token, listener_ctx->opendht_token);
-        } catch (const std::exception& e) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to get OpenDHT token: %s", e.what());
-            return 0;
-        }
-
-        // Store listener context in global map
-        {
-            std::lock_guard<std::mutex> lock(listeners_mutex);
-            active_listeners[token] = listener_ctx;
-        }
-
-        return token;
-
-    } catch (const std::exception& e) {
-        QGP_LOG_ERROR(LOG_TAG, "Exception while starting listener: %s", e.what());
-        return 0;
-    }
+    // Delegate to extended version with no cleanup callback
+    // This ensures all listeners store key_data for network-change resilience
+    return dht_listen_ex(ctx, key, key_len, callback, user_data, nullptr);
 }
 
 /**
@@ -366,8 +257,16 @@ extern "C" size_t dht_listen_ex(
         // Start listening via OpenDHT
         listener_ctx->future_token = ctx->runner.listen(hash, cpp_callback);
 
-        // Wait for the OpenDHT token
+        // Wait for the OpenDHT token with timeout (avoid ANR on bad DHT state)
         try {
+            auto status = listener_ctx->future_token.wait_for(std::chrono::seconds(5));
+            if (status == std::future_status::timeout) {
+                QGP_LOG_ERROR(LOG_TAG, "Timeout waiting for OpenDHT token (5s) - DHT may be in bad state");
+                if (cleanup) {
+                    cleanup(user_data);
+                }
+                return 0;
+            }
             listener_ctx->opendht_token = listener_ctx->future_token.get();
             QGP_LOG_DEBUG(LOG_TAG, "Extended subscription active for token %zu (OpenDHT: %zu)",
                           token, listener_ctx->opendht_token);
@@ -547,4 +446,45 @@ extern "C" size_t dht_resubscribe_all_listeners(
 
     QGP_LOG_INFO(LOG_TAG, "Resubscribed %zu/%zu listeners", resubscribed, active_listeners.size());
     return resubscribed;
+}
+
+/**
+ * Check if a listener is currently active in the DHT layer
+ */
+extern "C" bool dht_is_listener_active(size_t token)
+{
+    if (token == 0) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(listeners_mutex);
+    auto it = active_listeners.find(token);
+    if (it == active_listeners.end()) {
+        return false;
+    }
+    return it->second->active;
+}
+
+/**
+ * Get listener statistics for health monitoring
+ */
+extern "C" void dht_get_listener_stats(size_t *total, size_t *active, size_t *suspended)
+{
+    std::lock_guard<std::mutex> lock(listeners_mutex);
+
+    size_t t = active_listeners.size();
+    size_t a = 0;
+    size_t s = 0;
+
+    for (const auto& [token, ctx] : active_listeners) {
+        if (ctx->active) {
+            a++;
+        } else {
+            s++;
+        }
+    }
+
+    if (total) *total = t;
+    if (active) *active = a;
+    if (suspended) *suspended = s;
 }

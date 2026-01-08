@@ -24,6 +24,7 @@ Internal DNA engine implementation with async task queue.
 | `int dna_start_workers(dna_engine_t*)` | Start worker threads |
 | `void dna_stop_workers(dna_engine_t*)` | Stop worker threads |
 | `void* dna_worker_thread(void*)` | Worker thread entry point |
+| `void* dna_engine_setup_listeners_thread(void*)` | Background thread for DHT listener setup (avoids deadlock) |
 
 ### Task Execution
 
