@@ -175,8 +175,13 @@ class EventHandler {
       case ContactRequestReceivedEvent():
         // New contact request received via DHT listener - refresh contact requests
         // Also refresh contacts since reciprocal requests are auto-approved (adds contact)
+        // IMPORTANT: Must wait for request fetch to complete (triggers auto-approval)
+        // before refreshing contacts, otherwise contacts refresh happens too early
         _ref.invalidate(contactRequestsProvider);
-        _ref.read(contactsProvider.notifier).refresh();
+        _ref.read(contactRequestsProvider.future).then((_) {
+          // Auto-approval completed, now refresh contacts to show new contact
+          _ref.read(contactsProvider.notifier).refresh();
+        });
         break;
 
       case ErrorEvent(message: final errorMsg):
