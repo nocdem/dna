@@ -367,18 +367,16 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 
 **IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.
 
-### CHECKPOINT 9: VERSION PUBLISH TO DHT (After Release Push)
-**After pushing a release, publish the new version info to DHT so clients can check for updates.**
+### CHECKPOINT 9: VERSION PUBLISH TO DHT (MANDATORY After Every Push)
+**After EVERY push, publish the new version info to DHT so clients can check for updates.**
 
-**When to publish:**
-- After pushing a significant release (not every commit)
-- When you want users to see an update notification in the app
+**IMPORTANT:** This is MANDATORY after every push that includes a version bump. Clients check DHT for the latest version and will show update notifications based on this.
 
 **CLI Command:**
 ```bash
-CLI=/opt/dna-messenger/build/cli/dna-messenger-cli
-$CLI load                             # Load Claude's identity
-$CLI publish-version --lib 0.3.92 --app 0.99.29 --nodus 0.4.3 \
+cd /opt/dna-messenger/build
+./cli/dna-messenger-cli publish-version \
+    --lib 0.3.146 --app 0.99.96 --nodus 0.4.3 \
     --lib-min 0.3.50 --app-min 0.99.0 --nodus-min 0.4.0
 ```
 
@@ -387,13 +385,13 @@ $CLI publish-version --lib 0.3.92 --app 0.99.29 --nodus 0.4.3 \
 - Minimum versions define compatibility - apps below minimum may show warnings
 - DHT key: `SHA3-512("dna:system:version")`
 - Version info is signed with Dilithium5
+- Update the version numbers in the command above to match current versions
 
 **Procedure:**
-1. **BUILD** the CLI: `cd build && make dna-messenger-cli`
-2. **LOAD** identity: `$CLI load`
-3. **PUBLISH** with current versions from header files
-4. **VERIFY**: `$CLI check-version`
-5. **STATE**: "CHECKPOINT 9 COMPLETE - Version published to DHT: lib=X.Y.Z app=X.Y.Z nodus=X.Y.Z"
+1. **PUSH** changes to both repos (gitlab + origin)
+2. **PUBLISH** version to DHT using command above (update version numbers first!)
+3. **VERIFY**: `./cli/dna-messenger-cli check-version`
+4. **STATE**: "CHECKPOINT 9 COMPLETE - Version published to DHT: lib=X.Y.Z app=X.Y.Z nodus=X.Y.Z"
 
 **ENFORCEMENT**: Each checkpoint requires explicit completion statement. Missing ANY checkpoint statement indicates protocol violation and requires restart.
 
