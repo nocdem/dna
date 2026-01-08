@@ -450,13 +450,9 @@ extern "C" size_t dht_resubscribe_all_listeners(
     std::lock_guard<std::mutex> lock(listeners_mutex);
 
     size_t resubscribed = 0;
-    QGP_LOG_INFO(LOG_TAG, "Resubscribing %zu active listeners", active_listeners.size());
+    QGP_LOG_INFO(LOG_TAG, "Resubscribing %zu listeners after network change", active_listeners.size());
 
     for (auto& [token, listener_ctx] : active_listeners) {
-        if (!listener_ctx->active) {
-            continue;
-        }
-
         // Skip listeners without key data (created with basic API)
         if (listener_ctx->key_data.empty()) {
             QGP_LOG_DEBUG(LOG_TAG, "Skipping token %zu (no key data)", token);
@@ -501,6 +497,7 @@ extern "C" size_t dht_resubscribe_all_listeners(
             // Resubscribe
             auto future = ctx->runner.listen(hash, cpp_callback);
             listener_ctx->opendht_token = future.get();
+            listener_ctx->active = true;  // Re-activate after successful resubscription
 
             QGP_LOG_DEBUG(LOG_TAG, "Resubscribed token %zu (new OpenDHT: %zu)",
                           token, listener_ctx->opendht_token);
