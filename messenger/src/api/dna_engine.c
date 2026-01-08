@@ -184,6 +184,7 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
      * engine-level arrays still show active=true, blocking new listener creation. */
     dna_engine_cancel_all_outbox_listeners(engine);
     dna_engine_cancel_all_presence_listeners(engine);
+    dna_engine_cancel_contact_request_listener(engine);
 
     int count = dna_engine_listen_all_contacts(engine);
     QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: started %d listeners", count);
