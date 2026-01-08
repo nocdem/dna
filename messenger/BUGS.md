@@ -13,10 +13,11 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-- [ ] **[MIXED] P2 - DHT listeners don't survive network changes (WiFi→mobile)** - After network change, engine-level arrays get out of sync with DHT layer. Branch `fix/dht-listeners-network-change` (v0.3.153): switched to `dht_listen_ex()` with cleanup callbacks, added `dht_is_listener_active()` to verify DHT layer state, added contact request listener for real-time notifications, removed Android 60s polling timer for better battery. **NEEDS TESTING ON DEVICE**
-
+(none)
 
 ## Fixed Bugs
+
+- [x] **[MIXED] P2 - DHT listeners don't survive network changes (WiFi→mobile)** - After network change, engine-level arrays got out of sync with DHT layer. Fixed by: running listener setup on background thread (avoids deadlock), adding 5s timeout to `dht_listen_ex()`, cancelling contact request listener in setup thread, refreshing contacts on contact request event (auto-approval for reciprocal requests), increasing `DHT_MAX_LISTENERS` to 1024, removing 60s contact request polling (use DHT listener instead). (v0.3.155)
 
 - [x] **[FLUTTER] P2 - Unread count stops working after opening/closing chat** - `selectedContactProvider` was not being reset to null when closing chat via back navigation. This caused `isChatOpen=true` even when chat was closed, skipping `incrementCount()`. Fixed by resetting to null in ChatScreen's `dispose()`. (v0.99.97)
 
