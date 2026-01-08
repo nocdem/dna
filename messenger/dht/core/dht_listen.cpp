@@ -13,6 +13,8 @@
 #include <mutex>
 #include <memory>
 #include <atomic>
+#include <chrono>
+#include <future>
 
 // Unified logging (respects config log level)
 extern "C" {
@@ -255,8 +257,16 @@ extern "C" size_t dht_listen_ex(
         // Start listening via OpenDHT
         listener_ctx->future_token = ctx->runner.listen(hash, cpp_callback);
 
-        // Wait for the OpenDHT token
+        // Wait for the OpenDHT token with timeout (avoid ANR on bad DHT state)
         try {
+            auto status = listener_ctx->future_token.wait_for(std::chrono::seconds(5));
+            if (status == std::future_status::timeout) {
+                QGP_LOG_ERROR(LOG_TAG, "Timeout waiting for OpenDHT token (5s) - DHT may be in bad state");
+                if (cleanup) {
+                    cleanup(user_data);
+                }
+                return 0;
+            }
             listener_ctx->opendht_token = listener_ctx->future_token.get();
             QGP_LOG_DEBUG(LOG_TAG, "Extended subscription active for token %zu (OpenDHT: %zu)",
                           token, listener_ctx->opendht_token);
