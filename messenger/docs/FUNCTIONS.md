@@ -1034,6 +1034,7 @@ Core DHT (Distributed Hash Table) operations for decentralized storage.
 | `size_t dht_get_active_listen_count(dht_context_t*)` | Get active subscription count |
 | `size_t dht_listen_ex(dht_context_t*, const uint8_t*, size_t, dht_listen_callback_t, void*, dht_listen_cleanup_t)` | Listen with cleanup callback |
 | `void dht_cancel_all_listeners(dht_context_t*)` | Cancel all listeners |
+| `void dht_suspend_all_listeners(dht_context_t*)` | Suspend listeners for reinit |
 | `size_t dht_resubscribe_all_listeners(dht_context_t*)` | Resubscribe after reconnect |
 
 ### 9.6 DHT Keyserver (`dht_keyserver.h`)

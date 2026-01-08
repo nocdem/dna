@@ -293,10 +293,9 @@ int dht_singleton_reinit(void)
         return -1;
     }
 
-    // Cancel all DHT listeners before stopping
-    if (g_dht_context) {
-        dht_cancel_all_listeners(g_dht_context);
-    }
+    // Suspend all DHT listeners before stopping (preserves for resubscription)
+    // Use suspend instead of cancel to keep listener contexts in memory
+    dht_suspend_all_listeners(g_dht_context);
 
     // Stop and free current DHT context (but keep identity buffer)
     if (g_dht_context) {

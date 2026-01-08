@@ -438,6 +438,43 @@ extern "C" void dht_cancel_all_listeners(
 }
 
 /**
+ * Suspend all active listeners (Phase 14)
+ *
+ * Cancels OpenDHT subscriptions but preserves listener contexts for resubscription.
+ * Does NOT clear the map or call cleanup callbacks.
+ */
+extern "C" void dht_suspend_all_listeners(
+    dht_context_t *ctx)
+{
+    std::lock_guard<std::mutex> lock(listeners_mutex);
+
+    QGP_LOG_INFO(LOG_TAG, "Suspending %zu active listeners for reinit", active_listeners.size());
+
+    for (auto& [token, listener_ctx] : active_listeners) {
+        if (!listener_ctx->active) {
+            continue;
+        }
+
+        QGP_LOG_DEBUG(LOG_TAG, "Suspending listener token %zu", token);
+        listener_ctx->active = false;
+
+        // Cancel OpenDHT subscription (only if context is valid)
+        if (ctx) {
+            try {
+                ctx->runner.cancelListen(dht::InfoHash(), listener_ctx->opendht_token);
+            } catch (const std::exception& e) {
+                QGP_LOG_ERROR(LOG_TAG, "Exception suspending listener %zu: %s", token, e.what());
+            }
+        }
+
+        // Do NOT call cleanup callback
+        // Do NOT remove from map
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "All listeners suspended (preserved for resubscription)");
+}
+
+/**
  * Resubscribe all active listeners (Phase 14)
  */
 extern "C" size_t dht_resubscribe_all_listeners(

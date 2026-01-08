@@ -190,6 +190,24 @@ void dht_cancel_all_listeners(
 );
 
 /**
+ * Suspend all active listeners (Phase 14)
+ *
+ * Cancels all OpenDHT subscriptions but preserves listener contexts in memory
+ * for later resubscription. Unlike dht_cancel_all_listeners(), this does NOT:
+ * - Call cleanup callbacks
+ * - Clear the listener map
+ * - Free listener resources
+ *
+ * Use this before DHT reinit (network change), then call
+ * dht_resubscribe_all_listeners() after the new DHT context is ready.
+ *
+ * @param ctx DHT context (may be NULL if context was already freed)
+ */
+void dht_suspend_all_listeners(
+    dht_context_t *ctx
+);
+
+/**
  * Resubscribe all active listeners (Phase 14)
  *
  * Re-registers all active listeners with OpenDHT. This should be called
