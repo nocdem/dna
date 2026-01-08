@@ -58,10 +58,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
 // Public key export (crypto/utils/qgp_key.c)
 int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_file);
 
-// Legacy keyring stubs (return NULL - keyring not used in DNA Messenger)
-// These exist only for API compatibility with old dna_api.c code
-char* keyring_find_key(const char *name);
-char* keyring_find_private_key(const char *name, const char *key_type);
+// NOTE: keyring_find_key/keyring_find_private_key removed in v0.3.150
 
 // ASCII Armor (armor.c)
 bool is_armored_file(const char *path);

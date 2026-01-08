@@ -293,16 +293,11 @@ int messenger_load_pubkey(
     char *fingerprint_out  // NEW: Output fingerprint (129 bytes: 128 hex + null), can be NULL
 );
 
-/**
- * List all public keys in keyserver
- *
- * @param ctx: Messenger context
- * @return: 0 on success, -1 on error
- */
-int messenger_list_pubkeys(const messenger_context_t *ctx);
+// NOTE: messenger_list_pubkeys() removed in v0.3.150 - legacy keyserver API
+// Use messenger_get_contact_list() for local contacts
 
 /**
- * Get contact list (identities from keyserver)
+ * Get contact list (identities from local database)
  *
  * Returns array of identity strings. Caller must free each string and the array.
  *

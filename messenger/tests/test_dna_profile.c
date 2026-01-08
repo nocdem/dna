@@ -77,25 +77,8 @@ void test_wallet_validation(void) {
     TEST_ASSERT(!dna_validate_wallet_address(valid_cf, "unknown"), "Unknown network rejected");
 }
 
-// ===== Test: IPFS CID Validation =====
-void test_ipfs_validation(void) {
-    TEST_START("IPFS CID Validation");
-
-    // Valid CIDv1
-    const char *valid_cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi";
-    TEST_ASSERT(dna_validate_ipfs_cid(valid_cid), "Valid CIDv1 accepted");
-
-    // Valid CIDv0
-    const char *valid_cid_v0 = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
-    TEST_ASSERT(dna_validate_ipfs_cid(valid_cid_v0), "Valid CIDv0 accepted");
-
-    // Invalid CIDs
-    TEST_ASSERT(!dna_validate_ipfs_cid(""), "Empty CID rejected");
-    TEST_ASSERT(!dna_validate_ipfs_cid("invalid"), "Invalid CID rejected");
-    TEST_ASSERT(!dna_validate_ipfs_cid("bafybei"), "Too short CID rejected");
-}
-
 // ===== Test: DNA Name Validation =====
+// NOTE: test_ipfs_validation() removed in v0.3.150 - IPFS support removed in commit eb88052
 void test_name_validation(void) {
     TEST_START("DNA Name Validation");
 
@@ -232,7 +215,6 @@ int main(void) {
 
     test_identity_creation();
     test_wallet_validation();
-    test_ipfs_validation();
     test_name_validation();
     test_network_checking();
     test_wallet_getters_setters();

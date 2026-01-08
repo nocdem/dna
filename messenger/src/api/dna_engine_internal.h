@@ -444,7 +444,7 @@ struct dna_engine {
     bool keys_encrypted;             /* True if identity keys are password-protected */
 
     /* Wallet */
-    wallet_list_t *wallet_list;      /* Cached Cellframe wallet list (legacy) */
+    // NOTE: wallet_list removed in v0.3.150 - was never assigned (dead code)
     blockchain_wallet_list_t *blockchain_wallets;  /* Multi-chain wallet list */
     bool wallets_loaded;             /* True if wallets have been scanned */
 

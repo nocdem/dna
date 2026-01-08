@@ -1014,10 +1014,8 @@ void dna_engine_destroy(dna_engine_t *engine) {
         messenger_free(engine->messenger);
     }
 
-    /* Free wallet lists */
-    if (engine->wallet_list) {
-        wallet_list_free(engine->wallet_list);
-    }
+    /* Free wallet list */
+    // NOTE: engine->wallet_list removed in v0.3.150 - was never assigned (dead code)
     if (engine->blockchain_wallets) {
         blockchain_wallet_list_free(engine->blockchain_wallets);
     }

@@ -298,15 +298,17 @@ Low-level cryptographic API for message encryption/decryption with post-quantum 
 
 | Function | Description |
 |----------|-------------|
-| `dna_error_t dna_encrypt_message(...)` | Encrypt message for recipient(s) by name |
 | `dna_error_t dna_encrypt_message_raw(...)` | Encrypt message with raw keys (for DB integration) |
+
+<!-- NOTE: dna_encrypt_message() removed in v0.3.150 - used broken keyring stubs -->
 
 ### 2.5 Message Decryption
 
 | Function | Description |
 |----------|-------------|
-| `dna_error_t dna_decrypt_message(...)` | Decrypt message using keyring name (v0.08: returns sender timestamp) |
 | `dna_error_t dna_decrypt_message_raw(...)` | Decrypt message with raw keys (v0.08: returns sender timestamp) |
+
+<!-- NOTE: dna_decrypt_message() removed in v0.3.150 - used broken keyring stubs -->
 
 ### 2.6 Signature Operations
 
@@ -317,10 +319,8 @@ Low-level cryptographic API for message encryption/decryption with post-quantum 
 
 ### 2.7 Key Management
 
-| Function | Description |
-|----------|-------------|
-| `dna_error_t dna_load_key(...)` | Load key from keyring by name |
-| `dna_error_t dna_load_pubkey(...)` | Load public key from keyring |
+<!-- NOTE: dna_load_key() and dna_load_pubkey() removed in v0.3.150 - used broken keyring stubs -->
+<!-- Keys are now managed through dna_engine identity system -->
 
 ### 2.8 Utility Functions
 
@@ -378,7 +378,6 @@ Core messenger functionality including identity management, key generation, mess
 |----------|-------------|
 | `int messenger_store_pubkey(...)` | Store public key in DHT keyserver |
 | `int messenger_load_pubkey(...)` | Load public key from cache or DHT |
-| `int messenger_list_pubkeys(messenger_context_t*)` | List all public keys in keyserver |
 | `int messenger_get_contact_list(...)` | Get contact list |
 | `int messenger_sync_contacts_to_dht(messenger_context_t*)` | Sync contacts to DHT |
 | `int messenger_sync_contacts_from_dht(messenger_context_t*)` | Sync contacts from DHT |

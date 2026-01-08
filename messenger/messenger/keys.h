@@ -64,16 +64,8 @@ int messenger_load_pubkey(
     char *fingerprint_out
 );
 
-/**
- * List all identities in keyserver
- *
- * Fetches list from cpunk.io API and displays to console.
- * Legacy function - may be deprecated in favor of local contact list.
- *
- * @param ctx: Messenger context
- * @return: 0 on success, -1 on error
- */
-int messenger_list_pubkeys(const messenger_context_t *ctx);
+// NOTE: messenger_list_pubkeys() removed in v0.3.150 - legacy keyserver API
+// Use messenger_get_contact_list() for local contacts
 
 /**
  * Get contact list from local database

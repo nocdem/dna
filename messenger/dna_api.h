@@ -103,40 +103,8 @@ void dna_buffer_free(dna_buffer_t *buffer);
 // MESSAGE ENCRYPTION
 // ============================================================================
 
-/**
- * Encrypt message for recipient(s)
- *
- * Memory-based encryption workflow:
- * 1. Load recipient public keys (from keyring by name)
- * 2. Load sender's signing key
- * 3. Sign plaintext message
- * 4. Generate random DEK
- * 5. Encrypt message with AES-256-GCM
- * 6. Wrap DEK for each recipient with Kyber1024 (ML-KEM-1024)
- * 7. Return ciphertext buffer
- *
- * Format: [header | recipient_entries | nonce | ciphertext | tag | signature]
- *
- * @param ctx: DNA context
- * @param plaintext: Plaintext message buffer
- * @param plaintext_len: Plaintext length
- * @param recipient_names: Array of recipient names (keyring lookup)
- * @param recipient_count: Number of recipients (1-255)
- * @param sender_key_name: Sender's key name (for signing)
- * @param ciphertext_out: Output ciphertext buffer (caller must free)
- * @param ciphertext_len_out: Output ciphertext length
- * @return: DNA_OK on success, error code otherwise
- */
-dna_error_t dna_encrypt_message(
-    dna_context_t *ctx,
-    const uint8_t *plaintext,
-    size_t plaintext_len,
-    const char **recipient_names,
-    size_t recipient_count,
-    const char *sender_key_name,
-    uint8_t **ciphertext_out,
-    size_t *ciphertext_len_out
-);
+// NOTE: dna_encrypt_message() removed in v0.3.150 - used broken keyring stubs
+// Use dna_encrypt_message_raw() instead with explicit key parameters
 
 /**
  * Encrypt message with raw keys (for offline delivery)
@@ -170,40 +138,8 @@ dna_error_t dna_encrypt_message_raw(
 // MESSAGE DECRYPTION
 // ============================================================================
 
-/**
- * Decrypt message
- *
- * Memory-based decryption workflow:
- * 1. Load recipient's private key (from keyring by name)
- * 2. Parse ciphertext header
- * 3. Try each recipient entry (Kyber1024 decapsulation)
- * 4. Unwrap DEK with KEK
- * 5. Decrypt with AES-256-GCM (verifies authentication tag)
- * 6. Verify signature
- * 7. Return plaintext buffer and sender's public key
- *
- * @param ctx: DNA context
- * @param ciphertext: Encrypted message buffer
- * @param ciphertext_len: Ciphertext length
- * @param recipient_key_name: Recipient's key name (for decryption)
- * @param plaintext_out: Output plaintext buffer (caller must free)
- * @param plaintext_len_out: Output plaintext length
- * @param sender_pubkey_out: Sender's public key (for verification, caller must free)
- * @param sender_pubkey_len_out: Sender's public key length
- * @param timestamp_out: v0.08: Sender's timestamp (can be NULL if not needed)
- * @return: DNA_OK on success, error code otherwise
- */
-dna_error_t dna_decrypt_message(
-    dna_context_t *ctx,
-    const uint8_t *ciphertext,
-    size_t ciphertext_len,
-    const char *recipient_key_name,
-    uint8_t **plaintext_out,
-    size_t *plaintext_len_out,
-    uint8_t **sender_pubkey_out,
-    size_t *sender_pubkey_len_out,
-    uint64_t *timestamp_out
-);
+// NOTE: dna_decrypt_message() removed in v0.3.150 - used broken keyring stubs
+// Use dna_decrypt_message_raw() instead with explicit key parameters
 
 /**
  * Decrypt message with raw keys (for offline delivery)
@@ -286,43 +222,12 @@ dna_error_t dna_verify_message(
 );
 
 // ============================================================================
-// KEY MANAGEMENT (Phase 2 - Basic)
+// KEY MANAGEMENT
 // ============================================================================
 
-/**
- * Load key from keyring by name
- * (Uses QGP keyring at ~/.qgp/ for Phase 2)
- *
- * @param ctx: DNA context
- * @param key_name: Key name (e.g., "alice")
- * @param key_type: "signing" or "encryption"
- * @param key_out: Output key buffer (caller must free)
- * @param key_len_out: Output key length
- * @return: DNA_OK on success, DNA_ERROR_NOT_FOUND if not found
- */
-dna_error_t dna_load_key(
-    dna_context_t *ctx,
-    const char *key_name,
-    const char *key_type,
-    uint8_t **key_out,
-    size_t *key_len_out
-);
-
-/**
- * Load public key from keyring by name
- *
- * @param ctx: DNA context
- * @param contact_name: Contact name (e.g., "bob")
- * @param pubkey_out: Output public key buffer (caller must free)
- * @param pubkey_len_out: Output public key length
- * @return: DNA_OK on success, DNA_ERROR_NOT_FOUND if not found
- */
-dna_error_t dna_load_pubkey(
-    dna_context_t *ctx,
-    const char *contact_name,
-    uint8_t **pubkey_out,
-    size_t *pubkey_len_out
-);
+// NOTE: dna_load_key() and dna_load_pubkey() removed in v0.3.150
+// They used broken keyring stubs that always returned NULL.
+// Keys are now managed through dna_engine identity system.
 
 // ============================================================================
 // UTILITY FUNCTIONS
