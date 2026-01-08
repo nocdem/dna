@@ -174,7 +174,9 @@ class EventHandler {
 
       case ContactRequestReceivedEvent():
         // New contact request received via DHT listener - refresh contact requests
+        // Also refresh contacts since reciprocal requests are auto-approved (adds contact)
         _ref.invalidate(contactRequestsProvider);
+        _ref.read(contactsProvider.notifier).refresh();
         break;
 
       case ErrorEvent(message: final errorMsg):
