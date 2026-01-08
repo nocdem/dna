@@ -55,7 +55,7 @@ Core DHT (Distributed Hash Table) operations for decentralized storage.
 
 | Function | Description |
 |----------|-------------|
-| `size_t dht_listen(dht_context_t*, const uint8_t*, size_t, dht_listen_callback_t, void*)` | Start listening for values |
+| `size_t dht_listen(dht_context_t*, const uint8_t*, size_t, dht_listen_callback_t, void*)` | Start listening (wrapper for `dht_listen_ex` with NULL cleanup) |
 | `void dht_cancel_listen(dht_context_t*, size_t)` | Cancel listen subscription |
 | `size_t dht_get_active_listen_count(dht_context_t*)` | Get active subscription count |
 | `size_t dht_listen_ex(dht_context_t*, const uint8_t*, size_t, dht_listen_callback_t, void*, dht_listen_cleanup_t)` | Listen with cleanup callback |
