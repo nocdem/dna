@@ -544,6 +544,34 @@ int messenger_register_name(
 
     QGP_LOG_INFO(LOG_TAG, "✓ Identity published to DHT (fingerprint:profile + name:lookup)\n");
 
+    // Read-back verification: confirm data actually stored in DHT
+    // Wait briefly for DHT propagation before verifying
+    qgp_platform_sleep_ms(1500);  // 1.5 seconds
+
+    dna_unified_identity_t *verify_identity = NULL;
+    int verify_result = dht_keyserver_lookup(dht_ctx, fingerprint, &verify_identity);
+    if (verify_result == 0 && verify_identity) {
+        QGP_LOG_INFO(LOG_TAG, "✓ Read-back verification: profile confirmed in DHT");
+        dna_identity_free(verify_identity);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "Read-back verification failed (profile may still propagate)");
+        // Don't fail registration - PUT succeeded, verification is extra assurance
+    }
+
+    // Verify name lookup alias
+    char *lookup_fp = NULL;
+    int alias_verify = dna_lookup_by_name(dht_ctx, desired_name, &lookup_fp);
+    if (alias_verify == 0 && lookup_fp) {
+        if (strncmp(lookup_fp, fingerprint, 128) == 0) {
+            QGP_LOG_INFO(LOG_TAG, "✓ Read-back verification: name '%s' -> fingerprint confirmed", desired_name);
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Name lookup returned different fingerprint!");
+        }
+        free(lookup_fp);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "Read-back verification failed for name lookup (may still propagate)");
+    }
+
     // Cache public keys locally
     if (keyserver_cache_put(fingerprint, sign_key->public_key, sign_key->public_key_size,
                             enc_key->public_key, enc_key->public_key_size, 365*24*60*60) == 0) {

@@ -30,8 +30,8 @@
  * Internal Constants
  *============================================================================*/
 
-/** Timeout for parallel fetch in milliseconds */
-#define DHT_CHUNK_FETCH_TIMEOUT_MS  30000
+/** Timeout for parallel fetch in milliseconds (10s - reduced from 30s for mobile UX) */
+#define DHT_CHUNK_FETCH_TIMEOUT_MS  10000
 
 /** Maximum parallel fetches at once */
 #define DHT_CHUNK_MAX_PARALLEL      64
