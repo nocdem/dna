@@ -191,6 +191,12 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
          * Listeners fire DNA_EVENT_OUTBOX_UPDATED -> Flutter polls + refreshes UI */
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT connected, identity_loaded=%d", engine->identity_loaded);
         if (engine->identity_loaded) {
+            /* Cancel stale engine-level listener tracking before creating new ones.
+             * After network change + DHT reinit, global listeners are suspended but
+             * engine-level arrays still show active=true, blocking new listener creation. */
+            dna_engine_cancel_all_outbox_listeners(engine);
+            dna_engine_cancel_all_presence_listeners(engine);
+
             QGP_LOG_WARN(LOG_TAG, "[LISTEN] Starting outbox listeners from DHT callback...");
             int count = dna_engine_listen_all_contacts(engine);
             QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT callback: started %d listeners", count);
