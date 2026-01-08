@@ -120,6 +120,12 @@ class EventHandler {
             selectedContact.fingerprint == contactFp;
         final appInForeground = _ref.read(appInForegroundProvider);
 
+        // DEBUG: Log unread count decision
+        print('[EVENT] MESSAGE_RECEIVED: contactFp=${contactFp.substring(0, 16)}... '
+            'selectedContact=${selectedContact?.fingerprint?.substring(0, 16) ?? "NULL"} '
+            'isChatOpen=$isChatOpen appInForeground=$appInForeground '
+            'willIncrement=${!msg.isOutgoing && (!appInForeground || !isChatOpen)}');
+
         // Always invalidate the conversation provider
         _ref.invalidate(conversationProvider(contactFp));
 
