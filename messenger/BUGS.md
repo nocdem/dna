@@ -13,9 +13,11 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-- [ ] **[FLUTTER] P2 - Contact not added to sender after recipient accepts request** - When B accepts A's contact request, A doesn't see B in their contacts until app restart. The reciprocal request listener fires (contact request notification is instant on B side), but A's contacts list doesn't update. Auto-approval logic in `dna_handle_get_contact_requests()` should add B as contact, and Flutter should refresh via `ContactRequestReceivedEvent`. Needs investigation.
+(none)
 
 ## Fixed Bugs
+
+- [x] **[MIXED] P2 - DHT listeners not working on desktop** - Contact request listener, outbox listeners, and presence listeners didn't fire on desktop (Linux/Windows). Worked on Android. Root cause: Identity load checked `p2p_enabled` before starting listeners, but P2P transport often fails on desktop while DHT works fine. DHT listeners don't need P2P transport - they work via DHT directly. Fixed by removing `p2p_enabled` check from listener setup condition. (v0.3.156)
 
 - [x] **[MIXED] P2 - DHT listeners don't survive network changes (WiFi→mobile)** - After network change, engine-level arrays got out of sync with DHT layer. Fixed by: running listener setup on background thread (avoids deadlock), adding 5s timeout to `dht_listen_ex()`, cancelling contact request listener in setup thread, refreshing contacts on contact request event (auto-approval for reciprocal requests), increasing `DHT_MAX_LISTENERS` to 1024, removing 60s contact request polling (use DHT listener instead). (v0.3.155)
 

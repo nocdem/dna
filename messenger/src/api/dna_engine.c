@@ -1318,8 +1318,9 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
 
     /* 2. Start outbox listeners for Flutter events (DNA_EVENT_OUTBOX_UPDATED)
      * When DHT value changes, fires event -> Flutter polls + refreshes UI
-     * Must be AFTER identity_loaded=true since listeners check this flag */
-    if (engine->messenger && engine->messenger->p2p_enabled) {
+     * Must be AFTER identity_loaded=true since listeners check this flag
+     * Note: DHT listeners don't require P2P transport - they work via DHT directly */
+    if (engine->messenger) {
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: starting outbox listeners...");
         int listener_count = dna_engine_listen_all_contacts(engine);
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: started %d listeners", listener_count);
