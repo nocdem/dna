@@ -30,6 +30,8 @@ set(DHT_COMMON_SOURCES
     # Client modules (Phase 3/4)
     client/dht_identity.cpp
     client/dht_singleton.c
+    client/dht_bootstrap_discovery.c  # Client-side node discovery
+    client/bootstrap_cache.c          # Bootstrap node SQLite cache
     client/dht_contactlist.c
     client/dht_message_backup.c
     client/dna_profile.c

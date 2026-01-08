@@ -1216,6 +1216,19 @@ High-level DHT client operations including singleton management, identity backup
 | `int dht_singleton_reinit(void)` | Reinitialize DHT after network change (restarts with same identity) |
 | `void dht_singleton_set_status_callback(dht_status_callback_t, void*)` | Set connection status callback |
 
+**Bootstrap Discovery (`dht_bootstrap_discovery.h`):**
+
+Client-side discovery of bootstrap nodes from DHT registry for decentralization.
+
+| Function | Description |
+|----------|-------------|
+| `int dht_bootstrap_from_cache(dht_config_t*, size_t)` | Populate config with best cached nodes |
+| `int dht_bootstrap_discovery_start(dht_context_t*)` | Start background discovery thread (non-blocking) |
+| `void dht_bootstrap_discovery_stop(void)` | Stop discovery thread |
+| `bool dht_bootstrap_discovery_is_running(void)` | Check if discovery is running |
+| `void dht_bootstrap_discovery_set_callback(dht_discovery_callback_t, void*)` | Set discovery completion callback |
+| `int dht_bootstrap_discovery_run_sync(dht_context_t*)` | Run discovery synchronously (blocking) |
+
 ### 11.2 DHT Identity (`dht_identity.h`)
 
 | Function | Description |
@@ -1588,6 +1601,25 @@ Local SQLite databases for contacts, caching, and profiles.
 | `int group_invitations_delete(const char*)` | Delete invitation |
 | `void group_invitations_free(group_invitation_t*, int)` | Free invitation array |
 | `void group_invitations_cleanup(void)` | Cleanup database |
+
+### 13.8 Bootstrap Cache (`dht/client/bootstrap_cache.h`)
+
+SQLite cache for discovered bootstrap nodes, enabling decentralization.
+*Note: Located in `dht/client/` as it's specifically for DHT bootstrap caching.*
+
+| Function | Description |
+|----------|-------------|
+| `int bootstrap_cache_init(const char*)` | Initialize bootstrap cache (NULL = default path) |
+| `void bootstrap_cache_cleanup(void)` | Cleanup bootstrap cache |
+| `int bootstrap_cache_put(const char*, uint16_t, const char*, const char*, uint64_t)` | Store discovered bootstrap node |
+| `int bootstrap_cache_get_best(size_t, bootstrap_cache_entry_t**, size_t*)` | Get top N nodes by reliability |
+| `int bootstrap_cache_get_all(bootstrap_cache_entry_t**, size_t*)` | Get all cached nodes |
+| `int bootstrap_cache_mark_connected(const char*, uint16_t)` | Mark node as successfully connected |
+| `int bootstrap_cache_mark_failed(const char*, uint16_t)` | Increment failure counter |
+| `int bootstrap_cache_expire(uint64_t)` | Remove nodes older than X seconds |
+| `int bootstrap_cache_count(void)` | Get count of cached nodes |
+| `bool bootstrap_cache_exists(const char*, uint16_t)` | Check if node exists in cache |
+| `void bootstrap_cache_free_entries(bootstrap_cache_entry_t*)` | Free entry array |
 
 ---
 

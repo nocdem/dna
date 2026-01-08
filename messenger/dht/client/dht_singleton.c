@@ -4,11 +4,13 @@
 
 #include "dht_singleton.h"
 #include "dht_identity.h"
+#include "dht_bootstrap_discovery.h"
 #include "../core/dht_context.h"
 #include "../core/dht_listen.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 #include "dna_config.h"
+#include "bootstrap_cache.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +37,11 @@ static void ensure_config(void) {
     if (!g_config_loaded) {
         dna_config_load(&g_config);
         g_config_loaded = true;
+
+        // Initialize bootstrap cache for decentralized node discovery
+        if (bootstrap_cache_init(NULL) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "Failed to initialize bootstrap cache (discovery disabled)");
+        }
     }
 }
 
@@ -175,15 +182,21 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
     dht_config.is_bootstrap = false;
     strncpy(dht_config.identity, "dna-user", sizeof(dht_config.identity) - 1);
 
-    // STEP 1: Bootstrap to first node from config for cold start
-    if (g_config.bootstrap_count > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Using seed node for cold start: %s", g_config.bootstrap_nodes[0]);
-        strncpy(dht_config.bootstrap_nodes[0], g_config.bootstrap_nodes[0],
-                sizeof(dht_config.bootstrap_nodes[0]) - 1);
-        dht_config.bootstrap_count = 1;
+    // STEP 1: Try cached bootstrap nodes first (decentralization)
+    int cached_count = dht_bootstrap_from_cache(&dht_config, 3);
+    if (cached_count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Using %d cached bootstrap nodes (reliability-first)", cached_count);
     } else {
-        QGP_LOG_ERROR(LOG_TAG, "No bootstrap nodes configured");
-        return -1;
+        // Fall back to hardcoded nodes (first run or cache empty)
+        if (g_config.bootstrap_count > 0) {
+            QGP_LOG_INFO(LOG_TAG, "No cached nodes, using hardcoded: %s", g_config.bootstrap_nodes[0]);
+            strncpy(dht_config.bootstrap_nodes[0], g_config.bootstrap_nodes[0],
+                    sizeof(dht_config.bootstrap_nodes[0]) - 1);
+            dht_config.bootstrap_count = 1;
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "No bootstrap nodes configured");
+            return -1;
+        }
     }
 
     // NO PERSISTENCE for client DHT
@@ -225,6 +238,13 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 
     if (dht_context_is_ready(g_dht_context)) {
         QGP_LOG_WARN(LOG_TAG, "DHT connected after %d00ms", wait_count);
+
+        // Start background discovery of additional bootstrap nodes (non-blocking)
+        // This discovers community-run Nodus nodes and saves them to cache
+        if (dht_bootstrap_discovery_start(g_dht_context) == 0) {
+            QGP_LOG_INFO(LOG_TAG, "Background bootstrap discovery started");
+        }
+
         // Fire connected callback manually - OpenDHT's setOnStatusChanged doesn't
         // reliably fire for disconnected->connected transitions
         if (g_status_callback) {
@@ -240,6 +260,9 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 
 void dht_singleton_cleanup(void)
 {
+    // Stop discovery thread first
+    dht_bootstrap_discovery_stop();
+
     if (g_dht_context) {
         QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP START (ctx=%p) <<<", (void*)g_dht_context);
         dht_context_free(g_dht_context);
@@ -255,6 +278,9 @@ void dht_singleton_cleanup(void)
         g_identity_buffer = NULL;
         g_identity_buffer_size = 0;
     }
+
+    // Cleanup bootstrap cache
+    bootstrap_cache_cleanup();
 }
 
 int dht_singleton_reinit(void)
@@ -297,7 +323,12 @@ int dht_singleton_reinit(void)
     dht_config.is_bootstrap = false;
     strncpy(dht_config.identity, "dna-user", sizeof(dht_config.identity) - 1);
 
-    if (g_config.bootstrap_count > 0) {
+    // Try cached bootstrap nodes first (decentralization)
+    int cached_count = dht_bootstrap_from_cache(&dht_config, 3);
+    if (cached_count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Reinit: using %d cached bootstrap nodes", cached_count);
+    } else if (g_config.bootstrap_count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Reinit: using hardcoded bootstrap node");
         strncpy(dht_config.bootstrap_nodes[0], g_config.bootstrap_nodes[0],
                 sizeof(dht_config.bootstrap_nodes[0]) - 1);
         dht_config.bootstrap_count = 1;
@@ -346,6 +377,9 @@ int dht_singleton_reinit(void)
         // Resubscribe all listeners
         size_t resubscribed = dht_resubscribe_all_listeners(g_dht_context);
         QGP_LOG_INFO(LOG_TAG, "Resubscribed %zu listeners", resubscribed);
+
+        // Start background discovery to find new/updated bootstrap nodes
+        dht_bootstrap_discovery_start(g_dht_context);
 
         // Fire connected callback
         if (g_status_callback) {
