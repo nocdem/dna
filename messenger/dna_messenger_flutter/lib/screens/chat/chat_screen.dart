@@ -84,6 +84,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   void dispose() {
+    // Clear selected contact when leaving chat screen
+    // This ensures isChatOpen=false for incoming message handling
+    ref.read(selectedContactProvider.notifier).state = null;
+
     _messageController.removeListener(_onTextChanged);
     _messageController.dispose();
     _scrollController.dispose();

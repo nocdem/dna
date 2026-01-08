@@ -13,10 +13,12 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-- [ ] **[FLUTTER] P2 - Unread count stops working after opening/closing chat** - Steps: (1) Send messages laptop→phone with chat closed on phone, unread indicator works. (2) Open chat on phone, see messages. (3) Close chat on phone. (4) Send more messages laptop→phone - no unread indicator. **Update:** No `MESSAGE_RECEIVED` event fires at all after closing chat - suggests DHT listener may be getting cancelled/broken when chat is opened, not a selectedContact issue. Check: (a) Is OUTBOX_UPDATED firing? (b) Is listener still active? (c) Does opening chat cancel/restart listeners? Debug logging added in v0.3.147.
+(none)
 
 
 ## Fixed Bugs
+
+- [x] **[FLUTTER] P2 - Unread count stops working after opening/closing chat** - `selectedContactProvider` was not being reset to null when closing chat via back navigation. This caused `isChatOpen=true` even when chat was closed, skipping `incrementCount()`. Fixed by resetting to null in ChatScreen's `dispose()`. (v0.99.97)
 
 - [x] **[CLI] P1 - Heap-buffer-overflow in offline message JSON parsing** - `messenger_p2p.c:941` called `json_tokener_parse()` on plaintext buffer from `dna_decrypt_message_raw()` without null-termination. When decrypted content was small (e.g., 4 bytes from corrupted message), ASAN detected read past buffer. Fixed by realloc+null-terminate before parsing. (v0.3.139)
 
