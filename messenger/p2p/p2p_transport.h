@@ -205,33 +205,11 @@ int p2p_lookup_presence_by_fingerprint(
 );
 
 // ============================================================================
-// Direct Messaging
+// DHT Offline Queue (Phase 14: Primary messaging path)
 // ============================================================================
-
-/**
- * Send encrypted message to a peer
- *
- * Steps:
- * 1. Look up peer in DHT (if not already connected)
- * 2. Establish TCP connection (if not already connected)
- * 3. Encrypt message with Kyber1024 (ML-KEM-1024) + AES-256-GCM
- * 4. Sign with Dilithium5 (ML-DSA-87)
- * 5. Send over TCP connection
- *
- * If peer is offline and offline_queue is enabled, stores in DHT
- *
- * @param ctx P2P transport context
- * @param peer_pubkey Recipient's Dilithium5 public key (2592 bytes)
- * @param message Plaintext message
- * @param message_len Length of message
- * @return 0 on success, -1 on failure
- */
-int p2p_send_message(
-    p2p_transport_t *ctx,
-    const uint8_t *peer_pubkey,
-    const uint8_t *message,
-    size_t message_len
-);
+// NOTE: p2p_send_message() removed in v0.3.154 - was dead code since Phase 14
+// All messaging now uses DHT-only path via messenger_queue_to_dht()
+// P2P/ICE infrastructure preserved in transport_juice.c for future voice/video
 
 /**
  * Check for offline messages in DHT

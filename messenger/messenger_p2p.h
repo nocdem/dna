@@ -1,28 +1,25 @@
 /*
  * DNA Messenger - P2P Integration Layer
  *
- * Phase 9.1b: Hybrid P2P Transport Integration
+ * Phase 14: DHT-Only Messaging
  *
- * This module bridges the messenger core (messenger.c) with the P2P transport layer (p2p_transport.h).
- * It implements a hybrid messaging approach:
- * - P2P direct messaging when both peers are online (via DHT + TCP)
- * - DHT offline queue (Spillway) for offline message delivery
+ * This module bridges the messenger core (messenger.c) with the DHT layer.
+ * All messaging uses DHT-only path (Spillway protocol) for reliability.
  *
- * Architecture:
+ * Architecture (Phase 14):
  * ┌──────────────────────────────────────────────┐
  * │  messenger_send_message()                    │
  * │  ↓                                           │
- * │  messenger_send_p2p() [THIS MODULE]          │
- * │  ├─ Check if recipient online (DHT)          │
- * │  ├─ If online: p2p_send() → TCP direct       │
- * │  └─ If offline: DHT Spillway queue           │
+ * │  messenger_queue_to_dht() [THIS MODULE]      │
+ * │  └─ Queue to DHT Spillway (7-day TTL)        │
  * └──────────────────────────────────────────────┘
  *
- * Message Flow:
- * 1. Sender: messenger_send_p2p() tries P2P first
- * 2. If P2P succeeds: message delivered instantly
- * 3. If P2P fails: message queued in DHT (Spillway)
- * 4. Receiver: DHT listen callback → store in local SQLite
+ * P2P infrastructure (TCP, ICE) is preserved for future voice/video only.
+ * Presence system still uses DHT for online status tracking.
+ *
+ * Removed in v0.3.154:
+ * - messenger_send_p2p() - hybrid P2P+DHT path (was dead code)
+ * - messenger_broadcast_p2p() - called messenger_send_p2p()
  */
 
 #ifndef MESSENGER_P2P_H
@@ -60,40 +57,19 @@ int messenger_p2p_init(messenger_context_t *ctx);
 void messenger_p2p_shutdown(messenger_context_t *ctx);
 
 // ============================================================================
-// HYBRID MESSAGING (P2P + DHT Offline Queue)
+// DHT-ONLY MESSAGING (Phase 14)
 // ============================================================================
+// NOTE: messenger_send_p2p() and messenger_broadcast_p2p() removed in v0.3.152
+// All messaging now uses messenger_queue_to_dht() directly
 
 /**
- * Send message via P2P with DHT fallback (DEPRECATED for messaging)
- *
- * Hybrid sending logic:
- * 1. Query DHT to check if recipient is online
- * 2. If online: Send via P2P directly (p2p_send)
- * 3. If offline or P2P fails: Queue in DHT (Spillway)
- *
- * NOTE: For messaging, use messenger_queue_to_dht() instead.
- * This function is kept for potential future audio/video use.
- *
- * @param ctx: Messenger context
- * @param recipient: Recipient identity
- * @param encrypted_message: Encrypted message data
- * @param encrypted_len: Encrypted message length
- * @return: 0 on success (P2P or DHT), -1 on error
- */
-int messenger_send_p2p(
-    messenger_context_t *ctx,
-    const char *recipient,
-    const uint8_t *encrypted_message,
-    size_t encrypted_len
-);
-
-/**
- * Queue message directly to DHT (Spillway) - DHT-only path
+ * Queue message directly to DHT (Spillway) - PRIMARY messaging path
  *
  * Phase 14: DHT-only messaging. Messages are queued directly to DHT
- * without attempting P2P direct delivery. This is the preferred path
- * for messaging, especially on mobile platforms where P2P connections
- * are unreliable due to background execution restrictions.
+ * without attempting P2P direct delivery. This is the only path
+ * for messaging, ensuring reliability on all platforms including
+ * mobile where P2P connections are unreliable due to background
+ * execution restrictions.
  *
  * P2P infrastructure is preserved for future audio/video use.
  *
@@ -106,27 +82,6 @@ int messenger_send_p2p(
 int messenger_queue_to_dht(
     messenger_context_t *ctx,
     const char *recipient,
-    const uint8_t *encrypted_message,
-    size_t encrypted_len
-);
-
-/**
- * Broadcast message to multiple recipients via P2P
- *
- * Sends to each recipient using messenger_send_p2p() logic.
- * Some may go via P2P, others via DHT offline queue.
- *
- * @param ctx: Messenger context
- * @param recipients: Array of recipient identities
- * @param recipient_count: Number of recipients
- * @param encrypted_message: Encrypted message data
- * @param encrypted_len: Encrypted message length
- * @return: 0 on success, -1 on error
- */
-int messenger_broadcast_p2p(
-    messenger_context_t *ctx,
-    const char **recipients,
-    size_t recipient_count,
     const uint8_t *encrypted_message,
     size_t encrypted_len
 );

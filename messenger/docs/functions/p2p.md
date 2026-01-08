@@ -2,7 +2,10 @@
 
 **Directory:** `p2p/`
 
-Peer-to-peer transport layer for direct TCP messaging with DHT-based peer discovery.
+P2P transport layer providing DHT-based peer discovery and presence system.
+
+> **Phase 14 (v0.3.154):** Direct P2P messaging removed - all messaging now uses DHT-only path.
+> P2P/ICE infrastructure preserved for future voice/video calls.
 
 ---
 
@@ -28,13 +31,14 @@ Peer-to-peer transport layer for direct TCP messaging with DHT-based peer discov
 | `int p2p_lookup_peer(p2p_transport_t*, const uint8_t*, peer_info_t*)` | Look up peer in DHT |
 | `int p2p_lookup_presence_by_fingerprint(p2p_transport_t*, const char*, uint64_t*)` | Look up presence by fingerprint |
 
-### Direct Messaging
+### DHT Offline Queue
 
 | Function | Description |
 |----------|-------------|
-| `int p2p_send_message(p2p_transport_t*, const uint8_t*, const uint8_t*, size_t)` | Send encrypted message to peer |
 | `int p2p_check_offline_messages(p2p_transport_t*, const char* sender_fp, size_t*)` | Check for offline messages in DHT (sender_fp=NULL for all contacts) |
 | `int p2p_queue_offline_message(p2p_transport_t*, const char*, const char*, const uint8_t*, size_t, uint64_t)` | Queue message for offline recipient |
+
+> **Removed in v0.3.154:** `p2p_send_message()` - was dead code since Phase 14 (DHT-only messaging)
 
 ### Connection Management
 

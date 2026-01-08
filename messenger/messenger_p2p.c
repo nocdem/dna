@@ -633,117 +633,11 @@ void messenger_p2p_shutdown(messenger_context_t *ctx)
 }
 
 // ============================================================================
-// P2P MESSAGING (P2P + DHT Offline Queue)
-// ============================================================================
-
-int messenger_send_p2p(
-    messenger_context_t *ctx,
-    const char *recipient,
-    const uint8_t *encrypted_message,
-    size_t encrypted_len)
-{
-    QGP_LOG_WARN("P2P", ">>> messenger_send_p2p called for %s (len=%zu)\n",
-                 recipient ? recipient : "NULL", encrypted_len);
-
-    if (!ctx || !recipient || !encrypted_message || encrypted_len == 0) {
-        QGP_LOG_ERROR("P2P", "Invalid parameters");
-        return -1;
-    }
-
-    QGP_LOG_WARN("P2P", ">>> p2p_enabled=%d, p2p_transport=%p\n",
-                 ctx->p2p_enabled, (void*)ctx->p2p_transport);
-
-    // If P2P is not enabled, cannot send message
-    if (!ctx->p2p_enabled || !ctx->p2p_transport) {
-        QGP_LOG_WARN("P2P", "P2P disabled (enabled=%d, transport=%p), cannot send to %s\n",
-                     ctx->p2p_enabled, (void*)ctx->p2p_transport, recipient);
-        return -1;  // Cannot send - no transport available
-    }
-
-    // Load recipient's public key
-    uint8_t *recipient_pubkey = NULL;
-    size_t recipient_pubkey_len = 0;
-
-    QGP_LOG_WARN("P2P", ">>> Loading pubkey for %s...\n", recipient);
-    if (load_pubkey_for_identity(ctx, recipient, &recipient_pubkey, &recipient_pubkey_len) != 0) {
-        QGP_LOG_ERROR("P2P", "Failed to load public key for %s\n", recipient);
-        return -1;  // Cannot send without recipient's public key
-    }
-
-    QGP_LOG_WARN("P2P", ">>> Calling p2p_send_message (pubkey_len=%zu)...\n", recipient_pubkey_len);
-
-    // Try to send via P2P
-    int result = p2p_send_message(
-        ctx->p2p_transport,
-        recipient_pubkey,
-        encrypted_message,
-        encrypted_len
-    );
-
-    free(recipient_pubkey);
-
-    if (result == 0) {
-        QGP_LOG_INFO("P2P", "Message sent to %s via P2P\n", recipient);
-        return 0;
-    }
-
-    // P2P send failed - try DHT offline queue (Phase 9.2)
-    QGP_LOG_WARN("P2P", ">>> P2P send failed (result=%d), trying DHT queue for %s\n", result, recipient);
-
-    // Try to queue in DHT
-    if (ctx->p2p_transport) {
-        // CRITICAL: Resolve recipient to fingerprint for consistent DHT key
-        // Queue key = SHA3-512(recipient_fingerprint + ":offline_queue")
-        // Retrieval key = SHA3-512(ctx->identity + ":offline_queue")
-        // Both must use fingerprints, not display names!
-        char recipient_fingerprint[129];
-        if (resolve_identity_to_fingerprint(ctx, recipient, recipient_fingerprint) != 0) {
-            QGP_LOG_ERROR("P2P", "Failed to resolve recipient '%s' to fingerprint for DHT queue\n", recipient);
-            return -1;
-        }
-
-        // Get next sequence number for watermark pruning
-        uint64_t seq_num = 1;
-        if (ctx->backup_ctx) {
-            seq_num = message_backup_get_next_seq(ctx->backup_ctx, recipient_fingerprint);
-        }
-
-        int queue_result = p2p_queue_offline_message(
-            ctx->p2p_transport,
-            ctx->identity,      // sender (should already be fingerprint)
-            recipient_fingerprint,  // recipient (NOW using fingerprint!)
-            encrypted_message,
-            encrypted_len,
-            seq_num
-        );
-
-        QGP_LOG_WARN("P2P", ">>> p2p_queue_offline_message returned %d (seq=%lu)\n",
-               queue_result, (unsigned long)seq_num);
-        if (queue_result == 0) {
-            QGP_LOG_WARN("P2P", ">>> Message queued in DHT for %s (fingerprint: %.20s..., seq=%lu)\n",
-                   recipient, recipient_fingerprint, (unsigned long)seq_num);
-
-            // Start tracking delivery for this recipient (delivery confirmation feature)
-            dna_engine_t *engine = dna_engine_get_global();
-            if (engine) {
-                dna_engine_track_delivery(engine, recipient_fingerprint);
-            }
-
-            return 0;  // Success via DHT queue
-        } else {
-            QGP_LOG_ERROR("P2P", "Failed to queue message in DHT (result=%d)\n", queue_result);
-            return -1;  // DHT queue failed - message not delivered
-        }
-    }
-
-    // No P2P transport available
-    QGP_LOG_ERROR("P2P", "No P2P transport available for %s\n", recipient);
-    return -1;  // Message not delivered
-}
-
-// ============================================================================
 // DHT-ONLY MESSAGING (Phase 14)
 // ============================================================================
+// NOTE: messenger_send_p2p() removed in v0.3.154 - was dead code since Phase 14
+// All messaging now uses messenger_queue_to_dht() directly
+// P2P infrastructure preserved for future voice/video only
 
 int messenger_queue_to_dht(
     messenger_context_t *ctx,
@@ -808,32 +702,7 @@ int messenger_queue_to_dht(
     return -1;
 }
 
-int messenger_broadcast_p2p(
-    messenger_context_t *ctx,
-    const char **recipients,
-    size_t recipient_count,
-    const uint8_t *encrypted_message,
-    size_t encrypted_len)
-{
-    if (!ctx || !recipients || recipient_count == 0 || !encrypted_message) {
-        return -1;
-    }
-
-    size_t sent = 0;
-    size_t failed = 0;
-
-    for (size_t i = 0; i < recipient_count; i++) {
-        if (messenger_send_p2p(ctx, recipients[i], encrypted_message, encrypted_len) == 0) {
-            sent++;
-        } else {
-            failed++;
-        }
-    }
-
-    QGP_LOG_DEBUG("P2P", "Broadcast complete: %zu sent, %zu failed\n", sent, failed);
-
-    return 0;
-}
+// NOTE: messenger_broadcast_p2p() removed in v0.3.154 - called messenger_send_p2p() which is now removed
 
 // ============================================================================
 // P2P RECEIVE CALLBACKS
