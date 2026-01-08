@@ -30,15 +30,31 @@ Anything against protocol mode breaks the blockchain / encryption.
 - Mark bugs as fixed with version number when resolved
 
 ## FUNCTION REFERENCE
-**`docs/FUNCTIONS.md`** is the authoritative source for all function signatures in the codebase.
+**`docs/functions/`** is the authoritative source for all function signatures in the codebase.
 
-**ALWAYS check `FUNCTIONS.md` when:**
+**Quick Links:**
+| Module | File | Description |
+|--------|------|-------------|
+| Public API | [public-api.md](docs/functions/public-api.md) | Main engine API (`dna_engine.h`) |
+| DNA API | [dna-api.md](docs/functions/dna-api.md) | Low-level crypto API |
+| Messenger | [messenger.md](docs/functions/messenger.md) | Core messenger + backup |
+| Crypto | [crypto.md](docs/functions/crypto.md) | Kyber, Dilithium, BIP39 |
+| DHT | [dht.md](docs/functions/dht.md) | Core, Shared, Client |
+| P2P | [p2p.md](docs/functions/p2p.md) | Transport layer |
+| Database | [database.md](docs/functions/database.md) | SQLite caches |
+| Blockchain | [blockchain.md](docs/functions/blockchain.md) | Multi-chain wallet |
+| Engine | [engine.md](docs/functions/engine.md) | Internal implementation |
+| Key Sizes | [key-sizes.md](docs/functions/key-sizes.md) | Crypto sizes reference |
+
+**Index:** [docs/functions/README.md](docs/functions/README.md)
+
+**ALWAYS check these files when:**
 - Writing new code that calls existing functions
 - Modifying existing function signatures
 - Debugging issues (to understand available APIs)
 - Adding new features (to find relevant functions)
 
-**ALWAYS update `FUNCTIONS.md` when:**
+**ALWAYS update these files when:**
 - Adding new functions (public or internal)
 - Changing function signatures
 - Removing functions
@@ -48,8 +64,6 @@ Anything against protocol mode breaks the blockchain / encryption.
 ```
 | `return_type function_name(params)` | Brief one-line description |
 ```
-
-**Sections:** Public API → DNA API → Messenger → Crypto → DHT → P2P → Database → Blockchain → Engine
 
 ## LOGGING STANDARD
 
@@ -308,7 +322,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 | DNA Engine API | `docs/DNA_ENGINE_API.md` | Public API functions, data types, callbacks, error codes changes |
 | DNA Nodus | `docs/DNA_NODUS.md` | Bootstrap server, STUN/TURN, config, deployment changes |
 | Flutter UI | `docs/FLUTTER_UI.md` | Screens, FFI bindings, providers, widgets changes |
-| Function Reference | `docs/FUNCTIONS.md` | Adding, modifying, or removing any function signatures |
+| Function Reference | `docs/functions/` | Adding, modifying, or removing any function signatures |
 | Git Workflow | `docs/GIT_WORKFLOW.md` | Commit guidelines, branch strategy, repo procedures changes |
 | Message System | `docs/MESSAGE_SYSTEM.md` | Message format, encryption, GSK, database schema changes |
 | Mobile Porting | `docs/MOBILE_PORTING.md` | Android SDK, JNI, iOS, platform abstraction changes |
@@ -403,7 +417,7 @@ cd /opt/dna-messenger/build
 - **[README.md](README.md)** - Project overview and getting started
 
 ### 🔧 Technical Docs
-- **[Functions Reference](docs/FUNCTIONS.md)** - All function signatures (authoritative source)
+- **[Functions Reference](docs/functions/README.md)** - All function signatures (modular, by component)
 - **[Protocol Specs](docs/PROTOCOL.md)** - Wire formats (Seal, Spillway, Anchor, Atlas, Nexus)
 - **[CLI Testing](docs/CLI_TESTING.md)** - CLI tool for debugging and testing
 - **[Flutter UI](docs/FLUTTER_UI.md)** - Flutter migration (Phase 7)
