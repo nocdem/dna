@@ -170,6 +170,28 @@ dna_engine_t* dna_engine_get_global(void) {
 }
 
 /**
+ * Background thread for listener setup
+ * Runs on separate thread to avoid blocking OpenDHT's callback thread.
+ */
+static void *dna_engine_setup_listeners_thread(void *arg) {
+    dna_engine_t *engine = (dna_engine_t *)arg;
+    if (!engine) return NULL;
+
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: starting listener setup...");
+
+    /* Cancel stale engine-level listener tracking before creating new ones.
+     * After network change + DHT reinit, global listeners are suspended but
+     * engine-level arrays still show active=true, blocking new listener creation. */
+    dna_engine_cancel_all_outbox_listeners(engine);
+    dna_engine_cancel_all_presence_listeners(engine);
+
+    int count = dna_engine_listen_all_contacts(engine);
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: started %d listeners", count);
+
+    return NULL;
+}
+
+/**
  * DHT status change callback - dispatches DHT_CONNECTED/DHT_DISCONNECTED events
  * Called from OpenDHT's internal thread when connection status changes.
  */
@@ -190,18 +212,21 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
         }
 
         /* Restart outbox listeners on DHT connect (handles reconnection)
-         * Listeners fire DNA_EVENT_OUTBOX_UPDATED -> Flutter polls + refreshes UI */
+         * Listeners fire DNA_EVENT_OUTBOX_UPDATED -> Flutter polls + refreshes UI
+         *
+         * IMPORTANT: Run listener setup on a background thread!
+         * This callback runs on OpenDHT's internal thread. If we block here with
+         * dht_listen_ex()'s future.get(), we deadlock (OpenDHT needs this thread). */
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT connected, identity_loaded=%d", engine->identity_loaded);
         if (engine->identity_loaded) {
-            /* Cancel stale engine-level listener tracking before creating new ones.
-             * After network change + DHT reinit, global listeners are suspended but
-             * engine-level arrays still show active=true, blocking new listener creation. */
-            dna_engine_cancel_all_outbox_listeners(engine);
-            dna_engine_cancel_all_presence_listeners(engine);
-
-            QGP_LOG_WARN(LOG_TAG, "[LISTEN] Starting outbox listeners from DHT callback...");
-            int count = dna_engine_listen_all_contacts(engine);
-            QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT callback: started %d listeners", count);
+            /* Spawn background thread for listener setup to avoid deadlock */
+            pthread_t listener_thread;
+            if (pthread_create(&listener_thread, NULL, dna_engine_setup_listeners_thread, engine) == 0) {
+                pthread_detach(listener_thread);
+                QGP_LOG_INFO(LOG_TAG, "[LISTEN] Spawned background thread for listener setup");
+            } else {
+                QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to spawn listener setup thread");
+            }
         } else {
             QGP_LOG_WARN(LOG_TAG, "[LISTEN] Skipping listeners (no identity loaded yet)");
         }
