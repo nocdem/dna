@@ -5323,7 +5323,16 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     if (!list || list->count == 0) {
         QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] No contacts in database (count=%zu)", list ? list->count : 0);
         if (list) contacts_db_free_list(list);
+        /* Still start contact request listener even with 0 contacts!
+         * Users need to receive contact requests regardless of contact count. */
+        size_t contact_req_token = dna_engine_start_contact_request_listener(engine);
+        if (contact_req_token > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[LISTEN] Contact request listener started (no contacts), token=%zu", contact_req_token);
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN] Failed to start contact request listener");
+        }
         engine->listeners_starting = false;
+        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Started 0 outbox + 0 presence + contact_req listeners");
         return 0;
     }
 
