@@ -302,8 +302,48 @@ class DnaMessengerService : Service() {
         }
         lastNetworkChangeTime = now
 
-        android.util.Log.i(TAG, "Network changed to $newNetworkId - reinitializing DHT")
+        android.util.Log.i(TAG, "Network changed to $newNetworkId - checking connectivity...")
         updateNotification("Reconnecting...")
+
+        // Verify network is actually usable before reinit
+        if (!isNetworkValidated()) {
+            android.util.Log.w(TAG, "Network not validated yet, waiting...")
+            // Retry after 1 second
+            android.os.Handler(mainLooper).postDelayed({
+                if (isNetworkValidated()) {
+                    performDhtReinit()
+                } else {
+                    android.util.Log.e(TAG, "Network still not validated, skipping reinit")
+                    updateNotification("DNA Messenger running")
+                }
+            }, 1000)
+            return
+        }
+
+        performDhtReinit()
+    }
+
+    /**
+     * Check if current network has validated internet connectivity
+     */
+    private fun isNetworkValidated(): Boolean {
+        val cm = connectivityManager ?: return false
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+
+        // Check for actual internet connectivity (not just connection)
+        val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        val isValidated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+
+        android.util.Log.d(TAG, "Network check: hasInternet=$hasInternet, isValidated=$isValidated")
+        return hasInternet && isValidated
+    }
+
+    /**
+     * Perform actual DHT reinitialization
+     */
+    private fun performDhtReinit() {
+        android.util.Log.i(TAG, "Network validated - reinitializing DHT")
 
         // Reinit DHT directly via JNI (works even when Flutter isn't running)
         try {
