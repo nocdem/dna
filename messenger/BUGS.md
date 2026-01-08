@@ -13,7 +13,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-- [ ] **[FLUTTER] P2 - Unread count stops working after opening/closing chat** - Steps: (1) Send messages laptop→phone with chat closed on phone, unread indicator works. (2) Open chat on phone, see messages. (3) Close chat on phone. (4) Send more messages laptop→phone - no unread indicator. Hypothesis: `selectedContactProvider` not being reset to null when chat is closed, so `isChatOpen` stays true and `incrementCount()` is skipped. Debug logging added in v0.3.147 - check logcat for `[EVENT] MESSAGE_RECEIVED` to see `selectedContact` value after closing chat.
+- [ ] **[FLUTTER] P2 - Unread count stops working after opening/closing chat** - Steps: (1) Send messages laptop→phone with chat closed on phone, unread indicator works. (2) Open chat on phone, see messages. (3) Close chat on phone. (4) Send more messages laptop→phone - no unread indicator. **Update:** No `MESSAGE_RECEIVED` event fires at all after closing chat - suggests DHT listener may be getting cancelled/broken when chat is opened, not a selectedContact issue. Check: (a) Is OUTBOX_UPDATED firing? (b) Is listener still active? (c) Does opening chat cancel/restart listeners? Debug logging added in v0.3.147.
 
 
 ## Fixed Bugs

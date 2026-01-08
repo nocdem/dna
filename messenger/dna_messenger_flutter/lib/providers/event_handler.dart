@@ -181,6 +181,7 @@ class EventHandler {
 
       case OutboxUpdatedEvent(contactFingerprint: final contactFp):
         // Contact's outbox has new messages - debounce to coalesce rapid events
+        print('[EVENT] OUTBOX_UPDATED: contactFp=${contactFp.substring(0, 16)}...');
         _scheduleOutboxCheck(contactFp);
         break;
 
