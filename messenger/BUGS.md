@@ -13,7 +13,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-- [ ] **[MIXED] P2 - DHT listeners don't survive network changes (WiFi→mobile)** - After network change, `dht_suspend_all_listeners()` marks global listeners inactive but engine-level arrays (`engine->outbox_listeners[]`) still show `active=true`. Duplicate check returns old tokens pointing to suspended listeners. Fix in v0.3.150: cancel engine-level listeners before recreating in DHT connected callback. **NEEDS TESTING**
+- [ ] **[MIXED] P2 - DHT listeners don't survive network changes (WiFi→mobile)** - After network change, engine-level arrays get out of sync with DHT layer. Branch `fix/dht-listeners-network-change` (v0.3.153): switched to `dht_listen_ex()` with cleanup callbacks, added `dht_is_listener_active()` to verify DHT layer state, added contact request listener for real-time notifications, removed Android 60s polling timer for better battery. **NEEDS TESTING ON DEVICE**
 
 
 ## Fixed Bugs

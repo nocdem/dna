@@ -868,6 +868,9 @@ class OutboxUpdatedEvent extends DnaEvent {
   OutboxUpdatedEvent(this.contactFingerprint);
 }
 
+/// Contact request received event - someone sent us a contact request
+class ContactRequestReceivedEvent extends DnaEvent {}
+
 // =============================================================================
 // EXCEPTIONS
 // =============================================================================
@@ -1061,7 +1064,8 @@ class DnaEngine {
         dartEvent = IdentityLoadedEvent('');
         break;
       case DnaEventType.DNA_EVENT_CONTACT_REQUEST_RECEIVED:
-        // TODO: Parse contact request from union data
+        // No data to parse - just signal that new request arrived
+        dartEvent = ContactRequestReceivedEvent();
         break;
       case DnaEventType.DNA_EVENT_OUTBOX_UPDATED:
         // Parse contact fingerprint from union data

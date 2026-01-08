@@ -178,6 +178,11 @@ class EventHandler {
         _scheduleOutboxCheck(contactFp);
         break;
 
+      case ContactRequestReceivedEvent():
+        // New contact request received via DHT listener - refresh contact requests
+        _ref.invalidate(contactRequestsProvider);
+        break;
+
       case ErrorEvent(message: final errorMsg):
         // Store error for UI to display
         _ref.read(lastErrorProvider.notifier).state = errorMsg;

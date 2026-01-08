@@ -12,24 +12,22 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
-import java.util.Timer
-import java.util.TimerTask
 
 /**
  * DNA Messenger Foreground Service
  *
  * Keeps the DHT connection alive when the app is backgrounded.
- * Polls for offline messages every 60 seconds.
- * Monitors network changes and notifies Flutter to reinitialize DHT.
+ * DHT listeners provide real-time push notifications for messages.
+ * Monitors network changes and reinitializes DHT when network switches.
  *
  * Phase 14: Android background execution for reliable DHT-only messaging.
+ * Note: Polling removed in favor of DHT listeners for better battery life.
  */
 class DnaMessengerService : Service() {
     companion object {
         private const val TAG = "DnaMessengerService"
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "dna_messenger_service"
-        private const val POLL_INTERVAL_MS = 60_000L  // 60 seconds
         private const val NETWORK_CHANGE_DEBOUNCE_MS = 2000L  // 2 seconds debounce
 
         @Volatile
@@ -47,7 +45,6 @@ class DnaMessengerService : Service() {
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
-    private var pollTimer: Timer? = null
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var lastNetworkChangeTime: Long = 0
@@ -69,7 +66,6 @@ class DnaMessengerService : Service() {
         when (action) {
             "START" -> startForegroundService()
             "STOP" -> stopForegroundService()
-            "POLL_NOW" -> pollOfflineMessagesNow()
         }
 
         return START_STICKY
@@ -80,7 +76,6 @@ class DnaMessengerService : Service() {
     override fun onDestroy() {
         android.util.Log.i(TAG, "Service destroyed")
         isRunning = false
-        stopPolling()
         releaseWakeLock()
         super.onDestroy()
     }
@@ -125,7 +120,6 @@ class DnaMessengerService : Service() {
         }
 
         acquireWakeLock()
-        startPolling()
         registerNetworkCallback()
 
         // Initialize native notification helper for background message notifications
@@ -145,7 +139,6 @@ class DnaMessengerService : Service() {
         notificationHelper = null
 
         unregisterNetworkCallback()
-        stopPolling()
         releaseWakeLock()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -205,7 +198,7 @@ class DnaMessengerService : Service() {
         }
         wakeLock?.let {
             if (!it.isHeld) {
-                it.acquire(10 * 60 * 1000L) // 10 minutes max, renewed by timer
+                it.acquire(10 * 60 * 1000L) // 10 minutes max, renewed during network changes
                 android.util.Log.d(TAG, "WakeLock acquired")
             }
         }
@@ -219,43 +212,6 @@ class DnaMessengerService : Service() {
             }
         }
         wakeLock = null
-    }
-
-    private fun startPolling() {
-        pollTimer?.cancel()
-        pollTimer = Timer("DnaMessengerPollTimer").apply {
-            scheduleAtFixedRate(object : TimerTask() {
-                override fun run() {
-                    pollOfflineMessages()
-                    // Renew wake lock periodically
-                    acquireWakeLock()
-                }
-            }, POLL_INTERVAL_MS, POLL_INTERVAL_MS)
-        }
-        android.util.Log.i(TAG, "Polling started (interval: ${POLL_INTERVAL_MS}ms)")
-    }
-
-    private fun stopPolling() {
-        pollTimer?.cancel()
-        pollTimer = null
-        android.util.Log.i(TAG, "Polling stopped")
-    }
-
-    private fun pollOfflineMessages() {
-        android.util.Log.d(TAG, "Polling for offline messages")
-        // Broadcast intent to Flutter to trigger offline message check
-        val intent = Intent("io.cpunk.dna_messenger.POLL_MESSAGES")
-        sendBroadcast(intent)
-    }
-
-    private fun pollOfflineMessagesNow() {
-        android.util.Log.i(TAG, "Immediate poll requested")
-        pollOfflineMessages()
-        updateNotification("Checking for messages...")
-        // Reset notification after delay
-        android.os.Handler(mainLooper).postDelayed({
-            updateNotification("DNA Messenger running")
-        }, 2000)
     }
 
     // ========== NETWORK MONITORING ==========

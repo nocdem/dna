@@ -548,3 +548,44 @@ extern "C" size_t dht_resubscribe_all_listeners(
     QGP_LOG_INFO(LOG_TAG, "Resubscribed %zu/%zu listeners", resubscribed, active_listeners.size());
     return resubscribed;
 }
+
+/**
+ * Check if a listener is currently active in the DHT layer
+ */
+extern "C" bool dht_is_listener_active(size_t token)
+{
+    if (token == 0) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(listeners_mutex);
+    auto it = active_listeners.find(token);
+    if (it == active_listeners.end()) {
+        return false;
+    }
+    return it->second->active;
+}
+
+/**
+ * Get listener statistics for health monitoring
+ */
+extern "C" void dht_get_listener_stats(size_t *total, size_t *active, size_t *suspended)
+{
+    std::lock_guard<std::mutex> lock(listeners_mutex);
+
+    size_t t = active_listeners.size();
+    size_t a = 0;
+    size_t s = 0;
+
+    for (const auto& [token, ctx] : active_listeners) {
+        if (ctx->active) {
+            a++;
+        } else {
+            s++;
+        }
+    }
+
+    if (total) *total = t;
+    if (active) *active = a;
+    if (suspended) *suspended = s;
+}

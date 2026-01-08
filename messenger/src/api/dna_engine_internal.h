@@ -411,6 +411,15 @@ typedef struct {
 } dna_presence_listener_t;
 
 /**
+ * Contact request listener (for real-time contact request notifications)
+ * Only one listener needed - listens to our own inbox key
+ */
+typedef struct {
+    size_t dht_token;               /* Token from dht_listen_ex() */
+    bool active;                    /* True if listener is active */
+} dna_contact_request_listener_t;
+
+/**
  * Delivery tracker entry (for message delivery confirmation)
  *
  * Tracks watermark updates from recipients to confirm message delivery.
@@ -465,6 +474,10 @@ struct dna_engine {
     dna_presence_listener_t presence_listeners[DNA_MAX_PRESENCE_LISTENERS];
     int presence_listener_count;
     pthread_mutex_t presence_listeners_mutex;
+
+    /* Contact request listener (for real-time contact request notifications) */
+    dna_contact_request_listener_t contact_request_listener;
+    pthread_mutex_t contact_request_listener_mutex;
 
     /* Delivery trackers (for message delivery confirmation) */
     dna_delivery_tracker_t delivery_trackers[DNA_MAX_DELIVERY_TRACKERS];

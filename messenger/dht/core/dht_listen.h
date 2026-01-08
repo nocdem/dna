@@ -223,6 +223,32 @@ size_t dht_resubscribe_all_listeners(
     dht_context_t *ctx
 );
 
+/**
+ * Check if a listener is currently active in the DHT layer
+ *
+ * Used by engine to verify that a cached token still corresponds to an
+ * active listener. Returns false if:
+ * - Token doesn't exist in the listener map
+ * - Listener was suspended (marked inactive)
+ * - Listener was cancelled
+ *
+ * @param token Listen token to check
+ * @return true if listener exists and is active, false otherwise
+ */
+bool dht_is_listener_active(size_t token);
+
+/**
+ * Get listener statistics for health monitoring
+ *
+ * Counts total, active, and suspended listeners. Useful for debugging
+ * and adaptive behavior (e.g., fallback to polling when listeners fail).
+ *
+ * @param total Output: total listeners in map (active + suspended)
+ * @param active Output: currently active listeners
+ * @param suspended Output: suspended listeners (awaiting resubscription)
+ */
+void dht_get_listener_stats(size_t *total, size_t *active, size_t *suspended);
+
 #ifdef __cplusplus
 }
 #endif
