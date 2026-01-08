@@ -13,7 +13,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-(none)
+- [ ] **[MIXED] P2 - DHT listeners don't survive network changes (WiFi→mobile)** - After network change, `dht_suspend_all_listeners()` marks global listeners inactive but engine-level arrays (`engine->outbox_listeners[]`) still show `active=true`. Duplicate check returns old tokens pointing to suspended listeners. Fix in v0.3.150: cancel engine-level listeners before recreating in DHT connected callback. **NEEDS TESTING**
 
 
 ## Fixed Bugs
