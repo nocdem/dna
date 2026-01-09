@@ -47,7 +47,8 @@ class ContactsScreen extends ConsumerWidget {
       ),
       body: contacts.when(
         data: (list) => _buildContactList(context, ref, list),
-        loading: () => const Center(child: CircularProgressIndicator()),
+        // Show cached contacts (or empty state) while loading - avoids spinner flash
+        loading: () => _buildContactList(context, ref, contacts.valueOrNull ?? []),
         error: (error, stack) => _buildError(context, ref, error),
       ),
       floatingActionButton: FloatingActionButton(
