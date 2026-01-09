@@ -1,5 +1,4 @@
 // Settings Screen - App settings and profile management
-import 'dart:convert';
 import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
@@ -7,10 +6,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/providers.dart';
@@ -242,7 +240,7 @@ class _ContactsSection extends ConsumerWidget {
     final contactCount = contacts.when(
       data: (list) => list.length,
       loading: () => 0,
-      error: (_, __) => 0,
+      error: (_, _) => 0,
     );
 
     return Column(
@@ -580,6 +578,9 @@ class _DataSectionState extends ConsumerState<_DataSection> {
   bool _isRestoring = false;
 
   Future<void> _backupMessages(BuildContext context) async {
+    // Capture ScaffoldMessenger before any async gap
+    final scaffoldMessenger = ScaffoldMessenger.of(context);
+
     // Show confirmation dialog
     final confirmed = await showDialog<bool>(
       context: context,
@@ -638,14 +639,14 @@ class _DataSectionState extends ConsumerState<_DataSection> {
           final result = await engine.backupMessages();
           if (mounted) {
             if (result.success) {
-              ScaffoldMessenger.of(context).showSnackBar(
+              scaffoldMessenger.showSnackBar(
                 SnackBar(
                   content: Text('Backed up ${result.processedCount} messages'),
                   backgroundColor: DnaColors.snackbarSuccess,
                 ),
               );
             } else {
-              ScaffoldMessenger.of(context).showSnackBar(
+              scaffoldMessenger.showSnackBar(
                 SnackBar(
                   content: Text(result.errorMessage ?? 'Backup failed'),
                   backgroundColor: DnaColors.snackbarError,
@@ -663,7 +664,7 @@ class _DataSectionState extends ConsumerState<_DataSection> {
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        scaffoldMessenger.showSnackBar(
           SnackBar(
             content: Text('Backup failed: $e'),
             backgroundColor: DnaColors.snackbarError,
@@ -678,6 +679,9 @@ class _DataSectionState extends ConsumerState<_DataSection> {
   }
 
   Future<void> _restoreMessages(BuildContext context) async {
+    // Capture ScaffoldMessenger before any async gap
+    final scaffoldMessenger = ScaffoldMessenger.of(context);
+
     // Show confirmation dialog
     final confirmed = await showDialog<bool>(
       context: context,
@@ -740,14 +744,14 @@ class _DataSectionState extends ConsumerState<_DataSection> {
               if (result.skippedCount > 0) {
                 message += ' (${result.skippedCount} duplicates skipped)';
               }
-              ScaffoldMessenger.of(context).showSnackBar(
+              scaffoldMessenger.showSnackBar(
                 SnackBar(
                   content: Text(message),
                   backgroundColor: DnaColors.snackbarSuccess,
                 ),
               );
             } else {
-              ScaffoldMessenger.of(context).showSnackBar(
+              scaffoldMessenger.showSnackBar(
                 SnackBar(
                   content: Text(result.errorMessage ?? 'Restore failed'),
                   backgroundColor: DnaColors.snackbarError,
@@ -765,7 +769,7 @@ class _DataSectionState extends ConsumerState<_DataSection> {
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        scaffoldMessenger.showSnackBar(
           SnackBar(
             content: Text('Restore failed: $e'),
             backgroundColor: DnaColors.snackbarError,
@@ -1067,58 +1071,6 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
   }
 }
 
-/// Pill-style button widget for settings
-class _PillButton extends StatelessWidget {
-  final String label;
-  final bool isSelected;
-  final bool isDestructive;
-  final VoidCallback onTap;
-
-  const _PillButton({
-    required this.label,
-    required this.isSelected,
-    required this.onTap,
-    this.isDestructive = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final Color baseColor;
-
-    if (isDestructive) {
-      baseColor = DnaColors.textWarning;
-    } else if (isSelected) {
-      baseColor = theme.colorScheme.primary;
-    } else {
-      baseColor = DnaColors.textMuted;
-    }
-
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          color: isSelected ? baseColor.withAlpha(26) : Colors.transparent,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: isSelected ? baseColor.withAlpha(128) : baseColor.withAlpha(51),
-            width: isSelected ? 1.5 : 1,
-          ),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: isSelected ? baseColor : baseColor.withAlpha(179),
-            fontSize: 12,
-            fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _IdentitySection extends ConsumerStatefulWidget {
   final String? fingerprint;
 
@@ -1318,42 +1270,13 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
 class _AboutSection extends ConsumerWidget {
   const _AboutSection();
 
-  void _showUpdateDialog(BuildContext context, engine.VersionCheckResult versionCheck, String currentAppVersion, String currentLibVersion) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            FaIcon(FontAwesomeIcons.triangleExclamation, color: DnaColors.textWarning, size: 20),
-            const SizedBox(width: 8),
-            const Text('Update Available'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('A new version is available. Please update to the latest version.'),
-            const SizedBox(height: 16),
-            if (versionCheck.appUpdateAvailable) ...[
-              Text('App: $currentAppVersion \u2192 ${versionCheck.appCurrent}',
-                style: const TextStyle(fontFamily: 'monospace')),
-              const SizedBox(height: 4),
-            ],
-            if (versionCheck.libraryUpdateAvailable) ...[
-              Text('Library: $currentLibVersion \u2192 ${versionCheck.libraryCurrent}',
-                style: const TextStyle(fontFamily: 'monospace')),
-            ],
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
+  static const _downloadUrl = 'https://cpunk.io/products/dna-messenger.html';
+
+  Future<void> _openDownloadPage() async {
+    final uri = Uri.parse(_downloadUrl);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
   }
 
   @override
@@ -1386,9 +1309,9 @@ class _AboutSection extends ConsumerWidget {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Card(
-              color: DnaColors.textWarning.withOpacity(0.15),
+              color: DnaColors.textWarning.withValues(alpha: 0.15),
               child: InkWell(
-                onTap: () => _showUpdateDialog(context, versionCheck, appVersion, libVersion),
+                onTap: _openDownloadPage,
                 borderRadius: BorderRadius.circular(12),
                 child: Padding(
                   padding: const EdgeInsets.all(12),
@@ -1408,7 +1331,7 @@ class _AboutSection extends ConsumerWidget {
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              'Tap for details',
+                              'Tap to download',
                               style: theme.textTheme.bodySmall?.copyWith(
                                 color: DnaColors.textMuted,
                               ),
@@ -1416,7 +1339,7 @@ class _AboutSection extends ConsumerWidget {
                           ],
                         ),
                       ),
-                      FaIcon(FontAwesomeIcons.chevronRight, size: 14, color: DnaColors.textMuted),
+                      FaIcon(FontAwesomeIcons.arrowUpRightFromSquare, size: 14, color: DnaColors.textMuted),
                     ],
                   ),
                 ),
