@@ -299,9 +299,14 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     // DHT has equal or more contacts - safe to REPLACE
     QGP_LOG_INFO(LOG_TAG, "REPLACE sync: DHT has %zu contacts (local had %d)\n", count, local_count);
 
+    // PRESERVE NICKNAMES: Save local nicknames before clearing (nicknames are local-only)
+    contact_list_t *local_list = NULL;
+    contacts_db_list(&local_list);
+
     if (contacts_db_clear_all() != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to clear local contacts\n");
         dht_contactlist_free_contacts(contacts, count);
+        if (local_list) contacts_db_free_list(local_list);
         return -1;
     }
 
@@ -319,6 +324,27 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
             QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to add contact '%s'\n", contacts[i]);
         }
     }
+
+    // RESTORE NICKNAMES: Re-apply saved nicknames to re-added contacts
+    if (local_list && local_list->count > 0) {
+        size_t restored = 0;
+        for (size_t i = 0; i < local_list->count; i++) {
+            if (local_list->contacts[i].nickname[0] != '\0') {
+                // Only restore if contact still exists (was in DHT list)
+                if (contacts_db_exists(local_list->contacts[i].identity)) {
+                    contacts_db_update_nickname(
+                        local_list->contacts[i].identity,
+                        local_list->contacts[i].nickname
+                    );
+                    restored++;
+                }
+            }
+        }
+        if (restored > 0) {
+            QGP_LOG_INFO(LOG_TAG, "Restored %zu local nicknames after DHT sync\n", restored);
+        }
+    }
+    if (local_list) contacts_db_free_list(local_list);
 
     dht_contactlist_free_contacts(contacts, count);
 
