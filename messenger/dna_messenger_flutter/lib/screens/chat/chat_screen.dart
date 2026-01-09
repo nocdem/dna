@@ -7,12 +7,15 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../utils/logger.dart';
 import '../../theme/dna_theme.dart';
 import '../../widgets/emoji_shortcode_field.dart';
 import '../../widgets/formatted_text.dart';
+import '../../widgets/image_message_bubble.dart';
+import '../../services/image_attachment_service.dart';
 import 'contact_profile_dialog.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
@@ -500,6 +503,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         top: false,
         child: Row(
           children: [
+            // Attachment button
+            IconButton(
+              icon: const FaIcon(FontAwesomeIcons.paperclip),
+              onPressed: () => _showAttachmentOptions(context, contact),
+              tooltip: 'Attach image',
+            ),
             // Emoji button
             IconButton(
               icon: FaIcon(
@@ -614,6 +623,140 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
     }
     // On success (result >= 0), message is already shown in UI with spinner
+  }
+
+  void _showAttachmentOptions(BuildContext context, Contact contact) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const FaIcon(FontAwesomeIcons.images),
+              title: const Text('Photo Library'),
+              onTap: () {
+                Navigator.pop(context);
+                _pickAndSendImage(contact, ImageSource.gallery);
+              },
+            ),
+            ListTile(
+              leading: const FaIcon(FontAwesomeIcons.camera),
+              title: const Text('Camera'),
+              onTap: () {
+                Navigator.pop(context);
+                _pickAndSendImage(contact, ImageSource.camera);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickAndSendImage(Contact contact, ImageSource source) async {
+    final service = ImageAttachmentService();
+
+    try {
+      // Pick image
+      final bytes = await service.pickImage(source);
+      if (bytes == null) return; // User cancelled
+
+      if (!mounted) return;
+
+      // Show loading indicator
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const Center(child: CircularProgressIndicator()),
+      );
+
+      // Process and compress
+      final attachment = await service.processImage(bytes);
+
+      if (!mounted) return;
+      Navigator.pop(context); // Dismiss loading
+
+      // Show caption dialog
+      final caption = await _showCaptionDialog(context);
+      if (!mounted) return;
+
+      // Send via existing message queue
+      final messageJson = attachment.toMessageJson(caption: caption);
+      final result = ref
+          .read(conversationProvider(contact.fingerprint).notifier)
+          .sendMessage(messageJson);
+
+      if (result == -1) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Message queue full. Please wait and try again.'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      } else if (result == -2) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Failed to send image. Please try again.'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    } on ImageAttachmentException catch (e) {
+      if (!mounted) return;
+      // Dismiss loading if showing
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.message),
+          backgroundColor: DnaColors.snackbarError,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      // Dismiss loading if showing
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: DnaColors.snackbarError,
+        ),
+      );
+    }
+  }
+
+  Future<String?> _showCaptionDialog(BuildContext context) async {
+    final controller = TextEditingController();
+
+    return showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add Caption'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(
+            hintText: 'Optional caption...',
+          ),
+          autofocus: true,
+          maxLines: 3,
+          maxLength: 500,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, null),
+            child: const Text('Skip'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Send'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _onEmojiSelected(Emoji emoji) {
@@ -1107,8 +1250,27 @@ class _MessageBubble extends StatelessWidget {
     return null;
   }
 
+  /// Check if message is an image attachment by parsing JSON content
+  Map<String, dynamic>? _parseImageData() {
+    try {
+      final data = jsonDecode(message.plaintext) as Map<String, dynamic>;
+      if (data['type'] == 'image_attachment') {
+        return data;
+      }
+    } catch (_) {
+      // Not JSON or invalid format - treat as regular message
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Handle image attachments with special bubble
+    final imageData = _parseImageData();
+    if (imageData != null) {
+      return ImageMessageBubble(message: message, imageData: imageData);
+    }
+
     // Handle transfer messages with special bubble (detected by JSON tag)
     final transferData = _parseTransferData();
     if (transferData != null) {
