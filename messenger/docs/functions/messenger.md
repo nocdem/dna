@@ -59,7 +59,7 @@ Core messenger functionality including identity management, key generation, mess
 | `int messenger_delete_message(messenger_context_t*, int)` | Delete message |
 | `int messenger_search_by_sender(...)` | Search messages by sender |
 | `int messenger_show_conversation(...)` | Show conversation with user |
-| `int messenger_get_conversation(...)` | Get conversation messages |
+| `int messenger_get_conversation(...)` | Get conversation messages (pre-decrypted, key loaded once) |
 | `void messenger_free_messages(message_info_t*, int)` | Free message array |
 | `int messenger_search_by_date(...)` | Search messages by date range |
 
