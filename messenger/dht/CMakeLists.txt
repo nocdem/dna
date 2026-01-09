@@ -33,6 +33,7 @@ set(DHT_COMMON_SOURCES
     client/dht_bootstrap_discovery.c  # Client-side node discovery
     client/bootstrap_cache.c          # Bootstrap node SQLite cache
     client/dht_contactlist.c
+    client/dht_addressbook.c      # Wallet address book DHT sync
     client/dht_message_backup.c
     client/dna_profile.c
     client/dna_message_wall.c

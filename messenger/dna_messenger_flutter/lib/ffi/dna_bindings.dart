@@ -193,6 +193,36 @@ final class dna_transaction_t extends Struct {
   external Array<Char> status;
 }
 
+/// Address book entry (wallet addresses)
+final class dna_addressbook_entry_t extends Struct {
+  @Int32()
+  external int id;
+
+  @Array(128)
+  external Array<Char> address;
+
+  @Array(64)
+  external Array<Char> label;
+
+  @Array(32)
+  external Array<Char> network;
+
+  @Array(256)
+  external Array<Char> notes;
+
+  @Uint64()
+  external int created_at;
+
+  @Uint64()
+  external int updated_at;
+
+  @Uint64()
+  external int last_used;
+
+  @Uint32()
+  external int use_count;
+}
+
 /// Feed channel information
 final class dna_channel_info_t extends Struct {
   @Array(65)
@@ -719,6 +749,16 @@ typedef DnaBackupResultCbNative = Void Function(
 );
 typedef DnaBackupResultCb = NativeFunction<DnaBackupResultCbNative>;
 
+/// Address book callback - Native
+typedef DnaAddressbookCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_addressbook_entry_t> entries,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaAddressbookCb = NativeFunction<DnaAddressbookCbNative>;
+
 /// Event callback - Native
 typedef DnaEventCbNative = Void Function(
   Pointer<dna_event_t> event,
@@ -892,6 +932,14 @@ typedef DnaBackupResultCbDart = void Function(
   int error,
   int processedCount,
   int skippedCount,
+  Pointer<Void> userData,
+);
+
+typedef DnaAddressbookCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_addressbook_entry_t> entries,
+  int count,
   Pointer<Void> userData,
 );
 
@@ -2482,6 +2530,176 @@ class DnaBindings {
     Pointer<Void> user_data,
   ) {
     return _dna_engine_restore_messages(engine, callback, user_data);
+  }
+
+  // ---------------------------------------------------------------------------
+  // ADDRESS BOOK
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_get_addressbook = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<DnaAddressbookCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaAddressbookCb>,
+          Pointer<Void>)>('dna_engine_get_addressbook');
+
+  int dna_engine_get_addressbook(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaAddressbookCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_addressbook(engine, callback, user_data);
+  }
+
+  late final _dna_engine_get_addressbook_by_network = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaAddressbookCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaAddressbookCb>, Pointer<Void>)>(
+      'dna_engine_get_addressbook_by_network');
+
+  int dna_engine_get_addressbook_by_network(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> network,
+    Pointer<DnaAddressbookCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_addressbook_by_network(
+        engine, network, callback, user_data);
+  }
+
+  late final _dna_engine_get_recent_addresses = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Int32, Pointer<DnaAddressbookCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, int, Pointer<DnaAddressbookCb>,
+          Pointer<Void>)>('dna_engine_get_recent_addresses');
+
+  int dna_engine_get_recent_addresses(
+    Pointer<dna_engine_t> engine,
+    int limit,
+    Pointer<DnaAddressbookCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_recent_addresses(engine, limit, callback, user_data);
+  }
+
+  late final _dna_engine_add_address = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<Utf8>, Pointer<Utf8>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<Utf8>, Pointer<Utf8>)>('dna_engine_add_address');
+
+  int dna_engine_add_address(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> address,
+    Pointer<Utf8> label,
+    Pointer<Utf8> network,
+    Pointer<Utf8> notes,
+  ) {
+    return _dna_engine_add_address(engine, address, label, network, notes);
+  }
+
+  late final _dna_engine_update_address = _lib.lookupFunction<
+      Int32 Function(
+          Pointer<dna_engine_t>, Int32, Pointer<Utf8>, Pointer<Utf8>),
+      int Function(Pointer<dna_engine_t>, int, Pointer<Utf8>,
+          Pointer<Utf8>)>('dna_engine_update_address');
+
+  int dna_engine_update_address(
+    Pointer<dna_engine_t> engine,
+    int id,
+    Pointer<Utf8> label,
+    Pointer<Utf8> notes,
+  ) {
+    return _dna_engine_update_address(engine, id, label, notes);
+  }
+
+  late final _dna_engine_remove_address = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Int32),
+      int Function(Pointer<dna_engine_t>, int)>('dna_engine_remove_address');
+
+  int dna_engine_remove_address(
+    Pointer<dna_engine_t> engine,
+    int id,
+  ) {
+    return _dna_engine_remove_address(engine, id);
+  }
+
+  late final _dna_engine_address_exists = _lib.lookupFunction<
+      Bool Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>),
+      bool Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<Utf8>)>('dna_engine_address_exists');
+
+  bool dna_engine_address_exists(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> address,
+    Pointer<Utf8> network,
+  ) {
+    return _dna_engine_address_exists(engine, address, network);
+  }
+
+  late final _dna_engine_lookup_address = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<dna_addressbook_entry_t>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<dna_addressbook_entry_t>)>('dna_engine_lookup_address');
+
+  int dna_engine_lookup_address(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> address,
+    Pointer<Utf8> network,
+    Pointer<dna_addressbook_entry_t> entry_out,
+  ) {
+    return _dna_engine_lookup_address(engine, address, network, entry_out);
+  }
+
+  late final _dna_engine_increment_address_usage = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Int32),
+      int Function(
+          Pointer<dna_engine_t>, int)>('dna_engine_increment_address_usage');
+
+  int dna_engine_increment_address_usage(
+    Pointer<dna_engine_t> engine,
+    int id,
+  ) {
+    return _dna_engine_increment_address_usage(engine, id);
+  }
+
+  late final _dna_engine_sync_addressbook_to_dht = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaCompletionCb>,
+          Pointer<Void>)>('dna_engine_sync_addressbook_to_dht');
+
+  int dna_engine_sync_addressbook_to_dht(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_sync_addressbook_to_dht(engine, callback, user_data);
+  }
+
+  late final _dna_engine_sync_addressbook_from_dht = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaCompletionCb>,
+          Pointer<Void>)>('dna_engine_sync_addressbook_from_dht');
+
+  int dna_engine_sync_addressbook_from_dht(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_sync_addressbook_from_dht(engine, callback, user_data);
+  }
+
+  late final _dna_free_addressbook_entries = _lib.lookupFunction<
+      Void Function(Pointer<dna_addressbook_entry_t>, Int32),
+      void Function(
+          Pointer<dna_addressbook_entry_t>, int)>('dna_free_addressbook_entries');
+
+  void dna_free_addressbook_entries(
+      Pointer<dna_addressbook_entry_t> entries, int count) {
+    _dna_free_addressbook_entries(entries, count);
   }
 }
 

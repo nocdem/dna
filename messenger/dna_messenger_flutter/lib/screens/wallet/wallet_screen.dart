@@ -4,9 +4,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import '../../ffi/dna_engine.dart' show Contact, Transaction, UserProfile, Wallet;
+import '../../ffi/dna_engine.dart' show AddressBookEntry, Contact, Transaction, UserProfile, Wallet;
+import '../../providers/addressbook_provider.dart';
 import '../../providers/providers.dart' hide UserProfile;
 import '../../theme/dna_theme.dart';
+import 'address_book_screen.dart';
+import 'address_dialog.dart';
 
 /// Get the SVG icon path for a token
 String? getTokenIconPath(String token) {
@@ -67,6 +70,14 @@ class WalletScreen extends ConsumerWidget {
             : null,
         title: const Text('Wallet'),
         actions: [
+          IconButton(
+            icon: const FaIcon(FontAwesomeIcons.addressBook),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const AddressBookScreen()),
+            ),
+            tooltip: 'Address Book',
+          ),
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
             onPressed: () => ref.invalidate(walletsProvider),
@@ -1329,10 +1340,16 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   Future<void> _send() async {
     setState(() => _isSending = true);
 
+    // Capture values before async gap
+    final recipientAddress = _effectiveRecipient;
+    final network = _selectedNetwork.toLowerCase() == 'ethereum' ? 'ethereum' :
+                    _selectedNetwork.toLowerCase() == 'solana' ? 'solana' :
+                    _selectedNetwork.toLowerCase() == 'tron' ? 'tron' : 'backbone';
+
     try {
       await ref.read(walletsProvider.notifier).sendTokens(
         walletIndex: widget.walletIndex,
-        recipientAddress: _effectiveRecipient,
+        recipientAddress: recipientAddress,
         amount: _amountController.text.trim(),
         token: _selectedToken,
         network: _selectedNetwork,
@@ -1344,6 +1361,12 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Transaction submitted successfully')),
         );
+
+        // After successful send, check if address should be saved
+        // Skip if this was a DNA fingerprint/name resolution
+        if (_resolvedAddress == null) {
+          _promptSaveAddress(recipientAddress, network);
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -1355,6 +1378,82 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
           ),
         );
       }
+    }
+  }
+
+  /// Prompt user to save address if it's new
+  void _promptSaveAddress(String address, String network) async {
+    try {
+      final engine = await ref.read(engineProvider.future);
+
+      // Check if address already exists
+      final exists = engine.addressExists(address, network);
+      if (exists) {
+        // Address exists - increment usage silently
+        final entry = engine.lookupAddress(address, network);
+        if (entry != null) {
+          engine.incrementAddressUsage(entry.id);
+        }
+        return;
+      }
+
+      // New address - prompt to save
+      if (!mounted) return;
+      final shouldSave = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Save Address?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Would you like to save this address to your address book?'),
+              const SizedBox(height: 12),
+              Text(
+                '${address.substring(0, 10)}...${address.substring(address.length - 8)}',
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('No thanks'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      );
+
+      if (shouldSave == true && mounted) {
+        // Show add address dialog
+        final result = await showDialog<AddressDialogResult>(
+          context: context,
+          builder: (context) => AddressDialog.prefilled(
+            address: address,
+            network: network,
+          ),
+        );
+
+        if (result != null) {
+          await ref.read(addressBookProvider.notifier).addAddress(
+            address: result.address,
+            label: result.label,
+            network: result.network,
+            notes: result.notes,
+          );
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Saved "${result.label}" to address book')),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      // Silently ignore errors - save prompt is optional
     }
   }
 }

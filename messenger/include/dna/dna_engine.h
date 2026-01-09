@@ -189,6 +189,21 @@ typedef struct {
 } dna_transaction_t;
 
 /**
+ * Address book entry (wallet address storage)
+ */
+typedef struct {
+    int id;                     /* Database row ID */
+    char address[128];          /* Wallet address */
+    char label[64];             /* User-defined label */
+    char network[32];           /* Network: backbone, ethereum, solana, tron */
+    char notes[256];            /* Optional notes */
+    uint64_t created_at;        /* When address was added */
+    uint64_t updated_at;        /* When address was last modified */
+    uint64_t last_used;         /* When address was last used for sending */
+    uint32_t use_count;         /* Number of times used for sending */
+} dna_addressbook_entry_t;
+
+/**
  * Feed channel information (simplified for async API)
  */
 typedef struct {
@@ -427,6 +442,17 @@ typedef void (*dna_transactions_cb)(
     dna_request_id_t request_id,
     int error,
     dna_transaction_t *transactions,
+    int count,
+    void *user_data
+);
+
+/**
+ * Address book callback
+ */
+typedef void (*dna_addressbook_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_addressbook_entry_t *entries,
     int count,
     void *user_data
 );
@@ -2257,6 +2283,177 @@ DNA_API void dna_free_feed_comment(dna_comment_info_t *comment);
  * Free profile returned by callbacks
  */
 DNA_API void dna_free_profile(dna_profile_t *profile);
+
+/**
+ * Free address book entries array returned by callbacks
+ */
+DNA_API void dna_free_addressbook_entries(dna_addressbook_entry_t *entries, int count);
+
+/* ============================================================================
+ * ADDRESS BOOK (wallet address storage)
+ * ============================================================================ */
+
+/**
+ * Get all address book entries
+ *
+ * @param engine        Engine instance
+ * @param callback      Result callback
+ * @param user_data     User data for callback
+ * @return              Request ID
+ */
+DNA_API dna_request_id_t dna_engine_get_addressbook(
+    dna_engine_t *engine,
+    dna_addressbook_cb callback,
+    void *user_data
+);
+
+/**
+ * Get address book entries by network
+ *
+ * @param engine        Engine instance
+ * @param network       Network name (backbone, ethereum, solana, tron)
+ * @param callback      Result callback
+ * @param user_data     User data for callback
+ * @return              Request ID
+ */
+DNA_API dna_request_id_t dna_engine_get_addressbook_by_network(
+    dna_engine_t *engine,
+    const char *network,
+    dna_addressbook_cb callback,
+    void *user_data
+);
+
+/**
+ * Add address to address book (synchronous)
+ *
+ * @param engine        Engine instance
+ * @param address       Wallet address
+ * @param label         User-defined label
+ * @param network       Network name
+ * @param notes         Optional notes (can be NULL)
+ * @return              0 on success, -1 on error, -2 if already exists
+ */
+DNA_API int dna_engine_add_address(
+    dna_engine_t *engine,
+    const char *address,
+    const char *label,
+    const char *network,
+    const char *notes
+);
+
+/**
+ * Update address in address book (synchronous)
+ *
+ * @param engine        Engine instance
+ * @param id            Database row ID
+ * @param label         New label
+ * @param notes         New notes (can be NULL to clear)
+ * @return              0 on success, -1 on error
+ */
+DNA_API int dna_engine_update_address(
+    dna_engine_t *engine,
+    int id,
+    const char *label,
+    const char *notes
+);
+
+/**
+ * Remove address from address book (synchronous)
+ *
+ * @param engine        Engine instance
+ * @param id            Database row ID
+ * @return              0 on success, -1 on error
+ */
+DNA_API int dna_engine_remove_address(
+    dna_engine_t *engine,
+    int id
+);
+
+/**
+ * Check if address exists in address book (synchronous)
+ *
+ * @param engine        Engine instance
+ * @param address       Wallet address
+ * @param network       Network name
+ * @return              true if exists, false otherwise
+ */
+DNA_API bool dna_engine_address_exists(
+    dna_engine_t *engine,
+    const char *address,
+    const char *network
+);
+
+/**
+ * Lookup address by address string (synchronous)
+ *
+ * @param engine        Engine instance
+ * @param address       Wallet address
+ * @param network       Network name
+ * @param entry_out     Output entry (caller must free with dna_free_addressbook_entries)
+ * @return              0 on success, -1 on error, 1 if not found
+ */
+DNA_API int dna_engine_lookup_address(
+    dna_engine_t *engine,
+    const char *address,
+    const char *network,
+    dna_addressbook_entry_t *entry_out
+);
+
+/**
+ * Increment address usage count (call after sending to address)
+ *
+ * @param engine        Engine instance
+ * @param id            Database row ID
+ * @return              0 on success, -1 on error
+ */
+DNA_API int dna_engine_increment_address_usage(
+    dna_engine_t *engine,
+    int id
+);
+
+/**
+ * Get recently used addresses
+ *
+ * @param engine        Engine instance
+ * @param limit         Maximum number of addresses to return
+ * @param callback      Result callback
+ * @param user_data     User data for callback
+ * @return              Request ID
+ */
+DNA_API dna_request_id_t dna_engine_get_recent_addresses(
+    dna_engine_t *engine,
+    int limit,
+    dna_addressbook_cb callback,
+    void *user_data
+);
+
+/**
+ * Sync address book to DHT
+ *
+ * @param engine        Engine instance
+ * @param callback      Completion callback
+ * @param user_data     User data for callback
+ * @return              Request ID
+ */
+DNA_API dna_request_id_t dna_engine_sync_addressbook_to_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Sync address book from DHT (replace local)
+ *
+ * @param engine        Engine instance
+ * @param callback      Completion callback
+ * @param user_data     User data for callback
+ * @return              Request ID
+ */
+DNA_API dna_request_id_t dna_engine_sync_addressbook_from_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
 
 /* ============================================================================
  * GLOBAL ENGINE ACCESS (for event dispatch from messenger layer)

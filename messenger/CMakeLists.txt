@@ -184,6 +184,7 @@ add_library(dna_lib ${DNA_LIB_TYPE}
     messenger_groups.c          # DHT-based group messaging
     database/keyserver_cache.c  # SQLite keyserver cache
     database/contacts_db.c      # Local contacts database
+    database/addressbook_db.c   # Wallet address book database
     database/profile_cache.c    # Profile cache database (7-day TTL)
     database/profile_manager.c  # Smart profile fetching (cache + DHT)
     database/cache_manager.c    # Unified cache lifecycle manager

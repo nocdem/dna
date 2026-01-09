@@ -62,6 +62,86 @@ class Contact {
   }
 }
 
+/// Address book entry (wallet addresses)
+class AddressBookEntry {
+  final int id;
+  final String address;
+  final String label;
+  final String network;
+  final String notes;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final DateTime lastUsed;
+  final int useCount;
+
+  AddressBookEntry({
+    required this.id,
+    required this.address,
+    required this.label,
+    required this.network,
+    required this.notes,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.lastUsed,
+    required this.useCount,
+  });
+
+  factory AddressBookEntry.fromNative(dna_addressbook_entry_t native) {
+    return AddressBookEntry(
+      id: native.id,
+      address: native.address.toDartString(128),
+      label: native.label.toDartString(64),
+      network: native.network.toDartString(32),
+      notes: native.notes.toDartString(256),
+      createdAt: DateTime.fromMillisecondsSinceEpoch(native.created_at * 1000),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(native.updated_at * 1000),
+      lastUsed: DateTime.fromMillisecondsSinceEpoch(native.last_used * 1000),
+      useCount: native.use_count,
+    );
+  }
+
+  /// Create a copy with updated fields
+  AddressBookEntry copyWith({
+    int? id,
+    String? address,
+    String? label,
+    String? network,
+    String? notes,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+    DateTime? lastUsed,
+    int? useCount,
+  }) {
+    return AddressBookEntry(
+      id: id ?? this.id,
+      address: address ?? this.address,
+      label: label ?? this.label,
+      network: network ?? this.network,
+      notes: notes ?? this.notes,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      lastUsed: lastUsed ?? this.lastUsed,
+      useCount: useCount ?? this.useCount,
+    );
+  }
+
+  /// Get network display name
+  String get networkDisplayName {
+    switch (network.toLowerCase()) {
+      case 'backbone':
+        return 'Cellframe';
+      case 'ethereum':
+        return 'Ethereum';
+      case 'solana':
+        return 'Solana';
+      case 'tron':
+        return 'TRON';
+      default:
+        return network;
+    }
+  }
+}
+
 /// Contact request information (ICQ-style request)
 class ContactRequest {
   final String fingerprint;
@@ -3970,6 +4050,319 @@ class DnaEngine {
     if (requestId == 0) {
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit restore request');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
+  // ADDRESS BOOK OPERATIONS
+  // ---------------------------------------------------------------------------
+
+  /// Get all address book entries
+  Future<List<AddressBookEntry>> getAddressBook() async {
+    final completer = Completer<List<AddressBookEntry>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_addressbook_entry_t> entries, int count,
+        Pointer<Void> userData) {
+      if (error == 0) {
+        final result = <AddressBookEntry>[];
+        for (var i = 0; i < count; i++) {
+          result.add(AddressBookEntry.fromNative((entries + i).ref));
+        }
+        if (count > 0) {
+          _bindings.dna_free_addressbook_entries(entries, count);
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaAddressbookCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_addressbook(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get address book entries filtered by network
+  Future<List<AddressBookEntry>> getAddressBookByNetwork(String network) async {
+    final completer = Completer<List<AddressBookEntry>>();
+    final localId = _nextLocalId++;
+    final networkPtr = network.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_addressbook_entry_t> entries, int count,
+        Pointer<Void> userData) {
+      calloc.free(networkPtr);
+
+      if (error == 0) {
+        final result = <AddressBookEntry>[];
+        for (var i = 0; i < count; i++) {
+          result.add(AddressBookEntry.fromNative((entries + i).ref));
+        }
+        if (count > 0) {
+          _bindings.dna_free_addressbook_entries(entries, count);
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaAddressbookCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_addressbook_by_network(
+      _engine,
+      networkPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(networkPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get recently used addresses
+  Future<List<AddressBookEntry>> getRecentAddresses({int limit = 10}) async {
+    final completer = Completer<List<AddressBookEntry>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_addressbook_entry_t> entries, int count,
+        Pointer<Void> userData) {
+      if (error == 0) {
+        final result = <AddressBookEntry>[];
+        for (var i = 0; i < count; i++) {
+          result.add(AddressBookEntry.fromNative((entries + i).ref));
+        }
+        if (count > 0) {
+          _bindings.dna_free_addressbook_entries(entries, count);
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaAddressbookCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_recent_addresses(
+      _engine,
+      limit,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Add a new address to the address book
+  /// Returns the new entry ID on success, or throws on failure
+  int addAddress({
+    required String address,
+    required String label,
+    required String network,
+    String notes = '',
+  }) {
+    final addressPtr = address.toNativeUtf8();
+    final labelPtr = label.toNativeUtf8();
+    final networkPtr = network.toNativeUtf8();
+    final notesPtr = notes.toNativeUtf8();
+
+    try {
+      final result = _bindings.dna_engine_add_address(
+        _engine,
+        addressPtr.cast(),
+        labelPtr.cast(),
+        networkPtr.cast(),
+        notesPtr.cast(),
+      );
+      if (result < 0) {
+        throw DnaEngineException(result, 'Failed to add address');
+      }
+      return result;
+    } finally {
+      calloc.free(addressPtr);
+      calloc.free(labelPtr);
+      calloc.free(networkPtr);
+      calloc.free(notesPtr);
+    }
+  }
+
+  /// Update an existing address in the address book
+  void updateAddress({
+    required int id,
+    required String label,
+    String notes = '',
+  }) {
+    final labelPtr = label.toNativeUtf8();
+    final notesPtr = notes.toNativeUtf8();
+
+    try {
+      final result = _bindings.dna_engine_update_address(
+        _engine,
+        id,
+        labelPtr.cast(),
+        notesPtr.cast(),
+      );
+      if (result != 0) {
+        throw DnaEngineException(result, 'Failed to update address');
+      }
+    } finally {
+      calloc.free(labelPtr);
+      calloc.free(notesPtr);
+    }
+  }
+
+  /// Remove an address from the address book
+  void removeAddress(int id) {
+    final result = _bindings.dna_engine_remove_address(_engine, id);
+    if (result != 0) {
+      throw DnaEngineException(result, 'Failed to remove address');
+    }
+  }
+
+  /// Check if an address exists in the address book
+  bool addressExists(String address, String network) {
+    final addressPtr = address.toNativeUtf8();
+    final networkPtr = network.toNativeUtf8();
+
+    try {
+      return _bindings.dna_engine_address_exists(
+        _engine,
+        addressPtr.cast(),
+        networkPtr.cast(),
+      );
+    } finally {
+      calloc.free(addressPtr);
+      calloc.free(networkPtr);
+    }
+  }
+
+  /// Look up an address and return its entry if found
+  AddressBookEntry? lookupAddress(String address, String network) {
+    final addressPtr = address.toNativeUtf8();
+    final networkPtr = network.toNativeUtf8();
+    final entryPtr = calloc<dna_addressbook_entry_t>();
+
+    try {
+      final result = _bindings.dna_engine_lookup_address(
+        _engine,
+        addressPtr.cast(),
+        networkPtr.cast(),
+        entryPtr,
+      );
+      if (result == 0) {
+        return AddressBookEntry.fromNative(entryPtr.ref);
+      }
+      return null;
+    } finally {
+      calloc.free(addressPtr);
+      calloc.free(networkPtr);
+      calloc.free(entryPtr);
+    }
+  }
+
+  /// Increment the usage count for an address
+  void incrementAddressUsage(int id) {
+    final result = _bindings.dna_engine_increment_address_usage(_engine, id);
+    if (result != 0) {
+      throw DnaEngineException(result, 'Failed to increment address usage');
+    }
+  }
+
+  /// Sync address book to DHT (backup)
+  Future<void> syncAddressBookToDht() async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_sync_addressbook_to_dht(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit sync request');
+    }
+
+    return completer.future;
+  }
+
+  /// Sync address book from DHT (restore)
+  Future<void> syncAddressBookFromDht() async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else if (error == -2) {
+        // No data in DHT - not an error, just empty
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_sync_addressbook_from_dht(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit sync request');
     }
 
     return completer.future;

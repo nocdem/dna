@@ -78,6 +78,8 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "database/profile_cache.h"
 #include "database/profile_manager.h"
 #include "database/contacts_db.h"
+#include "database/addressbook_db.h"
+#include "dht/client/dht_addressbook.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/key_encryption.h"
@@ -7618,4 +7620,584 @@ int dna_engine_check_version_dht(
                  result_out->info.app_current, result_out->info.nodus_current);
 
     return 0;
+}
+
+/* ============================================================================
+ * ADDRESS BOOK IMPLEMENTATION
+ * ============================================================================ */
+
+void dna_free_addressbook_entries(dna_addressbook_entry_t *entries, int count) {
+    (void)count;
+    free(entries);
+}
+
+/* Synchronous: Add address to address book */
+int dna_engine_add_address(
+    dna_engine_t *engine,
+    const char *address,
+    const char *label,
+    const char *network,
+    const char *notes)
+{
+    if (!engine || !engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "Engine not initialized or identity not loaded");
+        return -1;
+    }
+
+    if (!address || !label || !network) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for add_address");
+        return -1;
+    }
+
+    /* Initialize address book database if needed */
+    if (addressbook_db_init(engine->fingerprint) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize address book database");
+        return -1;
+    }
+
+    return addressbook_db_add(address, label, network, notes);
+}
+
+/* Synchronous: Update address in address book */
+int dna_engine_update_address(
+    dna_engine_t *engine,
+    int id,
+    const char *label,
+    const char *notes)
+{
+    if (!engine || !engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "Engine not initialized or identity not loaded");
+        return -1;
+    }
+
+    if (id <= 0 || !label) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for update_address");
+        return -1;
+    }
+
+    return addressbook_db_update(id, label, notes);
+}
+
+/* Synchronous: Remove address from address book */
+int dna_engine_remove_address(dna_engine_t *engine, int id) {
+    if (!engine || !engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "Engine not initialized or identity not loaded");
+        return -1;
+    }
+
+    if (id <= 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid id for remove_address");
+        return -1;
+    }
+
+    return addressbook_db_remove(id);
+}
+
+/* Synchronous: Check if address exists */
+bool dna_engine_address_exists(
+    dna_engine_t *engine,
+    const char *address,
+    const char *network)
+{
+    if (!engine || !engine->identity_loaded || !address || !network) {
+        return false;
+    }
+
+    /* Initialize address book database if needed */
+    if (addressbook_db_init(engine->fingerprint) != 0) {
+        return false;
+    }
+
+    return addressbook_db_exists(address, network);
+}
+
+/* Synchronous: Lookup address */
+int dna_engine_lookup_address(
+    dna_engine_t *engine,
+    const char *address,
+    const char *network,
+    dna_addressbook_entry_t *entry_out)
+{
+    if (!engine || !engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "Engine not initialized or identity not loaded");
+        return -1;
+    }
+
+    if (!address || !network || !entry_out) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for lookup_address");
+        return -1;
+    }
+
+    /* Initialize address book database if needed */
+    if (addressbook_db_init(engine->fingerprint) != 0) {
+        return -1;
+    }
+
+    addressbook_entry_t *db_entry = NULL;
+    int result = addressbook_db_get_by_address(address, network, &db_entry);
+
+    if (result != 0 || !db_entry) {
+        return result;  /* -1 for error, 1 for not found */
+    }
+
+    /* Copy to output struct */
+    entry_out->id = db_entry->id;
+    strncpy(entry_out->address, db_entry->address, sizeof(entry_out->address) - 1);
+    strncpy(entry_out->label, db_entry->label, sizeof(entry_out->label) - 1);
+    strncpy(entry_out->network, db_entry->network, sizeof(entry_out->network) - 1);
+    strncpy(entry_out->notes, db_entry->notes, sizeof(entry_out->notes) - 1);
+    entry_out->created_at = db_entry->created_at;
+    entry_out->updated_at = db_entry->updated_at;
+    entry_out->last_used = db_entry->last_used;
+    entry_out->use_count = db_entry->use_count;
+
+    addressbook_db_free_entry(db_entry);
+    return 0;
+}
+
+/* Synchronous: Increment address usage */
+int dna_engine_increment_address_usage(dna_engine_t *engine, int id) {
+    if (!engine || !engine->identity_loaded) {
+        return -1;
+    }
+
+    if (id <= 0) {
+        return -1;
+    }
+
+    return addressbook_db_increment_usage(id);
+}
+
+/* Async task data for address book operations */
+typedef struct {
+    dna_engine_t *engine;
+    dna_addressbook_cb callback;
+    void *user_data;
+    char network[32];  /* For network filter */
+    int limit;         /* For recent addresses */
+} addressbook_task_t;
+
+/* Helper: Convert addressbook_list_t to dna_addressbook_entry_t array */
+static dna_addressbook_entry_t* convert_addressbook_list(
+    addressbook_list_t *list,
+    int *count_out)
+{
+    if (!list || list->count == 0) {
+        *count_out = 0;
+        return NULL;
+    }
+
+    dna_addressbook_entry_t *entries = calloc(list->count, sizeof(dna_addressbook_entry_t));
+    if (!entries) {
+        *count_out = 0;
+        return NULL;
+    }
+
+    for (size_t i = 0; i < list->count; i++) {
+        entries[i].id = list->entries[i].id;
+        strncpy(entries[i].address, list->entries[i].address, sizeof(entries[i].address) - 1);
+        strncpy(entries[i].label, list->entries[i].label, sizeof(entries[i].label) - 1);
+        strncpy(entries[i].network, list->entries[i].network, sizeof(entries[i].network) - 1);
+        strncpy(entries[i].notes, list->entries[i].notes, sizeof(entries[i].notes) - 1);
+        entries[i].created_at = list->entries[i].created_at;
+        entries[i].updated_at = list->entries[i].updated_at;
+        entries[i].last_used = list->entries[i].last_used;
+        entries[i].use_count = list->entries[i].use_count;
+    }
+
+    *count_out = (int)list->count;
+    return entries;
+}
+
+/* Task: Get all addresses */
+static void task_get_addressbook(void *data) {
+    addressbook_task_t *task = (addressbook_task_t*)data;
+    if (!task) return;
+
+    dna_addressbook_entry_t *entries = NULL;
+    int count = 0;
+    int error = 0;
+
+    /* Initialize address book database if needed */
+    if (addressbook_db_init(task->engine->fingerprint) != 0) {
+        error = -1;
+    } else {
+        addressbook_list_t *list = NULL;
+        if (addressbook_db_list(&list) == 0 && list) {
+            entries = convert_addressbook_list(list, &count);
+            addressbook_db_free_list(list);
+        } else {
+            error = -1;
+        }
+    }
+
+    if (task->callback) {
+        task->callback(0, error, entries, count, task->user_data);
+    }
+
+    free(task);
+}
+
+/* Task: Get addresses by network */
+static void task_get_addressbook_by_network(void *data) {
+    addressbook_task_t *task = (addressbook_task_t*)data;
+    if (!task) return;
+
+    dna_addressbook_entry_t *entries = NULL;
+    int count = 0;
+    int error = 0;
+
+    /* Initialize address book database if needed */
+    if (addressbook_db_init(task->engine->fingerprint) != 0) {
+        error = -1;
+    } else {
+        addressbook_list_t *list = NULL;
+        if (addressbook_db_list_by_network(task->network, &list) == 0 && list) {
+            entries = convert_addressbook_list(list, &count);
+            addressbook_db_free_list(list);
+        } else {
+            error = -1;
+        }
+    }
+
+    if (task->callback) {
+        task->callback(0, error, entries, count, task->user_data);
+    }
+
+    free(task);
+}
+
+/* Task: Get recent addresses */
+static void task_get_recent_addresses(void *data) {
+    addressbook_task_t *task = (addressbook_task_t*)data;
+    if (!task) return;
+
+    dna_addressbook_entry_t *entries = NULL;
+    int count = 0;
+    int error = 0;
+
+    /* Initialize address book database if needed */
+    if (addressbook_db_init(task->engine->fingerprint) != 0) {
+        error = -1;
+    } else {
+        addressbook_list_t *list = NULL;
+        if (addressbook_db_get_recent(task->limit, &list) == 0 && list) {
+            entries = convert_addressbook_list(list, &count);
+            addressbook_db_free_list(list);
+        } else {
+            error = -1;
+        }
+    }
+
+    if (task->callback) {
+        task->callback(0, error, entries, count, task->user_data);
+    }
+
+    free(task);
+}
+
+/* Async: Get all addresses */
+dna_request_id_t dna_engine_get_addressbook(
+    dna_engine_t *engine,
+    dna_addressbook_cb callback,
+    void *user_data)
+{
+    if (!engine || !engine->identity_loaded || !callback) {
+        if (callback) {
+            callback(0, -1, NULL, 0, user_data);
+        }
+        return 0;
+    }
+
+    addressbook_task_t *task = calloc(1, sizeof(addressbook_task_t));
+    if (!task) {
+        callback(0, -1, NULL, 0, user_data);
+        return 0;
+    }
+
+    task->engine = engine;
+    task->callback = callback;
+    task->user_data = user_data;
+
+    /* Run synchronously for now (can be made async with thread pool if needed) */
+    task_get_addressbook(task);
+    return 1;
+}
+
+/* Async: Get addresses by network */
+dna_request_id_t dna_engine_get_addressbook_by_network(
+    dna_engine_t *engine,
+    const char *network,
+    dna_addressbook_cb callback,
+    void *user_data)
+{
+    if (!engine || !engine->identity_loaded || !network || !callback) {
+        if (callback) {
+            callback(0, -1, NULL, 0, user_data);
+        }
+        return 0;
+    }
+
+    addressbook_task_t *task = calloc(1, sizeof(addressbook_task_t));
+    if (!task) {
+        callback(0, -1, NULL, 0, user_data);
+        return 0;
+    }
+
+    task->engine = engine;
+    task->callback = callback;
+    task->user_data = user_data;
+    strncpy(task->network, network, sizeof(task->network) - 1);
+
+    task_get_addressbook_by_network(task);
+    return 1;
+}
+
+/* Async: Get recent addresses */
+dna_request_id_t dna_engine_get_recent_addresses(
+    dna_engine_t *engine,
+    int limit,
+    dna_addressbook_cb callback,
+    void *user_data)
+{
+    if (!engine || !engine->identity_loaded || limit <= 0 || !callback) {
+        if (callback) {
+            callback(0, -1, NULL, 0, user_data);
+        }
+        return 0;
+    }
+
+    addressbook_task_t *task = calloc(1, sizeof(addressbook_task_t));
+    if (!task) {
+        callback(0, -1, NULL, 0, user_data);
+        return 0;
+    }
+
+    task->engine = engine;
+    task->callback = callback;
+    task->user_data = user_data;
+    task->limit = limit;
+
+    task_get_recent_addresses(task);
+    return 1;
+}
+
+/* DHT Sync task data */
+typedef struct {
+    dna_engine_t *engine;
+    dna_completion_cb callback;
+    void *user_data;
+} addressbook_sync_task_t;
+
+/* Task: Sync address book to DHT */
+static void task_sync_addressbook_to_dht(void *data) {
+    addressbook_sync_task_t *task = (addressbook_sync_task_t*)data;
+    if (!task) return;
+
+    int error = 0;
+
+    /* Get DHT context */
+    dht_context_t *dht_ctx = dna_get_dht_ctx(task->engine);
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "No DHT context for address book sync");
+        error = -1;
+        goto done;
+    }
+
+    /* Load keys */
+    qgp_key_t *sign_key = dna_load_private_key(task->engine);
+    qgp_key_t *enc_key = dna_load_encryption_key(task->engine);
+    if (!sign_key || !enc_key) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load keys for address book sync");
+        error = -1;
+        if (sign_key) qgp_key_free(sign_key);
+        if (enc_key) qgp_key_free(enc_key);
+        goto done;
+    }
+
+    /* Get address book from database */
+    addressbook_list_t *list = NULL;
+    if (addressbook_db_list(&list) != 0 || !list) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get address book for sync");
+        error = -1;
+        qgp_key_free(sign_key);
+        qgp_key_free(enc_key);
+        goto done;
+    }
+
+    /* Convert to DHT entries */
+    dht_addressbook_entry_t *dht_entries = NULL;
+    if (list->count > 0) {
+        dht_entries = dht_addressbook_from_db_entries(list->entries, list->count);
+    }
+
+    /* Publish to DHT */
+    int result = dht_addressbook_publish(
+        dht_ctx,
+        task->engine->fingerprint,
+        dht_entries,
+        list->count,
+        enc_key->public_key,
+        enc_key->private_key,
+        sign_key->public_key,
+        sign_key->private_key,
+        0  /* Use default TTL */
+    );
+
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish address book to DHT");
+        error = -1;
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "Published %zu addresses to DHT", list->count);
+    }
+
+    if (dht_entries) {
+        dht_addressbook_free_entries(dht_entries, list->count);
+    }
+    addressbook_db_free_list(list);
+    qgp_key_free(sign_key);
+    qgp_key_free(enc_key);
+
+done:
+    if (task->callback) {
+        task->callback(0, error, task->user_data);
+    }
+    free(task);
+}
+
+/* Task: Sync address book from DHT */
+static void task_sync_addressbook_from_dht(void *data) {
+    addressbook_sync_task_t *task = (addressbook_sync_task_t*)data;
+    if (!task) return;
+
+    int error = 0;
+
+    /* Get DHT context */
+    dht_context_t *dht_ctx = dna_get_dht_ctx(task->engine);
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "No DHT context for address book sync");
+        error = -1;
+        goto done;
+    }
+
+    /* Load keys */
+    qgp_key_t *sign_key = dna_load_private_key(task->engine);
+    qgp_key_t *enc_key = dna_load_encryption_key(task->engine);
+    if (!sign_key || !enc_key) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load keys for address book sync");
+        error = -1;
+        if (sign_key) qgp_key_free(sign_key);
+        if (enc_key) qgp_key_free(enc_key);
+        goto done;
+    }
+
+    /* Fetch from DHT */
+    dht_addressbook_entry_t *dht_entries = NULL;
+    size_t entry_count = 0;
+
+    int result = dht_addressbook_fetch(
+        dht_ctx,
+        task->engine->fingerprint,
+        &dht_entries,
+        &entry_count,
+        enc_key->private_key,
+        sign_key->public_key
+    );
+
+    qgp_key_free(sign_key);
+    qgp_key_free(enc_key);
+
+    if (result == -2) {
+        /* Not found in DHT - not an error, just no data */
+        QGP_LOG_INFO(LOG_TAG, "No address book found in DHT");
+        goto done;
+    }
+
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to fetch address book from DHT");
+        error = -1;
+        goto done;
+    }
+
+    /* Replace local database with DHT data */
+    addressbook_db_clear_all();
+
+    for (size_t i = 0; i < entry_count; i++) {
+        addressbook_db_add(
+            dht_entries[i].address,
+            dht_entries[i].label,
+            dht_entries[i].network,
+            dht_entries[i].notes
+        );
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Synced %zu addresses from DHT", entry_count);
+
+    if (dht_entries) {
+        dht_addressbook_free_entries(dht_entries, entry_count);
+    }
+
+done:
+    if (task->callback) {
+        task->callback(0, error, task->user_data);
+    }
+    free(task);
+}
+
+/* Async: Sync address book to DHT */
+dna_request_id_t dna_engine_sync_addressbook_to_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data)
+{
+    if (!engine || !engine->identity_loaded) {
+        if (callback) {
+            callback(0, -1, user_data);
+        }
+        return 0;
+    }
+
+    addressbook_sync_task_t *task = calloc(1, sizeof(addressbook_sync_task_t));
+    if (!task) {
+        if (callback) {
+            callback(0, -1, user_data);
+        }
+        return 0;
+    }
+
+    task->engine = engine;
+    task->callback = callback;
+    task->user_data = user_data;
+
+    task_sync_addressbook_to_dht(task);
+    return 1;
+}
+
+/* Async: Sync address book from DHT */
+dna_request_id_t dna_engine_sync_addressbook_from_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data)
+{
+    if (!engine || !engine->identity_loaded) {
+        if (callback) {
+            callback(0, -1, user_data);
+        }
+        return 0;
+    }
+
+    addressbook_sync_task_t *task = calloc(1, sizeof(addressbook_sync_task_t));
+    if (!task) {
+        if (callback) {
+            callback(0, -1, user_data);
+        }
+        return 0;
+    }
+
+    task->engine = engine;
+    task->callback = callback;
+    task->user_data = user_data;
+
+    task_sync_addressbook_from_dht(task);
+    return 1;
 }
