@@ -4876,6 +4876,13 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine) {
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
     if (!dht_ctx) return -1;
 
+    /* Skip retry if DHT is not connected - retries will fail and block for timeout
+     * Messages will be retried when DHT reconnects (triggers this function again) */
+    if (!dht_context_is_ready(dht_ctx)) {
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Skipping retry - DHT not connected");
+        return 0;
+    }
+
     message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
     if (!backup_ctx) return -1;
 
