@@ -2728,11 +2728,10 @@ void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
             strncpy(messages[i].sender, msg_infos[i].sender ? msg_infos[i].sender : "", 128);
             strncpy(messages[i].recipient, msg_infos[i].recipient ? msg_infos[i].recipient : "", 128);
 
-            /* Decrypt message */
-            char *plaintext = NULL;
-            size_t plaintext_len = 0;
-            if (messenger_decrypt_message(engine->messenger, msg_infos[i].id, &plaintext, &plaintext_len) == 0) {
-                messages[i].plaintext = plaintext;
+            /* Use pre-decrypted plaintext from messenger_get_conversation */
+            /* (Kyber key loaded once, not per-message - massive speedup) */
+            if (msg_infos[i].plaintext) {
+                messages[i].plaintext = strdup(msg_infos[i].plaintext);
             } else {
                 messages[i].plaintext = strdup("[Decryption failed]");
             }
