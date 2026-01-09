@@ -150,8 +150,26 @@ Local SQLite database for message backup. Stores encrypted messages per-identity
 | `int message_backup_update_status_by_key(...)` | Update status by sender/recipient/timestamp |
 | `int message_backup_get_last_id(message_backup_context_t*)` | Get last inserted message ID |
 | `int message_backup_get_unread_count(...)` | Get unread count for contact |
+| `int message_backup_increment_retry_count(message_backup_context_t*, int)` | Increment retry count for failed message |
 
-### 4.4 Conversation Retrieval
+### 4.4 Message Retry (Bulletproof Delivery)
+
+| Function | Description |
+|----------|-------------|
+| `int message_backup_get_pending_messages(...)` | Get all PENDING/FAILED messages for retry (retry_count < max) |
+
+**Message Status Values:**
+| Status | Value | Meaning | Auto-Retry? |
+|--------|-------|---------|-------------|
+| PENDING | 0 | Queued locally, not yet sent to DHT | Yes |
+| SENT | 1 | Successfully queued in DHT | No |
+| FAILED | 2 | DHT queue failed | Yes |
+| DELIVERED | 3 | Recipient acknowledged | No |
+| READ | 4 | Recipient read | No |
+
+**Schema (v9):** `retry_count INTEGER DEFAULT 0` column tracks send attempts. Messages with `retry_count >= 10` are excluded from auto-retry.
+
+### 4.5 Conversation Retrieval
 
 | Function | Description |
 |----------|-------------|
@@ -160,7 +178,7 @@ Local SQLite database for message backup. Stores encrypted messages per-identity
 | `int message_backup_get_recent_contacts(...)` | Get list of recent contacts |
 | `int message_backup_search_by_identity(...)` | Search messages by sender/recipient |
 
-### 4.5 Sequence Numbers (Watermark Pruning)
+### 4.6 Sequence Numbers (Watermark Pruning)
 
 | Function | Description |
 |----------|-------------|

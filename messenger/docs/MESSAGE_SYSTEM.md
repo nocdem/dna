@@ -226,8 +226,74 @@ TRANSPORT                         STORAGE                        DECRYPTION     
 | `STATUS_PENDING` | 0 | Clock | Sending in progress |
 | `STATUS_SENT` | 1 | Checkmark | Successfully sent (P2P or DHT queued) |
 | `STATUS_FAILED` | 2 | Error | Send failed (retry available) |
+| `STATUS_DELIVERED` | 3 | Double-check | Recipient acknowledged receipt |
+| `STATUS_READ` | 4 | Blue double-check | Recipient read the message |
 
 **Source:** `messenger.h` (message_info_t), `dna_messenger_flutter/lib/models/`
+
+### 2.4 Bulletproof Message Delivery (Auto-Retry)
+
+Messages are automatically retried when send fails. This ensures messages are never lost due to transient network issues.
+
+```
+SEND ATTEMPT                     FAILURE                          RETRY TRIGGERS
+    │                               │                                  │
+    ▼                               │                                  │
+┌─────────────────┐                 │                                  │
+│ messenger_send  │                 │                                  │
+│   _message()    │                 │                                  │
+└────────┬────────┘                 │                                  │
+         │                          │                                  │
+         ▼                          │                                  │
+    DHT Queue ──────► FAILED ───────┼──────────────────────────────────┤
+         │                          │                                  │
+         │                          ▼                                  │
+         │               ┌───────────────────┐                         │
+         │               │ status = FAILED   │                         │
+         │               │ retry_count++     │                         │
+         │               └─────────┬─────────┘                         │
+         │                         │                                   │
+         │                         │    ┌───────────────────────────┐  │
+         │                         │    │ RETRY TRIGGERS:           │  │
+         │                         │    │ • Identity load (app start)│  │
+         │                         │    │ • DHT reconnect           │  │
+         │                         │    │ • Network change          │  │
+         │                         │    └─────────────┬─────────────┘  │
+         │                         │                  │                │
+         │                         │                  ▼                │
+         │                         │    ┌───────────────────────────┐  │
+         │                         └───►│ dna_engine_retry_pending  │  │
+         │                              │   _messages()             │  │
+         │                              │ Query: status IN (0,2)    │  │
+         │                              │        AND retry_count<10 │  │
+         │                              └─────────────┬─────────────┘  │
+         │                                            │                │
+         │                                            ▼                │
+         │                              ┌───────────────────────────┐  │
+         │                              │ For each pending message: │  │
+         │                              │   Re-queue to DHT         │  │
+         │                              │   Success → status=SENT   │  │
+         │                              │   Fail → retry_count++    │  │
+         │                              └───────────────────────────┘  │
+         │                                                             │
+         ▼                                                             │
+    SUCCESS ───────────────────────────────────────────────────────────┘
+    status = SENT
+```
+
+**Retry Logic:**
+- **Max retries:** 10 attempts (`retry_count` column in messages table)
+- **Retry triggers:** Identity load, DHT reconnect, network state change
+- **Query:** `SELECT * FROM messages WHERE is_outgoing=1 AND (status=0 OR status=2) AND retry_count < 10`
+- **On success:** Status updated to SENT (1)
+- **On failure:** `retry_count` incremented, status remains FAILED (2)
+
+**Database Schema (v9):**
+```sql
+ALTER TABLE messages ADD COLUMN retry_count INTEGER DEFAULT 0;
+```
+
+**Source:** `message_backup.c:644-721`, `src/api/dna_engine.c:4862-4920`
 
 ---
 
