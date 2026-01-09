@@ -99,6 +99,23 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
       }
     });
   }
+
+  /// Delete a message from local database
+  /// Returns true on success
+  Future<bool> deleteMessage(int messageId) async {
+    final engine = ref.read(engineProvider).valueOrNull;
+    if (engine == null) return false;
+
+    final success = engine.deleteMessage(messageId);
+    if (success) {
+      // Remove from UI immediately (optimistic)
+      state.whenData((messages) {
+        final updated = messages.where((m) => m.id != messageId).toList();
+        state = AsyncValue.data(updated);
+      });
+    }
+    return success;
+  }
 }
 
 /// Refresh trigger - increment to force conversation rebuild

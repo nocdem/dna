@@ -1419,6 +1419,21 @@ DNA_API dna_request_id_t dna_engine_mark_conversation_read(
     void *user_data
 );
 
+/**
+ * Delete a message from local database
+ *
+ * Deletes a message by ID from the local message backup database.
+ * This is a local-only operation - does not affect the recipient's copy.
+ *
+ * @param engine     Engine instance
+ * @param message_id Message ID to delete
+ * @return           0 on success, -1 on error
+ */
+DNA_API int dna_engine_delete_message_sync(
+    dna_engine_t *engine,
+    int message_id
+);
+
 /* ============================================================================
  * 5. GROUPS (6 async functions)
  * ============================================================================ */

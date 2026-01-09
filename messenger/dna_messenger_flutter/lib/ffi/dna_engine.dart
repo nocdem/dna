@@ -2089,6 +2089,12 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Delete a message from local database
+  /// Returns true on success, false on error
+  bool deleteMessage(int messageId) {
+    return _bindings.dna_engine_delete_message_sync(_engine, messageId) == 0;
+  }
+
   // ---------------------------------------------------------------------------
   // MESSAGE STATUS / READ RECEIPTS
   // ---------------------------------------------------------------------------

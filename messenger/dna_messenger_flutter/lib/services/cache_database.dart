@@ -21,7 +21,7 @@ class CachedIdentity {
 /// SQLite database for caching profiles (contacts + identities)
 class CacheDatabase {
   static const _databaseName = 'dna_cache.db';
-  static const _databaseVersion = 3; // Bumped for identity_list table
+  static const _databaseVersion = 4; // Bumped for starred_messages table
 
   // Singleton instance
   static CacheDatabase? _instance;
@@ -100,6 +100,20 @@ class CacheDatabase {
         order_index INTEGER
       )
     ''');
+
+    // Starred messages table
+    await db.execute('''
+      CREATE TABLE starred_messages (
+        message_id INTEGER PRIMARY KEY,
+        contact_fp TEXT NOT NULL,
+        starred_at INTEGER NOT NULL
+      )
+    ''');
+
+    // Index for starred messages by contact
+    await db.execute(
+      'CREATE INDEX idx_starred_messages_contact ON starred_messages(contact_fp)'
+    );
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -108,6 +122,7 @@ class CacheDatabase {
       await db.execute('DROP TABLE IF EXISTS contact_profiles');
       await db.execute('DROP TABLE IF EXISTS identity_profiles');
       await db.execute('DROP TABLE IF EXISTS identity_list');
+      await db.execute('DROP TABLE IF EXISTS starred_messages');
       await _onCreate(db, newVersion);
     }
   }
@@ -359,6 +374,80 @@ class CacheDatabase {
   Future<void> clearIdentityList() async {
     final db = await database;
     await db.delete('identity_list');
+  }
+
+  // ==========================================================================
+  // Starred Messages Operations
+  // ==========================================================================
+
+  /// Check if a message is starred
+  Future<bool> isMessageStarred(int messageId) async {
+    final db = await database;
+    final results = await db.query(
+      'starred_messages',
+      where: 'message_id = ?',
+      whereArgs: [messageId],
+      limit: 1,
+    );
+    return results.isNotEmpty;
+  }
+
+  /// Get all starred message IDs for a contact
+  Future<Set<int>> getStarredMessageIds(String contactFp) async {
+    final db = await database;
+    final results = await db.query(
+      'starred_messages',
+      columns: ['message_id'],
+      where: 'contact_fp = ?',
+      whereArgs: [contactFp],
+    );
+    return results.map((row) => row['message_id'] as int).toSet();
+  }
+
+  /// Get all starred message IDs
+  Future<Set<int>> getAllStarredMessageIds() async {
+    final db = await database;
+    final results = await db.query(
+      'starred_messages',
+      columns: ['message_id'],
+    );
+    return results.map((row) => row['message_id'] as int).toSet();
+  }
+
+  /// Star a message
+  Future<void> starMessage(int messageId, String contactFp) async {
+    final db = await database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    await db.insert(
+      'starred_messages',
+      {
+        'message_id': messageId,
+        'contact_fp': contactFp,
+        'starred_at': now,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// Unstar a message
+  Future<void> unstarMessage(int messageId) async {
+    final db = await database;
+    await db.delete(
+      'starred_messages',
+      where: 'message_id = ?',
+      whereArgs: [messageId],
+    );
+  }
+
+  /// Clear all starred messages for a contact
+  Future<void> clearStarredMessages(String contactFp) async {
+    final db = await database;
+    await db.delete(
+      'starred_messages',
+      where: 'contact_fp = ?',
+      whereArgs: [contactFp],
+    );
   }
 
   // ==========================================================================

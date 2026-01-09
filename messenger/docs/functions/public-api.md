@@ -73,6 +73,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `int dna_engine_set_message_queue_capacity(...)` | Set message queue capacity |
 | `dna_request_id_t dna_engine_get_conversation(...)` | Get conversation with contact |
 | `dna_request_id_t dna_engine_check_offline_messages(...)` | Force check for offline messages |
+| `int dna_engine_delete_message_sync(...)` | Delete message from local database |
 | `int dna_engine_get_unread_count(...)` | Get unread message count (sync) |
 | `dna_request_id_t dna_engine_mark_conversation_read(...)` | Mark all messages as read |
 

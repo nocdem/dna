@@ -4739,6 +4739,16 @@ dna_request_id_t dna_engine_mark_conversation_read(
     return 1; /* Return valid request ID */
 }
 
+int dna_engine_delete_message_sync(
+    dna_engine_t *engine,
+    int message_id
+) {
+    if (!engine || message_id <= 0) return -1;
+    if (!engine->messenger) return -1;
+
+    return messenger_delete_message(engine->messenger, message_id);
+}
+
 /* Groups */
 dna_request_id_t dna_engine_get_groups(
     dna_engine_t *engine,

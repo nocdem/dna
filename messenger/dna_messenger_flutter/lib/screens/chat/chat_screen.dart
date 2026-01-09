@@ -34,6 +34,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _justInsertedEmoji = false;
   Message? _replyingTo; // Message being replied to
 
+  // Search state
+  bool _isSearching = false;
+  String _searchQuery = '';
+  final _searchController = TextEditingController();
+
   @override
   void initState() {
     super.initState();
@@ -96,6 +101,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _messageController.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -179,6 +185,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final contact = ref.watch(selectedContactProvider);
     final messages = ref.watch(currentConversationProvider);
     final theme = Theme.of(context);
+    // Watch starred messages for the current contact
+    final starredIds = contact != null
+        ? ref.watch(starredMessagesProvider(contact.fingerprint))
+        : <int>{};
 
     if (contact == null) {
       return Scaffold(
@@ -203,57 +213,116 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
-        title: Row(
-          children: [
-            _ContactAvatar(contact: contact),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    displayName,
-                    style: theme.textTheme.titleMedium,
+        leading: _isSearching
+            ? IconButton(
+                icon: const FaIcon(FontAwesomeIcons.arrowLeft),
+                onPressed: () {
+                  setState(() {
+                    _isSearching = false;
+                    _searchQuery = '';
+                    _searchController.clear();
+                  });
+                },
+              )
+            : null,
+        title: _isSearching
+            ? TextField(
+                controller: _searchController,
+                autofocus: true,
+                decoration: InputDecoration(
+                  hintText: 'Search messages...',
+                  border: InputBorder.none,
+                  hintStyle: theme.textTheme.bodyMedium?.copyWith(
+                    color: DnaColors.textMuted,
                   ),
-                  Text(
-                    contact.isOnline
-                        ? 'Online'
-                        : 'Last seen ${_formatLastSeen(contact.lastSeen)}',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: contact.isOnline
-                          ? DnaColors.textSuccess
-                          : theme.textTheme.bodySmall?.color,
+                ),
+                style: theme.textTheme.bodyMedium,
+                onChanged: (value) {
+                  setState(() {
+                    _searchQuery = value.toLowerCase();
+                  });
+                },
+              )
+            : Row(
+                children: [
+                  _ContactAvatar(contact: contact),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          displayName,
+                          style: theme.textTheme.titleMedium,
+                        ),
+                        Text(
+                          contact.isOnline
+                              ? 'Online'
+                              : 'Last seen ${_formatLastSeen(contact.lastSeen)}',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: contact.isOnline
+                                ? DnaColors.textSuccess
+                                : theme.textTheme.bodySmall?.color,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
               ),
-            ),
-          ],
-        ),
-        actions: [
-          // Send CPUNK button
-          IconButton(
-            icon: const FaIcon(FontAwesomeIcons.moneyBillTransfer),
-            tooltip: 'Send CPUNK',
-            onPressed: () => _showSendCpunk(context, contact),
-          ),
-          // Check offline messages button
-          IconButton(
-            icon: _isCheckingOffline
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const FaIcon(FontAwesomeIcons.cloudArrowDown),
-            tooltip: 'Check offline messages',
-            onPressed: _isCheckingOffline ? null : _checkOfflineMessages,
-          ),
-          IconButton(
-            icon: const FaIcon(FontAwesomeIcons.ellipsisVertical),
-            onPressed: () => _showContactOptions(context),
-          ),
-        ],
+        actions: _isSearching
+            ? [
+                if (_searchQuery.isNotEmpty)
+                  IconButton(
+                    icon: const FaIcon(FontAwesomeIcons.xmark),
+                    onPressed: () {
+                      setState(() {
+                        _searchQuery = '';
+                        _searchController.clear();
+                      });
+                    },
+                  ),
+              ]
+            : [
+                // Search button
+                IconButton(
+                  icon: const FaIcon(FontAwesomeIcons.magnifyingGlass),
+                  tooltip: 'Search messages',
+                  onPressed: () {
+                    setState(() {
+                      _isSearching = true;
+                    });
+                  },
+                ),
+                // Jump to date button
+                IconButton(
+                  icon: const FaIcon(FontAwesomeIcons.calendar),
+                  tooltip: 'Jump to date',
+                  onPressed: () => _jumpToDate(messages.valueOrNull ?? []),
+                ),
+                // Send CPUNK button
+                IconButton(
+                  icon: const FaIcon(FontAwesomeIcons.moneyBillTransfer),
+                  tooltip: 'Send CPUNK',
+                  onPressed: () => _showSendCpunk(context, contact),
+                ),
+                // Check offline messages button
+                IconButton(
+                  icon: _isCheckingOffline
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const FaIcon(FontAwesomeIcons.cloudArrowDown),
+                  tooltip: 'Check offline messages',
+                  onPressed: _isCheckingOffline ? null : _checkOfflineMessages,
+                ),
+                IconButton(
+                  icon: const FaIcon(FontAwesomeIcons.ellipsisVertical),
+                  onPressed: () => _showContactOptions(context),
+                ),
+              ],
       ),
       body: Stack(
         children: [
@@ -263,7 +332,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               // Messages list
               Expanded(
                 child: messages.when(
-                  data: (list) => _buildMessageList(context, list),
+                  data: (list) => _buildMessageList(context, list, starredIds),
                   loading: () => const Center(child: CircularProgressIndicator()),
                   error: (error, stack) => Center(
                     child: Column(
@@ -345,7 +414,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
-  Widget _buildMessageList(BuildContext context, List<Message> messages) {
+  Widget _buildMessageList(BuildContext context, List<Message> messages, Set<int> starredIds) {
+    // Filter messages if searching
+    final filteredMessages = _searchQuery.isEmpty
+        ? messages
+        : messages.where((m) => m.plaintext.toLowerCase().contains(_searchQuery)).toList();
+
     if (messages.isEmpty) {
       return Center(
         child: Column(
@@ -371,16 +445,42 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       );
     }
 
+    // Show no results message if searching and no matches
+    if (_searchQuery.isNotEmpty && filteredMessages.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FaIcon(
+              FontAwesomeIcons.magnifyingGlass,
+              size: 48,
+              color: Theme.of(context).colorScheme.primary.withAlpha(128),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'No messages found',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Try a different search term',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      );
+    }
+
     return ListView.builder(
       controller: _scrollController,
       reverse: true,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      itemCount: messages.length,
+      itemCount: filteredMessages.length,
       itemBuilder: (context, index) {
         // Reverse index since list is reversed
-        final message = messages[messages.length - 1 - index];
-        final prevMessage = index < messages.length - 1
-            ? messages[messages.length - 2 - index]
+        final message = filteredMessages[filteredMessages.length - 1 - index];
+        final prevMessage = index < filteredMessages.length - 1
+            ? filteredMessages[filteredMessages.length - 2 - index]
             : null;
 
         final showDate = prevMessage == null ||
@@ -420,8 +520,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ),
               ),
               child: GestureDetector(
+                onTap: () => _showMessageInfo(message),
                 onLongPress: () => _showMessageActions(message),
-                child: _MessageBubble(message: message),
+                child: _MessageBubble(
+                  message: message,
+                  isStarred: starredIds.contains(message.id),
+                ),
               ),
             ),
           ],
@@ -959,7 +1063,158 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
+  void _showMessageInfo(Message message) {
+    final theme = Theme.of(context);
+    final contact = ref.read(selectedContactProvider);
+    final contactName = contact?.displayName.isNotEmpty == true
+        ? contact!.displayName
+        : 'contact';
+
+    // Format full timestamp
+    final fullTimestamp = DateFormat('MMMM d, y \'at\' HH:mm:ss').format(message.timestamp);
+
+    // Get status info
+    String statusText;
+    IconData statusIcon;
+    Color statusColor;
+    switch (message.status) {
+      case MessageStatus.pending:
+        statusText = 'Sending...';
+        statusIcon = FontAwesomeIcons.clock;
+        statusColor = DnaColors.textMuted;
+        break;
+      case MessageStatus.sent:
+        statusText = 'Sent';
+        statusIcon = FontAwesomeIcons.check;
+        statusColor = DnaColors.textMuted;
+        break;
+      case MessageStatus.failed:
+        statusText = 'Failed to send';
+        statusIcon = FontAwesomeIcons.circleExclamation;
+        statusColor = DnaColors.textError;
+        break;
+      case MessageStatus.delivered:
+        statusText = 'Delivered';
+        statusIcon = FontAwesomeIcons.checkDouble;
+        statusColor = DnaColors.textSuccess;
+        break;
+      case MessageStatus.read:
+        statusText = 'Read';
+        statusIcon = FontAwesomeIcons.checkDouble;
+        statusColor = DnaColors.primary;
+        break;
+    }
+
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header
+              Row(
+                children: [
+                  FaIcon(
+                    FontAwesomeIcons.circleInfo,
+                    size: 18,
+                    color: theme.colorScheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Message Info',
+                    style: theme.textTheme.titleMedium,
+                  ),
+                ],
+              ),
+              const Divider(height: 24),
+
+              // Timestamp
+              _buildInfoRow(
+                theme,
+                FontAwesomeIcons.clock,
+                'Time',
+                fullTimestamp,
+              ),
+              const SizedBox(height: 12),
+
+              // Direction
+              _buildInfoRow(
+                theme,
+                message.isOutgoing
+                    ? FontAwesomeIcons.arrowUp
+                    : FontAwesomeIcons.arrowDown,
+                'Direction',
+                message.isOutgoing ? 'Sent to $contactName' : 'Received from $contactName',
+              ),
+              const SizedBox(height: 12),
+
+              // Status (only for outgoing)
+              if (message.isOutgoing)
+                _buildInfoRow(
+                  theme,
+                  statusIcon,
+                  'Status',
+                  statusText,
+                  iconColor: statusColor,
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(
+    ThemeData theme,
+    IconData icon,
+    String label,
+    String value, {
+    Color? iconColor,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 24,
+          child: FaIcon(
+            icon,
+            size: 14,
+            color: iconColor ?? DnaColors.textMuted,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: DnaColors.textMuted,
+                ),
+              ),
+              Text(
+                value,
+                style: theme.textTheme.bodyMedium,
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   void _showMessageActions(Message message) {
+    final contact = ref.read(selectedContactProvider);
+    if (contact == null) return;
+
+    final starredIds = ref.read(starredMessagesProvider(contact.fingerprint));
+    final isStarred = starredIds.contains(message.id);
+
     showModalBottomSheet(
       context: context,
       builder: (context) => SafeArea(
@@ -990,10 +1245,151 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 _forwardMessage(message);
               },
             ),
+            ListTile(
+              leading: FaIcon(
+                isStarred ? FontAwesomeIcons.solidStar : FontAwesomeIcons.star,
+                color: isStarred ? Colors.amber : null,
+              ),
+              title: Text(isStarred ? 'Unstar' : 'Star'),
+              onTap: () {
+                Navigator.pop(context);
+                _toggleStarMessage(message, contact.fingerprint);
+              },
+            ),
+            ListTile(
+              leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.textError),
+              title: Text('Delete', style: TextStyle(color: DnaColors.textError)),
+              onTap: () {
+                Navigator.pop(context);
+                _confirmDeleteMessage(message);
+              },
+            ),
           ],
         ),
       ),
     );
+  }
+
+  void _toggleStarMessage(Message message, String contactFp) {
+    ref.read(starredMessagesProvider(contactFp).notifier).toggleStar(message.id);
+  }
+
+  Future<void> _jumpToDate(List<Message> messages) async {
+    if (messages.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('No messages to jump to'),
+          backgroundColor: DnaColors.snackbarInfo,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    // Get date range from messages
+    final dates = messages.map((m) => m.timestamp).toList()..sort();
+    final firstDate = DateTime(dates.first.year, dates.first.month, dates.first.day);
+    final lastDate = DateTime(dates.last.year, dates.last.month, dates.last.day);
+
+    // Show date picker
+    final selectedDate = await showDatePicker(
+      context: context,
+      initialDate: lastDate,
+      firstDate: firstDate,
+      lastDate: lastDate,
+      helpText: 'Jump to date',
+    );
+
+    if (selectedDate == null || !mounted) return;
+
+    // Find the first message on or after the selected date
+    final targetDate = DateTime(selectedDate.year, selectedDate.month, selectedDate.day);
+    int? targetIndex;
+    for (int i = 0; i < messages.length; i++) {
+      final msgDate = DateTime(
+        messages[i].timestamp.year,
+        messages[i].timestamp.month,
+        messages[i].timestamp.day,
+      );
+      if (msgDate.isAtSameMomentAs(targetDate) || msgDate.isAfter(targetDate)) {
+        targetIndex = i;
+        break;
+      }
+    }
+
+    if (targetIndex != null) {
+      // The ListView is reversed, so we need to convert the index
+      // ListView index = messages.length - 1 - targetIndex
+      final scrollIndex = messages.length - 1 - targetIndex;
+
+      // Estimate position (assuming ~80 pixels per message bubble)
+      final estimatedOffset = scrollIndex * 80.0;
+
+      _scrollController.animateTo(
+        estimatedOffset.clamp(0.0, _scrollController.position.maxScrollExtent),
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Jumped to ${DateFormat('MMM d, yyyy').format(selectedDate)}'),
+          backgroundColor: DnaColors.snackbarSuccess,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('No messages found for this date'),
+          backgroundColor: DnaColors.snackbarInfo,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  void _confirmDeleteMessage(Message message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Message'),
+        content: const Text('Are you sure you want to delete this message? This cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _deleteMessage(message);
+            },
+            style: TextButton.styleFrom(foregroundColor: DnaColors.textError),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteMessage(Message message) async {
+    final contact = ref.read(selectedContactProvider);
+    if (contact == null) return;
+
+    final success = await ref
+        .read(conversationProvider(contact.fingerprint).notifier)
+        .deleteMessage(message.id);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success ? 'Message deleted' : 'Failed to delete message'),
+          backgroundColor: success ? DnaColors.snackbarSuccess : DnaColors.textError,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   void _showReplyForwardOptions(Message message) {
@@ -1406,8 +1802,9 @@ class _ContactAvatar extends ConsumerWidget {
 
 class _MessageBubble extends StatelessWidget {
   final Message message;
+  final bool isStarred;
 
-  const _MessageBubble({required this.message});
+  const _MessageBubble({required this.message, this.isStarred = false});
 
   /// Check if message is a CPUNK transfer by parsing JSON content
   Map<String, dynamic>? _parseTransferData() {
@@ -1621,6 +2018,14 @@ class _MessageBubble extends StatelessWidget {
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (isStarred) ...[
+                  FaIcon(
+                    FontAwesomeIcons.solidStar,
+                    size: 10,
+                    color: Colors.amber,
+                  ),
+                  const SizedBox(width: 4),
+                ],
                 Text(
                   DateFormat('HH:mm').format(message.timestamp),
                   style: theme.textTheme.bodySmall?.copyWith(

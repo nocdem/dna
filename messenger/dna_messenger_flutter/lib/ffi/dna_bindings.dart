@@ -1556,6 +1556,20 @@ class DnaBindings {
     return _dna_engine_check_offline_messages(engine, callback, user_data);
   }
 
+  // Delete a message from local database
+  late final _dna_engine_delete_message_sync = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Int32),
+      int Function(Pointer<dna_engine_t>, int)>('dna_engine_delete_message_sync');
+
+  /// Delete a message from local database (synchronous)
+  /// Returns 0 on success, -1 on error
+  int dna_engine_delete_message_sync(
+    Pointer<dna_engine_t> engine,
+    int messageId,
+  ) {
+    return _dna_engine_delete_message_sync(engine, messageId);
+  }
+
   // ---------------------------------------------------------------------------
   // MESSAGE STATUS / READ RECEIPTS
   // ---------------------------------------------------------------------------
