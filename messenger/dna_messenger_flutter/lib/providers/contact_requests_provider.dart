@@ -56,11 +56,8 @@ class ContactRequestsNotifier extends AsyncNotifier<List<ContactRequest>> {
     // Refresh contacts list to show new contact and look up presence
     await ref.read(contactsProvider.notifier).refresh();
 
-    // Start DHT listener for the new contact's outbox (for push notifications)
-    engine.listenOutbox(fingerprint);
-
-    // Start presence listener for the new contact
-    engine.startPresenceListener(fingerprint);
+    // Restart all listeners (outbox + presence) to include the new contact
+    engine.listenAllContacts();
   }
 
   /// Deny a contact request (can retry later)
