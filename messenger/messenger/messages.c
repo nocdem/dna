@@ -375,7 +375,8 @@ int messenger_send_message(
         if (messenger_load_pubkey(ctx, all_recipients[i],
                                    &sign_pubkeys[i], &sign_len,
                                    &enc_pubkeys[i], &enc_len, NULL) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Cannot load public key for '%s' from keyserver", all_recipients[i]);
+            QGP_LOG_ERROR(LOG_TAG, "Cannot load public key for '%s' - key not cached and DHT unavailable", all_recipients[i]);
+            QGP_LOG_WARN(LOG_TAG, "MESSAGE NOT SAVED: Cannot encrypt without recipient's public key");
 
             // Cleanup on error
             for (size_t j = 0; j < total_recipients; j++) {
@@ -386,7 +387,7 @@ int messenger_send_message(
             free(sign_pubkeys);
             free(all_recipients);
             qgp_key_free(sender_sign_key);
-            return -1;
+            return -3;  // KEY_UNAVAILABLE - distinct from network error
         }
     }
 

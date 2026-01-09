@@ -1,10 +1,11 @@
 # DNA Engine API Reference
 
-**Version:** 1.9.0
+**Version:** 1.10.0
 **Date:** 2026-01-09
 **Location:** `include/dna/dna_engine.h`
 
 **Changelog:**
+- v1.10.0 (2026-01-09): Made DHT PUT synchronous for accurate status, added DNA_ENGINE_ERROR_KEY_UNAVAILABLE (-116) for offline key lookup failures
 - v1.9.0 (2026-01-09): Added Bulletproof Message Delivery - `dna_engine_retry_pending_messages()` for auto-retry of failed messages on network reconnect/identity load
 - v1.8.0 (2025-12-24): Added Debug Logging API (section 10) - ring buffer log storage, `dna_engine_debug_log_*()` functions for in-app log viewing on mobile
 - v1.7.0 (2025-12-15): Added password protection for identity keys - `dna_engine_change_password_sync()`, password parameter in `dna_engine_load_identity()`, on-demand wallet derivation from mnemonic
@@ -1501,6 +1502,7 @@ engine.debugLogClear();
 | -106 | `DNA_ENGINE_ERROR_NO_IDENTITY` | No identity loaded |
 | -107 | `DNA_ENGINE_ERROR_ALREADY_EXISTS` | Already exists |
 | -108 | `DNA_ENGINE_ERROR_PERMISSION` | Permission denied |
+| -116 | `DNA_ENGINE_ERROR_KEY_UNAVAILABLE` | Recipient public key not cached and DHT lookup failed (offline) |
 
 Use `dna_engine_error_string(error)` for human-readable messages.
 

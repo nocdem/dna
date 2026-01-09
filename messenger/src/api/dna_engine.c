@@ -2656,7 +2656,16 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task) {
     );
 
     if (rc != 0) {
-        error = DNA_ENGINE_ERROR_NETWORK;
+        /* Determine error type based on return code */
+        if (rc == -3) {
+            /* KEY_UNAVAILABLE: recipient key not cached and DHT lookup failed */
+            error = DNA_ENGINE_ERROR_KEY_UNAVAILABLE;
+            QGP_LOG_WARN(LOG_TAG, "[SEND] Key unavailable for recipient - message not saved (cannot encrypt)");
+        } else {
+            /* Network or other error */
+            error = DNA_ENGINE_ERROR_NETWORK;
+            QGP_LOG_WARN(LOG_TAG, "[SEND] Message send failed (rc=%d) - DHT queue unsuccessful", rc);
+        }
         /* Emit MESSAGE_SENT event with FAILED status so UI can update spinner */
         dna_event_t event = {0};
         event.type = DNA_EVENT_MESSAGE_SENT;
@@ -2665,6 +2674,7 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task) {
         dna_dispatch_event(engine, &event);
     } else {
         /* Emit MESSAGE_SENT event so UI can update spinner */
+        QGP_LOG_INFO(LOG_TAG, "[SEND] Message sent successfully to DHT");
         dna_event_t event = {0};
         event.type = DNA_EVENT_MESSAGE_SENT;
         event.data.message_status.message_id = 0;  /* ID not available here */

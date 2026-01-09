@@ -918,22 +918,38 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         // Use putSigned() instead of put() to enable editing/replacement
         // Note: putSigned() doesn't support creation_time parameter (uses current time)
         // Permanent flag controls whether value expires based on ValueType
-        // Fire-and-forget publish - don't block on network confirmation
-        // Race conditions prevented by local outbox cache in dht_queue_message
+        // SYNCHRONOUS: Wait for network confirmation to get accurate success/failure
+        // This ensures message status reflects actual DHT storage result
+        auto result_promise = std::make_shared<std::promise<bool>>();
+        std::future<bool> result_future = result_promise->get_future();
+
         ctx->runner.putSigned(hash, dht_value,
-                             [key_hex_start](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
+                             [result_promise, key_hex_start](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
                                  if (success) {
                                      QGP_LOG_DEBUG("DHT", "PUT_SIGNED: Stored on %zu node(s)", nodes.size());
                                  } else {
                                      QGP_LOG_WARN("DHT", "PUT_SIGNED: Failed to store on any node (key=%s...)", key_hex_start);
                                  }
+                                 result_promise->set_value(success);
                              },
                              true);  // permanent=true for maintain_storage behavior
 
-        // Store value to persistent storage (if enabled)
+        // Wait for DHT confirmation with timeout (5 seconds)
+        // In practice: ~10ms when online, fast failure when offline (no nodes reachable)
+        auto status = result_future.wait_for(std::chrono::seconds(5));
+        if (status == std::future_status::timeout) {
+            QGP_LOG_WARN("DHT", "PUT_SIGNED: Timeout waiting for network confirmation (5s)");
+            // Still persist locally for retry
+            persist_value_if_enabled(ctx, key, key_len, value, value_len, dht_value->type, ttl_seconds);
+            return -2;  // Timeout
+        }
+
+        bool success = result_future.get();
+
+        // Store value to persistent storage (if enabled) - do this regardless of network result
         persist_value_if_enabled(ctx, key, key_len, value, value_len, dht_value->type, ttl_seconds);
 
-        return 0;
+        return success ? 0 : -1;
     } catch (const std::exception& e) {
         QGP_LOG_ERROR("DHT", "Exception in dht_put_signed: %s", e.what());
         return -1;
