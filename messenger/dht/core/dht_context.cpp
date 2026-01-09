@@ -934,11 +934,12 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
                              },
                              true);  // permanent=true for maintain_storage behavior
 
-        // Wait for DHT confirmation with timeout (5 seconds)
+        // Wait for DHT confirmation with timeout (2 seconds)
         // In practice: ~10ms when online, fast failure when offline (no nodes reachable)
-        auto status = result_future.wait_for(std::chrono::seconds(5));
+        // Reduced from 5s to fail faster when network is unavailable
+        auto status = result_future.wait_for(std::chrono::seconds(2));
         if (status == std::future_status::timeout) {
-            QGP_LOG_WARN("DHT", "PUT_SIGNED: Timeout waiting for network confirmation (5s)");
+            QGP_LOG_WARN("DHT", "PUT_SIGNED: Timeout waiting for network confirmation (2s)");
             // Still persist locally for retry
             persist_value_if_enabled(ctx, key, key_len, value, value_len, dht_value->type, ttl_seconds);
             return -2;  // Timeout
@@ -1090,8 +1091,8 @@ extern "C" int dht_get(dht_context_t *ctx,
         auto start_network = std::chrono::steady_clock::now();
         auto future = ctx->runner.get(hash);
 
-        // Wait with 10 second timeout (30s was too long for mobile UX)
-        auto status = future.wait_for(std::chrono::seconds(10));
+        // Wait with 2 second timeout (reduced from 10s to fail faster offline)
+        auto status = future.wait_for(std::chrono::seconds(2));
         if (status == std::future_status::timeout) {
             auto network_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start_network).count();
@@ -1236,10 +1237,10 @@ extern "C" int dht_get_all(dht_context_t *ctx,
         // Get all values using future-based API
         auto future = ctx->runner.get(hash);
 
-        // Wait with 10 second timeout (30s was too long for mobile UX)
-        auto status = future.wait_for(std::chrono::seconds(10));
+        // Wait with 2 second timeout (reduced from 10s to fail faster offline)
+        auto status = future.wait_for(std::chrono::seconds(2));
         if (status == std::future_status::timeout) {
-            QGP_LOG_INFO("DHT", "GET_ALL: Timeout after 10 seconds");
+            QGP_LOG_INFO("DHT", "GET_ALL: Timeout after 2 seconds");
             return -2;  // Timeout error
         }
 
