@@ -24,9 +24,33 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
   String? _responseToken;
   bool _denied = false;
 
+  /// URL-safe base64 encoding without padding
+  String _base64UrlEncodeNoPadding(List<int> bytes) {
+    return base64Url.encode(bytes).replaceAll('=', '');
+  }
+
+  /// Check if payload has a valid challenge
+  bool get _hasChallenge {
+    final challenge = widget.payload.challenge?.trim();
+    return challenge != null && challenge.isNotEmpty;
+  }
+
+  /// Check if payload has domain or appName
+  bool get _hasVerificationInfo {
+    final domain = widget.payload.domain?.trim();
+    final appName = widget.payload.appName?.trim();
+    return (domain != null && domain.isNotEmpty) ||
+        (appName != null && appName.isNotEmpty);
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final fingerprint = ref.watch(currentFingerprintProvider) ?? '';
+    final hasIdentity = fingerprint.isNotEmpty;
+
+    // Can only approve if we have identity AND challenge
+    final canApprove = hasIdentity && _hasChallenge;
 
     return Scaffold(
       appBar: AppBar(
@@ -68,7 +92,56 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
                 ],
               ),
             ),
+
+            // Unverified request warning
+            if (!_hasVerificationInfo) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Unverified request (missing domain/app)',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: DnaColors.textWarning,
+                  fontStyle: FontStyle.italic,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+
             const SizedBox(height: 24),
+
+            // Missing challenge error card
+            if (!_hasChallenge) ...[
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: DnaColors.textWarning.withAlpha(30),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: DnaColors.textWarning),
+                ),
+                child: Column(
+                  children: [
+                    const FaIcon(FontAwesomeIcons.circleExclamation,
+                        color: DnaColors.textWarning, size: 32),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Invalid Authorization Request',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        color: DnaColors.textWarning,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'This request is missing a challenge token and cannot be securely approved.',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: DnaColors.textMuted,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 24),
+            ],
 
             // Request details card
             Container(
@@ -262,34 +335,43 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
 
             // Action buttons
             if (_responseToken == null && !_denied) ...[
-              ElevatedButton.icon(
-                onPressed: _isApproving ? null : _approve,
-                icon: _isApproving
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const FaIcon(FontAwesomeIcons.check, size: 16),
-                label: const Text('Approve'),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  backgroundColor: DnaColors.textSuccess,
+              // Only show approve/deny if we have a valid challenge
+              if (_hasChallenge) ...[
+                ElevatedButton.icon(
+                  onPressed: (_isApproving || !canApprove) ? null : _approve,
+                  icon: _isApproving
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const FaIcon(FontAwesomeIcons.check, size: 16),
+                  label: const Text('Approve'),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    backgroundColor: DnaColors.textSuccess,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: _isApproving ? null : _deny,
-                icon: const FaIcon(FontAwesomeIcons.xmark, size: 16),
-                label: const Text('Deny'),
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  foregroundColor: DnaColors.textWarning,
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: _isApproving ? null : _deny,
+                  icon: const FaIcon(FontAwesomeIcons.xmark, size: 16),
+                  label: const Text('Deny'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    foregroundColor: DnaColors.textWarning,
+                  ),
                 ),
-              ),
+              ] else ...[
+                // No challenge - only show Done button
+                OutlinedButton(
+                  onPressed: () => Navigator.of(context).popUntil((route) => route.isFirst),
+                  child: const Text('Done'),
+                ),
+              ],
             ] else ...[
               OutlinedButton(
-                onPressed: () => Navigator.of(context).pop(),
+                onPressed: () => Navigator.of(context).popUntil((route) => route.isFirst),
                 child: const Text('Done'),
               ),
             ],
@@ -341,19 +423,35 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
   }
 
   Future<void> _approve() async {
+    // Check for valid identity first
+    final fingerprint = ref.read(currentFingerprintProvider) ?? '';
+    if (fingerprint.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No identity loaded'),
+            backgroundColor: DnaColors.textWarning,
+          ),
+        );
+      }
+      return;
+    }
+
     setState(() => _isApproving = true);
 
     try {
-      final fingerprint = ref.read(currentFingerprintProvider) ?? '';
       final profile = ref.read(userProfileProvider).valueOrNull;
+      final now = DateTime.now().toUtc();
+      final exp = now.add(const Duration(seconds: 60));
 
       // Generate response token (v1: simple JSON with identity info)
-      // In future versions, this should be cryptographically signed
+      // TODO: Add Dilithium5 signature of the response payload
       final response = {
         'type': 'dna_auth_response',
         'version': 1,
         'status': 'approved',
-        'timestamp': DateTime.now().toUtc().toIso8601String(),
+        'iat': now.toIso8601String(),
+        'exp': exp.toIso8601String(),
         'identity': {
           'fingerprint': fingerprint,
           'name': profile?.nickname,
@@ -363,11 +461,11 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
           'domain': widget.payload.domain,
           'challenge': widget.payload.challenge,
         },
-        // Note: In future versions, add cryptographic signature here
+        // TODO: Add cryptographic signature here
         // 'signature': '<dilithium5_signature_of_response>'
       };
 
-      final token = base64Encode(utf8.encode(jsonEncode(response)));
+      final token = _base64UrlEncodeNoPadding(utf8.encode(jsonEncode(response)));
 
       setState(() {
         _isApproving = false;
