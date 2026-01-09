@@ -185,7 +185,8 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen> {
         break;
       case MobileScannerErrorCode.unsupported:
         message = 'Camera not supported on this device.';
-        icon = FontAwesomeIcons.cameraSlash;
+        icon = Icons.no_photography;
+        // icon = FontAwesomeIcons.cameraSlash; //don't use this as linux does not have camera
         break;
       default:
         message = 'Camera error: ${error.errorDetails?.message ?? 'Unknown error'}';
