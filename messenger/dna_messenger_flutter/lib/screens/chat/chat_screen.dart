@@ -385,7 +385,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         return Column(
           children: [
             if (showDate) _buildDateHeader(context, message.timestamp),
-            _MessageBubble(message: message),
+            GestureDetector(
+              onLongPress: () => _showMessageActions(message),
+              child: _MessageBubble(message: message),
+            ),
           ],
         );
       },
@@ -704,6 +707,127 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       ),
     );
+  }
+
+  void _showMessageActions(Message message) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const FaIcon(FontAwesomeIcons.copy),
+              title: const Text('Copy'),
+              onTap: () {
+                Navigator.pop(context);
+                _copyMessage(message);
+              },
+            ),
+            ListTile(
+              leading: const FaIcon(FontAwesomeIcons.share),
+              title: const Text('Forward'),
+              onTap: () {
+                Navigator.pop(context);
+                _forwardMessage(message);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _copyMessage(Message message) {
+    Clipboard.setData(ClipboardData(text: message.plaintext));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Message copied'),
+        backgroundColor: DnaColors.snackbarSuccess,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _forwardMessage(Message message) async {
+    final contacts = await ref.read(contactsProvider.future);
+
+    if (!mounted) return;
+
+    final selectedContact = await showModalBottomSheet<Contact>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.3,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (context, scrollController) => Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Text(
+                    'Forward to',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const FaIcon(FontAwesomeIcons.xmark),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: contacts.isEmpty
+                  ? const Center(child: Text('No contacts'))
+                  : ListView.builder(
+                      controller: scrollController,
+                      itemCount: contacts.length,
+                      itemBuilder: (context, index) {
+                        final contact = contacts[index];
+                        return ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: DnaColors.primary.withAlpha(50),
+                            child: Text(
+                              contact.displayName.isNotEmpty
+                                  ? contact.displayName[0].toUpperCase()
+                                  : '?',
+                              style: const TextStyle(color: DnaColors.primary),
+                            ),
+                          ),
+                          title: Text(contact.displayName.isNotEmpty
+                              ? contact.displayName
+                              : '${contact.fingerprint.substring(0, 16)}...'),
+                          subtitle: Text(
+                            '${contact.fingerprint.substring(0, 16)}...',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                          onTap: () => Navigator.pop(context, contact),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (selectedContact != null && mounted) {
+      // Send the message to the selected contact
+      ref.read(conversationProvider(selectedContact.fingerprint).notifier)
+          .sendMessage(message.plaintext);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Message forwarded to ${selectedContact.displayName.isNotEmpty ? selectedContact.displayName : 'contact'}'),
+          backgroundColor: DnaColors.snackbarSuccess,
+        ),
+      );
+    }
   }
 
   void _showQrCodeDialog(Contact contact) {
