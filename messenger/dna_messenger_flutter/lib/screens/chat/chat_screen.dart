@@ -32,6 +32,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _showEmojiPicker = false;
   bool _isCheckingOffline = false;
   bool _justInsertedEmoji = false;
+  Message? _replyingTo; // Message being replied to
 
   @override
   void initState() {
@@ -392,30 +393,30 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               key: ValueKey('msg_${message.id}'),
               confirmDismiss: (direction) async {
                 if (direction == DismissDirection.startToEnd) {
-                  // Swipe right → Forward
-                  _forwardMessage(message);
-                } else if (direction == DismissDirection.endToStart) {
-                  // Swipe left → Copy
+                  // Swipe right → Copy
                   _copyMessage(message);
+                } else if (direction == DismissDirection.endToStart) {
+                  // Swipe left → Reply/Forward options
+                  _showReplyForwardOptions(message);
                 }
                 return false; // Don't actually dismiss
               },
               background: Container(
                 alignment: Alignment.centerLeft,
                 padding: const EdgeInsets.only(left: 20),
-                color: DnaColors.primary.withAlpha(50),
+                color: DnaColors.textInfo.withAlpha(50),
                 child: const FaIcon(
-                  FontAwesomeIcons.share,
-                  color: DnaColors.primary,
+                  FontAwesomeIcons.copy,
+                  color: DnaColors.textInfo,
                 ),
               ),
               secondaryBackground: Container(
                 alignment: Alignment.centerRight,
                 padding: const EdgeInsets.only(right: 20),
-                color: DnaColors.textInfo.withAlpha(50),
-                child: FaIcon(
-                  FontAwesomeIcons.copy,
-                  color: DnaColors.textInfo,
+                color: DnaColors.primary.withAlpha(50),
+                child: const FaIcon(
+                  FontAwesomeIcons.reply,
+                  color: DnaColors.primary,
                 ),
               ),
               child: GestureDetector(
@@ -516,6 +517,62 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     ),
                   ),
                 ],
+              ],
+            ),
+          ),
+        // Reply preview banner
+        if (_replyingTo != null)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary.withAlpha(20),
+              border: Border(
+                left: BorderSide(
+                  color: theme.colorScheme.primary,
+                  width: 3,
+                ),
+              ),
+            ),
+            child: Row(
+              children: [
+                FaIcon(
+                  FontAwesomeIcons.reply,
+                  size: 14,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Replying to ${_replyingTo!.isOutgoing ? "yourself" : contact.displayName.isNotEmpty ? contact.displayName : "message"}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        _replyingTo!.plaintext.length > 50
+                            ? '${_replyingTo!.plaintext.substring(0, 50)}...'
+                            : _replyingTo!.plaintext,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: DnaColors.textMuted,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const FaIcon(FontAwesomeIcons.xmark, size: 16),
+                  onPressed: _cancelReply,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
               ],
             ),
           ),
@@ -621,9 +678,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     _messageController.clear();
 
+    // Build message text with reply marker if replying
+    String messageText = text;
+    if (_replyingTo != null) {
+      final replyTo = _replyingTo!;
+      final senderName = replyTo.isOutgoing
+          ? 'me'
+          : (contact.displayName.isNotEmpty ? contact.displayName : replyTo.sender.substring(0, 12));
+      // Truncate quoted text to 100 chars
+      final quotedText = replyTo.plaintext.length > 100
+          ? '${replyTo.plaintext.substring(0, 100)}...'
+          : replyTo.plaintext;
+      // Format: ↩ Re: [sender]\n> [quoted]\n[message]
+      messageText = '↩ Re: $senderName\n> $quotedText\n$text';
+      // Clear reply state
+      setState(() {
+        _replyingTo = null;
+      });
+    }
+
     // Queue message for async sending (returns immediately)
     final result = ref.read(conversationProvider(contact.fingerprint).notifier)
-        .sendMessage(text);
+        .sendMessage(messageText);
 
     if (result == -1) {
       // Queue full - show error and restore text
@@ -891,6 +967,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
+              leading: const FaIcon(FontAwesomeIcons.reply),
+              title: const Text('Reply'),
+              onTap: () {
+                Navigator.pop(context);
+                _replyMessage(message);
+              },
+            ),
+            ListTile(
               leading: const FaIcon(FontAwesomeIcons.copy),
               title: const Text('Copy'),
               onTap: () {
@@ -910,6 +994,48 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       ),
     );
+  }
+
+  void _showReplyForwardOptions(Message message) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const FaIcon(FontAwesomeIcons.reply),
+              title: const Text('Reply'),
+              onTap: () {
+                Navigator.pop(context);
+                _replyMessage(message);
+              },
+            ),
+            ListTile(
+              leading: const FaIcon(FontAwesomeIcons.share),
+              title: const Text('Forward'),
+              onTap: () {
+                Navigator.pop(context);
+                _forwardMessage(message);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _replyMessage(Message message) {
+    setState(() {
+      _replyingTo = message;
+    });
+    _focusNode.requestFocus();
+  }
+
+  void _cancelReply() {
+    setState(() {
+      _replyingTo = null;
+    });
   }
 
   void _copyMessage(Message message) {
@@ -1324,6 +1450,28 @@ class _MessageBubble extends StatelessWidget {
     return null;
   }
 
+  /// Check if message is a reply and extract sender name, quoted text, and reply
+  /// Format: "↩ Re: [sender]\n> [quoted]\n[reply message]"
+  ({String sender, String quoted, String text})? _parseReplyData() {
+    final text = message.plaintext;
+    if (text.startsWith('↩ Re: ')) {
+      final firstNewline = text.indexOf('\n');
+      if (firstNewline != -1) {
+        final sender = text.substring(6, firstNewline); // After "↩ Re: "
+        final afterSender = text.substring(firstNewline + 1);
+        if (afterSender.startsWith('> ')) {
+          final secondNewline = afterSender.indexOf('\n');
+          if (secondNewline != -1) {
+            final quoted = afterSender.substring(2, secondNewline); // After "> "
+            final replyText = afterSender.substring(secondNewline + 1);
+            return (sender: sender, quoted: quoted, text: replyText);
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     // Handle image attachments with special bubble
@@ -1341,7 +1489,9 @@ class _MessageBubble extends StatelessWidget {
     final theme = Theme.of(context);
     final isOutgoing = message.isOutgoing;
     final forwardedData = _parseForwardedData();
-    final displayText = forwardedData?.text ?? message.plaintext;
+    final replyData = _parseReplyData();
+    // Priority: reply > forwarded > plain text
+    final displayText = replyData?.text ?? forwardedData?.text ?? message.plaintext;
 
     return Align(
       alignment: isOutgoing ? Alignment.centerRight : Alignment.centerLeft,
@@ -1368,8 +1518,71 @@ class _MessageBubble extends StatelessWidget {
           crossAxisAlignment:
               isOutgoing ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
+            // Show reply header with quoted text if this is a reply
+            if (replyData != null) ...[
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: isOutgoing
+                      ? theme.colorScheme.onPrimary.withAlpha(25)
+                      : theme.colorScheme.primary.withAlpha(25),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border(
+                    left: BorderSide(
+                      color: isOutgoing
+                          ? theme.colorScheme.onPrimary.withAlpha(128)
+                          : theme.colorScheme.primary,
+                      width: 2,
+                    ),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        FaIcon(
+                          FontAwesomeIcons.reply,
+                          size: 10,
+                          color: isOutgoing
+                              ? theme.colorScheme.onPrimary.withAlpha(179)
+                              : theme.colorScheme.primary,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          replyData.sender,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: isOutgoing
+                                ? theme.colorScheme.onPrimary.withAlpha(200)
+                                : theme.colorScheme.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      replyData.quoted.length > 80
+                          ? '${replyData.quoted.substring(0, 80)}...'
+                          : replyData.quoted,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontSize: 12,
+                        color: isOutgoing
+                            ? theme.colorScheme.onPrimary.withAlpha(153)
+                            : DnaColors.textMuted,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 6),
+            ],
             // Show forwarded header if this is a forwarded message
-            if (forwardedData != null) ...[
+            if (forwardedData != null && replyData == null) ...[
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
