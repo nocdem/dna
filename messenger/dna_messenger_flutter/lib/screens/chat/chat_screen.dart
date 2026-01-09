@@ -388,9 +388,40 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         return Column(
           children: [
             if (showDate) _buildDateHeader(context, message.timestamp),
-            GestureDetector(
-              onLongPress: () => _showMessageActions(message),
-              child: _MessageBubble(message: message),
+            Dismissible(
+              key: ValueKey('msg_${message.id}'),
+              confirmDismiss: (direction) async {
+                if (direction == DismissDirection.startToEnd) {
+                  // Swipe right → Forward
+                  _forwardMessage(message);
+                } else if (direction == DismissDirection.endToStart) {
+                  // Swipe left → Copy
+                  _copyMessage(message);
+                }
+                return false; // Don't actually dismiss
+              },
+              background: Container(
+                alignment: Alignment.centerLeft,
+                padding: const EdgeInsets.only(left: 20),
+                color: DnaColors.primary.withAlpha(50),
+                child: const FaIcon(
+                  FontAwesomeIcons.share,
+                  color: DnaColors.primary,
+                ),
+              ),
+              secondaryBackground: Container(
+                alignment: Alignment.centerRight,
+                padding: const EdgeInsets.only(right: 20),
+                color: DnaColors.textInfo.withAlpha(50),
+                child: FaIcon(
+                  FontAwesomeIcons.copy,
+                  color: DnaColors.textInfo,
+                ),
+              ),
+              child: GestureDetector(
+                onLongPress: () => _showMessageActions(message),
+                child: _MessageBubble(message: message),
+              ),
             ),
           ],
         );
@@ -960,9 +991,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
 
     if (selectedContact != null && mounted) {
+      // Determine original sender name
+      final currentContact = ref.read(selectedContactProvider);
+      String originalSender;
+      if (message.isOutgoing) {
+        originalSender = 'me';
+      } else if (currentContact != null && currentContact.displayName.isNotEmpty) {
+        originalSender = currentContact.displayName;
+      } else {
+        originalSender = message.sender.substring(0, 12);
+      }
+
+      // Build forwarded message with marker
+      // Format: ⤷ Fwd: [name]\n[original message]
+      final forwardedText = '⤷ Fwd: $originalSender\n${message.plaintext}';
+
       // Send the message to the selected contact
       ref.read(conversationProvider(selectedContact.fingerprint).notifier)
-          .sendMessage(message.plaintext);
+          .sendMessage(forwardedText);
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -1263,6 +1309,21 @@ class _MessageBubble extends StatelessWidget {
     return null;
   }
 
+  /// Check if message is forwarded and extract sender name + original text
+  /// Format: "⤷ Fwd: [name]\n[original message]"
+  ({String sender, String text})? _parseForwardedData() {
+    final text = message.plaintext;
+    if (text.startsWith('⤷ Fwd: ')) {
+      final newlineIndex = text.indexOf('\n');
+      if (newlineIndex != -1) {
+        final sender = text.substring(7, newlineIndex); // After "⤷ Fwd: "
+        final originalText = text.substring(newlineIndex + 1);
+        return (sender: sender, text: originalText);
+      }
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     // Handle image attachments with special bubble
@@ -1279,6 +1340,8 @@ class _MessageBubble extends StatelessWidget {
 
     final theme = Theme.of(context);
     final isOutgoing = message.isOutgoing;
+    final forwardedData = _parseForwardedData();
+    final displayText = forwardedData?.text ?? message.plaintext;
 
     return Align(
       alignment: isOutgoing ? Alignment.centerRight : Alignment.centerLeft,
@@ -1305,8 +1368,35 @@ class _MessageBubble extends StatelessWidget {
           crossAxisAlignment:
               isOutgoing ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
+            // Show forwarded header if this is a forwarded message
+            if (forwardedData != null) ...[
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FaIcon(
+                    FontAwesomeIcons.share,
+                    size: 10,
+                    color: isOutgoing
+                        ? theme.colorScheme.onPrimary.withAlpha(179)
+                        : DnaColors.textMuted,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Forwarded from ${forwardedData.sender}',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontSize: 11,
+                      fontStyle: FontStyle.italic,
+                      color: isOutgoing
+                          ? theme.colorScheme.onPrimary.withAlpha(179)
+                          : DnaColors.textMuted,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+            ],
             FormattedText(
-              message.plaintext,
+              displayText,
               selectable: true,
               style: TextStyle(
                 color: isOutgoing
