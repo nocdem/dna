@@ -47,8 +47,15 @@ class ContactsScreen extends ConsumerWidget {
       ),
       body: contacts.when(
         data: (list) => _buildContactList(context, ref, list),
-        // Show cached contacts (or empty state) while loading - avoids spinner flash
-        loading: () => _buildContactList(context, ref, contacts.valueOrNull ?? []),
+        // Show cached contacts while loading if available, otherwise show spinner
+        // This prevents flash of "No contacts" on initial load
+        loading: () {
+          final cached = contacts.valueOrNull;
+          if (cached != null) {
+            return _buildContactList(context, ref, cached);
+          }
+          return const Center(child: CircularProgressIndicator());
+        },
         error: (error, stack) => _buildError(context, ref, error),
       ),
       floatingActionButton: FloatingActionButton(
