@@ -19,22 +19,45 @@ import 'dna_bindings.dart';
 class Contact {
   final String fingerprint;
   final String displayName;
+  final String nickname;
   final bool isOnline;
   final DateTime lastSeen;
 
   Contact({
     required this.fingerprint,
     required this.displayName,
+    required this.nickname,
     required this.isOnline,
     required this.lastSeen,
   });
+
+  /// Get effective display name (nickname if set, otherwise displayName)
+  String get effectiveName => nickname.isNotEmpty ? nickname : displayName;
 
   factory Contact.fromNative(dna_contact_t native) {
     return Contact(
       fingerprint: native.fingerprint.toDartString(129),
       displayName: native.display_name.toDartString(256),
+      nickname: native.nickname.toDartString(64),
       isOnline: native.is_online,
       lastSeen: DateTime.fromMillisecondsSinceEpoch(native.last_seen * 1000),
+    );
+  }
+
+  /// Create a copy with updated fields
+  Contact copyWith({
+    String? fingerprint,
+    String? displayName,
+    String? nickname,
+    bool? isOnline,
+    DateTime? lastSeen,
+  }) {
+    return Contact(
+      fingerprint: fingerprint ?? this.fingerprint,
+      displayName: displayName ?? this.displayName,
+      nickname: nickname ?? this.nickname,
+      isOnline: isOnline ?? this.isOnline,
+      lastSeen: lastSeen ?? this.lastSeen,
     );
   }
 }
@@ -1536,6 +1559,32 @@ class DnaEngine {
     }
 
     return completer.future;
+  }
+
+  /// Set local nickname for a contact (synchronous, local-only)
+  ///
+  /// Sets a custom nickname that overrides the DHT display name.
+  /// Pass null or empty string to clear the nickname.
+  void setContactNickname(String fingerprint, String? nickname) {
+    final fpPtr = fingerprint.toNativeUtf8();
+    final hasNickname = nickname != null && nickname.isNotEmpty;
+    final nicknamePtr = hasNickname ? nickname.toNativeUtf8() : nullptr;
+
+    try {
+      final result = _bindings.dna_engine_set_contact_nickname_sync(
+        _engine,
+        fpPtr.cast(),
+        hasNickname ? nicknamePtr.cast() : nullptr,
+      );
+      if (result != 0) {
+        throw DnaEngineException.fromCode(result, _bindings);
+      }
+    } finally {
+      calloc.free(fpPtr);
+      if (hasNickname) {
+        calloc.free(nicknamePtr);
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------

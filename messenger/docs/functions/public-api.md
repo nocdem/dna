@@ -46,6 +46,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_get_contacts(...)` | Get contact list from local database |
 | `dna_request_id_t dna_engine_add_contact(...)` | Add contact by fingerprint or registered name |
 | `dna_request_id_t dna_engine_remove_contact(...)` | Remove contact |
+| `int dna_engine_set_contact_nickname_sync(engine, fingerprint, nickname)` | Set local nickname for contact (sync) |
 
 ## 1.4 Contact Requests (ICQ-Style)
 

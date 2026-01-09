@@ -266,6 +266,15 @@ int contacts_db_init(const char *owner_identity) {
         sqlite3_free(err_msg);
     }
 
+    // Add nickname column to contacts table if it doesn't exist (migration v0.3.147)
+    const char *sql_add_nickname =
+        "ALTER TABLE contacts ADD COLUMN nickname TEXT DEFAULT NULL;";
+    rc = sqlite3_exec(g_db, sql_add_nickname, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        /* Ignore error - column may already exist */
+        sqlite3_free(err_msg);
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Initialized for identity '%s': %s\n", owner_identity, db_path);
     return 0;
 }
@@ -455,8 +464,8 @@ int contacts_db_list(contact_list_t **list_out) {
         return -1;
     }
 
-    // Query contacts (including last_seen from database)
-    const char *sql = "SELECT identity, added_timestamp, notes, last_seen FROM contacts ORDER BY identity;";
+    // Query contacts (including last_seen and nickname from database)
+    const char *sql = "SELECT identity, added_timestamp, notes, last_seen, nickname FROM contacts ORDER BY identity;";
     sqlite3_stmt *stmt = NULL;
 
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
@@ -473,6 +482,7 @@ int contacts_db_list(contact_list_t **list_out) {
         uint64_t timestamp = sqlite3_column_int64(stmt, 1);
         const char *notes = (const char*)sqlite3_column_text(stmt, 2);
         uint64_t last_seen = sqlite3_column_int64(stmt, 3);
+        const char *nickname = (const char*)sqlite3_column_text(stmt, 4);
 
         // Skip invalid fingerprints (corrupted data protection)
         if (!is_valid_fingerprint(identity)) {
@@ -489,6 +499,13 @@ int contacts_db_list(contact_list_t **list_out) {
             strncpy(list->contacts[i].notes, notes, sizeof(list->contacts[i].notes) - 1);
         } else {
             list->contacts[i].notes[0] = '\0';
+        }
+
+        if (nickname) {
+            strncpy(list->contacts[i].nickname, nickname, sizeof(list->contacts[i].nickname) - 1);
+            list->contacts[i].nickname[sizeof(list->contacts[i].nickname) - 1] = '\0';
+        } else {
+            list->contacts[i].nickname[0] = '\0';
         }
 
         i++;
@@ -587,6 +604,47 @@ int contacts_db_update_last_seen(const char *identity, uint64_t last_seen) {
         return -1;
     }
 
+    return 0;
+}
+
+// Update nickname for a contact (local-only, not synced to DHT)
+int contacts_db_update_nickname(const char *identity, const char *nickname) {
+    if (!g_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    if (!identity || strlen(identity) != 128) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid identity for nickname update\n");
+        return -1;
+    }
+
+    const char *sql = "UPDATE contacts SET nickname = ? WHERE identity = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare nickname update: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    // NULL or empty string clears nickname
+    if (nickname && nickname[0] != '\0') {
+        sqlite3_bind_text(stmt, 1, nickname, -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, 1);
+    }
+    sqlite3_bind_text(stmt, 2, identity, -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update nickname: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Updated nickname for: %.20s...\n", identity);
     return 0;
 }
 

@@ -94,7 +94,8 @@ DNA_API const char* dna_engine_error_string(int error);
  */
 typedef struct {
     char fingerprint[129];      /* 128 hex chars + null */
-    char display_name[256];     /* Registered name or shortened fingerprint */
+    char display_name[256];     /* Resolved name (nickname > DHT name > fingerprint) */
+    char nickname[64];          /* Local nickname override (empty if not set) */
     bool is_online;             /* Current online status */
     uint64_t last_seen;         /* Unix timestamp of last activity */
 } dna_contact_t;
@@ -1081,6 +1082,23 @@ DNA_API dna_request_id_t dna_engine_remove_contact(
     const char *fingerprint,
     dna_completion_cb callback,
     void *user_data
+);
+
+/**
+ * Set local nickname for a contact (synchronous)
+ *
+ * Sets a custom local nickname that overrides the DHT display name.
+ * This is local-only and NOT synced to the network.
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Contact fingerprint (128 hex chars)
+ * @param nickname    Nickname to set (NULL or empty to clear)
+ * @return            0 on success, negative error code on failure
+ */
+DNA_API int dna_engine_set_contact_nickname_sync(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *nickname
 );
 
 /* ============================================================================

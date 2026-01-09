@@ -8,8 +8,7 @@ export 'theme_provider.dart';
 export 'event_handler.dart';
 export 'groups_provider.dart';
 export 'wallet_provider.dart';
-// Feed disabled - will be reimplemented in the future
-// export 'feed_provider.dart';
+export 'feed_provider.dart';
 export 'profile_provider.dart';
 export 'contact_profile_cache_provider.dart';
 export 'identity_profile_cache_provider.dart';

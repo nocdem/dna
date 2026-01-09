@@ -122,7 +122,7 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
       final lastSeen = entry.value;
       final contact = currentState.firstWhere(
         (c) => c.fingerprint == fingerprint,
-        orElse: () => Contact(fingerprint: '', displayName: '', isOnline: false, lastSeen: DateTime.fromMillisecondsSinceEpoch(0)),
+        orElse: () => Contact(fingerprint: '', displayName: '', nickname: '', isOnline: false, lastSeen: DateTime.fromMillisecondsSinceEpoch(0)),
       );
       // Only count as change if lastSeen differs by more than 1 minute
       // This prevents unnecessary updates for small time differences
@@ -153,6 +153,7 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
         final updatedContact = Contact(
           fingerprint: contact.fingerprint,
           displayName: contact.displayName,
+          nickname: contact.nickname,
           isOnline: contact.isOnline,
           lastSeen: lastSeen,
         );
@@ -244,6 +245,13 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     await refresh();
   }
 
+  /// Set a local nickname for a contact (local-only, not synced to DHT)
+  Future<void> setContactNickname(String fingerprint, String? nickname) async {
+    final engine = await ref.read(engineProvider.future);
+    engine.setContactNickname(fingerprint, nickname);
+    await refresh(); // Refresh to show updated display name
+  }
+
   void updateContactStatus(String fingerprint, bool isOnline) {
     if (fingerprint.isEmpty) {
       return;
@@ -263,6 +271,7 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
         updated[index] = Contact(
           fingerprint: contact.fingerprint,
           displayName: contact.displayName,
+          nickname: contact.nickname,
           isOnline: isOnline,
           lastSeen: isOnline ? DateTime.now() : contact.lastSeen,
         );

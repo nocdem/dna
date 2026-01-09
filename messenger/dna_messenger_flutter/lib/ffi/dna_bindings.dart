@@ -28,6 +28,9 @@ final class dna_contact_t extends Struct {
   @Array(256)
   external Array<Char> display_name;
 
+  @Array(64)
+  external Array<Char> nickname;
+
   @Bool()
   external bool is_online;
 
@@ -1268,6 +1271,20 @@ class DnaBindings {
     Pointer<Void> user_data,
   ) {
     return _dna_engine_remove_contact(engine, fingerprint, callback, user_data);
+  }
+
+  // Set contact nickname (synchronous)
+  late final _dna_engine_set_contact_nickname_sync = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>)>(
+      'dna_engine_set_contact_nickname_sync');
+
+  int dna_engine_set_contact_nickname_sync(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+    Pointer<Utf8> nickname,
+  ) {
+    return _dna_engine_set_contact_nickname_sync(engine, fingerprint, nickname);
   }
 
   // ---------------------------------------------------------------------------

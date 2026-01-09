@@ -317,6 +317,7 @@ class EventHandler {
       _ref.read(selectedContactProvider.notifier).state = Contact(
         fingerprint: selectedContact.fingerprint,
         displayName: selectedContact.displayName,
+        nickname: selectedContact.nickname,
         isOnline: isOnline,
         lastSeen: isOnline ? DateTime.now() : selectedContact.lastSeen,
       );

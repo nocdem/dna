@@ -1967,24 +1967,41 @@ void dna_handle_get_contacts(dna_engine_t *engine, dna_task_t *task) {
         for (size_t i = 0; i < list->count; i++) {
             strncpy(contacts[i].fingerprint, list->contacts[i].identity, 128);
 
+            /* Copy local nickname to contact struct (for Flutter to access) */
+            if (list->contacts[i].nickname[0] != '\0') {
+                strncpy(contacts[i].nickname, list->contacts[i].nickname, sizeof(contacts[i].nickname) - 1);
+                contacts[i].nickname[sizeof(contacts[i].nickname) - 1] = '\0';
+            } else {
+                contacts[i].nickname[0] = '\0';
+            }
+
             /* Get display name with fallback chain:
+             * 0. Local nickname (NEW - highest priority)
              * 1. DHT profile (profile_manager)
              * 2. Registered name (keyserver_cache)
              * 3. Stored notes from contact request
              * 4. Fingerprint prefix as last resort */
             bool name_found = false;
 
+            /* Try 0: Local nickname (highest priority) */
+            if (list->contacts[i].nickname[0] != '\0') {
+                strncpy(contacts[i].display_name, list->contacts[i].nickname, sizeof(contacts[i].display_name) - 1);
+                name_found = true;
+            }
+
             /* Try 1: DHT profile (display_name first, then registered_name) */
-            dna_unified_identity_t *identity = NULL;
-            if (profile_manager_get_profile(list->contacts[i].identity, &identity) == 0 && identity) {
-                if (identity->display_name[0] != '\0') {
-                    strncpy(contacts[i].display_name, identity->display_name, sizeof(contacts[i].display_name) - 1);
-                    name_found = true;
-                } else if (identity->registered_name[0] != '\0') {
-                    strncpy(contacts[i].display_name, identity->registered_name, sizeof(contacts[i].display_name) - 1);
-                    name_found = true;
+            if (!name_found) {
+                dna_unified_identity_t *identity = NULL;
+                if (profile_manager_get_profile(list->contacts[i].identity, &identity) == 0 && identity) {
+                    if (identity->display_name[0] != '\0') {
+                        strncpy(contacts[i].display_name, identity->display_name, sizeof(contacts[i].display_name) - 1);
+                        name_found = true;
+                    } else if (identity->registered_name[0] != '\0') {
+                        strncpy(contacts[i].display_name, identity->registered_name, sizeof(contacts[i].display_name) - 1);
+                        name_found = true;
+                    }
+                    dna_identity_free(identity);
                 }
-                dna_identity_free(identity);
             }
 
             /* Try 2: Registered name from keyserver cache */
@@ -2131,6 +2148,46 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
 
 done:
     task->callback.completion(task->request_id, error, task->user_data);
+}
+
+/* ============================================================================
+ * CONTACT NICKNAME (synchronous API)
+ * ============================================================================ */
+
+int dna_engine_set_contact_nickname_sync(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *nickname
+) {
+    if (!engine) {
+        return DNA_ENGINE_ERROR_NOT_INITIALIZED;
+    }
+    if (!fingerprint || strlen(fingerprint) != 128) {
+        return DNA_ENGINE_ERROR_INVALID_PARAM;
+    }
+    if (!engine->identity_loaded) {
+        return DNA_ENGINE_ERROR_NO_IDENTITY;
+    }
+
+    /* Initialize contacts DB if needed */
+    if (contacts_db_init(engine->fingerprint) != 0) {
+        return DNA_ENGINE_ERROR_DATABASE;
+    }
+
+    /* Check if contact exists */
+    if (!contacts_db_exists(fingerprint)) {
+        return DNA_ERROR_NOT_FOUND;
+    }
+
+    /* Update nickname in database */
+    int result = contacts_db_update_nickname(fingerprint, nickname);
+    if (result != 0) {
+        return DNA_ENGINE_ERROR_DATABASE;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Set nickname for %.16s... to '%s'\n",
+                 fingerprint, nickname ? nickname : "(cleared)");
+    return DNA_OK;
 }
 
 /* ============================================================================

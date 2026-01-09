@@ -6,6 +6,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../../ffi/dna_engine.dart' show UserProfile, decodeBase64WithPadding;
 import '../../providers/providers.dart' show engineProvider;
+import '../../providers/contacts_provider.dart';
 import '../../theme/dna_theme.dart';
 
 /// Shows a bottom sheet with the contact's profile fetched from DHT
@@ -44,11 +45,29 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
   UserProfile? _profile;
   bool _isLoading = true;
   String? _error;
+  String? _currentNickname;
 
   @override
   void initState() {
     super.initState();
     _loadProfile();
+    _loadCurrentNickname();
+  }
+
+  void _loadCurrentNickname() {
+    // Get current nickname from contacts list
+    final contactsAsync = ref.read(contactsProvider);
+    contactsAsync.whenData((contacts) {
+      final contact = contacts.cast<dynamic>().firstWhere(
+        (c) => c.fingerprint == widget.fingerprint,
+        orElse: () => null,
+      );
+      if (contact != null && mounted) {
+        setState(() {
+          _currentNickname = contact.nickname.isNotEmpty ? contact.nickname : null;
+        });
+      }
+    });
   }
 
   Future<void> _loadProfile() async {
@@ -147,6 +166,10 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
         // Avatar and name header
         _buildHeader(theme),
         const SizedBox(height: 24),
+
+        // Set Nickname
+        _buildNicknameSection(theme),
+        const SizedBox(height: 16),
 
         // Fingerprint
         _buildFingerprintSection(theme),
@@ -258,6 +281,146 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
           textAlign: TextAlign.center,
         ),
       ],
+    );
+  }
+
+  Widget _buildNicknameSection(ThemeData theme) {
+    final profile = _profile;
+    final originalName = profile?.displayName.isNotEmpty == true
+        ? profile!.displayName
+        : widget.displayName;
+
+    return InkWell(
+      onTap: _showNicknameDialog,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: theme.cardColor,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: theme.dividerColor),
+        ),
+        child: Row(
+          children: [
+            FaIcon(FontAwesomeIcons.pen, color: DnaColors.primary),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Nickname',
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: DnaColors.primary,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _currentNickname ?? 'Not set (tap to add)',
+                    style: TextStyle(
+                      color: _currentNickname != null
+                          ? theme.textTheme.bodyMedium?.color
+                          : DnaColors.textMuted,
+                      fontStyle: _currentNickname != null
+                          ? FontStyle.normal
+                          : FontStyle.italic,
+                    ),
+                  ),
+                  if (_currentNickname != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      'Original: $originalName',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: DnaColors.textMuted,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            FaIcon(FontAwesomeIcons.chevronRight, size: 16, color: DnaColors.textMuted),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showNicknameDialog() {
+    final controller = TextEditingController(text: _currentNickname ?? '');
+    final profile = _profile;
+    final originalName = profile?.displayName.isNotEmpty == true
+        ? profile!.displayName
+        : widget.displayName;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Set Nickname'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Original name: $originalName',
+              style: TextStyle(
+                color: DnaColors.textMuted,
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              maxLength: 63,
+              decoration: const InputDecoration(
+                labelText: 'Nickname',
+                hintText: 'Enter custom nickname',
+                helperText: 'Leave empty to use original name',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final nickname = controller.text.trim();
+              Navigator.pop(context);
+
+              try {
+                await ref.read(contactsProvider.notifier).setContactNickname(
+                  widget.fingerprint,
+                  nickname.isEmpty ? null : nickname,
+                );
+                if (mounted) {
+                  setState(() {
+                    _currentNickname = nickname.isEmpty ? null : nickname;
+                  });
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(nickname.isEmpty
+                          ? 'Nickname cleared'
+                          : 'Nickname set to "$nickname"'),
+                    ),
+                  );
+                }
+              } catch (e) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Failed to set nickname: $e')),
+                  );
+                }
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
     );
   }
 

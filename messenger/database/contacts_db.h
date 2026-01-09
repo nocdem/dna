@@ -14,7 +14,9 @@
  *     identity TEXT PRIMARY KEY,
  *     added_timestamp INTEGER,
  *     notes TEXT,
- *     status INTEGER DEFAULT 0   -- 0=mutual, 1=pending_outgoing
+ *     status INTEGER DEFAULT 0,  -- 0=mutual, 1=pending_outgoing
+ *     last_seen INTEGER DEFAULT 0,
+ *     nickname TEXT DEFAULT NULL -- Local nickname override
  * );
  *
  * CREATE TABLE contact_requests (
@@ -69,6 +71,7 @@ typedef struct {
     char notes[512];           /* Optional notes */
     int status;                /* contact_status_t: 0=mutual, 1=pending_outgoing */
     uint64_t last_seen;        /* Last seen timestamp (0 = never seen) */
+    char nickname[64];         /* Local nickname override (empty = use DHT name) */
 } contact_entry_t;
 
 /**
@@ -180,6 +183,15 @@ void contacts_db_free_list(contact_list_t *list);
  * @return: 0 on success, -1 on error
  */
 int contacts_db_update_last_seen(const char *identity, uint64_t last_seen);
+
+/**
+ * Update nickname for a contact (local-only, not synced to DHT)
+ *
+ * @param identity: Contact fingerprint (128 hex chars)
+ * @param nickname: New nickname (NULL or empty to clear)
+ * @return: 0 on success, -1 on error
+ */
+int contacts_db_update_nickname(const char *identity, const char *nickname);
 
 /**
  * Close database
