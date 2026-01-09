@@ -264,7 +264,7 @@ class _ContactResultState extends ConsumerState<_ContactResult> {
 
           // Back button
           OutlinedButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(context).popUntil((route) => route.isFirst),
             child: const Text('Scan Another'),
           ),
         ],
@@ -274,24 +274,106 @@ class _ContactResultState extends ConsumerState<_ContactResult> {
 }
 
 /// Auth result - redirect to auth screen
-class _AuthResult extends StatelessWidget {
+class _AuthResult extends StatefulWidget {
   final QrPayload payload;
 
   const _AuthResult({required this.payload});
 
   @override
-  Widget build(BuildContext context) {
-    // Automatically navigate to auth screen
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+  State<_AuthResult> createState() => _AuthResultState();
+}
+
+class _AuthResultState extends State<_AuthResult> {
+  bool _navigated = false;
+
+  /// Check if auth payload has valid data
+  bool _isValidAuthPayload() {
+    final challenge = widget.payload.challenge?.trim();
+    final domain = widget.payload.domain?.trim();
+    final appName = widget.payload.appName?.trim();
+
+    // At least one of these must be non-null and non-empty
+    final hasChallenge = challenge != null && challenge.isNotEmpty;
+    final hasDomain = domain != null && domain.isNotEmpty;
+    final hasAppName = appName != null && appName.isNotEmpty;
+
+    return hasChallenge || hasDomain || hasAppName;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+
+    // Navigate only once and only if payload is valid
+    if (!_navigated && _isValidAuthPayload()) {
+      _navigated = true;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
-          builder: (context) => QrAuthScreen(payload: payload),
+          builder: (context) => QrAuthScreen(payload: widget.payload),
         ),
       );
-    });
+    }
+  }
 
+  @override
+  Widget build(BuildContext context) {
+    // If payload is invalid, show error
+    if (!_isValidAuthPayload()) {
+      return _buildInvalidPayloadError(context);
+    }
+
+    // Show loading while navigating
     return const Center(
       child: CircularProgressIndicator(),
+    );
+  }
+
+  Widget _buildInvalidPayloadError(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: DnaColors.surface,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: DnaColors.border),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const FaIcon(
+                FontAwesomeIcons.circleExclamation,
+                size: 48,
+                color: DnaColors.textWarning,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Invalid authorization request QR',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'The QR code is missing required authorization data.',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: DnaColors.textMuted,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              OutlinedButton(
+                onPressed: () => Navigator.of(context).popUntil((route) => route.isFirst),
+                child: const Text('Scan Another'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -416,7 +498,7 @@ class _PlainTextResult extends StatelessWidget {
 
           const SizedBox(height: 24),
           OutlinedButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(context).popUntil((route) => route.isFirst),
             child: const Text('Scan Another'),
           ),
         ],

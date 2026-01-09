@@ -1,5 +1,6 @@
 /// QR Scanner Screen - Camera-based QR code scanning
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -21,6 +22,7 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen> {
   bool _hasScanned = false;
   bool _torchOn = false;
   String? _errorMessage;
+  DateTime? _lastScanAt;
 
   @override
   void initState() {
@@ -45,34 +47,59 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen> {
   void _onDetect(BarcodeCapture capture) {
     if (_hasScanned) return;
 
+    // Throttle: ignore detections if last scan was < 700ms ago
+    final now = DateTime.now();
+    if (_lastScanAt != null &&
+        now.difference(_lastScanAt!).inMilliseconds < 700) {
+      return;
+    }
+
     final barcodes = capture.barcodes;
     if (barcodes.isEmpty) return;
 
-    final barcode = barcodes.first;
-    final value = barcode.rawValue;
-    if (value == null || value.isEmpty) return;
+    // Pick the first barcode with non-null, non-empty rawValue
+    String? value;
+    for (final barcode in barcodes) {
+      final raw = barcode.rawValue?.trim();
+      if (raw != null && raw.isNotEmpty) {
+        value = raw;
+        break;
+      }
+    }
+    if (value == null) return;
 
+    // Mark as scanned and stop controller immediately
     setState(() => _hasScanned = true);
+    _lastScanAt = now;
+    _controller?.stop();
 
     // Parse the QR payload
     final payload = parseQrPayload(value);
+
+    // Haptic feedback on successful scan
+    HapticFeedback.mediumImpact();
 
     // Navigate to result screen
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => QrResultScreen(payload: payload),
       ),
-    ).then((_) {
-      // Reset scan state when returning
+    ).then((_) async {
+      // Reset scan state and restart scanning when returning
       if (mounted) {
         setState(() => _hasScanned = false);
+        await _controller?.start();
       }
     });
   }
 
   void _toggleTorch() async {
-    await _controller?.toggleTorch();
-    setState(() => _torchOn = !_torchOn);
+    try {
+      await _controller?.toggleTorch();
+      setState(() => _torchOn = !_torchOn);
+    } catch (e) {
+      // Torch toggle failed, don't update state
+    }
   }
 
   void _switchCamera() async {
@@ -131,6 +158,16 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen> {
           right: 0,
           child: _buildInstructions(),
         ),
+        // Processing overlay when scanned
+        if (_hasScanned)
+          Positioned.fill(
+            child: Container(
+              color: Colors.black54,
+              child: const Center(
+                child: CircularProgressIndicator(),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -268,7 +305,9 @@ class _ScanOverlayPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final scanAreaSize = size.width * 0.7;
     final left = (size.width - scanAreaSize) / 2;
-    final top = (size.height - scanAreaSize) / 2 - 40;
+    // Clamp top to at least 24.0 so it never goes negative on small screens
+    final rawTop = (size.height - scanAreaSize) / 2 - 40;
+    final top = rawTop < 24.0 ? 24.0 : rawTop;
 
     final scanRect = RRect.fromRectAndRadius(
       Rect.fromLTWH(left, top, scanAreaSize, scanAreaSize),
