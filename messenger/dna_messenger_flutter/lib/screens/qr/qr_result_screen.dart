@@ -69,8 +69,22 @@ class _ContactResultState extends ConsumerState<_ContactResult> {
   String? _errorMessage;
   bool _requestSent = false;
 
+  /// Validate fingerprint: must be 128 hex characters
+  bool _isValidFingerprint(String? input) {
+    if (input == null || input.length != 128) return false;
+    return RegExp(r'^[0-9a-fA-F]+$').hasMatch(input);
+  }
+
   Future<void> _addContact() async {
     if (widget.payload.fingerprint == null) return;
+
+    // Validate fingerprint format
+    if (!_isValidFingerprint(widget.payload.fingerprint)) {
+      setState(() {
+        _errorMessage = 'Invalid fingerprint in QR code';
+      });
+      return;
+    }
 
     setState(() {
       _isAdding = true;
@@ -99,10 +113,10 @@ class _ContactResultState extends ConsumerState<_ContactResult> {
         return;
       }
 
-      // Send contact request
+      // Send contact request (pass displayName if available)
       await ref.read(contactRequestsProvider.notifier).sendRequest(
             widget.payload.fingerprint!,
-            null,
+            widget.payload.displayName,
           );
 
       setState(() {
