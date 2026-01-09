@@ -918,39 +918,22 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         // Use putSigned() instead of put() to enable editing/replacement
         // Note: putSigned() doesn't support creation_time parameter (uses current time)
         // Permanent flag controls whether value expires based on ValueType
-        // SYNCHRONOUS: Wait for network confirmation to get accurate success/failure
-        // This ensures message status reflects actual DHT storage result
-        auto result_promise = std::make_shared<std::promise<bool>>();
-        std::future<bool> result_future = result_promise->get_future();
-
+        // ASYNC: Fire-and-forget to avoid blocking. Callback logs result but doesn't block caller.
+        // Message status will be updated via watermark confirmation from recipient.
         ctx->runner.putSigned(hash, dht_value,
-                             [result_promise, key_hex_start](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
+                             [key_hex_start](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
                                  if (success) {
                                      QGP_LOG_DEBUG("DHT", "PUT_SIGNED: Stored on %zu node(s)", nodes.size());
                                  } else {
                                      QGP_LOG_WARN("DHT", "PUT_SIGNED: Failed to store on any node (key=%s...)", key_hex_start);
                                  }
-                                 result_promise->set_value(success);
                              },
                              true);  // permanent=true for maintain_storage behavior
 
-        // Wait for DHT confirmation with timeout (2 seconds)
-        // In practice: ~10ms when online, fast failure when offline (no nodes reachable)
-        // Reduced from 5s to fail faster when network is unavailable
-        auto status = result_future.wait_for(std::chrono::seconds(2));
-        if (status == std::future_status::timeout) {
-            QGP_LOG_WARN("DHT", "PUT_SIGNED: Timeout waiting for network confirmation (2s)");
-            // Still persist locally for retry
-            persist_value_if_enabled(ctx, key, key_len, value, value_len, dht_value->type, ttl_seconds);
-            return -2;  // Timeout
-        }
-
-        bool success = result_future.get();
-
-        // Store value to persistent storage (if enabled) - do this regardless of network result
+        // Store value to persistent storage (if enabled) for republishing
         persist_value_if_enabled(ctx, key, key_len, value, value_len, dht_value->type, ttl_seconds);
 
-        return success ? 0 : -1;
+        return 0;  // Async - assume success, status updated via watermark
     } catch (const std::exception& e) {
         QGP_LOG_ERROR("DHT", "Exception in dht_put_signed: %s", e.what());
         return -1;
