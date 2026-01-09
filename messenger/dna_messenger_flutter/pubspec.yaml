@@ -2,7 +2,7 @@ name: dna_messenger
 description: "Post-quantum encrypted P2P messenger with integrated cryptocurrency wallet"
 publish_to: 'none'
 
-version: 0.99.105+10005
+version: 0.99.106+10006
 
 environment:
   sdk: ^3.10.0
@@ -31,6 +31,7 @@ dependencies:
 
   # UI components
   qr_flutter: ^4.1.0
+  mobile_scanner: ^5.1.1  # QR code scanning with ML Kit
   image_picker: ^1.0.0
   image: ^4.1.0  # For reliable cross-platform image resizing
   crop_your_image: ^1.1.0  # Cross-platform avatar cropping
