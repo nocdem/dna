@@ -90,7 +90,9 @@ static void juice_log_handler(juice_log_level_t level, const char *message) {
             break;
         case JUICE_LOG_LEVEL_WARN:
             /* Downgrade common transient errors to DEBUG to reduce noise */
-            if (strstr(msg, "errno=101") || strstr(msg, "errno=111")) {
+            /* Also suppress keepalive failures when network is down - pointless to log */
+            if (strstr(msg, "errno=101") || strstr(msg, "errno=111") ||
+                strstr(msg, "keepalive failed")) {
                 QGP_LOG_DEBUG("ICE", "%s%s", msg, context);
             } else {
                 QGP_LOG_WARN("ICE", "%s%s", msg, context);
