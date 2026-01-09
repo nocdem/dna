@@ -114,6 +114,41 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Note: send button state handled by ValueListenableBuilder - no setState needed
   }
 
+  /// Retry a failed message
+  void _retryMessage(int messageId) async {
+    final contact = ref.read(selectedContactProvider);
+    if (contact == null) return;
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final success = engine.retryMessage(messageId);
+      if (success) {
+        // Refresh conversation to show updated status
+        ref.invalidate(conversationProvider(contact.fingerprint));
+      } else {
+        // Show error snackbar
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Failed to retry message'),
+              backgroundColor: DnaColors.snackbarError,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      log('CHAT', 'Retry failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Retry error: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _checkOfflineMessages() async {
     if (_isCheckingOffline) return;
 
@@ -525,6 +560,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 child: _MessageBubble(
                   message: message,
                   isStarred: starredIds.contains(message.id),
+                  onRetry: message.isOutgoing && message.status == MessageStatus.failed
+                      ? () => _retryMessage(message.id)
+                      : null,
                 ),
               ),
             ),
@@ -1803,8 +1841,9 @@ class _ContactAvatar extends ConsumerWidget {
 class _MessageBubble extends StatelessWidget {
   final Message message;
   final bool isStarred;
+  final VoidCallback? onRetry;
 
-  const _MessageBubble({required this.message, this.isStarred = false});
+  const _MessageBubble({required this.message, this.isStarred = false, this.onRetry});
 
   /// Check if message is a CPUNK transfer by parsing JSON content
   Map<String, dynamic>? _parseTransferData() {
@@ -2064,11 +2103,27 @@ class _MessageBubble extends StatelessWidget {
     }
 
     if (status == MessageStatus.failed) {
-      // Show red error icon for failed messages
-      return FaIcon(
-        FontAwesomeIcons.circleExclamation,
-        size: size,
-        color: DnaColors.textWarning,
+      // Show tappable retry icon for failed messages
+      return GestureDetector(
+        onTap: onRetry,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FaIcon(
+              FontAwesomeIcons.circleExclamation,
+              size: size - 2,
+              color: DnaColors.textWarning,
+            ),
+            if (onRetry != null) ...[
+              const SizedBox(width: 4),
+              FaIcon(
+                FontAwesomeIcons.arrowsRotate,
+                size: size - 2,
+                color: DnaColors.textWarning,
+              ),
+            ],
+          ],
+        ),
       );
     }
 

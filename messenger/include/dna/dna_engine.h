@@ -1434,6 +1434,33 @@ DNA_API int dna_engine_delete_message_sync(
     int message_id
 );
 
+/**
+ * Retry all pending/failed messages
+ *
+ * Queries local database for messages with status PENDING(0) or FAILED(2)
+ * and attempts to re-queue them to DHT. Called automatically on:
+ * - Identity load (app startup)
+ * - DHT reconnect (network change)
+ *
+ * Messages that exceed max_retries (10) are skipped and remain as FAILED.
+ *
+ * @param engine     Engine instance
+ * @return           Number of messages successfully retried, or -1 on error
+ */
+DNA_API int dna_engine_retry_pending_messages(dna_engine_t *engine);
+
+/**
+ * Retry a single failed message by ID
+ *
+ * Attempts to re-send a specific message. Use this for manual retry
+ * (e.g., user taps retry button on failed message).
+ *
+ * @param engine     Engine instance
+ * @param message_id Message ID from local database
+ * @return           0 on success, -1 on error (not found or not retryable)
+ */
+DNA_API int dna_engine_retry_message(dna_engine_t *engine, int message_id);
+
 /* ============================================================================
  * 5. GROUPS (6 async functions)
  * ============================================================================ */

@@ -2096,6 +2096,25 @@ class DnaEngine {
   }
 
   // ---------------------------------------------------------------------------
+  // MESSAGE RETRY
+  // ---------------------------------------------------------------------------
+
+  /// Retry all pending/failed messages
+  /// Called automatically on identity load and DHT reconnect.
+  /// Can also be called manually to retry queued messages.
+  /// Returns number of messages successfully retried, or -1 on error.
+  int retryPendingMessages() {
+    return _bindings.dna_engine_retry_pending_messages(_engine);
+  }
+
+  /// Retry a single failed message by ID
+  /// Use this when user taps retry button on a failed message.
+  /// Returns true on success, false on error.
+  bool retryMessage(int messageId) {
+    return _bindings.dna_engine_retry_message(_engine, messageId) == 0;
+  }
+
+  // ---------------------------------------------------------------------------
   // MESSAGE STATUS / READ RECEIPTS
   // ---------------------------------------------------------------------------
 

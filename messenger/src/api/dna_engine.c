@@ -67,6 +67,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/core/dht_listen.h"
 #include "dht/client/dht_contactlist.h"
 #include "dht/client/dht_message_backup.h"
+#include "dht/shared/dht_offline_queue.h"
 #include "dht/client/dna_feed.h"
 #include "dht/client/dna_profile.h"
 #include "dht/shared/dht_chunked.h"
@@ -190,6 +191,24 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
 
     int count = dna_engine_listen_all_contacts(engine);
     QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: started %d listeners", count);
+
+    /* Retry pending/failed messages after DHT reconnect
+     * Messages may have failed during the previous session or network outage.
+     * Now that DHT is reconnected, retry them. */
+    int retried = dna_engine_retry_pending_messages(engine);
+    if (retried > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] DHT reconnect: retried %d pending messages", retried);
+    }
+
+    /* Also check for missed incoming messages after reconnect */
+    if (engine->messenger && engine->messenger->p2p_transport) {
+        QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: checking for missed messages");
+        size_t received = 0;
+        p2p_check_offline_messages(engine->messenger->p2p_transport, NULL, &received);
+        if (received > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: received %zu missed messages", received);
+        }
+    }
 
     return NULL;
 }
@@ -566,6 +585,23 @@ int dna_engine_network_changed(dna_engine_t *engine) {
         QGP_LOG_INFO(LOG_TAG, "Starting fresh listeners after network change");
         int count = dna_engine_listen_all_contacts(engine);
         QGP_LOG_INFO(LOG_TAG, "Started %d outbox listeners", count);
+
+        /* Retry pending messages after network change
+         * Messages may have failed during network outage, retry now. */
+        int retried = dna_engine_retry_pending_messages(engine);
+        if (retried > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[RETRY] Network change: retried %d pending messages", retried);
+        }
+
+        /* Also check for missed incoming messages */
+        if (engine->messenger && engine->messenger->p2p_transport) {
+            QGP_LOG_INFO(LOG_TAG, "[FETCH] Network change: checking for missed messages");
+            size_t received = 0;
+            p2p_check_offline_messages(engine->messenger->p2p_transport, NULL, &received);
+            if (received > 0) {
+                QGP_LOG_INFO(LOG_TAG, "[FETCH] Network change: received %zu missed messages", received);
+            }
+        }
 
         /* Refresh presence on new network (only if app is in foreground) */
         if (engine->messenger && atomic_load(&engine->presence_active)) {
@@ -1326,6 +1362,14 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: starting outbox listeners...");
         int listener_count = dna_engine_listen_all_contacts(engine);
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: started %d listeners", listener_count);
+
+        /* 3. Retry any pending/failed messages from previous sessions
+         * Messages may have been queued while offline or failed to send.
+         * Now that DHT is connected, retry them. */
+        int retried = dna_engine_retry_pending_messages(engine);
+        if (retried > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[RETRY] Identity load: retried %d pending messages", retried);
+        }
     }
 
     /* Silent background: Create any missing blockchain wallets
@@ -4747,6 +4791,162 @@ int dna_engine_delete_message_sync(
     if (!engine->messenger) return -1;
 
     return messenger_delete_message(engine->messenger, message_id);
+}
+
+/* ============================================================================
+ * MESSAGE RETRY (Bulletproof Message Delivery)
+ * ============================================================================ */
+
+#define MESSAGE_RETRY_MAX_RETRIES 10
+#define MESSAGE_STATUS_PENDING 0
+#define MESSAGE_STATUS_SENT 1
+#define MESSAGE_STATUS_FAILED 2
+
+/**
+ * Retry a single pending/failed message
+ *
+ * Re-queues the message to DHT with a new seq_num.
+ * Updates status to SENT on success, increments retry_count on failure.
+ *
+ * @param engine Engine instance
+ * @param msg Message to retry (from message_backup_get_pending_messages)
+ * @return 0 on success, -1 on failure
+ */
+static int retry_single_message(dna_engine_t *engine, backup_message_t *msg) {
+    if (!engine || !msg) return -1;
+    if (!engine->messenger) return -1;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (!dht_ctx) return -1;
+
+    message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
+    if (!backup_ctx) return -1;
+
+    const char *my_fp = dna_engine_get_fingerprint(engine);
+    if (!my_fp) return -1;
+
+    /* Get a new seq_num for this recipient */
+    uint64_t seq_num = message_backup_get_next_seq(backup_ctx, msg->recipient);
+
+    /* Re-queue to DHT */
+    int rc = dht_queue_message(
+        dht_ctx,
+        my_fp,
+        msg->recipient,
+        msg->encrypted_message,
+        msg->encrypted_len,
+        seq_num,
+        DHT_OFFLINE_QUEUE_DEFAULT_TTL
+    );
+
+    if (rc == 0) {
+        /* Success - update status to SENT */
+        message_backup_update_status(backup_ctx, msg->id, MESSAGE_STATUS_SENT);
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d to %.20s... sent successfully (seq=%llu)",
+                     msg->id, msg->recipient, (unsigned long long)seq_num);
+        return 0;
+    } else {
+        /* Failed - increment retry count */
+        message_backup_increment_retry_count(backup_ctx, msg->id);
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Message %d to %.20s... failed (retry_count=%d)",
+                     msg->id, msg->recipient, msg->retry_count + 1);
+        return -1;
+    }
+}
+
+int dna_engine_retry_pending_messages(dna_engine_t *engine) {
+    if (!engine) return -1;
+    if (!engine->messenger) return -1;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (!dht_ctx) return -1;
+
+    message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
+    if (!backup_ctx) return -1;
+
+    /* Get all pending/failed messages under MAX_RETRIES */
+    backup_message_t *messages = NULL;
+    int count = 0;
+    int rc = message_backup_get_pending_messages(
+        backup_ctx,
+        MESSAGE_RETRY_MAX_RETRIES,
+        &messages,
+        &count
+    );
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[RETRY] Failed to query pending messages");
+        return -1;
+    }
+
+    if (count == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "[RETRY] No pending messages to retry");
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[RETRY] Found %d pending/failed messages to retry", count);
+
+    int success_count = 0;
+    int fail_count = 0;
+
+    /* Retry each message */
+    for (int i = 0; i < count; i++) {
+        if (retry_single_message(engine, &messages[i]) == 0) {
+            success_count++;
+        } else {
+            fail_count++;
+        }
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[RETRY] Completed: %d succeeded, %d failed", success_count, fail_count);
+
+    /* Free messages array */
+    message_backup_free_messages(messages, count);
+
+    return success_count;
+}
+
+int dna_engine_retry_message(dna_engine_t *engine, int message_id) {
+    if (!engine || message_id <= 0) return -1;
+    if (!engine->messenger) return -1;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (!dht_ctx) return -1;
+    (void)dht_ctx;  /* Used by retry_single_message via dna_get_dht_ctx */
+
+    message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
+    if (!backup_ctx) return -1;
+
+    /* Get all pending/failed messages (we'll filter by ID) */
+    backup_message_t *messages = NULL;
+    int count = 0;
+    int rc = message_backup_get_pending_messages(
+        backup_ctx,
+        MESSAGE_RETRY_MAX_RETRIES + 1,  /* Allow retry even at max (manual retry) */
+        &messages,
+        &count
+    );
+
+    if (rc != 0 || count == 0) {
+        return -1;
+    }
+
+    /* Find the specific message */
+    int result = -1;
+    for (int i = 0; i < count; i++) {
+        if (messages[i].id == message_id) {
+            result = retry_single_message(engine, &messages[i]);
+            break;
+        }
+    }
+
+    message_backup_free_messages(messages, count);
+
+    if (result == -1) {
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Message %d not found or not retryable", message_id);
+    }
+
+    return result;
 }
 
 /* Groups */
