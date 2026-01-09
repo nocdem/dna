@@ -487,10 +487,16 @@ int messenger_send_message(
             }
         }
     }
-    (void)dht_success;  // Suppress unused variable warning
 
     free(message_ids);
     free(ciphertext);
+
+    // Return -1 if ALL DHT queues failed, 0 if at least one succeeded
+    // This allows UI to show FAILED status when offline
+    if (dht_success == 0) {
+        QGP_LOG_WARN(LOG_TAG, "All DHT queues failed - message saved with FAILED status");
+        return -1;
+    }
 
     return 0;
 }
