@@ -234,7 +234,7 @@ static int deserialize_metadata(const char *json, dht_group_metadata_t **meta_ou
         if (!meta->members) goto error;
 
         for (uint32_t i = 0; i < meta->member_count; i++) {
-            meta->members[i] = malloc(129);  // 128 chars + null for full fingerprint
+            meta->members[i] = calloc(129, 1);  // Zero-initialized
             if (!meta->members[i]) goto error;
 
             // Find opening quote of this member
@@ -242,15 +242,20 @@ static int deserialize_metadata(const char *json, dht_group_metadata_t **meta_ou
             if (!p) goto error;
             p++;  // Move past opening quote
 
-            // Read member fingerprint (up to closing quote)
-            int chars_read = 0;
-            sscanf(p, "%128[^\"]%n", meta->members[i], &chars_read);
+            // Find closing quote
+            const char *end = strchr(p, '"');
+            if (!end) goto error;
 
-            // Advance p past the content we just read
-            p += chars_read;
+            // Copy member fingerprint (up to 128 chars)
+            size_t len = (size_t)(end - p);
+            if (len > 128) len = 128;
+            if (len > 0) {
+                memcpy(meta->members[i], p, len);
+            }
+            meta->members[i][len] = '\0';
 
-            // Skip past the closing quote
-            if (*p == '"') p++;
+            // Move past closing quote
+            p = end + 1;
         }
     }
 
