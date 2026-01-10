@@ -310,6 +310,51 @@ int cmd_publish_version(dna_engine_t *engine,
 int cmd_check_version(dna_engine_t *engine);
 
 /* ============================================================================
+ * GROUP COMMANDS (GEK System)
+ * ============================================================================ */
+
+/**
+ * List all groups the user belongs to
+ * @param engine DNA engine instance
+ * @return 0 on success, negative on error
+ */
+int cmd_group_list(dna_engine_t *engine);
+
+/**
+ * Create a new group
+ * @param engine DNA engine instance
+ * @param name Group name
+ * @return 0 on success, negative on error
+ */
+int cmd_group_create(dna_engine_t *engine, const char *name);
+
+/**
+ * Send a message to a group
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID
+ * @param message Message text
+ * @return 0 on success, negative on error
+ */
+int cmd_group_send(dna_engine_t *engine, const char *group_uuid, const char *message);
+
+/**
+ * Show group info and members
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID
+ * @return 0 on success, negative on error
+ */
+int cmd_group_info(dna_engine_t *engine, const char *group_uuid);
+
+/**
+ * Invite a member to a group
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID
+ * @param fingerprint Member fingerprint to invite
+ * @return 0 on success, negative on error
+ */
+int cmd_group_invite(dna_engine_t *engine, const char *group_uuid, const char *fingerprint);
+
+/* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */
 

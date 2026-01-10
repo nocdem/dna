@@ -62,7 +62,8 @@ static int get_group_uuid_by_id(const char *identity, int group_id, char *uuid_o
 // ============================================================================
 
 int messenger_create_group(messenger_context_t *ctx, const char *name, const char *description,
-                            const char **members, size_t member_count, int *group_id_out) {
+                            const char **members, size_t member_count, int *group_id_out,
+                            char *uuid_out) {
     if (!ctx || !name || !group_id_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to create_group\n");
         return -1;
@@ -118,6 +119,10 @@ int messenger_create_group(messenger_context_t *ctx, const char *name, const cha
     }
 
     *group_id_out = local_id;
+    if (uuid_out) {
+        strncpy(uuid_out, group_uuid, 36);
+        uuid_out[36] = '\0';
+    }
     QGP_LOG_INFO(LOG_TAG, "Created group '%s' (local_id=%d, uuid=%s)\n", name, local_id, group_uuid);
 
     // Phase 13: Create initial GEK (version 0) and publish to DHT

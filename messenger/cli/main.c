@@ -109,6 +109,13 @@ static void print_usage(const char *prog_name) {
     printf("    --lib <ver> --app <ver> --nodus <ver> [--lib-min <ver>] [--app-min <ver>] [--nodus-min <ver>]\n");
     printf("  check-version               Check latest version from DHT\n");
     printf("\n");
+    printf("GROUP COMMANDS:\n");
+    printf("  group-list                  List all groups\n");
+    printf("  group-create <name>         Create a new group\n");
+    printf("  group-send <uuid> <msg>     Send message to group\n");
+    printf("  group-info <uuid>           Show group info and members\n");
+    printf("  group-invite <uuid> <fp>    Invite member to group\n");
+    printf("\n");
     printf("Examples:\n");
     printf("  %s create alice\n", prog_name);
     printf("  %s restore abandon ability able about ...\n", prog_name);
@@ -523,6 +530,43 @@ int main(int argc, char *argv[]) {
     }
     else if (strcmp(command, "check-version") == 0) {
         result = cmd_check_version(g_engine);
+    }
+
+    /* ====== GROUP COMMANDS ====== */
+    else if (strcmp(command, "group-list") == 0) {
+        result = cmd_group_list(g_engine);
+    }
+    else if (strcmp(command, "group-create") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'group-create' requires <name> argument\n");
+            result = 1;
+        } else {
+            result = cmd_group_create(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "group-send") == 0) {
+        if (optind + 2 >= argc) {
+            fprintf(stderr, "Error: 'group-send' requires <uuid> and <message> arguments\n");
+            result = 1;
+        } else {
+            result = cmd_group_send(g_engine, argv[optind + 1], argv[optind + 2]);
+        }
+    }
+    else if (strcmp(command, "group-info") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'group-info' requires <uuid> argument\n");
+            result = 1;
+        } else {
+            result = cmd_group_info(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "group-invite") == 0) {
+        if (optind + 2 >= argc) {
+            fprintf(stderr, "Error: 'group-invite' requires <uuid> and <fingerprint> arguments\n");
+            result = 1;
+        } else {
+            result = cmd_group_invite(g_engine, argv[optind + 1], argv[optind + 2]);
+        }
     }
 
     /* ====== UNKNOWN COMMAND ====== */

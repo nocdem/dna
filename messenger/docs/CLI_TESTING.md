@@ -1,6 +1,6 @@
 # DNA Messenger CLI Testing Guide
 
-**Version:** 2.4.0
+**Version:** 2.5.0
 **Purpose:** Command-line tool for automated testing and debugging of DNA Messenger without GUI
 **Location:** `build/cli/dna-messenger-cli`
 
@@ -78,8 +78,15 @@ $CLI turn-creds                       # Show cached TURN credentials
 $CLI turn-creds --force               # Force request TURN credentials
 
 # Version Management
-$CLI publish-version --lib 0.3.91 --app 0.99.30 --nodus 0.4.4   # Publish version to DHT
+$CLI publish-version --lib 0.4.0 --app 0.99.106 --nodus 0.4.3   # Publish version to DHT
 $CLI check-version                    # Check latest version from DHT
+
+# Groups (GEK encrypted)
+$CLI group-list                       # List all groups
+$CLI group-create "Team Name"         # Create a new group
+$CLI group-send <uuid> "message"      # Send message to group
+$CLI group-info <uuid>                # Show group info and members
+$CLI group-invite <uuid> <fp>         # Invite member to group
 ```
 
 ---
@@ -617,7 +624,7 @@ TURN credentials are also obtained automatically when:
 Publishes version information to a well-known DHT key. The first publisher "owns" the key - only that identity can update it.
 
 ```bash
-dna-messenger-cli publish-version --lib 0.3.91 --app 0.99.30 --nodus 0.4.4
+dna-messenger-cli publish-version --lib 0.4.0 --app 0.99.106 --nodus 0.4.3
 ```
 
 **Required Arguments:**
@@ -633,9 +640,9 @@ dna-messenger-cli publish-version --lib 0.3.91 --app 0.99.30 --nodus 0.4.4
 **Sample Output:**
 ```
 Publishing version info to DHT...
-  Library: 0.3.91 (min: 0.3.50)
-  App:     0.99.30 (min: 0.99.0)
-  Nodus:   0.4.4 (min: 0.4.0)
+  Library: 0.4.0 (min: 0.4.0)
+  App:     0.99.106 (min: 0.99.0)
+  Nodus:   0.4.3 (min: 0.4.0)
   Publisher: 71194ec906913bb7...
 Waiting for DHT propagation...
 ✓ Version info published successfully!
@@ -662,17 +669,135 @@ dna-messenger-cli check-version
 Checking version info from DHT...
 
 Version Info from DHT:
-  Library: 0.3.91 (min: 0.3.50) [UPDATE AVAILABLE - local: 0.3.90]
-  App:     0.99.30 (min: 0.99.0)
-  Nodus:   0.4.4 (min: 0.4.0)
-  Published: 2026-01-04 12:00 UTC
-  Publisher: 71194ec906913bb7...
+  Library: 0.4.0 (min: 0.4.0) [UP TO DATE]
+  App:     0.99.106 (min: 0.99.0)
+  Nodus:   0.4.3 (min: 0.4.0)
+  Published: 2026-01-10 10:15 UTC
+  Publisher: 3cbba8d8bf0c3603...
 ```
 
 **Notes:**
 - Does not require identity loaded (read-only operation)
 - Shows [UPDATE AVAILABLE] if newer version exists
 - Returns -2 if no version info has been published yet
+
+---
+
+## Group Commands
+
+Group messaging uses GEK (Group Encryption Key) for end-to-end encrypted group chats.
+
+### `group-list` - List All Groups
+
+Lists all groups the user belongs to.
+
+```bash
+dna-messenger-cli group-list
+```
+
+**Sample Output:**
+```
+Groups (2):
+  1. Project Team
+     UUID: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+     Members: 5
+     Owner: You
+  2. Friends
+     UUID: 98765432-abcd-ef01-2345-678901234567
+     Members: 3
+     Owner: 5a8f2c3d4e6b7a9c...
+```
+
+---
+
+### `group-create <name>` - Create New Group
+
+Creates a new group with you as the owner.
+
+```bash
+dna-messenger-cli group-create "Project Team"
+```
+
+**Sample Output:**
+```
+Creating group 'Project Team'...
+✓ Group created!
+UUID: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+
+**Notes:**
+- You become the group owner
+- GEK v0 is automatically generated
+- Use the UUID for subsequent group operations
+
+---
+
+### `group-send <uuid> <message>` - Send Group Message
+
+Sends an encrypted message to a group.
+
+```bash
+dna-messenger-cli group-send a1b2c3d4-e5f6-7890-abcd-ef1234567890 "Hello team!"
+```
+
+**Sample Output:**
+```
+Sending message to group a1b2c3d4...
+✓ Message sent!
+```
+
+**Requirements:**
+- Must be a member of the group
+- Message encrypted with current GEK
+
+---
+
+### `group-info <uuid>` - Show Group Info
+
+Displays group metadata and member list.
+
+```bash
+dna-messenger-cli group-info a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+
+**Sample Output:**
+```
+Group Info
+========================================
+Name: Project Team
+UUID: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+Owner: 71194ec906913bb7... (You)
+Created: 2026-01-10 12:00 UTC
+GEK Version: 2
+
+Members (3):
+  1. 71194ec906913bb7... (owner)
+  2. 5a8f2c3d4e6b7a9c...
+  3. 7f8e9d0c1b2a3456...
+========================================
+```
+
+---
+
+### `group-invite <uuid> <fingerprint>` - Invite Member
+
+Invites a user to join the group. Only the group owner can invite.
+
+```bash
+dna-messenger-cli group-invite a1b2c3d4-e5f6-7890-abcd-ef1234567890 5a8f2c3d4e6b7a9c...
+```
+
+**Sample Output:**
+```
+Inviting 5a8f2c3d... to group a1b2c3d4...
+✓ Invitation sent!
+GEK rotated to version 3.
+```
+
+**Notes:**
+- Only group owner can invite members
+- GEK is automatically rotated when adding members
+- Invited user receives the new GEK via IKP (Initial Key Packet)
 
 ---
 
@@ -826,6 +951,14 @@ These warnings appear during normal operation and don't indicate errors:
 ---
 
 ## Changelog
+
+### v2.5.0
+- Added Group commands (GEK encrypted group messaging):
+  - `group-list` - List all groups
+  - `group-create` - Create a new group
+  - `group-send` - Send message to group
+  - `group-info` - Show group info and members
+  - `group-invite` - Invite member to group
 
 ### v2.4.0
 - Added NAT Traversal debugging commands:

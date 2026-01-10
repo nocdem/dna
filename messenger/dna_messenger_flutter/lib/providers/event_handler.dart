@@ -107,6 +107,12 @@ class EventHandler {
         _updateSelectedContactPresence(fp, false);
 
       case MessageReceivedEvent(message: final msg):
+        // Check if this is a group invitation - handle separately
+        if (msg.type == MessageType.groupInvitation) {
+          _ref.invalidate(invitationsProvider);
+          break;
+        }
+
         // New message received - refresh conversation from DB (decrypts messages)
         final contactFp = msg.isOutgoing ? msg.recipient : msg.sender;
         final selectedContact = _ref.read(selectedContactProvider);

@@ -707,8 +707,9 @@ void dna_free_event(dna_event_t *event) {
  * TASK EXECUTION DISPATCH
  * ============================================================================ */
 
-/* Forward declaration for handler defined later */
+/* Forward declarations for handlers defined later */
 void dna_handle_refresh_contact_profile(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_add_group_member(dna_engine_t *engine, dna_task_t *task);
 
 void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
     switch (task->type) {
@@ -798,6 +799,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_SEND_GROUP_MESSAGE:
             dna_handle_send_group_message(engine, task);
+            break;
+        case TASK_ADD_GROUP_MEMBER:
+            dna_handle_add_group_member(engine, task);
             break;
         case TASK_GET_INVITATIONS:
             dna_handle_get_invitations(engine, task);
@@ -2804,6 +2808,10 @@ void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task) {
 
 done:
     task->callback.groups(task->request_id, error, groups, count, task->user_data);
+    /* Free groups after callback - caller copies what it needs */
+    if (groups) {
+        free(groups);
+    }
 }
 
 void dna_handle_create_group(dna_engine_t *engine, dna_task_t *task) {
@@ -2822,16 +2830,14 @@ void dna_handle_create_group(dna_engine_t *engine, dna_task_t *task) {
         NULL, /* description */
         (const char**)task->params.create_group.members,
         task->params.create_group.member_count,
-        &group_id
+        &group_id,
+        group_uuid  /* Get real UUID */
     );
 
     if (rc != 0) {
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
-
-    /* Get UUID from group ID - simplified, actual impl would query database */
-    snprintf(group_uuid, sizeof(group_uuid), "%08x-0000-0000-0000-000000000000", group_id);
 
 done:
     task->callback.group_created(task->request_id, error,
@@ -2851,6 +2857,51 @@ void dna_handle_send_group_message(dna_engine_t *engine, dna_task_t *task) {
         engine->messenger,
         task->params.send_group_message.group_uuid,
         task->params.send_group_message.message
+    );
+
+    if (rc != 0) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+    }
+
+done:
+    task->callback.completion(task->request_id, error, task->user_data);
+}
+
+void dna_handle_add_group_member(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    /* Look up group_id from UUID using local cache */
+    dht_group_cache_entry_t *entries = NULL;
+    int entry_count = 0;
+    if (dht_groups_list_for_user(engine->fingerprint, &entries, &entry_count) != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    int group_id = -1;
+    for (int i = 0; i < entry_count; i++) {
+        if (strcmp(entries[i].group_uuid, task->params.add_group_member.group_uuid) == 0) {
+            group_id = entries[i].local_id;
+            break;
+        }
+    }
+    dht_groups_free_cache_entries(entries, entry_count);
+
+    if (group_id < 0) {
+        error = DNA_ENGINE_ERROR_NOT_FOUND;
+        goto done;
+    }
+
+    /* Add member using messenger API */
+    int rc = messenger_add_group_member(
+        engine->messenger,
+        group_id,
+        task->params.add_group_member.fingerprint
     );
 
     if (rc != 0) {
@@ -4817,6 +4868,25 @@ dna_request_id_t dna_engine_send_group_message(
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_SEND_GROUP_MESSAGE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_add_group_member(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !fingerprint || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    strncpy(params.add_group_member.group_uuid, group_uuid, 36);
+    strncpy(params.add_group_member.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_ADD_GROUP_MEMBER, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_get_invitations(

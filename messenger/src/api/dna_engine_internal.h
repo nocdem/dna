@@ -76,6 +76,7 @@ typedef enum {
     TASK_GET_GROUPS,
     TASK_CREATE_GROUP,
     TASK_SEND_GROUP_MESSAGE,
+    TASK_ADD_GROUP_MEMBER,
     TASK_GET_INVITATIONS,
     TASK_ACCEPT_INVITATION,
     TASK_REJECT_INVITATION,
@@ -212,6 +213,12 @@ typedef union {
         char group_uuid[37];
         char *message;  /* Heap allocated, task owns */
     } send_group_message;
+
+    /* Add group member */
+    struct {
+        char group_uuid[37];
+        char fingerprint[129];
+    } add_group_member;
 
     /* Accept/reject invitation */
     struct {
