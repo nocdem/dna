@@ -18,16 +18,14 @@
 #include <zlib.h>  // For crc32
 
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 
 #define LOG_TAG "DHT_CHUNK"
 #ifdef _WIN32
 #include <winsock2.h>
-#include <windows.h>  // For Sleep()
-#define chunk_sleep_ms(ms) Sleep(ms)
+#include <windows.h>
 #else
 #include <arpa/inet.h>
-#include <unistd.h>   // For usleep()
-#define chunk_sleep_ms(ms) usleep((ms) * 1000)
 #endif
 
 /*============================================================================
@@ -520,6 +518,11 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
         }
 
         free(serialized);
+
+        // Rate limit: 50ms delay between chunks to avoid overwhelming DHT nodes
+        if (i < total_chunks - 1) {
+            qgp_platform_sleep_ms(50);
+        }
     }
 
     free(compressed);
@@ -661,7 +664,7 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
         }
 
         // Brief delay before retry to allow DHT propagation
-        chunk_sleep_ms(DHT_CHUNK_RETRY_DELAY_MS);
+        qgp_platform_sleep_ms(DHT_CHUNK_RETRY_DELAY_MS);
 
         // Retry each failed chunk synchronously
         for (uint32_t i = 0; i < total_chunks; i++) {
@@ -843,6 +846,11 @@ int dht_chunked_delete(dht_context_t *ctx, const char *base_key,
         dht_put_signed(ctx, chunk_key, DHT_CHUNK_KEY_SIZE,
                       serialized, serialized_len,
                       value_id, 60);  // 1 minute TTL for quick expiry
+
+        // Rate limit: 50ms delay between chunks to avoid overwhelming DHT nodes
+        if (i < total_chunks - 1) {
+            qgp_platform_sleep_ms(50);
+        }
     }
 
     free(serialized);
