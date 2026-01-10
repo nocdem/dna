@@ -79,6 +79,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "database/profile_manager.h"
 #include "database/contacts_db.h"
 #include "database/addressbook_db.h"
+#include "database/group_invitations.h"
 #include "dht/client/dht_addressbook.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
@@ -1274,6 +1275,13 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     if (contacts_db_init(fingerprint) != 0) {
         QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize contacts database\n");
         /* Non-fatal - continue, contacts will be initialized on first access */
+    }
+
+    /* Initialize group invitations database BEFORE P2P message processing
+     * Required for storing incoming group invitations from P2P messages */
+    if (group_invitations_init(fingerprint) != 0) {
+        QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize group invitations database\n");
+        /* Non-fatal - continue, invitations will be initialized on first access */
     }
 
     /* Profile cache is now global - initialized in dna_engine_create() */
