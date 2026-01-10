@@ -329,7 +329,7 @@ int message_backup_save(message_backup_context_t *ctx,
 
     const char *sql =
         "INSERT INTO messages (sender, recipient, encrypted_message, encrypted_len, timestamp, is_outgoing, delivered, read, status, group_id, message_type) "
-        "VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)";
+        "VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)";  // delivered=0 until watermark confirms
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
