@@ -2322,6 +2322,12 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                     continue;
                 }
 
+                /* Skip if already a contact or already pending (avoids DHT lookups for old requests) */
+                if (contacts_db_exists(dht_requests[i].sender_fingerprint) ||
+                    contacts_db_request_exists(dht_requests[i].sender_fingerprint)) {
+                    continue;
+                }
+
                 /* If sender_name is empty, lookup from DHT profile (reverse lookup) */
                 char *looked_up_name = NULL;
                 const char *sender_name = dht_requests[i].sender_name;
