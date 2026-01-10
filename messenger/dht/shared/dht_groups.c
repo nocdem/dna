@@ -229,44 +229,32 @@ static int deserialize_metadata(const char *json, dht_group_metadata_t **meta_ou
     if (!p) goto error;
     p += 11;
 
-    // Find end of members array for bounds checking
-    const char *array_end = strchr(p, ']');
-    if (!array_end) goto error;
-
     if (meta->member_count > 0) {
-        meta->members = calloc(meta->member_count, sizeof(char*));  // NULL-initialized
+        meta->members = malloc(sizeof(char*) * meta->member_count);
         if (!meta->members) goto error;
 
-        uint32_t actual_count = 0;
         for (uint32_t i = 0; i < meta->member_count; i++) {
-            // Find opening quote - but stop if we hit array end
-            const char *quote = strchr(p, '"');
-            if (!quote || quote >= array_end) {
-                // No more members in array
-                break;
-            }
-            p = quote + 1;  // Move past opening quote
+            meta->members[i] = malloc(129);
+            if (!meta->members[i]) goto error;
+            memset(meta->members[i], 0, 129);
+
+            // Find opening quote
+            p = strchr(p, '"');
+            if (!p) goto error;
+            p++;  // Move past opening quote
 
             // Find closing quote
-            const char *end = strchr(p, '"');
-            if (!end || end >= array_end) break;
+            const char *close = strchr(p, '"');
+            if (!close) goto error;
 
-            // Allocate and copy member fingerprint
-            meta->members[i] = calloc(129, 1);
-            if (!meta->members[i]) goto error;
-
-            size_t len = (size_t)(end - p);
+            // Copy member (up to 128 chars)
+            size_t len = (size_t)(close - p);
             if (len > 128) len = 128;
-            if (len > 0) {
-                memcpy(meta->members[i], p, len);
-            }
+            memcpy(meta->members[i], p, len);
 
-            actual_count++;
-            p = end + 1;
+            // Advance past closing quote
+            p = close + 1;
         }
-
-        // Update member_count to actual parsed count
-        meta->member_count = actual_count;
     }
 
     *meta_out = meta;
