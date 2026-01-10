@@ -6099,6 +6099,7 @@ int dna_engine_track_delivery(
     engine->delivery_trackers[idx].listener_token = token;
     engine->delivery_trackers[idx].last_known_watermark = 0;
     engine->delivery_trackers[idx].active = true;
+    engine->delivery_trackers[idx].ctx = ctx;
 
     QGP_LOG_INFO(LOG_TAG, "Started delivery tracker for %s... (token=%zu)",
                  recipient_fingerprint, token);
@@ -6126,6 +6127,12 @@ void dna_engine_untrack_delivery(
             /* Cancel the watermark listener */
             if (dht_ctx) {
                 dht_cancel_watermark_listener(dht_ctx, engine->delivery_trackers[i].listener_token);
+            }
+
+            /* Free callback context */
+            if (engine->delivery_trackers[i].ctx) {
+                free(engine->delivery_trackers[i].ctx);
+                engine->delivery_trackers[i].ctx = NULL;
             }
 
             QGP_LOG_INFO(LOG_TAG, "Cancelled delivery tracker for %s...",
@@ -6158,6 +6165,10 @@ void dna_engine_cancel_all_delivery_trackers(dna_engine_t *engine)
             dht_cancel_watermark_listener(dht_ctx, engine->delivery_trackers[i].listener_token);
             QGP_LOG_DEBUG(LOG_TAG, "Cancelled delivery tracker for %s...",
                           engine->delivery_trackers[i].recipient);
+        }
+        if (engine->delivery_trackers[i].ctx) {
+            free(engine->delivery_trackers[i].ctx);
+            engine->delivery_trackers[i].ctx = NULL;
         }
         engine->delivery_trackers[i].active = false;
     }

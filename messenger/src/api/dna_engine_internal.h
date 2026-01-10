@@ -439,6 +439,7 @@ typedef struct {
     uint64_t last_known_watermark;  /* Last watermark value received */
     size_t listener_token;          /* Token from dht_listen_watermark() */
     bool active;                    /* True if tracker is active */
+    void *ctx;                      /* Callback context (must be freed on cancel) */
 } dna_delivery_tracker_t;
 
 /**
