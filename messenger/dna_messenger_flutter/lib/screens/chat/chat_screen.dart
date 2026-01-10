@@ -2090,18 +2090,6 @@ class _MessageBubble extends StatelessWidget {
     final color = theme.colorScheme.onPrimary.withAlpha(179);
     const size = 16.0;
 
-    if (status == MessageStatus.pending) {
-      // Show spinner for pending messages
-      return SizedBox(
-        width: size,
-        height: size,
-        child: CircularProgressIndicator(
-          strokeWidth: 1.5,
-          color: color,
-        ),
-      );
-    }
-
     if (status == MessageStatus.failed) {
       // Show tappable retry icon for failed messages
       return GestureDetector(
@@ -2137,15 +2125,16 @@ class _MessageBubble extends StatelessWidget {
   IconData _getStatusIcon(MessageStatus status) {
     switch (status) {
       case MessageStatus.pending:
-        return FontAwesomeIcons.clock;
       case MessageStatus.sent:
-        return FontAwesomeIcons.check;
+        // Clock for pending/sent (waiting for delivery confirmation)
+        return FontAwesomeIcons.clock;
       case MessageStatus.failed:
         return FontAwesomeIcons.circleExclamation;
       case MessageStatus.delivered:
         return FontAwesomeIcons.checkDouble;
       case MessageStatus.read:
-        return FontAwesomeIcons.checkDouble; // Would be colored differently
+        // Blue double-check for read (colored in the widget)
+        return FontAwesomeIcons.checkDouble;
     }
   }
 }
@@ -2718,11 +2707,11 @@ class _TransferBubble extends StatelessWidget {
                 if (isOutgoing) ...[
                   const SizedBox(width: 4),
                   FaIcon(
-                    message.status == MessageStatus.pending
+                    message.status == MessageStatus.pending || message.status == MessageStatus.sent
                         ? FontAwesomeIcons.clock
                         : (message.status == MessageStatus.failed
                             ? FontAwesomeIcons.circleExclamation
-                            : FontAwesomeIcons.check),
+                            : FontAwesomeIcons.checkDouble),
                     size: 14,
                     color: message.status == MessageStatus.failed
                         ? DnaColors.textWarning
