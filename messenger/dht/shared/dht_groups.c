@@ -858,15 +858,34 @@ int dht_groups_sync_from_dht(
     const char *group_uuid
 ) {
     if (!dht_ctx || !group_uuid || !g_db) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to sync_from_dht\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to sync_from_dht (dht_ctx=%p, uuid=%s, g_db=%p)\n",
+                     (void*)dht_ctx, group_uuid ? group_uuid : "NULL", (void*)g_db);
         return -1;
     }
+
+    QGP_LOG_INFO(LOG_TAG, "[SYNC] Starting sync for group %s\n", group_uuid);
 
     // Get from DHT
     dht_group_metadata_t *meta = NULL;
     int ret = dht_groups_get(dht_ctx, group_uuid, &meta);
     if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[SYNC] Failed to get group %s from DHT (ret=%d)\n", group_uuid, ret);
         return ret;
+    }
+
+    // Log what we fetched from DHT
+    QGP_LOG_INFO(LOG_TAG, "[SYNC] Fetched group '%s' from DHT: member_count=%u, creator=%.16s...\n",
+                meta->name, meta->member_count, meta->creator);
+
+    if (meta->member_count == 0) {
+        QGP_LOG_WARN(LOG_TAG, "[SYNC] WARNING: Group has 0 members! This may cause issues.\n");
+    }
+
+    // Log all members for debugging
+    for (uint32_t i = 0; i < meta->member_count; i++) {
+        QGP_LOG_DEBUG(LOG_TAG, "[SYNC] Member[%u]: %.16s...%s\n", i,
+                     meta->members[i],
+                     strlen(meta->members[i]) > 16 ? meta->members[i] + strlen(meta->members[i]) - 8 : "");
     }
 
     // Update local cache
@@ -875,34 +894,80 @@ int dht_groups_sync_from_dht(
         "INSERT OR REPLACE INTO dht_group_cache (group_uuid, name, creator, created_at, last_sync) "
         "VALUES (?, ?, ?, ?, ?)";
 
-    sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "[SYNC] Failed to prepare cache insert: %s\n", sqlite3_errmsg(g_db));
+        dht_groups_free_metadata(meta);
+        return -1;
+    }
+
     sqlite3_bind_text(stmt, 1, meta->group_uuid, -1, SQLITE_STATIC);
     sqlite3_bind_text(stmt, 2, meta->name, -1, SQLITE_STATIC);
     sqlite3_bind_text(stmt, 3, meta->creator, -1, SQLITE_STATIC);
     sqlite3_bind_int64(stmt, 4, meta->created_at);
     sqlite3_bind_int64(stmt, 5, time(NULL));
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
 
-    // Update members
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "[SYNC] Failed to insert group cache: %s (rc=%d)\n", sqlite3_errmsg(g_db), rc);
+        sqlite3_finalize(stmt);
+        dht_groups_free_metadata(meta);
+        return -1;
+    }
+    sqlite3_finalize(stmt);
+    QGP_LOG_INFO(LOG_TAG, "[SYNC] Inserted group '%s' into cache\n", meta->name);
+
+    // Update members - first delete existing
     const char *delete_sql = "DELETE FROM dht_group_members WHERE group_uuid = ?";
-    sqlite3_prepare_v2(g_db, delete_sql, -1, &stmt, NULL);
-    sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_STATIC);
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
+    rc = sqlite3_prepare_v2(g_db, delete_sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "[SYNC] Failed to prepare member delete: %s\n", sqlite3_errmsg(g_db));
+        dht_groups_free_metadata(meta);
+        return -1;
+    }
 
+    sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_STATIC);
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "[SYNC] Failed to delete old members: %s\n", sqlite3_errmsg(g_db));
+    }
+    int deleted = sqlite3_changes(g_db);
+    sqlite3_finalize(stmt);
+    QGP_LOG_DEBUG(LOG_TAG, "[SYNC] Deleted %d old member entries\n", deleted);
+
+    // Insert new members
+    int inserted = 0;
     for (uint32_t i = 0; i < meta->member_count; i++) {
         const char *insert_sql = "INSERT INTO dht_group_members (group_uuid, member_identity) VALUES (?, ?)";
-        sqlite3_prepare_v2(g_db, insert_sql, -1, &stmt, NULL);
+        rc = sqlite3_prepare_v2(g_db, insert_sql, -1, &stmt, NULL);
+        if (rc != SQLITE_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "[SYNC] Failed to prepare member insert: %s\n", sqlite3_errmsg(g_db));
+            continue;
+        }
+
         sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_STATIC);
         sqlite3_bind_text(stmt, 2, meta->members[i], -1, SQLITE_STATIC);
-        sqlite3_step(stmt);
+
+        rc = sqlite3_step(stmt);
+        if (rc != SQLITE_DONE) {
+            QGP_LOG_ERROR(LOG_TAG, "[SYNC] Failed to insert member %.16s...: %s (rc=%d)\n",
+                         meta->members[i], sqlite3_errmsg(g_db), rc);
+        } else {
+            inserted++;
+            QGP_LOG_DEBUG(LOG_TAG, "[SYNC] Inserted member[%u]: %.16s...\n", i, meta->members[i]);
+        }
         sqlite3_finalize(stmt);
     }
 
-    dht_groups_free_metadata(meta);
+    QGP_LOG_INFO(LOG_TAG, "[SYNC] Synced group %s: inserted %d/%u members to local cache\n",
+                group_uuid, inserted, meta->member_count);
 
-    QGP_LOG_INFO(LOG_TAG, "Synced group %s from DHT to local cache\n", group_uuid);
+    if (inserted != (int)meta->member_count) {
+        QGP_LOG_WARN(LOG_TAG, "[SYNC] WARNING: Not all members inserted! Expected %u, got %d\n",
+                    meta->member_count, inserted);
+    }
+
+    dht_groups_free_metadata(meta);
     return 0;
 }
 
