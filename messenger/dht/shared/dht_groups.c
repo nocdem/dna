@@ -230,17 +230,30 @@ static int deserialize_metadata(const char *json, dht_group_metadata_t **meta_ou
     p += 11;
 
     if (meta->member_count > 0) {
-        meta->members = malloc(sizeof(char*) * meta->member_count);
+        meta->members = calloc(meta->member_count, sizeof(char*));
         if (!meta->members) goto error;
 
         for (uint32_t i = 0; i < meta->member_count; i++) {
-            meta->members[i] = malloc(129);  // 128 chars + null for full fingerprint
+            meta->members[i] = calloc(129, 1);  // 128 chars + null, zero-initialized
             if (!meta->members[i]) goto error;
 
             p = strchr(p, '"');
-            if (!p) goto error;
+            if (!p) {
+                QGP_LOG_ERROR(LOG_TAG, "Parse error: no opening quote for member[%u]\n", i);
+                goto error;
+            }
             p++;
-            sscanf(p, "%128[^\"]", meta->members[i]);  // Read full 128-char fingerprint
+            int chars_read = 0;
+            sscanf(p, "%128[^\"]%n", meta->members[i], &chars_read);
+            QGP_LOG_DEBUG(LOG_TAG, "Parsed member[%u]: '%s' (read %d chars)\n", i, meta->members[i], chars_read);
+
+            // Validate: fingerprint must be 128 hex chars
+            size_t len = strlen(meta->members[i]);
+            if (len != 128) {
+                QGP_LOG_ERROR(LOG_TAG, "Invalid member[%u] length: %zu (expected 128)\n", i, len);
+                goto error;
+            }
+
             p = strchr(p, '"');  // Find closing quote
             if (p) p++;          // Move past it
         }
@@ -870,6 +883,22 @@ int dht_groups_sync_from_dht(
     if (ret != 0) {
         return ret;
     }
+
+    // DEBUG: Log parsed metadata before writing to database
+    QGP_LOG_INFO(LOG_TAG, "=== SYNC DEBUG: Parsed metadata ===\n");
+    QGP_LOG_INFO(LOG_TAG, "  group_uuid: %s\n", meta->group_uuid ? meta->group_uuid : "(null)");
+    QGP_LOG_INFO(LOG_TAG, "  name: %s\n", meta->name ? meta->name : "(null)");
+    QGP_LOG_INFO(LOG_TAG, "  creator: %.32s...\n", meta->creator ? meta->creator : "(null)");
+    QGP_LOG_INFO(LOG_TAG, "  member_count: %u\n", meta->member_count);
+    for (uint32_t i = 0; i < meta->member_count && i < 10; i++) {
+        if (meta->members && meta->members[i]) {
+            size_t len = strlen(meta->members[i]);
+            QGP_LOG_INFO(LOG_TAG, "  member[%u]: %.32s... (len=%zu)\n", i, meta->members[i], len);
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "  member[%u]: NULL POINTER!\n", i);
+        }
+    }
+    QGP_LOG_INFO(LOG_TAG, "=== END SYNC DEBUG ===\n");
 
     // Update local cache
     sqlite3_stmt *stmt = NULL;
