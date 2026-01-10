@@ -53,7 +53,7 @@ static const char *SCHEMA_SQL =
     "  delivered INTEGER DEFAULT 1,"
     "  read INTEGER DEFAULT 0,"
     "  is_outgoing INTEGER DEFAULT 0,"
-    "  status INTEGER DEFAULT 1,"         // 0=PENDING, 1=SENT, 2=FAILED
+    "  status INTEGER DEFAULT 1,"         // 0=PENDING, 1=SENT(legacy), 2=FAILED, 3=DELIVERED, 4=READ
     "  group_id INTEGER DEFAULT 0,"       // 0=direct message, >0=group ID (Phase 5.2)
     "  message_type INTEGER DEFAULT 0,"   // 0=chat, 1=group_invitation (Phase 6.2)
     "  invitation_status INTEGER DEFAULT 0"  // 0=pending, 1=accepted, 2=declined (Phase 6.2)
@@ -592,7 +592,8 @@ int message_backup_get_group_conversation(message_backup_context_t *ctx,
 }
 
 /**
- * Update message status (PENDING/SENT/FAILED)
+ * Update message status (PENDING/FAILED/DELIVERED/READ)
+ * Note: SENT(1) is legacy - new messages go directly PENDING→DELIVERED via watermark
  */
 int message_backup_update_status(message_backup_context_t *ctx, int message_id, int status) {
     if (!ctx || !ctx->db) return -1;
@@ -999,10 +1000,10 @@ uint64_t message_backup_get_next_seq(message_backup_context_t *ctx, const char *
  * Mark all outgoing messages as DELIVERED up to a sequence number
  *
  * Note: The current messages table doesn't store seq_num per message.
- * This implementation marks ALL outgoing SENT messages to the recipient
+ * This implementation marks ALL outgoing PENDING/SENT messages to the recipient
  * as DELIVERED. A future enhancement would add seq_num tracking per message.
  *
- * Message status values: 0=PENDING, 1=SENT, 2=FAILED, 3=DELIVERED, 4=READ
+ * Status flow: PENDING(0) → DELIVERED(3) via watermark. SENT(1) is legacy.
  */
 int message_backup_mark_delivered_up_to_seq(
     message_backup_context_t *ctx,
@@ -1016,11 +1017,12 @@ int message_backup_mark_delivered_up_to_seq(
 
     (void)max_seq_num;  // Not used yet - future: add seq_num column to messages
 
-    // Update all outgoing messages to recipient with status = SENT(1) to DELIVERED(3)
+    // Update all outgoing messages to recipient with status PENDING(0) or SENT(1) to DELIVERED(3)
+    // With async DHT PUT, messages stay PENDING until watermark confirms delivery
     // is_outgoing = 1 means we sent it, sender = our fingerprint
     const char *sql =
         "UPDATE messages SET status = 3 "
-        "WHERE sender = ? AND recipient = ? AND is_outgoing = 1 AND status = 1";
+        "WHERE sender = ? AND recipient = ? AND is_outgoing = 1 AND status IN (0, 1)";
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);

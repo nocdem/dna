@@ -161,13 +161,15 @@ Local SQLite database for message backup. Stores encrypted messages per-identity
 **Message Status Values:**
 | Status | Value | Meaning | Auto-Retry? |
 |--------|-------|---------|-------------|
-| PENDING | 0 | Queued locally, not yet sent to DHT | Yes |
-| SENT | 1 | Successfully queued in DHT | No |
+| PENDING | 0 | Queued to DHT, awaiting delivery confirmation | Yes |
+| SENT | 1 | Legacy (no longer used with async DHT PUT) | No |
 | FAILED | 2 | DHT queue failed | Yes |
-| DELIVERED | 3 | Recipient acknowledged | No |
+| DELIVERED | 3 | Recipient confirmed via watermark | No |
 | READ | 4 | Recipient read | No |
 
-**Schema (v9):** `retry_count INTEGER DEFAULT 0` column tracks send attempts. Messages with `retry_count >= 10` are excluded from auto-retry.
+**Status Flow:** `PENDING(0) → DELIVERED(3)` via watermark confirmation. `SENT(1)` is legacy from synchronous DHT PUT.
+
+**Schema (v9):** `retry_count INTEGER DEFAULT 0` column tracks send attempts. Messages with `retry_count >= 10` are excluded from auto-retry. Retry functions are mutex-protected.
 
 ### 4.5 Conversation Retrieval
 

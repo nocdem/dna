@@ -131,7 +131,7 @@ typedef struct {
     char *plaintext;            /* Decrypted message text (caller must free via dna_free_messages) */
     uint64_t timestamp;         /* Unix timestamp */
     bool is_outgoing;           /* true if sent by current identity */
-    int status;                 /* 0=pending, 1=sent, 2=delivered, 3=read */
+    int status;                 /* 0=pending, 1=sent(legacy), 2=failed, 3=delivered, 4=read */
     int message_type;           /* 0=chat, 1=group_invitation */
 } dna_message_t;
 

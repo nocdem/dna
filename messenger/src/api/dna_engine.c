@@ -4819,11 +4819,14 @@ int dna_engine_delete_message_sync(
 #define MESSAGE_STATUS_SENT 1
 #define MESSAGE_STATUS_FAILED 2
 
+/* Mutex to prevent concurrent retry calls (e.g., DHT reconnect + manual retry race) */
+static pthread_mutex_t retry_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 /**
  * Retry a single pending/failed message
  *
  * Re-queues the message to DHT with a new seq_num.
- * Updates status to SENT on success, increments retry_count on failure.
+ * Status stays PENDING until watermark confirms DELIVERED. Increments retry_count on failure.
  *
  * @param engine Engine instance
  * @param msg Message to retry (from message_backup_get_pending_messages)
@@ -4889,6 +4892,9 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine) {
     message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
     if (!backup_ctx) return -1;
 
+    /* Lock to prevent concurrent retry calls */
+    pthread_mutex_lock(&retry_mutex);
+
     /* Get all pending/failed messages under MAX_RETRIES */
     backup_message_t *messages = NULL;
     int count = 0;
@@ -4901,11 +4907,13 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine) {
 
     if (rc != 0) {
         QGP_LOG_ERROR(LOG_TAG, "[RETRY] Failed to query pending messages");
+        pthread_mutex_unlock(&retry_mutex);
         return -1;
     }
 
     if (count == 0) {
         QGP_LOG_DEBUG(LOG_TAG, "[RETRY] No pending messages to retry");
+        pthread_mutex_unlock(&retry_mutex);
         return 0;
     }
 
@@ -4928,6 +4936,7 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine) {
     /* Free messages array */
     message_backup_free_messages(messages, count);
 
+    pthread_mutex_unlock(&retry_mutex);
     return success_count;
 }
 
@@ -4942,6 +4951,9 @@ int dna_engine_retry_message(dna_engine_t *engine, int message_id) {
     message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
     if (!backup_ctx) return -1;
 
+    /* Lock to prevent concurrent retry calls */
+    pthread_mutex_lock(&retry_mutex);
+
     /* Get all pending/failed messages (we'll filter by ID) */
     backup_message_t *messages = NULL;
     int count = 0;
@@ -4953,6 +4965,7 @@ int dna_engine_retry_message(dna_engine_t *engine, int message_id) {
     );
 
     if (rc != 0 || count == 0) {
+        pthread_mutex_unlock(&retry_mutex);
         return -1;
     }
 
@@ -4971,6 +4984,7 @@ int dna_engine_retry_message(dna_engine_t *engine, int message_id) {
         QGP_LOG_WARN(LOG_TAG, "[RETRY] Message %d not found or not retryable", message_id);
     }
 
+    pthread_mutex_unlock(&retry_mutex);
     return result;
 }
 
