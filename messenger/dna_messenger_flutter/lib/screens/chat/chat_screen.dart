@@ -608,57 +608,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Widget _buildInputArea(BuildContext context, Contact contact) {
     final theme = Theme.of(context);
     final dhtState = ref.watch(dhtConnectionStateProvider);
-    final isConnected = dhtState == DhtConnectionState.connected;
-    final isConnecting = dhtState == DhtConnectionState.connecting;
+    final isDisconnected = dhtState == DhtConnectionState.disconnected;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // DHT Status Banner - shows when not connected
-        if (!isConnected)
+        // DHT Status Banner - only shows when fully disconnected
+        if (isDisconnected)
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: isConnecting
-                ? DnaColors.textWarning.withAlpha(30)
-                : DnaColors.textError.withAlpha(30),
+            color: DnaColors.textError.withAlpha(30),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                if (isConnecting) ...[
-                  SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: DnaColors.textWarning,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Connecting to network...',
-                    style: TextStyle(
-                      color: DnaColors.textWarning,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ] else ...[
-                  FaIcon(
-                    FontAwesomeIcons.cloudBolt,
-                    size: 14,
+                FaIcon(
+                  FontAwesomeIcons.cloudBolt,
+                  size: 14,
+                  color: DnaColors.textError,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Disconnected - messages will queue',
+                  style: TextStyle(
                     color: DnaColors.textError,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
                   ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Disconnected - messages will queue',
-                    style: TextStyle(
-                      color: DnaColors.textError,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
+                ),
               ],
             ),
           ),
