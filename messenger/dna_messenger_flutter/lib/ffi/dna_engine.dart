@@ -918,8 +918,8 @@ class MessageSentEvent extends DnaEvent {
 }
 
 class MessageDeliveredEvent extends DnaEvent {
-  final int messageId;
-  MessageDeliveredEvent(this.messageId);
+  final String contactFingerprint;
+  MessageDeliveredEvent(this.contactFingerprint);
 }
 
 class MessageReadEvent extends DnaEvent {
@@ -1136,6 +1136,19 @@ class DnaEngine {
         // message_status.message_id is at offset 0 in union (4 bytes)
         final messageId = event.data[0] | (event.data[1] << 8) | (event.data[2] << 16) | (event.data[3] << 24);
         dartEvent = MessageSentEvent(messageId);
+        break;
+      case DnaEventType.DNA_EVENT_MESSAGE_DELIVERED:
+        // Message delivered - parse recipient fingerprint from message_delivered.recipient
+        // baseOffset=4 for padding between type (int) and union in C struct (64-bit alignment)
+        const deliveredBaseOffset = 4;
+        final deliveredFpBytes = <int>[];
+        for (var i = deliveredBaseOffset; i < deliveredBaseOffset + 128; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          deliveredFpBytes.add(byte);
+        }
+        final deliveredContactFp = String.fromCharCodes(deliveredFpBytes);
+        dartEvent = MessageDeliveredEvent(deliveredContactFp);
         break;
       case DnaEventType.DNA_EVENT_CONTACT_ONLINE:
         // Parse fingerprint from contact_status.fingerprint

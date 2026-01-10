@@ -519,9 +519,9 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
 
         free(serialized);
 
-        // Rate limit: 50ms delay between chunks to avoid overwhelming DHT nodes
+        // Rate limit: 100ms delay between chunks to avoid overwhelming DHT nodes
         if (i < total_chunks - 1) {
-            qgp_platform_sleep_ms(50);
+            qgp_platform_sleep_ms(100);
         }
     }
 
@@ -847,9 +847,9 @@ int dht_chunked_delete(dht_context_t *ctx, const char *base_key,
                       serialized, serialized_len,
                       value_id, 60);  // 1 minute TTL for quick expiry
 
-        // Rate limit: 50ms delay between chunks to avoid overwhelming DHT nodes
+        // Rate limit: 100ms delay between chunks to avoid overwhelming DHT nodes
         if (i < total_chunks - 1) {
-            qgp_platform_sleep_ms(50);
+            qgp_platform_sleep_ms(100);
         }
     }
 

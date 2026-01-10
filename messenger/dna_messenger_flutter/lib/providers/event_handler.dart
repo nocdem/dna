@@ -154,9 +154,10 @@ class EventHandler {
         _scheduleConversationRefresh();
         break;
 
-      case MessageDeliveredEvent(messageId: final id):
-        // Update message status to delivered
-        _updateMessageStatus(id, MessageStatus.delivered);
+      case MessageDeliveredEvent(contactFingerprint: final contactFp):
+        // Messages delivered to contact - reload conversation from DB (status already updated)
+        _ref.invalidate(conversationProvider(contactFp));
+        break;
 
       case MessageReadEvent(messageId: final id):
         _updateMessageStatus(id, MessageStatus.read);
