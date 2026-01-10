@@ -957,7 +957,33 @@ void dht_groups_free_metadata(dht_group_metadata_t *metadata) {
 
 // Free array of cache entries
 void dht_groups_free_cache_entries(dht_group_cache_entry_t *entries, int count) {
+    (void)count;
     if (entries) {
         free(entries);
     }
+}
+
+// Get member count for a group from local cache
+int dht_groups_get_member_count(const char *group_uuid, int *count_out) {
+    if (!g_db || !group_uuid || !count_out) {
+        return -1;
+    }
+
+    *count_out = 0;
+
+    const char *sql = "SELECT COUNT(*) FROM dht_group_members WHERE group_uuid = ?";
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_STATIC);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        *count_out = sqlite3_column_int(stmt, 0);
+    }
+
+    sqlite3_finalize(stmt);
+    return 0;
 }

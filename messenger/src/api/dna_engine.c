@@ -70,6 +70,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/client/dna_feed.h"
 #include "dht/client/dna_profile.h"
 #include "dht/shared/dht_chunked.h"
+#include "dht/shared/dht_groups.h"
 #include "p2p/p2p_transport.h"
 #include "p2p/transport/transport_core.h"  /* For parse_presence_json */
 #include "p2p/transport/turn_credentials.h"
@@ -2809,8 +2810,15 @@ void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task) {
             strncpy(groups[i].uuid, entries[i].group_uuid, 36);
             strncpy(groups[i].name, entries[i].name, sizeof(groups[i].name) - 1);
             strncpy(groups[i].creator, entries[i].creator, 128);
-            groups[i].member_count = 0; /* Cache doesn't store member count */
             groups[i].created_at = entries[i].created_at;
+
+            /* Get member count from dht_group_members table */
+            int member_count = 0;
+            if (dht_groups_get_member_count(entries[i].group_uuid, &member_count) == 0) {
+                groups[i].member_count = member_count;
+            } else {
+                groups[i].member_count = 0;
+            }
         }
         count = entry_count;
 
