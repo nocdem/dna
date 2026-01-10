@@ -889,9 +889,9 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
         QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
         return -1;
     }
+    // v0.3.0: Flat structure - keys/identity.dsa
     char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium.pqkey",
-             data_dir2, ctx->identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir2);
 
     FILE *fp = fopen(dilithium_path, "rb");
     if (!fp) {

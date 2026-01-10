@@ -55,11 +55,11 @@ The following critical issues have been resolved:
 
 | Line | Issue | Description |
 |------|-------|-------------|
-| 491 | TODO | Key loading hard-coded to `~/.dna/<owner>-dilithium.pqkey` instead of using messenger context |
+| ~~491~~ | ~~TODO~~ | ~~Key loading hard-coded to `~/.dna/<owner>-dilithium.pqkey` instead of using messenger context~~ - **FIXED v0.4.16** |
 | 559 | TODO Phase 8 | P2P notifications to group members not implemented - members discover via polling |
 
 **Action Required:**
-- [ ] Integrate proper key loading from messenger context (line 491)
+- [x] ~~Integrate proper key loading from messenger context (line 491)~~ - **FIXED v0.4.16: Updated to use `keys/identity.dsa`**
 - [ ] Implement P2P notifications for GSK rotation (line 559) or document as Phase 8
 
 ### 1.2 Database

@@ -680,9 +680,10 @@ static int gek_rotate_and_publish(dht_context_t *dht_ctx, const char *group_uuid
     QGP_LOG_INFO(LOG_TAG, "Found Kyber pubkeys for %zu/%u members\n", valid_members, meta->member_count);
 
     // Step 5: Load owner's Dilithium5 private key for signing
+    // v0.3.0: Flat structure - keys/identity.dsa
     const char *gek_data_dir = qgp_platform_app_data_dir();
     char privkey_path[512];
-    snprintf(privkey_path, sizeof(privkey_path), "%s/%s-dilithium.pqkey", gek_data_dir ? gek_data_dir : ".", owner_identity);
+    snprintf(privkey_path, sizeof(privkey_path), "%s/keys/identity.dsa", gek_data_dir ? gek_data_dir : ".");
 
     FILE *fp = fopen(privkey_path, "rb");
     if (!fp) {
