@@ -849,6 +849,15 @@ static void p2p_message_received_internal(
                         if (store_result == 0) {
                             QGP_LOG_INFO("P2P", "Group invitation stored: %s (from %s)\n",
                                    invitation.group_name, invitation.inviter);
+
+                            // Emit event to notify Flutter UI
+                            dna_engine_t *engine = dna_engine_get_global();
+                            if (engine) {
+                                dna_event_t event = {0};
+                                event.type = DNA_EVENT_GROUP_INVITATION_RECEIVED;
+                                dna_dispatch_event(engine, &event);
+                                QGP_LOG_DEBUG("P2P", "Dispatched GROUP_INVITATION_RECEIVED event");
+                            }
                         } else if (store_result == -2) {
                             QGP_LOG_DEBUG("P2P", "Group invitation already exists: %s\n", invitation.group_name);
                         } else {

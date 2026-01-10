@@ -1840,6 +1840,26 @@ class _MessageBubble extends StatelessWidget {
     return null;
   }
 
+  /// Check if message is a group invitation by parsing JSON content
+  Map<String, dynamic>? _parseInvitationData() {
+    // Check message type first
+    if (message.type == MessageType.groupInvitation) {
+      try {
+        final data = jsonDecode(message.plaintext) as Map<String, dynamic>;
+        // Accept both formats: with and without underscores
+        final type = data['type'] as String?;
+        if (type == 'group_invite' || type == 'groupinvite') {
+          return data;
+        }
+      } catch (_) {
+        // Not valid JSON - still try to show as invitation
+      }
+      // Return minimal data if JSON parsing failed but type is invitation
+      return {'type': 'group_invite'};
+    }
+    return null;
+  }
+
   /// Check if message is forwarded and extract sender name + original text
   /// Format: "⤷ Fwd: [name]\n[original message]"
   ({String sender, String text})? _parseForwardedData() {
@@ -1883,6 +1903,12 @@ class _MessageBubble extends StatelessWidget {
     final imageData = _parseImageData();
     if (imageData != null) {
       return ImageMessageBubble(message: message, imageData: imageData);
+    }
+
+    // Handle group invitations with special bubble
+    final invitationData = _parseInvitationData();
+    if (invitationData != null) {
+      return _InvitationBubble(message: message, invitationData: invitationData);
     }
 
     // Handle transfer messages with special bubble (detected by JSON tag)
@@ -2517,6 +2543,208 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Special bubble for group invitation messages
+class _InvitationBubble extends ConsumerStatefulWidget {
+  final Message message;
+  final Map<String, dynamic> invitationData;
+
+  const _InvitationBubble({required this.message, required this.invitationData});
+
+  @override
+  ConsumerState<_InvitationBubble> createState() => _InvitationBubbleState();
+}
+
+class _InvitationBubbleState extends ConsumerState<_InvitationBubble> {
+  bool _isProcessing = false;
+
+  String _shortenFingerprint(String fingerprint) {
+    if (fingerprint.length <= 16) return fingerprint;
+    return '${fingerprint.substring(0, 8)}...${fingerprint.substring(fingerprint.length - 8)}';
+  }
+
+  Future<void> _acceptInvitation(String groupUuid, String groupName) async {
+    setState(() => _isProcessing = true);
+    try {
+      await ref.read(invitationsProvider.notifier).acceptInvitation(groupUuid);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Joined "$groupName"')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to accept: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
+  Future<void> _declineInvitation(String groupUuid) async {
+    setState(() => _isProcessing = true);
+    try {
+      await ref.read(invitationsProvider.notifier).rejectInvitation(groupUuid);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Invitation declined')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to decline: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isOutgoing = widget.message.isOutgoing;
+    final data = widget.invitationData;
+
+    // Extract invitation data - try both formats (with/without underscores)
+    final groupUuid = (data['group_uuid'] ?? data['groupuuid'] ?? '') as String;
+    final groupName = (data['group_name'] ?? data['groupname'] ?? 'Unknown Group') as String;
+    final inviter = (data['inviter'] ?? widget.message.sender) as String;
+    final memberCount = (data['member_count'] ?? data['membercount'] ?? 0) as int;
+
+    return Align(
+      alignment: isOutgoing ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: EdgeInsets.only(
+          top: 4,
+          bottom: 4,
+          left: isOutgoing ? 48 : 0,
+          right: isOutgoing ? 0 : 48,
+        ),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              theme.colorScheme.secondary.withAlpha(30),
+              theme.colorScheme.primary.withAlpha(20),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(16),
+            topRight: const Radius.circular(16),
+            bottomLeft: Radius.circular(isOutgoing ? 16 : 4),
+            bottomRight: Radius.circular(isOutgoing ? 4 : 16),
+          ),
+          border: Border.all(color: theme.colorScheme.secondary.withAlpha(60)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Header with icon
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircleAvatar(
+                  radius: 16,
+                  backgroundColor: theme.colorScheme.secondary.withAlpha(40),
+                  child: FaIcon(
+                    FontAwesomeIcons.userGroup,
+                    size: 14,
+                    color: theme.colorScheme.secondary,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Group Invitation',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.secondary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (!isOutgoing)
+                      Text(
+                        'From ${_shortenFingerprint(inviter)}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontSize: 10,
+                          color: DnaColors.textMuted,
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+
+            // Group name
+            Text(
+              groupName,
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            if (memberCount > 0)
+              Text(
+                '$memberCount member${memberCount == 1 ? '' : 's'}',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: DnaColors.textMuted,
+                ),
+              ),
+
+            // Accept/Decline buttons (only for incoming invitations)
+            if (!isOutgoing && groupUuid.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextButton(
+                    onPressed: _isProcessing ? null : () => _declineInvitation(groupUuid),
+                    child: const Text('Decline'),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: _isProcessing ? null : () => _acceptInvitation(groupUuid, groupName),
+                    child: _isProcessing
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('Accept'),
+                  ),
+                ],
+              ),
+            ],
+
+            // Timestamp
+            const SizedBox(height: 6),
+            Text(
+              DateFormat.jm().format(widget.message.timestamp),
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontSize: 10,
+                color: DnaColors.textMuted,
+              ),
+            ),
+          ],
         ),
       ),
     );
