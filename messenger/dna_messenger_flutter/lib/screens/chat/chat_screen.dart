@@ -95,8 +95,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void deactivate() {
     // Clear selected contact when leaving chat screen
     // This ensures isChatOpen=false for incoming message handling
-    // Note: Must use deactivate() not dispose() - ref is not safe in dispose()
-    ref.read(selectedContactProvider.notifier).state = null;
+    // Use addPostFrameCallback to defer state modification until after widget tree build
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) return; // Only clear if widget is actually being disposed
+      ref.read(selectedContactProvider.notifier).state = null;
+    });
     super.deactivate();
   }
 
