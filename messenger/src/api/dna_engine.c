@@ -2970,21 +2970,31 @@ done:
 void dna_handle_accept_invitation(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
 
+    QGP_LOG_INFO(LOG_TAG, "[ACCEPT] >>> dna_handle_accept_invitation called\n");
+    QGP_LOG_INFO(LOG_TAG, "[ACCEPT] group_uuid=%s\n",
+                 task->params.invitation.group_uuid ? task->params.invitation.group_uuid : "NULL");
+
     if (!engine->identity_loaded || !engine->messenger) {
+        QGP_LOG_ERROR(LOG_TAG, "[ACCEPT] No identity loaded or messenger not initialized\n");
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
         goto done;
     }
+
+    QGP_LOG_INFO(LOG_TAG, "[ACCEPT] Calling messenger_accept_group_invitation...\n");
 
     int rc = messenger_accept_group_invitation(
         engine->messenger,
         task->params.invitation.group_uuid
     );
 
+    QGP_LOG_INFO(LOG_TAG, "[ACCEPT] messenger_accept_group_invitation returned: %d\n", rc);
+
     if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
     }
 
 done:
+    QGP_LOG_INFO(LOG_TAG, "[ACCEPT] Completing with error=%d\n", error);
     task->callback.completion(task->request_id, error, task->user_data);
 }
 

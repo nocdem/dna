@@ -591,40 +591,53 @@ int messenger_send_group_invitation(messenger_context_t *ctx, const char *group_
  * Accept a group invitation
  */
 int messenger_accept_group_invitation(messenger_context_t *ctx, const char *group_uuid) {
+    QGP_LOG_INFO(LOG_TAG, "[ACCEPT] >>> messenger_accept_group_invitation called\n");
+    QGP_LOG_INFO(LOG_TAG, "[ACCEPT] group_uuid=%s\n", group_uuid ? group_uuid : "NULL");
+
     if (!ctx || !group_uuid) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to accept_group_invitation\n");
+        QGP_LOG_ERROR(LOG_TAG, "[ACCEPT] Invalid arguments to accept_group_invitation\n");
         return -1;
     }
 
     // Get invitation details
+    QGP_LOG_INFO(LOG_TAG, "[ACCEPT] Looking up invitation in database...\n");
     group_invitation_t *invitation = NULL;
     int ret = group_invitations_get(group_uuid, &invitation);
+    QGP_LOG_INFO(LOG_TAG, "[ACCEPT] group_invitations_get returned: %d, invitation=%p\n", ret, (void*)invitation);
+
     if (ret != 0 || !invitation) {
-        QGP_LOG_ERROR(LOG_TAG, "Invitation not found: %s\n", group_uuid);
+        QGP_LOG_ERROR(LOG_TAG, "[ACCEPT] Invitation not found: %s (ret=%d)\n", group_uuid, ret);
         return -1;
     }
+
+    QGP_LOG_INFO(LOG_TAG, "[ACCEPT] Found invitation: group_name='%s', inviter='%s'\n",
+                 invitation->group_name, invitation->inviter);
 
     // Sync group metadata from DHT
     dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "[ACCEPT] DHT not initialized\n");
         group_invitations_free(invitation, 1);
         return -1;
     }
 
+    QGP_LOG_INFO(LOG_TAG, "[ACCEPT] Calling dht_groups_sync_from_dht...\n");
     ret = dht_groups_sync_from_dht(dht_ctx, group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "[ACCEPT] dht_groups_sync_from_dht returned: %d\n", ret);
+
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to sync group from DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "[ACCEPT] Failed to sync group from DHT (ret=%d)\n", ret);
         group_invitations_free(invitation, 1);
         return -1;
     }
 
     // Update invitation status to accepted
+    QGP_LOG_INFO(LOG_TAG, "[ACCEPT] Updating invitation status to ACCEPTED...\n");
     group_invitations_update_status(group_uuid, INVITATION_STATUS_ACCEPTED);
 
     group_invitations_free(invitation, 1);
 
-    QGP_LOG_INFO(LOG_TAG, "Accepted group invitation: %s\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "[ACCEPT] Successfully accepted group invitation: %s\n", group_uuid);
     return 0;
 }
 
