@@ -234,7 +234,7 @@ static int deserialize_metadata(const char *json, dht_group_metadata_t **meta_ou
     if (!array_end) goto error;
 
     if (meta->member_count > 0) {
-        meta->members = malloc(sizeof(char*) * meta->member_count);
+        meta->members = calloc(meta->member_count, sizeof(char*));  // NULL-initialized
         if (!meta->members) goto error;
 
         uint32_t actual_count = 0;
