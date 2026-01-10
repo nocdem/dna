@@ -885,20 +885,20 @@ int dht_groups_sync_from_dht(
     }
 
     // DEBUG: Log parsed metadata before writing to database
-    QGP_LOG_INFO(LOG_TAG, "=== SYNC DEBUG: Parsed metadata ===\n");
-    QGP_LOG_INFO(LOG_TAG, "  group_uuid: %s\n", meta->group_uuid ? meta->group_uuid : "(null)");
-    QGP_LOG_INFO(LOG_TAG, "  name: %s\n", meta->name ? meta->name : "(null)");
-    QGP_LOG_INFO(LOG_TAG, "  creator: %.32s...\n", meta->creator ? meta->creator : "(null)");
-    QGP_LOG_INFO(LOG_TAG, "  member_count: %u\n", meta->member_count);
+    QGP_LOG_WARN(LOG_TAG, "=== SYNC DEBUG: Parsed metadata ===\n");
+    QGP_LOG_WARN(LOG_TAG, "  group_uuid: %s\n", meta->group_uuid ? meta->group_uuid : "(null)");
+    QGP_LOG_WARN(LOG_TAG, "  name: %s\n", meta->name ? meta->name : "(null)");
+    QGP_LOG_WARN(LOG_TAG, "  creator: %.32s...\n", meta->creator ? meta->creator : "(null)");
+    QGP_LOG_WARN(LOG_TAG, "  member_count: %u\n", meta->member_count);
     for (uint32_t i = 0; i < meta->member_count && i < 10; i++) {
         if (meta->members && meta->members[i]) {
             size_t len = strlen(meta->members[i]);
-            QGP_LOG_INFO(LOG_TAG, "  member[%u]: %.32s... (len=%zu)\n", i, meta->members[i], len);
+            QGP_LOG_WARN(LOG_TAG, "  member[%u]: %.32s... (len=%zu)\n", i, meta->members[i], len);
         } else {
             QGP_LOG_ERROR(LOG_TAG, "  member[%u]: NULL POINTER!\n", i);
         }
     }
-    QGP_LOG_INFO(LOG_TAG, "=== END SYNC DEBUG ===\n");
+    QGP_LOG_WARN(LOG_TAG, "=== END SYNC DEBUG ===\n");
 
     // Update local cache
     sqlite3_stmt *stmt = NULL;
