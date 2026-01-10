@@ -27,7 +27,10 @@ struct message_backup_context {
 };
 
 /**
- * Database Schema (v9) - Add GEK group tables (GEK system)
+ * Database Schema (v10)
+ *
+ * v9:  GEK group tables (groups, group_members, group_geks, pending_invitations, group_messages)
+ * v10: retry_count column for message retry system
  *
  * SECURITY: Messages stored as encrypted BLOB for data sovereignty.
  * If database is stolen, messages remain unreadable.
@@ -69,7 +72,7 @@ static const char *SCHEMA_SQL =
     "  value TEXT"
     ");"
     ""
-    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '9');";
+    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '10');";
 
 /**
  * Get database path

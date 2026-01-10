@@ -300,10 +300,12 @@ SEND ATTEMPT                     FAILURE                          RETRY TRIGGERS
 - **On success:** Status stays PENDING (0), awaiting watermark confirmation → DELIVERED (3)
 - **On failure:** `retry_count` incremented, status remains FAILED (2)
 
-**Database Schema (v9):**
+**Database Schema (v10):**
 ```sql
 ALTER TABLE messages ADD COLUMN retry_count INTEGER DEFAULT 0;
 ```
+
+Note: v9 added GEK group tables (groups, group_members, group_geks, pending_invitations, group_messages).
 
 **Source:** `message_backup.c:644-721`, `src/api/dna_engine.c:4862-4920`
 
@@ -938,7 +940,8 @@ CREATE TABLE IF NOT EXISTS messages (
   status INTEGER DEFAULT 1,         -- 0=PENDING, 1=SENT(legacy), 2=FAILED, 3=DELIVERED, 4=READ
   group_id INTEGER DEFAULT 0,       -- 0=direct message, >0=group ID
   message_type INTEGER DEFAULT 0,   -- 0=chat, 1=group_invitation
-  invitation_status INTEGER DEFAULT 0  -- 0=pending, 1=accepted, 2=declined
+  invitation_status INTEGER DEFAULT 0,  -- 0=pending, 1=accepted, 2=declined
+  retry_count INTEGER DEFAULT 0     -- (v10) Retry attempts for failed messages
 );
 ```
 
