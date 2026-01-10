@@ -100,6 +100,11 @@ static void on_display_name(dna_request_id_t request_id, int error,
     wait->done = true;
     pthread_cond_signal(&wait->cond);
     pthread_mutex_unlock(&wait->mutex);
+
+    /* Free the strdup'd string from dna_handle_lookup_name */
+    if (display_name) {
+        free((void*)display_name);
+    }
 }
 
 static void on_contacts_listed(dna_request_id_t request_id, int error,
