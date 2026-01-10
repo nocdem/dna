@@ -25,6 +25,11 @@ class _QrResultScreenState extends ConsumerState<QrResultScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          icon: const FaIcon(FontAwesomeIcons.arrowLeft),
+          onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+          tooltip: 'Back',
+        ),
         title: Text(_getTitle()),
       ),
       body: _buildBody(),
@@ -276,9 +281,9 @@ class _ContactResultState extends ConsumerState<_ContactResult> {
           ),
           const SizedBox(height: 12),
 
-          // Back button
+          // Back button - use root navigator
           OutlinedButton(
-            onPressed: () => Navigator.of(context).popUntil((route) => route.isFirst),
+            onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
             child: const Text('Scan Another'),
           ),
         ],
@@ -321,7 +326,8 @@ class _AuthResultState extends State<_AuthResult> {
     // Navigate only once and only if payload is valid
     if (!_navigated && _isValidAuthPayload()) {
       _navigated = true;
-      Navigator.of(context).pushReplacement(
+      // Use push (NOT pushReplacement) so there's a route to pop back to
+      Navigator.of(context, rootNavigator: true).push(
         MaterialPageRoute(
           builder: (context) => QrAuthScreen(payload: widget.payload),
         ),
@@ -381,7 +387,7 @@ class _AuthResultState extends State<_AuthResult> {
               ),
               const SizedBox(height: 24),
               OutlinedButton(
-                onPressed: () => Navigator.of(context).popUntil((route) => route.isFirst),
+                onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
                 child: const Text('Scan Another'),
               ),
             ],
@@ -494,8 +500,8 @@ class _PlainTextResult extends StatelessWidget {
               label: 'Add as Contact',
               isPrimary: true,
               onPressed: () {
-                // Navigate to contact result with parsed fingerprint
-                Navigator.of(context).pushReplacement(
+                // Navigate to contact result with parsed fingerprint (use root navigator)
+                Navigator.of(context, rootNavigator: true).pushReplacement(
                   MaterialPageRoute(
                     builder: (context) => QrResultScreen(
                       payload: QrPayload(
@@ -512,7 +518,7 @@ class _PlainTextResult extends StatelessWidget {
 
           const SizedBox(height: 24),
           OutlinedButton(
-            onPressed: () => Navigator.of(context).popUntil((route) => route.isFirst),
+            onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
             child: const Text('Scan Another'),
           ),
         ],

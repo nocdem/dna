@@ -204,8 +204,8 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
     // Haptic feedback on successful scan
     HapticFeedback.mediumImpact();
 
-    // Navigate to result screen
-    Navigator.of(context).push(
+    // Navigate to result screen on ROOT navigator (scanner is in IndexedStack, not a route)
+    Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute(
         builder: (context) => QrResultScreen(payload: payload),
       ),
