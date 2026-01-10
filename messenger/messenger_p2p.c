@@ -813,22 +813,27 @@ static void p2p_message_received_internal(
             plaintext[plaintext_len] = '\0';
         }
 
-        // Check if it's JSON with "type": "group_invite"
+        // Check if it's JSON with "type": "group_invite" or "groupinvite"
         json_object *j_msg = json_tokener_parse((const char*)plaintext);
         if (j_msg) {
             json_object *j_type = NULL;
             if (json_object_object_get_ex(j_msg, "type", &j_type)) {
                 const char *type_str = json_object_get_string(j_type);
-                if (type_str && strcmp(type_str, "group_invite") == 0) {
+                // Accept both formats: "group_invite" (correct) and "groupinvite" (legacy)
+                if (type_str && (strcmp(type_str, "group_invite") == 0 ||
+                                 strcmp(type_str, "groupinvite") == 0)) {
                     // It's a group invitation!
                     message_type = MESSAGE_TYPE_GROUP_INVITATION;
 
-                    // Extract invitation details
+                    // Extract invitation details - try both field name formats
                     json_object *j_uuid = NULL, *j_name = NULL, *j_inviter = NULL, *j_count = NULL;
-                    json_object_object_get_ex(j_msg, "group_uuid", &j_uuid);
-                    json_object_object_get_ex(j_msg, "group_name", &j_name);
+                    if (!json_object_object_get_ex(j_msg, "group_uuid", &j_uuid))
+                        json_object_object_get_ex(j_msg, "groupuuid", &j_uuid);
+                    if (!json_object_object_get_ex(j_msg, "group_name", &j_name))
+                        json_object_object_get_ex(j_msg, "groupname", &j_name);
                     json_object_object_get_ex(j_msg, "inviter", &j_inviter);
-                    json_object_object_get_ex(j_msg, "member_count", &j_count);
+                    if (!json_object_object_get_ex(j_msg, "member_count", &j_count))
+                        json_object_object_get_ex(j_msg, "membercount", &j_count);
 
                     if (j_uuid && j_name && j_inviter) {
                         // Store in group_invitations database
