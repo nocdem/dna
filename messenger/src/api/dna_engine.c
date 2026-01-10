@@ -2673,12 +2673,14 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task) {
         event.data.message_status.new_status = 2;  /* FAILED */
         dna_dispatch_event(engine, &event);
     } else {
-        /* Emit MESSAGE_SENT event so UI can update spinner */
-        QGP_LOG_INFO(LOG_TAG, "[SEND] Message sent successfully to DHT");
+        /* Emit MESSAGE_SENT event so UI can update (triggers refresh)
+         * Status is PENDING (0) - will become DELIVERED via watermark.
+         * With async DHT PUT, rc=0 means "queued", not "stored". */
+        QGP_LOG_INFO(LOG_TAG, "[SEND] Message queued to DHT (status=PENDING, async)");
         dna_event_t event = {0};
         event.type = DNA_EVENT_MESSAGE_SENT;
         event.data.message_status.message_id = 0;  /* ID not available here */
-        event.data.message_status.new_status = 1;  /* SENT */
+        event.data.message_status.new_status = 0;  /* PENDING - async, not confirmed yet */
         dna_dispatch_event(engine, &event);
     }
 
@@ -4855,9 +4857,10 @@ static int retry_single_message(dna_engine_t *engine, backup_message_t *msg) {
     );
 
     if (rc == 0) {
-        /* Success - update status to SENT */
-        message_backup_update_status(backup_ctx, msg->id, MESSAGE_STATUS_SENT);
-        QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d to %.20s... sent successfully (seq=%llu)",
+        /* Success - queued to DHT (async)
+         * Status stays PENDING - will become DELIVERED via watermark confirmation.
+         * With async PUT, rc=0 just means "queued", not "stored in DHT". */
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d to %.20s... queued (seq=%llu, status=PENDING)",
                      msg->id, msg->recipient, (unsigned long long)seq_num);
         return 0;
     } else {

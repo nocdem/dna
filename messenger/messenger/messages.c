@@ -472,17 +472,18 @@ int messenger_send_message(
     // Phase 14: DHT-only messaging - queue directly to DHT (Spillway)
     // P2P transport is NOT required - messenger_queue_to_dht uses DHT singleton
     // This is more reliable on mobile platforms with background execution restrictions
+    //
+    // NOTE: With async DHT PUT, we DON'T update status to SENT here.
+    // Status stays PENDING until watermark confirmation from recipient → DELIVERED.
+    // This ensures UI shows accurate status (clock icon until recipient confirms).
     size_t dht_success = 0;
     for (size_t i = 0; i < recipient_count; i++) {
         // Queue directly to DHT - no P2P attempt for messaging
         if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len) == 0) {
             dht_success++;
-            // Update status to SENT (1) - queued in DHT
-            if (message_ids[i] > 0) {
-                message_backup_update_status(ctx->backup_ctx, message_ids[i], 1);
-            }
+            // Status stays PENDING (0) - will become DELIVERED (3) via watermark
         } else {
-            // Update status to FAILED (2) - DHT queue failed
+            // Update status to FAILED (2) - DHT queue failed (key unavailable, etc.)
             if (message_ids[i] > 0) {
                 message_backup_update_status(ctx->backup_ctx, message_ids[i], 2);
             }
