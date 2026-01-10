@@ -38,6 +38,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _isSearching = false;
   String _searchQuery = '';
   final _searchController = TextEditingController();
+  final _searchFocusNode = FocusNode();
 
   @override
   void initState() {
@@ -110,6 +111,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _scrollController.dispose();
     _focusNode.dispose();
     _searchController.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
@@ -271,6 +273,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         title: _isSearching
             ? TextField(
                 controller: _searchController,
+                focusNode: _searchFocusNode,
                 autofocus: true,
                 decoration: InputDecoration(
                   hintText: 'Search messages...',
@@ -334,6 +337,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   onPressed: () {
                     setState(() {
                       _isSearching = true;
+                    });
+                    // Request focus after the TextField is built
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      _searchFocusNode.requestFocus();
                     });
                   },
                 ),
