@@ -100,6 +100,11 @@ static void on_display_name(dna_request_id_t request_id, int error,
     wait->done = true;
     pthread_cond_signal(&wait->cond);
     pthread_mutex_unlock(&wait->mutex);
+
+    /* Free the strdup'd string from dna_handle_lookup_name */
+    if (display_name) {
+        free((void*)display_name);
+    }
 }
 
 static void on_contacts_listed(dna_request_id_t request_id, int error,
@@ -1870,6 +1875,298 @@ int cmd_check_version(dna_engine_t *engine) {
         printf("  Publisher: %.16s...\n", result.info.publisher);
     }
 
+    return 0;
+}
+
+/* ============================================================================
+ * GROUP COMMANDS (GEK System)
+ * ============================================================================ */
+
+/* Callback storage for group operations */
+typedef struct {
+    cli_wait_t wait;
+    dna_group_t *groups;
+    int group_count;
+    char group_uuid[37];
+} cli_group_wait_t;
+
+static void on_groups_list(dna_request_id_t request_id, int error,
+                           dna_group_t *groups, int count, void *user_data) {
+    (void)request_id;
+    cli_group_wait_t *ctx = (cli_group_wait_t *)user_data;
+
+    pthread_mutex_lock(&ctx->wait.mutex);
+    ctx->wait.result = error;
+    if (error == 0 && groups && count > 0) {
+        ctx->groups = malloc(sizeof(dna_group_t) * count);
+        if (ctx->groups) {
+            memcpy(ctx->groups, groups, sizeof(dna_group_t) * count);
+            ctx->group_count = count;
+        }
+    }
+    ctx->wait.done = true;
+    pthread_cond_signal(&ctx->wait.cond);
+    pthread_mutex_unlock(&ctx->wait.mutex);
+}
+
+static void on_group_created(dna_request_id_t request_id, int error,
+                             const char *group_uuid, void *user_data) {
+    (void)request_id;
+    cli_group_wait_t *ctx = (cli_group_wait_t *)user_data;
+
+    pthread_mutex_lock(&ctx->wait.mutex);
+    ctx->wait.result = error;
+    if (error == 0 && group_uuid) {
+        strncpy(ctx->group_uuid, group_uuid, sizeof(ctx->group_uuid) - 1);
+        ctx->group_uuid[sizeof(ctx->group_uuid) - 1] = '\0';
+    }
+    ctx->wait.done = true;
+    pthread_cond_signal(&ctx->wait.cond);
+    pthread_mutex_unlock(&ctx->wait.mutex);
+}
+
+static void on_group_message_sent(dna_request_id_t request_id, int error, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+}
+
+int cmd_group_list(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    cli_group_wait_t ctx = {0};
+    cli_wait_init(&ctx.wait);
+    ctx.groups = NULL;
+    ctx.group_count = 0;
+
+    dna_request_id_t req_id = dna_engine_get_groups(engine, on_groups_list, &ctx);
+    if (req_id == 0) {
+        printf("Error: Failed to request groups list\n");
+        cli_wait_destroy(&ctx.wait);
+        return -1;
+    }
+
+    int result = cli_wait_for(&ctx.wait);
+    cli_wait_destroy(&ctx.wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get groups: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    if (ctx.group_count == 0) {
+        printf("No groups found.\n");
+        printf("Use 'group-create <name>' to create a new group.\n");
+        return 0;
+    }
+
+    printf("Groups (%d):\n", ctx.group_count);
+    for (int i = 0; i < ctx.group_count; i++) {
+        dna_group_t *g = &ctx.groups[i];
+        printf("  %d. %s\n", i + 1, g->name);
+        printf("     UUID: %s\n", g->uuid);
+        printf("     Members: %d\n", g->member_count);
+        printf("     Creator: %.16s...\n", g->creator);
+    }
+
+    if (ctx.groups) {
+        free(ctx.groups);
+    }
+
+    return 0;
+}
+
+int cmd_group_create(dna_engine_t *engine, const char *name) {
+    if (!engine || !name) {
+        printf("Error: Engine not initialized or name missing\n");
+        return -1;
+    }
+
+    printf("Creating group '%s'...\n", name);
+
+    cli_group_wait_t ctx = {0};
+    cli_wait_init(&ctx.wait);
+    ctx.group_uuid[0] = '\0';
+
+    /* Create group with no initial members (owner only) */
+    dna_request_id_t req_id = dna_engine_create_group(engine, name, NULL, 0, on_group_created, &ctx);
+    if (req_id == 0) {
+        printf("Error: Failed to initiate group creation\n");
+        cli_wait_destroy(&ctx.wait);
+        return -1;
+    }
+
+    int result = cli_wait_for(&ctx.wait);
+    cli_wait_destroy(&ctx.wait);
+
+    if (result != 0) {
+        printf("Error: Failed to create group: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("✓ Group created successfully!\n");
+    printf("  UUID: %s\n", ctx.group_uuid);
+    printf("\nUse 'group-invite %s <fingerprint>' to add members.\n", ctx.group_uuid);
+
+    return 0;
+}
+
+int cmd_group_send(dna_engine_t *engine, const char *group_uuid, const char *message) {
+    if (!engine || !group_uuid || !message) {
+        printf("Error: Missing arguments\n");
+        return -1;
+    }
+
+    printf("Sending message to group %s...\n", group_uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_request_id_t req_id = dna_engine_send_group_message(engine, group_uuid, message, on_group_message_sent, &wait);
+    if (req_id == 0) {
+        printf("Error: Failed to initiate group message send\n");
+        cli_wait_destroy(&wait);
+        return -1;
+    }
+
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to send group message: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("✓ Message sent to group!\n");
+    return 0;
+}
+
+int cmd_group_info(dna_engine_t *engine, const char *group_uuid) {
+    if (!engine || !group_uuid) {
+        printf("Error: Missing group UUID\n");
+        return -1;
+    }
+
+    /* Get groups list and find the matching one */
+    cli_group_wait_t ctx = {0};
+    cli_wait_init(&ctx.wait);
+    ctx.groups = NULL;
+    ctx.group_count = 0;
+
+    dna_request_id_t req_id = dna_engine_get_groups(engine, on_groups_list, &ctx);
+    if (req_id == 0) {
+        printf("Error: Failed to request groups\n");
+        cli_wait_destroy(&ctx.wait);
+        return -1;
+    }
+
+    int result = cli_wait_for(&ctx.wait);
+    cli_wait_destroy(&ctx.wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get groups: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    /* Find the group */
+    dna_group_t *found = NULL;
+    for (int i = 0; i < ctx.group_count; i++) {
+        if (strcmp(ctx.groups[i].uuid, group_uuid) == 0) {
+            found = &ctx.groups[i];
+            break;
+        }
+    }
+
+    if (!found) {
+        printf("Error: Group not found: %s\n", group_uuid);
+        if (ctx.groups) free(ctx.groups);
+        return -1;
+    }
+
+    printf("========================================\n");
+    printf("Group: %s\n", found->name);
+    printf("UUID: %s\n", found->uuid);
+    printf("Members: %d\n", found->member_count);
+    printf("Creator: %s\n", found->creator);
+    if (found->created_at > 0) {
+        time_t ts = (time_t)found->created_at;
+        char time_str[32];
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+        printf("Created: %s\n", time_str);
+    }
+    printf("========================================\n");
+
+    if (ctx.groups) free(ctx.groups);
+    return 0;
+}
+
+int cmd_group_invite(dna_engine_t *engine, const char *group_uuid, const char *fingerprint) {
+    if (!engine || !group_uuid || !fingerprint) {
+        printf("Error: Missing arguments\n");
+        return -1;
+    }
+
+    printf("Inviting %s to group %s...\n", fingerprint, group_uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_request_id_t req_id = dna_engine_add_group_member(
+        engine, group_uuid, fingerprint, on_completion, &wait);
+    if (req_id == 0) {
+        printf("Error: Failed to initiate group invite\n");
+        cli_wait_destroy(&wait);
+        return -1;
+    }
+
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to invite member: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("✓ Member invited successfully!\n");
+    return 0;
+}
+
+int cmd_group_sync(dna_engine_t *engine, const char *group_uuid) {
+    if (!engine || !group_uuid) {
+        printf("Error: Missing group UUID\n");
+        return -1;
+    }
+
+    printf("Syncing group %s from DHT...\n", group_uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_request_id_t req_id = dna_engine_sync_group_by_uuid(
+        engine, group_uuid, on_completion, &wait);
+    if (req_id == 0) {
+        printf("Error: Failed to initiate group sync\n");
+        cli_wait_destroy(&wait);
+        return -1;
+    }
+
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to sync group: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Group synced successfully from DHT!\n");
     return 0;
 }
 

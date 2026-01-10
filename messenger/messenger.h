@@ -518,6 +518,7 @@ typedef struct {
  * @param members: Array of member identities (excluding creator, who is added automatically)
  * @param member_count: Number of members
  * @param group_id_out: Output group ID
+ * @param uuid_out: Output UUID buffer (must be at least 37 bytes), can be NULL
  * @return: 0 on success, -1 on error
  */
 int messenger_create_group(
@@ -526,7 +527,8 @@ int messenger_create_group(
     const char *description,
     const char **members,
     size_t member_count,
-    int *group_id_out
+    int *group_id_out,
+    char *uuid_out
 );
 
 /**

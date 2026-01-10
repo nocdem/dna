@@ -80,6 +80,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "database/profile_manager.h"
 #include "database/contacts_db.h"
 #include "database/addressbook_db.h"
+#include "database/group_invitations.h"
 #include "dht/client/dht_addressbook.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
@@ -109,7 +110,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "blockchain/cellframe/cellframe_addr.h"
 #include "crypto/utils/seed_storage.h"
 #include "crypto/bip39/bip39.h"
-#include "messenger/gsk.h"
+#include "messenger/gek.h"
 #include <dirent.h>
 #include <sys/stat.h>
 #include <errno.h>
@@ -723,8 +724,9 @@ void dna_free_event(dna_event_t *event) {
  * TASK EXECUTION DISPATCH
  * ============================================================================ */
 
-/* Forward declaration for handler defined later */
+/* Forward declarations for handlers defined later */
 void dna_handle_refresh_contact_profile(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_add_group_member(dna_engine_t *engine, dna_task_t *task);
 
 void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
     switch (task->type) {
@@ -815,6 +817,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_SEND_GROUP_MESSAGE:
             dna_handle_send_group_message(engine, task);
             break;
+        case TASK_ADD_GROUP_MEMBER:
+            dna_handle_add_group_member(engine, task);
+            break;
         case TASK_GET_INVITATIONS:
             dna_handle_get_invitations(engine, task);
             break;
@@ -854,6 +859,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_SYNC_GROUPS:
             dna_handle_sync_groups(engine, task);
+            break;
+        case TASK_SYNC_GROUP_BY_UUID:
+            dna_handle_sync_group_by_uuid(engine, task);
             break;
         case TASK_GET_REGISTERED_NAME:
             dna_handle_get_registered_name(engine, task);
@@ -1057,8 +1065,8 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* Stop presence heartbeat thread */
     dna_stop_presence_heartbeat(engine);
 
-    /* Clear GSK KEM keys (H3 security fix) */
-    gsk_clear_kem_keys();
+    /* Clear GEK KEM keys (H3 security fix) */
+    gek_clear_kem_keys();
 
     /* Free messenger context */
     if (engine->messenger) {
@@ -1255,7 +1263,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     /* Load DHT identity */
     messenger_load_dht_identity(fingerprint);
 
-    /* Load KEM keys for GSK encryption (H3 security fix) */
+    /* Load KEM keys for GEK encryption (H3 security fix) */
     {
         char kem_path[512];
         snprintf(kem_path, sizeof(kem_path), "%s/keys/identity.kem", engine->data_dir);
@@ -1269,14 +1277,14 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         }
 
         if (load_rc == 0 && kem_key && kem_key->public_key && kem_key->private_key) {
-            if (gsk_set_kem_keys(kem_key->public_key, kem_key->private_key) == 0) {
-                QGP_LOG_INFO(LOG_TAG, "GSK KEM keys set successfully");
+            if (gek_set_kem_keys(kem_key->public_key, kem_key->private_key) == 0) {
+                QGP_LOG_INFO(LOG_TAG, "GEK KEM keys set successfully");
             } else {
-                QGP_LOG_WARN(LOG_TAG, "Warning: Failed to set GSK KEM keys");
+                QGP_LOG_WARN(LOG_TAG, "Warning: Failed to set GEK KEM keys");
             }
             qgp_key_free(kem_key);
         } else {
-            QGP_LOG_WARN(LOG_TAG, "Warning: Failed to load KEM keys for GSK encryption");
+            QGP_LOG_WARN(LOG_TAG, "Warning: Failed to load KEM keys for GEK encryption");
             if (kem_key) qgp_key_free(kem_key);
         }
     }
@@ -1286,6 +1294,13 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     if (contacts_db_init(fingerprint) != 0) {
         QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize contacts database\n");
         /* Non-fatal - continue, contacts will be initialized on first access */
+    }
+
+    /* Initialize group invitations database BEFORE P2P message processing
+     * Required for storing incoming group invitations from P2P messages */
+    if (group_invitations_init(fingerprint) != 0) {
+        QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize group invitations database\n");
+        /* Non-fatal - continue, invitations will be initialized on first access */
     }
 
     /* Profile cache is now global - initialized in dna_engine_create() */
@@ -2845,6 +2860,10 @@ void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task) {
 
 done:
     task->callback.groups(task->request_id, error, groups, count, task->user_data);
+    /* Free groups after callback - caller copies what it needs */
+    if (groups) {
+        free(groups);
+    }
 }
 
 void dna_handle_create_group(dna_engine_t *engine, dna_task_t *task) {
@@ -2863,16 +2882,14 @@ void dna_handle_create_group(dna_engine_t *engine, dna_task_t *task) {
         NULL, /* description */
         (const char**)task->params.create_group.members,
         task->params.create_group.member_count,
-        &group_id
+        &group_id,
+        group_uuid  /* Get real UUID */
     );
 
     if (rc != 0) {
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
-
-    /* Get UUID from group ID - simplified, actual impl would query database */
-    snprintf(group_uuid, sizeof(group_uuid), "%08x-0000-0000-0000-000000000000", group_id);
 
 done:
     task->callback.group_created(task->request_id, error,
@@ -2892,6 +2909,51 @@ void dna_handle_send_group_message(dna_engine_t *engine, dna_task_t *task) {
         engine->messenger,
         task->params.send_group_message.group_uuid,
         task->params.send_group_message.message
+    );
+
+    if (rc != 0) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+    }
+
+done:
+    task->callback.completion(task->request_id, error, task->user_data);
+}
+
+void dna_handle_add_group_member(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    /* Look up group_id from UUID using local cache */
+    dht_group_cache_entry_t *entries = NULL;
+    int entry_count = 0;
+    if (dht_groups_list_for_user(engine->fingerprint, &entries, &entry_count) != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    int group_id = -1;
+    for (int i = 0; i < entry_count; i++) {
+        if (strcmp(entries[i].group_uuid, task->params.add_group_member.group_uuid) == 0) {
+            group_id = entries[i].local_id;
+            break;
+        }
+    }
+    dht_groups_free_cache_entries(entries, entry_count);
+
+    if (group_id < 0) {
+        error = DNA_ENGINE_ERROR_NOT_FOUND;
+        goto done;
+    }
+
+    /* Add member using messenger API */
+    int rc = messenger_add_group_member(
+        engine->messenger,
+        group_id,
+        task->params.add_group_member.fingerprint
     );
 
     if (rc != 0) {
@@ -5038,6 +5100,25 @@ dna_request_id_t dna_engine_send_group_message(
     return dna_submit_task(engine, TASK_SEND_GROUP_MESSAGE, &params, cb, user_data);
 }
 
+dna_request_id_t dna_engine_add_group_member(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !fingerprint || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    strncpy(params.add_group_member.group_uuid, group_uuid, 36);
+    strncpy(params.add_group_member.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_ADD_GROUP_MEMBER, &params, cb, user_data);
+}
+
 dna_request_id_t dna_engine_get_invitations(
     dna_engine_t *engine,
     dna_invitations_cb callback,
@@ -5329,6 +5410,29 @@ dna_request_id_t dna_engine_sync_groups(
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_SYNC_GROUPS, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_sync_group_by_uuid(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+    if (strlen(group_uuid) != 36) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params;
+    memset(&params, 0, sizeof(params));
+    snprintf(params.sync_group_by_uuid.group_uuid,
+             sizeof(params.sync_group_by_uuid.group_uuid),
+             "%s", group_uuid);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SYNC_GROUP_BY_UUID, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_get_registered_name(
@@ -6248,6 +6352,7 @@ int dna_engine_track_delivery(
     engine->delivery_trackers[idx].listener_token = token;
     engine->delivery_trackers[idx].last_known_watermark = 0;
     engine->delivery_trackers[idx].active = true;
+    engine->delivery_trackers[idx].ctx = ctx;
 
     QGP_LOG_INFO(LOG_TAG, "Started delivery tracker for %s... (token=%zu)",
                  recipient_fingerprint, token);
@@ -6275,6 +6380,12 @@ void dna_engine_untrack_delivery(
             /* Cancel the watermark listener */
             if (dht_ctx) {
                 dht_cancel_watermark_listener(dht_ctx, engine->delivery_trackers[i].listener_token);
+            }
+
+            /* Free callback context */
+            if (engine->delivery_trackers[i].ctx) {
+                free(engine->delivery_trackers[i].ctx);
+                engine->delivery_trackers[i].ctx = NULL;
             }
 
             QGP_LOG_INFO(LOG_TAG, "Cancelled delivery tracker for %s...",
@@ -6307,6 +6418,10 @@ void dna_engine_cancel_all_delivery_trackers(dna_engine_t *engine)
             dht_cancel_watermark_listener(dht_ctx, engine->delivery_trackers[i].listener_token);
             QGP_LOG_DEBUG(LOG_TAG, "Cancelled delivery tracker for %s...",
                           engine->delivery_trackers[i].recipient);
+        }
+        if (engine->delivery_trackers[i].ctx) {
+            free(engine->delivery_trackers[i].ctx);
+            engine->delivery_trackers[i].ctx = NULL;
         }
         engine->delivery_trackers[i].active = false;
     }
@@ -6420,6 +6535,36 @@ void dna_handle_sync_groups(dna_engine_t *engine, dna_task_t *task) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
         if (messenger_sync_groups(engine->messenger) != 0) {
+            error = DNA_ENGINE_ERROR_NETWORK;
+        }
+    }
+
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_sync_group_by_uuid(dna_engine_t *engine, dna_task_t *task) {
+    if (task->cancelled) return;
+
+    int error = DNA_OK;
+    const char *group_uuid = task->params.sync_group_by_uuid.group_uuid;
+
+    if (!engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+    } else if (!group_uuid || strlen(group_uuid) != 36) {
+        error = DNA_ENGINE_ERROR_INVALID_PARAM;
+    } else {
+        dht_context_t *dht_ctx = dht_singleton_get();
+        if (dht_ctx) {
+            int ret = dht_groups_sync_from_dht(dht_ctx, group_uuid);
+            if (ret != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to sync group %s from DHT: %d", group_uuid, ret);
+                error = DNA_ENGINE_ERROR_NETWORK;
+            } else {
+                QGP_LOG_INFO(LOG_TAG, "Successfully synced group %s from DHT", group_uuid);
+            }
+        } else {
             error = DNA_ENGINE_ERROR_NETWORK;
         }
     }

@@ -1483,7 +1483,7 @@ DNA_API dna_request_id_t dna_engine_get_groups(
 /**
  * Create new group
  *
- * Creates group with GSK (Group Symmetric Key) encryption.
+ * Creates group with GEK (Group Encryption Key) encryption.
  *
  * @param engine              Engine instance
  * @param name                Group name
@@ -1505,7 +1505,7 @@ DNA_API dna_request_id_t dna_engine_create_group(
 /**
  * Send message to group
  *
- * Encrypts with GSK (AES-256-GCM), signs with Dilithium5.
+ * Encrypts with GEK (AES-256-GCM), signs with Dilithium5.
  *
  * @param engine     Engine instance
  * @param group_uuid Group UUID
@@ -1518,6 +1518,27 @@ DNA_API dna_request_id_t dna_engine_send_group_message(
     dna_engine_t *engine,
     const char *group_uuid,
     const char *message,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Add member to group
+ *
+ * Adds member to group in DHT, rotates GEK, sends invitation.
+ * Only group owner can add members.
+ *
+ * @param engine      Engine instance
+ * @param group_uuid  Group UUID
+ * @param fingerprint Member fingerprint to add
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_add_group_member(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    const char *fingerprint,
     dna_completion_cb callback,
     void *user_data
 );
@@ -1809,6 +1830,25 @@ DNA_API dna_request_id_t dna_engine_sync_contacts_from_dht(
  */
 DNA_API dna_request_id_t dna_engine_sync_groups(
     dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Sync a specific group from DHT to local cache
+ *
+ * Uses the group UUID to fetch metadata from DHT and update local database.
+ * Useful for recovering groups after database reset.
+ *
+ * @param engine      Engine instance
+ * @param group_uuid  Group UUID (36 chars)
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_sync_group_by_uuid(
+    dna_engine_t *engine,
+    const char *group_uuid,
     dna_completion_cb callback,
     void *user_data
 );

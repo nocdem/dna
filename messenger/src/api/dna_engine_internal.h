@@ -76,6 +76,7 @@ typedef enum {
     TASK_GET_GROUPS,
     TASK_CREATE_GROUP,
     TASK_SEND_GROUP_MESSAGE,
+    TASK_ADD_GROUP_MEMBER,
     TASK_GET_INVITATIONS,
     TASK_ACCEPT_INVITATION,
     TASK_REJECT_INVITATION,
@@ -92,6 +93,7 @@ typedef enum {
     TASK_SYNC_CONTACTS_TO_DHT,
     TASK_SYNC_CONTACTS_FROM_DHT,
     TASK_SYNC_GROUPS,
+    TASK_SYNC_GROUP_BY_UUID,
     TASK_GET_REGISTERED_NAME,
 
     /* Feed */
@@ -213,6 +215,12 @@ typedef union {
         char *message;  /* Heap allocated, task owns */
     } send_group_message;
 
+    /* Add group member */
+    struct {
+        char group_uuid[37];
+        char fingerprint[129];
+    } add_group_member;
+
     /* Accept/reject invitation */
     struct {
         char group_uuid[37];
@@ -299,6 +307,11 @@ typedef union {
     struct {
         char fingerprint[129];
     } lookup_presence;
+
+    /* Sync group by UUID */
+    struct {
+        char group_uuid[37];
+    } sync_group_by_uuid;
 
 } dna_task_params_t;
 
@@ -432,6 +445,7 @@ typedef struct {
     uint64_t last_known_watermark;  /* Last watermark value received */
     size_t listener_token;          /* Token from dht_listen_watermark() */
     bool active;                    /* True if tracker is active */
+    void *ctx;                      /* Callback context (must be freed on cancel) */
 } dna_delivery_tracker_t;
 
 /**
@@ -638,6 +652,7 @@ void dna_handle_lookup_presence(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_contacts_to_dht(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_contacts_from_dht(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_groups(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_sync_group_by_uuid(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_subscribe_to_contacts(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_registered_name(dna_engine_t *engine, dna_task_t *task);
 

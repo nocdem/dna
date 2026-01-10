@@ -113,7 +113,7 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
       // Filter to only stale profiles (older than 1 hour)
       const maxAge = Duration(hours: 1);
-      final db = CacheDatabase();
+      final db = CacheDatabase.instance;
       final staleContacts = <String>[];
 
       for (final contact in contacts) {

@@ -241,6 +241,8 @@ static int deserialize_metadata(const char *json, dht_group_metadata_t **meta_ou
             if (!p) goto error;
             p++;
             sscanf(p, "%128[^\"]", meta->members[i]);  // Read full 128-char fingerprint
+            p = strchr(p, '"');  // Find closing quote
+            if (p) p++;          // Move past it
         }
     }
 
