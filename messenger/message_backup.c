@@ -27,10 +27,11 @@ struct message_backup_context {
 };
 
 /**
- * Database Schema (v10)
+ * Database Schema (v11)
  *
  * v9:  GEK group tables (groups, group_members, group_geks, pending_invitations, group_messages)
  * v10: retry_count column for message retry system
+ * v11: Fix status field for old messages where delivered=1 but status was 0/1
  *
  * SECURITY: Messages stored as encrypted BLOB for data sovereignty.
  * If database is stolen, messages remain unreadable.
@@ -72,7 +73,7 @@ static const char *SCHEMA_SQL =
     "  value TEXT"
     ");"
     ""
-    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '10');";
+    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '11');";
 
 /**
  * Get database path
@@ -340,6 +341,22 @@ message_backup_context_t* message_backup_init(const char *identity) {
         sqlite3_free(err_msg);
     } else {
         QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v10 (added retry_count column)\n");
+    }
+
+    // Migration: Fix old messages with delivered=1 but status=0 or status=1 (v11)
+    // These should be status=3 (DELIVERED) since delivered flag was already set.
+    // This fixes messages from before we prioritized the status field over boolean flags.
+    const char *migration_sql_v11 =
+        "UPDATE messages SET status = 3 WHERE delivered = 1 AND status IN (0, 1);";
+    rc = sqlite3_exec(ctx->db, migration_sql_v11, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Migration warning (v11): %s\n", err_msg);
+        sqlite3_free(err_msg);
+    } else {
+        int changes = sqlite3_changes(ctx->db);
+        if (changes > 0) {
+            QGP_LOG_INFO(LOG_TAG, "Migrated %d messages to DELIVERED status (v11 - fix status field)\n", changes);
+        }
     }
 
     QGP_LOG_INFO(LOG_TAG, "Initialized successfully for identity: %s (ENCRYPTED STORAGE)\n", identity);
