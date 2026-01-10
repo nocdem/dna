@@ -115,6 +115,7 @@ static void print_usage(const char *prog_name) {
     printf("  group-send <uuid> <msg>     Send message to group\n");
     printf("  group-info <uuid>           Show group info and members\n");
     printf("  group-invite <uuid> <fp>    Invite member to group\n");
+    printf("  group-sync <uuid>           Sync group from DHT to local cache\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s create alice\n", prog_name);
@@ -566,6 +567,14 @@ int main(int argc, char *argv[]) {
             result = 1;
         } else {
             result = cmd_group_invite(g_engine, argv[optind + 1], argv[optind + 2]);
+        }
+    }
+    else if (strcmp(command, "group-sync") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'group-sync' requires <uuid> argument\n");
+            result = 1;
+        } else {
+            result = cmd_group_sync(g_engine, argv[optind + 1]);
         }
     }
 

@@ -844,6 +844,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_SYNC_GROUPS:
             dna_handle_sync_groups(engine, task);
             break;
+        case TASK_SYNC_GROUP_BY_UUID:
+            dna_handle_sync_group_by_uuid(engine, task);
+            break;
         case TASK_GET_REGISTERED_NAME:
             dna_handle_get_registered_name(engine, task);
             break;
@@ -5190,6 +5193,29 @@ dna_request_id_t dna_engine_sync_groups(
     return dna_submit_task(engine, TASK_SYNC_GROUPS, NULL, cb, user_data);
 }
 
+dna_request_id_t dna_engine_sync_group_by_uuid(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+    if (strlen(group_uuid) != 36) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params;
+    memset(&params, 0, sizeof(params));
+    snprintf(params.sync_group_by_uuid.group_uuid,
+             sizeof(params.sync_group_by_uuid.group_uuid),
+             "%s", group_uuid);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SYNC_GROUP_BY_UUID, &params, cb, user_data);
+}
+
 dna_request_id_t dna_engine_get_registered_name(
     dna_engine_t *engine,
     dna_display_name_cb callback,
@@ -6290,6 +6316,36 @@ void dna_handle_sync_groups(dna_engine_t *engine, dna_task_t *task) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
         if (messenger_sync_groups(engine->messenger) != 0) {
+            error = DNA_ENGINE_ERROR_NETWORK;
+        }
+    }
+
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_sync_group_by_uuid(dna_engine_t *engine, dna_task_t *task) {
+    if (task->cancelled) return;
+
+    int error = DNA_OK;
+    const char *group_uuid = task->params.sync_group_by_uuid.group_uuid;
+
+    if (!engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+    } else if (!group_uuid || strlen(group_uuid) != 36) {
+        error = DNA_ENGINE_ERROR_INVALID_PARAM;
+    } else {
+        dht_context_t *dht_ctx = dht_singleton_get();
+        if (dht_ctx) {
+            int ret = dht_groups_sync_from_dht(dht_ctx, group_uuid);
+            if (ret != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to sync group %s from DHT: %d", group_uuid, ret);
+                error = DNA_ENGINE_ERROR_NETWORK;
+            } else {
+                QGP_LOG_INFO(LOG_TAG, "Successfully synced group %s from DHT", group_uuid);
+            }
+        } else {
             error = DNA_ENGINE_ERROR_NETWORK;
         }
     }

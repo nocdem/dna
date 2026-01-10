@@ -354,6 +354,14 @@ int cmd_group_info(dna_engine_t *engine, const char *group_uuid);
  */
 int cmd_group_invite(dna_engine_t *engine, const char *group_uuid, const char *fingerprint);
 
+/**
+ * Sync a specific group from DHT to local cache
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID to sync
+ * @return 0 on success, negative on error
+ */
+int cmd_group_sync(dna_engine_t *engine, const char *group_uuid);
+
 /* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */

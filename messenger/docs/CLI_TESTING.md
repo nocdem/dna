@@ -87,6 +87,7 @@ $CLI group-create "Team Name"         # Create a new group
 $CLI group-send <uuid> "message"      # Send message to group
 $CLI group-info <uuid>                # Show group info and members
 $CLI group-invite <uuid> <fp>         # Invite member to group
+$CLI group-sync <uuid>                # Sync group from DHT to local cache
 ```
 
 ---
@@ -798,6 +799,27 @@ GEK rotated to version 3.
 - Only group owner can invite members
 - GEK is automatically rotated when adding members
 - Invited user receives the new GEK via IKP (Initial Key Packet)
+
+---
+
+### `group-sync <uuid>` - Sync Group from DHT
+
+Syncs a specific group from DHT to local cache. Useful for recovering groups after database reset when you're still a member in the DHT metadata.
+
+```bash
+dna-messenger-cli group-sync c9291b06-6768-44f6-a08e-8f06f4ceebe9
+```
+
+**Sample Output:**
+```
+Syncing group c9291b06-6768-44f6-a08e-8f06f4ceebe9 from DHT...
+Group synced successfully from DHT!
+```
+
+**Notes:**
+- Fetches group metadata from DHT and stores in local cache
+- Only works if you're already a member in the DHT group metadata
+- Useful for database recovery scenarios
 
 ---
 

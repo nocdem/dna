@@ -1807,6 +1807,25 @@ DNA_API dna_request_id_t dna_engine_sync_groups(
 );
 
 /**
+ * Sync a specific group from DHT to local cache
+ *
+ * Uses the group UUID to fetch metadata from DHT and update local database.
+ * Useful for recovering groups after database reset.
+ *
+ * @param engine      Engine instance
+ * @param group_uuid  Group UUID (36 chars)
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_sync_group_by_uuid(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
  * Request TURN relay credentials from DNA Nodus
  *
  * Forces a TURN credential request even if not needed for current NAT type.

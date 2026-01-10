@@ -2139,6 +2139,37 @@ int cmd_group_invite(dna_engine_t *engine, const char *group_uuid, const char *f
     return 0;
 }
 
+int cmd_group_sync(dna_engine_t *engine, const char *group_uuid) {
+    if (!engine || !group_uuid) {
+        printf("Error: Missing group UUID\n");
+        return -1;
+    }
+
+    printf("Syncing group %s from DHT...\n", group_uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_request_id_t req_id = dna_engine_sync_group_by_uuid(
+        engine, group_uuid, on_completion, &wait);
+    if (req_id == 0) {
+        printf("Error: Failed to initiate group sync\n");
+        cli_wait_destroy(&wait);
+        return -1;
+    }
+
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to sync group: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Group synced successfully from DHT!\n");
+    return 0;
+}
+
 /* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */
