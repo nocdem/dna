@@ -126,8 +126,9 @@ message_backup_context_t* message_backup_init(const char *identity) {
 
     QGP_LOG_INFO(LOG_TAG, "Opening database: %s\n", ctx->db_path);
 
-    // Open SQLite database
-    int rc = sqlite3_open(ctx->db_path, &ctx->db);
+    // Open SQLite database with FULLMUTEX for thread safety (DHT callbacks + main thread)
+    int rc = sqlite3_open_v2(ctx->db_path, &ctx->db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", sqlite3_errmsg(ctx->db));
         sqlite3_close(ctx->db);
