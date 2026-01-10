@@ -181,6 +181,10 @@ extern "C" size_t dht_listen_ex(
             std::lock_guard<std::mutex> lock(listeners_mutex);
             if (active_listeners.size() >= DHT_MAX_LISTENERS) {
                 QGP_LOG_ERROR(LOG_TAG, "Maximum listeners reached (%d)", DHT_MAX_LISTENERS);
+                // Call cleanup to free user_data (consistent with other failure paths)
+                if (cleanup) {
+                    cleanup(user_data);
+                }
                 return 0;
             }
         }

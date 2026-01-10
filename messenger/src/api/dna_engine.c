@@ -5525,12 +5525,12 @@ size_t dna_engine_listen_outbox(
     ctx->contact_fingerprint[sizeof(ctx->contact_fingerprint) - 1] = '\0';
 
     /* Start DHT listen on chunk[0] key */
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Calling dht_listen_ex() with cleanup callback...");
+    QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Calling dht_listen_ex() with cleanup callback...");
     size_t token = dht_listen_ex(dht_ctx, chunk0_key, DHT_CHUNK_KEY_SIZE,
                                   outbox_listen_callback, ctx, outbox_listener_cleanup);
     if (token == 0) {
         QGP_LOG_ERROR(LOG_TAG, "[LISTEN] dht_listen_ex() returned 0 (failed)");
-        free(ctx);  /* Cleanup not called on failure, free manually */
+        /* ctx already freed by cleanup callback in dht_listen_ex */
         pthread_mutex_unlock(&engine->outbox_listeners_mutex);
         return 0;
     }

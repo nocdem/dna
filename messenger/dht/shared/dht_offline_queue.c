@@ -1274,10 +1274,11 @@ size_t dht_listen_watermark(
            recipient, sender);
 
     // Start DHT listen with cleanup callback for proper memory management
+    // NOTE: dht_listen_ex() calls cleanup on ALL failure paths, so don't free here
     size_t token = dht_listen_ex(ctx, key, 64, watermark_listen_callback, wctx, watermark_listener_cleanup);
     if (token == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT listen for watermark\n");
-        free(wctx);
+        // wctx already freed by cleanup callback in dht_listen_ex
         return 0;
     }
 
