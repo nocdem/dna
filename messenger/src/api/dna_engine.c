@@ -3014,22 +3014,28 @@ done:
 void dna_handle_accept_invitation(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
 
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: START group=%s <<<", task->params.invitation.group_uuid);
+
     if (!engine->identity_loaded || !engine->messenger) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
         goto done;
     }
 
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: Calling messenger <<<");
     int rc = messenger_accept_group_invitation(
         engine->messenger,
         task->params.invitation.group_uuid
     );
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: messenger returned %d <<<", rc);
 
     if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
     }
 
 done:
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: callback error=%d <<<", error);
     task->callback.completion(task->request_id, error, task->user_data);
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: DONE <<<");
 }
 
 void dna_handle_reject_invitation(dna_engine_t *engine, dna_task_t *task) {

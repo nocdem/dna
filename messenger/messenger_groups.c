@@ -591,20 +591,26 @@ int messenger_send_group_invitation(messenger_context_t *ctx, const char *group_
  * Accept a group invitation
  */
 int messenger_accept_group_invitation(messenger_context_t *ctx, const char *group_uuid) {
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: START uuid=%s <<<\n", group_uuid ? group_uuid : "(null)");
+
     if (!ctx || !group_uuid) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to accept_group_invitation\n");
         return -1;
     }
 
     // Get invitation details
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: Getting invitation from DB <<<\n");
     group_invitation_t *invitation = NULL;
     int ret = group_invitations_get(group_uuid, &invitation);
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: group_invitations_get returned %d, invitation=%p <<<\n", ret, (void*)invitation);
+
     if (ret != 0 || !invitation) {
         QGP_LOG_ERROR(LOG_TAG, "Invitation not found: %s\n", group_uuid);
         return -1;
     }
 
     // Sync group metadata from DHT
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: Getting DHT context <<<\n");
     dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
         QGP_LOG_ERROR(LOG_TAG, "DHT not initialized\n");
@@ -612,7 +618,10 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
         return -1;
     }
 
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: Calling dht_groups_sync_from_dht <<<\n");
     ret = dht_groups_sync_from_dht(dht_ctx, group_uuid);
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: dht_groups_sync_from_dht returned %d <<<\n", ret);
+
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to sync group from DHT\n");
         group_invitations_free(invitation, 1);
@@ -620,11 +629,14 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
     }
 
     // Update invitation status to accepted
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: Updating status <<<\n");
     group_invitations_update_status(group_uuid, INVITATION_STATUS_ACCEPTED);
 
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: Freeing invitation <<<\n");
     group_invitations_free(invitation, 1);
 
     QGP_LOG_INFO(LOG_TAG, "Accepted group invitation: %s\n", group_uuid);
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: DONE <<<\n");
     return 0;
 }
 
@@ -889,9 +901,9 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
         QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
         return -1;
     }
+    // v0.3.0: Flat structure - keys/identity.dsa
     char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium.pqkey",
-             data_dir2, ctx->identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir2);
 
     FILE *fp = fopen(dilithium_path, "rb");
     if (!fp) {
