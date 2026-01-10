@@ -1,12 +1,18 @@
 /// QR Scanner Screen - Camera-based QR code scanning
+/// Handles lifecycle properly: stops camera when not visible (tab switch, route push, app pause)
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import '../../main.dart' show routeObserver;
 import '../../theme/dna_theme.dart';
 import '../../utils/qr_payload_parser.dart';
+import '../home_screen.dart' show currentTabProvider;
 import 'qr_result_screen.dart';
+
+/// QR Scanner tab index in the home screen IndexedStack
+const _kQrScannerTabIndex = 3;
 
 class QrScannerScreen extends ConsumerStatefulWidget {
   final VoidCallback? onMenuPressed;
@@ -17,17 +23,43 @@ class QrScannerScreen extends ConsumerStatefulWidget {
   ConsumerState<QrScannerScreen> createState() => _QrScannerScreenState();
 }
 
-class _QrScannerScreenState extends ConsumerState<QrScannerScreen> {
+class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
+    with RouteAware, WidgetsBindingObserver {
   MobileScannerController? _controller;
-  bool _hasScanned = false;
   bool _torchOn = false;
   String? _errorMessage;
   DateTime? _lastScanAt;
 
+  // Visibility and scanning state
+  bool _isTabActive = false;
+  bool _isRouteCovered = false;
+  bool _isAppPaused = false;
+  bool _scannerArmed = true; // false after scan, requires manual re-arm
+  bool _controllerStarted = false;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initController();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Subscribe to route observer
+    final route = ModalRoute.of(context);
+    if (route != null) {
+      routeObserver.subscribe(this, route);
+    }
+  }
+
+  @override
+  void dispose() {
+    routeObserver.unsubscribe(this);
+    WidgetsBinding.instance.removeObserver(this);
+    _controller?.dispose();
+    super.dispose();
   }
 
   void _initController() {
@@ -36,16 +68,108 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen> {
       facing: CameraFacing.back,
       torchEnabled: false,
     );
+    _controllerStarted = false;
+  }
+
+  /// Compute whether scanner should be running
+  bool get _shouldScannerRun {
+    return _isTabActive && !_isRouteCovered && !_isAppPaused;
+  }
+
+  /// Update scanner state based on visibility
+  void _updateScannerState() {
+    if (_shouldScannerRun) {
+      _startScanner();
+    } else {
+      _stopScanner();
+    }
+  }
+
+  Future<void> _startScanner() async {
+    if (_controllerStarted) return;
+    if (_controller == null) return;
+
+    try {
+      await _controller!.start();
+      _controllerStarted = true;
+    } catch (e) {
+      // Camera start failed, ignore (errorBuilder will handle it)
+    }
+  }
+
+  Future<void> _stopScanner() async {
+    if (!_controllerStarted) return;
+    if (_controller == null) return;
+
+    try {
+      await _controller!.stop();
+      _controllerStarted = false;
+    } catch (e) {
+      // Ignore stop errors
+    }
+  }
+
+  // ==========================================================================
+  // RouteAware - detect when covered by another route
+  // ==========================================================================
+
+  @override
+  void didPushNext() {
+    // Another route was pushed on top - stop camera
+    _isRouteCovered = true;
+    _updateScannerState();
   }
 
   @override
-  void dispose() {
-    _controller?.dispose();
-    super.dispose();
+  void didPopNext() {
+    // Returned to this route - but don't auto-start, require re-arm
+    _isRouteCovered = false;
+    // Scanner stays disarmed until user taps to re-arm
+    _updateScannerState();
   }
 
+  // ==========================================================================
+  // WidgetsBindingObserver - app lifecycle
+  // ==========================================================================
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.detached:
+      case AppLifecycleState.hidden:
+        _isAppPaused = true;
+        _updateScannerState();
+        break;
+      case AppLifecycleState.resumed:
+        _isAppPaused = false;
+        _updateScannerState();
+        break;
+    }
+  }
+
+  // ==========================================================================
+  // Tab switching detection (for IndexedStack)
+  // ==========================================================================
+
+  void _onTabChanged(int? previous, int current) {
+    final wasActive = _isTabActive;
+    _isTabActive = (current == _kQrScannerTabIndex);
+
+    if (wasActive != _isTabActive) {
+      _updateScannerState();
+    }
+  }
+
+  // ==========================================================================
+  // Scanning logic
+  // ==========================================================================
+
   void _onDetect(BarcodeCapture capture) {
-    if (_hasScanned) return;
+    // Don't process if scanner is not armed or not running
+    if (!_scannerArmed) return;
+    if (!_shouldScannerRun) return;
 
     // Throttle: ignore detections if last scan was < 700ms ago
     final now = DateTime.now();
@@ -68,10 +192,11 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen> {
     }
     if (value == null) return;
 
-    // Mark as scanned and stop controller immediately
-    setState(() => _hasScanned = true);
+    // Disarm scanner and stop controller immediately
     _lastScanAt = now;
-    _controller?.stop();
+    _scannerArmed = false;
+    _stopScanner();
+    setState(() {});
 
     // Parse the QR payload
     final payload = parseQrPayload(value);
@@ -84,13 +209,16 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen> {
       MaterialPageRoute(
         builder: (context) => QrResultScreen(payload: payload),
       ),
-    ).then((_) async {
-      // Reset scan state and restart scanning when returning
-      if (mounted) {
-        setState(() => _hasScanned = false);
-        await _controller?.start();
-      }
+    );
+    // Note: Scanner stays disarmed. User must tap "Tap to scan" overlay to re-arm.
+  }
+
+  /// Re-arm the scanner (called when user taps the overlay)
+  void _rearmScanner() {
+    setState(() {
+      _scannerArmed = true;
     });
+    _updateScannerState();
   }
 
   void _toggleTorch() async {
@@ -108,6 +236,20 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Watch tab changes to detect when we become visible/hidden
+    ref.listen<int>(currentTabProvider, _onTabChanged);
+
+    // Also check current tab state on build
+    final currentTab = ref.watch(currentTabProvider);
+    _isTabActive = (currentTab == _kQrScannerTabIndex);
+
+    // Start/stop scanner based on visibility (deferred to avoid build-time issues)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _updateScannerState();
+      }
+    });
+
     return Scaffold(
       appBar: AppBar(
         leading: widget.onMenuPressed != null
@@ -158,13 +300,39 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen> {
           right: 0,
           child: _buildInstructions(),
         ),
-        // Processing overlay when scanned
-        if (_hasScanned)
+        // "Tap to scan" overlay when disarmed (prevents jam loop)
+        if (!_scannerArmed)
           Positioned.fill(
-            child: Container(
-              color: Colors.black54,
-              child: const Center(
-                child: CircularProgressIndicator(),
+            child: GestureDetector(
+              onTap: _rearmScanner,
+              child: Container(
+                color: Colors.black54,
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const FaIcon(
+                        FontAwesomeIcons.qrcode,
+                        size: 64,
+                        color: Colors.white70,
+                      ),
+                      const SizedBox(height: 24),
+                      Text(
+                        'Tap to scan again',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              color: Colors.white,
+                            ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Move the QR code away first',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: Colors.white70,
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
@@ -223,7 +391,6 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen> {
       case MobileScannerErrorCode.unsupported:
         message = 'Camera not supported on this device.';
         icon = Icons.no_photography;
-        // icon = FontAwesomeIcons.cameraSlash; //don't use this as linux does not have camera
         break;
       default:
         message = 'Camera error: ${error.errorDetails?.message ?? 'Unknown error'}';
