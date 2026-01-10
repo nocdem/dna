@@ -293,6 +293,9 @@ class _ContactResultState extends ConsumerState<_ContactResult> {
 }
 
 /// Auth result - redirect to auth screen
+/// NOTE: This widget should NOT be reached for auth payloads anymore.
+/// Scanner now navigates directly to QrAuthScreen for auth payloads.
+/// This remains as fallback only.
 class _AuthResult extends StatefulWidget {
   final QrPayload payload;
 
@@ -323,15 +326,23 @@ class _AuthResultState extends State<_AuthResult> {
   void didChangeDependencies() {
     super.didChangeDependencies();
 
+    // TEMP DEBUG: Track when this is called
+    debugPrint('_AuthResult didChangeDependencies: _navigated=$_navigated, valid=${_isValidAuthPayload()}');
+
     // Navigate only once and only if payload is valid
+    // NOTE: Scanner now navigates directly to QrAuthScreen for auth payloads,
+    // so this code path should not be reached. Keeping as fallback.
     if (!_navigated && _isValidAuthPayload()) {
       _navigated = true;
+      debugPrint('_AuthResult: PUSHING QrAuthScreen (this should not happen anymore)');
       // Use push (NOT pushReplacement) so there's a route to pop back to
       Navigator.of(context, rootNavigator: true).push(
         MaterialPageRoute(
           builder: (context) => QrAuthScreen(payload: widget.payload),
         ),
       );
+    } else if (_navigated) {
+      debugPrint('_AuthResult: didChangeDependencies called but _navigated=true, NOT re-pushing');
     }
   }
 

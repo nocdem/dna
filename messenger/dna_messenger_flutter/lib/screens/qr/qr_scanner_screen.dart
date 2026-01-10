@@ -9,6 +9,7 @@ import '../../main.dart' show routeObserver;
 import '../../theme/dna_theme.dart';
 import '../../utils/qr_payload_parser.dart';
 import '../home_screen.dart' show currentTabProvider;
+import 'qr_auth_screen.dart';
 import 'qr_result_screen.dart';
 
 /// QR Scanner tab index in the home screen IndexedStack
@@ -204,12 +205,25 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
     // Haptic feedback on successful scan
     HapticFeedback.mediumImpact();
 
-    // Navigate to result screen on ROOT navigator (scanner is in IndexedStack, not a route)
-    Navigator.of(context, rootNavigator: true).push(
-      MaterialPageRoute(
-        builder: (context) => QrResultScreen(payload: payload),
-      ),
-    );
+    // Navigate based on payload type on ROOT navigator (scanner is in IndexedStack, not a route)
+    // Auth payloads go directly to QrAuthScreen (no intermediate route that can re-push)
+    // Other payloads go to QrResultScreen
+    final rootNav = Navigator.of(context, rootNavigator: true);
+    if (payload.type == QrPayloadType.auth) {
+      debugPrint('QR_SCANNER: auth payload, navigating directly to QrAuthScreen');
+      rootNav.push(
+        MaterialPageRoute(
+          builder: (context) => QrAuthScreen(payload: payload),
+        ),
+      );
+    } else {
+      debugPrint('QR_SCANNER: ${payload.type} payload, navigating to QrResultScreen');
+      rootNav.push(
+        MaterialPageRoute(
+          builder: (context) => QrResultScreen(payload: payload),
+        ),
+      );
+    }
     // Note: Scanner stays disarmed. User must tap "Tap to scan" overlay to re-arm.
   }
 
