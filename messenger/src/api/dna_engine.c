@@ -571,44 +571,24 @@ int dna_engine_network_changed(dna_engine_t *engine) {
         QGP_LOG_INFO(LOG_TAG, "Cancelling listeners before DHT reinit");
         dna_engine_cancel_all_outbox_listeners(engine);
         dna_engine_cancel_all_presence_listeners(engine);
+        dna_engine_cancel_contact_request_listener(engine);
     }
 
-    /* Reinitialize DHT singleton with stored identity */
+    /* Reinitialize DHT singleton with stored identity.
+     * On success, dht_singleton_reinit() fires the status callback which spawns
+     * dna_engine_setup_listeners_thread(). That thread handles:
+     * - Starting fresh listeners for all contacts
+     * - Retrying pending messages
+     * - Fetching missed incoming messages
+     * - Refreshing presence
+     * NO NEED to duplicate that work here - just reinit and let callback handle the rest. */
     int result = dht_singleton_reinit();
     if (result != 0) {
         QGP_LOG_ERROR(LOG_TAG, "DHT reinit failed");
         return -1;
     }
 
-    /* Start fresh listeners on new DHT context */
-    if (engine->identity_loaded) {
-        QGP_LOG_INFO(LOG_TAG, "Starting fresh listeners after network change");
-        int count = dna_engine_listen_all_contacts(engine);
-        QGP_LOG_INFO(LOG_TAG, "Started %d outbox listeners", count);
-
-        /* Retry pending messages after network change
-         * Messages may have failed during network outage, retry now. */
-        int retried = dna_engine_retry_pending_messages(engine);
-        if (retried > 0) {
-            QGP_LOG_INFO(LOG_TAG, "[RETRY] Network change: retried %d pending messages", retried);
-        }
-
-        /* Also check for missed incoming messages */
-        if (engine->messenger && engine->messenger->p2p_transport) {
-            QGP_LOG_INFO(LOG_TAG, "[FETCH] Network change: checking for missed messages");
-            size_t received = 0;
-            p2p_check_offline_messages(engine->messenger->p2p_transport, NULL, &received);
-            if (received > 0) {
-                QGP_LOG_INFO(LOG_TAG, "[FETCH] Network change: received %zu missed messages", received);
-            }
-        }
-
-        /* Refresh presence on new network (only if app is in foreground) */
-        if (engine->messenger && atomic_load(&engine->presence_active)) {
-            messenger_p2p_refresh_presence(engine->messenger);
-        }
-    }
-
+    QGP_LOG_INFO(LOG_TAG, "DHT reinit successful - status callback will restart listeners");
     return 0;
 }
 
