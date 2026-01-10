@@ -194,8 +194,8 @@ int group_invitations_get_pending(group_invitation_t **invitations_out, int *cou
         return 0;
     }
 
-    // Allocate array
-    group_invitation_t *invitations = malloc(sizeof(group_invitation_t) * count);
+    // Allocate array (zero-initialized)
+    group_invitation_t *invitations = calloc(count, sizeof(group_invitation_t));
     if (!invitations) {
         sqlite3_finalize(stmt);
         return -1;
@@ -211,9 +211,22 @@ int group_invitations_get_pending(group_invitation_t **invitations_out, int *cou
         int status = sqlite3_column_int(stmt, 4);
         int member_count = sqlite3_column_int(stmt, 5);
 
-        strncpy(invitations[i].group_uuid, uuid, sizeof(invitations[i].group_uuid) - 1);
-        strncpy(invitations[i].group_name, name, sizeof(invitations[i].group_name) - 1);
-        strncpy(invitations[i].inviter, inviter, sizeof(invitations[i].inviter) - 1);
+        // Safe copy with NULL check and guaranteed null-termination
+        if (uuid) {
+            strncpy(invitations[i].group_uuid, uuid, sizeof(invitations[i].group_uuid) - 1);
+        }
+        invitations[i].group_uuid[sizeof(invitations[i].group_uuid) - 1] = '\0';
+
+        if (name) {
+            strncpy(invitations[i].group_name, name, sizeof(invitations[i].group_name) - 1);
+        }
+        invitations[i].group_name[sizeof(invitations[i].group_name) - 1] = '\0';
+
+        if (inviter) {
+            strncpy(invitations[i].inviter, inviter, sizeof(invitations[i].inviter) - 1);
+        }
+        invitations[i].inviter[sizeof(invitations[i].inviter) - 1] = '\0';
+
         invitations[i].invited_at = invited_at;
         invitations[i].status = (invitation_status_t)status;
         invitations[i].member_count = member_count;
@@ -265,13 +278,14 @@ int group_invitations_get(const char *group_uuid, group_invitation_t **invitatio
         return -2;  // Not found
     }
 
-    // Allocate invitation
-    group_invitation_t *invitation = malloc(sizeof(group_invitation_t));
+    // Allocate invitation (zero-initialized to prevent garbage in padding/unused bytes)
+    group_invitation_t *invitation = calloc(1, sizeof(group_invitation_t));
     if (!invitation) {
         sqlite3_finalize(stmt);
         return -1;
     }
 
+    // Get column values (may be NULL)
     const char *uuid = (const char*)sqlite3_column_text(stmt, 0);
     const char *name = (const char*)sqlite3_column_text(stmt, 1);
     const char *inviter = (const char*)sqlite3_column_text(stmt, 2);
@@ -279,9 +293,22 @@ int group_invitations_get(const char *group_uuid, group_invitation_t **invitatio
     int status = sqlite3_column_int(stmt, 4);
     int member_count = sqlite3_column_int(stmt, 5);
 
-    strncpy(invitation->group_uuid, uuid, sizeof(invitation->group_uuid) - 1);
-    strncpy(invitation->group_name, name, sizeof(invitation->group_name) - 1);
-    strncpy(invitation->inviter, inviter, sizeof(invitation->inviter) - 1);
+    // Safe copy with guaranteed null-termination (calloc already zeroed the struct)
+    if (uuid) {
+        strncpy(invitation->group_uuid, uuid, sizeof(invitation->group_uuid) - 1);
+    }
+    invitation->group_uuid[sizeof(invitation->group_uuid) - 1] = '\0';
+
+    if (name) {
+        strncpy(invitation->group_name, name, sizeof(invitation->group_name) - 1);
+    }
+    invitation->group_name[sizeof(invitation->group_name) - 1] = '\0';
+
+    if (inviter) {
+        strncpy(invitation->inviter, inviter, sizeof(invitation->inviter) - 1);
+    }
+    invitation->inviter[sizeof(invitation->inviter) - 1] = '\0';
+
     invitation->invited_at = invited_at;
     invitation->status = (invitation_status_t)status;
     invitation->member_count = member_count;
