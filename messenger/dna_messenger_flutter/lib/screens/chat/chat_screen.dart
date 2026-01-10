@@ -575,7 +575,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 child: _MessageBubble(
                   message: message,
                   isStarred: starredIds.contains(message.id),
-                  onRetry: message.isOutgoing && message.status == MessageStatus.failed
+                  onRetry: message.isOutgoing &&
+                          (message.status == MessageStatus.failed || message.status == MessageStatus.pending)
                       ? () => _retryMessage(message.id)
                       : null,
                 ),
@@ -2129,6 +2130,18 @@ class _MessageBubble extends StatelessWidget {
               ),
             ],
           ],
+        ),
+      );
+    }
+
+    // Show tappable retry for pending messages (tap clock to retry)
+    if (status == MessageStatus.pending && onRetry != null) {
+      return GestureDetector(
+        onTap: onRetry,
+        child: FaIcon(
+          FontAwesomeIcons.clock,
+          size: size,
+          color: color,
         ),
       );
     }
