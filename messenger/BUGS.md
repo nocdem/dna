@@ -13,7 +13,9 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-(none)
+- [ ] **[MIXED] P1 - Message status stuck on clock icon until app restart** - Messages are delivered (watermark updates DB to DELIVERED) but Flutter UI keeps showing clock icon. After app restart, shows correctly as delivered. **Suspected cause:** Watermark key mismatch - `dht_publish_watermark_async()` and `dht_get_watermark()` use raw string key (`recipient:watermark:sender`) while `dht_listen_watermark()` uses SHA3-512 hash of that string. Publisher and listener are on different DHT keys, so watermark updates never reach sender. **Fix attempted in v0.4.23 but reverted** - the fix caused other issues (presence stopped working, possible threading crash). Need to investigate further before re-applying.
+
+- [ ] **[CLI] P2 - DHT PUT_SIGNED high failure rate** - Logs show ~77% failure rate (986 failed vs 298 stored). Error: "PUT_SIGNED: Failed to store on any node". GETs work fine, bootstrap nodes are reachable. Failures may be historical/accumulated across sessions. Need to investigate: (1) Are failures happening in bursts or consistently? (2) Is there rate limiting by DHT nodes? (3) Are signatures valid? (4) Network connectivity during failures?
 
 ## Fixed Bugs
 
