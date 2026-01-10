@@ -24,7 +24,7 @@ set(DHT_COMMON_SOURCES
     shared/dht_offline_queue.c
     shared/dht_groups.c
     shared/dht_profile.c
-    shared/dht_gsk_storage.c  # Phase 13: GSK chunked storage
+    shared/dht_gek_storage.c  # GEK chunked storage
     shared/dht_chunked.c      # Generic chunked storage layer
     shared/dht_contact_request.c  # ICQ-style contact request system
     # Client modules (Phase 3/4)

@@ -4,7 +4,7 @@
 
 #include "init.h"
 #include "identity.h"
-#include "gsk.h"
+#include "gek.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -209,9 +209,9 @@ messenger_context_t* messenger_init(const char *identity) {
         return NULL;
     }
 
-    // Initialize GSK subsystem (Phase 13 - Group Symmetric Key)
-    if (gsk_init(ctx->backup_ctx) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize GSK subsystem");
+    // Initialize GEK subsystem (Group Encryption Key)
+    if (gek_init(ctx->backup_ctx) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize GEK subsystem");
         message_backup_close(ctx->backup_ctx);
         free(ctx->identity);
         free(ctx);

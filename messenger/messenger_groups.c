@@ -5,7 +5,7 @@
 
 #include "messenger.h"
 #include "messenger_p2p.h"  // For messenger_p2p_check_offline_messages
-#include "messenger/gsk.h"  // GSK rotation (Phase 5 - v0.09)
+#include "messenger/gek.h"  // GEK rotation
 #include "dht/shared/dht_groups.h"
 #include "dht/core/dht_context.h"
 #include "dht/client/dht_singleton.h"  // For dht_singleton_get
@@ -120,13 +120,13 @@ int messenger_create_group(messenger_context_t *ctx, const char *name, const cha
     *group_id_out = local_id;
     QGP_LOG_INFO(LOG_TAG, "Created group '%s' (local_id=%d, uuid=%s)\n", name, local_id, group_uuid);
 
-    // Phase 13: Create initial GSK (version 0) and publish to DHT
-    QGP_LOG_INFO(LOG_TAG, "Creating initial GSK for group %s...\n", group_uuid);
-    if (gsk_rotate_on_member_add(dht_ctx, group_uuid, ctx->identity) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Warning: Initial GSK creation failed (non-fatal)\n");
-        // Continue - group is created, but GSK needs to be created later
+    // Phase 13: Create initial GEK (version 0) and publish to DHT
+    QGP_LOG_INFO(LOG_TAG, "Creating initial GEK for group %s...\n", group_uuid);
+    if (gek_rotate_on_member_add(dht_ctx, group_uuid, ctx->identity) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Warning: Initial GEK creation failed (non-fatal)\n");
+        // Continue - group is created, but GEK needs to be created later
     } else {
-        QGP_LOG_INFO(LOG_TAG, "Initial GSK created and published to DHT\n");
+        QGP_LOG_INFO(LOG_TAG, "Initial GEK created and published to DHT\n");
     }
 
     // Send invitations to all initial members (not the creator)
@@ -315,11 +315,11 @@ int messenger_add_group_member(messenger_context_t *ctx, int group_id, const cha
     // Sync back to local cache
     dht_groups_sync_from_dht(dht_ctx, group_uuid);
 
-    // Phase 5 (v0.09): Rotate GSK when member is added
-    QGP_LOG_INFO(LOG_TAG, "Rotating GSK for group %s after adding member...\n", group_uuid);
-    if (gsk_rotate_on_member_add(dht_ctx, group_uuid, ctx->identity) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Warning: GSK rotation failed (non-fatal)\n");
-        // Continue - member is still added, but GSK rotation failed
+    // Phase 5 (v0.09): Rotate GEK when member is added
+    QGP_LOG_INFO(LOG_TAG, "Rotating GEK for group %s after adding member...\n", group_uuid);
+    if (gek_rotate_on_member_add(dht_ctx, group_uuid, ctx->identity) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Warning: GEK rotation failed (non-fatal)\n");
+        // Continue - member is still added, but GEK rotation failed
     }
 
     // Fetch group metadata to get name and member count for invitation
@@ -375,11 +375,11 @@ int messenger_remove_group_member(messenger_context_t *ctx, int group_id, const 
     // Sync back to local cache
     dht_groups_sync_from_dht(dht_ctx, group_uuid);
 
-    // Phase 5 (v0.09): Rotate GSK when member is removed
-    QGP_LOG_INFO(LOG_TAG, "Rotating GSK for group %s after removing member...\n", group_uuid);
-    if (gsk_rotate_on_member_remove(dht_ctx, group_uuid, ctx->identity) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Warning: GSK rotation failed (non-fatal)\n");
-        // Continue - member is still removed, but GSK rotation failed
+    // Phase 5 (v0.09): Rotate GEK when member is removed
+    QGP_LOG_INFO(LOG_TAG, "Rotating GEK for group %s after removing member...\n", group_uuid);
+    if (gek_rotate_on_member_remove(dht_ctx, group_uuid, ctx->identity) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Warning: GEK rotation failed (non-fatal)\n");
+        // Continue - member is still removed, but GEK rotation failed
     }
 
     QGP_LOG_INFO(LOG_TAG, "Removed member %s from group %d\n", identity, group_id);
@@ -853,7 +853,7 @@ int messenger_sync_groups(messenger_context_t *ctx) {
  * Send message to a group using feed-pattern outbox
  *
  * NEW IMPLEMENTATION (v0.10+):
- * - Message encrypted ONCE with GSK (AES-256-GCM)
+ * - Message encrypted ONCE with GEK (AES-256-GCM)
  * - Stored ONCE in DHT (feed pattern)
  * - All members poll via dht_get_all()
  * - Storage: O(message_size) vs O(N * message_size) in old system

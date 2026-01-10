@@ -1,17 +1,17 @@
 /**
- * @file dht_gsk_storage.c
- * @brief DHT Storage for GSK Initial Key Packets
+ * @file dht_gek_storage.c
+ * @brief DHT Storage for GEK Initial Key Packets
  *
  * Simplified implementation using the generic dht_chunked layer.
  * Handles publishing and fetching of large Initial Key Packets
- * for Group Symmetric Key (GSK) distribution via DHT.
+ * for Group Encryption Key (GEK) distribution via DHT.
  *
- * Part of DNA Messenger v0.09 - GSK Upgrade
+ * Part of DNA Messenger - GEK System
  *
- * @date 2025-11-27
+ * @date 2026-01-10
  */
 
-#include "dht_gsk_storage.h"
+#include "dht_gek_storage.h"
 #include "dht_chunked.h"
 #include "../../crypto/utils/qgp_sha3.h"
 #include <stdio.h>
@@ -19,7 +19,7 @@
 #include <string.h>
 #include "../crypto/utils/qgp_log.h"
 
-#define LOG_TAG "DHT_GSK"
+#define LOG_TAG "DHT_GEK"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -32,15 +32,15 @@
  *============================================================================*/
 
 /**
- * Generate base key for GSK storage
+ * Generate base key for GEK storage
  *
- * Format: "group_uuid:gsk:version"
+ * Format: "group_uuid:gek:version"
  */
-static int make_gsk_base_key(const char *group_uuid, uint32_t gsk_version,
+static int make_gek_base_key(const char *group_uuid, uint32_t gek_version,
                              char *key_out, size_t key_out_size) {
     if (!group_uuid || !key_out) return -1;
 
-    int ret = snprintf(key_out, key_out_size, "%s:gsk:%u", group_uuid, gsk_version);
+    int ret = snprintf(key_out, key_out_size, "%s:gek:%u", group_uuid, gek_version);
     if (ret < 0 || (size_t)ret >= key_out_size) {
         return -1;
     }
@@ -57,8 +57,8 @@ static int make_gsk_base_key(const char *group_uuid, uint32_t gsk_version,
  * This is kept for logging/debugging purposes. The actual storage
  * now uses the generic chunked layer which has its own key format.
  */
-int dht_gsk_make_chunk_key(const char *group_uuid,
-                            uint32_t gsk_version,
+int dht_gek_make_chunk_key(const char *group_uuid,
+                            uint32_t gek_version,
                             uint32_t chunk_index,
                             char key_out[65]) {
     if (!group_uuid || !key_out) {
@@ -67,7 +67,7 @@ int dht_gsk_make_chunk_key(const char *group_uuid,
 
     // Generate using the new chunked layer format for consistency
     char base_key[256];
-    if (make_gsk_base_key(group_uuid, gsk_version, base_key, sizeof(base_key)) != 0) {
+    if (make_gek_base_key(group_uuid, gek_version, base_key, sizeof(base_key)) != 0) {
         return -1;
     }
 
@@ -91,7 +91,7 @@ int dht_gsk_make_chunk_key(const char *group_uuid,
  * Legacy function - kept for any code that still uses it directly.
  * New code should use dht_chunked_publish() which handles serialization internally.
  */
-int dht_gsk_serialize_chunk(const dht_gsk_chunk_t *chunk,
+int dht_gek_serialize_chunk(const dht_gek_chunk_t *chunk,
                              uint8_t **serialized_out,
                              size_t *serialized_size_out) {
     if (!chunk || !serialized_out || !serialized_size_out) {
@@ -148,9 +148,9 @@ int dht_gsk_serialize_chunk(const dht_gsk_chunk_t *chunk,
  *
  * Legacy function - kept for any code that still uses it directly.
  */
-int dht_gsk_deserialize_chunk(const uint8_t *serialized,
+int dht_gek_deserialize_chunk(const uint8_t *serialized,
                                size_t serialized_size,
-                               dht_gsk_chunk_t *chunk_out) {
+                               dht_gek_chunk_t *chunk_out) {
     if (!serialized || !chunk_out || serialized_size < 17) {
         QGP_LOG_ERROR(LOG_TAG, "deserialize_chunk: Invalid parameter\n");
         return -1;
@@ -164,9 +164,9 @@ int dht_gsk_deserialize_chunk(const uint8_t *serialized,
     chunk_out->magic = ntohl(magic_net);
     offset += 4;
 
-    if (chunk_out->magic != DHT_GSK_MAGIC) {
+    if (chunk_out->magic != DHT_GEK_MAGIC) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid magic: 0x%08X (expected 0x%08X)\n",
-                chunk_out->magic, DHT_GSK_MAGIC);
+                chunk_out->magic, DHT_GEK_MAGIC);
         return -1;
     }
 
@@ -174,9 +174,9 @@ int dht_gsk_deserialize_chunk(const uint8_t *serialized,
     chunk_out->version = serialized[offset];
     offset += 1;
 
-    if (chunk_out->version != DHT_GSK_VERSION) {
+    if (chunk_out->version != DHT_GEK_VERSION) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid version: %u (expected %u)\n",
-                chunk_out->version, DHT_GSK_VERSION);
+                chunk_out->version, DHT_GEK_VERSION);
         return -1;
     }
 
@@ -220,7 +220,7 @@ int dht_gsk_deserialize_chunk(const uint8_t *serialized,
 /**
  * Free chunk structure
  */
-void dht_gsk_free_chunk(dht_gsk_chunk_t *chunk) {
+void dht_gek_free_chunk(dht_gek_chunk_t *chunk) {
     if (chunk && chunk->chunk_data) {
         free(chunk->chunk_data);
         chunk->chunk_data = NULL;
@@ -237,9 +237,9 @@ void dht_gsk_free_chunk(dht_gsk_chunk_t *chunk) {
  * Uses the generic dht_chunked layer for automatic chunking,
  * compression, and parallel-friendly storage.
  */
-int dht_gsk_publish(dht_context_t *ctx,
+int dht_gek_publish(dht_context_t *ctx,
                     const char *group_uuid,
-                    uint32_t gsk_version,
+                    uint32_t gek_version,
                     const uint8_t *packet,
                     size_t packet_size) {
     if (!ctx || !group_uuid || !packet || packet_size == 0) {
@@ -247,18 +247,18 @@ int dht_gsk_publish(dht_context_t *ctx,
         return -1;
     }
 
-    // Generate base key for this GSK packet
+    // Generate base key for this GEK packet
     char base_key[256];
-    if (make_gsk_base_key(group_uuid, gsk_version, base_key, sizeof(base_key)) != 0) {
+    if (make_gek_base_key(group_uuid, gek_version, base_key, sizeof(base_key)) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to generate base key\n");
         return -1;
     }
 
     QGP_LOG_INFO(LOG_TAG, "Publishing packet (group=%s v%u): %zu bytes\n",
-           group_uuid, gsk_version, packet_size);
+           group_uuid, gek_version, packet_size);
 
     // Use the generic chunked layer
-    int ret = dht_chunked_publish(ctx, base_key, packet, packet_size, DHT_GSK_DEFAULT_TTL);
+    int ret = dht_chunked_publish(ctx, base_key, packet, packet_size, DHT_GEK_DEFAULT_TTL);
 
     if (ret != DHT_CHUNK_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to publish: %s\n", dht_chunked_strerror(ret));
@@ -275,9 +275,9 @@ int dht_gsk_publish(dht_context_t *ctx,
  * Uses the generic dht_chunked layer for parallel fetching,
  * automatic reassembly, and decompression.
  */
-int dht_gsk_fetch(dht_context_t *ctx,
+int dht_gek_fetch(dht_context_t *ctx,
                   const char *group_uuid,
-                  uint32_t gsk_version,
+                  uint32_t gek_version,
                   uint8_t **packet_out,
                   size_t *packet_size_out) {
     if (!ctx || !group_uuid || !packet_out || !packet_size_out) {
@@ -285,14 +285,14 @@ int dht_gsk_fetch(dht_context_t *ctx,
         return -1;
     }
 
-    // Generate base key for this GSK packet
+    // Generate base key for this GEK packet
     char base_key[256];
-    if (make_gsk_base_key(group_uuid, gsk_version, base_key, sizeof(base_key)) != 0) {
+    if (make_gek_base_key(group_uuid, gek_version, base_key, sizeof(base_key)) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to generate base key\n");
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Fetching packet (group=%s v%u)...\n", group_uuid, gsk_version);
+    QGP_LOG_INFO(LOG_TAG, "Fetching packet (group=%s v%u)...\n", group_uuid, gek_version);
 
     // Use the generic chunked layer
     int ret = dht_chunked_fetch(ctx, base_key, packet_out, packet_size_out);

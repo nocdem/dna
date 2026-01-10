@@ -108,7 +108,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "blockchain/cellframe/cellframe_addr.h"
 #include "crypto/utils/seed_storage.h"
 #include "crypto/bip39/bip39.h"
-#include "messenger/gsk.h"
+#include "messenger/gek.h"
 #include <dirent.h>
 #include <sys/stat.h>
 #include <errno.h>
@@ -1041,8 +1041,8 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* Stop presence heartbeat thread */
     dna_stop_presence_heartbeat(engine);
 
-    /* Clear GSK KEM keys (H3 security fix) */
-    gsk_clear_kem_keys();
+    /* Clear GEK KEM keys (H3 security fix) */
+    gek_clear_kem_keys();
 
     /* Free messenger context */
     if (engine->messenger) {
@@ -1239,7 +1239,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     /* Load DHT identity */
     messenger_load_dht_identity(fingerprint);
 
-    /* Load KEM keys for GSK encryption (H3 security fix) */
+    /* Load KEM keys for GEK encryption (H3 security fix) */
     {
         char kem_path[512];
         snprintf(kem_path, sizeof(kem_path), "%s/keys/identity.kem", engine->data_dir);
@@ -1253,14 +1253,14 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         }
 
         if (load_rc == 0 && kem_key && kem_key->public_key && kem_key->private_key) {
-            if (gsk_set_kem_keys(kem_key->public_key, kem_key->private_key) == 0) {
-                QGP_LOG_INFO(LOG_TAG, "GSK KEM keys set successfully");
+            if (gek_set_kem_keys(kem_key->public_key, kem_key->private_key) == 0) {
+                QGP_LOG_INFO(LOG_TAG, "GEK KEM keys set successfully");
             } else {
-                QGP_LOG_WARN(LOG_TAG, "Warning: Failed to set GSK KEM keys");
+                QGP_LOG_WARN(LOG_TAG, "Warning: Failed to set GEK KEM keys");
             }
             qgp_key_free(kem_key);
         } else {
-            QGP_LOG_WARN(LOG_TAG, "Warning: Failed to load KEM keys for GSK encryption");
+            QGP_LOG_WARN(LOG_TAG, "Warning: Failed to load KEM keys for GEK encryption");
             if (kem_key) qgp_key_free(kem_key);
         }
     }

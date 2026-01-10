@@ -27,7 +27,7 @@ struct message_backup_context {
 };
 
 /**
- * Database Schema (v6) - Add sender_fingerprint for v0.07 message format (Phase 12)
+ * Database Schema (v9) - Add GEK group tables (GEK system)
  *
  * SECURITY: Messages stored as encrypted BLOB for data sovereignty.
  * If database is stolen, messages remain unreadable.
@@ -69,7 +69,7 @@ static const char *SCHEMA_SQL =
     "  value TEXT"
     ");"
     ""
-    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '6');";
+    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '9');";
 
 /**
  * Get database path
@@ -253,6 +253,77 @@ message_backup_context_t* message_backup_init(const char *identity) {
         sqlite3_free(err_msg);
     } else {
         QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v8 (added offline_seq table)\n");
+    }
+
+    // Migration: Create GEK (Group Encryption Key) tables (v9 - GEK system)
+    // Fresh start for group system - drop old tables and create new schema
+    const char *migration_sql_v9 =
+        // Drop old group tables (clean slate - no migration needed)
+        "DROP TABLE IF EXISTS dht_group_gsks;"
+        "DROP TABLE IF EXISTS dht_groups;"
+        "DROP TABLE IF EXISTS dht_group_members;"
+
+        // Create groups table
+        "CREATE TABLE IF NOT EXISTS groups ("
+        "  uuid TEXT PRIMARY KEY,"              // Group UUID (canonical lowercase)
+        "  name TEXT NOT NULL,"                 // Group display name
+        "  created_at INTEGER NOT NULL,"        // Creation timestamp (Unix epoch)
+        "  is_owner INTEGER DEFAULT 0,"         // 1 if we are the group owner
+        "  owner_fp TEXT NOT NULL"              // Owner's fingerprint (128 hex chars)
+        ");"
+
+        // Create group_members table
+        "CREATE TABLE IF NOT EXISTS group_members ("
+        "  group_uuid TEXT NOT NULL,"           // FK to groups.uuid
+        "  fingerprint TEXT NOT NULL,"          // Member fingerprint (128 hex chars)
+        "  added_at INTEGER NOT NULL,"          // When member was added
+        "  PRIMARY KEY (group_uuid, fingerprint)"
+        ");"
+
+        // Create group_geks table - stores encrypted GEK keys per version
+        "CREATE TABLE IF NOT EXISTS group_geks ("
+        "  group_uuid TEXT NOT NULL,"           // FK to groups.uuid
+        "  version INTEGER NOT NULL,"           // GEK version (monotonic)
+        "  encrypted_key BLOB NOT NULL,"        // Kyber1024-encrypted GEK (1628 bytes)
+        "  created_at INTEGER NOT NULL,"        // Creation timestamp
+        "  expires_at INTEGER NOT NULL,"        // Expiration timestamp
+        "  PRIMARY KEY (group_uuid, version)"
+        ");"
+
+        // Create pending_invitations table
+        "CREATE TABLE IF NOT EXISTS pending_invitations ("
+        "  group_uuid TEXT PRIMARY KEY,"        // Group UUID
+        "  group_name TEXT NOT NULL,"           // Group display name
+        "  owner_fp TEXT NOT NULL,"             // Owner's fingerprint
+        "  received_at INTEGER NOT NULL"        // When invitation was received
+        ");"
+
+        // Create group_messages table - decrypted group message cache
+        "CREATE TABLE IF NOT EXISTS group_messages ("
+        "  id INTEGER PRIMARY KEY,"             // Local message ID
+        "  group_uuid TEXT NOT NULL,"           // FK to groups.uuid
+        "  message_id INTEGER NOT NULL,"        // Sender's message ID (per-sender sequence)
+        "  sender_fp TEXT NOT NULL,"            // Sender fingerprint
+        "  timestamp_ms INTEGER NOT NULL,"      // Message timestamp (milliseconds)
+        "  gek_version INTEGER NOT NULL,"       // GEK version used for encryption
+        "  plaintext TEXT NOT NULL,"            // Decrypted message content
+        "  received_at INTEGER NOT NULL,"       // When we received the message
+        "  UNIQUE (group_uuid, sender_fp, message_id)"  // Deduplication key
+        ");"
+
+        // Create indexes for common queries
+        "CREATE INDEX IF NOT EXISTS idx_group_members_uuid ON group_members(group_uuid);"
+        "CREATE INDEX IF NOT EXISTS idx_group_geks_uuid ON group_geks(group_uuid);"
+        "CREATE INDEX IF NOT EXISTS idx_group_messages_uuid ON group_messages(group_uuid);"
+        "CREATE INDEX IF NOT EXISTS idx_group_messages_timestamp ON group_messages(timestamp_ms);";
+
+    rc = sqlite3_exec(ctx->db, migration_sql_v9, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        // Log but don't fail - tables may already exist
+        QGP_LOG_DEBUG(LOG_TAG, "GEK migration note: %s\n", err_msg);
+        sqlite3_free(err_msg);
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v9 (added GEK group tables)\n");
     }
 
     QGP_LOG_INFO(LOG_TAG, "Initialized successfully for identity: %s (ENCRYPTED STORAGE)\n", identity);

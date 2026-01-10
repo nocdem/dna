@@ -1455,7 +1455,7 @@ DNA_API dna_request_id_t dna_engine_get_groups(
 /**
  * Create new group
  *
- * Creates group with GSK (Group Symmetric Key) encryption.
+ * Creates group with GEK (Group Encryption Key) encryption.
  *
  * @param engine              Engine instance
  * @param name                Group name
@@ -1477,7 +1477,7 @@ DNA_API dna_request_id_t dna_engine_create_group(
 /**
  * Send message to group
  *
- * Encrypts with GSK (AES-256-GCM), signs with Dilithium5.
+ * Encrypts with GEK (AES-256-GCM), signs with Dilithium5.
  *
  * @param engine     Engine instance
  * @param group_uuid Group UUID

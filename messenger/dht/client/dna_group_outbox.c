@@ -10,7 +10,7 @@
  */
 
 #include "dna_group_outbox.h"
-#include "../../messenger/gsk.h"
+#include "../../messenger/gek.h"
 #include "../../message_backup.h"
 #include "../../crypto/utils/qgp_aes.h"
 #include "../../crypto/utils/qgp_dilithium.h"
@@ -322,9 +322,9 @@ int dna_group_outbox_send(
     QGP_LOG_INFO(LOG_TAG, "Sending message to group %s\n", group_uuid);
 
     /* Step 1: Load active GSK */
-    uint8_t gsk[GSK_KEY_SIZE];
+    uint8_t gsk[GEK_KEY_SIZE];
     uint32_t gsk_version = 0;
-    if (gsk_load_active(group_uuid, gsk, &gsk_version) != 0) {
+    if (gek_load_active(group_uuid, gsk, &gsk_version) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "No active GSK for group %s\n", group_uuid);
         return DNA_GROUP_OUTBOX_ERR_NO_GSK;
     }
@@ -634,8 +634,8 @@ int dna_group_outbox_sync(
     size_t new_count = 0;
 
     /* Load GSK for decryption */
-    uint8_t gsk[GSK_KEY_SIZE];
-    if (gsk_load_active(group_uuid, gsk, NULL) != 0) {
+    uint8_t gsk[GEK_KEY_SIZE];
+    if (gek_load_active(group_uuid, gsk, NULL) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "No active GSK for group %s (skipping sync)\n", group_uuid);
         return DNA_GROUP_OUTBOX_ERR_NO_GSK;
     }
