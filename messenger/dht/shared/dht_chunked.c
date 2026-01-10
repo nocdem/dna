@@ -22,8 +22,12 @@
 #define LOG_TAG "DHT_CHUNK"
 #ifdef _WIN32
 #include <winsock2.h>
+#include <windows.h>  // For Sleep()
+#define chunk_sleep_ms(ms) Sleep(ms)
 #else
 #include <arpa/inet.h>
+#include <unistd.h>   // For usleep()
+#define chunk_sleep_ms(ms) usleep((ms) * 1000)
 #endif
 
 /*============================================================================
@@ -35,6 +39,12 @@
 
 /** Maximum parallel fetches at once */
 #define DHT_CHUNK_MAX_PARALLEL      64
+
+/** Maximum retry attempts for failed chunks (handles DHT propagation delays) */
+#define DHT_CHUNK_MAX_RETRIES       3
+
+/** Delay between retry attempts in milliseconds */
+#define DHT_CHUNK_RETRY_DELAY_MS    500
 
 /*============================================================================
  * Internal Structures
@@ -604,10 +614,65 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
     }
     pthread_mutex_unlock(&pctx.mutex);
 
-    // Step 5: Verify all chunks received
+    // Step 5: Verify all chunks received, retry failed ones
+    // DHT is async - chunks may not be fully propagated when receiver fetches immediately
+    int retry;
+    for (retry = 0; retry < DHT_CHUNK_MAX_RETRIES; retry++) {
+        // Count failed chunks
+        uint32_t failed_count = 0;
+        for (uint32_t i = 0; i < total_chunks; i++) {
+            if (!pctx.slots[i].received || pctx.slots[i].error) {
+                failed_count++;
+            }
+        }
+
+        if (failed_count == 0) {
+            break;  // All chunks received successfully
+        }
+
+        if (retry > 0) {
+            QGP_LOG_INFO(LOG_TAG, "Retry %d: %u chunks still missing, retrying...\n",
+                         retry, failed_count);
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "%u chunks missing, will retry (DHT propagation delay)\n",
+                         failed_count);
+        }
+
+        // Brief delay before retry to allow DHT propagation
+        chunk_sleep_ms(DHT_CHUNK_RETRY_DELAY_MS);
+
+        // Retry each failed chunk synchronously
+        for (uint32_t i = 0; i < total_chunks; i++) {
+            if (!pctx.slots[i].received || pctx.slots[i].error) {
+                uint8_t chunk_key[DHT_CHUNK_KEY_SIZE];
+                if (dht_chunked_make_key(base_key, i, chunk_key) != 0) {
+                    continue;
+                }
+
+                uint8_t *chunk_data = NULL;
+                size_t chunk_len = 0;
+                if (dht_get(ctx, chunk_key, DHT_CHUNK_KEY_SIZE, &chunk_data, &chunk_len) == 0
+                    && chunk_data && chunk_len > 0) {
+                    // Success - update slot
+                    if (pctx.slots[i].data) {
+                        free(pctx.slots[i].data);
+                    }
+                    pctx.slots[i].data = chunk_data;
+                    pctx.slots[i].data_len = chunk_len;
+                    pctx.slots[i].received = true;
+                    pctx.slots[i].error = false;
+                    QGP_LOG_DEBUG(LOG_TAG, "Retry succeeded for chunk %u\n", i);
+                } else {
+                    if (chunk_data) free(chunk_data);
+                }
+            }
+        }
+    }
+
+    // Final verification after all retries
     for (uint32_t i = 0; i < total_chunks; i++) {
         if (!pctx.slots[i].received || pctx.slots[i].error) {
-            QGP_LOG_ERROR(LOG_TAG, "Missing or error chunk %u\n", i);
+            QGP_LOG_ERROR(LOG_TAG, "Missing chunk %u after %d retries\n", i, DHT_CHUNK_MAX_RETRIES);
             goto cleanup_error;
         }
     }
