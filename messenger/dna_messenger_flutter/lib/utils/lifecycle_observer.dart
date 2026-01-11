@@ -93,8 +93,8 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // This ensures users see up-to-date names when they open the app
       await _refreshContactProfiles(engine);
 
-      // Refresh contacts to get updated presence status (seamless update)
-      await ref.read(contactsProvider.notifier).refresh();
+      // Invalidate contacts to force reload (shows new unread counts, last messages)
+      ref.invalidate(contactsProvider);
 
       // Refresh current conversation if one is open
       // This ensures messages received while backgrounded are visible
