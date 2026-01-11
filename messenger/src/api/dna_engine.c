@@ -2751,13 +2751,13 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task) {
         dna_dispatch_event(engine, &event);
     } else {
         /* Emit MESSAGE_SENT event so UI can update (triggers refresh)
-         * Status is PENDING (0) - will become DELIVERED via watermark.
-         * With async DHT PUT, rc=0 means "queued", not "stored". */
-        QGP_LOG_INFO(LOG_TAG, "[SEND] Message queued to DHT (status=PENDING, async)");
+         * Status is SENT (1) - DHT PUT succeeded, single tick in UI.
+         * Will become DELIVERED (3) via watermark confirmation → double tick. */
+        QGP_LOG_INFO(LOG_TAG, "[SEND] Message stored on DHT (status=SENT, single tick)");
         dna_event_t event = {0};
         event.type = DNA_EVENT_MESSAGE_SENT;
         event.data.message_status.message_id = 0;  /* ID not available here */
-        event.data.message_status.new_status = 0;  /* PENDING - async, not confirmed yet */
+        event.data.message_status.new_status = 1;  /* SENT - DHT PUT succeeded */
         dna_dispatch_event(engine, &event);
     }
 

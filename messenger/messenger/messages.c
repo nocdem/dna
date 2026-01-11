@@ -473,15 +473,20 @@ int messenger_send_message(
     // P2P transport is NOT required - messenger_queue_to_dht uses DHT singleton
     // This is more reliable on mobile platforms with background execution restrictions
     //
-    // NOTE: With async DHT PUT, we DON'T update status to SENT here.
-    // Status stays PENDING until watermark confirmation from recipient → DELIVERED.
-    // This ensures UI shows accurate status (clock icon until recipient confirms).
+    // Message status flow:
+    // 1. PENDING (0) - message saved, clock icon
+    // 2. SENT (1) - DHT PUT succeeded, single tick
+    // 3. DELIVERED (3) - watermark received from recipient, double tick
     size_t dht_success = 0;
     for (size_t i = 0; i < recipient_count; i++) {
         // Queue directly to DHT - no P2P attempt for messaging
         if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len) == 0) {
             dht_success++;
-            // Status stays PENDING (0) - will become DELIVERED (3) via watermark
+            // Update status to SENT (1) - DHT PUT succeeded, single tick in UI
+            // Will become DELIVERED (3) via watermark confirmation → double tick
+            if (message_ids[i] > 0) {
+                message_backup_update_status(ctx->backup_ctx, message_ids[i], 1);
+            }
         } else {
             // Update status to FAILED (2) - DHT queue failed (key unavailable, etc.)
             if (message_ids[i] > 0) {
