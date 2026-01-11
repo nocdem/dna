@@ -159,17 +159,220 @@ static uint64_t extract_value_id(const uint8_t *packed_data, size_t packed_len) 
 }
 
 /**
- * @brief Initialize database schema
+ * @brief Check if a column exists in a table
  */
-static int init_schema(sqlite3 *db) {
-    char *err_msg = NULL;
-    int rc = sqlite3_exec(db, SCHEMA_SQL, NULL, NULL, &err_msg);
+static bool table_has_column(sqlite3 *db, const char *table, const char *column) {
+    char sql[256];
+    snprintf(sql, sizeof(sql), "PRAGMA table_info(%s)", table);
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Schema creation failed: %s", err_msg);
+        return false;
+    }
+
+    bool found = false;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *col_name = (const char*)sqlite3_column_text(stmt, 1);
+        if (col_name && strcmp(col_name, column) == 0) {
+            found = true;
+            break;
+        }
+    }
+    sqlite3_finalize(stmt);
+    return found;
+}
+
+/**
+ * @brief Check if table exists
+ */
+static bool table_exists(sqlite3 *db, const char *table) {
+    const char *sql = "SELECT name FROM sqlite_master WHERE type='table' AND name=?";
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        return false;
+    }
+    sqlite3_bind_text(stmt, 1, table, -1, SQLITE_STATIC);
+    bool exists = (sqlite3_step(stmt) == SQLITE_ROW);
+    sqlite3_finalize(stmt);
+    return exists;
+}
+
+/**
+ * @brief Migrate v1 schema to v2 (add value_id column, change PRIMARY KEY)
+ *
+ * V1 schema: PRIMARY KEY (key_hash, created_at) - caused duplicates
+ * V2 schema: PRIMARY KEY (key_hash, value_id) - proper multi-writer support
+ *
+ * Migration process:
+ * 1. Create new table with v2 schema
+ * 2. Copy data, extracting value_id from packed value_data
+ * 3. For rows with duplicate (key_hash, value_id), keep only latest created_at
+ * 4. Drop old table, rename new table
+ */
+static int migrate_v1_to_v2(sqlite3 *db) {
+    QGP_LOG_INFO(LOG_TAG, "Migrating database schema from v1 to v2...");
+
+    char *err_msg = NULL;
+    int rc;
+
+    // Begin transaction
+    rc = sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Migration begin failed: %s", err_msg);
         sqlite3_free(err_msg);
         return -1;
     }
+
+    // Create v2 table
+    rc = sqlite3_exec(db, MIGRATION_V2_CREATE, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Migration create v2 table failed: %s", err_msg);
+        sqlite3_free(err_msg);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return -1;
+    }
+
+    // Read all v1 data and insert into v2 with extracted value_id
+    sqlite3_stmt *read_stmt;
+    const char *read_sql = "SELECT key_hash, value_data, value_type, created_at, expires_at FROM dht_values ORDER BY created_at DESC";
+    rc = sqlite3_prepare_v2(db, read_sql, -1, &read_stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Migration read prepare failed: %s", sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return -1;
+    }
+
+    sqlite3_stmt *insert_stmt;
+    const char *insert_sql = "INSERT OR IGNORE INTO dht_values_v2 "
+                             "(key_hash, value_id, value_data, value_type, created_at, expires_at) "
+                             "VALUES (?, ?, ?, ?, ?, ?)";
+    rc = sqlite3_prepare_v2(db, insert_sql, -1, &insert_stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Migration insert prepare failed: %s", sqlite3_errmsg(db));
+        sqlite3_finalize(read_stmt);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return -1;
+    }
+
+    size_t migrated = 0;
+    size_t skipped = 0;
+
+    while (sqlite3_step(read_stmt) == SQLITE_ROW) {
+        const char *key_hash = (const char*)sqlite3_column_text(read_stmt, 0);
+        const void *value_data = sqlite3_column_blob(read_stmt, 1);
+        int value_data_len = sqlite3_column_bytes(read_stmt, 1);
+        int value_type = sqlite3_column_int(read_stmt, 2);
+        int64_t created_at = sqlite3_column_int64(read_stmt, 3);
+
+        // Extract value_id from packed data
+        uint64_t value_id = extract_value_id((const uint8_t*)value_data, value_data_len);
+        if (value_id == 0) {
+            // No valid value_id, use hash of value_data as fallback
+            QGP_LOG_WARN(LOG_TAG, "Could not extract value_id for key %s, using created_at as fallback", key_hash);
+            value_id = (uint64_t)created_at;
+        }
+
+        // Insert into v2 (OR IGNORE handles duplicates - keeps first which is latest due to ORDER BY)
+        sqlite3_bind_text(insert_stmt, 1, key_hash, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(insert_stmt, 2, (int64_t)value_id);
+        sqlite3_bind_blob(insert_stmt, 3, value_data, value_data_len, SQLITE_TRANSIENT);
+        sqlite3_bind_int(insert_stmt, 4, value_type);
+        sqlite3_bind_int64(insert_stmt, 5, created_at);
+
+        if (sqlite3_column_type(read_stmt, 4) != SQLITE_NULL) {
+            sqlite3_bind_int64(insert_stmt, 6, sqlite3_column_int64(read_stmt, 4));
+        } else {
+            sqlite3_bind_null(insert_stmt, 6);
+        }
+
+        rc = sqlite3_step(insert_stmt);
+        if (rc == SQLITE_DONE) {
+            if (sqlite3_changes(db) > 0) {
+                migrated++;
+            } else {
+                skipped++;  // Duplicate (key_hash, value_id) - older version skipped
+            }
+        }
+        sqlite3_reset(insert_stmt);
+    }
+
+    sqlite3_finalize(read_stmt);
+    sqlite3_finalize(insert_stmt);
+
+    // Drop old table
+    rc = sqlite3_exec(db, "DROP TABLE dht_values", NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Migration drop old table failed: %s", err_msg);
+        sqlite3_free(err_msg);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return -1;
+    }
+
+    // Rename v2 table to dht_values
+    rc = sqlite3_exec(db, "ALTER TABLE dht_values_v2 RENAME TO dht_values", NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Migration rename table failed: %s", err_msg);
+        sqlite3_free(err_msg);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return -1;
+    }
+
+    // Create indexes
+    rc = sqlite3_exec(db,
+        "CREATE INDEX IF NOT EXISTS idx_expires ON dht_values(expires_at);"
+        "CREATE INDEX IF NOT EXISTS idx_key ON dht_values(key_hash);",
+        NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Migration create indexes failed: %s", err_msg);
+        sqlite3_free(err_msg);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return -1;
+    }
+
+    // Commit transaction
+    rc = sqlite3_exec(db, "COMMIT", NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Migration commit failed: %s", err_msg);
+        sqlite3_free(err_msg);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Migration complete: %zu rows migrated, %zu duplicates removed", migrated, skipped);
     return 0;
+}
+
+/**
+ * @brief Initialize database schema (with migration support)
+ */
+static int init_schema(sqlite3 *db) {
+    char *err_msg = NULL;
+    int rc;
+
+    // Check if dht_values table exists
+    if (!table_exists(db, "dht_values")) {
+        // Fresh database - create v2 schema directly
+        QGP_LOG_INFO(LOG_TAG, "Creating new database with v2 schema");
+        rc = sqlite3_exec(db, SCHEMA_SQL_V2, NULL, NULL, &err_msg);
+        if (rc != SQLITE_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "Schema creation failed: %s", err_msg);
+            sqlite3_free(err_msg);
+            return -1;
+        }
+        return 0;
+    }
+
+    // Table exists - check if it's v1 or v2
+    if (table_has_column(db, "dht_values", "value_id")) {
+        // Already v2 schema
+        QGP_LOG_DEBUG(LOG_TAG, "Database already has v2 schema");
+        return 0;
+    }
+
+    // V1 schema detected - needs migration
+    return migrate_v1_to_v2(db);
 }
 
 // ============================================================================
@@ -297,17 +500,28 @@ int dht_value_storage_put(dht_value_storage_t *storage,
         return 0;  // Success (but not stored)
     }
 
+    // Get value_id: prefer metadata->value_id if set, otherwise extract from packed data
+    uint64_t value_id = metadata->value_id;
+    if (value_id == 0 && metadata->value_data && metadata->value_data_len > 0) {
+        value_id = extract_value_id(metadata->value_data, metadata->value_data_len);
+    }
+    if (value_id == 0) {
+        // Last resort: use created_at as value_id (this shouldn't happen normally)
+        QGP_LOG_WARN(LOG_TAG, "No value_id available, using created_at as fallback");
+        value_id = metadata->created_at;
+    }
+
     pthread_mutex_lock(&storage->mutex);
 
     // Convert key hash to hex
     char key_hex[256];
     hash_to_hex(metadata->key_hash, metadata->key_hash_len, key_hex);
 
-    // Prepare INSERT statement
+    // Prepare INSERT statement (v2 schema with value_id)
     sqlite3_stmt *stmt;
     const char *sql = "INSERT OR REPLACE INTO dht_values "
-                      "(key_hash, value_data, value_type, created_at, expires_at) "
-                      "VALUES (?, ?, ?, ?, ?)";
+                      "(key_hash, value_id, value_data, value_type, created_at, expires_at) "
+                      "VALUES (?, ?, ?, ?, ?, ?)";
 
     int rc = sqlite3_prepare_v2(storage->db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
@@ -319,13 +533,14 @@ int dht_value_storage_put(dht_value_storage_t *storage,
 
     // Bind parameters
     sqlite3_bind_text(stmt, 1, key_hex, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_blob(stmt, 2, metadata->value_data, metadata->value_data_len, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 3, metadata->value_type);
-    sqlite3_bind_int64(stmt, 4, metadata->created_at);
+    sqlite3_bind_int64(stmt, 2, (int64_t)value_id);
+    sqlite3_bind_blob(stmt, 3, metadata->value_data, metadata->value_data_len, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 4, metadata->value_type);
+    sqlite3_bind_int64(stmt, 5, metadata->created_at);
     if (metadata->expires_at > 0) {
-        sqlite3_bind_int64(stmt, 5, metadata->expires_at);
+        sqlite3_bind_int64(stmt, 6, metadata->expires_at);
     } else {
-        sqlite3_bind_null(stmt, 5);  // Permanent
+        sqlite3_bind_null(stmt, 6);  // Permanent
     }
 
     // Execute
@@ -373,9 +588,9 @@ int dht_value_storage_get(dht_value_storage_t *storage,
     char key_hex[256];
     hash_to_hex(key_hash, key_hash_len, key_hex);
 
-    // Query values
+    // Query values (v2 schema with value_id)
     sqlite3_stmt *stmt;
-    const char *sql = "SELECT value_data, value_type, created_at, expires_at "
+    const char *sql = "SELECT value_id, value_data, value_type, created_at, expires_at "
                       "FROM dht_values "
                       "WHERE key_hash = ? AND (expires_at IS NULL OR expires_at > ?)";
 
@@ -414,12 +629,15 @@ int dht_value_storage_get(dht_value_storage_t *storage,
         return -1;
     }
 
-    // Fetch results
+    // Fetch results (column indices: 0=value_id, 1=value_data, 2=value_type, 3=created_at, 4=expires_at)
     size_t i = 0;
     while (sqlite3_step(stmt) == SQLITE_ROW && i < count) {
+        // Get value_id
+        results[i].value_id = (uint64_t)sqlite3_column_int64(stmt, 0);
+
         // Copy value data
-        const void *blob = sqlite3_column_blob(stmt, 0);
-        int blob_len = sqlite3_column_bytes(stmt, 0);
+        const void *blob = sqlite3_column_blob(stmt, 1);
+        int blob_len = sqlite3_column_bytes(stmt, 1);
 
         results[i].value_data = (uint8_t*)malloc(blob_len);
         if (results[i].value_data) {
@@ -427,11 +645,11 @@ int dht_value_storage_get(dht_value_storage_t *storage,
             results[i].value_data_len = blob_len;
         }
 
-        results[i].value_type = sqlite3_column_int(stmt, 1);
-        results[i].created_at = sqlite3_column_int64(stmt, 2);
+        results[i].value_type = sqlite3_column_int(stmt, 2);
+        results[i].created_at = sqlite3_column_int64(stmt, 3);
 
-        if (sqlite3_column_type(stmt, 3) != SQLITE_NULL) {
-            results[i].expires_at = sqlite3_column_int64(stmt, 3);
+        if (sqlite3_column_type(stmt, 4) != SQLITE_NULL) {
+            results[i].expires_at = sqlite3_column_int64(stmt, 4);
         } else {
             results[i].expires_at = 0;  // Permanent
         }
@@ -564,16 +782,12 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
         QGP_LOG_WARN(LOG_TAG, "Timed out waiting for DHT peers after %d seconds, proceeding anyway", max_wait_seconds);
     }
 
-    // Query only LATEST version per key (not all versions)
+    // Query all unique (key_hash, value_id) pairs (v2 schema supports multi-writer)
+    // Each value_id represents a different writer to the same DHT key
     sqlite3_stmt *stmt;
-    const char *sql = "SELECT key_hash, value_data, value_type, created_at, expires_at "
+    const char *sql = "SELECT key_hash, value_id, value_data, value_type, created_at, expires_at "
                       "FROM dht_values "
-                      "WHERE (expires_at IS NULL OR expires_at > ?) "
-                      "  AND created_at = ("
-                      "    SELECT MAX(created_at) "
-                      "    FROM dht_values AS dv2 "
-                      "    WHERE dv2.key_hash = dht_values.key_hash"
-                      "  )";
+                      "WHERE (expires_at IS NULL OR expires_at > ?)";
 
     uint64_t now = time(NULL);
 
@@ -610,15 +824,18 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
 
         pthread_mutex_lock(&storage->mutex);
 
+        // Column indices: 0=key_hash, 1=value_id, 2=value_data, 3=value_type, 4=created_at, 5=expires_at
         const char *key_hex = (const char*)sqlite3_column_text(stmt, 0);
-        const void *packed_blob = sqlite3_column_blob(stmt, 1);
-        int packed_len = sqlite3_column_bytes(stmt, 1);
-        uint32_t value_type = sqlite3_column_int(stmt, 2);
+        uint64_t value_id = (uint64_t)sqlite3_column_int64(stmt, 1);
+        const void *packed_blob = sqlite3_column_blob(stmt, 2);
+        int packed_len = sqlite3_column_bytes(stmt, 2);
+        uint32_t value_type = sqlite3_column_int(stmt, 3);
         uint64_t expires_at = 0;
 
-        if (sqlite3_column_type(stmt, 4) != SQLITE_NULL) {
-            expires_at = sqlite3_column_int64(stmt, 4);
+        if (sqlite3_column_type(stmt, 5) != SQLITE_NULL) {
+            expires_at = sqlite3_column_int64(stmt, 5);
         }
+        (void)value_id;  // Logged for debugging if needed
 
         // Copy key and packed data (need to free mutex before DHT operation)
         char key_hex_copy[256] = {0};
