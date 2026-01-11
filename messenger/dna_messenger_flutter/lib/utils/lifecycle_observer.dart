@@ -68,6 +68,14 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
         engine.attachEventCallback();
       }
 
+      // Always resume presence heartbeat first (marks us as online)
+      // This is safe even if DHT is disconnected - heartbeat will just fail silently
+      // until DHT reconnects
+      engine.resumePresence();
+
+      // Resume Dart-side polling timers (handles presence refresh + contact requests)
+      ref.read(eventHandlerProvider).resumePolling();
+
       // Check if DHT is actually still connected (may have dropped while idle)
       final isDhtConnected = engine.isDhtConnected();
 
@@ -78,13 +86,6 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
         engine.networkChanged();
         // DHT connected event will update state and restart listeners
-      } else {
-        // DHT still connected - just resume normal operations
-        // Resume C-side presence heartbeat (marks us as online)
-        engine.resumePresence();
-
-        // Resume Dart-side polling timers (handles presence refresh + contact requests)
-        ref.read(eventHandlerProvider).resumePolling();
       }
 
       // Force refresh contact profiles from DHT (fixes stale display names)
