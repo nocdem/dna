@@ -362,6 +362,18 @@ int cmd_group_invite(dna_engine_t *engine, const char *group_uuid, const char *f
  */
 int cmd_group_sync(dna_engine_t *engine, const char *group_uuid);
 
+/**
+ * Publish GEK for a group to DHT
+ *
+ * Only the group creator/owner can publish GEK. This generates or rotates
+ * the GEK and publishes it to DHT so members can fetch it.
+ *
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID to publish GEK for
+ * @return 0 on success, negative on error
+ */
+int cmd_group_publish_gek(dna_engine_t *engine, const char *group_uuid);
+
 /* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */

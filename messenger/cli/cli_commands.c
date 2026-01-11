@@ -2170,6 +2170,45 @@ int cmd_group_sync(dna_engine_t *engine, const char *group_uuid) {
     return 0;
 }
 
+int cmd_group_publish_gek(dna_engine_t *engine, const char *group_uuid) {
+    if (!engine || !group_uuid) {
+        printf("Error: Missing group UUID\n");
+        return -1;
+    }
+
+    printf("Publishing GEK for group %s to DHT...\n", group_uuid);
+
+    /* Get the fingerprint from engine */
+    const char *fingerprint = dna_engine_get_fingerprint(engine);
+    if (!fingerprint || strlen(fingerprint) == 0) {
+        printf("Error: No identity loaded\n");
+        return -1;
+    }
+
+    /* Call gek_rotate_on_member_add to generate and publish GEK */
+    /* This works because it:
+     * 1. Generates new GEK (or uses existing if version 0)
+     * 2. Builds IKP for all current members
+     * 3. Publishes to DHT
+     */
+    extern int gek_rotate_on_member_add(void *dht_ctx, const char *group_uuid, const char *owner_identity);
+
+    void *dht_ctx = dna_engine_get_dht_context(engine);
+    if (!dht_ctx) {
+        printf("Error: DHT not initialized\n");
+        return -1;
+    }
+
+    int ret = gek_rotate_on_member_add(dht_ctx, group_uuid, fingerprint);
+    if (ret != 0) {
+        printf("Error: Failed to publish GEK\n");
+        return -1;
+    }
+
+    printf("GEK published successfully to DHT!\n");
+    return 0;
+}
+
 /* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */
