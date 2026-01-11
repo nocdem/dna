@@ -512,7 +512,11 @@ static void jni_event_callback(const dna_event_t *event, void *user_data) {
 
     jclass cls = (*env)->GetObjectClass(env, g_event_listener);
     jmethodID method = (*env)->GetMethodID(env, cls, "onEvent", "(ILjava/lang/String;Ljava/lang/String;)V");
-    if (!method) return;
+    if (!method) {
+        (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, cls);
+        return;
+    }
 
     jstring data1 = NULL;
     jstring data2 = NULL;
@@ -583,6 +587,8 @@ static void jni_android_notification_callback(const char *contact_fingerprint, c
 
     jmethodID method = (*env)->GetMethodID(env, cls, "onOutboxUpdated", "(Ljava/lang/String;Ljava/lang/String;)V");
     if (!method) {
+        /* IMPORTANT: Clear pending exception from GetMethodID failure */
+        (*env)->ExceptionClear(env);
         LOGE("Failed to get onOutboxUpdated method");
         (*env)->DeleteLocalRef(env, cls);
         return;
@@ -637,10 +643,28 @@ static void jni_android_contact_request_callback(
         return;
     }
 
+    /* Debug: log the actual class name */
+    jclass classClass = (*env)->FindClass(env, "java/lang/Class");
+    if (classClass) {
+        jmethodID getNameMethod = (*env)->GetMethodID(env, classClass, "getName", "()Ljava/lang/String;");
+        if (getNameMethod) {
+            jstring className = (jstring)(*env)->CallObjectMethod(env, cls, getNameMethod);
+            if (className) {
+                const char *classNameStr = (*env)->GetStringUTFChars(env, className, NULL);
+                LOGI("[NOTIFY] Notification helper class: %s", classNameStr);
+                (*env)->ReleaseStringUTFChars(env, className, classNameStr);
+                (*env)->DeleteLocalRef(env, className);
+            }
+        }
+        (*env)->DeleteLocalRef(env, classClass);
+    }
+
     jmethodID method = (*env)->GetMethodID(env, cls, "onContactRequestReceived", "()V");
     if (!method) {
         /* Method might not exist yet - not an error, just skip */
-        LOGD("onContactRequestReceived method not found (not implemented yet?)");
+        /* IMPORTANT: Clear pending exception from GetMethodID failure */
+        (*env)->ExceptionClear(env);
+        LOGW("onContactRequestReceived method not found in class");
         (*env)->DeleteLocalRef(env, cls);
         return;
     }
