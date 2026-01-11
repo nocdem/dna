@@ -622,8 +622,10 @@ static void *background_fetch_thread(void *arg) {
     dna_engine_t *engine = ctx->engine;
     const char *sender_fp = ctx->sender_fp[0] ? ctx->sender_fp : NULL;
 
-    /* Small delay to let DHT callback complete first */
-    qgp_platform_sleep_ms(100);
+    /* Delay to let DHT propagate data to more nodes.
+     * 100ms was too short - occasionally caused 0 messages due to
+     * querying nodes that hadn't received the data yet. */
+    qgp_platform_sleep_ms(300);
 
     if (!engine || !engine->messenger || !engine->identity_loaded) {
         QGP_LOG_WARN(LOG_TAG, "[BACKGROUND-THREAD] Engine not ready, aborting fetch");
@@ -631,11 +633,31 @@ static void *background_fetch_thread(void *arg) {
         return NULL;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetching from %s...",
-                 sender_fp ? sender_fp : "ALL contacts");
+    /* Retry loop with exponential backoff for DHT propagation delays */
     size_t offline_count = 0;
-    messenger_p2p_check_offline_messages(engine->messenger, sender_fp, &offline_count);
-    QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetch complete: %zu messages", offline_count);
+    int max_retries = 3;
+    int delay_ms = 500;  /* Start with 500ms between retries */
+
+    for (int attempt = 0; attempt < max_retries; attempt++) {
+        QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetching from %s... (attempt %d/%d)",
+                     sender_fp ? sender_fp : "ALL contacts", attempt + 1, max_retries);
+
+        messenger_p2p_check_offline_messages(engine->messenger, sender_fp, &offline_count);
+
+        if (offline_count > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetch complete: %zu messages", offline_count);
+            break;
+        }
+
+        /* No messages found - wait and retry (DHT propagation delay) */
+        if (attempt < max_retries - 1) {
+            QGP_LOG_WARN(LOG_TAG, "[BACKGROUND-THREAD] No messages found, retrying in %dms...", delay_ms);
+            qgp_platform_sleep_ms(delay_ms);
+            delay_ms *= 2;  /* Exponential backoff: 500, 1000, 2000... */
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetch complete: 0 messages after %d attempts", max_retries);
+        }
+    }
 
     free(ctx);
     return NULL;
