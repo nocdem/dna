@@ -648,8 +648,19 @@ int dna_group_outbox_sync(
     /* Load GSK for decryption */
     uint8_t gsk[GEK_KEY_SIZE];
     if (gek_load_active(group_uuid, gsk, NULL) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "No active GSK for group %s (skipping sync)\n", group_uuid);
-        return DNA_GROUP_OUTBOX_ERR_NO_GSK;
+        /* GEK not found locally - try auto-sync from DHT */
+        QGP_LOG_WARN(LOG_TAG, "No local GSK for group %s, attempting auto-sync from DHT...\n", group_uuid);
+        if (messenger_sync_group_gek(group_uuid) == 0) {
+            /* Sync succeeded, retry load */
+            if (gek_load_active(group_uuid, gsk, NULL) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "GSK load failed after sync for group %s (skipping)\n", group_uuid);
+                return DNA_GROUP_OUTBOX_ERR_NO_GSK;
+            }
+            QGP_LOG_INFO(LOG_TAG, "Auto-synced GSK for group %s\n", group_uuid);
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "Auto-sync failed, no active GSK for group %s (skipping)\n", group_uuid);
+            return DNA_GROUP_OUTBOX_ERR_NO_GSK;
+        }
     }
 
     /* Sync past buckets (sealed, fetch once) */
@@ -725,9 +736,10 @@ int dna_group_outbox_sync_all(
     }
 
     QGP_LOG_INFO(LOG_TAG, "Syncing all groups for %s\n", my_fingerprint);
+    (void)my_fingerprint;  /* Groups table only contains joined groups, no filter needed */
 
-    /* Query all groups the user is a member of */
-    const char *sql = "SELECT DISTINCT group_uuid FROM dht_group_members WHERE member_fingerprint = ?";
+    /* Query all groups the user has joined (from message backup database) */
+    const char *sql = "SELECT uuid FROM groups";
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(group_outbox_db, sql, -1, &stmt, NULL);
@@ -735,8 +747,6 @@ int dna_group_outbox_sync_all(
         QGP_LOG_ERROR(LOG_TAG, "Failed to query groups: %s\n", sqlite3_errmsg(group_outbox_db));
         return DNA_GROUP_OUTBOX_ERR_DB;
     }
-
-    sqlite3_bind_text(stmt, 1, my_fingerprint, -1, SQLITE_TRANSIENT);
 
     size_t total_new = 0;
 

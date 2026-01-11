@@ -72,6 +72,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/client/dna_profile.h"
 #include "dht/shared/dht_chunked.h"
 #include "dht/shared/dht_groups.h"
+#include "dht/client/dna_group_outbox.h"
 #include "p2p/p2p_transport.h"
 #include "p2p/transport/transport_core.h"  /* For parse_presence_json */
 #include "p2p/transport/turn_credentials.h"
@@ -2814,9 +2815,22 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
     size_t offline_count = 0;
     int rc = messenger_p2p_check_offline_messages(engine->messenger, NULL, &offline_count);
     if (rc == 0) {
-        QGP_LOG_WARN("DNA_ENGINE", "[OFFLINE] Check complete: %zu new messages", offline_count);
+        QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] Direct messages check complete: %zu new", offline_count);
     } else {
-        QGP_LOG_WARN("DNA_ENGINE", "[OFFLINE] Check failed with rc=%d", rc);
+        QGP_LOG_WARN("DNA_ENGINE", "[OFFLINE] Direct messages check failed with rc=%d", rc);
+    }
+
+    /* Also sync group messages from DHT */
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (dht_ctx) {
+        size_t group_msg_count = 0;
+        rc = dna_group_outbox_sync_all(dht_ctx, engine->fingerprint, &group_msg_count);
+        if (rc == 0) {
+            QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] Group messages sync complete: %zu new", group_msg_count);
+        } else if (rc != DNA_GROUP_OUTBOX_ERR_NULL_PARAM) {
+            /* NULL_PARAM just means no groups, not an error */
+            QGP_LOG_WARN("DNA_ENGINE", "[OFFLINE] Group messages sync failed with rc=%d", rc);
+        }
     }
 
 done:
