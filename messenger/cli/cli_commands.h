@@ -375,6 +375,18 @@ int cmd_group_sync(dna_engine_t *engine, const char *group_uuid);
 int cmd_group_publish_gek(dna_engine_t *engine, const char *group_uuid);
 
 /* ============================================================================
+ * DHT DEBUG COMMANDS
+ * ============================================================================ */
+
+/**
+ * Fetch and display the DHT bootstrap registry
+ * Shows all registered bootstrap nodes with their status.
+ * @param engine DNA engine instance
+ * @return 0 on success, negative on error
+ */
+int cmd_bootstrap_registry(dna_engine_t *engine);
+
+/* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */
 

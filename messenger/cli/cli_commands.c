@@ -1879,6 +1879,114 @@ int cmd_check_version(dna_engine_t *engine) {
 }
 
 /* ============================================================================
+ * DHT DEBUG COMMANDS
+ * ============================================================================ */
+
+#include "dht/core/dht_bootstrap_registry.h"
+
+int cmd_bootstrap_registry(dna_engine_t *engine) {
+    (void)engine;  /* Not needed, uses singleton */
+
+    printf("Fetching bootstrap registry from DHT...\n\n");
+
+    dht_context_t *dht = dht_singleton_get();
+    if (!dht) {
+        printf("Error: DHT not initialized\n");
+        return -1;
+    }
+
+    /* Wait for DHT to be ready */
+    if (!dht_context_is_ready(dht)) {
+        printf("Waiting for DHT connection...\n");
+        for (int i = 0; i < 50; i++) {
+            if (dht_context_is_ready(dht)) break;
+            struct timespec ts = {0, 100000000};  /* 100ms */
+            nanosleep(&ts, NULL);
+        }
+        if (!dht_context_is_ready(dht)) {
+            printf("Error: DHT not connected\n");
+            return -1;
+        }
+    }
+
+    bootstrap_registry_t registry;
+    memset(&registry, 0, sizeof(registry));
+
+    int ret = dht_bootstrap_registry_fetch(dht, &registry);
+
+    if (ret != 0) {
+        printf("Error: Failed to fetch bootstrap registry (error: %d)\n", ret);
+        printf("\nPossible causes:\n");
+        printf("  - Bootstrap nodes not registered in DHT\n");
+        printf("  - DHT network connectivity issue\n");
+        printf("  - Registry key mismatch\n");
+        return ret;
+    }
+
+    if (registry.node_count == 0) {
+        printf("Registry is empty (no nodes registered)\n");
+        return 0;
+    }
+
+    printf("Found %zu bootstrap nodes:\n\n", registry.node_count);
+    printf("%-18s %-6s %-10s %-12s %s\n",
+           "IP", "PORT", "VERSION", "UPTIME", "LAST_SEEN");
+    printf("%-18s %-6s %-10s %-12s %s\n",
+           "------------------", "------", "----------", "------------", "--------------------");
+
+    time_t now = time(NULL);
+
+    for (size_t i = 0; i < registry.node_count; i++) {
+        bootstrap_node_entry_t *node = &registry.nodes[i];
+
+        /* Calculate time since last seen */
+        int64_t age_sec = (int64_t)(now - node->last_seen);
+        char age_str[32];
+        if (age_sec < 0) {
+            snprintf(age_str, sizeof(age_str), "future?");
+        } else if (age_sec < 60) {
+            snprintf(age_str, sizeof(age_str), "%llds ago", (long long)age_sec);
+        } else if (age_sec < 3600) {
+            snprintf(age_str, sizeof(age_str), "%lldm ago", (long long)(age_sec / 60));
+        } else if (age_sec < 86400) {
+            snprintf(age_str, sizeof(age_str), "%lldh ago", (long long)(age_sec / 3600));
+        } else {
+            snprintf(age_str, sizeof(age_str), "%lldd ago", (long long)(age_sec / 86400));
+        }
+
+        /* Format uptime */
+        char uptime_str[32];
+        if (node->uptime < 60) {
+            snprintf(uptime_str, sizeof(uptime_str), "%llus", (unsigned long long)node->uptime);
+        } else if (node->uptime < 3600) {
+            snprintf(uptime_str, sizeof(uptime_str), "%llum", (unsigned long long)(node->uptime / 60));
+        } else if (node->uptime < 86400) {
+            snprintf(uptime_str, sizeof(uptime_str), "%lluh", (unsigned long long)(node->uptime / 3600));
+        } else {
+            snprintf(uptime_str, sizeof(uptime_str), "%llud", (unsigned long long)(node->uptime / 86400));
+        }
+
+        /* Status indicator */
+        const char *status = (age_sec < DHT_BOOTSTRAP_STALE_TIMEOUT) ? "✓" : "✗";
+
+        printf("%s %-17s %-6d %-10s %-12s %s\n",
+               status,
+               node->ip,
+               node->port,
+               node->version,
+               uptime_str,
+               age_str);
+    }
+
+    /* Filter and show active count */
+    dht_bootstrap_registry_filter_active(&registry);
+    printf("\nActive nodes (< %d min old): %zu\n",
+           DHT_BOOTSTRAP_STALE_TIMEOUT / 60, registry.node_count);
+
+    return 0;
+}
+
+/* ============================================================================
  * GROUP COMMANDS (GEK System)
  * ============================================================================ */
 

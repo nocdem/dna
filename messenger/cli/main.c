@@ -109,6 +109,9 @@ static void print_usage(const char *prog_name) {
     printf("    --lib <ver> --app <ver> --nodus <ver> [--lib-min <ver>] [--app-min <ver>] [--nodus-min <ver>]\n");
     printf("  check-version               Check latest version from DHT\n");
     printf("\n");
+    printf("DHT DEBUG COMMANDS:\n");
+    printf("  bootstrap-registry          Show DHT bootstrap node registry\n");
+    printf("\n");
     printf("GROUP COMMANDS:\n");
     printf("  group-list                  List all groups\n");
     printf("  group-create <name>         Create a new group\n");
@@ -532,6 +535,11 @@ int main(int argc, char *argv[]) {
     }
     else if (strcmp(command, "check-version") == 0) {
         result = cmd_check_version(g_engine);
+    }
+
+    /* ====== DHT DEBUG COMMANDS ====== */
+    else if (strcmp(command, "bootstrap-registry") == 0) {
+        result = cmd_bootstrap_registry(g_engine);
     }
 
     /* ====== GROUP COMMANDS ====== */

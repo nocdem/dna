@@ -5,6 +5,7 @@
 
 #include "dht_bootstrap_discovery.h"
 #include "../core/dht_bootstrap_registry.h"
+#include "../core/dht_context.h"
 #include "bootstrap_cache.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
@@ -160,12 +161,36 @@ int dht_bootstrap_discovery_run_sync(dht_context_t *dht_ctx) {
 
     QGP_LOG_INFO(LOG_TAG, "Starting bootstrap registry discovery...");
 
-    // Fetch registry from DHT
+    // Wait for DHT to be ready (max 10 seconds)
+    int wait_count = 0;
+    while (!dht_context_is_ready(dht_ctx) && wait_count < 100) {
+        qgp_platform_sleep_ms(100);
+        wait_count++;
+    }
+
+    if (!dht_context_is_ready(dht_ctx)) {
+        QGP_LOG_WARN(LOG_TAG, "DHT not ready after 10s, skipping discovery");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "DHT ready after %dms, fetching registry...", wait_count * 100);
+
+    // Fetch registry from DHT with retry
     bootstrap_registry_t registry;
     memset(&registry, 0, sizeof(registry));
 
-    if (dht_bootstrap_registry_fetch(dht_ctx, &registry) != 0) {
-        QGP_LOG_WARN(LOG_TAG, "Failed to fetch bootstrap registry from DHT");
+    int fetch_result = -1;
+    for (int attempt = 1; attempt <= 3; attempt++) {
+        fetch_result = dht_bootstrap_registry_fetch(dht_ctx, &registry);
+        if (fetch_result == 0) {
+            break;
+        }
+        QGP_LOG_INFO(LOG_TAG, "Registry fetch attempt %d/3 failed, retrying...", attempt);
+        qgp_platform_sleep_ms(1000);  // Wait 1s between retries
+    }
+
+    if (fetch_result != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to fetch bootstrap registry from DHT after 3 attempts");
         return -1;
     }
 
