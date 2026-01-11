@@ -211,16 +211,19 @@ extern "C" size_t dht_listen_ex(
             const std::vector<std::shared_ptr<dht::Value>>& values,
             bool expired
         ) -> bool {
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN-DHT] >>> OpenDHT callback invoked! token=%zu, values=%zu, expired=%d",
+                         token, values.size(), expired);
+
             // Check if listener is still active
             std::lock_guard<std::mutex> lock(listeners_mutex);
             if (!listener_ctx->active) {
-                QGP_LOG_DEBUG(LOG_TAG, "Token %zu is no longer active, stopping", token);
+                QGP_LOG_WARN(LOG_TAG, "[LISTEN-DHT] Token %zu is no longer active, stopping listener", token);
                 return false;
             }
 
             // Handle expiration notification
             if (expired) {
-                QGP_LOG_DEBUG(LOG_TAG, "Token %zu received expiration notification", token);
+                QGP_LOG_WARN(LOG_TAG, "[LISTEN-DHT] Token %zu received expiration notification", token);
                 bool continue_listening = listener_ctx->callback(
                     nullptr, 0, true, listener_ctx->user_data
                 );
@@ -229,17 +232,26 @@ extern "C" size_t dht_listen_ex(
 
             // Handle value notifications
             if (values.empty()) {
+                QGP_LOG_WARN(LOG_TAG, "[LISTEN-DHT] Token %zu: empty values array (no new data)", token);
                 return true;
             }
 
-            QGP_LOG_DEBUG(LOG_TAG, "Token %zu received %zu value(s)", token, values.size());
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN-DHT] Token %zu received %zu value(s)", token, values.size());
 
             // Invoke C callback for each value
             bool continue_listening = true;
             for (const auto& val : values) {
                 if (!val || val->data.empty()) {
+                    QGP_LOG_WARN(LOG_TAG, "[LISTEN-DHT] Token %zu: skipping empty value", token);
                     continue;
                 }
+
+                // Log value details for debugging listener issues
+                QGP_LOG_WARN(LOG_TAG, "[LISTEN-DHT] Token %zu: value id=%llu, seq=%llu, size=%zu bytes",
+                             token,
+                             (unsigned long long)val->id,
+                             (unsigned long long)val->seq,
+                             val->data.size());
 
                 bool result = listener_ctx->callback(
                     val->data.data(),
@@ -249,12 +261,15 @@ extern "C" size_t dht_listen_ex(
                 );
 
                 if (!result) {
-                    QGP_LOG_DEBUG(LOG_TAG, "Token %zu callback returned false, stopping", token);
+                    QGP_LOG_WARN(LOG_TAG, "[LISTEN-DHT] Token %zu callback returned false, stopping", token);
                     continue_listening = false;
                     break;
                 }
+                QGP_LOG_WARN(LOG_TAG, "[LISTEN-DHT] Token %zu callback returned true, continuing", token);
             }
 
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN-DHT] >>> Token %zu returning %s from OpenDHT callback",
+                         token, continue_listening ? "true (continue)" : "false (stop)");
             return continue_listening;
         };
 
