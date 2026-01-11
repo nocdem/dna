@@ -8,6 +8,7 @@ import '../providers/engine_provider.dart';
 import '../providers/event_handler.dart';
 import '../providers/contacts_provider.dart';
 import '../providers/contact_profile_cache_provider.dart';
+import '../providers/messages_provider.dart';
 import '../services/cache_database.dart';
 
 /// Provider that tracks whether the app is currently in foreground (resumed)
@@ -95,8 +96,12 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Refresh contacts to get updated presence status (seamless update)
       await ref.read(contactsProvider.notifier).refresh();
 
-      // Note: Offline messages are handled by C-side push notification callback
-      // (messenger_push_notification_callback) which triggers poll on DHT listen events
+      // Refresh current conversation if one is open
+      // This ensures messages received while backgrounded are visible
+      final selectedContact = ref.read(selectedContactProvider);
+      if (selectedContact != null) {
+        ref.invalidate(conversationProvider(selectedContact.fingerprint));
+      }
     } catch (_) {
       // Error during resume - silently continue
     }
