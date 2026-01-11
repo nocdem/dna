@@ -367,6 +367,26 @@ int message_backup_mark_delivered_up_to_seq(
 );
 
 /**
+ * Get unique recipients with pending outgoing messages
+ *
+ * Returns list of unique recipient fingerprints that have undelivered
+ * outgoing messages (status=PENDING). Used to restore delivery trackers
+ * on app startup.
+ *
+ * @param ctx Backup context
+ * @param recipients_out Array to receive recipient fingerprints (caller allocates)
+ * @param max_recipients Maximum number of recipients to return
+ * @param count_out Receives actual count of recipients
+ * @return 0 on success, -1 on error
+ */
+int message_backup_get_pending_recipients(
+    message_backup_context_t *ctx,
+    char recipients_out[][129],
+    int max_recipients,
+    int *count_out
+);
+
+/**
  * Close backup context
  *
  * @param ctx Backup context

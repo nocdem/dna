@@ -1418,6 +1418,24 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         if (retried > 0) {
             QGP_LOG_INFO(LOG_TAG, "[RETRY] Identity load: retried %d pending messages", retried);
         }
+
+        /* 4. Restore delivery trackers for all pending messages
+         * This ensures double-tick (delivered) status works after app restart */
+        message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
+        if (backup_ctx) {
+            char pending_recipients[DNA_MAX_DELIVERY_TRACKERS][129];
+            int pending_count = 0;
+            if (message_backup_get_pending_recipients(backup_ctx, pending_recipients,
+                                                       DNA_MAX_DELIVERY_TRACKERS, &pending_count) == 0) {
+                for (int i = 0; i < pending_count; i++) {
+                    dna_engine_track_delivery(engine, pending_recipients[i]);
+                }
+                if (pending_count > 0) {
+                    QGP_LOG_INFO(LOG_TAG, "[DELIVERY] Restored %d delivery trackers for pending messages",
+                                 pending_count);
+                }
+            }
+        }
     }
 
     /* Silent background: Create any missing blockchain wallets
@@ -5200,16 +5218,43 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine) {
     int success_count = 0;
     int fail_count = 0;
 
+    /* Track unique recipients for delivery tracker setup */
+    char tracked_recipients[DNA_MAX_DELIVERY_TRACKERS][129];
+    int tracked_count = 0;
+
     /* Retry each message */
     for (int i = 0; i < count; i++) {
         if (retry_single_message(engine, &messages[i]) == 0) {
             success_count++;
+
+            /* Track unique recipient for delivery tracker */
+            const char *recipient = messages[i].recipient;
+            if (recipient && strlen(recipient) == 128) {
+                bool already_tracked = false;
+                for (int j = 0; j < tracked_count; j++) {
+                    if (strcmp(tracked_recipients[j], recipient) == 0) {
+                        already_tracked = true;
+                        break;
+                    }
+                }
+                if (!already_tracked && tracked_count < DNA_MAX_DELIVERY_TRACKERS) {
+                    strncpy(tracked_recipients[tracked_count], recipient, 128);
+                    tracked_recipients[tracked_count][128] = '\0';
+                    tracked_count++;
+                }
+            }
         } else {
             fail_count++;
         }
     }
 
     QGP_LOG_INFO(LOG_TAG, "[RETRY] Completed: %d succeeded, %d failed", success_count, fail_count);
+
+    /* Start delivery trackers for all recipients with pending messages */
+    for (int i = 0; i < tracked_count; i++) {
+        dna_engine_track_delivery(engine, tracked_recipients[i]);
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Started delivery tracker for %.20s...", tracked_recipients[i]);
+    }
 
     /* Free messages array */
     message_backup_free_messages(messages, count);

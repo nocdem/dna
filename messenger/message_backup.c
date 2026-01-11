@@ -1209,6 +1209,54 @@ int message_backup_mark_delivered_up_to_seq(
 }
 
 /**
+ * Get unique recipients with pending outgoing messages
+ */
+int message_backup_get_pending_recipients(
+    message_backup_context_t *ctx,
+    char recipients_out[][129],
+    int max_recipients,
+    int *count_out
+) {
+    if (!ctx || !ctx->db || !recipients_out || !count_out) {
+        return -1;
+    }
+
+    *count_out = 0;
+
+    // Get distinct recipients of outgoing messages with PENDING status
+    const char *sql =
+        "SELECT DISTINCT recipient FROM messages "
+        "WHERE is_outgoing = 1 AND status = 0 "
+        "LIMIT ?";
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare pending recipients query: %s\n",
+                      sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, max_recipients);
+
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && count < max_recipients) {
+        const char *recipient = (const char *)sqlite3_column_text(stmt, 0);
+        if (recipient && strlen(recipient) == 128) {
+            strncpy(recipients_out[count], recipient, 128);
+            recipients_out[count][128] = '\0';
+            count++;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+
+    *count_out = count;
+    QGP_LOG_INFO(LOG_TAG, "Found %d unique recipients with pending messages\n", count);
+    return 0;
+}
+
+/**
  * Close backup context
  */
 void message_backup_close(message_backup_context_t *ctx) {
