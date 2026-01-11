@@ -812,8 +812,8 @@ int dht_groups_list_for_user(
         groups[count].group_uuid[36] = '\0';
         strncpy(groups[count].name, db_name ? db_name : "", 127);
         groups[count].name[127] = '\0';
-        strncpy(groups[count].creator, db_creator ? db_creator : "", 32);
-        groups[count].creator[32] = '\0';
+        strncpy(groups[count].creator, db_creator ? db_creator : "", 128);
+        groups[count].creator[128] = '\0';
         groups[count].created_at = sqlite3_column_int64(stmt, 4);
         groups[count].last_sync = sqlite3_column_int64(stmt, 5);
 
@@ -936,6 +936,11 @@ int dht_groups_sync_from_dht(
     sqlite3_finalize(stmt);
 
     for (uint32_t i = 0; i < meta->member_count; i++) {
+        // Skip NULL members (defensive - shouldn't happen if parsing succeeded)
+        if (!meta->members || !meta->members[i]) {
+            QGP_LOG_ERROR(LOG_TAG, "NULL member[%u] - skipping\n", i);
+            continue;
+        }
         const char *insert_sql = "INSERT INTO dht_group_members (group_uuid, member_identity) VALUES (?, ?)";
         sqlite3_prepare_v2(g_db, insert_sql, -1, &stmt, NULL);
         sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_STATIC);
