@@ -122,10 +122,10 @@ int dna_update_profile(
     QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] dna_update_profile called for %.16s...\n", fingerprint);
     QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] Base key: %s\n", base_key);
 
-    // Store in DHT via chunked layer (permanent storage)
+    // Store in DHT via chunked layer with PERMANENT TTL for identity data
     ret = dht_chunked_publish(dht_ctx, base_key,
                               (uint8_t*)json, strlen(json),
-                              DHT_CHUNK_TTL_365DAY);
+                              DHT_CHUNK_TTL_PERMANENT);
 
     if (ret != DHT_CHUNK_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT: %s\n", dht_chunked_strerror(ret));
