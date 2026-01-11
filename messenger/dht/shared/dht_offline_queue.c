@@ -10,6 +10,7 @@
 #include <errno.h>
 
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"  /* qgp_platform_sleep_ms */
 #include "messenger/messages.h"  /* DNA_MESSAGE_MAX_CIPHERTEXT_SIZE */
 
 #define LOG_TAG "DHT_OFFLINE"
@@ -1055,18 +1056,35 @@ static void *watermark_publish_thread(void *arg) {
     value[6] = (uint8_t)(wctx->seq_num >> 8);
     value[7] = (uint8_t)(wctx->seq_num);
 
-    // Put signed with value_id=1 (replacement) and watermark TTL
-    int result = dht_put_signed(wctx->ctx,
+    // Retry with exponential backoff (PUT_SIGNED can fail transiently)
+    int max_retries = 3;
+    int delay_ms = 500;
+    int result = -1;
+
+    for (int attempt = 1; attempt <= max_retries; attempt++) {
+        result = dht_put_signed(wctx->ctx,
                                  key, 64,
                                  value, sizeof(value),
                                  1,  // value_id=1 for replacement
                                  DHT_WATERMARK_TTL);
 
-    if (result == 0) {
-        QGP_LOG_DEBUG(LOG_TAG, "Watermark published: %.20s... → %.20s... seq=%lu\n",
-               wctx->recipient, wctx->sender, (unsigned long)wctx->seq_num);
-    } else {
-        QGP_LOG_WARN(LOG_TAG, "Watermark publish failed (will retry on next receive)\n");
+        if (result == 0) {
+            QGP_LOG_WARN(LOG_TAG, "[WATERMARK-PUT] Published OK: %.20s... → %.20s... seq=%lu (attempt %d)\n",
+                   wctx->recipient, wctx->sender, (unsigned long)wctx->seq_num, attempt);
+            break;
+        }
+
+        if (attempt < max_retries) {
+            QGP_LOG_WARN(LOG_TAG, "[WATERMARK-PUT] Failed attempt %d/%d, retrying in %dms...\n",
+                   attempt, max_retries, delay_ms);
+            qgp_platform_sleep_ms(delay_ms);
+            delay_ms *= 2;  // Exponential backoff: 500, 1000, 2000
+        }
+    }
+
+    if (result != 0) {
+        QGP_LOG_WARN(LOG_TAG, "[WATERMARK-PUT] FAILED after %d attempts: %.20s... → %.20s... seq=%lu\n",
+               max_retries, wctx->recipient, wctx->sender, (unsigned long)wctx->seq_num);
     }
 
     free(wctx);
@@ -1216,11 +1234,12 @@ static bool watermark_listen_callback(
                        ((uint64_t)value[6] << 8) |
                        ((uint64_t)value[7]);
 
-    QGP_LOG_INFO(LOG_TAG, "Watermark update: %.20s... → %.20s... seq=%lu\n",
+    QGP_LOG_WARN(LOG_TAG, "[WATERMARK-LISTEN] Received: %.20s... → %.20s... seq=%lu\n",
            ctx->recipient, ctx->sender, (unsigned long)seq_num);
 
-    // Invoke user callback
+    // Invoke user callback (triggers DELIVERED status update)
     if (ctx->user_cb) {
+        QGP_LOG_WARN(LOG_TAG, "[WATERMARK-LISTEN] Invoking delivery callback...\n");
         ctx->user_cb(ctx->sender, ctx->recipient, seq_num, ctx->user_data);
     }
 

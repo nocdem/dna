@@ -6540,7 +6540,7 @@ static void delivery_watermark_callback(
 
     dna_engine_t *engine = ctx->engine;
 
-    QGP_LOG_INFO(LOG_TAG, "Delivery confirmed: %.20s... → %.20s... seq=%lu",
+    QGP_LOG_WARN(LOG_TAG, "[DELIVERY] Watermark received! %.20s... → %.20s... seq=%lu",
                  sender, recipient, (unsigned long)seq_num);
 
     /* Update tracker's last known watermark */
@@ -6562,11 +6562,10 @@ static void delivery_watermark_callback(
             recipient,   /* Contact fingerprint - they received */
             seq_num
         );
-        if (updated > 0) {
-            QGP_LOG_INFO(LOG_TAG, "Updated %d messages to DELIVERED status", updated);
-        }
+        QGP_LOG_WARN(LOG_TAG, "[DELIVERY] Updated %d messages to DELIVERED in DB", updated);
     }
 
+    QGP_LOG_WARN(LOG_TAG, "[DELIVERY] Dispatching DNA_EVENT_MESSAGE_DELIVERED for %.20s...", recipient);
     /* Dispatch DNA_EVENT_MESSAGE_DELIVERED event */
     dna_event_t event = {0};
     event.type = DNA_EVENT_MESSAGE_DELIVERED;
