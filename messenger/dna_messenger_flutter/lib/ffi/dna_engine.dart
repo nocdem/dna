@@ -275,6 +275,13 @@ class Message {
 enum MessageStatus { pending, sent, failed, delivered, read }
 enum MessageType { chat, groupInvitation, cpunkTransfer }
 
+/// Result of paginated conversation query
+class ConversationPage {
+  final List<Message> messages;
+  final int total;
+  ConversationPage(this.messages, this.total);
+}
+
 /// Group information
 class Group {
   final String uuid;
@@ -2089,6 +2096,55 @@ class DnaEngine {
     final requestId = _bindings.dna_engine_get_conversation(
       _engine,
       contactPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(contactPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get conversation with contact (paginated)
+  /// Messages are returned in DESC order (newest first)
+  Future<ConversationPage> getConversationPage(
+      String contactFingerprint, int limit, int offset) async {
+    final completer = Completer<ConversationPage>();
+    final localId = _nextLocalId++;
+
+    final contactPtr = contactFingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<dna_message_t> messages,
+                    int count, int total, Pointer<Void> userData) {
+      calloc.free(contactPtr);
+
+      if (error == 0) {
+        final result = <Message>[];
+        for (var i = 0; i < count; i++) {
+          result.add(Message.fromNative((messages + i).ref));
+        }
+        if (count > 0) {
+          _bindings.dna_free_messages(messages, count);
+        }
+        completer.complete(ConversationPage(result, total));
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaMessagesPageCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_conversation_page(
+      _engine,
+      contactPtr.cast(),
+      limit,
+      offset,
       callback.nativeFunction.cast(),
       nullptr,
     );

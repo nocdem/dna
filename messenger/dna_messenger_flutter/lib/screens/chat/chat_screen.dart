@@ -46,11 +46,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     super.initState();
     // Listen to text changes to update send button state
     _messageController.addListener(_onTextChanged);
+    // Listen to scroll for loading older messages
+    _scrollController.addListener(_onScroll);
 
     // Mark messages as read when chat opens
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _markMessagesAsRead();
     });
+  }
+
+  void _onScroll() {
+    // For reversed ListView, maxScrollExtent is the "top" (older messages)
+    if (_scrollController.position.pixels >=
+        _scrollController.position.maxScrollExtent - 200) {
+      final contact = ref.read(selectedContactProvider);
+      if (contact != null) {
+        ref.read(conversationProvider(contact.fingerprint).notifier).loadMore();
+      }
+    }
   }
 
   Future<void> _markMessagesAsRead() async {
@@ -108,6 +121,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   @override
   void dispose() {
     _messageController.removeListener(_onTextChanged);
+    _scrollController.removeListener(_onScroll);
     _messageController.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
@@ -522,12 +536,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       );
     }
 
+    final isLoadingMore = ref.watch(isLoadingMoreProvider(contact.fingerprint));
+    final hasMore = ref.watch(hasMoreMessagesProvider(contact.fingerprint));
+    // Add 1 for loading indicator if loading or has more
+    final extraItems = (isLoadingMore || hasMore) ? 1 : 0;
+
     return ListView.builder(
       controller: _scrollController,
       reverse: true,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      itemCount: filteredMessages.length,
+      itemCount: filteredMessages.length + extraItems,
       itemBuilder: (context, index) {
+        // Last item (appears at top in reversed list) is the loading indicator
+        if (index == filteredMessages.length) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            child: Center(
+              child: isLoadingMore
+                  ? const SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const SizedBox.shrink(),
+            ),
+          );
+        }
         // Reverse index since list is reversed
         final message = filteredMessages[filteredMessages.length - 1 - index];
         final prevMessage = index < filteredMessages.length - 1

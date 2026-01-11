@@ -5,24 +5,111 @@ import '../ffi/dna_engine.dart';
 import 'engine_provider.dart';
 import 'contacts_provider.dart';
 
+/// Page size for message loading
+const int _pageSize = 50;
+
 /// Conversation provider - keyed by contact fingerprint
 final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, List<Message>, String>(
   ConversationNotifier.new,
 );
 
+/// Pagination state for a conversation
+class _PaginationState {
+  final int total;
+  final int loadedCount;
+  final bool isLoadingMore;
+
+  _PaginationState({
+    this.total = 0,
+    this.loadedCount = 0,
+    this.isLoadingMore = false,
+  });
+
+  bool get hasMore => loadedCount < total;
+}
+
+/// Tracks pagination state per conversation
+final _paginationStateProvider = StateProvider.family<_PaginationState, String>(
+  (ref, fingerprint) => _PaginationState(),
+);
+
+/// Whether more messages can be loaded
+final hasMoreMessagesProvider = Provider.family<bool, String>((ref, fingerprint) {
+  return ref.watch(_paginationStateProvider(fingerprint)).hasMore;
+});
+
+/// Whether currently loading more messages
+final isLoadingMoreProvider = Provider.family<bool, String>((ref, fingerprint) {
+  return ref.watch(_paginationStateProvider(fingerprint)).isLoadingMore;
+});
+
 class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
   @override
   Future<List<Message>> build(String arg) async {
     final engine = await ref.watch(engineProvider.future);
-    return engine.getConversation(arg);
+    // Load initial page (newest messages)
+    final page = await engine.getConversationPage(arg, _pageSize, 0);
+    // Update pagination state
+    ref.read(_paginationStateProvider(arg).notifier).state = _PaginationState(
+      total: page.total,
+      loadedCount: page.messages.length,
+    );
+    // Reverse to ASC order (oldest first) for UI
+    return page.messages.reversed.toList();
   }
 
   Future<void> refresh() async {
     state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
-      return engine.getConversation(arg);
+      final page = await engine.getConversationPage(arg, _pageSize, 0);
+      ref.read(_paginationStateProvider(arg).notifier).state = _PaginationState(
+        total: page.total,
+        loadedCount: page.messages.length,
+      );
+      return page.messages.reversed.toList();
     });
+  }
+
+  /// Load more (older) messages
+  Future<void> loadMore() async {
+    final paginationNotifier = ref.read(_paginationStateProvider(arg).notifier);
+    final pagination = paginationNotifier.state;
+
+    if (!pagination.hasMore || pagination.isLoadingMore) return;
+
+    paginationNotifier.state = _PaginationState(
+      total: pagination.total,
+      loadedCount: pagination.loadedCount,
+      isLoadingMore: true,
+    );
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final page = await engine.getConversationPage(
+        arg,
+        _pageSize,
+        pagination.loadedCount,
+      );
+
+      // Prepend older messages (reversed to ASC) to the beginning
+      state.whenData((messages) {
+        final olderMessages = page.messages.reversed.toList();
+        state = AsyncValue.data([...olderMessages, ...messages]);
+      });
+
+      paginationNotifier.state = _PaginationState(
+        total: page.total,
+        loadedCount: pagination.loadedCount + page.messages.length,
+        isLoadingMore: false,
+      );
+    } catch (e) {
+      paginationNotifier.state = _PaginationState(
+        total: pagination.total,
+        loadedCount: pagination.loadedCount,
+        isLoadingMore: false,
+      );
+    }
   }
 
   /// Send message using async queue (fire-and-forget with optimistic UI)

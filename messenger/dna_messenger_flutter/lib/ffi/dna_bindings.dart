@@ -605,6 +605,17 @@ typedef DnaMessagesCbNative = Void Function(
 );
 typedef DnaMessagesCb = NativeFunction<DnaMessagesCbNative>;
 
+/// Messages page callback (with total count) - Native
+typedef DnaMessagesPageCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_message_t> messages,
+  Int32 count,
+  Int32 total,
+  Pointer<Void> user_data,
+);
+typedef DnaMessagesPageCb = NativeFunction<DnaMessagesPageCbNative>;
+
 /// Groups callback - Native
 typedef DnaGroupsCbNative = Void Function(
   Uint64 request_id,
@@ -1540,6 +1551,24 @@ class DnaBindings {
   ) {
     return _dna_engine_get_conversation(
         engine, contact_fingerprint, callback, user_data);
+  }
+
+  late final _dna_engine_get_conversation_page = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Int32, Int32,
+          Pointer<DnaMessagesPageCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, int, int,
+          Pointer<DnaMessagesPageCb>, Pointer<Void>)>('dna_engine_get_conversation_page');
+
+  int dna_engine_get_conversation_page(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> contact_fingerprint,
+    int limit,
+    int offset,
+    Pointer<DnaMessagesPageCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_conversation_page(
+        engine, contact_fingerprint, limit, offset, callback, user_data);
   }
 
   late final _dna_engine_check_offline_messages = _lib.lookupFunction<
