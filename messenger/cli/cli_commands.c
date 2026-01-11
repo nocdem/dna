@@ -1929,10 +1929,10 @@ int cmd_bootstrap_registry(dna_engine_t *engine) {
     }
 
     printf("Found %zu bootstrap nodes:\n\n", registry.node_count);
-    printf("%-18s %-6s %-10s %-12s %s\n",
-           "IP", "PORT", "VERSION", "UPTIME", "LAST_SEEN");
-    printf("%-18s %-6s %-10s %-12s %s\n",
-           "------------------", "------", "----------", "------------", "--------------------");
+    printf("%-18s %-6s %-10s %-12s %-12s %s\n",
+           "IP", "PORT", "VERSION", "UPTIME", "LAST_SEEN", "NODE_ID");
+    printf("%-18s %-6s %-10s %-12s %-12s %s\n",
+           "------------------", "------", "----------", "------------", "------------", "--------------------");
 
     time_t now = time(NULL);
 
@@ -1969,13 +1969,14 @@ int cmd_bootstrap_registry(dna_engine_t *engine) {
         /* Status indicator */
         const char *status = (age_sec < DHT_BOOTSTRAP_STALE_TIMEOUT) ? "✓" : "✗";
 
-        printf("%s %-17s %-6d %-10s %-12s %s\n",
+        printf("%s %-17s %-6d %-10s %-12s %-12s %s\n",
                status,
                node->ip,
                node->port,
                node->version,
                uptime_str,
-               age_str);
+               age_str,
+               node->node_id);
     }
 
     /* Filter and show active count */

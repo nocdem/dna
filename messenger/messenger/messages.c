@@ -458,17 +458,24 @@ int messenger_send_message(
             message_type        // message_type (chat or invitation) - Phase 6.2
         );
 
-        if (result != 0 && result != 1) {  // 1 = duplicate, not an error
+        if (result == -1) {
             QGP_LOG_ERROR(LOG_TAG, "Store message failed for recipient '%s' in SQLite", recipients[i]);
             free(ciphertext);
             free(message_ids);
             return -1;
         }
 
-        // Get the message ID we just inserted
-        message_ids[i] = message_backup_get_last_id(ctx->backup_ctx);
-        QGP_LOG_WARN(LOG_TAG, "[SEND] Saved message id=%d for recipient %.20s...",
-                     message_ids[i], recipients[i]);
+        if (result == 1) {
+            // Duplicate - message already exists, don't get last_id (would be wrong)
+            message_ids[i] = 0;
+            QGP_LOG_WARN(LOG_TAG, "[SEND] Duplicate message for recipient %.20s..., skipping status update",
+                         recipients[i]);
+        } else {
+            // New message inserted - get its ID for status update
+            message_ids[i] = message_backup_get_last_id(ctx->backup_ctx);
+            QGP_LOG_WARN(LOG_TAG, "[SEND] Saved message id=%d for recipient %.20s...",
+                         message_ids[i], recipients[i]);
+        }
     }
 
     // Phase 14: DHT-only messaging - queue directly to DHT (Spillway)
