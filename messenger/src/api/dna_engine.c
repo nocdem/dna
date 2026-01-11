@@ -6591,6 +6591,15 @@ int dna_engine_track_delivery(
         return -1;
     }
 
+    /* Validate fingerprints before starting listener */
+    size_t my_fp_len = strlen(engine->fingerprint);
+    size_t recipient_len = strlen(recipient_fingerprint);
+    if (my_fp_len != 128 || recipient_len != 128) {
+        QGP_LOG_ERROR(LOG_TAG, "[DELIVERY] Invalid fingerprint length: mine=%zu recipient=%zu (expected 128)",
+                      my_fp_len, recipient_len);
+        return -1;
+    }
+
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
     if (!dht_ctx) {
         QGP_LOG_ERROR(LOG_TAG, "Cannot track delivery: DHT not available");
@@ -6630,6 +6639,8 @@ int dna_engine_track_delivery(
     /* Start watermark listener
      * Key: SHA3-512(recipient + ":watermark:" + sender)
      * sender = my fingerprint, recipient = contact */
+    QGP_LOG_INFO(LOG_TAG, "[DELIVERY] Starting watermark listener: sender=%.20s... recipient=%.20s...",
+                 engine->fingerprint, recipient_fingerprint);
     size_t token = dht_listen_watermark(dht_ctx,
                                         engine->fingerprint,
                                         recipient_fingerprint,

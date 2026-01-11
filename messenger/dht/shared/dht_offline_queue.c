@@ -1209,7 +1209,22 @@ static bool watermark_listen_callback(
 ) {
     watermark_listener_ctx_t *ctx = (watermark_listener_ctx_t *)user_data;
     if (!ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK-LISTEN] NULL context received!\n");
         return false;  // Stop listening
+    }
+
+    // Debug: log pointer for correlation with allocation
+    QGP_LOG_INFO(LOG_TAG, "[WATERMARK-LISTEN] Callback with ctx=%p\n", (void*)ctx);
+
+    // Validate context integrity - check sender starts with hex char
+    if (ctx->sender[0] == '\0' ||
+        !((ctx->sender[0] >= '0' && ctx->sender[0] <= '9') ||
+          (ctx->sender[0] >= 'a' && ctx->sender[0] <= 'f') ||
+          (ctx->sender[0] >= 'A' && ctx->sender[0] <= 'F'))) {
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK-LISTEN] CORRUPTED CONTEXT! ctx=%p sender[0]=0x%02x\n",
+                      (void*)ctx, (unsigned char)ctx->sender[0]);
+        // Don't crash - just skip this callback
+        return true;  // Keep listening but skip processing
     }
 
     // Ignore expiration notifications
@@ -1273,6 +1288,15 @@ size_t dht_listen_watermark(
         return 0;
     }
 
+    // Validate fingerprint lengths (should be 128 hex chars)
+    size_t sender_len = strlen(sender);
+    size_t recipient_len = strlen(recipient);
+    if (sender_len != 128 || recipient_len != 128) {
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Invalid fingerprint length: sender=%zu recipient=%zu (expected 128)\n",
+                      sender_len, recipient_len);
+        return 0;
+    }
+
     // Allocate listener context
     watermark_listener_ctx_t *wctx = (watermark_listener_ctx_t *)calloc(1, sizeof(watermark_listener_ctx_t));
     if (!wctx) {
@@ -1281,9 +1305,15 @@ size_t dht_listen_watermark(
     }
 
     strncpy(wctx->sender, sender, sizeof(wctx->sender) - 1);
+    wctx->sender[sizeof(wctx->sender) - 1] = '\0';
     strncpy(wctx->recipient, recipient, sizeof(wctx->recipient) - 1);
+    wctx->recipient[sizeof(wctx->recipient) - 1] = '\0';
     wctx->user_cb = callback;
     wctx->user_data = user_data;
+
+    // Debug: log pointer and content for tracking corruption
+    QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Context allocated at %p: sender=%.20s... recipient=%.20s...\n",
+                 (void*)wctx, wctx->sender, wctx->recipient);
 
     // Generate watermark key: SHA3-512(recipient + ":watermark:" + sender)
     uint8_t key[64];
