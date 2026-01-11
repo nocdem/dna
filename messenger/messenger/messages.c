@@ -375,7 +375,8 @@ int messenger_send_message(
         if (messenger_load_pubkey(ctx, all_recipients[i],
                                    &sign_pubkeys[i], &sign_len,
                                    &enc_pubkeys[i], &enc_len, NULL) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Cannot load public key for '%s' from keyserver", all_recipients[i]);
+            QGP_LOG_ERROR(LOG_TAG, "Cannot load public key for '%s' - key not cached and DHT unavailable", all_recipients[i]);
+            QGP_LOG_WARN(LOG_TAG, "MESSAGE NOT SAVED: Cannot encrypt without recipient's public key");
 
             // Cleanup on error
             for (size_t j = 0; j < total_recipients; j++) {
@@ -386,7 +387,7 @@ int messenger_send_message(
             free(sign_pubkeys);
             free(all_recipients);
             qgp_key_free(sender_sign_key);
-            return -1;
+            return -3;  // KEY_UNAVAILABLE - distinct from network error
         }
     }
 
@@ -471,26 +472,33 @@ int messenger_send_message(
     // Phase 14: DHT-only messaging - queue directly to DHT (Spillway)
     // P2P transport is NOT required - messenger_queue_to_dht uses DHT singleton
     // This is more reliable on mobile platforms with background execution restrictions
+    //
+    // NOTE: With async DHT PUT, we DON'T update status to SENT here.
+    // Status stays PENDING until watermark confirmation from recipient → DELIVERED.
+    // This ensures UI shows accurate status (clock icon until recipient confirms).
     size_t dht_success = 0;
     for (size_t i = 0; i < recipient_count; i++) {
         // Queue directly to DHT - no P2P attempt for messaging
         if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len) == 0) {
             dht_success++;
-            // Update status to SENT (1) - queued in DHT
-            if (message_ids[i] > 0) {
-                message_backup_update_status(ctx->backup_ctx, message_ids[i], 1);
-            }
+            // Status stays PENDING (0) - will become DELIVERED (3) via watermark
         } else {
-            // Update status to FAILED (2) - DHT queue failed
+            // Update status to FAILED (2) - DHT queue failed (key unavailable, etc.)
             if (message_ids[i] > 0) {
                 message_backup_update_status(ctx->backup_ctx, message_ids[i], 2);
             }
         }
     }
-    (void)dht_success;  // Suppress unused variable warning
 
     free(message_ids);
     free(ciphertext);
+
+    // Return -1 if ALL DHT queues failed, 0 if at least one succeeded
+    // This allows UI to show FAILED status when offline
+    if (dht_success == 0) {
+        QGP_LOG_WARN(LOG_TAG, "All DHT queues failed - message saved with FAILED status");
+        return -1;
+    }
 
     return 0;
 }
@@ -996,7 +1004,28 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
         return -1;
     }
 
-    // Convert each message
+    // Load Kyber key ONCE for all decryptions (massive performance improvement)
+    const char *home_kyber = qgp_platform_app_data_dir();
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", home_kyber);
+
+    qgp_key_t *kyber_key = NULL;
+    if (qgp_key_load(kyber_path, &kyber_key) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key for decryption");
+        free(messages);
+        message_backup_free_messages(backup_messages, backup_count);
+        return -1;
+    }
+
+    if (kyber_key->private_key_size != 3168) {  // Kyber1024 secret key size
+        QGP_LOG_ERROR(LOG_TAG, "Invalid Kyber key size: %zu", kyber_key->private_key_size);
+        qgp_key_free(kyber_key);
+        free(messages);
+        message_backup_free_messages(backup_messages, backup_count);
+        return -1;
+    }
+
+    // Convert and decrypt each message
     for (int i = 0; i < backup_count; i++) {
         messages[i].id = backup_messages[i].id;
         messages[i].sender = strdup(backup_messages[i].sender);
@@ -1010,10 +1039,10 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
         }
 
         // Convert status int to string: 0=pending, 1=sent, 2=failed, 3=delivered, 4=read
-        // First check the status field, fall back to read/delivered flags for old messages
-        if (backup_messages[i].read) {
+        // Check status field FIRST, fall back to read/delivered flags only for old messages
+        if (backup_messages[i].status == 4) {
             messages[i].status = strdup("read");
-        } else if (backup_messages[i].delivered) {
+        } else if (backup_messages[i].status == 3) {
             messages[i].status = strdup("delivered");
         } else if (backup_messages[i].status == 2) {
             messages[i].status = strdup("failed");
@@ -1022,15 +1051,63 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
         } else if (backup_messages[i].status == 0) {
             messages[i].status = strdup("pending");
         } else {
-            messages[i].status = strdup("sent");  // Default for old messages
+            // Old messages without status field - fall back to boolean flags
+            if (backup_messages[i].read) {
+                messages[i].status = strdup("read");
+            } else if (backup_messages[i].delivered) {
+                messages[i].status = strdup("delivered");
+            } else {
+                messages[i].status = strdup("sent");  // Default for old messages
+            }
         }
 
         // For now, we don't have separate timestamps for delivered/read
         // We could add these to SQLite schema later if needed
         messages[i].delivered_at = backup_messages[i].delivered ? strdup(messages[i].timestamp) : NULL;
         messages[i].read_at = backup_messages[i].read ? strdup(messages[i].timestamp) : NULL;
-        messages[i].plaintext = NULL;  // Not decrypted yet
         messages[i].message_type = backup_messages[i].message_type;  // Phase 6.2: Copy message type
+
+        // Decrypt message inline (key already loaded - no disk I/O per message)
+        if (backup_messages[i].encrypted_message && backup_messages[i].encrypted_len > 0) {
+            uint8_t *plaintext = NULL;
+            size_t plaintext_len = 0;
+            uint8_t *sender_fp = NULL;
+            size_t sender_fp_len = 0;
+            uint8_t *signature = NULL;
+            size_t signature_len = 0;
+            uint64_t sender_timestamp = 0;
+
+            dna_error_t err = dna_decrypt_message_raw(
+                ctx->dna_ctx,
+                backup_messages[i].encrypted_message,
+                backup_messages[i].encrypted_len,
+                kyber_key->private_key,
+                &plaintext,
+                &plaintext_len,
+                &sender_fp,
+                &sender_fp_len,
+                &signature,
+                &signature_len,
+                &sender_timestamp
+            );
+
+            if (err == DNA_OK && plaintext) {
+                // Copy plaintext as null-terminated string
+                messages[i].plaintext = (char*)malloc(plaintext_len + 1);
+                if (messages[i].plaintext) {
+                    memcpy(messages[i].plaintext, plaintext, plaintext_len);
+                    messages[i].plaintext[plaintext_len] = '\0';
+                }
+                free(plaintext);
+            } else {
+                messages[i].plaintext = strdup("[Decryption failed]");
+            }
+
+            free(sender_fp);
+            free(signature);
+        } else {
+            messages[i].plaintext = strdup("[No message data]");
+        }
 
         if (!messages[i].sender || !messages[i].recipient || !messages[i].timestamp || !messages[i].status) {
             // Clean up on failure
@@ -1044,10 +1121,14 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
                 free(messages[j].plaintext);
             }
             free(messages);
+            qgp_key_free(kyber_key);
             message_backup_free_messages(backup_messages, backup_count);
             return -1;
         }
     }
+
+    // Free Kyber key after all decryptions (secure wipe)
+    qgp_key_free(kyber_key);
 
     *messages_out = messages;
     message_backup_free_messages(backup_messages, backup_count);

@@ -1571,6 +1571,33 @@ class DnaBindings {
   }
 
   // ---------------------------------------------------------------------------
+  // MESSAGE RETRY
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_retry_pending_messages = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>),
+      int Function(Pointer<dna_engine_t>)>('dna_engine_retry_pending_messages');
+
+  /// Retry all pending/failed messages
+  /// Returns number of messages successfully retried, or -1 on error
+  int dna_engine_retry_pending_messages(Pointer<dna_engine_t> engine) {
+    return _dna_engine_retry_pending_messages(engine);
+  }
+
+  late final _dna_engine_retry_message = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Int32),
+      int Function(Pointer<dna_engine_t>, int)>('dna_engine_retry_message');
+
+  /// Retry a single failed message by ID
+  /// Returns 0 on success, -1 on error
+  int dna_engine_retry_message(
+    Pointer<dna_engine_t> engine,
+    int messageId,
+  ) {
+    return _dna_engine_retry_message(engine, messageId);
+  }
+
+  // ---------------------------------------------------------------------------
   // MESSAGE STATUS / READ RECEIPTS
   // ---------------------------------------------------------------------------
 

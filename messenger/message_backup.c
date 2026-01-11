@@ -27,7 +27,11 @@ struct message_backup_context {
 };
 
 /**
- * Database Schema (v9) - Add GEK group tables (GEK system)
+ * Database Schema (v11)
+ *
+ * v9:  GEK group tables (groups, group_members, group_geks, pending_invitations, group_messages)
+ * v10: retry_count column for message retry system
+ * v11: Fix status field for old messages where delivered=1 but status was 0/1
  *
  * SECURITY: Messages stored as encrypted BLOB for data sovereignty.
  * If database is stolen, messages remain unreadable.
@@ -53,7 +57,7 @@ static const char *SCHEMA_SQL =
     "  delivered INTEGER DEFAULT 1,"
     "  read INTEGER DEFAULT 0,"
     "  is_outgoing INTEGER DEFAULT 0,"
-    "  status INTEGER DEFAULT 1,"         // 0=PENDING, 1=SENT, 2=FAILED
+    "  status INTEGER DEFAULT 1,"         // 0=PENDING, 1=SENT(legacy), 2=FAILED, 3=DELIVERED, 4=READ
     "  group_id INTEGER DEFAULT 0,"       // 0=direct message, >0=group ID (Phase 5.2)
     "  message_type INTEGER DEFAULT 0,"   // 0=chat, 1=group_invitation (Phase 6.2)
     "  invitation_status INTEGER DEFAULT 0"  // 0=pending, 1=accepted, 2=declined (Phase 6.2)
@@ -69,7 +73,7 @@ static const char *SCHEMA_SQL =
     "  value TEXT"
     ");"
     ""
-    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '9');";
+    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '11');";
 
 /**
  * Get database path
@@ -327,6 +331,35 @@ message_backup_context_t* message_backup_init(const char *identity) {
         QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v9 (added GEK group tables)\n");
     }
 
+    // Migration: Add retry_count column if it doesn't exist (v10 - Message Retry)
+    const char *migration_sql_v10 = "ALTER TABLE messages ADD COLUMN retry_count INTEGER DEFAULT 0;";
+    rc = sqlite3_exec(ctx->db, migration_sql_v10, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        // Column might already exist (not an error)
+        if (strstr(err_msg, "duplicate column") == NULL) {
+            QGP_LOG_ERROR(LOG_TAG, "Migration warning (v10): %s\n", err_msg);
+        }
+        sqlite3_free(err_msg);
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v10 (added retry_count column)\n");
+    }
+
+    // Migration: Fix old messages with delivered=1 but status=0 or status=1 (v11)
+    // These should be status=3 (DELIVERED) since delivered flag was already set.
+    // This fixes messages from before we prioritized the status field over boolean flags.
+    const char *migration_sql_v11 =
+        "UPDATE messages SET status = 3 WHERE delivered = 1 AND status IN (0, 1);";
+    rc = sqlite3_exec(ctx->db, migration_sql_v11, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Migration warning (v11): %s\n", err_msg);
+        sqlite3_free(err_msg);
+    } else {
+        int changes = sqlite3_changes(ctx->db);
+        if (changes > 0) {
+            QGP_LOG_INFO(LOG_TAG, "Migrated %d messages to DELIVERED status (v11 - fix status field)\n", changes);
+        }
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Initialized successfully for identity: %s (ENCRYPTED STORAGE)\n", identity);
     return ctx;
 }
@@ -388,7 +421,7 @@ int message_backup_save(message_backup_context_t *ctx,
 
     const char *sql =
         "INSERT INTO messages (sender, recipient, encrypted_message, encrypted_len, timestamp, is_outgoing, delivered, read, status, group_id, message_type) "
-        "VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)";
+        "VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)";  // delivered=0 until watermark confirms
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
@@ -651,7 +684,8 @@ int message_backup_get_group_conversation(message_backup_context_t *ctx,
 }
 
 /**
- * Update message status (PENDING/SENT/FAILED)
+ * Update message status (PENDING/FAILED/DELIVERED/READ)
+ * Note: SENT(1) is legacy - new messages go directly PENDING→DELIVERED via watermark
  */
 int message_backup_update_status(message_backup_context_t *ctx, int message_id, int status) {
     if (!ctx || !ctx->db) return -1;
@@ -673,6 +707,112 @@ int message_backup_update_status(message_backup_context_t *ctx, int message_id, 
     }
 
     return -1;
+}
+
+/**
+ * Increment retry count for a message
+ */
+int message_backup_increment_retry_count(message_backup_context_t *ctx, int message_id) {
+    if (!ctx || !ctx->db) return -1;
+
+    const char *sql = "UPDATE messages SET retry_count = retry_count + 1 WHERE id = ?";
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_int(stmt, 1, message_id);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc == SQLITE_DONE) {
+        QGP_LOG_DEBUG(LOG_TAG, "Incremented retry_count for message %d\n", message_id);
+        return 0;
+    }
+
+    return -1;
+}
+
+/**
+ * Get all pending/failed outgoing messages for retry
+ */
+int message_backup_get_pending_messages(message_backup_context_t *ctx,
+                                         int max_retries,
+                                         backup_message_t **messages_out,
+                                         int *count_out) {
+    if (!ctx || !ctx->db || !messages_out || !count_out) return -1;
+
+    *messages_out = NULL;
+    *count_out = 0;
+
+    // Query outgoing messages with status PENDING(0) or FAILED(2) that haven't exceeded max_retries
+    const char *sql =
+        "SELECT id, sender, recipient, encrypted_message, encrypted_len, timestamp, delivered, read, status, group_id, message_type, retry_count "
+        "FROM messages "
+        "WHERE is_outgoing = 1 AND (status = 0 OR status = 2) AND retry_count < ? "
+        "ORDER BY timestamp ASC";
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare pending messages query: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, max_retries);
+
+    // Count results first
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        count++;
+    }
+    sqlite3_reset(stmt);
+
+    if (count == 0) {
+        sqlite3_finalize(stmt);
+        return 0;
+    }
+
+    // Allocate array
+    backup_message_t *messages = calloc(count, sizeof(backup_message_t));
+    if (!messages) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    // Fetch messages
+    int idx = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && idx < count) {
+        messages[idx].id = sqlite3_column_int(stmt, 0);
+        strncpy(messages[idx].sender, (const char*)sqlite3_column_text(stmt, 1), 255);
+        strncpy(messages[idx].recipient, (const char*)sqlite3_column_text(stmt, 2), 255);
+
+        // Copy encrypted message (BLOB)
+        int blob_len = sqlite3_column_bytes(stmt, 3);
+        const void *blob_data = sqlite3_column_blob(stmt, 3);
+        messages[idx].encrypted_message = malloc(blob_len);
+        if (messages[idx].encrypted_message) {
+            memcpy(messages[idx].encrypted_message, blob_data, blob_len);
+            messages[idx].encrypted_len = blob_len;
+        }
+
+        messages[idx].timestamp = (time_t)sqlite3_column_int64(stmt, 5);
+        messages[idx].delivered = sqlite3_column_int(stmt, 6) != 0;
+        messages[idx].read = sqlite3_column_int(stmt, 7) != 0;
+        messages[idx].status = sqlite3_column_int(stmt, 8);
+        messages[idx].group_id = sqlite3_column_int(stmt, 9);
+        messages[idx].message_type = sqlite3_column_int(stmt, 10);
+        messages[idx].retry_count = sqlite3_column_int(stmt, 11);
+        idx++;
+    }
+
+    sqlite3_finalize(stmt);
+
+    *messages_out = messages;
+    *count_out = count;
+
+    QGP_LOG_INFO(LOG_TAG, "Found %d pending/failed messages for retry\n", count);
+    return 0;
 }
 
 /**
@@ -952,10 +1092,10 @@ uint64_t message_backup_get_next_seq(message_backup_context_t *ctx, const char *
  * Mark all outgoing messages as DELIVERED up to a sequence number
  *
  * Note: The current messages table doesn't store seq_num per message.
- * This implementation marks ALL outgoing SENT messages to the recipient
+ * This implementation marks ALL outgoing PENDING/SENT messages to the recipient
  * as DELIVERED. A future enhancement would add seq_num tracking per message.
  *
- * Message status values: 0=PENDING, 1=SENT, 2=FAILED, 3=DELIVERED, 4=READ
+ * Status flow: PENDING(0) → DELIVERED(3) via watermark. SENT(1) is legacy.
  */
 int message_backup_mark_delivered_up_to_seq(
     message_backup_context_t *ctx,
@@ -969,11 +1109,12 @@ int message_backup_mark_delivered_up_to_seq(
 
     (void)max_seq_num;  // Not used yet - future: add seq_num column to messages
 
-    // Update all outgoing messages to recipient with status = SENT(1) to DELIVERED(3)
+    // Update all outgoing messages to recipient with status PENDING(0) or SENT(1) to DELIVERED(3)
+    // With async DHT PUT, messages stay PENDING until watermark confirms delivery
     // is_outgoing = 1 means we sent it, sender = our fingerprint
     const char *sql =
         "UPDATE messages SET status = 3 "
-        "WHERE sender = ? AND recipient = ? AND is_outgoing = 1 AND status = 1";
+        "WHERE sender = ? AND recipient = ? AND is_outgoing = 1 AND status IN (0, 1)";
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);

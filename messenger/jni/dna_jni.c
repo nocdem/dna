@@ -1038,18 +1038,32 @@ Java_io_cpunk_dna_DNAEngine_nativeNetworkChanged(JNIEnv *env, jobject thiz) {
 
 /**
  * Direct DHT reinit for DnaMessengerService (foreground service).
- * Called when network changes and Flutter isn't running.
- * Uses dht_singleton_reinit() directly - doesn't need g_engine.
+ * Called when network changes while app is backgrounded.
+ *
+ * If engine is available with identity loaded, uses dna_engine_network_changed()
+ * which properly cancels existing listeners before reinit.
+ *
+ * Otherwise falls back to direct dht_singleton_reinit() (no listeners to cancel).
+ *
  * Returns: 0 on success, -1 if DHT not initialized, -2 on reinit failure
  */
 JNIEXPORT jint JNICALL
 Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReinitDht(JNIEnv *env, jobject thiz) {
+    /* If engine is ready (identity loaded), use the full network_changed path.
+     * This properly cancels listeners before reinit and lets the status callback
+     * restart them on the new DHT context. */
+    if (g_engine && dna_engine_get_fingerprint(g_engine) != NULL) {
+        LOGI("nativeReinitDht: Using engine network_changed path");
+        return dna_engine_network_changed(g_engine);
+    }
+
+    /* Fallback: DHT-only reinit when engine/identity not available */
     if (!dht_singleton_is_initialized()) {
         LOGD("nativeReinitDht: DHT not initialized, skipping");
         return -1;
     }
 
-    LOGI("nativeReinitDht: Network change - reinitializing DHT singleton");
+    LOGI("nativeReinitDht: Network change - reinitializing DHT singleton (no engine)");
     int result = dht_singleton_reinit();
     if (result != 0) {
         LOGE("nativeReinitDht: DHT reinit failed");

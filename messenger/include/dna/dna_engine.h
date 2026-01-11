@@ -79,6 +79,7 @@ typedef uint64_t dna_request_id_t;
 #define DNA_ENGINE_ERROR_INVALID_SIGNATURE (-113)  /* DHT profile signature verification failed */
 #define DNA_ENGINE_ERROR_INSUFFICIENT_BALANCE (-114)  /* Insufficient token balance for transaction */
 #define DNA_ENGINE_ERROR_RENT_MINIMUM (-115)  /* Solana: amount below rent-exempt minimum for new account */
+#define DNA_ENGINE_ERROR_KEY_UNAVAILABLE (-116)  /* Recipient public key not cached and DHT lookup failed */
 
 /**
  * Get human-readable error message for engine errors
@@ -130,7 +131,7 @@ typedef struct {
     char *plaintext;            /* Decrypted message text (caller must free via dna_free_messages) */
     uint64_t timestamp;         /* Unix timestamp */
     bool is_outgoing;           /* true if sent by current identity */
-    int status;                 /* 0=pending, 1=sent, 2=delivered, 3=read */
+    int status;                 /* 0=pending, 1=sent(legacy), 2=failed, 3=delivered, 4=read */
     int message_type;           /* 0=chat, 1=group_invitation */
 } dna_message_t;
 
@@ -1433,6 +1434,33 @@ DNA_API int dna_engine_delete_message_sync(
     dna_engine_t *engine,
     int message_id
 );
+
+/**
+ * Retry all pending/failed messages
+ *
+ * Queries local database for messages with status PENDING(0) or FAILED(2)
+ * and attempts to re-queue them to DHT. Called automatically on:
+ * - Identity load (app startup)
+ * - DHT reconnect (network change)
+ *
+ * Messages that exceed max_retries (10) are skipped and remain as FAILED.
+ *
+ * @param engine     Engine instance
+ * @return           Number of messages successfully retried, or -1 on error
+ */
+DNA_API int dna_engine_retry_pending_messages(dna_engine_t *engine);
+
+/**
+ * Retry a single failed message by ID
+ *
+ * Attempts to re-send a specific message. Use this for manual retry
+ * (e.g., user taps retry button on failed message).
+ *
+ * @param engine     Engine instance
+ * @param message_id Message ID from local database
+ * @return           0 on success, -1 on error (not found or not retryable)
+ */
+DNA_API int dna_engine_retry_message(dna_engine_t *engine, int message_id);
 
 /* ============================================================================
  * 5. GROUPS (6 async functions)

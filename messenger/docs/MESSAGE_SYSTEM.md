@@ -1,7 +1,7 @@
 # DNA Messenger - Message System Documentation
 
 **Version:** v0.08 (Phase 14 - DHT-Only Messaging)
-**Last Updated:** 2025-12-24
+**Last Updated:** 2026-01-10
 **Security Level:** NIST Category 5 (256-bit quantum)
 
 This document describes how the DNA Messenger message system works, with all facts verified directly from source code.
@@ -223,11 +223,91 @@ TRANSPORT                         STORAGE                        DECRYPTION     
 
 | Status | Value | Icon | Description |
 |--------|-------|------|-------------|
-| `STATUS_PENDING` | 0 | Clock | Sending in progress |
-| `STATUS_SENT` | 1 | Checkmark | Successfully sent (P2P or DHT queued) |
-| `STATUS_FAILED` | 2 | Error | Send failed (retry available) |
+| `STATUS_PENDING` | 0 | Clock | Queued to DHT, awaiting delivery confirmation |
+| `STATUS_SENT` | 1 | — | Legacy (no longer used with async DHT PUT) |
+| `STATUS_FAILED` | 2 | Error | Send failed (will auto-retry, tap to retry manually) |
+| `STATUS_DELIVERED` | 3 | Double-check | Recipient confirmed via watermark |
+| `STATUS_READ` | 4 | Blue double-check | Recipient read the message |
 
-**Source:** `messenger.h` (message_info_t), `dna_messenger_flutter/lib/models/`
+**Status Flow (v0.3.168+):**
+```
+PENDING (0) ──────────────────────────────────────► DELIVERED (3)
+    │                                                  ▲
+    │ (DHT queue failed)                               │
+    ▼                                                  │
+FAILED (2) ──► auto-retry on reconnect ──► PENDING ───┘
+```
+
+**Note:** With async DHT PUT, messages stay PENDING until recipient sends watermark confirmation. The SENT status is legacy from when DHT PUT was synchronous.
+
+**Source:** `message_backup.h` (backup_message_t), `dna_messenger_flutter/lib/ffi/dna_engine.dart`
+
+### 2.4 Bulletproof Message Delivery (Auto-Retry)
+
+Messages are automatically retried when send fails. This ensures messages are never lost due to transient network issues.
+
+```
+SEND ATTEMPT                     FAILURE                          RETRY TRIGGERS
+    │                               │                                  │
+    ▼                               │                                  │
+┌─────────────────┐                 │                                  │
+│ messenger_send  │                 │                                  │
+│   _message()    │                 │                                  │
+└────────┬────────┘                 │                                  │
+         │                          │                                  │
+         ▼                          │                                  │
+    DHT Queue ──────► FAILED ───────┼──────────────────────────────────┤
+         │                          │                                  │
+         │                          ▼                                  │
+         │               ┌───────────────────┐                         │
+         │               │ status = FAILED   │                         │
+         │               │ retry_count++     │                         │
+         │               └─────────┬─────────┘                         │
+         │                         │                                   │
+         │                         │    ┌───────────────────────────┐  │
+         │                         │    │ RETRY TRIGGERS:           │  │
+         │                         │    │ • Identity load (app start)│  │
+         │                         │    │ • DHT reconnect           │  │
+         │                         │    │ • Network change          │  │
+         │                         │    └─────────────┬─────────────┘  │
+         │                         │                  │                │
+         │                         │                  ▼                │
+         │                         │    ┌───────────────────────────┐  │
+         │                         └───►│ dna_engine_retry_pending  │  │
+         │                              │   _messages()             │  │
+         │                              │ Query: status IN (0,2)    │  │
+         │                              │        AND retry_count<10 │  │
+         │                              └─────────────┬─────────────┘  │
+         │                                            │                │
+         │                                            ▼                │
+         │                              ┌───────────────────────────┐  │
+         │                              │ For each pending message: │  │
+         │                              │   Re-queue to DHT (async) │  │
+         │                              │   Success → stays PENDING │  │
+         │                              │   Fail → retry_count++    │  │
+         │                              └───────────────────────────┘  │
+         │                                                             │
+         ▼                                                             │
+    SUCCESS (queued to DHT) ───────────────────────────────────────────┘
+    status = PENDING (until watermark confirms DELIVERED)
+```
+
+**Retry Logic:**
+- **Max retries:** 10 attempts (`retry_count` column in messages table)
+- **Retry triggers:** Identity load, DHT reconnect, network state change
+- **Thread safety:** Mutex-protected to prevent concurrent retry calls
+- **Query:** `SELECT * FROM messages WHERE is_outgoing=1 AND (status=0 OR status=2) AND retry_count < 10`
+- **On success:** Status stays PENDING (0), awaiting watermark confirmation → DELIVERED (3)
+- **On failure:** `retry_count` incremented, status remains FAILED (2)
+
+**Database Schema (v10):**
+```sql
+ALTER TABLE messages ADD COLUMN retry_count INTEGER DEFAULT 0;
+```
+
+Note: v9 added GEK group tables (groups, group_members, group_geks, pending_invitations, group_messages).
+
+**Source:** `message_backup.c:644-721`, `src/api/dna_engine.c:4862-4920`
 
 ---
 
@@ -857,10 +937,11 @@ CREATE TABLE IF NOT EXISTS messages (
   delivered INTEGER DEFAULT 1,
   read INTEGER DEFAULT 0,
   is_outgoing INTEGER DEFAULT 0,
-  status INTEGER DEFAULT 1,         -- 0=PENDING, 1=SENT, 2=FAILED
+  status INTEGER DEFAULT 1,         -- 0=PENDING, 1=SENT(legacy), 2=FAILED, 3=DELIVERED, 4=READ
   group_id INTEGER DEFAULT 0,       -- 0=direct message, >0=group ID
   message_type INTEGER DEFAULT 0,   -- 0=chat, 1=group_invitation
-  invitation_status INTEGER DEFAULT 0  -- 0=pending, 1=accepted, 2=declined
+  invitation_status INTEGER DEFAULT 0,  -- 0=pending, 1=accepted, 2=declined
+  retry_count INTEGER DEFAULT 0     -- (v10) Retry attempts for failed messages
 );
 ```
 

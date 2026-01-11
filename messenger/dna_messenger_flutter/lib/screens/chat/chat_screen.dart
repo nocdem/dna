@@ -38,6 +38,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _isSearching = false;
   String _searchQuery = '';
   final _searchController = TextEditingController();
+  final _searchFocusNode = FocusNode();
 
   @override
   void initState() {
@@ -110,6 +111,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _scrollController.dispose();
     _focusNode.dispose();
     _searchController.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
@@ -120,6 +122,41 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
     _justInsertedEmoji = false;
     // Note: send button state handled by ValueListenableBuilder - no setState needed
+  }
+
+  /// Retry a failed message
+  void _retryMessage(int messageId) async {
+    final contact = ref.read(selectedContactProvider);
+    if (contact == null) return;
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final success = engine.retryMessage(messageId);
+      if (success) {
+        // Refresh conversation to show updated status
+        ref.invalidate(conversationProvider(contact.fingerprint));
+      } else {
+        // Show error snackbar
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Failed to retry message'),
+              backgroundColor: DnaColors.snackbarError,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      log('CHAT', 'Retry failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Retry error: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _checkOfflineMessages() async {
@@ -236,6 +273,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         title: _isSearching
             ? TextField(
                 controller: _searchController,
+                focusNode: _searchFocusNode,
                 autofocus: true,
                 decoration: InputDecoration(
                   hintText: 'Search messages...',
@@ -299,6 +337,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   onPressed: () {
                     setState(() {
                       _isSearching = true;
+                    });
+                    // Request focus after the TextField is built
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      _searchFocusNode.requestFocus();
                     });
                   },
                 ),
@@ -533,6 +575,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 child: _MessageBubble(
                   message: message,
                   isStarred: starredIds.contains(message.id),
+                  onRetry: message.isOutgoing &&
+                          (message.status == MessageStatus.failed || message.status == MessageStatus.pending)
+                      ? () => _retryMessage(message.id)
+                      : null,
                 ),
               ),
             ),
@@ -578,57 +624,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Widget _buildInputArea(BuildContext context, Contact contact) {
     final theme = Theme.of(context);
     final dhtState = ref.watch(dhtConnectionStateProvider);
-    final isConnected = dhtState == DhtConnectionState.connected;
-    final isConnecting = dhtState == DhtConnectionState.connecting;
+    final isDisconnected = dhtState == DhtConnectionState.disconnected;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // DHT Status Banner - shows when not connected
-        if (!isConnected)
+        // DHT Status Banner - only shows when fully disconnected
+        if (isDisconnected)
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: isConnecting
-                ? DnaColors.textWarning.withAlpha(30)
-                : DnaColors.textError.withAlpha(30),
+            color: DnaColors.textError.withAlpha(30),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                if (isConnecting) ...[
-                  SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: DnaColors.textWarning,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Connecting to network...',
-                    style: TextStyle(
-                      color: DnaColors.textWarning,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ] else ...[
-                  FaIcon(
-                    FontAwesomeIcons.cloudBolt,
-                    size: 14,
+                FaIcon(
+                  FontAwesomeIcons.cloudBolt,
+                  size: 14,
+                  color: DnaColors.textError,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Disconnected - messages will queue',
+                  style: TextStyle(
                     color: DnaColors.textError,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
                   ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Disconnected - messages will queue',
-                    style: TextStyle(
-                      color: DnaColors.textError,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
+                ),
               ],
             ),
           ),
@@ -1811,8 +1834,9 @@ class _ContactAvatar extends ConsumerWidget {
 class _MessageBubble extends StatelessWidget {
   final Message message;
   final bool isStarred;
+  final VoidCallback? onRetry;
 
-  const _MessageBubble({required this.message, this.isStarred = false});
+  const _MessageBubble({required this.message, this.isStarred = false, this.onRetry});
 
   /// Check if message is a CPUNK transfer by parsing JSON content
   Map<String, dynamic>? _parseTransferData() {
@@ -2085,24 +2109,40 @@ class _MessageBubble extends StatelessWidget {
     final color = theme.colorScheme.onPrimary.withAlpha(179);
     const size = 16.0;
 
-    if (status == MessageStatus.pending) {
-      // Show spinner for pending messages
-      return SizedBox(
-        width: size,
-        height: size,
-        child: CircularProgressIndicator(
-          strokeWidth: 1.5,
-          color: color,
+    if (status == MessageStatus.failed) {
+      // Show tappable retry icon for failed messages
+      return GestureDetector(
+        onTap: onRetry,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FaIcon(
+              FontAwesomeIcons.circleExclamation,
+              size: size - 2,
+              color: DnaColors.textWarning,
+            ),
+            if (onRetry != null) ...[
+              const SizedBox(width: 4),
+              FaIcon(
+                FontAwesomeIcons.arrowsRotate,
+                size: size - 2,
+                color: DnaColors.textWarning,
+              ),
+            ],
+          ],
         ),
       );
     }
 
-    if (status == MessageStatus.failed) {
-      // Show red error icon for failed messages
-      return FaIcon(
-        FontAwesomeIcons.circleExclamation,
-        size: size,
-        color: DnaColors.textWarning,
+    // Show tappable retry for pending messages (tap clock to retry)
+    if (status == MessageStatus.pending && onRetry != null) {
+      return GestureDetector(
+        onTap: onRetry,
+        child: FaIcon(
+          FontAwesomeIcons.clock,
+          size: size,
+          color: color,
+        ),
       );
     }
 
@@ -2116,15 +2156,16 @@ class _MessageBubble extends StatelessWidget {
   IconData _getStatusIcon(MessageStatus status) {
     switch (status) {
       case MessageStatus.pending:
-        return FontAwesomeIcons.clock;
       case MessageStatus.sent:
-        return FontAwesomeIcons.check;
+        // Clock for pending/sent (waiting for delivery confirmation)
+        return FontAwesomeIcons.clock;
       case MessageStatus.failed:
         return FontAwesomeIcons.circleExclamation;
       case MessageStatus.delivered:
         return FontAwesomeIcons.checkDouble;
       case MessageStatus.read:
-        return FontAwesomeIcons.checkDouble; // Would be colored differently
+        // Blue double-check for read (colored in the widget)
+        return FontAwesomeIcons.checkDouble;
     }
   }
 }
@@ -2899,11 +2940,11 @@ class _TransferBubble extends StatelessWidget {
                 if (isOutgoing) ...[
                   const SizedBox(width: 4),
                   FaIcon(
-                    message.status == MessageStatus.pending
+                    message.status == MessageStatus.pending || message.status == MessageStatus.sent
                         ? FontAwesomeIcons.clock
                         : (message.status == MessageStatus.failed
                             ? FontAwesomeIcons.circleExclamation
-                            : FontAwesomeIcons.check),
+                            : FontAwesomeIcons.checkDouble),
                     size: 14,
                     color: message.status == MessageStatus.failed
                         ? DnaColors.textWarning

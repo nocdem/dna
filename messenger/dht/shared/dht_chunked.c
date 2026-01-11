@@ -18,16 +18,14 @@
 #include <zlib.h>  // For crc32
 
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 
 #define LOG_TAG "DHT_CHUNK"
 #ifdef _WIN32
 #include <winsock2.h>
-#include <windows.h>  // For Sleep()
-#define chunk_sleep_ms(ms) Sleep(ms)
+#include <windows.h>
 #else
 #include <arpa/inet.h>
-#include <unistd.h>   // For usleep()
-#define chunk_sleep_ms(ms) usleep((ms) * 1000)
 #endif
 
 /*============================================================================
@@ -166,26 +164,34 @@ static int decompress_data(const uint8_t *in, size_t in_len,
         return -1;
     }
 
-    uint8_t *buf = (uint8_t *)malloc(expected_size);
+    // Allocate 2x buffer to handle stale chunk headers from DHT consistency issues
+    // When DHT PUT partially fails, chunk 0 (with header) may be stale while
+    // data chunks have more content than the header claims
+    size_t buffer_size = expected_size * 2;
+    if (buffer_size < expected_size) buffer_size = expected_size;  // Overflow check
+
+    uint8_t *buf = (uint8_t *)malloc(buffer_size);
     if (!buf) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate decompression buffer\n");
         return -1;
     }
 
-    size_t decompressed_size = ZSTD_decompress(buf, expected_size, in, in_len);
+    size_t decompressed_size = ZSTD_decompress(buf, buffer_size, in, in_len);
 
     if (ZSTD_isError(decompressed_size)) {
-        QGP_LOG_WARN(LOG_TAG, "ZSTD decompression failed (stale DHT data?): %s",
+        QGP_LOG_WARN(LOG_TAG, "ZSTD decompression failed: %s",
                 ZSTD_getErrorName(decompressed_size));
         free(buf);
         return -1;
     }
 
+    // Allow size mismatch due to stale headers - just warn and continue
     if (decompressed_size != expected_size) {
-        QGP_LOG_ERROR(LOG_TAG, "Decompressed size mismatch: %zu != %zu\n",
+        QGP_LOG_WARN(LOG_TAG, "Decompressed size mismatch (stale header?): %zu != %zu (using actual)\n",
                 decompressed_size, expected_size);
-        free(buf);
-        return -1;
+        // Reallocate to actual size to avoid wasting memory
+        uint8_t *resized = (uint8_t *)realloc(buf, decompressed_size);
+        if (resized) buf = resized;
     }
 
     *out = buf;
@@ -444,7 +450,21 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
            data_len, compressed_len, total_chunks, base_key);
 
     // Step 4: Publish each chunk
-    for (uint32_t i = 0; i < total_chunks; i++) {
+    // IMPORTANT: Publish chunk 0 LAST since it contains the header with original_size.
+    // This minimizes inconsistency if some PUTs fail - chunk 0's header will match
+    // the data chunks that were published before it.
+    // Order: 1, 2, ..., N-1, 0
+    for (uint32_t iter = 0; iter < total_chunks; iter++) {
+        // Reorder: skip 0 first, do it last
+        uint32_t i;
+        if (total_chunks == 1) {
+            i = 0;  // Only one chunk, must be 0
+        } else if (iter < total_chunks - 1) {
+            i = iter + 1;  // Do chunks 1, 2, ..., N-1 first
+        } else {
+            i = 0;  // Do chunk 0 last
+        }
+
         size_t offset = (size_t)i * DHT_CHUNK_DATA_SIZE;
         size_t chunk_size = (i == total_chunks - 1)
             ? (compressed_len - offset)
@@ -498,6 +518,11 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
         }
 
         free(serialized);
+
+        // Rate limit: 100ms delay between chunks to avoid overwhelming DHT nodes
+        if (i < total_chunks - 1) {
+            qgp_platform_sleep_ms(100);
+        }
     }
 
     free(compressed);
@@ -639,7 +664,7 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
         }
 
         // Brief delay before retry to allow DHT propagation
-        chunk_sleep_ms(DHT_CHUNK_RETRY_DELAY_MS);
+        qgp_platform_sleep_ms(DHT_CHUNK_RETRY_DELAY_MS);
 
         // Retry each failed chunk synchronously
         for (uint32_t i = 0; i < total_chunks; i++) {
@@ -821,6 +846,11 @@ int dht_chunked_delete(dht_context_t *ctx, const char *base_key,
         dht_put_signed(ctx, chunk_key, DHT_CHUNK_KEY_SIZE,
                       serialized, serialized_len,
                       value_id, 60);  // 1 minute TTL for quick expiry
+
+        // Rate limit: 100ms delay between chunks to avoid overwhelming DHT nodes
+        if (i < total_chunks - 1) {
+            qgp_platform_sleep_ms(100);
+        }
     }
 
     free(serialized);

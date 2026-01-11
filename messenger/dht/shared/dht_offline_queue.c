@@ -1040,9 +1040,9 @@ static void *watermark_publish_thread(void *arg) {
         return NULL;
     }
 
-    // Generate watermark key
-    char base_key[512];
-    make_watermark_base_key(wctx->recipient, wctx->sender, base_key, sizeof(base_key));
+    // Generate watermark key (SHA3-512 hash to match listener key format)
+    uint8_t key[64];
+    dht_generate_watermark_key(wctx->recipient, wctx->sender, key);
 
     // Serialize seq_num to 8 bytes big-endian
     uint8_t value[8];
@@ -1057,7 +1057,7 @@ static void *watermark_publish_thread(void *arg) {
 
     // Put signed with value_id=1 (replacement) and watermark TTL
     int result = dht_put_signed(wctx->ctx,
-                                 (const uint8_t*)base_key, strlen(base_key),
+                                 key, 64,
                                  value, sizeof(value),
                                  1,  // value_id=1 for replacement
                                  DHT_WATERMARK_TTL);
@@ -1128,15 +1128,15 @@ int dht_get_watermark(dht_context_t *ctx,
 
     *seq_num_out = 0;  // Default: no watermark found
 
-    // Generate watermark key
-    char base_key[512];
-    make_watermark_base_key(recipient, sender, base_key, sizeof(base_key));
+    // Generate watermark key (SHA3-512 hash to match listener/publish key format)
+    uint8_t key[64];
+    dht_generate_watermark_key(recipient, sender, key);
 
     // Try to fetch from DHT
     uint8_t *value = NULL;
     size_t value_len = 0;
 
-    int result = dht_get(ctx, (const uint8_t*)base_key, strlen(base_key), &value, &value_len);
+    int result = dht_get(ctx, key, 64, &value, &value_len);
 
     if (result == 0 && value && value_len == 8) {
         // Deserialize 8 bytes big-endian to uint64_t
@@ -1274,10 +1274,11 @@ size_t dht_listen_watermark(
            recipient, sender);
 
     // Start DHT listen with cleanup callback for proper memory management
+    // NOTE: dht_listen_ex() calls cleanup on ALL failure paths, so don't free here
     size_t token = dht_listen_ex(ctx, key, 64, watermark_listen_callback, wctx, watermark_listener_cleanup);
     if (token == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT listen for watermark\n");
-        free(wctx);
+        // wctx already freed by cleanup callback in dht_listen_ex
         return 0;
     }
 

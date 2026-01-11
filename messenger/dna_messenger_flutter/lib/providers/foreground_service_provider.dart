@@ -108,27 +108,13 @@ class ForegroundServiceNotifier extends StateNotifier<bool> {
         _ref.invalidate(contactsProvider);
         break;
       case 'onNetworkChanged':
-        // Network changed (WiFi <-> Cellular) - reinitialize DHT
-        await _handleNetworkChange();
+        // Network changed - Android service already reinited DHT via JNI.
+        // Just refresh UI and poll for any messages that arrived.
+        await _pollOfflineMessages();
+        _ref.invalidate(contactsProvider);
         break;
     }
     return null;
-  }
-
-  /// Handle network connectivity change
-  Future<void> _handleNetworkChange() async {
-    try {
-      final engine = await _ref.read(engineProvider.future);
-      final result = engine.networkChanged();
-      if (result == 0) {
-        // Poll for any messages that arrived during network switch
-        await _pollOfflineMessages();
-        // Refresh contacts to update UI
-        _ref.invalidate(contactsProvider);
-      }
-    } catch (_) {
-      // Silently ignore network change errors
-    }
   }
 
   /// Start the foreground service

@@ -55,10 +55,11 @@ typedef struct {
     time_t timestamp;
     bool delivered;
     bool read;
-    int status;  // 0=PENDING, 1=SENT, 2=FAILED
+    int status;  // 0=PENDING (queued), 1=SENT (legacy), 2=FAILED, 3=DELIVERED (watermark confirmed), 4=READ
     int group_id;  // Group ID (0 for direct messages, >0 for group messages) - Phase 5.2
     int message_type;  // 0=chat, 1=group_invitation - Phase 6.2
     int invitation_status;  // 0=pending, 1=accepted, 2=declined - Phase 6.2
+    int retry_count;  // Number of send retry attempts (for failed messages)
 } backup_message_t;
 
 /**
@@ -145,10 +146,36 @@ int message_backup_get_unread_count(message_backup_context_t *ctx, const char *c
  *
  * @param ctx Backup context
  * @param message_id Message ID from database
- * @param status New status (0=PENDING, 1=SENT, 2=FAILED)
+ * @param status New status (0=PENDING, 2=FAILED, 3=DELIVERED)
  * @return 0 on success, -1 on error
  */
 int message_backup_update_status(message_backup_context_t *ctx, int message_id, int status);
+
+/**
+ * Increment retry count for a message
+ *
+ * @param ctx Backup context
+ * @param message_id Message ID from database
+ * @return 0 on success, -1 on error
+ */
+int message_backup_increment_retry_count(message_backup_context_t *ctx, int message_id);
+
+/**
+ * Get all pending/failed messages for retry
+ *
+ * Returns outgoing messages with status PENDING(0) or FAILED(2) that haven't
+ * exceeded MAX_RETRIES. Used for automatic retry on identity load and DHT reconnect.
+ *
+ * @param ctx Backup context
+ * @param max_retries Maximum retry attempts (messages with retry_count >= max_retries excluded)
+ * @param messages_out Array of messages (caller must free with message_backup_free_messages)
+ * @param count_out Number of messages returned
+ * @return 0 on success, -1 on error
+ */
+int message_backup_get_pending_messages(message_backup_context_t *ctx,
+                                         int max_retries,
+                                         backup_message_t **messages_out,
+                                         int *count_out);
 
 /**
  * Update message status by sender/recipient/timestamp
@@ -159,7 +186,7 @@ int message_backup_update_status(message_backup_context_t *ctx, int message_id, 
  * @param sender Sender fingerprint
  * @param recipient Recipient fingerprint
  * @param timestamp Message timestamp
- * @param status New status (0=PENDING, 1=SENT, 2=FAILED)
+ * @param status New status (0=PENDING, 2=FAILED, 3=DELIVERED)
  * @return 0 on success, -1 on error
  */
 int message_backup_update_status_by_key(

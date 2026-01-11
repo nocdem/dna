@@ -101,6 +101,14 @@ messenger_context_t* messenger_init(const char *identity);
 void messenger_free(messenger_context_t *ctx);
 
 /**
+ * Get message backup context from messenger
+ *
+ * @param ctx: Messenger context
+ * @return: Message backup context, or NULL if not initialized
+ */
+message_backup_context_t* messenger_get_backup_ctx(messenger_context_t *ctx);
+
+/**
  * Set session password for encrypted key operations (v0.2.17+)
  *
  * Call this after loading an identity with encrypted keys.

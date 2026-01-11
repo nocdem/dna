@@ -918,8 +918,8 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         // Use putSigned() instead of put() to enable editing/replacement
         // Note: putSigned() doesn't support creation_time parameter (uses current time)
         // Permanent flag controls whether value expires based on ValueType
-        // Fire-and-forget publish - don't block on network confirmation
-        // Race conditions prevented by local outbox cache in dht_queue_message
+        // ASYNC: Fire-and-forget to avoid blocking. Callback logs result but doesn't block caller.
+        // Message status will be updated via watermark confirmation from recipient.
         ctx->runner.putSigned(hash, dht_value,
                              [key_hex_start](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
                                  if (success) {
@@ -930,10 +930,10 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
                              },
                              true);  // permanent=true for maintain_storage behavior
 
-        // Store value to persistent storage (if enabled)
+        // Store value to persistent storage (if enabled) for republishing
         persist_value_if_enabled(ctx, key, key_len, value, value_len, dht_value->type, ttl_seconds);
 
-        return 0;
+        return 0;  // Async - assume success, status updated via watermark
     } catch (const std::exception& e) {
         QGP_LOG_ERROR("DHT", "Exception in dht_put_signed: %s", e.what());
         return -1;
@@ -1074,8 +1074,8 @@ extern "C" int dht_get(dht_context_t *ctx,
         auto start_network = std::chrono::steady_clock::now();
         auto future = ctx->runner.get(hash);
 
-        // Wait with 10 second timeout (30s was too long for mobile UX)
-        auto status = future.wait_for(std::chrono::seconds(10));
+        // Wait with 2 second timeout (reduced from 10s to fail faster offline)
+        auto status = future.wait_for(std::chrono::seconds(2));
         if (status == std::future_status::timeout) {
             auto network_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start_network).count();
@@ -1220,10 +1220,10 @@ extern "C" int dht_get_all(dht_context_t *ctx,
         // Get all values using future-based API
         auto future = ctx->runner.get(hash);
 
-        // Wait with 10 second timeout (30s was too long for mobile UX)
-        auto status = future.wait_for(std::chrono::seconds(10));
+        // Wait with 2 second timeout (reduced from 10s to fail faster offline)
+        auto status = future.wait_for(std::chrono::seconds(2));
         if (status == std::future_status::timeout) {
-            QGP_LOG_INFO("DHT", "GET_ALL: Timeout after 10 seconds");
+            QGP_LOG_INFO("DHT", "GET_ALL: Timeout after 2 seconds");
             return -2;  // Timeout error
         }
 

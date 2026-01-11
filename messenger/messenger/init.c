@@ -302,6 +302,11 @@ void messenger_free(messenger_context_t *ctx) {
     free(ctx);
 }
 
+message_backup_context_t* messenger_get_backup_ctx(messenger_context_t *ctx) {
+    if (!ctx) return NULL;
+    return ctx->backup_ctx;
+}
+
 /**
  * Set session password for encrypted key operations (v0.2.17+)
  */

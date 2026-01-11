@@ -120,6 +120,10 @@ class EventHandler {
             selectedContact.fingerprint == contactFp;
         final appInForeground = _ref.read(appInForegroundProvider);
 
+        // Debug logging for badge issue investigation
+        final engine = _ref.read(engineProvider).valueOrNull;
+        engine?.debugLog('EVENT', 'MESSAGE_RECEIVED: isOutgoing=${msg.isOutgoing}, contactFp=${contactFp.substring(0, 16)}..., isChatOpen=$isChatOpen, appInForeground=$appInForeground');
+
         // Always invalidate the conversation provider
         _ref.invalidate(conversationProvider(contactFp));
 
@@ -132,9 +136,12 @@ class EventHandler {
         if (!msg.isOutgoing && (!appInForeground || !isChatOpen)) {
           // Increment unread count for incoming messages when chat not open
           _ref.read(unreadCountsProvider.notifier).incrementCount(contactFp);
+          engine?.debugLog('EVENT', 'MESSAGE_RECEIVED: Incremented unread count for $contactFp');
 
           // Show notification for incoming message
           _showMessageNotification(contactFp, msg.plaintext);
+        } else {
+          engine?.debugLog('EVENT', 'MESSAGE_RECEIVED: Skipped unread increment (outgoing=${msg.isOutgoing}, chatOpen=$isChatOpen)');
         }
 
         // NOTE: We intentionally do NOT invalidate(contactsProvider) here.
@@ -147,9 +154,10 @@ class EventHandler {
         _scheduleConversationRefresh();
         break;
 
-      case MessageDeliveredEvent(messageId: final id):
-        // Update message status to delivered
-        _updateMessageStatus(id, MessageStatus.delivered);
+      case MessageDeliveredEvent(contactFingerprint: final contactFp):
+        // Messages delivered to contact - reload conversation from DB (status already updated)
+        _ref.invalidate(conversationProvider(contactFp));
+        break;
 
       case MessageReadEvent(messageId: final id):
         _updateMessageStatus(id, MessageStatus.read);

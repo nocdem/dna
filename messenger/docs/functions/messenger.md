@@ -59,7 +59,7 @@ Core messenger functionality including identity management, key generation, mess
 | `int messenger_delete_message(messenger_context_t*, int)` | Delete message |
 | `int messenger_search_by_sender(...)` | Search messages by sender |
 | `int messenger_show_conversation(...)` | Show conversation with user |
-| `int messenger_get_conversation(...)` | Get conversation messages |
+| `int messenger_get_conversation(...)` | Get conversation messages (pre-decrypted, key loaded once) |
 | `void messenger_free_messages(message_info_t*, int)` | Free message array |
 | `int messenger_search_by_date(...)` | Search messages by date range |
 
@@ -150,8 +150,28 @@ Local SQLite database for message backup. Stores encrypted messages per-identity
 | `int message_backup_update_status_by_key(...)` | Update status by sender/recipient/timestamp |
 | `int message_backup_get_last_id(message_backup_context_t*)` | Get last inserted message ID |
 | `int message_backup_get_unread_count(...)` | Get unread count for contact |
+| `int message_backup_increment_retry_count(message_backup_context_t*, int)` | Increment retry count for failed message |
 
-### 4.4 Conversation Retrieval
+### 4.4 Message Retry (Bulletproof Delivery)
+
+| Function | Description |
+|----------|-------------|
+| `int message_backup_get_pending_messages(...)` | Get all PENDING/FAILED messages for retry (retry_count < max) |
+
+**Message Status Values:**
+| Status | Value | Meaning | Auto-Retry? |
+|--------|-------|---------|-------------|
+| PENDING | 0 | Queued to DHT, awaiting delivery confirmation | Yes |
+| SENT | 1 | Legacy (no longer used with async DHT PUT) | No |
+| FAILED | 2 | DHT queue failed | Yes |
+| DELIVERED | 3 | Recipient confirmed via watermark | No |
+| READ | 4 | Recipient read | No |
+
+**Status Flow:** `PENDING(0) → DELIVERED(3)` via watermark confirmation. `SENT(1)` is legacy from synchronous DHT PUT.
+
+**Schema (v9):** `retry_count INTEGER DEFAULT 0` column tracks send attempts. Messages with `retry_count >= 10` are excluded from auto-retry. Retry functions are mutex-protected.
+
+### 4.5 Conversation Retrieval
 
 | Function | Description |
 |----------|-------------|
@@ -160,7 +180,7 @@ Local SQLite database for message backup. Stores encrypted messages per-identity
 | `int message_backup_get_recent_contacts(...)` | Get list of recent contacts |
 | `int message_backup_search_by_identity(...)` | Search messages by sender/recipient |
 
-### 4.5 Sequence Numbers (Watermark Pruning)
+### 4.6 Sequence Numbers (Watermark Pruning)
 
 | Function | Description |
 |----------|-------------|

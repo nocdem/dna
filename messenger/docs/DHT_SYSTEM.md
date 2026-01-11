@@ -385,6 +385,10 @@ strncpy(ctx->contact_fp, contact_fp, 128);
 ctx->engine = engine;
 
 size_t token = dht_listen_ex(dht_ctx, key, 64, my_callback, ctx, my_cleanup);
+if (token == 0) {
+    // Failure - cleanup was already called by dht_listen_ex, do NOT free ctx here
+    return;
+}
 
 // When cancelled, my_cleanup is called automatically
 dht_cancel_listen(dht_ctx, token);  // calls my_cleanup(ctx)
@@ -392,6 +396,9 @@ dht_cancel_listen(dht_ctx, token);  // calls my_cleanup(ctx)
 // Or cancel all listeners at once (during shutdown)
 dht_cancel_all_listeners(dht_ctx);  // calls cleanup for each
 ```
+
+**Important:** `dht_listen_ex()` calls the cleanup function on ALL failure paths (timeout,
+exception, max listeners). Do NOT manually free user_data if the function returns 0.
 
 **Note:** The callback is triggered for both new values AND updates to existing values
 (when content changes and sequence number increases). This enables real-time notifications

@@ -111,7 +111,7 @@ class DnaMessengerService : Service() {
 
     private fun startForegroundService() {
         android.util.Log.i(TAG, "Starting foreground service")
-        val notification = createNotification("DNA Messenger running")
+        val notification = createNotification("Decentralized mode active — background service running to receive messages")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
@@ -189,6 +189,10 @@ class DnaMessengerService : Service() {
     }
 
     private fun acquireWakeLock() {
+        // WakeLock disabled for battery testing - foreground service should keep process alive
+        // If messages are delayed during Doze, re-enable with shorter timeout
+        android.util.Log.d(TAG, "WakeLock disabled (battery optimization test)")
+        /*
         if (wakeLock == null) {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(
@@ -202,6 +206,7 @@ class DnaMessengerService : Service() {
                 android.util.Log.d(TAG, "WakeLock acquired")
             }
         }
+        */
     }
 
     private fun releaseWakeLock() {
@@ -314,7 +319,7 @@ class DnaMessengerService : Service() {
                     performDhtReinit()
                 } else {
                     android.util.Log.e(TAG, "Network still not validated, skipping reinit")
-                    updateNotification("DNA Messenger running")
+                    updateNotification("Decentralized mode active — background service running to receive messages")
                 }
             }, 1000)
             return
@@ -363,7 +368,7 @@ class DnaMessengerService : Service() {
 
         // Reset notification after delay
         android.os.Handler(mainLooper).postDelayed({
-            updateNotification("DNA Messenger running")
+            updateNotification("Decentralized mode active — background service running to receive messages")
         }, 3000)
     }
 }

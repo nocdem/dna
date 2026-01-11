@@ -67,6 +67,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/core/dht_listen.h"
 #include "dht/client/dht_contactlist.h"
 #include "dht/client/dht_message_backup.h"
+#include "dht/shared/dht_offline_queue.h"
 #include "dht/client/dna_feed.h"
 #include "dht/client/dna_profile.h"
 #include "dht/shared/dht_chunked.h"
@@ -192,6 +193,24 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
 
     int count = dna_engine_listen_all_contacts(engine);
     QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: started %d listeners", count);
+
+    /* Retry pending/failed messages after DHT reconnect
+     * Messages may have failed during the previous session or network outage.
+     * Now that DHT is reconnected, retry them. */
+    int retried = dna_engine_retry_pending_messages(engine);
+    if (retried > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] DHT reconnect: retried %d pending messages", retried);
+    }
+
+    /* Also check for missed incoming messages after reconnect */
+    if (engine->messenger && engine->messenger->p2p_transport) {
+        QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: checking for missed messages");
+        size_t received = 0;
+        p2p_check_offline_messages(engine->messenger->p2p_transport, NULL, &received);
+        if (received > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: received %zu missed messages", received);
+        }
+    }
 
     return NULL;
 }
@@ -554,27 +573,24 @@ int dna_engine_network_changed(dna_engine_t *engine) {
         QGP_LOG_INFO(LOG_TAG, "Cancelling listeners before DHT reinit");
         dna_engine_cancel_all_outbox_listeners(engine);
         dna_engine_cancel_all_presence_listeners(engine);
+        dna_engine_cancel_contact_request_listener(engine);
     }
 
-    /* Reinitialize DHT singleton with stored identity */
+    /* Reinitialize DHT singleton with stored identity.
+     * On success, dht_singleton_reinit() fires the status callback which spawns
+     * dna_engine_setup_listeners_thread(). That thread handles:
+     * - Starting fresh listeners for all contacts
+     * - Retrying pending messages
+     * - Fetching missed incoming messages
+     * - Refreshing presence
+     * NO NEED to duplicate that work here - just reinit and let callback handle the rest. */
     int result = dht_singleton_reinit();
     if (result != 0) {
         QGP_LOG_ERROR(LOG_TAG, "DHT reinit failed");
         return -1;
     }
 
-    /* Start fresh listeners on new DHT context */
-    if (engine->identity_loaded) {
-        QGP_LOG_INFO(LOG_TAG, "Starting fresh listeners after network change");
-        int count = dna_engine_listen_all_contacts(engine);
-        QGP_LOG_INFO(LOG_TAG, "Started %d outbox listeners", count);
-
-        /* Refresh presence on new network (only if app is in foreground) */
-        if (engine->messenger && atomic_load(&engine->presence_active)) {
-            messenger_p2p_refresh_presence(engine->messenger);
-        }
-    }
-
+    QGP_LOG_INFO(LOG_TAG, "DHT reinit successful - status callback will restart listeners");
     return 0;
 }
 
@@ -1342,6 +1358,14 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: starting outbox listeners...");
         int listener_count = dna_engine_listen_all_contacts(engine);
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: started %d listeners", listener_count);
+
+        /* 3. Retry any pending/failed messages from previous sessions
+         * Messages may have been queued while offline or failed to send.
+         * Now that DHT is connected, retry them. */
+        int retried = dna_engine_retry_pending_messages(engine);
+        if (retried > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[RETRY] Identity load: retried %d pending messages", retried);
+        }
     }
 
     /* Silent background: Create any missing blockchain wallets
@@ -2299,6 +2323,12 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                     continue;
                 }
 
+                /* Skip if already a contact or already pending (avoids DHT lookups for old requests) */
+                if (contacts_db_exists(dht_requests[i].sender_fingerprint) ||
+                    contacts_db_request_exists(dht_requests[i].sender_fingerprint)) {
+                    continue;
+                }
+
                 /* If sender_name is empty, lookup from DHT profile (reverse lookup) */
                 char *looked_up_name = NULL;
                 const char *sender_name = dht_requests[i].sender_name;
@@ -2628,13 +2658,31 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task) {
     );
 
     if (rc != 0) {
-        error = DNA_ENGINE_ERROR_NETWORK;
-    } else {
-        /* Emit MESSAGE_SENT event so UI can update spinner */
+        /* Determine error type based on return code */
+        if (rc == -3) {
+            /* KEY_UNAVAILABLE: recipient key not cached and DHT lookup failed */
+            error = DNA_ENGINE_ERROR_KEY_UNAVAILABLE;
+            QGP_LOG_WARN(LOG_TAG, "[SEND] Key unavailable for recipient - message not saved (cannot encrypt)");
+        } else {
+            /* Network or other error */
+            error = DNA_ENGINE_ERROR_NETWORK;
+            QGP_LOG_WARN(LOG_TAG, "[SEND] Message send failed (rc=%d) - DHT queue unsuccessful", rc);
+        }
+        /* Emit MESSAGE_SENT event with FAILED status so UI can update spinner */
         dna_event_t event = {0};
         event.type = DNA_EVENT_MESSAGE_SENT;
         event.data.message_status.message_id = 0;  /* ID not available here */
-        event.data.message_status.new_status = 1;  /* SENT */
+        event.data.message_status.new_status = 2;  /* FAILED */
+        dna_dispatch_event(engine, &event);
+    } else {
+        /* Emit MESSAGE_SENT event so UI can update (triggers refresh)
+         * Status is PENDING (0) - will become DELIVERED via watermark.
+         * With async DHT PUT, rc=0 means "queued", not "stored". */
+        QGP_LOG_INFO(LOG_TAG, "[SEND] Message queued to DHT (status=PENDING, async)");
+        dna_event_t event = {0};
+        event.type = DNA_EVENT_MESSAGE_SENT;
+        event.data.message_status.message_id = 0;  /* ID not available here */
+        event.data.message_status.new_status = 0;  /* PENDING - async, not confirmed yet */
         dna_dispatch_event(engine, &event);
     }
 
@@ -2700,11 +2748,10 @@ void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
             strncpy(messages[i].sender, msg_infos[i].sender ? msg_infos[i].sender : "", 128);
             strncpy(messages[i].recipient, msg_infos[i].recipient ? msg_infos[i].recipient : "", 128);
 
-            /* Decrypt message */
-            char *plaintext = NULL;
-            size_t plaintext_len = 0;
-            if (messenger_decrypt_message(engine->messenger, msg_infos[i].id, &plaintext, &plaintext_len) == 0) {
-                messages[i].plaintext = plaintext;
+            /* Use pre-decrypted plaintext from messenger_get_conversation */
+            /* (Kyber key loaded once, not per-message - massive speedup) */
+            if (msg_infos[i].plaintext) {
+                messages[i].plaintext = strdup(msg_infos[i].plaintext);
             } else {
                 messages[i].plaintext = strdup("[Decryption failed]");
             }
@@ -4825,6 +4872,184 @@ int dna_engine_delete_message_sync(
     return messenger_delete_message(engine->messenger, message_id);
 }
 
+/* ============================================================================
+ * MESSAGE RETRY (Bulletproof Message Delivery)
+ * ============================================================================ */
+
+#define MESSAGE_RETRY_MAX_RETRIES 10
+#define MESSAGE_STATUS_PENDING 0
+#define MESSAGE_STATUS_SENT 1
+#define MESSAGE_STATUS_FAILED 2
+
+/* Mutex to prevent concurrent retry calls (e.g., DHT reconnect + manual retry race) */
+static pthread_mutex_t retry_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/**
+ * Retry a single pending/failed message
+ *
+ * Re-queues the message to DHT with a new seq_num.
+ * Status stays PENDING until watermark confirms DELIVERED. Increments retry_count on failure.
+ *
+ * @param engine Engine instance
+ * @param msg Message to retry (from message_backup_get_pending_messages)
+ * @return 0 on success, -1 on failure
+ */
+static int retry_single_message(dna_engine_t *engine, backup_message_t *msg) {
+    if (!engine || !msg) return -1;
+    if (!engine->messenger) return -1;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (!dht_ctx) return -1;
+
+    message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
+    if (!backup_ctx) return -1;
+
+    const char *my_fp = dna_engine_get_fingerprint(engine);
+    if (!my_fp) return -1;
+
+    /* Get a new seq_num for this recipient */
+    uint64_t seq_num = message_backup_get_next_seq(backup_ctx, msg->recipient);
+
+    /* Re-queue to DHT */
+    int rc = dht_queue_message(
+        dht_ctx,
+        my_fp,
+        msg->recipient,
+        msg->encrypted_message,
+        msg->encrypted_len,
+        seq_num,
+        DHT_OFFLINE_QUEUE_DEFAULT_TTL
+    );
+
+    if (rc == 0) {
+        /* Success - queued to DHT (async)
+         * Status stays PENDING - will become DELIVERED via watermark confirmation.
+         * With async PUT, rc=0 just means "queued", not "stored in DHT". */
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d to %.20s... queued (seq=%llu, status=PENDING)",
+                     msg->id, msg->recipient, (unsigned long long)seq_num);
+        return 0;
+    } else {
+        /* Failed - increment retry count */
+        message_backup_increment_retry_count(backup_ctx, msg->id);
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Message %d to %.20s... failed (retry_count=%d)",
+                     msg->id, msg->recipient, msg->retry_count + 1);
+        return -1;
+    }
+}
+
+int dna_engine_retry_pending_messages(dna_engine_t *engine) {
+    if (!engine) return -1;
+    if (!engine->messenger) return -1;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (!dht_ctx) return -1;
+
+    /* Skip retry if DHT is not connected - retries will fail and block for timeout
+     * Messages will be retried when DHT reconnects (triggers this function again) */
+    if (!dht_context_is_ready(dht_ctx)) {
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Skipping retry - DHT not connected");
+        return 0;
+    }
+
+    message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
+    if (!backup_ctx) return -1;
+
+    /* Lock to prevent concurrent retry calls */
+    pthread_mutex_lock(&retry_mutex);
+
+    /* Get all pending/failed messages under MAX_RETRIES */
+    backup_message_t *messages = NULL;
+    int count = 0;
+    int rc = message_backup_get_pending_messages(
+        backup_ctx,
+        MESSAGE_RETRY_MAX_RETRIES,
+        &messages,
+        &count
+    );
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[RETRY] Failed to query pending messages");
+        pthread_mutex_unlock(&retry_mutex);
+        return -1;
+    }
+
+    if (count == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "[RETRY] No pending messages to retry");
+        pthread_mutex_unlock(&retry_mutex);
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[RETRY] Found %d pending/failed messages to retry", count);
+
+    int success_count = 0;
+    int fail_count = 0;
+
+    /* Retry each message */
+    for (int i = 0; i < count; i++) {
+        if (retry_single_message(engine, &messages[i]) == 0) {
+            success_count++;
+        } else {
+            fail_count++;
+        }
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[RETRY] Completed: %d succeeded, %d failed", success_count, fail_count);
+
+    /* Free messages array */
+    message_backup_free_messages(messages, count);
+
+    pthread_mutex_unlock(&retry_mutex);
+    return success_count;
+}
+
+int dna_engine_retry_message(dna_engine_t *engine, int message_id) {
+    if (!engine || message_id <= 0) return -1;
+    if (!engine->messenger) return -1;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (!dht_ctx) return -1;
+    (void)dht_ctx;  /* Used by retry_single_message via dna_get_dht_ctx */
+
+    message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
+    if (!backup_ctx) return -1;
+
+    /* Lock to prevent concurrent retry calls */
+    pthread_mutex_lock(&retry_mutex);
+
+    /* Get all pending/failed messages (we'll filter by ID) */
+    backup_message_t *messages = NULL;
+    int count = 0;
+    int rc = message_backup_get_pending_messages(
+        backup_ctx,
+        MESSAGE_RETRY_MAX_RETRIES + 1,  /* Allow retry even at max (manual retry) */
+        &messages,
+        &count
+    );
+
+    if (rc != 0 || count == 0) {
+        pthread_mutex_unlock(&retry_mutex);
+        return -1;
+    }
+
+    /* Find the specific message */
+    int result = -1;
+    for (int i = 0; i < count; i++) {
+        if (messages[i].id == message_id) {
+            result = retry_single_message(engine, &messages[i]);
+            break;
+        }
+    }
+
+    message_backup_free_messages(messages, count);
+
+    if (result == -1) {
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Message %d not found or not retryable", message_id);
+    }
+
+    pthread_mutex_unlock(&retry_mutex);
+    return result;
+}
+
 /* Groups */
 dna_request_id_t dna_engine_get_groups(
     dna_engine_t *engine,
@@ -5406,12 +5631,12 @@ size_t dna_engine_listen_outbox(
     ctx->contact_fingerprint[sizeof(ctx->contact_fingerprint) - 1] = '\0';
 
     /* Start DHT listen on chunk[0] key */
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Calling dht_listen_ex() with cleanup callback...");
+    QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Calling dht_listen_ex() with cleanup callback...");
     size_t token = dht_listen_ex(dht_ctx, chunk0_key, DHT_CHUNK_KEY_SIZE,
                                   outbox_listen_callback, ctx, outbox_listener_cleanup);
     if (token == 0) {
         QGP_LOG_ERROR(LOG_TAG, "[LISTEN] dht_listen_ex() returned 0 (failed)");
-        free(ctx);  /* Cleanup not called on failure, free manually */
+        /* ctx already freed by cleanup callback in dht_listen_ex */
         pthread_mutex_unlock(&engine->outbox_listeners_mutex);
         return 0;
     }
