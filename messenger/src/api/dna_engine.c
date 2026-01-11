@@ -2874,10 +2874,7 @@ void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task) {
 
 done:
     task->callback.groups(task->request_id, error, groups, count, task->user_data);
-    /* Free groups after callback - caller copies what it needs */
-    if (groups) {
-        free(groups);
-    }
+    /* Note: caller (Flutter) owns the memory and frees via dna_free_groups() */
 }
 
 void dna_handle_create_group(dna_engine_t *engine, dna_task_t *task) {
