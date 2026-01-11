@@ -149,8 +149,10 @@ class EventHandler {
         // Unread counts are already updated via incrementCount() above.
         // Full contact list rebuilds cause unnecessary UI churn and presence bouncing.
 
-      case MessageSentEvent():
+      case MessageSentEvent(messageId: final msgId):
         // Debounced refresh - only once after last message sent
+        final engine = _ref.read(engineProvider).valueOrNull;
+        engine?.debugLog('EVENT', '[MESSAGE_SENT] Handler triggered, messageId=$msgId, scheduling refresh');
         _scheduleConversationRefresh();
         break;
 
@@ -220,7 +222,10 @@ class EventHandler {
     _refreshTimer?.cancel();
     _refreshTimer = Timer(const Duration(milliseconds: 300), () {
       final selectedContact = _ref.read(selectedContactProvider);
+      final engine = _ref.read(engineProvider).valueOrNull;
+      engine?.debugLog('EVENT', '[REFRESH] Timer fired, selectedContact=${selectedContact?.fingerprint?.substring(0, 16) ?? "null"}');
       if (selectedContact != null) {
+        engine?.debugLog('EVENT', '[REFRESH] Invalidating conversationProvider for ${selectedContact.fingerprint.substring(0, 16)}...');
         _ref.invalidate(conversationProvider(selectedContact.fingerprint));
       }
     });

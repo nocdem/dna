@@ -674,6 +674,12 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
      * Dart NativeCallable is closed while C still holds the pointer) */
     bool flutter_attached = (callback && !disposing);
 
+    /* Debug logging for MESSAGE_SENT event dispatch */
+    if (event->type == DNA_EVENT_MESSAGE_SENT) {
+        QGP_LOG_WARN(LOG_TAG, "[EVENT] MESSAGE_SENT dispatch: callback=%p, disposing=%d, attached=%d, status=%d",
+                     (void*)callback, disposing, flutter_attached, event->data.message_status.new_status);
+    }
+
     if (flutter_attached) {
         /* Heap-allocate a copy for async callbacks (Dart NativeCallable.listener)
          * The caller (Dart) must call dna_free_event() after processing */
@@ -681,6 +687,9 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
         if (heap_event) {
             memcpy(heap_event, event, sizeof(dna_event_t));
             callback(heap_event, user_data);
+            if (event->type == DNA_EVENT_MESSAGE_SENT) {
+                QGP_LOG_WARN(LOG_TAG, "[EVENT] MESSAGE_SENT callback invoked");
+            }
         }
     }
 

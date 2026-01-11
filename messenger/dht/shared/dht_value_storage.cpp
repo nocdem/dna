@@ -457,13 +457,41 @@ int dht_value_storage_cleanup(dht_value_storage_t *storage) {
  * CRITICAL FIX (2025-11-25): Now uses dht_republish_packed() to preserve signatures.
  * Previously used dht_put_ttl() which created NEW unsigned values, losing signatures.
  * The stored value_data is now a full serialized dht::Value (from getPacked()).
+ *
+ * CRITICAL FIX (2026-01-12): Wait for DHT peers before republishing.
+ * Previously republished immediately on startup, before connecting to other nodes.
+ * If all bootstrap nodes restart simultaneously, values were published to zero peers
+ * and lost forever. Now waits up to 60 seconds for at least 1 peer connection.
  */
 static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
-    QGP_LOG_DEBUG(LOG_TAG, "Republish thread started (signature-preserving mode)");
+    QGP_LOG_INFO(LOG_TAG, "Republish thread started (signature-preserving mode)");
 
     pthread_mutex_lock(&storage->mutex);
     storage->republish_in_progress = true;
     pthread_mutex_unlock(&storage->mutex);
+
+    // CRITICAL: Wait for DHT to connect to at least 1 peer before republishing
+    // This prevents data loss when all bootstrap nodes restart simultaneously
+    QGP_LOG_INFO(LOG_TAG, "Waiting for DHT peers before republishing...");
+    int wait_seconds = 0;
+    const int max_wait_seconds = 60;  // Wait up to 60 seconds for peers
+
+    while (wait_seconds < max_wait_seconds) {
+        if (dht_context_is_ready(ctx)) {
+            QGP_LOG_INFO(LOG_TAG, "DHT connected to peers after %d seconds, starting republish", wait_seconds);
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        wait_seconds++;
+
+        if (wait_seconds % 10 == 0) {
+            QGP_LOG_INFO(LOG_TAG, "Still waiting for DHT peers... (%d/%d seconds)", wait_seconds, max_wait_seconds);
+        }
+    }
+
+    if (wait_seconds >= max_wait_seconds) {
+        QGP_LOG_WARN(LOG_TAG, "Timed out waiting for DHT peers after %d seconds, proceeding anyway", max_wait_seconds);
+    }
 
     // Query only LATEST version per key (not all versions)
     sqlite3_stmt *stmt;
@@ -497,6 +525,7 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
 
     size_t count = 0;
     size_t skipped = 0;
+    size_t failed = 0;
 
     // Republish each value
     while (true) {
@@ -550,16 +579,45 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
         // CRITICAL FIX: Use dht_republish_packed() to preserve signatures
         // The packed_copy contains a full serialized dht::Value including signature
         // key_hex is already the InfoHash as hex string (from key.toString() in store callback)
-        int put_result = dht_republish_packed(ctx, key_hex_copy,
+        //
+        // CRITICAL FIX (2026-01-12): Retry failed republishes up to 3 times
+        // If network is unstable during startup, retrying helps ensure data survives
+        int put_result = -1;
+        const int max_retries = 3;
+        for (int retry = 0; retry < max_retries; retry++) {
+            put_result = dht_republish_packed(ctx, key_hex_copy,
                                                packed_copy, packed_len);
+            if (put_result == 0) {
+                break;  // Success
+            }
+
+            // Wait before retry, with exponential backoff
+            if (retry < max_retries - 1) {
+                int delay_ms = 500 * (1 << retry);  // 500ms, 1000ms, 2000ms
+                QGP_LOG_WARN(LOG_TAG, "Republish failed (attempt %d/%d), retrying in %dms...",
+                             retry + 1, max_retries, delay_ms);
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+
+                // Re-check DHT connectivity before retry
+                if (!dht_context_is_ready(ctx)) {
+                    QGP_LOG_WARN(LOG_TAG, "DHT disconnected, waiting for reconnect...");
+                    int reconnect_wait = 0;
+                    while (reconnect_wait < 30 && !dht_context_is_ready(ctx)) {
+                        std::this_thread::sleep_for(std::chrono::seconds(1));
+                        reconnect_wait++;
+                    }
+                }
+            }
+        }
 
         free(packed_copy);
 
         if (put_result == 0) {
             count++;
         } else {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to republish value type=0x%x (error %d)",
-                          value_type, put_result);
+            failed++;
+            QGP_LOG_ERROR(LOG_TAG, "Failed to republish value type=0x%x after %d attempts",
+                          value_type, max_retries);
             pthread_mutex_lock(&storage->mutex);
             storage->error_count++;
             pthread_mutex_unlock(&storage->mutex);
@@ -575,7 +633,11 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
     storage->republish_in_progress = false;
     pthread_mutex_unlock(&storage->mutex);
 
-    QGP_LOG_DEBUG(LOG_TAG, "Republish complete: %zu values (skipped %zu expired)", count, skipped);
+    if (failed > 0) {
+        QGP_LOG_WARN(LOG_TAG, "Republish complete: %zu values OK, %zu FAILED (skipped %zu expired)", count, failed, skipped);
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "Republish complete: %zu values (skipped %zu expired)", count, skipped);
+    }
 }
 
 int dht_value_storage_restore_async(dht_value_storage_t *storage, dht_context_t *ctx) {

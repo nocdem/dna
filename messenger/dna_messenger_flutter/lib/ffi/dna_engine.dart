@@ -1142,6 +1142,9 @@ class DnaEngine {
         // Message was successfully sent - trigger UI refresh
         // message_status.message_id is at offset 0 in union (4 bytes)
         final messageId = event.data[0] | (event.data[1] << 8) | (event.data[2] << 16) | (event.data[3] << 24);
+        // Debug: parse status from offset 4 (new_status is after message_id)
+        final status = event.data[4] | (event.data[5] << 8) | (event.data[6] << 16) | (event.data[7] << 24);
+        debugLog('FFI-EVENT', '[MESSAGE_SENT] Received! messageId=$messageId, status=$status');
         dartEvent = MessageSentEvent(messageId);
         break;
       case DnaEventType.DNA_EVENT_MESSAGE_DELIVERED:
