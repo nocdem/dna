@@ -61,6 +61,7 @@ typedef struct {
     const uint8_t *value_data;   /**< Serialized value data */
     size_t value_data_len;       /**< Value data length */
     uint32_t value_type;         /**< ValueType ID (0x1001, 0x1002, etc.) */
+    uint64_t value_id;           /**< Unique value ID within the key (for multi-writer support) */
     uint64_t created_at;         /**< Creation timestamp (Unix epoch) */
     uint64_t expires_at;         /**< Expiration timestamp (0 = permanent) */
 } dht_value_metadata_t;

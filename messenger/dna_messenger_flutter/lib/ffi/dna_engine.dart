@@ -1142,10 +1142,12 @@ class DnaEngine {
         break;
       case DnaEventType.DNA_EVENT_MESSAGE_SENT:
         // Message was successfully sent - trigger UI refresh
-        // message_status.message_id is at offset 0 in union (4 bytes)
-        final messageId = event.data[0] | (event.data[1] << 8) | (event.data[2] << 16) | (event.data[3] << 24);
-        // Debug: parse status from offset 4 (new_status is after message_id)
-        final status = event.data[4] | (event.data[5] << 8) | (event.data[6] << 16) | (event.data[7] << 24);
+        // baseOffset=4 for padding between type (int) and union in C struct (64-bit alignment)
+        const sentBaseOffset = 4;
+        final messageId = event.data[sentBaseOffset] | (event.data[sentBaseOffset + 1] << 8) |
+                          (event.data[sentBaseOffset + 2] << 16) | (event.data[sentBaseOffset + 3] << 24);
+        final status = event.data[sentBaseOffset + 4] | (event.data[sentBaseOffset + 5] << 8) |
+                       (event.data[sentBaseOffset + 6] << 16) | (event.data[sentBaseOffset + 7] << 24);
         print('[DART-EVENT] MESSAGE_SENT: messageId=$messageId, status=$status');
         dartEvent = MessageSentEvent(messageId);
         break;

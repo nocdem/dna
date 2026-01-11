@@ -17,6 +17,7 @@
 #include <thread>
 #include <chrono>
 #include <exception>
+#include <msgpack.hpp>
 
 // Unified logging (respects config log level)
 extern "C" {
@@ -50,20 +51,40 @@ struct dht_value_storage {
 };
 
 /**
- * @brief SQLite schema
+ * @brief SQLite schema (v2 - with value_id for multi-writer support)
+ *
+ * PRIMARY KEY changed from (key_hash, created_at) to (key_hash, value_id)
+ * This allows multiple values per DHT key (from different writers) to coexist.
  */
-static const char *SCHEMA_SQL =
+static const char *SCHEMA_SQL_V2 =
     "CREATE TABLE IF NOT EXISTS dht_values ("
     "  key_hash TEXT NOT NULL,"
+    "  value_id INTEGER NOT NULL,"
     "  value_data BLOB NOT NULL,"
     "  value_type INTEGER NOT NULL,"
     "  created_at INTEGER NOT NULL,"
     "  expires_at INTEGER,"
-    "  original_key TEXT,"
-    "  PRIMARY KEY (key_hash, created_at)"
+    "  PRIMARY KEY (key_hash, value_id)"
     ");"
     "CREATE INDEX IF NOT EXISTS idx_expires ON dht_values(expires_at);"
     "CREATE INDEX IF NOT EXISTS idx_key ON dht_values(key_hash);";
+
+/**
+ * @brief Migration SQL: v1 to v2
+ * - Create new table with value_id column
+ * - Migrate data (extract value_id from value_data, dedupe by keeping latest)
+ * - Drop old table and rename new one
+ */
+static const char *MIGRATION_V2_CREATE =
+    "CREATE TABLE IF NOT EXISTS dht_values_v2 ("
+    "  key_hash TEXT NOT NULL,"
+    "  value_id INTEGER NOT NULL,"
+    "  value_data BLOB NOT NULL,"
+    "  value_type INTEGER NOT NULL,"
+    "  created_at INTEGER NOT NULL,"
+    "  expires_at INTEGER,"
+    "  PRIMARY KEY (key_hash, value_id)"
+    ");";
 
 /**
  * @brief Helper: Convert binary hash to hex string
@@ -85,6 +106,56 @@ static uint64_t get_file_size(const char *path) {
         return st.st_size;
     }
     return 0;
+}
+
+/**
+ * @brief Extract value_id from msgpack-packed DHT Value
+ *
+ * OpenDHT Values are packed as msgpack maps with "id" key containing uint64_t.
+ * Format: {"id": <uint64_t>, "dat": <blob>, ...}
+ *
+ * @param packed_data Packed value data from Value::getPacked()
+ * @param packed_len Length of packed data
+ * @return value_id on success, 0 on error (0 is INVALID_ID in OpenDHT)
+ */
+static uint64_t extract_value_id(const uint8_t *packed_data, size_t packed_len) {
+    if (!packed_data || packed_len == 0) {
+        return 0;
+    }
+
+    try {
+        msgpack::object_handle oh = msgpack::unpack((const char*)packed_data, packed_len);
+        msgpack::object obj = oh.get();
+
+        if (obj.type != msgpack::type::MAP) {
+            QGP_LOG_ERROR(LOG_TAG, "Packed value is not a map");
+            return 0;
+        }
+
+        // Search for "id" key in the map
+        for (uint32_t i = 0; i < obj.via.map.size; i++) {
+            const msgpack::object_kv& kv = obj.via.map.ptr[i];
+
+            // Check if key is "id" string
+            if (kv.key.type == msgpack::type::STR) {
+                std::string key_str(kv.key.via.str.ptr, kv.key.via.str.size);
+                if (key_str == "id") {
+                    // Extract uint64_t value
+                    if (kv.val.type == msgpack::type::POSITIVE_INTEGER) {
+                        return kv.val.via.u64;
+                    } else if (kv.val.type == msgpack::type::NEGATIVE_INTEGER) {
+                        return (uint64_t)kv.val.via.i64;
+                    }
+                }
+            }
+        }
+
+        QGP_LOG_ERROR(LOG_TAG, "No 'id' field found in packed value");
+        return 0;
+    } catch (const std::exception& e) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to extract value_id: %s", e.what());
+        return 0;
+    }
 }
 
 /**
