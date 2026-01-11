@@ -11,6 +11,7 @@
 
 #include "dna_group_outbox.h"
 #include "../../messenger/gek.h"
+#include "../../messenger.h"  // For messenger_sync_group_gek
 #include "../../message_backup.h"
 #include "../../crypto/utils/qgp_aes.h"
 #include "../../crypto/utils/qgp_dilithium.h"
@@ -325,8 +326,19 @@ int dna_group_outbox_send(
     uint8_t gsk[GEK_KEY_SIZE];
     uint32_t gsk_version = 0;
     if (gek_load_active(group_uuid, gsk, &gsk_version) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "No active GSK for group %s\n", group_uuid);
-        return DNA_GROUP_OUTBOX_ERR_NO_GSK;
+        /* GEK not found locally - try auto-sync from DHT */
+        QGP_LOG_WARN(LOG_TAG, "No local GSK for group %s, attempting auto-sync from DHT...\n", group_uuid);
+        if (messenger_sync_group_gek(group_uuid) == 0) {
+            /* Sync succeeded, retry load */
+            if (gek_load_active(group_uuid, gsk, &gsk_version) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "GSK load failed after sync for group %s\n", group_uuid);
+                return DNA_GROUP_OUTBOX_ERR_NO_GSK;
+            }
+            QGP_LOG_INFO(LOG_TAG, "Auto-synced GSK v%u for group %s\n", gsk_version, group_uuid);
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "Auto-sync failed, no active GSK for group %s\n", group_uuid);
+            return DNA_GROUP_OUTBOX_ERR_NO_GSK;
+        }
     }
 
     /* Step 2: Get current hour bucket */
