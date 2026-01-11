@@ -17,6 +17,7 @@ import '../../widgets/formatted_text.dart';
 import '../../widgets/image_message_bubble.dart';
 import '../../services/image_attachment_service.dart';
 import 'contact_profile_dialog.dart';
+import 'widgets/message_bubble.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -382,7 +383,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               // Messages list
               Expanded(
                 child: messages.when(
-                  data: (list) => _buildMessageList(context, list, starredIds),
+                  data: (list) => _buildMessageList(context, list, starredIds, contact),
                   loading: () => const Center(child: CircularProgressIndicator()),
                   error: (error, stack) => Center(
                     child: Column(
@@ -464,7 +465,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
-  Widget _buildMessageList(BuildContext context, List<Message> messages, Set<int> starredIds) {
+  Widget _buildMessageList(BuildContext context, List<Message> messages, Set<int> starredIds, Contact contact) {
     // Filter messages if searching
     final filteredMessages = _searchQuery.isEmpty
         ? messages
@@ -569,9 +570,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   color: DnaColors.primary,
                 ),
               ),
-              child: GestureDetector(
+              child: MessageBubbleWrapper(
+                message: message,
+                isStarred: starredIds.contains(message.id),
                 onTap: () => _showMessageInfo(message),
                 onLongPress: () => _showMessageActions(message),
+                onReply: _replyMessage,
+                onCopy: _copyMessage,
+                onForward: _forwardMessage,
+                onStar: (msg) => _toggleStarMessage(msg, contact.fingerprint),
+                onDelete: _confirmDeleteMessage,
+                onRetry: message.isOutgoing &&
+                        (message.status == MessageStatus.failed || message.status == MessageStatus.pending)
+                    ? () => _retryMessage(message.id)
+                    : null,
                 child: _MessageBubble(
                   message: message,
                   isStarred: starredIds.contains(message.id),
