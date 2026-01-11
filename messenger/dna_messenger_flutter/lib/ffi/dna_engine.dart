@@ -1083,10 +1083,12 @@ class DnaEngine {
   }
 
   void _onEventReceived(Pointer<dna_event_t> eventPtr, Pointer<Void> userData) {
-    if (_isDisposed) return;
-
+    // DEBUG: Print to stdout/logcat immediately
     final event = eventPtr.ref;
     final type = event.type;
+    print('[DART-EVENT] _onEventReceived called, type=$type, disposed=$_isDisposed');
+
+    if (_isDisposed) return;
 
     DnaEvent? dartEvent;
 
@@ -1144,7 +1146,7 @@ class DnaEngine {
         final messageId = event.data[0] | (event.data[1] << 8) | (event.data[2] << 16) | (event.data[3] << 24);
         // Debug: parse status from offset 4 (new_status is after message_id)
         final status = event.data[4] | (event.data[5] << 8) | (event.data[6] << 16) | (event.data[7] << 24);
-        debugLog('FFI-EVENT', '[MESSAGE_SENT] Received! messageId=$messageId, status=$status');
+        print('[DART-EVENT] MESSAGE_SENT: messageId=$messageId, status=$status');
         dartEvent = MessageSentEvent(messageId);
         break;
       case DnaEventType.DNA_EVENT_MESSAGE_DELIVERED:
@@ -1215,6 +1217,7 @@ class DnaEngine {
     }
 
     if (dartEvent != null) {
+      print('[DART-EVENT] Adding to stream: ${dartEvent.runtimeType}');
       _eventController.add(dartEvent);
     }
 
