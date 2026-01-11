@@ -17,6 +17,12 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 - [ ] **[FLUTTER] P2 - Chat window causes constant image flashing** - Sent/received images in chat flash repeatedly. Chat window implementation needs refactoring to avoid unnecessary rebuilds. Consider using `const` widgets, `RepaintBoundary`, or caching decoded images.
 
+---
+
+## Feature Requests
+
+- [ ] **[CLI] P2 - DHT key derivation leaks communication metadata** - Current outbox/watermark keys are deterministic: `SHA3-512(sender:outbox:recipient)`. A third party who knows both fingerprints can calculate these keys and monitor DHT to detect if/when two parties communicate (timing, frequency, direction). Message content remains encrypted, but existence of communication is leaked. **Proposed fix:** Add per-contact random 32-byte salt exchanged during contact establishment. New key format: `SHA3-512(salt:sender:outbox:recipient)`. Third parties cannot calculate keys without the salt. **See:** [docs/PRIVACY_DHT_KEY_DERIVATION.md](docs/PRIVACY_DHT_KEY_DERIVATION.md) for full analysis and implementation plan.
+
 ## Fixed Bugs
 
 - [x] **[MIXED] P1 - Message status stuck on clock icon until app restart** - Messages were delivered (watermark updates DB to DELIVERED) but Flutter UI kept showing clock icon. **Root cause:** Watermark key mismatch - `dht_publish_watermark_async()` and `dht_get_watermark()` used raw string key while `dht_listen_watermark()` used SHA3-512 hash. Publisher and listener were on different DHT keys. **Fix:** v0.4.23 fixed publish to use SHA3-512, v0.4.24 fixed get to use SHA3-512. Also added MESSAGE_DELIVERED event handler in Flutter and fixed event data type (contactFingerprint instead of messageId). (v0.4.24, v0.99.114)

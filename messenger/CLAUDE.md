@@ -535,15 +535,22 @@ DNA Messenger is developed by a **collaborative team**. When working on this pro
 - Use `git pull --no-rebase` to merge remote changes
 - Merge commits maintain context of feature development
 
-**ALWAYS push to both repos:**
+**Push Rules:**
+- **RELEASE command**: When user says "release" → push to BOTH repos + add `[RELEASE]` tag to commit
+- **User `nocdem`**: Always push to BOTH repos (gitlab + origin)
+- **User `mika`**: Only push to `origin main` (mika's origin is GitLab)
+- **Other users**: Push to `gitlab main` only
+
 ```bash
+# For RELEASE or nocdem user:
 ./push_both.sh
 # OR manually:
 git push gitlab main    # GitLab (primary)
 git push origin main    # GitHub (mirror)
-```
 
-**NOTE:** If user is `mika` (check with `whoami`), only push to `origin main` - mika only has access to origin (which is GitLab for this user).
+# For other users (non-release):
+git push gitlab main    # GitLab only
+```
 
 **Commit format:**
 ```
@@ -554,9 +561,11 @@ Details: what/why/breaking
 ```
 
 **CI Build Trigger:**
-- CI only runs when commit message contains `[BUILD]` or when triggered manually via web
+- CI only runs when commit message contains `[BUILD]` or `[RELEASE]` or when triggered manually via web
 - When user asks for a "build commit", include `[BUILD]` in the commit message
+- When user asks for a "release", include `[RELEASE]` in the commit message
 - Example: `feat: Add presence refresh (v0.2.45) [BUILD]`
+- Example: `docs: Update git workflow (v0.4.31) [RELEASE]`
 
 ---
 
