@@ -29,6 +29,11 @@ class DnaMessengerService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "dna_messenger_service"
         private const val NETWORK_CHANGE_DEBOUNCE_MS = 2000L  // 2 seconds debounce
+        private const val WAKELOCK_TIMEOUT_MS = 10 * 60 * 1000L  // 10 minutes
+        private const val LISTEN_RENEWAL_INTERVAL_MS = 5 * 60 * 60 * 1000L  // 5 hours (before 6h expiry)
+        private const val HEALTH_CHECK_INTERVAL_MS = 15 * 60 * 1000L  // 15 minutes
+        private const val MAX_RECONNECT_RETRIES = 5
+        private val RECONNECT_BACKOFF_MS = longArrayOf(1000, 2000, 5000, 10000, 30000)  // Exponential backoff
 
         @Volatile
         private var isRunning = false
@@ -42,6 +47,13 @@ class DnaMessengerService : Service() {
          */
         @JvmStatic
         external fun nativeReinitDht(): Int
+
+        /**
+         * Check if DHT is connected and listeners are active.
+         * Returns: true if DHT is healthy, false otherwise
+         */
+        @JvmStatic
+        external fun nativeIsDhtHealthy(): Boolean
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -51,6 +63,10 @@ class DnaMessengerService : Service() {
     private var currentNetworkId: String? = null
     private var hadPreviousNetwork: Boolean = false  // Track if we had a network before disconnect
     private var notificationHelper: DnaNotificationHelper? = null
+    private var reconnectRetryCount: Int = 0
+    private var listenRenewalHandler: android.os.Handler? = null
+    private var healthCheckHandler: android.os.Handler? = null
+    private var wakeLockRenewalHandler: android.os.Handler? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -121,6 +137,8 @@ class DnaMessengerService : Service() {
 
         acquireWakeLock()
         registerNetworkCallback()
+        startListenRenewalTimer()
+        startHealthCheckTimer()
 
         // Initialize native notification helper for background message notifications
         try {
@@ -138,6 +156,8 @@ class DnaMessengerService : Service() {
         notificationHelper?.unregister()
         notificationHelper = null
 
+        stopListenRenewalTimer()
+        stopHealthCheckTimer()
         unregisterNetworkCallback()
         releaseWakeLock()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -189,10 +209,6 @@ class DnaMessengerService : Service() {
     }
 
     private fun acquireWakeLock() {
-        // WakeLock disabled for battery testing - foreground service should keep process alive
-        // If messages are delayed during Doze, re-enable with shorter timeout
-        android.util.Log.d(TAG, "WakeLock disabled (battery optimization test)")
-        /*
         if (wakeLock == null) {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(
@@ -202,14 +218,37 @@ class DnaMessengerService : Service() {
         }
         wakeLock?.let {
             if (!it.isHeld) {
-                it.acquire(10 * 60 * 1000L) // 10 minutes max, renewed during network changes
-                android.util.Log.d(TAG, "WakeLock acquired")
+                it.acquire(WAKELOCK_TIMEOUT_MS)
+                android.util.Log.d(TAG, "WakeLock acquired (${WAKELOCK_TIMEOUT_MS / 60000} min timeout)")
             }
         }
-        */
+        // Schedule renewal before expiry
+        startWakeLockRenewal()
+    }
+
+    private fun startWakeLockRenewal() {
+        wakeLockRenewalHandler?.removeCallbacksAndMessages(null)
+        wakeLockRenewalHandler = android.os.Handler(mainLooper)
+        val renewalInterval = WAKELOCK_TIMEOUT_MS - 60000  // Renew 1 minute before expiry
+        wakeLockRenewalHandler?.postDelayed(object : Runnable {
+            override fun run() {
+                if (isRunning && wakeLock != null) {
+                    wakeLock?.let {
+                        if (it.isHeld) {
+                            it.release()
+                        }
+                        it.acquire(WAKELOCK_TIMEOUT_MS)
+                        android.util.Log.d(TAG, "WakeLock renewed")
+                    }
+                    wakeLockRenewalHandler?.postDelayed(this, renewalInterval)
+                }
+            }
+        }, renewalInterval)
     }
 
     private fun releaseWakeLock() {
+        wakeLockRenewalHandler?.removeCallbacksAndMessages(null)
+        wakeLockRenewalHandler = null
         wakeLock?.let {
             if (it.isHeld) {
                 it.release()
@@ -217,6 +256,64 @@ class DnaMessengerService : Service() {
             }
         }
         wakeLock = null
+    }
+
+    // ========== LISTEN RENEWAL (prevent 6-hour OpenDHT expiry) ==========
+
+    private fun startListenRenewalTimer() {
+        listenRenewalHandler?.removeCallbacksAndMessages(null)
+        listenRenewalHandler = android.os.Handler(mainLooper)
+        listenRenewalHandler?.postDelayed(object : Runnable {
+            override fun run() {
+                if (isRunning) {
+                    android.util.Log.i(TAG, "Listen renewal timer fired - reinitializing DHT to refresh subscriptions")
+                    performDhtReinit()
+                    listenRenewalHandler?.postDelayed(this, LISTEN_RENEWAL_INTERVAL_MS)
+                }
+            }
+        }, LISTEN_RENEWAL_INTERVAL_MS)
+        android.util.Log.i(TAG, "Listen renewal timer started (${LISTEN_RENEWAL_INTERVAL_MS / 3600000}h interval)")
+    }
+
+    private fun stopListenRenewalTimer() {
+        listenRenewalHandler?.removeCallbacksAndMessages(null)
+        listenRenewalHandler = null
+        android.util.Log.i(TAG, "Listen renewal timer stopped")
+    }
+
+    // ========== DHT HEALTH CHECK ==========
+
+    private fun startHealthCheckTimer() {
+        healthCheckHandler?.removeCallbacksAndMessages(null)
+        healthCheckHandler = android.os.Handler(mainLooper)
+        healthCheckHandler?.postDelayed(object : Runnable {
+            override fun run() {
+                if (isRunning) {
+                    performHealthCheck()
+                    healthCheckHandler?.postDelayed(this, HEALTH_CHECK_INTERVAL_MS)
+                }
+            }
+        }, HEALTH_CHECK_INTERVAL_MS)
+        android.util.Log.i(TAG, "Health check timer started (${HEALTH_CHECK_INTERVAL_MS / 60000}min interval)")
+    }
+
+    private fun stopHealthCheckTimer() {
+        healthCheckHandler?.removeCallbacksAndMessages(null)
+        healthCheckHandler = null
+        android.util.Log.i(TAG, "Health check timer stopped")
+    }
+
+    private fun performHealthCheck() {
+        try {
+            val isHealthy = nativeIsDhtHealthy()
+            android.util.Log.d(TAG, "DHT health check: healthy=$isHealthy")
+            if (!isHealthy && isNetworkValidated()) {
+                android.util.Log.w(TAG, "DHT unhealthy but network available - triggering reinit")
+                performDhtReinit()
+            }
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Health check error: ${e.message}")
+        }
     }
 
     // ========== NETWORK MONITORING ==========
@@ -306,22 +403,30 @@ class DnaMessengerService : Service() {
             return
         }
         lastNetworkChangeTime = now
+        reconnectRetryCount = 0  // Reset retry count on new network change
 
         android.util.Log.i(TAG, "Network changed to $newNetworkId - checking connectivity...")
         updateNotification("Reconnecting...")
 
-        // Verify network is actually usable before reinit
+        attemptReconnectWithBackoff()
+    }
+
+    private fun attemptReconnectWithBackoff() {
         if (!isNetworkValidated()) {
-            android.util.Log.w(TAG, "Network not validated yet, waiting...")
-            // Retry after 1 second
-            android.os.Handler(mainLooper).postDelayed({
-                if (isNetworkValidated()) {
-                    performDhtReinit()
-                } else {
-                    android.util.Log.e(TAG, "Network still not validated, skipping reinit")
-                    updateNotification("Decentralized mode active — background service running to receive messages")
-                }
-            }, 1000)
+            if (reconnectRetryCount < MAX_RECONNECT_RETRIES) {
+                val delay = RECONNECT_BACKOFF_MS[reconnectRetryCount.coerceAtMost(RECONNECT_BACKOFF_MS.size - 1)]
+                reconnectRetryCount++
+                android.util.Log.w(TAG, "Network not validated, retry $reconnectRetryCount/$MAX_RECONNECT_RETRIES in ${delay}ms")
+                android.os.Handler(mainLooper).postDelayed({
+                    if (isRunning) {
+                        attemptReconnectWithBackoff()
+                    }
+                }, delay)
+            } else {
+                android.util.Log.e(TAG, "Max reconnect retries reached, giving up")
+                updateNotification("Decentralized mode active — background service running to receive messages")
+                reconnectRetryCount = 0
+            }
             return
         }
 

@@ -167,6 +167,11 @@ static dna_engine_t *g_dht_callback_engine = NULL;
 static dna_android_notification_cb g_android_notification_cb = NULL;
 static void *g_android_notification_data = NULL;
 
+/* Android contact request notification callback.
+ * Called when DNA_EVENT_CONTACT_REQUEST_RECEIVED fires. */
+static dna_android_contact_request_cb g_android_contact_request_cb = NULL;
+static void *g_android_contact_request_data = NULL;
+
 /* Global engine accessors (for messenger layer event dispatch) */
 void dna_engine_set_global(dna_engine_t *engine) {
     g_dht_callback_engine = engine;
@@ -715,6 +720,15 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
             g_android_notification_cb(fp, display_name, g_android_notification_data);
         }
     }
+
+    /* Android contact request notification callback.
+     * When a new contact request is received, notify the Android layer. */
+    if (event->type == DNA_EVENT_CONTACT_REQUEST_RECEIVED && g_android_contact_request_cb) {
+        QGP_LOG_INFO(LOG_TAG, "[ANDROID-NOTIFY] Contact request received - notifying Android");
+        /* The event doesn't carry the request details, so we pass NULLs
+         * and let Android fetch the actual requests via get_contact_requests() */
+        g_android_contact_request_cb(NULL, NULL, NULL, g_android_contact_request_data);
+    }
 }
 
 void dna_free_event(dna_event_t *event) {
@@ -1053,6 +1067,16 @@ void dna_engine_set_android_notification_callback(
     g_android_notification_cb = callback;
     g_android_notification_data = user_data;
     QGP_LOG_INFO(LOG_TAG, "Android notification callback %s",
+                 callback ? "registered" : "cleared");
+}
+
+void dna_engine_set_android_contact_request_callback(
+    dna_android_contact_request_cb callback,
+    void *user_data
+) {
+    g_android_contact_request_cb = callback;
+    g_android_contact_request_data = user_data;
+    QGP_LOG_INFO(LOG_TAG, "Android contact request callback %s",
                  callback ? "registered" : "cleared");
 }
 

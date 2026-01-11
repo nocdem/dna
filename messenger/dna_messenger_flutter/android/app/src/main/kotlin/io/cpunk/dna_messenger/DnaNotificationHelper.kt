@@ -21,6 +21,8 @@ class DnaNotificationHelper(private val context: Context) {
         private const val TAG = "DnaNotificationHelper"
         private const val MESSAGE_CHANNEL_ID = "dna_messages"
         private const val MESSAGE_NOTIFICATION_ID = 2001
+        private const val CONTACT_REQUEST_CHANNEL_ID = "dna_contact_requests"
+        private const val CONTACT_REQUEST_NOTIFICATION_ID = 3001
 
         // Flutter SharedPreferences file and key
         private const val FLUTTER_PREFS_FILE = "FlutterSharedPreferences"
@@ -56,7 +58,10 @@ class DnaNotificationHelper(private val context: Context) {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
+            val notificationManager = context.getSystemService(NotificationManager::class.java)
+
+            // Message channel
+            val messageChannel = NotificationChannel(
                 MESSAGE_CHANNEL_ID,
                 "Messages",
                 NotificationManager.IMPORTANCE_HIGH
@@ -65,8 +70,19 @@ class DnaNotificationHelper(private val context: Context) {
                 enableVibration(true)
                 enableLights(true)
             }
-            val notificationManager = context.getSystemService(NotificationManager::class.java)
-            notificationManager.createNotificationChannel(channel)
+            notificationManager.createNotificationChannel(messageChannel)
+
+            // Contact request channel
+            val contactRequestChannel = NotificationChannel(
+                CONTACT_REQUEST_CHANNEL_ID,
+                "Contact Requests",
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply {
+                description = "New contact request notifications"
+                enableVibration(true)
+                enableLights(true)
+            }
+            notificationManager.createNotificationChannel(contactRequestChannel)
         }
     }
 
@@ -122,6 +138,47 @@ class DnaNotificationHelper(private val context: Context) {
         notificationManager.notify(notificationId, notification)
 
         android.util.Log.i(TAG, "Notification shown for $senderName")
+    }
+
+    /**
+     * Called from native code (JNI) when a new contact request is received.
+     * This method is called from a native thread, not the main thread.
+     */
+    fun onContactRequestReceived() {
+        android.util.Log.i(TAG, "onContactRequestReceived: new contact request")
+
+        // Check if user has notifications enabled
+        if (!areNotificationsEnabled()) {
+            android.util.Log.i(TAG, "Notifications disabled by user, skipping")
+            return
+        }
+
+        showContactRequestNotification()
+    }
+
+    private fun showContactRequestNotification() {
+        val pendingIntent = PendingIntent.getActivity(
+            context, 0,
+            context.packageManager.getLaunchIntentForPackage(context.packageName),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification = NotificationCompat.Builder(context, CONTACT_REQUEST_CHANNEL_ID)
+            .setContentTitle("New Contact Request")
+            .setContentText("Someone wants to connect with you")
+            .setSmallIcon(android.R.drawable.ic_menu_add)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_SOCIAL)
+            .setVibrate(longArrayOf(0, 200, 100, 200))
+            .setLocalOnly(false)
+            .build()
+
+        val notificationManager = context.getSystemService(NotificationManager::class.java)
+        notificationManager.notify(CONTACT_REQUEST_NOTIFICATION_ID, notification)
+
+        android.util.Log.i(TAG, "Contact request notification shown")
     }
 
     fun unregister() {

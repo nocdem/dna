@@ -603,6 +603,54 @@ static void jni_android_notification_callback(const char *contact_fingerprint, c
     LOGI("[NOTIFY] Java notification helper called successfully");
 }
 
+/**
+ * Native callback invoked by dna_engine when DNA_EVENT_CONTACT_REQUEST_RECEIVED fires.
+ * Calls the Java NotificationHelper.onContactRequestReceived() method.
+ */
+static void jni_android_contact_request_callback(
+    const char *requester_fingerprint,
+    const char *display_name,
+    const char *message,
+    void *user_data)
+{
+    (void)user_data;
+    (void)requester_fingerprint;  /* Currently not used - event doesn't carry details */
+    (void)display_name;
+    (void)message;
+
+    if (!g_notification_helper) {
+        LOGD("Contact request callback: no notification helper");
+        return;
+    }
+
+    JNIEnv *env = get_env();
+    if (!env) {
+        LOGE("Failed to get JNIEnv for contact request callback");
+        return;
+    }
+
+    LOGI("[NOTIFY] Contact request received - calling Java notification helper");
+
+    jclass cls = (*env)->GetObjectClass(env, g_notification_helper);
+    if (!cls) {
+        LOGE("Failed to get notification helper class");
+        return;
+    }
+
+    jmethodID method = (*env)->GetMethodID(env, cls, "onContactRequestReceived", "()V");
+    if (!method) {
+        /* Method might not exist yet - not an error, just skip */
+        LOGD("onContactRequestReceived method not found (not implemented yet?)");
+        (*env)->DeleteLocalRef(env, cls);
+        return;
+    }
+
+    (*env)->CallVoidMethod(env, g_notification_helper, method);
+    (*env)->DeleteLocalRef(env, cls);
+
+    LOGI("[NOTIFY] Java contact request notification called successfully");
+}
+
 /* ============================================================================
  * JNI NATIVE METHODS
  * ============================================================================ */
@@ -683,12 +731,14 @@ Java_io_cpunk_dna_DNAEngine_nativeSetNotificationHelper(JNIEnv *env, jobject thi
         (*env)->DeleteGlobalRef(env, g_notification_helper);
         g_notification_helper = NULL;
         dna_engine_set_android_notification_callback(NULL, NULL);
+        dna_engine_set_android_contact_request_callback(NULL, NULL);
     }
 
     /* Set new helper */
     if (helper) {
         g_notification_helper = (*env)->NewGlobalRef(env, helper);
         dna_engine_set_android_notification_callback(jni_android_notification_callback, NULL);
+        dna_engine_set_android_contact_request_callback(jni_android_contact_request_callback, NULL);
         LOGI("Notification helper registered successfully");
     } else {
         LOGI("Notification helper cleared");
@@ -708,12 +758,14 @@ Java_io_cpunk_dna_1messenger_DnaNotificationHelper_nativeSetNotificationHelper(J
         (*env)->DeleteGlobalRef(env, g_notification_helper);
         g_notification_helper = NULL;
         dna_engine_set_android_notification_callback(NULL, NULL);
+        dna_engine_set_android_contact_request_callback(NULL, NULL);
     }
 
     /* Set new helper */
     if (helper) {
         g_notification_helper = (*env)->NewGlobalRef(env, helper);
         dna_engine_set_android_notification_callback(jni_android_notification_callback, NULL);
+        dna_engine_set_android_contact_request_callback(jni_android_contact_request_callback, NULL);
         LOGI("Flutter: Notification helper registered successfully");
     } else {
         LOGI("Flutter: Notification helper cleared");
@@ -1072,4 +1124,16 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReinitDht(JNIEnv *env, jo
 
     LOGI("nativeReinitDht: DHT reinit successful");
     return 0;
+}
+
+/**
+ * Check if DHT is healthy (initialized and connected).
+ * Used by foreground service for periodic health checks.
+ */
+JNIEXPORT jboolean JNICALL
+Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeIsDhtHealthy(JNIEnv *env, jobject thiz) {
+    if (!dht_singleton_is_initialized()) {
+        return JNI_FALSE;
+    }
+    return dht_singleton_is_ready() ? JNI_TRUE : JNI_FALSE;
 }
