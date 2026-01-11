@@ -6582,6 +6582,13 @@ void dna_handle_sync_group_by_uuid(dna_engine_t *engine, dna_task_t *task) {
                 error = DNA_ENGINE_ERROR_NETWORK;
             } else {
                 QGP_LOG_INFO(LOG_TAG, "Successfully synced group %s from DHT", group_uuid);
+                // Also sync GEK for this group
+                int gek_ret = messenger_sync_group_gek(group_uuid);
+                if (gek_ret != 0) {
+                    QGP_LOG_WARN(LOG_TAG, "Failed to sync GEK for group %s (non-fatal)", group_uuid);
+                } else {
+                    QGP_LOG_INFO(LOG_TAG, "Successfully synced GEK for group %s", group_uuid);
+                }
             }
         } else {
             error = DNA_ENGINE_ERROR_NETWORK;

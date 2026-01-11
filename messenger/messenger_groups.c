@@ -761,6 +761,123 @@ int messenger_reject_group_invitation(messenger_context_t *ctx, const char *grou
 }
 
 /**
+ * Sync GEK (Group Encryption Key) from DHT for an existing group
+ *
+ * Fetches the Initial Key Packet from DHT, extracts the GEK using
+ * this user's Kyber private key, and stores it locally.
+ *
+ * @param group_uuid Group UUID (36 chars)
+ * @return 0 on success, -1 on error
+ */
+int messenger_sync_group_gek(const char *group_uuid) {
+    if (!group_uuid || strlen(group_uuid) != 36) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid group_uuid for GEK sync\n");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Syncing GEK for group %s...\n", group_uuid);
+
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not initialized\n");
+        return -1;
+    }
+
+    // Load user's Kyber private key for IKP extraction
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory for GEK sync\n");
+        return -1;
+    }
+
+    // v0.3.0: Flat structure - keys/identity.kem
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", data_dir);
+
+    qgp_key_t *kyber_key = NULL;
+    if (qgp_key_load(kyber_path, &kyber_key) != 0 || !kyber_key) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key for GEK sync\n");
+        return -1;
+    }
+
+    if (kyber_key->private_key_size != 3168) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid Kyber key size: %zu\n", kyber_key->private_key_size);
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    // Load Dilithium public key to compute fingerprint
+    char dilithium_path[512];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
+
+    qgp_key_t *dilithium_key = NULL;
+    if (qgp_key_load(dilithium_path, &dilithium_key) != 0 || !dilithium_key) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key for fingerprint\n");
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    // Compute fingerprint (SHA3-512 of Dilithium public key)
+    uint8_t my_fingerprint[64];
+    if (qgp_sha3_512(dilithium_key->public_key, 2592, my_fingerprint) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to compute fingerprint\n");
+        qgp_key_free(kyber_key);
+        qgp_key_free(dilithium_key);
+        return -1;
+    }
+    qgp_key_free(dilithium_key);
+
+    // Try fetching GEK versions starting from 0
+    uint8_t *ikp_packet = NULL;
+    size_t ikp_size = 0;
+    int found_gek = 0;
+    int ret;
+
+    // Try versions 0-9 (covers most cases)
+    for (uint32_t try_version = 0; try_version < 10; try_version++) {
+        ret = dht_gek_fetch(dht_ctx, group_uuid, try_version, &ikp_packet, &ikp_size);
+        if (ret == 0 && ikp_packet && ikp_size > 0) {
+            QGP_LOG_INFO(LOG_TAG, "Found IKP for group %s version %u (%zu bytes)\n",
+                         group_uuid, try_version, ikp_size);
+            found_gek = 1;
+            break;
+        }
+    }
+
+    if (!found_gek) {
+        QGP_LOG_WARN(LOG_TAG, "No GEK found in DHT for group %s\n", group_uuid);
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    // Extract GEK from IKP using my fingerprint and Kyber private key
+    uint8_t gek[GEK_KEY_SIZE];
+    uint32_t extracted_version = 0;
+    ret = ikp_extract(ikp_packet, ikp_size, my_fingerprint,
+                      kyber_key->private_key, gek, &extracted_version);
+    free(ikp_packet);
+    qgp_key_free(kyber_key);
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to extract GEK from IKP (not a member?)\n");
+        return -1;
+    }
+
+    // Store GEK locally
+    ret = gek_store(group_uuid, extracted_version, gek);
+    qgp_secure_memzero(gek, GEK_KEY_SIZE);
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store GEK locally\n");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Successfully synced GEK v%u for group %s\n",
+                 extracted_version, group_uuid);
+    return 0;
+}
+
+/**
  * Sync groups from offline messages and DHT
  *
  * This function:

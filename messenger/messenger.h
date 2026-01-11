@@ -686,6 +686,20 @@ int messenger_reject_group_invitation(
 );
 
 /**
+ * Sync GEK (Group Encryption Key) from DHT for an existing group
+ *
+ * Fetches the Initial Key Packet from DHT, extracts the GEK using
+ * this user's Kyber private key, and stores it locally.
+ *
+ * Use this to manually sync GEK for groups where the invitation was
+ * accepted before the automatic GEK sync was implemented.
+ *
+ * @param group_uuid: Group UUID (36 chars)
+ * @return: 0 on success, -1 on error
+ */
+int messenger_sync_group_gek(const char *group_uuid);
+
+/**
  * Sync groups and invitations from DHT and offline messages
  *
  * This function:
