@@ -467,6 +467,8 @@ int messenger_send_message(
 
         // Get the message ID we just inserted
         message_ids[i] = message_backup_get_last_id(ctx->backup_ctx);
+        QGP_LOG_WARN(LOG_TAG, "[SEND] Saved message id=%d for recipient %.20s...",
+                     message_ids[i], recipients[i]);
     }
 
     // Phase 14: DHT-only messaging - queue directly to DHT (Spillway)
@@ -485,7 +487,12 @@ int messenger_send_message(
             // Update status to SENT (1) - DHT PUT succeeded, single tick in UI
             // Will become DELIVERED (3) via watermark confirmation → double tick
             if (message_ids[i] > 0) {
-                message_backup_update_status(ctx->backup_ctx, message_ids[i], 1);
+                int update_rc = message_backup_update_status(ctx->backup_ctx, message_ids[i], 1);
+                QGP_LOG_WARN(LOG_TAG, "[SEND] DHT PUT OK, updated msg %d to SENT(1), rc=%d",
+                             message_ids[i], update_rc);
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "[SEND] DHT PUT OK but message_id=%d invalid, cannot update status",
+                             message_ids[i]);
             }
         } else {
             // Update status to FAILED (2) - DHT queue failed (key unavailable, etc.)
