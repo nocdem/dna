@@ -2290,6 +2290,7 @@ int dna_engine_set_contact_nickname_sync(
 
 void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
+    qgp_key_t *privkey = NULL;
 
     QGP_LOG_INFO("DNA_ENGINE", "dna_handle_send_contact_request called for recipient: %.20s...",
                  task->params.send_contact_request.recipient);
@@ -2308,7 +2309,7 @@ void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Get sender keys */
-    qgp_key_t *privkey = dna_load_private_key(engine);
+    privkey = dna_load_private_key(engine);
     if (!privkey) {
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
@@ -2339,6 +2340,9 @@ void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task) {
     /* Contact will be added when the recipient approves and we approve their reciprocal request */
 
 done:
+    if (privkey) {
+        qgp_key_free(privkey);
+    }
     if (task->callback.completion) {
         task->callback.completion(task->request_id, error, task->user_data);
     }
@@ -2545,6 +2549,7 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
                 task->params.contact_request.fingerprint,
                 "Contact request accepted"
             );
+            qgp_key_free(privkey);
         }
     }
 
