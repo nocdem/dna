@@ -4984,6 +4984,43 @@ dna_request_id_t dna_engine_check_offline_messages(
     return dna_submit_task(engine, TASK_CHECK_OFFLINE_MESSAGES, NULL, cb, user_data);
 }
 
+dna_request_id_t dna_engine_check_offline_messages_from(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !contact_fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+    if (!engine->identity_loaded || !engine->messenger) {
+        callback(1, DNA_ENGINE_ERROR_NO_IDENTITY, user_data);
+        return 1;
+    }
+
+    size_t fp_len = strlen(contact_fingerprint);
+    if (fp_len < 64) {
+        QGP_LOG_ERROR(LOG_TAG, "[OFFLINE] Invalid fingerprint length: %zu", fp_len);
+        callback(1, DNA_ENGINE_ERROR_INVALID_PARAM, user_data);
+        return 1;
+    }
+
+    /* Check offline messages from specific contact's outbox.
+     * This is faster than checking all contacts and provides
+     * immediate updates when entering a specific chat. */
+    QGP_LOG_INFO(LOG_TAG, "[OFFLINE] Checking messages from %.20s...", contact_fingerprint);
+
+    size_t offline_count = 0;
+    int rc = messenger_p2p_check_offline_messages(engine->messenger, contact_fingerprint, &offline_count);
+    if (rc == 0) {
+        QGP_LOG_INFO(LOG_TAG, "[OFFLINE] From %.20s...: %zu new messages", contact_fingerprint, offline_count);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "[OFFLINE] Check from %.20s... failed: %d", contact_fingerprint, rc);
+    }
+
+    /* Call completion callback (0 = success for any result including 0 messages) */
+    callback(1, rc == 0 ? DNA_OK : DNA_ENGINE_ERROR_NETWORK, user_data);
+    return 1;
+}
+
 int dna_engine_get_unread_count(
     dna_engine_t *engine,
     const char *contact_fingerprint
@@ -5847,6 +5884,34 @@ void dna_engine_cancel_outbox_listener(
     pthread_mutex_unlock(&engine->outbox_listeners_mutex);
 }
 
+/**
+ * Debug: Log all active outbox listeners
+ * Called to verify which contacts have active listeners
+ */
+void dna_engine_log_active_listeners(dna_engine_t *engine) {
+    if (!engine) return;
+
+    pthread_mutex_lock(&engine->outbox_listeners_mutex);
+
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN-DEBUG] === ACTIVE OUTBOX LISTENERS (%d) ===",
+                 engine->outbox_listener_count);
+
+    for (int i = 0; i < engine->outbox_listener_count; i++) {
+        if (engine->outbox_listeners[i].active) {
+            bool dht_active = dht_is_listener_active(engine->outbox_listeners[i].dht_token);
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN-DEBUG]   [%d] %.32s... token=%zu dht_active=%d",
+                         i,
+                         engine->outbox_listeners[i].contact_fingerprint,
+                         engine->outbox_listeners[i].dht_token,
+                         dht_active);
+        }
+    }
+
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN-DEBUG] === END LISTENERS ===");
+
+    pthread_mutex_unlock(&engine->outbox_listeners_mutex);
+}
+
 int dna_engine_listen_all_contacts(dna_engine_t *engine)
 {
     QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] dna_engine_listen_all_contacts() called");
@@ -5946,6 +6011,10 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     engine->listeners_starting = false;
     QGP_LOG_INFO(LOG_TAG, "[LISTEN] Started %d/%zu outbox + %d/%zu presence + contact_req listeners",
                  started, count, presence_started, count);
+
+    /* Debug: log all active listeners for troubleshooting */
+    dna_engine_log_active_listeners(engine);
+
     return started;
 }
 

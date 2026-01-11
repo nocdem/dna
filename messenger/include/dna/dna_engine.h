@@ -1455,6 +1455,25 @@ DNA_API dna_request_id_t dna_engine_check_offline_messages(
 );
 
 /**
+ * Force check for offline messages from a specific contact
+ *
+ * Queries only the specified contact's outbox instead of all contacts.
+ * Use this when entering a chat to get immediate updates from that contact.
+ *
+ * @param engine              Engine instance
+ * @param contact_fingerprint Contact fingerprint to check
+ * @param callback            Called on completion
+ * @param user_data           User data for callback
+ * @return                    Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_check_offline_messages_from(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
  * Get unread message count for a contact (synchronous)
  *
  * Returns number of unread incoming messages from the specified contact.

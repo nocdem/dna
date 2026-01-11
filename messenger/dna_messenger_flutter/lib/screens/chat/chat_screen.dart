@@ -88,14 +88,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   /// Check offline messages silently (no UI feedback)
   /// Called automatically when chat opens
+  /// Uses targeted fetch for this specific contact (faster than checking all)
   Future<void> _checkOfflineMessagesSilent() async {
     final contact = ref.read(selectedContactProvider);
     if (contact == null) return;
 
     try {
       final engine = await ref.read(engineProvider.future);
-      log('CHAT', 'Auto-checking offline messages for ${contact.fingerprint.substring(0, 16)}...');
-      await engine.checkOfflineMessages();
+      log('CHAT', 'Auto-checking offline messages from ${contact.fingerprint.substring(0, 16)}...');
+
+      // Use targeted fetch for this specific contact (faster than checking all)
+      await engine.checkOfflineMessagesFrom(contact.fingerprint);
 
       // Refresh conversation to show any new messages
       if (mounted) {

@@ -1585,6 +1585,24 @@ class DnaBindings {
     return _dna_engine_check_offline_messages(engine, callback, user_data);
   }
 
+  // Check offline messages from a specific contact
+  late final _dna_engine_check_offline_messages_from = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>(
+      'dna_engine_check_offline_messages_from');
+
+  int dna_engine_check_offline_messages_from(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> contactFingerprint,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_check_offline_messages_from(
+        engine, contactFingerprint, callback, user_data);
+  }
+
   // Delete a message from local database
   late final _dna_engine_delete_message_sync = _lib.lookupFunction<
       Int32 Function(Pointer<dna_engine_t>, Int32),

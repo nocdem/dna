@@ -3831,6 +3831,45 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Check for offline messages from a specific contact
+  ///
+  /// This queries only the specified contact's outbox instead of all contacts.
+  /// Use this when entering a chat to get immediate updates from that contact.
+  /// Faster than checkOfflineMessages() which checks all contacts.
+  Future<void> checkOfflineMessagesFrom(String contactFingerprint) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+    final fpNative = contactFingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+      calloc.free(fpNative);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_check_offline_messages_from(
+      _engine,
+      fpNative,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      calloc.free(fpNative);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
   /// Refresh presence in DHT (announce we're online)
   ///
   /// This publishes presence to DHT so peers can discover we're online.
