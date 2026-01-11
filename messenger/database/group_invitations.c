@@ -31,6 +31,8 @@ static const char *INVITATIONS_SCHEMA =
  * Initialize group invitations database
  */
 int group_invitations_init(const char *identity) {
+    QGP_LOG_WARN(LOG_TAG, ">>> INIT START identity=%s\n", identity ? identity : "(null)");
+
     if (!identity) {
         QGP_LOG_ERROR(LOG_TAG, "NULL identity\n");
         return -1;
@@ -38,6 +40,7 @@ int group_invitations_init(const char *identity) {
 
     // If already initialized for this identity, return success
     if (g_invitations_db && strcmp(g_current_identity, identity) == 0) {
+        QGP_LOG_WARN(LOG_TAG, ">>> INIT: already initialized, returning 0\n");
         return 0;
     }
 
@@ -79,7 +82,7 @@ int group_invitations_init(const char *identity) {
     }
 
     strncpy(g_current_identity, identity, sizeof(g_current_identity) - 1);
-    QGP_LOG_INFO(LOG_TAG, "Initialized for identity: %s\n", identity);
+    QGP_LOG_WARN(LOG_TAG, ">>> INIT COMPLETE for identity: %s\n", identity);
     return 0;
 }
 

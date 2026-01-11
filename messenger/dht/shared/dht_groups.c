@@ -797,11 +797,22 @@ int dht_groups_list_for_user(
         }
 
         groups[count].local_id = sqlite3_column_int(stmt, 0);
-        strncpy(groups[count].group_uuid, (const char*)sqlite3_column_text(stmt, 1), 36);
+
+        const char *db_uuid = (const char*)sqlite3_column_text(stmt, 1);
+        const char *db_name = (const char*)sqlite3_column_text(stmt, 2);
+        const char *db_creator = (const char*)sqlite3_column_text(stmt, 3);
+
+        QGP_LOG_WARN(LOG_TAG, ">>> ROW[%d]: uuid=%s name=%s creator_len=%zu",
+                     count,
+                     db_uuid ? db_uuid : "(null)",
+                     db_name ? db_name : "(null)",
+                     db_creator ? strlen(db_creator) : 0);
+
+        strncpy(groups[count].group_uuid, db_uuid ? db_uuid : "", 36);
         groups[count].group_uuid[36] = '\0';
-        strncpy(groups[count].name, (const char*)sqlite3_column_text(stmt, 2), 127);
+        strncpy(groups[count].name, db_name ? db_name : "", 127);
         groups[count].name[127] = '\0';
-        strncpy(groups[count].creator, (const char*)sqlite3_column_text(stmt, 3), 32);
+        strncpy(groups[count].creator, db_creator ? db_creator : "", 32);
         groups[count].creator[32] = '\0';
         groups[count].created_at = sqlite3_column_int64(stmt, 4);
         groups[count].last_sync = sqlite3_column_int64(stmt, 5);

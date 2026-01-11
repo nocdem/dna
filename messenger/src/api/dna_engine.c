@@ -5306,12 +5306,14 @@ static bool outbox_listen_callback(
         QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Dispatching event to Flutter...");
         dna_dispatch_event(ctx->engine, &event);
         QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Event dispatched successfully");
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] >>> About to return true (continue listening)");
     } else if (expired) {
         QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Value expired (ignoring)");
     } else {
         QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Empty value received (ignoring)");
     }
 
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] >>> CALLBACK RETURNING TRUE <<<");
     return true;  /* Continue listening */
 }
 

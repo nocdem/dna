@@ -251,10 +251,12 @@ messenger_context_t* messenger_init(const char *identity) {
     // v0.3.0: Initialize DHT groups database (flat structure)
     char groups_db_path[512];
     snprintf(groups_db_path, sizeof(groups_db_path), "%s/db/groups.db", qgp_platform_app_data_dir());
+    QGP_LOG_WARN(LOG_TAG, ">>> dht_groups_init START path=%s", groups_db_path);
     if (dht_groups_init(groups_db_path) != 0) {
         QGP_LOG_WARN(LOG_TAG, "Failed to initialize DHT groups database");
         // Non-fatal - continue without groups support
     }
+    QGP_LOG_WARN(LOG_TAG, ">>> dht_groups_init DONE");
 
     QGP_LOG_INFO(LOG_TAG, "Messenger initialized for '%s'", identity);
 
