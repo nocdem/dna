@@ -70,6 +70,7 @@ typedef enum {
     /* Messaging */
     TASK_SEND_MESSAGE,
     TASK_GET_CONVERSATION,
+    TASK_GET_CONVERSATION_PAGE,
     TASK_CHECK_OFFLINE_MESSAGES,
 
     /* Groups */
@@ -202,6 +203,13 @@ typedef union {
         char contact[129];
     } get_conversation;
 
+    /* Get conversation page (paginated) */
+    struct {
+        char contact[129];
+        int limit;
+        int offset;
+    } get_conversation_page;
+
     /* Create group */
     struct {
         char name[256];
@@ -328,6 +336,7 @@ typedef union {
     dna_contact_requests_cb contact_requests;
     dna_blocked_users_cb blocked_users;
     dna_messages_cb messages;
+    dna_messages_page_cb messages_page;
     dna_groups_cb groups;
     dna_group_created_cb group_created;
     dna_invitations_cb invitations;
@@ -630,6 +639,7 @@ void dna_handle_get_blocked_users(dna_engine_t *engine, dna_task_t *task);
 /* Messaging */
 void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_conversation_page(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task);
 
 /* Groups */

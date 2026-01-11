@@ -1136,6 +1136,175 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
 }
 
 /**
+ * Get conversation with pagination (for efficient chat loading)
+ * Returns messages in DESC order (newest first) for reverse-scroll UI
+ */
+int messenger_get_conversation_page(messenger_context_t *ctx, const char *other_identity,
+                                     int limit, int offset,
+                                     message_info_t **messages_out, int *count_out,
+                                     int *total_out) {
+    if (!ctx || !other_identity || !messages_out || !count_out) {
+        return -1;
+    }
+
+    // Get paginated conversation from SQLite
+    backup_message_t *backup_messages = NULL;
+    int backup_count = 0;
+    int total = 0;
+
+    int result = message_backup_get_conversation_page(ctx->backup_ctx, other_identity,
+                                                       limit, offset,
+                                                       &backup_messages, &backup_count, &total);
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Get conversation page failed from SQLite");
+        return -1;
+    }
+
+    *count_out = backup_count;
+    if (total_out) *total_out = total;
+
+    if (backup_count == 0) {
+        *messages_out = NULL;
+        return 0;
+    }
+
+    // Convert backup_message_t to message_info_t for GUI compatibility
+    message_info_t *messages = (message_info_t*)calloc(backup_count, sizeof(message_info_t));
+    if (!messages) {
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
+        message_backup_free_messages(backup_messages, backup_count);
+        return -1;
+    }
+
+    // Load Kyber key ONCE for all decryptions
+    const char *home_kyber = qgp_platform_app_data_dir();
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", home_kyber);
+
+    qgp_key_t *kyber_key = NULL;
+    if (qgp_key_load(kyber_path, &kyber_key) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key for decryption");
+        free(messages);
+        message_backup_free_messages(backup_messages, backup_count);
+        return -1;
+    }
+
+    if (kyber_key->private_key_size != 3168) {  // Kyber1024 secret key size
+        QGP_LOG_ERROR(LOG_TAG, "Invalid Kyber key size: %zu", kyber_key->private_key_size);
+        qgp_key_free(kyber_key);
+        free(messages);
+        message_backup_free_messages(backup_messages, backup_count);
+        return -1;
+    }
+
+    // Convert and decrypt each message
+    for (int i = 0; i < backup_count; i++) {
+        messages[i].id = backup_messages[i].id;
+        messages[i].sender = strdup(backup_messages[i].sender);
+        messages[i].recipient = strdup(backup_messages[i].recipient);
+
+        // Convert time_t to string (format: YYYY-MM-DD HH:MM:SS)
+        struct tm *tm_info = localtime(&backup_messages[i].timestamp);
+        messages[i].timestamp = (char*)malloc(32);
+        if (messages[i].timestamp) {
+            strftime(messages[i].timestamp, 32, "%Y-%m-%d %H:%M:%SS", tm_info);
+        }
+
+        // Convert status int to string
+        if (backup_messages[i].status == 4) {
+            messages[i].status = strdup("read");
+        } else if (backup_messages[i].status == 3) {
+            messages[i].status = strdup("delivered");
+        } else if (backup_messages[i].status == 2) {
+            messages[i].status = strdup("failed");
+        } else if (backup_messages[i].status == 1) {
+            messages[i].status = strdup("sent");
+        } else if (backup_messages[i].status == 0) {
+            messages[i].status = strdup("pending");
+        } else {
+            // Old messages without status field
+            if (backup_messages[i].read) {
+                messages[i].status = strdup("read");
+            } else if (backup_messages[i].delivered) {
+                messages[i].status = strdup("delivered");
+            } else {
+                messages[i].status = strdup("sent");
+            }
+        }
+
+        messages[i].delivered_at = backup_messages[i].delivered ? strdup(messages[i].timestamp) : NULL;
+        messages[i].read_at = backup_messages[i].read ? strdup(messages[i].timestamp) : NULL;
+        messages[i].message_type = backup_messages[i].message_type;
+
+        // Decrypt message inline
+        if (backup_messages[i].encrypted_message && backup_messages[i].encrypted_len > 0) {
+            uint8_t *plaintext = NULL;
+            size_t plaintext_len = 0;
+            uint8_t *sender_fp = NULL;
+            size_t sender_fp_len = 0;
+            uint8_t *signature = NULL;
+            size_t signature_len = 0;
+            uint64_t sender_timestamp = 0;
+
+            dna_error_t err = dna_decrypt_message_raw(
+                ctx->dna_ctx,
+                backup_messages[i].encrypted_message,
+                backup_messages[i].encrypted_len,
+                kyber_key->private_key,
+                &plaintext,
+                &plaintext_len,
+                &sender_fp,
+                &sender_fp_len,
+                &signature,
+                &signature_len,
+                &sender_timestamp
+            );
+
+            if (err == DNA_OK && plaintext) {
+                messages[i].plaintext = (char*)malloc(plaintext_len + 1);
+                if (messages[i].plaintext) {
+                    memcpy(messages[i].plaintext, plaintext, plaintext_len);
+                    messages[i].plaintext[plaintext_len] = '\0';
+                }
+                free(plaintext);
+            } else {
+                messages[i].plaintext = strdup("[Decryption failed]");
+            }
+
+            free(sender_fp);
+            free(signature);
+        } else {
+            messages[i].plaintext = strdup("[No message data]");
+        }
+
+        if (!messages[i].sender || !messages[i].recipient || !messages[i].timestamp || !messages[i].status) {
+            // Clean up on failure
+            for (int j = 0; j <= i; j++) {
+                free(messages[j].sender);
+                free(messages[j].recipient);
+                free(messages[j].timestamp);
+                free(messages[j].status);
+                free(messages[j].delivered_at);
+                free(messages[j].read_at);
+                free(messages[j].plaintext);
+            }
+            free(messages);
+            qgp_key_free(kyber_key);
+            message_backup_free_messages(backup_messages, backup_count);
+            return -1;
+        }
+    }
+
+    qgp_key_free(kyber_key);
+    *messages_out = messages;
+    message_backup_free_messages(backup_messages, backup_count);
+
+    QGP_LOG_DEBUG(LOG_TAG, "Retrieved page: %d messages (offset=%d, total=%d)",
+                  backup_count, offset, total);
+    return 0;
+}
+
+/**
  * Free message array
  */
 void messenger_free_messages(message_info_t *messages, int count) {

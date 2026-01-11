@@ -361,6 +361,18 @@ typedef void (*dna_messages_cb)(
 );
 
 /**
+ * Messages page callback (with total count for pagination)
+ */
+typedef void (*dna_messages_page_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_message_t *messages,
+    int count,
+    int total,
+    void *user_data
+);
+
+/**
  * Groups callback
  */
 typedef void (*dna_groups_cb)(
@@ -1369,6 +1381,29 @@ DNA_API dna_request_id_t dna_engine_get_conversation(
     dna_engine_t *engine,
     const char *contact_fingerprint,
     dna_messages_cb callback,
+    void *user_data
+);
+
+/**
+ * Get conversation page with contact (paginated)
+ *
+ * Returns a page of messages for efficient chat loading.
+ * Messages ordered by timestamp DESC (newest first).
+ *
+ * @param engine              Engine instance
+ * @param contact_fingerprint Contact fingerprint
+ * @param limit               Max messages to return (page size)
+ * @param offset              Messages to skip (for pagination)
+ * @param callback            Called with messages array and total count
+ * @param user_data           User data for callback
+ * @return                    Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_get_conversation_page(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
+    int limit,
+    int offset,
+    dna_messages_page_cb callback,
     void *user_data
 );
 

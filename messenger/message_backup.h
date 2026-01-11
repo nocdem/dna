@@ -222,6 +222,30 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
                                      int *count_out);
 
 /**
+ * Get conversation history with pagination
+ *
+ * Returns a page of messages between current user and specified contact.
+ * Messages are ordered by timestamp DESC (newest first) for efficient
+ * loading in reverse-scroll chat UIs.
+ *
+ * @param ctx Backup context
+ * @param contact_identity Contact identity
+ * @param limit Max messages to return (page size, e.g. 50)
+ * @param offset Number of messages to skip (for pagination)
+ * @param messages_out Array of messages (caller must free)
+ * @param count_out Number of messages returned in this page
+ * @param total_out Total messages in conversation (for has_more check)
+ * @return 0 on success, -1 on error
+ */
+int message_backup_get_conversation_page(message_backup_context_t *ctx,
+                                          const char *contact_identity,
+                                          int limit,
+                                          int offset,
+                                          backup_message_t **messages_out,
+                                          int *count_out,
+                                          int *total_out);
+
+/**
  * Get group conversation history (Phase 5.2)
  *
  * Returns all messages for specified group ID.

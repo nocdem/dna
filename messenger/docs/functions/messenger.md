@@ -175,10 +175,13 @@ Local SQLite database for message backup. Stores encrypted messages per-identity
 
 | Function | Description |
 |----------|-------------|
-| `int message_backup_get_conversation(...)` | Get conversation history with contact |
+| `int message_backup_get_conversation(...)` | Get all conversation history with contact (ASC order) |
+| `int message_backup_get_conversation_page(ctx, contact, limit, offset, msgs_out, count_out, total_out)` | Get paginated conversation (DESC order, newest first) |
 | `int message_backup_get_group_conversation(...)` | Get group conversation history |
 | `int message_backup_get_recent_contacts(...)` | Get list of recent contacts |
 | `int message_backup_search_by_identity(...)` | Search messages by sender/recipient |
+
+**Pagination:** Use `message_backup_get_conversation_page()` for efficient loading in chat UIs. Returns messages in DESC order (newest first) with `total_out` for calculating has_more. Default page size: 50 messages.
 
 ### 4.6 Sequence Numbers (Watermark Pruning)
 

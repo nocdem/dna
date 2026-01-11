@@ -59,6 +59,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dna_engine_internal.h"
 #include "dna_api.h"
 #include "messenger/init.h"
+#include "messenger/messages.h"
 #include "messenger_p2p.h"
 #include "message_backup.h"
 #include "messenger/status.h"
@@ -804,6 +805,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_GET_CONVERSATION:
             dna_handle_get_conversation(engine, task);
+            break;
+        case TASK_GET_CONVERSATION_PAGE:
+            dna_handle_get_conversation_page(engine, task);
             break;
         case TASK_CHECK_OFFLINE_MESSAGES:
             dna_handle_check_offline_messages(engine, task);
@@ -2801,6 +2805,99 @@ void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
 
 done:
     task->callback.messages(task->request_id, error, messages, count, task->user_data);
+}
+
+void dna_handle_get_conversation_page(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+    dna_message_t *messages = NULL;
+    int count = 0;
+    int total = 0;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    message_info_t *msg_infos = NULL;
+    int msg_count = 0;
+
+    int rc = messenger_get_conversation_page(
+        engine->messenger,
+        task->params.get_conversation_page.contact,
+        task->params.get_conversation_page.limit,
+        task->params.get_conversation_page.offset,
+        &msg_infos,
+        &msg_count,
+        &total
+    );
+
+    if (rc != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    if (msg_count > 0) {
+        messages = calloc(msg_count, sizeof(dna_message_t));
+        if (!messages) {
+            messenger_free_messages(msg_infos, msg_count);
+            error = DNA_ERROR_INTERNAL;
+            goto done;
+        }
+
+        for (int i = 0; i < msg_count; i++) {
+            messages[i].id = msg_infos[i].id;
+            strncpy(messages[i].sender, msg_infos[i].sender ? msg_infos[i].sender : "", 128);
+            strncpy(messages[i].recipient, msg_infos[i].recipient ? msg_infos[i].recipient : "", 128);
+
+            if (msg_infos[i].plaintext) {
+                messages[i].plaintext = strdup(msg_infos[i].plaintext);
+            } else {
+                messages[i].plaintext = strdup("[Decryption failed]");
+            }
+
+            /* Parse timestamp string (format: YYYY-MM-DD HH:MM:SS) */
+            if (msg_infos[i].timestamp) {
+                struct tm tm = {0};
+                if (strptime(msg_infos[i].timestamp, "%Y-%m-%d %H:%M:%S", &tm) != NULL) {
+                    messages[i].timestamp = (uint64_t)mktime(&tm);
+                } else {
+                    messages[i].timestamp = (uint64_t)time(NULL);
+                }
+            } else {
+                messages[i].timestamp = (uint64_t)time(NULL);
+            }
+
+            messages[i].is_outgoing = (msg_infos[i].sender &&
+                strcmp(msg_infos[i].sender, engine->fingerprint) == 0);
+
+            /* Map status string to int */
+            if (msg_infos[i].status) {
+                if (strcmp(msg_infos[i].status, "read") == 0) {
+                    messages[i].status = 4;
+                } else if (strcmp(msg_infos[i].status, "delivered") == 0) {
+                    messages[i].status = 3;
+                } else if (strcmp(msg_infos[i].status, "failed") == 0) {
+                    messages[i].status = 2;
+                } else if (strcmp(msg_infos[i].status, "sent") == 0) {
+                    messages[i].status = 1;
+                } else if (strcmp(msg_infos[i].status, "pending") == 0) {
+                    messages[i].status = 0;
+                } else {
+                    messages[i].status = 1;
+                }
+            } else {
+                messages[i].status = 1;
+            }
+
+            messages[i].message_type = msg_infos[i].message_type;
+        }
+        count = msg_count;
+
+        messenger_free_messages(msg_infos, msg_count);
+    }
+
+done:
+    task->callback.messages_page(task->request_id, error, messages, count, total, task->user_data);
 }
 
 void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
@@ -4831,6 +4928,25 @@ dna_request_id_t dna_engine_get_conversation(
 
     dna_task_callback_t cb = { .messages = callback };
     return dna_submit_task(engine, TASK_GET_CONVERSATION, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_conversation_page(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
+    int limit,
+    int offset,
+    dna_messages_page_cb callback,
+    void *user_data
+) {
+    if (!engine || !contact_fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_conversation_page.contact, contact_fingerprint, 128);
+    params.get_conversation_page.limit = limit > 0 ? limit : 50;
+    params.get_conversation_page.offset = offset >= 0 ? offset : 0;
+
+    dna_task_callback_t cb = { .messages_page = callback };
+    return dna_submit_task(engine, TASK_GET_CONVERSATION_PAGE, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_check_offline_messages(

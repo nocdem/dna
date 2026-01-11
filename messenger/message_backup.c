@@ -529,18 +529,92 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
                                      const char *contact_identity,
                                      backup_message_t **messages_out,
                                      int *count_out) {
-    if (!ctx || !ctx->db || !contact_identity) return -1;
+    // Wrapper that loads all messages (for backward compatibility)
+    // Uses paginated function internally with large limit
+    int total = 0;
+    int result = message_backup_get_conversation_page(ctx, contact_identity,
+                                                       100000,  // Large limit to get all
+                                                       0,       // No offset
+                                                       messages_out,
+                                                       count_out,
+                                                       &total);
+    if (result != 0 || *count_out <= 1) {
+        return result;
+    }
 
+    // Paginated function returns DESC order - reverse for ASC (backward compatibility)
+    backup_message_t *messages = *messages_out;
+    int count = *count_out;
+    for (int i = 0; i < count / 2; i++) {
+        backup_message_t tmp = messages[i];
+        messages[i] = messages[count - 1 - i];
+        messages[count - 1 - i] = tmp;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Retrieved %d ENCRYPTED messages for conversation with %s\n",
+                 count, contact_identity);
+    return 0;
+}
+
+/**
+ * Get conversation history with pagination
+ * Returns messages ordered by timestamp DESC (newest first) for reverse-scroll chat UI
+ */
+int message_backup_get_conversation_page(message_backup_context_t *ctx,
+                                          const char *contact_identity,
+                                          int limit,
+                                          int offset,
+                                          backup_message_t **messages_out,
+                                          int *count_out,
+                                          int *total_out) {
+    if (!ctx || !ctx->db || !contact_identity) return -1;
+    if (limit <= 0) limit = 50;  // Default page size
+    if (offset < 0) offset = 0;
+
+    // First, get total count for this conversation
+    const char *count_sql =
+        "SELECT COUNT(*) FROM messages "
+        "WHERE (sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?)";
+
+    sqlite3_stmt *count_stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, count_sql, -1, &count_stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare count query: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    sqlite3_bind_text(count_stmt, 1, ctx->identity, -1, SQLITE_STATIC);
+    sqlite3_bind_text(count_stmt, 2, contact_identity, -1, SQLITE_STATIC);
+    sqlite3_bind_text(count_stmt, 3, contact_identity, -1, SQLITE_STATIC);
+    sqlite3_bind_text(count_stmt, 4, ctx->identity, -1, SQLITE_STATIC);
+
+    int total = 0;
+    if (sqlite3_step(count_stmt) == SQLITE_ROW) {
+        total = sqlite3_column_int(count_stmt, 0);
+    }
+    sqlite3_finalize(count_stmt);
+
+    if (total_out) *total_out = total;
+
+    if (total == 0 || offset >= total) {
+        *messages_out = NULL;
+        *count_out = 0;
+        return 0;
+    }
+
+    // Get paginated messages - ORDER BY timestamp DESC for newest-first
+    // This allows efficient loading for reverse-scroll chat UI
     const char *sql =
         "SELECT id, sender, recipient, encrypted_message, encrypted_len, timestamp, delivered, read, status, group_id, message_type "
         "FROM messages "
         "WHERE (sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?) "
-        "ORDER BY timestamp ASC";
+        "ORDER BY timestamp DESC "
+        "LIMIT ? OFFSET ?";
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare query: %s\n", sqlite3_errmsg(ctx->db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare page query: %s\n", sqlite3_errmsg(ctx->db));
         return -1;
     }
 
@@ -548,23 +622,11 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
     sqlite3_bind_text(stmt, 2, contact_identity, -1, SQLITE_STATIC);
     sqlite3_bind_text(stmt, 3, contact_identity, -1, SQLITE_STATIC);
     sqlite3_bind_text(stmt, 4, ctx->identity, -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 5, limit);
+    sqlite3_bind_int(stmt, 6, offset);
 
-    // Count results first
-    int count = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        count++;
-    }
-    sqlite3_reset(stmt);
-
-    if (count == 0) {
-        sqlite3_finalize(stmt);
-        *messages_out = NULL;
-        *count_out = 0;
-        return 0;
-    }
-
-    // Allocate array
-    backup_message_t *messages = calloc(count, sizeof(backup_message_t));
+    // Allocate array for max possible messages
+    backup_message_t *messages = calloc(limit, sizeof(backup_message_t));
     if (!messages) {
         sqlite3_finalize(stmt);
         return -1;
@@ -572,7 +634,7 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
 
     // Fetch messages
     int idx = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW && idx < count) {
+    while (sqlite3_step(stmt) == SQLITE_ROW && idx < limit) {
         messages[idx].id = sqlite3_column_int(stmt, 0);
         strncpy(messages[idx].sender, (const char*)sqlite3_column_text(stmt, 1), 255);
         strncpy(messages[idx].recipient, (const char*)sqlite3_column_text(stmt, 2), 255);
@@ -589,18 +651,19 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
         messages[idx].timestamp = (time_t)sqlite3_column_int64(stmt, 5);
         messages[idx].delivered = sqlite3_column_int(stmt, 6) != 0;
         messages[idx].read = sqlite3_column_int(stmt, 7) != 0;
-        messages[idx].status = sqlite3_column_int(stmt, 8);  // Read status column (default 1 for old messages)
-        messages[idx].group_id = sqlite3_column_int(stmt, 9);  // Phase 5.2: group ID
-        messages[idx].message_type = sqlite3_column_int(stmt, 10);  // Phase 6.2: message type (0=chat, 1=group_invitation)
+        messages[idx].status = sqlite3_column_int(stmt, 8);
+        messages[idx].group_id = sqlite3_column_int(stmt, 9);
+        messages[idx].message_type = sqlite3_column_int(stmt, 10);
         idx++;
     }
 
     sqlite3_finalize(stmt);
 
     *messages_out = messages;
-    *count_out = count;
+    *count_out = idx;
 
-    QGP_LOG_INFO(LOG_TAG, "Retrieved %d ENCRYPTED messages for conversation with %s\n", count, contact_identity);
+    QGP_LOG_DEBUG(LOG_TAG, "Retrieved page: %d messages (offset=%d, total=%d) for %s\n",
+                  idx, offset, total, contact_identity);
     return 0;
 }
 
