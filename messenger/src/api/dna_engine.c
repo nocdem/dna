@@ -72,6 +72,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/client/dna_feed.h"
 #include "dht/client/dna_profile.h"
 #include "dht/shared/dht_chunked.h"
+#include "dht/shared/dht_contact_request.h"
 #include "dht/shared/dht_groups.h"
 #include "dht/client/dna_group_outbox.h"
 #include "p2p/p2p_transport.h"
@@ -6334,7 +6335,7 @@ static void contact_request_listener_cleanup(void *user_data) {
 
 /**
  * DHT callback when contact request data changes
- * Fires DNA_EVENT_CONTACT_REQUEST_RECEIVED when new request arrives
+ * Fires DNA_EVENT_CONTACT_REQUEST_RECEIVED only for genuinely new requests
  */
 static bool contact_request_listen_callback(
     const uint8_t *value,
@@ -6352,8 +6353,37 @@ static bool contact_request_listen_callback(
         return true;  /* Continue listening */
     }
 
-    QGP_LOG_INFO(LOG_TAG, "[CONTACT_REQ] DHT listener fired - new contact request data (%zu bytes)",
-                 value_len);
+    /* Parse the contact request to check if it's from a known contact */
+    dht_contact_request_t request = {0};
+    if (dht_deserialize_contact_request(value, value_len, &request) != 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "[CONTACT_REQ] Failed to parse request data (%zu bytes)", value_len);
+        return true;  /* Continue listening, might be corrupt data */
+    }
+
+    /* Skip if sender is already a contact */
+    if (contacts_db_exists(request.sender_fingerprint)) {
+        QGP_LOG_DEBUG(LOG_TAG, "[CONTACT_REQ] Ignoring request from existing contact: %.20s...",
+                      request.sender_fingerprint);
+        return true;  /* Continue listening */
+    }
+
+    /* Skip if we already have a pending request from this sender */
+    if (contacts_db_request_exists(request.sender_fingerprint)) {
+        QGP_LOG_DEBUG(LOG_TAG, "[CONTACT_REQ] Ignoring duplicate request from: %.20s...",
+                      request.sender_fingerprint);
+        return true;  /* Continue listening */
+    }
+
+    /* Skip if sender is blocked */
+    if (contacts_db_is_blocked(request.sender_fingerprint)) {
+        QGP_LOG_DEBUG(LOG_TAG, "[CONTACT_REQ] Ignoring request from blocked user: %.20s...",
+                      request.sender_fingerprint);
+        return true;  /* Continue listening */
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[CONTACT_REQ] New contact request from: %.20s... (%s)",
+                 request.sender_fingerprint,
+                 request.sender_name[0] ? request.sender_name : "unknown");
 
     /* Dispatch event to notify UI */
     dna_event_t event = {0};
