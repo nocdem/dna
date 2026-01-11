@@ -225,8 +225,10 @@ class EventHandler {
       final engine = _ref.read(engineProvider).valueOrNull;
       engine?.debugLog('EVENT', '[REFRESH] Timer fired, selectedContact=${selectedContact?.fingerprint?.substring(0, 16) ?? "null"}');
       if (selectedContact != null) {
-        engine?.debugLog('EVENT', '[REFRESH] Invalidating conversationProvider for ${selectedContact.fingerprint.substring(0, 16)}...');
-        _ref.invalidate(conversationProvider(selectedContact.fingerprint));
+        engine?.debugLog('EVENT', '[REFRESH] Calling refresh() on conversationProvider for ${selectedContact.fingerprint.substring(0, 16)}...');
+        // Use refresh() instead of invalidate() to force immediate rebuild
+        // invalidate() only marks stale, doesn't trigger rebuild until next read
+        _ref.read(conversationProvider(selectedContact.fingerprint).notifier).refresh();
       }
     });
   }
