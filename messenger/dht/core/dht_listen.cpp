@@ -281,6 +281,10 @@ extern "C" size_t dht_listen_ex(
             auto status = listener_ctx->future_token.wait_for(std::chrono::seconds(5));
             if (status == std::future_status::timeout) {
                 QGP_LOG_ERROR(LOG_TAG, "Timeout waiting for OpenDHT token (5s) - DHT may be in bad state");
+                // CRITICAL: Mark listener as inactive BEFORE freeing user_data
+                // The OpenDHT listener was already started at ctx->runner.listen() above.
+                // Without this, the callback could fire with freed user_data → use-after-free!
+                listener_ctx->active = false;
                 if (cleanup) {
                     cleanup(user_data);
                 }
@@ -291,6 +295,9 @@ extern "C" size_t dht_listen_ex(
                           token, listener_ctx->opendht_token);
         } catch (const std::exception& e) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to get OpenDHT token: %s", e.what());
+            // CRITICAL: Mark listener as inactive BEFORE freeing user_data
+            // The OpenDHT listener was already started at ctx->runner.listen() above.
+            listener_ctx->active = false;
             // Call cleanup if provided
             if (cleanup) {
                 cleanup(user_data);
