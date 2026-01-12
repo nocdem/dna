@@ -24,12 +24,18 @@ class QrPayload {
   final String? fingerprint;
   final String? displayName;
 
-  // Auth fields
+  // Auth fields (per QR-core auth spec)
   final String? appName;
-  final String? domain;
-  final String? challenge;
-  final List<String>? scopes;
-  final String? callbackUrl;
+  final String? origin;       // Domain/origin of the requesting service
+  final String? sessionId;    // Session identifier from server
+  final String? nonce;        // Challenge nonce for replay protection
+  final int? expiresAt;       // Unix epoch seconds when request expires
+  final List<String>? scopes; // Requested permissions (optional)
+  final String? callbackUrl;  // HTTPS callback URL for auth response
+
+  // Legacy aliases (for backwards compatibility)
+  String? get domain => origin;
+  String? get challenge => nonce;
 
   // Detection hints for plain text
   final bool looksLikeUrl;
@@ -41,13 +47,29 @@ class QrPayload {
     this.fingerprint,
     this.displayName,
     this.appName,
-    this.domain,
-    this.challenge,
+    this.origin,
+    this.sessionId,
+    this.nonce,
+    this.expiresAt,
     this.scopes,
     this.callbackUrl,
     this.looksLikeUrl = false,
     this.looksLikeFingerprint = false,
   });
+
+  /// Check if this auth payload has the minimum required fields for signing
+  bool get hasRequiredAuthFields =>
+      origin != null &&
+      sessionId != null &&
+      nonce != null &&
+      callbackUrl != null;
+
+  /// Check if the auth request has expired
+  bool get isExpired {
+    if (expiresAt == null) return false;
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    return now > expiresAt!;
+  }
 
   @override
   String toString() => 'QrPayload(type: $type, raw: ${rawContent.length > 50 ? '${rawContent.substring(0, 50)}...' : rawContent})';
@@ -117,10 +139,12 @@ QrPayload _parseDnaUri(String uri) {
       type: QrPayloadType.auth,
       rawContent: uri,
       appName: params['app'] ?? params['appName'] ?? params['app_name'],
-      domain: params['domain'] ?? params['service'],
-      challenge: params['challenge'] ?? params['nonce'],
-      scopes: params['scopes']?.split(','),
-      callbackUrl: params['callback'] ?? params['callback_url'],
+      origin: params['origin'] ?? params['domain'] ?? params['service'],
+      sessionId: params['session_id'] ?? params['sessionId'] ?? params['session'],
+      nonce: params['nonce'] ?? params['challenge'],
+      expiresAt: _parseExpiresAt(params['expires_at'] ?? params['expiresAt'] ?? params['expires']),
+      scopes: params['scopes']?.split(',') ?? params['scope']?.split(','),
+      callbackUrl: params['callback'] ?? params['callback_url'] ?? params['callbackUrl'],
     );
   }
 
@@ -151,8 +175,8 @@ QrPayload _parseJsonPayload(String raw, Map<String, dynamic> json) {
     }
   }
 
-  if (type == 'auth' || type == 'login') {
-    final scopesRaw = json['scopes'];
+  if (type == 'auth' || type == 'login' || type == 'dna.auth.request') {
+    final scopesRaw = json['scopes'] ?? json['scope'] ?? json['requested_scope'];
     List<String>? scopes;
     if (scopesRaw is List) {
       scopes = scopesRaw.cast<String>();
@@ -164,10 +188,12 @@ QrPayload _parseJsonPayload(String raw, Map<String, dynamic> json) {
       type: QrPayloadType.auth,
       rawContent: raw,
       appName: json['app'] as String? ?? json['appName'] as String? ?? json['app_name'] as String?,
-      domain: json['domain'] as String? ?? json['service'] as String?,
-      challenge: json['challenge'] as String? ?? json['nonce'] as String?,
+      origin: json['origin'] as String? ?? json['domain'] as String? ?? json['service'] as String?,
+      sessionId: json['session_id'] as String? ?? json['sessionId'] as String? ?? json['session'] as String?,
+      nonce: json['nonce'] as String? ?? json['challenge'] as String?,
+      expiresAt: _parseExpiresAtDynamic(json['expires_at'] ?? json['expiresAt'] ?? json['expires']),
       scopes: scopes,
-      callbackUrl: json['callback'] as String? ?? json['callback_url'] as String?,
+      callbackUrl: json['callback'] as String? ?? json['callback_url'] as String? ?? json['callbackUrl'] as String?,
     );
   }
 
@@ -178,6 +204,20 @@ QrPayload _parseJsonPayload(String raw, Map<String, dynamic> json) {
     looksLikeUrl: false,
     looksLikeFingerprint: false,
   );
+}
+
+/// Parse expires_at from string (URI param)
+int? _parseExpiresAt(String? value) {
+  if (value == null) return null;
+  return int.tryParse(value);
+}
+
+/// Parse expires_at from dynamic (JSON value - could be int or string)
+int? _parseExpiresAtDynamic(dynamic value) {
+  if (value == null) return null;
+  if (value is int) return value;
+  if (value is String) return int.tryParse(value);
+  return null;
 }
 
 /// Check if string is a valid DNA fingerprint (128 hex characters)

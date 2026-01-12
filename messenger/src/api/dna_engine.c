@@ -83,6 +83,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/key_encryption.h"
+#include "crypto/utils/qgp_dilithium.h"
 
 /* Blockchain/Wallet includes for send_tokens */
 #include "cellframe_wallet.h"
@@ -8210,4 +8211,58 @@ dna_request_id_t dna_engine_sync_addressbook_from_dht(
 
     task_sync_addressbook_from_dht(task);
     return 1;
+}
+
+/* ============================================================================
+ * SIGNING API (for QR Auth and external authentication)
+ * ============================================================================ */
+
+/**
+ * Sign arbitrary data with the loaded identity's Dilithium5 key
+ */
+int dna_engine_sign_data(
+    dna_engine_t *engine,
+    const uint8_t *data,
+    size_t data_len,
+    uint8_t *signature_out,
+    size_t *sig_len_out)
+{
+    if (!engine || !data || !signature_out || !sig_len_out) {
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    if (!engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "sign_data: no identity loaded");
+        return DNA_ENGINE_ERROR_NO_IDENTITY;
+    }
+
+    /* Load the private signing key */
+    qgp_key_t *sign_key = dna_load_private_key(engine);
+    if (!sign_key) {
+        QGP_LOG_ERROR(LOG_TAG, "sign_data: failed to load private key");
+        return DNA_ENGINE_ERROR_NO_IDENTITY;
+    }
+
+    /* Verify key has private key data */
+    if (!sign_key->private_key || sign_key->private_key_size == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "sign_data: key has no private key data");
+        qgp_key_free(sign_key);
+        return DNA_ERROR_CRYPTO;
+    }
+
+    /* Sign with Dilithium5 */
+    int ret = qgp_dsa87_sign(signature_out, sig_len_out,
+                             data, data_len,
+                             sign_key->private_key);
+
+    qgp_key_free(sign_key);
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "sign_data: qgp_dsa87_sign failed");
+        return DNA_ERROR_CRYPTO;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "sign_data: signed %zu bytes, signature length %zu",
+                  data_len, *sig_len_out);
+    return 0;
 }

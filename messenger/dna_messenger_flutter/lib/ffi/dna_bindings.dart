@@ -2715,6 +2715,27 @@ class DnaBindings {
       Pointer<dna_addressbook_entry_t> entries, int count) {
     _dna_free_addressbook_entries(entries, count);
   }
+
+  // ==========================================================================
+  // SIGNING API (for QR Auth)
+  // ==========================================================================
+
+  /// Sign data with the loaded identity's Dilithium5 key
+  late final _dna_engine_sign_data = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Uint8>, Size,
+          Pointer<Uint8>, Pointer<Size>),
+      int Function(Pointer<dna_engine_t>, Pointer<Uint8>, int, Pointer<Uint8>,
+          Pointer<Size>)>('dna_engine_sign_data');
+
+  int dna_engine_sign_data(
+    Pointer<dna_engine_t> engine,
+    Pointer<Uint8> data,
+    int dataLen,
+    Pointer<Uint8> signatureOut,
+    Pointer<Size> sigLenOut,
+  ) {
+    return _dna_engine_sign_data(engine, data, dataLen, signatureOut, sigLenOut);
+  }
 }
 
 // =============================================================================

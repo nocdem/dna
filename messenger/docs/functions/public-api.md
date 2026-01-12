@@ -231,3 +231,14 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 **Structures:**
 - `dna_version_info_t` - Version info from DHT (library/app/nodus current+minimum, publisher, timestamp)
 - `dna_version_check_result_t` - Check result with update_available flags
+
+## 1.20 Signing API (for QR Auth)
+
+| Function | Description |
+|----------|-------------|
+| `int dna_engine_sign_data(engine, data, data_len, signature_out, sig_len_out)` | Sign arbitrary data with loaded identity's Dilithium5 key |
+
+**Notes:**
+- `signature_out` must be at least 4627 bytes (Dilithium5 max signature size)
+- Used for QR-based authentication flows where app needs to prove identity to external services
+- Returns 0 on success, `DNA_ENGINE_ERROR_NO_IDENTITY` if no identity loaded

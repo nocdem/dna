@@ -4375,6 +4375,57 @@ class DnaEngine {
   }
 
   // ---------------------------------------------------------------------------
+  // SIGNING (for QR Auth)
+  // ---------------------------------------------------------------------------
+
+  /// Sign arbitrary data with the loaded identity's Dilithium5 key
+  ///
+  /// Used for QR-based authentication flows where the app needs to prove
+  /// identity to external services.
+  ///
+  /// Returns the signature as Uint8List (up to 4627 bytes for Dilithium5).
+  /// Throws [DnaEngineException] on error.
+  Uint8List signData(Uint8List data) {
+    // Allocate buffers
+    final dataPtr = calloc<Uint8>(data.length);
+    // Dilithium5 max signature size is 4627 bytes
+    final signaturePtr = calloc<Uint8>(4627);
+    final sigLenPtr = calloc<Size>();
+
+    try {
+      // Copy input data
+      for (var i = 0; i < data.length; i++) {
+        dataPtr[i] = data[i];
+      }
+
+      final result = _bindings.dna_engine_sign_data(
+        _engine,
+        dataPtr,
+        data.length,
+        signaturePtr,
+        sigLenPtr,
+      );
+
+      if (result != 0) {
+        throw DnaEngineException.fromCode(result, _bindings);
+      }
+
+      // Extract signature
+      final sigLen = sigLenPtr.value;
+      final signature = Uint8List(sigLen);
+      for (var i = 0; i < sigLen; i++) {
+        signature[i] = signaturePtr[i];
+      }
+
+      return signature;
+    } finally {
+      calloc.free(dataPtr);
+      calloc.free(signaturePtr);
+      calloc.free(sigLenPtr);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // CLEANUP
   // ---------------------------------------------------------------------------
 

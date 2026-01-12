@@ -1,13 +1,12 @@
 /// QR Auth Screen - Authorization/login confirmation
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:share_plus/share_plus.dart';
 import '../../providers/providers.dart';
+import '../../services/qr_auth_service.dart';
 import '../../theme/dna_theme.dart';
 import '../../utils/qr_payload_parser.dart';
+import '../../utils/logger.dart';
 import '../home_screen.dart';
 
 class QrAuthScreen extends ConsumerStatefulWidget {
@@ -19,28 +18,27 @@ class QrAuthScreen extends ConsumerStatefulWidget {
   ConsumerState<QrAuthScreen> createState() => _QrAuthScreenState();
 }
 
+enum _AuthState {
+  pending,    // Waiting for user action
+  approving,  // Sending to callback
+  approved,   // Success
+  failed,     // Network/server error (can retry)
+  denied,     // User denied
+}
+
 class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
   bool _showRawPayload = false;
-  bool _isApproving = false;
-  String? _responseToken;
-  bool _denied = false;
+  _AuthState _state = _AuthState.pending;
+  String? _errorMessage;
 
-  /// URL-safe base64 encoding without padding
-  String _base64UrlEncodeNoPadding(List<int> bytes) {
-    return base64Url.encode(bytes).replaceAll('=', '');
-  }
+  /// Check if payload has valid required fields for auth
+  bool get _hasRequiredFields => widget.payload.hasRequiredAuthFields;
 
-  /// Check if payload has a valid challenge
-  bool get _hasChallenge {
-    final challenge = widget.payload.challenge?.trim();
-    return challenge != null && challenge.isNotEmpty;
-  }
-
-  /// Check if payload has domain or appName
+  /// Check if payload has domain or appName for display
   bool get _hasVerificationInfo {
-    final domain = widget.payload.domain?.trim();
+    final origin = widget.payload.origin?.trim();
     final appName = widget.payload.appName?.trim();
-    return (domain != null && domain.isNotEmpty) ||
+    return (origin != null && origin.isNotEmpty) ||
         (appName != null && appName.isNotEmpty);
   }
 
@@ -52,26 +50,22 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
     final rootCanPop = rootNav.canPop();
     final localCanPop = localNav.canPop();
 
-    debugPrint('QR_AUTH _close called:');
-    debugPrint('  state: hasChallenge=$_hasChallenge, token=${_responseToken != null}, denied=$_denied');
-    debugPrint('  nav: rootCanPop=$rootCanPop, localCanPop=$localCanPop');
+    DnaLogger.log('QR_AUTH', '_close: rootCanPop=$rootCanPop, localCanPop=$localCanPop');
 
     // Try root navigator first (this is where we were pushed from scanner)
     if (rootCanPop) {
-      debugPrint('QR_AUTH _close: executing rootNav.pop()');
       rootNav.pop();
       return;
     }
 
     // Try local navigator
     if (localCanPop) {
-      debugPrint('QR_AUTH _close: executing localNav.pop()');
       localNav.pop();
       return;
     }
 
     // FALLBACK: Neither can pop - force navigate to HomeScreen
-    debugPrint('QR_AUTH _close: FALLBACK - neither can pop, forcing HomeScreen');
+    DnaLogger.log('QR_AUTH', '_close: FALLBACK - forcing HomeScreen');
     rootNav.pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const HomeScreen()),
       (route) => false,
@@ -83,12 +77,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
     final theme = Theme.of(context);
     final fingerprint = ref.watch(currentFingerprintProvider) ?? '';
     final hasIdentity = fingerprint.isNotEmpty;
-    final canApprove = hasIdentity && _hasChallenge;
-
-    // Debug: log state on every build
-    debugPrint('QR_AUTH build:');
-    debugPrint('  state: hasChallenge=$_hasChallenge, canApprove=$canApprove, token=${_responseToken != null}, denied=$_denied');
-    debugPrint('  nav: rootCanPop=${Navigator.of(context, rootNavigator: true).canPop()}, localCanPop=${Navigator.of(context).canPop()}');
+    final canApprove = hasIdentity && _hasRequiredFields && !widget.payload.isExpired;
 
     // NO PopScope - let system back work naturally, we also have explicit X button
     return Scaffold(
@@ -96,10 +85,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
         automaticallyImplyLeading: false,
         leading: IconButton(
           icon: const FaIcon(FontAwesomeIcons.xmark),
-          onPressed: () {
-            debugPrint('QR_AUTH X button pressed');
-            _close();
-          },
+          onPressed: _close,
           tooltip: 'Close',
         ),
         title: const Text('Authorization Request'),
@@ -145,7 +131,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
             if (!_hasVerificationInfo) ...[
               const SizedBox(height: 8),
               Text(
-                'Unverified request (missing domain/app)',
+                'Unverified request (missing origin/app)',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: DnaColors.textWarning,
                   fontStyle: FontStyle.italic,
@@ -156,283 +142,382 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
 
             const SizedBox(height: 24),
 
-            // Missing challenge error card
-            if (!_hasChallenge) ...[
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: DnaColors.textWarning.withAlpha(30),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: DnaColors.textWarning),
-                ),
-                child: Column(
-                  children: [
-                    const FaIcon(FontAwesomeIcons.circleExclamation,
-                        color: DnaColors.textWarning, size: 32),
-                    const SizedBox(height: 12),
-                    Text(
-                      'Invalid Authorization Request',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        color: DnaColors.textWarning,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'This request is missing a challenge token and cannot be securely approved.',
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: DnaColors.textMuted,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
+            // Missing required fields error card
+            if (!_hasRequiredFields) ...[
+              _buildErrorCard(
+                theme,
+                title: 'Invalid Authorization Request',
+                message: 'This request is missing required fields (origin, session_id, nonce, or callback) and cannot be approved.',
+              ),
+              const SizedBox(height: 24),
+            ],
+
+            // Expired request error card
+            if (_hasRequiredFields && widget.payload.isExpired) ...[
+              _buildErrorCard(
+                theme,
+                title: 'Request Expired',
+                message: 'This authorization request has expired. Please scan a new QR code.',
               ),
               const SizedBox(height: 24),
             ],
 
             // Request details card
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: DnaColors.surface,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: DnaColors.border),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // App name
-                  _buildInfoRow(
-                    theme,
-                    icon: FontAwesomeIcons.mobileScreenButton,
-                    label: 'Application',
-                    value: widget.payload.appName ?? 'Unknown App',
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Domain
-                  _buildInfoRow(
-                    theme,
-                    icon: FontAwesomeIcons.globe,
-                    label: 'Domain/Service',
-                    value: widget.payload.domain ?? 'Unknown',
-                  ),
-
-                  // Scopes
-                  if (widget.payload.scopes != null && widget.payload.scopes!.isNotEmpty) ...[
-                    const SizedBox(height: 16),
-                    _buildInfoRow(
-                      theme,
-                      icon: FontAwesomeIcons.key,
-                      label: 'Requested Permissions',
-                      value: widget.payload.scopes!.join(', '),
-                    ),
-                  ],
-
-                  // Challenge
-                  if (widget.payload.challenge != null) ...[
-                    const SizedBox(height: 16),
-                    _buildInfoRow(
-                      theme,
-                      icon: FontAwesomeIcons.fingerprint,
-                      label: 'Challenge',
-                      value: _truncate(widget.payload.challenge!, 40),
-                      isMonospace: true,
-                    ),
-                  ],
-                ],
-              ),
-            ),
+            _buildRequestDetailsCard(theme),
 
             // Raw payload toggle
             if (_showRawPayload) ...[
               const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: DnaColors.background,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: DnaColors.border),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Raw Payload',
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: DnaColors.textMuted,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    SelectableText(
-                      widget.payload.rawContent,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        fontFamily: 'monospace',
-                        color: DnaColors.textMuted,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              _buildRawPayloadCard(theme),
             ],
 
-            // Response token (after approval)
-            if (_responseToken != null) ...[
+            // Success state
+            if (_state == _AuthState.approved) ...[
               const SizedBox(height: 24),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: DnaColors.textSuccess.withAlpha(30),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: DnaColors.textSuccess.withAlpha(100)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const FaIcon(FontAwesomeIcons.circleCheck,
-                            color: DnaColors.textSuccess, size: 20),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Authorization Approved',
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            color: DnaColors.textSuccess,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      'Response Token:',
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: DnaColors.textMuted,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: DnaColors.surface,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: SelectableText(
-                        _responseToken!,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          fontFamily: 'monospace',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: () {
-                              Clipboard.setData(ClipboardData(text: _responseToken!));
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Token copied')),
-                              );
-                            },
-                            icon: const FaIcon(FontAwesomeIcons.copy, size: 14),
-                            label: const Text('Copy'),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: () => Share.share(_responseToken!),
-                            icon: const FaIcon(FontAwesomeIcons.shareNodes, size: 14),
-                            label: const Text('Share'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
+              _buildSuccessCard(theme),
+            ],
+
+            // Error state (can retry)
+            if (_state == _AuthState.failed && _errorMessage != null) ...[
+              const SizedBox(height: 24),
+              _buildFailureCard(theme, _errorMessage!),
             ],
 
             // Denied message
-            if (_denied) ...[
+            if (_state == _AuthState.denied) ...[
               const SizedBox(height: 24),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: DnaColors.textWarning.withAlpha(30),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(
-                  children: [
-                    const FaIcon(FontAwesomeIcons.ban, color: DnaColors.textWarning, size: 20),
-                    const SizedBox(width: 12),
-                    Text(
-                      'Authorization Denied',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        color: DnaColors.textWarning,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              _buildDeniedCard(theme),
             ],
 
             const SizedBox(height: 32),
 
             // Action buttons
-            if (_responseToken == null && !_denied) ...[
-              // Only show approve/deny if we have a valid challenge
-              if (_hasChallenge) ...[
-                ElevatedButton.icon(
-                  onPressed: (_isApproving || !canApprove) ? null : _approve,
-                  icon: _isApproving
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const FaIcon(FontAwesomeIcons.check, size: 16),
-                  label: const Text('Approve'),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    backgroundColor: DnaColors.textSuccess,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                OutlinedButton.icon(
-                  onPressed: _isApproving ? null : _deny,
-                  icon: const FaIcon(FontAwesomeIcons.xmark, size: 16),
-                  label: const Text('Deny'),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    foregroundColor: DnaColors.textWarning,
-                  ),
-                ),
-              ] else ...[
-                // No challenge - only show Done button
-                OutlinedButton(
-                  onPressed: () {
-                    debugPrint('QR_AUTH Done button pressed (no challenge path)');
-                    _close();
-                  },
-                  child: const Text('Done'),
-                ),
-              ],
-            ] else ...[
-              OutlinedButton(
-                onPressed: () {
-                  debugPrint('QR_AUTH Done button pressed (after approve/deny)');
-                  _close();
-                },
-                child: const Text('Done'),
-              ),
-            ],
+            _buildActionButtons(theme, canApprove),
           ],
         ),
       ),
     );
+  }
+
+  Widget _buildErrorCard(ThemeData theme, {required String title, required String message}) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: DnaColors.textWarning.withAlpha(30),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: DnaColors.textWarning),
+      ),
+      child: Column(
+        children: [
+          const FaIcon(FontAwesomeIcons.circleExclamation,
+              color: DnaColors.textWarning, size: 32),
+          const SizedBox(height: 12),
+          Text(
+            title,
+            style: theme.textTheme.titleMedium?.copyWith(
+              color: DnaColors.textWarning,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            message,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: DnaColors.textMuted,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRequestDetailsCard(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: DnaColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: DnaColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // App name
+          _buildInfoRow(
+            theme,
+            icon: FontAwesomeIcons.mobileScreenButton,
+            label: 'Application',
+            value: widget.payload.appName ?? 'Unknown App',
+          ),
+          const SizedBox(height: 16),
+
+          // Origin/Domain
+          _buildInfoRow(
+            theme,
+            icon: FontAwesomeIcons.globe,
+            label: 'Origin',
+            value: widget.payload.origin ?? 'Unknown',
+          ),
+
+          // Session ID
+          if (widget.payload.sessionId != null) ...[
+            const SizedBox(height: 16),
+            _buildInfoRow(
+              theme,
+              icon: FontAwesomeIcons.hashtag,
+              label: 'Session',
+              value: _truncate(widget.payload.sessionId!, 32),
+              isMonospace: true,
+            ),
+          ],
+
+          // Scopes
+          if (widget.payload.scopes != null && widget.payload.scopes!.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            _buildInfoRow(
+              theme,
+              icon: FontAwesomeIcons.key,
+              label: 'Requested Permissions',
+              value: widget.payload.scopes!.join(', '),
+            ),
+          ],
+
+          // Nonce/Challenge
+          if (widget.payload.nonce != null) ...[
+            const SizedBox(height: 16),
+            _buildInfoRow(
+              theme,
+              icon: FontAwesomeIcons.fingerprint,
+              label: 'Nonce',
+              value: _truncate(widget.payload.nonce!, 40),
+              isMonospace: true,
+            ),
+          ],
+
+          // Expiry
+          if (widget.payload.expiresAt != null) ...[
+            const SizedBox(height: 16),
+            _buildInfoRow(
+              theme,
+              icon: FontAwesomeIcons.clock,
+              label: 'Expires',
+              value: _formatExpiry(widget.payload.expiresAt!),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRawPayloadCard(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: DnaColors.background,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: DnaColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Raw Payload',
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: DnaColors.textMuted,
+            ),
+          ),
+          const SizedBox(height: 8),
+          SelectableText(
+            widget.payload.rawContent,
+            style: theme.textTheme.bodySmall?.copyWith(
+              fontFamily: 'monospace',
+              color: DnaColors.textMuted,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSuccessCard(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: DnaColors.textSuccess.withAlpha(30),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: DnaColors.textSuccess.withAlpha(100)),
+      ),
+      child: Row(
+        children: [
+          const FaIcon(FontAwesomeIcons.circleCheck,
+              color: DnaColors.textSuccess, size: 24),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Authorization Approved',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    color: DnaColors.textSuccess,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Successfully authenticated with ${widget.payload.origin ?? "the service"}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: DnaColors.textMuted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFailureCard(ThemeData theme, String error) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: DnaColors.textWarning.withAlpha(30),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: DnaColors.textWarning.withAlpha(100)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const FaIcon(FontAwesomeIcons.circleXmark,
+                  color: DnaColors.textWarning, size: 24),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Authorization Failed',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    color: DnaColors.textWarning,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            error,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: DnaColors.textMuted,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDeniedCard(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: DnaColors.textWarning.withAlpha(30),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          const FaIcon(FontAwesomeIcons.ban, color: DnaColors.textWarning, size: 20),
+          const SizedBox(width: 12),
+          Text(
+            'Authorization Denied',
+            style: theme.textTheme.titleMedium?.copyWith(
+              color: DnaColors.textWarning,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionButtons(ThemeData theme, bool canApprove) {
+    switch (_state) {
+      case _AuthState.pending:
+        if (_hasRequiredFields && !widget.payload.isExpired) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              ElevatedButton.icon(
+                onPressed: canApprove ? _approve : null,
+                icon: const FaIcon(FontAwesomeIcons.check, size: 16),
+                label: const Text('Approve'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  backgroundColor: DnaColors.textSuccess,
+                ),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _deny,
+                icon: const FaIcon(FontAwesomeIcons.xmark, size: 16),
+                label: const Text('Deny'),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  foregroundColor: DnaColors.textWarning,
+                ),
+              ),
+            ],
+          );
+        } else {
+          // Invalid request - only show Done
+          return OutlinedButton(
+            onPressed: _close,
+            child: const Text('Done'),
+          );
+        }
+
+      case _AuthState.approving:
+        return ElevatedButton.icon(
+          onPressed: null,
+          icon: const SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+          ),
+          label: const Text('Approving...'),
+          style: ElevatedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            backgroundColor: DnaColors.textSuccess,
+          ),
+        );
+
+      case _AuthState.failed:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ElevatedButton.icon(
+              onPressed: _approve,
+              icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 16),
+              label: const Text('Retry'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton(
+              onPressed: _close,
+              child: const Text('Cancel'),
+            ),
+          ],
+        );
+
+      case _AuthState.approved:
+      case _AuthState.denied:
+        return OutlinedButton(
+          onPressed: _close,
+          child: const Text('Done'),
+        );
+    }
   }
 
   Widget _buildInfoRow(
@@ -476,8 +561,37 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
     return '${text.substring(0, maxLength)}...';
   }
 
+  String _formatExpiry(int epochSeconds) {
+    final expiry = DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000);
+    final now = DateTime.now();
+    final diff = expiry.difference(now);
+
+    if (diff.isNegative) {
+      return 'Expired';
+    } else if (diff.inMinutes < 1) {
+      return 'In ${diff.inSeconds} seconds';
+    } else if (diff.inHours < 1) {
+      return 'In ${diff.inMinutes} minutes';
+    } else {
+      return 'In ${diff.inHours} hours';
+    }
+  }
+
   Future<void> _approve() async {
     // Check for valid identity first
+    final engine = ref.read(engineProvider);
+    if (engine == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Engine not initialized'),
+            backgroundColor: DnaColors.textWarning,
+          ),
+        );
+      }
+      return;
+    }
+
     final fingerprint = ref.read(currentFingerprintProvider) ?? '';
     if (fingerprint.isEmpty) {
       if (mounted) {
@@ -491,54 +605,40 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
       return;
     }
 
-    setState(() => _isApproving = true);
+    setState(() {
+      _state = _AuthState.approving;
+      _errorMessage = null;
+    });
 
     try {
-      final profile = ref.read(userProfileProvider).valueOrNull;
-      final now = DateTime.now().toUtc();
-      final exp = now.add(const Duration(seconds: 60));
+      final authService = QrAuthService(engine);
+      final result = await authService.approve(widget.payload);
 
-      // Generate response token (v1: simple JSON with identity info)
-      // TODO: Add Dilithium5 signature of the response payload
-      final response = {
-        'type': 'dna_auth_response',
-        'version': 1,
-        'status': 'approved',
-        'iat': now.toIso8601String(),
-        'exp': exp.toIso8601String(),
-        'identity': {
-          'fingerprint': fingerprint,
-          'name': profile?.nickname,
-        },
-        'request': {
-          'app': widget.payload.appName,
-          'domain': widget.payload.domain,
-          'challenge': widget.payload.challenge,
-        },
-        // TODO: Add cryptographic signature here
-        // 'signature': '<dilithium5_signature_of_response>'
-      };
+      if (!mounted) return;
 
-      final token = _base64UrlEncodeNoPadding(utf8.encode(jsonEncode(response)));
-
-      setState(() {
-        _isApproving = false;
-        _responseToken = token;
-      });
-    } catch (e) {
-      setState(() => _isApproving = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: $e'),
-            backgroundColor: DnaColors.textWarning,
-          ),
-        );
+      if (result.success) {
+        setState(() => _state = _AuthState.approved);
+      } else {
+        setState(() {
+          _state = _AuthState.failed;
+          _errorMessage = result.errorMessage ?? 'Unknown error';
+        });
       }
+    } catch (e) {
+      DnaLogger.error('QR_AUTH', 'Unexpected error during approve: $e');
+      if (!mounted) return;
+      setState(() {
+        _state = _AuthState.failed;
+        _errorMessage = 'Unexpected error: $e';
+      });
     }
   }
 
   void _deny() {
-    setState(() => _denied = true);
+    final engine = ref.read(engineProvider);
+    if (engine != null) {
+      QrAuthService(engine).deny(widget.payload);
+    }
+    setState(() => _state = _AuthState.denied);
   }
 }
