@@ -1101,13 +1101,10 @@ class DnaEngine {
         break;
       case DnaEventType.DNA_EVENT_MESSAGE_RECEIVED:
         // Parse message from union data
-        // NOTE: C union is 8-byte aligned, but Dart data array starts at offset 4
-        // So we add 4 to all offsets to account for padding in C struct
+        // Dart struct now has _padding field matching C struct 8-byte alignment
         // dna_message_t layout: id(4) + sender[129] + recipient[129] + ptr(8) + timestamp(8) + bool(1+3pad) + status(4) + type(4)
-        // Sender at C offset 4, but in Dart data array at offset 8 (4 + 4 padding)
-        const baseOffset = 4; // Padding between type and union in C
         final senderBytes = <int>[];
-        for (var i = baseOffset + 4; i < baseOffset + 4 + 128; i++) {
+        for (var i = 4; i < 132; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           senderBytes.add(byte);
@@ -1115,18 +1112,18 @@ class DnaEngine {
         final sender = String.fromCharCodes(senderBytes);
 
         final recipientBytes = <int>[];
-        for (var i = baseOffset + 133; i < baseOffset + 133 + 128; i++) {
+        for (var i = 133; i < 261; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           recipientBytes.add(byte);
         }
         final recipient = String.fromCharCodes(recipientBytes);
 
-        // is_outgoing is at C offset 280 (after plaintext ptr + timestamp)
-        final isOutgoing = event.data[baseOffset + 280] != 0;
+        // is_outgoing is at union offset 280 (after plaintext ptr + timestamp)
+        final isOutgoing = event.data[280] != 0;
 
-        // message_type is at C offset 288 (0=chat, 1=group invitation)
-        final msgTypeInt = event.data[baseOffset + 288];
+        // message_type is at union offset 288 (0=chat, 1=group invitation)
+        final msgTypeInt = event.data[288];
         final msgType = msgTypeInt == 1 ? MessageType.groupInvitation : MessageType.chat;
 
         dartEvent = MessageReceivedEvent(Message(
@@ -1142,21 +1139,19 @@ class DnaEngine {
         break;
       case DnaEventType.DNA_EVENT_MESSAGE_SENT:
         // Message was successfully sent - trigger UI refresh
-        // baseOffset=4 for padding between type (int) and union in C struct (64-bit alignment)
-        const sentBaseOffset = 4;
-        final messageId = event.data[sentBaseOffset] | (event.data[sentBaseOffset + 1] << 8) |
-                          (event.data[sentBaseOffset + 2] << 16) | (event.data[sentBaseOffset + 3] << 24);
-        final status = event.data[sentBaseOffset + 4] | (event.data[sentBaseOffset + 5] << 8) |
-                       (event.data[sentBaseOffset + 6] << 16) | (event.data[sentBaseOffset + 7] << 24);
+        // Dart struct now has _padding field matching C struct 8-byte alignment
+        final messageId = event.data[0] | (event.data[1] << 8) |
+                          (event.data[2] << 16) | (event.data[3] << 24);
+        final status = event.data[4] | (event.data[5] << 8) |
+                       (event.data[6] << 16) | (event.data[7] << 24);
         print('[DART-EVENT] MESSAGE_SENT: messageId=$messageId, status=$status');
         dartEvent = MessageSentEvent(messageId);
         break;
       case DnaEventType.DNA_EVENT_MESSAGE_DELIVERED:
         // Message delivered - parse recipient fingerprint from message_delivered.recipient
-        // baseOffset=4 for padding between type (int) and union in C struct (64-bit alignment)
-        const deliveredBaseOffset = 4;
+        // Dart struct now has _padding field matching C struct 8-byte alignment
         final deliveredFpBytes = <int>[];
-        for (var i = deliveredBaseOffset; i < deliveredBaseOffset + 128; i++) {
+        for (var i = 0; i < 128; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           deliveredFpBytes.add(byte);
@@ -1166,10 +1161,9 @@ class DnaEngine {
         break;
       case DnaEventType.DNA_EVENT_CONTACT_ONLINE:
         // Parse fingerprint from contact_status.fingerprint
-        // baseOffset=4 for padding between type (int) and union in C struct (64-bit alignment)
-        const onlineBaseOffset = 4;
+        // Dart struct now has _padding field matching C struct 8-byte alignment
         final onlineFpBytes = <int>[];
-        for (var i = onlineBaseOffset; i < onlineBaseOffset + 128; i++) {
+        for (var i = 0; i < 128; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           onlineFpBytes.add(byte);
@@ -1179,10 +1173,9 @@ class DnaEngine {
         break;
       case DnaEventType.DNA_EVENT_CONTACT_OFFLINE:
         // Parse fingerprint from contact_status.fingerprint
-        // baseOffset=4 for padding between type (int) and union in C struct (64-bit alignment)
-        const offlineBaseOffset = 4;
+        // Dart struct now has _padding field matching C struct 8-byte alignment
         final offlineFpBytes = <int>[];
-        for (var i = offlineBaseOffset; i < offlineBaseOffset + 128; i++) {
+        for (var i = 0; i < 128; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           offlineFpBytes.add(byte);
@@ -1199,10 +1192,9 @@ class DnaEngine {
         break;
       case DnaEventType.DNA_EVENT_OUTBOX_UPDATED:
         // Parse contact fingerprint from union data
-        // baseOffset=4 for padding between type (int) and union in C struct (64-bit alignment)
-        const outboxBaseOffset = 4;
+        // Dart struct now has _padding field matching C struct 8-byte alignment
         final fpBytes = <int>[];
-        for (var i = outboxBaseOffset; i < outboxBaseOffset + 128; i++) {
+        for (var i = 0; i < 128; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           fpBytes.add(byte);

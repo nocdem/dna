@@ -470,6 +470,10 @@ final class dna_event_t extends Struct {
   @Int32()
   external int type;
 
+  // Padding for 8-byte alignment of union (matches C struct layout on 64-bit)
+  @Array(4)
+  external Array<Uint8> _padding;
+
   // Union data starts here - 512 bytes reserved for largest union member
   @Array(512)
   external Array<Uint8> data;
