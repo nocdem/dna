@@ -507,9 +507,16 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
                    dht_key[4], dht_key[5], dht_key[6], dht_key[7], base_key);
         }
 
-        // Build caller string with base_key for debugging (truncate to 48 chars)
+        // Build caller string showing feature type (suffix after last ':')
+        // e.g., "fingerprint:profile" -> "chunk:profile"
         char caller[64];
-        snprintf(caller, sizeof(caller), "chunk:%.48s", base_key);
+        const char *suffix = strrchr(base_key, ':');
+        if (suffix && suffix[1]) {
+            snprintf(caller, sizeof(caller), "chunk:%s", suffix + 1);
+        } else {
+            // No colon found, show first 48 chars
+            snprintf(caller, sizeof(caller), "chunk:%.48s", base_key);
+        }
 
         // Publish to DHT
         if (dht_put_signed(ctx, dht_key, DHT_CHUNK_KEY_SIZE,
@@ -840,9 +847,14 @@ int dht_chunked_delete(dht_context_t *ctx, const char *base_key,
         return DHT_CHUNK_ERR_ALLOC;
     }
 
-    // Build caller string with base_key for debugging
+    // Build caller string showing feature type (suffix after last ':')
     char caller[64];
-    snprintf(caller, sizeof(caller), "chunk_del:%.44s", base_key);
+    const char *suffix = strrchr(base_key, ':');
+    if (suffix && suffix[1]) {
+        snprintf(caller, sizeof(caller), "chunk_del:%s", suffix + 1);
+    } else {
+        snprintf(caller, sizeof(caller), "chunk_del:%.44s", base_key);
+    }
 
     for (uint32_t i = 0; i < total_chunks; i++) {
         uint8_t chunk_key[DHT_CHUNK_KEY_SIZE];
