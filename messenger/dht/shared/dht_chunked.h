@@ -85,7 +85,8 @@ typedef enum {
     DHT_CHUNK_ERR_CHECKSUM = -7,    /** CRC32 checksum mismatch */
     DHT_CHUNK_ERR_INCOMPLETE = -8,  /** Missing chunks */
     DHT_CHUNK_ERR_TIMEOUT = -9,     /** Fetch timeout */
-    DHT_CHUNK_ERR_ALLOC = -10       /** Memory allocation failed */
+    DHT_CHUNK_ERR_ALLOC = -10,      /** Memory allocation failed */
+    DHT_CHUNK_ERR_NOT_CONNECTED = -11  /** DHT not connected (no nodes in routing table) */
 } dht_chunk_error_t;
 
 /*============================================================================
