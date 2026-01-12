@@ -8262,7 +8262,8 @@ int dna_engine_publish_version(
         dht_ctx,
         dht_key, sizeof(dht_key),
         (const uint8_t *)json_str, json_len,
-        VERSION_VALUE_ID
+        VERSION_VALUE_ID,
+        "version_publish"
     );
 
     json_object_put(root);

@@ -637,7 +637,7 @@ int turn_credentials_request(
 
     // Publish request to DHT (short TTL, will be consumed)
     int ret = dht_put_signed(dht, (uint8_t*)request_key, strlen(request_key),
-                             request_data, request_len, 1, 300);  // 5 min TTL
+                             request_data, request_len, 1, 300, "turn_request");  // 5 min TTL
     free(request_data);
 
     if (ret != 0) {

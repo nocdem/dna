@@ -194,13 +194,15 @@ int dht_put(dht_context_t *ctx,
  * @param value_len Value length
  * @param value_id Fixed value ID (e.g., 1 for offline queue slot)
  * @param ttl_seconds Time-to-live in seconds (0 = default 7 days)
+ * @param caller Debug string identifying the caller (e.g., "watermark", "chunked")
  * @return 0 on success, -1 on error
  */
 int dht_put_signed(dht_context_t *ctx,
                    const uint8_t *key, size_t key_len,
                    const uint8_t *value, size_t value_len,
                    uint64_t value_id,
-                   unsigned int ttl_seconds);
+                   unsigned int ttl_seconds,
+                   const char *caller);
 
 /**
  * Put SIGNED value in DHT permanently with fixed value ID
@@ -224,7 +226,8 @@ int dht_put_signed(dht_context_t *ctx,
 int dht_put_signed_permanent(dht_context_t *ctx,
                               const uint8_t *key, size_t key_len,
                               const uint8_t *value, size_t value_len,
-                              uint64_t value_id);
+                              uint64_t value_id,
+                              const char *caller);
 
 /**
  * Republish a serialized (packed) Value to DHT exactly as-is

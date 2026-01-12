@@ -62,7 +62,7 @@ int p2p_register_presence(p2p_transport_t *ctx) {
     unsigned int ttl_7days = 7 * 24 * 3600;  // 604800 seconds
     int result = dht_put_signed(dht, dht_key, sizeof(dht_key),
                                 (const uint8_t*)presence_data, strlen(presence_data),
-                                1, ttl_7days);
+                                1, ttl_7days, "presence");
 
     if (result == 0) {
         QGP_LOG_INFO(LOG_TAG, "Presence registered successfully (signed)\n");

@@ -846,8 +846,9 @@ extern "C" int dht_put_permanent(dht_context_t *ctx,
 extern "C" int dht_put_signed_permanent(dht_context_t *ctx,
                                         const uint8_t *key, size_t key_len,
                                         const uint8_t *value, size_t value_len,
-                                        uint64_t value_id) {
-    return dht_put_signed(ctx, key, key_len, value, value_len, value_id, UINT_MAX);
+                                        uint64_t value_id,
+                                        const char *caller) {
+    return dht_put_signed(ctx, key, key_len, value, value_len, value_id, UINT_MAX, caller);
 }
 
 /**
@@ -869,7 +870,8 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
                               const uint8_t *key, size_t key_len,
                               const uint8_t *value, size_t value_len,
                               uint64_t value_id,
-                              unsigned int ttl_seconds) {
+                              unsigned int ttl_seconds,
+                              const char *caller) {
     if (!ctx || !key || !value) {
         QGP_LOG_ERROR("DHT", "NULL parameter in dht_put_signed");
         return -1;
@@ -879,6 +881,9 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         QGP_LOG_ERROR("DHT", "Node not running");
         return -1;
     }
+
+    // Capture caller string for async callback
+    std::string caller_str = caller ? caller : "unknown";
 
     try {
         // Hash the key to get infohash
@@ -912,8 +917,8 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
             sprintf(&key_hex_start[i * 2], "%02x", key[i]);
         }
         key_hex_start[40] = '\0';
-        QGP_LOG_DEBUG("DHT", "PUT_SIGNED: key=%s... (%zu bytes, TTL=%us, type=0x%x, id=%llu)",
-                     key_hex_start, value_len, ttl_seconds, dht_value->type, (unsigned long long)value_id);
+        QGP_LOG_DEBUG("DHT", "PUT_SIGNED [%s]: key=%s... (%zu bytes, TTL=%us, type=0x%x, id=%llu)",
+                     caller_str.c_str(), key_hex_start, value_len, ttl_seconds, dht_value->type, (unsigned long long)value_id);
 
         // Use putSigned() instead of put() to enable editing/replacement
         // Note: putSigned() doesn't support creation_time parameter (uses current time)
@@ -921,11 +926,11 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         // ASYNC: Fire-and-forget to avoid blocking. Callback logs result but doesn't block caller.
         // Message status will be updated via watermark confirmation from recipient.
         ctx->runner.putSigned(hash, dht_value,
-                             [key_hex_start](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
+                             [key_hex_start, caller_str](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
                                  if (success) {
-                                     QGP_LOG_DEBUG("DHT", "PUT_SIGNED: Stored on %zu node(s)", nodes.size());
+                                     QGP_LOG_DEBUG("DHT", "PUT_SIGNED [%s]: Stored on %zu node(s)", caller_str.c_str(), nodes.size());
                                  } else {
-                                     QGP_LOG_WARN("DHT", "PUT_SIGNED: Failed to store on any node (key=%s...)", key_hex_start);
+                                     QGP_LOG_WARN("DHT", "PUT_SIGNED [%s]: Failed to store on any node (key=%s...)", caller_str.c_str(), key_hex_start);
                                  }
                              },
                              true);  // permanent=true for maintain_storage behavior

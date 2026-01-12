@@ -1061,7 +1061,7 @@ int messenger_p2p_refresh_presence(messenger_context_t *ctx)
     unsigned int ttl_7days = 7 * 24 * 3600;  // 604800 seconds
     int result = dht_put_signed(dht, dht_key, sizeof(dht_key),
                                 (const uint8_t*)presence_data, strlen(presence_data),
-                                1, ttl_7days);
+                                1, ttl_7days, "presence_heartbeat");
 
     if (result != 0) {
         QGP_LOG_ERROR("P2P", "Failed to register presence in DHT");

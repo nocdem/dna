@@ -428,7 +428,7 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
     /* Publish as multi-owner signed value */
     ret = dht_put_signed(dht_ctx, (const uint8_t *)comments_key, strlen(comments_key),
                          (const uint8_t *)json_data, strlen(json_data),
-                         my_value_id, DNA_FEED_TTL_SECONDS);
+                         my_value_id, DNA_FEED_TTL_SECONDS, "feed_comment");
     json_object_put(arr);
 
     if (ret != 0) {
@@ -735,7 +735,7 @@ int dna_feed_comment_vote_cast(dht_context_t *dht_ctx,
     /* Publish vote */
     ret = dht_put_signed(dht_ctx, (const uint8_t *)votes_key, strlen(votes_key),
                          (const uint8_t *)vote_str, strlen(vote_str),
-                         value_id, DNA_FEED_TTL_SECONDS);
+                         value_id, DNA_FEED_TTL_SECONDS, "feed_vote");
     free(vote_str);
 
     return (ret == 0) ? 0 : -1;

@@ -1066,7 +1066,8 @@ static void *watermark_publish_thread(void *arg) {
                                  key, 64,
                                  value, sizeof(value),
                                  1,  // value_id=1 for replacement
-                                 DHT_WATERMARK_TTL);
+                                 DHT_WATERMARK_TTL,
+                                 "watermark");
 
         if (result == 0) {
             QGP_LOG_WARN(LOG_TAG, "[WATERMARK-PUT] Published OK: %.20s... → %.20s... seq=%lu (attempt %d)\n",

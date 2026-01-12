@@ -548,7 +548,7 @@ static int save_poster_bucket(dht_context_t *dht_ctx, const char *channel_id, co
     QGP_LOG_INFO(LOG_TAG, "Registering contributor in bucket index (value_id=%llu)\n", (unsigned long long)contrib_value_id);
     ret = dht_put_signed(dht_ctx, (const uint8_t *)contrib_key, strlen(contrib_key),
                          (const uint8_t *)poster_fingerprint, strlen(poster_fingerprint),
-                         contrib_value_id, DNA_FEED_TTL_SECONDS);
+                         contrib_value_id, DNA_FEED_TTL_SECONDS, "feed_contributor");
 
     if (ret != 0) {
         /* Non-fatal - poster bucket is already stored */

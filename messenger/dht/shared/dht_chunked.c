@@ -510,7 +510,7 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
         // Publish to DHT
         if (dht_put_signed(ctx, dht_key, DHT_CHUNK_KEY_SIZE,
                           serialized, serialized_len,
-                          value_id, ttl_seconds) != 0) {
+                          value_id, ttl_seconds, "chunked_publish") != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to publish chunk %u to DHT\n", i);
             free(serialized);
             free(compressed);
@@ -845,7 +845,7 @@ int dht_chunked_delete(dht_context_t *ctx, const char *base_key,
         // Overwrite with empty marker (short TTL)
         dht_put_signed(ctx, chunk_key, DHT_CHUNK_KEY_SIZE,
                       serialized, serialized_len,
-                      value_id, 60);  // 1 minute TTL for quick expiry
+                      value_id, 60, "chunked_delete");  // 1 minute TTL for quick expiry
 
         // Rate limit: 100ms delay between chunks to avoid overwhelming DHT nodes
         if (i < total_chunks - 1) {

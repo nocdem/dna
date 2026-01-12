@@ -511,7 +511,7 @@ int dna_group_outbox_send(
 
     ret = dht_put_signed(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
                          (const uint8_t *)bucket_json, strlen(bucket_json),
-                         my_value_id, DNA_GROUP_OUTBOX_TTL);
+                         my_value_id, DNA_GROUP_OUTBOX_TTL, "group_outbox");
 
     free(bucket_json);
     dna_group_outbox_free_messages(all_msgs, new_count);

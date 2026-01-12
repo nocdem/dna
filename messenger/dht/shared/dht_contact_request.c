@@ -570,7 +570,8 @@ int dht_send_contact_request(
         serialized,
         serialized_len,
         value_id,
-        DHT_CONTACT_REQUEST_DEFAULT_TTL
+        DHT_CONTACT_REQUEST_DEFAULT_TTL,
+        "contact_request_send"
     );
 
     free(serialized);
@@ -739,7 +740,8 @@ int dht_cancel_contact_request(
         empty_data,
         1,
         value_id,
-        1  /* 1 second TTL - effectively immediate expiry */
+        1,  /* 1 second TTL - effectively immediate expiry */
+        "contact_request_clear"
     );
 
     if (put_result != 0) {

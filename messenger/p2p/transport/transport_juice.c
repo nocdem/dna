@@ -654,7 +654,7 @@ int ice_publish_to_dht(ice_context_t *ctx, const char *my_fingerprint) {
     unsigned int ttl_7days = 7 * 24 * 3600;  // 604800 seconds
     int ret = dht_put_signed(dht, (uint8_t*)hex_key, strlen(hex_key),
                              (uint8_t*)ctx->local_candidates, ctx->candidates_len,
-                             1, ttl_7days);
+                             1, ttl_7days, "ice_candidates");
 
     pthread_mutex_unlock(&ctx->candidates_mutex);
 

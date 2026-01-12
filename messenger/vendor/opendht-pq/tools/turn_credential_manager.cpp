@@ -287,7 +287,8 @@ bool TurnCredentialManager::publish_response(const std::string& client_fingerpri
                           (uint8_t*)response_key, strlen(response_key),
                           response.data(), response.size(),
                           1,  // value_id
-                          config_.credential_ttl_seconds) == 0;
+                          config_.credential_ttl_seconds,
+                          "turn_credential_response") == 0;
 }
 
 bool TurnCredentialManager::publish_sync(const IssuedCredential& cred) {
@@ -319,7 +320,8 @@ bool TurnCredentialManager::publish_sync(const IssuedCredential& cred) {
                           (uint8_t*)sync_key, strlen(sync_key),
                           entry.data(), entry.size(),
                           0,  // value_id = 0 means append (multi-value)
-                          3600) == 0;  // 1 hour
+                          3600,  // 1 hour
+                          "turn_credential_sync") == 0;
 }
 
 bool TurnCredentialManager::process_sync_entry(const uint8_t* data, size_t len) {
