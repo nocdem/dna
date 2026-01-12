@@ -11,9 +11,10 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
+
 import '../ffi/dna_engine.dart';
 import '../utils/qr_payload_parser.dart';
-import '../utils/logger.dart';
 
 /// Result of an auth approval operation
 class QrAuthResult {
@@ -85,7 +86,7 @@ class QrAuthService {
         expiresAt: expiresAt,
       );
 
-      DnaLogger.log('QR_AUTH', 'Signing payload: $signedPayload');
+      debugPrint('QR_AUTH: Signing payload: $signedPayload');
 
       // Sign the canonical JSON bytes
       final payloadBytes = utf8.encode(signedPayload);
@@ -108,16 +109,16 @@ class QrAuthService {
         },
       );
 
-      DnaLogger.log('QR_AUTH', 'Posting to callback: ${payload.callbackUrl}');
+      debugPrint('QR_AUTH: Posting to callback: ${payload.callbackUrl}');
 
       // POST to callback URL
       final result = await _postToCallback(payload.callbackUrl!, responseBody);
       return result;
     } on DnaEngineException catch (e) {
-      DnaLogger.error('QR_AUTH', 'Engine error during auth: ${e.message}');
+      debugPrint('QR_AUTH ERROR: Engine error during auth: ${e.message}');
       return QrAuthResult.failure('Signing failed: ${e.message}');
     } catch (e) {
-      DnaLogger.error('QR_AUTH', 'Unexpected error during auth: $e');
+      debugPrint('QR_AUTH ERROR: Unexpected error during auth: $e');
       return QrAuthResult.failure('Unexpected error: $e');
     }
   }
@@ -162,7 +163,7 @@ class QrAuthService {
         ..badCertificateCallback = (cert, host, port) {
           // In production, we should NOT accept bad certificates
           // This is only for development/testing
-          DnaLogger.log('QR_AUTH', 'Bad certificate for $host:$port');
+          debugPrint('QR_AUTH: Bad certificate for $host:$port');
           return false;
         };
 
@@ -186,26 +187,26 @@ class QrAuthService {
       await response.drain<void>();
 
       if (statusCode >= 200 && statusCode < 300) {
-        DnaLogger.log('QR_AUTH', 'Auth callback success: $statusCode');
+        debugPrint('QR_AUTH: Auth callback success: $statusCode');
         return const QrAuthResult.success();
       } else {
-        DnaLogger.error('QR_AUTH', 'Auth callback failed: $statusCode');
+        debugPrint('QR_AUTH ERROR: Auth callback failed: $statusCode');
         return QrAuthResult.failure(
           'Server returned $statusCode',
           statusCode: statusCode,
         );
       }
     } on SocketException catch (e) {
-      DnaLogger.error('QR_AUTH', 'Network error: $e');
+      debugPrint('QR_AUTH ERROR: Network error: $e');
       return QrAuthResult.failure('Network error: ${e.message}');
     } on HandshakeException catch (e) {
-      DnaLogger.error('QR_AUTH', 'TLS error: $e');
+      debugPrint('QR_AUTH ERROR: TLS error: $e');
       return QrAuthResult.failure('TLS/SSL error: ${e.message}');
     } on HttpException catch (e) {
-      DnaLogger.error('QR_AUTH', 'HTTP error: $e');
+      debugPrint('QR_AUTH ERROR: HTTP error: $e');
       return QrAuthResult.failure('HTTP error: ${e.message}');
     } catch (e) {
-      DnaLogger.error('QR_AUTH', 'Unexpected network error: $e');
+      debugPrint('QR_AUTH ERROR: Unexpected network error: $e');
       return QrAuthResult.failure('Network error: $e');
     } finally {
       client?.close();
@@ -215,7 +216,7 @@ class QrAuthService {
   /// Deny an auth request (optional - just navigates away without POSTing)
   /// In the future, this could POST a denial response if the spec requires it.
   void deny(QrPayload payload) {
-    DnaLogger.log('QR_AUTH', 'Auth request denied by user: ${payload.origin}');
+    debugPrint('QR_AUTH: Auth request denied by user: ${payload.origin}');
     // Currently no network call needed for denial
     // The server will timeout the session
   }

@@ -1,4 +1,5 @@
 /// QR Auth Screen - Authorization/login confirmation
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -6,7 +7,6 @@ import '../../providers/providers.dart';
 import '../../services/qr_auth_service.dart';
 import '../../theme/dna_theme.dart';
 import '../../utils/qr_payload_parser.dart';
-import '../../utils/logger.dart';
 import '../home_screen.dart';
 
 class QrAuthScreen extends ConsumerStatefulWidget {
@@ -50,7 +50,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
     final rootCanPop = rootNav.canPop();
     final localCanPop = localNav.canPop();
 
-    DnaLogger.log('QR_AUTH', '_close: rootCanPop=$rootCanPop, localCanPop=$localCanPop');
+    debugPrint('QR_AUTH _close: rootCanPop=$rootCanPop, localCanPop=$localCanPop');
 
     // Try root navigator first (this is where we were pushed from scanner)
     if (rootCanPop) {
@@ -65,7 +65,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
     }
 
     // FALLBACK: Neither can pop - force navigate to HomeScreen
-    DnaLogger.log('QR_AUTH', '_close: FALLBACK - forcing HomeScreen');
+    debugPrint('QR_AUTH _close: FALLBACK - forcing HomeScreen');
     rootNav.pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const HomeScreen()),
       (route) => false,
@@ -579,7 +579,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
 
   Future<void> _approve() async {
     // Check for valid identity first
-    final engine = ref.read(engineProvider);
+    final engine = ref.read(engineProvider).valueOrNull;
     if (engine == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -625,7 +625,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
         });
       }
     } catch (e) {
-      DnaLogger.error('QR_AUTH', 'Unexpected error during approve: $e');
+      debugPrint('QR_AUTH: Unexpected error during approve: $e');
       if (!mounted) return;
       setState(() {
         _state = _AuthState.failed;
@@ -635,7 +635,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
   }
 
   void _deny() {
-    final engine = ref.read(engineProvider);
+    final engine = ref.read(engineProvider).valueOrNull;
     if (engine != null) {
       QrAuthService(engine).deny(widget.payload);
     }
