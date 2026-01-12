@@ -507,14 +507,22 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
                    dht_key[4], dht_key[5], dht_key[6], dht_key[7], base_key);
         }
 
-        // Build caller string showing feature type (suffix after last ':')
-        // e.g., "fingerprint:profile" -> "chunk:profile"
+        // Build caller string showing feature type by detecting keywords
         char caller[64];
-        const char *suffix = strrchr(base_key, ':');
-        if (suffix && suffix[1]) {
-            snprintf(caller, sizeof(caller), "chunk:%s", suffix + 1);
+        if (strstr(base_key, ":outbox:")) {
+            snprintf(caller, sizeof(caller), "chunk:outbox");
+        } else if (strstr(base_key, ":profile")) {
+            snprintf(caller, sizeof(caller), "chunk:profile");
+        } else if (strstr(base_key, ":contacts")) {
+            snprintf(caller, sizeof(caller), "chunk:contacts");
+        } else if (strstr(base_key, ":backup")) {
+            snprintf(caller, sizeof(caller), "chunk:backup");
+        } else if (strstr(base_key, "dht:group:")) {
+            snprintf(caller, sizeof(caller), "chunk:group");
+        } else if (strstr(base_key, ":gek:")) {
+            snprintf(caller, sizeof(caller), "chunk:gek");
         } else {
-            // No colon found, show first 48 chars
+            // Unknown format, show first 48 chars
             snprintf(caller, sizeof(caller), "chunk:%.48s", base_key);
         }
 
@@ -847,11 +855,16 @@ int dht_chunked_delete(dht_context_t *ctx, const char *base_key,
         return DHT_CHUNK_ERR_ALLOC;
     }
 
-    // Build caller string showing feature type (suffix after last ':')
+    // Build caller string showing feature type by detecting keywords
     char caller[64];
-    const char *suffix = strrchr(base_key, ':');
-    if (suffix && suffix[1]) {
-        snprintf(caller, sizeof(caller), "chunk_del:%s", suffix + 1);
+    if (strstr(base_key, ":outbox:")) {
+        snprintf(caller, sizeof(caller), "chunk_del:outbox");
+    } else if (strstr(base_key, ":profile")) {
+        snprintf(caller, sizeof(caller), "chunk_del:profile");
+    } else if (strstr(base_key, ":contacts")) {
+        snprintf(caller, sizeof(caller), "chunk_del:contacts");
+    } else if (strstr(base_key, "dht:group:")) {
+        snprintf(caller, sizeof(caller), "chunk_del:group");
     } else {
         snprintf(caller, sizeof(caller), "chunk_del:%.44s", base_key);
     }
