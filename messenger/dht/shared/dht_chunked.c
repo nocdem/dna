@@ -426,25 +426,11 @@ uint32_t dht_chunked_estimate_chunks(size_t data_len) {
     return (uint32_t)((estimated_compressed + DHT_CHUNK_DATA_SIZE - 1) / DHT_CHUNK_DATA_SIZE);
 }
 
-/** Minimum nodes required in routing table before publishing */
-#define DHT_CHUNK_MIN_NODES 3
-
 int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
                         const uint8_t *data, size_t data_len,
                         uint32_t ttl_seconds) {
     if (!ctx || !base_key || !data || data_len == 0) {
         return DHT_CHUNK_ERR_NULL_PARAM;
-    }
-
-    // Check DHT connectivity before attempting publish
-    size_t node_count = 0;
-    size_t stored_values = 0;
-    if (dht_get_stats(ctx, &node_count, &stored_values) == 0) {
-        if (node_count < DHT_CHUNK_MIN_NODES) {
-            QGP_LOG_WARN(LOG_TAG, "DHT not ready: only %zu nodes (need %d), skipping publish",
-                         node_count, DHT_CHUNK_MIN_NODES);
-            return DHT_CHUNK_ERR_NOT_CONNECTED;
-        }
     }
 
     // Step 1: Compress data

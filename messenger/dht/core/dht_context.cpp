@@ -925,12 +925,15 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         // Permanent flag controls whether value expires based on ValueType
         // ASYNC: Fire-and-forget to avoid blocking. Callback logs result but doesn't block caller.
         // Message status will be updated via watermark confirmation from recipient.
+        size_t val_size = value_len;
         ctx->runner.putSigned(hash, dht_value,
-                             [key_hex_start, caller_str](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
+                             [key_hex_start, caller_str, val_size](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
                                  if (success) {
-                                     QGP_LOG_DEBUG("DHT", "PUT_SIGNED [%s]: Stored on %zu node(s)", caller_str.c_str(), nodes.size());
+                                     QGP_LOG_DEBUG("DHT", "PUT_SIGNED [%s]: Stored on %zu node(s) (size=%zu)", caller_str.c_str(), nodes.size(), val_size);
                                  } else {
-                                     QGP_LOG_WARN("DHT", "PUT_SIGNED [%s]: Failed to store on any node (key=%s...)", caller_str.c_str(), key_hex_start);
+                                     // Log more details on failure
+                                     QGP_LOG_WARN("DHT", "PUT_SIGNED [%s]: FAILED key=%s size=%zu nodes_tried=%zu",
+                                                  caller_str.c_str(), key_hex_start, val_size, nodes.size());
                                  }
                              },
                              true);  // permanent=true for maintain_storage behavior
