@@ -2205,9 +2205,11 @@ class _MessageBubble extends StatelessWidget {
   IconData _getStatusIcon(MessageStatus status) {
     switch (status) {
       case MessageStatus.pending:
-      case MessageStatus.sent:
-        // Clock for pending/sent (waiting for delivery confirmation)
+        // Clock for pending (queued, waiting for DHT PUT)
         return FontAwesomeIcons.clock;
+      case MessageStatus.sent:
+        // Single tick for sent (DHT PUT succeeded)
+        return FontAwesomeIcons.check;
       case MessageStatus.failed:
         return FontAwesomeIcons.circleExclamation;
       case MessageStatus.delivered:
@@ -2989,11 +2991,13 @@ class _TransferBubble extends StatelessWidget {
                 if (isOutgoing) ...[
                   const SizedBox(width: 4),
                   FaIcon(
-                    message.status == MessageStatus.pending || message.status == MessageStatus.sent
+                    message.status == MessageStatus.pending
                         ? FontAwesomeIcons.clock
-                        : (message.status == MessageStatus.failed
-                            ? FontAwesomeIcons.circleExclamation
-                            : FontAwesomeIcons.checkDouble),
+                        : (message.status == MessageStatus.sent
+                            ? FontAwesomeIcons.check
+                            : (message.status == MessageStatus.failed
+                                ? FontAwesomeIcons.circleExclamation
+                                : FontAwesomeIcons.checkDouble)),
                     size: 14,
                     color: message.status == MessageStatus.failed
                         ? DnaColors.textWarning

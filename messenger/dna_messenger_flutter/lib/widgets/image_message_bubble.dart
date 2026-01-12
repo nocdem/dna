@@ -166,9 +166,11 @@ class ImageMessageBubble extends StatelessWidget {
     IconData icon;
     switch (status) {
       case MessageStatus.pending:
-      case MessageStatus.sent:
-        // Clock for pending/sent (waiting for delivery confirmation)
+        // Clock for pending (queued, waiting for DHT PUT)
         icon = FontAwesomeIcons.clock;
+      case MessageStatus.sent:
+        // Single tick for sent (DHT PUT succeeded)
+        icon = FontAwesomeIcons.check;
       case MessageStatus.failed:
         icon = FontAwesomeIcons.circleExclamation;
       case MessageStatus.delivered:
