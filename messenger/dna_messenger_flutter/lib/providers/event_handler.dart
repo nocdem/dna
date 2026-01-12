@@ -151,8 +151,7 @@ class EventHandler {
 
       case MessageSentEvent(messageId: final msgId):
         // Debounced refresh - only once after last message sent
-        final engine = _ref.read(engineProvider).valueOrNull;
-        engine?.debugLog('EVENT', '[MESSAGE_SENT] Handler triggered, messageId=$msgId, scheduling refresh');
+        print('[DART-HANDLER] MessageSentEvent received, msgId=$msgId');
         _scheduleConversationRefresh();
         break;
 
@@ -219,13 +218,13 @@ class EventHandler {
   /// Schedule a debounced conversation refresh
   /// Coalesces rapid MessageSentEvents into a single refresh
   void _scheduleConversationRefresh() {
+    print('[DART-HANDLER] _scheduleConversationRefresh called');
     _refreshTimer?.cancel();
     _refreshTimer = Timer(const Duration(milliseconds: 300), () {
       final selectedContact = _ref.read(selectedContactProvider);
-      final engine = _ref.read(engineProvider).valueOrNull;
-      engine?.debugLog('EVENT', '[REFRESH] Timer fired, selectedContact=${selectedContact?.fingerprint?.substring(0, 16) ?? "null"}');
+      print('[DART-HANDLER] Timer fired, selectedContact=${selectedContact?.fingerprint?.substring(0, 16) ?? "null"}');
       if (selectedContact != null) {
-        engine?.debugLog('EVENT', '[REFRESH] Calling refresh() on conversationProvider for ${selectedContact.fingerprint.substring(0, 16)}...');
+        print('[DART-HANDLER] Calling refresh() on conversation');
         // Use refresh() instead of invalidate() to force immediate rebuild
         // invalidate() only marks stale, doesn't trigger rebuild until next read
         _ref.read(conversationProvider(selectedContact.fingerprint).notifier).refresh();
