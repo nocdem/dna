@@ -6602,16 +6602,27 @@ static void delivery_watermark_callback(
     QGP_LOG_WARN(LOG_TAG, "[DELIVERY] Watermark received! %.20s... → %.20s... seq=%lu",
                  sender, recipient, (unsigned long)seq_num);
 
-    /* Update tracker's last known watermark */
+    /* Check if this is a new watermark (higher seq than we've seen) */
+    uint64_t last_known = 0;
     pthread_mutex_lock(&engine->delivery_trackers_mutex);
     for (int i = 0; i < engine->delivery_tracker_count; i++) {
         if (engine->delivery_trackers[i].active &&
             strcmp(engine->delivery_trackers[i].recipient, recipient) == 0) {
-            engine->delivery_trackers[i].last_known_watermark = seq_num;
+            last_known = engine->delivery_trackers[i].last_known_watermark;
+            if (seq_num > last_known) {
+                engine->delivery_trackers[i].last_known_watermark = seq_num;
+            }
             break;
         }
     }
     pthread_mutex_unlock(&engine->delivery_trackers_mutex);
+
+    /* Skip if we've already processed this or a higher watermark */
+    if (seq_num <= last_known) {
+        QGP_LOG_WARN(LOG_TAG, "[DELIVERY] Ignoring old/duplicate watermark (seq=%lu <= last_known=%lu)",
+                     (unsigned long)seq_num, (unsigned long)last_known);
+        return;
+    }
 
     /* Update message status in database (all messages with seq <= seq_num are delivered) */
     if (engine->messenger && engine->messenger->backup_ctx) {
@@ -6707,13 +6718,21 @@ int dna_engine_track_delivery(
         return -1;
     }
 
+    /* Pre-fetch current watermark to avoid processing stale cached values
+     * The listener will fire immediately with any cached DHT value,
+     * but we only want to process NEW watermarks (higher seq than current) */
+    uint64_t current_watermark = 0;
+    dht_get_watermark(dht_ctx, recipient_fingerprint, engine->fingerprint, &current_watermark);
+    QGP_LOG_INFO(LOG_TAG, "[DELIVERY] Pre-fetched watermark for %.20s...: seq=%lu",
+                 recipient_fingerprint, (unsigned long)current_watermark);
+
     /* Store tracker info */
     int idx = engine->delivery_tracker_count++;
     strncpy(engine->delivery_trackers[idx].recipient, recipient_fingerprint,
             sizeof(engine->delivery_trackers[idx].recipient) - 1);
     engine->delivery_trackers[idx].recipient[sizeof(engine->delivery_trackers[idx].recipient) - 1] = '\0';
     engine->delivery_trackers[idx].listener_token = token;
-    engine->delivery_trackers[idx].last_known_watermark = 0;
+    engine->delivery_trackers[idx].last_known_watermark = current_watermark;  /* Start from current, not 0 */
     engine->delivery_trackers[idx].active = true;
     engine->delivery_trackers[idx].ctx = ctx;
 
