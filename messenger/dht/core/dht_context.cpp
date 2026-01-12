@@ -882,6 +882,14 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         return -1;
     }
 
+    // Check if DHT has nodes in routing table before attempting PUT
+    // Without nodes, async PUT will fail with nodes_tried=0
+    if (!dht_context_is_ready(ctx)) {
+        QGP_LOG_INFO("DHT", "PUT_SIGNED [%s]: DHT not ready (no nodes) - deferring",
+                     caller ? caller : "unknown");
+        return -2;  // Not connected - caller should retry later
+    }
+
     // Capture caller string for async callback
     std::string caller_str = caller ? caller : "unknown";
 
