@@ -495,8 +495,22 @@ class _PlainTextResult extends StatelessWidget {
                   url = 'https://$url';
                 }
                 final uri = Uri.tryParse(url);
-                if (uri != null && await canLaunchUrl(uri)) {
+                if (uri == null) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Invalid URL')),
+                    );
+                  }
+                  return;
+                }
+                try {
                   await launchUrl(uri, mode: LaunchMode.externalApplication);
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Could not open URL: $e')),
+                    );
+                  }
                 }
               },
             ),
