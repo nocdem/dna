@@ -37,6 +37,7 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
   bool _isAppPaused = false;
   bool _scannerArmed = true; // false after scan, requires manual re-arm
   bool _controllerStarted = false;
+  bool _isNavigating = false; // guard against concurrent scan handling
 
   @override
   void initState() {
@@ -59,6 +60,11 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
   void dispose() {
     routeObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
+    // Stop scanner synchronously before dispose (can't await in dispose)
+    if (_controllerStarted && _controller != null) {
+      _controller!.stop();
+      _controllerStarted = false;
+    }
     _controller?.dispose();
     super.dispose();
   }
@@ -168,9 +174,10 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
   // ==========================================================================
 
   void _onDetect(BarcodeCapture capture) {
-    // Don't process if scanner is not armed or not running
+    // Don't process if scanner is not armed, not running, or already navigating
     if (!_scannerArmed) return;
     if (!_shouldScannerRun) return;
+    if (_isNavigating) return;
 
     // Throttle: ignore detections if last scan was < 700ms ago
     final now = DateTime.now();
@@ -193,10 +200,21 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
     }
     if (value == null) return;
 
-    // Disarm scanner and stop controller immediately
+    // Set navigation guard FIRST to prevent re-entry
+    _isNavigating = true;
     _lastScanAt = now;
     _scannerArmed = false;
-    _stopScanner();
+
+    // Stop scanner and navigate (async but we don't block UI)
+    _handleScanResult(value);
+  }
+
+  /// Handle scan result asynchronously - stops scanner before navigating
+  Future<void> _handleScanResult(String value) async {
+    // Stop scanner BEFORE navigation to prevent "already started" error on return
+    await _stopScanner();
+
+    if (!mounted) return;
     setState(() {});
 
     // Parse the QR payload
@@ -225,12 +243,14 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
       );
     }
     // Note: Scanner stays disarmed. User must tap "Tap to scan" overlay to re-arm.
+    // _isNavigating stays true until re-arm
   }
 
   /// Re-arm the scanner (called when user taps the overlay)
   void _rearmScanner() {
     setState(() {
       _scannerArmed = true;
+      _isNavigating = false;
     });
     _updateScannerState();
   }
@@ -426,9 +446,16 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
             ),
             const SizedBox(height: 24),
             ElevatedButton.icon(
-              onPressed: () {
+              onPressed: () async {
+                // Stop scanner before dispose to prevent "already started" error
+                if (_controllerStarted && _controller != null) {
+                  await _controller!.stop();
+                  _controllerStarted = false;
+                }
                 _controller?.dispose();
                 _initController();
+                _isNavigating = false;
+                _scannerArmed = true;
                 setState(() {});
               },
               icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 16),
@@ -456,11 +483,19 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
             ),
             const SizedBox(height: 24),
             ElevatedButton.icon(
-              onPressed: () {
+              onPressed: () async {
+                // Stop scanner before reinit to prevent "already started" error
+                if (_controllerStarted && _controller != null) {
+                  await _controller!.stop();
+                  _controllerStarted = false;
+                }
+                _controller?.dispose();
                 setState(() {
                   _errorMessage = null;
                 });
                 _initController();
+                _isNavigating = false;
+                _scannerArmed = true;
               },
               icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 16),
               label: const Text('Retry'),
