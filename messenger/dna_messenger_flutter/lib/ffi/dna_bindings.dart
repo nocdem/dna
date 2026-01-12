@@ -1,6 +1,6 @@
 // DNA Messenger Engine FFI Bindings
 // Hand-written bindings for dna_engine.h
-// ignore_for_file: non_constant_identifier_names, camel_case_types, constant_identifier_names
+// ignore_for_file: non_constant_identifier_names, camel_case_types, constant_identifier_names, unused_field
 
 import 'dart:convert';
 import 'dart:ffi';
@@ -34,6 +34,10 @@ final class dna_contact_t extends Struct {
   @Bool()
   external bool is_online;
 
+  // 6 bytes padding to align uint64_t to 8-byte boundary (450 -> 456)
+  @Array(6)
+  external Array<Uint8> _padding1;
+
   @Uint64()
   external int last_seen;
 }
@@ -49,6 +53,10 @@ final class dna_contact_request_t extends Struct {
   @Array(256)
   external Array<Char> message;
 
+  // 7 bytes padding to align uint64_t to 8-byte boundary (449 -> 456)
+  @Array(7)
+  external Array<Uint8> _padding1;
+
   @Uint64()
   external int requested_at;
 
@@ -60,6 +68,10 @@ final class dna_contact_request_t extends Struct {
 final class dna_blocked_user_t extends Struct {
   @Array(129)
   external Array<Char> fingerprint;
+
+  // 7 bytes padding to align uint64_t to 8-byte boundary (129 -> 136)
+  @Array(7)
+  external Array<Uint8> _padding1;
 
   @Uint64()
   external int blocked_at;
@@ -79,6 +91,10 @@ final class dna_message_t extends Struct {
   @Array(129)
   external Array<Char> recipient;
 
+  // 2 bytes padding to align pointer to 8-byte boundary (262 -> 264)
+  @Array(2)
+  external Array<Uint8> _padding1;
+
   external Pointer<Utf8> plaintext;
 
   @Uint64()
@@ -86,6 +102,10 @@ final class dna_message_t extends Struct {
 
   @Bool()
   external bool is_outgoing;
+
+  // 3 bytes padding to align int to 4-byte boundary (281 -> 284)
+  @Array(3)
+  external Array<Uint8> _padding2;
 
   @Int32()
   external int status;
@@ -105,8 +125,16 @@ final class dna_group_t extends Struct {
   @Array(129)
   external Array<Char> creator;
 
+  // 2 bytes padding to align int to 4-byte boundary (422 -> 424)
+  @Array(2)
+  external Array<Uint8> _padding1;
+
   @Int32()
   external int member_count;
+
+  // 4 bytes padding to align uint64_t to 8-byte boundary (428 -> 432)
+  @Array(4)
+  external Array<Uint8> _padding2;
 
   @Uint64()
   external int created_at;
@@ -123,8 +151,16 @@ final class dna_invitation_t extends Struct {
   @Array(129)
   external Array<Char> inviter;
 
+  // 2 bytes padding to align int to 4-byte boundary (422 -> 424)
+  @Array(2)
+  external Array<Uint8> _padding1;
+
   @Int32()
   external int member_count;
+
+  // 4 bytes padding to align uint64_t to 8-byte boundary (428 -> 432)
+  @Array(4)
+  external Array<Uint8> _padding2;
 
   @Uint64()
   external int invited_at;
@@ -210,6 +246,10 @@ final class dna_addressbook_entry_t extends Struct {
   @Array(256)
   external Array<Char> notes;
 
+  // 4 bytes padding to align uint64_t to 8-byte boundary (484 -> 488)
+  @Array(4)
+  external Array<Uint8> _padding1;
+
   @Uint64()
   external int created_at;
 
@@ -237,6 +277,10 @@ final class dna_channel_info_t extends Struct {
   @Array(129)
   external Array<Char> creator_fingerprint;
 
+  // 6 bytes padding to align uint64_t to 8-byte boundary (770 -> 776)
+  @Array(6)
+  external Array<Uint8> _padding1;
+
   @Uint64()
   external int created_at;
 
@@ -260,6 +304,10 @@ final class dna_post_info_t extends Struct {
 
   @Array(129)
   external Array<Char> author_fingerprint;
+
+  // 6 bytes padding to align pointer to 8-byte boundary (394 -> 400)
+  @Array(6)
+  external Array<Uint8> _padding1;
 
   external Pointer<Utf8> text;
 
@@ -295,6 +343,10 @@ final class dna_comment_info_t extends Struct {
 
   @Array(129)
   external Array<Char> author_fingerprint;
+
+  // 7 bytes padding to align pointer to 8-byte boundary (529 -> 536)
+  @Array(7)
+  external Array<Uint8> _padding1;
 
   external Pointer<Utf8> text;
 
@@ -454,6 +506,27 @@ final class dna_event_identity_loaded extends Struct {
 final class dna_event_outbox_updated extends Struct {
   @Array(129)
   external Array<Char> contact_fingerprint;
+}
+
+/// Event data union - message delivered
+final class dna_event_message_delivered extends Struct {
+  @Array(129)
+  external Array<Char> recipient;
+
+  // 7 bytes padding to align uint64_t to 8-byte boundary (129 -> 136)
+  @Array(7)
+  external Array<Uint8> _padding1;
+
+  @Uint64()
+  external int seq_num;
+
+  @Uint64()
+  external int timestamp;
+}
+
+/// Event data union - contact request received
+final class dna_event_contact_request_received extends Struct {
+  external dna_contact_request_t request;
 }
 
 /// Event data union - error
