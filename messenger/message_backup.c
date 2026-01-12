@@ -360,6 +360,20 @@ message_backup_context_t* message_backup_init(const char *identity) {
         }
     }
 
+    // Migration: Add offline_seq column to messages table (v12)
+    // Stores sequence number for watermark-based delivery confirmation
+    const char *migration_sql_v12 =
+        "ALTER TABLE messages ADD COLUMN offline_seq INTEGER DEFAULT 0;";
+    rc = sqlite3_exec(ctx->db, migration_sql_v12, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        if (strstr(err_msg, "duplicate column") == NULL) {
+            QGP_LOG_ERROR(LOG_TAG, "Migration warning (v12): %s\n", err_msg);
+        }
+        sqlite3_free(err_msg);
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v12 (added offline_seq column)\n");
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Initialized successfully for identity: %s (ENCRYPTED STORAGE)\n", identity);
     return ctx;
 }
@@ -399,6 +413,7 @@ bool message_backup_exists_ciphertext(message_backup_context_t *ctx,
 
 /**
  * Save encrypted message to backup
+ * offline_seq: sequence number for outgoing messages (for watermark tracking), 0 for incoming
  */
 int message_backup_save(message_backup_context_t *ctx,
                         const char *sender,
@@ -408,7 +423,8 @@ int message_backup_save(message_backup_context_t *ctx,
                         time_t timestamp,
                         bool is_outgoing,
                         int group_id,
-                        int message_type) {
+                        int message_type,
+                        uint64_t offline_seq) {
     if (!ctx || !ctx->db) return -1;
     if (!sender || !recipient || !encrypted_message) return -1;
 
@@ -420,8 +436,8 @@ int message_backup_save(message_backup_context_t *ctx,
     }
 
     const char *sql =
-        "INSERT INTO messages (sender, recipient, encrypted_message, encrypted_len, timestamp, is_outgoing, delivered, read, status, group_id, message_type) "
-        "VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)";  // delivered=0 until watermark confirms
+        "INSERT INTO messages (sender, recipient, encrypted_message, encrypted_len, timestamp, is_outgoing, delivered, read, status, group_id, message_type, offline_seq) "
+        "VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)";  // delivered=0 until watermark confirms
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
@@ -439,6 +455,7 @@ int message_backup_save(message_backup_context_t *ctx,
     sqlite3_bind_int(stmt, 7, 0);  // status = 0 (PENDING) - will be updated after send
     sqlite3_bind_int(stmt, 8, group_id);  // Phase 5.2: group ID
     sqlite3_bind_int(stmt, 9, message_type);  // Phase 6.2: message type
+    sqlite3_bind_int64(stmt, 10, (sqlite3_int64)offline_seq);  // v12: watermark seq
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -1155,10 +1172,10 @@ uint64_t message_backup_get_next_seq(message_backup_context_t *ctx, const char *
  * Mark all outgoing messages as DELIVERED up to a sequence number
  *
  * Note: The current messages table doesn't store seq_num per message.
- * This implementation marks ALL outgoing PENDING/SENT messages to the recipient
- * as DELIVERED. A future enhancement would add seq_num tracking per message.
+ * Marks outgoing messages with offline_seq <= max_seq_num as DELIVERED.
+ * Only affects messages with status PENDING(0) or SENT(1).
  *
- * Status flow: PENDING(0) → DELIVERED(3) via watermark. SENT(1) is legacy.
+ * Status flow: PENDING(0) → SENT(1) → DELIVERED(3) via watermark.
  */
 int message_backup_mark_delivered_up_to_seq(
     message_backup_context_t *ctx,
@@ -1170,14 +1187,12 @@ int message_backup_mark_delivered_up_to_seq(
         return -1;
     }
 
-    (void)max_seq_num;  // Not used yet - future: add seq_num column to messages
-
-    // Update all outgoing messages to recipient with status PENDING(0) or SENT(1) to DELIVERED(3)
-    // With async DHT PUT, messages stay PENDING until watermark confirms delivery
-    // is_outgoing = 1 means we sent it, sender = our fingerprint
+    // Update outgoing messages where offline_seq <= max_seq_num
+    // This ensures only messages that the recipient has actually fetched are marked
     const char *sql =
         "UPDATE messages SET status = 3 "
-        "WHERE sender = ? AND recipient = ? AND is_outgoing = 1 AND status IN (0, 1)";
+        "WHERE sender = ? AND recipient = ? AND is_outgoing = 1 "
+        "AND status IN (0, 1) AND offline_seq > 0 AND offline_seq <= ?";
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
@@ -1189,6 +1204,7 @@ int message_backup_mark_delivered_up_to_seq(
 
     sqlite3_bind_text(stmt, 1, sender, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, recipient, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, (sqlite3_int64)max_seq_num);
 
     rc = sqlite3_step(stmt);
     int changes = sqlite3_changes(ctx->db);

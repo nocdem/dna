@@ -643,10 +643,11 @@ int messenger_queue_to_dht(
     messenger_context_t *ctx,
     const char *recipient,
     const uint8_t *encrypted_message,
-    size_t encrypted_len)
+    size_t encrypted_len,
+    uint64_t seq_num)
 {
-    QGP_LOG_INFO("P2P", "Queueing message to DHT for %s (len=%zu)\n",
-                 recipient ? recipient : "NULL", encrypted_len);
+    QGP_LOG_INFO("P2P", "Queueing message to DHT for %s (len=%zu, seq=%llu)\n",
+                 recipient ? recipient : "NULL", encrypted_len, (unsigned long long)seq_num);
 
     if (!ctx || !recipient || !encrypted_message || encrypted_len == 0) {
         QGP_LOG_ERROR("P2P", "messenger_queue_to_dht: Invalid parameters\n");
@@ -667,11 +668,8 @@ int messenger_queue_to_dht(
         return -1;
     }
 
-    // Get next sequence number for watermark pruning
-    uint64_t seq_num = 1;
-    if (ctx->backup_ctx) {
-        seq_num = message_backup_get_next_seq(ctx->backup_ctx, recipient_fingerprint);
-    }
+    // seq_num passed from caller (obtained before message was saved to DB)
+    // This ensures message.offline_seq matches the seq used in DHT Spillway
 
     // Queue directly to DHT (Spillway) - call dht_queue_message directly
     // Default TTL: 7 days (604800 seconds)
@@ -890,7 +888,8 @@ static void p2p_message_received_internal(
         msg_timestamp,      // sender's timestamp (v0.08)
         false,              // is_outgoing = false (we're receiving)
         0,                  // group_id = 0 (direct messages for invitations)
-        message_type        // message_type (chat or invitation)
+        message_type,       // message_type (chat or invitation)
+        0                   // offline_seq = 0 (not tracked for incoming messages)
     );
 
     if (result < 0) {

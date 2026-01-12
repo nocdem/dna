@@ -77,13 +77,15 @@ void messenger_p2p_shutdown(messenger_context_t *ctx);
  * @param recipient: Recipient identity (name or fingerprint)
  * @param encrypted_message: Encrypted message data
  * @param encrypted_len: Encrypted message length
+ * @param seq_num: Sequence number for watermark delivery tracking
  * @return: 0 on success (DHT queued), -1 on error
  */
 int messenger_queue_to_dht(
     messenger_context_t *ctx,
     const char *recipient,
     const uint8_t *encrypted_message,
-    size_t encrypted_len
+    size_t encrypted_len,
+    uint64_t seq_num
 );
 
 // ============================================================================

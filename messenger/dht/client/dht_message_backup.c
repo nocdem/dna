@@ -264,6 +264,7 @@ static int deserialize_and_import_messages(
         }
 
         // Import message to SQLite
+        // Legacy backups don't have offline_seq, so pass 0
         int result = message_backup_save(
             msg_ctx,
             sender,
@@ -273,7 +274,8 @@ static int deserialize_and_import_messages(
             timestamp,
             is_outgoing,
             group_id,
-            message_type
+            message_type,
+            0  // offline_seq = 0 (legacy backup format)
         );
 
         free(encrypted_message);

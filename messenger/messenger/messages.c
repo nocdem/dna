@@ -359,11 +359,14 @@ int messenger_send_message(
     // Load all recipient public keys from keyserver (including sender)
     uint8_t **enc_pubkeys = calloc(total_recipients, sizeof(uint8_t*));
     uint8_t **sign_pubkeys = calloc(total_recipients, sizeof(uint8_t*));
+    // Allocate fingerprint storage for actual recipients (not sender at index 0)
+    char (*recipient_fps)[129] = calloc(recipient_count, sizeof(*recipient_fps));
 
-    if (!enc_pubkeys || !sign_pubkeys) {
+    if (!enc_pubkeys || !sign_pubkeys || !recipient_fps) {
         QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
         free(enc_pubkeys);
         free(sign_pubkeys);
+        free(recipient_fps);
         free(all_recipients);
         qgp_key_free(sender_sign_key);
         return -1;
@@ -372,9 +375,11 @@ int messenger_send_message(
     // Load public keys for all recipients from keyserver
     for (size_t i = 0; i < total_recipients; i++) {
         size_t sign_len = 0, enc_len = 0;
+        // Capture fingerprint for actual recipients (index > 0)
+        char *fp_out = (i > 0) ? recipient_fps[i - 1] : NULL;
         if (messenger_load_pubkey(ctx, all_recipients[i],
                                    &sign_pubkeys[i], &sign_len,
-                                   &enc_pubkeys[i], &enc_len, NULL) != 0) {
+                                   &enc_pubkeys[i], &enc_len, fp_out) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Cannot load public key for '%s' - key not cached and DHT unavailable", all_recipients[i]);
             QGP_LOG_WARN(LOG_TAG, "MESSAGE NOT SAVED: Cannot encrypt without recipient's public key");
 
@@ -385,6 +390,7 @@ int messenger_send_message(
             }
             free(enc_pubkeys);
             free(sign_pubkeys);
+            free(recipient_fps);
             free(all_recipients);
             qgp_key_free(sender_sign_key);
             return -3;  // KEY_UNAVAILABLE - distinct from network error
@@ -415,6 +421,7 @@ int messenger_send_message(
 
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Multi-recipient encryption failed");
+        free(recipient_fps);
         return -1;
     }
 
@@ -437,12 +444,24 @@ int messenger_send_message(
     (void)message_group_id;  // Suppress unused variable warning
 
     // Store in SQLite local database - one row per actual recipient (not sender)
-    // Track message IDs for status updates
+    // Track message IDs and sequence numbers for status updates
     time_t now = time(NULL);
     int *message_ids = malloc(recipient_count * sizeof(int));
-    if (!message_ids) {
+    uint64_t *seq_nums = malloc(recipient_count * sizeof(uint64_t));
+    if (!message_ids || !seq_nums) {
         free(ciphertext);
+        free(recipient_fps);
+        free(message_ids);
+        free(seq_nums);
         return -1;
+    }
+
+    // Get seq numbers BEFORE saving - ensures message.offline_seq matches DHT Spillway seq
+    for (size_t i = 0; i < recipient_count; i++) {
+        // Use fingerprint from key loading to get seq for this recipient
+        seq_nums[i] = message_backup_get_next_seq(ctx->backup_ctx, recipient_fps[i]);
+        QGP_LOG_DEBUG(LOG_TAG, "[SEND] Got seq=%llu for recipient %.20s...",
+                      (unsigned long long)seq_nums[i], recipient_fps[i]);
     }
 
     for (size_t i = 0; i < recipient_count; i++) {
@@ -455,13 +474,16 @@ int messenger_send_message(
             now,                // timestamp
             true,               // is_outgoing = true (we're sending)
             group_id,           // group_id (0 for direct, >0 for group) - Phase 6.2
-            message_type        // message_type (chat or invitation) - Phase 6.2
+            message_type,       // message_type (chat or invitation) - Phase 6.2
+            seq_nums[i]         // offline_seq for watermark delivery tracking
         );
 
         if (result == -1) {
             QGP_LOG_ERROR(LOG_TAG, "Store message failed for recipient '%s' in SQLite", recipients[i]);
             free(ciphertext);
             free(message_ids);
+            free(seq_nums);
+            free(recipient_fps);
             return -1;
         }
 
@@ -473,8 +495,8 @@ int messenger_send_message(
         } else {
             // New message inserted - get its ID for status update
             message_ids[i] = message_backup_get_last_id(ctx->backup_ctx);
-            QGP_LOG_WARN(LOG_TAG, "[SEND] Saved message id=%d for recipient %.20s...",
-                         message_ids[i], recipients[i]);
+            QGP_LOG_WARN(LOG_TAG, "[SEND] Saved message id=%d seq=%llu for recipient %.20s...",
+                         message_ids[i], (unsigned long long)seq_nums[i], recipients[i]);
         }
     }
 
@@ -489,7 +511,8 @@ int messenger_send_message(
     size_t dht_success = 0;
     for (size_t i = 0; i < recipient_count; i++) {
         // Queue directly to DHT - no P2P attempt for messaging
-        if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len) == 0) {
+        // Pass seq_num that was already saved with the message
+        if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len, seq_nums[i]) == 0) {
             dht_success++;
             // Update status to SENT (1) - DHT PUT succeeded, single tick in UI
             // Will become DELIVERED (3) via watermark confirmation → double tick
@@ -510,6 +533,8 @@ int messenger_send_message(
     }
 
     free(message_ids);
+    free(seq_nums);
+    free(recipient_fps);
     free(ciphertext);
 
     // Return -1 if ALL DHT queues failed, 0 if at least one succeeded

@@ -112,7 +112,8 @@ int message_backup_save(message_backup_context_t *ctx,
                         time_t timestamp,
                         bool is_outgoing,
                         int group_id,
-                        int message_type);
+                        int message_type,
+                        uint64_t offline_seq);
 
 /**
  * Mark message as delivered
