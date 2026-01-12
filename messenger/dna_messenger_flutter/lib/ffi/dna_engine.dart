@@ -4385,20 +4385,19 @@ class DnaEngine {
   ///
   /// Returns the signature as Uint8List (up to 4627 bytes for Dilithium5).
   /// Throws [DnaEngineException] on error.
+  /// Dilithium5 max signature size is 4627 bytes
+  static const int _dilithium5MaxSigLen = 4627;
+
   Uint8List signData(Uint8List data) {
-    // Allocate buffers
     final dataPtr = calloc<Uint8>(data.length);
-    // Dilithium5 max signature size is 4627 bytes
-    final signaturePtr = calloc<Uint8>(4627);
+    final signaturePtr = calloc<Uint8>(_dilithium5MaxSigLen);
     final sigLenPtr = calloc<Size>();
 
     try {
       // Copy input data
-      for (var i = 0; i < data.length; i++) {
-        dataPtr[i] = data[i];
-      }
+      dataPtr.asTypedList(data.length).setAll(0, data);
 
-      final result = _bindings.dna_engine_sign_data(
+      final rc = _bindings.dna_engine_sign_data(
         _engine,
         dataPtr,
         data.length,
@@ -4406,24 +4405,26 @@ class DnaEngine {
         sigLenPtr,
       );
 
-      if (result != 0) {
-        throw DnaEngineException.fromCode(result, _bindings);
+      if (rc != 0) {
+        throw DnaEngineException.fromCode(rc, _bindings);
       }
 
-      // Extract signature
       final sigLen = sigLenPtr.value;
-      final signature = Uint8List(sigLen);
-      for (var i = 0; i < sigLen; i++) {
-        signature[i] = signaturePtr[i];
+
+      // HARDEN: validate returned length
+      if (sigLen == 0 || sigLen > _dilithium5MaxSigLen) {
+        throw DnaEngineException(-1, 'Invalid signature length: $sigLen');
       }
 
-      return signature;
+      // Fast copy
+      return Uint8List.fromList(signaturePtr.asTypedList(sigLen));
     } finally {
       calloc.free(dataPtr);
       calloc.free(signaturePtr);
       calloc.free(sigLenPtr);
     }
   }
+
 
   // ---------------------------------------------------------------------------
   // CLEANUP
