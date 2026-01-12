@@ -590,6 +590,11 @@ final class dna_version_check_result_t extends Struct {
   @Bool()
   external bool nodus_update_available;
 
+  // 5 bytes padding to align embedded struct to 8-byte boundary (3 -> 8)
+  // dna_version_info_t has 8-byte alignment due to uint64_t published_at
+  @Array(5)
+  external Array<Uint8> _padding1;
+
   external dna_version_info_t info;
 }
 
