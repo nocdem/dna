@@ -507,10 +507,14 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
                    dht_key[4], dht_key[5], dht_key[6], dht_key[7], base_key);
         }
 
+        // Build caller string with base_key for debugging (truncate to 48 chars)
+        char caller[64];
+        snprintf(caller, sizeof(caller), "chunk:%.48s", base_key);
+
         // Publish to DHT
         if (dht_put_signed(ctx, dht_key, DHT_CHUNK_KEY_SIZE,
                           serialized, serialized_len,
-                          value_id, ttl_seconds, "chunked_publish") != 0) {
+                          value_id, ttl_seconds, caller) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to publish chunk %u to DHT\n", i);
             free(serialized);
             free(compressed);
@@ -836,6 +840,10 @@ int dht_chunked_delete(dht_context_t *ctx, const char *base_key,
         return DHT_CHUNK_ERR_ALLOC;
     }
 
+    // Build caller string with base_key for debugging
+    char caller[64];
+    snprintf(caller, sizeof(caller), "chunk_del:%.44s", base_key);
+
     for (uint32_t i = 0; i < total_chunks; i++) {
         uint8_t chunk_key[DHT_CHUNK_KEY_SIZE];
         if (dht_chunked_make_key(base_key, i, chunk_key) != 0) {
@@ -845,7 +853,7 @@ int dht_chunked_delete(dht_context_t *ctx, const char *base_key,
         // Overwrite with empty marker (short TTL)
         dht_put_signed(ctx, chunk_key, DHT_CHUNK_KEY_SIZE,
                       serialized, serialized_len,
-                      value_id, 60, "chunked_delete");  // 1 minute TTL for quick expiry
+                      value_id, 60, caller);  // 1 minute TTL for quick expiry
 
         // Rate limit: 100ms delay between chunks to avoid overwhelming DHT nodes
         if (i < total_chunks - 1) {
