@@ -33,10 +33,7 @@
 #include "crypto/utils/qgp_types.h"
 #define LOG_TAG "DNA_OUTBOX"
 
-/* External DHT functions */
-extern int dht_put_signed(dht_context_t *ctx, const uint8_t *key, size_t key_len,
-                          const uint8_t *value, size_t value_len,
-                          uint64_t value_id, uint32_t ttl);
+/* External DHT functions - dht_put_signed declared in dht_context.h */
 extern int dht_get_all(dht_context_t *ctx, const uint8_t *key, size_t key_len,
                        uint8_t ***values_out, size_t **lens_out, size_t *count_out);
 extern int dht_get_owner_value_id(dht_context_t *ctx, uint64_t *value_id_out);
