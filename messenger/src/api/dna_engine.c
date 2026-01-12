@@ -2987,6 +2987,15 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
+    /* First, sync any pending outboxes (our messages that failed to publish earlier) */
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (dht_ctx) {
+        int synced = dht_offline_queue_sync_pending(dht_ctx);
+        if (synced > 0) {
+            QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] Synced %d pending outboxes to DHT", synced);
+        }
+    }
+
     /* Check DHT offline queue for messages from contacts */
     size_t offline_count = 0;
     int rc = messenger_p2p_check_offline_messages(engine->messenger, NULL, &offline_count);
@@ -2997,7 +3006,6 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Also sync group messages from DHT */
-    dht_context_t *dht_ctx = dht_singleton_get();
     if (dht_ctx) {
         size_t group_msg_count = 0;
         rc = dna_group_outbox_sync_all(dht_ctx, engine->fingerprint, &group_msg_count);

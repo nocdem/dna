@@ -37,6 +37,7 @@ typedef struct {
     size_t count;                        // Number of messages
     time_t last_update;                  // When cache was last updated
     bool valid;                          // True if entry is in use
+    bool needs_dht_sync;                 // True if failed to publish, needs retry
 } outbox_cache_entry_t;
 
 static outbox_cache_entry_t g_outbox_cache[OUTBOX_CACHE_MAX_ENTRIES];
@@ -72,7 +73,8 @@ static outbox_cache_entry_t *outbox_cache_find(const char *base_key) {
 }
 
 // Store messages in cache (takes ownership of messages array)
-static void outbox_cache_store(const char *base_key, dht_offline_message_t *messages, size_t count) {
+// needs_sync: true if DHT publish failed, entry needs retry
+static void outbox_cache_store_ex(const char *base_key, dht_offline_message_t *messages, size_t count, bool needs_sync) {
     outbox_cache_init();
 
     // Find existing entry or empty slot
@@ -113,6 +115,12 @@ static void outbox_cache_store(const char *base_key, dht_offline_message_t *mess
     entry->count = count;
     entry->last_update = time(NULL);
     entry->valid = true;
+    entry->needs_dht_sync = needs_sync;
+}
+
+// Wrapper for backward compatibility
+static void outbox_cache_store(const char *base_key, dht_offline_message_t *messages, size_t count) {
+    outbox_cache_store_ex(base_key, messages, count, false);
 }
 
 // Platform-specific network byte order functions
@@ -687,13 +695,16 @@ int dht_queue_message(
     if (put_result != DHT_CHUNK_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to store queue in DHT: %s (put took %ld ms)\n",
                 dht_chunked_strerror(put_result), put_ms);
-        dht_offline_messages_free(all_messages, new_count);
+
+        // Cache locally with needs_sync=true, will retry when DHT is ready
+        outbox_cache_store_ex(base_key, all_messages, new_count, true);
+
         pthread_mutex_unlock(&g_queue_mutex);
         return -1;
     }
 
-    // Success - update local cache with new queue (takes ownership of all_messages)
-    outbox_cache_store(base_key, all_messages, new_count);
+    // Success - update local cache, needs_sync=false
+    outbox_cache_store_ex(base_key, all_messages, new_count, false);
 
     struct timespec queue_end;
     clock_gettime(CLOCK_MONOTONIC, &queue_end);
@@ -1349,4 +1360,63 @@ void dht_cancel_watermark_listener(
     QGP_LOG_INFO(LOG_TAG, "Cancelling watermark listener (token=%zu)\n", token);
     dht_cancel_listen(ctx, token);
     // Cleanup callback (watermark_listener_cleanup) frees the context
+}
+
+/**
+ * Sync pending outbox caches to DHT
+ *
+ * Iterates all cached outboxes that failed to publish (needs_dht_sync=true)
+ * and attempts to republish them. Call this when DHT becomes ready.
+ *
+ * @param ctx DHT context
+ * @return Number of entries successfully synced
+ */
+int dht_offline_queue_sync_pending(dht_context_t *ctx) {
+    if (!ctx) return 0;
+
+    pthread_mutex_lock(&g_queue_mutex);
+    outbox_cache_init();
+
+    int synced = 0;
+    int pending = 0;
+
+    for (int i = 0; i < OUTBOX_CACHE_MAX_ENTRIES; i++) {
+        if (!g_outbox_cache[i].valid || !g_outbox_cache[i].needs_dht_sync) {
+            continue;
+        }
+
+        pending++;
+        outbox_cache_entry_t *entry = &g_outbox_cache[i];
+
+        QGP_LOG_INFO(LOG_TAG, "Syncing pending outbox: %s (%zu messages)\n",
+                     entry->base_key, entry->count);
+
+        // Serialize messages
+        uint8_t *serialized = NULL;
+        size_t serialized_len = 0;
+        if (dht_serialize_messages(entry->messages, entry->count, &serialized, &serialized_len) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to serialize pending outbox\n");
+            continue;
+        }
+
+        // Try to publish
+        int result = dht_chunked_publish(ctx, entry->base_key, serialized, serialized_len, DHT_CHUNK_TTL_7DAY);
+        free(serialized);
+
+        if (result == DHT_CHUNK_OK) {
+            entry->needs_dht_sync = false;
+            synced++;
+            QGP_LOG_INFO(LOG_TAG, "Successfully synced pending outbox\n");
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Still failed to sync outbox: %s\n", dht_chunked_strerror(result));
+        }
+    }
+
+    pthread_mutex_unlock(&g_queue_mutex);
+
+    if (pending > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Synced %d/%d pending outboxes\n", synced, pending);
+    }
+
+    return synced;
 }
