@@ -127,6 +127,9 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 /* Use engine-specific error codes */
 #define DNA_OK 0
 
+/* DHT stabilization delay - wait for routing table to fill after bootstrap */
+#define DHT_STABILIZATION_SECONDS 15
+
 /* Forward declarations for static helpers */
 static dht_context_t* dna_get_dht_ctx(dna_engine_t *engine);
 static qgp_key_t* dna_load_private_key(dna_engine_t *engine);
@@ -218,6 +221,46 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
         if (received > 0) {
             QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: received %zu missed messages", received);
         }
+    }
+
+    /* Wait for DHT routing table to stabilize after reconnect, then retry again.
+     * The immediate retry above may fail if routing table is still sparse. */
+    QGP_LOG_INFO(LOG_TAG, "[RETRY] Listener thread: waiting %d seconds for stabilization...",
+                 DHT_STABILIZATION_SECONDS);
+    qgp_platform_sleep_ms(DHT_STABILIZATION_SECONDS * 1000);
+
+    int retried_post_stable = dna_engine_retry_pending_messages(engine);
+    if (retried_post_stable > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Reconnect post-stabilization: retried %d messages", retried_post_stable);
+    }
+
+    return NULL;
+}
+
+/**
+ * Post-stabilization retry thread
+ * Waits for DHT routing table to fill, then retries pending messages.
+ * Spawned from identity load to handle the common case where DHT connects
+ * before identity is loaded (callback's listener thread doesn't spawn).
+ */
+static void *dna_engine_stabilization_retry_thread(void *arg) {
+    dna_engine_t *engine = (dna_engine_t *)arg;
+    if (!engine) return NULL;
+
+    /* Wait for DHT routing table to stabilize.
+     * Early retries fail with nodes_tried=0 because routing table only has
+     * bootstrap nodes. After 15 seconds, routing table is populated with
+     * nodes discovered through DHT crawling. */
+    QGP_LOG_INFO(LOG_TAG, "[RETRY] Stabilization thread: waiting %d seconds for routing table...",
+                 DHT_STABILIZATION_SECONDS);
+    qgp_platform_sleep_ms(DHT_STABILIZATION_SECONDS * 1000);
+
+    /* Now retry with populated routing table */
+    int retried = dna_engine_retry_pending_messages(engine);
+    if (retried > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Post-stabilization: retried %d pending messages", retried);
+    } else {
+        QGP_LOG_DEBUG(LOG_TAG, "[RETRY] Post-stabilization: no pending messages to retry");
     }
 
     return NULL;
@@ -1426,6 +1469,16 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         int retried = dna_engine_retry_pending_messages(engine);
         if (retried > 0) {
             QGP_LOG_INFO(LOG_TAG, "[RETRY] Identity load: retried %d pending messages", retried);
+        }
+
+        /* Spawn post-stabilization retry thread.
+         * DHT callback's listener thread only spawns if identity_loaded was true
+         * when callback fired. In the common case (DHT connects before identity
+         * loads), we need this dedicated thread to retry after routing table fills. */
+        pthread_t stabilization_thread;
+        if (pthread_create(&stabilization_thread, NULL, dna_engine_stabilization_retry_thread, engine) == 0) {
+            pthread_detach(stabilization_thread);
+            QGP_LOG_DEBUG(LOG_TAG, "[RETRY] Spawned post-stabilization retry thread");
         }
 
         /* 4. Restore delivery trackers for all pending messages
