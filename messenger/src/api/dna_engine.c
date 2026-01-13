@@ -6400,10 +6400,30 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
         return 0;
     }
 
-    /* Race condition prevention: only one listener setup at a time */
+    /* Race condition prevention: only one listener setup at a time
+     * If another thread is setting up listeners, wait for it to complete.
+     * This prevents silent failures where the second caller gets 0 listeners. */
     if (engine->listeners_starting) {
-        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Listener setup already in progress, skipping duplicate call");
-        return 0;
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN] Listener setup already in progress, waiting...");
+        /* Wait up to 5 seconds for the other thread to finish */
+        for (int wait_count = 0; wait_count < 50 && engine->listeners_starting; wait_count++) {
+            qgp_platform_sleep_ms(100);
+        }
+        if (engine->listeners_starting) {
+            /* Other thread took too long - something is wrong, but don't block forever */
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN] Timed out waiting for listener setup, proceeding anyway");
+        } else {
+            /* Other thread finished - return its listener count (already set up) */
+            QGP_LOG_INFO(LOG_TAG, "[LISTEN] Other thread finished listener setup, returning existing count");
+            /* Count existing active listeners and return that */
+            pthread_mutex_lock(&engine->outbox_listeners_mutex);
+            int existing_count = 0;
+            for (int i = 0; i < DNA_MAX_OUTBOX_LISTENERS; i++) {
+                if (engine->outbox_listeners[i].active) existing_count++;
+            }
+            pthread_mutex_unlock(&engine->outbox_listeners_mutex);
+            return existing_count;
+        }
     }
     engine->listeners_starting = true;
 
