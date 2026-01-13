@@ -29,7 +29,7 @@ class DnaMessengerService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "dna_messenger_service"
         private const val NETWORK_CHANGE_DEBOUNCE_MS = 2000L  // 2 seconds debounce
-        private const val WAKELOCK_TIMEOUT_MS = 10 * 60 * 1000L  // 10 minutes
+        private const val WAKELOCK_TIMEOUT_MS = 30 * 60 * 1000L  // 30 minutes
         private const val LISTEN_RENEWAL_INTERVAL_MS = 5 * 60 * 60 * 1000L  // 5 hours (before 6h expiry)
         private const val HEALTH_CHECK_INTERVAL_MS = 15 * 60 * 1000L  // 15 minutes
         private const val MAX_RECONNECT_RETRIES = 5
