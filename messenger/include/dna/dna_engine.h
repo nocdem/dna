@@ -2737,6 +2737,25 @@ DNA_API int dna_engine_sign_data(
     size_t *sig_len_out
 );
 
+/**
+ * Get the loaded identity's Dilithium5 signing public key
+ *
+ * Copies the raw public key bytes into the provided buffer.
+ * Dilithium5 public key size is 2592 bytes.
+ *
+ * @param engine         Engine instance
+ * @param pubkey_out     Output buffer for public key (must be at least 2592 bytes)
+ * @param pubkey_out_len Size of output buffer
+ * @return               Number of bytes written (2592) on success, negative on error:
+ *                       DNA_ENGINE_ERROR_NO_IDENTITY - no identity loaded
+ *                       DNA_ERROR_INVALID_ARG - null parameters or buffer too small
+ */
+DNA_API int dna_engine_get_signing_public_key(
+    dna_engine_t *engine,
+    uint8_t *pubkey_out,
+    size_t pubkey_out_len
+);
+
 #ifdef __cplusplus
 }
 #endif

@@ -237,8 +237,11 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | Function | Description |
 |----------|-------------|
 | `int dna_engine_sign_data(engine, data, data_len, signature_out, sig_len_out)` | Sign arbitrary data with loaded identity's Dilithium5 key |
+| `int dna_engine_get_signing_public_key(engine, pubkey_out, pubkey_out_len)` | Get the loaded identity's Dilithium5 signing public key |
 
 **Notes:**
 - `signature_out` must be at least 4627 bytes (Dilithium5 max signature size)
+- `pubkey_out` must be at least 2592 bytes (Dilithium5 public key size)
 - Used for QR-based authentication flows where app needs to prove identity to external services
-- Returns 0 on success, `DNA_ENGINE_ERROR_NO_IDENTITY` if no identity loaded
+- `sign_data` returns 0 on success, `DNA_ENGINE_ERROR_NO_IDENTITY` if no identity loaded
+- `get_signing_public_key` returns bytes written (2592) on success, negative on error

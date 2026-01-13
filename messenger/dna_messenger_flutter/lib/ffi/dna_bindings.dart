@@ -2736,6 +2736,20 @@ class DnaBindings {
   ) {
     return _dna_engine_sign_data(engine, data, dataLen, signatureOut, sigLenOut);
   }
+
+  /// Get the loaded identity's Dilithium5 signing public key
+  late final _dna_engine_get_signing_public_key = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Uint8>, Size),
+      int Function(Pointer<dna_engine_t>, Pointer<Uint8>, int)>(
+      'dna_engine_get_signing_public_key');
+
+  int dna_engine_get_signing_public_key(
+    Pointer<dna_engine_t> engine,
+    Pointer<Uint8> pubkeyOut,
+    int pubkeyOutLen,
+  ) {
+    return _dna_engine_get_signing_public_key(engine, pubkeyOut, pubkeyOutLen);
+  }
 }
 
 // =============================================================================

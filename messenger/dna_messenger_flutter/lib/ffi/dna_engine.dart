@@ -4425,6 +4425,41 @@ class DnaEngine {
     }
   }
 
+  /// Dilithium5 public key size is 2592 bytes
+  static const int _dilithium5PubKeyLen = 2592;
+
+  /// Get the loaded identity's Dilithium5 signing public key
+  ///
+  /// Returns the raw public key bytes (2592 bytes for Dilithium5).
+  /// Throws [DnaEngineException] on error (e.g., no identity loaded).
+  Uint8List get signingPublicKey {
+    // Use 4096 buffer to be safe
+    const bufferSize = 4096;
+    final pubkeyPtr = calloc<Uint8>(bufferSize);
+
+    try {
+      final rc = _bindings.dna_engine_get_signing_public_key(
+        _engine,
+        pubkeyPtr,
+        bufferSize,
+      );
+
+      if (rc < 0) {
+        throw DnaEngineException.fromCode(rc, _bindings);
+      }
+
+      // rc is the number of bytes written
+      if (rc == 0 || rc > bufferSize) {
+        throw DnaEngineException(-1, 'Invalid public key length: $rc');
+      }
+
+      // Fast copy
+      return Uint8List.fromList(pubkeyPtr.asTypedList(rc));
+    } finally {
+      calloc.free(pubkeyPtr);
+    }
+  }
+
 
   // ---------------------------------------------------------------------------
   // CLEANUP

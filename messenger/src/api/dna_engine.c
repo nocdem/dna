@@ -8266,3 +8266,52 @@ int dna_engine_sign_data(
                   data_len, *sig_len_out);
     return 0;
 }
+
+/**
+ * Get the loaded identity's Dilithium5 signing public key
+ */
+int dna_engine_get_signing_public_key(
+    dna_engine_t *engine,
+    uint8_t *pubkey_out,
+    size_t pubkey_out_len)
+{
+    if (!engine || !pubkey_out) {
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    if (!engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "get_signing_public_key: no identity loaded");
+        return DNA_ENGINE_ERROR_NO_IDENTITY;
+    }
+
+    /* Load the signing key (contains public key) */
+    qgp_key_t *sign_key = dna_load_private_key(engine);
+    if (!sign_key) {
+        QGP_LOG_ERROR(LOG_TAG, "get_signing_public_key: failed to load key");
+        return DNA_ENGINE_ERROR_NO_IDENTITY;
+    }
+
+    /* Verify key has public key data */
+    if (!sign_key->public_key || sign_key->public_key_size == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "get_signing_public_key: key has no public key data");
+        qgp_key_free(sign_key);
+        return DNA_ERROR_CRYPTO;
+    }
+
+    /* Check buffer size */
+    if (pubkey_out_len < sign_key->public_key_size) {
+        QGP_LOG_ERROR(LOG_TAG, "get_signing_public_key: buffer too small (%zu < %zu)",
+                      pubkey_out_len, sign_key->public_key_size);
+        qgp_key_free(sign_key);
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    /* Copy public key to output buffer */
+    memcpy(pubkey_out, sign_key->public_key, sign_key->public_key_size);
+    size_t result = sign_key->public_key_size;
+
+    qgp_key_free(sign_key);
+
+    QGP_LOG_DEBUG(LOG_TAG, "get_signing_public_key: returned %zu bytes", result);
+    return (int)result;
+}
