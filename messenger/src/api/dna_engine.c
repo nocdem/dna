@@ -245,24 +245,54 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
  */
 static void *dna_engine_stabilization_retry_thread(void *arg) {
     dna_engine_t *engine = (dna_engine_t *)arg;
-    if (!engine) return NULL;
+
+    /* Diagnostic: log immediately so we know thread started */
+    QGP_LOG_WARN(LOG_TAG, "[RETRY] >>> STABILIZATION THREAD STARTED (engine=%p) <<<", (void*)engine);
+
+    if (!engine) {
+        QGP_LOG_ERROR(LOG_TAG, "[RETRY] Stabilization thread: engine is NULL, aborting");
+        return NULL;
+    }
 
     /* Wait for DHT routing table to stabilize.
      * Early retries fail with nodes_tried=0 because routing table only has
      * bootstrap nodes. After 15 seconds, routing table is populated with
      * nodes discovered through DHT crawling. */
-    QGP_LOG_INFO(LOG_TAG, "[RETRY] Stabilization thread: waiting %d seconds for routing table...",
+    QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread: waiting %d seconds for routing table...",
                  DHT_STABILIZATION_SECONDS);
     qgp_platform_sleep_ms(DHT_STABILIZATION_SECONDS * 1000);
 
-    /* Now retry with populated routing table */
-    int retried = dna_engine_retry_pending_messages(engine);
-    if (retried > 0) {
-        QGP_LOG_INFO(LOG_TAG, "[RETRY] Post-stabilization: retried %d pending messages", retried);
-    } else {
-        QGP_LOG_DEBUG(LOG_TAG, "[RETRY] Post-stabilization: no pending messages to retry");
+    QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread: woke up, starting retries...");
+
+    /* 1. Re-register presence - initial registration during identity load often fails
+     * with nodes_tried=0 because routing table only has bootstrap nodes */
+    if (engine->messenger) {
+        int presence_rc = messenger_p2p_refresh_presence(engine->messenger);
+        if (presence_rc == 0) {
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: presence re-registered");
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: presence registration failed: %d", presence_rc);
+        }
     }
 
+    /* 2. Sync any pending outboxes (messages that failed to publish earlier) */
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (dht_ctx) {
+        int synced = dht_offline_queue_sync_pending(dht_ctx);
+        if (synced > 0) {
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: synced %d pending outboxes", synced);
+        }
+    }
+
+    /* 3. Retry pending messages from backup database */
+    int retried = dna_engine_retry_pending_messages(engine);
+    if (retried > 0) {
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: retried %d pending messages", retried);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: no pending messages to retry");
+    }
+
+    QGP_LOG_WARN(LOG_TAG, "[RETRY] >>> STABILIZATION THREAD COMPLETE <<<");
     return NULL;
 }
 
@@ -1475,10 +1505,16 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
          * DHT callback's listener thread only spawns if identity_loaded was true
          * when callback fired. In the common case (DHT connects before identity
          * loads), we need this dedicated thread to retry after routing table fills. */
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] About to spawn stabilization thread (engine=%p, messenger=%p)",
+                     (void*)engine, (void*)engine->messenger);
         pthread_t stabilization_thread;
-        if (pthread_create(&stabilization_thread, NULL, dna_engine_stabilization_retry_thread, engine) == 0) {
+        int spawn_rc = pthread_create(&stabilization_thread, NULL, dna_engine_stabilization_retry_thread, engine);
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] pthread_create returned %d", spawn_rc);
+        if (spawn_rc == 0) {
             pthread_detach(stabilization_thread);
-            QGP_LOG_DEBUG(LOG_TAG, "[RETRY] Spawned post-stabilization retry thread");
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread spawned successfully");
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "[RETRY] FAILED to spawn stabilization thread: rc=%d", spawn_rc);
         }
 
         /* 4. Restore delivery trackers for all pending messages
