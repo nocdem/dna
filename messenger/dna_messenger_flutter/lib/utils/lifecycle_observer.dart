@@ -1,9 +1,9 @@
 // App Lifecycle Observer - handles app state changes
 // Phase 14: DHT-only messaging with reliable Android background support
 
-import 'dart:io' show Platform;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../platform/platform_handler.dart';
 import '../providers/engine_provider.dart';
 import '../providers/event_handler.dart';
 import '../providers/contacts_provider.dart';
@@ -63,11 +63,10 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     try {
       final engine = await ref.read(engineProvider.future);
 
-      // Re-attach event callback on Android (was detached on pause for JNI to handle background)
-      // Desktop platforms keep callback attached since they don't have JNI fallback
-      if (Platform.isAndroid) {
-        engine.attachEventCallback();
-      }
+      // Platform-specific resume handling
+      // Android: Re-attach event callback (was detached for JNI to handle background)
+      // Desktop: No-op (callback stays attached)
+      PlatformHandler.instance.onResume(engine);
 
       // Always resume presence heartbeat first (marks us as online)
       // This is safe even if DHT is disconnected - heartbeat will just fail silently
@@ -177,12 +176,10 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Pause C-side presence heartbeat (stops marking us as online)
       engine.pausePresence();
 
-      // On Android: Detach Flutter event callback - JNI notification helper handles
-      // background notifications directly via native Android NotificationManager.
-      // On Desktop: Keep callback attached since there's no JNI fallback.
-      if (Platform.isAndroid) {
-        engine.detachEventCallback();
-      }
+      // Platform-specific pause handling
+      // Android: Detach Flutter event callback (JNI handles background notifications)
+      // Desktop: No-op (callback stays attached)
+      PlatformHandler.instance.onPause(engine);
     } catch (_) {
       // Error during pause - silently continue
     }
