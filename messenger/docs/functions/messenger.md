@@ -91,29 +91,44 @@ Core messenger functionality including identity management, key generation, mess
 | `int messenger_load_group_messages(...)` | Load group conversation messages |
 | `void messenger_free_groups(group_info_t*, int)` | Free group array |
 
-### 3.8 Group Symmetric Key (GSK)
+### 3.8 Group Encryption Key (GEK)
 
-**File:** `messenger/gsk.h`, `messenger/gsk_encryption.h`
+**File:** `messenger/gek.h`, `messenger/gek.c`
 
-GSK provides AES-256 symmetric encryption for group messaging (faster than per-recipient Kyber).
-GSKs are now encrypted at rest using Kyber1024 KEM (H3 security fix).
+GEK provides AES-256 symmetric encryption for group messaging (faster than per-recipient Kyber).
+GEKs are encrypted at rest using Kyber1024 KEM + AES-256-GCM.
 
 | Function | Description |
 |----------|-------------|
-| `int gsk_init(void *backup_ctx)` | Initialize GSK subsystem |
-| `int gsk_set_kem_keys(const uint8_t*, const uint8_t*)` | Set KEM keys for GSK encryption |
-| `void gsk_clear_kem_keys(void)` | Clear KEM keys from memory |
-| `int gsk_generate(const char*, uint32_t, uint8_t[32])` | Generate new random GSK |
-| `int gsk_store(const char*, uint32_t, const uint8_t[32])` | Store GSK (encrypted with KEM) |
-| `int gsk_load(const char*, uint32_t, uint8_t[32])` | Load GSK by version (decrypted) |
-| `int gsk_load_active(const char*, uint8_t[32], uint32_t*)` | Load latest active GSK |
-| `int gsk_rotate(const char*, uint32_t*, uint8_t[32])` | Rotate GSK (generate new version) |
-| `int gsk_get_current_version(const char*, uint32_t*)` | Get current GSK version |
-| `int gsk_cleanup_expired(void)` | Delete expired GSKs |
-| `int gsk_rotate_on_member_add(...)` | Rotate GSK when member added |
-| `int gsk_rotate_on_member_remove(...)` | Rotate GSK when member removed |
-| `int gsk_encrypt(const uint8_t[32], const uint8_t*, uint8_t*)` | Encrypt GSK with KEM |
-| `int gsk_decrypt(const uint8_t*, size_t, const uint8_t*, uint8_t[32])` | Decrypt GSK with KEM |
+| `int gek_init(void *backup_ctx)` | Initialize GEK subsystem |
+| `int gek_set_kem_keys(const uint8_t*, const uint8_t*)` | Set KEM keys for GEK encryption |
+| `void gek_clear_kem_keys(void)` | Clear KEM keys from memory |
+| `int gek_generate(const char*, uint32_t, uint8_t[32])` | Generate new random GEK |
+| `int gek_store(const char*, uint32_t, const uint8_t[32])` | Store GEK (encrypted with KEM) |
+| `int gek_load(const char*, uint32_t, uint8_t[32])` | Load GEK by version (decrypted) |
+| `int gek_load_active(const char*, uint8_t[32], uint32_t*)` | Load latest active GEK |
+| `int gek_rotate(const char*, uint32_t*, uint8_t[32])` | Rotate GEK (generate new version) |
+| `int gek_get_current_version(const char*, uint32_t*)` | Get current GEK version |
+| `int gek_cleanup_expired(void)` | Delete expired GEKs |
+| `int gek_rotate_on_member_add(...)` | Rotate GEK when member added |
+| `int gek_rotate_on_member_remove(...)` | Rotate GEK when member removed |
+| `int gek_encrypt(const uint8_t[32], const uint8_t*, uint8_t*)` | Encrypt GEK with KEM |
+| `int gek_decrypt(const uint8_t*, size_t, const uint8_t*, uint8_t[32])` | Decrypt GEK with KEM |
+
+### 3.9 Initial Key Packet (IKP)
+
+**File:** `messenger/gek.h`
+
+IKP functions for distributing GEK to group members via Kyber1024 encryption.
+
+| Function | Description |
+|----------|-------------|
+| `int ikp_build(...)` | Build Initial Key Packet for GEK distribution |
+| `int ikp_extract(...)` | Extract GEK from received IKP |
+| `int ikp_verify(...)` | Verify IKP signature (Dilithium5) |
+| `size_t ikp_calculate_size(size_t member_count)` | Calculate expected IKP size |
+| `int ikp_get_version(...)` | Get GEK version from IKP header |
+| `int ikp_get_member_count(...)` | Get member count from IKP header |
 
 ---
 

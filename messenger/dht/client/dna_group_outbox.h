@@ -3,7 +3,7 @@
  * @brief Group Message Outbox via DHT
  *
  * Feed-pattern group messaging with owner-namespaced storage:
- * - Message encrypted once with GSK (AES-256-GCM)
+ * - Message encrypted once with GEK (AES-256-GCM)
  * - Stored ONCE in DHT per hour bucket per group
  * - All senders write to SAME key with unique value_id (from dht_get_owner_value_id())
  * - All members fetch via dht_get_all()
@@ -64,7 +64,7 @@ extern "C" {
 typedef enum {
     DNA_GROUP_OUTBOX_OK = 0,
     DNA_GROUP_OUTBOX_ERR_NULL_PARAM = -1,
-    DNA_GROUP_OUTBOX_ERR_NO_GSK = -2,
+    DNA_GROUP_OUTBOX_ERR_NO_GEK = -2,
     DNA_GROUP_OUTBOX_ERR_ENCRYPT = -3,
     DNA_GROUP_OUTBOX_ERR_DECRYPT = -4,
     DNA_GROUP_OUTBOX_ERR_SIGN = -5,
@@ -83,7 +83,7 @@ typedef enum {
  *============================================================================*/
 
 /**
- * @brief Single group message (encrypted with GSK)
+ * @brief Single group message (encrypted with GEK)
  *
  * Stored in DHT at: dna:group:<group_uuid>:out:<hour_bucket>
  * Multiple senders write to same key with their value_id
@@ -93,7 +93,7 @@ typedef struct {
     char sender_fingerprint[129];               /* SHA3-512 fingerprint of sender */
     char group_uuid[37];                        /* UUID v4 of group */
     uint64_t timestamp_ms;                      /* Unix timestamp in milliseconds */
-    uint32_t gsk_version;                       /* GSK version used for encryption */
+    uint32_t gsk_version;                       /* GEK version used for encryption */
 
     /* Encrypted payload (AES-256-GCM) */
     uint8_t nonce[DNA_GROUP_OUTBOX_NONCE_SIZE]; /* 12-byte nonce */
@@ -132,10 +132,10 @@ typedef struct {
  * @brief Send a message to group outbox
  *
  * Flow:
- * 1. gsk_load_active(group_uuid) -> get GSK + version
+ * 1. gek_load_active(group_uuid) -> get GEK + version
  * 2. hour_bucket = time(NULL) / 3600
  * 3. Generate message_id: sprintf("%s_%s_%lu", my_fingerprint, group_uuid, timestamp_ms)
- * 4. Encrypt plaintext with GSK (AES-256-GCM)
+ * 4. Encrypt plaintext with GEK (AES-256-GCM)
  * 5. Sign with Dilithium5
  * 6. dht_get_owner_value_id() -> my unique value_id
  * 7. dht_get() my existing messages at this key (my value_id slot)

@@ -232,7 +232,7 @@ message_backup_context_t* message_backup_init(const char *identity) {
         sqlite3_free(err_msg);
     }
 
-    // Migration: Add gsk_version column if it doesn't exist (v6 -> v7, Phase 13 - GSK)
+    // Migration: Add gsk_version column if it doesn't exist (v6 -> v7, Phase 13 - GEK)
     const char *migration_sql_v7 = "ALTER TABLE messages ADD COLUMN gsk_version INTEGER DEFAULT 0;";
     rc = sqlite3_exec(ctx->db, migration_sql_v7, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {

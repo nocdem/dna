@@ -101,7 +101,7 @@ const char *dna_group_outbox_strerror(int error) {
     switch (error) {
         case DNA_GROUP_OUTBOX_OK: return "Success";
         case DNA_GROUP_OUTBOX_ERR_NULL_PARAM: return "NULL parameter";
-        case DNA_GROUP_OUTBOX_ERR_NO_GSK: return "No active GSK found";
+        case DNA_GROUP_OUTBOX_ERR_NO_GEK: return "No active GEK found";
         case DNA_GROUP_OUTBOX_ERR_ENCRYPT: return "Encryption failed";
         case DNA_GROUP_OUTBOX_ERR_DECRYPT: return "Decryption failed";
         case DNA_GROUP_OUTBOX_ERR_SIGN: return "Signing failed";
@@ -319,22 +319,22 @@ int dna_group_outbox_send(
 
     QGP_LOG_INFO(LOG_TAG, "Sending message to group %s\n", group_uuid);
 
-    /* Step 1: Load active GSK */
-    uint8_t gsk[GEK_KEY_SIZE];
-    uint32_t gsk_version = 0;
-    if (gek_load_active(group_uuid, gsk, &gsk_version) != 0) {
+    /* Step 1: Load active GEK */
+    uint8_t gek[GEK_KEY_SIZE];
+    uint32_t gek_version = 0;
+    if (gek_load_active(group_uuid, gek, &gek_version) != 0) {
         /* GEK not found locally - try auto-sync from DHT */
-        QGP_LOG_WARN(LOG_TAG, "No local GSK for group %s, attempting auto-sync from DHT...\n", group_uuid);
+        QGP_LOG_WARN(LOG_TAG, "No local GEK for group %s, attempting auto-sync from DHT...\n", group_uuid);
         if (messenger_sync_group_gek(group_uuid) == 0) {
             /* Sync succeeded, retry load */
-            if (gek_load_active(group_uuid, gsk, &gsk_version) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "GSK load failed after sync for group %s\n", group_uuid);
-                return DNA_GROUP_OUTBOX_ERR_NO_GSK;
+            if (gek_load_active(group_uuid, gek, &gek_version) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "GEK load failed after sync for group %s\n", group_uuid);
+                return DNA_GROUP_OUTBOX_ERR_NO_GEK;
             }
-            QGP_LOG_INFO(LOG_TAG, "Auto-synced GSK v%u for group %s\n", gsk_version, group_uuid);
+            QGP_LOG_INFO(LOG_TAG, "Auto-synced GEK v%u for group %s\n", gek_version, group_uuid);
         } else {
-            QGP_LOG_ERROR(LOG_TAG, "Auto-sync failed, no active GSK for group %s\n", group_uuid);
-            return DNA_GROUP_OUTBOX_ERR_NO_GSK;
+            QGP_LOG_ERROR(LOG_TAG, "Auto-sync failed, no active GEK for group %s\n", group_uuid);
+            return DNA_GROUP_OUTBOX_ERR_NO_GEK;
         }
     }
 
@@ -353,7 +353,7 @@ int dna_group_outbox_send(
         strncpy(message_id_out, message_id, DNA_GROUP_MSG_ID_SIZE - 1);
     }
 
-    /* Step 4: Encrypt plaintext with GSK (AES-256-GCM) */
+    /* Step 4: Encrypt plaintext with GEK (AES-256-GCM) */
     size_t plaintext_len = strlen(plaintext);
     size_t ciphertext_size = qgp_aes256_encrypt_size(plaintext_len);
     uint8_t *ciphertext = malloc(ciphertext_size);
@@ -366,7 +366,7 @@ int dna_group_outbox_send(
     size_t ciphertext_len = 0;
 
     /* AAD = message_id (for authentication binding) */
-    if (qgp_aes256_encrypt(gsk, (const uint8_t *)plaintext, plaintext_len,
+    if (qgp_aes256_encrypt(gek, (const uint8_t *)plaintext, plaintext_len,
                            (const uint8_t *)message_id, strlen(message_id),
                            ciphertext, &ciphertext_len, nonce, tag) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "AES encryption failed\n");
@@ -411,7 +411,7 @@ int dna_group_outbox_send(
     strncpy(new_msg.sender_fingerprint, sender_fingerprint, sizeof(new_msg.sender_fingerprint) - 1);
     strncpy(new_msg.group_uuid, group_uuid, sizeof(new_msg.group_uuid) - 1);
     new_msg.timestamp_ms = timestamp_ms;
-    new_msg.gsk_version = gsk_version;
+    new_msg.gsk_version = gek_version;
     memcpy(new_msg.nonce, nonce, DNA_GROUP_OUTBOX_NONCE_SIZE);
     new_msg.ciphertext = ciphertext;
     new_msg.ciphertext_len = ciphertext_len;
@@ -642,21 +642,21 @@ int dna_group_outbox_sync(
     uint64_t current_hour = dna_group_outbox_get_hour_bucket();
     size_t new_count = 0;
 
-    /* Load GSK for decryption */
-    uint8_t gsk[GEK_KEY_SIZE];
-    if (gek_load_active(group_uuid, gsk, NULL) != 0) {
+    /* Load GEK for decryption */
+    uint8_t gek[GEK_KEY_SIZE];
+    if (gek_load_active(group_uuid, gek, NULL) != 0) {
         /* GEK not found locally - try auto-sync from DHT */
-        QGP_LOG_WARN(LOG_TAG, "No local GSK for group %s, attempting auto-sync from DHT...\n", group_uuid);
+        QGP_LOG_WARN(LOG_TAG, "No local GEK for group %s, attempting auto-sync from DHT...\n", group_uuid);
         if (messenger_sync_group_gek(group_uuid) == 0) {
             /* Sync succeeded, retry load */
-            if (gek_load_active(group_uuid, gsk, NULL) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "GSK load failed after sync for group %s (skipping)\n", group_uuid);
-                return DNA_GROUP_OUTBOX_ERR_NO_GSK;
+            if (gek_load_active(group_uuid, gek, NULL) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "GEK load failed after sync for group %s (skipping)\n", group_uuid);
+                return DNA_GROUP_OUTBOX_ERR_NO_GEK;
             }
-            QGP_LOG_INFO(LOG_TAG, "Auto-synced GSK for group %s\n", group_uuid);
+            QGP_LOG_INFO(LOG_TAG, "Auto-synced GEK for group %s\n", group_uuid);
         } else {
-            QGP_LOG_ERROR(LOG_TAG, "Auto-sync failed, no active GSK for group %s (skipping)\n", group_uuid);
-            return DNA_GROUP_OUTBOX_ERR_NO_GSK;
+            QGP_LOG_ERROR(LOG_TAG, "Auto-sync failed, no active GEK for group %s (skipping)\n", group_uuid);
+            return DNA_GROUP_OUTBOX_ERR_NO_GEK;
         }
     }
 
@@ -687,7 +687,7 @@ int dna_group_outbox_sync(
                 if (plaintext) {
                     size_t plaintext_len = 0;
                     /* AAD = message_id */
-                    if (qgp_aes256_decrypt(gsk, messages[i].ciphertext, messages[i].ciphertext_len,
+                    if (qgp_aes256_decrypt(gek, messages[i].ciphertext, messages[i].ciphertext_len,
                                            (const uint8_t *)messages[i].message_id, strlen(messages[i].message_id),
                                            messages[i].nonce, messages[i].tag,
                                            plaintext, &plaintext_len) == 0) {

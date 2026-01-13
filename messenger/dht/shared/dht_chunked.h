@@ -107,7 +107,7 @@ typedef enum {
  *    d. dht_put_signed(key, serialized, value_id, ttl)
  *
  * @param ctx         DHT context
- * @param base_key    Base key string (e.g., "fingerprint:profile" or "uuid:gsk:1")
+ * @param base_key    Base key string (e.g., "fingerprint:profile" or "uuid:gek:1")
  * @param data        Data to publish
  * @param data_len    Data length in bytes
  * @param ttl_seconds TTL in seconds (use DHT_CHUNK_TTL_* constants)

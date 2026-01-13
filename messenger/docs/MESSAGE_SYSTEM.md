@@ -16,7 +16,7 @@ This document describes how the DNA Messenger message system works, with all fac
 4. [Encryption Process](#4-encryption-process)
 5. [Decryption Process](#5-decryption-process)
 6. [Transport Layer](#6-transport-layer)
-7. [GSK System](#7-gsk-system-group-symmetric-key)
+7. [GEK System](#7-gek-system-group-encryption-key)
 8. [Key Management](#8-key-management)
 9. [Database Schema](#9-database-schema)
 10. [Security Properties](#10-security-properties)
@@ -755,56 +755,57 @@ Fields:
 
 ---
 
-## 7. GSK System (Group Symmetric Key)
+## 7. GEK System (Group Encryption Key)
 
 ### 7.1 Purpose
 
-GSK provides **200× faster** group message encryption compared to per-recipient Kyber1024.
+GEK provides **200× faster** group message encryption compared to per-recipient Kyber1024.
 
 Instead of:
 - N members × Kyber1024 encapsulation = N × 1608 bytes per message
 
-GSK uses:
+GEK uses:
 - 1 AES-256-GCM encryption with shared key = same ciphertext for all members
 
-**Source:** `messenger/gsk.h:1-165`
+**Source:** `messenger/gek.h`
 
-### 7.2 GSK Entry Structure
+### 7.2 GEK Entry Structure
 
 ```c
-// Source: messenger/gsk.h:36-42
+// Source: messenger/gek.h
 
 typedef struct {
     char group_uuid[37];       // UUID v4 (36 + null terminator)
-    uint32_t gsk_version;      // Rotation counter (0, 1, 2, ...)
-    uint8_t gsk[GSK_KEY_SIZE]; // AES-256 key (32 bytes)
+    uint32_t gek_version;      // Rotation counter (0, 1, 2, ...)
+    uint8_t gek[GEK_KEY_SIZE]; // AES-256 key (32 bytes)
     uint64_t created_at;       // Unix timestamp (seconds)
-    uint64_t expires_at;       // created_at + GSK_DEFAULT_EXPIRY
-} gsk_entry_t;
+    uint64_t expires_at;       // created_at + GEK_DEFAULT_EXPIRY
+} gek_entry_t;
 
-#define GSK_KEY_SIZE 32                    // AES-256
-#define GSK_DEFAULT_EXPIRY (7 * 24 * 3600) // 7 days
+#define GEK_KEY_SIZE 32                    // AES-256
+#define GEK_DEFAULT_EXPIRY (7 * 24 * 3600) // 7 days
 ```
 
 ### 7.3 Initial Key Packet Format
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                      INITIAL KEY PACKET (GSK Distribution)                   │
+│                      INITIAL KEY PACKET (GEK Distribution)                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  HEADER (42 bytes)                                                          │
+│  HEADER (45 bytes)                                                          │
 │  ┌───────┬──────────┬──────────────────────────────────────────────────┐   │
-│  │  0    │   37     │ group_uuid[37] (UUID v4 + null)                  │   │
-│  │  37   │    4     │ version (uint32_t, GSK version number)           │   │
-│  │  41   │    1     │ member_count (uint8_t, 1-255)                    │   │
+│  │  0    │    4     │ magic (0x47454B20 = "GEK ")                      │   │
+│  │  4    │   36     │ group_uuid[36] (UUID v4)                         │   │
+│  │  40   │    4     │ version (uint32_t, GEK version number)           │   │
+│  │  44   │    1     │ member_count (uint8_t, 1-16)                     │   │
 │  └───────┴──────────┴──────────────────────────────────────────────────┘   │
 │                                                                             │
 │  MEMBER ENTRIES (1672 bytes × member_count)                                 │
 │  ┌───────┬──────────┬──────────────────────────────────────────────────┐   │
 │  │  0    │   64     │ fingerprint[64] (SHA3-512 of member's pubkey)    │   │
 │  │  64   │  1568    │ kyber_ciphertext[1568] (Kyber1024 encapsulation) │   │
-│  │ 1632  │   40     │ wrapped_gsk[40] (AES-wrapped GSK)                │   │
+│  │ 1632  │   40     │ wrapped_gek[40] (AES-wrapped GEK)                │   │
 │  └───────┴──────────┴──────────────────────────────────────────────────┘   │
 │  (Repeated for each member)                                                 │
 │                                                                             │
@@ -815,36 +816,36 @@ typedef struct {
 │  │  3    │  ~4627   │ signature (Dilithium5 over header+entries)       │   │
 │  └───────┴──────────┴──────────────────────────────────────────────────┘   │
 │                                                                             │
-│  TOTAL SIZE: 42 + (1672 × N) + 4630 bytes                                  │
+│  TOTAL SIZE: 45 + (1672 × N) + 4630 bytes                                  │
 │                                                                             │
-│  Example for 10 members: 42 + 16720 + 4630 = 21,392 bytes                  │
+│  Example for 10 members: 45 + 16720 + 4630 = 21,395 bytes                  │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Source:** `messenger/gsk_packet.h:8-17`
+**Source:** `messenger/gek.h` (IKP constants)
 
-### 7.4 GSK Lifecycle
+### 7.4 GEK Lifecycle
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           GSK LIFECYCLE                                      │
+│                           GEK LIFECYCLE                                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  1. GROUP CREATION                                                          │
 │     ─────────────────                                                       │
 │     ┌─────────────────────────────────────────────────┐                    │
-│     │ gsk_generate(group_uuid, version=0, gsk)        │                    │
-│     │ gsk_store(group_uuid, 0, gsk)                   │                    │
-│     │ gsk_packet_build(...) → Initial Key Packet      │                    │
+│     │ gek_generate(group_uuid, version=0, gek)        │                    │
+│     │ gek_store(group_uuid, 0, gek)                   │                    │
+│     │ ikp_build(...) → Initial Key Packet             │                    │
 │     │ DHT publish packet to all members               │                    │
 │     └─────────────────────────────────────────────────┘                    │
 │                                                                             │
 │  2. MEMBER ADDED                                                            │
 │     ────────────────                                                        │
 │     ┌─────────────────────────────────────────────────┐                    │
-│     │ gsk_rotate_on_member_add()                      │                    │
-│     │   - Generate new GSK (version++)                │                    │
+│     │ gek_rotate_on_member_add()                      │                    │
+│     │   - Generate new GEK (version++)                │                    │
 │     │   - Build new Initial Key Packet (all members)  │                    │
 │     │   - Publish to DHT                              │                    │
 │     └─────────────────────────────────────────────────┘                    │
@@ -852,24 +853,24 @@ typedef struct {
 │  3. MEMBER REMOVED                                                          │
 │     ───────────────                                                         │
 │     ┌─────────────────────────────────────────────────┐                    │
-│     │ gsk_rotate_on_member_remove()                   │                    │
-│     │   - Generate new GSK (version++)                │  CRITICAL:         │
+│     │ gek_rotate_on_member_remove()                   │                    │
+│     │   - Generate new GEK (version++)                │  CRITICAL:         │
 │     │   - Build new Initial Key Packet (WITHOUT       │  Removed member    │
 │     │     removed member)                             │  cannot decrypt    │
 │     │   - Publish to DHT                              │  future messages   │
 │     └─────────────────────────────────────────────────┘                    │
 │                                                                             │
-│  4. GSK EXPIRATION (7 days)                                                 │
+│  4. GEK EXPIRATION (7 days)                                                 │
 │     ───────────────────────                                                 │
 │     ┌─────────────────────────────────────────────────┐                    │
-│     │ gsk_cleanup_expired() - removes old GSKs        │                    │
+│     │ gek_cleanup_expired() - removes old GEKs        │                    │
 │     │ Auto-rotate if needed for continued messaging   │                    │
 │     └─────────────────────────────────────────────────┘                    │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Source:** `messenger/gsk.h:132-159`
+**Source:** `messenger/gek.h`
 
 ---
 
@@ -1063,14 +1064,14 @@ CREATE INDEX IF NOT EXISTS idx_sender_fingerprint ON messages(sender_fingerprint
 | `dht/shared/dht_offline_queue.h` | 1-237 | Offline queue API |
 | `p2p/transport/transport_offline.c` | 64-170 | Offline message polling |
 
-### 11.5 GSK System
+### 11.5 GEK System
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `messenger/gsk.h` | 1-165 | GSK management API |
-| `messenger/gsk.c` | - | GSK implementation |
-| `messenger/gsk_packet.h` | 1-131 | Initial Key Packet API |
-| `messenger/gsk_packet.c` | - | Packet building/extraction |
+| `messenger/gek.h` | 1-399 | GEK management + IKP API |
+| `messenger/gek.c` | - | GEK implementation |
+| `messenger/groups.h` | 1-266 | Group management API |
+| `messenger/groups.c` | - | Group implementation |
 
 ### 11.6 Database
 

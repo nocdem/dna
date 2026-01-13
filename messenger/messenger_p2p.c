@@ -868,12 +868,12 @@ static void p2p_message_received_internal(
         }
         free(plaintext);
     } else if (decrypt_result != DNA_OK) {
-        // Only log at DEBUG level - this is expected for GSK group messages
-        QGP_LOG_DEBUG("P2P", "Could not decrypt for invitation check (error=%d, may be GSK message)", decrypt_result);
+        // Only log at DEBUG level - this is expected for GEK group messages
+        QGP_LOG_DEBUG("P2P", "Could not decrypt for invitation check (error=%d, may be GEK message)", decrypt_result);
     }
 
     // Use sender's timestamp if available, otherwise fall back to local time
-    // (fallback needed for messages we can't decrypt - e.g., GSK group messages)
+    // (fallback needed for messages we can't decrypt - e.g., GEK group messages)
     time_t msg_timestamp = sender_timestamp ? (time_t)sender_timestamp : time(NULL);
     if (sender_timestamp == 0) {
         QGP_LOG_WARN("P2P", "DEBUG: Using local timestamp (sender_timestamp=0)");

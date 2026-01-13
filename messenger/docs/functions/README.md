@@ -33,7 +33,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 - Identity management
 - Contacts and contact requests
 - Messaging (P2P + DHT)
-- Groups (GSK encryption)
+- Groups (GEK encryption)
 - Wallet (multi-chain)
 - P2P & Presence
 - Listeners (outbox, presence, delivery)
@@ -45,14 +45,14 @@ Low-level cryptographic API for message encryption/decryption.
 - Context and buffer management
 - Message encryption/decryption
 - Signature operations
-- GSK group messaging
+- GEK group messaging
 
 ### 3. Messenger ([messenger.md](messenger.md))
 Core messenger functionality.
 - Initialization and key generation
 - Public key management
 - Message operations and status
-- Group management and GSK
+- Group management and GEK
 
 ### 4. Cryptography ([crypto.md](crypto.md))
 All cryptographic primitives and utilities.

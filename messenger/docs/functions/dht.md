@@ -213,16 +213,16 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 | `int dht_value_storage_get_stats(dht_value_storage_t*, dht_storage_stats_t*)` | Get storage stats |
 | `bool dht_value_storage_should_persist(uint32_t, uint64_t)` | Check if should persist |
 
-### 10.8 GSK Storage (`dht_gsk_storage.h`)
+### 10.8 GEK Storage (`dht_gek_storage.h`)
 
 | Function | Description |
 |----------|-------------|
-| `int dht_gsk_publish(dht_context_t*, const char*, uint32_t, const uint8_t*, size_t)` | Publish GSK packet |
-| `int dht_gsk_fetch(dht_context_t*, const char*, uint32_t, uint8_t**, size_t*)` | Fetch GSK packet |
-| `int dht_gsk_make_chunk_key(const char*, uint32_t, uint32_t, char[65])` | Generate chunk key |
-| `int dht_gsk_serialize_chunk(const dht_gsk_chunk_t*, uint8_t**, size_t*)` | Serialize chunk |
-| `int dht_gsk_deserialize_chunk(const uint8_t*, size_t, dht_gsk_chunk_t*)` | Deserialize chunk |
-| `void dht_gsk_free_chunk(dht_gsk_chunk_t*)` | Free chunk |
+| `int dht_gek_publish(dht_context_t*, const char*, uint32_t, const uint8_t*, size_t)` | Publish GEK packet |
+| `int dht_gek_fetch(dht_context_t*, const char*, uint32_t, uint8_t**, size_t*)` | Fetch GEK packet |
+| `int dht_gek_make_chunk_key(const char*, uint32_t, uint32_t, char[65])` | Generate chunk key |
+| `int dht_gek_serialize_chunk(const dht_gek_chunk_t*, uint8_t**, size_t*)` | Serialize chunk |
+| `int dht_gek_deserialize_chunk(const uint8_t*, size_t, dht_gek_chunk_t*)` | Deserialize chunk |
+| `void dht_gek_free_chunk(dht_gek_chunk_t*)` | Free chunk |
 
 ---
 

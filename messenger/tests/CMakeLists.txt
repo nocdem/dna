@@ -76,7 +76,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(JSONCPP REQUIRED jsoncpp)
 
 # Link order matters! dht_lib must come after crypto libs that need qgp_randombytes
-# dna_lib includes messenger module (gsk_packet, messages, etc.)
+# dna_lib includes messenger module (gek, messages, groups, etc.)
 set(TEST_LIBS
     ${DNA_BUILD}/libdna_lib.a
     ${DNA_BUILD}/p2p/libp2p_transport.a
@@ -253,7 +253,6 @@ if(ENABLE_FUZZING)
     # Fuzz targets
     add_fuzz_target(fuzz_offline_queue fuzz/fuzz_offline_queue.c)
     add_fuzz_target(fuzz_contact_request fuzz/fuzz_contact_request.c)
-    add_fuzz_target(fuzz_gsk_packet fuzz/fuzz_gsk_packet.c)
     add_fuzz_target(fuzz_message_decrypt fuzz/fuzz_message_decrypt.c)
     add_fuzz_target(fuzz_profile_json fuzz/fuzz_profile_json.c)
     add_fuzz_target(fuzz_base58 fuzz/fuzz_base58.c)
@@ -262,7 +261,6 @@ if(ENABLE_FUZZING)
     message(STATUS "Fuzzing targets enabled (libFuzzer):")
     message(STATUS "  - fuzz_offline_queue   : DHT offline message deserialization")
     message(STATUS "  - fuzz_contact_request : DHT contact request deserialization")
-    message(STATUS "  - fuzz_gsk_packet      : GSK packet extraction")
     message(STATUS "  - fuzz_message_decrypt : DNA message decryption (v0.08)")
     message(STATUS "  - fuzz_profile_json    : Profile JSON parsing")
     message(STATUS "  - fuzz_base58          : Base58 decoding")
