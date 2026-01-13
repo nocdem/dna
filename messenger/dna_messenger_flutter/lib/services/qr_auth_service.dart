@@ -10,7 +10,7 @@ library;
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
-
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import '../ffi/dna_engine.dart';
@@ -85,7 +85,11 @@ class QrAuthService {
         issuedAt: now,
         expiresAt: expiresAt,
       );
-
+      //final payloadHash = sha3_256.convert(utf8.encode(signedPayload)).toString();
+      //debugPrint('QR_AUTH: payload_len=${utf8.encode(signedPayload).length} payload_sha3_256=$payloadHash');
+      final payloadBytesDbg = utf8.encode(signedPayload);
+      final payloadHash = sha256.convert(payloadBytesDbg).toString();
+      debugPrint('QR_AUTH: payload_len=${payloadBytesDbg.length} payload_sha256=$payloadHash');
       debugPrint('QR_AUTH: Signing payload: $signedPayload');
 
       // Sign the canonical JSON bytes
@@ -95,10 +99,14 @@ class QrAuthService {
       // Base64 encode the signature
       final signatureBase64 = base64Encode(signature);
 
+      // Export Dilithium signing public key (raw bytes -> base64)
+      final pubkeyB64 = base64Encode(_engine.signingPublicKey);
+
       // Build the response body
       final responseBody = _buildResponseBody(
         sessionId: payload.sessionId!,
         fingerprint: fingerprint,
+        pubkeyB64: pubkeyB64,
         signature: signatureBase64,
         signedPayload: {
           'origin': payload.origin!,
@@ -140,6 +148,7 @@ class QrAuthService {
   String _buildResponseBody({
     required String sessionId,
     required String fingerprint,
+    required String pubkeyB64,
     required String signature,
     required Map<String, dynamic> signedPayload,
   }) {
@@ -148,6 +157,7 @@ class QrAuthService {
       'v': 1,
       'session_id': sessionId,
       'fingerprint': fingerprint,
+      'pubkey_b64': pubkeyB64,
       'signature': signature,
       'signed_payload': signedPayload,
     };
@@ -175,27 +185,82 @@ class QrAuthService {
       request.write(body);
 
       final response = await request.close().timeout(
-            const Duration(seconds: 15),
-            onTimeout: () {
-              throw const SocketException('Connection timed out');
-            },
-          );
+        const Duration(seconds: 15),
+        onTimeout: () {
+          throw const SocketException('Connection timed out');
+        },
+      );
 
       final statusCode = response.statusCode;
 
-      // Drain the response body
-      await response.drain<void>();
+      // Read response body (do NOT just drain it—this is where error details live)
+      final responseText = await response.transform(utf8.decoder).join();
+      final contentType = response.headers.contentType?.mimeType;
 
       if (statusCode >= 200 && statusCode < 300) {
         debugPrint('QR_AUTH: Auth callback success: $statusCode');
         return const QrAuthResult.success();
-      } else {
-        debugPrint('QR_AUTH ERROR: Auth callback failed: $statusCode');
-        return QrAuthResult.failure(
-          'Server returned $statusCode',
-          statusCode: statusCode,
-        );
       }
+
+      // Try to parse a structured error message from JSON responses.
+      String? errorMessage;
+
+      if (contentType == 'application/json' && responseText.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(responseText);
+
+          // FastAPI often returns {"detail": "..."} or {"detail": {...}}
+          dynamic detail = decoded is Map<String, dynamic> ? decoded['detail'] : null;
+
+          // Support both:
+          // 1) {"detail":{"error":"not_authorized","reason":"identity_not_allowed"}}
+          // 2) {"error":"not_authorized","reason":"identity_not_allowed"}
+          String? error;
+          String? reason;
+
+          if (detail is Map<String, dynamic>) {
+            error = detail['error']?.toString();
+            reason = detail['reason']?.toString();
+          } else if (decoded is Map<String, dynamic>) {
+            error = decoded['error']?.toString();
+            reason = decoded['reason']?.toString();
+            // Sometimes detail is a string:
+            if (error == null && reason == null && detail is String) {
+              errorMessage = detail;
+            }
+          }
+
+          // Map known reasons to human-friendly messages
+          if (errorMessage == null) {
+            if (reason == 'identity_not_allowed') {
+              errorMessage = 'Not authorized: this identity is not allowed for this service.';
+            } else if (reason == 'invalid_signature') {
+              errorMessage = 'Authentication failed: signature was rejected by server.';
+            } else if (reason == 'fingerprint_pubkey_mismatch') {
+              errorMessage = 'Authentication failed: identity binding mismatch.';
+            } else if (reason == 'replay_nonce') {
+              errorMessage = 'Authentication failed: replay detected.';
+            } else if (error != null || reason != null) {
+              // Generic structured error fallback
+              final parts = <String>[];
+              if (error != null && error.isNotEmpty) parts.add(error);
+              if (reason != null && reason.isNotEmpty) parts.add(reason);
+              errorMessage = parts.isEmpty ? null : parts.join(' / ');
+            }
+          }
+        } catch (_) {
+          // Ignore JSON parsing errors and fall back to generic message below
+        }
+      }
+
+      // If we couldn't parse a better message, use status code
+      errorMessage ??= 'Server returned $statusCode';
+
+      debugPrint('QR_AUTH ERROR: Auth callback failed: $statusCode body="$responseText"');
+      return QrAuthResult.failure(
+        errorMessage,
+        statusCode: statusCode,
+      );
     } on SocketException catch (e) {
       debugPrint('QR_AUTH ERROR: Network error: $e');
       return QrAuthResult.failure('Network error: ${e.message}');
@@ -212,6 +277,7 @@ class QrAuthService {
       client?.close();
     }
   }
+
 
   /// Deny an auth request (optional - just navigates away without POSTing)
   /// In the future, this could POST a denial response if the spec requires it.
