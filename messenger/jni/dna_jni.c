@@ -615,11 +615,35 @@ static void jni_event_callback(const dna_event_t *event, void *user_data) {
 static jobject g_notification_helper = NULL;
 
 /**
+ * Completion callback for checkOfflineMessages - just logs result
+ */
+static void jni_check_offline_complete(int request_id, int error, void *user_data) {
+    (void)request_id;
+    (void)user_data;
+    if (error == 0) {
+        LOGI("[NOTIFY] checkOfflineMessages completed successfully (watermarks published)");
+    } else {
+        LOGW("[NOTIFY] checkOfflineMessages failed: error=%d", error);
+    }
+}
+
+/**
  * Native callback invoked by dna_engine when DNA_EVENT_OUTBOX_UPDATED fires.
- * Calls the Java NotificationHelper.onOutboxUpdated() method.
+ *
+ * Two responsibilities:
+ * 1. Trigger immediate message fetch (which publishes watermarks for delivery confirmation)
+ * 2. Call Java NotificationHelper to show notification
  */
 static void jni_android_notification_callback(const char *contact_fingerprint, const char *display_name, void *user_data) {
     (void)user_data;
+
+    /* Always try to fetch messages on OUTBOX_UPDATED - this publishes watermarks
+     * which enables delivery confirmation (double checkmark) on the sender side.
+     * Without this, PC→Android delivery confirmation fails. */
+    if (g_engine) {
+        LOGI("[NOTIFY] Triggering checkOfflineMessages for delivery confirmation");
+        dna_engine_check_offline_messages(g_engine, jni_check_offline_complete, NULL);
+    }
 
     if (!g_notification_helper || !contact_fingerprint) {
         LOGD("Android notification callback: no helper or fingerprint");
