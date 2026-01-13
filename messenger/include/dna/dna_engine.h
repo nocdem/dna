@@ -573,6 +573,7 @@ typedef enum {
     DNA_EVENT_IDENTITY_LOADED,
     DNA_EVENT_CONTACT_REQUEST_RECEIVED,  /* New contact request from DHT */
     DNA_EVENT_OUTBOX_UPDATED,            /* Contact's outbox has new messages */
+    DNA_EVENT_GROUP_MESSAGE_RECEIVED,    /* New group messages via DHT listen */
     DNA_EVENT_ERROR
 } dna_event_type_t;
 
@@ -613,6 +614,10 @@ typedef struct {
             uint64_t seq_num;               /* Watermark value (messages up to this are delivered) */
             uint64_t timestamp;             /* When delivery was confirmed */
         } message_delivered;
+        struct {
+            char group_uuid[37];            /* Group UUID */
+            int new_count;                  /* Number of new messages received */
+        } group_message;
         struct {
             int code;
             char message[256];
@@ -724,6 +729,40 @@ typedef void (*dna_android_contact_request_cb)(
  */
 DNA_API void dna_engine_set_android_contact_request_callback(
     dna_android_contact_request_cb callback,
+    void *user_data
+);
+
+/**
+ * Group message notification callback
+ *
+ * Called when new group messages arrive via DHT listen (real-time push).
+ * This is used for Android background notifications when new messages
+ * are detected in a group chat.
+ *
+ * @param group_uuid    UUID of the group (36 chars)
+ * @param group_name    Display name of the group or NULL
+ * @param new_count     Number of new messages received
+ * @param user_data     User data passed when setting callback
+ */
+typedef void (*dna_android_group_message_cb)(
+    const char *group_uuid,
+    const char *group_name,
+    size_t new_count,
+    void *user_data
+);
+
+/**
+ * Set Android notification callback for group messages
+ *
+ * This callback is called when new group messages are received via
+ * DHT listen, allowing Android to show native notifications for
+ * group chat activity even when Flutter is detached.
+ *
+ * @param callback  Notification callback function (NULL to disable)
+ * @param user_data User data passed to callback
+ */
+DNA_API void dna_engine_set_android_group_message_callback(
+    dna_android_group_message_cb callback,
     void *user_data
 );
 

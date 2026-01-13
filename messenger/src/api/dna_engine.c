@@ -60,6 +60,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dna_api.h"
 #include "messenger/init.h"
 #include "messenger/messages.h"
+#include "messenger/groups.h"
 #include "messenger_p2p.h"
 #include "message_backup.h"
 #include "messenger/status.h"
@@ -176,6 +177,11 @@ static void *g_android_notification_data = NULL;
 static dna_android_contact_request_cb g_android_contact_request_cb = NULL;
 static void *g_android_contact_request_data = NULL;
 
+/* Android group message notification callback.
+ * Called when new group messages arrive via DHT listen. */
+static dna_android_group_message_cb g_android_group_message_cb = NULL;
+static void *g_android_group_message_data = NULL;
+
 /* Global engine accessors (for messenger layer event dispatch) */
 void dna_engine_set_global(dna_engine_t *engine) {
     g_dht_callback_engine = engine;
@@ -204,6 +210,10 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
 
     int count = dna_engine_listen_all_contacts(engine);
     QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: started %d listeners", count);
+
+    /* Subscribe to all groups for real-time notifications */
+    int group_count = dna_engine_subscribe_all_groups(engine);
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: subscribed to %d groups", group_count);
 
     /* Retry pending/failed messages after DHT reconnect
      * Messages may have failed during the previous session or network outage.
@@ -600,6 +610,10 @@ static void* presence_heartbeat_thread(void *arg) {
             QGP_LOG_DEBUG(LOG_TAG, "Heartbeat: refreshing presence");
             messenger_p2p_refresh_presence(engine->messenger);
         }
+
+        /* Check for day rotation on group listeners (runs every 4 min, actual
+         * rotation only happens at midnight UTC when day bucket changes) */
+        dna_engine_check_group_day_rotation(engine);
     }
 
     QGP_LOG_INFO(LOG_TAG, "Presence heartbeat thread stopped");
@@ -1105,6 +1119,11 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     engine->delivery_tracker_count = 0;
     memset(engine->delivery_trackers, 0, sizeof(engine->delivery_trackers));
 
+    /* Initialize group outbox listeners */
+    pthread_mutex_init(&engine->group_listen_mutex, NULL);
+    engine->group_listen_count = 0;
+    memset(engine->group_listen_contexts, 0, sizeof(engine->group_listen_contexts));
+
     /* Initialize task queue */
     dna_task_queue_init(&engine->task_queue);
 
@@ -1185,6 +1204,197 @@ void dna_engine_set_android_contact_request_callback(
                  callback ? "registered" : "cleared");
 }
 
+void dna_engine_set_android_group_message_callback(
+    dna_android_group_message_cb callback,
+    void *user_data
+) {
+    g_android_group_message_cb = callback;
+    g_android_group_message_data = user_data;
+    QGP_LOG_INFO(LOG_TAG, "Android group message callback %s",
+                 callback ? "registered" : "cleared");
+}
+
+/* Internal helper to fire Android group message callback.
+ * Called from group outbox subscribe on_new_message callback. */
+void dna_engine_fire_group_message_callback(
+    const char *group_uuid,
+    const char *group_name,
+    size_t new_count
+) {
+    if (g_android_group_message_cb && new_count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Firing group message callback: group=%s count=%zu",
+                     group_uuid, new_count);
+        g_android_group_message_cb(group_uuid, group_name, new_count,
+                                   g_android_group_message_data);
+    }
+}
+
+/* Callback for group message notifications from dna_group_outbox_subscribe() */
+static void on_group_new_message(const char *group_uuid, size_t new_count, void *user_data) {
+    (void)user_data;
+    QGP_LOG_INFO(LOG_TAG, "[GROUP] New messages: group=%s count=%zu", group_uuid, new_count);
+
+    /* Get group name from local database for notification */
+    char group_name[256] = "";
+    groups_info_t group_info;
+    if (groups_get_info(group_uuid, &group_info) == 0) {
+        strncpy(group_name, group_info.name, sizeof(group_name) - 1);
+    }
+
+    /* Fire Android callback */
+    dna_engine_fire_group_message_callback(group_uuid,
+        group_name[0] ? group_name : NULL, new_count);
+
+    /* Fire DNA event */
+    dna_engine_t *engine = dna_engine_get_global();
+    if (engine) {
+        dna_event_t event = {0};
+        event.type = DNA_EVENT_GROUP_MESSAGE_RECEIVED;
+        strncpy(event.data.group_message.group_uuid, group_uuid,
+                sizeof(event.data.group_message.group_uuid) - 1);
+        event.data.group_message.new_count = (int)new_count;
+        dna_dispatch_event(engine, &event);
+    }
+}
+
+int dna_engine_subscribe_all_groups(dna_engine_t *engine) {
+    if (!engine || !engine->identity_loaded) {
+        QGP_LOG_WARN(LOG_TAG, "[GROUP] Cannot subscribe - no identity loaded");
+        return 0;
+    }
+
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_WARN(LOG_TAG, "[GROUP] Cannot subscribe - DHT not available");
+        return 0;
+    }
+
+    /* Get all groups user is member of */
+    dht_group_cache_entry_t *groups = NULL;
+    int group_count = 0;
+    int ret = dht_groups_list_for_user(engine->fingerprint, &groups, &group_count);
+    if (ret != 0 || group_count == 0) {
+        QGP_LOG_INFO(LOG_TAG, "[GROUP] No groups to subscribe to");
+        return 0;
+    }
+
+    int subscribed = 0;
+    pthread_mutex_lock(&engine->group_listen_mutex);
+
+    for (int i = 0; i < group_count && engine->group_listen_count < DNA_MAX_GROUP_LISTENERS; i++) {
+        const char *group_uuid = groups[i].group_uuid;
+
+        /* Check if already subscribed */
+        bool already_subscribed = false;
+        for (int j = 0; j < engine->group_listen_count; j++) {
+            if (engine->group_listen_contexts[j] &&
+                strcmp(engine->group_listen_contexts[j]->group_uuid, group_uuid) == 0) {
+                already_subscribed = true;
+                break;
+            }
+        }
+        if (already_subscribed) continue;
+
+        /* Get group members */
+        groups_member_t *members = NULL;
+        int member_count = 0;
+        if (groups_get_members(group_uuid, &members, &member_count) != 0 || member_count == 0) {
+            QGP_LOG_WARN(LOG_TAG, "[GROUP] No members found for group %s", group_uuid);
+            continue;
+        }
+
+        /* Build fingerprint array */
+        const char **fps = malloc(member_count * sizeof(char *));
+        if (!fps) {
+            groups_free_members(members, member_count);
+            continue;
+        }
+        for (int m = 0; m < member_count; m++) {
+            fps[m] = members[m].fingerprint;
+        }
+
+        /* Full sync before subscribing (catch up on last 7 days) */
+        size_t sync_count = 0;
+        dna_group_outbox_sync(dht_ctx, group_uuid, fps, member_count, &sync_count);
+        if (sync_count > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[GROUP] Synced %zu messages for group %s",
+                         sync_count, group_uuid);
+        }
+
+        /* Subscribe for real-time updates */
+        dna_group_listen_ctx_t *ctx = NULL;
+        ret = dna_group_outbox_subscribe(dht_ctx, group_uuid, fps, member_count,
+                                          on_group_new_message, NULL, &ctx);
+        if (ret == 0 && ctx) {
+            engine->group_listen_contexts[engine->group_listen_count++] = ctx;
+            subscribed++;
+            QGP_LOG_INFO(LOG_TAG, "[GROUP] Subscribed to group %s (%d members)",
+                         group_uuid, member_count);
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "[GROUP] Failed to subscribe to group %s: %d",
+                          group_uuid, ret);
+        }
+
+        free(fps);
+        groups_free_members(members, member_count);
+    }
+
+    pthread_mutex_unlock(&engine->group_listen_mutex);
+    dht_groups_free_cache_entries(groups, group_count);
+
+    QGP_LOG_INFO(LOG_TAG, "[GROUP] Subscribed to %d groups", subscribed);
+    return subscribed;
+}
+
+void dna_engine_unsubscribe_all_groups(dna_engine_t *engine) {
+    if (!engine) return;
+
+    dht_context_t *dht_ctx = dht_singleton_get();
+
+    pthread_mutex_lock(&engine->group_listen_mutex);
+
+    for (int i = 0; i < engine->group_listen_count; i++) {
+        if (engine->group_listen_contexts[i]) {
+            dna_group_outbox_unsubscribe(dht_ctx, engine->group_listen_contexts[i]);
+            engine->group_listen_contexts[i] = NULL;
+        }
+    }
+    engine->group_listen_count = 0;
+
+    pthread_mutex_unlock(&engine->group_listen_mutex);
+
+    QGP_LOG_INFO(LOG_TAG, "[GROUP] Unsubscribed from all groups");
+}
+
+int dna_engine_check_group_day_rotation(dna_engine_t *engine) {
+    if (!engine) return 0;
+
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) return 0;
+
+    int rotated = 0;
+    pthread_mutex_lock(&engine->group_listen_mutex);
+
+    for (int i = 0; i < engine->group_listen_count; i++) {
+        if (engine->group_listen_contexts[i]) {
+            int result = dna_group_outbox_check_day_rotation(
+                dht_ctx, engine->group_listen_contexts[i]);
+            if (result > 0) {
+                rotated++;
+                QGP_LOG_INFO(LOG_TAG, "[GROUP] Day rotation for group %s",
+                             engine->group_listen_contexts[i]->group_uuid);
+            }
+        }
+    }
+
+    pthread_mutex_unlock(&engine->group_listen_mutex);
+
+    if (rotated > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[GROUP] Day rotation completed for %d groups", rotated);
+    }
+    return rotated;
+}
+
 void dna_engine_destroy(dna_engine_t *engine) {
     if (!engine) return;
 
@@ -1229,6 +1439,10 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* Cancel all delivery trackers */
     dna_engine_cancel_all_delivery_trackers(engine);
     pthread_mutex_destroy(&engine->delivery_trackers_mutex);
+
+    /* Unsubscribe from all groups */
+    dna_engine_unsubscribe_all_groups(engine);
+    pthread_mutex_destroy(&engine->group_listen_mutex);
 
     /* Free message queue */
     pthread_mutex_lock(&engine->message_queue.mutex);

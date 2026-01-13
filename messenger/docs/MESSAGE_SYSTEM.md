@@ -872,6 +872,116 @@ typedef struct {
 
 **Source:** `messenger/gek.h`
 
+### 7.5 Group Outbox DHT Storage (Per-Sender Keys)
+
+Group messages are stored in DHT using per-sender keys with day buckets for efficient retrieval and real-time notifications.
+
+#### Key Format
+
+```
+dna:group:<uuid>:out:<day>:<sender_fp>
+
+Where:
+  <uuid>       = Group UUID (36 chars)
+  <day>        = Day bucket (Unix timestamp / 86400)
+  <sender_fp>  = Sender's fingerprint (128 hex chars)
+
+Example:
+  dna:group:550e8400-e29b-41d4-a716-446655440000:out:20089:abc123...def456
+```
+
+#### Architecture Benefits
+
+| Aspect | Per-Sender Keys |
+|--------|-----------------|
+| Writer pattern | Single-writer per key (no conflicts) |
+| Storage | Chunked ZSTD (unlimited size) |
+| Real-time | `dht_listen()` per member's chunk0 |
+| Bucket granularity | Day (7 keys/week vs 168 for hour) |
+| Chunk retrieval | `dht_chunked_fetch()` per sender |
+
+#### Send Flow
+
+```
+User sends message
+       │
+       ▼
+┌─────────────────────────────────────┐
+│ 1. Load GEK (auto-sync from DHT)    │
+│ 2. day = time() / 86400             │
+│ 3. Generate message_id              │
+│ 4. Encrypt with GEK (AES-256-GCM)   │
+│ 5. Sign with Dilithium5             │
+└─────────────────────────────────────┘
+       │
+       ▼
+┌─────────────────────────────────────┐
+│ 6. sender_key = dna:group:<uuid>    │
+│         :out:<day>:<my_fp>          │
+│ 7. dht_chunked_fetch(sender_key)    │
+│ 8. Append new message               │
+│ 9. dht_chunked_publish(sender_key)  │
+└─────────────────────────────────────┘
+       │
+       ▼
+   Store locally
+```
+
+#### Listen Flow
+
+```
+Group loaded
+    │
+    ▼
+┌─────────────────────────────────────┐
+│ For each member in group:           │
+│   sender_key = dna:group:<uuid>     │
+│         :out:<day>:<member_fp>      │
+│   chunk0_key = SHA3(key+":chunk:0") │
+│   dht_listen(chunk0_key, callback)  │
+└─────────────────────────────────────┘
+    │
+    ▼
+[Callback fires when member publishes]
+    │
+    ▼
+┌─────────────────────────────────────┐
+│ 1. Identify sender from user_data   │
+│ 2. dht_chunked_fetch(sender_key)    │
+│ 3. Decrypt and store new messages   │
+│ 4. Fire UI callback                 │
+└─────────────────────────────────────┘
+```
+
+#### Day Rotation (Midnight UTC)
+
+```
+Every 4 minutes (heartbeat timer)
+         │
+         ▼
+┌─────────────────────────────────────┐
+│ new_day = time() / 86400            │
+│ if new_day != current_day:          │
+│   Cancel all old listeners          │
+│   Update current_day                │
+│   Resubscribe to new day keys       │
+└─────────────────────────────────────┘
+```
+
+#### Sync (Catch-up)
+
+On group load, syncs last 7 days of messages:
+
+```c
+for (day = last_sync_day + 1; day <= current_day; day++) {
+    for each member:
+        dht_chunked_fetch(member's sender_key)
+        decrypt and store new messages
+}
+```
+
+**Source:** `dht/client/dna_group_outbox.c`, `src/api/dna_engine.c`
+
 ---
 
 ## 8. Key Management

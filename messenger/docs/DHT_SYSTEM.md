@@ -1038,6 +1038,7 @@ Stats printed every 60 seconds:
 | **Identity** | PERMANENT | `SHA3-512(fingerprint:profile)` | Yes | Unified: keys + name + profile (v0.3.0+) |
 | **Name Lookup** | PERMANENT | `SHA3-512(name:lookup)` | Yes | Name → fingerprint (v0.3.0+) |
 | Group Metadata | 30 days | `SHA3-512(group_uuid)` | Yes | |
+| **Group Outbox** | 7 days | `dna:group:<uuid>:out:<day>:<sender_fp>` | No | Per-sender, day buckets, chunked ZSTD |
 | Message Wall | 30 days | `SHA3-512(fingerprint:message_wall)` | Yes | DNA Board |
 | Bootstrap Registry | 7 days | `SHA3-512("dna:bootstrap:registry")` | Special | Self-healing |
 

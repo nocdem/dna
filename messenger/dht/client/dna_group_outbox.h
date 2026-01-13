@@ -2,15 +2,15 @@
  * @file dna_group_outbox.h
  * @brief Group Message Outbox via DHT
  *
- * Feed-pattern group messaging with owner-namespaced storage:
+ * Feed-pattern group messaging with per-sender chunked storage:
  * - Message encrypted once with GEK (AES-256-GCM)
- * - Stored ONCE in DHT per hour bucket per group
- * - All senders write to SAME key with unique value_id (from dht_get_owner_value_id())
- * - All members fetch via dht_get_all()
- * - Storage: O(message_size) per message vs O(N x message_size) in old system
+ * - Each sender stores at their OWN key (single-writer per key)
+ * - Storage uses chunked ZSTD compression (unlimited size)
+ * - Real-time notifications via dht_listen() per member
+ * - Day-based buckets (7 days retention)
  *
  * Key Format:
- *   dna:group:<group_uuid>:out:<hour_bucket>
+ *   dna:group:<group_uuid>:out:<day_bucket>:<sender_fingerprint>
  *
  * Message ID Format:
  *   <sender_fingerprint>_<group_uuid>_<timestamp_ms>
@@ -18,6 +18,7 @@
  * Part of DNA Messenger
  *
  * @date 2025-11-29
+ * @updated 2026-01-13 - Per-sender keys, day buckets, chunked storage, dht_listen
  */
 
 #ifndef DNA_GROUP_OUTBOX_H
@@ -45,8 +46,17 @@ extern "C" {
 /** TTL for group outbox buckets (7 days in seconds) */
 #define DNA_GROUP_OUTBOX_TTL (7 * 24 * 3600)
 
-/** Maximum hour buckets to sync on catch-up (7 days x 24 hours) */
-#define DNA_GROUP_OUTBOX_MAX_CATCHUP_BUCKETS 168
+/** Seconds per day for bucket calculation */
+#define DNA_GROUP_OUTBOX_SECONDS_PER_DAY 86400
+
+/** Maximum days to sync on catch-up (7 days) */
+#define DNA_GROUP_OUTBOX_MAX_CATCHUP_DAYS 7
+
+/** Key format for per-sender storage */
+#define DNA_GROUP_OUTBOX_KEY_FMT "dna:group:%s:out:%lu:%s"
+
+/** @deprecated Use DNA_GROUP_OUTBOX_MAX_CATCHUP_DAYS instead */
+#define DNA_GROUP_OUTBOX_MAX_CATCHUP_BUCKETS (DNA_GROUP_OUTBOX_MAX_CATCHUP_DAYS * 24)
 
 /** AES-256-GCM nonce size */
 #define DNA_GROUP_OUTBOX_NONCE_SIZE 12
@@ -110,19 +120,47 @@ typedef struct {
 } dna_group_message_t;
 
 /**
- * @brief Hour bucket containing messages from this sender
+ * @brief Day bucket containing messages from this sender
  *
- * Each sender maintains their own bucket at the shared key.
- * dht_get_all() returns all senders' buckets in one call.
+ * Each sender has their own DHT key for each day.
+ * Key format: dna:group:<uuid>:out:<day>:<sender_fp>
  */
 typedef struct {
     char group_uuid[37];
     char sender_fingerprint[129];
-    uint64_t hour_bucket;                       /* unix_timestamp / 3600 */
+    uint64_t day_bucket;                        /* unix_timestamp / 86400 */
     dna_group_message_t *messages;              /* Array of messages */
     size_t message_count;
     size_t allocated_count;
 } dna_group_outbox_bucket_t;
+
+/*============================================================================
+ * Listen Context Structures (for real-time notifications)
+ *============================================================================*/
+
+/**
+ * @brief Listen context for a single group member
+ */
+typedef struct {
+    char sender_fingerprint[129];               /* Member's fingerprint */
+    size_t listen_token;                        /* Token from dht_listen_ex() */
+    bool active;                                /* Is listener active? */
+} dna_group_member_listen_t;
+
+/**
+ * @brief Listen context for entire group
+ *
+ * Manages dht_listen() subscriptions for all members of a group.
+ * Created by dna_group_outbox_subscribe(), freed by unsubscribe().
+ */
+typedef struct {
+    char group_uuid[37];                        /* Group UUID */
+    uint64_t current_day;                       /* Current day bucket being listened */
+    dna_group_member_listen_t *members;         /* Array of member listeners */
+    size_t member_count;                        /* Number of members */
+    void (*on_new_message)(const char *group_uuid, size_t new_count, void *user_data);
+    void *user_data;                            /* User data for callback */
+} dna_group_listen_ctx_t;
 
 /*============================================================================
  * Send API
@@ -164,14 +202,39 @@ int dna_group_outbox_send(
  *============================================================================*/
 
 /**
- * @brief Fetch all messages from a group outbox for a specific hour
+ * @brief Fetch messages from a single sender for a specific day
  *
- * Uses dht_get_all() to retrieve all senders' messages in one call.
- * Messages are decrypted and signature-verified.
+ * Uses chunked DHT storage to fetch one sender's messages.
+ * Messages are NOT decrypted (caller must decrypt with GEK).
  *
  * @param dht_ctx DHT context
  * @param group_uuid Group UUID
- * @param hour_bucket Hour bucket to fetch (unix_timestamp / 3600, 0 = current hour)
+ * @param sender_fingerprint Sender's fingerprint (128 hex chars)
+ * @param day_bucket Day bucket (unix_timestamp / 86400, 0 = current day)
+ * @param messages_out Output: Array of messages (caller must free with dna_group_outbox_free_messages)
+ * @param count_out Output: Number of messages
+ * @return DNA_GROUP_OUTBOX_OK on success, error code on failure
+ */
+int dna_group_outbox_fetch_sender(
+    dht_context_t *dht_ctx,
+    const char *group_uuid,
+    const char *sender_fingerprint,
+    uint64_t day_bucket,
+    dna_group_message_t **messages_out,
+    size_t *count_out
+);
+
+/**
+ * @brief Fetch all messages from all members for a specific day
+ *
+ * Iterates through member list and fetches each sender's messages.
+ * Messages are NOT decrypted (caller must decrypt with GEK).
+ *
+ * @param dht_ctx DHT context
+ * @param group_uuid Group UUID
+ * @param day_bucket Day bucket (unix_timestamp / 86400, 0 = current day)
+ * @param member_fps Array of member fingerprints (128 hex chars each)
+ * @param member_count Number of members
  * @param messages_out Output: Array of messages (caller must free with dna_group_outbox_free_messages)
  * @param count_out Output: Number of messages
  * @return DNA_GROUP_OUTBOX_OK on success, error code on failure
@@ -179,31 +242,37 @@ int dna_group_outbox_send(
 int dna_group_outbox_fetch(
     dht_context_t *dht_ctx,
     const char *group_uuid,
-    uint64_t hour_bucket,
+    uint64_t day_bucket,
+    const char **member_fps,
+    size_t member_count,
     dna_group_message_t **messages_out,
     size_t *count_out
 );
 
 /**
- * @brief Sync all hours since last sync for a group
+ * @brief Sync all days since last sync for a group
  *
  * Flow:
- * 1. Get last_sync_hour from group_sync_state table
- * 2. current_hour = time(NULL) / 3600
- * 3. For each hour from (last_sync_hour + 1) to current_hour:
- *    - Fetch bucket via dht_get_all()
+ * 1. Get last_sync_day from group_sync_state table
+ * 2. current_day = time(NULL) / 86400
+ * 3. For each day from (last_sync_day + 1) to current_day:
+ *    - Fetch all members' buckets via dht_chunked_fetch()
  *    - Dedupe against existing messages by message_id
- *    - Store new messages in group_messages table
- * 4. Update last_sync_hour in group_sync_state
+ *    - Decrypt and store new messages in group_messages table
+ * 4. Update last_sync_day in group_sync_state
  *
  * @param dht_ctx DHT context
  * @param group_uuid Group UUID
+ * @param member_fps Array of member fingerprints (128 hex chars each)
+ * @param member_count Number of members
  * @param new_message_count_out Output: Number of new messages stored (optional)
  * @return DNA_GROUP_OUTBOX_OK on success, error code on failure
  */
 int dna_group_outbox_sync(
     dht_context_t *dht_ctx,
     const char *group_uuid,
+    const char **member_fps,
+    size_t member_count,
     size_t *new_message_count_out
 );
 
@@ -228,14 +297,42 @@ int dna_group_outbox_sync_all(
  *============================================================================*/
 
 /**
- * @brief Get current hour bucket
+ * @brief Get current day bucket
  *
+ * @return Current unix timestamp / 86400 (days since epoch)
+ */
+uint64_t dna_group_outbox_get_day_bucket(void);
+
+/**
+ * @brief Generate per-sender DHT key for group outbox
+ *
+ * Key format: dna:group:<group_uuid>:out:<day_bucket>:<sender_fingerprint>
+ *
+ * @param group_uuid Group UUID
+ * @param day_bucket Day bucket (unix_timestamp / 86400)
+ * @param sender_fingerprint Sender's fingerprint (128 hex chars)
+ * @param key_out Output buffer for key string (must be at least 256 bytes)
+ * @param key_out_size Size of output buffer
+ * @return 0 on success, -1 on error
+ */
+int dna_group_outbox_make_sender_key(
+    const char *group_uuid,
+    uint64_t day_bucket,
+    const char *sender_fingerprint,
+    char *key_out,
+    size_t key_out_size
+);
+
+/**
+ * @brief Get current hour bucket
+ * @deprecated Use dna_group_outbox_get_day_bucket() instead
  * @return Current unix timestamp / 3600
  */
 uint64_t dna_group_outbox_get_hour_bucket(void);
 
 /**
- * @brief Generate DHT key for group outbox
+ * @brief Generate DHT key for group outbox (shared key format)
+ * @deprecated Use dna_group_outbox_make_sender_key() instead
  *
  * Key format: dna:group:<group_uuid>:out:<hour_bucket>
  *
@@ -326,11 +423,32 @@ int dna_group_outbox_db_get_messages(
 );
 
 /**
- * @brief Get last sync hour for a group
+ * @brief Get last sync day for a group
  *
  * @param group_uuid Group UUID
- * @param last_sync_hour_out Output: Last synced hour bucket (0 if never synced)
+ * @param last_sync_day_out Output: Last synced day bucket (0 if never synced)
  * @return 0 on success, -1 on error
+ */
+int dna_group_outbox_db_get_last_sync_day(
+    const char *group_uuid,
+    uint64_t *last_sync_day_out
+);
+
+/**
+ * @brief Update last sync day for a group
+ *
+ * @param group_uuid Group UUID
+ * @param last_sync_day Day bucket that was synced
+ * @return 0 on success, -1 on error
+ */
+int dna_group_outbox_db_set_last_sync_day(
+    const char *group_uuid,
+    uint64_t last_sync_day
+);
+
+/**
+ * @brief Get last sync hour for a group
+ * @deprecated Use dna_group_outbox_db_get_last_sync_day() instead
  */
 int dna_group_outbox_db_get_last_sync_hour(
     const char *group_uuid,
@@ -339,14 +457,100 @@ int dna_group_outbox_db_get_last_sync_hour(
 
 /**
  * @brief Update last sync hour for a group
- *
- * @param group_uuid Group UUID
- * @param last_sync_hour Hour bucket that was synced
- * @return 0 on success, -1 on error
+ * @deprecated Use dna_group_outbox_db_set_last_sync_day() instead
  */
 int dna_group_outbox_db_set_last_sync_hour(
     const char *group_uuid,
     uint64_t last_sync_hour
+);
+
+/*============================================================================
+ * Listen API (Real-time notifications via DHT listen)
+ *============================================================================*/
+
+/**
+ * @brief Subscribe to group for real-time message notifications
+ *
+ * Creates dht_listen() subscriptions for each member's chunk:0 key.
+ * Callback fires when any member publishes new messages.
+ *
+ * @param dht_ctx DHT context
+ * @param group_uuid Group UUID
+ * @param member_fps Array of member fingerprints
+ * @param member_count Number of members
+ * @param on_new_message Callback when new messages arrive
+ * @param user_data User data for callback
+ * @param ctx_out Output: Listen context (caller must free with unsubscribe)
+ * @return 0 on success, error code on failure
+ */
+int dna_group_outbox_subscribe(
+    dht_context_t *dht_ctx,
+    const char *group_uuid,
+    const char **member_fps,
+    size_t member_count,
+    void (*on_new_message)(const char *group_uuid, size_t new_count, void *user_data),
+    void *user_data,
+    dna_group_listen_ctx_t **ctx_out
+);
+
+/**
+ * @brief Unsubscribe from group
+ *
+ * Cancels all dht_listen() subscriptions and frees context.
+ *
+ * @param dht_ctx DHT context (may be NULL if already freed)
+ * @param ctx Listen context to free
+ */
+void dna_group_outbox_unsubscribe(
+    dht_context_t *dht_ctx,
+    dna_group_listen_ctx_t *ctx
+);
+
+/**
+ * @brief Check and rotate listeners if day changed
+ *
+ * Call this periodically (e.g., every minute).
+ * If day changed, cancels old listeners and subscribes to new day.
+ *
+ * @param dht_ctx DHT context
+ * @param ctx Listen context
+ * @return 1 if rotated, 0 if no change, -1 on error
+ */
+int dna_group_outbox_check_day_rotation(
+    dht_context_t *dht_ctx,
+    dna_group_listen_ctx_t *ctx
+);
+
+/**
+ * @brief Add listener for a new group member
+ *
+ * Call when a member joins the group.
+ *
+ * @param dht_ctx DHT context
+ * @param ctx Listen context
+ * @param member_fingerprint New member's fingerprint
+ * @return 0 on success, -1 on error
+ */
+int dna_group_outbox_add_member_listener(
+    dht_context_t *dht_ctx,
+    dna_group_listen_ctx_t *ctx,
+    const char *member_fingerprint
+);
+
+/**
+ * @brief Remove listener for a departing member
+ *
+ * Call when a member leaves the group.
+ *
+ * @param dht_ctx DHT context
+ * @param ctx Listen context
+ * @param member_fingerprint Departing member's fingerprint
+ * @return 0 on success, -1 if not found
+ */
+int dna_group_outbox_remove_member_listener(
+    dht_context_t *dht_ctx,
+    dna_group_listen_ctx_t *ctx,
+    const char *member_fingerprint
 );
 
 /*============================================================================

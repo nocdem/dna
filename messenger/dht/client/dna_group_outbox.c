@@ -10,7 +10,11 @@
  */
 
 #include "dna_group_outbox.h"
+#include "../shared/dht_chunked.h"
+#include "../core/dht_listen.h"
+#include "dht_singleton.h"
 #include "../../messenger/gek.h"
+#include "../../messenger/groups.h"  // For groups_get_members()
 #include "../../messenger.h"  // For messenger_sync_group_gek
 #include "../../message_backup.h"
 #include "../../crypto/utils/qgp_aes.h"
@@ -64,8 +68,28 @@ static inline uint64_t htonll_outbox(uint64_t value) {
  * Utility Functions
  *============================================================================*/
 
+uint64_t dna_group_outbox_get_day_bucket(void) {
+    return (uint64_t)time(NULL) / DNA_GROUP_OUTBOX_SECONDS_PER_DAY;
+}
+
 uint64_t dna_group_outbox_get_hour_bucket(void) {
     return (uint64_t)time(NULL) / 3600;
+}
+
+int dna_group_outbox_make_sender_key(
+    const char *group_uuid,
+    uint64_t day_bucket,
+    const char *sender_fingerprint,
+    char *key_out,
+    size_t key_out_size
+) {
+    if (!group_uuid || !sender_fingerprint || !key_out || key_out_size < 256) {
+        return -1;
+    }
+
+    snprintf(key_out, key_out_size, DNA_GROUP_OUTBOX_KEY_FMT,
+             group_uuid, (unsigned long)day_bucket, sender_fingerprint);
+    return 0;
 }
 
 int dna_group_outbox_make_key(
@@ -338,8 +362,8 @@ int dna_group_outbox_send(
         }
     }
 
-    /* Step 2: Get current hour bucket */
-    uint64_t hour_bucket = dna_group_outbox_get_hour_bucket();
+    /* Step 2: Get current day bucket */
+    uint64_t day_bucket = dna_group_outbox_get_day_bucket();
 
     /* Step 3: Generate message ID */
     struct timespec ts;
@@ -419,53 +443,28 @@ int dna_group_outbox_send(
     memcpy(new_msg.signature, signature, signature_len);
     new_msg.signature_len = signature_len;
 
-    /* Step 7: Get my unique value_id */
-    uint64_t my_value_id = 1;
-    dht_get_owner_value_id(dht_ctx, &my_value_id);
+    /* Step 7: Generate MY per-sender DHT key */
+    char sender_key[512];
+    dna_group_outbox_make_sender_key(group_uuid, day_bucket, sender_fingerprint,
+                                      sender_key, sizeof(sender_key));
 
-    /* Step 8: Generate DHT key for this bucket */
-    char dht_key[128];
-    dna_group_outbox_make_key(group_uuid, hour_bucket, dht_key, sizeof(dht_key));
-
-    /* Step 9: Read my existing messages at this key (read-modify-write pattern) */
+    /* Step 8: Read my existing messages using chunked fetch */
     dna_group_message_t *existing_msgs = NULL;
     size_t existing_count = 0;
 
-    uint8_t **values = NULL;
-    size_t *lens = NULL;
-    size_t value_count = 0;
+    uint8_t *existing_data = NULL;
+    size_t existing_len = 0;
+    ret = dht_chunked_fetch(dht_ctx, sender_key, &existing_data, &existing_len);
 
-    /* Use dht_get with my value_id to get only my data */
-    ret = dht_get_all(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
-                      &values, &lens, &value_count);
-
-    if (ret == 0 && value_count > 0) {
-        /* Find my entry (match by sender fingerprint in deserialized messages) */
-        for (size_t i = 0; i < value_count; i++) {
-            if (values[i] && lens[i] > 0) {
-                char *json_str = malloc(lens[i] + 1);
-                if (json_str) {
-                    memcpy(json_str, values[i], lens[i]);
-                    json_str[lens[i]] = '\0';
-
-                    dna_group_message_t *msgs = NULL;
-                    size_t msg_count = 0;
-                    if (bucket_from_json(json_str, &msgs, &msg_count) == 0 && msgs) {
-                        /* Check if these are my messages */
-                        if (msg_count > 0 && strcmp(msgs[0].sender_fingerprint, sender_fingerprint) == 0) {
-                            existing_msgs = msgs;
-                            existing_count = msg_count;
-                        } else {
-                            dna_group_outbox_free_messages(msgs, msg_count);
-                        }
-                    }
-                    free(json_str);
-                }
-            }
-            free(values[i]);
+    if (ret == 0 && existing_data && existing_len > 0) {
+        char *json_str = malloc(existing_len + 1);
+        if (json_str) {
+            memcpy(json_str, existing_data, existing_len);
+            json_str[existing_len] = '\0';
+            bucket_from_json(json_str, &existing_msgs, &existing_count);
+            free(json_str);
         }
-        free(values);
-        free(lens);
+        free(existing_data);
     }
 
     QGP_LOG_INFO(LOG_TAG, "Found %zu existing messages in my bucket\n", existing_count);
@@ -496,25 +495,25 @@ int dna_group_outbox_send(
     }
     free(ciphertext);
 
-    /* Step 11: Serialize and publish to DHT */
+    /* Step 11: Serialize and publish to DHT using chunked storage */
     char *bucket_json = NULL;
     if (bucket_to_json(all_msgs, new_count, &bucket_json) != 0) {
         dna_group_outbox_free_messages(all_msgs, new_count);
         return DNA_GROUP_OUTBOX_ERR_SERIALIZE;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Publishing %zu messages to DHT key %s (value_id=%lu)\n",
-           new_count, dht_key, (unsigned long)my_value_id);
+    QGP_LOG_INFO(LOG_TAG, "Publishing %zu messages to sender key %s\n",
+           new_count, sender_key);
 
-    ret = dht_put_signed(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
-                         (const uint8_t *)bucket_json, strlen(bucket_json),
-                         my_value_id, DNA_GROUP_OUTBOX_TTL, "group_outbox");
+    ret = dht_chunked_publish(dht_ctx, sender_key,
+                               (const uint8_t *)bucket_json, strlen(bucket_json),
+                               DNA_GROUP_OUTBOX_TTL);
 
     free(bucket_json);
     dna_group_outbox_free_messages(all_msgs, new_count);
 
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT put failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT chunked publish failed: %s\n", dht_chunked_strerror(ret));
         return DNA_GROUP_OUTBOX_ERR_DHT_PUT;
     }
 
@@ -532,7 +531,143 @@ int dna_group_outbox_send(
  * Receive API
  *============================================================================*/
 
+int dna_group_outbox_fetch_sender(
+    dht_context_t *dht_ctx,
+    const char *group_uuid,
+    const char *sender_fingerprint,
+    uint64_t day_bucket,
+    dna_group_message_t **messages_out,
+    size_t *count_out
+) {
+    if (!dht_ctx || !group_uuid || !sender_fingerprint || !messages_out || !count_out) {
+        return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
+    }
+
+    *messages_out = NULL;
+    *count_out = 0;
+
+    /* Use current day if 0 */
+    if (day_bucket == 0) {
+        day_bucket = dna_group_outbox_get_day_bucket();
+    }
+
+    /* Generate per-sender DHT key */
+    char sender_key[512];
+    if (dna_group_outbox_make_sender_key(group_uuid, day_bucket, sender_fingerprint,
+                                          sender_key, sizeof(sender_key)) != 0) {
+        return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Fetching sender %s day %lu: %s\n",
+                  sender_fingerprint, (unsigned long)day_bucket, sender_key);
+
+    /* Fetch chunked data */
+    uint8_t *data = NULL;
+    size_t data_len = 0;
+    int ret = dht_chunked_fetch(dht_ctx, sender_key, &data, &data_len);
+
+    if (ret != 0 || !data || data_len == 0) {
+        /* No messages from this sender - not an error */
+        return DNA_GROUP_OUTBOX_OK;
+    }
+
+    /* Parse JSON */
+    char *json_str = malloc(data_len + 1);
+    if (!json_str) {
+        free(data);
+        return DNA_GROUP_OUTBOX_ERR_ALLOC;
+    }
+    memcpy(json_str, data, data_len);
+    json_str[data_len] = '\0';
+    free(data);
+
+    ret = bucket_from_json(json_str, messages_out, count_out);
+    free(json_str);
+
+    if (ret != 0) {
+        return DNA_GROUP_OUTBOX_ERR_DESERIALIZE;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Fetched %zu messages from sender %s\n",
+                  *count_out, sender_fingerprint);
+    return DNA_GROUP_OUTBOX_OK;
+}
+
 int dna_group_outbox_fetch(
+    dht_context_t *dht_ctx,
+    const char *group_uuid,
+    uint64_t day_bucket,
+    const char **member_fps,
+    size_t member_count,
+    dna_group_message_t **messages_out,
+    size_t *count_out
+) {
+    if (!dht_ctx || !group_uuid || !member_fps || !messages_out || !count_out) {
+        return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
+    }
+
+    *messages_out = NULL;
+    *count_out = 0;
+
+    /* Use current day if 0 */
+    if (day_bucket == 0) {
+        day_bucket = dna_group_outbox_get_day_bucket();
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Fetching group %s day %lu from %zu members\n",
+                 group_uuid, (unsigned long)day_bucket, member_count);
+
+    /* Collect all messages from all members */
+    dna_group_message_t *all_messages = NULL;
+    size_t total_count = 0;
+    size_t allocated = 0;
+
+    for (size_t i = 0; i < member_count; i++) {
+        if (!member_fps[i]) continue;
+
+        dna_group_message_t *member_msgs = NULL;
+        size_t member_msg_count = 0;
+
+        int ret = dna_group_outbox_fetch_sender(dht_ctx, group_uuid,
+                                                 member_fps[i], day_bucket,
+                                                 &member_msgs, &member_msg_count);
+
+        if (ret != 0 || !member_msgs || member_msg_count == 0) {
+            continue;
+        }
+
+        /* Expand array if needed */
+        if (total_count + member_msg_count > allocated) {
+            size_t new_alloc = (allocated == 0) ? 64 : allocated * 2;
+            while (new_alloc < total_count + member_msg_count) new_alloc *= 2;
+            dna_group_message_t *new_arr = realloc(all_messages, new_alloc * sizeof(dna_group_message_t));
+            if (!new_arr) {
+                dna_group_outbox_free_messages(member_msgs, member_msg_count);
+                continue;
+            }
+            all_messages = new_arr;
+            allocated = new_alloc;
+        }
+
+        /* Copy messages (transfer ownership) */
+        for (size_t j = 0; j < member_msg_count; j++) {
+            all_messages[total_count++] = member_msgs[j];
+            member_msgs[j].ciphertext = NULL;
+            member_msgs[j].plaintext = NULL;
+        }
+        free(member_msgs);
+    }
+
+    *messages_out = all_messages;
+    *count_out = total_count;
+
+    QGP_LOG_INFO(LOG_TAG, "Fetched %zu total messages from group %s\n",
+                 total_count, group_uuid);
+    return DNA_GROUP_OUTBOX_OK;
+}
+
+/* Legacy fetch using shared key - deprecated */
+static int dna_group_outbox_fetch_legacy(
     dht_context_t *dht_ctx,
     const char *group_uuid,
     uint64_t hour_bucket,
@@ -627,19 +762,21 @@ int dna_group_outbox_fetch(
 int dna_group_outbox_sync(
     dht_context_t *dht_ctx,
     const char *group_uuid,
+    const char **member_fps,
+    size_t member_count,
     size_t *new_message_count_out
 ) {
-    if (!dht_ctx || !group_uuid) {
+    if (!dht_ctx || !group_uuid || !member_fps || member_count == 0) {
         return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Syncing group %s\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Syncing group %s with %zu members\n", group_uuid, member_count);
 
-    /* Get last sync hour */
-    uint64_t last_sync_hour = 0;
-    dna_group_outbox_db_get_last_sync_hour(group_uuid, &last_sync_hour);
+    /* Get last sync day */
+    uint64_t last_sync_day = 0;
+    dna_group_outbox_db_get_last_sync_day(group_uuid, &last_sync_day);
 
-    uint64_t current_hour = dna_group_outbox_get_hour_bucket();
+    uint64_t current_day = dna_group_outbox_get_day_bucket();
     size_t new_count = 0;
 
     /* Load GEK for decryption */
@@ -660,20 +797,33 @@ int dna_group_outbox_sync(
         }
     }
 
-    /* Sync past buckets (sealed, fetch once) */
-    uint64_t start_hour = last_sync_hour > 0 ? last_sync_hour + 1 : current_hour - DNA_GROUP_OUTBOX_MAX_CATCHUP_BUCKETS;
-    if (start_hour > current_hour) start_hour = current_hour;
+    /* Determine start day */
+    uint64_t start_day = last_sync_day > 0
+        ? last_sync_day + 1
+        : current_day - DNA_GROUP_OUTBOX_MAX_CATCHUP_DAYS;
+    if (start_day > current_day) start_day = current_day;
 
-    for (uint64_t hour = start_hour; hour <= current_hour; hour++) {
+    QGP_LOG_INFO(LOG_TAG, "Syncing days %lu to %lu\n", (unsigned long)start_day, (unsigned long)current_day);
+
+    /* Sync each day */
+    for (uint64_t day = start_day; day <= current_day; day++) {
         dna_group_message_t *messages = NULL;
         size_t count = 0;
 
-        int ret = dna_group_outbox_fetch(dht_ctx, group_uuid, hour, &messages, &count);
+        /* Fetch from all members for this day */
+        int ret = dna_group_outbox_fetch(dht_ctx, group_uuid, day,
+                                          member_fps, member_count,
+                                          &messages, &count);
+
         if (ret != DNA_GROUP_OUTBOX_OK || !messages || count == 0) {
+            /* Update sync day for past days even if empty */
+            if (day < current_day) {
+                dna_group_outbox_db_set_last_sync_day(group_uuid, day);
+            }
             continue;
         }
 
-        QGP_LOG_INFO(LOG_TAG, "Processing %zu messages from hour %lu\n", count, (unsigned long)hour);
+        QGP_LOG_INFO(LOG_TAG, "Processing %zu messages from day %lu\n", count, (unsigned long)day);
 
         for (size_t i = 0; i < count; i++) {
             /* Check if already stored */
@@ -709,9 +859,9 @@ int dna_group_outbox_sync(
 
         dna_group_outbox_free_messages(messages, count);
 
-        /* Update sync hour for past buckets only */
-        if (hour < current_hour) {
-            dna_group_outbox_db_set_last_sync_hour(group_uuid, hour);
+        /* Update sync day for past days only */
+        if (day < current_day) {
+            dna_group_outbox_db_set_last_sync_day(group_uuid, day);
         }
     }
 
@@ -751,11 +901,32 @@ int dna_group_outbox_sync_all(
         const char *group_uuid = (const char *)sqlite3_column_text(stmt, 0);
         if (!group_uuid) continue;
 
+        /* Get members for this group */
+        groups_member_t *members = NULL;
+        int member_count = 0;
+        if (groups_get_members(group_uuid, &members, &member_count) != 0 || member_count == 0) {
+            QGP_LOG_WARN(LOG_TAG, "No members found for group %s\n", group_uuid);
+            continue;
+        }
+
+        /* Build fingerprint array */
+        const char **fps = malloc(member_count * sizeof(char *));
+        if (!fps) {
+            groups_free_members(members, member_count);
+            continue;
+        }
+        for (int m = 0; m < member_count; m++) {
+            fps[m] = members[m].fingerprint;
+        }
+
         size_t new_count = 0;
-        int ret = dna_group_outbox_sync(dht_ctx, group_uuid, &new_count);
+        int ret = dna_group_outbox_sync(dht_ctx, group_uuid, fps, member_count, &new_count);
         if (ret == DNA_GROUP_OUTBOX_OK) {
             total_new += new_count;
         }
+
+        free(fps);
+        groups_free_members(members, member_count);
     }
 
     sqlite3_finalize(stmt);
@@ -1065,6 +1236,23 @@ int dna_group_outbox_db_set_last_sync_hour(
     return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
+/* Day-based sync functions - use same column as hour (it's just a bucket number) */
+int dna_group_outbox_db_get_last_sync_day(
+    const char *group_uuid,
+    uint64_t *last_sync_day_out
+) {
+    /* Reuse hour column for day bucket */
+    return dna_group_outbox_db_get_last_sync_hour(group_uuid, last_sync_day_out);
+}
+
+int dna_group_outbox_db_set_last_sync_day(
+    const char *group_uuid,
+    uint64_t last_sync_day
+) {
+    /* Reuse hour column for day bucket */
+    return dna_group_outbox_db_set_last_sync_hour(group_uuid, last_sync_day);
+}
+
 /*============================================================================
  * Memory Management
  *============================================================================*/
@@ -1091,4 +1279,344 @@ void dna_group_outbox_free_bucket(dna_group_outbox_bucket_t *bucket) {
         dna_group_outbox_free_messages(bucket->messages, bucket->message_count);
     }
     free(bucket);
+}
+
+/*============================================================================
+ * Listen API (Real-time notifications)
+ *============================================================================*/
+
+/* Internal: Info passed to listen callback */
+typedef struct {
+    dna_group_listen_ctx_t *ctx;
+    size_t member_index;
+} group_listen_info_t;
+
+/* Internal: Cleanup callback for listen info */
+static void group_listen_cleanup(void *user_data) {
+    if (user_data) {
+        free(user_data);
+    }
+}
+
+/* Internal: DHT listen callback */
+static bool group_message_listen_callback(
+    const uint8_t *value,
+    size_t value_len,
+    bool expired,
+    void *user_data
+) {
+    if (expired || !value || value_len == 0 || !user_data) {
+        return true;  /* Continue listening */
+    }
+
+    group_listen_info_t *info = (group_listen_info_t *)user_data;
+    dna_group_listen_ctx_t *ctx = info->ctx;
+
+    if (!ctx || info->member_index >= ctx->member_count) {
+        return true;
+    }
+
+    const char *sender_fp = ctx->members[info->member_index].sender_fingerprint;
+
+    QGP_LOG_INFO(LOG_TAG, "Listen callback for group %s, sender %.16s...\n",
+                 ctx->group_uuid, sender_fp);
+
+    /* Fetch this sender's messages */
+    dna_group_message_t *messages = NULL;
+    size_t count = 0;
+
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        return true;
+    }
+
+    int ret = dna_group_outbox_fetch_sender(dht_ctx, ctx->group_uuid, sender_fp,
+                                             ctx->current_day, &messages, &count);
+
+    if (ret != 0 || !messages || count == 0) {
+        return true;
+    }
+
+    /* Load GEK for decryption */
+    uint8_t gek[GEK_KEY_SIZE];
+    if (gek_load_active(ctx->group_uuid, gek, NULL) != 0) {
+        dna_group_outbox_free_messages(messages, count);
+        return true;
+    }
+
+    /* Process and store new messages */
+    size_t new_count = 0;
+    for (size_t i = 0; i < count; i++) {
+        /* Check if already stored */
+        if (dna_group_outbox_db_message_exists(messages[i].message_id) == 1) {
+            continue;
+        }
+
+        /* Decrypt message */
+        if (messages[i].ciphertext && messages[i].ciphertext_len > 0) {
+            uint8_t *plaintext = malloc(messages[i].ciphertext_len);
+            if (plaintext) {
+                size_t plaintext_len = 0;
+                if (qgp_aes256_decrypt(gek, messages[i].ciphertext, messages[i].ciphertext_len,
+                                       (const uint8_t *)messages[i].message_id, strlen(messages[i].message_id),
+                                       messages[i].nonce, messages[i].tag,
+                                       plaintext, &plaintext_len) == 0) {
+                    messages[i].plaintext = malloc(plaintext_len + 1);
+                    if (messages[i].plaintext) {
+                        memcpy(messages[i].plaintext, plaintext, plaintext_len);
+                        messages[i].plaintext[plaintext_len] = '\0';
+                    }
+                }
+                free(plaintext);
+            }
+        }
+
+        /* Store in database */
+        if (dna_group_outbox_db_store_message(&messages[i]) == 0) {
+            new_count++;
+        }
+    }
+
+    dna_group_outbox_free_messages(messages, count);
+
+    /* Fire user callback if new messages */
+    if (new_count > 0 && ctx->on_new_message) {
+        ctx->on_new_message(ctx->group_uuid, new_count, ctx->user_data);
+    }
+
+    return true;  /* Continue listening */
+}
+
+/* Internal: Subscribe to a single member's chunk:0 key */
+static int subscribe_to_member(
+    dht_context_t *dht_ctx,
+    dna_group_listen_ctx_t *ctx,
+    size_t member_index
+) {
+    if (!dht_ctx || !ctx || member_index >= ctx->member_count) {
+        return -1;
+    }
+
+    /* Generate sender key for current day */
+    char sender_key[512];
+    dna_group_outbox_make_sender_key(ctx->group_uuid, ctx->current_day,
+                                      ctx->members[member_index].sender_fingerprint,
+                                      sender_key, sizeof(sender_key));
+
+    /* Generate chunk:0 key (binary) */
+    uint8_t chunk0_key[DHT_CHUNK_KEY_SIZE];
+    dht_chunked_make_key(sender_key, 0, chunk0_key);
+
+    /* Create callback info */
+    group_listen_info_t *info = malloc(sizeof(group_listen_info_t));
+    if (!info) {
+        return -1;
+    }
+    info->ctx = ctx;
+    info->member_index = member_index;
+
+    /* Subscribe */
+    size_t token = dht_listen_ex(dht_ctx, chunk0_key, DHT_CHUNK_KEY_SIZE,
+                                  group_message_listen_callback,
+                                  info,
+                                  group_listen_cleanup);
+
+    ctx->members[member_index].listen_token = token;
+    ctx->members[member_index].active = (token != 0);
+
+    if (token == 0) {
+        free(info);
+        return -1;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Subscribed to member %.16s... token=%zu\n",
+                  ctx->members[member_index].sender_fingerprint, token);
+    return 0;
+}
+
+int dna_group_outbox_subscribe(
+    dht_context_t *dht_ctx,
+    const char *group_uuid,
+    const char **member_fps,
+    size_t member_count,
+    void (*on_new_message)(const char *group_uuid, size_t new_count, void *user_data),
+    void *user_data,
+    dna_group_listen_ctx_t **ctx_out
+) {
+    if (!dht_ctx || !group_uuid || !member_fps || member_count == 0 || !ctx_out) {
+        return -1;
+    }
+
+    /* Allocate context */
+    dna_group_listen_ctx_t *ctx = calloc(1, sizeof(dna_group_listen_ctx_t));
+    if (!ctx) {
+        return -1;
+    }
+
+    strncpy(ctx->group_uuid, group_uuid, sizeof(ctx->group_uuid) - 1);
+    ctx->current_day = dna_group_outbox_get_day_bucket();
+    ctx->on_new_message = on_new_message;
+    ctx->user_data = user_data;
+    ctx->member_count = member_count;
+
+    ctx->members = calloc(member_count, sizeof(dna_group_member_listen_t));
+    if (!ctx->members) {
+        free(ctx);
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Subscribing to group %s with %zu members, day %lu\n",
+                 group_uuid, member_count, (unsigned long)ctx->current_day);
+
+    /* Subscribe to each member's chunk:0 key */
+    size_t success_count = 0;
+    for (size_t i = 0; i < member_count; i++) {
+        if (!member_fps[i]) continue;
+
+        strncpy(ctx->members[i].sender_fingerprint, member_fps[i], 128);
+
+        if (subscribe_to_member(dht_ctx, ctx, i) == 0) {
+            success_count++;
+        }
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Subscribed to %zu/%zu members\n", success_count, member_count);
+
+    *ctx_out = ctx;
+    return 0;
+}
+
+void dna_group_outbox_unsubscribe(
+    dht_context_t *dht_ctx,
+    dna_group_listen_ctx_t *ctx
+) {
+    if (!ctx) return;
+
+    QGP_LOG_INFO(LOG_TAG, "Unsubscribing from group %s\n", ctx->group_uuid);
+
+    /* Cancel all listeners */
+    if (dht_ctx) {
+        for (size_t i = 0; i < ctx->member_count; i++) {
+            if (ctx->members[i].active) {
+                dht_cancel_listen(dht_ctx, ctx->members[i].listen_token);
+                ctx->members[i].active = false;
+            }
+        }
+    }
+
+    /* Free context */
+    free(ctx->members);
+    free(ctx);
+}
+
+int dna_group_outbox_check_day_rotation(
+    dht_context_t *dht_ctx,
+    dna_group_listen_ctx_t *ctx
+) {
+    if (!dht_ctx || !ctx) {
+        return -1;
+    }
+
+    uint64_t new_day = dna_group_outbox_get_day_bucket();
+
+    if (new_day == ctx->current_day) {
+        return 0;  /* No change */
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Day rotation: %lu -> %lu for group %s\n",
+                 (unsigned long)ctx->current_day, (unsigned long)new_day,
+                 ctx->group_uuid);
+
+    /* Cancel old listeners */
+    for (size_t i = 0; i < ctx->member_count; i++) {
+        if (ctx->members[i].active) {
+            dht_cancel_listen(dht_ctx, ctx->members[i].listen_token);
+            ctx->members[i].active = false;
+            ctx->members[i].listen_token = 0;
+        }
+    }
+
+    /* Update day */
+    ctx->current_day = new_day;
+
+    /* Resubscribe for new day */
+    size_t success_count = 0;
+    for (size_t i = 0; i < ctx->member_count; i++) {
+        if (ctx->members[i].sender_fingerprint[0] == '\0') continue;
+
+        if (subscribe_to_member(dht_ctx, ctx, i) == 0) {
+            success_count++;
+        }
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Rotated: %zu/%zu members resubscribed\n",
+                 success_count, ctx->member_count);
+
+    return 1;  /* Rotated */
+}
+
+int dna_group_outbox_add_member_listener(
+    dht_context_t *dht_ctx,
+    dna_group_listen_ctx_t *ctx,
+    const char *member_fingerprint
+) {
+    if (!dht_ctx || !ctx || !member_fingerprint) {
+        return -1;
+    }
+
+    /* Expand members array */
+    dna_group_member_listen_t *new_members = realloc(ctx->members,
+        (ctx->member_count + 1) * sizeof(dna_group_member_listen_t));
+    if (!new_members) {
+        return -1;
+    }
+    ctx->members = new_members;
+
+    /* Initialize new member slot */
+    size_t idx = ctx->member_count;
+    memset(&ctx->members[idx], 0, sizeof(dna_group_member_listen_t));
+    strncpy(ctx->members[idx].sender_fingerprint, member_fingerprint, 128);
+
+    ctx->member_count++;
+
+    /* Subscribe to new member */
+    int ret = subscribe_to_member(dht_ctx, ctx, idx);
+
+    QGP_LOG_INFO(LOG_TAG, "Added member listener for %.16s... (ret=%d)\n",
+                 member_fingerprint, ret);
+
+    return ret;
+}
+
+int dna_group_outbox_remove_member_listener(
+    dht_context_t *dht_ctx,
+    dna_group_listen_ctx_t *ctx,
+    const char *member_fingerprint
+) {
+    if (!ctx || !member_fingerprint) {
+        return -1;
+    }
+
+    /* Find member */
+    for (size_t i = 0; i < ctx->member_count; i++) {
+        if (strcmp(ctx->members[i].sender_fingerprint, member_fingerprint) == 0) {
+            /* Cancel listener */
+            if (ctx->members[i].active && dht_ctx) {
+                dht_cancel_listen(dht_ctx, ctx->members[i].listen_token);
+            }
+
+            /* Remove from array (shift remaining) */
+            if (i < ctx->member_count - 1) {
+                memmove(&ctx->members[i], &ctx->members[i + 1],
+                    (ctx->member_count - i - 1) * sizeof(dna_group_member_listen_t));
+            }
+            ctx->member_count--;
+
+            QGP_LOG_INFO(LOG_TAG, "Removed member listener for %.16s...\n",
+                         member_fingerprint);
+            return 0;
+        }
+    }
+
+    return -1;  /* Not found */
 }

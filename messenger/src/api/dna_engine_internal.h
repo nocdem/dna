@@ -18,6 +18,7 @@
 #include "dht/shared/dht_groups.h"
 #include "dht/shared/dht_offline_queue.h"
 #include "dht/shared/dht_contact_request.h"
+#include "dht/client/dna_group_outbox.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -507,6 +508,12 @@ struct dna_engine {
     int delivery_tracker_count;
     pthread_mutex_t delivery_trackers_mutex;
 
+    /* Group outbox listeners (for real-time group message notifications) */
+    #define DNA_MAX_GROUP_LISTENERS 64
+    dna_group_listen_ctx_t *group_listen_contexts[DNA_MAX_GROUP_LISTENERS];
+    int group_listen_count;
+    pthread_mutex_t group_listen_mutex;
+
     /* Event callback */
     dna_event_cb event_callback;
     void *event_user_data;
@@ -690,6 +697,51 @@ void dna_handle_get_comment_votes(dna_engine_t *engine, dna_task_t *task);
  * Free task parameters (heap-allocated parts)
  */
 void dna_free_task_params(dna_task_t *task);
+
+/* ============================================================================
+ * INTERNAL FUNCTIONS - Group Messaging
+ * ============================================================================ */
+
+/**
+ * Fire Android callback for group messages (internal helper)
+ * Called from group outbox subscribe callback when new messages arrive.
+ *
+ * @param group_uuid    UUID of the group
+ * @param group_name    Display name of the group (may be NULL)
+ * @param new_count     Number of new messages
+ */
+void dna_engine_fire_group_message_callback(
+    const char *group_uuid,
+    const char *group_name,
+    size_t new_count
+);
+
+/**
+ * Subscribe to all groups (internal)
+ * Called at engine init after DHT connects. Sets up listeners for all groups
+ * the user is a member of. Also performs full sync of last 7 days.
+ *
+ * @param engine    Engine instance
+ * @return Number of groups subscribed to
+ */
+int dna_engine_subscribe_all_groups(dna_engine_t *engine);
+
+/**
+ * Unsubscribe from all groups (internal)
+ * Called at engine shutdown or DHT disconnection.
+ *
+ * @param engine    Engine instance
+ */
+void dna_engine_unsubscribe_all_groups(dna_engine_t *engine);
+
+/**
+ * Check day rotation for all group listeners (internal)
+ * Called periodically (e.g., every 60 seconds) to rotate listeners at midnight UTC.
+ *
+ * @param engine    Engine instance
+ * @return Number of groups that rotated
+ */
+int dna_engine_check_group_day_rotation(dna_engine_t *engine);
 
 #ifdef __cplusplus
 }
