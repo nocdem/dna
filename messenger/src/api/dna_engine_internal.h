@@ -78,6 +78,7 @@ typedef enum {
     TASK_GET_GROUPS,
     TASK_CREATE_GROUP,
     TASK_SEND_GROUP_MESSAGE,
+    TASK_GET_GROUP_CONVERSATION,
     TASK_ADD_GROUP_MEMBER,
     TASK_GET_INVITATIONS,
     TASK_ACCEPT_INVITATION,
@@ -223,6 +224,11 @@ typedef union {
         char group_uuid[37];
         char *message;  /* Heap allocated, task owns */
     } send_group_message;
+
+    /* Get group conversation */
+    struct {
+        char group_uuid[37];
+    } get_group_conversation;
 
     /* Add group member */
     struct {
@@ -653,6 +659,7 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_create_group(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_send_group_message(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_group_conversation(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_invitations(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_accept_invitation(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_reject_invitation(dna_engine_t *engine, dna_task_t *task);

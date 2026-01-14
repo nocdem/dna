@@ -460,6 +460,7 @@ abstract class DnaEventType {
   static const int DNA_EVENT_CONTACT_REQUEST_RECEIVED = 12;
   static const int DNA_EVENT_OUTBOX_UPDATED = 13;  // Contact's outbox has new messages
   static const int DNA_EVENT_ERROR = 14;
+  static const int DNA_EVENT_GROUP_MESSAGE_RECEIVED = 15;  // New group messages via DHT listen
 }
 
 /// Event data union - message received
@@ -1792,6 +1793,21 @@ class DnaBindings {
   ) {
     return _dna_engine_send_group_message(
         engine, group_uuid, message, callback, user_data);
+  }
+
+  late final _dna_engine_get_group_conversation = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaMessagesCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaMessagesCb>, Pointer<Void>)>('dna_engine_get_group_conversation');
+
+  int dna_engine_get_group_conversation(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> group_uuid,
+    Pointer<DnaMessagesCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_group_conversation(engine, group_uuid, callback, user_data);
   }
 
   late final _dna_engine_get_invitations = _lib.lookupFunction<

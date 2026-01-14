@@ -199,6 +199,13 @@ class EventHandler {
         });
         break;
 
+      case GroupMessageReceivedEvent(groupUuid: final uuid, newCount: final count):
+        // New group messages received via DHT listener - refresh group conversation
+        _ref.invalidate(groupConversationProvider(uuid));
+        // Also refresh groups list to update any preview/badge
+        _ref.invalidate(groupsProvider);
+        break;
+
       case ErrorEvent(message: final errorMsg):
         // Store error for UI to display
         _ref.read(lastErrorProvider.notifier).state = errorMsg;

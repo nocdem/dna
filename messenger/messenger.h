@@ -750,6 +750,22 @@ int messenger_load_group_messages(
 );
 
 /**
+ * Get group conversation messages (as message_info_t for engine API)
+ *
+ * @param ctx: Messenger context
+ * @param group_id: Local group ID
+ * @param messages_out: Output array of message_info_t (caller must free)
+ * @param count_out: Number of messages returned
+ * @return: 0 on success, -1 on error
+ */
+int messenger_get_group_conversation(
+    messenger_context_t *ctx,
+    int group_id,
+    message_info_t **messages_out,
+    int *count_out
+);
+
+/**
  * Free group array
  *
  * @param groups: Array of group_info_t to free

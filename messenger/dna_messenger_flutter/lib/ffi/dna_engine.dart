@@ -981,6 +981,13 @@ class OutboxUpdatedEvent extends DnaEvent {
 /// Contact request received event - someone sent us a contact request
 class ContactRequestReceivedEvent extends DnaEvent {}
 
+/// Group message received event - new messages in a group
+class GroupMessageReceivedEvent extends DnaEvent {
+  final String groupUuid;
+  final int newCount;
+  GroupMessageReceivedEvent(this.groupUuid, this.newCount);
+}
+
 // =============================================================================
 // EXCEPTIONS
 // =============================================================================
@@ -1201,6 +1208,23 @@ class DnaEngine {
         }
         final contactFp = String.fromCharCodes(fpBytes);
         dartEvent = OutboxUpdatedEvent(contactFp);
+        break;
+      case DnaEventType.DNA_EVENT_GROUP_MESSAGE_RECEIVED:
+        // Parse group_uuid (37 bytes) and new_count (int32 at offset 40)
+        // C struct: char group_uuid[37] + 3 padding bytes + int new_count
+        final uuidBytes = <int>[];
+        for (var i = 0; i < 36; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          uuidBytes.add(byte);
+        }
+        final groupUuid = String.fromCharCodes(uuidBytes);
+        // new_count is at offset 40 (37 bytes + 3 padding for 4-byte alignment)
+        final newCount = event.data[40] |
+            (event.data[41] << 8) |
+            (event.data[42] << 16) |
+            (event.data[43] << 24);
+        dartEvent = GroupMessageReceivedEvent(groupUuid, newCount);
         break;
       case DnaEventType.DNA_EVENT_ERROR:
         dartEvent = ErrorEvent(0, 'Error occurred');
@@ -3231,6 +3255,52 @@ class DnaEngine {
     if (requestId == 0) {
       calloc.free(groupPtr);
       calloc.free(messagePtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get group conversation messages
+  /// Messages are returned in ASC order (oldest first)
+  Future<List<Message>> getGroupConversation(String groupUuid) async {
+    final completer = Completer<List<Message>>();
+    final localId = _nextLocalId++;
+
+    final groupPtr = groupUuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<dna_message_t> messages,
+                    int count, Pointer<Void> userData) {
+      calloc.free(groupPtr);
+
+      if (error == 0) {
+        final result = <Message>[];
+        for (var i = 0; i < count; i++) {
+          result.add(Message.fromNative((messages + i).ref));
+        }
+        if (count > 0) {
+          _bindings.dna_free_messages(messages, count);
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaMessagesCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_group_conversation(
+      _engine,
+      groupPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(groupPtr);
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit request');
     }

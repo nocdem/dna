@@ -880,6 +880,54 @@ int dht_groups_get_uuid_by_local_id(
     return result;
 }
 
+// Get local group ID from group UUID (Phase 7 - Group Messages)
+int dht_groups_get_local_id_by_uuid(
+    const char *identity,
+    const char *group_uuid,
+    int *local_id_out
+) {
+    if (!identity || !group_uuid || !local_id_out || !g_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to get_local_id_by_uuid\n");
+        return -1;
+    }
+
+    // Query local cache for local_id by group_uuid
+    // User must be a member of the group (security check)
+    const char *sql =
+        "SELECT c.local_id "
+        "FROM dht_group_cache c "
+        "INNER JOIN dht_group_members m ON c.group_uuid = m.group_uuid "
+        "WHERE c.group_uuid = ? AND m.member_identity = ? "
+        "LIMIT 1";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare query: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, identity, -1, SQLITE_STATIC);
+
+    int result = -2;  // Not found by default
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        *local_id_out = sqlite3_column_int(stmt, 0);
+        result = 0;
+    }
+
+    sqlite3_finalize(stmt);
+
+    if (result == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "Mapped UUID %s to local_id %d for user %.16s...\n",
+                     group_uuid, *local_id_out, identity);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "UUID %s not found for user %.16s...\n", group_uuid, identity);
+    }
+
+    return result;
+}
+
 // Sync group metadata from DHT to local cache
 int dht_groups_sync_from_dht(
     dht_context_t *dht_ctx,

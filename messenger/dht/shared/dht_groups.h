@@ -198,6 +198,23 @@ int dht_groups_get_uuid_by_local_id(
 );
 
 /**
+ * Get local group ID from group UUID (Phase 7 - Group Messages)
+ *
+ * Reverse helper function to map group_uuid to local_id.
+ * Useful for functions that receive UUID from DHT/events.
+ *
+ * @param identity: User identity (for per-user group cache)
+ * @param group_uuid: Group UUID (36 chars)
+ * @param local_id_out: Output local group ID
+ * @return: 0 on success, -1 on error, -2 if not found
+ */
+int dht_groups_get_local_id_by_uuid(
+    const char *identity,
+    const char *group_uuid,
+    int *local_id_out
+);
+
+/**
  * Sync group metadata from DHT to local cache
  *
  * @param dht_ctx: DHT context

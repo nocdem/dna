@@ -1647,6 +1647,25 @@ DNA_API dna_request_id_t dna_engine_send_group_message(
 );
 
 /**
+ * Get group conversation messages
+ *
+ * Retrieves all messages from a group, decrypted with GEK.
+ * Messages are returned in chronological order (oldest first).
+ *
+ * @param engine      Engine instance
+ * @param group_uuid  Group UUID
+ * @param callback    Called with messages array
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_get_group_conversation(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_messages_cb callback,
+    void *user_data
+);
+
+/**
  * Add member to group
  *
  * Adds member to group in DHT, rotates GEK, sends invitation.

@@ -956,6 +956,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_SEND_GROUP_MESSAGE:
             dna_handle_send_group_message(engine, task);
             break;
+        case TASK_GET_GROUP_CONVERSATION:
+            dna_handle_get_group_conversation(engine, task);
+            break;
         case TASK_ADD_GROUP_MEMBER:
             dna_handle_add_group_member(engine, task);
             break;
@@ -3431,6 +3434,118 @@ done:
     task->callback.completion(task->request_id, error, task->user_data);
 }
 
+void dna_handle_get_group_conversation(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+    dna_message_t *messages = NULL;
+    int count = 0;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    /* Look up local_id from group_uuid using helper function */
+    int local_id = -1;
+    int lookup_rc = dht_groups_get_local_id_by_uuid(
+        engine->fingerprint,
+        task->params.get_group_conversation.group_uuid,
+        &local_id
+    );
+
+    if (lookup_rc != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Group UUID %s not found for user",
+                     task->params.get_group_conversation.group_uuid);
+        error = DNA_ENGINE_ERROR_NOT_FOUND;
+        goto done;
+    }
+
+    /* Get group conversation messages */
+    message_info_t *msg_infos = NULL;
+    int msg_count = 0;
+
+    int rc = messenger_get_group_conversation(
+        engine->messenger,
+        local_id,
+        &msg_infos,
+        &msg_count
+    );
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get group conversation: %d", rc);
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Got %d group messages for group %s (local_id=%d)",
+                  msg_count, task->params.get_group_conversation.group_uuid, local_id);
+
+    if (msg_count > 0) {
+        messages = calloc(msg_count, sizeof(dna_message_t));
+        if (!messages) {
+            messenger_free_messages(msg_infos, msg_count);
+            error = DNA_ERROR_INTERNAL;
+            goto done;
+        }
+
+        for (int i = 0; i < msg_count; i++) {
+            messages[i].id = msg_infos[i].id;
+            strncpy(messages[i].sender, msg_infos[i].sender ? msg_infos[i].sender : "", 128);
+            /* For group messages, recipient is the group UUID */
+            strncpy(messages[i].recipient, task->params.get_group_conversation.group_uuid, 36);
+
+            /* Use pre-decrypted plaintext from messenger layer */
+            if (msg_infos[i].plaintext) {
+                messages[i].plaintext = strdup(msg_infos[i].plaintext);
+            } else {
+                messages[i].plaintext = strdup("[Decryption failed]");
+            }
+
+            /* Parse timestamp string (format: YYYY-MM-DD HH:MM:SS) */
+            if (msg_infos[i].timestamp) {
+                struct tm tm = {0};
+                if (strptime(msg_infos[i].timestamp, "%Y-%m-%d %H:%M:%S", &tm) != NULL) {
+                    messages[i].timestamp = (uint64_t)mktime(&tm);
+                } else {
+                    messages[i].timestamp = (uint64_t)time(NULL);
+                }
+            } else {
+                messages[i].timestamp = (uint64_t)time(NULL);
+            }
+
+            /* Determine if outgoing */
+            messages[i].is_outgoing = (msg_infos[i].sender &&
+                strcmp(msg_infos[i].sender, engine->fingerprint) == 0);
+
+            /* Map status string to int: 0=pending, 1=sent, 2=failed, 3=delivered, 4=read */
+            if (msg_infos[i].status) {
+                if (strcmp(msg_infos[i].status, "read") == 0) {
+                    messages[i].status = 4;
+                } else if (strcmp(msg_infos[i].status, "delivered") == 0) {
+                    messages[i].status = 3;
+                } else if (strcmp(msg_infos[i].status, "failed") == 0) {
+                    messages[i].status = 2;
+                } else if (strcmp(msg_infos[i].status, "sent") == 0) {
+                    messages[i].status = 1;
+                } else if (strcmp(msg_infos[i].status, "pending") == 0) {
+                    messages[i].status = 0;
+                } else {
+                    messages[i].status = 3;  /* default to delivered for group messages */
+                }
+            } else {
+                messages[i].status = 3;  /* default to delivered for group messages */
+            }
+
+            messages[i].message_type = msg_infos[i].message_type;
+        }
+        count = msg_count;
+
+        messenger_free_messages(msg_infos, msg_count);
+    }
+
+done:
+    task->callback.messages(task->request_id, error, messages, count, task->user_data);
+}
+
 void dna_handle_add_group_member(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
 
@@ -5699,6 +5814,23 @@ dna_request_id_t dna_engine_send_group_message(
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_SEND_GROUP_MESSAGE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_group_conversation(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_messages_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_group_conversation.group_uuid, group_uuid, 36);
+
+    dna_task_callback_t cb = { .messages = callback };
+    return dna_submit_task(engine, TASK_GET_GROUP_CONVERSATION, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_add_group_member(
