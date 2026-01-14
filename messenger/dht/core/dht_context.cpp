@@ -996,7 +996,21 @@ extern "C" int dht_put_signed_sync(dht_context_t *ctx,
 
         // Create value with specified ID
         auto dht_value = std::make_shared<dht::Value>(value, value_len);
-        dht_value->type = 0x444E41;  // "DNA"
+
+        // Set TTL (0 = use default 7 days)
+        if (ttl_seconds == 0) {
+            ttl_seconds = 7 * 24 * 3600;  // 7 days
+        }
+
+        // Choose ValueType based on TTL (365/30/7 days) - same as dht_put_signed()
+        if (ttl_seconds >= 365 * 24 * 3600) {
+            dht_value->type = 0x1002;  // 365-day
+        } else if (ttl_seconds >= 30 * 24 * 3600) {
+            dht_value->type = 0x1003;  // 30-day
+        } else {
+            dht_value->type = 0x1001;  // 7-day
+        }
+
         dht_value->id = value_id;
 
         // Caller string for logging
