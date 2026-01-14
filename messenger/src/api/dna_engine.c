@@ -780,35 +780,34 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
         }
     }
 
-    /* When OUTBOX_UPDATED fires, spawn a background thread to fetch from that contact only.
-     * IMPORTANT: Must NOT block the DHT callback thread - that causes ANR when
-     * app resumes because Flutter's DHT operations block on the same mutex. */
-    if (event->type == DNA_EVENT_OUTBOX_UPDATED && g_android_notification_cb) {
+#ifdef __ANDROID__
+    /* Android: When OUTBOX_UPDATED fires and Flutter is NOT attached, just show notification.
+     * Don't fetch - let Flutter handle fetching when user opens app.
+     * This avoids race conditions between C auto-fetch and Flutter fetch. */
+    if (event->type == DNA_EVENT_OUTBOX_UPDATED && g_android_notification_cb && !flutter_attached) {
         const char *contact_fp = event->data.outbox_updated.contact_fingerprint;
-        QGP_LOG_INFO(LOG_TAG, "[AUTO-FETCH] Spawning fetch for %.20s...", contact_fp);
+        const char *display_name = NULL;
+        char name_buf[256] = {0};
 
-        if (engine->messenger && engine->identity_loaded) {
-            /* Create context with contact fingerprint */
-            fetch_thread_ctx_t *ctx = calloc(1, sizeof(fetch_thread_ctx_t));
-            if (ctx) {
-                ctx->engine = engine;
-                strncpy(ctx->sender_fp, contact_fp, sizeof(ctx->sender_fp) - 1);
-
-                /* Spawn detached thread for non-blocking fetch */
-                pthread_t fetch_thread;
-                pthread_attr_t attr;
-                pthread_attr_init(&attr);
-                pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-                if (pthread_create(&fetch_thread, &attr, background_fetch_thread, ctx) == 0) {
-                    QGP_LOG_DEBUG(LOG_TAG, "[AUTO-FETCH] Fetch thread spawned");
-                } else {
-                    QGP_LOG_WARN(LOG_TAG, "[AUTO-FETCH] Failed to spawn fetch thread");
-                    free(ctx);
-                }
-                pthread_attr_destroy(&attr);
+        /* Try to get display name from profile cache */
+        dna_unified_identity_t *cached = NULL;
+        uint64_t cached_at = 0;
+        if (profile_cache_get(contact_fp, &cached, &cached_at) == 0 && cached) {
+            if (cached->display_name[0]) {
+                strncpy(name_buf, cached->display_name, sizeof(name_buf) - 1);
+                display_name = name_buf;
+            } else if (cached->registered_name[0]) {
+                strncpy(name_buf, cached->registered_name, sizeof(name_buf) - 1);
+                display_name = name_buf;
             }
+            dna_identity_free(cached);
         }
+
+        QGP_LOG_INFO(LOG_TAG, "[ANDROID-NOTIFY] Flutter detached, notifying: fp=%.16s... name=%s",
+                     contact_fp, display_name ? display_name : "(unknown)");
+        g_android_notification_cb(contact_fp, display_name, g_android_notification_data);
     }
+#endif
 
     /* Android notification callback - called for MESSAGE_RECEIVED events
      * (incoming messages only). This allows Android to show native

@@ -29,9 +29,10 @@ class AndroidPlatformHandler implements PlatformHandler {
 
   @override
   Future<void> onOutboxUpdated(DnaEngine engine) async {
-    // On Android, native code already fetched messages via background_fetch_thread
-    // JNI notification helper shows notifications directly
-    // Flutter just needs to sync UI state - no need to call checkOfflineMessages()
+    // Flutter handles message fetching on all platforms (unified behavior).
+    // C auto-fetch only runs when Flutter is detached (app backgrounded/killed).
+    // This avoids race conditions between C and Flutter both trying to fetch.
+    await engine.checkOfflineMessages();
   }
 
   @override
