@@ -25,9 +25,9 @@ abstract class PlatformHandler {
 
   /// Called when app comes to foreground (resumed)
   ///
-  /// Android: Re-attach Flutter event callback (was detached for JNI to handle)
+  /// Android: Re-attach Flutter event callback, fetch offline messages
   /// Desktop: No-op (callback stays attached)
-  void onResume(DnaEngine engine);
+  Future<void> onResume(DnaEngine engine);
 
   /// Called when app goes to background (paused)
   ///

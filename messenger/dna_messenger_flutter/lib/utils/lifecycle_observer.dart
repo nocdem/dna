@@ -64,9 +64,9 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       final engine = await ref.read(engineProvider.future);
 
       // Platform-specific resume handling
-      // Android: Re-attach event callback (was detached for JNI to handle background)
+      // Android: Re-attach event callback, fetch offline messages
       // Desktop: No-op (callback stays attached)
-      PlatformHandler.instance.onResume(engine);
+      await PlatformHandler.instance.onResume(engine);
 
       // Always resume presence heartbeat first (marks us as online)
       // This is safe even if DHT is disconnected - heartbeat will just fail silently

@@ -13,14 +13,14 @@ import '../platform_handler.dart';
 /// - Native code fetches messages via background_fetch_thread
 class AndroidPlatformHandler implements PlatformHandler {
   @override
-  void onResume(DnaEngine engine) {
+  Future<void> onResume(DnaEngine engine) async {
     // Re-attach Flutter event callback
     // Was detached on pause so JNI could handle background notifications
     engine.attachEventCallback();
 
     // Fetch any messages that arrived while app was backgrounded
     // Notifications were shown but messages not fetched (to avoid race condition)
-    engine.checkOfflineMessages();
+    await engine.checkOfflineMessages();
   }
 
   @override
