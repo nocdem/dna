@@ -783,12 +783,67 @@ class _DataSectionState extends ConsumerState<_DataSection> {
     }
   }
 
+  String _formatLastSync(DateTime? lastSync) {
+    if (lastSync == null) return 'Never synced';
+    final now = DateTime.now();
+    final diff = now.difference(lastSync);
+    if (diff.inMinutes < 1) return 'Just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
+    if (diff.inHours < 24) return '${diff.inHours} hours ago';
+    return '${diff.inDays} days ago';
+  }
+
   @override
   Widget build(BuildContext context) {
+    final syncState = ref.watch(syncSettingsProvider);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader('Data'),
+        // Auto-sync toggle
+        SwitchListTile(
+          secondary: FaIcon(
+            FontAwesomeIcons.arrowsRotate,
+            color: syncState.autoSyncEnabled
+                ? Theme.of(context).colorScheme.primary
+                : null,
+          ),
+          title: const Text('Auto Sync'),
+          subtitle: Text(
+            syncState.autoSyncEnabled
+                ? 'Last sync: ${_formatLastSync(syncState.lastSyncTime)}'
+                : 'Sync messages automatically every 15 minutes',
+          ),
+          value: syncState.autoSyncEnabled,
+          onChanged: (value) {
+            ref.read(syncSettingsProvider.notifier).setAutoSyncEnabled(value);
+          },
+        ),
+        // Sync Now button (visible when auto-sync is enabled)
+        if (syncState.autoSyncEnabled)
+          ListTile(
+            leading: syncState.isSyncing
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const FaIcon(FontAwesomeIcons.rotate),
+            title: const Text('Sync Now'),
+            subtitle: syncState.lastSyncError != null
+                ? Text(
+                    syncState.lastSyncError!,
+                    style: TextStyle(color: DnaColors.textWarning),
+                  )
+                : const Text('Force immediate sync'),
+            trailing: syncState.isSyncing ? null : const FaIcon(FontAwesomeIcons.chevronRight),
+            onTap: syncState.isSyncing
+                ? null
+                : () => ref.read(syncSettingsProvider.notifier).syncNow(),
+          ),
+        const Divider(height: 1, indent: 16, endIndent: 16),
+        // Manual backup
         ListTile(
           leading: _isBackingUp
               ? const SizedBox(

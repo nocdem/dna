@@ -381,6 +381,18 @@ final class dna_debug_log_entry_t extends Struct {
   external Array<Char> message;
 }
 
+/// Backup info structure for check_backup_exists (v0.4.60)
+final class dna_backup_info_t extends Struct {
+  @Bool()
+  external bool exists;
+
+  @Uint64()
+  external int timestamp;
+
+  @Int32()
+  external int message_count;
+}
+
 /// User profile information (synced with DHT dna_unified_identity_t)
 final class dna_profile_t extends Struct {
   // Cellframe wallets
@@ -843,6 +855,15 @@ typedef DnaBackupResultCbNative = Void Function(
 );
 typedef DnaBackupResultCb = NativeFunction<DnaBackupResultCbNative>;
 
+/// Backup info callback - Native (v0.4.60 for check_backup_exists)
+typedef DnaBackupInfoCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_backup_info_t> info,
+  Pointer<Void> user_data,
+);
+typedef DnaBackupInfoCb = NativeFunction<DnaBackupInfoCbNative>;
+
 /// Address book callback - Native
 typedef DnaAddressbookCbNative = Void Function(
   Uint64 request_id,
@@ -1026,6 +1047,13 @@ typedef DnaBackupResultCbDart = void Function(
   int error,
   int processedCount,
   int skippedCount,
+  Pointer<Void> userData,
+);
+
+typedef DnaBackupInfoCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_backup_info_t> info,
   Pointer<Void> userData,
 );
 
@@ -2716,6 +2744,26 @@ class DnaBindings {
     Pointer<Void> user_data,
   ) {
     return _dna_engine_restore_messages(engine, callback, user_data);
+  }
+
+  late final _dna_engine_check_backup_exists = _lib.lookupFunction<
+      Uint64 Function(
+        Pointer<dna_engine_t>,
+        Pointer<DnaBackupInfoCb>,
+        Pointer<Void>,
+      ),
+      int Function(
+        Pointer<dna_engine_t>,
+        Pointer<DnaBackupInfoCb>,
+        Pointer<Void>,
+      )>('dna_engine_check_backup_exists');
+
+  int dna_engine_check_backup_exists(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaBackupInfoCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_check_backup_exists(engine, callback, user_data);
   }
 
   // ---------------------------------------------------------------------------

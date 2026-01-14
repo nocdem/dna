@@ -8671,6 +8671,73 @@ dna_request_id_t dna_engine_restore_messages(
 }
 
 /* ============================================================================
+ * BACKUP CHECK API
+ * ============================================================================ */
+
+dna_request_id_t dna_engine_check_backup_exists(
+    dna_engine_t *engine,
+    dna_backup_info_cb callback,
+    void *user_data)
+{
+    dna_request_id_t request_id = dna_next_request_id(engine);
+
+    if (!engine || !callback) {
+        QGP_LOG_ERROR(LOG_TAG, "check_backup_exists: invalid parameters");
+        if (callback) {
+            dna_backup_info_t info = {0};
+            callback(request_id, -1, &info, user_data);
+        }
+        return request_id;
+    }
+
+    if (engine->fingerprint[0] == '\0') {
+        QGP_LOG_ERROR(LOG_TAG, "check_backup_exists: no identity loaded");
+        dna_backup_info_t info = {0};
+        callback(request_id, -1, &info, user_data);
+        return request_id;
+    }
+
+    // Get DHT context
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "check_backup_exists: DHT not initialized");
+        dna_backup_info_t info = {0};
+        callback(request_id, -1, &info, user_data);
+        return request_id;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Checking if backup exists for fingerprint %.20s...",
+                 engine->fingerprint);
+
+    // Use dht_message_backup_get_info to check without full download
+    uint64_t timestamp = 0;
+    int message_count = -1;
+    int result = dht_message_backup_get_info(dht_ctx, engine->fingerprint,
+                                              &timestamp, &message_count);
+
+    dna_backup_info_t info = {0};
+    if (result == 0) {
+        info.exists = true;
+        info.timestamp = timestamp;
+        info.message_count = message_count;
+        QGP_LOG_INFO(LOG_TAG, "Backup found: timestamp=%llu, messages=%d",
+                     (unsigned long long)timestamp, message_count);
+        callback(request_id, 0, &info, user_data);
+    } else if (result == -2) {
+        info.exists = false;
+        info.timestamp = 0;
+        info.message_count = 0;
+        QGP_LOG_INFO(LOG_TAG, "No backup found in DHT");
+        callback(request_id, 0, &info, user_data);
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to check backup: %d", result);
+        callback(request_id, result, &info, user_data);
+    }
+
+    return request_id;
+}
+
+/* ============================================================================
  * VERSION CHECK API
  * ============================================================================ */
 

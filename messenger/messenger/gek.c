@@ -1112,3 +1112,155 @@ int ikp_get_member_count(const uint8_t *packet, size_t packet_size, uint8_t *cou
     *count_out = packet[44];
     return 0;
 }
+
+/* ============================================================================
+ * BACKUP / RESTORE (Multi-Device Sync)
+ * ============================================================================ */
+
+int gek_export_all(gek_export_entry_t **entries_out, size_t *count_out) {
+    if (!entries_out || !count_out) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_export_all: NULL parameter");
+        return -1;
+    }
+
+    *entries_out = NULL;
+    *count_out = 0;
+
+    if (!msg_db) {
+        // Not an error - GEK module not used yet, return empty
+        QGP_LOG_DEBUG(LOG_TAG, "gek_export_all: No database (not initialized)");
+        return 0;
+    }
+
+    // Count GEK entries
+    const char *count_sql = "SELECT COUNT(*) FROM group_geks";
+    sqlite3_stmt *count_stmt;
+    if (sqlite3_prepare_v2(msg_db, count_sql, -1, &count_stmt, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare count statement: %s", sqlite3_errmsg(msg_db));
+        return -1;
+    }
+
+    size_t total_count = 0;
+    if (sqlite3_step(count_stmt) == SQLITE_ROW) {
+        total_count = (size_t)sqlite3_column_int(count_stmt, 0);
+    }
+    sqlite3_finalize(count_stmt);
+
+    if (total_count == 0) {
+        QGP_LOG_INFO(LOG_TAG, "No GEK entries to export");
+        return 0;
+    }
+
+    // Allocate output array
+    gek_export_entry_t *entries = calloc(total_count, sizeof(gek_export_entry_t));
+    if (!entries) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate export entries");
+        return -1;
+    }
+
+    // Query all GEK entries (encrypted_key is already encrypted in DB)
+    const char *select_sql =
+        "SELECT group_uuid, version, encrypted_key, created_at, expires_at FROM group_geks";
+    sqlite3_stmt *select_stmt;
+
+    if (sqlite3_prepare_v2(msg_db, select_sql, -1, &select_stmt, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare select statement: %s", sqlite3_errmsg(msg_db));
+        free(entries);
+        return -1;
+    }
+
+    size_t idx = 0;
+    while (sqlite3_step(select_stmt) == SQLITE_ROW && idx < total_count) {
+        const char *uuid = (const char *)sqlite3_column_text(select_stmt, 0);
+        uint32_t version = (uint32_t)sqlite3_column_int(select_stmt, 1);
+        const void *enc_gek = sqlite3_column_blob(select_stmt, 2);
+        int enc_gek_len = sqlite3_column_bytes(select_stmt, 2);
+        uint64_t created_at = (uint64_t)sqlite3_column_int64(select_stmt, 3);
+        uint64_t expires_at = (uint64_t)sqlite3_column_int64(select_stmt, 4);
+
+        if (uuid && enc_gek && enc_gek_len == GEK_ENC_TOTAL_SIZE) {
+            strncpy(entries[idx].group_uuid, uuid, 36);
+            entries[idx].group_uuid[36] = '\0';
+            entries[idx].gek_version = version;
+            memcpy(entries[idx].encrypted_gek, enc_gek, GEK_ENC_TOTAL_SIZE);
+            entries[idx].created_at = created_at;
+            entries[idx].expires_at = expires_at;
+            idx++;
+        }
+    }
+
+    sqlite3_finalize(select_stmt);
+
+    *entries_out = entries;
+    *count_out = idx;
+
+    QGP_LOG_INFO(LOG_TAG, "Exported %zu GEK entries for backup", idx);
+    return 0;
+}
+
+int gek_import_all(const gek_export_entry_t *entries, size_t count, int *imported_out) {
+    if (!entries && count > 0) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_import_all: NULL entries with count > 0");
+        return -1;
+    }
+
+    if (imported_out) {
+        *imported_out = 0;
+    }
+
+    if (count == 0) {
+        QGP_LOG_INFO(LOG_TAG, "No GEK entries to import");
+        return 0;
+    }
+
+    if (!msg_db) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_import_all: Database not initialized");
+        return -1;
+    }
+
+    // Prepare insert statement (INSERT OR IGNORE to skip duplicates)
+    const char *insert_sql =
+        "INSERT OR IGNORE INTO group_geks "
+        "(group_uuid, version, encrypted_key, created_at, expires_at) "
+        "VALUES (?, ?, ?, ?, ?)";
+    sqlite3_stmt *insert_stmt;
+
+    if (sqlite3_prepare_v2(msg_db, insert_sql, -1, &insert_stmt, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare insert statement: %s", sqlite3_errmsg(msg_db));
+        return -1;
+    }
+
+    int imported = 0;
+    for (size_t i = 0; i < count; i++) {
+        sqlite3_reset(insert_stmt);
+        sqlite3_bind_text(insert_stmt, 1, entries[i].group_uuid, -1, SQLITE_STATIC);
+        sqlite3_bind_int(insert_stmt, 2, (int)entries[i].gek_version);
+        sqlite3_bind_blob(insert_stmt, 3, entries[i].encrypted_gek, GEK_ENC_TOTAL_SIZE, SQLITE_STATIC);
+        sqlite3_bind_int64(insert_stmt, 4, (sqlite3_int64)entries[i].created_at);
+        sqlite3_bind_int64(insert_stmt, 5, (sqlite3_int64)entries[i].expires_at);
+
+        if (sqlite3_step(insert_stmt) == SQLITE_DONE) {
+            if (sqlite3_changes(msg_db) > 0) {
+                imported++;
+            }
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Failed to import GEK entry %zu: %s", i, sqlite3_errmsg(msg_db));
+        }
+    }
+
+    sqlite3_finalize(insert_stmt);
+
+    if (imported_out) {
+        *imported_out = imported;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Imported %d/%zu GEK entries from backup", imported, count);
+    return 0;
+}
+
+void gek_free_export_entries(gek_export_entry_t *entries, size_t count) {
+    (void)count;  // No per-entry cleanup needed
+    if (entries) {
+        free(entries);
+    }
+}

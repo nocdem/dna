@@ -2849,6 +2849,47 @@ DNA_API dna_request_id_t dna_engine_restore_messages(
     void *user_data
 );
 
+/**
+ * Backup info structure for check_backup_exists
+ */
+typedef struct {
+    bool exists;              /* True if backup found in DHT */
+    uint64_t timestamp;       /* Backup timestamp (Unix epoch) */
+    int message_count;        /* Number of messages (-1 if unknown) */
+} dna_backup_info_t;
+
+/**
+ * Callback for backup info check
+ *
+ * @param request_id  Request ID from the call
+ * @param error       0 on success, -1 on error
+ * @param info        Backup info (only valid if error == 0)
+ * @param user_data   User data from the call
+ */
+typedef void (*dna_backup_info_cb)(
+    int request_id,
+    int error,
+    const dna_backup_info_t *info,
+    void *user_data
+);
+
+/**
+ * Check if message backup exists in DHT
+ *
+ * Useful for new device setup - check if user has existing backup
+ * before prompting to restore.
+ *
+ * @param engine     Engine instance
+ * @param callback   Called on completion with backup info
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_check_backup_exists(
+    dna_engine_t *engine,
+    dna_backup_info_cb callback,
+    void *user_data
+);
+
 /* ============================================================================
  * VERSION CHECK API - DHT-based version announcements
  * ============================================================================ */

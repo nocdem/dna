@@ -660,6 +660,19 @@ class BackupResult {
   });
 }
 
+/// Info about existing backup in DHT (v0.4.60)
+class BackupInfo {
+  final bool exists;
+  final DateTime? timestamp;
+  final int messageCount;
+
+  BackupInfo({
+    required this.exists,
+    this.timestamp,
+    required this.messageCount,
+  });
+}
+
 /// User profile information (synced with DHT dna_unified_identity_t)
 class UserProfile {
   // Cellframe wallets
@@ -4253,6 +4266,51 @@ class DnaEngine {
     if (requestId == 0) {
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit restore request');
+    }
+
+    return completer.future;
+  }
+
+  /// Check if message backup exists in DHT (v0.4.60)
+  /// Returns backup info without downloading the full backup
+  /// Used for new device restore flow
+  Future<BackupInfo> checkBackupExists() async {
+    final completer = Completer<BackupInfo>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<dna_backup_info_t> info, Pointer<Void> userData) {
+      if (error == 0 && info != nullptr) {
+        final infoRef = info.ref;
+        completer.complete(BackupInfo(
+          exists: infoRef.exists,
+          timestamp: infoRef.timestamp > 0
+              ? DateTime.fromMillisecondsSinceEpoch(infoRef.timestamp * 1000)
+              : null,
+          messageCount: infoRef.message_count,
+        ));
+      } else {
+        // No backup found or error - return exists=false
+        completer.complete(BackupInfo(
+          exists: false,
+          messageCount: 0,
+        ));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaBackupInfoCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_check_backup_exists(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      // Return no backup instead of throwing - graceful degradation
+      return BackupInfo(exists: false, messageCount: 0);
     }
 
     return completer.future;

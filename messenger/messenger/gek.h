@@ -392,6 +392,55 @@ int ikp_get_version(const uint8_t *packet, size_t packet_size, uint32_t *version
  */
 int ikp_get_member_count(const uint8_t *packet, size_t packet_size, uint8_t *count_out);
 
+/* ============================================================================
+ * BACKUP / RESTORE (Multi-Device Sync)
+ * ============================================================================ */
+
+/**
+ * GEK export entry for backup
+ * Contains encrypted GEK data (safe to store in DHT backup)
+ */
+typedef struct {
+    char group_uuid[37];              // UUID v4 (36 + null)
+    uint32_t gek_version;             // GEK version number
+    uint8_t encrypted_gek[GEK_ENC_TOTAL_SIZE];  // Encrypted GEK (1628 bytes)
+    uint64_t created_at;              // Creation timestamp
+    uint64_t expires_at;              // Expiration timestamp
+} gek_export_entry_t;
+
+/**
+ * Export all GEKs for backup
+ *
+ * Retrieves all GEK entries from the database in encrypted form.
+ * The GEKs remain encrypted (safe to include in DHT backup).
+ *
+ * @param entries_out Output array (allocated by function, caller must free)
+ * @param count_out Output for number of entries
+ * @return 0 on success, -1 on error
+ */
+int gek_export_all(gek_export_entry_t **entries_out, size_t *count_out);
+
+/**
+ * Import GEKs from backup
+ *
+ * Imports encrypted GEK entries into the database.
+ * Skips entries that already exist (by group_uuid + version).
+ *
+ * @param entries Array of GEK entries to import
+ * @param count Number of entries
+ * @param imported_out Output for number of successfully imported entries (can be NULL)
+ * @return 0 on success, -1 on error
+ */
+int gek_import_all(const gek_export_entry_t *entries, size_t count, int *imported_out);
+
+/**
+ * Free exported GEK entries array
+ *
+ * @param entries Array to free
+ * @param count Number of entries
+ */
+void gek_free_export_entries(gek_export_entry_t *entries, size_t count);
+
 #ifdef __cplusplus
 }
 #endif

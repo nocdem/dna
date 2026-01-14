@@ -259,6 +259,56 @@ int groups_is_member(const char *group_uuid, const char *my_fp);
  */
 int groups_is_owner(const char *group_uuid, const char *my_fp);
 
+/* ============================================================================
+ * BACKUP / RESTORE (Multi-Device Sync)
+ * ============================================================================ */
+
+/**
+ * Group export entry for backup
+ * Contains full group info including members
+ */
+typedef struct {
+    char uuid[37];              // Group UUID
+    char name[128];             // Group display name
+    char owner_fp[129];         // Owner fingerprint
+    bool is_owner;              // True if we are owner
+    uint64_t created_at;        // Creation timestamp
+    char **members;             // Array of member fingerprints
+    int member_count;           // Number of members
+} groups_export_entry_t;
+
+/**
+ * Export all groups for backup
+ *
+ * Retrieves all group entries from the database with members.
+ *
+ * @param entries_out Output array (allocated by function, caller must free with groups_free_export_entries)
+ * @param count_out Output for number of entries
+ * @return 0 on success, -1 on error
+ */
+int groups_export_all(groups_export_entry_t **entries_out, size_t *count_out);
+
+/**
+ * Import groups from backup
+ *
+ * Imports group entries into the database.
+ * Skips groups that already exist (by UUID).
+ *
+ * @param entries Array of group entries to import
+ * @param count Number of entries
+ * @param imported_out Output for number of successfully imported groups (can be NULL)
+ * @return 0 on success, -1 on error
+ */
+int groups_import_all(const groups_export_entry_t *entries, size_t count, int *imported_out);
+
+/**
+ * Free exported groups array
+ *
+ * @param entries Array to free
+ * @param count Number of entries
+ */
+void groups_free_export_entries(groups_export_entry_t *entries, size_t count);
+
 #ifdef __cplusplus
 }
 #endif
