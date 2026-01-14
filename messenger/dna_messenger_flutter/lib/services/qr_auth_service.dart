@@ -1,15 +1,18 @@
 /// QR Auth Service for DNA Messenger
 ///
 /// Handles the QR-based authentication flow:
-/// 1. Builds canonical signed_payload JSON
-/// 2. Signs with Dilithium5 via FFI
-/// 3. POSTs to callback URL
-/// 4. Returns success/failure status
+/// 1. Validates QR payload
+/// 2. Enforces RP/origin binding rules (v2+)
+/// 3. Builds canonical signed_payload JSON
+/// 4. Signs with Dilithium5 via FFI
+/// 5. POSTs to callback URL
+/// 6. Returns success/failure status
 library;
 
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
@@ -63,8 +66,16 @@ class QrAuthService {
     if (callbackUri == null) {
       return const QrAuthResult.failure('Invalid callback URL');
     }
-    if (callbackUri.scheme != 'https') {
+    if (callbackUri.scheme.toLowerCase() != 'https') {
       return const QrAuthResult.failure('Callback URL must use HTTPS');
+    }
+
+    // WebAuthn-style RP/origin binding enforcement (v2+ payloads).
+    // This is the "browser-enforced" part in WebAuthn terms: refuse to sign
+    // if origin/callback do not align with rp_id.
+    final rpError = validateRpBinding(payload);
+    if (rpError != null) {
+      return QrAuthResult.failure(rpError);
     }
 
     try {
@@ -78,22 +89,27 @@ class QrAuthService {
       final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final expiresAt = payload.expiresAt ?? (now + 120); // Default 2 minutes
 
-      final signedPayload = _buildCanonicalSignedPayload(
+      // For v2+ payloads, include rp_id in the signed canonical JSON
+      final pv = payload.v ?? 1;
+      final includeRp = pv >= 2 && (payload.rpId != null && payload.rpId!.isNotEmpty);
+
+      final signedPayloadStr = _buildCanonicalSignedPayload(
         origin: payload.origin!,
         sessionId: payload.sessionId!,
         nonce: payload.nonce!,
         issuedAt: now,
         expiresAt: expiresAt,
+        rpId: includeRp ? payload.rpId : null,
       );
-      //final payloadHash = sha3_256.convert(utf8.encode(signedPayload)).toString();
-      //debugPrint('QR_AUTH: payload_len=${utf8.encode(signedPayload).length} payload_sha3_256=$payloadHash');
-      final payloadBytesDbg = utf8.encode(signedPayload);
-      final payloadHash = sha256.convert(payloadBytesDbg).toString();
-      debugPrint('QR_AUTH: payload_len=${payloadBytesDbg.length} payload_sha256=$payloadHash');
-      debugPrint('QR_AUTH: Signing payload: $signedPayload');
+
+      final payloadBytes = utf8.encode(signedPayloadStr);
+      final payloadHash = sha256.convert(payloadBytes).toString();
+      debugPrint(
+        'QR_AUTH: payload_len=${payloadBytes.length} payload_sha256=$payloadHash',
+      );
+      debugPrint('QR_AUTH: Signing payload: $signedPayloadStr');
 
       // Sign the canonical JSON bytes
-      final payloadBytes = utf8.encode(signedPayload);
       final signature = _engine.signData(Uint8List.fromList(payloadBytes));
 
       // Base64 encode the signature
@@ -102,19 +118,28 @@ class QrAuthService {
       // Export Dilithium signing public key (raw bytes -> base64)
       final pubkeyB64 = base64Encode(_engine.signingPublicKey);
 
+      // Build signed_payload object (must correspond to the canonical string)
+      final signedPayloadObj = <String, dynamic>{
+        'origin': payload.origin!,
+        'session_id': payload.sessionId!,
+        'nonce': payload.nonce!,
+        'issued_at': now,
+        'expires_at': expiresAt,
+      };
+
+      if (includeRp) {
+        // Normalize to match canonical builder behavior
+        signedPayloadObj['rp_id'] = payload.rpId!.trim().toLowerCase();
+      }
+
       // Build the response body
       final responseBody = _buildResponseBody(
         sessionId: payload.sessionId!,
         fingerprint: fingerprint,
         pubkeyB64: pubkeyB64,
         signature: signatureBase64,
-        signedPayload: {
-          'origin': payload.origin!,
-          'session_id': payload.sessionId!,
-          'nonce': payload.nonce!,
-          'issued_at': now,
-          'expires_at': expiresAt,
-        },
+        signedPayload: signedPayloadObj,
+        v: includeRp ? 2 : 1,
       );
 
       debugPrint('QR_AUTH: Posting to callback: ${payload.callbackUrl}');
@@ -131,30 +156,45 @@ class QrAuthService {
     }
   }
 
-  /// Build canonical signed_payload JSON (RFC 8785 style: sorted keys, no whitespace)
+  /// Build canonical signed_payload JSON (sorted keys, no whitespace).
+  ///
+  /// IMPORTANT: Must match server reconstruction byte-for-byte.
+  ///
+  /// v1 keys (alphabetical):
+  ///   expires_at, issued_at, nonce, origin, session_id
+  ///
+  /// v2+ adds rp_id (alphabetical position between origin and session_id):
+  ///   expires_at, issued_at, nonce, origin, rp_id, session_id
   String _buildCanonicalSignedPayload({
     required String origin,
     required String sessionId,
     required String nonce,
     required int issuedAt,
     required int expiresAt,
+    String? rpId,
   }) {
-    // Keys must be in sorted order for canonical JSON
-    // expires_at, issued_at, nonce, origin, session_id (alphabetical)
-    return '{"expires_at":$expiresAt,"issued_at":$issuedAt,"nonce":"$nonce","origin":"$origin","session_id":"$sessionId"}';
+    final normOrigin = origin.trim();
+
+    if (rpId != null && rpId.trim().isNotEmpty) {
+      final normRpId = rpId.trim().toLowerCase();
+      return '{"expires_at":$expiresAt,"issued_at":$issuedAt,"nonce":"$nonce","origin":"$normOrigin","rp_id":"$normRpId","session_id":"$sessionId"}';
+    }
+
+    return '{"expires_at":$expiresAt,"issued_at":$issuedAt,"nonce":"$nonce","origin":"$normOrigin","session_id":"$sessionId"}';
   }
 
-  /// Build the complete response body
+  /// Build the complete response body JSON string
   String _buildResponseBody({
     required String sessionId,
     required String fingerprint,
     required String pubkeyB64,
     required String signature,
     required Map<String, dynamic> signedPayload,
+    required int v,
   }) {
     final response = {
       'type': 'dna.auth.response',
-      'v': 1,
+      'v': v,
       'session_id': sessionId,
       'fingerprint': fingerprint,
       'pubkey_b64': pubkeyB64,
@@ -171,8 +211,7 @@ class QrAuthService {
       client = HttpClient()
         ..connectionTimeout = const Duration(seconds: 15)
         ..badCertificateCallback = (cert, host, port) {
-          // In production, we should NOT accept bad certificates
-          // This is only for development/testing
+          // In production, do NOT accept bad certificates.
           debugPrint('QR_AUTH: Bad certificate for $host:$port');
           return false;
         };
@@ -193,74 +232,31 @@ class QrAuthService {
 
       final statusCode = response.statusCode;
 
-      // Read response body (do NOT just drain it—this is where error details live)
-      final responseText = await response.transform(utf8.decoder).join();
-      final contentType = response.headers.contentType?.mimeType;
+      // Read body for better errors (server may return JSON detail)
+      final respText = await utf8.decoder.bind(response).join();
 
       if (statusCode >= 200 && statusCode < 300) {
         debugPrint('QR_AUTH: Auth callback success: $statusCode');
         return const QrAuthResult.success();
-      }
+      } else {
+        debugPrint('QR_AUTH ERROR: Auth callback failed: $statusCode body=$respText');
 
-      // Try to parse a structured error message from JSON responses.
-      String? errorMessage;
-
-      if (contentType == 'application/json' && responseText.isNotEmpty) {
+        // Try to extract a nicer message if server returns JSON detail
+        String msg = 'Server returned $statusCode';
         try {
-          final decoded = jsonDecode(responseText);
-
-          // FastAPI often returns {"detail": "..."} or {"detail": {...}}
-          dynamic detail = decoded is Map<String, dynamic> ? decoded['detail'] : null;
-
-          // Support both:
-          // 1) {"detail":{"error":"not_authorized","reason":"identity_not_allowed"}}
-          // 2) {"error":"not_authorized","reason":"identity_not_allowed"}
-          String? error;
-          String? reason;
-
-          if (detail is Map<String, dynamic>) {
-            error = detail['error']?.toString();
-            reason = detail['reason']?.toString();
-          } else if (decoded is Map<String, dynamic>) {
-            error = decoded['error']?.toString();
-            reason = decoded['reason']?.toString();
-            // Sometimes detail is a string:
-            if (error == null && reason == null && detail is String) {
-              errorMessage = detail;
-            }
-          }
-
-          // Map known reasons to human-friendly messages
-          if (errorMessage == null) {
-            if (reason == 'identity_not_allowed') {
-              errorMessage = 'Not authorized: this identity is not allowed for this service.';
-            } else if (reason == 'invalid_signature') {
-              errorMessage = 'Authentication failed: signature was rejected by server.';
-            } else if (reason == 'fingerprint_pubkey_mismatch') {
-              errorMessage = 'Authentication failed: identity binding mismatch.';
-            } else if (reason == 'replay_nonce') {
-              errorMessage = 'Authentication failed: replay detected.';
-            } else if (error != null || reason != null) {
-              // Generic structured error fallback
-              final parts = <String>[];
-              if (error != null && error.isNotEmpty) parts.add(error);
-              if (reason != null && reason.isNotEmpty) parts.add(reason);
-              errorMessage = parts.isEmpty ? null : parts.join(' / ');
+          final decoded = jsonDecode(respText);
+          if (decoded is Map && decoded['detail'] != null) {
+            final detail = decoded['detail'];
+            if (detail is Map && detail['message'] is String) {
+              msg = detail['message'] as String;
             }
           }
         } catch (_) {
-          // Ignore JSON parsing errors and fall back to generic message below
+          // ignore, keep generic message
         }
+
+        return QrAuthResult.failure(msg, statusCode: statusCode);
       }
-
-      // If we couldn't parse a better message, use status code
-      errorMessage ??= 'Server returned $statusCode';
-
-      debugPrint('QR_AUTH ERROR: Auth callback failed: $statusCode body="$responseText"');
-      return QrAuthResult.failure(
-        errorMessage,
-        statusCode: statusCode,
-      );
     } on SocketException catch (e) {
       debugPrint('QR_AUTH ERROR: Network error: $e');
       return QrAuthResult.failure('Network error: ${e.message}');
@@ -278,12 +274,9 @@ class QrAuthService {
     }
   }
 
-
   /// Deny an auth request (optional - just navigates away without POSTing)
-  /// In the future, this could POST a denial response if the spec requires it.
   void deny(QrPayload payload) {
     debugPrint('QR_AUTH: Auth request denied by user: ${payload.origin}');
-    // Currently no network call needed for denial
-    // The server will timeout the session
+    // No network call for denial; server will timeout the session
   }
 }
