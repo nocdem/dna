@@ -245,3 +245,5 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 - Used for QR-based authentication flows where app needs to prove identity to external services
 - `sign_data` returns 0 on success, `DNA_ENGINE_ERROR_NO_IDENTITY` if no identity loaded
 - `get_signing_public_key` returns bytes written (2592) on success, negative on error
+
+**Protocol Documentation:** See [QR_AUTH.md](../QR_AUTH.md) for full QR authentication protocol specification (v1/v2/v3), payload formats, RP binding, and canonical signing.
