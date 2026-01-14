@@ -45,6 +45,9 @@
 /** Delay between retry attempts in milliseconds */
 #define DHT_CHUNK_RETRY_DELAY_MS    500
 
+/** Timeout for synchronous PUT completion (5 seconds) */
+#define DHT_CHUNK_PUT_TIMEOUT_MS    5000
+
 /*============================================================================
  * Internal Structures
  *============================================================================*/
@@ -518,7 +521,7 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
             snprintf(caller, sizeof(caller), "chunk:contacts");
         } else if (strstr(base_key, ":backup")) {
             snprintf(caller, sizeof(caller), "chunk:backup");
-        } else if (strstr(base_key, "dht:group:")) {
+        } else if (strstr(base_key, "dna:group:")) {
             snprintf(caller, sizeof(caller), "chunk:group");
         } else if (strstr(base_key, ":gek:")) {
             snprintf(caller, sizeof(caller), "chunk:gek");
@@ -527,11 +530,18 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
             snprintf(caller, sizeof(caller), "chunk:%.48s", base_key);
         }
 
-        // Publish to DHT
-        if (dht_put_signed(ctx, dht_key, DHT_CHUNK_KEY_SIZE,
-                          serialized, serialized_len,
-                          value_id, ttl_seconds, caller) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to publish chunk %u to DHT\n", i);
+        // Publish to DHT using SYNC version to detect actual failures
+        // This allows retry logic to properly increment retry_count on failure
+        int put_result = dht_put_signed_sync(ctx, dht_key, DHT_CHUNK_KEY_SIZE,
+                                              serialized, serialized_len,
+                                              value_id, ttl_seconds, caller,
+                                              DHT_CHUNK_PUT_TIMEOUT_MS);
+        if (put_result != 0) {
+            if (put_result == -2) {
+                QGP_LOG_WARN(LOG_TAG, "Chunk %u PUT timed out (DHT may be reinitializing)\n", i);
+            } else {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to publish chunk %u to DHT (result=%d)\n", i, put_result);
+            }
             free(serialized);
             free(compressed);
             return DHT_CHUNK_ERR_DHT_PUT;
@@ -864,7 +874,7 @@ int dht_chunked_delete(dht_context_t *ctx, const char *base_key,
         snprintf(caller, sizeof(caller), "chunk_del:profile");
     } else if (strstr(base_key, ":contacts")) {
         snprintf(caller, sizeof(caller), "chunk_del:contacts");
-    } else if (strstr(base_key, "dht:group:")) {
+    } else if (strstr(base_key, "dna:group:")) {
         snprintf(caller, sizeof(caller), "chunk_del:group");
     } else {
         snprintf(caller, sizeof(caller), "chunk_del:%.44s", base_key);

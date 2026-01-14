@@ -205,6 +205,37 @@ int dht_put_signed(dht_context_t *ctx,
                    const char *caller);
 
 /**
+ * Put SIGNED value in DHT with SYNCHRONOUS completion tracking
+ *
+ * Unlike dht_put_signed() which returns immediately (async), this function
+ * waits for the DHT callback to report actual success/failure. This allows
+ * callers to detect when PUT operations fail (e.g., nodes_tried=0) and
+ * handle them appropriately (e.g., increment retry_count).
+ *
+ * Use cases:
+ * - Message retry system: Need to know if PUT actually succeeded
+ * - Critical operations: Profile updates, contact list sync
+ *
+ * @param ctx DHT context
+ * @param key Key (will be hashed to 160-bit infohash)
+ * @param key_len Key length
+ * @param value Value to store
+ * @param value_len Value length
+ * @param value_id Fixed value ID (for replacement behavior)
+ * @param ttl_seconds Time-to-live in seconds
+ * @param caller Debug string identifying the caller
+ * @param timeout_ms Maximum time to wait for callback (recommended: 5000ms)
+ * @return 0 on confirmed success, -1 on confirmed failure, -2 on timeout
+ */
+int dht_put_signed_sync(dht_context_t *ctx,
+                        const uint8_t *key, size_t key_len,
+                        const uint8_t *value, size_t value_len,
+                        uint64_t value_id,
+                        unsigned int ttl_seconds,
+                        const char *caller,
+                        int timeout_ms);
+
+/**
  * Put SIGNED value in DHT permanently with fixed value ID
  *
  * This is a convenience wrapper around dht_put_signed() that sets TTL to

@@ -957,6 +957,115 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
 }
 
 /**
+ * Context for synchronous PUT completion tracking
+ */
+struct put_sync_ctx {
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool completed;
+    bool success;
+    size_t nodes_count;
+};
+
+/**
+ * Put SIGNED value in DHT with SYNCHRONOUS completion tracking
+ *
+ * Waits for the DHT callback to report actual success/failure, allowing
+ * callers to detect when PUT operations fail (e.g., nodes_tried=0).
+ */
+extern "C" int dht_put_signed_sync(dht_context_t *ctx,
+                                    const uint8_t *key, size_t key_len,
+                                    const uint8_t *value, size_t value_len,
+                                    uint64_t value_id,
+                                    unsigned int ttl_seconds,
+                                    const char *caller,
+                                    int timeout_ms) {
+    if (!ctx || !key || !value) {
+        QGP_LOG_ERROR("DHT", "NULL parameter in dht_put_signed_sync");
+        return -1;
+    }
+
+    if (!ctx->running) {
+        QGP_LOG_WARN("DHT", "dht_put_signed_sync: Node not running");
+        return -1;
+    }
+
+    try {
+        // Create InfoHash from key bytes
+        dht::InfoHash hash = dht::InfoHash::get(key, key_len);
+
+        // Create value with specified ID
+        auto dht_value = std::make_shared<dht::Value>(value, value_len);
+        dht_value->type = 0x444E41;  // "DNA"
+        dht_value->id = value_id;
+
+        // Caller string for logging
+        std::string caller_str = caller ? caller : "sync_put";
+
+        // Key hex for logging
+        char key_hex_start[41];
+        for (int i = 0; i < 20 && i < (int)key_len; i++) {
+            sprintf(&key_hex_start[i * 2], "%02x", key[i]);
+        }
+        key_hex_start[40] = '\0';
+
+        QGP_LOG_DEBUG("DHT", "PUT_SIGNED_SYNC [%s]: key=%s... (%zu bytes, TTL=%us)",
+                     caller_str.c_str(), key_hex_start, value_len, ttl_seconds);
+
+        // Create sync context
+        auto sync_ctx = std::make_shared<put_sync_ctx>();
+        sync_ctx->completed = false;
+        sync_ctx->success = false;
+        sync_ctx->nodes_count = 0;
+
+        // Fire async PUT with callback that signals completion
+        ctx->runner.putSigned(hash, dht_value,
+            [sync_ctx, key_hex_start, caller_str, value_len](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes) {
+                {
+                    std::lock_guard<std::mutex> lock(sync_ctx->mtx);
+                    sync_ctx->success = success;
+                    sync_ctx->nodes_count = nodes.size();
+                    sync_ctx->completed = true;
+                }
+                sync_ctx->cv.notify_one();
+
+                // Log result
+                if (success) {
+                    QGP_LOG_DEBUG("DHT", "PUT_SIGNED_SYNC [%s]: OK on %zu node(s) (size=%zu)",
+                                 caller_str.c_str(), nodes.size(), value_len);
+                } else {
+                    QGP_LOG_WARN("DHT", "PUT_SIGNED_SYNC [%s]: FAILED key=%s nodes_tried=%zu",
+                                caller_str.c_str(), key_hex_start, nodes.size());
+                }
+            },
+            true);  // permanent=true
+
+        // Wait for completion with timeout
+        {
+            std::unique_lock<std::mutex> lock(sync_ctx->mtx);
+            if (!sync_ctx->cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                                        [&sync_ctx] { return sync_ctx->completed; })) {
+                // Timeout
+                QGP_LOG_WARN("DHT", "PUT_SIGNED_SYNC [%s]: TIMEOUT after %dms",
+                            caller_str.c_str(), timeout_ms);
+                return -2;  // Timeout
+            }
+        }
+
+        // Return based on actual result
+        if (sync_ctx->success) {
+            return 0;  // Confirmed success
+        } else {
+            return -1;  // Confirmed failure (nodes_tried=0 or other error)
+        }
+
+    } catch (const std::exception& e) {
+        QGP_LOG_ERROR("DHT", "Exception in dht_put_signed_sync: %s", e.what());
+        return -1;
+    }
+}
+
+/**
  * Republish a serialized (packed) Value to DHT exactly as-is
  *
  * This function deserializes a msgpack-encoded dht::Value and publishes it
