@@ -35,6 +35,16 @@ typedef struct message_backup_context message_backup_context_t;
 #define MESSAGE_TYPE_CPUNK_TRANSFER 2
 
 /**
+ * Message Status Values
+ */
+#define MESSAGE_STATUS_PENDING   0  // Queued for sending
+#define MESSAGE_STATUS_SENT      1  // Legacy (unused)
+#define MESSAGE_STATUS_FAILED    2  // Temporary failure
+#define MESSAGE_STATUS_DELIVERED 3  // Watermark confirmed
+#define MESSAGE_STATUS_READ      4  // Read receipt received
+#define MESSAGE_STATUS_STALE     5  // 30+ days old, never delivered (v0.4.59)
+
+/**
  * Invitation Status (Phase 6.2 - only for MESSAGE_TYPE_GROUP_INVITATION)
  * NOTE: These match the enum in database/group_invitations.h
  */
@@ -55,7 +65,7 @@ typedef struct {
     time_t timestamp;
     bool delivered;
     bool read;
-    int status;  // 0=PENDING (queued), 1=SENT (legacy), 2=FAILED, 3=DELIVERED (watermark confirmed), 4=READ
+    int status;  // 0=PENDING (queued), 1=SENT (legacy), 2=FAILED, 3=DELIVERED (watermark confirmed), 4=READ, 5=STALE
     int group_id;  // Group ID (0 for direct messages, >0 for group messages) - Phase 5.2
     int message_type;  // 0=chat, 1=group_invitation - Phase 6.2
     int invitation_status;  // 0=pending, 1=accepted, 2=declined - Phase 6.2
@@ -162,13 +172,36 @@ int message_backup_update_status(message_backup_context_t *ctx, int message_id, 
 int message_backup_increment_retry_count(message_backup_context_t *ctx, int message_id);
 
 /**
+ * Mark message as stale (30+ days without delivery)
+ *
+ * Messages marked stale are shown differently in UI but not deleted.
+ * User can still manually retry or delete stale messages.
+ *
+ * @param ctx Backup context
+ * @param message_id Message ID from database
+ * @return 0 on success, -1 on error
+ */
+int message_backup_mark_stale(message_backup_context_t *ctx, int message_id);
+
+/**
+ * Get message age in days
+ *
+ * Calculates days since message was created (timestamp field).
+ *
+ * @param ctx Backup context
+ * @param message_id Message ID from database
+ * @return Age in days (>=0), or -1 on error
+ */
+int message_backup_get_age_days(message_backup_context_t *ctx, int message_id);
+
+/**
  * Get all pending/failed messages for retry
  *
  * Returns outgoing messages with status PENDING(0) or FAILED(2) that haven't
  * exceeded MAX_RETRIES. Used for automatic retry on identity load and DHT reconnect.
  *
  * @param ctx Backup context
- * @param max_retries Maximum retry attempts (messages with retry_count >= max_retries excluded)
+ * @param max_retries Maximum retry attempts (0 = unlimited, no filtering by retry_count)
  * @param messages_out Array of messages (caller must free with message_backup_free_messages)
  * @param count_out Number of messages returned
  * @return 0 on success, -1 on error

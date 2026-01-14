@@ -814,6 +814,62 @@ int message_backup_increment_retry_count(message_backup_context_t *ctx, int mess
 }
 
 /**
+ * Mark message as stale (30+ days without delivery)
+ */
+int message_backup_mark_stale(message_backup_context_t *ctx, int message_id) {
+    if (!ctx || !ctx->db) return -1;
+
+    const char *sql = "UPDATE messages SET status = 5 WHERE id = ?";  // 5 = STALE
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare mark_stale: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, message_id);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc == SQLITE_DONE) {
+        QGP_LOG_INFO(LOG_TAG, "Message %d marked as STALE (30+ days old)\n", message_id);
+        return 0;
+    }
+
+    return -1;
+}
+
+/**
+ * Get message age in days
+ */
+int message_backup_get_age_days(message_backup_context_t *ctx, int message_id) {
+    if (!ctx || !ctx->db) return -1;
+
+    const char *sql = "SELECT timestamp FROM messages WHERE id = ?";
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_int(stmt, 1, message_id);
+    rc = sqlite3_step(stmt);
+
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    time_t msg_timestamp = (time_t)sqlite3_column_int64(stmt, 0);
+    sqlite3_finalize(stmt);
+
+    time_t now = time(NULL);
+    int age_days = (int)((now - msg_timestamp) / (24 * 60 * 60));
+
+    return age_days >= 0 ? age_days : 0;
+}
+
+/**
  * Get all pending/failed outgoing messages for retry
  */
 int message_backup_get_pending_messages(message_backup_context_t *ctx,
@@ -825,12 +881,21 @@ int message_backup_get_pending_messages(message_backup_context_t *ctx,
     *messages_out = NULL;
     *count_out = 0;
 
-    // Query outgoing messages with status PENDING(0) or FAILED(2) that haven't exceeded max_retries
-    const char *sql =
+    // Query outgoing messages with status PENDING(0) or FAILED(2)
+    // max_retries=0 means unlimited (no retry_count filter)
+    const char *sql_unlimited =
+        "SELECT id, sender, recipient, encrypted_message, encrypted_len, timestamp, delivered, read, status, group_id, message_type, retry_count "
+        "FROM messages "
+        "WHERE is_outgoing = 1 AND (status = 0 OR status = 2) "
+        "ORDER BY timestamp ASC";
+
+    const char *sql_limited =
         "SELECT id, sender, recipient, encrypted_message, encrypted_len, timestamp, delivered, read, status, group_id, message_type, retry_count "
         "FROM messages "
         "WHERE is_outgoing = 1 AND (status = 0 OR status = 2) AND retry_count < ? "
         "ORDER BY timestamp ASC";
+
+    const char *sql = (max_retries == 0) ? sql_unlimited : sql_limited;
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
@@ -839,7 +904,10 @@ int message_backup_get_pending_messages(message_backup_context_t *ctx,
         return -1;
     }
 
-    sqlite3_bind_int(stmt, 1, max_retries);
+    // Only bind max_retries if using the limited query
+    if (max_retries > 0) {
+        sqlite3_bind_int(stmt, 1, max_retries);
+    }
 
     // Count results first
     int count = 0;

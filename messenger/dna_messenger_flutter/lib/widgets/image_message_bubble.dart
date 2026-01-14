@@ -176,6 +176,13 @@ class ImageMessageBubble extends StatelessWidget {
       case MessageStatus.delivered:
       case MessageStatus.read:
         icon = FontAwesomeIcons.checkDouble;
+      case MessageStatus.stale:
+        // Hourglass for stale (30+ days old, never delivered)
+        return FaIcon(
+          FontAwesomeIcons.hourglassEnd,
+          size: size,
+          color: color.withAlpha(128),  // Dimmed to show it's old
+        );
     }
 
     return FaIcon(icon, size: size, color: color);

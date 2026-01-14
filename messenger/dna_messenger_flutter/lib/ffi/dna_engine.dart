@@ -229,7 +229,7 @@ class Message {
           : native.plaintext.toDartString(),
       timestamp: DateTime.fromMillisecondsSinceEpoch(native.timestamp * 1000),
       isOutgoing: native.is_outgoing,
-      status: MessageStatus.values[native.status.clamp(0, 4)],
+      status: MessageStatus.values[native.status.clamp(0, 5)],
       type: native.message_type == 2
           ? MessageType.cpunkTransfer
           : (native.message_type == 1
@@ -272,7 +272,7 @@ class Message {
   }
 }
 
-enum MessageStatus { pending, sent, failed, delivered, read }
+enum MessageStatus { pending, sent, failed, delivered, read, stale }
 enum MessageType { chat, groupInvitation, cpunkTransfer }
 
 /// Result of paginated conversation query

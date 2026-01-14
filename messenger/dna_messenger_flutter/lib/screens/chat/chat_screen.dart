@@ -618,14 +618,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 onStar: (msg) => _toggleStarMessage(msg, contact.fingerprint),
                 onDelete: _confirmDeleteMessage,
                 onRetry: message.isOutgoing &&
-                        (message.status == MessageStatus.failed || message.status == MessageStatus.pending)
+                        (message.status == MessageStatus.failed || message.status == MessageStatus.pending || message.status == MessageStatus.stale)
                     ? () => _retryMessage(message.id)
                     : null,
                 child: _MessageBubble(
                   message: message,
                   isStarred: starredIds.contains(message.id),
                   onRetry: message.isOutgoing &&
-                          (message.status == MessageStatus.failed || message.status == MessageStatus.pending)
+                          (message.status == MessageStatus.failed || message.status == MessageStatus.pending || message.status == MessageStatus.stale)
                       ? () => _retryMessage(message.id)
                       : null,
                 ),
@@ -1182,6 +1182,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         statusText = 'Read';
         statusIcon = FontAwesomeIcons.checkDouble;
         statusColor = DnaColors.primary;
+        break;
+      case MessageStatus.stale:
+        statusText = 'Stale (30+ days)';
+        statusIcon = FontAwesomeIcons.hourglassEnd;
+        statusColor = DnaColors.textMuted;
         break;
     }
 
@@ -2217,6 +2222,9 @@ class _MessageBubble extends StatelessWidget {
       case MessageStatus.read:
         // Blue double-check for read (colored in the widget)
         return FontAwesomeIcons.checkDouble;
+      case MessageStatus.stale:
+        // Hourglass for stale (30+ days old)
+        return FontAwesomeIcons.hourglassEnd;
     }
   }
 }
@@ -2997,11 +3005,15 @@ class _TransferBubble extends StatelessWidget {
                             ? FontAwesomeIcons.check
                             : (message.status == MessageStatus.failed
                                 ? FontAwesomeIcons.circleExclamation
-                                : FontAwesomeIcons.checkDouble)),
+                                : (message.status == MessageStatus.stale
+                                    ? FontAwesomeIcons.hourglassEnd
+                                    : FontAwesomeIcons.checkDouble))),
                     size: 14,
                     color: message.status == MessageStatus.failed
                         ? DnaColors.textWarning
-                        : theme.colorScheme.onPrimary.withAlpha(179),
+                        : (message.status == MessageStatus.stale
+                            ? theme.colorScheme.onPrimary.withAlpha(128)
+                            : theme.colorScheme.onPrimary.withAlpha(179)),
                   ),
                 ],
               ],

@@ -5544,15 +5544,54 @@ int dna_engine_delete_message_sync(
 
 /* ============================================================================
  * MESSAGE RETRY (Bulletproof Message Delivery)
- * ============================================================================ */
+ * ============================================================================
+ *
+ * v0.4.59: "Never Give Up" retry system
+ * - No max retry limit (keeps trying until delivered or stale)
+ * - Exponential backoff: 30s, 60s, 120s, ... max 1 hour
+ * - Stale marking: 30+ day old messages marked stale (shown differently in UI)
+ * - DHT check: Only retry when DHT is connected with ≥1 peer
+ */
 
-#define MESSAGE_RETRY_MAX_RETRIES 10
-#define MESSAGE_STATUS_PENDING 0
-#define MESSAGE_STATUS_SENT 1
-#define MESSAGE_STATUS_FAILED 2
+#define MESSAGE_RETRY_MAX_RETRIES 0  /* 0 = unlimited retries (never give up) */
+#define MESSAGE_STALE_DAYS 30        /* Mark as stale after 30 days */
+#define MESSAGE_BACKOFF_BASE_SECS 30 /* Base backoff: 30 seconds */
+#define MESSAGE_BACKOFF_MAX_SECS 3600 /* Max backoff: 1 hour */
 
 /* Mutex to prevent concurrent retry calls (e.g., DHT reconnect + manual retry race) */
 static pthread_mutex_t retry_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/**
+ * Calculate retry backoff interval based on retry_count
+ * Exponential: 30s, 60s, 120s, 240s, 480s, 960s, 1920s, 3600s (max)
+ */
+static int get_retry_backoff_secs(int retry_count) {
+    if (retry_count <= 0) return MESSAGE_BACKOFF_BASE_SECS;
+
+    /* Cap the exponent to prevent overflow (2^7 = 128, 30*128 = 3840 > 3600) */
+    int exp = retry_count < 7 ? retry_count : 7;
+    int interval = MESSAGE_BACKOFF_BASE_SECS * (1 << exp);
+
+    return interval > MESSAGE_BACKOFF_MAX_SECS ? MESSAGE_BACKOFF_MAX_SECS : interval;
+}
+
+/**
+ * Check if message is ready for retry based on exponential backoff
+ * Returns true if enough time has passed since message creation + backoff
+ */
+static bool is_ready_for_retry(backup_message_t *msg) {
+    if (!msg) return false;
+
+    /* First attempt (retry_count=0) always allowed */
+    if (msg->retry_count == 0) return true;
+
+    /* Calculate next retry time based on backoff */
+    int backoff_secs = get_retry_backoff_secs(msg->retry_count);
+    time_t next_retry_at = msg->timestamp + (msg->retry_count * backoff_secs);
+    time_t now = time(NULL);
+
+    return now >= next_retry_at;
+}
 
 /**
  * Retry a single pending/failed message
@@ -5627,12 +5666,12 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine) {
     /* Lock to prevent concurrent retry calls */
     pthread_mutex_lock(&retry_mutex);
 
-    /* Get all pending/failed messages under MAX_RETRIES */
+    /* Get all pending/failed messages (0 = unlimited, no retry_count filter) */
     backup_message_t *messages = NULL;
     int count = 0;
     int rc = message_backup_get_pending_messages(
         backup_ctx,
-        MESSAGE_RETRY_MAX_RETRIES,
+        MESSAGE_RETRY_MAX_RETRIES,  /* 0 = unlimited */
         &messages,
         &count
     );
@@ -5649,22 +5688,42 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine) {
         return 0;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "[RETRY] Found %d pending/failed messages to retry", count);
+    QGP_LOG_INFO(LOG_TAG, "[RETRY] Found %d pending/failed messages to process", count);
 
     int success_count = 0;
     int fail_count = 0;
+    int skipped_backoff = 0;
+    int marked_stale = 0;
 
     /* Track unique recipients for delivery tracker setup */
     char tracked_recipients[DNA_MAX_DELIVERY_TRACKERS][129];
     int tracked_count = 0;
 
-    /* Retry each message */
+    /* Process each message */
     for (int i = 0; i < count; i++) {
-        if (retry_single_message(engine, &messages[i]) == 0) {
+        backup_message_t *msg = &messages[i];
+
+        /* Check if message is stale (30+ days old) */
+        int age_days = message_backup_get_age_days(backup_ctx, msg->id);
+        if (age_days >= MESSAGE_STALE_DAYS) {
+            message_backup_mark_stale(backup_ctx, msg->id);
+            marked_stale++;
+            QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d marked STALE (age=%d days)", msg->id, age_days);
+            continue;
+        }
+
+        /* Check exponential backoff - skip if not ready for retry yet */
+        if (!is_ready_for_retry(msg)) {
+            skipped_backoff++;
+            continue;
+        }
+
+        /* Retry the message */
+        if (retry_single_message(engine, msg) == 0) {
             success_count++;
 
             /* Track unique recipient for delivery tracker */
-            const char *recipient = messages[i].recipient;
+            const char *recipient = msg->recipient;
             if (recipient && strlen(recipient) == 128) {
                 bool already_tracked = false;
                 for (int j = 0; j < tracked_count; j++) {
@@ -5684,7 +5743,8 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine) {
         }
     }
 
-    QGP_LOG_INFO(LOG_TAG, "[RETRY] Completed: %d succeeded, %d failed", success_count, fail_count);
+    QGP_LOG_INFO(LOG_TAG, "[RETRY] Completed: %d succeeded, %d failed, %d backoff, %d stale",
+                 success_count, fail_count, skipped_backoff, marked_stale);
 
     /* Start delivery trackers for all recipients with pending messages */
     for (int i = 0; i < tracked_count; i++) {
@@ -5718,7 +5778,7 @@ int dna_engine_retry_message(dna_engine_t *engine, int message_id) {
     int count = 0;
     int rc = message_backup_get_pending_messages(
         backup_ctx,
-        MESSAGE_RETRY_MAX_RETRIES + 1,  /* Allow retry even at max (manual retry) */
+        0,  /* 0 = unlimited - allow manual retry regardless of retry_count */
         &messages,
         &count
     );

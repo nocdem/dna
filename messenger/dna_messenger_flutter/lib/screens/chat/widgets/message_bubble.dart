@@ -92,7 +92,8 @@ class MessageBubbleWrapper extends StatelessWidget {
       onDelete: () => onDelete(message),
       onRetry: onRetry != null && message.isOutgoing &&
               (message.status == MessageStatus.failed ||
-                  message.status == MessageStatus.pending)
+                  message.status == MessageStatus.pending ||
+                  message.status == MessageStatus.stale)
           ? onRetry
           : null,
     );
