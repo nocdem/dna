@@ -702,37 +702,6 @@ DNA_API void dna_engine_set_android_notification_callback(
 );
 
 /**
- * Contact request notification callback
- *
- * Called when a new contact request is received from DHT.
- *
- * @param requester_fingerprint  Fingerprint of the requester (128 hex chars)
- * @param display_name           Display name of requester or NULL
- * @param message                Request message or NULL
- * @param user_data              User data passed when setting callback
- */
-typedef void (*dna_android_contact_request_cb)(
-    const char *requester_fingerprint,
-    const char *display_name,
-    const char *message,
-    void *user_data
-);
-
-/**
- * Set Android notification callback for contact requests
- *
- * This callback is called when DNA_EVENT_CONTACT_REQUEST_RECEIVED fires,
- * allowing Android to show native notifications for new contact requests.
- *
- * @param callback  Notification callback function (NULL to disable)
- * @param user_data User data passed to callback
- */
-DNA_API void dna_engine_set_android_contact_request_callback(
-    dna_android_contact_request_cb callback,
-    void *user_data
-);
-
-/**
  * Group message notification callback
  *
  * Called when new group messages arrive via DHT listen (real-time push).
