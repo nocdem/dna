@@ -1275,9 +1275,11 @@ int dna_engine_subscribe_all_groups(dna_engine_t *engine) {
     /* Get all groups user is member of */
     dht_group_cache_entry_t *groups = NULL;
     int group_count = 0;
+    QGP_LOG_WARN(LOG_TAG, "[GROUP] Subscribing for identity %.16s...", engine->fingerprint);
     int ret = dht_groups_list_for_user(engine->fingerprint, &groups, &group_count);
+    QGP_LOG_WARN(LOG_TAG, "[GROUP] dht_groups_list_for_user returned %d, count=%d", ret, group_count);
     if (ret != 0 || group_count == 0) {
-        QGP_LOG_INFO(LOG_TAG, "[GROUP] No groups to subscribe to");
+        QGP_LOG_WARN(LOG_TAG, "[GROUP] No groups to subscribe to (ret=%d, count=%d)", ret, group_count);
         return 0;
     }
 
@@ -1298,23 +1300,16 @@ int dna_engine_subscribe_all_groups(dna_engine_t *engine) {
         }
         if (already_subscribed) continue;
 
-        /* Get group members */
-        groups_member_t *members = NULL;
+        /* Get group members from DHT cache (not messages.db) */
+        char **members = NULL;
         int member_count = 0;
-        if (groups_get_members(group_uuid, &members, &member_count) != 0 || member_count == 0) {
+        if (dht_groups_get_members(group_uuid, &members, &member_count) != 0 || member_count == 0) {
             QGP_LOG_WARN(LOG_TAG, "[GROUP] No members found for group %s", group_uuid);
             continue;
         }
 
-        /* Build fingerprint array */
-        const char **fps = malloc(member_count * sizeof(char *));
-        if (!fps) {
-            groups_free_members(members, member_count);
-            continue;
-        }
-        for (int m = 0; m < member_count; m++) {
-            fps[m] = members[m].fingerprint;
-        }
+        /* Cast to const char** for subscribe function */
+        const char **fps = (const char **)members;
 
         /* Full sync before subscribing (catch up on last 7 days) */
         size_t sync_count = 0;
@@ -1338,8 +1333,7 @@ int dna_engine_subscribe_all_groups(dna_engine_t *engine) {
                           group_uuid, ret);
         }
 
-        free(fps);
-        groups_free_members(members, member_count);
+        dht_groups_free_members(members, member_count);
     }
 
     pthread_mutex_unlock(&engine->group_listen_mutex);
@@ -1709,6 +1703,13 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: starting outbox listeners...");
         int listener_count = dna_engine_listen_all_contacts(engine);
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: started %d listeners", listener_count);
+
+        /* Subscribe to group outboxes for real-time group messages.
+         * This is critical: DHT usually connects before identity loads, so the
+         * background thread (dna_engine_setup_listeners_thread) never runs.
+         * We must subscribe to groups here after identity loads. */
+        int group_count = dna_engine_subscribe_all_groups(engine);
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: subscribed to %d groups", group_count);
 
         /* 3. Retry any pending/failed messages from previous sessions
          * Messages may have been queued while offline or failed to send.

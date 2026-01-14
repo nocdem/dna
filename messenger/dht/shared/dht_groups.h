@@ -242,6 +242,31 @@ int dht_groups_get_member_count(
 );
 
 /**
+ * Get member fingerprints for a group from local cache
+ *
+ * Queries dht_group_members table for member identities.
+ * Fast local lookup, no DHT query.
+ *
+ * @param group_uuid: Group UUID
+ * @param members_out: Output array of fingerprints (caller frees with dht_groups_free_members)
+ * @param count_out: Number of members returned
+ * @return: 0 on success, -1 on error
+ */
+int dht_groups_get_members(
+    const char *group_uuid,
+    char ***members_out,
+    int *count_out
+);
+
+/**
+ * Free member fingerprint array from dht_groups_get_members
+ *
+ * @param members: Array to free
+ * @param count: Number of members
+ */
+void dht_groups_free_members(char **members, int count);
+
+/**
  * Free group metadata structure
  *
  * @param metadata: Metadata to free

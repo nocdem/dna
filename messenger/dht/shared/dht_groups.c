@@ -1051,3 +1051,65 @@ int dht_groups_get_member_count(const char *group_uuid, int *count_out) {
     sqlite3_finalize(stmt);
     return 0;
 }
+
+int dht_groups_get_members(const char *group_uuid, char ***members_out, int *count_out) {
+    if (!g_db || !group_uuid || !members_out || !count_out) {
+        return -1;
+    }
+
+    *members_out = NULL;
+    *count_out = 0;
+
+    /* First get count */
+    int member_count = 0;
+    if (dht_groups_get_member_count(group_uuid, &member_count) != 0 || member_count == 0) {
+        return 0;  /* No members, not an error */
+    }
+
+    /* Allocate array */
+    char **members = calloc(member_count, sizeof(char *));
+    if (!members) {
+        return -1;
+    }
+
+    /* Fetch members */
+    const char *sql = "SELECT member_identity FROM dht_group_members WHERE group_uuid = ?";
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        free(members);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_STATIC);
+
+    int idx = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && idx < member_count) {
+        const char *fp = (const char *)sqlite3_column_text(stmt, 0);
+        if (fp) {
+            members[idx] = strdup(fp);
+            if (!members[idx]) {
+                /* Cleanup on failure */
+                for (int i = 0; i < idx; i++) free(members[i]);
+                free(members);
+                sqlite3_finalize(stmt);
+                return -1;
+            }
+            idx++;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+
+    *members_out = members;
+    *count_out = idx;
+    return 0;
+}
+
+void dht_groups_free_members(char **members, int count) {
+    if (!members) return;
+    for (int i = 0; i < count; i++) {
+        free(members[i]);
+    }
+    free(members);
+}
