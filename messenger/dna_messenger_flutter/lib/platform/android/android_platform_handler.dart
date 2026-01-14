@@ -17,6 +17,10 @@ class AndroidPlatformHandler implements PlatformHandler {
     // Re-attach Flutter event callback
     // Was detached on pause so JNI could handle background notifications
     engine.attachEventCallback();
+
+    // Fetch any messages that arrived while app was backgrounded
+    // Notifications were shown but messages not fetched (to avoid race condition)
+    engine.checkOfflineMessages();
   }
 
   @override
