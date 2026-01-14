@@ -41,6 +41,12 @@ class _AndroidNotificationSettingsState
         // Method channel not available (shouldn't happen on Android)
         log('SETTINGS', 'Error requesting notification permission: $e');
       }
+
+      // Start foreground service
+      await ForegroundServiceManager.startService();
+    } else {
+      // Stop foreground service
+      await ForegroundServiceManager.stopService();
     }
 
     ref.read(notificationSettingsProvider.notifier).setEnabled(enabled);
@@ -55,8 +61,11 @@ class _AndroidNotificationSettingsState
       children: [
         SwitchListTile(
           secondary: const FaIcon(FontAwesomeIcons.bell),
-          title: const Text('Enable Notifications'),
-          subtitle: const Text('Show alerts for new messages'),
+          title: const Text('Background Notifications'),
+          subtitle: const Text(
+            'Keep app running in background to receive notifications when closed. '
+            'Disabling saves battery but you won\'t get alerts until you open the app.',
+          ),
           value: settings.enabled,
           onChanged: _toggleNotifications,
         ),

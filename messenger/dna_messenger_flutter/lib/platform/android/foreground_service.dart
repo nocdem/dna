@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../providers/engine_provider.dart';
 import '../../providers/contacts_provider.dart';
+import '../../providers/notification_settings_provider.dart';
 
 /// MethodChannel for Android ForegroundService communication
 class ForegroundServiceManager {
@@ -121,8 +122,14 @@ class ForegroundServiceNotifier extends StateNotifier<bool> {
     return null;
   }
 
-  /// Start the foreground service
+  /// Start the foreground service (only if notifications enabled)
   Future<void> _startService() async {
+    // Check if user has notifications enabled
+    final notificationSettings = _ref.read(notificationSettingsProvider);
+    if (!notificationSettings.enabled) {
+      return; // User disabled background notifications
+    }
+
     final success = await ForegroundServiceManager.startService();
     state = success;
   }
