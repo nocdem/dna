@@ -1991,19 +1991,45 @@ int cmd_group_info(dna_engine_t *engine, const char *group_uuid) {
     return 0;
 }
 
-int cmd_group_invite(dna_engine_t *engine, const char *group_uuid, const char *fingerprint) {
-    if (!engine || !group_uuid || !fingerprint) {
+int cmd_group_invite(dna_engine_t *engine, const char *group_uuid, const char *identifier) {
+    if (!engine || !group_uuid || !identifier) {
         printf("Error: Missing arguments\n");
         return -1;
     }
 
-    printf("Inviting %s to group %s...\n", fingerprint, group_uuid);
+    /* Resolve name to fingerprint if needed */
+    char resolved_fp[129] = {0};
+    if (strlen(identifier) >= 128) {
+        /* Already looks like a fingerprint */
+        strncpy(resolved_fp, identifier, 128);
+    } else {
+        /* Assume it's a name - resolve via DHT lookup */
+        printf("Resolving name '%s'...\n", identifier);
+
+        cli_wait_t lookup_wait;
+        cli_wait_init(&lookup_wait);
+
+        dna_engine_lookup_name(engine, identifier, on_display_name, &lookup_wait);
+        int lookup_result = cli_wait_for(&lookup_wait);
+
+        if (lookup_result != 0 || strlen(lookup_wait.display_name) == 0) {
+            printf("Error: Name '%s' not found in DHT\n", identifier);
+            cli_wait_destroy(&lookup_wait);
+            return -1;
+        }
+
+        strncpy(resolved_fp, lookup_wait.display_name, 128);
+        cli_wait_destroy(&lookup_wait);
+        printf("Resolved to: %.16s...\n", resolved_fp);
+    }
+
+    printf("Inviting %.16s... to group %s...\n", resolved_fp, group_uuid);
 
     cli_wait_t wait;
     cli_wait_init(&wait);
 
     dna_request_id_t req_id = dna_engine_add_group_member(
-        engine, group_uuid, fingerprint, on_completion, &wait);
+        engine, group_uuid, resolved_fp, on_completion, &wait);
     if (req_id == 0) {
         printf("Error: Failed to initiate group invite\n");
         cli_wait_destroy(&wait);

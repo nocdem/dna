@@ -19,6 +19,7 @@
 // Background discovery thread state
 static pthread_t g_discovery_thread;
 static atomic_bool g_discovery_running = false;
+static atomic_bool g_discovery_thread_created = false;  // Track if thread needs joining
 static dht_context_t *g_discovery_dht_ctx = NULL;
 
 // Callback for discovery completion
@@ -126,22 +127,32 @@ int dht_bootstrap_discovery_start(dht_context_t *dht_ctx) {
     if (rc != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to start discovery thread: %d", rc);
         atomic_store(&g_discovery_running, false);
+        g_discovery_dht_ctx = NULL;
         return -1;
     }
 
-    // Detach thread - we don't need to join it
-    pthread_detach(g_discovery_thread);
+    // Mark thread as created so stop() knows to join it
+    atomic_store(&g_discovery_thread_created, true);
 
     QGP_LOG_INFO(LOG_TAG, "Background discovery started");
     return 0;
 }
 
 void dht_bootstrap_discovery_stop(void) {
+    // Signal thread to stop
     if (atomic_load(&g_discovery_running)) {
         QGP_LOG_INFO(LOG_TAG, "Stopping discovery thread...");
         atomic_store(&g_discovery_running, false);
-        // Thread will exit on next check
     }
+
+    // Always join if thread was created (even if it already finished)
+    // This prevents use-after-free when DHT context is freed
+    if (atomic_exchange(&g_discovery_thread_created, false)) {
+        pthread_join(g_discovery_thread, NULL);
+        QGP_LOG_INFO(LOG_TAG, "Discovery thread joined");
+    }
+
+    g_discovery_dht_ctx = NULL;
 }
 
 bool dht_bootstrap_discovery_is_running(void) {

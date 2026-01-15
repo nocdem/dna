@@ -1280,6 +1280,9 @@ int dna_engine_subscribe_all_groups(dna_engine_t *engine) {
     QGP_LOG_WARN(LOG_TAG, "[GROUP] dht_groups_list_for_user returned %d, count=%d", ret, group_count);
     if (ret != 0 || group_count == 0) {
         QGP_LOG_WARN(LOG_TAG, "[GROUP] No groups to subscribe to (ret=%d, count=%d)", ret, group_count);
+        if (groups) {
+            dht_groups_free_cache_entries(groups, group_count);
+        }
         return 0;
     }
 
