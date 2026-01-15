@@ -1288,9 +1288,12 @@ int dna_engine_subscribe_all_groups(dna_engine_t *engine) {
 
     int subscribed = 0;
     pthread_mutex_lock(&engine->group_listen_mutex);
+    QGP_LOG_WARN(LOG_TAG, "[GROUP] Loop start: group_count=%d, listen_count=%d, max=%d",
+                 group_count, engine->group_listen_count, DNA_MAX_GROUP_LISTENERS);
 
     for (int i = 0; i < group_count && engine->group_listen_count < DNA_MAX_GROUP_LISTENERS; i++) {
         const char *group_uuid = groups[i].group_uuid;
+        QGP_LOG_WARN(LOG_TAG, "[GROUP] Processing group[%d]: %s", i, group_uuid);
 
         /* Check if already subscribed */
         bool already_subscribed = false;
@@ -1298,6 +1301,7 @@ int dna_engine_subscribe_all_groups(dna_engine_t *engine) {
             if (engine->group_listen_contexts[j] &&
                 strcmp(engine->group_listen_contexts[j]->group_uuid, group_uuid) == 0) {
                 already_subscribed = true;
+                QGP_LOG_WARN(LOG_TAG, "[GROUP] Already subscribed to %s (slot %d)", group_uuid, j);
                 break;
             }
         }
@@ -1309,31 +1313,31 @@ int dna_engine_subscribe_all_groups(dna_engine_t *engine) {
          */
 
         /* Full sync before subscribing (catch up on last 7 days) */
+        QGP_LOG_WARN(LOG_TAG, "[GROUP] Syncing group %s...", group_uuid);
         size_t sync_count = 0;
         dna_group_outbox_sync(dht_ctx, group_uuid, &sync_count);
-        if (sync_count > 0) {
-            QGP_LOG_INFO(LOG_TAG, "[GROUP] Synced %zu messages for group %s",
-                         sync_count, group_uuid);
-        }
+        QGP_LOG_WARN(LOG_TAG, "[GROUP] Sync done: %zu messages", sync_count);
 
         /* Subscribe for real-time updates - single listener per group */
+        QGP_LOG_WARN(LOG_TAG, "[GROUP] Subscribing to group %s...", group_uuid);
         dna_group_listen_ctx_t *ctx = NULL;
         ret = dna_group_outbox_subscribe(dht_ctx, group_uuid,
                                           on_group_new_message, NULL, &ctx);
         if (ret == 0 && ctx) {
             engine->group_listen_contexts[engine->group_listen_count++] = ctx;
             subscribed++;
-            QGP_LOG_INFO(LOG_TAG, "[GROUP] Subscribed to group %s", group_uuid);
+            QGP_LOG_WARN(LOG_TAG, "[GROUP] ✓ Subscribed to group %s (slot %d)",
+                         group_uuid, engine->group_listen_count - 1);
         } else {
-            QGP_LOG_ERROR(LOG_TAG, "[GROUP] Failed to subscribe to group %s: %d",
-                          group_uuid, ret);
+            QGP_LOG_ERROR(LOG_TAG, "[GROUP] ✗ Failed to subscribe to group %s: ret=%d ctx=%p",
+                          group_uuid, ret, (void*)ctx);
         }
     }
 
     pthread_mutex_unlock(&engine->group_listen_mutex);
     dht_groups_free_cache_entries(groups, group_count);
 
-    QGP_LOG_INFO(LOG_TAG, "[GROUP] Subscribed to %d groups", subscribed);
+    QGP_LOG_WARN(LOG_TAG, "[GROUP] Subscribe complete: %d groups subscribed", subscribed);
     return subscribed;
 }
 
