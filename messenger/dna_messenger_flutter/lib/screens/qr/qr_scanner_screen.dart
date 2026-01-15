@@ -38,6 +38,7 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
   bool _scannerArmed = true; // false after scan, requires manual re-arm
   bool _controllerStarted = false;
   bool _isNavigating = false; // guard against concurrent scan handling
+  bool _isStarting = false; // guard against concurrent start() calls
 
   @override
   void initState() {
@@ -76,6 +77,7 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
       torchEnabled: false,
     );
     _controllerStarted = false;
+    _isStarting = false;
   }
 
   /// Compute whether scanner should be running
@@ -93,18 +95,26 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
   }
 
   Future<void> _startScanner() async {
-    if (_controllerStarted) return;
+    // Guard against concurrent start calls (race condition fix)
+    if (_controllerStarted || _isStarting) return;
     if (_controller == null) return;
 
+    _isStarting = true;
     try {
       await _controller!.start();
       _controllerStarted = true;
     } catch (e) {
       // Camera start failed, ignore (errorBuilder will handle it)
+    } finally {
+      _isStarting = false;
     }
   }
 
   Future<void> _stopScanner() async {
+    // Wait for any in-progress start to complete first
+    while (_isStarting) {
+      await Future.delayed(const Duration(milliseconds: 10));
+    }
     if (!_controllerStarted) return;
     if (_controller == null) return;
 
@@ -273,16 +283,20 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
     // Watch tab changes to detect when we become visible/hidden
     ref.listen<int>(currentTabProvider, _onTabChanged);
 
-    // Also check current tab state on build
+    // Also check current tab state on build (but don't trigger scanner update here -
+    // that's handled by _onTabChanged listener to avoid redundant calls)
     final currentTab = ref.watch(currentTabProvider);
+    final wasActive = _isTabActive;
     _isTabActive = (currentTab == _kQrScannerTabIndex);
 
-    // Start/stop scanner based on visibility (deferred to avoid build-time issues)
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        _updateScannerState();
-      }
-    });
+    // Only update scanner on INITIAL build when tab is active (not on every rebuild)
+    if (_isTabActive && !wasActive && !_controllerStarted && !_isStarting) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _updateScannerState();
+        }
+      });
+    }
 
     return Scaffold(
       appBar: AppBar(
