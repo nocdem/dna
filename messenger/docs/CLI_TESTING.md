@@ -71,11 +71,10 @@ $CLI balance <index>                  # Show balances
 # Network
 $CLI online <fp>                      # Check if peer online
 
-# NAT Traversal (STUN/ICE/TURN)
-$CLI stun-test                        # Test STUN, show public IP
-$CLI ice-status                       # Show ICE connection status
-$CLI turn-creds                       # Show cached TURN credentials
-$CLI turn-creds --force               # Force request TURN credentials
+# NAT Traversal (DEPRECATED - Removed v0.4.61 for privacy)
+# $CLI stun-test                      # DEPRECATED - ICE/STUN removed
+# $CLI ice-status                     # DEPRECATED - ICE/STUN removed
+# $CLI turn-creds                     # DEPRECATED - TURN removed
 
 # Version Management
 $CLI publish-version --lib 0.4.0 --app 0.99.106 --nodus 0.4.3   # Publish version to DHT
@@ -495,126 +494,15 @@ Peer 5a8f2c3d... is OFFLINE
 
 ---
 
-## NAT Traversal Commands
+## NAT Traversal Commands (DEPRECATED)
 
-### `stun-test` - Test STUN Connectivity
+> **Removed in v0.4.61 for privacy.** ICE/STUN/TURN removed to prevent IP leakage to third-party servers. All messaging now uses DHT-only (Spillway protocol).
 
-Tests STUN server connectivity and displays your public IP address.
+### `stun-test` - DEPRECATED
+### `ice-status` - DEPRECATED
+### `turn-creds` - DEPRECATED
 
-```bash
-dna-messenger-cli stun-test
-```
-
-**Sample Output:**
-```
-Testing STUN connectivity...
-========================================
-✓ STUN Test PASSED
-  Public IP: 195.174.168.27
-========================================
-
-STUN Servers Tested:
-  1. stun.l.google.com:19302
-  2. stun1.l.google.com:19302
-  3. stun.cloudflare.com:3478
-
-NAT Type: Likely Open/Full Cone (direct P2P possible)
-```
-
-**Notes:**
-- Does not require identity load
-- Tests Google and Cloudflare STUN servers
-- Shows NAT type assessment
-
----
-
-### `ice-status` - Show ICE Connection Status
-
-Displays ICE (Interactive Connectivity Establishment) status and gathered candidates.
-
-```bash
-dna-messenger-cli ice-status
-```
-
-**Sample Output:**
-```
-ICE Connection Status
-========================================
-P2P Transport: ACTIVE
-  Listen Port: 4001 (TCP)
-  ICE Status: READY
-
-Local ICE Candidates:
-  [HOST]  a=candidate:1 1 UDP 2114977791 192.168.0.198 54206 typ host
-  [SRFLX] a=candidate:2 1 UDP 1678769919 195.174.168.27 54206 typ srflx
-
-Active Connections: 0
-========================================
-```
-
-**Candidate Types:**
-- `[HOST]` - Local network interface address
-- `[SRFLX]` - Server-reflexive (NAT-mapped public IP via STUN)
-- `[RELAY]` - TURN relay candidate
-
-**Requirements:**
-- Identity must be loaded
-
----
-
-### `turn-creds [--force]` - Show/Request TURN Credentials
-
-Displays or requests TURN relay credentials from DNA Nodus bootstrap servers.
-
-```bash
-# Show cached credentials
-dna-messenger-cli turn-creds
-
-# Force request new credentials
-dna-messenger-cli turn-creds --force
-```
-
-**Sample Output (with --force):**
-```
-TURN Credentials
-========================================
-Identity: 71194ec906913bb7...
-
-Requesting TURN credentials from DNA Nodus...
-✓ Credentials obtained!
-
-Cached credentials:
-
-TURN Servers (3):
-  1. 154.38.182.161:3478
-     Username: 71194ec9_1703185432
-     Password: a8f2c3d4e5f67890
-     Expires:  6 days, 23 hours
-  2. 164.68.105.227:3478
-     ...
-========================================
-```
-
-**Sample Output (no credentials):**
-```
-No cached credentials found.
-
-Use 'turn-creds --force' to request credentials from DNA Nodus.
-
-TURN credentials are also obtained automatically when:
-  1. ICE direct connection fails
-  2. STUN-only candidates are insufficient
-  3. Symmetric NAT requires relay
-```
-
-**Options:**
-- `--force` - Request new credentials from DNA Nodus even if not needed
-
-**Notes:**
-- TURN credentials are requested automatically during ICE negotiation
-- Credentials have 7-day TTL
-- Credentials are signed with Dilithium5
-- Uses UDP port 3479 for fast credential requests
+These commands now return deprecation messages.
 
 ---
 
@@ -984,9 +872,9 @@ These warnings appear during normal operation and don't indicate errors:
 
 ### v2.4.0
 - Added NAT Traversal debugging commands:
-  - `stun-test` - Test STUN connectivity, show public IP
-  - `ice-status` - Show ICE connection status and candidates
-  - `turn-creds` - Show cached TURN credentials
+  - `stun-test` - DEPRECATED (v0.4.61)
+  - `ice-status` - DEPRECATED (v0.4.61)
+  - `turn-creds` - DEPRECATED (v0.4.61)
 - Commands help debug P2P connectivity issues
 
 ### v2.2.0

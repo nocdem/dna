@@ -5,7 +5,7 @@
 P2P transport layer providing DHT-based peer discovery and presence system.
 
 > **Phase 14 (v0.3.154):** Direct P2P messaging removed - all messaging now uses DHT-only path.
-> P2P/ICE infrastructure preserved for future voice/video calls.
+> **v0.4.61:** ICE/STUN/TURN removed for privacy. Future voice/video will use alternative transport.
 
 ---
 

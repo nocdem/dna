@@ -81,8 +81,8 @@ dna/                        # Renamed root
     │                 │  │                 │  │                 │
     │ Links:          │  │ Links:          │  │ Links:          │
     │ - shared/crypto │  │ - shared/crypto │  │ - opendht-pq    │
-    │ - opendht-pq    │  │ - opendht-pq    │  │ - libjuice      │
-    │ - libjuice      │  │                 │  │                 │
+    │ - opendht-pq    │  │ - opendht-pq    │  │                 │
+    │                 │  │                 │  │                 │
     └─────────────────┘  └─────────────────┘  └─────────────────┘
               │                   │                   │
               └───────────────────┴───────────────────┘
@@ -152,7 +152,7 @@ find cli -type f -name '*.[ch]' | wc -l         # ~XX files
 
 ### 1.3 Identify External Dependencies
 - `vendor/opendht-pq/` - DHT library
-- `vendor/libjuice/` - ICE/STUN library
+- ~~`vendor/libjuice/`~~ - Removed v0.4.61
 - `vendor/sqlite3/` - SQLite (if vendored)
 
 ---
@@ -402,12 +402,12 @@ add_executable(dna-nodus ${NODUS_SOURCES})
 target_include_directories(dna-nodus PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/vendor/opendht-pq/include
-    ${CMAKE_SOURCE_DIR}/vendor/libjuice/include
+    # libjuice removed v0.4.61
 )
 
 target_link_libraries(dna-nodus PRIVATE
     opendht
-    juice
+    # juice removed v0.4.61
     Threads::Threads
 )
 
@@ -579,7 +579,7 @@ cat > docs/README.md << 'EOF'
 | Project | Description | Docs |
 |---------|-------------|------|
 | [Messenger](messenger/) | E2E encrypted messenger | Architecture, DHT, P2P, API |
-| [Nodus](nodus/) | Bootstrap + STUN/TURN server | Deployment, Config |
+| [Nodus](nodus/) | DHT Bootstrap server | Deployment, Config |
 | [dnac](dnac/) | ZK post-quantum ledger | (Planned) |
 | [Shared](shared/) | Shared crypto library | Crypto reference |
 
@@ -636,7 +636,7 @@ add_subdirectory(shared/crypto)
 
 # Build vendor dependencies
 add_subdirectory(vendor/opendht-pq)
-add_subdirectory(vendor/libjuice)
+# libjuice removed v0.4.61
 
 # Build projects based on options
 if(BUILD_MESSENGER)
@@ -867,7 +867,7 @@ refactor: Restructure to multi-project monorepo
 Structure:
 - shared/crypto/ - Shared crypto library
 - messenger/ - DNA Messenger (lib, cli, flutter, android)
-- nodus/ - Bootstrap + STUN/TURN server
+- nodus/ - DHT Bootstrap server
 - dnac/ - ZK ledger (placeholder)
 
 Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>

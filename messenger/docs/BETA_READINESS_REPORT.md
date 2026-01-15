@@ -429,7 +429,7 @@ cleanup:
    | Resource | Limit | Location |
    |----------|-------|----------|
    | Concurrent connections | 256 | transport_core.h:126 |
-   | ICE message queue | 16 | transport_juice.c:109 |
+   | ~~ICE message queue~~ | ~~16~~ | Removed v0.4.61 |
    | Engine message queue | 100 | dna_engine_internal.h:37 |
    | Plaintext message | 512 KB | messages.h:30 |
    | Ciphertext message | 10 MB | messages.h:37 |

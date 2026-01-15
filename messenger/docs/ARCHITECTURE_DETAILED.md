@@ -40,7 +40,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 | **Symmetric Encryption** | AES-256-GCM |
 | **Hash Function** | SHA3-512, Keccak-256 (ETH) |
 | **DHT Network** | OpenDHT-PQ (post-quantum modified) |
-| **NAT Traversal** | libjuice (ICE/STUN) |
+| **NAT Traversal** | DHT-only (ICE/STUN removed v0.4.61) |
 | **Local Storage** | SQLite3 |
 | **GUI Framework** | ImGui (OpenGL3 + GLFW3) |
 | **Blockchain** | Cellframe (CPUNK), Ethereum (ETH), TRON (TRX), Solana (SOL) |
@@ -108,7 +108,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 │   └── shared/               # Groups, offline queue, GSK storage
 │
 ├── p2p/                      # Peer-to-peer transport
-│   └── transport/            # TCP connections, ICE/NAT
+│   └── transport/            # TCP connections, DHT presence
 │
 ├── messenger/                # Messaging core
 │   ├── identity.c            # Identity management
@@ -197,7 +197,7 @@ cmake/
 ├── WindowsBuild.cmake    # Windows/MinGW/MSVC configuration
 ├── AndroidBuild.cmake    # Android NDK configuration
 ├── Dependencies.cmake    # External dependency management
-└── Libjuice.cmake        # libjuice ExternalProject setup
+└── ~~Libjuice.cmake~~    # Removed v0.4.61
 ```
 
 **Module Responsibilities:**
@@ -210,7 +210,7 @@ cmake/
 | `WindowsBuild.cmake` | Configures MSVC/MinGW, static linking, WINDOWS_SYSTEM_LIBS |
 | `AndroidBuild.cmake` | NDK config, pre-built deps, ANDROID_GNUTLS_LIBS |
 | `Dependencies.cmake` | find_package for OpenSSL, CURL, json-c, SQLite3 |
-| `Libjuice.cmake` | ExternalProject_Add for libjuice v1.7.0 |
+| ~~`Libjuice.cmake`~~ | Removed v0.4.61 |
 
 ### CMake Targets
 
@@ -227,7 +227,7 @@ p2p_transport (STATIC)    # P2P layer
 
 # Vendor
 opendht (STATIC)          # OpenDHT-PQ
-libjuice (EXTERNAL)       # NAT traversal (v1.7.0)
+# libjuice removed v0.4.61
 ```
 
 ### Build Options
@@ -246,7 +246,7 @@ libjuice (EXTERNAL)       # NAT traversal (v1.7.0)
 | CURL | Blockchain RPC | System |
 | SQLite3 | Local storage | System |
 | json-c | JSON parsing | System |
-| libjuice | ICE/STUN NAT traversal | Vendored |
+| ~~libjuice~~ | ~~ICE/STUN NAT traversal~~ | Removed v0.4.61 |
 | OpenDHT-PQ | DHT with Dilithium5 | Vendored |
 
 ### Platform-Specific Notes
@@ -663,8 +663,8 @@ int dht_context_bootstrap_runtime(dht_context_t *ctx, const char *ip, uint16_t p
 │  └─────────────┘      └─────────────┘      └─────────────┘     │
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │                  libjuice (ICE/STUN)                     │   │
-│  │              NAT Traversal & Hole Punching               │   │
+│  │              DHT-Only Transport (v0.4.61+)               │   │
+│  │         ICE/STUN removed for privacy - uses Spillway     │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘

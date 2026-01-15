@@ -678,7 +678,7 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 
 ### ✅ Complete
 - **Phase 4:** Desktop GUI (ImGui) + Wallet Integration
-- **Phase 5.1-5.9:** P2P Architecture (DHT, ICE, GSK, Message Format v0.08)
+- **Phase 5.1-5.9:** P2P Architecture (DHT, GSK, Message Format v0.08) - ICE removed v0.4.61
 - **Phase 6:** Android SDK (JNI bindings, Java classes, Gradle project)
 - **Phase 8:** cpunk Wallet Integration
 - **Phase 9.1-9.6:** P2P Transport, Offline Queue, DHT Migrations
