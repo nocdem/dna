@@ -78,7 +78,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/client/dna_group_outbox.h"
 #include "p2p/p2p_transport.h"
 #include "p2p/transport/transport_core.h"  /* For parse_presence_json */
-#include "p2p/transport/turn_credentials.h"
+/* TURN credentials removed in v0.4.61 for privacy */
 #include "database/presence_cache.h"
 #include "database/keyserver_cache.h"
 #include "database/profile_cache.h"
@@ -6077,75 +6077,15 @@ bool dna_engine_is_peer_online(dna_engine_t *engine, const char *fingerprint) {
 }
 
 int dna_engine_request_turn_credentials(dna_engine_t *engine, int timeout_ms) {
-    if (!engine || !engine->identity_loaded) {
-        QGP_LOG_ERROR(LOG_TAG, "Engine not initialized or no identity loaded");
-        return -1;
-    }
-
-    if (timeout_ms <= 0) {
-        timeout_ms = 10000;  // Default 10 seconds
-    }
-
-    // Get data directory
-    const char *data_dir = engine->data_dir;
-    if (!data_dir) {
-        data_dir = qgp_platform_app_data_dir();
-    }
-    if (!data_dir) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory");
-        return -1;
-    }
-
-    // Build path to signing key (v0.3.0: flat structure)
-    char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/keys/identity.dsa", data_dir);
-
-    // Load signing key (handle encrypted keys)
-    qgp_key_t *sign_key = NULL;
-    int load_rc;
-    if (engine->keys_encrypted && engine->session_password) {
-        load_rc = qgp_key_load_encrypted(key_path, engine->session_password, &sign_key);
-    } else {
-        load_rc = qgp_key_load(key_path, &sign_key);
-    }
-
-    if (load_rc != 0 || !sign_key) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load signing key: %s", key_path);
-        return -1;
-    }
-
-    if (!sign_key->public_key || !sign_key->private_key) {
-        QGP_LOG_ERROR(LOG_TAG, "Signing key missing public or private component");
-        qgp_key_free(sign_key);
-        return -1;
-    }
-
-    // Initialize TURN credential system
-    turn_credentials_init();
-
-    // Request credentials
-    turn_credentials_t creds;
-    memset(&creds, 0, sizeof(creds));
-
-    QGP_LOG_INFO(LOG_TAG, "Requesting TURN credentials (timeout: %dms)...", timeout_ms);
-
-    int result = turn_credentials_request(
-        engine->fingerprint,
-        sign_key->public_key,
-        sign_key->private_key,
-        &creds,
-        timeout_ms
-    );
-
-    qgp_key_free(sign_key);
-
-    if (result != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to obtain TURN credentials");
-        return -1;
-    }
-
-    QGP_LOG_INFO(LOG_TAG, "Successfully obtained TURN credentials (%zu servers)", creds.server_count);
-    return 0;
+    /* TURN credentials removed in v0.4.61 for privacy
+     * - Prevents IP leakage to STUN/TURN servers
+     * - All messaging now uses DHT-only (Spillway protocol)
+     * - This function is deprecated and always returns -1
+     */
+    (void)engine;
+    (void)timeout_ms;
+    QGP_LOG_WARN(LOG_TAG, "TURN credentials deprecated (v0.4.61) - use DHT messaging instead");
+    return -1;
 }
 
 dna_request_id_t dna_engine_lookup_presence(
@@ -6682,12 +6622,11 @@ static bool presence_listen_callback(
     memcpy(json_buf, value, copy_len);
     json_buf[copy_len] = '\0';
 
-    peer_info_t peer_info;
-    memset(&peer_info, 0, sizeof(peer_info));
-
+    /* v0.4.61: timestamp-only presence (privacy - no IP disclosure) */
+    uint64_t last_seen = 0;
     time_t presence_timestamp = time(NULL);  /* Fallback to now if parse fails */
-    if (parse_presence_json(json_buf, &peer_info) == 0 && peer_info.last_seen > 0) {
-        presence_timestamp = (time_t)peer_info.last_seen;
+    if (parse_presence_json(json_buf, &last_seen) == 0 && last_seen > 0) {
+        presence_timestamp = (time_t)last_seen;
     }
 
     /* Update cache with actual timestamp from presence data */

@@ -1,21 +1,22 @@
 /**
  * P2P Transport Discovery Module
  * DHT-based peer discovery (presence registration and peer lookup)
+ *
+ * Privacy: ICE/STUN/TURN removed in v0.4.61
+ * - Presence now timestamp-only (no IP address published)
+ * - Contacts can see online status without learning your IP
  */
 
 #include "transport_core.h"
-#include "transport_ice.h"  // Phase 11: ICE NAT traversal
 #include "crypto/utils/qgp_log.h"
-#include "dht/client/dht_singleton.h"  // Phase 14: Direct DHT access
+#include "dht/client/dht_singleton.h"
 
 #define LOG_TAG "P2P_DISC"
 
 /**
- * Register presence in DHT
- * Publishes IP:port information for peer discovery
- *
- * Phase 11 FIX: ICE candidates now published by persistent ICE context
- * (no longer done here - see ice_init_persistent() in p2p_transport_start)
+ * Register presence in DHT (timestamp only - privacy preserving)
+ * Publishes only timestamp for online status indication
+ * No IP address is published to protect user privacy.
  *
  * @param ctx: P2P transport context
  * @return: 0 on success, -1 on error
@@ -25,20 +26,10 @@ int p2p_register_presence(p2p_transport_t *ctx) {
         return -1;
     }
 
-    // Get public IP via STUN (NAT-mapped address)
-    // Only use STUN result - local IPs are useless for remote peers
-    char my_ip[64] = {0};
-    if (stun_get_public_ip(my_ip, sizeof(my_ip)) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "STUN query failed - cannot register presence without public IP\n");
-        return -1;
-    }
-    QGP_LOG_INFO(LOG_TAG, "STUN discovered public IP: %s\n", my_ip);
-
-    // Create presence JSON
-    char presence_data[512];
-    if (create_presence_json(my_ip, ctx->config.listen_port,
-                            presence_data, sizeof(presence_data)) != 0) {
-        QGP_LOG_INFO(LOG_TAG, "Failed to create presence JSON\n");
+    // Create timestamp-only presence JSON (no IP - privacy)
+    char presence_data[128];
+    if (create_presence_json(presence_data, sizeof(presence_data)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create presence JSON\n");
         return -1;
     }
 
@@ -46,14 +37,13 @@ int p2p_register_presence(p2p_transport_t *ctx) {
     uint8_t dht_key[64];  // SHA3-512 = 64 bytes
     sha3_512_hash(ctx->my_public_key, 2592, dht_key);  // Dilithium5 public key size
 
-    QGP_LOG_INFO(LOG_TAG, "Registering presence in DHT\n");
+    QGP_LOG_INFO(LOG_TAG, "Registering presence in DHT (timestamp only, privacy-preserving)\n");
     QGP_LOG_INFO(LOG_TAG, "DHT key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x\n",
            dht_key[0], dht_key[1], dht_key[2], dht_key[3],
            dht_key[4], dht_key[5], dht_key[6], dht_key[7]);
     QGP_LOG_INFO(LOG_TAG, "Presence data: %s\n", presence_data);
 
     // Store in DHT (signed, 7-day TTL, value_id=1 for replacement)
-    // Presence data is ephemeral and refreshed regularly
     dht_context_t *dht = dht_singleton_get();
     if (!dht) {
         QGP_LOG_ERROR(LOG_TAG, "DHT not available for presence registration\n");
@@ -65,28 +55,18 @@ int p2p_register_presence(p2p_transport_t *ctx) {
                                 1, ttl_7days, "presence");
 
     if (result == 0) {
-        QGP_LOG_INFO(LOG_TAG, "Presence registered successfully (signed)\n");
+        QGP_LOG_INFO(LOG_TAG, "✓ Presence registered (timestamp only, no IP leaked)\n");
     } else {
-        QGP_LOG_INFO(LOG_TAG, "Failed to register presence in DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to register presence in DHT\n");
         return result;
-    }
-
-    // Phase 11 FIX: ICE candidates are now published by ice_init_persistent()
-    // during p2p_transport_start(), not here. This prevents Bug #2
-    // (destroying ICE context after publishing candidates).
-
-    if (ctx->ice_ready) {
-        QGP_LOG_INFO(LOG_TAG, "✓ Presence and ICE candidates both registered (ICE ready for NAT traversal)\n");
-    } else {
-        QGP_LOG_INFO(LOG_TAG, "✓ Presence registered (ICE unavailable, TCP-only mode)\n");
     }
 
     return 0;
 }
 
 /**
- * Lookup peer in DHT
- * Retrieves IP:port information for peer connection
+ * Lookup peer in DHT (timestamp only)
+ * Retrieves online status without IP disclosure
  * @param ctx: P2P transport context
  * @param peer_pubkey: Peer's Dilithium5 public key (2592 bytes)
  * @param peer_info: Output peer information structure
@@ -101,11 +81,13 @@ int p2p_lookup_peer(
         return -1;
     }
 
+    memset(peer_info, 0, sizeof(peer_info_t));
+
     // Compute DHT key: SHA3-512(peer_pubkey)
     uint8_t dht_key[64];  // SHA3-512 = 64 bytes
     sha3_512_hash(peer_pubkey, 2592, dht_key);  // Dilithium5 public key size
 
-    QGP_LOG_INFO(LOG_TAG, "Looking up peer in DHT\n");
+    QGP_LOG_INFO(LOG_TAG, "Looking up peer presence in DHT\n");
     QGP_LOG_INFO(LOG_TAG, "DHT key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x\n",
            dht_key[0], dht_key[1], dht_key[2], dht_key[3],
            dht_key[4], dht_key[5], dht_key[6], dht_key[7]);
@@ -124,11 +106,11 @@ int p2p_lookup_peer(
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Found peer data: %.*s\n", (int)value_len, value);
+    QGP_LOG_INFO(LOG_TAG, "Found peer presence: %.*s\n", (int)value_len, value);
 
-    // Parse JSON
-    if (parse_presence_json((const char*)value, peer_info) != 0) {
-        QGP_LOG_INFO(LOG_TAG, "Failed to parse peer presence JSON\n");
+    // Parse JSON (timestamp only)
+    if (parse_presence_json((const char*)value, &peer_info->last_seen) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse peer presence JSON\n");
         free(value);
         return -1;
     }
@@ -142,8 +124,8 @@ int p2p_lookup_peer(
 
     free(value);
 
-    QGP_LOG_INFO(LOG_TAG, "Peer lookup successful: %s:%d (online: %s)\n",
-           peer_info->ip, peer_info->port,
+    QGP_LOG_INFO(LOG_TAG, "Peer lookup successful: last_seen=%lu (online: %s)\n",
+           (unsigned long)peer_info->last_seen,
            peer_info->is_online ? "yes" : "no");
 
     return 0;
@@ -207,16 +189,12 @@ int p2p_lookup_presence_by_fingerprint(
     QGP_LOG_INFO(LOG_TAG, "Found presence data: %.*s\n", (int)value_len, value);
 
     // Parse JSON to extract timestamp
-    peer_info_t peer_info;
-    memset(&peer_info, 0, sizeof(peer_info));
-
-    if (parse_presence_json((const char*)value, &peer_info) != 0) {
-        QGP_LOG_INFO(LOG_TAG, "Failed to parse presence JSON\n");
+    if (parse_presence_json((const char*)value, last_seen_out) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse presence JSON\n");
         free(value);
         return -1;
     }
 
-    *last_seen_out = peer_info.last_seen;
     free(value);
 
     QGP_LOG_INFO(LOG_TAG, "Presence lookup successful: last_seen=%lu\n",
@@ -226,10 +204,13 @@ int p2p_lookup_presence_by_fingerprint(
 }
 
 // ============================================================================
-// p2p_send_message() REMOVED in v0.3.154
+// ICE candidate functions removed in v0.4.61 for privacy
 // ============================================================================
-// The 3-tier fallback system (TCP → ICE → DHT) was dead code since Phase 14.
-// All messaging now uses DHT-only path via messenger_queue_to_dht().
+// The following were removed:
+// - ICE candidate publishing to DHT
+// - ICE candidate lookup from DHT
+// - 3-tier fallback system (TCP → ICE → DHT)
 //
-// P2P/ICE infrastructure is preserved in transport_juice.c for future voice/video.
+// All messaging now uses DHT-only path via messenger_queue_to_dht().
+// This provides better privacy by not leaking IP addresses.
 // ============================================================================

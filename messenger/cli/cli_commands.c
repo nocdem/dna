@@ -11,8 +11,7 @@
 #include "dht/core/dht_keyserver.h"
 #include "dht/client/dht_singleton.h"
 #include "p2p/transport/transport_core.h"
-#include "p2p/transport/transport_ice.h"
-#include "p2p/transport/turn_credentials.h"
+/* ICE/TURN removed in v0.4.61 for privacy */
 #include "messenger.h"
 
 #include <stdio.h>
@@ -1481,290 +1480,65 @@ int cmd_online(dna_engine_t *engine, const char *fingerprint) {
  * ============================================================================ */
 
 int cmd_stun_test(void) {
-    printf("Testing STUN connectivity...\n");
+    printf("STUN Test - DEPRECATED\n");
     printf("========================================\n");
-
-    // Test multiple STUN servers
-    const char *stun_servers[] = {
-        "stun.l.google.com",
-        "stun1.l.google.com",
-        "stun.cloudflare.com"
-    };
-    const uint16_t stun_ports[] = {19302, 19302, 3478};
-    const int num_servers = 3;
-
-    char public_ip[64] = {0};
-    int success = 0;
-
-    // Try stun_get_public_ip first (uses internal implementation)
-    if (stun_get_public_ip(public_ip, sizeof(public_ip)) == 0) {
-        printf("✓ STUN Test PASSED\n");
-        printf("  Public IP: %s\n", public_ip);
-        success = 1;
-    } else {
-        printf("✗ STUN Test FAILED\n");
-        printf("  Could not discover public IP via STUN\n");
-    }
-
+    printf("\n");
+    printf("STUN was removed in v0.4.61 for privacy.\n");
+    printf("\n");
+    printf("Privacy improvements:\n");
+    printf("  - No IP leakage to Google/Cloudflare STUN servers\n");
+    printf("  - All messaging now uses DHT-only (Spillway protocol)\n");
     printf("========================================\n");
-    printf("\nSTUN Servers Tested:\n");
-    for (int i = 0; i < num_servers; i++) {
-        printf("  %d. %s:%d\n", i + 1, stun_servers[i], stun_ports[i]);
-    }
-
-    if (success) {
-        printf("\nNAT Type: Likely Open/Full Cone (direct P2P possible)\n");
-    } else {
-        printf("\nNAT Type: Unknown (may need TURN relay)\n");
-    }
-
-    return success ? 0 : -1;
+    return 0;
 }
 
 int cmd_ice_status(dna_engine_t *engine) {
-    if (!engine) {
-        printf("Error: Engine not initialized\n");
-        return -1;
-    }
+    (void)engine;
 
-    printf("ICE Connection Status\n");
+    printf("ICE Status - DEPRECATED\n");
     printf("========================================\n");
-
-    // Get messenger context from engine
-    messenger_context_t *messenger = (messenger_context_t *)dna_engine_get_messenger_context(engine);
-    if (!messenger) {
-        printf("Messenger: NOT INITIALIZED\n");
-        return -1;
-    }
-
-    // Get P2P transport from messenger
-    p2p_transport_t *transport = messenger->p2p_transport;
-    if (!transport) {
-        printf("P2P Transport: NOT INITIALIZED\n");
-        printf("  (Start P2P with identity load)\n");
-        return -1;
-    }
-
-    printf("P2P Transport: ACTIVE\n");
-    printf("  Listen Port: 4001 (TCP)\n");
-
-    // Check ICE readiness
-    if (transport->ice_ready) {
-        printf("  ICE Status: READY\n");
-
-        // Get local candidates if available
-        if (transport->ice_context) {
-            const char *local_cands = ice_get_local_candidates(transport->ice_context);
-            if (local_cands && strlen(local_cands) > 0) {
-                printf("\nLocal ICE Candidates:\n");
-                // Parse and display candidates
-                char *cands_copy = strdup(local_cands);
-                char *line = strtok(cands_copy, "\n");
-                int count = 0;
-                while (line && count < 10) {
-                    if (strlen(line) > 0) {
-                        // Extract type from candidate line
-                        if (strstr(line, "typ host")) {
-                            printf("  [HOST]  %s\n", line);
-                        } else if (strstr(line, "typ srflx")) {
-                            printf("  [SRFLX] %s\n", line);
-                        } else if (strstr(line, "typ relay")) {
-                            printf("  [RELAY] %s\n", line);
-                        } else {
-                            printf("  %s\n", line);
-                        }
-                        count++;
-                    }
-                    line = strtok(NULL, "\n");
-                }
-                free(cands_copy);
-                printf("  (Total: %d candidates)\n", count);
-            } else {
-                printf("\nLocal ICE Candidates: None gathered\n");
-            }
-        }
-    } else {
-        printf("  ICE Status: NOT READY\n");
-        printf("  (ICE initializes on first P2P connection attempt)\n");
-    }
-
-    // Show active connections
-    printf("\nActive Connections: %zu\n", transport->connection_count);
-    if (transport->connection_count > 0) {
-        pthread_mutex_lock(&transport->connections_mutex);
-        for (size_t i = 0; i < transport->connection_count && i < 10; i++) {
-            p2p_connection_t *conn = transport->connections[i];
-            if (conn && conn->active) {
-                const char *type = (conn->type == CONNECTION_TYPE_ICE) ? "ICE" : "TCP";
-                printf("  %zu. [%s] %.16s...\n", i + 1, type, conn->peer_fingerprint);
-            }
-        }
-        pthread_mutex_unlock(&transport->connections_mutex);
-    }
-
+    printf("\n");
+    printf("ICE/STUN/TURN was removed in v0.4.61 for privacy.\n");
+    printf("\n");
+    printf("Current transport mode: DHT-only (Spillway protocol)\n");
+    printf("\n");
+    printf("Privacy improvements:\n");
+    printf("  - No IP leakage to third-party servers\n");
+    printf("  - Timestamp-only presence (no IP disclosure)\n");
+    printf("  - All messaging via DHT with 7-day offline queue\n");
     printf("========================================\n");
     return 0;
 }
 
 int cmd_turn_creds(dna_engine_t *engine, bool force_request) {
-    if (!engine) {
-        printf("Error: Engine not initialized\n");
-        return -1;
-    }
+    (void)engine;
+    (void)force_request;
 
-    printf("TURN Credentials\n");
+    printf("TURN Credentials - DEPRECATED\n");
     printf("========================================\n");
-
-    // Get identity fingerprint from engine
-    const char *fingerprint = dna_engine_get_fingerprint(engine);
-
-    if (!fingerprint || strlen(fingerprint) == 0) {
-        printf("Error: No identity loaded\n");
-        return -1;
-    }
-
-    printf("Identity: %.16s...\n\n", fingerprint);
-
-    // Initialize TURN credential system if needed
-    turn_credentials_init();
-
-    turn_credentials_t creds;
-    memset(&creds, 0, sizeof(creds));
-
-    if (force_request) {
-        printf("Requesting TURN credentials from DNA Nodus...\n");
-
-        int result = dna_engine_request_turn_credentials(engine, 10000);
-        if (result != 0) {
-            printf("✗ Failed to obtain TURN credentials\n");
-            printf("  (Bootstrap servers may be unreachable)\n");
-            return -1;
-        }
-
-        printf("✓ Credentials obtained!\n\n");
-    }
-
-    // Show cached credentials
-    if (turn_credentials_get_cached(fingerprint, &creds) != 0) {
-        printf("No cached credentials found.\n");
-        printf("\nUse 'turn-creds --force' to request credentials from DNA Nodus.\n");
-        printf("\nTURN credentials are also obtained automatically when:\n");
-        printf("  1. ICE direct connection fails\n");
-        printf("  2. STUN-only candidates are insufficient\n");
-        printf("  3. Symmetric NAT requires relay\n");
-        return 0;
-    }
-
-    printf("Cached credentials:\n\n");
-
-    // Display credentials
-    printf("TURN Servers (%zu):\n", creds.server_count);
-    for (size_t i = 0; i < creds.server_count; i++) {
-        turn_server_info_t *srv = &creds.servers[i];
-        printf("  %zu. %s:%d\n", i + 1, srv->host, srv->port);
-        printf("     Username: %s\n", srv->username);
-        printf("     Password: %s\n", srv->password);
-
-        // Calculate expiry
-        time_t now = time(NULL);
-        if (srv->expires_at > now) {
-            int hours_left = (int)((srv->expires_at - now) / 3600);
-            int days_left = hours_left / 24;
-            if (days_left > 0) {
-                printf("     Expires:  %d days, %d hours\n", days_left, hours_left % 24);
-            } else {
-                printf("     Expires:  %d hours\n", hours_left);
-            }
-        } else {
-            printf("     Expires:  EXPIRED\n");
-        }
-    }
-
+    printf("\n");
+    printf("STUN/TURN was removed in v0.4.61 for privacy.\n");
+    printf("\n");
+    printf("Privacy improvements:\n");
+    printf("  - No IP leakage to Google/Cloudflare STUN servers\n");
+    printf("  - No connection pattern exposure to TURN relays\n");
+    printf("  - Timestamp-only presence (no IP disclosure)\n");
+    printf("\n");
+    printf("All messaging now uses DHT-only (Spillway protocol).\n");
     printf("========================================\n");
     return 0;
 }
 
 int cmd_turn_test(dna_engine_t *engine) {
-    if (!engine) {
-        printf("Error: No identity loaded.\n");
-        return -1;
-    }
+    (void)engine;
 
-    printf("\nTURN Relay Test\n");
+    printf("TURN Test - DEPRECATED\n");
     printf("========================================\n");
-
-    // Get identity fingerprint
-    const char *fp = dna_engine_get_fingerprint(engine);
-    if (!fp || strlen(fp) == 0) {
-        printf("Error: No identity loaded.\n");
-        return -1;
-    }
-    printf("Identity: %.16s...\n\n", fp);
-
-    // Get list of TURN servers
-    const char *servers[4];
-    int num_servers = turn_credentials_get_server_list(servers, 4);
-    if (num_servers == 0) {
-        printf("Error: No TURN servers configured.\n");
-        return -1;
-    }
-
-    printf("Testing %d TURN servers...\n\n", num_servers);
-
-    int success_count = 0;
-
-    for (int i = 0; i < num_servers; i++) {
-        const char *server_ip = servers[i];
-        printf("[%d/%d] %s\n", i + 1, num_servers, server_ip);
-
-        // Check for cached credentials first
-        turn_server_info_t creds;
-        int have_creds = (turn_credentials_get_for_server(server_ip, &creds) == 0);
-
-        if (have_creds) {
-            printf("      Cached credentials: %s\n", creds.username);
-        } else {
-            // Request credentials
-            printf("      Requesting credentials...\n");
-            int ret = dna_engine_request_turn_credentials(engine, 5000);
-            if (ret == 0) {
-                have_creds = (turn_credentials_get_for_server(server_ip, &creds) == 0);
-                if (have_creds) {
-                    printf("      ✓ Got credentials: %s\n", creds.username);
-                }
-            }
-        }
-
-        if (have_creds) {
-            // Show credential status
-            time_t now = time(NULL);
-            if (creds.expires_at > now) {
-                int hours_left = (int)((creds.expires_at - now) / 3600);
-                printf("      Expires: %d hours\n", hours_left);
-                printf("      Status: ✓ READY\n");
-                success_count++;
-            } else {
-                printf("      Status: ✗ EXPIRED\n");
-            }
-        } else {
-            printf("      Status: ✗ NO CREDENTIALS\n");
-        }
-        printf("\n");
-    }
-
+    printf("\n");
+    printf("STUN/TURN was removed in v0.4.61 for privacy.\n");
+    printf("All messaging now uses DHT-only (Spillway protocol).\n");
     printf("========================================\n");
-    printf("Result: %d/%d servers ready for TURN relay\n", success_count, num_servers);
-
-    if (success_count == 0) {
-        printf("\n⚠ No TURN servers available. ICE will use STUN-only.\n");
-        printf("  TURN servers may need to be deployed with signature verification.\n");
-    } else if (success_count < num_servers) {
-        printf("\n⚠ Some TURN servers unavailable. Failover will use available servers.\n");
-    } else {
-        printf("\n✓ All TURN servers ready. Full NAT traversal capability available.\n");
-    }
-
-    return (success_count > 0) ? 0 : -1;
+    return 0;
 }
 
 /* ============================================================================

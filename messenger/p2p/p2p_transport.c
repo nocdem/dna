@@ -72,11 +72,7 @@ p2p_transport_t* p2p_transport_init(
     pthread_mutex_init(&ctx->connections_mutex, NULL);
     pthread_mutex_init(&ctx->callback_mutex, NULL);
 
-    // Initialize ICE state (Phase 11 FIX)
-    ctx->ice_context = NULL;
-    ctx->ice_ready = false;
-
-    // Verify DHT singleton is available (required for ICE candidate publishing)
+    // Verify DHT singleton is available (required for presence and messaging)
     // DHT is accessed via dht_singleton_get() - not stored in p2p_transport
     if (!dht_singleton_is_initialized()) {
         QGP_LOG_ERROR(LOG_TAG, "Global DHT not initialized! Call dht_singleton_init() at app startup.\n");
@@ -115,56 +111,10 @@ int p2p_transport_start(p2p_transport_t *ctx) {
         return -1;
     }
 
-    // Initialize ICE context for NAT traversal (libjuice)
-    QGP_LOG_INFO(LOG_TAG, "Initializing ICE for NAT traversal (libjuice)...\n");
-
-    pthread_mutex_init(&ctx->ice_mutex, NULL);
-    pthread_mutex_lock(&ctx->ice_mutex);
-
-    ctx->ice_context = ice_context_new();
-    if (!ctx->ice_context) {
-        QGP_LOG_ERROR(LOG_TAG, "WARNING: ICE initialization failed (NAT traversal unavailable)\n");
-        QGP_LOG_ERROR(LOG_TAG, "Continuing with TCP-only mode...\n");
-        pthread_mutex_unlock(&ctx->ice_mutex);
-        return 0;  // Not fatal - continue with TCP-only mode
-    }
-
-    // Gather ICE candidates (try multiple STUN servers)
-    int gathered = 0;
-    const char *stun_servers[] = {"stun.l.google.com", "stun1.l.google.com", "stun.cloudflare.com"};
-    const uint16_t stun_ports[] = {19302, 19302, 3478};
-
-    for (size_t i = 0; i < 3 && !gathered; i++) {
-        QGP_LOG_INFO(LOG_TAG, "Trying STUN server: %s:%d\n", stun_servers[i], stun_ports[i]);
-        if (ice_gather_candidates(ctx->ice_context, stun_servers[i], stun_ports[i]) == 0) {
-            gathered = 1;
-            QGP_LOG_INFO(LOG_TAG, "✓ Successfully gathered ICE candidates via %s:%d\n", stun_servers[i], stun_ports[i]);
-            break;
-        }
-    }
-
-    if (!gathered) {
-        QGP_LOG_ERROR(LOG_TAG, "WARNING: Failed to gather candidates from all STUN servers\n");
-        ice_context_free(ctx->ice_context);
-        ctx->ice_context = NULL;
-        pthread_mutex_unlock(&ctx->ice_mutex);
-        return 0;  // Not fatal - continue with TCP-only mode
-    }
-
-    // Publish ICE candidates to DHT
-    if (ice_publish_to_dht(ctx->ice_context, ctx->my_fingerprint) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "WARNING: Failed to publish ICE candidates to DHT\n");
-        ice_context_free(ctx->ice_context);
-        ctx->ice_context = NULL;
-        pthread_mutex_unlock(&ctx->ice_mutex);
-        return 0;  // Not fatal - continue with TCP-only mode
-    }
-
-    QGP_LOG_INFO(LOG_TAG, "✓ Published ICE candidates to DHT (key: %s:ice_candidates)\n", ctx->my_fingerprint);
-    ctx->ice_ready = true;
-    pthread_mutex_unlock(&ctx->ice_mutex);
-
-    QGP_LOG_INFO(LOG_TAG, "✓ ICE ready for NAT traversal\n");
+    // ICE/STUN/TURN removed in v0.4.61 for privacy
+    // No external IP addresses are discovered or published
+    // All messaging uses DHT-only path
+    QGP_LOG_INFO(LOG_TAG, "✓ P2P transport started (DHT-only mode, privacy-preserving)\n");
     return 0;
 }
 
@@ -176,24 +126,15 @@ void p2p_transport_stop(p2p_transport_t *ctx) {
     QGP_LOG_INFO(LOG_TAG, "Stopping transport...\n");
     ctx->running = false;
 
-    // Close all peer connections (TCP and ICE)
+    // Close all peer connections (TCP only)
     pthread_mutex_lock(&ctx->connections_mutex);
     for (size_t i = 0; i < 256; i++) {
         if (ctx->connections[i]) {
             p2p_connection_t *conn = ctx->connections[i];
             conn->active = false;
 
-            if (conn->type == CONNECTION_TYPE_TCP) {
-                if (conn->sockfd >= 0) {
-                    close(conn->sockfd);
-                }
-            } else if (conn->type == CONNECTION_TYPE_ICE) {
-                if (conn->ice_ctx) {
-                    QGP_LOG_INFO(LOG_TAG, "Shutting down ICE connection to %.16s...\n", conn->peer_fingerprint);
-                    ice_shutdown(conn->ice_ctx);
-                    ice_context_free(conn->ice_ctx);
-                    conn->ice_ctx = NULL;
-                }
+            if (conn->sockfd >= 0) {
+                close(conn->sockfd);
             }
 
             // Wait for receive thread to finish (with timeout on Linux)
@@ -215,19 +156,6 @@ void p2p_transport_stop(p2p_transport_t *ctx) {
     }
     ctx->connection_count = 0;
     pthread_mutex_unlock(&ctx->connections_mutex);
-
-    // Shutdown persistent ICE context
-    if (ctx->ice_ready) {
-        QGP_LOG_INFO(LOG_TAG, "Shutting down persistent ICE...\n");
-        pthread_mutex_lock(&ctx->ice_mutex);
-        if (ctx->ice_context) {
-            ice_shutdown(ctx->ice_context);
-            ice_context_free(ctx->ice_context);
-            ctx->ice_context = NULL;
-        }
-        ctx->ice_ready = false;
-        pthread_mutex_unlock(&ctx->ice_mutex);
-    }
 
     // Stop TCP listener
     tcp_stop_listener(ctx);

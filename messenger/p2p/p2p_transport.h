@@ -14,15 +14,17 @@ extern "C" {
  * P2P Transport Layer for DNA Messenger
  *
  * Architecture:
- * - DHT-based peer discovery (OpenDHT via dht_context.h)
- * - TCP socket connections for peer-to-peer messaging
+ * - DHT-only messaging (privacy-preserving, no IP leaks)
+ * - Timestamp-only presence (online status without IP disclosure)
  * - Post-quantum encryption: Kyber1024 (ML-KEM-1024) + Dilithium5 (ML-DSA-87) + AES-256-GCM
  * - NIST Category 5 security (256-bit quantum)
- * - Offline message queuing in DHT
+ * - Offline message queuing in DHT (7-day TTL)
  *
  * Port Usage:
  * - UDP 4000: DHT network
- * - TCP 4001: P2P messaging
+ * - TCP 4001: LAN connections only (no external IP published)
+ *
+ * Privacy: ICE/STUN/TURN removed in v0.4.61 - no IP addresses published to DHT
  */
 
 // Forward declare opaque types
@@ -46,14 +48,13 @@ typedef struct {
 } p2p_config_t;
 
 /**
- * Peer Information
+ * Peer Information (Privacy-preserving: timestamp only, no IP)
+ * IP addresses removed in v0.4.61 to prevent privacy leaks
  */
 typedef struct {
-    char ip[64];                    // IPv4 or IPv6 address
-    uint16_t port;                  // TCP port
-    uint64_t last_seen;             // Unix timestamp
+    uint64_t last_seen;             // Unix timestamp when peer was last online
     uint8_t public_key[2592];       // Dilithium5 public key
-    bool is_online;                 // Currently reachable
+    bool is_online;                 // Currently online (based on timestamp)
 } peer_info_t;
 
 /**
@@ -162,8 +163,9 @@ int p2p_transport_deliver_message(
 // ============================================================================
 
 /**
- * Register my presence in DHT
- * Publishes: hash(my_pubkey) -> { ip, port, timestamp }
+ * Register my presence in DHT (timestamp only - privacy preserving)
+ * Publishes: hash(my_pubkey) -> { timestamp }
+ * No IP address is published to protect user privacy.
  *
  * This should be called periodically (every 5-10 minutes) to refresh presence
  *
@@ -173,8 +175,9 @@ int p2p_transport_deliver_message(
 int p2p_register_presence(p2p_transport_t *ctx);
 
 /**
- * Look up a peer in DHT
- * Queries: hash(peer_pubkey) -> { ip, port, timestamp }
+ * Look up a peer's online status in DHT (timestamp only)
+ * Queries: hash(peer_pubkey) -> { timestamp }
+ * Returns when peer was last seen online (no IP disclosed).
  *
  * @param ctx P2P transport context
  * @param peer_pubkey Peer's Dilithium5 public key (2592 bytes)
@@ -205,11 +208,10 @@ int p2p_lookup_presence_by_fingerprint(
 );
 
 // ============================================================================
-// DHT Offline Queue (Phase 14: Primary messaging path)
+// DHT Offline Queue (Primary messaging path)
 // ============================================================================
-// NOTE: p2p_send_message() removed in v0.3.154 - was dead code since Phase 14
-// All messaging now uses DHT-only path via messenger_queue_to_dht()
-// P2P/ICE infrastructure preserved in transport_juice.c for future voice/video
+// NOTE: All messaging uses DHT-only path via messenger_queue_to_dht()
+// ICE/STUN/TURN removed in v0.4.61 for privacy - no IP addresses published
 
 /**
  * Check for offline messages in DHT

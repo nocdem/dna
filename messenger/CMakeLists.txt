@@ -69,8 +69,8 @@ include(${CMAKE_SOURCE_DIR}/cmake/PlatformDetect.cmake)
 # External dependencies (OpenSSL, CURL, json-c, SQLite3)
 include(${CMAKE_SOURCE_DIR}/cmake/Dependencies.cmake)
 
-# libjuice for NAT traversal (ICE/STUN)
-include(${CMAKE_SOURCE_DIR}/cmake/Libjuice.cmake)
+# libjuice removed in v0.4.61 for privacy (was ICE/STUN NAT traversal)
+# include(${CMAKE_SOURCE_DIR}/cmake/Libjuice.cmake)
 
 # =============================================================================
 # Vendored Cryptographic Libraries
@@ -226,7 +226,7 @@ target_link_libraries(dna_lib
     secp256k1          # secp256k1 for Ethereum/Bitcoin key derivation
     cellframe_minimal  # Blockchain transaction building (uint256, signing)
     dht_lib            # DHT library (MUST come BEFORE p2p_transport for Windows stub symbols)
-    p2p_transport      # P2P transport layer (links libjuice for NAT traversal)
+    p2p_transport      # P2P transport layer (DHT-only, libjuice removed in v0.4.61)
     dht_lib            # Link dht_lib again to resolve circular deps with p2p_transport
     p2p_transport      # Link p2p_transport again for static linking order
     ${JSONC_LIBRARIES}
@@ -285,7 +285,7 @@ target_include_directories(dna_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/blockchain/solana     # Solana blockchain headers
     ${CMAKE_SOURCE_DIR}/blockchain/tron       # TRON blockchain headers
     ${OPENSSL_INCLUDE_DIR}
-    ${JUICE_INCLUDE_DIRS}             # libjuice headers
+    # JUICE_INCLUDE_DIRS removed in v0.4.61 - libjuice no longer used
 )
 
 # Add json-c include directories if found

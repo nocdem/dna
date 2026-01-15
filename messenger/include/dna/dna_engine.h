@@ -1999,12 +1999,12 @@ DNA_API dna_request_id_t dna_engine_sync_group_by_uuid(
 /**
  * Request TURN relay credentials from DNA Nodus
  *
- * Forces a TURN credential request even if not needed for current NAT type.
- * Useful for testing and pre-caching credentials.
+ * @deprecated TURN was removed in v0.4.61 for privacy. Always returns -1.
+ *             All messaging now uses DHT-only (Spillway protocol).
  *
- * @param engine      Engine instance
- * @param timeout_ms  Timeout in milliseconds (0 for default 10s)
- * @return            0 on success, negative on error
+ * @param engine      Engine instance (unused)
+ * @param timeout_ms  Timeout in milliseconds (unused)
+ * @return            Always -1 (deprecated)
  */
 DNA_API int dna_engine_request_turn_credentials(dna_engine_t *engine, int timeout_ms);
 

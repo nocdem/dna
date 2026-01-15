@@ -24,14 +24,14 @@ get_filename_component(DHT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../dht" ABSOLUTE)
 set(DHT_LIB dht_lib)
 
 # P2P Transport library (modular architecture)
+# Note: ICE/STUN/TURN removed in v0.4.61 for privacy (no IP address leaks)
 add_library(p2p_transport STATIC
     p2p_transport.c
     transport/transport_helpers.c
     transport/transport_tcp.c
     transport/transport_discovery.c
     transport/transport_offline.c
-    transport/transport_juice.c            # NAT traversal (libjuice - replaces libnice)
-    transport/turn_credentials.c           # TURN credential client (requests from dna-nodus)
+    # transport_juice.c and turn_credentials.c removed for privacy
 )
 
 target_include_directories(p2p_transport PUBLIC
@@ -39,14 +39,14 @@ target_include_directories(p2p_transport PUBLIC
     ${DHT_DIR}
     ${OPENSSL_INCLUDE_DIR}
     ${OPENDHT_INCLUDE_DIRS}
-    ${JUICE_INCLUDE_DIRS}  # libjuice headers (replaces libnice + glib)
+    # JUICE_INCLUDE_DIRS removed - libjuice no longer used
 )
 
 target_link_libraries(p2p_transport
     ${DHT_LIB}
     ${OPENDHT_LIBRARIES}
     ${OPENSSL_LIBRARIES}
-    ${JUICE_LIBRARIES}     # libjuice for NAT traversal (replaces libnice + glib)
+    # JUICE_LIBRARIES removed - libjuice no longer used
 )
 
 # Platform-specific libraries

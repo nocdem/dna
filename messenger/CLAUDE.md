@@ -1,8 +1,8 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-01-14 | **Status:** BETA | **Phase:** 7 (Flutter UI)
+**Last Updated:** 2026-01-15 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.4.60 | Flutter v0.99.132 | Nodus v0.4.5
+**Versions:** Library v0.4.61 | Flutter v0.99.132 | Nodus v0.4.5
 
 ---
 
@@ -122,13 +122,13 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 | Architecture | `docs/ARCHITECTURE_DETAILED.md` | Directory structure, components, build system, data flow changes |
 | DHT System | `docs/DHT_SYSTEM.md` | DHT operations, bootstrap nodes, offline queue, key derivation changes |
 | DNA Engine API | `docs/DNA_ENGINE_API.md` | Public API functions, data types, callbacks, error codes changes |
-| DNA Nodus | `docs/DNA_NODUS.md` | Bootstrap server, STUN/TURN, config, deployment changes |
+| DNA Nodus | `docs/DNA_NODUS.md` | Bootstrap server, config, deployment changes |
 | Flutter UI | `docs/FLUTTER_UI.md` | Screens, FFI bindings, providers, widgets changes |
 | Function Reference | `docs/functions/` | Adding, modifying, or removing any function signatures |
 | Git Workflow | `docs/GIT_WORKFLOW.md` | Commit guidelines, branch strategy, repo procedures changes |
 | Message System | `docs/MESSAGE_SYSTEM.md` | Message format, encryption, GSK, database schema changes |
 | Mobile Porting | `docs/MOBILE_PORTING.md` | Android SDK, JNI, iOS, platform abstraction changes |
-| P2P Architecture | `docs/P2P_ARCHITECTURE.md` | Transport tiers, ICE/NAT, TCP, peer discovery changes |
+| P2P Architecture | `docs/P2P_ARCHITECTURE.md` | DHT transport, TCP, peer discovery changes |
 | Security | `docs/SECURITY_AUDIT.md` | Crypto primitives, vulnerabilities, security fixes |
 
 **Procedure:**
@@ -145,7 +145,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.4.60 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
+| C Library | `include/dna/version.h` | v0.4.61 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
 | Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.132+10032 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.5 | Nodus server changes (vendor/opendht-pq/tools/) |
 
@@ -520,7 +520,7 @@ make && ./fuzz_<target> ../fuzz/corpus/<target>/ -max_total_time=60
 - **[Protocol Specs](docs/PROTOCOL.md)** - Wire formats (Seal, Spillway, Anchor, Atlas, Nexus)
 - **[CLI Testing](docs/CLI_TESTING.md)** - CLI tool for debugging and testing
 - **[Flutter UI](docs/FLUTTER_UI.md)** - Flutter migration (Phase 7)
-- **[DNA Nodus](docs/DNA_NODUS.md)** - Bootstrap + STUN/TURN server (v0.4)
+- **[DNA Nodus](docs/DNA_NODUS.md)** - DHT Bootstrap server (v0.4.5)
 - **[DHT System](docs/DHT_SYSTEM.md)** - DHT architecture and operations
 - **[Message System](docs/MESSAGE_SYSTEM.md)** - Message handling and encryption
 - **[P2P Architecture](docs/P2P_ARCHITECTURE.md)** - Peer-to-peer transport layer
@@ -535,7 +535,7 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 
 **Crypto:** Kyber1024 (ML-KEM-1024), Dilithium5 (ML-DSA-87), AES-256-GCM, SHA3-512
 
-**Key Features:** E2E encrypted messaging • GSK group encryption • DHT groups • Per-identity contacts • User profiles • Wall posts • cpunk wallet • P2P + DHT • ICE NAT traversal • Offline queueing (7d) • BIP39 recovery • SQLite • ImGui GUI • Android SDK (JNI)
+**Key Features:** E2E encrypted messaging • GSK group encryption • DHT groups • Per-identity contacts • User profiles • Wall posts • cpunk wallet • DHT-only messaging • Offline queueing (7d) • BIP39 recovery • SQLite • ImGui GUI • Android SDK (JNI)
 
 
 ---
@@ -626,12 +626,14 @@ Details: what/why/breaking
 
 ## DNA Nodus Deployment
 
-**Bootstrap Servers (dna-nodus v0.4):**
-| Server | IP | DHT Port | TURN Port |
-|--------|-----|----------|-----------|
-| US-1 | 154.38.182.161 | 4000 | 3478 |
-| EU-1 | 164.68.105.227 | 4000 | 3478 |
-| EU-2 | 164.68.116.180 | 4000 | 3478 |
+**Bootstrap Servers (dna-nodus v0.4.5 - DHT-only, privacy-preserving):**
+| Server | IP | DHT Port |
+|--------|-----|----------|
+| US-1 | 154.38.182.161 | 4000 |
+| EU-1 | 164.68.105.227 | 4000 |
+| EU-2 | 164.68.116.180 | 4000 |
+
+**Note:** STUN/TURN removed in v0.4.5 for privacy (no IP leakage to third parties).
 
 **Deployment Process (v0.4+):**
 ```bash
@@ -655,7 +657,6 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 {
     "dht_port": 4000,
     "seed_nodes": ["154.38.182.161", "164.68.105.227"],
-    "turn_port": 3478,
     "public_ip": "auto",
     "persistence_path": "/var/lib/dna-dht/bootstrap.state"
 }
@@ -663,8 +664,6 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 
 **Services:**
 - DHT: UDP port 4000
-- STUN/TURN: UDP port 3478 (libjuice)
-- Credential TTL: 7 days
 
 **Persistence:**
 - Default path: `/var/lib/dna-dht/bootstrap.state`
@@ -684,7 +683,7 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 - **Phase 8:** cpunk Wallet Integration
 - **Phase 9.1-9.6:** P2P Transport, Offline Queue, DHT Migrations
 - **Phase 10.1-10.4:** User Profiles, DNA Board, Avatars, Voting
-- **Phase 11:** ICE NAT Traversal
+- **Phase 11:** ICE NAT Traversal (removed in v0.4.61 for privacy)
 - **Phase 12:** Message Format v0.08 - Fingerprint Privacy
 - **Phase 13:** GSK Group Encryption
 - **Phase 14:** DHT-Only Messaging (Android ForegroundService, DHT listen reliability)

@@ -1030,18 +1030,9 @@ int messenger_p2p_refresh_presence(messenger_context_t *ctx)
         return -1;
     }
 
-    // Get public IP via STUN
-    char my_ip[64] = {0};
-    if (stun_get_public_ip(my_ip, sizeof(my_ip)) != 0) {
-        QGP_LOG_ERROR("P2P", "STUN query failed - cannot register presence without public IP");
-        free(pubkey);
-        return -1;
-    }
-    QGP_LOG_DEBUG("P2P", "STUN discovered public IP: %s", my_ip);
-
-    // Create presence JSON (port=0 since we're not listening for P2P connections)
+    // Create timestamp-only presence JSON (v0.4.61: privacy - no IP disclosure)
     char presence_data[512];
-    if (create_presence_json(my_ip, 0, presence_data, sizeof(presence_data)) != 0) {
+    if (create_presence_json(presence_data, sizeof(presence_data)) != 0) {
         QGP_LOG_ERROR("P2P", "Failed to create presence JSON");
         free(pubkey);
         return -1;
@@ -1120,17 +1111,15 @@ int messenger_p2p_lookup_presence(
         return -1;
     }
 
-    // Parse JSON to extract timestamp
-    peer_info_t peer_info;
-    memset(&peer_info, 0, sizeof(peer_info));
-
-    if (parse_presence_json((const char*)value, &peer_info) != 0) {
+    // Parse JSON to extract timestamp (v0.4.61: timestamp-only presence)
+    uint64_t last_seen = 0;
+    if (parse_presence_json((const char*)value, &last_seen) != 0) {
         QGP_LOG_DEBUG("P2P", "Failed to parse presence JSON");
         free(value);
         return -1;
     }
 
-    *last_seen_out = peer_info.last_seen;
+    *last_seen_out = last_seen;
     free(value);
 
     QGP_LOG_DEBUG("P2P", "Presence lookup successful: last_seen=%lu", (unsigned long)*last_seen_out);
