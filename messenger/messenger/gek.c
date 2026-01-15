@@ -748,6 +748,13 @@ static int gek_rotate_and_publish(dht_context_t *dht_ctx, const char *group_uuid
 
     free(packet);
 
+    // Step 8: Update group metadata with new GEK version
+    // This allows invitees to know which IKP version to fetch
+    if (dht_groups_update_gek_version(dht_ctx, group_uuid, new_version) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to update GEK version in metadata (IKP still published)\n");
+        // Non-fatal: IKP is published, metadata update is best-effort
+    }
+
     QGP_LOG_INFO(LOG_TAG, "GEK rotation complete for group %s (v%u published to DHT)\n",
            group_uuid, new_version);
 

@@ -34,6 +34,7 @@ typedef struct {
     char creator[129];              // Creator DNA fingerprint (128 hex chars + null)
     uint64_t created_at;            // Unix timestamp
     uint32_t version;               // Version number (for updates)
+    uint32_t gek_version;           // Current GEK (Group Encryption Key) version
     uint32_t member_count;          // Number of members
     char **members;                 // Array of member identities
 } dht_group_metadata_t;
@@ -149,6 +150,23 @@ int dht_groups_remove_member(
     const char *group_uuid,
     const char *member,
     const char *remover
+);
+
+/**
+ * Update GEK version in group metadata
+ *
+ * Called after GEK rotation to update the current GEK version.
+ * Invitees use this to know which IKP version to fetch.
+ *
+ * @param dht_ctx: DHT context
+ * @param group_uuid: Group UUID
+ * @param new_gek_version: New GEK version number
+ * @return: 0 on success, -1 on error
+ */
+int dht_groups_update_gek_version(
+    dht_context_t *dht_ctx,
+    const char *group_uuid,
+    uint32_t new_gek_version
 );
 
 /**

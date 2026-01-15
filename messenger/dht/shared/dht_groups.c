@@ -162,6 +162,7 @@ static char* serialize_metadata(const dht_group_metadata_t *meta) {
     ptr += sprintf(ptr, "\"creator\":\"%s\",", meta->creator);
     ptr += sprintf(ptr, "\"created_at\":%lu,", (unsigned long)meta->created_at);
     ptr += sprintf(ptr, "\"version\":%u,", meta->version);
+    ptr += sprintf(ptr, "\"gek_version\":%u,", meta->gek_version);
     ptr += sprintf(ptr, "\"member_count\":%u,", meta->member_count);
     ptr += sprintf(ptr, "\"members\":[");
 
@@ -219,6 +220,14 @@ static int deserialize_metadata(const char *json, dht_group_metadata_t **meta_ou
     p = strstr(p, "\"version\":");
     if (!p) goto error;
     sscanf(p + 10, "%u", &meta->version);
+
+    // Parse gek_version (optional for backward compatibility)
+    const char *gek_p = strstr(p, "\"gek_version\":");
+    if (gek_p) {
+        sscanf(gek_p + 14, "%u", &meta->gek_version);
+    } else {
+        meta->gek_version = 1;  // Default to v1 for old groups
+    }
 
     p = strstr(p, "\"member_count\":");
     if (!p) goto error;
@@ -687,6 +696,52 @@ int dht_groups_remove_member(
     }
 
     QGP_LOG_INFO(LOG_TAG, "Removed member %s from group %s\n", member, group_uuid);
+    return 0;
+}
+
+// Update GEK version in group metadata
+int dht_groups_update_gek_version(
+    dht_context_t *dht_ctx,
+    const char *group_uuid,
+    uint32_t new_gek_version
+) {
+    if (!dht_ctx || !group_uuid) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to update_gek_version\n");
+        return -1;
+    }
+
+    // Get current metadata
+    dht_group_metadata_t *meta = NULL;
+    int ret = dht_groups_get(dht_ctx, group_uuid, &meta);
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get group metadata for GEK version update\n");
+        return ret;
+    }
+
+    // Update GEK version
+    meta->gek_version = new_gek_version;
+    meta->version++;  // Increment metadata version
+
+    // Serialize and store
+    char *json = serialize_metadata(meta);
+    if (!json) {
+        dht_groups_free_metadata(meta);
+        return -1;
+    }
+
+    char base_key[256];
+    make_base_key(group_uuid, base_key, sizeof(base_key));
+
+    ret = dht_chunked_publish(dht_ctx, base_key, (uint8_t*)json, strlen(json), DHT_CHUNK_TTL_30DAY);
+    free(json);
+    dht_groups_free_metadata(meta);
+
+    if (ret != DHT_CHUNK_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update GEK version in DHT: %s\n", dht_chunked_strerror(ret));
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Updated GEK version to %u for group %s\n", new_gek_version, group_uuid);
     return 0;
 }
 

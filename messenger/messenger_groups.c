@@ -677,30 +677,33 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
         }
         qgp_key_free(dilithium_key);
 
-        // Try fetching GEK versions starting from 0
-        // (Group creator publishes version 0 initially)
-        uint8_t *ikp_packet = NULL;
-        size_t ikp_size = 0;
-        uint32_t gek_version = 0;
-        int found_gek = 0;
-
-        // Try version 0 first, then try higher versions if group had rotations
-        for (uint32_t try_version = 0; try_version < 10; try_version++) {
-            ret = dht_gek_fetch(dht_ctx, group_uuid, try_version, &ikp_packet, &ikp_size);
-            if (ret == 0 && ikp_packet && ikp_size > 0) {
-                gek_version = try_version;
-                QGP_LOG_INFO(LOG_TAG, "Found IKP for group %s version %u (%zu bytes)\n",
-                             group_uuid, gek_version, ikp_size);
-                found_gek = 1;
-                break;
-            }
-        }
-
-        if (!found_gek) {
-            QGP_LOG_WARN(LOG_TAG, "No GEK found in DHT for group %s (may be published later)\n", group_uuid);
+        // Get group metadata to find current GEK version
+        dht_group_metadata_t *group_meta = NULL;
+        ret = dht_groups_get(dht_ctx, group_uuid, &group_meta);
+        if (ret != 0 || !group_meta) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to get group metadata for GEK version\n");
             qgp_key_free(kyber_key);
             break;
         }
+
+        uint32_t gek_version = group_meta->gek_version;
+        QGP_LOG_INFO(LOG_TAG, "Group metadata indicates GEK version %u\n", gek_version);
+        dht_groups_free_metadata(group_meta);
+
+        // Fetch the specific GEK version from metadata
+        uint8_t *ikp_packet = NULL;
+        size_t ikp_size = 0;
+        ret = dht_gek_fetch(dht_ctx, group_uuid, gek_version, &ikp_packet, &ikp_size);
+
+        if (ret != 0 || !ikp_packet || ikp_size == 0) {
+            QGP_LOG_WARN(LOG_TAG, "No GEK v%u found in DHT for group %s (may be published later)\n",
+                         gek_version, group_uuid);
+            qgp_key_free(kyber_key);
+            break;
+        }
+
+        QGP_LOG_INFO(LOG_TAG, "Found IKP for group %s version %u (%zu bytes)\n",
+                     group_uuid, gek_version, ikp_size);
 
         // Extract GEK from IKP using my fingerprint and Kyber private key
         uint8_t gek[GEK_KEY_SIZE];
@@ -827,28 +830,32 @@ int messenger_sync_group_gek(const char *group_uuid) {
     }
     qgp_key_free(dilithium_key);
 
-    // Try fetching GEK versions starting from 0
-    uint8_t *ikp_packet = NULL;
-    size_t ikp_size = 0;
-    int found_gek = 0;
-    int ret;
-
-    // Try versions 0-9 (covers most cases)
-    for (uint32_t try_version = 0; try_version < 10; try_version++) {
-        ret = dht_gek_fetch(dht_ctx, group_uuid, try_version, &ikp_packet, &ikp_size);
-        if (ret == 0 && ikp_packet && ikp_size > 0) {
-            QGP_LOG_INFO(LOG_TAG, "Found IKP for group %s version %u (%zu bytes)\n",
-                         group_uuid, try_version, ikp_size);
-            found_gek = 1;
-            break;
-        }
-    }
-
-    if (!found_gek) {
-        QGP_LOG_WARN(LOG_TAG, "No GEK found in DHT for group %s\n", group_uuid);
+    // Get group metadata to find current GEK version
+    dht_group_metadata_t *group_meta = NULL;
+    int ret = dht_groups_get(dht_ctx, group_uuid, &group_meta);
+    if (ret != 0 || !group_meta) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get group metadata for GEK sync\n");
         qgp_key_free(kyber_key);
         return -1;
     }
+
+    uint32_t gek_version = group_meta->gek_version;
+    QGP_LOG_INFO(LOG_TAG, "Group metadata indicates GEK version %u\n", gek_version);
+    dht_groups_free_metadata(group_meta);
+
+    // Fetch the specific GEK version from metadata
+    uint8_t *ikp_packet = NULL;
+    size_t ikp_size = 0;
+    ret = dht_gek_fetch(dht_ctx, group_uuid, gek_version, &ikp_packet, &ikp_size);
+
+    if (ret != 0 || !ikp_packet || ikp_size == 0) {
+        QGP_LOG_WARN(LOG_TAG, "No GEK v%u found in DHT for group %s\n", gek_version, group_uuid);
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Found IKP for group %s version %u (%zu bytes)\n",
+                 group_uuid, gek_version, ikp_size);
 
     // Extract GEK from IKP using my fingerprint and Kyber private key
     uint8_t gek[GEK_KEY_SIZE];

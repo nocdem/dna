@@ -152,6 +152,7 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 | `int dht_groups_update(...)` | Update group metadata |
 | `int dht_groups_add_member(dht_context_t*, const char*, const char*, const char*)` | Add member to group |
 | `int dht_groups_remove_member(dht_context_t*, const char*, const char*, const char*)` | Remove member from group |
+| `int dht_groups_update_gek_version(dht_context_t*, const char*, uint32_t)` | Update GEK version in metadata |
 | `int dht_groups_delete(dht_context_t*, const char*, const char*)` | Delete group |
 | `int dht_groups_list_for_user(const char*, dht_group_cache_entry_t**, int*)` | List user's groups |
 | `int dht_groups_get_uuid_by_local_id(const char*, int, char*)` | Get UUID from local ID |
