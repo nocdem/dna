@@ -40,6 +40,7 @@ Core DHT (Distributed Hash Table) operations for decentralized storage.
 | `int dht_get(dht_context_t*, const uint8_t*, size_t, uint8_t**, size_t*)` | Get first value (blocking) |
 | `void dht_get_async(dht_context_t*, const uint8_t*, size_t, void(*)(uint8_t*, size_t, void*), void*)` | Get value (async) |
 | `int dht_get_all(dht_context_t*, const uint8_t*, size_t, uint8_t***, size_t**, size_t*)` | Get all values |
+| `int dht_get_all_with_ids(dht_context_t*, const uint8_t*, size_t, uint8_t***, size_t**, uint64_t**, size_t*)` | Get all values with value_ids (for multi-writer filtering) |
 | `void dht_get_batch(dht_context_t*, const uint8_t**, const size_t*, size_t, dht_batch_callback_t, void*)` | Batch GET (parallel) |
 | `int dht_get_batch_sync(dht_context_t*, const uint8_t**, const size_t*, size_t, dht_batch_result_t**)` | Batch GET (blocking) |
 | `void dht_batch_results_free(dht_batch_result_t*, size_t)` | Free batch results |

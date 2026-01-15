@@ -1300,40 +1300,31 @@ int dna_engine_subscribe_all_groups(dna_engine_t *engine) {
         }
         if (already_subscribed) continue;
 
-        /* Get group members from DHT cache (not messages.db) */
-        char **members = NULL;
-        int member_count = 0;
-        if (dht_groups_get_members(group_uuid, &members, &member_count) != 0 || member_count == 0) {
-            QGP_LOG_WARN(LOG_TAG, "[GROUP] No members found for group %s", group_uuid);
-            continue;
-        }
-
-        /* Cast to const char** for subscribe function */
-        const char **fps = (const char **)members;
+        /* Single-key architecture: No need to get members for subscription.
+         * All members write to the same key with different value_id.
+         * Single dht_listen() on the shared key catches ALL member updates.
+         */
 
         /* Full sync before subscribing (catch up on last 7 days) */
         size_t sync_count = 0;
-        dna_group_outbox_sync(dht_ctx, group_uuid, fps, member_count, &sync_count);
+        dna_group_outbox_sync(dht_ctx, group_uuid, &sync_count);
         if (sync_count > 0) {
             QGP_LOG_INFO(LOG_TAG, "[GROUP] Synced %zu messages for group %s",
                          sync_count, group_uuid);
         }
 
-        /* Subscribe for real-time updates */
+        /* Subscribe for real-time updates - single listener per group */
         dna_group_listen_ctx_t *ctx = NULL;
-        ret = dna_group_outbox_subscribe(dht_ctx, group_uuid, fps, member_count,
+        ret = dna_group_outbox_subscribe(dht_ctx, group_uuid,
                                           on_group_new_message, NULL, &ctx);
         if (ret == 0 && ctx) {
             engine->group_listen_contexts[engine->group_listen_count++] = ctx;
             subscribed++;
-            QGP_LOG_INFO(LOG_TAG, "[GROUP] Subscribed to group %s (%d members)",
-                         group_uuid, member_count);
+            QGP_LOG_INFO(LOG_TAG, "[GROUP] Subscribed to group %s", group_uuid);
         } else {
             QGP_LOG_ERROR(LOG_TAG, "[GROUP] Failed to subscribe to group %s: %d",
                           group_uuid, ret);
         }
-
-        dht_groups_free_members(members, member_count);
     }
 
     pthread_mutex_unlock(&engine->group_listen_mutex);

@@ -901,33 +901,47 @@ When a user accepts a group invitation or needs to recover GEK after reinstall:
 
 **Source:** `messenger_groups.c:messenger_sync_group_gek()`
 
-### 7.5 Group Outbox DHT Storage (Per-Sender Keys)
+### 7.5 Group Outbox DHT Storage (Single-Key Multi-Writer)
 
-Group messages are stored in DHT using per-sender keys with day buckets for efficient retrieval and real-time notifications.
+Group messages use a single-key multi-writer architecture where ALL members write to the SAME DHT key with different `value_id`s.
 
 #### Key Format
 
 ```
-dna:group:<uuid>:out:<day>:<sender_fp>
+dna:group:<uuid>:out:<day>
 
 Where:
   <uuid>       = Group UUID (36 chars)
   <day>        = Day bucket (Unix timestamp / 86400)
-  <sender_fp>  = Sender's fingerprint (128 hex chars)
 
 Example:
-  dna:group:550e8400-e29b-41d4-a716-446655440000:out:20089:abc123...def456
+  dna:group:550e8400-e29b-41d4-a716-446655440000:out:20089
 ```
 
 #### Architecture Benefits
 
-| Aspect | Per-Sender Keys |
-|--------|-----------------|
-| Writer pattern | Single-writer per key (no conflicts) |
+| Aspect | Single-Key Multi-Writer |
+|--------|-------------------------|
+| Listeners per group | 1 (not N per member) |
+| Max groups (1024 limit) | 1024 (vs ~50 with per-sender) |
+| Writer isolation | `value_id` per sender |
 | Storage | Chunked ZSTD (unlimited size) |
-| Real-time | `dht_listen()` per member's chunk0 |
-| Bucket granularity | Day (7 keys/week vs 168 for hour) |
-| Chunk retrieval | `dht_chunked_fetch()` per sender |
+| Real-time | Single `dht_listen()` per group |
+| Member changes | Automatic (no resubscription) |
+
+#### Multi-Writer DHT Model
+
+```
+All members write to same key with unique value_id:
+
+Key: dna:group:<uuid>:out:<day>
+  ├── Writer A (value_id=A) → [A's messages JSON]
+  ├── Writer B (value_id=B) → [B's messages JSON]
+  └── Writer C (value_id=C) → [C's messages JSON]
+
+dht_get_all_with_ids() returns:
+  [(data_A, id_A), (data_B, id_B), (data_C, id_C)]
+```
 
 #### Send Flow
 
@@ -945,11 +959,13 @@ User sends message
        │
        ▼
 ┌─────────────────────────────────────┐
-│ 6. sender_key = dna:group:<uuid>    │
-│         :out:<day>:<my_fp>          │
-│ 7. dht_chunked_fetch(sender_key)    │
-│ 8. Append new message               │
-│ 9. dht_chunked_publish(sender_key)  │
+│ 6. group_key = dna:group:<uuid>     │
+│         :out:<day>                  │
+│ 7. dht_chunked_fetch_mine(key)      │
+│    → Filter by MY value_id          │
+│ 8. Append new message to my bucket  │
+│ 9. dht_chunked_publish(key, bucket) │
+│    → Uses MY value_id (replaces)    │
 └─────────────────────────────────────┘
        │
        ▼
@@ -963,22 +979,26 @@ Group loaded
     │
     ▼
 ┌─────────────────────────────────────┐
-│ For each member in group:           │
-│   sender_key = dna:group:<uuid>     │
-│         :out:<day>:<member_fp>      │
-│   chunk0_key = SHA3(key+":chunk:0") │
-│   dht_listen(chunk0_key, callback)  │
+│ group_key = dna:group:<uuid>        │
+│         :out:<day>                  │
+│ chunk0_key = SHA3(key+":chunk:0")   │
+│ dht_listen(chunk0_key, callback)    │
+│                                     │
+│ → SINGLE listener for ALL members   │
+│ → Fires when ANY member publishes   │
 └─────────────────────────────────────┘
     │
     ▼
-[Callback fires when member publishes]
+[Callback fires]
     │
     ▼
 ┌─────────────────────────────────────┐
-│ 1. Identify sender from user_data   │
-│ 2. dht_chunked_fetch(sender_key)    │
-│ 3. Decrypt and store new messages   │
-│ 4. Fire UI callback                 │
+│ 1. dht_chunked_fetch_all(group_key) │
+│    → Gets ALL senders' buckets      │
+│ 2. Merge messages from all senders  │
+│ 3. Dedupe by message_id             │
+│ 4. Decrypt and store new messages   │
+│ 5. Fire UI callback                 │
 └─────────────────────────────────────┘
 ```
 
@@ -991,9 +1011,8 @@ Every 4 minutes (heartbeat timer)
 ┌─────────────────────────────────────┐
 │ new_day = time() / 86400            │
 │ if new_day != current_day:          │
-│   Cancel all old listeners          │
-│   Update current_day                │
-│   Resubscribe to new day keys       │
+│   Cancel 1 listener (old day)       │
+│   Subscribe 1 listener (new day)    │
 └─────────────────────────────────────┘
 ```
 
@@ -1003,10 +1022,26 @@ On group load, syncs last 7 days of messages:
 
 ```c
 for (day = last_sync_day + 1; day <= current_day; day++) {
-    for each member:
-        dht_chunked_fetch(member's sender_key)
-        decrypt and store new messages
+    dht_chunked_fetch_all(group_key_for_day)
+    // → Gets ALL senders' messages at once
+    decrypt and store new messages
 }
+```
+
+#### Multi-Chunk Multi-Writer Handling
+
+When a sender's data exceeds 45KB, `dht_chunked_fetch_all()` uses `value_id` to group chunks:
+
+```
+Key: chunk0 of group_key
+  ├── Writer A chunk0 (value_id=A, total_chunks=3)
+  └── Writer B chunk0 (value_id=B, total_chunks=1)
+
+For Writer A (multi-chunk):
+  1. Fetch chunk1 key → get all values with ids
+  2. Filter by value_id=A
+  3. Repeat for chunk2
+  4. Assemble and decompress
 ```
 
 **Source:** `dht/client/dna_group_outbox.c`, `src/api/dna_engine.c`

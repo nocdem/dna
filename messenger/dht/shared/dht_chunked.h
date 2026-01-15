@@ -148,6 +148,47 @@ int dht_chunked_fetch(
 );
 
 /**
+ * Fetch MY OWN data from DHT (using my value_id)
+ *
+ * Same as dht_chunked_fetch() but only fetches the value belonging
+ * to the current identity (matching dht_get_owner_value_id()).
+ * Used when multiple writers publish to the same key.
+ *
+ * @param ctx          DHT context
+ * @param base_key     Base key string (same as used in publish)
+ * @param data_out     Output buffer (allocated by function, caller must free)
+ * @param data_len_out Output data length
+ * @return DHT_CHUNK_OK on success, error code on failure
+ */
+int dht_chunked_fetch_mine(
+    dht_context_t *ctx,
+    const char *base_key,
+    uint8_t **data_out,
+    size_t *data_len_out
+);
+
+/**
+ * Fetch ALL values from ALL writers at a key
+ *
+ * For multi-writer keys (like group outbox), fetches all published values
+ * from all different value_id owners. Returns array of decompressed data.
+ *
+ * @param ctx          DHT context
+ * @param base_key     Base key string
+ * @param values_out   Output: Array of decompressed data pointers (caller frees each + array)
+ * @param lens_out     Output: Array of data lengths (caller frees)
+ * @param count_out    Output: Number of values fetched
+ * @return DHT_CHUNK_OK on success, error code on failure
+ */
+int dht_chunked_fetch_all(
+    dht_context_t *ctx,
+    const char *base_key,
+    uint8_t ***values_out,
+    size_t **lens_out,
+    size_t *count_out
+);
+
+/**
  * Delete chunked data from DHT
  *
  * Note: DHT doesn't support true deletion. This function publishes

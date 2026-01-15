@@ -1433,6 +1433,98 @@ extern "C" int dht_get_all(dht_context_t *ctx,
 }
 
 /**
+ * Get all values from DHT with their value_ids
+ *
+ * Same as dht_get_all() but also returns value_id for each value.
+ * Essential for multi-writer scenarios where we need to:
+ * - Filter by our own value_id (fetch "mine")
+ * - Group multi-chunk data by value_id
+ */
+extern "C" int dht_get_all_with_ids(dht_context_t *ctx,
+                                     const uint8_t *key, size_t key_len,
+                                     uint8_t ***values_out, size_t **values_len_out,
+                                     uint64_t **value_ids_out,
+                                     size_t *count_out) {
+    if (!key || !values_out || !values_len_out || !value_ids_out || !count_out) {
+        QGP_LOG_ERROR("DHT", "NULL parameter in dht_get_all_with_ids");
+        return -1;
+    }
+    DHT_GET_VALIDATE_CTX(ctx, "dht_get_all_with_ids");
+
+    try {
+        auto hash = dht::InfoHash::get(key, key_len);
+        QGP_LOG_DEBUG("DHT", "GET_ALL_WITH_IDS: %s", hash.toString().c_str());
+
+        auto future = ctx->runner.get(hash);
+        auto status = future.wait_for(std::chrono::seconds(2));
+        if (status == std::future_status::timeout) {
+            QGP_LOG_INFO("DHT", "GET_ALL_WITH_IDS: Timeout after 2 seconds");
+            return -2;
+        }
+
+        auto values = future.get();
+        if (values.empty()) {
+            QGP_LOG_DEBUG("DHT", "GET_ALL_WITH_IDS: No values found");
+            return -1;
+        }
+
+        QGP_LOG_DEBUG("DHT", "GET_ALL_WITH_IDS: Found %zu value(s)", values.size());
+
+        // Allocate arrays
+        uint8_t **value_array = (uint8_t**)malloc(values.size() * sizeof(uint8_t*));
+        size_t *len_array = (size_t*)malloc(values.size() * sizeof(size_t));
+        uint64_t *id_array = (uint64_t*)malloc(values.size() * sizeof(uint64_t));
+
+        if (!value_array || !len_array || !id_array) {
+            QGP_LOG_ERROR("DHT", "malloc failed in dht_get_all_with_ids");
+            free(value_array);
+            free(len_array);
+            free(id_array);
+            return -1;
+        }
+
+        // Copy each value with its value_id
+        for (size_t i = 0; i < values.size(); i++) {
+            auto val = values[i];
+            if (!val || val->data.empty()) {
+                value_array[i] = nullptr;
+                len_array[i] = 0;
+                id_array[i] = 0;
+                continue;
+            }
+
+            value_array[i] = (uint8_t*)malloc(val->data.size());
+            if (!value_array[i]) {
+                for (size_t j = 0; j < i; j++) {
+                    free(value_array[j]);
+                }
+                free(value_array);
+                free(len_array);
+                free(id_array);
+                return -1;
+            }
+
+            memcpy(value_array[i], val->data.data(), val->data.size());
+            len_array[i] = val->data.size();
+            id_array[i] = val->id;  // <-- The key addition: return value_id!
+
+            QGP_LOG_DEBUG("DHT", "  Value %zu: %zu bytes, id=%llu",
+                         i+1, val->data.size(), (unsigned long long)val->id);
+        }
+
+        *values_out = value_array;
+        *values_len_out = len_array;
+        *value_ids_out = id_array;
+        *count_out = values.size();
+
+        return 0;
+    } catch (const std::exception& e) {
+        QGP_LOG_ERROR("DHT", "Exception in dht_get_all_with_ids: %s", e.what());
+        return -1;
+    }
+}
+
+/**
  * Batch GET - retrieve multiple keys in parallel
  */
 extern "C" void dht_get_batch(

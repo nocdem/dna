@@ -327,6 +327,29 @@ int dht_get_all(dht_context_t *ctx,
                 size_t *count_out);
 
 /**
+ * Get all values from DHT with their value_ids
+ *
+ * Same as dht_get_all() but also returns the value_id for each value.
+ * This allows callers to:
+ * - Filter by their own value_id (fetch "mine" from multi-writer key)
+ * - Group chunks by value_id (multi-chunk multi-writer scenario)
+ *
+ * @param ctx DHT context
+ * @param key Key (will be hashed to 160-bit infohash)
+ * @param key_len Key length
+ * @param values_out Array of value buffers (caller must free each + array)
+ * @param values_len_out Array of value lengths (caller must free)
+ * @param value_ids_out Array of value_ids (caller must free)
+ * @param count_out Number of values returned
+ * @return 0 on success, -1 on error (not found or error)
+ */
+int dht_get_all_with_ids(dht_context_t *ctx,
+                         const uint8_t *key, size_t key_len,
+                         uint8_t ***values_out, size_t **values_len_out,
+                         uint64_t **value_ids_out,
+                         size_t *count_out);
+
+/**
  * Batch result structure for dht_get_batch()
  */
 typedef struct {
