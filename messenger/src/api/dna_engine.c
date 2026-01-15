@@ -3654,6 +3654,10 @@ void dna_handle_accept_invitation(dna_engine_t *engine, dna_task_t *task) {
 
     if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
+    } else {
+        /* Subscribe to the newly accepted group for real-time messages */
+        QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: Subscribing to groups <<<");
+        dna_engine_subscribe_all_groups(engine);
     }
 
 done:
