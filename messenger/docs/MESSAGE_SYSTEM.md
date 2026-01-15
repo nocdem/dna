@@ -872,6 +872,35 @@ typedef struct {
 
 **Source:** `messenger/gek.h`
 
+#### GEK Fetching (Invitee/Recovery)
+
+When a user accepts a group invitation or needs to recover GEK after reinstall:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  GEK FETCH FLOW (v0.4.64+)                                                  │
+│                                                                             │
+│  1. Fetch group metadata from DHT: hash(group_uuid)                         │
+│     → Metadata contains gek_version field                                   │
+│                                                                             │
+│  2. Fetch IKP (Initial Key Packet) for that specific version:               │
+│     → dht_gek_fetch(group_uuid, gek_version)                                │
+│                                                                             │
+│  3. Extract GEK using user's Kyber private key:                             │
+│     → ikp_extract(ikp, kyber_sk, gek_out)                                   │
+│                                                                             │
+│  4. Store GEK locally for message encryption/decryption                     │
+│                                                                             │
+│  NOTE: Prior to v0.4.64, the code tried versions 0-9 sequentially,          │
+│        which could fail if the correct version was > 9 or if an earlier     │
+│        version was found first.                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Flutter API:** `syncGroup(uuid)` triggers this flow for GEK recovery.
+
+**Source:** `messenger_groups.c:messenger_sync_group_gek()`
+
 ### 7.5 Group Outbox DHT Storage (Per-Sender Keys)
 
 Group messages are stored in DHT using per-sender keys with day buckets for efficient retrieval and real-time notifications.

@@ -41,6 +41,14 @@ class GroupsNotifier extends AsyncNotifier<List<Group>> {
     final engine = await ref.read(engineProvider.future);
     await engine.sendGroupMessage(groupUuid, message);
   }
+
+  /// Sync group metadata and GEK from DHT
+  /// Use this to recover GEK after app reinstall or database loss
+  Future<void> syncGroup(String groupUuid) async {
+    final engine = await ref.read(engineProvider.future);
+    await engine.syncGroupByUuid(groupUuid);
+    await refresh();
+  }
 }
 
 /// Invitations list provider

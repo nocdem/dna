@@ -2234,6 +2234,25 @@ class DnaBindings {
   }
 
   // ---------------------------------------------------------------------------
+  // GROUPS - SYNC GROUP BY UUID
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_sync_group_by_uuid = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_sync_group_by_uuid');
+
+  int dna_engine_sync_group_by_uuid(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> group_uuid,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_sync_group_by_uuid(engine, group_uuid, callback, user_data);
+  }
+
+  // ---------------------------------------------------------------------------
   // IDENTITY - GET REGISTERED NAME (was missing)
   // ---------------------------------------------------------------------------
 

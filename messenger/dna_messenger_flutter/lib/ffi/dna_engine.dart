@@ -3395,6 +3395,44 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Sync a group from DHT (metadata + GEK)
+  /// Use this to recover GEK after app reinstall or database loss
+  Future<void> syncGroupByUuid(String groupUuid) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final groupPtr = groupUuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(groupPtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_sync_group_by_uuid(
+      _engine,
+      groupPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(groupPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
   // ---------------------------------------------------------------------------
   // FEED - CHANNELS
   // ---------------------------------------------------------------------------
