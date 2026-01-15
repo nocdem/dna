@@ -3352,6 +3352,7 @@ done:
 void dna_handle_create_group(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     char group_uuid[37] = {0};
+    char *uuid_copy = NULL;  /* Heap-allocated for async callback */
 
     if (!engine->identity_loaded || !engine->messenger) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
@@ -3374,9 +3375,12 @@ void dna_handle_create_group(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
+    /* Allocate heap copy for async callback (caller must free) */
+    uuid_copy = strdup(group_uuid);
+
 done:
     task->callback.group_created(task->request_id, error,
-                                  (error == DNA_OK) ? group_uuid : NULL,
+                                  uuid_copy,  /* Heap-allocated, callback must free */
                                   task->user_data);
 }
 
