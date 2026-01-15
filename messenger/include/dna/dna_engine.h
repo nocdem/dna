@@ -1997,18 +1997,6 @@ DNA_API dna_request_id_t dna_engine_sync_group_by_uuid(
 );
 
 /**
- * Request TURN relay credentials from DNA Nodus
- *
- * @deprecated TURN was removed in v0.4.61 for privacy. Always returns -1.
- *             All messaging now uses DHT-only (Spillway protocol).
- *
- * @param engine      Engine instance (unused)
- * @param timeout_ms  Timeout in milliseconds (unused)
- * @return            Always -1 (deprecated)
- */
-DNA_API int dna_engine_request_turn_credentials(dna_engine_t *engine, int timeout_ms);
-
-/**
  * Get registered name for current identity
  *
  * Performs DHT reverse lookup (fingerprint -> name).

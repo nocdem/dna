@@ -250,39 +250,6 @@ int cmd_balance(dna_engine_t *engine, int wallet_index);
 int cmd_online(dna_engine_t *engine, const char *fingerprint);
 
 /* ============================================================================
- * NAT TRAVERSAL COMMANDS (STUN/ICE/TURN)
- * ============================================================================ */
-
-/**
- * Test STUN connectivity and show public IP
- * @return 0 on success, negative on error
- */
-int cmd_stun_test(void);
-
-/**
- * Show ICE connection status and candidates
- * @param engine DNA engine instance
- * @return 0 on success, negative on error
- */
-int cmd_ice_status(dna_engine_t *engine);
-
-/**
- * Request or show TURN credentials
- * @param engine DNA engine instance
- * @param request If true, request new credentials; if false, show cached
- * @return 0 on success, negative on error
- */
-int cmd_turn_creds(dna_engine_t *engine, bool request);
-
-/**
- * Test TURN relay connectivity with all servers
- * Requests credentials and tests allocation on each TURN server.
- * @param engine DNA engine instance
- * @return 0 on success, negative on error
- */
-int cmd_turn_test(dna_engine_t *engine);
-
-/* ============================================================================
  * VERSION COMMANDS
  * ============================================================================ */
 

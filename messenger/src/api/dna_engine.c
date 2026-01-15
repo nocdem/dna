@@ -6037,18 +6037,6 @@ bool dna_engine_is_peer_online(dna_engine_t *engine, const char *fingerprint) {
     return messenger_transport_peer_online(engine->messenger, fingerprint);
 }
 
-int dna_engine_request_turn_credentials(dna_engine_t *engine, int timeout_ms) {
-    /* TURN credentials removed in v0.4.61 for privacy
-     * - Prevents IP leakage to STUN/TURN servers
-     * - All messaging now uses DHT-only (Spillway protocol)
-     * - This function is deprecated and always returns -1
-     */
-    (void)engine;
-    (void)timeout_ms;
-    QGP_LOG_WARN(LOG_TAG, "TURN credentials deprecated (v0.4.61) - use DHT messaging instead");
-    return -1;
-}
-
 dna_request_id_t dna_engine_lookup_presence(
     dna_engine_t *engine,
     const char *fingerprint,

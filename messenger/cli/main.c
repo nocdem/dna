@@ -487,21 +487,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* ====== NAT TRAVERSAL COMMANDS ====== */
-    else if (strcmp(command, "stun-test") == 0) {
-        result = cmd_stun_test();
-    }
-    else if (strcmp(command, "ice-status") == 0) {
-        result = cmd_ice_status(g_engine);
-    }
-    else if (strcmp(command, "turn-creds") == 0) {
-        bool force = (optind + 1 < argc && strcmp(argv[optind + 1], "--force") == 0);
-        result = cmd_turn_creds(g_engine, force);
-    }
-    else if (strcmp(command, "turn-test") == 0) {
-        result = cmd_turn_test(g_engine);
-    }
-
     /* ====== VERSION COMMANDS ====== */
     else if (strcmp(command, "publish-version") == 0) {
         /* Parse --lib, --app, --nodus and their -min variants */

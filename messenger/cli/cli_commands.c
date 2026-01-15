@@ -1476,72 +1476,6 @@ int cmd_online(dna_engine_t *engine, const char *fingerprint) {
 }
 
 /* ============================================================================
- * NAT TRAVERSAL COMMANDS (STUN/ICE/TURN)
- * ============================================================================ */
-
-int cmd_stun_test(void) {
-    printf("STUN Test - DEPRECATED\n");
-    printf("========================================\n");
-    printf("\n");
-    printf("STUN was removed in v0.4.61 for privacy.\n");
-    printf("\n");
-    printf("Privacy improvements:\n");
-    printf("  - No IP leakage to Google/Cloudflare STUN servers\n");
-    printf("  - All messaging now uses DHT-only (Spillway protocol)\n");
-    printf("========================================\n");
-    return 0;
-}
-
-int cmd_ice_status(dna_engine_t *engine) {
-    (void)engine;
-
-    printf("ICE Status - DEPRECATED\n");
-    printf("========================================\n");
-    printf("\n");
-    printf("ICE/STUN/TURN was removed in v0.4.61 for privacy.\n");
-    printf("\n");
-    printf("Current transport mode: DHT-only (Spillway protocol)\n");
-    printf("\n");
-    printf("Privacy improvements:\n");
-    printf("  - No IP leakage to third-party servers\n");
-    printf("  - Timestamp-only presence (no IP disclosure)\n");
-    printf("  - All messaging via DHT with 7-day offline queue\n");
-    printf("========================================\n");
-    return 0;
-}
-
-int cmd_turn_creds(dna_engine_t *engine, bool force_request) {
-    (void)engine;
-    (void)force_request;
-
-    printf("TURN Credentials - DEPRECATED\n");
-    printf("========================================\n");
-    printf("\n");
-    printf("STUN/TURN was removed in v0.4.61 for privacy.\n");
-    printf("\n");
-    printf("Privacy improvements:\n");
-    printf("  - No IP leakage to Google/Cloudflare STUN servers\n");
-    printf("  - No connection pattern exposure to TURN relays\n");
-    printf("  - Timestamp-only presence (no IP disclosure)\n");
-    printf("\n");
-    printf("All messaging now uses DHT-only (Spillway protocol).\n");
-    printf("========================================\n");
-    return 0;
-}
-
-int cmd_turn_test(dna_engine_t *engine) {
-    (void)engine;
-
-    printf("TURN Test - DEPRECATED\n");
-    printf("========================================\n");
-    printf("\n");
-    printf("STUN/TURN was removed in v0.4.61 for privacy.\n");
-    printf("All messaging now uses DHT-only (Spillway protocol).\n");
-    printf("========================================\n");
-    return 0;
-}
-
-/* ============================================================================
  * VERSION COMMANDS
  * ============================================================================ */
 
@@ -2319,21 +2253,6 @@ bool execute_command(dna_engine_t *engine, const char *line) {
         } else {
             cmd_online(engine, fp);
         }
-    }
-    /* NAT Traversal Commands */
-    else if (strcmp(cmd, "stun-test") == 0) {
-        cmd_stun_test();
-    }
-    else if (strcmp(cmd, "ice-status") == 0) {
-        cmd_ice_status(engine);
-    }
-    else if (strcmp(cmd, "turn-creds") == 0) {
-        char *arg = strtok(NULL, " \t");
-        bool force = (arg && strcmp(arg, "--force") == 0);
-        cmd_turn_creds(engine, force);
-    }
-    else if (strcmp(cmd, "turn-test") == 0) {
-        cmd_turn_test(engine);
     }
     /* Version Commands */
     else if (strcmp(cmd, "publish-version") == 0) {
