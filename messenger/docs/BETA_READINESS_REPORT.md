@@ -79,7 +79,7 @@ for (int i = 0; i < 0x20; i++) {
 
 #### S3. Integer Parsing Without Bounds Checking [LOW]
 
-**Location:** `p2p/transport/transport_helpers.c:297`
+**Location:** `transport/internal/transport_helpers.c:297`
 
 **Issue:** Some integer parsing using `atoi()` or `strtol()` doesn't validate the result is within expected bounds before use.
 
@@ -329,12 +329,12 @@ cleanup:
 #### T5. P2P Transport Layer [MEDIUM]
 
 **Untested Functions:**
-- `p2p_transport_start()`
-- `p2p_transport_stop()`
-- `p2p_transport_deliver_message()`
-- `p2p_transport_send()`
+- `transport_start()`
+- `transport_stop()`
+- `transport_deliver_message()`
+- `REMOVED (DHT-only)`
 
-**Location:** `p2p/p2p_transport.c`
+**Location:** `transport/transport.c`
 
 **Risk:** Network transport layer has no unit tests.
 
@@ -404,14 +404,14 @@ cleanup:
 
 1. **Clean Layer Separation**
    ```
-   crypto/ (lowest) → messenger/ → dht/ → p2p/ (network)
+   crypto/ (lowest) → messenger/ → dht/ → transport/ (network)
                    → database/ (storage)
                    → blockchain/ (wallet)
    ```
    No upward dependencies detected.
 
 2. **No Circular Dependencies**
-   - crypto/ does not include messenger/, dht/, or p2p/
+   - crypto/ does not include messenger/, dht/, or transport/
    - messenger/ does not include dht/ headers directly (uses shared/)
    - Clean module boundaries maintained
 
@@ -614,7 +614,7 @@ All P0 and P1 items have been completed (v0.3.74-v0.3.76). The codebase is ready
 - `messenger/gsk_packet.c`
 - `dht/shared/dht_offline_queue.c`
 - `dht/shared/dht_profile.c`
-- `p2p/transport/*.c`
+- `transport/internal/*.c`
 - `src/api/dna_engine.c`
 - `blockchain/*.c`
 
@@ -623,13 +623,13 @@ All P0 and P1 items have been completed (v0.3.74-v0.3.76). The codebase is ready
 - `src/api/dna_engine_internal.h`
 - `messenger/*.c`
 - `dht/shared/*.c`
-- `p2p/*.c`
+- `transport/*.c`
 
 ### Architecture Review
 - `include/dna/dna_engine.h`
 - `docs/ARCHITECTURE_DETAILED.md`
 - `CMakeLists.txt`
-- All header files in crypto/, messenger/, dht/, p2p/
+- All header files in crypto/, messenger/, dht/, transport/
 
 ---
 

@@ -36,7 +36,7 @@ dna-messenger/              # Root
 ├── database/               # Database in root
 ├── dht/                    # DHT in root
 ├── messenger/              # Messenger core in root
-├── p2p/                    # P2P in root
+├── transport/                    # P2P in root
 ├── src/                    # Engine in root
 ├── cli/                    # CLI in root
 ├── dna_messenger_flutter/  # Flutter separate

@@ -2689,7 +2689,7 @@ DNA_API dna_request_id_t dna_engine_sync_addressbook_from_dht(
  * Set the global engine instance
  *
  * Called by dna_engine_create() to make the engine accessible
- * from lower layers (e.g., messenger_p2p.c) for event dispatch.
+ * from lower layers (e.g., messenger_transport.c) for event dispatch.
  *
  * @param engine    Engine instance (or NULL to clear)
  */

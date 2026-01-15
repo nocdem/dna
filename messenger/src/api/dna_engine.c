@@ -61,7 +61,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "messenger/init.h"
 #include "messenger/messages.h"
 #include "messenger/groups.h"
-#include "messenger_p2p.h"
+#include "messenger_transport.h"
 #include "message_backup.h"
 #include "messenger/status.h"
 #include "dht/client/dht_singleton.h"
@@ -76,8 +76,8 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/shared/dht_contact_request.h"
 #include "dht/shared/dht_groups.h"
 #include "dht/client/dna_group_outbox.h"
-#include "p2p/p2p_transport.h"
-#include "p2p/transport/transport_core.h"  /* For parse_presence_json */
+#include "transport/transport.h"
+#include "transport/internal/transport_core.h"  /* For parse_presence_json */
 /* TURN credentials removed in v0.4.61 for privacy */
 #include "database/presence_cache.h"
 #include "database/keyserver_cache.h"
@@ -163,7 +163,7 @@ static int is_valid_identity_name(const char *name) {
 size_t dna_engine_start_presence_listener(dna_engine_t *engine, const char *contact_fingerprint);
 
 /* Global engine pointer for DHT status callback and event dispatch from lower layers
- * Set during create, cleared during destroy. Used by messenger_p2p.c to emit events. */
+ * Set during create, cleared during destroy. Used by messenger_transport.c to emit events. */
 static dna_engine_t *g_dht_callback_engine = NULL;
 
 /* Android notification callback - separate from Flutter's event callback.
@@ -224,10 +224,10 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
     }
 
     /* Also check for missed incoming messages after reconnect */
-    if (engine->messenger && engine->messenger->p2p_transport) {
+    if (engine->messenger && engine->messenger->transport_ctx) {
         QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: checking for missed messages");
         size_t received = 0;
-        p2p_check_offline_messages(engine->messenger->p2p_transport, NULL, &received);
+        transport_check_offline_messages(engine->messenger->transport_ctx, NULL, &received);
         if (received > 0) {
             QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: received %zu missed messages", received);
         }
@@ -277,7 +277,7 @@ static void *dna_engine_stabilization_retry_thread(void *arg) {
     /* 1. Re-register presence - initial registration during identity load often fails
      * with nodes_tried=0 because routing table only has bootstrap nodes */
     if (engine->messenger) {
-        int presence_rc = messenger_p2p_refresh_presence(engine->messenger);
+        int presence_rc = messenger_transport_refresh_presence(engine->messenger);
         if (presence_rc == 0) {
             QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: presence re-registered");
         } else {
@@ -608,7 +608,7 @@ static void* presence_heartbeat_thread(void *arg) {
         /* Only announce presence if active (foreground) */
         if (atomic_load(&engine->presence_active) && engine->messenger) {
             QGP_LOG_DEBUG(LOG_TAG, "Heartbeat: refreshing presence");
-            messenger_p2p_refresh_presence(engine->messenger);
+            messenger_transport_refresh_presence(engine->messenger);
         }
 
         /* Check for day rotation on group listeners (runs every 4 min, actual
@@ -648,7 +648,7 @@ void dna_engine_resume_presence(dna_engine_t *engine) {
 
     /* Immediately refresh presence on resume */
     if (engine->messenger) {
-        messenger_p2p_refresh_presence(engine->messenger);
+        messenger_transport_refresh_presence(engine->messenger);
     }
 }
 
@@ -729,7 +729,7 @@ static void *background_fetch_thread(void *arg) {
         QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetching from %s... (attempt %d/%d)",
                      sender_fp ? sender_fp : "ALL contacts", attempt + 1, max_retries);
 
-        messenger_p2p_check_offline_messages(engine->messenger, sender_fp, &offline_count);
+        messenger_transport_check_offline_messages(engine->messenger, sender_fp, &offline_count);
 
         if (offline_count > 0) {
             QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetch complete: %zu messages", offline_count);
@@ -1666,16 +1666,16 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Initialize P2P transport for DHT and messaging */
-    if (messenger_p2p_init(engine->messenger) != 0) {
+    if (messenger_transport_init(engine->messenger) != 0) {
         QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize P2P transport\n");
         /* Non-fatal - continue without P2P, DHT operations will still work via singleton */
     } else {
         /* P2P initialized successfully - complete P2P setup */
-        /* Note: Presence already registered in messenger_p2p_init() */
+        /* Note: Presence already registered in messenger_transport_init() */
 
         /* 1. Check for offline messages (Spillway: query contacts' outboxes) */
         size_t offline_count = 0;
-        if (messenger_p2p_check_offline_messages(engine->messenger, NULL, &offline_count) == 0) {
+        if (messenger_transport_check_offline_messages(engine->messenger, NULL, &offline_count) == 0) {
             if (offline_count > 0) {
                 QGP_LOG_INFO(LOG_TAG, "Received %zu offline messages\n", offline_count);
             } else {
@@ -3305,7 +3305,7 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
 
     /* Check DHT offline queue for messages from contacts */
     size_t offline_count = 0;
-    int rc = messenger_p2p_check_offline_messages(engine->messenger, NULL, &offline_count);
+    int rc = messenger_transport_check_offline_messages(engine->messenger, NULL, &offline_count);
     if (rc == 0) {
         QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] Direct messages check complete: %zu new", offline_count);
     } else {
@@ -5491,7 +5491,7 @@ dna_request_id_t dna_engine_check_offline_messages_from(
     QGP_LOG_INFO(LOG_TAG, "[OFFLINE] Checking messages from %.20s...", contact_fingerprint);
 
     size_t offline_count = 0;
-    int rc = messenger_p2p_check_offline_messages(engine->messenger, contact_fingerprint, &offline_count);
+    int rc = messenger_transport_check_offline_messages(engine->messenger, contact_fingerprint, &offline_count);
     if (rc == 0) {
         QGP_LOG_INFO(LOG_TAG, "[OFFLINE] From %.20s...: %zu new messages", contact_fingerprint, offline_count);
     } else {
@@ -6073,7 +6073,7 @@ bool dna_engine_is_peer_online(dna_engine_t *engine, const char *fingerprint) {
         return false;
     }
 
-    return messenger_p2p_peer_online(engine->messenger, fingerprint);
+    return messenger_transport_peer_online(engine->messenger, fingerprint);
 }
 
 int dna_engine_request_turn_credentials(dna_engine_t *engine, int timeout_ms) {
@@ -7278,7 +7278,7 @@ void dna_handle_refresh_presence(dna_engine_t *engine, dna_task_t *task) {
     if (!engine->messenger) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
-        if (messenger_p2p_refresh_presence(engine->messenger) != 0) {
+        if (messenger_transport_refresh_presence(engine->messenger) != 0) {
             error = DNA_ENGINE_ERROR_NETWORK;
         }
     }
@@ -7297,7 +7297,7 @@ void dna_handle_lookup_presence(dna_engine_t *engine, dna_task_t *task) {
     if (!engine->messenger) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
-        if (messenger_p2p_lookup_presence(engine->messenger,
+        if (messenger_transport_lookup_presence(engine->messenger,
                 task->params.lookup_presence.fingerprint,
                 &last_seen) == 0 && last_seen > 0) {
             /* Update presence cache with DHT result */

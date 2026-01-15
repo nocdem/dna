@@ -1063,7 +1063,7 @@ Presence records are published when a user comes online and refreshed periodical
 ```c
 // C API - lookup presence by fingerprint
 int p2p_lookup_presence_by_fingerprint(
-    p2p_transport_t *ctx,
+    transport_t *ctx,
     const char *fingerprint,      // 128 hex chars
     uint64_t *last_seen_out       // Unix timestamp output
 );

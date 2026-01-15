@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-01-15 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.4.61 | Flutter v0.99.132 | Nodus v0.4.5
+**Versions:** Library v0.4.62 | Flutter v0.99.132 | Nodus v0.4.5
 
 ---
 
@@ -128,7 +128,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 | Git Workflow | `docs/GIT_WORKFLOW.md` | Commit guidelines, branch strategy, repo procedures changes |
 | Message System | `docs/MESSAGE_SYSTEM.md` | Message format, encryption, GSK, database schema changes |
 | Mobile Porting | `docs/MOBILE_PORTING.md` | Android SDK, JNI, iOS, platform abstraction changes |
-| P2P Architecture | `docs/P2P_ARCHITECTURE.md` | DHT transport, TCP, peer discovery changes |
+| Transport Layer | `docs/P2P_ARCHITECTURE.md` | DHT transport, presence, peer discovery changes |
 | Security | `docs/SECURITY_AUDIT.md` | Crypto primitives, vulnerabilities, security fixes |
 
 **Procedure:**
@@ -145,7 +145,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.4.61 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
+| C Library | `include/dna/version.h` | v0.4.62 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
 | Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.132+10032 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.5 | Nodus server changes (vendor/opendht-pq/tools/) |
 
@@ -294,7 +294,7 @@ If there is only one valid path AND it is confirmed by code/docs/logs:
 | Messenger | [messenger.md](docs/functions/messenger.md) | Core messenger + backup |
 | Crypto | [crypto.md](docs/functions/crypto.md) | Kyber, Dilithium, BIP39 |
 | DHT | [dht.md](docs/functions/dht.md) | Core, Shared, Client |
-| P2P | [p2p.md](docs/functions/p2p.md) | Transport layer |
+| Transport | [transport.md](docs/functions/transport.md) | DHT transport layer |
 | Database | [database.md](docs/functions/database.md) | SQLite caches |
 | Blockchain | [blockchain.md](docs/functions/blockchain.md) | Multi-chain wallet |
 | Engine | [engine.md](docs/functions/engine.md) | Internal implementation |

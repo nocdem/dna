@@ -217,7 +217,7 @@ TRANSPORT                         STORAGE                        DECRYPTION     
                                             └──────────────────┘                        └───────────────────┘
 ```
 
-**Source:** `messenger/messages.c:592-747`, `p2p/transport/transport_offline.c:64-170`
+**Source:** `messenger/messages.c:592-747`, `transport/internal/transport_offline.c:64-170`
 
 ### 2.3 Message Status States
 
@@ -650,13 +650,13 @@ execution restrictions make P2P connections unreliable.
 │  DEPRECATED (kept for future audio/video):                                  │
 │  ─────────────────────────────────────────                                  │
 │  • messenger_send_p2p() - No longer called for messaging                    │
-│  • p2p_lookup_peer() - Used for presence only                               │
+│  • transport_register_presence() - Used for presence only                               │
 │  • TCP direct delivery - Bypassed for messages                              │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Source:** `messenger/messages.c:463-491`, `messenger_p2p.c:780-838`
+**Source:** `messenger/messages.c:463-491`, `messenger_transport.c:780-838`
 
 ### 6.2 Port Configuration
 
@@ -665,7 +665,7 @@ execution restrictions make P2P connections unreliable.
 | 4000 | UDP | DHT Network (OpenDHT-PQ) |
 | 4001 | TCP | P2P Messaging |
 
-**Source:** `p2p/p2p_transport.h:20-25`
+**Source:** `transport/transport.h:20-25`
 
 ### 6.3 DHT Offline Queue (Spillway Protocol)
 
@@ -1002,7 +1002,7 @@ for (day = last_sync_day + 1; day <= current_day; day++) {
 
 | Key Type | Public | Private | Source |
 |----------|--------|---------|--------|
-| Dilithium5 (signing) | 2592 bytes | 4896 bytes | `p2p_transport.h:54` |
+| Dilithium5 (signing) | 2592 bytes | 4896 bytes | `transport/transport.h` |
 | Kyber1024 (encryption) | 1568 bytes | 3168 bytes | `messages.c:642-648` |
 
 ### 8.3 Fingerprint Computation
@@ -1169,10 +1169,10 @@ CREATE INDEX IF NOT EXISTS idx_sender_fingerprint ON messages(sender_fingerprint
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `p2p/p2p_transport.h` | 1-320 | P2P transport API |
-| `p2p/p2p_transport.c` | - | P2P implementation |
+| `transport/transport.h` | 1-320 | P2P transport API |
+| `transport/transport.c` | - | P2P implementation |
 | `dht/shared/dht_offline_queue.h` | 1-237 | Offline queue API |
-| `p2p/transport/transport_offline.c` | 64-170 | Offline message polling |
+| `transport/internal/transport_offline.c` | 64-170 | Offline message polling |
 
 ### 11.5 GEK System
 

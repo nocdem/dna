@@ -92,7 +92,7 @@ set(OPENDHT_TOOLS ON CACHE BOOL "Enable OpenDHT-PQ tools for dna-nodus" FORCE)
 set(SKIP_INSTALL_ALL ON CACHE BOOL "Skip install for vendored opendht-pq" FORCE)
 add_subdirectory(vendor/opendht-pq)  # OpenDHT-PQ with Dilithium5 support
 add_subdirectory(dht)               # DHT integration (uses vendor/opendht-pq)
-add_subdirectory(p2p)               # P2P transport layer
+add_subdirectory(transport)         # Transport layer (DHT-only messaging)
 
 # =============================================================================
 # Blockchain Minimal Library
@@ -176,7 +176,7 @@ add_library(dna_lib ${DNA_LIB_TYPE}
     messenger/groups.c          # Group management (GEK system)
     # Messenger facade (delegates to messenger/ modules)
     messenger.c
-    messenger_p2p.c             # P2P integration layer
+    messenger_transport.c       # Transport integration layer
     # Local message backup (SQLite)
     message_backup.c
     database/presence_cache.c   # Fast presence cache (O(1) lookup)
@@ -225,10 +225,10 @@ target_link_libraries(dna_lib
     dsa
     secp256k1          # secp256k1 for Ethereum/Bitcoin key derivation
     cellframe_minimal  # Blockchain transaction building (uint256, signing)
-    dht_lib            # DHT library (MUST come BEFORE p2p_transport for Windows stub symbols)
-    p2p_transport      # P2P transport layer (DHT-only, libjuice removed in v0.4.61)
-    dht_lib            # Link dht_lib again to resolve circular deps with p2p_transport
-    p2p_transport      # Link p2p_transport again for static linking order
+    dht_lib            # DHT library (MUST come BEFORE transport_lib for Windows stub symbols)
+    transport_lib      # Transport layer (DHT-only messaging)
+    dht_lib            # Link dht_lib again to resolve circular deps with transport_lib
+    transport_lib      # Link transport_lib again for static linking order
     ${JSONC_LIBRARIES}
     ${PLATFORM_LIBS}
 )
@@ -279,7 +279,7 @@ target_include_directories(dna_lib PUBLIC
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/include       # Unified Engine API headers
     ${CMAKE_SOURCE_DIR}/src/api       # Internal API headers
-    ${CMAKE_SOURCE_DIR}/p2p           # P2P transport headers
+    ${CMAKE_SOURCE_DIR}/transport      # Transport layer headers
     ${CMAKE_SOURCE_DIR}/dht           # DHT headers
     ${CMAKE_SOURCE_DIR}/blockchain/cellframe  # Cellframe blockchain headers
     ${CMAKE_SOURCE_DIR}/blockchain/solana     # Solana blockchain headers

@@ -16,7 +16,7 @@
  * │     └─ dht_singleton_get() ← Use global DHT    │
  * │                                                 │
  * │  Messaging (MainWindow)                        │
- * │  └─ messenger_p2p_init()                       │
+ * │  └─ messenger_transport_init()                       │
  * │     └─ dht_singleton_get() ← Use global DHT    │
  * │                                                 │
  * │  App Shutdown                                  │

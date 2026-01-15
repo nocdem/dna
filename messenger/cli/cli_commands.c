@@ -10,7 +10,7 @@
 #include "crypto/utils/qgp_platform.h"
 #include "dht/core/dht_keyserver.h"
 #include "dht/client/dht_singleton.h"
-#include "p2p/transport/transport_core.h"
+#include "transport/internal/transport_core.h"
 /* ICE/TURN removed in v0.4.61 for privacy */
 #include "messenger.h"
 

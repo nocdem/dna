@@ -16,7 +16,7 @@ The following critical issues have been resolved:
 | Empty event handlers | `event_handler.dart` | Implemented handlers for GroupInvitation, GroupMember, Error events |
 | Debug printf statements | `messenger/messages.c` | Removed ~15 debug printf statements from `messenger_send_message()` |
 | Misleading placeholder | `groups_screen.dart` | Updated to show "in development" message instead of fake empty state |
-| Debug prints | `p2p/transport/transport_offline.c` | Removed all DEBUG FETCH and info prints |
+| Debug prints | `transport/internal/transport_offline.c` | Removed all DEBUG FETCH and info prints |
 | Debug print | `messenger/messages.c:701` | Removed signature verification DEBUG print |
 | Debug prints | `blockchain/cellframe/cellframe_tx_builder.c` | Removed uint256 DEBUG prints |
 | Debug prints | `blockchain/cellframe/cellframe_wallet_create.c` | Removed WALLET_DEBUG prints |
@@ -77,7 +77,7 @@ The following critical issues have been resolved:
 
 **File:** `messenger/messages.c` - ✅ **FIXED** (all debug prints removed)
 
-**File:** `p2p/transport/transport_offline.c` - ✅ **FIXED** (all DEBUG FETCH and info prints removed)
+**File:** `transport/internal/transport_offline.c` - ✅ **FIXED** (all DEBUG FETCH and info prints removed)
 
 ### 2.2 Blockchain Module - Commented Debug Code
 
@@ -211,7 +211,7 @@ if (!_disposed && mounted) {  // ERROR: 'mounted' doesn't exist on StateNotifier
 ### C/C++ Files Requiring Cleanup
 1. `messenger/gsk.c` - 2 TODOs (Phase 8 features)
 2. `messenger/messages.c` - ✅ debug prints FIXED
-3. `p2p/transport/transport_offline.c` - ✅ debug prints FIXED
+3. `transport/internal/transport_offline.c` - ✅ debug prints FIXED
 4. `blockchain/cellframe/cellframe_wallet.c` - ✅ commented debugs FIXED
 5. `blockchain/cellframe/cellframe_sign.c` - ✅ commented debugs FIXED
 6. `blockchain/cellframe/cellframe_tx_builder.c` - ✅ active debug FIXED

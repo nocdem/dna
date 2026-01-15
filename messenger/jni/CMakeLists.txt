@@ -32,7 +32,7 @@ target_include_directories(dna_jni PRIVATE
 target_link_libraries(dna_jni
     dna_lib
     dht_lib
-    p2p_transport
+    transport_lib
     opendht
     cellframe_minimal
     cellframe_dilithium

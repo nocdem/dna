@@ -1,27 +1,28 @@
 /**
- * P2P Transport Offline Queue Module
+ * Transport Offline Queue Module
  * Spillway Protocol: Sender outbox architecture for offline message delivery
  */
 
 #include "transport_core.h"
 #include "crypto/utils/qgp_log.h"
-#include "dht/client/dht_singleton.h"  // Phase 14: Direct DHT access
+#include "dht/client/dht_singleton.h"
 
-#define LOG_TAG "SPILLWAY_OUTBOX"
+#define LOG_TAG "SPILLWAY"
 
 /**
  * Queue offline message in sender's DHT outbox (Spillway)
  * Stores encrypted message in sender's outbox for recipient to retrieve
- * @param ctx: P2P transport context
- * @param sender: Sender fingerprint (owner of outbox)
- * @param recipient: Recipient fingerprint
- * @param message: Encrypted message data
- * @param message_len: Message length
- * @param seq_num: Monotonic sequence number for watermark pruning
- * @return: 0 on success, -1 on error
+ *
+ * @param ctx Transport context
+ * @param sender Sender fingerprint (owner of outbox)
+ * @param recipient Recipient fingerprint
+ * @param message Encrypted message data
+ * @param message_len Message length
+ * @param seq_num Monotonic sequence number for watermark pruning
+ * @return 0 on success, -1 on error
  */
-int p2p_queue_offline_message(
-    p2p_transport_t *ctx,
+int transport_queue_offline_message(
+    transport_t *ctx,
     const char *sender,
     const char *recipient,
     const uint8_t *message,
@@ -71,13 +72,14 @@ int p2p_queue_offline_message(
 /**
  * Check offline messages from contacts' outboxes (Spillway)
  * Queries each contact's outbox for messages addressed to this user
- * @param ctx: P2P transport context
- * @param sender_fp: If non-NULL, fetch only from this contact. If NULL, fetch from all contacts.
- * @param messages_received: Output number of messages delivered (optional)
- * @return: 0 on success, -1 on error
+ *
+ * @param ctx Transport context
+ * @param sender_fp If non-NULL, fetch only from this contact. If NULL, fetch from all contacts.
+ * @param messages_received Output number of messages delivered (optional)
+ * @return 0 on success, -1 on error
  */
-int p2p_check_offline_messages(
-    p2p_transport_t *ctx,
+int transport_check_offline_messages(
+    transport_t *ctx,
     const char *sender_fp,
     size_t *messages_received)
 {
@@ -137,7 +139,6 @@ int p2p_check_offline_messages(
     }
 
     // Query contact outboxes
-    // For each contact: Key = SHA3-512(contact_fp + ":outbox:" + my_fp)
     dht_context_t *dht = dht_singleton_get();
     if (!dht) {
         QGP_LOG_ERROR(LOG_TAG, "DHT not available for offline message check\n");
@@ -150,7 +151,7 @@ int p2p_check_offline_messages(
     dht_offline_message_t *messages = NULL;
     size_t count = 0;
 
-    // Use parallel version for 10-100× speedup
+    // Use parallel version for 10-100x speedup
     int result = dht_retrieve_queued_messages_from_contacts_parallel(
         dht,
         ctx->config.identity,  // My fingerprint (recipient)
@@ -177,8 +178,7 @@ int p2p_check_offline_messages(
         return 0;
     }
 
-    // 4. Track max seq_num per sender for watermark publishing
-    // Using a simple array (O(n²) but contacts count is small)
+    // Track max seq_num per sender for watermark publishing
     typedef struct {
         char sender[129];
         uint64_t max_seq_num;
@@ -188,7 +188,7 @@ int p2p_check_offline_messages(
     size_t watermark_count = 0;
     size_t watermark_capacity = 0;
 
-    // 5. Deliver each message via callback and track max seq_num per sender
+    // Deliver each message via callback and track max seq_num per sender
     size_t delivered_count = 0;
     for (size_t i = 0; i < count; i++) {
         dht_offline_message_t *msg = &messages[i];
@@ -224,7 +224,7 @@ int p2p_check_offline_messages(
             }
         }
 
-        // Deliver to application layer (messenger_p2p.c)
+        // Deliver to application layer (messenger_transport.c)
         if (ctx->message_callback) {
             ctx->message_callback(
                 NULL,                    // peer_pubkey (unknown for offline messages)
@@ -237,13 +237,13 @@ int p2p_check_offline_messages(
         }
     }
 
-    // 6. Publish watermarks asynchronously (fire-and-forget)
+    // Publish watermarks asynchronously (fire-and-forget)
     // This tells senders which messages we've received so they can prune their outboxes
     for (size_t i = 0; i < watermark_count; i++) {
         QGP_LOG_INFO(LOG_TAG, "Publishing watermark for sender %.20s...: seq=%lu\n",
                watermarks[i].sender, (unsigned long)watermarks[i].max_seq_num);
         dht_publish_watermark_async(
-            dht,                      // Use dht from singleton above
+            dht,
             ctx->config.identity,     // My fingerprint (recipient/watermark owner)
             watermarks[i].sender,     // Sender fingerprint
             watermarks[i].max_seq_num
@@ -253,9 +253,6 @@ int p2p_check_offline_messages(
     if (watermarks) {
         free(watermarks);
     }
-
-    // Note (Spillway): No queue clearing needed - recipients don't control sender outboxes.
-    // Senders manage their own outboxes. Watermarks tell senders to prune delivered messages.
 
     if (messages_received) {
         *messages_received = delivered_count;

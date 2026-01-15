@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "dna_api.h"
-#include "p2p/p2p_transport.h"
+#include "transport/transport.h"
 #include "message_backup.h"
 
 #ifdef __cplusplus
@@ -51,8 +51,8 @@ typedef struct {
     dna_context_t *dna_ctx;      // DNA API context
 
     // P2P Transport (Phase 9.1b: Hybrid P2P messaging)
-    p2p_transport_t *p2p_transport;  // P2P transport layer (NULL if disabled)
-    bool p2p_enabled;                 // Enable/disable P2P messaging
+    transport_t *transport_ctx;  // Transport layer (NULL if disabled)
+    bool transport_enabled;                 // Enable/disable P2P messaging
 
     // Session password for encrypted keys (v0.2.17+)
     char *session_password;          // Password for encrypted keys (NULL if unencrypted)

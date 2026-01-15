@@ -4,7 +4,7 @@
  */
 
 #include "messenger.h"
-#include "messenger_p2p.h"  // For messenger_p2p_check_offline_messages
+#include "messenger_transport.h"  // For messenger_transport_check_offline_messages
 #include "messenger/gek.h"  // GEK rotation
 #include "dht/shared/dht_groups.h"
 #include "dht/shared/dht_gek_storage.h"  // GEK fetch from DHT
@@ -17,7 +17,7 @@
 #include "dna_api.h"  // For dna_decrypt_message_raw
 #include "crypto/utils/qgp_types.h"  // For qgp_key_load/free
 #include "crypto/utils/qgp_platform.h"  // For qgp_platform_home_dir
-// p2p_transport.h no longer needed - Phase 14 uses dht_singleton_get() directly
+// transport_ctx.h no longer needed - Phase 14 uses dht_singleton_get() directly
 #include <json-c/json.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -895,9 +895,9 @@ int messenger_sync_groups(messenger_context_t *ctx) {
     QGP_LOG_INFO(LOG_TAG, "Syncing groups and invitations...\n");
 
     // Step 1: Check for offline messages (which may contain invitations)
-    if (ctx->p2p_enabled && ctx->p2p_transport) {
+    if (ctx->transport_enabled && ctx->transport_ctx) {
         size_t offline_count = 0;
-        messenger_p2p_check_offline_messages(ctx, NULL, &offline_count);
+        messenger_transport_check_offline_messages(ctx, NULL, &offline_count);
         if (offline_count > 0) {
             QGP_LOG_INFO(LOG_TAG, "Retrieved %zu offline messages (may include invitations)\n", offline_count);
         }

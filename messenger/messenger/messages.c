@@ -35,8 +35,8 @@
 #include "../crypto/utils/qgp_random.h"
 #include "../crypto/utils/aes_keywrap.h"
 #include "../message_backup.h"
-#include "../messenger_p2p.h"
-#include "../p2p/p2p_transport.h"
+#include "../messenger_transport.h"
+#include "../transport/transport.h"
 #include "keys.h"
 #include "crypto/utils/qgp_log.h"
 

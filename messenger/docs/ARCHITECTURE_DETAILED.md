@@ -107,7 +107,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 │   ├── keyserver/            # Public key storage
 │   └── shared/               # Groups, offline queue, GSK storage
 │
-├── p2p/                      # Peer-to-peer transport
+├── transport/                      # Peer-to-peer transport
 │   └── transport/            # TCP connections, DHT presence
 │
 ├── messenger/                # Messaging core
@@ -163,7 +163,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 ├── win32/                    # Windows compatibility
 │
 ├── messenger.c/h             # Messenger facade
-├── messenger_p2p.c/h         # P2P integration
+├── messenger_transport.c/h   # DHT transport integration
 ├── message_backup.c/h        # SQLite message storage
 ├── dna_api.c/h               # Core DNA API
 ├── dna_config.c/h            # Configuration
@@ -223,7 +223,7 @@ cellframe_minimal (STATIC) # Blockchain transaction building
 kem (STATIC)              # Kyber1024 implementation
 dsa (STATIC)              # Dilithium5 implementation
 dht_lib (STATIC)          # DHT integration
-p2p_transport (STATIC)    # P2P layer
+transport_lib (STATIC)    # P2P layer
 
 # Vendor
 opendht (STATIC)          # OpenDHT-PQ
@@ -649,7 +649,7 @@ int dht_context_bootstrap_runtime(dht_context_t *ctx, const char *ip, uint16_t p
 
 ### 6.1 Architecture
 
-**Location:** `p2p/p2p_transport.h`
+**Location:** `transport/transport.h`
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -678,63 +678,56 @@ int dht_context_bootstrap_runtime(dht_context_t *ctx, const char *ip, uint16_t p
 
 ```c
 typedef struct {
-    uint16_t listen_port;           // TCP 4001 (default)
     uint16_t dht_port;              // UDP 4000 (default)
     char bootstrap_nodes[5][256];   // DHT bootstrap addresses
     size_t bootstrap_count;
     char identity[256];
-    bool enable_offline_queue;      // DHT fallback
+    bool enable_offline_queue;      // DHT queue (always true)
     uint32_t offline_ttl_seconds;   // 7 days (default)
-} p2p_config_t;
+} transport_config_t;
 ```
 
-### 6.3 Peer Information
+### 6.3 Peer Information (Timestamp-Only)
 
 ```c
 typedef struct {
-    char ip[64];                    // IPv4 or IPv6
-    uint16_t port;                  // TCP port
     uint64_t last_seen;             // Unix timestamp
     uint8_t public_key[2592];       // Dilithium5 public key
-    bool is_online;
+    bool is_online;                 // Based on timestamp freshness
 } peer_info_t;
 ```
+
+> **Note (v0.4.62):** No IP/port fields - privacy-preserving presence system.
 
 ### 6.4 Core Operations
 
 ```c
 // Initialize with cryptographic keys
-p2p_transport_t* p2p_transport_init(
-    const p2p_config_t *config,
+transport_t* transport_init(
+    const transport_config_t *config,
     const uint8_t *my_privkey_dilithium,    // 4896 bytes
     const uint8_t *my_pubkey_dilithium,     // 2592 bytes
     const uint8_t *my_kyber_key,            // 3168 bytes
-    p2p_message_callback_t message_callback,
-    p2p_connection_callback_t connection_callback,
+    transport_message_callback_t message_callback,
     void *callback_user_data
 );
 
 // Lifecycle
-int p2p_transport_start(p2p_transport_t *ctx);
-void p2p_transport_stop(p2p_transport_t *ctx);
-void p2p_transport_free(p2p_transport_t *ctx);
+int transport_start(transport_t *ctx);
+void transport_stop(transport_t *ctx);
+void transport_free(transport_t *ctx);
 
-// Discovery
-int p2p_register_presence(p2p_transport_t *ctx);  // Periodic (5-10 min)
-int p2p_lookup_peer(p2p_transport_t *ctx, const uint8_t *peer_pubkey, peer_info_t *out);
+// Discovery (DHT presence)
+int transport_register_presence(transport_t *ctx);  // Periodic (5 min)
 
-// Messaging
-int p2p_send_message(p2p_transport_t *ctx, const uint8_t *peer_pubkey,
-                     const uint8_t *message, size_t message_len);
-int p2p_check_offline_messages(p2p_transport_t *ctx, size_t *messages_received);
-int p2p_queue_offline_message(p2p_transport_t *ctx, const char *sender,
-                              const char *recipient, const uint8_t *message, size_t len);
-
-// Connection management
-int p2p_get_connected_peers(p2p_transport_t *ctx, uint8_t (*pubkeys)[2592],
-                            size_t max_peers, size_t *count);
-int p2p_disconnect_peer(p2p_transport_t *ctx, const uint8_t *peer_pubkey);
+// Offline messaging (DHT Spillway)
+int transport_check_offline_messages(transport_t *ctx, const char *sender_fp, size_t *count);
+int transport_queue_offline_message(transport_t *ctx, const char *sender,
+                                    const char *recipient, const uint8_t *message,
+                                    size_t len, uint64_t seq_num);
 ```
+
+> **Removed (v0.4.62):** TCP listener, direct P2P messaging, connection management - all messaging now uses DHT.
 
 ### 6.5 Message Flow
 
@@ -770,8 +763,8 @@ typedef struct {
     char *fingerprint;                   // SHA3-512 (128 hex)
     message_backup_context_t *backup_ctx; // SQLite messages
     dna_context_t *dna_ctx;              // DNA API context
-    p2p_transport_t *p2p_transport;      // P2P layer
-    bool p2p_enabled;
+    transport_t *transport_ctx;          // Transport layer (DHT)
+    bool transport_enabled;
 
     // Public key cache
     pubkey_cache_entry_t cache[100];
