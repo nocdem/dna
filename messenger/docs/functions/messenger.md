@@ -88,7 +88,6 @@ Core messenger functionality including identity management, key generation, mess
 | `int messenger_reject_group_invitation(...)` | Reject group invitation |
 | `int messenger_sync_groups(messenger_context_t*)` | Sync groups from DHT |
 | `int messenger_send_group_message(...)` | Send message to group |
-| `int messenger_load_group_messages(...)` | Load group conversation messages |
 | `void messenger_free_groups(group_info_t*, int)` | Free group array |
 
 ### 3.8 Group Encryption Key (GEK)

@@ -731,41 +731,6 @@ int messenger_send_group_message(
 );
 
 /**
- * Load group conversation messages (Phase 6.2)
- *
- * Retrieves all messages for a specific group from local SQLite database.
- * Messages are returned ENCRYPTED - caller must decrypt each message.
- *
- * @param ctx: Messenger context
- * @param group_uuid: Group UUID (36 chars)
- * @param messages_out: Output array of messages (caller must free with message_backup_free_messages)
- * @param count_out: Number of messages returned
- * @return: 0 on success, -1 on error
- */
-int messenger_load_group_messages(
-    messenger_context_t *ctx,
-    const char *group_uuid,
-    backup_message_t **messages_out,
-    int *count_out
-);
-
-/**
- * Get group conversation messages (as message_info_t for engine API)
- *
- * @param ctx: Messenger context
- * @param group_id: Local group ID
- * @param messages_out: Output array of message_info_t (caller must free)
- * @param count_out: Number of messages returned
- * @return: 0 on success, -1 on error
- */
-int messenger_get_group_conversation(
-    messenger_context_t *ctx,
-    int group_id,
-    message_info_t **messages_out,
-    int *count_out
-);
-
-/**
  * Free group array
  *
  * @param groups: Array of group_info_t to free
