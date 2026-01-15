@@ -298,29 +298,41 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
       });
     }
 
-    return Scaffold(
-      appBar: AppBar(
-        leading: widget.onMenuPressed != null
-            ? IconButton(
-                icon: const FaIcon(FontAwesomeIcons.bars),
-                onPressed: widget.onMenuPressed,
-              )
-            : null,
-        title: const Text('Scan QR'),
-        actions: [
-          IconButton(
-            icon: FaIcon(_torchOn ? FontAwesomeIcons.lightbulb : FontAwesomeIcons.solidLightbulb),
-            onPressed: _toggleTorch,
-            tooltip: 'Toggle Flash',
-          ),
-          IconButton(
-            icon: const FaIcon(FontAwesomeIcons.cameraRotate),
-            onPressed: _switchCamera,
-            tooltip: 'Switch Camera',
-          ),
-        ],
+    // Intercept Android back button: close scanner and return to Chats tab
+    // instead of backgrounding the app. Also ensures camera is stopped cleanly.
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        await _stopScanner();
+        if (mounted) {
+          ref.read(currentTabProvider.notifier).state = 0; // Switch to Chats
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: widget.onMenuPressed != null
+              ? IconButton(
+                  icon: const FaIcon(FontAwesomeIcons.bars),
+                  onPressed: widget.onMenuPressed,
+                )
+              : null,
+          title: const Text('Scan QR'),
+          actions: [
+            IconButton(
+              icon: FaIcon(_torchOn ? FontAwesomeIcons.lightbulb : FontAwesomeIcons.solidLightbulb),
+              onPressed: _toggleTorch,
+              tooltip: 'Toggle Flash',
+            ),
+            IconButton(
+              icon: const FaIcon(FontAwesomeIcons.cameraRotate),
+              onPressed: _switchCamera,
+              tooltip: 'Switch Camera',
+            ),
+          ],
+        ),
+        body: _buildBody(),
       ),
-      body: _buildBody(),
     );
   }
 
