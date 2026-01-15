@@ -7067,11 +7067,28 @@ size_t dna_engine_start_watermark_listener(
 
     /* Phase 2: DHT operations WITHOUT holding mutex (prevents ABBA deadlock) */
 
-    /* Pre-fetch current watermark to filter stale cached values */
+    /* Pre-fetch current watermark to filter stale cached values AND mark delivered */
     uint64_t current_watermark = 0;
     dht_get_watermark(dht_ctx, fp_copy, engine->fingerprint, &current_watermark);
     QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK] Pre-fetched for %.20s...: seq=%lu",
                  fp_copy, (unsigned long)current_watermark);
+
+    /* If we have a watermark, mark those messages as delivered NOW.
+     * This handles the case where we missed listener callbacks (e.g., fresh install,
+     * or messages sent from another device). Without this, the pre-fetch value
+     * becomes the baseline and we ignore listener callbacks with lower seq. */
+    if (current_watermark > 0 && engine->messenger && engine->messenger->backup_ctx) {
+        int updated = message_backup_mark_delivered_up_to_seq(
+            engine->messenger->backup_ctx,
+            fp_copy,                /* Contact sent us watermark */
+            engine->fingerprint,    /* We sent the messages */
+            current_watermark
+        );
+        if (updated > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Pre-fetch: marked %d messages as DELIVERED (seq<=%lu)",
+                         updated, (unsigned long)current_watermark);
+        }
+    }
 
     /* Start DHT watermark listener */
     size_t token = dht_listen_watermark(dht_ctx,
