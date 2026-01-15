@@ -3575,7 +3575,9 @@ void dna_handle_add_group_member(dna_engine_t *engine, dna_task_t *task) {
         task->params.add_group_member.fingerprint
     );
 
-    if (rc != 0) {
+    if (rc == -3) {
+        error = DNA_ENGINE_ERROR_ALREADY_EXISTS;  // Already a member
+    } else if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
     }
 

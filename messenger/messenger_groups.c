@@ -315,8 +315,8 @@ int messenger_add_group_member(messenger_context_t *ctx, int group_id, const cha
     // Add member in DHT
     int ret = dht_groups_add_member(dht_ctx, group_uuid, identity, ctx->identity);
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to add member to DHT\n");
-        return -1;
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add member to DHT (ret=%d)\n", ret);
+        return ret;  // Preserve specific error code: -2=unauthorized, -3=already member
     }
 
     // Sync back to local cache
