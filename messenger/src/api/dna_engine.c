@@ -3443,31 +3443,13 @@ void dna_handle_get_group_conversation(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Look up local_id from group_uuid using helper function */
-    int local_id = -1;
-    int lookup_rc = dht_groups_get_local_id_by_uuid(
-        engine->fingerprint,
-        task->params.get_group_conversation.group_uuid,
-        &local_id
-    );
+    const char *group_uuid = task->params.get_group_conversation.group_uuid;
 
-    if (lookup_rc != 0) {
-        QGP_LOG_WARN(LOG_TAG, "Group UUID %s not found for user",
-                     task->params.get_group_conversation.group_uuid);
-        error = DNA_ENGINE_ERROR_NOT_FOUND;
-        goto done;
-    }
+    /* Get group messages directly from group_messages table in groups.db */
+    dna_group_message_t *group_msgs = NULL;
+    size_t msg_count = 0;
 
-    /* Get group conversation messages */
-    message_info_t *msg_infos = NULL;
-    int msg_count = 0;
-
-    int rc = messenger_get_group_conversation(
-        engine->messenger,
-        local_id,
-        &msg_infos,
-        &msg_count
-    );
+    int rc = dna_group_outbox_db_get_messages(group_uuid, 0, 0, &group_msgs, &msg_count);
 
     if (rc != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to get group conversation: %d", rc);
@@ -3475,70 +3457,45 @@ void dna_handle_get_group_conversation(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    QGP_LOG_DEBUG(LOG_TAG, "Got %d group messages for group %s (local_id=%d)",
-                  msg_count, task->params.get_group_conversation.group_uuid, local_id);
+    QGP_LOG_WARN(LOG_TAG, "[GROUP] Got %zu messages for group %s", msg_count, group_uuid);
 
     if (msg_count > 0) {
         messages = calloc(msg_count, sizeof(dna_message_t));
         if (!messages) {
-            messenger_free_messages(msg_infos, msg_count);
+            dna_group_outbox_free_messages(group_msgs, msg_count);
             error = DNA_ERROR_INTERNAL;
             goto done;
         }
 
-        for (int i = 0; i < msg_count; i++) {
-            messages[i].id = msg_infos[i].id;
-            strncpy(messages[i].sender, msg_infos[i].sender ? msg_infos[i].sender : "", 128);
-            /* For group messages, recipient is the group UUID */
-            strncpy(messages[i].recipient, task->params.get_group_conversation.group_uuid, 36);
+        /* Messages from DB are in DESC order, reverse to ASC for UI */
+        for (size_t i = 0; i < msg_count; i++) {
+            size_t src_idx = msg_count - 1 - i;  /* Reverse order */
+            dna_group_message_t *src = &group_msgs[src_idx];
 
-            /* Use pre-decrypted plaintext from messenger layer */
-            if (msg_infos[i].plaintext) {
-                messages[i].plaintext = strdup(msg_infos[i].plaintext);
+            messages[i].id = (int64_t)i;  /* Use index as ID since message_id is string */
+            strncpy(messages[i].sender, src->sender_fingerprint, 128);
+            strncpy(messages[i].recipient, group_uuid, 36);
+
+            /* Use decrypted plaintext */
+            if (src->plaintext) {
+                messages[i].plaintext = strdup(src->plaintext);
             } else {
                 messages[i].plaintext = strdup("[Decryption failed]");
             }
 
-            /* Parse timestamp string (format: YYYY-MM-DD HH:MM:SS) */
-            if (msg_infos[i].timestamp) {
-                struct tm tm = {0};
-                if (strptime(msg_infos[i].timestamp, "%Y-%m-%d %H:%M:%S", &tm) != NULL) {
-                    messages[i].timestamp = (uint64_t)mktime(&tm);
-                } else {
-                    messages[i].timestamp = (uint64_t)time(NULL);
-                }
-            } else {
-                messages[i].timestamp = (uint64_t)time(NULL);
-            }
+            /* Convert timestamp_ms to seconds */
+            messages[i].timestamp = src->timestamp_ms / 1000;
 
             /* Determine if outgoing */
-            messages[i].is_outgoing = (msg_infos[i].sender &&
-                strcmp(msg_infos[i].sender, engine->fingerprint) == 0);
+            messages[i].is_outgoing = (strcmp(src->sender_fingerprint, engine->fingerprint) == 0);
 
-            /* Map status string to int: 0=pending, 1=sent, 2=failed, 3=delivered, 4=read */
-            if (msg_infos[i].status) {
-                if (strcmp(msg_infos[i].status, "read") == 0) {
-                    messages[i].status = 4;
-                } else if (strcmp(msg_infos[i].status, "delivered") == 0) {
-                    messages[i].status = 3;
-                } else if (strcmp(msg_infos[i].status, "failed") == 0) {
-                    messages[i].status = 2;
-                } else if (strcmp(msg_infos[i].status, "sent") == 0) {
-                    messages[i].status = 1;
-                } else if (strcmp(msg_infos[i].status, "pending") == 0) {
-                    messages[i].status = 0;
-                } else {
-                    messages[i].status = 3;  /* default to delivered for group messages */
-                }
-            } else {
-                messages[i].status = 3;  /* default to delivered for group messages */
-            }
-
-            messages[i].message_type = msg_infos[i].message_type;
+            /* Group messages are always delivered */
+            messages[i].status = 3;  /* delivered */
+            messages[i].message_type = 0;  /* text */
         }
-        count = msg_count;
+        count = (int)msg_count;
 
-        messenger_free_messages(msg_infos, msg_count);
+        dna_group_outbox_free_messages(group_msgs, msg_count);
     }
 
 done:
