@@ -232,7 +232,11 @@ messenger_context_t* messenger_init(const char *identity) {
     }
 
     // Initialize Group Outbox subsystem (v0.10 - Feed pattern group messaging)
-    dna_group_outbox_set_db(message_backup_get_db(ctx->backup_ctx));
+    // Use groups.db (not messages.db) - group_messages table is in groups.db
+    group_database_context_t *grp_db_ctx = group_database_get_instance();
+    if (grp_db_ctx) {
+        dna_group_outbox_set_db(group_database_get_db(grp_db_ctx));
+    }
     if (dna_group_outbox_db_init() != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to initialize group outbox subsystem");
         message_backup_close(ctx->backup_ctx);

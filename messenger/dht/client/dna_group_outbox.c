@@ -784,41 +784,9 @@ int dna_group_outbox_db_init(void) {
         return -1;
     }
 
-    /* Create group_messages table */
-    const char *create_messages =
-        "CREATE TABLE IF NOT EXISTS group_messages ("
-        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "  message_id TEXT UNIQUE NOT NULL,"
-        "  group_uuid TEXT NOT NULL,"
-        "  sender_fingerprint TEXT NOT NULL,"
-        "  gsk_version INTEGER NOT NULL,"
-        "  nonce BLOB NOT NULL,"
-        "  ciphertext BLOB NOT NULL,"
-        "  ciphertext_len INTEGER NOT NULL,"
-        "  tag BLOB NOT NULL,"
-        "  signature BLOB NOT NULL,"
-        "  signature_len INTEGER NOT NULL,"
-        "  timestamp_ms INTEGER NOT NULL,"
-        "  received_at INTEGER NOT NULL,"
-        "  decrypted_text TEXT"
-        ")";
-
+    /* group_messages table is created by group_database.c - don't recreate */
     char *err_msg = NULL;
-    int rc = sqlite3_exec(group_outbox_db, create_messages, NULL, NULL, &err_msg);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to create group_messages table: %s\n", err_msg);
-        sqlite3_free(err_msg);
-        return -1;
-    }
-
-    /* Create indexes */
-    const char *create_idx1 = "CREATE INDEX IF NOT EXISTS idx_group_messages_group ON group_messages(group_uuid)";
-    const char *create_idx2 = "CREATE INDEX IF NOT EXISTS idx_group_messages_timestamp ON group_messages(timestamp_ms)";
-    const char *create_idx3 = "CREATE INDEX IF NOT EXISTS idx_group_messages_id ON group_messages(message_id)";
-
-    sqlite3_exec(group_outbox_db, create_idx1, NULL, NULL, NULL);
-    sqlite3_exec(group_outbox_db, create_idx2, NULL, NULL, NULL);
-    sqlite3_exec(group_outbox_db, create_idx3, NULL, NULL, NULL);
+    int rc;
 
     /* Create group_sync_state table */
     const char *create_sync =
@@ -851,35 +819,36 @@ int dna_group_outbox_db_store_message(const dna_group_message_t *msg) {
         return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
     }
 
+    /* Schema 1: group_uuid, message_id (INTEGER), sender_fp, timestamp_ms, gek_version, plaintext, received_at */
     const char *sql =
         "INSERT OR IGNORE INTO group_messages "
-        "(message_id, group_uuid, sender_fingerprint, gsk_version, nonce, ciphertext, ciphertext_len, "
-        "tag, signature, signature_len, timestamp_ms, received_at, decrypted_text) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        "(group_uuid, message_id, sender_fp, timestamp_ms, gek_version, plaintext, received_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)";
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(group_outbox_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare store SQL: %s\n", sqlite3_errmsg(group_outbox_db));
         return DNA_GROUP_OUTBOX_ERR_DB;
     }
 
-    sqlite3_bind_text(stmt, 1, msg->message_id, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, msg->group_uuid, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, msg->sender_fingerprint, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 4, (int)msg->gsk_version);
-    sqlite3_bind_blob(stmt, 5, msg->nonce, DNA_GROUP_OUTBOX_NONCE_SIZE, SQLITE_TRANSIENT);
-    sqlite3_bind_blob(stmt, 6, msg->ciphertext, (int)msg->ciphertext_len, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 7, (int)msg->ciphertext_len);
-    sqlite3_bind_blob(stmt, 8, msg->tag, DNA_GROUP_OUTBOX_TAG_SIZE, SQLITE_TRANSIENT);
-    sqlite3_bind_blob(stmt, 9, msg->signature, (int)msg->signature_len, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 10, (int)msg->signature_len);
-    sqlite3_bind_int64(stmt, 11, (sqlite3_int64)msg->timestamp_ms);
-    sqlite3_bind_int64(stmt, 12, (sqlite3_int64)time(NULL));
-    if (msg->plaintext) {
-        sqlite3_bind_text(stmt, 13, msg->plaintext, -1, SQLITE_TRANSIENT);
-    } else {
-        sqlite3_bind_null(stmt, 13);
+    /* Convert message_id string to integer hash */
+    int64_t msg_id_int = 0;
+    for (size_t i = 0; msg->message_id[i] && i < 16; i++) {
+        msg_id_int = (msg_id_int * 31) + (unsigned char)msg->message_id[i];
     }
+
+    sqlite3_bind_text(stmt, 1, msg->group_uuid, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, msg_id_int);
+    sqlite3_bind_text(stmt, 3, msg->sender_fingerprint, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)msg->timestamp_ms);
+    sqlite3_bind_int(stmt, 5, (int)msg->gsk_version);
+    if (msg->plaintext) {
+        sqlite3_bind_text(stmt, 6, msg->plaintext, -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_text(stmt, 6, "", -1, SQLITE_STATIC);
+    }
+    sqlite3_bind_int64(stmt, 7, (sqlite3_int64)time(NULL));
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -888,6 +857,7 @@ int dna_group_outbox_db_store_message(const dna_group_message_t *msg) {
         if (sqlite3_errcode(group_outbox_db) == SQLITE_CONSTRAINT) {
             return DNA_GROUP_OUTBOX_ERR_DUPLICATE;
         }
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store message: %s\n", sqlite3_errmsg(group_outbox_db));
         return DNA_GROUP_OUTBOX_ERR_DB;
     }
 
@@ -899,6 +869,12 @@ int dna_group_outbox_db_message_exists(const char *message_id) {
         return -1;
     }
 
+    /* Convert message_id string to integer hash (same as store) */
+    int64_t msg_id_int = 0;
+    for (size_t i = 0; message_id[i] && i < 16; i++) {
+        msg_id_int = (msg_id_int * 31) + (unsigned char)message_id[i];
+    }
+
     const char *sql = "SELECT 1 FROM group_messages WHERE message_id = ? LIMIT 1";
 
     sqlite3_stmt *stmt = NULL;
@@ -907,7 +883,7 @@ int dna_group_outbox_db_message_exists(const char *message_id) {
         return -1;
     }
 
-    sqlite3_bind_text(stmt, 1, message_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 1, msg_id_int);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -926,15 +902,13 @@ int dna_group_outbox_db_get_messages(
         return -1;
     }
 
-    /* M8: Use parameterized queries for LIMIT/OFFSET (SQL injection prevention) */
+    /* Schema 1: group_uuid, message_id, sender_fp, timestamp_ms, gek_version, plaintext, received_at */
     const char *sql_with_limit =
-        "SELECT message_id, group_uuid, sender_fingerprint, gsk_version, nonce, ciphertext, "
-        "ciphertext_len, tag, signature, signature_len, timestamp_ms, decrypted_text "
+        "SELECT group_uuid, message_id, sender_fp, timestamp_ms, gek_version, plaintext "
         "FROM group_messages WHERE group_uuid = ? ORDER BY timestamp_ms DESC LIMIT ? OFFSET ?";
 
     const char *sql_no_limit =
-        "SELECT message_id, group_uuid, sender_fingerprint, gsk_version, nonce, ciphertext, "
-        "ciphertext_len, tag, signature, signature_len, timestamp_ms, decrypted_text "
+        "SELECT group_uuid, message_id, sender_fp, timestamp_ms, gek_version, plaintext "
         "FROM group_messages WHERE group_uuid = ? ORDER BY timestamp_ms DESC";
 
     const char *sql = (limit > 0) ? sql_with_limit : sql_no_limit;
@@ -942,6 +916,7 @@ int dna_group_outbox_db_get_messages(
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(group_outbox_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare get SQL: %s\n", sqlite3_errmsg(group_outbox_db));
         return -1;
     }
 
@@ -951,7 +926,6 @@ int dna_group_outbox_db_get_messages(
         sqlite3_bind_int64(stmt, 3, (sqlite3_int64)offset);
     }
 
-    /* Count rows first */
     dna_group_message_t *messages = NULL;
     size_t count = 0;
     size_t allocated = 0;
@@ -968,37 +942,26 @@ int dna_group_outbox_db_get_messages(
         dna_group_message_t *msg = &messages[count];
         memset(msg, 0, sizeof(dna_group_message_t));
 
-        strncpy(msg->message_id, (const char *)sqlite3_column_text(stmt, 0), sizeof(msg->message_id) - 1);
-        strncpy(msg->group_uuid, (const char *)sqlite3_column_text(stmt, 1), sizeof(msg->group_uuid) - 1);
-        strncpy(msg->sender_fingerprint, (const char *)sqlite3_column_text(stmt, 2), sizeof(msg->sender_fingerprint) - 1);
-        msg->gsk_version = (uint32_t)sqlite3_column_int(stmt, 3);
+        /* Column 0: group_uuid */
+        const char *uuid = (const char *)sqlite3_column_text(stmt, 0);
+        if (uuid) strncpy(msg->group_uuid, uuid, sizeof(msg->group_uuid) - 1);
 
-        const void *nonce = sqlite3_column_blob(stmt, 4);
-        if (nonce) memcpy(msg->nonce, nonce, DNA_GROUP_OUTBOX_NONCE_SIZE);
+        /* Column 1: message_id (INTEGER) - convert to string */
+        int64_t msg_id_int = sqlite3_column_int64(stmt, 1);
+        snprintf(msg->message_id, sizeof(msg->message_id), "%lld", (long long)msg_id_int);
 
-        const void *ct = sqlite3_column_blob(stmt, 5);
-        int ct_len = sqlite3_column_int(stmt, 6);
-        if (ct && ct_len > 0) {
-            msg->ciphertext = malloc(ct_len);
-            if (msg->ciphertext) {
-                memcpy(msg->ciphertext, ct, ct_len);
-                msg->ciphertext_len = ct_len;
-            }
-        }
+        /* Column 2: sender_fp */
+        const char *sender = (const char *)sqlite3_column_text(stmt, 2);
+        if (sender) strncpy(msg->sender_fingerprint, sender, sizeof(msg->sender_fingerprint) - 1);
 
-        const void *tag = sqlite3_column_blob(stmt, 7);
-        if (tag) memcpy(msg->tag, tag, DNA_GROUP_OUTBOX_TAG_SIZE);
+        /* Column 3: timestamp_ms */
+        msg->timestamp_ms = (uint64_t)sqlite3_column_int64(stmt, 3);
 
-        const void *sig = sqlite3_column_blob(stmt, 8);
-        int sig_len = sqlite3_column_int(stmt, 9);
-        if (sig && sig_len <= DNA_GROUP_OUTBOX_SIG_SIZE) {
-            memcpy(msg->signature, sig, sig_len);
-            msg->signature_len = sig_len;
-        }
+        /* Column 4: gek_version */
+        msg->gsk_version = (uint32_t)sqlite3_column_int(stmt, 4);
 
-        msg->timestamp_ms = (uint64_t)sqlite3_column_int64(stmt, 10);
-
-        const char *text = (const char *)sqlite3_column_text(stmt, 11);
+        /* Column 5: plaintext */
+        const char *text = (const char *)sqlite3_column_text(stmt, 5);
         if (text) msg->plaintext = strdup(text);
 
         count++;
