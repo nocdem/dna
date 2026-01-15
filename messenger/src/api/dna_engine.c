@@ -466,10 +466,6 @@ dna_request_id_t dna_submit_task(
     }
     pthread_mutex_unlock(&engine->task_mutex);
 
-    if (type == TASK_LOAD_IDENTITY) {
-        QGP_LOG_WARN(LOG_TAG, "[SUBMIT] LOAD_IDENTITY submitted: request_id=%llu, callback=%p, pushed=%d",
-                     (unsigned long long)task.request_id, (void*)task.callback.completion, pushed);
-    }
     return pushed ? task.request_id : DNA_REQUEST_ID_INVALID;
 }
 
@@ -861,10 +857,7 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             dna_handle_create_identity(engine, task);
             break;
         case TASK_LOAD_IDENTITY:
-            QGP_LOG_WARN(LOG_TAG, "[TASK] LOAD_IDENTITY task starting, request_id=%llu, callback=%p",
-                         (unsigned long long)task->request_id, (void*)task->callback.completion);
             dna_handle_load_identity(engine, task);
-            QGP_LOG_WARN(LOG_TAG, "[TASK] LOAD_IDENTITY task finished");
             break;
         case TASK_REGISTER_NAME:
             dna_handle_register_name(engine, task);
@@ -1772,10 +1765,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     dna_dispatch_event(engine, &event);
 
 done:
-    QGP_LOG_WARN(LOG_TAG, "[LOAD_IDENTITY] About to call completion callback: request_id=%llu, error=%d, callback=%p",
-                 (unsigned long long)task->request_id, error, (void*)task->callback.completion);
     task->callback.completion(task->request_id, error, task->user_data);
-    QGP_LOG_WARN(LOG_TAG, "[LOAD_IDENTITY] Completion callback returned");
 }
 
 void dna_handle_register_name(dna_engine_t *engine, dna_task_t *task) {

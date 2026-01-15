@@ -13,6 +13,8 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
+- [ ] **[FLUTTER] P3 - Avatar not restored when reinstalling from scratch** - After fresh install and restoring identity from seed phrase, avatar is not correctly restored from DHT. Profile data (name, etc.) may restore but avatar image is missing or not displayed.
+
 - [x] **[CLI] P2 - DHT PUT_SIGNED high failure rate** - Logs showed ~77% failure rate (986 failed vs 298 stored). Error: "PUT_SIGNED: Failed to store on any node". **Root cause:** Burst flooding from chunked operations (10-50 rapid PUTs per action) overwhelming DHT nodes. **Fix:** Added 100ms delay between chunk PUTs in `dht_chunked.c` to rate-limit operations. (v0.4.23)
 
 - [ ] **[FLUTTER] P3 - Presence status not updating in open chat** - When viewing a chat, the contact's online/offline status doesn't update in real-time. User has to close the chat to see updated presence in contacts list. The chat header should reflect live presence changes.

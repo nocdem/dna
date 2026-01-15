@@ -1525,25 +1525,20 @@ class DnaEngine {
     final pwPtr = password?.toNativeUtf8();
 
     void onComplete(int requestId, int error, Pointer<Void> userData) {
-      print('[DART-LOAD_IDENTITY] onComplete called! requestId=$requestId, error=$error');
       calloc.free(fpPtr);
       if (pwPtr != null) calloc.free(pwPtr);
 
       if (error == 0) {
-        print('[DART-LOAD_IDENTITY] Completing future successfully');
         completer.complete();
       } else {
-        print('[DART-LOAD_IDENTITY] Completing future with error: $error');
         completer.completeError(DnaEngineException.fromCode(error, _bindings));
       }
       _cleanupRequest(localId);
-      print('[DART-LOAD_IDENTITY] onComplete finished');
     }
 
     final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
     _pendingRequests[localId] = _PendingRequest(callback: callback);
 
-    print('[DART-LOAD_IDENTITY] Calling dna_engine_load_identity, callback=${callback.nativeFunction}');
     final requestId = _bindings.dna_engine_load_identity(
       _engine,
       fpPtr.cast(),
@@ -1551,7 +1546,6 @@ class DnaEngine {
       callback.nativeFunction.cast(),
       nullptr,
     );
-    print('[DART-LOAD_IDENTITY] dna_engine_load_identity returned requestId=$requestId');
 
     if (requestId == 0) {
       calloc.free(fpPtr);
