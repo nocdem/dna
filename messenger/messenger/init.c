@@ -25,6 +25,7 @@
 #include "../crypto/bip39/bip39.h"
 #include "../dht/client/dna_group_outbox.h"
 #include "../dht/shared/dht_groups.h"
+#include "../messenger_transport.h"
 
 /**
  * Get the path to a key file (.dsa or .kem)
@@ -279,6 +280,9 @@ void messenger_free(messenger_context_t *ctx) {
     if (!ctx) {
         return;
     }
+
+    // Shutdown transport first (v0.4.66 - fix memory leak)
+    messenger_transport_shutdown(ctx);
 
     // Free pubkey cache
     for (int i = 0; i < ctx->cache_count; i++) {
