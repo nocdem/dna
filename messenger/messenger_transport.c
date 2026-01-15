@@ -542,12 +542,7 @@ int messenger_queue_to_dht(
     if (queue_result == 0) {
         QGP_LOG_INFO(LOG_TAG, "Message queued in DHT for %s (fp: %.20s..., seq=%lu)\n",
                recipient, recipient_fingerprint, (unsigned long)seq_num);
-
-        dna_engine_t *engine = dna_engine_get_global();
-        if (engine) {
-            dna_engine_track_delivery(engine, recipient_fingerprint);
-        }
-
+        /* Watermark listener is already running persistently for this contact */
         return 0;
     }
 

@@ -2053,47 +2053,37 @@ DNA_API int dna_engine_refresh_listeners(
 );
 
 /* ============================================================================
- * 7.6 DELIVERY TRACKERS (Message delivery confirmation)
+ * 7.6 WATERMARK LISTENERS (Message delivery confirmation)
  * ============================================================================ */
 
 /**
- * Start tracking delivery status for a recipient
+ * Start persistent watermark listener for a contact
  *
- * Listens for watermark updates from the recipient. When they retrieve
- * messages and publish their watermark, this fires DNA_EVENT_MESSAGE_DELIVERED
- * and updates message status in the local database.
+ * Starts a watermark listener for the contact to track message delivery.
+ * When the contact reads messages, their watermark is updated in DHT.
+ * When our listener receives an update, messages are marked DELIVERED
+ * and DNA_EVENT_MESSAGE_DELIVERED is fired.
  *
- * Call this after sending an offline message to start tracking delivery.
- * Duplicate calls for the same recipient are ignored (idempotent).
+ * This is automatically called for all contacts in dna_engine_listen_all_contacts().
+ * Use this when adding a new contact to start delivery tracking immediately.
  *
  * @param engine               Engine instance
- * @param recipient_fingerprint Recipient's fingerprint (128 hex chars)
- * @return                     0 on success, negative on error
+ * @param contact_fingerprint  Contact's fingerprint (128 hex chars)
+ * @return                     DHT listener token (>0 on success, 0 on failure)
  */
-DNA_API int dna_engine_track_delivery(
+DNA_API size_t dna_engine_start_watermark_listener(
     dna_engine_t *engine,
-    const char *recipient_fingerprint
+    const char *contact_fingerprint
 );
 
 /**
- * Stop tracking delivery for a recipient
+ * Cancel all persistent watermark listeners
  *
- * Cancels the watermark listener for the specified recipient.
- *
- * @param engine               Engine instance
- * @param recipient_fingerprint Recipient's fingerprint
- */
-DNA_API void dna_engine_untrack_delivery(
-    dna_engine_t *engine,
-    const char *recipient_fingerprint
-);
-
-/**
- * Cancel all active delivery trackers
+ * Called automatically on engine destroy or identity unload.
  *
  * @param engine    Engine instance
  */
-DNA_API void dna_engine_cancel_all_delivery_trackers(
+DNA_API void dna_engine_cancel_all_watermark_listeners(
     dna_engine_t *engine
 );
 

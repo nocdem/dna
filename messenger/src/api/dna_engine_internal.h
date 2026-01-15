@@ -449,20 +449,20 @@ typedef struct {
 } dna_contact_request_listener_t;
 
 /**
- * Delivery tracker entry (for message delivery confirmation)
+ * Persistent watermark listener entry (for delivery confirmation)
  *
- * Tracks watermark updates from recipients to confirm message delivery.
- * When recipient publishes watermark >= sent seq_num, message is DELIVERED.
+ * Watermark listeners are persistent - one per contact, stays active for the
+ * session lifetime. They receive watermark updates and update message delivery
+ * status in bulk (all messages with seq <= watermark become DELIVERED).
  */
-#define DNA_MAX_DELIVERY_TRACKERS 128
+#define DNA_MAX_WATERMARK_LISTENERS 128
 
 typedef struct {
-    char recipient[129];            /* Recipient fingerprint we're tracking */
+    char contact_fingerprint[129];  /* Contact we're tracking watermarks from */
     uint64_t last_known_watermark;  /* Last watermark value received */
-    size_t listener_token;          /* Token from dht_listen_watermark() */
-    bool active;                    /* True if tracker is active */
-    void *ctx;                      /* Callback context (must be freed on cancel) */
-} dna_delivery_tracker_t;
+    size_t dht_token;               /* Token from dht_listen_watermark() */
+    bool active;                    /* True if listener is active */
+} dna_watermark_listener_t;
 
 /**
  * DNA Engine internal state
@@ -509,10 +509,10 @@ struct dna_engine {
     dna_contact_request_listener_t contact_request_listener;
     pthread_mutex_t contact_request_listener_mutex;
 
-    /* Delivery trackers (for message delivery confirmation) */
-    dna_delivery_tracker_t delivery_trackers[DNA_MAX_DELIVERY_TRACKERS];
-    int delivery_tracker_count;
-    pthread_mutex_t delivery_trackers_mutex;
+    /* Persistent watermark listeners (for message delivery confirmation) */
+    dna_watermark_listener_t watermark_listeners[DNA_MAX_WATERMARK_LISTENERS];
+    int watermark_listener_count;
+    pthread_mutex_t watermark_listeners_mutex;
 
     /* Group outbox listeners (for real-time group message notifications) */
     #define DNA_MAX_GROUP_LISTENERS 64

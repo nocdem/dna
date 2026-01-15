@@ -1103,9 +1103,9 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     engine->contact_request_listener.active = false;
 
     /* Initialize delivery trackers */
-    pthread_mutex_init(&engine->delivery_trackers_mutex, NULL);
-    engine->delivery_tracker_count = 0;
-    memset(engine->delivery_trackers, 0, sizeof(engine->delivery_trackers));
+    pthread_mutex_init(&engine->watermark_listeners_mutex, NULL);
+    engine->watermark_listener_count = 0;
+    memset(engine->watermark_listeners, 0, sizeof(engine->watermark_listeners));
 
     /* Initialize group outbox listeners */
     pthread_mutex_init(&engine->group_listen_mutex, NULL);
@@ -1406,9 +1406,9 @@ void dna_engine_destroy(dna_engine_t *engine) {
     dna_engine_cancel_contact_request_listener(engine);
     pthread_mutex_destroy(&engine->contact_request_listener_mutex);
 
-    /* Cancel all delivery trackers */
-    dna_engine_cancel_all_delivery_trackers(engine);
-    pthread_mutex_destroy(&engine->delivery_trackers_mutex);
+    /* Cancel all watermark listeners */
+    dna_engine_cancel_all_watermark_listeners(engine);
+    pthread_mutex_destroy(&engine->watermark_listeners_mutex);
 
     /* Unsubscribe from all groups */
     dna_engine_unsubscribe_all_groups(engine);
@@ -1708,23 +1708,8 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
             QGP_LOG_ERROR(LOG_TAG, "[RETRY] FAILED to spawn stabilization thread: rc=%d", spawn_rc);
         }
 
-        /* 4. Restore delivery trackers for all pending messages
-         * This ensures double-tick (delivered) status works after app restart */
-        message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
-        if (backup_ctx) {
-            char pending_recipients[DNA_MAX_DELIVERY_TRACKERS][129];
-            int pending_count = 0;
-            if (message_backup_get_pending_recipients(backup_ctx, pending_recipients,
-                                                       DNA_MAX_DELIVERY_TRACKERS, &pending_count) == 0) {
-                for (int i = 0; i < pending_count; i++) {
-                    dna_engine_track_delivery(engine, pending_recipients[i]);
-                }
-                if (pending_count > 0) {
-                    QGP_LOG_INFO(LOG_TAG, "[DELIVERY] Restored %d delivery trackers for pending messages",
-                                 pending_count);
-                }
-            }
-        }
+        /* Note: Delivery confirmation is now handled by persistent watermark listeners
+         * started in dna_engine_listen_all_contacts() for each contact. */
     }
 
     /* Silent background: Create any missing blockchain wallets
@@ -2534,6 +2519,9 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
         error = DNA_ERROR_NOT_FOUND;
     } else {
         QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: Successfully removed %.16s... from local DB\n", fp);
+
+        /* Cancel watermark listener for this contact */
+        dna_engine_cancel_watermark_listener(engine, fp);
     }
 
     /* Sync to DHT */
@@ -2833,6 +2821,11 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
         error = DNA_ERROR_NOT_FOUND;
         goto done;
     }
+
+    /* Start listeners for new contact (outbox, presence, watermark) */
+    dna_engine_listen_outbox(engine, task->params.contact_request.fingerprint);
+    dna_engine_start_presence_listener(engine, task->params.contact_request.fingerprint);
+    dna_engine_start_watermark_listener(engine, task->params.contact_request.fingerprint);
 
     /* Send a reciprocal request so they know we approved */
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
@@ -5631,10 +5624,6 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine) {
     int skipped_backoff = 0;
     int marked_stale = 0;
 
-    /* Track unique recipients for delivery tracker setup */
-    char tracked_recipients[DNA_MAX_DELIVERY_TRACKERS][129];
-    int tracked_count = 0;
-
     /* Process each message */
     for (int i = 0; i < count; i++) {
         backup_message_t *msg = &messages[i];
@@ -5657,23 +5646,6 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine) {
         /* Retry the message */
         if (retry_single_message(engine, msg) == 0) {
             success_count++;
-
-            /* Track unique recipient for delivery tracker */
-            const char *recipient = msg->recipient;
-            if (recipient && strlen(recipient) == 128) {
-                bool already_tracked = false;
-                for (int j = 0; j < tracked_count; j++) {
-                    if (strcmp(tracked_recipients[j], recipient) == 0) {
-                        already_tracked = true;
-                        break;
-                    }
-                }
-                if (!already_tracked && tracked_count < DNA_MAX_DELIVERY_TRACKERS) {
-                    strncpy(tracked_recipients[tracked_count], recipient, 128);
-                    tracked_recipients[tracked_count][128] = '\0';
-                    tracked_count++;
-                }
-            }
         } else {
             fail_count++;
         }
@@ -5682,11 +5654,7 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine) {
     QGP_LOG_INFO(LOG_TAG, "[RETRY] Completed: %d succeeded, %d failed, %d backoff, %d stale",
                  success_count, fail_count, skipped_backoff, marked_stale);
 
-    /* Start delivery trackers for all recipients with pending messages */
-    for (int i = 0; i < tracked_count; i++) {
-        dna_engine_track_delivery(engine, tracked_recipients[i]);
-        QGP_LOG_INFO(LOG_TAG, "[RETRY] Started delivery tracker for %.20s...", tracked_recipients[i]);
-    }
+    /* Note: Delivery confirmation handled by persistent watermark listeners */
 
     /* Free messages array */
     message_backup_free_messages(messages, count);
@@ -6465,6 +6433,12 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
         } else {
             QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Failed to start presence listener for contact[%zu] (fp_len=%zu)", i, id_len);
         }
+
+        /* Start watermark listener (for delivery confirmation) */
+        size_t watermark_token = dna_engine_start_watermark_listener(engine, contact_id);
+        if (watermark_token > 0) {
+            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Watermark listener started for contact[%zu], token=%zu", i, watermark_token);
+        }
     }
 
     /* Cleanup */
@@ -6479,7 +6453,7 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     }
 
     engine->listeners_starting = false;
-    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Started %d/%zu outbox + %d/%zu presence + contact_req listeners",
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Started %d/%zu outbox + %d/%zu presence + watermark listeners",
                  started, count, presence_started, count);
 
     /* Debug: log all active listeners for troubleshooting */
@@ -6958,55 +6932,48 @@ void dna_engine_cancel_contact_request_listener(dna_engine_t *engine)
 }
 
 /* ============================================================================
- * DELIVERY TRACKERS (Message delivery confirmation)
+ * PERSISTENT WATERMARK LISTENERS (Message delivery confirmation)
  * ============================================================================ */
 
 /**
- * Callback context for delivery tracker
- */
-typedef struct {
-    dna_engine_t *engine;
-    char recipient[129];
-} delivery_tracker_ctx_t;
-
-/**
- * Internal callback for watermark updates
+ * Internal callback for persistent watermark updates
  * Updates message status and dispatches DNA_EVENT_MESSAGE_DELIVERED
  */
-static void delivery_watermark_callback(
+static void watermark_listener_callback(
     const char *sender,
     const char *recipient,
     uint64_t seq_num,
     void *user_data
 ) {
-    delivery_tracker_ctx_t *ctx = (delivery_tracker_ctx_t *)user_data;
-    if (!ctx || !ctx->engine) {
+    dna_engine_t *engine = (dna_engine_t *)user_data;
+    if (!engine) {
         return;
     }
 
-    dna_engine_t *engine = ctx->engine;
-
-    QGP_LOG_WARN(LOG_TAG, "[DELIVERY] Watermark received! %.20s... → %.20s... seq=%lu",
+    QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Received: %.20s... → %.20s... seq=%lu",
                  sender, recipient, (unsigned long)seq_num);
 
     /* Check if this is a new watermark (higher seq than we've seen) */
     uint64_t last_known = 0;
-    pthread_mutex_lock(&engine->delivery_trackers_mutex);
-    for (int i = 0; i < engine->delivery_tracker_count; i++) {
-        if (engine->delivery_trackers[i].active &&
-            strcmp(engine->delivery_trackers[i].recipient, recipient) == 0) {
-            last_known = engine->delivery_trackers[i].last_known_watermark;
+    bool found = false;
+
+    pthread_mutex_lock(&engine->watermark_listeners_mutex);
+    for (int i = 0; i < engine->watermark_listener_count; i++) {
+        if (engine->watermark_listeners[i].active &&
+            strcmp(engine->watermark_listeners[i].contact_fingerprint, recipient) == 0) {
+            last_known = engine->watermark_listeners[i].last_known_watermark;
             if (seq_num > last_known) {
-                engine->delivery_trackers[i].last_known_watermark = seq_num;
+                engine->watermark_listeners[i].last_known_watermark = seq_num;
             }
+            found = true;
             break;
         }
     }
-    pthread_mutex_unlock(&engine->delivery_trackers_mutex);
+    pthread_mutex_unlock(&engine->watermark_listeners_mutex);
 
     /* Skip if we've already processed this or a higher watermark */
     if (seq_num <= last_known) {
-        QGP_LOG_WARN(LOG_TAG, "[DELIVERY] Ignoring old/duplicate watermark (seq=%lu <= last_known=%lu)",
+        QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK] Ignoring old/duplicate (seq=%lu <= last=%lu)",
                      (unsigned long)seq_num, (unsigned long)last_known);
         return;
     }
@@ -7019,10 +6986,11 @@ static void delivery_watermark_callback(
             recipient,   /* Contact fingerprint - they received */
             seq_num
         );
-        QGP_LOG_WARN(LOG_TAG, "[DELIVERY] Updated %d messages to DELIVERED in DB", updated);
+        if (updated > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Updated %d messages to DELIVERED", updated);
+        }
     }
 
-    QGP_LOG_WARN(LOG_TAG, "[DELIVERY] Dispatching DNA_EVENT_MESSAGE_DELIVERED for %.20s...", recipient);
     /* Dispatch DNA_EVENT_MESSAGE_DELIVERED event */
     dna_event_t event = {0};
     event.type = DNA_EVENT_MESSAGE_DELIVERED;
@@ -7034,145 +7002,127 @@ static void delivery_watermark_callback(
     dna_dispatch_event(engine, &event);
 }
 
-int dna_engine_track_delivery(
+/**
+ * Start persistent watermark listener for a contact
+ *
+ * IMPORTANT: This function releases the mutex before DHT calls to prevent
+ * ABBA deadlock (watermark_listeners_mutex vs DHT listeners_mutex).
+ *
+ * @param engine Engine instance
+ * @param contact_fingerprint Contact to listen for watermarks from
+ * @return DHT listener token (>0 on success, 0 on failure)
+ */
+size_t dna_engine_start_watermark_listener(
     dna_engine_t *engine,
-    const char *recipient_fingerprint
+    const char *contact_fingerprint
 ) {
-    if (!engine || !recipient_fingerprint || !engine->identity_loaded) {
-        QGP_LOG_ERROR(LOG_TAG, "Cannot track delivery: invalid params or no identity");
-        return -1;
+    if (!engine || !contact_fingerprint || !engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Cannot start: invalid params or no identity");
+        return 0;
     }
 
-    /* Validate fingerprints before starting listener */
+    /* Validate fingerprints */
     size_t my_fp_len = strlen(engine->fingerprint);
-    size_t recipient_len = strlen(recipient_fingerprint);
-    if (my_fp_len != 128 || recipient_len != 128) {
-        QGP_LOG_ERROR(LOG_TAG, "[DELIVERY] Invalid fingerprint length: mine=%zu recipient=%zu (expected 128)",
-                      my_fp_len, recipient_len);
-        return -1;
+    size_t contact_len = strlen(contact_fingerprint);
+    if (my_fp_len != 128 || contact_len != 128) {
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Invalid fingerprint length: mine=%zu contact=%zu",
+                      my_fp_len, contact_len);
+        return 0;
     }
 
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
     if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Cannot track delivery: DHT not available");
-        return -1;
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] DHT not available");
+        return 0;
     }
 
-    pthread_mutex_lock(&engine->delivery_trackers_mutex);
+    /* Phase 1: Check duplicates and capacity under mutex */
+    pthread_mutex_lock(&engine->watermark_listeners_mutex);
 
-    /* Check if already tracking this recipient */
-    for (int i = 0; i < engine->delivery_tracker_count; i++) {
-        if (engine->delivery_trackers[i].active &&
-            strcmp(engine->delivery_trackers[i].recipient, recipient_fingerprint) == 0) {
-            QGP_LOG_DEBUG(LOG_TAG, "Already tracking delivery for %s...", recipient_fingerprint);
-            pthread_mutex_unlock(&engine->delivery_trackers_mutex);
-            return 0;  /* Already tracking - success */
+    for (int i = 0; i < engine->watermark_listener_count; i++) {
+        if (engine->watermark_listeners[i].active &&
+            strcmp(engine->watermark_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
+            QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK] Already listening for %.20s...", contact_fingerprint);
+            size_t existing = engine->watermark_listeners[i].dht_token;
+            pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+            return existing;
         }
     }
 
-    /* Check capacity */
-    if (engine->delivery_tracker_count >= DNA_MAX_DELIVERY_TRACKERS) {
-        QGP_LOG_ERROR(LOG_TAG, "Maximum delivery trackers reached (%d)", DNA_MAX_DELIVERY_TRACKERS);
-        pthread_mutex_unlock(&engine->delivery_trackers_mutex);
-        return -1;
+    if (engine->watermark_listener_count >= DNA_MAX_WATERMARK_LISTENERS) {
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Maximum listeners reached (%d)", DNA_MAX_WATERMARK_LISTENERS);
+        pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+        return 0;
     }
 
-    /* Create callback context */
-    delivery_tracker_ctx_t *ctx = malloc(sizeof(delivery_tracker_ctx_t));
-    if (!ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate delivery tracker context");
-        pthread_mutex_unlock(&engine->delivery_trackers_mutex);
-        return -1;
-    }
-    ctx->engine = engine;
-    strncpy(ctx->recipient, recipient_fingerprint, sizeof(ctx->recipient) - 1);
-    ctx->recipient[sizeof(ctx->recipient) - 1] = '\0';
+    /* Copy fingerprint for use outside mutex */
+    char fp_copy[129];
+    strncpy(fp_copy, contact_fingerprint, sizeof(fp_copy) - 1);
+    fp_copy[128] = '\0';
 
-    /* Start watermark listener
-     * Key: SHA3-512(recipient + ":watermark:" + sender)
-     * sender = my fingerprint, recipient = contact */
-    QGP_LOG_INFO(LOG_TAG, "[DELIVERY] Starting watermark listener: sender=%.20s... recipient=%.20s...",
-                 engine->fingerprint, recipient_fingerprint);
+    pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+
+    /* Phase 2: DHT operations WITHOUT holding mutex (prevents ABBA deadlock) */
+
+    /* Pre-fetch current watermark to filter stale cached values */
+    uint64_t current_watermark = 0;
+    dht_get_watermark(dht_ctx, fp_copy, engine->fingerprint, &current_watermark);
+    QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK] Pre-fetched for %.20s...: seq=%lu",
+                 fp_copy, (unsigned long)current_watermark);
+
+    /* Start DHT watermark listener */
     size_t token = dht_listen_watermark(dht_ctx,
                                         engine->fingerprint,
-                                        recipient_fingerprint,
-                                        delivery_watermark_callback,
-                                        ctx);
+                                        fp_copy,
+                                        watermark_listener_callback,
+                                        engine);
     if (token == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to start watermark listener for %s...", recipient_fingerprint);
-        free(ctx);
-        pthread_mutex_unlock(&engine->delivery_trackers_mutex);
-        return -1;
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Failed to start listener for %.20s...", fp_copy);
+        return 0;
     }
 
-    /* Pre-fetch current watermark to avoid processing stale cached values
-     * The listener will fire immediately with any cached DHT value,
-     * but we only want to process NEW watermarks (higher seq than current) */
-    uint64_t current_watermark = 0;
-    dht_get_watermark(dht_ctx, recipient_fingerprint, engine->fingerprint, &current_watermark);
-    QGP_LOG_INFO(LOG_TAG, "[DELIVERY] Pre-fetched watermark for %.20s...: seq=%lu",
-                 recipient_fingerprint, (unsigned long)current_watermark);
+    /* Phase 3: Store listener info under mutex */
+    pthread_mutex_lock(&engine->watermark_listeners_mutex);
 
-    /* Store tracker info */
-    int idx = engine->delivery_tracker_count++;
-    strncpy(engine->delivery_trackers[idx].recipient, recipient_fingerprint,
-            sizeof(engine->delivery_trackers[idx].recipient) - 1);
-    engine->delivery_trackers[idx].recipient[sizeof(engine->delivery_trackers[idx].recipient) - 1] = '\0';
-    engine->delivery_trackers[idx].listener_token = token;
-    engine->delivery_trackers[idx].last_known_watermark = current_watermark;  /* Start from current, not 0 */
-    engine->delivery_trackers[idx].active = true;
-    engine->delivery_trackers[idx].ctx = ctx;
-
-    QGP_LOG_INFO(LOG_TAG, "Started delivery tracker for %s... (token=%zu)",
-                 recipient_fingerprint, token);
-
-    pthread_mutex_unlock(&engine->delivery_trackers_mutex);
-    return 0;
-}
-
-void dna_engine_untrack_delivery(
-    dna_engine_t *engine,
-    const char *recipient_fingerprint
-) {
-    if (!engine || !recipient_fingerprint) {
-        return;
+    /* Re-check capacity (race condition) */
+    if (engine->watermark_listener_count >= DNA_MAX_WATERMARK_LISTENERS) {
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Capacity reached after DHT start, cancelling");
+        pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+        dht_cancel_watermark_listener(dht_ctx, token);
+        return 0;
     }
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-
-    pthread_mutex_lock(&engine->delivery_trackers_mutex);
-
-    for (int i = 0; i < engine->delivery_tracker_count; i++) {
-        if (engine->delivery_trackers[i].active &&
-            strcmp(engine->delivery_trackers[i].recipient, recipient_fingerprint) == 0) {
-
-            /* Cancel the watermark listener */
-            if (dht_ctx) {
-                dht_cancel_watermark_listener(dht_ctx, engine->delivery_trackers[i].listener_token);
-            }
-
-            /* Free callback context */
-            if (engine->delivery_trackers[i].ctx) {
-                free(engine->delivery_trackers[i].ctx);
-                engine->delivery_trackers[i].ctx = NULL;
-            }
-
-            QGP_LOG_INFO(LOG_TAG, "Cancelled delivery tracker for %s...",
-                         recipient_fingerprint);
-
-            /* Remove by swapping with last element */
-            if (i < engine->delivery_tracker_count - 1) {
-                engine->delivery_trackers[i] = engine->delivery_trackers[engine->delivery_tracker_count - 1];
-            }
-            engine->delivery_tracker_count--;
-            break;
+    /* Check if another thread added this listener */
+    for (int i = 0; i < engine->watermark_listener_count; i++) {
+        if (engine->watermark_listeners[i].active &&
+            strcmp(engine->watermark_listeners[i].contact_fingerprint, fp_copy) == 0) {
+            QGP_LOG_WARN(LOG_TAG, "[WATERMARK] Race: duplicate for %.20s..., cancelling", fp_copy);
+            pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+            dht_cancel_watermark_listener(dht_ctx, token);
+            return engine->watermark_listeners[i].dht_token;
         }
     }
 
-    pthread_mutex_unlock(&engine->delivery_trackers_mutex);
+    /* Store listener */
+    int idx = engine->watermark_listener_count++;
+    strncpy(engine->watermark_listeners[idx].contact_fingerprint, fp_copy,
+            sizeof(engine->watermark_listeners[idx].contact_fingerprint) - 1);
+    engine->watermark_listeners[idx].contact_fingerprint[128] = '\0';
+    engine->watermark_listeners[idx].dht_token = token;
+    engine->watermark_listeners[idx].last_known_watermark = current_watermark;
+    engine->watermark_listeners[idx].active = true;
+
+    QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Started listener for %.20s... (token=%zu, baseline=%lu)",
+                 fp_copy, token, (unsigned long)current_watermark);
+
+    pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+    return token;
 }
 
-void dna_engine_cancel_all_delivery_trackers(dna_engine_t *engine)
+/**
+ * Cancel all watermark listeners (called on engine destroy or identity unload)
+ */
+void dna_engine_cancel_all_watermark_listeners(dna_engine_t *engine)
 {
     if (!engine) {
         return;
@@ -7180,25 +7130,57 @@ void dna_engine_cancel_all_delivery_trackers(dna_engine_t *engine)
 
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
 
-    pthread_mutex_lock(&engine->delivery_trackers_mutex);
+    pthread_mutex_lock(&engine->watermark_listeners_mutex);
 
-    for (int i = 0; i < engine->delivery_tracker_count; i++) {
-        if (engine->delivery_trackers[i].active && dht_ctx) {
-            dht_cancel_watermark_listener(dht_ctx, engine->delivery_trackers[i].listener_token);
-            QGP_LOG_DEBUG(LOG_TAG, "Cancelled delivery tracker for %s...",
-                          engine->delivery_trackers[i].recipient);
+    for (int i = 0; i < engine->watermark_listener_count; i++) {
+        if (engine->watermark_listeners[i].active && dht_ctx) {
+            dht_cancel_watermark_listener(dht_ctx, engine->watermark_listeners[i].dht_token);
+            QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK] Cancelled listener for %.20s...",
+                          engine->watermark_listeners[i].contact_fingerprint);
         }
-        if (engine->delivery_trackers[i].ctx) {
-            free(engine->delivery_trackers[i].ctx);
-            engine->delivery_trackers[i].ctx = NULL;
-        }
-        engine->delivery_trackers[i].active = false;
+        engine->watermark_listeners[i].active = false;
     }
 
-    engine->delivery_tracker_count = 0;
-    QGP_LOG_INFO(LOG_TAG, "Cancelled all delivery trackers");
+    engine->watermark_listener_count = 0;
+    QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Cancelled all listeners");
 
-    pthread_mutex_unlock(&engine->delivery_trackers_mutex);
+    pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+}
+
+/**
+ * Cancel watermark listener for a specific contact
+ * Called when a contact is removed.
+ */
+void dna_engine_cancel_watermark_listener(dna_engine_t *engine, const char *contact_fingerprint)
+{
+    if (!engine || !contact_fingerprint) {
+        return;
+    }
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+
+    pthread_mutex_lock(&engine->watermark_listeners_mutex);
+
+    for (int i = 0; i < engine->watermark_listener_count; i++) {
+        if (engine->watermark_listeners[i].active &&
+            strcmp(engine->watermark_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
+
+            if (dht_ctx) {
+                dht_cancel_watermark_listener(dht_ctx, engine->watermark_listeners[i].dht_token);
+            }
+
+            QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Cancelled listener for %.20s...", contact_fingerprint);
+
+            /* Remove by swapping with last element */
+            if (i < engine->watermark_listener_count - 1) {
+                engine->watermark_listeners[i] = engine->watermark_listeners[engine->watermark_listener_count - 1];
+            }
+            engine->watermark_listener_count--;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&engine->watermark_listeners_mutex);
 }
 
 /* ============================================================================
