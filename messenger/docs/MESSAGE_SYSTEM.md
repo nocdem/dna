@@ -990,11 +990,19 @@ for (day = last_sync_day + 1; day <= current_day; day++) {
 
 ```
 ~/.dna/
-├── <fingerprint>.dsa     # Dilithium5 private key (4896 bytes)
-├── <fingerprint>.kem     # Kyber1024 private key (3168 bytes)
-├── messages.db           # SQLite message database
-└── keyserver_cache.db    # Public key cache (7-day TTL)
+├── keys/
+│   └── identity.dsa      # Dilithium5 private key (4896 bytes)
+│   └── identity.kem      # Kyber1024 private key (3168 bytes)
+├── db/
+│   ├── messages.db       # SQLite - Direct messages only (v0.4.63+)
+│   ├── groups.db         # SQLite - All group data (v0.4.63+)
+│   └── keyserver_cache.db    # Public key cache (7-day TTL)
+└── ...
 ```
+
+**Database Separation (v0.4.63):**
+- **messages.db**: Direct user-to-user messages only
+- **groups.db**: Groups, members, GEKs, invitations, group messages
 
 **Source:** `messenger.h:1-12`, `messenger/messages.c:358-367`
 
@@ -1032,10 +1040,14 @@ if (qgp_sha3_512(sender_sign_key->public_key,
 
 ## 9. Database Schema
 
-### 9.1 Messages Table
+**v0.4.63+ Architecture:** Two separate databases for clean separation:
+- **messages.db**: Direct user-to-user messages (`message_backup.c`)
+- **groups.db**: All group data (`messenger/group_database.c`)
+
+### 9.1 Messages Table (messages.db)
 
 ```sql
--- Source: message_backup.c:40-56
+-- Source: message_backup.c:48-64
 
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1085,6 +1097,64 @@ CREATE INDEX IF NOT EXISTS idx_sender_fingerprint ON messages(sender_fingerprint
 | `MESSAGE_INVITATION_STATUS_REJECTED` | 2 | Invitation declined |
 
 **Source:** `message_backup.h:40-42`
+
+### 9.5 Groups Database Schema (groups.db)
+
+**Added in v0.4.63** - All group data moved to separate database.
+
+```sql
+-- Source: messenger/group_database.c:48-96
+
+-- Core group metadata
+CREATE TABLE IF NOT EXISTS groups (
+  uuid TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  is_owner INTEGER DEFAULT 0,
+  owner_fp TEXT NOT NULL
+);
+
+-- Group members
+CREATE TABLE IF NOT EXISTS group_members (
+  group_uuid TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  added_at INTEGER NOT NULL,
+  PRIMARY KEY (group_uuid, fingerprint)
+);
+
+-- Group Encryption Keys (GEK) per version
+CREATE TABLE IF NOT EXISTS group_geks (
+  group_uuid TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  encrypted_key BLOB NOT NULL,   -- Kyber1024-encrypted (1628 bytes)
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  PRIMARY KEY (group_uuid, version)
+);
+
+-- Pending group invitations
+CREATE TABLE IF NOT EXISTS pending_invitations (
+  group_uuid TEXT PRIMARY KEY,
+  group_name TEXT NOT NULL,
+  owner_fp TEXT NOT NULL,
+  received_at INTEGER NOT NULL
+);
+
+-- Decrypted group message cache
+CREATE TABLE IF NOT EXISTS group_messages (
+  id INTEGER PRIMARY KEY,
+  group_uuid TEXT NOT NULL,
+  message_id INTEGER NOT NULL,
+  sender_fp TEXT NOT NULL,
+  timestamp_ms INTEGER NOT NULL,
+  gek_version INTEGER NOT NULL,
+  plaintext TEXT NOT NULL,
+  received_at INTEGER NOT NULL,
+  UNIQUE (group_uuid, sender_fp, message_id)
+);
+```
+
+**Source:** `messenger/group_database.c`
 
 ---
 

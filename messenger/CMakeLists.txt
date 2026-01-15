@@ -174,6 +174,7 @@ add_library(dna_lib ${DNA_LIB_TYPE}
     messenger/messages.c
     messenger/gek.c             # Group Encryption Key (GEK system)
     messenger/groups.c          # Group management (GEK system)
+    messenger/group_database.c  # Group database (separate from messages.db)
     # Messenger facade (delegates to messenger/ modules)
     messenger.c
     messenger_transport.c       # Transport integration layer

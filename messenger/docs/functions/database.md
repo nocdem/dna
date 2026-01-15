@@ -134,7 +134,25 @@ Local SQLite databases for contacts, caching, and profiles.
 
 ---
 
-## 13.7 Group Invitations (`group_invitations.h`)
+## 13.7 Group Database (`messenger/group_database.h`)
+
+**Added in v0.4.63** - Separate SQLite database for all group data.
+
+| Function | Description |
+|----------|-------------|
+| `group_database_context_t* group_database_init(void)` | Initialize group database (singleton) |
+| `group_database_context_t* group_database_get_instance(void)` | Get global group database instance |
+| `void* group_database_get_db(group_database_context_t*)` | Get raw SQLite handle |
+| `void group_database_close(group_database_context_t*)` | Close group database |
+| `int group_database_get_stats(group_database_context_t*, int*, int*, int*)` | Get stats (groups, members, messages) |
+
+**Database:** `~/.dna/db/groups.db`
+
+**Tables:** groups, group_members, group_geks, pending_invitations, group_messages
+
+---
+
+## 13.8 Group Invitations (legacy) (`group_invitations.h`)
 
 | Function | Description |
 |----------|-------------|

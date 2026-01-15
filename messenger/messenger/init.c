@@ -5,6 +5,7 @@
 #include "init.h"
 #include "identity.h"
 #include "gek.h"
+#include "group_database.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -209,9 +210,20 @@ messenger_context_t* messenger_init(const char *identity) {
         return NULL;
     }
 
+    // Initialize group database (separate from messages.db)
+    if (group_database_init() == NULL) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize group database");
+        message_backup_close(ctx->backup_ctx);
+        free(ctx->fingerprint);
+        free(ctx->identity);
+        free(ctx);
+        return NULL;
+    }
+
     // Initialize GEK subsystem (Group Encryption Key)
-    if (gek_init(ctx->backup_ctx) != 0) {
+    if (gek_init(NULL) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to initialize GEK subsystem");
+        group_database_close(group_database_get_instance());
         message_backup_close(ctx->backup_ctx);
         free(ctx->identity);
         free(ctx);
@@ -282,6 +294,9 @@ void messenger_free(messenger_context_t *ctx) {
     if (ctx->backup_ctx) {
         message_backup_close(ctx->backup_ctx);
     }
+
+    // Close group database (v0.4.63 - separate from messages.db)
+    group_database_close(group_database_get_instance());
 
     // Free fingerprint (Phase 4)
     if (ctx->fingerprint) {

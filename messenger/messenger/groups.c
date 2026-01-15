@@ -9,7 +9,7 @@
 
 #include "groups.h"
 #include "gek.h"
-#include "../message_backup.h"
+#include "group_database.h"
 #include "../crypto/utils/qgp_random.h"
 #include "../crypto/utils/qgp_platform.h"
 #include "../crypto/utils/qgp_log.h"
@@ -60,30 +60,33 @@ static int generate_uuid(char *uuid_out) {
  * INITIALIZATION
  * ============================================================================ */
 
-int groups_init(void *backup_ctx) {
-    if (!backup_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "backup_ctx is NULL\n");
+int groups_init(void *unused_ctx) {
+    (void)unused_ctx;  // Legacy parameter, no longer used
+
+    // Get database handle from group_database singleton
+    group_database_context_t *grp_db_ctx = group_database_get_instance();
+    if (!grp_db_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "group_database not initialized - call group_database_init() first\n");
         return -1;
     }
 
-    // Get database handle from backup context
-    groups_db = (sqlite3 *)message_backup_get_db(backup_ctx);
+    groups_db = (sqlite3 *)group_database_get_db(grp_db_ctx);
     if (!groups_db) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to get database handle\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get database handle from group_database\n");
         return -1;
     }
 
-    // Verify tables exist (created by message_backup.c migration v9)
+    // Verify tables exist (created by group_database.c)
     const char *verify_sql = "SELECT 1 FROM groups LIMIT 1";
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(groups_db, verify_sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "groups table not found - run message_backup migration\n");
+        QGP_LOG_ERROR(LOG_TAG, "groups table not found in groups.db\n");
         return -1;
     }
     sqlite3_finalize(stmt);
 
-    QGP_LOG_INFO(LOG_TAG, "Initialized groups subsystem\n");
+    QGP_LOG_INFO(LOG_TAG, "Initialized groups subsystem (using groups.db)\n");
     return 0;
 }
 

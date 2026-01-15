@@ -11,7 +11,7 @@
  */
 
 #include "gek.h"
-#include "../message_backup.h"
+#include "group_database.h"
 #include "../crypto/utils/qgp_random.h"
 #include "../crypto/utils/qgp_sha3.h"
 #include "../crypto/utils/qgp_platform.h"
@@ -497,31 +497,34 @@ int gek_cleanup_expired(void) {
  * INITIALIZATION
  * ============================================================================ */
 
-int gek_init(void *backup_ctx) {
-    if (!backup_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "backup_ctx is NULL\n");
+int gek_init(void *unused_ctx) {
+    (void)unused_ctx;  // Legacy parameter, no longer used
+
+    // Get database handle from group_database singleton
+    group_database_context_t *grp_db_ctx = group_database_get_instance();
+    if (!grp_db_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "group_database not initialized - call group_database_init() first\n");
         return -1;
     }
 
-    // Get database handle from backup context
-    msg_db = (sqlite3 *)message_backup_get_db(backup_ctx);
+    msg_db = (sqlite3 *)group_database_get_db(grp_db_ctx);
     if (!msg_db) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to get database handle from backup context\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get database handle from group_database\n");
         return -1;
     }
 
-    // Table created by message_backup.c migration (v9)
+    // Table created by group_database.c
     // Just verify it exists
     const char *verify_sql = "SELECT 1 FROM group_geks LIMIT 1";
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(msg_db, verify_sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "group_geks table not found - run message_backup migration\n");
+        QGP_LOG_ERROR(LOG_TAG, "group_geks table not found in groups.db\n");
         return -1;
     }
     sqlite3_finalize(stmt);
 
-    QGP_LOG_INFO(LOG_TAG, "Initialized GEK subsystem\n");
+    QGP_LOG_INFO(LOG_TAG, "Initialized GEK subsystem (using groups.db)\n");
 
     // Cleanup expired entries on startup
     gek_cleanup_expired();
