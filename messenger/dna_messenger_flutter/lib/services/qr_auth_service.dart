@@ -53,6 +53,13 @@ class QrAuthService {
       );
     }
 
+    // v4 stateless flow: st token present
+    final pv = payload.v ?? 1;
+    final isV4 = pv >= 4 && payload.st != null && payload.st!.trim().isNotEmpty;
+    if (isV4) {
+      return await _approveV4(payload);
+    }
+
     if (payload.isExpired) {
       return const QrAuthResult.failure('Auth request has expired');
     }
@@ -72,7 +79,6 @@ class QrAuthService {
     }
 
     // If v3, require rp_id_hash in the QR (and also recompute for signing)
-    final pv = payload.v ?? 1;
     if (pv >= 3 && (payload.rpIdHash == null || payload.rpIdHash!.trim().isEmpty)) {
       return const QrAuthResult.failure('Missing rp_id_hash in QR payload (v3)');
     }
@@ -247,5 +253,183 @@ class QrAuthService {
 
   void deny(QrPayload payload) {
     debugPrint('QR_AUTH: Auth request denied by user: ${payload.origin}');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // v4 stateless flow
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<QrAuthResult> _approveV4(QrPayload payload) async {
+    try {
+      final fingerprint = _engine.fingerprint;
+      if (fingerprint == null || fingerprint.isEmpty) {
+        return const QrAuthResult.failure('No identity loaded');
+      }
+
+      final st = payload.st!.trim();
+
+      // Decode st payload
+      final stPayload = _decodeStPayload(st);
+      if (stPayload == null) {
+        return const QrAuthResult.failure('Invalid st token format');
+      }
+
+      // Extract required fields
+      final sid = stPayload['sid'] as String?;
+      final origin = (stPayload['origin'] as String?)?.trim();
+      final rpIdHash = stPayload['rp_id_hash'] as String?;
+      final nonce = stPayload['nonce'] as String?;
+      final issuedAt = stPayload['issued_at'] as int?;
+      final expiresAt = stPayload['expires_at'] as int?;
+
+      if (sid == null || sid.isEmpty) {
+        return const QrAuthResult.failure('Missing sid in st payload');
+      }
+      if (origin == null || origin.isEmpty) {
+        return const QrAuthResult.failure('Missing origin in st payload');
+      }
+      if (rpIdHash == null || rpIdHash.isEmpty) {
+        return const QrAuthResult.failure('Missing rp_id_hash in st payload');
+      }
+      if (nonce == null || nonce.isEmpty) {
+        return const QrAuthResult.failure('Missing nonce in st payload');
+      }
+      if (issuedAt == null) {
+        return const QrAuthResult.failure('Missing issued_at in st payload');
+      }
+      if (expiresAt == null) {
+        return const QrAuthResult.failure('Missing expires_at in st payload');
+      }
+
+      // Check expiry locally
+      final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      if (now > expiresAt) {
+        return const QrAuthResult.failure('Auth request has expired');
+      }
+
+      // Compute st_hash = base64(sha256(utf8(st))) - STANDARD base64
+      final stHash = _sha256B64Std(st);
+
+      // session_id = sid for compatibility
+      final sessionId = sid;
+
+      // Build canonical v4 payload - exact key order:
+      // expires_at, issued_at, nonce, origin, rp_id_hash, session_id, sid, st_hash
+      final canonicalStr = _buildCanonicalV4Payload(
+        expiresAt: expiresAt,
+        issuedAt: issuedAt,
+        nonce: nonce,
+        origin: origin,
+        rpIdHash: rpIdHash,
+        sessionId: sessionId,
+        sid: sid,
+        stHash: stHash,
+      );
+
+      final payloadBytes = utf8.encode(canonicalStr);
+      final payloadHash = sha256.convert(payloadBytes).toString();
+      debugPrint(
+        'QR_AUTH_V4: sid=$sid payload_sha256=$payloadHash',
+      );
+
+      // Sign with Dilithium5
+      final signature = _engine.signData(Uint8List.fromList(payloadBytes));
+      final signatureBase64 = base64Encode(signature);
+      final pubkeyB64 = base64Encode(_engine.signingPublicKey);
+
+      // Build signed_payload object for response
+      final signedPayloadObj = <String, dynamic>{
+        'sid': sid,
+        'origin': origin,
+        'rp_id_hash': rpIdHash,
+        'nonce': nonce,
+        'issued_at': issuedAt,
+        'expires_at': expiresAt,
+        'st_hash': stHash,
+        'session_id': sessionId,
+      };
+
+      // Build request body
+      final requestBody = {
+        'type': 'dna.auth.response',
+        'v': 4,
+        'st': st,
+        'session_id': sessionId,
+        'fingerprint': fingerprint,
+        'pubkey_b64': pubkeyB64,
+        'signature': signatureBase64,
+        'signed_payload': signedPayloadObj,
+      };
+
+      // POST to {origin}/api/v4/verify
+      final verifyUrl = origin.endsWith('/')
+          ? '${origin}api/v4/verify'
+          : '$origin/api/v4/verify';
+
+      debugPrint('QR_AUTH_V4: verifyUrl=$verifyUrl');
+
+      return await _postToCallback(verifyUrl, jsonEncode(requestBody));
+    } on DnaEngineException catch (e) {
+      return QrAuthResult.failure('Signing failed: ${e.message}');
+    } catch (e) {
+      return QrAuthResult.failure('Unexpected error: $e');
+    }
+  }
+
+  /// Decode st token: "v4.<b64url(payload_json)>.<b64url(sig)>"
+  Map<String, dynamic>? _decodeStPayload(String st) {
+    try {
+      final parts = st.split('.');
+      if (parts.length != 3 || parts[0] != 'v4') {
+        return null;
+      }
+
+      final payloadB64Url = parts[1];
+      final payloadBytes = _b64UrlDecode(payloadB64Url);
+      final payloadStr = utf8.decode(payloadBytes);
+      final payload = jsonDecode(payloadStr) as Map<String, dynamic>;
+      return payload;
+    } catch (e) {
+      debugPrint('QR_AUTH_V4: Failed to decode st payload: $e');
+      return null;
+    }
+  }
+
+  /// Decode base64url (RFC 4648 §5) to bytes
+  Uint8List _b64UrlDecode(String input) {
+    // Replace URL-safe chars with standard base64 chars
+    String s = input.replaceAll('-', '+').replaceAll('_', '/');
+    // Add padding if needed
+    switch (s.length % 4) {
+      case 2:
+        s += '==';
+        break;
+      case 3:
+        s += '=';
+        break;
+    }
+    return base64Decode(s);
+  }
+
+  /// SHA-256 hash of UTF-8 string, returned as standard base64
+  String _sha256B64Std(String input) {
+    final digest = sha256.convert(utf8.encode(input));
+    return base64Encode(digest.bytes);
+  }
+
+  /// Build canonical v4 payload string with exact key order
+  String _buildCanonicalV4Payload({
+    required int expiresAt,
+    required int issuedAt,
+    required String nonce,
+    required String origin,
+    required String rpIdHash,
+    required String sessionId,
+    required String sid,
+    required String stHash,
+  }) {
+    // Alphabetical key order:
+    // expires_at, issued_at, nonce, origin, rp_id_hash, session_id, sid, st_hash
+    return '{"expires_at":$expiresAt,"issued_at":$issuedAt,"nonce":"$nonce","origin":"$origin","rp_id_hash":"$rpIdHash","session_id":"$sessionId","sid":"$sid","st_hash":"$stHash"}';
   }
 }

@@ -28,6 +28,9 @@ class QrPayload {
   // v3: base64(sha256(rp_id))
   final String? rpIdHash;
 
+  // v4: stateless token (v4.<b64url(payload)>.<b64url(sig)>)
+  final String? st;
+
   final int? v;
 
   final String? sessionId;
@@ -53,6 +56,7 @@ class QrPayload {
     this.rpId,
     this.rpName,
     this.rpIdHash,
+    this.st,
     this.v,
     this.sessionId,
     this.nonce,
@@ -63,8 +67,15 @@ class QrPayload {
     this.looksLikeFingerprint = false,
   });
 
-  bool get hasRequiredAuthFields =>
-      origin != null && sessionId != null && nonce != null && callbackUrl != null;
+  bool get hasRequiredAuthFields {
+    final pv = v ?? 1;
+    if (pv >= 4) {
+      // v4: only st required (origin/nonce/etc come from decoded st)
+      return st != null && st!.trim().isNotEmpty;
+    }
+    // v1-v3: require origin, session_id, nonce, callback
+    return origin != null && sessionId != null && nonce != null && callbackUrl != null;
+  }
 
   Uri? get originUri => origin == null ? null : Uri.tryParse(origin!);
   Uri? get callbackUri => callbackUrl == null ? null : Uri.tryParse(callbackUrl!);
@@ -134,6 +145,7 @@ QrPayload _parseDnaUri(String uri) {
       rpId: params['rp_id'] ?? params['rpId'],
       rpName: params['rp_name'] ?? params['rpName'],
       rpIdHash: params['rp_id_hash'] ?? params['rpIdHash'],
+      st: params['st'] ?? params['session_token'] ?? params['token'],
       sessionId: params['session_id'] ?? params['sessionId'] ?? params['session'],
       nonce: params['nonce'] ?? params['challenge'],
       expiresAt: _parseExpiresAt(params['expires_at'] ?? params['expiresAt'] ?? params['expires']),
@@ -174,6 +186,7 @@ QrPayload _parseJsonPayload(String raw, Map<String, dynamic> json) {
       rpId: json['rp_id'] as String? ?? json['rpId'] as String?,
       rpName: json['rp_name'] as String? ?? json['rpName'] as String?,
       rpIdHash: json['rp_id_hash'] as String? ?? json['rpIdHash'] as String?,
+      st: json['st'] as String? ?? json['session_token'] as String? ?? json['token'] as String?,
       sessionId: json['session_id'] as String? ?? json['sessionId'] as String? ?? json['session'] as String?,
       nonce: json['nonce'] as String? ?? json['challenge'] as String?,
       expiresAt: _parseExpiresAtDynamic(json['expires_at'] ?? json['expiresAt'] ?? json['expires']),
@@ -189,6 +202,15 @@ String? validateRpBinding(QrPayload p) {
   if (p.type != QrPayloadType.auth) return null;
 
   final pv = p.v ?? 1;
+
+  // v4: binding is inside st payload, skip host checks here
+  if (pv >= 4) {
+    if (p.st == null || p.st!.trim().isEmpty) {
+      return 'Missing st token in QR payload (v4)';
+    }
+    return null;
+  }
+
   if (pv <= 1) return null;
 
   if (p.rpId == null || p.rpId!.trim().isEmpty) {
