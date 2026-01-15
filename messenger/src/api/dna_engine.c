@@ -142,6 +142,7 @@ void dna_engine_cancel_all_outbox_listeners(dna_engine_t *engine);
 void dna_engine_cancel_all_presence_listeners(dna_engine_t *engine);
 void dna_engine_cancel_contact_request_listener(dna_engine_t *engine);
 size_t dna_engine_start_contact_request_listener(dna_engine_t *engine);
+void dna_engine_cancel_watermark_listener(dna_engine_t *engine, const char *contact_fingerprint);
 
 /**
  * Validate identity name - must be lowercase only
@@ -6955,7 +6956,6 @@ static void watermark_listener_callback(
 
     /* Check if this is a new watermark (higher seq than we've seen) */
     uint64_t last_known = 0;
-    bool found = false;
 
     pthread_mutex_lock(&engine->watermark_listeners_mutex);
     for (int i = 0; i < engine->watermark_listener_count; i++) {
@@ -6965,7 +6965,6 @@ static void watermark_listener_callback(
             if (seq_num > last_known) {
                 engine->watermark_listeners[i].last_known_watermark = seq_num;
             }
-            found = true;
             break;
         }
     }
