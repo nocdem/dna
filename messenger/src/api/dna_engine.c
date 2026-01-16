@@ -6538,8 +6538,15 @@ void dna_engine_cancel_all_outbox_listeners(dna_engine_t *engine)
     pthread_mutex_lock(&engine->outbox_listeners_mutex);
 
     for (int i = 0; i < engine->outbox_listener_count; i++) {
-        if (engine->outbox_listeners[i].active && dht_ctx) {
-            dht_cancel_listen(dht_ctx, engine->outbox_listeners[i].dht_token);
+        if (engine->outbox_listeners[i].active) {
+            /* Free daily bucket context (v0.5.0+) */
+            if (engine->outbox_listeners[i].dm_listen_ctx) {
+                dht_dm_outbox_unsubscribe(dht_ctx, engine->outbox_listeners[i].dm_listen_ctx);
+                engine->outbox_listeners[i].dm_listen_ctx = NULL;
+            } else if (dht_ctx && engine->outbox_listeners[i].dht_token != 0) {
+                /* Legacy fallback */
+                dht_cancel_listen(dht_ctx, engine->outbox_listeners[i].dht_token);
+            }
             QGP_LOG_DEBUG(LOG_TAG, "Cancelled outbox listener for %s...",
                           engine->outbox_listeners[i].contact_fingerprint);
         }
