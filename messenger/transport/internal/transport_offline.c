@@ -6,6 +6,7 @@
 #include "transport_core.h"
 #include "crypto/utils/qgp_log.h"
 #include "dht/client/dht_singleton.h"
+#include "dht/shared/dht_dm_outbox.h"  /* v0.5.0+ daily bucket API */
 
 #define LOG_TAG "SPILLWAY"
 
@@ -151,11 +152,11 @@ int transport_check_offline_messages(
     dht_offline_message_t *messages = NULL;
     size_t count = 0;
 
-    // Use parallel version for 10-100x speedup
-    int result = dht_retrieve_queued_messages_from_contacts_parallel(
+    // Use daily bucket sync (v0.5.0+) - 3 days parallel per contact
+    int result = dht_dm_outbox_sync_all_contacts_recent(
         dht,
         ctx->config.identity,  // My fingerprint (recipient)
-        sender_fps_array,
+        (const char **)sender_fps_array,
         sender_count,
         &messages,
         &count
