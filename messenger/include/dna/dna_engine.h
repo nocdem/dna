@@ -79,6 +79,7 @@ typedef uint64_t dna_request_id_t;
 #define DNA_ENGINE_ERROR_INVALID_SIGNATURE (-113)  /* DHT profile signature verification failed */
 #define DNA_ENGINE_ERROR_INSUFFICIENT_BALANCE (-114)  /* Insufficient token balance for transaction */
 #define DNA_ENGINE_ERROR_RENT_MINIMUM (-115)  /* Solana: amount below rent-exempt minimum for new account */
+#define DNA_ENGINE_ERROR_KEY_UNAVAILABLE (-116)  /* Recipient public key not cached and DHT lookup failed */
 
 /**
  * Get human-readable error message for engine errors
@@ -130,7 +131,7 @@ typedef struct {
     char *plaintext;            /* Decrypted message text (caller must free via dna_free_messages) */
     uint64_t timestamp;         /* Unix timestamp */
     bool is_outgoing;           /* true if sent by current identity */
-    int status;                 /* 0=pending, 1=sent, 2=delivered, 3=read */
+    int status;                 /* 0=pending, 1=sent(legacy), 2=failed, 3=delivered, 4=read */
     int message_type;           /* 0=chat, 1=group_invitation */
 } dna_message_t;
 
@@ -360,6 +361,18 @@ typedef void (*dna_messages_cb)(
 );
 
 /**
+ * Messages page callback (with total count for pagination)
+ */
+typedef void (*dna_messages_page_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_message_t *messages,
+    int count,
+    int total,
+    void *user_data
+);
+
+/**
  * Groups callback
  */
 typedef void (*dna_groups_cb)(
@@ -560,6 +573,7 @@ typedef enum {
     DNA_EVENT_IDENTITY_LOADED,
     DNA_EVENT_CONTACT_REQUEST_RECEIVED,  /* New contact request from DHT */
     DNA_EVENT_OUTBOX_UPDATED,            /* Contact's outbox has new messages */
+    DNA_EVENT_GROUP_MESSAGE_RECEIVED,    /* New group messages via DHT listen */
     DNA_EVENT_ERROR
 } dna_event_type_t;
 
@@ -600,6 +614,10 @@ typedef struct {
             uint64_t seq_num;               /* Watermark value (messages up to this are delivered) */
             uint64_t timestamp;             /* When delivery was confirmed */
         } message_delivered;
+        struct {
+            char group_uuid[37];            /* Group UUID */
+            int new_count;                  /* Number of new messages received */
+        } group_message;
         struct {
             int code;
             char message[256];
@@ -670,9 +688,9 @@ DNA_API void dna_engine_set_event_callback(
 typedef void (*dna_android_notification_cb)(const char *contact_fingerprint, const char *display_name, void *user_data);
 
 /**
- * Set Android notification callback
+ * Set Android notification callback for messages
  *
- * This callback is called when DNA_EVENT_OUTBOX_UPDATED fires, allowing Android
+ * This callback is called when DNA_EVENT_MESSAGE_RECEIVED fires, allowing Android
  * to show native notifications even when Flutter's event callback is detached.
  *
  * @param callback  Notification callback function (NULL to disable)
@@ -680,6 +698,40 @@ typedef void (*dna_android_notification_cb)(const char *contact_fingerprint, con
  */
 DNA_API void dna_engine_set_android_notification_callback(
     dna_android_notification_cb callback,
+    void *user_data
+);
+
+/**
+ * Group message notification callback
+ *
+ * Called when new group messages arrive via DHT listen (real-time push).
+ * This is used for Android background notifications when new messages
+ * are detected in a group chat.
+ *
+ * @param group_uuid    UUID of the group (36 chars)
+ * @param group_name    Display name of the group or NULL
+ * @param new_count     Number of new messages received
+ * @param user_data     User data passed when setting callback
+ */
+typedef void (*dna_android_group_message_cb)(
+    const char *group_uuid,
+    const char *group_name,
+    size_t new_count,
+    void *user_data
+);
+
+/**
+ * Set Android notification callback for group messages
+ *
+ * This callback is called when new group messages are received via
+ * DHT listen, allowing Android to show native notifications for
+ * group chat activity even when Flutter is detached.
+ *
+ * @param callback  Notification callback function (NULL to disable)
+ * @param user_data User data passed to callback
+ */
+DNA_API void dna_engine_set_android_group_message_callback(
+    dna_android_group_message_cb callback,
     void *user_data
 );
 
@@ -1372,6 +1424,29 @@ DNA_API dna_request_id_t dna_engine_get_conversation(
 );
 
 /**
+ * Get conversation page with contact (paginated)
+ *
+ * Returns a page of messages for efficient chat loading.
+ * Messages ordered by timestamp DESC (newest first).
+ *
+ * @param engine              Engine instance
+ * @param contact_fingerprint Contact fingerprint
+ * @param limit               Max messages to return (page size)
+ * @param offset              Messages to skip (for pagination)
+ * @param callback            Called with messages array and total count
+ * @param user_data           User data for callback
+ * @return                    Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_get_conversation_page(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
+    int limit,
+    int offset,
+    dna_messages_page_cb callback,
+    void *user_data
+);
+
+/**
  * Force check for offline messages
  *
  * Normally automatic - only needed if you want immediate check.
@@ -1383,6 +1458,25 @@ DNA_API dna_request_id_t dna_engine_get_conversation(
  */
 DNA_API dna_request_id_t dna_engine_check_offline_messages(
     dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Force check for offline messages from a specific contact
+ *
+ * Queries only the specified contact's outbox instead of all contacts.
+ * Use this when entering a chat to get immediate updates from that contact.
+ *
+ * @param engine              Engine instance
+ * @param contact_fingerprint Contact fingerprint to check
+ * @param callback            Called on completion
+ * @param user_data           User data for callback
+ * @return                    Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_check_offline_messages_from(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
     dna_completion_cb callback,
     void *user_data
 );
@@ -1434,6 +1528,33 @@ DNA_API int dna_engine_delete_message_sync(
     int message_id
 );
 
+/**
+ * Retry all pending/failed messages
+ *
+ * Queries local database for messages with status PENDING(0) or FAILED(2)
+ * and attempts to re-queue them to DHT. Called automatically on:
+ * - Identity load (app startup)
+ * - DHT reconnect (network change)
+ *
+ * Messages that exceed max_retries (10) are skipped and remain as FAILED.
+ *
+ * @param engine     Engine instance
+ * @return           Number of messages successfully retried, or -1 on error
+ */
+DNA_API int dna_engine_retry_pending_messages(dna_engine_t *engine);
+
+/**
+ * Retry a single failed message by ID
+ *
+ * Attempts to re-send a specific message. Use this for manual retry
+ * (e.g., user taps retry button on failed message).
+ *
+ * @param engine     Engine instance
+ * @param message_id Message ID from local database
+ * @return           0 on success, -1 on error (not found or not retryable)
+ */
+DNA_API int dna_engine_retry_message(dna_engine_t *engine, int message_id);
+
 /* ============================================================================
  * 5. GROUPS (6 async functions)
  * ============================================================================ */
@@ -1455,7 +1576,7 @@ DNA_API dna_request_id_t dna_engine_get_groups(
 /**
  * Create new group
  *
- * Creates group with GSK (Group Symmetric Key) encryption.
+ * Creates group with GEK (Group Encryption Key) encryption.
  *
  * @param engine              Engine instance
  * @param name                Group name
@@ -1477,7 +1598,7 @@ DNA_API dna_request_id_t dna_engine_create_group(
 /**
  * Send message to group
  *
- * Encrypts with GSK (AES-256-GCM), signs with Dilithium5.
+ * Encrypts with GEK (AES-256-GCM), signs with Dilithium5.
  *
  * @param engine     Engine instance
  * @param group_uuid Group UUID
@@ -1490,6 +1611,46 @@ DNA_API dna_request_id_t dna_engine_send_group_message(
     dna_engine_t *engine,
     const char *group_uuid,
     const char *message,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Get group conversation messages
+ *
+ * Retrieves all messages from a group, decrypted with GEK.
+ * Messages are returned in chronological order (oldest first).
+ *
+ * @param engine      Engine instance
+ * @param group_uuid  Group UUID
+ * @param callback    Called with messages array
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_get_group_conversation(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_messages_cb callback,
+    void *user_data
+);
+
+/**
+ * Add member to group
+ *
+ * Adds member to group in DHT, rotates GEK, sends invitation.
+ * Only group owner can add members.
+ *
+ * @param engine      Engine instance
+ * @param group_uuid  Group UUID
+ * @param fingerprint Member fingerprint to add
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_add_group_member(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    const char *fingerprint,
     dna_completion_cb callback,
     void *user_data
 );
@@ -1786,16 +1947,23 @@ DNA_API dna_request_id_t dna_engine_sync_groups(
 );
 
 /**
- * Request TURN relay credentials from DNA Nodus
+ * Sync a specific group from DHT to local cache
  *
- * Forces a TURN credential request even if not needed for current NAT type.
- * Useful for testing and pre-caching credentials.
+ * Uses the group UUID to fetch metadata from DHT and update local database.
+ * Useful for recovering groups after database reset.
  *
  * @param engine      Engine instance
- * @param timeout_ms  Timeout in milliseconds (0 for default 10s)
- * @return            0 on success, negative on error
+ * @param group_uuid  Group UUID (36 chars)
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
  */
-DNA_API int dna_engine_request_turn_credentials(dna_engine_t *engine, int timeout_ms);
+DNA_API dna_request_id_t dna_engine_sync_group_by_uuid(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_completion_cb callback,
+    void *user_data
+);
 
 /**
  * Get registered name for current identity
@@ -1885,47 +2053,37 @@ DNA_API int dna_engine_refresh_listeners(
 );
 
 /* ============================================================================
- * 7.6 DELIVERY TRACKERS (Message delivery confirmation)
+ * 7.6 WATERMARK LISTENERS (Message delivery confirmation)
  * ============================================================================ */
 
 /**
- * Start tracking delivery status for a recipient
+ * Start persistent watermark listener for a contact
  *
- * Listens for watermark updates from the recipient. When they retrieve
- * messages and publish their watermark, this fires DNA_EVENT_MESSAGE_DELIVERED
- * and updates message status in the local database.
+ * Starts a watermark listener for the contact to track message delivery.
+ * When the contact reads messages, their watermark is updated in DHT.
+ * When our listener receives an update, messages are marked DELIVERED
+ * and DNA_EVENT_MESSAGE_DELIVERED is fired.
  *
- * Call this after sending an offline message to start tracking delivery.
- * Duplicate calls for the same recipient are ignored (idempotent).
+ * This is automatically called for all contacts in dna_engine_listen_all_contacts().
+ * Use this when adding a new contact to start delivery tracking immediately.
  *
  * @param engine               Engine instance
- * @param recipient_fingerprint Recipient's fingerprint (128 hex chars)
- * @return                     0 on success, negative on error
+ * @param contact_fingerprint  Contact's fingerprint (128 hex chars)
+ * @return                     DHT listener token (>0 on success, 0 on failure)
  */
-DNA_API int dna_engine_track_delivery(
+DNA_API size_t dna_engine_start_watermark_listener(
     dna_engine_t *engine,
-    const char *recipient_fingerprint
+    const char *contact_fingerprint
 );
 
 /**
- * Stop tracking delivery for a recipient
+ * Cancel all persistent watermark listeners
  *
- * Cancels the watermark listener for the specified recipient.
- *
- * @param engine               Engine instance
- * @param recipient_fingerprint Recipient's fingerprint
- */
-DNA_API void dna_engine_untrack_delivery(
-    dna_engine_t *engine,
-    const char *recipient_fingerprint
-);
-
-/**
- * Cancel all active delivery trackers
+ * Called automatically on engine destroy or identity unload.
  *
  * @param engine    Engine instance
  */
-DNA_API void dna_engine_cancel_all_delivery_trackers(
+DNA_API void dna_engine_cancel_all_watermark_listeners(
     dna_engine_t *engine
 );
 
@@ -2478,7 +2636,7 @@ DNA_API dna_request_id_t dna_engine_sync_addressbook_from_dht(
  * Set the global engine instance
  *
  * Called by dna_engine_create() to make the engine accessible
- * from lower layers (e.g., messenger_p2p.c) for event dispatch.
+ * from lower layers (e.g., messenger_transport.c) for event dispatch.
  *
  * @param engine    Engine instance (or NULL to clear)
  */
@@ -2635,6 +2793,47 @@ DNA_API dna_request_id_t dna_engine_backup_messages(
 DNA_API dna_request_id_t dna_engine_restore_messages(
     dna_engine_t *engine,
     dna_backup_result_cb callback,
+    void *user_data
+);
+
+/**
+ * Backup info structure for check_backup_exists
+ */
+typedef struct {
+    bool exists;              /* True if backup found in DHT */
+    uint64_t timestamp;       /* Backup timestamp (Unix epoch) */
+    int message_count;        /* Number of messages (-1 if unknown) */
+} dna_backup_info_t;
+
+/**
+ * Callback for backup info check
+ *
+ * @param request_id  Request ID from the call
+ * @param error       0 on success, -1 on error
+ * @param info        Backup info (only valid if error == 0)
+ * @param user_data   User data from the call
+ */
+typedef void (*dna_backup_info_cb)(
+    int request_id,
+    int error,
+    const dna_backup_info_t *info,
+    void *user_data
+);
+
+/**
+ * Check if message backup exists in DHT
+ *
+ * Useful for new device setup - check if user has existing backup
+ * before prompting to restore.
+ *
+ * @param engine     Engine instance
+ * @param callback   Called on completion with backup info
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_check_backup_exists(
+    dna_engine_t *engine,
+    dna_backup_info_cb callback,
     void *user_data
 );
 

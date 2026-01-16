@@ -1,6 +1,6 @@
 // DNA Messenger Engine FFI Bindings
 // Hand-written bindings for dna_engine.h
-// ignore_for_file: non_constant_identifier_names, camel_case_types, constant_identifier_names
+// ignore_for_file: non_constant_identifier_names, camel_case_types, constant_identifier_names, unused_field
 
 import 'dart:convert';
 import 'dart:ffi';
@@ -34,6 +34,10 @@ final class dna_contact_t extends Struct {
   @Bool()
   external bool is_online;
 
+  // 6 bytes padding to align uint64_t to 8-byte boundary (450 -> 456)
+  @Array(6)
+  external Array<Uint8> _padding1;
+
   @Uint64()
   external int last_seen;
 }
@@ -49,6 +53,10 @@ final class dna_contact_request_t extends Struct {
   @Array(256)
   external Array<Char> message;
 
+  // 7 bytes padding to align uint64_t to 8-byte boundary (449 -> 456)
+  @Array(7)
+  external Array<Uint8> _padding1;
+
   @Uint64()
   external int requested_at;
 
@@ -60,6 +68,10 @@ final class dna_contact_request_t extends Struct {
 final class dna_blocked_user_t extends Struct {
   @Array(129)
   external Array<Char> fingerprint;
+
+  // 7 bytes padding to align uint64_t to 8-byte boundary (129 -> 136)
+  @Array(7)
+  external Array<Uint8> _padding1;
 
   @Uint64()
   external int blocked_at;
@@ -79,6 +91,10 @@ final class dna_message_t extends Struct {
   @Array(129)
   external Array<Char> recipient;
 
+  // 2 bytes padding to align pointer to 8-byte boundary (262 -> 264)
+  @Array(2)
+  external Array<Uint8> _padding1;
+
   external Pointer<Utf8> plaintext;
 
   @Uint64()
@@ -86,6 +102,10 @@ final class dna_message_t extends Struct {
 
   @Bool()
   external bool is_outgoing;
+
+  // 3 bytes padding to align int to 4-byte boundary (281 -> 284)
+  @Array(3)
+  external Array<Uint8> _padding2;
 
   @Int32()
   external int status;
@@ -105,8 +125,16 @@ final class dna_group_t extends Struct {
   @Array(129)
   external Array<Char> creator;
 
+  // 2 bytes padding to align int to 4-byte boundary (422 -> 424)
+  @Array(2)
+  external Array<Uint8> _padding1;
+
   @Int32()
   external int member_count;
+
+  // 4 bytes padding to align uint64_t to 8-byte boundary (428 -> 432)
+  @Array(4)
+  external Array<Uint8> _padding2;
 
   @Uint64()
   external int created_at;
@@ -123,8 +151,16 @@ final class dna_invitation_t extends Struct {
   @Array(129)
   external Array<Char> inviter;
 
+  // 2 bytes padding to align int to 4-byte boundary (422 -> 424)
+  @Array(2)
+  external Array<Uint8> _padding1;
+
   @Int32()
   external int member_count;
+
+  // 4 bytes padding to align uint64_t to 8-byte boundary (428 -> 432)
+  @Array(4)
+  external Array<Uint8> _padding2;
 
   @Uint64()
   external int invited_at;
@@ -210,6 +246,10 @@ final class dna_addressbook_entry_t extends Struct {
   @Array(256)
   external Array<Char> notes;
 
+  // 4 bytes padding to align uint64_t to 8-byte boundary (484 -> 488)
+  @Array(4)
+  external Array<Uint8> _padding1;
+
   @Uint64()
   external int created_at;
 
@@ -237,6 +277,10 @@ final class dna_channel_info_t extends Struct {
   @Array(129)
   external Array<Char> creator_fingerprint;
 
+  // 6 bytes padding to align uint64_t to 8-byte boundary (770 -> 776)
+  @Array(6)
+  external Array<Uint8> _padding1;
+
   @Uint64()
   external int created_at;
 
@@ -260,6 +304,10 @@ final class dna_post_info_t extends Struct {
 
   @Array(129)
   external Array<Char> author_fingerprint;
+
+  // 6 bytes padding to align pointer to 8-byte boundary (394 -> 400)
+  @Array(6)
+  external Array<Uint8> _padding1;
 
   external Pointer<Utf8> text;
 
@@ -296,6 +344,10 @@ final class dna_comment_info_t extends Struct {
   @Array(129)
   external Array<Char> author_fingerprint;
 
+  // 7 bytes padding to align pointer to 8-byte boundary (529 -> 536)
+  @Array(7)
+  external Array<Uint8> _padding1;
+
   external Pointer<Utf8> text;
 
   @Uint64()
@@ -327,6 +379,18 @@ final class dna_debug_log_entry_t extends Struct {
 
   @Array(256)
   external Array<Char> message;
+}
+
+/// Backup info structure for check_backup_exists (v0.4.60)
+final class dna_backup_info_t extends Struct {
+  @Bool()
+  external bool exists;
+
+  @Uint64()
+  external int timestamp;
+
+  @Int32()
+  external int message_count;
 }
 
 /// User profile information (synced with DHT dna_unified_identity_t)
@@ -408,6 +472,7 @@ abstract class DnaEventType {
   static const int DNA_EVENT_CONTACT_REQUEST_RECEIVED = 12;
   static const int DNA_EVENT_OUTBOX_UPDATED = 13;  // Contact's outbox has new messages
   static const int DNA_EVENT_ERROR = 14;
+  static const int DNA_EVENT_GROUP_MESSAGE_RECEIVED = 15;  // New group messages via DHT listen
 }
 
 /// Event data union - message received
@@ -456,6 +521,27 @@ final class dna_event_outbox_updated extends Struct {
   external Array<Char> contact_fingerprint;
 }
 
+/// Event data union - message delivered
+final class dna_event_message_delivered extends Struct {
+  @Array(129)
+  external Array<Char> recipient;
+
+  // 7 bytes padding to align uint64_t to 8-byte boundary (129 -> 136)
+  @Array(7)
+  external Array<Uint8> _padding1;
+
+  @Uint64()
+  external int seq_num;
+
+  @Uint64()
+  external int timestamp;
+}
+
+/// Event data union - contact request received
+final class dna_event_contact_request_received extends Struct {
+  external dna_contact_request_t request;
+}
+
 /// Event data union - error
 final class dna_event_error extends Struct {
   @Int32()
@@ -469,6 +555,10 @@ final class dna_event_error extends Struct {
 final class dna_event_t extends Struct {
   @Int32()
   external int type;
+
+  // Padding for 8-byte alignment of union (matches C struct layout on 64-bit)
+  @Array(4)
+  external Array<Uint8> _padding;
 
   // Union data starts here - 512 bytes reserved for largest union member
   @Array(512)
@@ -512,6 +602,11 @@ final class dna_version_check_result_t extends Struct {
 
   @Bool()
   external bool nodus_update_available;
+
+  // 5 bytes padding to align embedded struct to 8-byte boundary (3 -> 8)
+  // dna_version_info_t has 8-byte alignment due to uint64_t published_at
+  @Array(5)
+  external Array<Uint8> _padding1;
 
   external dna_version_info_t info;
 }
@@ -604,6 +699,17 @@ typedef DnaMessagesCbNative = Void Function(
   Pointer<Void> user_data,
 );
 typedef DnaMessagesCb = NativeFunction<DnaMessagesCbNative>;
+
+/// Messages page callback (with total count) - Native
+typedef DnaMessagesPageCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_message_t> messages,
+  Int32 count,
+  Int32 total,
+  Pointer<Void> user_data,
+);
+typedef DnaMessagesPageCb = NativeFunction<DnaMessagesPageCbNative>;
 
 /// Groups callback - Native
 typedef DnaGroupsCbNative = Void Function(
@@ -748,6 +854,15 @@ typedef DnaBackupResultCbNative = Void Function(
   Pointer<Void> user_data,
 );
 typedef DnaBackupResultCb = NativeFunction<DnaBackupResultCbNative>;
+
+/// Backup info callback - Native (v0.4.60 for check_backup_exists)
+typedef DnaBackupInfoCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_backup_info_t> info,
+  Pointer<Void> user_data,
+);
+typedef DnaBackupInfoCb = NativeFunction<DnaBackupInfoCbNative>;
 
 /// Address book callback - Native
 typedef DnaAddressbookCbNative = Void Function(
@@ -932,6 +1047,13 @@ typedef DnaBackupResultCbDart = void Function(
   int error,
   int processedCount,
   int skippedCount,
+  Pointer<Void> userData,
+);
+
+typedef DnaBackupInfoCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_backup_info_t> info,
   Pointer<Void> userData,
 );
 
@@ -1542,6 +1664,24 @@ class DnaBindings {
         engine, contact_fingerprint, callback, user_data);
   }
 
+  late final _dna_engine_get_conversation_page = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Int32, Int32,
+          Pointer<DnaMessagesPageCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, int, int,
+          Pointer<DnaMessagesPageCb>, Pointer<Void>)>('dna_engine_get_conversation_page');
+
+  int dna_engine_get_conversation_page(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> contact_fingerprint,
+    int limit,
+    int offset,
+    Pointer<DnaMessagesPageCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_conversation_page(
+        engine, contact_fingerprint, limit, offset, callback, user_data);
+  }
+
   late final _dna_engine_check_offline_messages = _lib.lookupFunction<
       Uint64 Function(
           Pointer<dna_engine_t>, Pointer<DnaCompletionCb>, Pointer<Void>),
@@ -1556,6 +1696,24 @@ class DnaBindings {
     return _dna_engine_check_offline_messages(engine, callback, user_data);
   }
 
+  // Check offline messages from a specific contact
+  late final _dna_engine_check_offline_messages_from = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>(
+      'dna_engine_check_offline_messages_from');
+
+  int dna_engine_check_offline_messages_from(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> contactFingerprint,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_check_offline_messages_from(
+        engine, contactFingerprint, callback, user_data);
+  }
+
   // Delete a message from local database
   late final _dna_engine_delete_message_sync = _lib.lookupFunction<
       Int32 Function(Pointer<dna_engine_t>, Int32),
@@ -1568,6 +1726,33 @@ class DnaBindings {
     int messageId,
   ) {
     return _dna_engine_delete_message_sync(engine, messageId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // MESSAGE RETRY
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_retry_pending_messages = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>),
+      int Function(Pointer<dna_engine_t>)>('dna_engine_retry_pending_messages');
+
+  /// Retry all pending/failed messages
+  /// Returns number of messages successfully retried, or -1 on error
+  int dna_engine_retry_pending_messages(Pointer<dna_engine_t> engine) {
+    return _dna_engine_retry_pending_messages(engine);
+  }
+
+  late final _dna_engine_retry_message = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Int32),
+      int Function(Pointer<dna_engine_t>, int)>('dna_engine_retry_message');
+
+  /// Retry a single failed message by ID
+  /// Returns 0 on success, -1 on error
+  int dna_engine_retry_message(
+    Pointer<dna_engine_t> engine,
+    int messageId,
+  ) {
+    return _dna_engine_retry_message(engine, messageId);
   }
 
   // ---------------------------------------------------------------------------
@@ -1636,6 +1821,21 @@ class DnaBindings {
   ) {
     return _dna_engine_send_group_message(
         engine, group_uuid, message, callback, user_data);
+  }
+
+  late final _dna_engine_get_group_conversation = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaMessagesCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaMessagesCb>, Pointer<Void>)>('dna_engine_get_group_conversation');
+
+  int dna_engine_get_group_conversation(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> group_uuid,
+    Pointer<DnaMessagesCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_group_conversation(engine, group_uuid, callback, user_data);
   }
 
   late final _dna_engine_get_invitations = _lib.lookupFunction<
@@ -2031,6 +2231,25 @@ class DnaBindings {
   ) {
     return _dna_engine_create_group(
         engine, name, member_fingerprints, member_count, callback, user_data);
+  }
+
+  // ---------------------------------------------------------------------------
+  // GROUPS - SYNC GROUP BY UUID
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_sync_group_by_uuid = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_sync_group_by_uuid');
+
+  int dna_engine_sync_group_by_uuid(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> group_uuid,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_sync_group_by_uuid(engine, group_uuid, callback, user_data);
   }
 
   // ---------------------------------------------------------------------------
@@ -2544,6 +2763,26 @@ class DnaBindings {
     Pointer<Void> user_data,
   ) {
     return _dna_engine_restore_messages(engine, callback, user_data);
+  }
+
+  late final _dna_engine_check_backup_exists = _lib.lookupFunction<
+      Uint64 Function(
+        Pointer<dna_engine_t>,
+        Pointer<DnaBackupInfoCb>,
+        Pointer<Void>,
+      ),
+      int Function(
+        Pointer<dna_engine_t>,
+        Pointer<DnaBackupInfoCb>,
+        Pointer<Void>,
+      )>('dna_engine_check_backup_exists');
+
+  int dna_engine_check_backup_exists(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaBackupInfoCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_check_backup_exists(engine, callback, user_data);
   }
 
   // ---------------------------------------------------------------------------

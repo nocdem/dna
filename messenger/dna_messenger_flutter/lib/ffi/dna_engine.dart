@@ -229,7 +229,7 @@ class Message {
           : native.plaintext.toDartString(),
       timestamp: DateTime.fromMillisecondsSinceEpoch(native.timestamp * 1000),
       isOutgoing: native.is_outgoing,
-      status: MessageStatus.values[native.status.clamp(0, 4)],
+      status: MessageStatus.values[native.status.clamp(0, 5)],
       type: native.message_type == 2
           ? MessageType.cpunkTransfer
           : (native.message_type == 1
@@ -272,8 +272,15 @@ class Message {
   }
 }
 
-enum MessageStatus { pending, sent, failed, delivered, read }
+enum MessageStatus { pending, sent, failed, delivered, read, stale }
 enum MessageType { chat, groupInvitation, cpunkTransfer }
+
+/// Result of paginated conversation query
+class ConversationPage {
+  final List<Message> messages;
+  final int total;
+  ConversationPage(this.messages, this.total);
+}
 
 /// Group information
 class Group {
@@ -653,6 +660,19 @@ class BackupResult {
   });
 }
 
+/// Info about existing backup in DHT (v0.4.60)
+class BackupInfo {
+  final bool exists;
+  final DateTime? timestamp;
+  final int messageCount;
+
+  BackupInfo({
+    required this.exists,
+    this.timestamp,
+    required this.messageCount,
+  });
+}
+
 /// User profile information (synced with DHT dna_unified_identity_t)
 class UserProfile {
   // Cellframe wallets
@@ -918,8 +938,8 @@ class MessageSentEvent extends DnaEvent {
 }
 
 class MessageDeliveredEvent extends DnaEvent {
-  final int messageId;
-  MessageDeliveredEvent(this.messageId);
+  final String contactFingerprint;
+  MessageDeliveredEvent(this.contactFingerprint);
 }
 
 class MessageReadEvent extends DnaEvent {
@@ -973,6 +993,13 @@ class OutboxUpdatedEvent extends DnaEvent {
 
 /// Contact request received event - someone sent us a contact request
 class ContactRequestReceivedEvent extends DnaEvent {}
+
+/// Group message received event - new messages in a group
+class GroupMessageReceivedEvent extends DnaEvent {
+  final String groupUuid;
+  final int newCount;
+  GroupMessageReceivedEvent(this.groupUuid, this.newCount);
+}
 
 // =============================================================================
 // EXCEPTIONS
@@ -1076,10 +1103,12 @@ class DnaEngine {
   }
 
   void _onEventReceived(Pointer<dna_event_t> eventPtr, Pointer<Void> userData) {
-    if (_isDisposed) return;
-
+    // DEBUG: Print to stdout/logcat immediately
     final event = eventPtr.ref;
     final type = event.type;
+    print('[DART-EVENT] _onEventReceived called, type=$type, disposed=$_isDisposed');
+
+    if (_isDisposed) return;
 
     DnaEvent? dartEvent;
 
@@ -1092,13 +1121,10 @@ class DnaEngine {
         break;
       case DnaEventType.DNA_EVENT_MESSAGE_RECEIVED:
         // Parse message from union data
-        // NOTE: C union is 8-byte aligned, but Dart data array starts at offset 4
-        // So we add 4 to all offsets to account for padding in C struct
+        // Dart struct now has _padding field matching C struct 8-byte alignment
         // dna_message_t layout: id(4) + sender[129] + recipient[129] + ptr(8) + timestamp(8) + bool(1+3pad) + status(4) + type(4)
-        // Sender at C offset 4, but in Dart data array at offset 8 (4 + 4 padding)
-        const baseOffset = 4; // Padding between type and union in C
         final senderBytes = <int>[];
-        for (var i = baseOffset + 4; i < baseOffset + 4 + 128; i++) {
+        for (var i = 4; i < 132; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           senderBytes.add(byte);
@@ -1106,18 +1132,18 @@ class DnaEngine {
         final sender = String.fromCharCodes(senderBytes);
 
         final recipientBytes = <int>[];
-        for (var i = baseOffset + 133; i < baseOffset + 133 + 128; i++) {
+        for (var i = 133; i < 261; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           recipientBytes.add(byte);
         }
         final recipient = String.fromCharCodes(recipientBytes);
 
-        // is_outgoing is at C offset 280 (after plaintext ptr + timestamp)
-        final isOutgoing = event.data[baseOffset + 280] != 0;
+        // is_outgoing is at union offset 280 (after plaintext ptr + timestamp)
+        final isOutgoing = event.data[280] != 0;
 
-        // message_type is at C offset 288 (0=chat, 1=group invitation)
-        final msgTypeInt = event.data[baseOffset + 288];
+        // message_type is at union offset 288 (0=chat, 1=group invitation)
+        final msgTypeInt = event.data[288];
         final msgType = msgTypeInt == 1 ? MessageType.groupInvitation : MessageType.chat;
 
         dartEvent = MessageReceivedEvent(Message(
@@ -1133,16 +1159,31 @@ class DnaEngine {
         break;
       case DnaEventType.DNA_EVENT_MESSAGE_SENT:
         // Message was successfully sent - trigger UI refresh
-        // message_status.message_id is at offset 0 in union (4 bytes)
-        final messageId = event.data[0] | (event.data[1] << 8) | (event.data[2] << 16) | (event.data[3] << 24);
+        // Dart struct now has _padding field matching C struct 8-byte alignment
+        final messageId = event.data[0] | (event.data[1] << 8) |
+                          (event.data[2] << 16) | (event.data[3] << 24);
+        final status = event.data[4] | (event.data[5] << 8) |
+                       (event.data[6] << 16) | (event.data[7] << 24);
+        print('[DART-EVENT] MESSAGE_SENT: messageId=$messageId, status=$status');
         dartEvent = MessageSentEvent(messageId);
+        break;
+      case DnaEventType.DNA_EVENT_MESSAGE_DELIVERED:
+        // Message delivered - parse recipient fingerprint from message_delivered.recipient
+        // Dart struct now has _padding field matching C struct 8-byte alignment
+        final deliveredFpBytes = <int>[];
+        for (var i = 0; i < 128; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          deliveredFpBytes.add(byte);
+        }
+        final deliveredContactFp = String.fromCharCodes(deliveredFpBytes);
+        dartEvent = MessageDeliveredEvent(deliveredContactFp);
         break;
       case DnaEventType.DNA_EVENT_CONTACT_ONLINE:
         // Parse fingerprint from contact_status.fingerprint
-        // baseOffset=4 for padding between type (int) and union in C struct (64-bit alignment)
-        const onlineBaseOffset = 4;
+        // Dart struct now has _padding field matching C struct 8-byte alignment
         final onlineFpBytes = <int>[];
-        for (var i = onlineBaseOffset; i < onlineBaseOffset + 128; i++) {
+        for (var i = 0; i < 128; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           onlineFpBytes.add(byte);
@@ -1152,10 +1193,9 @@ class DnaEngine {
         break;
       case DnaEventType.DNA_EVENT_CONTACT_OFFLINE:
         // Parse fingerprint from contact_status.fingerprint
-        // baseOffset=4 for padding between type (int) and union in C struct (64-bit alignment)
-        const offlineBaseOffset = 4;
+        // Dart struct now has _padding field matching C struct 8-byte alignment
         final offlineFpBytes = <int>[];
-        for (var i = offlineBaseOffset; i < offlineBaseOffset + 128; i++) {
+        for (var i = 0; i < 128; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           offlineFpBytes.add(byte);
@@ -1172,16 +1212,32 @@ class DnaEngine {
         break;
       case DnaEventType.DNA_EVENT_OUTBOX_UPDATED:
         // Parse contact fingerprint from union data
-        // baseOffset=4 for padding between type (int) and union in C struct (64-bit alignment)
-        const outboxBaseOffset = 4;
+        // Dart struct now has _padding field matching C struct 8-byte alignment
         final fpBytes = <int>[];
-        for (var i = outboxBaseOffset; i < outboxBaseOffset + 128; i++) {
+        for (var i = 0; i < 128; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           fpBytes.add(byte);
         }
         final contactFp = String.fromCharCodes(fpBytes);
         dartEvent = OutboxUpdatedEvent(contactFp);
+        break;
+      case DnaEventType.DNA_EVENT_GROUP_MESSAGE_RECEIVED:
+        // Parse group_uuid (37 bytes) and new_count (int32 at offset 40)
+        // C struct: char group_uuid[37] + 3 padding bytes + int new_count
+        final uuidBytes = <int>[];
+        for (var i = 0; i < 36; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          uuidBytes.add(byte);
+        }
+        final groupUuid = String.fromCharCodes(uuidBytes);
+        // new_count is at offset 40 (37 bytes + 3 padding for 4-byte alignment)
+        final newCount = event.data[40] |
+            (event.data[41] << 8) |
+            (event.data[42] << 16) |
+            (event.data[43] << 24);
+        dartEvent = GroupMessageReceivedEvent(groupUuid, newCount);
         break;
       case DnaEventType.DNA_EVENT_ERROR:
         dartEvent = ErrorEvent(0, 'Error occurred');
@@ -1192,6 +1248,7 @@ class DnaEngine {
     }
 
     if (dartEvent != null) {
+      print('[DART-EVENT] Adding to stream: ${dartEvent.runtimeType}');
       _eventController.add(dartEvent);
     }
 
@@ -2089,10 +2146,78 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Get conversation with contact (paginated)
+  /// Messages are returned in DESC order (newest first)
+  Future<ConversationPage> getConversationPage(
+      String contactFingerprint, int limit, int offset) async {
+    final completer = Completer<ConversationPage>();
+    final localId = _nextLocalId++;
+
+    final contactPtr = contactFingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<dna_message_t> messages,
+                    int count, int total, Pointer<Void> userData) {
+      calloc.free(contactPtr);
+
+      if (error == 0) {
+        final result = <Message>[];
+        for (var i = 0; i < count; i++) {
+          result.add(Message.fromNative((messages + i).ref));
+        }
+        if (count > 0) {
+          _bindings.dna_free_messages(messages, count);
+        }
+        completer.complete(ConversationPage(result, total));
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaMessagesPageCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_conversation_page(
+      _engine,
+      contactPtr.cast(),
+      limit,
+      offset,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(contactPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
   /// Delete a message from local database
   /// Returns true on success, false on error
   bool deleteMessage(int messageId) {
     return _bindings.dna_engine_delete_message_sync(_engine, messageId) == 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // MESSAGE RETRY
+  // ---------------------------------------------------------------------------
+
+  /// Retry all pending/failed messages
+  /// Called automatically on identity load and DHT reconnect.
+  /// Can also be called manually to retry queued messages.
+  /// Returns number of messages successfully retried, or -1 on error.
+  int retryPendingMessages() {
+    return _bindings.dna_engine_retry_pending_messages(_engine);
+  }
+
+  /// Retry a single failed message by ID
+  /// Use this when user taps retry button on a failed message.
+  /// Returns true on success, false on error.
+  bool retryMessage(int messageId) {
+    return _bindings.dna_engine_retry_message(_engine, messageId) == 0;
   }
 
   // ---------------------------------------------------------------------------
@@ -3069,16 +3194,22 @@ class DnaEngine {
 
     void onComplete(int requestId, int error, Pointer<Utf8> groupUuid,
                     Pointer<Void> userData) {
-      // Free allocated memory
+      // Free allocated memory (input params)
       calloc.free(namePtr);
       for (var i = 0; i < memberFingerprints.length; i++) {
         calloc.free(membersPtr[i]);
       }
       calloc.free(membersPtr);
 
-      if (error == 0) {
-        completer.complete(groupUuid.toDartString());
+      if (error == 0 && groupUuid != nullptr) {
+        final uuid = groupUuid.toDartString();
+        // Free C-allocated string (strdup'd in dna_handle_create_group)
+        calloc.free(groupUuid);
+        completer.complete(uuid);
       } else {
+        if (groupUuid != nullptr) {
+          calloc.free(groupUuid);
+        }
         completer.completeError(DnaEngineException.fromCode(error, _bindings));
       }
       _cleanupRequest(localId);
@@ -3150,6 +3281,52 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Get group conversation messages
+  /// Messages are returned in ASC order (oldest first)
+  Future<List<Message>> getGroupConversation(String groupUuid) async {
+    final completer = Completer<List<Message>>();
+    final localId = _nextLocalId++;
+
+    final groupPtr = groupUuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<dna_message_t> messages,
+                    int count, Pointer<Void> userData) {
+      calloc.free(groupPtr);
+
+      if (error == 0) {
+        final result = <Message>[];
+        for (var i = 0; i < count; i++) {
+          result.add(Message.fromNative((messages + i).ref));
+        }
+        if (count > 0) {
+          _bindings.dna_free_messages(messages, count);
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaMessagesCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_group_conversation(
+      _engine,
+      groupPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(groupPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
   /// Accept a group invitation
   Future<void> acceptInvitation(String groupUuid) async {
     final completer = Completer<void>();
@@ -3209,6 +3386,44 @@ class DnaEngine {
     _pendingRequests[localId] = _PendingRequest(callback: callback);
 
     final requestId = _bindings.dna_engine_reject_invitation(
+      _engine,
+      groupPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(groupPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Sync a group from DHT (metadata + GEK)
+  /// Use this to recover GEK after app reinstall or database loss
+  Future<void> syncGroupByUuid(String groupUuid) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final groupPtr = groupUuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(groupPtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_sync_group_by_uuid(
       _engine,
       groupPtr.cast(),
       callback.nativeFunction.cast(),
@@ -3743,6 +3958,45 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Check for offline messages from a specific contact
+  ///
+  /// This queries only the specified contact's outbox instead of all contacts.
+  /// Use this when entering a chat to get immediate updates from that contact.
+  /// Faster than checkOfflineMessages() which checks all contacts.
+  Future<void> checkOfflineMessagesFrom(String contactFingerprint) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+    final fpNative = contactFingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+      calloc.free(fpNative);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_check_offline_messages_from(
+      _engine,
+      fpNative,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      calloc.free(fpNative);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
   /// Refresh presence in DHT (announce we're online)
   ///
   /// This publishes presence to DHT so peers can discover we're online.
@@ -4056,6 +4310,51 @@ class DnaEngine {
     if (requestId == 0) {
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit restore request');
+    }
+
+    return completer.future;
+  }
+
+  /// Check if message backup exists in DHT (v0.4.60)
+  /// Returns backup info without downloading the full backup
+  /// Used for new device restore flow
+  Future<BackupInfo> checkBackupExists() async {
+    final completer = Completer<BackupInfo>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<dna_backup_info_t> info, Pointer<Void> userData) {
+      if (error == 0 && info != nullptr) {
+        final infoRef = info.ref;
+        completer.complete(BackupInfo(
+          exists: infoRef.exists,
+          timestamp: infoRef.timestamp > 0
+              ? DateTime.fromMillisecondsSinceEpoch(infoRef.timestamp * 1000)
+              : null,
+          messageCount: infoRef.message_count,
+        ));
+      } else {
+        // No backup found or error - return exists=false
+        completer.complete(BackupInfo(
+          exists: false,
+          messageCount: 0,
+        ));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaBackupInfoCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_check_backup_exists(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      // Return no backup instead of throwing - graceful degradation
+      return BackupInfo(exists: false, messageCount: 0);
     }
 
     return completer.future;

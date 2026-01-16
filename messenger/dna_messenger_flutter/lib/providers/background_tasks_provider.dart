@@ -1,6 +1,6 @@
 // Background Tasks Provider - Manual refresh support
 // Note: DHT listeners and initial offline check are handled by C code during identity load
-// (messenger_p2p_subscribe_to_contacts + messenger_p2p_check_offline_messages)
+// (messenger_transport_subscribe_to_contacts + messenger_transport_check_offline_messages)
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';

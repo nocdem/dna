@@ -14,7 +14,7 @@
 #include "../dht/core/dht_context.h"
 #include "../dht/keyserver/keyserver_core.h"
 #include "../database/contacts_db.h"
-#include "../p2p/p2p_transport.h"
+#include "../transport/transport.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "MSG_CONTACTS"

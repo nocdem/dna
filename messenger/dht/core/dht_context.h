@@ -194,13 +194,46 @@ int dht_put(dht_context_t *ctx,
  * @param value_len Value length
  * @param value_id Fixed value ID (e.g., 1 for offline queue slot)
  * @param ttl_seconds Time-to-live in seconds (0 = default 7 days)
+ * @param caller Debug string identifying the caller (e.g., "watermark", "chunked")
  * @return 0 on success, -1 on error
  */
 int dht_put_signed(dht_context_t *ctx,
                    const uint8_t *key, size_t key_len,
                    const uint8_t *value, size_t value_len,
                    uint64_t value_id,
-                   unsigned int ttl_seconds);
+                   unsigned int ttl_seconds,
+                   const char *caller);
+
+/**
+ * Put SIGNED value in DHT with SYNCHRONOUS completion tracking
+ *
+ * Unlike dht_put_signed() which returns immediately (async), this function
+ * waits for the DHT callback to report actual success/failure. This allows
+ * callers to detect when PUT operations fail (e.g., nodes_tried=0) and
+ * handle them appropriately (e.g., increment retry_count).
+ *
+ * Use cases:
+ * - Message retry system: Need to know if PUT actually succeeded
+ * - Critical operations: Profile updates, contact list sync
+ *
+ * @param ctx DHT context
+ * @param key Key (will be hashed to 160-bit infohash)
+ * @param key_len Key length
+ * @param value Value to store
+ * @param value_len Value length
+ * @param value_id Fixed value ID (for replacement behavior)
+ * @param ttl_seconds Time-to-live in seconds
+ * @param caller Debug string identifying the caller
+ * @param timeout_ms Maximum time to wait for callback (recommended: 5000ms)
+ * @return 0 on confirmed success, -1 on confirmed failure, -2 on timeout
+ */
+int dht_put_signed_sync(dht_context_t *ctx,
+                        const uint8_t *key, size_t key_len,
+                        const uint8_t *value, size_t value_len,
+                        uint64_t value_id,
+                        unsigned int ttl_seconds,
+                        const char *caller,
+                        int timeout_ms);
 
 /**
  * Put SIGNED value in DHT permanently with fixed value ID
@@ -224,7 +257,8 @@ int dht_put_signed(dht_context_t *ctx,
 int dht_put_signed_permanent(dht_context_t *ctx,
                               const uint8_t *key, size_t key_len,
                               const uint8_t *value, size_t value_len,
-                              uint64_t value_id);
+                              uint64_t value_id,
+                              const char *caller);
 
 /**
  * Republish a serialized (packed) Value to DHT exactly as-is
@@ -291,6 +325,29 @@ int dht_get_all(dht_context_t *ctx,
                 const uint8_t *key, size_t key_len,
                 uint8_t ***values_out, size_t **values_len_out,
                 size_t *count_out);
+
+/**
+ * Get all values from DHT with their value_ids
+ *
+ * Same as dht_get_all() but also returns the value_id for each value.
+ * This allows callers to:
+ * - Filter by their own value_id (fetch "mine" from multi-writer key)
+ * - Group chunks by value_id (multi-chunk multi-writer scenario)
+ *
+ * @param ctx DHT context
+ * @param key Key (will be hashed to 160-bit infohash)
+ * @param key_len Key length
+ * @param values_out Array of value buffers (caller must free each + array)
+ * @param values_len_out Array of value lengths (caller must free)
+ * @param value_ids_out Array of value_ids (caller must free)
+ * @param count_out Number of values returned
+ * @return 0 on success, -1 on error (not found or error)
+ */
+int dht_get_all_with_ids(dht_context_t *ctx,
+                         const uint8_t *key, size_t key_len,
+                         uint8_t ***values_out, size_t **values_len_out,
+                         uint64_t **value_ids_out,
+                         size_t *count_out);
 
 /**
  * Batch result structure for dht_get_batch()

@@ -16,9 +16,11 @@
 
 #include "dna/dna_engine.h"
 #include "dht/client/dht_singleton.h"
+#include "dht/core/dht_listen.h"
 
 #define LOG_TAG "DNA-JNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
@@ -48,9 +50,14 @@ JNIEXPORT void JNI_OnUnload(JavaVM *vm, void *reserved) {
     g_jvm = NULL;
 }
 
-/* Get JNIEnv for current thread */
-static JNIEnv* get_env(void) {
+/* Get JNIEnv for current thread
+ * Returns env and sets *did_attach to true if we attached (caller must detach)
+ * IMPORTANT: Caller MUST call release_env() after JNI work is done!
+ */
+static JNIEnv* get_env(int *did_attach) {
     JNIEnv *env = NULL;
+    *did_attach = 0;
+
     if (g_jvm) {
         int status = (*g_jvm)->GetEnv(g_jvm, (void**)&env, JNI_VERSION_1_6);
         if (status == JNI_EDETACHED) {
@@ -58,9 +65,19 @@ static JNIEnv* get_env(void) {
                 LOGE("Failed to attach thread");
                 return NULL;
             }
+            *did_attach = 1;  /* We attached, caller must detach */
+            LOGD("Thread attached to JVM");
         }
     }
     return env;
+}
+
+/* Release JNIEnv - detaches thread if we attached it */
+static void release_env(int did_attach) {
+    if (did_attach && g_jvm) {
+        (*g_jvm)->DetachCurrentThread(g_jvm);
+        LOGD("Thread detached from JVM");
+    }
 }
 
 /* ============================================================================
@@ -97,9 +114,11 @@ static void free_callback_ctx(JNIEnv *env, jni_callback_ctx_t *ctx) {
 /* Completion callback (success/error only) */
 static void jni_completion_callback(dna_request_id_t request_id, int error, void *user_data) {
     jni_callback_ctx_t *ctx = (jni_callback_ctx_t*)user_data;
-    JNIEnv *env = get_env();
+    int did_attach = 0;
+    JNIEnv *env = get_env(&did_attach);
     if (!env || !ctx || !ctx->callback_obj) {
         if (ctx) free(ctx);
+        release_env(did_attach);
         return;
     }
 
@@ -110,14 +129,17 @@ static void jni_completion_callback(dna_request_id_t request_id, int error, void
     }
 
     free_callback_ctx(env, ctx);
+    release_env(did_attach);
 }
 
 /* Send tokens callback - includes tx_hash */
 static void jni_send_tokens_callback(dna_request_id_t request_id, int error, const char *tx_hash, void *user_data) {
     jni_callback_ctx_t *ctx = (jni_callback_ctx_t*)user_data;
-    JNIEnv *env = get_env();
+    int did_attach = 0;
+    JNIEnv *env = get_env(&did_attach);
     if (!env || !ctx || !ctx->callback_obj) {
         if (ctx) free(ctx);
+        release_env(did_attach);
         return;
     }
 
@@ -130,6 +152,7 @@ static void jni_send_tokens_callback(dna_request_id_t request_id, int error, con
     }
 
     free_callback_ctx(env, ctx);
+    release_env(did_attach);
 }
 
 /* v0.3.0: jni_identities_callback removed - single-user model */
@@ -138,9 +161,11 @@ static void jni_send_tokens_callback(dna_request_id_t request_id, int error, con
 static void jni_identity_created_callback(dna_request_id_t request_id, int error,
                                           const char *fingerprint, void *user_data) {
     jni_callback_ctx_t *ctx = (jni_callback_ctx_t*)user_data;
-    JNIEnv *env = get_env();
+    int did_attach = 0;
+    JNIEnv *env = get_env(&did_attach);
     if (!env || !ctx || !ctx->callback_obj) {
         if (ctx) free(ctx);
+        release_env(did_attach);
         return;
     }
 
@@ -154,15 +179,18 @@ static void jni_identity_created_callback(dna_request_id_t request_id, int error
 
     if (fp_str) (*env)->DeleteLocalRef(env, fp_str);
     free_callback_ctx(env, ctx);
+    release_env(did_attach);
 }
 
 /* Display name callback */
 static void jni_display_name_callback(dna_request_id_t request_id, int error,
                                       const char *display_name, void *user_data) {
     jni_callback_ctx_t *ctx = (jni_callback_ctx_t*)user_data;
-    JNIEnv *env = get_env();
+    int did_attach = 0;
+    JNIEnv *env = get_env(&did_attach);
     if (!env || !ctx || !ctx->callback_obj) {
         if (ctx) free(ctx);
+        release_env(did_attach);
         return;
     }
 
@@ -176,16 +204,19 @@ static void jni_display_name_callback(dna_request_id_t request_id, int error,
 
     if (name_str) (*env)->DeleteLocalRef(env, name_str);
     free_callback_ctx(env, ctx);
+    release_env(did_attach);
 }
 
 /* Contacts callback */
 static void jni_contacts_callback(dna_request_id_t request_id, int error,
                                   dna_contact_t *contacts, int count, void *user_data) {
     jni_callback_ctx_t *ctx = (jni_callback_ctx_t*)user_data;
-    JNIEnv *env = get_env();
+    int did_attach = 0;
+    JNIEnv *env = get_env(&did_attach);
     if (!env || !ctx || !ctx->callback_obj) {
         if (contacts) dna_free_contacts(contacts, count);
         if (ctx) free(ctx);
+        release_env(did_attach);
         return;
     }
 
@@ -216,16 +247,19 @@ static void jni_contacts_callback(dna_request_id_t request_id, int error,
 
     if (contacts) dna_free_contacts(contacts, count);
     free_callback_ctx(env, ctx);
+    release_env(did_attach);
 }
 
 /* Messages callback */
 static void jni_messages_callback(dna_request_id_t request_id, int error,
                                   dna_message_t *messages, int count, void *user_data) {
     jni_callback_ctx_t *ctx = (jni_callback_ctx_t*)user_data;
-    JNIEnv *env = get_env();
+    int did_attach = 0;
+    JNIEnv *env = get_env(&did_attach);
     if (!env || !ctx || !ctx->callback_obj) {
         if (messages) dna_free_messages(messages, count);
         if (ctx) free(ctx);
+        release_env(did_attach);
         return;
     }
 
@@ -260,16 +294,19 @@ static void jni_messages_callback(dna_request_id_t request_id, int error,
 
     if (messages) dna_free_messages(messages, count);
     free_callback_ctx(env, ctx);
+    release_env(did_attach);
 }
 
 /* Groups callback */
 static void jni_groups_callback(dna_request_id_t request_id, int error,
                                 dna_group_t *groups, int count, void *user_data) {
     jni_callback_ctx_t *ctx = (jni_callback_ctx_t*)user_data;
-    JNIEnv *env = get_env();
+    int did_attach = 0;
+    JNIEnv *env = get_env(&did_attach);
     if (!env || !ctx || !ctx->callback_obj) {
         if (groups) dna_free_groups(groups, count);
         if (ctx) free(ctx);
+        release_env(did_attach);
         return;
     }
 
@@ -302,15 +339,18 @@ static void jni_groups_callback(dna_request_id_t request_id, int error,
 
     if (groups) dna_free_groups(groups, count);
     free_callback_ctx(env, ctx);
+    release_env(did_attach);
 }
 
 /* Group created callback */
 static void jni_group_created_callback(dna_request_id_t request_id, int error,
                                        const char *group_uuid, void *user_data) {
     jni_callback_ctx_t *ctx = (jni_callback_ctx_t*)user_data;
-    JNIEnv *env = get_env();
+    int did_attach = 0;
+    JNIEnv *env = get_env(&did_attach);
     if (!env || !ctx || !ctx->callback_obj) {
         if (ctx) free(ctx);
+        release_env(did_attach);
         return;
     }
 
@@ -324,16 +364,19 @@ static void jni_group_created_callback(dna_request_id_t request_id, int error,
 
     if (uuid_str) (*env)->DeleteLocalRef(env, uuid_str);
     free_callback_ctx(env, ctx);
+    release_env(did_attach);
 }
 
 /* Invitations callback */
 static void jni_invitations_callback(dna_request_id_t request_id, int error,
                                      dna_invitation_t *invitations, int count, void *user_data) {
     jni_callback_ctx_t *ctx = (jni_callback_ctx_t*)user_data;
-    JNIEnv *env = get_env();
+    int did_attach = 0;
+    JNIEnv *env = get_env(&did_attach);
     if (!env || !ctx || !ctx->callback_obj) {
         if (invitations) dna_free_invitations(invitations, count);
         if (ctx) free(ctx);
+        release_env(did_attach);
         return;
     }
 
@@ -366,16 +409,19 @@ static void jni_invitations_callback(dna_request_id_t request_id, int error,
 
     if (invitations) dna_free_invitations(invitations, count);
     free_callback_ctx(env, ctx);
+    release_env(did_attach);
 }
 
 /* Wallets callback */
 static void jni_wallets_callback(dna_request_id_t request_id, int error,
                                  dna_wallet_t *wallets, int count, void *user_data) {
     jni_callback_ctx_t *ctx = (jni_callback_ctx_t*)user_data;
-    JNIEnv *env = get_env();
+    int did_attach = 0;
+    JNIEnv *env = get_env(&did_attach);
     if (!env || !ctx || !ctx->callback_obj) {
         if (wallets) dna_free_wallets(wallets, count);
         if (ctx) free(ctx);
+        release_env(did_attach);
         return;
     }
 
@@ -406,16 +452,19 @@ static void jni_wallets_callback(dna_request_id_t request_id, int error,
 
     if (wallets) dna_free_wallets(wallets, count);
     free_callback_ctx(env, ctx);
+    release_env(did_attach);
 }
 
 /* Balances callback */
 static void jni_balances_callback(dna_request_id_t request_id, int error,
                                   dna_balance_t *balances, int count, void *user_data) {
     jni_callback_ctx_t *ctx = (jni_callback_ctx_t*)user_data;
-    JNIEnv *env = get_env();
+    int did_attach = 0;
+    JNIEnv *env = get_env(&did_attach);
     if (!env || !ctx || !ctx->callback_obj) {
         if (balances) dna_free_balances(balances, count);
         if (ctx) free(ctx);
+        release_env(did_attach);
         return;
     }
 
@@ -447,16 +496,19 @@ static void jni_balances_callback(dna_request_id_t request_id, int error,
 
     if (balances) dna_free_balances(balances, count);
     free_callback_ctx(env, ctx);
+    release_env(did_attach);
 }
 
 /* Transactions callback */
 static void jni_transactions_callback(dna_request_id_t request_id, int error,
                                       dna_transaction_t *transactions, int count, void *user_data) {
     jni_callback_ctx_t *ctx = (jni_callback_ctx_t*)user_data;
-    JNIEnv *env = get_env();
+    int did_attach = 0;
+    JNIEnv *env = get_env(&did_attach);
     if (!env || !ctx || !ctx->callback_obj) {
         if (transactions) dna_free_transactions(transactions, count);
         if (ctx) free(ctx);
+        release_env(did_attach);
         return;
     }
 
@@ -496,6 +548,7 @@ static void jni_transactions_callback(dna_request_id_t request_id, int error,
 
     if (transactions) dna_free_transactions(transactions, count);
     free_callback_ctx(env, ctx);
+    release_env(did_attach);
 }
 
 /* ============================================================================
@@ -507,12 +560,18 @@ static jobject g_event_listener = NULL;
 static void jni_event_callback(const dna_event_t *event, void *user_data) {
     if (!g_event_listener || !event) return;
 
-    JNIEnv *env = get_env();
+    int did_attach = 0;
+    JNIEnv *env = get_env(&did_attach);
     if (!env) return;
 
     jclass cls = (*env)->GetObjectClass(env, g_event_listener);
     jmethodID method = (*env)->GetMethodID(env, cls, "onEvent", "(ILjava/lang/String;Ljava/lang/String;)V");
-    if (!method) return;
+    if (!method) {
+        (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, cls);
+        release_env(did_attach);
+        return;
+    }
 
     jstring data1 = NULL;
     jstring data2 = NULL;
@@ -545,6 +604,7 @@ static void jni_event_callback(const dna_event_t *event, void *user_data) {
 
     if (data1) (*env)->DeleteLocalRef(env, data1);
     if (data2) (*env)->DeleteLocalRef(env, data2);
+    release_env(did_attach);
 }
 
 /* ============================================================================
@@ -557,6 +617,9 @@ static jobject g_notification_helper = NULL;
 /**
  * Native callback invoked by dna_engine when DNA_EVENT_OUTBOX_UPDATED fires.
  * Calls the Java NotificationHelper.onOutboxUpdated() method.
+ *
+ * Note: Message fetching is already handled by dna_engine's auto-fetch in
+ * dna_dispatch_event() which spawns background_fetch_thread on OUTBOX_UPDATED.
  */
 static void jni_android_notification_callback(const char *contact_fingerprint, const char *display_name, void *user_data) {
     (void)user_data;
@@ -566,7 +629,8 @@ static void jni_android_notification_callback(const char *contact_fingerprint, c
         return;
     }
 
-    JNIEnv *env = get_env();
+    int did_attach = 0;
+    JNIEnv *env = get_env(&did_attach);
     if (!env) {
         LOGE("Failed to get JNIEnv for notification callback");
         return;
@@ -578,13 +642,17 @@ static void jni_android_notification_callback(const char *contact_fingerprint, c
     jclass cls = (*env)->GetObjectClass(env, g_notification_helper);
     if (!cls) {
         LOGE("Failed to get notification helper class");
+        release_env(did_attach);
         return;
     }
 
     jmethodID method = (*env)->GetMethodID(env, cls, "onOutboxUpdated", "(Ljava/lang/String;Ljava/lang/String;)V");
     if (!method) {
+        /* IMPORTANT: Clear pending exception from GetMethodID failure */
+        (*env)->ExceptionClear(env);
         LOGE("Failed to get onOutboxUpdated method");
         (*env)->DeleteLocalRef(env, cls);
+        release_env(did_attach);
         return;
     }
 
@@ -601,6 +669,7 @@ static void jni_android_notification_callback(const char *contact_fingerprint, c
     (*env)->DeleteLocalRef(env, cls);
 
     LOGI("[NOTIFY] Java notification helper called successfully");
+    release_env(did_attach);
 }
 
 /* ============================================================================
@@ -1038,18 +1107,32 @@ Java_io_cpunk_dna_DNAEngine_nativeNetworkChanged(JNIEnv *env, jobject thiz) {
 
 /**
  * Direct DHT reinit for DnaMessengerService (foreground service).
- * Called when network changes and Flutter isn't running.
- * Uses dht_singleton_reinit() directly - doesn't need g_engine.
+ * Called when network changes while app is backgrounded.
+ *
+ * If engine is available with identity loaded, uses dna_engine_network_changed()
+ * which properly cancels existing listeners before reinit.
+ *
+ * Otherwise falls back to direct dht_singleton_reinit() (no listeners to cancel).
+ *
  * Returns: 0 on success, -1 if DHT not initialized, -2 on reinit failure
  */
 JNIEXPORT jint JNICALL
 Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReinitDht(JNIEnv *env, jobject thiz) {
+    /* If engine is ready (identity loaded), use the full network_changed path.
+     * This properly cancels listeners before reinit and lets the status callback
+     * restart them on the new DHT context. */
+    if (g_engine && dna_engine_get_fingerprint(g_engine) != NULL) {
+        LOGI("nativeReinitDht: Using engine network_changed path");
+        return dna_engine_network_changed(g_engine);
+    }
+
+    /* Fallback: DHT-only reinit when engine/identity not available */
     if (!dht_singleton_is_initialized()) {
         LOGD("nativeReinitDht: DHT not initialized, skipping");
         return -1;
     }
 
-    LOGI("nativeReinitDht: Network change - reinitializing DHT singleton");
+    LOGI("nativeReinitDht: Network change - reinitializing DHT singleton (no engine)");
     int result = dht_singleton_reinit();
     if (result != 0) {
         LOGE("nativeReinitDht: DHT reinit failed");
@@ -1058,4 +1141,32 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReinitDht(JNIEnv *env, jo
 
     LOGI("nativeReinitDht: DHT reinit successful");
     return 0;
+}
+
+/**
+ * Check if DHT is healthy (initialized, connected, and has active listeners).
+ * Used by foreground service for periodic health checks.
+ */
+JNIEXPORT jboolean JNICALL
+Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeIsDhtHealthy(JNIEnv *env, jobject thiz) {
+    if (!dht_singleton_is_initialized()) {
+        return JNI_FALSE;
+    }
+    if (!dht_singleton_is_ready()) {
+        return JNI_FALSE;
+    }
+
+    /* Also check if we have active listeners - DHT can be "ready" but listeners dead */
+    size_t total = 0, active = 0, suspended = 0;
+    dht_get_listener_stats(&total, &active, &suspended);
+    LOGD("DHT health: ready=true, listeners total=%zu active=%zu suspended=%zu",
+         total, active, suspended);
+
+    /* Unhealthy if DHT is ready but we have no active listeners */
+    if (active == 0 && total > 0) {
+        LOGW("DHT ready but all %zu listeners are inactive/suspended", total);
+        return JNI_FALSE;
+    }
+
+    return JNI_TRUE;
 }

@@ -4,7 +4,8 @@
 
 #include "init.h"
 #include "identity.h"
-#include "gsk.h"
+#include "gek.h"
+#include "group_database.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,7 @@
 #include "../crypto/bip39/bip39.h"
 #include "../dht/client/dna_group_outbox.h"
 #include "../dht/shared/dht_groups.h"
+#include "../messenger_transport.h"
 
 /**
  * Get the path to a key file (.dsa or .kem)
@@ -209,9 +211,20 @@ messenger_context_t* messenger_init(const char *identity) {
         return NULL;
     }
 
-    // Initialize GSK subsystem (Phase 13 - Group Symmetric Key)
-    if (gsk_init(ctx->backup_ctx) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize GSK subsystem");
+    // Initialize group database (separate from messages.db)
+    if (group_database_init() == NULL) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize group database");
+        message_backup_close(ctx->backup_ctx);
+        free(ctx->fingerprint);
+        free(ctx->identity);
+        free(ctx);
+        return NULL;
+    }
+
+    // Initialize GEK subsystem (Group Encryption Key)
+    if (gek_init(NULL) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize GEK subsystem");
+        group_database_close(group_database_get_instance());
         message_backup_close(ctx->backup_ctx);
         free(ctx->identity);
         free(ctx);
@@ -219,7 +232,11 @@ messenger_context_t* messenger_init(const char *identity) {
     }
 
     // Initialize Group Outbox subsystem (v0.10 - Feed pattern group messaging)
-    dna_group_outbox_set_db(message_backup_get_db(ctx->backup_ctx));
+    // Use groups.db (not messages.db) - group_messages table is in groups.db
+    group_database_context_t *grp_db_ctx = group_database_get_instance();
+    if (grp_db_ctx) {
+        dna_group_outbox_set_db(group_database_get_db(grp_db_ctx));
+    }
     if (dna_group_outbox_db_init() != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to initialize group outbox subsystem");
         message_backup_close(ctx->backup_ctx);
@@ -251,10 +268,12 @@ messenger_context_t* messenger_init(const char *identity) {
     // v0.3.0: Initialize DHT groups database (flat structure)
     char groups_db_path[512];
     snprintf(groups_db_path, sizeof(groups_db_path), "%s/db/groups.db", qgp_platform_app_data_dir());
+    QGP_LOG_WARN(LOG_TAG, ">>> dht_groups_init START path=%s", groups_db_path);
     if (dht_groups_init(groups_db_path) != 0) {
         QGP_LOG_WARN(LOG_TAG, "Failed to initialize DHT groups database");
         // Non-fatal - continue without groups support
     }
+    QGP_LOG_WARN(LOG_TAG, ">>> dht_groups_init DONE");
 
     QGP_LOG_INFO(LOG_TAG, "Messenger initialized for '%s'", identity);
 
@@ -265,6 +284,9 @@ void messenger_free(messenger_context_t *ctx) {
     if (!ctx) {
         return;
     }
+
+    // Shutdown transport first (v0.4.66 - fix memory leak)
+    messenger_transport_shutdown(ctx);
 
     // Free pubkey cache
     for (int i = 0; i < ctx->cache_count; i++) {
@@ -280,6 +302,9 @@ void messenger_free(messenger_context_t *ctx) {
     if (ctx->backup_ctx) {
         message_backup_close(ctx->backup_ctx);
     }
+
+    // Close group database (v0.4.63 - separate from messages.db)
+    group_database_close(group_database_get_instance());
 
     // Free fingerprint (Phase 4)
     if (ctx->fingerprint) {
@@ -298,6 +323,11 @@ void messenger_free(messenger_context_t *ctx) {
 
     free(ctx->identity);
     free(ctx);
+}
+
+message_backup_context_t* messenger_get_backup_ctx(messenger_context_t *ctx) {
+    if (!ctx) return NULL;
+    return ctx->backup_ctx;
 }
 
 /**

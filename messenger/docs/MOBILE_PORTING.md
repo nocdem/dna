@@ -64,9 +64,9 @@ DNA Messenger has been successfully ported to Android. The Android SDK provides 
 │  │  (1.4MB)  │ │  (DHT)    │ │ (Kyber)   │ │ (Dilithium)  ││
 │  └───────────┘ └───────────┘ └───────────┘ └──────────────┘│
 │  ┌───────────────────┐ ┌────────────┐ ┌──────────────────┐ │
-│  │ libp2p_transport  │ │libopendht  │ │    libjuice      │ │
-│  │   (P2P + NAT)     │ │   (PQ)     │ │   (ICE/STUN)     │ │
-│  └───────────────────┘ └────────────┘ └──────────────────┘ │
+│  │ libtransport_lib  │ │libopendht  │                      │
+│  │   (P2P + DHT)     │ │   (PQ)     │                      │
+│  └───────────────────┘ └────────────┘                      │
 └─────────────────────────────────────────────────────────────┘
                             │
 ┌─────────────────────────────────────────────────────────────┐
@@ -98,8 +98,8 @@ DNA Messenger has been successfully ported to Android. The Android SDK provides 
 | `libkem.a` | ~200 KB | Kyber1024 (ML-KEM-1024) | ✅ Pure C |
 | `libdsa.a` | ~300 KB | Dilithium5 (ML-DSA-87) | ✅ Pure C |
 | `libdna_lib.a` | 1.4 MB | Messenger core | ✅ Pure C |
-| `libp2p_transport.a` | ~500 KB | P2P + NAT | ✅ POSIX sockets |
-| `libjuice.a` | ~300 KB | ICE/STUN/TURN | ✅ Mobile-ready |
+| `libtransport_lib.a` | ~500 KB | P2P + NAT | ✅ POSIX sockets |
+| ~~`libjuice.a`~~ | - | ICE/STUN/TURN | ❌ Removed v0.4.61 |
 
 ### 2. Public API (`include/dna/dna_engine.h`)
 
@@ -188,9 +188,8 @@ build-android-arm64-v8a/
 ├── libdht_lib.a           # DHT networking
 ├── libkem.a               # Kyber1024
 ├── libdsa.a               # Dilithium5
-├── libp2p_transport.a     # P2P transport
-├── libopendht.a           # OpenDHT-PQ
-└── vendor/libjuice/...    # ICE/STUN
+├── libtransport_lib.a     # P2P transport
+└── libopendht.a           # OpenDHT-PQ (libjuice removed v0.4.61)
 ```
 
 ---
@@ -449,7 +448,7 @@ void _handleNetworkChange() async {
 | Dependency | Purpose | Mobile Support |
 |------------|---------|----------------|
 | SQLite3 | Local database | ✅ Native on both |
-| libjuice | ICE/STUN/TURN | ✅ Works on mobile |
+| ~~libjuice~~ | ~~ICE/STUN/TURN~~ | ❌ Removed v0.4.61 |
 | json-c | JSON parsing | ✅ Pure C |
 | stb_image | Avatar processing | ✅ Header-only |
 

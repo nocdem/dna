@@ -299,6 +299,7 @@ createGroup(name, members)   // Create new group
 sendGroupMessage(uuid, msg)  // Send to group
 acceptInvitation(uuid)       // Accept invite
 rejectInvitation(uuid)       // Decline invite
+syncGroup(uuid)              // Sync group metadata + GEK from DHT
 
 // Wallet
 sendTokens(...)              // Send tokens

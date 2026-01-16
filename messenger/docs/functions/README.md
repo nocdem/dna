@@ -17,7 +17,7 @@ This directory provides a comprehensive reference for all functions in the DNA M
 | **Messenger** | [messenger.md](messenger.md) | Core messenger + message backup |
 | **Cryptography** | [crypto.md](crypto.md) | Utils, KEM (Kyber), DSA (Dilithium), BIP39/BIP32 |
 | **DHT** | [dht.md](dht.md) | Core, Shared, and Client DHT operations |
-| **P2P** | [p2p.md](p2p.md) | Peer-to-peer transport layer |
+| **Transport** | [transport.md](transport.md) | DHT transport layer (presence, offline queue) |
 | **Database** | [database.md](database.md) | SQLite databases (contacts, cache, profiles) |
 | **Blockchain** | [blockchain.md](blockchain.md) | Multi-chain wallet (Cellframe, ETH, Solana, TRON) |
 | **Engine** | [engine.md](engine.md) | Internal engine implementation |
@@ -33,7 +33,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 - Identity management
 - Contacts and contact requests
 - Messaging (P2P + DHT)
-- Groups (GSK encryption)
+- Groups (GEK encryption)
 - Wallet (multi-chain)
 - P2P & Presence
 - Listeners (outbox, presence, delivery)
@@ -45,14 +45,14 @@ Low-level cryptographic API for message encryption/decryption.
 - Context and buffer management
 - Message encryption/decryption
 - Signature operations
-- GSK group messaging
+- GEK group messaging
 
 ### 3. Messenger ([messenger.md](messenger.md))
 Core messenger functionality.
 - Initialization and key generation
 - Public key management
 - Message operations and status
-- Group management and GSK
+- Group management and GEK
 
 ### 4. Cryptography ([crypto.md](crypto.md))
 All cryptographic primitives and utilities.
@@ -72,12 +72,12 @@ Distributed Hash Table operations.
 - Contact requests
 - Message backup
 
-### 6. P2P ([p2p.md](p2p.md))
-Peer-to-peer transport layer.
+### 6. Transport ([transport.md](transport.md))
+DHT-based transport layer.
 - Transport initialization
-- Peer discovery
-- Direct messaging
-- Connection management
+- DHT presence system
+- Offline message queue
+- Messenger transport integration
 
 ### 7. Database ([database.md](database.md))
 Local SQLite databases.

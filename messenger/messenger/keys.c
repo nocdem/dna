@@ -21,7 +21,7 @@
 #include "../dht/client/dht_singleton.h"
 #include "../database/keyserver_cache.h"
 #include "../database/contacts_db.h"
-#include "../p2p/p2p_transport.h"
+#include "../transport/transport.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "MSG_KEYS"
@@ -130,7 +130,7 @@ int messenger_store_pubkey(
     qgp_key_free(key);
 
     // No cleanup needed - global DHT singleton persists for app lifetime
-    // P2P transport DHT is managed by p2p_transport_free()
+    // P2P transport DHT is managed by transport_ctx_free()
 
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to publish keys to DHT keyserver");

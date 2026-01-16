@@ -1,7 +1,7 @@
 # DNA Messenger - Message System Documentation
 
-**Version:** v0.08 (Phase 14 - DHT-Only Messaging)
-**Last Updated:** 2025-12-24
+**Version:** v0.09 (Phase 14 - DHT-Only Messaging, Spillway v2)
+**Last Updated:** 2026-01-16
 **Security Level:** NIST Category 5 (256-bit quantum)
 
 This document describes how the DNA Messenger message system works, with all facts verified directly from source code.
@@ -16,7 +16,7 @@ This document describes how the DNA Messenger message system works, with all fac
 4. [Encryption Process](#4-encryption-process)
 5. [Decryption Process](#5-decryption-process)
 6. [Transport Layer](#6-transport-layer)
-7. [GSK System](#7-gsk-system-group-symmetric-key)
+7. [GEK System](#7-gek-system-group-encryption-key)
 8. [Key Management](#8-key-management)
 9. [Database Schema](#9-database-schema)
 10. [Security Properties](#10-security-properties)
@@ -217,17 +217,97 @@ TRANSPORT                         STORAGE                        DECRYPTION     
                                             └──────────────────┘                        └───────────────────┘
 ```
 
-**Source:** `messenger/messages.c:592-747`, `p2p/transport/transport_offline.c:64-170`
+**Source:** `messenger/messages.c:592-747`, `transport/internal/transport_offline.c:64-170`
 
 ### 2.3 Message Status States
 
 | Status | Value | Icon | Description |
 |--------|-------|------|-------------|
-| `STATUS_PENDING` | 0 | Clock | Sending in progress |
-| `STATUS_SENT` | 1 | Checkmark | Successfully sent (P2P or DHT queued) |
-| `STATUS_FAILED` | 2 | Error | Send failed (retry available) |
+| `STATUS_PENDING` | 0 | Clock | Queued to DHT, awaiting delivery confirmation |
+| `STATUS_SENT` | 1 | — | Legacy (no longer used with async DHT PUT) |
+| `STATUS_FAILED` | 2 | Error | Send failed (will auto-retry, tap to retry manually) |
+| `STATUS_DELIVERED` | 3 | Double-check | Recipient confirmed via watermark |
+| `STATUS_READ` | 4 | Blue double-check | Recipient read the message |
 
-**Source:** `messenger.h` (message_info_t), `dna_messenger_flutter/lib/models/`
+**Status Flow (v0.3.168+):**
+```
+PENDING (0) ──────────────────────────────────────► DELIVERED (3)
+    │                                                  ▲
+    │ (DHT queue failed)                               │
+    ▼                                                  │
+FAILED (2) ──► auto-retry on reconnect ──► PENDING ───┘
+```
+
+**Note:** With async DHT PUT, messages stay PENDING until recipient sends watermark confirmation. The SENT status is legacy from when DHT PUT was synchronous.
+
+**Source:** `message_backup.h` (backup_message_t), `dna_messenger_flutter/lib/ffi/dna_engine.dart`
+
+### 2.4 Bulletproof Message Delivery (Auto-Retry)
+
+Messages are automatically retried when send fails. This ensures messages are never lost due to transient network issues.
+
+```
+SEND ATTEMPT                     FAILURE                          RETRY TRIGGERS
+    │                               │                                  │
+    ▼                               │                                  │
+┌─────────────────┐                 │                                  │
+│ messenger_send  │                 │                                  │
+│   _message()    │                 │                                  │
+└────────┬────────┘                 │                                  │
+         │                          │                                  │
+         ▼                          │                                  │
+    DHT Queue ──────► FAILED ───────┼──────────────────────────────────┤
+         │                          │                                  │
+         │                          ▼                                  │
+         │               ┌───────────────────┐                         │
+         │               │ status = FAILED   │                         │
+         │               │ retry_count++     │                         │
+         │               └─────────┬─────────┘                         │
+         │                         │                                   │
+         │                         │    ┌───────────────────────────┐  │
+         │                         │    │ RETRY TRIGGERS:           │  │
+         │                         │    │ • Identity load (app start)│  │
+         │                         │    │ • DHT reconnect           │  │
+         │                         │    │ • Network change          │  │
+         │                         │    └─────────────┬─────────────┘  │
+         │                         │                  │                │
+         │                         │                  ▼                │
+         │                         │    ┌───────────────────────────┐  │
+         │                         └───►│ dna_engine_retry_pending  │  │
+         │                              │   _messages()             │  │
+         │                              │ Query: status IN (0,2)    │  │
+         │                              │        AND retry_count<10 │  │
+         │                              └─────────────┬─────────────┘  │
+         │                                            │                │
+         │                                            ▼                │
+         │                              ┌───────────────────────────┐  │
+         │                              │ For each pending message: │  │
+         │                              │   Re-queue to DHT (async) │  │
+         │                              │   Success → stays PENDING │  │
+         │                              │   Fail → retry_count++    │  │
+         │                              └───────────────────────────┘  │
+         │                                                             │
+         ▼                                                             │
+    SUCCESS (queued to DHT) ───────────────────────────────────────────┘
+    status = PENDING (until watermark confirms DELIVERED)
+```
+
+**Retry Logic:**
+- **Max retries:** 10 attempts (`retry_count` column in messages table)
+- **Retry triggers:** Identity load, DHT reconnect, network state change
+- **Thread safety:** Mutex-protected to prevent concurrent retry calls
+- **Query:** `SELECT * FROM messages WHERE is_outgoing=1 AND (status=0 OR status=2) AND retry_count < 10`
+- **On success:** Status stays PENDING (0), awaiting watermark confirmation → DELIVERED (3)
+- **On failure:** `retry_count` incremented, status remains FAILED (2)
+
+**Database Schema (v10):**
+```sql
+ALTER TABLE messages ADD COLUMN retry_count INTEGER DEFAULT 0;
+```
+
+Note: v9 added GEK group tables (groups, group_members, group_geks, pending_invitations, group_messages).
+
+**Source:** `message_backup.c:644-721`, `src/api/dna_engine.c:4862-4920`
 
 ---
 
@@ -570,13 +650,13 @@ execution restrictions make P2P connections unreliable.
 │  DEPRECATED (kept for future audio/video):                                  │
 │  ─────────────────────────────────────────                                  │
 │  • messenger_send_p2p() - No longer called for messaging                    │
-│  • p2p_lookup_peer() - Used for presence only                               │
+│  • transport_register_presence() - Used for presence only                               │
 │  • TCP direct delivery - Bypassed for messages                              │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Source:** `messenger/messages.c:463-491`, `messenger_p2p.c:780-838`
+**Source:** `messenger/messages.c:463-491`, `messenger_transport.c:780-838`
 
 ### 6.2 Port Configuration
 
@@ -585,72 +665,74 @@ execution restrictions make P2P connections unreliable.
 | 4000 | UDP | DHT Network (OpenDHT-PQ) |
 | 4001 | TCP | P2P Messaging |
 
-**Source:** `p2p/p2p_transport.h:20-25`
+**Source:** `transport/transport.h:20-25`
 
-### 6.3 DHT Offline Queue (Spillway Protocol)
+### 6.3 DHT Offline Queue (Spillway Protocol v2 - Daily Buckets)
 
-**Spillway Protocol** = Sender-Based Outbox Architecture with Watermark Pruning
+**Spillway Protocol v2** = Sender-Based Outbox with Daily Buckets (v0.5.0+)
 
-**Source:** `dht/shared/dht_offline_queue.h:14-37`
+**Source:** `dht/shared/dht_dm_outbox.h`, `dht/shared/dht_dm_outbox.c`
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                 SPILLWAY PROTOCOL: SENDER-BASED OUTBOX                       │
+│             SPILLWAY PROTOCOL v2: DAILY BUCKET OUTBOX (v0.5.0+)             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  STORAGE KEY GENERATION:                                                    │
-│  ───────────────────────                                                    │
-│  key = SHA3-512(sender_fingerprint + ":outbox:" + recipient_fingerprint)    │
+│  KEY FORMAT:                                                                │
+│  ───────────                                                                │
+│  key = sender_fp:outbox:recipient_fp:DAY_BUCKET                             │
 │                                                                             │
-│  Example:                                                                   │
-│    sender    = "a3f9e2d1c5b8..."  (128 hex chars)                          │
-│    recipient = "b4a7f89012e3..."  (128 hex chars)                          │
-│    input     = "a3f9e2d1c5b8...:outbox:b4a7f89012e3..."                    │
-│    key       = SHA3-512(input) → 64 bytes                                  │
+│  where DAY_BUCKET = unix_timestamp / 86400 (days since epoch)               │
+│                                                                             │
+│  Example (2026-01-16, day 20470):                                           │
+│    alice_fp:outbox:bob_fp:20470  (today's messages)                         │
+│    alice_fp:outbox:bob_fp:20469  (yesterday's messages)                     │
 │                                                                             │
 │  STORAGE:                                                                   │
 │  ────────                                                                   │
-│  ┌────────────────────────────────────────────────────┐                    │
-│  │ dht_put_signed(key, messages, value_id=1)          │                    │
-│  │                                                    │                    │
-│  │ - Uses Dilithium5 signature for authentication    │                    │
-│  │ - value_id=1 enables REPLACEMENT (not append)     │                    │
-│  │ - TTL: 7 days (604,800 seconds)                   │                    │
-│  └────────────────────────────────────────────────────┘                    │
+│  ┌────────────────────────────────────────────────────────────┐             │
+│  │ dht_chunked_publish(key, messages)                         │             │
+│  │                                                             │             │
+│  │ - Uses Dilithium5 signature for authentication             │             │
+│  │ - Chunked storage (supports large message lists)           │             │
+│  │ - TTL: 7 days (auto-expire, no pruning needed)             │             │
+│  │ - Max 500 messages per day bucket (DoS prevention)         │             │
+│  └────────────────────────────────────────────────────────────┘             │
 │                                                                             │
-│  RETRIEVAL:                                                                 │
-│  ──────────                                                                 │
-│  ┌────────────────────────────────────────────────────┐                    │
-│  │ FOR each contact in my_contacts:                   │                    │
-│  │   key = SHA3-512(contact + ":outbox:" + me)        │                    │
-│  │   messages = dht_get(key)                          │                    │
-│  │   deliver_to_callback(messages)                    │                    │
-│  └────────────────────────────────────────────────────┘                    │
+│  SYNC STRATEGY (3-day parallel):                                            │
+│  ───────────────────────────────                                            │
+│  ┌────────────────────────────────────────────────────────────┐             │
+│  │ Recent sync: yesterday + today + tomorrow (clock skew)     │             │
+│  │ Full sync:   last 8 days (today-6 to today+1)              │             │
+│  │                                                             │             │
+│  │ FOR each contact:                                           │             │
+│  │   parallel_fetch(day-1, day, day+1)  // 3 days in parallel │             │
+│  │   merge_and_deduplicate(messages)                          │             │
+│  └────────────────────────────────────────────────────────────┘             │
 │                                                                             │
-│  Delivery: Real-time via DHT listen (push notifications)                   │
+│  LISTEN & DAY ROTATION:                                                     │
+│  ───────────────────────                                                    │
+│  ┌────────────────────────────────────────────────────────────┐             │
+│  │ 1. Subscribe to contact's today bucket                     │             │
+│  │ 2. Heartbeat checks day rotation every 4 minutes           │             │
+│  │ 3. At midnight UTC: rotate to new day's bucket             │             │
+│  │ 4. Sync yesterday one more time (catch late messages)      │             │
+│  └────────────────────────────────────────────────────────────┘             │
 │                                                                             │
-│  WATERMARK PRUNING:                                                         │
-│  ──────────────────                                                         │
-│  ┌────────────────────────────────────────────────────────────────────┐    │
-│  │ 1. Alice sends msgs to Bob with seq_num (1, 2, 3...)               │    │
-│  │ 2. Bob receives, publishes watermark: seq=3                        │    │
-│  │ 3. Alice sends new msg (seq=4), fetches Bob's watermark            │    │
-│  │ 4. Alice prunes outbox: removes msgs where seq <= 3                │    │
-│  │ 5. Result: Bounded outbox, only undelivered messages remain        │    │
-│  └────────────────────────────────────────────────────────────────────┘    │
+│  WATERMARK (for delivery reports only):                                     │
+│  ───────────────────────────────────────                                    │
+│  - Watermark Key: SHA3-512(recipient + ":watermark:" + sender)              │
+│  - Watermark TTL: 30 days                                                   │
+│  - Used for: DELIVERED status notifications (not for pruning)               │
 │                                                                             │
-│  Watermark Key: SHA3-512(recipient + ":watermark:" + sender)                │
-│  Watermark TTL: 30 days                                                     │
-│  Watermark Value: 8-byte big-endian seq_num                                 │
-│                                                                             │
-│  BENEFITS:                                                                  │
-│  ─────────                                                                  │
-│  ✓ Bounded storage (watermark pruning prevents unbounded growth)           │
-│  ✓ Clock-skew immune (uses monotonic seq_num, not timestamps)              │
-│  ✓ Spam prevention (recipients only query known contacts)                  │
-│  ✓ Sender control (can edit/delete within TTL)                             │
-│  ✓ Parallel retrieval (10-100× speedup)                                    │
-│  ✓ Async watermarks (fire-and-forget, self-healing on retry)               │
+│  BENEFITS vs v1:                                                            │
+│  ───────────────                                                            │
+│  ✓ No watermark pruning needed (TTL auto-expire)                            │
+│  ✓ Bounded storage (max 500 msgs/day × 7 days = 3500 max)                   │
+│  ✓ Parallel sync (3 days fetched simultaneously)                            │
+│  ✓ Clock-skew tolerant (+/- 1 day buffer)                                   │
+│  ✓ Consistent with group outbox architecture                                │
+│  ✓ Simpler implementation (no read-modify-write for pruning)                │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -675,56 +757,57 @@ Fields:
 
 ---
 
-## 7. GSK System (Group Symmetric Key)
+## 7. GEK System (Group Encryption Key)
 
 ### 7.1 Purpose
 
-GSK provides **200× faster** group message encryption compared to per-recipient Kyber1024.
+GEK provides **200× faster** group message encryption compared to per-recipient Kyber1024.
 
 Instead of:
 - N members × Kyber1024 encapsulation = N × 1608 bytes per message
 
-GSK uses:
+GEK uses:
 - 1 AES-256-GCM encryption with shared key = same ciphertext for all members
 
-**Source:** `messenger/gsk.h:1-165`
+**Source:** `messenger/gek.h`
 
-### 7.2 GSK Entry Structure
+### 7.2 GEK Entry Structure
 
 ```c
-// Source: messenger/gsk.h:36-42
+// Source: messenger/gek.h
 
 typedef struct {
     char group_uuid[37];       // UUID v4 (36 + null terminator)
-    uint32_t gsk_version;      // Rotation counter (0, 1, 2, ...)
-    uint8_t gsk[GSK_KEY_SIZE]; // AES-256 key (32 bytes)
+    uint32_t gek_version;      // Rotation counter (0, 1, 2, ...)
+    uint8_t gek[GEK_KEY_SIZE]; // AES-256 key (32 bytes)
     uint64_t created_at;       // Unix timestamp (seconds)
-    uint64_t expires_at;       // created_at + GSK_DEFAULT_EXPIRY
-} gsk_entry_t;
+    uint64_t expires_at;       // created_at + GEK_DEFAULT_EXPIRY
+} gek_entry_t;
 
-#define GSK_KEY_SIZE 32                    // AES-256
-#define GSK_DEFAULT_EXPIRY (7 * 24 * 3600) // 7 days
+#define GEK_KEY_SIZE 32                    // AES-256
+#define GEK_DEFAULT_EXPIRY (7 * 24 * 3600) // 7 days
 ```
 
 ### 7.3 Initial Key Packet Format
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                      INITIAL KEY PACKET (GSK Distribution)                   │
+│                      INITIAL KEY PACKET (GEK Distribution)                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  HEADER (42 bytes)                                                          │
+│  HEADER (45 bytes)                                                          │
 │  ┌───────┬──────────┬──────────────────────────────────────────────────┐   │
-│  │  0    │   37     │ group_uuid[37] (UUID v4 + null)                  │   │
-│  │  37   │    4     │ version (uint32_t, GSK version number)           │   │
-│  │  41   │    1     │ member_count (uint8_t, 1-255)                    │   │
+│  │  0    │    4     │ magic (0x47454B20 = "GEK ")                      │   │
+│  │  4    │   36     │ group_uuid[36] (UUID v4)                         │   │
+│  │  40   │    4     │ version (uint32_t, GEK version number)           │   │
+│  │  44   │    1     │ member_count (uint8_t, 1-16)                     │   │
 │  └───────┴──────────┴──────────────────────────────────────────────────┘   │
 │                                                                             │
 │  MEMBER ENTRIES (1672 bytes × member_count)                                 │
 │  ┌───────┬──────────┬──────────────────────────────────────────────────┐   │
 │  │  0    │   64     │ fingerprint[64] (SHA3-512 of member's pubkey)    │   │
 │  │  64   │  1568    │ kyber_ciphertext[1568] (Kyber1024 encapsulation) │   │
-│  │ 1632  │   40     │ wrapped_gsk[40] (AES-wrapped GSK)                │   │
+│  │ 1632  │   40     │ wrapped_gek[40] (AES-wrapped GEK)                │   │
 │  └───────┴──────────┴──────────────────────────────────────────────────┘   │
 │  (Repeated for each member)                                                 │
 │                                                                             │
@@ -735,36 +818,36 @@ typedef struct {
 │  │  3    │  ~4627   │ signature (Dilithium5 over header+entries)       │   │
 │  └───────┴──────────┴──────────────────────────────────────────────────┘   │
 │                                                                             │
-│  TOTAL SIZE: 42 + (1672 × N) + 4630 bytes                                  │
+│  TOTAL SIZE: 45 + (1672 × N) + 4630 bytes                                  │
 │                                                                             │
-│  Example for 10 members: 42 + 16720 + 4630 = 21,392 bytes                  │
+│  Example for 10 members: 45 + 16720 + 4630 = 21,395 bytes                  │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Source:** `messenger/gsk_packet.h:8-17`
+**Source:** `messenger/gek.h` (IKP constants)
 
-### 7.4 GSK Lifecycle
+### 7.4 GEK Lifecycle
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           GSK LIFECYCLE                                      │
+│                           GEK LIFECYCLE                                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  1. GROUP CREATION                                                          │
 │     ─────────────────                                                       │
 │     ┌─────────────────────────────────────────────────┐                    │
-│     │ gsk_generate(group_uuid, version=0, gsk)        │                    │
-│     │ gsk_store(group_uuid, 0, gsk)                   │                    │
-│     │ gsk_packet_build(...) → Initial Key Packet      │                    │
+│     │ gek_generate(group_uuid, version=0, gek)        │                    │
+│     │ gek_store(group_uuid, 0, gek)                   │                    │
+│     │ ikp_build(...) → Initial Key Packet             │                    │
 │     │ DHT publish packet to all members               │                    │
 │     └─────────────────────────────────────────────────┘                    │
 │                                                                             │
 │  2. MEMBER ADDED                                                            │
 │     ────────────────                                                        │
 │     ┌─────────────────────────────────────────────────┐                    │
-│     │ gsk_rotate_on_member_add()                      │                    │
-│     │   - Generate new GSK (version++)                │                    │
+│     │ gek_rotate_on_member_add()                      │                    │
+│     │   - Generate new GEK (version++)                │                    │
 │     │   - Build new Initial Key Packet (all members)  │                    │
 │     │   - Publish to DHT                              │                    │
 │     └─────────────────────────────────────────────────┘                    │
@@ -772,24 +855,198 @@ typedef struct {
 │  3. MEMBER REMOVED                                                          │
 │     ───────────────                                                         │
 │     ┌─────────────────────────────────────────────────┐                    │
-│     │ gsk_rotate_on_member_remove()                   │                    │
-│     │   - Generate new GSK (version++)                │  CRITICAL:         │
+│     │ gek_rotate_on_member_remove()                   │                    │
+│     │   - Generate new GEK (version++)                │  CRITICAL:         │
 │     │   - Build new Initial Key Packet (WITHOUT       │  Removed member    │
 │     │     removed member)                             │  cannot decrypt    │
 │     │   - Publish to DHT                              │  future messages   │
 │     └─────────────────────────────────────────────────┘                    │
 │                                                                             │
-│  4. GSK EXPIRATION (7 days)                                                 │
+│  4. GEK EXPIRATION (7 days)                                                 │
 │     ───────────────────────                                                 │
 │     ┌─────────────────────────────────────────────────┐                    │
-│     │ gsk_cleanup_expired() - removes old GSKs        │                    │
+│     │ gek_cleanup_expired() - removes old GEKs        │                    │
 │     │ Auto-rotate if needed for continued messaging   │                    │
 │     └─────────────────────────────────────────────────┘                    │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Source:** `messenger/gsk.h:132-159`
+**Source:** `messenger/gek.h`
+
+#### GEK Fetching (Invitee/Recovery)
+
+When a user accepts a group invitation or needs to recover GEK after reinstall:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  GEK FETCH FLOW (v0.4.64+)                                                  │
+│                                                                             │
+│  1. Fetch group metadata from DHT: hash(group_uuid)                         │
+│     → Metadata contains gek_version field                                   │
+│                                                                             │
+│  2. Fetch IKP (Initial Key Packet) for that specific version:               │
+│     → dht_gek_fetch(group_uuid, gek_version)                                │
+│                                                                             │
+│  3. Extract GEK using user's Kyber private key:                             │
+│     → ikp_extract(ikp, kyber_sk, gek_out)                                   │
+│                                                                             │
+│  4. Store GEK locally for message encryption/decryption                     │
+│                                                                             │
+│  NOTE: Prior to v0.4.64, the code tried versions 0-9 sequentially,          │
+│        which could fail if the correct version was > 9 or if an earlier     │
+│        version was found first.                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Flutter API:** `syncGroup(uuid)` triggers this flow for GEK recovery.
+
+**Source:** `messenger_groups.c:messenger_sync_group_gek()`
+
+### 7.5 Group Outbox DHT Storage (Single-Key Multi-Writer)
+
+Group messages use a single-key multi-writer architecture where ALL members write to the SAME DHT key with different `value_id`s.
+
+#### Key Format
+
+```
+dna:group:<uuid>:out:<day>
+
+Where:
+  <uuid>       = Group UUID (36 chars)
+  <day>        = Day bucket (Unix timestamp / 86400)
+
+Example:
+  dna:group:550e8400-e29b-41d4-a716-446655440000:out:20089
+```
+
+#### Architecture Benefits
+
+| Aspect | Single-Key Multi-Writer |
+|--------|-------------------------|
+| Listeners per group | 1 (not N per member) |
+| Max groups (1024 limit) | 1024 (vs ~50 with per-sender) |
+| Writer isolation | `value_id` per sender |
+| Storage | Chunked ZSTD (unlimited size) |
+| Real-time | Single `dht_listen()` per group |
+| Member changes | Automatic (no resubscription) |
+
+#### Multi-Writer DHT Model
+
+```
+All members write to same key with unique value_id:
+
+Key: dna:group:<uuid>:out:<day>
+  ├── Writer A (value_id=A) → [A's messages JSON]
+  ├── Writer B (value_id=B) → [B's messages JSON]
+  └── Writer C (value_id=C) → [C's messages JSON]
+
+dht_get_all_with_ids() returns:
+  [(data_A, id_A), (data_B, id_B), (data_C, id_C)]
+```
+
+#### Send Flow
+
+```
+User sends message
+       │
+       ▼
+┌─────────────────────────────────────┐
+│ 1. Load GEK (auto-sync from DHT)    │
+│ 2. day = time() / 86400             │
+│ 3. Generate message_id              │
+│ 4. Encrypt with GEK (AES-256-GCM)   │
+│ 5. Sign with Dilithium5             │
+└─────────────────────────────────────┘
+       │
+       ▼
+┌─────────────────────────────────────┐
+│ 6. group_key = dna:group:<uuid>     │
+│         :out:<day>                  │
+│ 7. dht_chunked_fetch_mine(key)      │
+│    → Filter by MY value_id          │
+│ 8. Append new message to my bucket  │
+│ 9. dht_chunked_publish(key, bucket) │
+│    → Uses MY value_id (replaces)    │
+└─────────────────────────────────────┘
+       │
+       ▼
+   Store locally
+```
+
+#### Listen Flow
+
+```
+Group loaded
+    │
+    ▼
+┌─────────────────────────────────────┐
+│ group_key = dna:group:<uuid>        │
+│         :out:<day>                  │
+│ chunk0_key = SHA3(key+":chunk:0")   │
+│ dht_listen(chunk0_key, callback)    │
+│                                     │
+│ → SINGLE listener for ALL members   │
+│ → Fires when ANY member publishes   │
+└─────────────────────────────────────┘
+    │
+    ▼
+[Callback fires]
+    │
+    ▼
+┌─────────────────────────────────────┐
+│ 1. dht_chunked_fetch_all(group_key) │
+│    → Gets ALL senders' buckets      │
+│ 2. Merge messages from all senders  │
+│ 3. Dedupe by message_id             │
+│ 4. Decrypt and store new messages   │
+│ 5. Fire UI callback                 │
+└─────────────────────────────────────┘
+```
+
+#### Day Rotation (Midnight UTC)
+
+```
+Every 4 minutes (heartbeat timer)
+         │
+         ▼
+┌─────────────────────────────────────┐
+│ new_day = time() / 86400            │
+│ if new_day != current_day:          │
+│   Cancel 1 listener (old day)       │
+│   Subscribe 1 listener (new day)    │
+└─────────────────────────────────────┘
+```
+
+#### Sync (Catch-up)
+
+On group load, syncs last 7 days of messages:
+
+```c
+for (day = last_sync_day + 1; day <= current_day; day++) {
+    dht_chunked_fetch_all(group_key_for_day)
+    // → Gets ALL senders' messages at once
+    decrypt and store new messages
+}
+```
+
+#### Multi-Chunk Multi-Writer Handling
+
+When a sender's data exceeds 45KB, `dht_chunked_fetch_all()` uses `value_id` to group chunks:
+
+```
+Key: chunk0 of group_key
+  ├── Writer A chunk0 (value_id=A, total_chunks=3)
+  └── Writer B chunk0 (value_id=B, total_chunks=1)
+
+For Writer A (multi-chunk):
+  1. Fetch chunk1 key → get all values with ids
+  2. Filter by value_id=A
+  3. Repeat for chunk2
+  4. Assemble and decompress
+```
+
+**Source:** `dht/client/dna_group_outbox.c`, `src/api/dna_engine.c`
 
 ---
 
@@ -799,11 +1056,19 @@ typedef struct {
 
 ```
 ~/.dna/
-├── <fingerprint>.dsa     # Dilithium5 private key (4896 bytes)
-├── <fingerprint>.kem     # Kyber1024 private key (3168 bytes)
-├── messages.db           # SQLite message database
-└── keyserver_cache.db    # Public key cache (7-day TTL)
+├── keys/
+│   └── identity.dsa      # Dilithium5 private key (4896 bytes)
+│   └── identity.kem      # Kyber1024 private key (3168 bytes)
+├── db/
+│   ├── messages.db       # SQLite - Direct messages only (v0.4.63+)
+│   ├── groups.db         # SQLite - All group data (v0.4.63+)
+│   └── keyserver_cache.db    # Public key cache (7-day TTL)
+└── ...
 ```
+
+**Database Separation (v0.4.63):**
+- **messages.db**: Direct user-to-user messages only
+- **groups.db**: Groups, members, GEKs, invitations, group messages
 
 **Source:** `messenger.h:1-12`, `messenger/messages.c:358-367`
 
@@ -811,7 +1076,7 @@ typedef struct {
 
 | Key Type | Public | Private | Source |
 |----------|--------|---------|--------|
-| Dilithium5 (signing) | 2592 bytes | 4896 bytes | `p2p_transport.h:54` |
+| Dilithium5 (signing) | 2592 bytes | 4896 bytes | `transport/transport.h` |
 | Kyber1024 (encryption) | 1568 bytes | 3168 bytes | `messages.c:642-648` |
 
 ### 8.3 Fingerprint Computation
@@ -841,28 +1106,40 @@ if (qgp_sha3_512(sender_sign_key->public_key,
 
 ## 9. Database Schema
 
-### 9.1 Messages Table
+**v0.4.63+ Architecture:** Two separate databases for clean separation:
+- **messages.db**: Direct user-to-user messages (`message_backup.c`)
+- **groups.db**: All group data (`messenger/group_database.c`)
+
+### 9.1 Messages Table (messages.db)
 
 ```sql
--- Source: message_backup.c:40-56
+-- Source: message_backup.c - Schema v14
+-- NOTE: v14 stores plaintext directly (no per-message encryption)
+--       Database encryption handled by SQLCipher in future update
 
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   sender TEXT NOT NULL,
   recipient TEXT NOT NULL,
-  sender_fingerprint BLOB,          -- SHA3-512 fingerprint (64 bytes, v0.07)
-  encrypted_message BLOB NOT NULL,  -- Encrypted ciphertext
-  encrypted_len INTEGER NOT NULL,   -- Ciphertext length
+  sender_fingerprint TEXT,          -- SHA3-512 fingerprint (128 hex chars, v14)
+  plaintext TEXT NOT NULL,          -- Decrypted message content (v14)
   timestamp INTEGER NOT NULL,
   delivered INTEGER DEFAULT 1,
   read INTEGER DEFAULT 0,
   is_outgoing INTEGER DEFAULT 0,
-  status INTEGER DEFAULT 1,         -- 0=PENDING, 1=SENT, 2=FAILED
+  status INTEGER DEFAULT 1,         -- 0=PENDING, 1=SENT(legacy), 2=FAILED, 3=DELIVERED, 4=READ, 5=STALE
   group_id INTEGER DEFAULT 0,       -- 0=direct message, >0=group ID
   message_type INTEGER DEFAULT 0,   -- 0=chat, 1=group_invitation
-  invitation_status INTEGER DEFAULT 0  -- 0=pending, 1=accepted, 2=declined
+  invitation_status INTEGER DEFAULT 0,  -- 0=pending, 1=accepted, 2=declined
+  retry_count INTEGER DEFAULT 0,    -- Retry attempts for failed messages
+  offline_seq INTEGER DEFAULT 0     -- DHT offline queue sequence number
 );
 ```
+
+**Breaking Change (v14):** Schema v14 is incompatible with v13 and earlier.
+- Old `encrypted_message BLOB` replaced with `plaintext TEXT`
+- Migration: Old messages table dropped, fresh start required
+- Transport encryption (DHT) remains unchanged - only storage changed
 
 ### 9.2 Indexes
 
@@ -893,6 +1170,64 @@ CREATE INDEX IF NOT EXISTS idx_sender_fingerprint ON messages(sender_fingerprint
 | `MESSAGE_INVITATION_STATUS_REJECTED` | 2 | Invitation declined |
 
 **Source:** `message_backup.h:40-42`
+
+### 9.5 Groups Database Schema (groups.db)
+
+**Added in v0.4.63** - All group data moved to separate database.
+
+```sql
+-- Source: messenger/group_database.c:48-96
+
+-- Core group metadata
+CREATE TABLE IF NOT EXISTS groups (
+  uuid TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  is_owner INTEGER DEFAULT 0,
+  owner_fp TEXT NOT NULL
+);
+
+-- Group members
+CREATE TABLE IF NOT EXISTS group_members (
+  group_uuid TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  added_at INTEGER NOT NULL,
+  PRIMARY KEY (group_uuid, fingerprint)
+);
+
+-- Group Encryption Keys (GEK) per version
+CREATE TABLE IF NOT EXISTS group_geks (
+  group_uuid TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  encrypted_key BLOB NOT NULL,   -- Kyber1024-encrypted (1628 bytes)
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  PRIMARY KEY (group_uuid, version)
+);
+
+-- Pending group invitations
+CREATE TABLE IF NOT EXISTS pending_invitations (
+  group_uuid TEXT PRIMARY KEY,
+  group_name TEXT NOT NULL,
+  owner_fp TEXT NOT NULL,
+  received_at INTEGER NOT NULL
+);
+
+-- Decrypted group message cache
+CREATE TABLE IF NOT EXISTS group_messages (
+  id INTEGER PRIMARY KEY,
+  group_uuid TEXT NOT NULL,
+  message_id INTEGER NOT NULL,
+  sender_fp TEXT NOT NULL,
+  timestamp_ms INTEGER NOT NULL,
+  gek_version INTEGER NOT NULL,
+  plaintext TEXT NOT NULL,
+  received_at INTEGER NOT NULL,
+  UNIQUE (group_uuid, sender_fp, message_id)
+);
+```
+
+**Source:** `messenger/group_database.c`
 
 ---
 
@@ -977,19 +1312,19 @@ CREATE INDEX IF NOT EXISTS idx_sender_fingerprint ON messages(sender_fingerprint
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `p2p/p2p_transport.h` | 1-320 | P2P transport API |
-| `p2p/p2p_transport.c` | - | P2P implementation |
+| `transport/transport.h` | 1-320 | P2P transport API |
+| `transport/transport.c` | - | P2P implementation |
 | `dht/shared/dht_offline_queue.h` | 1-237 | Offline queue API |
-| `p2p/transport/transport_offline.c` | 64-170 | Offline message polling |
+| `transport/internal/transport_offline.c` | 64-170 | Offline message polling |
 
-### 11.5 GSK System
+### 11.5 GEK System
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `messenger/gsk.h` | 1-165 | GSK management API |
-| `messenger/gsk.c` | - | GSK implementation |
-| `messenger/gsk_packet.h` | 1-131 | Initial Key Packet API |
-| `messenger/gsk_packet.c` | - | Packet building/extraction |
+| `messenger/gek.h` | 1-399 | GEK management + IKP API |
+| `messenger/gek.c` | - | GEK implementation |
+| `messenger/groups.h` | 1-266 | Group management API |
+| `messenger/groups.c` | - | Group implementation |
 
 ### 11.6 Database
 

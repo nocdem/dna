@@ -56,7 +56,10 @@ class DnaNotificationHelper(private val context: Context) {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
+            val notificationManager = context.getSystemService(NotificationManager::class.java)
+
+            // Message channel
+            val messageChannel = NotificationChannel(
                 MESSAGE_CHANNEL_ID,
                 "Messages",
                 NotificationManager.IMPORTANCE_HIGH
@@ -65,8 +68,7 @@ class DnaNotificationHelper(private val context: Context) {
                 enableVibration(true)
                 enableLights(true)
             }
-            val notificationManager = context.getSystemService(NotificationManager::class.java)
-            notificationManager.createNotificationChannel(channel)
+            notificationManager.createNotificationChannel(messageChannel)
         }
     }
 

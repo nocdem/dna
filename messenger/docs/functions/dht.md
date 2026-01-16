@@ -40,6 +40,7 @@ Core DHT (Distributed Hash Table) operations for decentralized storage.
 | `int dht_get(dht_context_t*, const uint8_t*, size_t, uint8_t**, size_t*)` | Get first value (blocking) |
 | `void dht_get_async(dht_context_t*, const uint8_t*, size_t, void(*)(uint8_t*, size_t, void*), void*)` | Get value (async) |
 | `int dht_get_all(dht_context_t*, const uint8_t*, size_t, uint8_t***, size_t**, size_t*)` | Get all values |
+| `int dht_get_all_with_ids(dht_context_t*, const uint8_t*, size_t, uint8_t***, size_t**, uint64_t**, size_t*)` | Get all values with value_ids (for multi-writer filtering) |
 | `void dht_get_batch(dht_context_t*, const uint8_t**, const size_t*, size_t, dht_batch_callback_t, void*)` | Batch GET (parallel) |
 | `int dht_get_batch_sync(dht_context_t*, const uint8_t**, const size_t*, size_t, dht_batch_result_t**)` | Batch GET (blocking) |
 | `void dht_batch_results_free(dht_batch_result_t*, size_t)` | Free batch results |
@@ -118,11 +119,30 @@ Core DHT (Distributed Hash Table) operations for decentralized storage.
 
 Shared DHT modules for offline messaging, groups, profiles, and storage.
 
-### 10.1 Offline Queue (`dht_offline_queue.h`)
+### 10.1 DM Outbox Daily Buckets (`dht_dm_outbox.h`) - v0.5.0+
 
 | Function | Description |
 |----------|-------------|
-| `int dht_queue_message(...)` | Store message in sender's outbox |
+| `uint64_t dht_dm_outbox_get_day_bucket(void)` | Get current day bucket (timestamp/86400) |
+| `int dht_dm_outbox_make_key(...)` | Generate DHT key for day bucket |
+| `int dht_dm_queue_message(...)` | Queue message to daily bucket (chunked storage) |
+| `int dht_dm_outbox_sync_day(...)` | Sync messages from specific day |
+| `int dht_dm_outbox_sync_recent(...)` | Sync 3 days (yesterday, today, tomorrow) |
+| `int dht_dm_outbox_sync_full(...)` | Sync last 8 days |
+| `int dht_dm_outbox_sync_all_contacts_recent(...)` | Sync all contacts (parallel) |
+| `int dht_dm_outbox_subscribe(...)` | Subscribe with day rotation support |
+| `void dht_dm_outbox_unsubscribe(...)` | Unsubscribe from contact's outbox |
+| `int dht_dm_outbox_check_day_rotation(...)` | Check/rotate listener at midnight |
+| `void dht_dm_outbox_cache_clear(void)` | Clear local outbox cache |
+| `int dht_dm_outbox_cache_sync_pending(...)` | Sync pending cached entries |
+
+### 10.1.1 Offline Queue Legacy (`dht_offline_queue.h`)
+
+**Note:** `dht_queue_message()` now redirects to `dht_dm_queue_message()` (v0.5.0+)
+
+| Function | Description |
+|----------|-------------|
+| `int dht_queue_message(...)` | Store message (redirects to daily bucket API) |
 | `int dht_retrieve_queued_messages_from_contacts(...)` | Retrieve messages from contacts (sequential) |
 | `int dht_retrieve_queued_messages_from_contacts_parallel(...)` | Retrieve messages (parallel, 10-100× faster) |
 | `void dht_offline_message_free(dht_offline_message_t*)` | Free single message |
@@ -152,6 +172,7 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 | `int dht_groups_update(...)` | Update group metadata |
 | `int dht_groups_add_member(dht_context_t*, const char*, const char*, const char*)` | Add member to group |
 | `int dht_groups_remove_member(dht_context_t*, const char*, const char*, const char*)` | Remove member from group |
+| `int dht_groups_update_gek_version(dht_context_t*, const char*, uint32_t)` | Update GEK version in metadata |
 | `int dht_groups_delete(dht_context_t*, const char*, const char*)` | Delete group |
 | `int dht_groups_list_for_user(const char*, dht_group_cache_entry_t**, int*)` | List user's groups |
 | `int dht_groups_get_uuid_by_local_id(const char*, int, char*)` | Get UUID from local ID |
@@ -213,16 +234,16 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 | `int dht_value_storage_get_stats(dht_value_storage_t*, dht_storage_stats_t*)` | Get storage stats |
 | `bool dht_value_storage_should_persist(uint32_t, uint64_t)` | Check if should persist |
 
-### 10.8 GSK Storage (`dht_gsk_storage.h`)
+### 10.8 GEK Storage (`dht_gek_storage.h`)
 
 | Function | Description |
 |----------|-------------|
-| `int dht_gsk_publish(dht_context_t*, const char*, uint32_t, const uint8_t*, size_t)` | Publish GSK packet |
-| `int dht_gsk_fetch(dht_context_t*, const char*, uint32_t, uint8_t**, size_t*)` | Fetch GSK packet |
-| `int dht_gsk_make_chunk_key(const char*, uint32_t, uint32_t, char[65])` | Generate chunk key |
-| `int dht_gsk_serialize_chunk(const dht_gsk_chunk_t*, uint8_t**, size_t*)` | Serialize chunk |
-| `int dht_gsk_deserialize_chunk(const uint8_t*, size_t, dht_gsk_chunk_t*)` | Deserialize chunk |
-| `void dht_gsk_free_chunk(dht_gsk_chunk_t*)` | Free chunk |
+| `int dht_gek_publish(dht_context_t*, const char*, uint32_t, const uint8_t*, size_t)` | Publish GEK packet |
+| `int dht_gek_fetch(dht_context_t*, const char*, uint32_t, uint8_t**, size_t*)` | Fetch GEK packet |
+| `int dht_gek_make_chunk_key(const char*, uint32_t, uint32_t, char[65])` | Generate chunk key |
+| `int dht_gek_serialize_chunk(const dht_gek_chunk_t*, uint8_t**, size_t*)` | Serialize chunk |
+| `int dht_gek_deserialize_chunk(const uint8_t*, size_t, dht_gek_chunk_t*)` | Deserialize chunk |
+| `void dht_gek_free_chunk(dht_gek_chunk_t*)` | Free chunk |
 
 ---
 

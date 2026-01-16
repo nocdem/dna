@@ -59,7 +59,7 @@ Core messenger functionality including identity management, key generation, mess
 | `int messenger_delete_message(messenger_context_t*, int)` | Delete message |
 | `int messenger_search_by_sender(...)` | Search messages by sender |
 | `int messenger_show_conversation(...)` | Show conversation with user |
-| `int messenger_get_conversation(...)` | Get conversation messages |
+| `int messenger_get_conversation(...)` | Get conversation messages (pre-decrypted, key loaded once) |
 | `void messenger_free_messages(message_info_t*, int)` | Free message array |
 | `int messenger_search_by_date(...)` | Search messages by date range |
 
@@ -88,32 +88,46 @@ Core messenger functionality including identity management, key generation, mess
 | `int messenger_reject_group_invitation(...)` | Reject group invitation |
 | `int messenger_sync_groups(messenger_context_t*)` | Sync groups from DHT |
 | `int messenger_send_group_message(...)` | Send message to group |
-| `int messenger_load_group_messages(...)` | Load group conversation messages |
 | `void messenger_free_groups(group_info_t*, int)` | Free group array |
 
-### 3.8 Group Symmetric Key (GSK)
+### 3.8 Group Encryption Key (GEK)
 
-**File:** `messenger/gsk.h`, `messenger/gsk_encryption.h`
+**File:** `messenger/gek.h`, `messenger/gek.c`
 
-GSK provides AES-256 symmetric encryption for group messaging (faster than per-recipient Kyber).
-GSKs are now encrypted at rest using Kyber1024 KEM (H3 security fix).
+GEK provides AES-256 symmetric encryption for group messaging (faster than per-recipient Kyber).
+GEKs are encrypted at rest using Kyber1024 KEM + AES-256-GCM.
 
 | Function | Description |
 |----------|-------------|
-| `int gsk_init(void *backup_ctx)` | Initialize GSK subsystem |
-| `int gsk_set_kem_keys(const uint8_t*, const uint8_t*)` | Set KEM keys for GSK encryption |
-| `void gsk_clear_kem_keys(void)` | Clear KEM keys from memory |
-| `int gsk_generate(const char*, uint32_t, uint8_t[32])` | Generate new random GSK |
-| `int gsk_store(const char*, uint32_t, const uint8_t[32])` | Store GSK (encrypted with KEM) |
-| `int gsk_load(const char*, uint32_t, uint8_t[32])` | Load GSK by version (decrypted) |
-| `int gsk_load_active(const char*, uint8_t[32], uint32_t*)` | Load latest active GSK |
-| `int gsk_rotate(const char*, uint32_t*, uint8_t[32])` | Rotate GSK (generate new version) |
-| `int gsk_get_current_version(const char*, uint32_t*)` | Get current GSK version |
-| `int gsk_cleanup_expired(void)` | Delete expired GSKs |
-| `int gsk_rotate_on_member_add(...)` | Rotate GSK when member added |
-| `int gsk_rotate_on_member_remove(...)` | Rotate GSK when member removed |
-| `int gsk_encrypt(const uint8_t[32], const uint8_t*, uint8_t*)` | Encrypt GSK with KEM |
-| `int gsk_decrypt(const uint8_t*, size_t, const uint8_t*, uint8_t[32])` | Decrypt GSK with KEM |
+| `int gek_init(void *backup_ctx)` | Initialize GEK subsystem |
+| `int gek_set_kem_keys(const uint8_t*, const uint8_t*)` | Set KEM keys for GEK encryption |
+| `void gek_clear_kem_keys(void)` | Clear KEM keys from memory |
+| `int gek_generate(const char*, uint32_t, uint8_t[32])` | Generate new random GEK |
+| `int gek_store(const char*, uint32_t, const uint8_t[32])` | Store GEK (encrypted with KEM) |
+| `int gek_load(const char*, uint32_t, uint8_t[32])` | Load GEK by version (decrypted) |
+| `int gek_load_active(const char*, uint8_t[32], uint32_t*)` | Load latest active GEK |
+| `int gek_rotate(const char*, uint32_t*, uint8_t[32])` | Rotate GEK (generate new version) |
+| `int gek_get_current_version(const char*, uint32_t*)` | Get current GEK version |
+| `int gek_cleanup_expired(void)` | Delete expired GEKs |
+| `int gek_rotate_on_member_add(...)` | Rotate GEK when member added |
+| `int gek_rotate_on_member_remove(...)` | Rotate GEK when member removed |
+| `int gek_encrypt(const uint8_t[32], const uint8_t*, uint8_t*)` | Encrypt GEK with KEM |
+| `int gek_decrypt(const uint8_t*, size_t, const uint8_t*, uint8_t[32])` | Decrypt GEK with KEM |
+
+### 3.9 Initial Key Packet (IKP)
+
+**File:** `messenger/gek.h`
+
+IKP functions for distributing GEK to group members via Kyber1024 encryption.
+
+| Function | Description |
+|----------|-------------|
+| `int ikp_build(...)` | Build Initial Key Packet for GEK distribution |
+| `int ikp_extract(...)` | Extract GEK from received IKP |
+| `int ikp_verify(...)` | Verify IKP signature (Dilithium5) |
+| `size_t ikp_calculate_size(size_t member_count)` | Calculate expected IKP size |
+| `int ikp_get_version(...)` | Get GEK version from IKP header |
+| `int ikp_get_member_count(...)` | Get member count from IKP header |
 
 ---
 
@@ -121,7 +135,10 @@ GSKs are now encrypted at rest using Kyber1024 KEM (H3 security fix).
 
 **File:** `message_backup.h`
 
-Local SQLite database for message backup. Stores encrypted messages per-identity at `~/.dna/<fingerprint>_messages.db`.
+Local SQLite database for message backup. Stores **plaintext** messages per-identity at `~/.dna/db/messages.db` (v14).
+
+**v14 Schema Change:** Messages stored as plaintext (previously encrypted BLOB).
+Database-level encryption (SQLCipher) planned for future.
 
 ### 4.1 Initialization
 
@@ -135,8 +152,8 @@ Local SQLite database for message backup. Stores encrypted messages per-identity
 
 | Function | Description |
 |----------|-------------|
-| `int message_backup_save(...)` | Save encrypted message to local backup |
-| `bool message_backup_exists_ciphertext(...)` | Check if message exists by ciphertext hash |
+| `int message_backup_save(ctx, sender, recipient, plaintext, sender_fp, timestamp, is_outgoing, group_id, message_type, offline_seq)` | Save plaintext message to local backup (v14) |
+| `bool message_backup_exists(ctx, sender_fp, recipient, timestamp)` | Check if message exists (v14: by sender_fp+recipient+timestamp) |
 | `int message_backup_delete(message_backup_context_t*, int)` | Delete message by ID |
 | `void message_backup_free_messages(backup_message_t*, int)` | Free message array |
 
@@ -150,17 +167,40 @@ Local SQLite database for message backup. Stores encrypted messages per-identity
 | `int message_backup_update_status_by_key(...)` | Update status by sender/recipient/timestamp |
 | `int message_backup_get_last_id(message_backup_context_t*)` | Get last inserted message ID |
 | `int message_backup_get_unread_count(...)` | Get unread count for contact |
+| `int message_backup_increment_retry_count(message_backup_context_t*, int)` | Increment retry count for failed message |
 
-### 4.4 Conversation Retrieval
+### 4.4 Message Retry (Bulletproof Delivery)
 
 | Function | Description |
 |----------|-------------|
-| `int message_backup_get_conversation(...)` | Get conversation history with contact |
+| `int message_backup_get_pending_messages(...)` | Get all PENDING/FAILED messages for retry (retry_count < max) |
+
+**Message Status Values:**
+| Status | Value | Meaning | Auto-Retry? |
+|--------|-------|---------|-------------|
+| PENDING | 0 | Queued to DHT, awaiting delivery confirmation | Yes |
+| SENT | 1 | Legacy (no longer used with async DHT PUT) | No |
+| FAILED | 2 | DHT queue failed | Yes |
+| DELIVERED | 3 | Recipient confirmed via watermark | No |
+| READ | 4 | Recipient read | No |
+
+**Status Flow:** `PENDING(0) → DELIVERED(3)` via watermark confirmation. `SENT(1)` is legacy from synchronous DHT PUT.
+
+**Schema (v9):** `retry_count INTEGER DEFAULT 0` column tracks send attempts. Messages with `retry_count >= 10` are excluded from auto-retry. Retry functions are mutex-protected.
+
+### 4.5 Conversation Retrieval
+
+| Function | Description |
+|----------|-------------|
+| `int message_backup_get_conversation(...)` | Get all conversation history with contact (ASC order) |
+| `int message_backup_get_conversation_page(ctx, contact, limit, offset, msgs_out, count_out, total_out)` | Get paginated conversation (DESC order, newest first) |
 | `int message_backup_get_group_conversation(...)` | Get group conversation history |
 | `int message_backup_get_recent_contacts(...)` | Get list of recent contacts |
 | `int message_backup_search_by_identity(...)` | Search messages by sender/recipient |
 
-### 4.5 Sequence Numbers (Watermark Pruning)
+**Pagination:** Use `message_backup_get_conversation_page()` for efficient loading in chat UIs. Returns messages in DESC order (newest first) with `total_out` for calculating has_more. Default page size: 50 messages.
+
+### 4.6 Sequence Numbers (Watermark Pruning)
 
 | Function | Description |
 |----------|-------------|

@@ -1,5 +1,8 @@
 /**
  * DNA Nodus Configuration - Implementation
+ *
+ * Privacy: STUN/TURN removed in v0.4.61
+ * TURN config fields are parsed but ignored for backwards compatibility.
  */
 
 #include "nodus_config.h"
@@ -16,11 +19,12 @@ void NodusConfig::apply_defaults() {
     seed_nodes.push_back(NODUS_DEFAULT_SEED_NODE);
     persistence_path = NODUS_DEFAULT_PERSISTENCE_PATH;
 
-    turn_port = NODUS_DEFAULT_TURN_PORT;
-    credential_port = NODUS_DEFAULT_CREDENTIAL_PORT;
-    relay_port_begin = NODUS_DEFAULT_RELAY_PORT_BEGIN;
-    relay_port_end = NODUS_DEFAULT_RELAY_PORT_END;
-    credential_ttl_seconds = NODUS_DEFAULT_CREDENTIAL_TTL;
+    // TURN settings deprecated but kept for backwards compatibility
+    turn_port = 0;
+    credential_port = 0;
+    relay_port_begin = 0;
+    relay_port_end = 0;
+    credential_ttl_seconds = 0;
 
     identity = "dna-bootstrap-node";
     public_ip = "auto";
@@ -57,21 +61,10 @@ bool NodusConfig::load(const std::string& path) {
             }
         }
 
-        // TURN settings
+        // TURN settings - parsed but IGNORED (for backwards compatibility)
+        // Old config files may still have these fields
         if (config.contains("turn")) {
-            auto& turn = config["turn"];
-            if (turn.contains("port")) {
-                turn_port = turn["port"].get<uint16_t>();
-            }
-            if (turn.contains("relay_port_begin")) {
-                relay_port_begin = turn["relay_port_begin"].get<uint16_t>();
-            }
-            if (turn.contains("relay_port_end")) {
-                relay_port_end = turn["relay_port_end"].get<uint16_t>();
-            }
-            if (turn.contains("credential_ttl_seconds")) {
-                credential_ttl_seconds = turn["credential_ttl_seconds"].get<uint32_t>();
-            }
+            // Silently ignore TURN section - removed in v0.4.61
         }
 
         // Flat config keys (actual format used in /etc/dna-nodus.conf)
@@ -87,21 +80,9 @@ bool NodusConfig::load(const std::string& path) {
         if (config.contains("persistence_path")) {
             persistence_path = config["persistence_path"].get<std::string>();
         }
-        if (config.contains("turn_port")) {
-            turn_port = config["turn_port"].get<uint16_t>();
-        }
-        if (config.contains("credential_port")) {
-            credential_port = config["credential_port"].get<uint16_t>();
-        }
-        if (config.contains("relay_port_begin")) {
-            relay_port_begin = config["relay_port_begin"].get<uint16_t>();
-        }
-        if (config.contains("relay_port_end")) {
-            relay_port_end = config["relay_port_end"].get<uint16_t>();
-        }
-        if (config.contains("credential_ttl_seconds")) {
-            credential_ttl_seconds = config["credential_ttl_seconds"].get<uint32_t>();
-        }
+
+        // TURN flat keys - parsed but IGNORED
+        // (turn_port, credential_port, relay_port_begin, relay_port_end, credential_ttl_seconds)
 
         // General settings
         if (config.contains("identity")) {
@@ -137,11 +118,8 @@ void NodusConfig::print() const {
     std::cout << std::endl;
     std::cout << "  persistence_path: " << persistence_path << std::endl;
 
-    std::cout << "TURN:" << std::endl;
-    std::cout << "  port: " << turn_port << std::endl;
-    std::cout << "  relay_ports: " << relay_port_begin << "-" << relay_port_end << std::endl;
-    std::cout << "  credential_ttl: " << credential_ttl_seconds << "s ("
-              << (credential_ttl_seconds / 86400) << " days)" << std::endl;
+    // TURN section removed - no longer printed
+    std::cout << "Mode: DHT-only (STUN/TURN removed in v0.4.61 for privacy)" << std::endl;
 
     std::cout << "General:" << std::endl;
     std::cout << "  identity: " << identity << std::endl;

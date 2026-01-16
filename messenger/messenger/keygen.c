@@ -30,7 +30,7 @@
 #include "../dht/client/dht_singleton.h"
 #include "../dht/client/dht_identity.h"
 #include "../database/keyserver_cache.h"
-// p2p_transport.h no longer needed - Phase 14 uses dht_singleton_get() directly
+// transport_ctx.h no longer needed - Phase 14 uses dht_singleton_get() directly
 #include "../dna_config.h"
 #include "keys.h"
 #include "../blockchain/cellframe/cellframe_wallet_create.h"

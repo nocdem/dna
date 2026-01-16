@@ -155,14 +155,6 @@ class ImageMessageBubble extends StatelessWidget {
     final color = theme.colorScheme.onPrimary.withAlpha(179);
     const size = 16.0;
 
-    if (status == MessageStatus.pending) {
-      return SizedBox(
-        width: size,
-        height: size,
-        child: CircularProgressIndicator(strokeWidth: 1.5, color: color),
-      );
-    }
-
     if (status == MessageStatus.failed) {
       return FaIcon(
         FontAwesomeIcons.circleExclamation,
@@ -174,14 +166,23 @@ class ImageMessageBubble extends StatelessWidget {
     IconData icon;
     switch (status) {
       case MessageStatus.pending:
+        // Clock for pending (queued, waiting for DHT PUT)
         icon = FontAwesomeIcons.clock;
       case MessageStatus.sent:
+        // Single tick for sent (DHT PUT succeeded)
         icon = FontAwesomeIcons.check;
       case MessageStatus.failed:
         icon = FontAwesomeIcons.circleExclamation;
       case MessageStatus.delivered:
       case MessageStatus.read:
         icon = FontAwesomeIcons.checkDouble;
+      case MessageStatus.stale:
+        // Hourglass for stale (30+ days old, never delivered)
+        return FaIcon(
+          FontAwesomeIcons.hourglassEnd,
+          size: size,
+          color: color.withAlpha(128),  // Dimmed to show it's old
+        );
     }
 
     return FaIcon(icon, size: size, color: color);

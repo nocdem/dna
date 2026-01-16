@@ -32,7 +32,7 @@ target_include_directories(dna_jni PRIVATE
 target_link_libraries(dna_jni
     dna_lib
     dht_lib
-    p2p_transport
+    transport_lib
     opendht
     cellframe_minimal
     cellframe_dilithium
@@ -59,8 +59,7 @@ target_link_libraries(dna_jni
     z
 )
 
-# Ensure libjuice is built before dna_jni
-add_dependencies(dna_jni libjuice_external)
+# libjuice removed in v0.4.61 - no longer needed
 
 # Strip in release mode
 if(CMAKE_BUILD_TYPE STREQUAL "Release")

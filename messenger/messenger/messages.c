@@ -35,8 +35,8 @@
 #include "../crypto/utils/qgp_random.h"
 #include "../crypto/utils/aes_keywrap.h"
 #include "../message_backup.h"
-#include "../messenger_p2p.h"
-#include "../p2p/p2p_transport.h"
+#include "../messenger_transport.h"
+#include "../transport/transport.h"
 #include "keys.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -359,11 +359,14 @@ int messenger_send_message(
     // Load all recipient public keys from keyserver (including sender)
     uint8_t **enc_pubkeys = calloc(total_recipients, sizeof(uint8_t*));
     uint8_t **sign_pubkeys = calloc(total_recipients, sizeof(uint8_t*));
+    // Allocate fingerprint storage for actual recipients (not sender at index 0)
+    char (*recipient_fps)[129] = calloc(recipient_count, sizeof(*recipient_fps));
 
-    if (!enc_pubkeys || !sign_pubkeys) {
+    if (!enc_pubkeys || !sign_pubkeys || !recipient_fps) {
         QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
         free(enc_pubkeys);
         free(sign_pubkeys);
+        free(recipient_fps);
         free(all_recipients);
         qgp_key_free(sender_sign_key);
         return -1;
@@ -372,10 +375,13 @@ int messenger_send_message(
     // Load public keys for all recipients from keyserver
     for (size_t i = 0; i < total_recipients; i++) {
         size_t sign_len = 0, enc_len = 0;
+        // Capture fingerprint for actual recipients (index > 0)
+        char *fp_out = (i > 0) ? recipient_fps[i - 1] : NULL;
         if (messenger_load_pubkey(ctx, all_recipients[i],
                                    &sign_pubkeys[i], &sign_len,
-                                   &enc_pubkeys[i], &enc_len, NULL) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Cannot load public key for '%s' from keyserver", all_recipients[i]);
+                                   &enc_pubkeys[i], &enc_len, fp_out) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Cannot load public key for '%s' - key not cached and DHT unavailable", all_recipients[i]);
+            QGP_LOG_WARN(LOG_TAG, "MESSAGE NOT SAVED: Cannot encrypt without recipient's public key");
 
             // Cleanup on error
             for (size_t j = 0; j < total_recipients; j++) {
@@ -384,9 +390,10 @@ int messenger_send_message(
             }
             free(enc_pubkeys);
             free(sign_pubkeys);
+            free(recipient_fps);
             free(all_recipients);
             qgp_key_free(sender_sign_key);
-            return -1;
+            return -3;  // KEY_UNAVAILABLE - distinct from network error
         }
     }
 
@@ -414,6 +421,7 @@ int messenger_send_message(
 
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Multi-recipient encryption failed");
+        free(recipient_fps);
         return -1;
     }
 
@@ -436,12 +444,24 @@ int messenger_send_message(
     (void)message_group_id;  // Suppress unused variable warning
 
     // Store in SQLite local database - one row per actual recipient (not sender)
-    // Track message IDs for status updates
+    // Track message IDs and sequence numbers for status updates
     time_t now = time(NULL);
     int *message_ids = malloc(recipient_count * sizeof(int));
-    if (!message_ids) {
+    uint64_t *seq_nums = malloc(recipient_count * sizeof(uint64_t));
+    if (!message_ids || !seq_nums) {
         free(ciphertext);
+        free(recipient_fps);
+        free(message_ids);
+        free(seq_nums);
         return -1;
+    }
+
+    // Get seq numbers BEFORE saving - ensures message.offline_seq matches DHT Spillway seq
+    for (size_t i = 0; i < recipient_count; i++) {
+        // Use fingerprint from key loading to get seq for this recipient
+        seq_nums[i] = message_backup_get_next_seq(ctx->backup_ctx, recipient_fps[i]);
+        QGP_LOG_DEBUG(LOG_TAG, "[SEND] Got seq=%llu for recipient %.20s...",
+                      (unsigned long long)seq_nums[i], recipient_fps[i]);
     }
 
     for (size_t i = 0; i < recipient_count; i++) {
@@ -449,48 +469,80 @@ int messenger_send_message(
             ctx->backup_ctx,
             ctx->identity,      // sender
             recipients[i],      // recipient
-            ciphertext,         // encrypted message
-            ciphertext_len,     // encrypted length
+            message,            // plaintext (v14 - decrypted message)
+            ctx->identity,      // sender_fingerprint (v14)
             now,                // timestamp
             true,               // is_outgoing = true (we're sending)
             group_id,           // group_id (0 for direct, >0 for group) - Phase 6.2
-            message_type        // message_type (chat or invitation) - Phase 6.2
+            message_type,       // message_type (chat or invitation) - Phase 6.2
+            seq_nums[i]         // offline_seq for watermark delivery tracking
         );
 
-        if (result != 0 && result != 1) {  // 1 = duplicate, not an error
+        if (result == -1) {
             QGP_LOG_ERROR(LOG_TAG, "Store message failed for recipient '%s' in SQLite", recipients[i]);
             free(ciphertext);
             free(message_ids);
+            free(seq_nums);
+            free(recipient_fps);
             return -1;
         }
 
-        // Get the message ID we just inserted
-        message_ids[i] = message_backup_get_last_id(ctx->backup_ctx);
+        if (result == 1) {
+            // Duplicate - message already exists, don't get last_id (would be wrong)
+            message_ids[i] = 0;
+            QGP_LOG_WARN(LOG_TAG, "[SEND] Duplicate message for recipient %.20s..., skipping status update",
+                         recipients[i]);
+        } else {
+            // New message inserted - get its ID for status update
+            message_ids[i] = message_backup_get_last_id(ctx->backup_ctx);
+            QGP_LOG_WARN(LOG_TAG, "[SEND] Saved message id=%d seq=%llu for recipient %.20s...",
+                         message_ids[i], (unsigned long long)seq_nums[i], recipients[i]);
+        }
     }
 
     // Phase 14: DHT-only messaging - queue directly to DHT (Spillway)
     // P2P transport is NOT required - messenger_queue_to_dht uses DHT singleton
     // This is more reliable on mobile platforms with background execution restrictions
+    //
+    // Message status flow:
+    // 1. PENDING (0) - message saved, clock icon
+    // 2. SENT (1) - DHT PUT succeeded, single tick
+    // 3. DELIVERED (3) - watermark received from recipient, double tick
     size_t dht_success = 0;
     for (size_t i = 0; i < recipient_count; i++) {
         // Queue directly to DHT - no P2P attempt for messaging
-        if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len) == 0) {
+        // Pass seq_num that was already saved with the message
+        if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len, seq_nums[i]) == 0) {
             dht_success++;
-            // Update status to SENT (1) - queued in DHT
+            // Update status to SENT (1) - DHT PUT succeeded, single tick in UI
+            // Will become DELIVERED (3) via watermark confirmation → double tick
             if (message_ids[i] > 0) {
-                message_backup_update_status(ctx->backup_ctx, message_ids[i], 1);
+                int update_rc = message_backup_update_status(ctx->backup_ctx, message_ids[i], 1);
+                QGP_LOG_WARN(LOG_TAG, "[SEND] DHT PUT OK, updated msg %d to SENT(1), rc=%d",
+                             message_ids[i], update_rc);
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "[SEND] DHT PUT OK but message_id=%d invalid, cannot update status",
+                             message_ids[i]);
             }
         } else {
-            // Update status to FAILED (2) - DHT queue failed
+            // Update status to FAILED (2) - DHT queue failed (key unavailable, etc.)
             if (message_ids[i] > 0) {
                 message_backup_update_status(ctx->backup_ctx, message_ids[i], 2);
             }
         }
     }
-    (void)dht_success;  // Suppress unused variable warning
 
     free(message_ids);
+    free(seq_nums);
+    free(recipient_fps);
     free(ciphertext);
+
+    // Return -1 if ALL DHT queues failed, 0 if at least one succeeded
+    // This allows UI to show FAILED status when offline
+    if (dht_success == 0) {
+        QGP_LOG_WARN(LOG_TAG, "All DHT queues failed - message saved with FAILED status");
+        return -1;
+    }
 
     return 0;
 }
@@ -616,127 +668,37 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     }
 
     const char *sender = target_msg->sender;
-    const uint8_t *ciphertext = target_msg->encrypted_message;
-    size_t ciphertext_len = target_msg->encrypted_len;
 
     printf("\n========================================\n");
     printf(" Message #%d from %s\n", message_id, sender);
     printf("========================================\n\n");
 
-    // Load recipient's private Kyber1024 key (ML-KEM-1024) from filesystem
-    // v0.3.0: Flat structure - keys/identity.kem
-    const char *home_kyber1 = qgp_platform_app_data_dir();
-    char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", home_kyber1);
-
-    qgp_key_t *kyber_key = NULL;
-    if (qgp_key_load(kyber_path, &kyber_key) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Cannot load private key from %s", kyber_path);
+    // v14: Messages are stored as plaintext - no decryption needed
+    const char *plaintext = target_msg->plaintext;
+    if (!plaintext) {
+        QGP_LOG_ERROR(LOG_TAG, "Message %d has no plaintext content", message_id);
         message_backup_free_messages(all_messages, all_count);
         return -1;
-    }
-
-    if (kyber_key->private_key_size != 3168) {  // Kyber1024 secret key size
-        QGP_LOG_ERROR(LOG_TAG, "Invalid Kyber1024 private key size: %zu (expected 3168)",
-                kyber_key->private_key_size);
-        qgp_key_free(kyber_key);
-        message_backup_free_messages(all_messages, all_count);
-        return -1;
-    }
-
-    // Decrypt message using raw key
-    uint8_t *plaintext = NULL;
-    size_t plaintext_len = 0;
-    uint8_t *sender_sign_pubkey_from_msg = NULL;
-    size_t sender_sign_pubkey_len = 0;
-    uint8_t *signature = NULL;
-    size_t signature_len = 0;
-    uint64_t sender_timestamp = 0;
-
-    dna_error_t err = dna_decrypt_message_raw(
-        ctx->dna_ctx,
-        ciphertext,
-        ciphertext_len,
-        kyber_key->private_key,
-        &plaintext,
-        &plaintext_len,
-        &sender_sign_pubkey_from_msg,  // v0.07: This is now 64-byte fingerprint, not pubkey
-        &sender_sign_pubkey_len,
-        &signature,
-        &signature_len,
-        &sender_timestamp  // v0.08: Extract sender's timestamp
-    );
-
-    // Free Kyber key (secure wipes private key internally)
-    qgp_key_free(kyber_key);
-
-    if (err != DNA_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Decryption failed: %s", dna_error_string(err));
-        message_backup_free_messages(all_messages, all_count);
-        return -1;
-    }
-
-    // v0.07: sender_sign_pubkey_from_msg is now the 64-byte fingerprint
-    // Look up actual pubkey from keyserver using fingerprint
-    uint8_t *sender_sign_pubkey_keyserver = NULL;
-    uint8_t *sender_enc_pubkey_keyserver = NULL;
-    size_t sender_sign_len_keyserver = 0, sender_enc_len_keyserver = 0;
-
-    // Convert fingerprint to hex for keyserver lookup
-    char fingerprint_hex[129];
-    for (int i = 0; i < 64; i++) {
-        sprintf(fingerprint_hex + (i * 2), "%02x", sender_sign_pubkey_from_msg[i]);
-    }
-    fingerprint_hex[128] = '\0';
-
-    // Query keyserver by fingerprint (cache-first, then DHT)
-    int sig_verified = 0;
-    if (messenger_load_pubkey(ctx, sender, &sender_sign_pubkey_keyserver, &sender_sign_len_keyserver,
-                               &sender_enc_pubkey_keyserver, &sender_enc_len_keyserver, NULL) != 0) {
-        QGP_LOG_WARN(LOG_TAG, "Could not load sender '%s' pubkey from keyserver", sender);
-        QGP_LOG_WARN(LOG_TAG, "Message decrypted but signature NOT verified!");
-        QGP_LOG_WARN(LOG_TAG, "Fingerprint: %s", fingerprint_hex);
-    } else {
-        // v0.07: Verify signature using looked-up public key
-        if (signature && signature_len > 0) {
-            if (qgp_dsa87_verify(signature, signature_len, plaintext, plaintext_len,
-                                 sender_sign_pubkey_keyserver) == 0) {
-                sig_verified = 1;
-            } else {
-                QGP_LOG_ERROR(LOG_TAG, "✗ Signature verification FAILED (fingerprint: %.16s...)\n", fingerprint_hex);
-                QGP_LOG_WARN(LOG_TAG, "Message may be forged or corrupted!");
-            }
-        } else {
-            QGP_LOG_ERROR(LOG_TAG, "No signature found in message\n");
-        }
-        free(sender_sign_pubkey_keyserver);
-        free(sender_enc_pubkey_keyserver);
     }
 
     // Display message
     printf("Message:\n");
     printf("----------------------------------------\n");
-    printf("%.*s\n", (int)plaintext_len, plaintext);
+    printf("%s\n", plaintext);
     printf("----------------------------------------\n");
 
-    // Display sender timestamp (v0.08)
-    struct tm *tm_info = localtime((time_t*)&sender_timestamp);
+    // Display timestamp
+    struct tm *tm_info = localtime(&target_msg->timestamp);
     char time_str[64];
     strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
-    printf("Sent: %s (sender's time)\n", time_str);
+    printf("Sent: %s\n", time_str);
 
-    if (sig_verified) {
-        printf("✓ Signature verified from %s\n", sender);
-        printf("✓ Sender identity verified against keyserver\n");
-    } else {
-        printf("⚠ WARNING: Signature NOT verified!\n");
-        printf("  Sender: %s (unverified)\n", sender);
+    // Display sender fingerprint if available
+    if (target_msg->sender_fingerprint[0] != '\0') {
+        printf("Sender fingerprint: %.20s...\n", target_msg->sender_fingerprint);
     }
 
     // Cleanup
-    free(plaintext);
-    free(sender_sign_pubkey_from_msg);
-    if (signature) free(signature);
     message_backup_free_messages(all_messages, all_count);
     printf("\n");
     return 0;
@@ -749,7 +711,7 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
     }
 
     // Fetch message from SQLite local database
-    // Support decrypting both received messages (recipient = identity) AND sent messages (sender = identity)
+    // Support both received messages (recipient = identity) AND sent messages (sender = identity)
     backup_message_t *all_messages = NULL;
     int all_count = 0;
 
@@ -774,77 +736,25 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
         return -1;
     }
 
-    const uint8_t *ciphertext = target_msg->encrypted_message;
-    size_t ciphertext_len = target_msg->encrypted_len;
-
-    // Load recipient's private Kyber1024 key (ML-KEM-1024) from filesystem
-    // v0.3.0: Flat structure - keys/identity.kem
-    const char *home_kyber2 = qgp_platform_app_data_dir();
-    char kyber_path2[512];
-    snprintf(kyber_path2, sizeof(kyber_path2), "%s/keys/identity.kem", home_kyber2);
-
-    qgp_key_t *kyber_key = NULL;
-    if (qgp_key_load(kyber_path2, &kyber_key) != 0) {
+    // v14: Messages are stored as plaintext - no decryption needed
+    const char *plaintext = target_msg->plaintext;
+    if (!plaintext) {
+        QGP_LOG_ERROR(LOG_TAG, "Message %d has no plaintext content", message_id);
         message_backup_free_messages(all_messages, all_count);
         return -1;
     }
 
-    if (kyber_key->private_key_size != 3168) {  // Kyber1024 secret key size
-        qgp_key_free(kyber_key);
-        message_backup_free_messages(all_messages, all_count);
-        return -1;
-    }
+    size_t plaintext_len = strlen(plaintext);
 
-    // Decrypt message using raw key
-    uint8_t *plaintext = NULL;
-    size_t plaintext_len = 0;
-    uint8_t *sender_sign_pubkey_from_msg = NULL;
-    size_t sender_sign_pubkey_len = 0;
-    uint8_t *signature = NULL;
-    size_t signature_len = 0;
-    uint64_t sender_timestamp = 0;
-
-    dna_error_t err = dna_decrypt_message_raw(
-        ctx->dna_ctx,
-        ciphertext,
-        ciphertext_len,
-        kyber_key->private_key,
-        &plaintext,
-        &plaintext_len,
-        &sender_sign_pubkey_from_msg,  // v0.07: Now 64-byte fingerprint
-        &sender_sign_pubkey_len,
-        &signature,
-        &signature_len,
-        &sender_timestamp  // v0.08: Extract sender's timestamp
-    );
-
-    // Free Kyber key (secure wipes private key internally)
-    qgp_key_free(kyber_key);
-
-    if (err != DNA_OK) {
-        message_backup_free_messages(all_messages, all_count);
-        return -1;
-    }
-
-    // v0.07: sender_sign_pubkey_from_msg is 64-byte fingerprint
-    // Keyserver lookup and signature verification handled by caller if needed
-
-    free(sender_sign_pubkey_from_msg);
-    if (signature) free(signature);
-    message_backup_free_messages(all_messages, all_count);
-
-    // Return plaintext as null-terminated string
-    *plaintext_out = (char*)malloc(plaintext_len + 1);
+    // Return plaintext as null-terminated string (caller must free)
+    *plaintext_out = strdup(plaintext);
     if (!*plaintext_out) {
-        free(plaintext);
+        message_backup_free_messages(all_messages, all_count);
         return -1;
     }
 
-    memcpy(*plaintext_out, plaintext, plaintext_len);
-    (*plaintext_out)[plaintext_len] = '\0';
     *plaintext_len_out = plaintext_len;
-
-    free(plaintext);
+    message_backup_free_messages(all_messages, all_count);
     return 0;
 }
 
@@ -996,7 +906,7 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
         return -1;
     }
 
-    // Convert each message
+    // v14: No decryption needed - messages stored as plaintext
     for (int i = 0; i < backup_count; i++) {
         messages[i].id = backup_messages[i].id;
         messages[i].sender = strdup(backup_messages[i].sender);
@@ -1010,10 +920,9 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
         }
 
         // Convert status int to string: 0=pending, 1=sent, 2=failed, 3=delivered, 4=read
-        // First check the status field, fall back to read/delivered flags for old messages
-        if (backup_messages[i].read) {
+        if (backup_messages[i].status == 4) {
             messages[i].status = strdup("read");
-        } else if (backup_messages[i].delivered) {
+        } else if (backup_messages[i].status == 3) {
             messages[i].status = strdup("delivered");
         } else if (backup_messages[i].status == 2) {
             messages[i].status = strdup("failed");
@@ -1022,15 +931,22 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
         } else if (backup_messages[i].status == 0) {
             messages[i].status = strdup("pending");
         } else {
-            messages[i].status = strdup("sent");  // Default for old messages
+            // Old messages without status field - fall back to boolean flags
+            if (backup_messages[i].read) {
+                messages[i].status = strdup("read");
+            } else if (backup_messages[i].delivered) {
+                messages[i].status = strdup("delivered");
+            } else {
+                messages[i].status = strdup("sent");  // Default for old messages
+            }
         }
 
-        // For now, we don't have separate timestamps for delivered/read
-        // We could add these to SQLite schema later if needed
         messages[i].delivered_at = backup_messages[i].delivered ? strdup(messages[i].timestamp) : NULL;
         messages[i].read_at = backup_messages[i].read ? strdup(messages[i].timestamp) : NULL;
-        messages[i].plaintext = NULL;  // Not decrypted yet
-        messages[i].message_type = backup_messages[i].message_type;  // Phase 6.2: Copy message type
+        messages[i].message_type = backup_messages[i].message_type;
+
+        // v14: Direct plaintext copy - no decryption needed
+        messages[i].plaintext = backup_messages[i].plaintext ? strdup(backup_messages[i].plaintext) : strdup("");
 
         if (!messages[i].sender || !messages[i].recipient || !messages[i].timestamp || !messages[i].status) {
             // Clean up on failure
@@ -1051,6 +967,114 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
 
     *messages_out = messages;
     message_backup_free_messages(backup_messages, backup_count);
+    return 0;
+}
+
+/**
+ * Get conversation with pagination (for efficient chat loading)
+ * Returns messages in DESC order (newest first) for reverse-scroll UI
+ */
+int messenger_get_conversation_page(messenger_context_t *ctx, const char *other_identity,
+                                     int limit, int offset,
+                                     message_info_t **messages_out, int *count_out,
+                                     int *total_out) {
+    if (!ctx || !other_identity || !messages_out || !count_out) {
+        return -1;
+    }
+
+    // Get paginated conversation from SQLite
+    backup_message_t *backup_messages = NULL;
+    int backup_count = 0;
+    int total = 0;
+
+    int result = message_backup_get_conversation_page(ctx->backup_ctx, other_identity,
+                                                       limit, offset,
+                                                       &backup_messages, &backup_count, &total);
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Get conversation page failed from SQLite");
+        return -1;
+    }
+
+    *count_out = backup_count;
+    if (total_out) *total_out = total;
+
+    if (backup_count == 0) {
+        *messages_out = NULL;
+        return 0;
+    }
+
+    // Convert backup_message_t to message_info_t for GUI compatibility
+    message_info_t *messages = (message_info_t*)calloc(backup_count, sizeof(message_info_t));
+    if (!messages) {
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
+        message_backup_free_messages(backup_messages, backup_count);
+        return -1;
+    }
+
+    // v14: No decryption needed - messages stored as plaintext
+    for (int i = 0; i < backup_count; i++) {
+        messages[i].id = backup_messages[i].id;
+        messages[i].sender = strdup(backup_messages[i].sender);
+        messages[i].recipient = strdup(backup_messages[i].recipient);
+
+        // Convert time_t to string (format: YYYY-MM-DD HH:MM:SS)
+        struct tm *tm_info = localtime(&backup_messages[i].timestamp);
+        messages[i].timestamp = (char*)malloc(32);
+        if (messages[i].timestamp) {
+            strftime(messages[i].timestamp, 32, "%Y-%m-%d %H:%M:%S", tm_info);
+        }
+
+        // Convert status int to string
+        if (backup_messages[i].status == 4) {
+            messages[i].status = strdup("read");
+        } else if (backup_messages[i].status == 3) {
+            messages[i].status = strdup("delivered");
+        } else if (backup_messages[i].status == 2) {
+            messages[i].status = strdup("failed");
+        } else if (backup_messages[i].status == 1) {
+            messages[i].status = strdup("sent");
+        } else if (backup_messages[i].status == 0) {
+            messages[i].status = strdup("pending");
+        } else {
+            // Old messages without status field
+            if (backup_messages[i].read) {
+                messages[i].status = strdup("read");
+            } else if (backup_messages[i].delivered) {
+                messages[i].status = strdup("delivered");
+            } else {
+                messages[i].status = strdup("sent");
+            }
+        }
+
+        messages[i].delivered_at = backup_messages[i].delivered ? strdup(messages[i].timestamp) : NULL;
+        messages[i].read_at = backup_messages[i].read ? strdup(messages[i].timestamp) : NULL;
+        messages[i].message_type = backup_messages[i].message_type;
+
+        // v14: Direct plaintext copy - no decryption needed
+        messages[i].plaintext = backup_messages[i].plaintext ? strdup(backup_messages[i].plaintext) : strdup("");
+
+        if (!messages[i].sender || !messages[i].recipient || !messages[i].timestamp || !messages[i].status) {
+            // Clean up on failure
+            for (int j = 0; j <= i; j++) {
+                free(messages[j].sender);
+                free(messages[j].recipient);
+                free(messages[j].timestamp);
+                free(messages[j].status);
+                free(messages[j].delivered_at);
+                free(messages[j].read_at);
+                free(messages[j].plaintext);
+            }
+            free(messages);
+            message_backup_free_messages(backup_messages, backup_count);
+            return -1;
+        }
+    }
+
+    *messages_out = messages;
+    message_backup_free_messages(backup_messages, backup_count);
+
+    QGP_LOG_DEBUG(LOG_TAG, "Retrieved page: %d messages (offset=%d, total=%d)",
+                  backup_count, offset, total);
     return 0;
 }
 

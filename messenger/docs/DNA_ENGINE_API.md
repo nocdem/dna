@@ -1,10 +1,12 @@
 # DNA Engine API Reference
 
-**Version:** 1.8.0
-**Date:** 2025-12-24
+**Version:** 1.10.0
+**Date:** 2026-01-09
 **Location:** `include/dna/dna_engine.h`
 
 **Changelog:**
+- v1.10.0 (2026-01-09): Made DHT PUT synchronous for accurate status, added DNA_ENGINE_ERROR_KEY_UNAVAILABLE (-116) for offline key lookup failures
+- v1.9.0 (2026-01-09): Added Bulletproof Message Delivery - `dna_engine_retry_pending_messages()` for auto-retry of failed messages on network reconnect/identity load
 - v1.8.0 (2025-12-24): Added Debug Logging API (section 10) - ring buffer log storage, `dna_engine_debug_log_*()` functions for in-app log viewing on mobile
 - v1.7.0 (2025-12-15): Added password protection for identity keys - `dna_engine_change_password_sync()`, password parameter in `dna_engine_load_identity()`, on-demand wallet derivation from mnemonic
 - v1.6.0 (2025-12-10): Added ICQ-style Contact Request API (section 3a) - send/approve/deny requests, block/unblock users
@@ -1149,6 +1151,43 @@ Use this only for manual refresh (e.g., pull-to-refresh in UI).
 
 ---
 
+### dna_engine_retry_pending_messages
+
+```c
+int dna_engine_retry_pending_messages(dna_engine_t *engine);
+```
+
+Retry all pending/failed messages (bulletproof delivery).
+
+Queries the message database for all outgoing messages with status PENDING (0) or FAILED (2) and `retry_count < 10`, then attempts to re-queue each to DHT.
+
+**Automatic Triggers:**
+- Identity load (app startup)
+- DHT reconnect (network restored)
+- Network state change (WiFi/mobile switch)
+
+**Returns:**
+- Number of messages successfully retried (>= 0)
+- `-1` on error
+
+**Retry Logic:**
+```c
+// Pseudocode
+for each message in pending_messages:
+    if (dht_queue(message) == success):
+        message.status = SENT
+        retried_count++
+    else:
+        message.retry_count++
+        // Stays FAILED, will retry on next trigger
+```
+
+**Max Retries:** 10 attempts per message. After 10 failures, message remains FAILED and requires manual retry via UI.
+
+**Source:** `src/api/dna_engine.c:4862-4920`, `message_backup.c:644-721`
+
+---
+
 ## 5. Groups
 
 ### dna_engine_create_group
@@ -1463,6 +1502,7 @@ engine.debugLogClear();
 | -106 | `DNA_ENGINE_ERROR_NO_IDENTITY` | No identity loaded |
 | -107 | `DNA_ENGINE_ERROR_ALREADY_EXISTS` | Already exists |
 | -108 | `DNA_ENGINE_ERROR_PERMISSION` | Permission denied |
+| -116 | `DNA_ENGINE_ERROR_KEY_UNAVAILABLE` | Recipient public key not cached and DHT lookup failed (offline) |
 
 Use `dna_engine_error_string(error)` for human-readable messages.
 

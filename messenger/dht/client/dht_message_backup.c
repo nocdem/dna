@@ -13,6 +13,8 @@
 #include "../dna_api.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_types.h"
+#include "../../messenger/gek.h"
+#include "../../messenger/groups.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -132,14 +134,14 @@ static char* serialize_messages_to_json(
             json_object_object_add(msg_obj, "sender", json_object_new_string(messages[m].sender));
             json_object_object_add(msg_obj, "recipient", json_object_new_string(messages[m].recipient));
 
-            // Base64 encode the encrypted message
-            char *enc_b64 = qgp_base64_encode(messages[m].encrypted_message, messages[m].encrypted_len, NULL);
-            if (enc_b64) {
-                json_object_object_add(msg_obj, "encrypted_message_base64", json_object_new_string(enc_b64));
-                free(enc_b64);
+            // v3: Store plaintext directly (v14 schema - no encryption in DB)
+            if (messages[m].plaintext) {
+                json_object_object_add(msg_obj, "plaintext", json_object_new_string(messages[m].plaintext));
             }
-
-            json_object_object_add(msg_obj, "encrypted_len", json_object_new_int64(messages[m].encrypted_len));
+            // Store sender fingerprint for duplicate detection
+            if (messages[m].sender_fingerprint[0] != '\0') {
+                json_object_object_add(msg_obj, "sender_fingerprint", json_object_new_string(messages[m].sender_fingerprint));
+            }
             json_object_object_add(msg_obj, "timestamp", json_object_new_int64(messages[m].timestamp));
             json_object_object_add(msg_obj, "is_outgoing", json_object_new_boolean(
                 strcmp(messages[m].sender, fingerprint) == 0));
@@ -167,9 +169,82 @@ static char* serialize_messages_to_json(
         *message_count_out = total_messages;
     }
 
+    // === Add GEK data (v2) ===
+    gek_export_entry_t *gek_entries = NULL;
+    size_t gek_count = 0;
+    if (gek_export_all(&gek_entries, &gek_count) == 0 && gek_count > 0) {
+        json_object *geks_array = json_object_new_array();
+        for (size_t i = 0; i < gek_count; i++) {
+            json_object *gek_obj = json_object_new_object();
+            json_object_object_add(gek_obj, "group_uuid",
+                json_object_new_string(gek_entries[i].group_uuid));
+            json_object_object_add(gek_obj, "gek_version",
+                json_object_new_int((int)gek_entries[i].gek_version));
+
+            // Base64 encode the encrypted GEK
+            char *gek_b64 = qgp_base64_encode(gek_entries[i].encrypted_gek,
+                GEK_ENC_TOTAL_SIZE, NULL);
+            if (gek_b64) {
+                json_object_object_add(gek_obj, "gek_base64",
+                    json_object_new_string(gek_b64));
+                free(gek_b64);
+            }
+
+            json_object_object_add(gek_obj, "created_at",
+                json_object_new_int64((int64_t)gek_entries[i].created_at));
+            json_object_object_add(gek_obj, "expires_at",
+                json_object_new_int64((int64_t)gek_entries[i].expires_at));
+            json_object_array_add(geks_array, gek_obj);
+        }
+        json_object_object_add(root, "gek_count", json_object_new_int((int)gek_count));
+        json_object_object_add(root, "geks", geks_array);
+        gek_free_export_entries(gek_entries, gek_count);
+        QGP_LOG_INFO(LOG_TAG, "Added %zu GEK entries to backup", gek_count);
+    } else {
+        json_object_object_add(root, "gek_count", json_object_new_int(0));
+    }
+
+    // === Add group data (v2) ===
+    groups_export_entry_t *group_entries = NULL;
+    size_t group_count = 0;
+    if (groups_export_all(&group_entries, &group_count) == 0 && group_count > 0) {
+        json_object *groups_array = json_object_new_array();
+        for (size_t i = 0; i < group_count; i++) {
+            json_object *group_obj = json_object_new_object();
+            json_object_object_add(group_obj, "uuid",
+                json_object_new_string(group_entries[i].uuid));
+            json_object_object_add(group_obj, "name",
+                json_object_new_string(group_entries[i].name));
+            json_object_object_add(group_obj, "owner_fingerprint",
+                json_object_new_string(group_entries[i].owner_fp));
+            json_object_object_add(group_obj, "is_owner",
+                json_object_new_boolean(group_entries[i].is_owner));
+            json_object_object_add(group_obj, "created_at",
+                json_object_new_int64((int64_t)group_entries[i].created_at));
+
+            // Add members array
+            json_object *members_array = json_object_new_array();
+            for (int m = 0; m < group_entries[i].member_count; m++) {
+                if (group_entries[i].members && group_entries[i].members[m]) {
+                    json_object_array_add(members_array,
+                        json_object_new_string(group_entries[i].members[m]));
+                }
+            }
+            json_object_object_add(group_obj, "members", members_array);
+            json_object_array_add(groups_array, group_obj);
+        }
+        json_object_object_add(root, "group_count", json_object_new_int((int)group_count));
+        json_object_object_add(root, "groups", groups_array);
+        groups_free_export_entries(group_entries, group_count);
+        QGP_LOG_INFO(LOG_TAG, "Added %zu groups to backup", group_count);
+    } else {
+        json_object_object_add(root, "group_count", json_object_new_int(0));
+    }
+
     // Convert to string
     const char *json_str = json_object_to_json_string_ext(root, JSON_C_TO_STRING_PLAIN);
-    QGP_LOG_INFO(LOG_TAG, "Serialized %d messages to JSON (%zu bytes)", total_messages, strlen(json_str));
+    QGP_LOG_INFO(LOG_TAG, "Serialized %d messages, %zu GEKs, %zu groups to JSON (%zu bytes)",
+                 total_messages, gek_count, group_count, strlen(json_str));
     char *result = strdup(json_str);
 
     json_object_put(root);  // This frees the entire object tree
@@ -217,66 +292,63 @@ static int deserialize_and_import_messages(
         json_object *msg_obj = json_object_array_get_idx(messages_array, i);
         if (!msg_obj) continue;
 
-        // Extract fields
+        // Extract fields (v3 format: plaintext instead of encrypted_message)
         json_object *sender_obj = NULL, *recipient_obj = NULL;
-        json_object *enc_b64_obj = NULL, *timestamp_obj = NULL;
+        json_object *plaintext_obj = NULL, *timestamp_obj = NULL;
         json_object *is_outgoing_obj = NULL, *group_id_obj = NULL;
-        json_object *message_type_obj = NULL;
+        json_object *message_type_obj = NULL, *sender_fp_obj = NULL;
 
         json_object_object_get_ex(msg_obj, "sender", &sender_obj);
         json_object_object_get_ex(msg_obj, "recipient", &recipient_obj);
-        json_object_object_get_ex(msg_obj, "encrypted_message_base64", &enc_b64_obj);
+        json_object_object_get_ex(msg_obj, "plaintext", &plaintext_obj);
         json_object_object_get_ex(msg_obj, "timestamp", &timestamp_obj);
         json_object_object_get_ex(msg_obj, "is_outgoing", &is_outgoing_obj);
         json_object_object_get_ex(msg_obj, "group_id", &group_id_obj);
         json_object_object_get_ex(msg_obj, "message_type", &message_type_obj);
+        json_object_object_get_ex(msg_obj, "sender_fingerprint", &sender_fp_obj);
 
-        if (!sender_obj || !recipient_obj || !enc_b64_obj || !timestamp_obj) {
-            QGP_LOG_WARN(LOG_TAG, "Skipping message %zu: missing required fields", i);
+        // v3 requires plaintext field - skip old v2 encrypted format
+        if (!sender_obj || !recipient_obj || !plaintext_obj || !timestamp_obj) {
+            // Check if this is old v2 encrypted format
+            json_object *enc_b64_obj = NULL;
+            if (json_object_object_get_ex(msg_obj, "encrypted_message_base64", &enc_b64_obj)) {
+                QGP_LOG_WARN(LOG_TAG, "Skipping message %zu: old v2 encrypted format not supported in v3", i);
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "Skipping message %zu: missing required fields", i);
+            }
             skipped++;
             continue;
         }
 
         const char *sender = json_object_get_string(sender_obj);
         const char *recipient = json_object_get_string(recipient_obj);
-        const char *enc_b64 = json_object_get_string(enc_b64_obj);
+        const char *plaintext = json_object_get_string(plaintext_obj);
         time_t timestamp = (time_t)json_object_get_int64(timestamp_obj);
         bool is_outgoing = is_outgoing_obj ? json_object_get_boolean(is_outgoing_obj) : false;
         int group_id = group_id_obj ? json_object_get_int(group_id_obj) : 0;
         int message_type = message_type_obj ? json_object_get_int(message_type_obj) : 0;
+        const char *sender_fp = sender_fp_obj ? json_object_get_string(sender_fp_obj) : sender;
 
-        // Decode base64 encrypted message
-        size_t enc_len = 0;
-        uint8_t *encrypted_message = qgp_base64_decode(enc_b64, &enc_len);
-        if (!encrypted_message || enc_len == 0) {
-            QGP_LOG_WARN(LOG_TAG, "Skipping message %zu: failed to decode base64", i);
-            if (encrypted_message) free(encrypted_message);
-            skipped++;
-            continue;
-        }
-
-        // Check if message already exists (duplicate check)
-        if (message_backup_exists_ciphertext(msg_ctx, encrypted_message, enc_len)) {
+        // Check if message already exists (v3: use sender_fp + recipient + timestamp)
+        if (message_backup_exists(msg_ctx, sender_fp, recipient, timestamp)) {
             QGP_LOG_DEBUG(LOG_TAG, "Skipping message %zu: duplicate", i);
-            free(encrypted_message);
             skipped++;
             continue;
         }
 
-        // Import message to SQLite
+        // Import message to SQLite (v3 format: plaintext)
         int result = message_backup_save(
             msg_ctx,
             sender,
             recipient,
-            encrypted_message,
-            enc_len,
+            plaintext,      // v3: plaintext message
+            sender_fp,      // v3: sender fingerprint
             timestamp,
             is_outgoing,
             group_id,
-            message_type
+            message_type,
+            0  // offline_seq = 0 (backup doesn't preserve this)
         );
-
-        free(encrypted_message);
 
         if (result == 0) {
             restored++;
@@ -289,12 +361,155 @@ static int deserialize_and_import_messages(
         }
     }
 
+    // === Import GEK data (v2) ===
+    json_object *geks_array = NULL;
+    int gek_imported = 0;
+    if (json_object_object_get_ex(root, "geks", &geks_array)) {
+        size_t gek_count = json_object_array_length(geks_array);
+        if (gek_count > 0) {
+            gek_export_entry_t *gek_entries = calloc(gek_count, sizeof(gek_export_entry_t));
+            if (gek_entries) {
+                for (size_t i = 0; i < gek_count; i++) {
+                    json_object *gek_obj = json_object_array_get_idx(geks_array, i);
+                    if (!gek_obj) continue;
+
+                    json_object *uuid_obj = NULL, *version_obj = NULL;
+                    json_object *gek_b64_obj = NULL, *created_obj = NULL, *expires_obj = NULL;
+
+                    json_object_object_get_ex(gek_obj, "group_uuid", &uuid_obj);
+                    json_object_object_get_ex(gek_obj, "gek_version", &version_obj);
+                    json_object_object_get_ex(gek_obj, "gek_base64", &gek_b64_obj);
+                    json_object_object_get_ex(gek_obj, "created_at", &created_obj);
+                    json_object_object_get_ex(gek_obj, "expires_at", &expires_obj);
+
+                    if (uuid_obj && gek_b64_obj) {
+                        const char *uuid = json_object_get_string(uuid_obj);
+                        const char *gek_b64 = json_object_get_string(gek_b64_obj);
+
+                        if (uuid) {
+                            strncpy(gek_entries[i].group_uuid, uuid, 36);
+                            gek_entries[i].group_uuid[36] = '\0';
+                        }
+                        gek_entries[i].gek_version = version_obj ?
+                            (uint32_t)json_object_get_int(version_obj) : 0;
+                        gek_entries[i].created_at = created_obj ?
+                            (uint64_t)json_object_get_int64(created_obj) : 0;
+                        gek_entries[i].expires_at = expires_obj ?
+                            (uint64_t)json_object_get_int64(expires_obj) : 0;
+
+                        // Decode base64 encrypted GEK
+                        size_t dec_len = 0;
+                        uint8_t *dec_gek = qgp_base64_decode(gek_b64, &dec_len);
+                        if (dec_gek && dec_len == GEK_ENC_TOTAL_SIZE) {
+                            memcpy(gek_entries[i].encrypted_gek, dec_gek, GEK_ENC_TOTAL_SIZE);
+                        }
+                        if (dec_gek) free(dec_gek);
+                    }
+                }
+
+                gek_import_all(gek_entries, gek_count, &gek_imported);
+                free(gek_entries);
+            }
+        }
+        QGP_LOG_INFO(LOG_TAG, "Imported %d GEK entries from backup", gek_imported);
+    }
+
+    // === Import group data (v2) ===
+    json_object *groups_array_obj = NULL;
+    int groups_imported = 0;
+    if (json_object_object_get_ex(root, "groups", &groups_array_obj)) {
+        size_t group_count = json_object_array_length(groups_array_obj);
+        if (group_count > 0) {
+            groups_export_entry_t *group_entries = calloc(group_count, sizeof(groups_export_entry_t));
+            if (group_entries) {
+                for (size_t i = 0; i < group_count; i++) {
+                    json_object *group_obj = json_object_array_get_idx(groups_array_obj, i);
+                    if (!group_obj) continue;
+
+                    json_object *uuid_obj = NULL, *name_obj = NULL;
+                    json_object *owner_obj = NULL, *is_owner_obj = NULL;
+                    json_object *created_obj = NULL, *members_obj = NULL;
+
+                    json_object_object_get_ex(group_obj, "uuid", &uuid_obj);
+                    json_object_object_get_ex(group_obj, "name", &name_obj);
+                    json_object_object_get_ex(group_obj, "owner_fingerprint", &owner_obj);
+                    json_object_object_get_ex(group_obj, "is_owner", &is_owner_obj);
+                    json_object_object_get_ex(group_obj, "created_at", &created_obj);
+                    json_object_object_get_ex(group_obj, "members", &members_obj);
+
+                    if (uuid_obj) {
+                        const char *uuid = json_object_get_string(uuid_obj);
+                        if (uuid) {
+                            strncpy(group_entries[i].uuid, uuid, 36);
+                            group_entries[i].uuid[36] = '\0';
+                        }
+                    }
+                    if (name_obj) {
+                        const char *name = json_object_get_string(name_obj);
+                        if (name) {
+                            strncpy(group_entries[i].name, name, 127);
+                            group_entries[i].name[127] = '\0';
+                        }
+                    }
+                    if (owner_obj) {
+                        const char *owner = json_object_get_string(owner_obj);
+                        if (owner) {
+                            strncpy(group_entries[i].owner_fp, owner, 128);
+                            group_entries[i].owner_fp[128] = '\0';
+                        }
+                    }
+                    group_entries[i].is_owner = is_owner_obj ?
+                        json_object_get_boolean(is_owner_obj) : false;
+                    group_entries[i].created_at = created_obj ?
+                        (uint64_t)json_object_get_int64(created_obj) : 0;
+
+                    // Parse members array
+                    group_entries[i].members = NULL;
+                    group_entries[i].member_count = 0;
+                    if (members_obj) {
+                        size_t mem_count = json_object_array_length(members_obj);
+                        if (mem_count > 0) {
+                            group_entries[i].members = calloc(mem_count, sizeof(char *));
+                            if (group_entries[i].members) {
+                                for (size_t m = 0; m < mem_count; m++) {
+                                    json_object *mem_obj = json_object_array_get_idx(members_obj, m);
+                                    if (mem_obj) {
+                                        const char *fp = json_object_get_string(mem_obj);
+                                        if (fp) {
+                                            group_entries[i].members[m] = strdup(fp);
+                                            group_entries[i].member_count++;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                groups_import_all(group_entries, group_count, &groups_imported);
+
+                // Free group entries
+                for (size_t i = 0; i < group_count; i++) {
+                    if (group_entries[i].members) {
+                        for (int m = 0; m < group_entries[i].member_count; m++) {
+                            free(group_entries[i].members[m]);
+                        }
+                        free(group_entries[i].members);
+                    }
+                }
+                free(group_entries);
+            }
+        }
+        QGP_LOG_INFO(LOG_TAG, "Imported %d groups from backup", groups_imported);
+    }
+
     json_object_put(root);
 
     if (restored_count_out) *restored_count_out = restored;
     if (skipped_count_out) *skipped_count_out = skipped;
 
-    QGP_LOG_INFO(LOG_TAG, "Import complete: %d restored, %d skipped", restored, skipped);
+    QGP_LOG_INFO(LOG_TAG, "Import complete: %d messages restored, %d skipped, %d GEKs, %d groups",
+                 restored, skipped, gek_imported, groups_imported);
 
     return 0;
 }

@@ -17,6 +17,45 @@ import java.io.FileOutputStream
  * Phase 14: Added ForegroundService integration for reliable DHT-only messaging.
  */
 class MainActivity : FlutterFragmentActivity() {
+    companion object {
+        private const val TAG = "MainActivity"
+
+        /**
+         * Singleton notification helper - shared between MainActivity and ForegroundService.
+         * Initialized early in MainActivity.onCreate() to catch all DHT events.
+         */
+        @Volatile
+        var notificationHelper: DnaNotificationHelper? = null
+            private set
+
+        /**
+         * Initialize notification helper if not already initialized.
+         * Called early in MainActivity.onCreate() and also from ForegroundService as fallback.
+         */
+        @Synchronized
+        fun initNotificationHelper(context: Context): DnaNotificationHelper? {
+            if (notificationHelper == null) {
+                try {
+                    notificationHelper = DnaNotificationHelper(context.applicationContext)
+                    android.util.Log.i(TAG, "Notification helper initialized (singleton)")
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "Failed to initialize notification helper: ${e.message}")
+                }
+            }
+            return notificationHelper
+        }
+
+        /**
+         * Cleanup notification helper when app is fully destroyed.
+         */
+        @Synchronized
+        fun cleanupNotificationHelper() {
+            notificationHelper?.unregister()
+            notificationHelper = null
+            android.util.Log.i(TAG, "Notification helper cleaned up")
+        }
+    }
+
     private var serviceChannel: DnaServiceMethodChannel? = null
 
     // Broadcast receiver for service poll requests
@@ -39,6 +78,10 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Initialize notification helper EARLY - before DHT connects
+        // This ensures we catch all DHT events from the very beginning
+        initNotificationHelper(this)
 
         // Copy CA bundle from assets to app data directory for curl SSL
         copyCACertificateBundle()

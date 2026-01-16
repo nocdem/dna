@@ -10,9 +10,8 @@
 #include "crypto/utils/qgp_platform.h"
 #include "dht/core/dht_keyserver.h"
 #include "dht/client/dht_singleton.h"
-#include "p2p/transport/transport_core.h"
-#include "p2p/transport/transport_ice.h"
-#include "p2p/transport/turn_credentials.h"
+#include "transport/internal/transport_core.h"
+/* ICE/TURN removed in v0.4.61 for privacy */
 #include "messenger.h"
 
 #include <stdio.h>
@@ -100,6 +99,11 @@ static void on_display_name(dna_request_id_t request_id, int error,
     wait->done = true;
     pthread_cond_signal(&wait->cond);
     pthread_mutex_unlock(&wait->mutex);
+
+    /* Free the strdup'd string from dna_handle_lookup_name */
+    if (display_name) {
+        free((void*)display_name);
+    }
 }
 
 static void on_contacts_listed(dna_request_id_t request_id, int error,
@@ -1472,297 +1476,6 @@ int cmd_online(dna_engine_t *engine, const char *fingerprint) {
 }
 
 /* ============================================================================
- * NAT TRAVERSAL COMMANDS (STUN/ICE/TURN)
- * ============================================================================ */
-
-int cmd_stun_test(void) {
-    printf("Testing STUN connectivity...\n");
-    printf("========================================\n");
-
-    // Test multiple STUN servers
-    const char *stun_servers[] = {
-        "stun.l.google.com",
-        "stun1.l.google.com",
-        "stun.cloudflare.com"
-    };
-    const uint16_t stun_ports[] = {19302, 19302, 3478};
-    const int num_servers = 3;
-
-    char public_ip[64] = {0};
-    int success = 0;
-
-    // Try stun_get_public_ip first (uses internal implementation)
-    if (stun_get_public_ip(public_ip, sizeof(public_ip)) == 0) {
-        printf("✓ STUN Test PASSED\n");
-        printf("  Public IP: %s\n", public_ip);
-        success = 1;
-    } else {
-        printf("✗ STUN Test FAILED\n");
-        printf("  Could not discover public IP via STUN\n");
-    }
-
-    printf("========================================\n");
-    printf("\nSTUN Servers Tested:\n");
-    for (int i = 0; i < num_servers; i++) {
-        printf("  %d. %s:%d\n", i + 1, stun_servers[i], stun_ports[i]);
-    }
-
-    if (success) {
-        printf("\nNAT Type: Likely Open/Full Cone (direct P2P possible)\n");
-    } else {
-        printf("\nNAT Type: Unknown (may need TURN relay)\n");
-    }
-
-    return success ? 0 : -1;
-}
-
-int cmd_ice_status(dna_engine_t *engine) {
-    if (!engine) {
-        printf("Error: Engine not initialized\n");
-        return -1;
-    }
-
-    printf("ICE Connection Status\n");
-    printf("========================================\n");
-
-    // Get messenger context from engine
-    messenger_context_t *messenger = (messenger_context_t *)dna_engine_get_messenger_context(engine);
-    if (!messenger) {
-        printf("Messenger: NOT INITIALIZED\n");
-        return -1;
-    }
-
-    // Get P2P transport from messenger
-    p2p_transport_t *transport = messenger->p2p_transport;
-    if (!transport) {
-        printf("P2P Transport: NOT INITIALIZED\n");
-        printf("  (Start P2P with identity load)\n");
-        return -1;
-    }
-
-    printf("P2P Transport: ACTIVE\n");
-    printf("  Listen Port: 4001 (TCP)\n");
-
-    // Check ICE readiness
-    if (transport->ice_ready) {
-        printf("  ICE Status: READY\n");
-
-        // Get local candidates if available
-        if (transport->ice_context) {
-            const char *local_cands = ice_get_local_candidates(transport->ice_context);
-            if (local_cands && strlen(local_cands) > 0) {
-                printf("\nLocal ICE Candidates:\n");
-                // Parse and display candidates
-                char *cands_copy = strdup(local_cands);
-                char *line = strtok(cands_copy, "\n");
-                int count = 0;
-                while (line && count < 10) {
-                    if (strlen(line) > 0) {
-                        // Extract type from candidate line
-                        if (strstr(line, "typ host")) {
-                            printf("  [HOST]  %s\n", line);
-                        } else if (strstr(line, "typ srflx")) {
-                            printf("  [SRFLX] %s\n", line);
-                        } else if (strstr(line, "typ relay")) {
-                            printf("  [RELAY] %s\n", line);
-                        } else {
-                            printf("  %s\n", line);
-                        }
-                        count++;
-                    }
-                    line = strtok(NULL, "\n");
-                }
-                free(cands_copy);
-                printf("  (Total: %d candidates)\n", count);
-            } else {
-                printf("\nLocal ICE Candidates: None gathered\n");
-            }
-        }
-    } else {
-        printf("  ICE Status: NOT READY\n");
-        printf("  (ICE initializes on first P2P connection attempt)\n");
-    }
-
-    // Show active connections
-    printf("\nActive Connections: %zu\n", transport->connection_count);
-    if (transport->connection_count > 0) {
-        pthread_mutex_lock(&transport->connections_mutex);
-        for (size_t i = 0; i < transport->connection_count && i < 10; i++) {
-            p2p_connection_t *conn = transport->connections[i];
-            if (conn && conn->active) {
-                const char *type = (conn->type == CONNECTION_TYPE_ICE) ? "ICE" : "TCP";
-                printf("  %zu. [%s] %.16s...\n", i + 1, type, conn->peer_fingerprint);
-            }
-        }
-        pthread_mutex_unlock(&transport->connections_mutex);
-    }
-
-    printf("========================================\n");
-    return 0;
-}
-
-int cmd_turn_creds(dna_engine_t *engine, bool force_request) {
-    if (!engine) {
-        printf("Error: Engine not initialized\n");
-        return -1;
-    }
-
-    printf("TURN Credentials\n");
-    printf("========================================\n");
-
-    // Get identity fingerprint from engine
-    const char *fingerprint = dna_engine_get_fingerprint(engine);
-
-    if (!fingerprint || strlen(fingerprint) == 0) {
-        printf("Error: No identity loaded\n");
-        return -1;
-    }
-
-    printf("Identity: %.16s...\n\n", fingerprint);
-
-    // Initialize TURN credential system if needed
-    turn_credentials_init();
-
-    turn_credentials_t creds;
-    memset(&creds, 0, sizeof(creds));
-
-    if (force_request) {
-        printf("Requesting TURN credentials from DNA Nodus...\n");
-
-        int result = dna_engine_request_turn_credentials(engine, 10000);
-        if (result != 0) {
-            printf("✗ Failed to obtain TURN credentials\n");
-            printf("  (Bootstrap servers may be unreachable)\n");
-            return -1;
-        }
-
-        printf("✓ Credentials obtained!\n\n");
-    }
-
-    // Show cached credentials
-    if (turn_credentials_get_cached(fingerprint, &creds) != 0) {
-        printf("No cached credentials found.\n");
-        printf("\nUse 'turn-creds --force' to request credentials from DNA Nodus.\n");
-        printf("\nTURN credentials are also obtained automatically when:\n");
-        printf("  1. ICE direct connection fails\n");
-        printf("  2. STUN-only candidates are insufficient\n");
-        printf("  3. Symmetric NAT requires relay\n");
-        return 0;
-    }
-
-    printf("Cached credentials:\n\n");
-
-    // Display credentials
-    printf("TURN Servers (%zu):\n", creds.server_count);
-    for (size_t i = 0; i < creds.server_count; i++) {
-        turn_server_info_t *srv = &creds.servers[i];
-        printf("  %zu. %s:%d\n", i + 1, srv->host, srv->port);
-        printf("     Username: %s\n", srv->username);
-        printf("     Password: %s\n", srv->password);
-
-        // Calculate expiry
-        time_t now = time(NULL);
-        if (srv->expires_at > now) {
-            int hours_left = (int)((srv->expires_at - now) / 3600);
-            int days_left = hours_left / 24;
-            if (days_left > 0) {
-                printf("     Expires:  %d days, %d hours\n", days_left, hours_left % 24);
-            } else {
-                printf("     Expires:  %d hours\n", hours_left);
-            }
-        } else {
-            printf("     Expires:  EXPIRED\n");
-        }
-    }
-
-    printf("========================================\n");
-    return 0;
-}
-
-int cmd_turn_test(dna_engine_t *engine) {
-    if (!engine) {
-        printf("Error: No identity loaded.\n");
-        return -1;
-    }
-
-    printf("\nTURN Relay Test\n");
-    printf("========================================\n");
-
-    // Get identity fingerprint
-    const char *fp = dna_engine_get_fingerprint(engine);
-    if (!fp || strlen(fp) == 0) {
-        printf("Error: No identity loaded.\n");
-        return -1;
-    }
-    printf("Identity: %.16s...\n\n", fp);
-
-    // Get list of TURN servers
-    const char *servers[4];
-    int num_servers = turn_credentials_get_server_list(servers, 4);
-    if (num_servers == 0) {
-        printf("Error: No TURN servers configured.\n");
-        return -1;
-    }
-
-    printf("Testing %d TURN servers...\n\n", num_servers);
-
-    int success_count = 0;
-
-    for (int i = 0; i < num_servers; i++) {
-        const char *server_ip = servers[i];
-        printf("[%d/%d] %s\n", i + 1, num_servers, server_ip);
-
-        // Check for cached credentials first
-        turn_server_info_t creds;
-        int have_creds = (turn_credentials_get_for_server(server_ip, &creds) == 0);
-
-        if (have_creds) {
-            printf("      Cached credentials: %s\n", creds.username);
-        } else {
-            // Request credentials
-            printf("      Requesting credentials...\n");
-            int ret = dna_engine_request_turn_credentials(engine, 5000);
-            if (ret == 0) {
-                have_creds = (turn_credentials_get_for_server(server_ip, &creds) == 0);
-                if (have_creds) {
-                    printf("      ✓ Got credentials: %s\n", creds.username);
-                }
-            }
-        }
-
-        if (have_creds) {
-            // Show credential status
-            time_t now = time(NULL);
-            if (creds.expires_at > now) {
-                int hours_left = (int)((creds.expires_at - now) / 3600);
-                printf("      Expires: %d hours\n", hours_left);
-                printf("      Status: ✓ READY\n");
-                success_count++;
-            } else {
-                printf("      Status: ✗ EXPIRED\n");
-            }
-        } else {
-            printf("      Status: ✗ NO CREDENTIALS\n");
-        }
-        printf("\n");
-    }
-
-    printf("========================================\n");
-    printf("Result: %d/%d servers ready for TURN relay\n", success_count, num_servers);
-
-    if (success_count == 0) {
-        printf("\n⚠ No TURN servers available. ICE will use STUN-only.\n");
-        printf("  TURN servers may need to be deployed with signature verification.\n");
-    } else if (success_count < num_servers) {
-        printf("\n⚠ Some TURN servers unavailable. Failover will use available servers.\n");
-    } else {
-        printf("\n✓ All TURN servers ready. Full NAT traversal capability available.\n");
-    }
-
-    return (success_count > 0) ? 0 : -1;
-}
-
-/* ============================================================================
  * VERSION COMMANDS
  * ============================================================================ */
 
@@ -1870,6 +1583,472 @@ int cmd_check_version(dna_engine_t *engine) {
         printf("  Publisher: %.16s...\n", result.info.publisher);
     }
 
+    return 0;
+}
+
+/* ============================================================================
+ * DHT DEBUG COMMANDS
+ * ============================================================================ */
+
+#include "dht/core/dht_bootstrap_registry.h"
+
+int cmd_bootstrap_registry(dna_engine_t *engine) {
+    (void)engine;  /* Not needed, uses singleton */
+
+    printf("Fetching bootstrap registry from DHT...\n\n");
+
+    dht_context_t *dht = dht_singleton_get();
+    if (!dht) {
+        printf("Error: DHT not initialized\n");
+        return -1;
+    }
+
+    /* Wait for DHT to be ready */
+    if (!dht_context_is_ready(dht)) {
+        printf("Waiting for DHT connection...\n");
+        for (int i = 0; i < 50; i++) {
+            if (dht_context_is_ready(dht)) break;
+            struct timespec ts = {0, 100000000};  /* 100ms */
+            nanosleep(&ts, NULL);
+        }
+        if (!dht_context_is_ready(dht)) {
+            printf("Error: DHT not connected\n");
+            return -1;
+        }
+    }
+
+    bootstrap_registry_t registry;
+    memset(&registry, 0, sizeof(registry));
+
+    int ret = dht_bootstrap_registry_fetch(dht, &registry);
+
+    if (ret != 0) {
+        printf("Error: Failed to fetch bootstrap registry (error: %d)\n", ret);
+        printf("\nPossible causes:\n");
+        printf("  - Bootstrap nodes not registered in DHT\n");
+        printf("  - DHT network connectivity issue\n");
+        printf("  - Registry key mismatch\n");
+        return ret;
+    }
+
+    if (registry.node_count == 0) {
+        printf("Registry is empty (no nodes registered)\n");
+        return 0;
+    }
+
+    printf("Found %zu bootstrap nodes:\n\n", registry.node_count);
+    printf("%-18s %-6s %-10s %-12s %-12s %s\n",
+           "IP", "PORT", "VERSION", "UPTIME", "LAST_SEEN", "NODE_ID");
+    printf("%-18s %-6s %-10s %-12s %-12s %s\n",
+           "------------------", "------", "----------", "------------", "------------", "--------------------");
+
+    time_t now = time(NULL);
+
+    for (size_t i = 0; i < registry.node_count; i++) {
+        bootstrap_node_entry_t *node = &registry.nodes[i];
+
+        /* Calculate time since last seen */
+        int64_t age_sec = (int64_t)(now - node->last_seen);
+        char age_str[32];
+        if (age_sec < 0) {
+            snprintf(age_str, sizeof(age_str), "future?");
+        } else if (age_sec < 60) {
+            snprintf(age_str, sizeof(age_str), "%llds ago", (long long)age_sec);
+        } else if (age_sec < 3600) {
+            snprintf(age_str, sizeof(age_str), "%lldm ago", (long long)(age_sec / 60));
+        } else if (age_sec < 86400) {
+            snprintf(age_str, sizeof(age_str), "%lldh ago", (long long)(age_sec / 3600));
+        } else {
+            snprintf(age_str, sizeof(age_str), "%lldd ago", (long long)(age_sec / 86400));
+        }
+
+        /* Format uptime */
+        char uptime_str[32];
+        if (node->uptime < 60) {
+            snprintf(uptime_str, sizeof(uptime_str), "%llus", (unsigned long long)node->uptime);
+        } else if (node->uptime < 3600) {
+            snprintf(uptime_str, sizeof(uptime_str), "%llum", (unsigned long long)(node->uptime / 60));
+        } else if (node->uptime < 86400) {
+            snprintf(uptime_str, sizeof(uptime_str), "%lluh", (unsigned long long)(node->uptime / 3600));
+        } else {
+            snprintf(uptime_str, sizeof(uptime_str), "%llud", (unsigned long long)(node->uptime / 86400));
+        }
+
+        /* Status indicator */
+        const char *status = (age_sec < DHT_BOOTSTRAP_STALE_TIMEOUT) ? "✓" : "✗";
+
+        printf("%s %-17s %-6d %-10s %-12s %-12s %s\n",
+               status,
+               node->ip,
+               node->port,
+               node->version,
+               uptime_str,
+               age_str,
+               node->node_id);
+    }
+
+    /* Filter and show active count */
+    dht_bootstrap_registry_filter_active(&registry);
+    printf("\nActive nodes (< %d min old): %zu\n",
+           DHT_BOOTSTRAP_STALE_TIMEOUT / 60, registry.node_count);
+
+    return 0;
+}
+
+/* ============================================================================
+ * GROUP COMMANDS (GEK System)
+ * ============================================================================ */
+
+/* Callback storage for group operations */
+typedef struct {
+    cli_wait_t wait;
+    dna_group_t *groups;
+    int group_count;
+    char group_uuid[37];
+} cli_group_wait_t;
+
+static void on_groups_list(dna_request_id_t request_id, int error,
+                           dna_group_t *groups, int count, void *user_data) {
+    (void)request_id;
+    cli_group_wait_t *ctx = (cli_group_wait_t *)user_data;
+
+    pthread_mutex_lock(&ctx->wait.mutex);
+    ctx->wait.result = error;
+    if (error == 0 && groups && count > 0) {
+        ctx->groups = malloc(sizeof(dna_group_t) * count);
+        if (ctx->groups) {
+            memcpy(ctx->groups, groups, sizeof(dna_group_t) * count);
+            ctx->group_count = count;
+        }
+    }
+    ctx->wait.done = true;
+    pthread_cond_signal(&ctx->wait.cond);
+    pthread_mutex_unlock(&ctx->wait.mutex);
+}
+
+static void on_group_created(dna_request_id_t request_id, int error,
+                             const char *group_uuid, void *user_data) {
+    (void)request_id;
+    cli_group_wait_t *ctx = (cli_group_wait_t *)user_data;
+
+    pthread_mutex_lock(&ctx->wait.mutex);
+    ctx->wait.result = error;
+    if (error == 0 && group_uuid) {
+        strncpy(ctx->group_uuid, group_uuid, sizeof(ctx->group_uuid) - 1);
+        ctx->group_uuid[sizeof(ctx->group_uuid) - 1] = '\0';
+    }
+    ctx->wait.done = true;
+    pthread_cond_signal(&ctx->wait.cond);
+    pthread_mutex_unlock(&ctx->wait.mutex);
+}
+
+static void on_group_message_sent(dna_request_id_t request_id, int error, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+}
+
+int cmd_group_list(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    cli_group_wait_t ctx = {0};
+    cli_wait_init(&ctx.wait);
+    ctx.groups = NULL;
+    ctx.group_count = 0;
+
+    dna_request_id_t req_id = dna_engine_get_groups(engine, on_groups_list, &ctx);
+    if (req_id == 0) {
+        printf("Error: Failed to request groups list\n");
+        cli_wait_destroy(&ctx.wait);
+        return -1;
+    }
+
+    int result = cli_wait_for(&ctx.wait);
+    cli_wait_destroy(&ctx.wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get groups: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    if (ctx.group_count == 0) {
+        printf("No groups found.\n");
+        printf("Use 'group-create <name>' to create a new group.\n");
+        return 0;
+    }
+
+    printf("Groups (%d):\n", ctx.group_count);
+    for (int i = 0; i < ctx.group_count; i++) {
+        dna_group_t *g = &ctx.groups[i];
+        printf("  %d. %s\n", i + 1, g->name);
+        printf("     UUID: %s\n", g->uuid);
+        printf("     Members: %d\n", g->member_count);
+        printf("     Creator: %.16s...\n", g->creator);
+    }
+
+    if (ctx.groups) {
+        free(ctx.groups);
+    }
+
+    return 0;
+}
+
+int cmd_group_create(dna_engine_t *engine, const char *name) {
+    if (!engine || !name) {
+        printf("Error: Engine not initialized or name missing\n");
+        return -1;
+    }
+
+    printf("Creating group '%s'...\n", name);
+
+    cli_group_wait_t ctx = {0};
+    cli_wait_init(&ctx.wait);
+    ctx.group_uuid[0] = '\0';
+
+    /* Create group with no initial members (owner only) */
+    dna_request_id_t req_id = dna_engine_create_group(engine, name, NULL, 0, on_group_created, &ctx);
+    if (req_id == 0) {
+        printf("Error: Failed to initiate group creation\n");
+        cli_wait_destroy(&ctx.wait);
+        return -1;
+    }
+
+    int result = cli_wait_for(&ctx.wait);
+    cli_wait_destroy(&ctx.wait);
+
+    if (result != 0) {
+        printf("Error: Failed to create group: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("✓ Group created successfully!\n");
+    printf("  UUID: %s\n", ctx.group_uuid);
+    printf("\nUse 'group-invite %s <fingerprint>' to add members.\n", ctx.group_uuid);
+
+    return 0;
+}
+
+int cmd_group_send(dna_engine_t *engine, const char *group_uuid, const char *message) {
+    if (!engine || !group_uuid || !message) {
+        printf("Error: Missing arguments\n");
+        return -1;
+    }
+
+    printf("Sending message to group %s...\n", group_uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_request_id_t req_id = dna_engine_send_group_message(engine, group_uuid, message, on_group_message_sent, &wait);
+    if (req_id == 0) {
+        printf("Error: Failed to initiate group message send\n");
+        cli_wait_destroy(&wait);
+        return -1;
+    }
+
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to send group message: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("✓ Message sent to group!\n");
+    return 0;
+}
+
+int cmd_group_info(dna_engine_t *engine, const char *group_uuid) {
+    if (!engine || !group_uuid) {
+        printf("Error: Missing group UUID\n");
+        return -1;
+    }
+
+    /* Get groups list and find the matching one */
+    cli_group_wait_t ctx = {0};
+    cli_wait_init(&ctx.wait);
+    ctx.groups = NULL;
+    ctx.group_count = 0;
+
+    dna_request_id_t req_id = dna_engine_get_groups(engine, on_groups_list, &ctx);
+    if (req_id == 0) {
+        printf("Error: Failed to request groups\n");
+        cli_wait_destroy(&ctx.wait);
+        return -1;
+    }
+
+    int result = cli_wait_for(&ctx.wait);
+    cli_wait_destroy(&ctx.wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get groups: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    /* Find the group */
+    dna_group_t *found = NULL;
+    for (int i = 0; i < ctx.group_count; i++) {
+        if (strcmp(ctx.groups[i].uuid, group_uuid) == 0) {
+            found = &ctx.groups[i];
+            break;
+        }
+    }
+
+    if (!found) {
+        printf("Error: Group not found: %s\n", group_uuid);
+        if (ctx.groups) free(ctx.groups);
+        return -1;
+    }
+
+    printf("========================================\n");
+    printf("Group: %s\n", found->name);
+    printf("UUID: %s\n", found->uuid);
+    printf("Members: %d\n", found->member_count);
+    printf("Creator: %s\n", found->creator);
+    if (found->created_at > 0) {
+        time_t ts = (time_t)found->created_at;
+        char time_str[32];
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+        printf("Created: %s\n", time_str);
+    }
+    printf("========================================\n");
+
+    if (ctx.groups) free(ctx.groups);
+    return 0;
+}
+
+int cmd_group_invite(dna_engine_t *engine, const char *group_uuid, const char *identifier) {
+    if (!engine || !group_uuid || !identifier) {
+        printf("Error: Missing arguments\n");
+        return -1;
+    }
+
+    /* Resolve name to fingerprint if needed */
+    char resolved_fp[129] = {0};
+    if (strlen(identifier) >= 128) {
+        /* Already looks like a fingerprint */
+        strncpy(resolved_fp, identifier, 128);
+    } else {
+        /* Assume it's a name - resolve via DHT lookup */
+        printf("Resolving name '%s'...\n", identifier);
+
+        cli_wait_t lookup_wait;
+        cli_wait_init(&lookup_wait);
+
+        dna_engine_lookup_name(engine, identifier, on_display_name, &lookup_wait);
+        int lookup_result = cli_wait_for(&lookup_wait);
+
+        if (lookup_result != 0 || strlen(lookup_wait.display_name) == 0) {
+            printf("Error: Name '%s' not found in DHT\n", identifier);
+            cli_wait_destroy(&lookup_wait);
+            return -1;
+        }
+
+        strncpy(resolved_fp, lookup_wait.display_name, 128);
+        cli_wait_destroy(&lookup_wait);
+        printf("Resolved to: %.16s...\n", resolved_fp);
+    }
+
+    printf("Inviting %.16s... to group %s...\n", resolved_fp, group_uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_request_id_t req_id = dna_engine_add_group_member(
+        engine, group_uuid, resolved_fp, on_completion, &wait);
+    if (req_id == 0) {
+        printf("Error: Failed to initiate group invite\n");
+        cli_wait_destroy(&wait);
+        return -1;
+    }
+
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to invite member: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("✓ Member invited successfully!\n");
+    return 0;
+}
+
+int cmd_group_sync(dna_engine_t *engine, const char *group_uuid) {
+    if (!engine || !group_uuid) {
+        printf("Error: Missing group UUID\n");
+        return -1;
+    }
+
+    printf("Syncing group %s from DHT...\n", group_uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_request_id_t req_id = dna_engine_sync_group_by_uuid(
+        engine, group_uuid, on_completion, &wait);
+    if (req_id == 0) {
+        printf("Error: Failed to initiate group sync\n");
+        cli_wait_destroy(&wait);
+        return -1;
+    }
+
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to sync group: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Group synced successfully from DHT!\n");
+    return 0;
+}
+
+int cmd_group_publish_gek(dna_engine_t *engine, const char *group_uuid) {
+    if (!engine || !group_uuid) {
+        printf("Error: Missing group UUID\n");
+        return -1;
+    }
+
+    printf("Publishing GEK for group %s to DHT...\n", group_uuid);
+
+    /* Get the fingerprint from engine */
+    const char *fingerprint = dna_engine_get_fingerprint(engine);
+    if (!fingerprint || strlen(fingerprint) == 0) {
+        printf("Error: No identity loaded\n");
+        return -1;
+    }
+
+    /* Call gek_rotate_on_member_add to generate and publish GEK */
+    /* This works because it:
+     * 1. Generates new GEK (or uses existing if version 0)
+     * 2. Builds IKP for all current members
+     * 3. Publishes to DHT
+     */
+    extern int gek_rotate_on_member_add(void *dht_ctx, const char *group_uuid, const char *owner_identity);
+
+    void *dht_ctx = dna_engine_get_dht_context(engine);
+    if (!dht_ctx) {
+        printf("Error: DHT not initialized\n");
+        return -1;
+    }
+
+    int ret = gek_rotate_on_member_add(dht_ctx, group_uuid, fingerprint);
+    if (ret != 0) {
+        printf("Error: Failed to publish GEK\n");
+        return -1;
+    }
+
+    printf("GEK published successfully to DHT!\n");
     return 0;
 }
 
@@ -2074,21 +2253,6 @@ bool execute_command(dna_engine_t *engine, const char *line) {
         } else {
             cmd_online(engine, fp);
         }
-    }
-    /* NAT Traversal Commands */
-    else if (strcmp(cmd, "stun-test") == 0) {
-        cmd_stun_test();
-    }
-    else if (strcmp(cmd, "ice-status") == 0) {
-        cmd_ice_status(engine);
-    }
-    else if (strcmp(cmd, "turn-creds") == 0) {
-        char *arg = strtok(NULL, " \t");
-        bool force = (arg && strcmp(arg, "--force") == 0);
-        cmd_turn_creds(engine, force);
-    }
-    else if (strcmp(cmd, "turn-test") == 0) {
-        cmd_turn_test(engine);
     }
     /* Version Commands */
     else if (strcmp(cmd, "publish-version") == 0) {

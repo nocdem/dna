@@ -162,6 +162,7 @@ static char* serialize_metadata(const dht_group_metadata_t *meta) {
     ptr += sprintf(ptr, "\"creator\":\"%s\",", meta->creator);
     ptr += sprintf(ptr, "\"created_at\":%lu,", (unsigned long)meta->created_at);
     ptr += sprintf(ptr, "\"version\":%u,", meta->version);
+    ptr += sprintf(ptr, "\"gek_version\":%u,", meta->gek_version);
     ptr += sprintf(ptr, "\"member_count\":%u,", meta->member_count);
     ptr += sprintf(ptr, "\"members\":[");
 
@@ -220,6 +221,14 @@ static int deserialize_metadata(const char *json, dht_group_metadata_t **meta_ou
     if (!p) goto error;
     sscanf(p + 10, "%u", &meta->version);
 
+    // Parse gek_version (optional for backward compatibility)
+    const char *gek_p = strstr(p, "\"gek_version\":");
+    if (gek_p) {
+        sscanf(gek_p + 14, "%u", &meta->gek_version);
+    } else {
+        meta->gek_version = 1;  // Default to v1 for old groups
+    }
+
     p = strstr(p, "\"member_count\":");
     if (!p) goto error;
     sscanf(p + 15, "%u", &meta->member_count);
@@ -230,17 +239,32 @@ static int deserialize_metadata(const char *json, dht_group_metadata_t **meta_ou
     p += 11;
 
     if (meta->member_count > 0) {
-        meta->members = malloc(sizeof(char*) * meta->member_count);
+        meta->members = calloc(meta->member_count, sizeof(char*));
         if (!meta->members) goto error;
 
         for (uint32_t i = 0; i < meta->member_count; i++) {
-            meta->members[i] = malloc(129);  // 128 chars + null for full fingerprint
+            meta->members[i] = calloc(129, 1);  // 128 chars + null, zero-initialized
             if (!meta->members[i]) goto error;
 
             p = strchr(p, '"');
-            if (!p) goto error;
+            if (!p) {
+                QGP_LOG_ERROR(LOG_TAG, "Parse error: no opening quote for member[%u]\n", i);
+                goto error;
+            }
             p++;
-            sscanf(p, "%128[^\"]", meta->members[i]);  // Read full 128-char fingerprint
+            int chars_read = 0;
+            sscanf(p, "%128[^\"]%n", meta->members[i], &chars_read);
+            QGP_LOG_DEBUG(LOG_TAG, "Parsed member[%u]: '%s' (read %d chars)\n", i, meta->members[i], chars_read);
+
+            // Validate: fingerprint must be 128 hex chars
+            size_t len = strlen(meta->members[i]);
+            if (len != 128) {
+                QGP_LOG_ERROR(LOG_TAG, "Invalid member[%u] length: %zu (expected 128)\n", i, len);
+                goto error;
+            }
+
+            p = strchr(p, '"');  // Find closing quote
+            if (p) p++;          // Move past it
         }
     }
 
@@ -259,7 +283,9 @@ int dht_groups_init(const char *db_path) {
         return 0;
     }
 
-    int rc = sqlite3_open(db_path, &g_db);
+    // Open with FULLMUTEX for thread safety (DHT callbacks + main thread)
+    int rc = sqlite3_open_v2(db_path, &g_db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", sqlite3_errmsg(g_db));
         sqlite3_close(g_db);
@@ -673,6 +699,52 @@ int dht_groups_remove_member(
     return 0;
 }
 
+// Update GEK version in group metadata
+int dht_groups_update_gek_version(
+    dht_context_t *dht_ctx,
+    const char *group_uuid,
+    uint32_t new_gek_version
+) {
+    if (!dht_ctx || !group_uuid) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to update_gek_version\n");
+        return -1;
+    }
+
+    // Get current metadata
+    dht_group_metadata_t *meta = NULL;
+    int ret = dht_groups_get(dht_ctx, group_uuid, &meta);
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get group metadata for GEK version update\n");
+        return ret;
+    }
+
+    // Update GEK version
+    meta->gek_version = new_gek_version;
+    meta->version++;  // Increment metadata version
+
+    // Serialize and store
+    char *json = serialize_metadata(meta);
+    if (!json) {
+        dht_groups_free_metadata(meta);
+        return -1;
+    }
+
+    char base_key[256];
+    make_base_key(group_uuid, base_key, sizeof(base_key));
+
+    ret = dht_chunked_publish(dht_ctx, base_key, (uint8_t*)json, strlen(json), DHT_CHUNK_TTL_30DAY);
+    free(json);
+    dht_groups_free_metadata(meta);
+
+    if (ret != DHT_CHUNK_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update GEK version in DHT: %s\n", dht_chunked_strerror(ret));
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Updated GEK version to %u for group %s\n", new_gek_version, group_uuid);
+    return 0;
+}
+
 // Delete group from DHT
 int dht_groups_delete(
     dht_context_t *dht_ctx,
@@ -780,12 +852,23 @@ int dht_groups_list_for_user(
         }
 
         groups[count].local_id = sqlite3_column_int(stmt, 0);
-        strncpy(groups[count].group_uuid, (const char*)sqlite3_column_text(stmt, 1), 36);
+
+        const char *db_uuid = (const char*)sqlite3_column_text(stmt, 1);
+        const char *db_name = (const char*)sqlite3_column_text(stmt, 2);
+        const char *db_creator = (const char*)sqlite3_column_text(stmt, 3);
+
+        QGP_LOG_WARN(LOG_TAG, ">>> ROW[%d]: uuid=%s name=%s creator_len=%zu",
+                     count,
+                     db_uuid ? db_uuid : "(null)",
+                     db_name ? db_name : "(null)",
+                     db_creator ? strlen(db_creator) : 0);
+
+        strncpy(groups[count].group_uuid, db_uuid ? db_uuid : "", 36);
         groups[count].group_uuid[36] = '\0';
-        strncpy(groups[count].name, (const char*)sqlite3_column_text(stmt, 2), 127);
+        strncpy(groups[count].name, db_name ? db_name : "", 127);
         groups[count].name[127] = '\0';
-        strncpy(groups[count].creator, (const char*)sqlite3_column_text(stmt, 3), 32);
-        groups[count].creator[32] = '\0';
+        strncpy(groups[count].creator, db_creator ? db_creator : "", 128);
+        groups[count].creator[128] = '\0';
         groups[count].created_at = sqlite3_column_int64(stmt, 4);
         groups[count].last_sync = sqlite3_column_int64(stmt, 5);
 
@@ -852,6 +935,54 @@ int dht_groups_get_uuid_by_local_id(
     return result;
 }
 
+// Get local group ID from group UUID (Phase 7 - Group Messages)
+int dht_groups_get_local_id_by_uuid(
+    const char *identity,
+    const char *group_uuid,
+    int *local_id_out
+) {
+    if (!identity || !group_uuid || !local_id_out || !g_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to get_local_id_by_uuid\n");
+        return -1;
+    }
+
+    // Query local cache for local_id by group_uuid
+    // User must be a member of the group (security check)
+    const char *sql =
+        "SELECT c.local_id "
+        "FROM dht_group_cache c "
+        "INNER JOIN dht_group_members m ON c.group_uuid = m.group_uuid "
+        "WHERE c.group_uuid = ? AND m.member_identity = ? "
+        "LIMIT 1";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare query: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, identity, -1, SQLITE_STATIC);
+
+    int result = -2;  // Not found by default
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        *local_id_out = sqlite3_column_int(stmt, 0);
+        result = 0;
+    }
+
+    sqlite3_finalize(stmt);
+
+    if (result == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "Mapped UUID %s to local_id %d for user %.16s...\n",
+                     group_uuid, *local_id_out, identity);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "UUID %s not found for user %.16s...\n", group_uuid, identity);
+    }
+
+    return result;
+}
+
 // Sync group metadata from DHT to local cache
 int dht_groups_sync_from_dht(
     dht_context_t *dht_ctx,
@@ -868,6 +999,22 @@ int dht_groups_sync_from_dht(
     if (ret != 0) {
         return ret;
     }
+
+    // DEBUG: Log parsed metadata before writing to database
+    QGP_LOG_WARN(LOG_TAG, "=== SYNC DEBUG: Parsed metadata ===\n");
+    QGP_LOG_WARN(LOG_TAG, "  group_uuid: %s\n", meta->group_uuid ? meta->group_uuid : "(null)");
+    QGP_LOG_WARN(LOG_TAG, "  name: %s\n", meta->name ? meta->name : "(null)");
+    QGP_LOG_WARN(LOG_TAG, "  creator: %.32s...\n", meta->creator ? meta->creator : "(null)");
+    QGP_LOG_WARN(LOG_TAG, "  member_count: %u\n", meta->member_count);
+    for (uint32_t i = 0; i < meta->member_count && i < 10; i++) {
+        if (meta->members && meta->members[i]) {
+            size_t len = strlen(meta->members[i]);
+            QGP_LOG_WARN(LOG_TAG, "  member[%u]: %.32s... (len=%zu)\n", i, meta->members[i], len);
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "  member[%u]: NULL POINTER!\n", i);
+        }
+    }
+    QGP_LOG_WARN(LOG_TAG, "=== END SYNC DEBUG ===\n");
 
     // Update local cache
     sqlite3_stmt *stmt = NULL;
@@ -892,6 +1039,11 @@ int dht_groups_sync_from_dht(
     sqlite3_finalize(stmt);
 
     for (uint32_t i = 0; i < meta->member_count; i++) {
+        // Skip NULL members (defensive - shouldn't happen if parsing succeeded)
+        if (!meta->members || !meta->members[i]) {
+            QGP_LOG_ERROR(LOG_TAG, "NULL member[%u] - skipping\n", i);
+            continue;
+        }
         const char *insert_sql = "INSERT INTO dht_group_members (group_uuid, member_identity) VALUES (?, ?)";
         sqlite3_prepare_v2(g_db, insert_sql, -1, &stmt, NULL);
         sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_STATIC);
@@ -924,7 +1076,95 @@ void dht_groups_free_metadata(dht_group_metadata_t *metadata) {
 
 // Free array of cache entries
 void dht_groups_free_cache_entries(dht_group_cache_entry_t *entries, int count) {
+    (void)count;
     if (entries) {
         free(entries);
     }
+}
+
+// Get member count for a group from local cache
+int dht_groups_get_member_count(const char *group_uuid, int *count_out) {
+    if (!g_db || !group_uuid || !count_out) {
+        return -1;
+    }
+
+    *count_out = 0;
+
+    const char *sql = "SELECT COUNT(*) FROM dht_group_members WHERE group_uuid = ?";
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_STATIC);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        *count_out = sqlite3_column_int(stmt, 0);
+    }
+
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
+int dht_groups_get_members(const char *group_uuid, char ***members_out, int *count_out) {
+    if (!g_db || !group_uuid || !members_out || !count_out) {
+        return -1;
+    }
+
+    *members_out = NULL;
+    *count_out = 0;
+
+    /* First get count */
+    int member_count = 0;
+    if (dht_groups_get_member_count(group_uuid, &member_count) != 0 || member_count == 0) {
+        return 0;  /* No members, not an error */
+    }
+
+    /* Allocate array */
+    char **members = calloc(member_count, sizeof(char *));
+    if (!members) {
+        return -1;
+    }
+
+    /* Fetch members */
+    const char *sql = "SELECT member_identity FROM dht_group_members WHERE group_uuid = ?";
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        free(members);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_STATIC);
+
+    int idx = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && idx < member_count) {
+        const char *fp = (const char *)sqlite3_column_text(stmt, 0);
+        if (fp) {
+            members[idx] = strdup(fp);
+            if (!members[idx]) {
+                /* Cleanup on failure */
+                for (int i = 0; i < idx; i++) free(members[i]);
+                free(members);
+                sqlite3_finalize(stmt);
+                return -1;
+            }
+            idx++;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+
+    *members_out = members;
+    *count_out = idx;
+    return 0;
+}
+
+void dht_groups_free_members(char **members, int count) {
+    if (!members) return;
+    for (int i = 0; i < count; i++) {
+        free(members[i]);
+    }
+    free(members);
 }

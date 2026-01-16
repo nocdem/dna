@@ -72,8 +72,11 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `int dna_engine_get_message_queue_size(...)` | Get current message queue size |
 | `int dna_engine_set_message_queue_capacity(...)` | Set message queue capacity |
 | `dna_request_id_t dna_engine_get_conversation(...)` | Get conversation with contact |
+| `dna_request_id_t dna_engine_get_conversation_page(...)` | Get conversation page (paginated, newest first) |
 | `dna_request_id_t dna_engine_check_offline_messages(...)` | Force check for offline messages |
 | `int dna_engine_delete_message_sync(...)` | Delete message from local database |
+| `int dna_engine_retry_pending_messages(...)` | Retry all pending/failed messages |
+| `int dna_engine_retry_message(...)` | Retry single failed message by ID |
 | `int dna_engine_get_unread_count(...)` | Get unread message count (sync) |
 | `dna_request_id_t dna_engine_mark_conversation_read(...)` | Mark all messages as read |
 
@@ -108,7 +111,8 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_sync_contacts_to_dht(...)` | Sync contacts to DHT |
 | `dna_request_id_t dna_engine_sync_contacts_from_dht(...)` | Sync contacts from DHT |
 | `dna_request_id_t dna_engine_sync_groups(...)` | Sync groups from DHT |
-| `int dna_engine_request_turn_credentials(dna_engine_t*, int)` | Request TURN relay credentials |
+| `dna_request_id_t dna_engine_sync_group_by_uuid(...)` | Sync specific group by UUID from DHT |
+| `int dna_engine_request_turn_credentials(dna_engine_t*, int)` | **DEPRECATED v0.4.61** - Always returns -1 |
 | `dna_request_id_t dna_engine_get_registered_name(...)` | Get registered name for current identity |
 | `void dna_engine_pause_presence(dna_engine_t*)` | Pause presence updates (app backgrounded) |
 | `void dna_engine_resume_presence(dna_engine_t*)` | Resume presence updates (app foregrounded) |
@@ -131,13 +135,13 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `void dna_engine_cancel_presence_listener(dna_engine_t*, const char*)` | Cancel presence listener for contact |
 | `void dna_engine_cancel_all_presence_listeners(dna_engine_t*)` | Cancel all presence listeners |
 
-## 1.11 Delivery Trackers
+## 1.11 Watermark Listeners
 
 | Function | Description |
 |----------|-------------|
-| `int dna_engine_track_delivery(dna_engine_t*, const char*)` | Start tracking delivery for recipient |
-| `void dna_engine_untrack_delivery(dna_engine_t*, const char*)` | Stop tracking delivery |
-| `void dna_engine_cancel_all_delivery_trackers(dna_engine_t*)` | Cancel all delivery trackers |
+| `size_t dna_engine_start_watermark_listener(dna_engine_t*, const char*)` | Start persistent watermark listener for contact |
+| `void dna_engine_cancel_watermark_listener(dna_engine_t*, const char*)` | Cancel watermark listener for contact |
+| `void dna_engine_cancel_all_watermark_listeners(dna_engine_t*)` | Cancel all watermark listeners |
 
 ## 1.12 Feed (DNA Board)
 

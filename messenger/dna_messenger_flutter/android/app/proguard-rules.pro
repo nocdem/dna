@@ -3,5 +3,6 @@
 # Keep DNA Messenger JNI classes (called from native code)
 -keep class io.cpunk.dna_messenger.DnaNotificationHelper {
     public void onOutboxUpdated(java.lang.String, java.lang.String);
+    public void onContactRequestReceived();
 }
 -keep class io.cpunk.dna_messenger.DnaMessengerService { *; }

@@ -41,6 +41,14 @@ class GroupsNotifier extends AsyncNotifier<List<Group>> {
     final engine = await ref.read(engineProvider.future);
     await engine.sendGroupMessage(groupUuid, message);
   }
+
+  /// Sync group metadata and GEK from DHT
+  /// Use this to recover GEK after app reinstall or database loss
+  Future<void> syncGroup(String groupUuid) async {
+    final engine = await ref.read(engineProvider.future);
+    await engine.syncGroupByUuid(groupUuid);
+    await refresh();
+  }
 }
 
 /// Invitations list provider
@@ -87,3 +95,39 @@ class InvitationsNotifier extends AsyncNotifier<List<Invitation>> {
 
 /// Selected group for chat
 final selectedGroupProvider = StateProvider<Group?>((ref) => null);
+
+/// Group conversation provider - keyed by group UUID
+final groupConversationProvider = AsyncNotifierProviderFamily<GroupConversationNotifier, List<Message>, String>(
+  GroupConversationNotifier.new,
+);
+
+class GroupConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
+  @override
+  Future<List<Message>> build(String arg) async {
+    final identityLoaded = ref.watch(identityLoadedProvider);
+    if (!identityLoaded) {
+      return [];
+    }
+
+    final engine = await ref.watch(engineProvider.future);
+    final messages = await engine.getGroupConversation(arg);
+    // Messages already in ASC order from C layer
+    return messages;
+  }
+
+  Future<void> refresh() async {
+    state = const AsyncValue.loading();
+    state = await AsyncValue.guard(() async {
+      final engine = await ref.read(engineProvider.future);
+      return engine.getGroupConversation(arg);
+    });
+  }
+
+  /// Add a message to the conversation (for optimistic UI)
+  void addMessage(Message message) {
+    state.whenData((messages) {
+      final updated = List<Message>.from(messages)..add(message);
+      state = AsyncValue.data(updated);
+    });
+  }
+}

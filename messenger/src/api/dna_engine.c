@@ -59,7 +59,9 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dna_engine_internal.h"
 #include "dna_api.h"
 #include "messenger/init.h"
-#include "messenger_p2p.h"
+#include "messenger/messages.h"
+#include "messenger/groups.h"
+#include "messenger_transport.h"
 #include "message_backup.h"
 #include "messenger/status.h"
 #include "dht/client/dht_singleton.h"
@@ -67,18 +69,23 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/core/dht_listen.h"
 #include "dht/client/dht_contactlist.h"
 #include "dht/client/dht_message_backup.h"
+#include "dht/shared/dht_offline_queue.h"
 #include "dht/client/dna_feed.h"
 #include "dht/client/dna_profile.h"
 #include "dht/shared/dht_chunked.h"
-#include "p2p/p2p_transport.h"
-#include "p2p/transport/transport_core.h"  /* For parse_presence_json */
-#include "p2p/transport/turn_credentials.h"
+#include "dht/shared/dht_contact_request.h"
+#include "dht/shared/dht_groups.h"
+#include "dht/client/dna_group_outbox.h"
+#include "transport/transport.h"
+#include "transport/internal/transport_core.h"  /* For parse_presence_json */
+/* TURN credentials removed in v0.4.61 for privacy */
 #include "database/presence_cache.h"
 #include "database/keyserver_cache.h"
 #include "database/profile_cache.h"
 #include "database/profile_manager.h"
 #include "database/contacts_db.h"
 #include "database/addressbook_db.h"
+#include "database/group_invitations.h"
 #include "dht/client/dht_addressbook.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
@@ -109,7 +116,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "blockchain/cellframe/cellframe_addr.h"
 #include "crypto/utils/seed_storage.h"
 #include "crypto/bip39/bip39.h"
-#include "messenger/gsk.h"
+#include "messenger/gek.h"
 #include <dirent.h>
 #include <sys/stat.h>
 #include <errno.h>
@@ -122,6 +129,9 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 /* Use engine-specific error codes */
 #define DNA_OK 0
 
+/* DHT stabilization delay - wait for routing table to fill after bootstrap */
+#define DHT_STABILIZATION_SECONDS 15
+
 /* Forward declarations for static helpers */
 static dht_context_t* dna_get_dht_ctx(dna_engine_t *engine);
 static qgp_key_t* dna_load_private_key(dna_engine_t *engine);
@@ -133,6 +143,7 @@ void dna_engine_cancel_all_outbox_listeners(dna_engine_t *engine);
 void dna_engine_cancel_all_presence_listeners(dna_engine_t *engine);
 void dna_engine_cancel_contact_request_listener(dna_engine_t *engine);
 size_t dna_engine_start_contact_request_listener(dna_engine_t *engine);
+void dna_engine_cancel_watermark_listener(dna_engine_t *engine, const char *contact_fingerprint);
 
 /**
  * Validate identity name - must be lowercase only
@@ -154,7 +165,7 @@ static int is_valid_identity_name(const char *name) {
 size_t dna_engine_start_presence_listener(dna_engine_t *engine, const char *contact_fingerprint);
 
 /* Global engine pointer for DHT status callback and event dispatch from lower layers
- * Set during create, cleared during destroy. Used by messenger_p2p.c to emit events. */
+ * Set during create, cleared during destroy. Used by messenger_transport.c to emit events. */
 static dna_engine_t *g_dht_callback_engine = NULL;
 
 /* Android notification callback - separate from Flutter's event callback.
@@ -162,6 +173,11 @@ static dna_engine_t *g_dht_callback_engine = NULL;
  * allowing Android to show native notifications even when Flutter is detached. */
 static dna_android_notification_cb g_android_notification_cb = NULL;
 static void *g_android_notification_data = NULL;
+
+/* Android group message notification callback.
+ * Called when new group messages arrive via DHT listen. */
+static dna_android_group_message_cb g_android_group_message_cb = NULL;
+static void *g_android_group_message_data = NULL;
 
 /* Global engine accessors (for messenger layer event dispatch) */
 void dna_engine_set_global(dna_engine_t *engine) {
@@ -192,6 +208,98 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
     int count = dna_engine_listen_all_contacts(engine);
     QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: started %d listeners", count);
 
+    /* Subscribe to all groups for real-time notifications */
+    int group_count = dna_engine_subscribe_all_groups(engine);
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: subscribed to %d groups", group_count);
+
+    /* Retry pending/failed messages after DHT reconnect
+     * Messages may have failed during the previous session or network outage.
+     * Now that DHT is reconnected, retry them. */
+    int retried = dna_engine_retry_pending_messages(engine);
+    if (retried > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] DHT reconnect: retried %d pending messages", retried);
+    }
+
+    /* Also check for missed incoming messages after reconnect */
+    if (engine->messenger && engine->messenger->transport_ctx) {
+        QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: checking for missed messages");
+        size_t received = 0;
+        transport_check_offline_messages(engine->messenger->transport_ctx, NULL, &received);
+        if (received > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: received %zu missed messages", received);
+        }
+    }
+
+    /* Wait for DHT routing table to stabilize after reconnect, then retry again.
+     * The immediate retry above may fail if routing table is still sparse. */
+    QGP_LOG_INFO(LOG_TAG, "[RETRY] Listener thread: waiting %d seconds for stabilization...",
+                 DHT_STABILIZATION_SECONDS);
+    qgp_platform_sleep_ms(DHT_STABILIZATION_SECONDS * 1000);
+
+    int retried_post_stable = dna_engine_retry_pending_messages(engine);
+    if (retried_post_stable > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Reconnect post-stabilization: retried %d messages", retried_post_stable);
+    }
+
+    return NULL;
+}
+
+/**
+ * Post-stabilization retry thread
+ * Waits for DHT routing table to fill, then retries pending messages.
+ * Spawned from identity load to handle the common case where DHT connects
+ * before identity is loaded (callback's listener thread doesn't spawn).
+ */
+static void *dna_engine_stabilization_retry_thread(void *arg) {
+    dna_engine_t *engine = (dna_engine_t *)arg;
+
+    /* Diagnostic: log immediately so we know thread started */
+    QGP_LOG_WARN(LOG_TAG, "[RETRY] >>> STABILIZATION THREAD STARTED (engine=%p) <<<", (void*)engine);
+
+    if (!engine) {
+        QGP_LOG_ERROR(LOG_TAG, "[RETRY] Stabilization thread: engine is NULL, aborting");
+        return NULL;
+    }
+
+    /* Wait for DHT routing table to stabilize.
+     * Early retries fail with nodes_tried=0 because routing table only has
+     * bootstrap nodes. After 15 seconds, routing table is populated with
+     * nodes discovered through DHT crawling. */
+    QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread: waiting %d seconds for routing table...",
+                 DHT_STABILIZATION_SECONDS);
+    qgp_platform_sleep_ms(DHT_STABILIZATION_SECONDS * 1000);
+
+    QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread: woke up, starting retries...");
+
+    /* 1. Re-register presence - initial registration during identity load often fails
+     * with nodes_tried=0 because routing table only has bootstrap nodes */
+    if (engine->messenger) {
+        int presence_rc = messenger_transport_refresh_presence(engine->messenger);
+        if (presence_rc == 0) {
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: presence re-registered");
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: presence registration failed: %d", presence_rc);
+        }
+    }
+
+    /* 2. Sync any pending outboxes (messages that failed to publish earlier) */
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (dht_ctx) {
+        int synced = dht_offline_queue_sync_pending(dht_ctx);
+        if (synced > 0) {
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: synced %d pending outboxes", synced);
+        }
+    }
+
+    /* 3. Retry pending messages from backup database */
+    int retried = dna_engine_retry_pending_messages(engine);
+    if (retried > 0) {
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: retried %d pending messages", retried);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: no pending messages to retry");
+    }
+
+    QGP_LOG_WARN(LOG_TAG, "[RETRY] >>> STABILIZATION THREAD COMPLETE <<<");
     return NULL;
 }
 
@@ -497,8 +605,15 @@ static void* presence_heartbeat_thread(void *arg) {
         /* Only announce presence if active (foreground) */
         if (atomic_load(&engine->presence_active) && engine->messenger) {
             QGP_LOG_DEBUG(LOG_TAG, "Heartbeat: refreshing presence");
-            messenger_p2p_refresh_presence(engine->messenger);
+            messenger_transport_refresh_presence(engine->messenger);
         }
+
+        /* Check for day rotation on group listeners (runs every 4 min, actual
+         * rotation only happens at midnight UTC when day bucket changes) */
+        dna_engine_check_group_day_rotation(engine);
+
+        /* Check for day rotation on 1-1 DM outbox listeners (v0.4.81+) */
+        dna_engine_check_outbox_day_rotation(engine);
     }
 
     QGP_LOG_INFO(LOG_TAG, "Presence heartbeat thread stopped");
@@ -533,7 +648,7 @@ void dna_engine_resume_presence(dna_engine_t *engine) {
 
     /* Immediately refresh presence on resume */
     if (engine->messenger) {
-        messenger_p2p_refresh_presence(engine->messenger);
+        messenger_transport_refresh_presence(engine->messenger);
     }
 }
 
@@ -553,27 +668,24 @@ int dna_engine_network_changed(dna_engine_t *engine) {
         QGP_LOG_INFO(LOG_TAG, "Cancelling listeners before DHT reinit");
         dna_engine_cancel_all_outbox_listeners(engine);
         dna_engine_cancel_all_presence_listeners(engine);
+        dna_engine_cancel_contact_request_listener(engine);
     }
 
-    /* Reinitialize DHT singleton with stored identity */
+    /* Reinitialize DHT singleton with stored identity.
+     * On success, dht_singleton_reinit() fires the status callback which spawns
+     * dna_engine_setup_listeners_thread(). That thread handles:
+     * - Starting fresh listeners for all contacts
+     * - Retrying pending messages
+     * - Fetching missed incoming messages
+     * - Refreshing presence
+     * NO NEED to duplicate that work here - just reinit and let callback handle the rest. */
     int result = dht_singleton_reinit();
     if (result != 0) {
         QGP_LOG_ERROR(LOG_TAG, "DHT reinit failed");
         return -1;
     }
 
-    /* Start fresh listeners on new DHT context */
-    if (engine->identity_loaded) {
-        QGP_LOG_INFO(LOG_TAG, "Starting fresh listeners after network change");
-        int count = dna_engine_listen_all_contacts(engine);
-        QGP_LOG_INFO(LOG_TAG, "Started %d outbox listeners", count);
-
-        /* Refresh presence on new network (only if app is in foreground) */
-        if (engine->messenger && atomic_load(&engine->presence_active)) {
-            messenger_p2p_refresh_presence(engine->messenger);
-        }
-    }
-
+    QGP_LOG_INFO(LOG_TAG, "DHT reinit successful - status callback will restart listeners");
     return 0;
 }
 
@@ -597,8 +709,10 @@ static void *background_fetch_thread(void *arg) {
     dna_engine_t *engine = ctx->engine;
     const char *sender_fp = ctx->sender_fp[0] ? ctx->sender_fp : NULL;
 
-    /* Small delay to let DHT callback complete first */
-    qgp_platform_sleep_ms(100);
+    /* Delay to let DHT propagate data to more nodes.
+     * 100ms was too short - occasionally caused 0 messages due to
+     * querying nodes that hadn't received the data yet. */
+    qgp_platform_sleep_ms(300);
 
     if (!engine || !engine->messenger || !engine->identity_loaded) {
         QGP_LOG_WARN(LOG_TAG, "[BACKGROUND-THREAD] Engine not ready, aborting fetch");
@@ -606,11 +720,31 @@ static void *background_fetch_thread(void *arg) {
         return NULL;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetching from %s...",
-                 sender_fp ? sender_fp : "ALL contacts");
+    /* Retry loop with exponential backoff for DHT propagation delays */
     size_t offline_count = 0;
-    messenger_p2p_check_offline_messages(engine->messenger, sender_fp, &offline_count);
-    QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetch complete: %zu messages", offline_count);
+    int max_retries = 3;
+    int delay_ms = 500;  /* Start with 500ms between retries */
+
+    for (int attempt = 0; attempt < max_retries; attempt++) {
+        QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetching from %s... (attempt %d/%d)",
+                     sender_fp ? sender_fp : "ALL contacts", attempt + 1, max_retries);
+
+        messenger_transport_check_offline_messages(engine->messenger, sender_fp, &offline_count);
+
+        if (offline_count > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetch complete: %zu messages", offline_count);
+            break;
+        }
+
+        /* No messages found - wait and retry (DHT propagation delay) */
+        if (attempt < max_retries - 1) {
+            QGP_LOG_WARN(LOG_TAG, "[BACKGROUND-THREAD] No messages found, retrying in %dms...", delay_ms);
+            qgp_platform_sleep_ms(delay_ms);
+            delay_ms *= 2;  /* Exponential backoff: 500, 1000, 2000... */
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetch complete: 0 messages after %d attempts", max_retries);
+        }
+    }
 
     free(ctx);
     return NULL;
@@ -627,6 +761,12 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
      * Dart NativeCallable is closed while C still holds the pointer) */
     bool flutter_attached = (callback && !disposing);
 
+    /* Debug logging for MESSAGE_SENT event dispatch */
+    if (event->type == DNA_EVENT_MESSAGE_SENT) {
+        QGP_LOG_WARN(LOG_TAG, "[EVENT] MESSAGE_SENT dispatch: callback=%p, disposing=%d, attached=%d, status=%d",
+                     (void*)callback, disposing, flutter_attached, event->data.message_status.new_status);
+    }
+
     if (flutter_attached) {
         /* Heap-allocate a copy for async callbacks (Dart NativeCallable.listener)
          * The caller (Dart) must call dna_free_event() after processing */
@@ -634,38 +774,40 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
         if (heap_event) {
             memcpy(heap_event, event, sizeof(dna_event_t));
             callback(heap_event, user_data);
-        }
-    }
-
-    /* When OUTBOX_UPDATED fires, spawn a background thread to fetch from that contact only.
-     * IMPORTANT: Must NOT block the DHT callback thread - that causes ANR when
-     * app resumes because Flutter's DHT operations block on the same mutex. */
-    if (event->type == DNA_EVENT_OUTBOX_UPDATED && g_android_notification_cb) {
-        const char *contact_fp = event->data.outbox_updated.contact_fingerprint;
-        QGP_LOG_INFO(LOG_TAG, "[AUTO-FETCH] Spawning fetch for %.20s...", contact_fp);
-
-        if (engine->messenger && engine->identity_loaded) {
-            /* Create context with contact fingerprint */
-            fetch_thread_ctx_t *ctx = calloc(1, sizeof(fetch_thread_ctx_t));
-            if (ctx) {
-                ctx->engine = engine;
-                strncpy(ctx->sender_fp, contact_fp, sizeof(ctx->sender_fp) - 1);
-
-                /* Spawn detached thread for non-blocking fetch */
-                pthread_t fetch_thread;
-                pthread_attr_t attr;
-                pthread_attr_init(&attr);
-                pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-                if (pthread_create(&fetch_thread, &attr, background_fetch_thread, ctx) == 0) {
-                    QGP_LOG_DEBUG(LOG_TAG, "[AUTO-FETCH] Fetch thread spawned");
-                } else {
-                    QGP_LOG_WARN(LOG_TAG, "[AUTO-FETCH] Failed to spawn fetch thread");
-                    free(ctx);
-                }
-                pthread_attr_destroy(&attr);
+            if (event->type == DNA_EVENT_MESSAGE_SENT) {
+                QGP_LOG_WARN(LOG_TAG, "[EVENT] MESSAGE_SENT callback invoked");
             }
         }
     }
+
+#ifdef __ANDROID__
+    /* Android: When OUTBOX_UPDATED fires and Flutter is NOT attached, just show notification.
+     * Don't fetch - let Flutter handle fetching when user opens app.
+     * This avoids race conditions between C auto-fetch and Flutter fetch. */
+    if (event->type == DNA_EVENT_OUTBOX_UPDATED && g_android_notification_cb && !flutter_attached) {
+        const char *contact_fp = event->data.outbox_updated.contact_fingerprint;
+        const char *display_name = NULL;
+        char name_buf[256] = {0};
+
+        /* Try to get display name from profile cache */
+        dna_unified_identity_t *cached = NULL;
+        uint64_t cached_at = 0;
+        if (profile_cache_get(contact_fp, &cached, &cached_at) == 0 && cached) {
+            if (cached->display_name[0]) {
+                strncpy(name_buf, cached->display_name, sizeof(name_buf) - 1);
+                display_name = name_buf;
+            } else if (cached->registered_name[0]) {
+                strncpy(name_buf, cached->registered_name, sizeof(name_buf) - 1);
+                display_name = name_buf;
+            }
+            dna_identity_free(cached);
+        }
+
+        QGP_LOG_INFO(LOG_TAG, "[ANDROID-NOTIFY] Flutter detached, notifying: fp=%.16s... name=%s",
+                     contact_fp, display_name ? display_name : "(unknown)");
+        g_android_notification_cb(contact_fp, display_name, g_android_notification_data);
+    }
+#endif
 
     /* Android notification callback - called for MESSAGE_RECEIVED events
      * (incoming messages only). This allows Android to show native
@@ -708,8 +850,9 @@ void dna_free_event(dna_event_t *event) {
  * TASK EXECUTION DISPATCH
  * ============================================================================ */
 
-/* Forward declaration for handler defined later */
+/* Forward declarations for handlers defined later */
 void dna_handle_refresh_contact_profile(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_add_group_member(dna_engine_t *engine, dna_task_t *task);
 
 void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
     switch (task->type) {
@@ -786,6 +929,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_GET_CONVERSATION:
             dna_handle_get_conversation(engine, task);
             break;
+        case TASK_GET_CONVERSATION_PAGE:
+            dna_handle_get_conversation_page(engine, task);
+            break;
         case TASK_CHECK_OFFLINE_MESSAGES:
             dna_handle_check_offline_messages(engine, task);
             break;
@@ -799,6 +945,12 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_SEND_GROUP_MESSAGE:
             dna_handle_send_group_message(engine, task);
+            break;
+        case TASK_GET_GROUP_CONVERSATION:
+            dna_handle_get_group_conversation(engine, task);
+            break;
+        case TASK_ADD_GROUP_MEMBER:
+            dna_handle_add_group_member(engine, task);
             break;
         case TASK_GET_INVITATIONS:
             dna_handle_get_invitations(engine, task);
@@ -839,6 +991,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_SYNC_GROUPS:
             dna_handle_sync_groups(engine, task);
+            break;
+        case TASK_SYNC_GROUP_BY_UUID:
+            dna_handle_sync_group_by_uuid(engine, task);
             break;
         case TASK_GET_REGISTERED_NAME:
             dna_handle_get_registered_name(engine, task);
@@ -953,9 +1108,14 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     engine->contact_request_listener.active = false;
 
     /* Initialize delivery trackers */
-    pthread_mutex_init(&engine->delivery_trackers_mutex, NULL);
-    engine->delivery_tracker_count = 0;
-    memset(engine->delivery_trackers, 0, sizeof(engine->delivery_trackers));
+    pthread_mutex_init(&engine->watermark_listeners_mutex, NULL);
+    engine->watermark_listener_count = 0;
+    memset(engine->watermark_listeners, 0, sizeof(engine->watermark_listeners));
+
+    /* Initialize group outbox listeners */
+    pthread_mutex_init(&engine->group_listen_mutex, NULL);
+    engine->group_listen_count = 0;
+    memset(engine->group_listen_contexts, 0, sizeof(engine->group_listen_contexts));
 
     /* Initialize task queue */
     dna_task_queue_init(&engine->task_queue);
@@ -1027,6 +1187,235 @@ void dna_engine_set_android_notification_callback(
                  callback ? "registered" : "cleared");
 }
 
+void dna_engine_set_android_group_message_callback(
+    dna_android_group_message_cb callback,
+    void *user_data
+) {
+    g_android_group_message_cb = callback;
+    g_android_group_message_data = user_data;
+    QGP_LOG_INFO(LOG_TAG, "Android group message callback %s",
+                 callback ? "registered" : "cleared");
+}
+
+/* Internal helper to fire Android group message callback.
+ * Called from group outbox subscribe on_new_message callback. */
+void dna_engine_fire_group_message_callback(
+    const char *group_uuid,
+    const char *group_name,
+    size_t new_count
+) {
+    if (g_android_group_message_cb && new_count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Firing group message callback: group=%s count=%zu",
+                     group_uuid, new_count);
+        g_android_group_message_cb(group_uuid, group_name, new_count,
+                                   g_android_group_message_data);
+    }
+}
+
+/* Callback for group message notifications from dna_group_outbox_subscribe() */
+static void on_group_new_message(const char *group_uuid, size_t new_count, void *user_data) {
+    (void)user_data;
+    QGP_LOG_INFO(LOG_TAG, "[GROUP] New messages: group=%s count=%zu", group_uuid, new_count);
+
+    /* Get group name from local database for notification */
+    char group_name[256] = "";
+    groups_info_t group_info;
+    if (groups_get_info(group_uuid, &group_info) == 0) {
+        strncpy(group_name, group_info.name, sizeof(group_name) - 1);
+    }
+
+    /* Fire Android callback */
+    dna_engine_fire_group_message_callback(group_uuid,
+        group_name[0] ? group_name : NULL, new_count);
+
+    /* Fire DNA event */
+    dna_engine_t *engine = dna_engine_get_global();
+    if (engine) {
+        dna_event_t event = {0};
+        event.type = DNA_EVENT_GROUP_MESSAGE_RECEIVED;
+        strncpy(event.data.group_message.group_uuid, group_uuid,
+                sizeof(event.data.group_message.group_uuid) - 1);
+        event.data.group_message.new_count = (int)new_count;
+        dna_dispatch_event(engine, &event);
+    }
+}
+
+int dna_engine_subscribe_all_groups(dna_engine_t *engine) {
+    if (!engine || !engine->identity_loaded) {
+        QGP_LOG_WARN(LOG_TAG, "[GROUP] Cannot subscribe - no identity loaded");
+        return 0;
+    }
+
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_WARN(LOG_TAG, "[GROUP] Cannot subscribe - DHT not available");
+        return 0;
+    }
+
+    /* Get all groups user is member of */
+    dht_group_cache_entry_t *groups = NULL;
+    int group_count = 0;
+    QGP_LOG_WARN(LOG_TAG, "[GROUP] Subscribing for identity %.16s...", engine->fingerprint);
+    int ret = dht_groups_list_for_user(engine->fingerprint, &groups, &group_count);
+    QGP_LOG_WARN(LOG_TAG, "[GROUP] dht_groups_list_for_user returned %d, count=%d", ret, group_count);
+    if (ret != 0 || group_count == 0) {
+        QGP_LOG_WARN(LOG_TAG, "[GROUP] No groups to subscribe to (ret=%d, count=%d)", ret, group_count);
+        if (groups) {
+            dht_groups_free_cache_entries(groups, group_count);
+        }
+        return 0;
+    }
+
+    int subscribed = 0;
+    pthread_mutex_lock(&engine->group_listen_mutex);
+    QGP_LOG_WARN(LOG_TAG, "[GROUP] Loop start: group_count=%d, listen_count=%d, max=%d",
+                 group_count, engine->group_listen_count, DNA_MAX_GROUP_LISTENERS);
+
+    for (int i = 0; i < group_count && engine->group_listen_count < DNA_MAX_GROUP_LISTENERS; i++) {
+        const char *group_uuid = groups[i].group_uuid;
+        QGP_LOG_WARN(LOG_TAG, "[GROUP] Processing group[%d]: %s", i, group_uuid);
+
+        /* Check if already subscribed */
+        bool already_subscribed = false;
+        for (int j = 0; j < engine->group_listen_count; j++) {
+            if (engine->group_listen_contexts[j] &&
+                strcmp(engine->group_listen_contexts[j]->group_uuid, group_uuid) == 0) {
+                already_subscribed = true;
+                QGP_LOG_WARN(LOG_TAG, "[GROUP] Already subscribed to %s (slot %d)", group_uuid, j);
+                break;
+            }
+        }
+        if (already_subscribed) continue;
+
+        /* Single-key architecture: No need to get members for subscription.
+         * All members write to the same key with different value_id.
+         * Single dht_listen() on the shared key catches ALL member updates.
+         */
+
+        /* Full sync before subscribing (catch up on last 7 days) */
+        QGP_LOG_WARN(LOG_TAG, "[GROUP] Syncing group %s...", group_uuid);
+        size_t sync_count = 0;
+        dna_group_outbox_sync(dht_ctx, group_uuid, &sync_count);
+        QGP_LOG_WARN(LOG_TAG, "[GROUP] Sync done: %zu messages", sync_count);
+
+        /* Subscribe for real-time updates - single listener per group */
+        QGP_LOG_WARN(LOG_TAG, "[GROUP] Subscribing to group %s...", group_uuid);
+        dna_group_listen_ctx_t *ctx = NULL;
+        ret = dna_group_outbox_subscribe(dht_ctx, group_uuid,
+                                          on_group_new_message, NULL, &ctx);
+        if (ret == 0 && ctx) {
+            engine->group_listen_contexts[engine->group_listen_count++] = ctx;
+            subscribed++;
+            QGP_LOG_WARN(LOG_TAG, "[GROUP] ✓ Subscribed to group %s (slot %d)",
+                         group_uuid, engine->group_listen_count - 1);
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "[GROUP] ✗ Failed to subscribe to group %s: ret=%d ctx=%p",
+                          group_uuid, ret, (void*)ctx);
+        }
+    }
+
+    pthread_mutex_unlock(&engine->group_listen_mutex);
+    dht_groups_free_cache_entries(groups, group_count);
+
+    QGP_LOG_WARN(LOG_TAG, "[GROUP] Subscribe complete: %d groups subscribed", subscribed);
+    return subscribed;
+}
+
+void dna_engine_unsubscribe_all_groups(dna_engine_t *engine) {
+    if (!engine) return;
+
+    dht_context_t *dht_ctx = dht_singleton_get();
+
+    pthread_mutex_lock(&engine->group_listen_mutex);
+
+    for (int i = 0; i < engine->group_listen_count; i++) {
+        if (engine->group_listen_contexts[i]) {
+            dna_group_outbox_unsubscribe(dht_ctx, engine->group_listen_contexts[i]);
+            engine->group_listen_contexts[i] = NULL;
+        }
+    }
+    engine->group_listen_count = 0;
+
+    pthread_mutex_unlock(&engine->group_listen_mutex);
+
+    QGP_LOG_INFO(LOG_TAG, "[GROUP] Unsubscribed from all groups");
+}
+
+int dna_engine_check_group_day_rotation(dna_engine_t *engine) {
+    if (!engine) return 0;
+
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) return 0;
+
+    int rotated = 0;
+    pthread_mutex_lock(&engine->group_listen_mutex);
+
+    for (int i = 0; i < engine->group_listen_count; i++) {
+        if (engine->group_listen_contexts[i]) {
+            int result = dna_group_outbox_check_day_rotation(
+                dht_ctx, engine->group_listen_contexts[i]);
+            if (result > 0) {
+                rotated++;
+                QGP_LOG_INFO(LOG_TAG, "[GROUP] Day rotation for group %s",
+                             engine->group_listen_contexts[i]->group_uuid);
+            }
+        }
+    }
+
+    pthread_mutex_unlock(&engine->group_listen_mutex);
+
+    if (rotated > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[GROUP] Day rotation completed for %d groups", rotated);
+    }
+    return rotated;
+}
+
+/**
+ * @brief Check and rotate day bucket for 1-1 DM outbox listeners
+ *
+ * Called from heartbeat thread every 4 minutes. Actual rotation only happens
+ * at midnight UTC when the day bucket number changes.
+ *
+ * Flow:
+ * 1. Get current day bucket
+ * 2. For each active listener, check if day changed
+ * 3. If changed: cancel old listener, subscribe to new day, sync yesterday
+ *
+ * @param engine Engine instance
+ * @return Number of listeners rotated (0 if no change)
+ */
+int dna_engine_check_outbox_day_rotation(dna_engine_t *engine) {
+    if (!engine) return 0;
+
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) return 0;
+
+    int rotated = 0;
+    pthread_mutex_lock(&engine->outbox_listeners_mutex);
+
+    for (int i = 0; i < engine->outbox_listener_count; i++) {
+        if (engine->outbox_listeners[i].active &&
+            engine->outbox_listeners[i].dm_listen_ctx) {
+
+            int result = dht_dm_outbox_check_day_rotation(
+                dht_ctx, engine->outbox_listeners[i].dm_listen_ctx);
+
+            if (result > 0) {
+                rotated++;
+                QGP_LOG_INFO(LOG_TAG, "[DM-OUTBOX] Day rotation for contact %.32s...",
+                             engine->outbox_listeners[i].contact_fingerprint);
+            }
+        }
+    }
+
+    pthread_mutex_unlock(&engine->outbox_listeners_mutex);
+
+    if (rotated > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[DM-OUTBOX] Day rotation completed for %d contacts", rotated);
+    }
+    return rotated;
+}
+
 void dna_engine_destroy(dna_engine_t *engine) {
     if (!engine) return;
 
@@ -1042,8 +1431,8 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* Stop presence heartbeat thread */
     dna_stop_presence_heartbeat(engine);
 
-    /* Clear GSK KEM keys (H3 security fix) */
-    gsk_clear_kem_keys();
+    /* Clear GEK KEM keys (H3 security fix) */
+    gek_clear_kem_keys();
 
     /* Free messenger context */
     if (engine->messenger) {
@@ -1068,9 +1457,13 @@ void dna_engine_destroy(dna_engine_t *engine) {
     dna_engine_cancel_contact_request_listener(engine);
     pthread_mutex_destroy(&engine->contact_request_listener_mutex);
 
-    /* Cancel all delivery trackers */
-    dna_engine_cancel_all_delivery_trackers(engine);
-    pthread_mutex_destroy(&engine->delivery_trackers_mutex);
+    /* Cancel all watermark listeners */
+    dna_engine_cancel_all_watermark_listeners(engine);
+    pthread_mutex_destroy(&engine->watermark_listeners_mutex);
+
+    /* Unsubscribe from all groups */
+    dna_engine_unsubscribe_all_groups(engine);
+    pthread_mutex_destroy(&engine->group_listen_mutex);
 
     /* Free message queue */
     pthread_mutex_lock(&engine->message_queue.mutex);
@@ -1240,7 +1633,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     /* Load DHT identity */
     messenger_load_dht_identity(fingerprint);
 
-    /* Load KEM keys for GSK encryption (H3 security fix) */
+    /* Load KEM keys for GEK encryption (H3 security fix) */
     {
         char kem_path[512];
         snprintf(kem_path, sizeof(kem_path), "%s/keys/identity.kem", engine->data_dir);
@@ -1254,14 +1647,14 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         }
 
         if (load_rc == 0 && kem_key && kem_key->public_key && kem_key->private_key) {
-            if (gsk_set_kem_keys(kem_key->public_key, kem_key->private_key) == 0) {
-                QGP_LOG_INFO(LOG_TAG, "GSK KEM keys set successfully");
+            if (gek_set_kem_keys(kem_key->public_key, kem_key->private_key) == 0) {
+                QGP_LOG_INFO(LOG_TAG, "GEK KEM keys set successfully");
             } else {
-                QGP_LOG_WARN(LOG_TAG, "Warning: Failed to set GSK KEM keys");
+                QGP_LOG_WARN(LOG_TAG, "Warning: Failed to set GEK KEM keys");
             }
             qgp_key_free(kem_key);
         } else {
-            QGP_LOG_WARN(LOG_TAG, "Warning: Failed to load KEM keys for GSK encryption");
+            QGP_LOG_WARN(LOG_TAG, "Warning: Failed to load KEM keys for GEK encryption");
             if (kem_key) qgp_key_free(kem_key);
         }
     }
@@ -1271,6 +1664,13 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     if (contacts_db_init(fingerprint) != 0) {
         QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize contacts database\n");
         /* Non-fatal - continue, contacts will be initialized on first access */
+    }
+
+    /* Initialize group invitations database BEFORE P2P message processing
+     * Required for storing incoming group invitations from P2P messages */
+    if (group_invitations_init(fingerprint) != 0) {
+        QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize group invitations database\n");
+        /* Non-fatal - continue, invitations will be initialized on first access */
     }
 
     /* Profile cache is now global - initialized in dna_engine_create() */
@@ -1290,16 +1690,16 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Initialize P2P transport for DHT and messaging */
-    if (messenger_p2p_init(engine->messenger) != 0) {
+    if (messenger_transport_init(engine->messenger) != 0) {
         QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize P2P transport\n");
         /* Non-fatal - continue without P2P, DHT operations will still work via singleton */
     } else {
         /* P2P initialized successfully - complete P2P setup */
-        /* Note: Presence already registered in messenger_p2p_init() */
+        /* Note: Presence already registered in messenger_transport_init() */
 
         /* 1. Check for offline messages (Spillway: query contacts' outboxes) */
         size_t offline_count = 0;
-        if (messenger_p2p_check_offline_messages(engine->messenger, NULL, &offline_count) == 0) {
+        if (messenger_transport_check_offline_messages(engine->messenger, NULL, &offline_count) == 0) {
             if (offline_count > 0) {
                 QGP_LOG_INFO(LOG_TAG, "Received %zu offline messages\n", offline_count);
             } else {
@@ -1327,6 +1727,40 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: starting outbox listeners...");
         int listener_count = dna_engine_listen_all_contacts(engine);
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: started %d listeners", listener_count);
+
+        /* Subscribe to group outboxes for real-time group messages.
+         * This is critical: DHT usually connects before identity loads, so the
+         * background thread (dna_engine_setup_listeners_thread) never runs.
+         * We must subscribe to groups here after identity loads. */
+        int group_count = dna_engine_subscribe_all_groups(engine);
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: subscribed to %d groups", group_count);
+
+        /* 3. Retry any pending/failed messages from previous sessions
+         * Messages may have been queued while offline or failed to send.
+         * Now that DHT is connected, retry them. */
+        int retried = dna_engine_retry_pending_messages(engine);
+        if (retried > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[RETRY] Identity load: retried %d pending messages", retried);
+        }
+
+        /* Spawn post-stabilization retry thread.
+         * DHT callback's listener thread only spawns if identity_loaded was true
+         * when callback fired. In the common case (DHT connects before identity
+         * loads), we need this dedicated thread to retry after routing table fills. */
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] About to spawn stabilization thread (engine=%p, messenger=%p)",
+                     (void*)engine, (void*)engine->messenger);
+        pthread_t stabilization_thread;
+        int spawn_rc = pthread_create(&stabilization_thread, NULL, dna_engine_stabilization_retry_thread, engine);
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] pthread_create returned %d", spawn_rc);
+        if (spawn_rc == 0) {
+            pthread_detach(stabilization_thread);
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread spawned successfully");
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "[RETRY] FAILED to spawn stabilization thread: rc=%d", spawn_rc);
+        }
+
+        /* Note: Delivery confirmation is now handled by persistent watermark listeners
+         * started in dna_engine_listen_all_contacts() for each contact. */
     }
 
     /* Silent background: Create any missing blockchain wallets
@@ -2136,6 +2570,9 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
         error = DNA_ERROR_NOT_FOUND;
     } else {
         QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: Successfully removed %.16s... from local DB\n", fp);
+
+        /* Cancel watermark listener for this contact */
+        dna_engine_cancel_watermark_listener(engine, fp);
     }
 
     /* Sync to DHT */
@@ -2199,6 +2636,7 @@ int dna_engine_set_contact_nickname_sync(
 
 void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
+    qgp_key_t *privkey = NULL;
 
     QGP_LOG_INFO("DNA_ENGINE", "dna_handle_send_contact_request called for recipient: %.20s...",
                  task->params.send_contact_request.recipient);
@@ -2217,7 +2655,7 @@ void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Get sender keys */
-    qgp_key_t *privkey = dna_load_private_key(engine);
+    privkey = dna_load_private_key(engine);
     if (!privkey) {
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
@@ -2248,6 +2686,9 @@ void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task) {
     /* Contact will be added when the recipient approves and we approve their reciprocal request */
 
 done:
+    if (privkey) {
+        qgp_key_free(privkey);
+    }
     if (task->callback.completion) {
         task->callback.completion(task->request_id, error, task->user_data);
     }
@@ -2281,6 +2722,12 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
             for (size_t i = 0; i < dht_count; i++) {
                 /* Skip if blocked */
                 if (contacts_db_is_blocked(dht_requests[i].sender_fingerprint)) {
+                    continue;
+                }
+
+                /* Skip if already a contact or already pending (avoids DHT lookups for old requests) */
+                if (contacts_db_exists(dht_requests[i].sender_fingerprint) ||
+                    contacts_db_request_exists(dht_requests[i].sender_fingerprint)) {
                     continue;
                 }
 
@@ -2426,6 +2873,11 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
         goto done;
     }
 
+    /* Start listeners for new contact (outbox, presence, watermark) */
+    dna_engine_listen_outbox(engine, task->params.contact_request.fingerprint);
+    dna_engine_start_presence_listener(engine, task->params.contact_request.fingerprint);
+    dna_engine_start_watermark_listener(engine, task->params.contact_request.fingerprint);
+
     /* Send a reciprocal request so they know we approved */
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
     if (dht_ctx) {
@@ -2448,6 +2900,7 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
                 task->params.contact_request.fingerprint,
                 "Contact request accepted"
             );
+            qgp_key_free(privkey);
         }
     }
 
@@ -2613,13 +3066,31 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task) {
     );
 
     if (rc != 0) {
-        error = DNA_ENGINE_ERROR_NETWORK;
-    } else {
-        /* Emit MESSAGE_SENT event so UI can update spinner */
+        /* Determine error type based on return code */
+        if (rc == -3) {
+            /* KEY_UNAVAILABLE: recipient key not cached and DHT lookup failed */
+            error = DNA_ENGINE_ERROR_KEY_UNAVAILABLE;
+            QGP_LOG_WARN(LOG_TAG, "[SEND] Key unavailable for recipient - message not saved (cannot encrypt)");
+        } else {
+            /* Network or other error */
+            error = DNA_ENGINE_ERROR_NETWORK;
+            QGP_LOG_WARN(LOG_TAG, "[SEND] Message send failed (rc=%d) - DHT queue unsuccessful", rc);
+        }
+        /* Emit MESSAGE_SENT event with FAILED status so UI can update spinner */
         dna_event_t event = {0};
         event.type = DNA_EVENT_MESSAGE_SENT;
         event.data.message_status.message_id = 0;  /* ID not available here */
-        event.data.message_status.new_status = 1;  /* SENT */
+        event.data.message_status.new_status = 2;  /* FAILED */
+        dna_dispatch_event(engine, &event);
+    } else {
+        /* Emit MESSAGE_SENT event so UI can update (triggers refresh)
+         * Status is SENT (1) - DHT PUT succeeded, single tick in UI.
+         * Will become DELIVERED (3) via watermark confirmation → double tick. */
+        QGP_LOG_INFO(LOG_TAG, "[SEND] Message stored on DHT (status=SENT, single tick)");
+        dna_event_t event = {0};
+        event.type = DNA_EVENT_MESSAGE_SENT;
+        event.data.message_status.message_id = 0;  /* ID not available here */
+        event.data.message_status.new_status = 1;  /* SENT - DHT PUT succeeded */
         dna_dispatch_event(engine, &event);
     }
 
@@ -2685,11 +3156,10 @@ void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
             strncpy(messages[i].sender, msg_infos[i].sender ? msg_infos[i].sender : "", 128);
             strncpy(messages[i].recipient, msg_infos[i].recipient ? msg_infos[i].recipient : "", 128);
 
-            /* Decrypt message */
-            char *plaintext = NULL;
-            size_t plaintext_len = 0;
-            if (messenger_decrypt_message(engine->messenger, msg_infos[i].id, &plaintext, &plaintext_len) == 0) {
-                messages[i].plaintext = plaintext;
+            /* Use pre-decrypted plaintext from messenger_get_conversation */
+            /* (Kyber key loaded once, not per-message - massive speedup) */
+            if (msg_infos[i].plaintext) {
+                messages[i].plaintext = strdup(msg_infos[i].plaintext);
             } else {
                 messages[i].plaintext = strdup("[Decryption failed]");
             }
@@ -2740,6 +3210,99 @@ done:
     task->callback.messages(task->request_id, error, messages, count, task->user_data);
 }
 
+void dna_handle_get_conversation_page(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+    dna_message_t *messages = NULL;
+    int count = 0;
+    int total = 0;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    message_info_t *msg_infos = NULL;
+    int msg_count = 0;
+
+    int rc = messenger_get_conversation_page(
+        engine->messenger,
+        task->params.get_conversation_page.contact,
+        task->params.get_conversation_page.limit,
+        task->params.get_conversation_page.offset,
+        &msg_infos,
+        &msg_count,
+        &total
+    );
+
+    if (rc != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    if (msg_count > 0) {
+        messages = calloc(msg_count, sizeof(dna_message_t));
+        if (!messages) {
+            messenger_free_messages(msg_infos, msg_count);
+            error = DNA_ERROR_INTERNAL;
+            goto done;
+        }
+
+        for (int i = 0; i < msg_count; i++) {
+            messages[i].id = msg_infos[i].id;
+            strncpy(messages[i].sender, msg_infos[i].sender ? msg_infos[i].sender : "", 128);
+            strncpy(messages[i].recipient, msg_infos[i].recipient ? msg_infos[i].recipient : "", 128);
+
+            if (msg_infos[i].plaintext) {
+                messages[i].plaintext = strdup(msg_infos[i].plaintext);
+            } else {
+                messages[i].plaintext = strdup("[Decryption failed]");
+            }
+
+            /* Parse timestamp string (format: YYYY-MM-DD HH:MM:SS) */
+            if (msg_infos[i].timestamp) {
+                struct tm tm = {0};
+                if (strptime(msg_infos[i].timestamp, "%Y-%m-%d %H:%M:%S", &tm) != NULL) {
+                    messages[i].timestamp = (uint64_t)mktime(&tm);
+                } else {
+                    messages[i].timestamp = (uint64_t)time(NULL);
+                }
+            } else {
+                messages[i].timestamp = (uint64_t)time(NULL);
+            }
+
+            messages[i].is_outgoing = (msg_infos[i].sender &&
+                strcmp(msg_infos[i].sender, engine->fingerprint) == 0);
+
+            /* Map status string to int */
+            if (msg_infos[i].status) {
+                if (strcmp(msg_infos[i].status, "read") == 0) {
+                    messages[i].status = 4;
+                } else if (strcmp(msg_infos[i].status, "delivered") == 0) {
+                    messages[i].status = 3;
+                } else if (strcmp(msg_infos[i].status, "failed") == 0) {
+                    messages[i].status = 2;
+                } else if (strcmp(msg_infos[i].status, "sent") == 0) {
+                    messages[i].status = 1;
+                } else if (strcmp(msg_infos[i].status, "pending") == 0) {
+                    messages[i].status = 0;
+                } else {
+                    messages[i].status = 1;
+                }
+            } else {
+                messages[i].status = 1;
+            }
+
+            messages[i].message_type = msg_infos[i].message_type;
+        }
+        count = msg_count;
+
+        messenger_free_messages(msg_infos, msg_count);
+    }
+
+done:
+    task->callback.messages_page(task->request_id, error, messages, count, total, task->user_data);
+}
+
 void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
 
@@ -2748,13 +3311,34 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
+    /* First, sync any pending outboxes (our messages that failed to publish earlier) */
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (dht_ctx) {
+        int synced = dht_offline_queue_sync_pending(dht_ctx);
+        if (synced > 0) {
+            QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] Synced %d pending outboxes to DHT", synced);
+        }
+    }
+
     /* Check DHT offline queue for messages from contacts */
     size_t offline_count = 0;
-    int rc = messenger_p2p_check_offline_messages(engine->messenger, NULL, &offline_count);
+    int rc = messenger_transport_check_offline_messages(engine->messenger, NULL, &offline_count);
     if (rc == 0) {
-        QGP_LOG_WARN("DNA_ENGINE", "[OFFLINE] Check complete: %zu new messages", offline_count);
+        QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] Direct messages check complete: %zu new", offline_count);
     } else {
-        QGP_LOG_WARN("DNA_ENGINE", "[OFFLINE] Check failed with rc=%d", rc);
+        QGP_LOG_WARN("DNA_ENGINE", "[OFFLINE] Direct messages check failed with rc=%d", rc);
+    }
+
+    /* Also sync group messages from DHT */
+    if (dht_ctx) {
+        size_t group_msg_count = 0;
+        rc = dna_group_outbox_sync_all(dht_ctx, engine->fingerprint, &group_msg_count);
+        if (rc == 0) {
+            QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] Group messages sync complete: %zu new", group_msg_count);
+        } else if (rc != DNA_GROUP_OUTBOX_ERR_NULL_PARAM) {
+            /* NULL_PARAM just means no groups, not an error */
+            QGP_LOG_WARN("DNA_ENGINE", "[OFFLINE] Group messages sync failed with rc=%d", rc);
+        }
     }
 
 done:
@@ -2795,8 +3379,15 @@ void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task) {
             strncpy(groups[i].uuid, entries[i].group_uuid, 36);
             strncpy(groups[i].name, entries[i].name, sizeof(groups[i].name) - 1);
             strncpy(groups[i].creator, entries[i].creator, 128);
-            groups[i].member_count = 0; /* Cache doesn't store member count */
             groups[i].created_at = entries[i].created_at;
+
+            /* Get member count from dht_group_members table */
+            int member_count = 0;
+            if (dht_groups_get_member_count(entries[i].group_uuid, &member_count) == 0) {
+                groups[i].member_count = member_count;
+            } else {
+                groups[i].member_count = 0;
+            }
         }
         count = entry_count;
 
@@ -2805,11 +3396,13 @@ void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task) {
 
 done:
     task->callback.groups(task->request_id, error, groups, count, task->user_data);
+    /* Note: caller (Flutter) owns the memory and frees via dna_free_groups() */
 }
 
 void dna_handle_create_group(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     char group_uuid[37] = {0};
+    char *uuid_copy = NULL;  /* Heap-allocated for async callback */
 
     if (!engine->identity_loaded || !engine->messenger) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
@@ -2823,7 +3416,8 @@ void dna_handle_create_group(dna_engine_t *engine, dna_task_t *task) {
         NULL, /* description */
         (const char**)task->params.create_group.members,
         task->params.create_group.member_count,
-        &group_id
+        &group_id,
+        group_uuid  /* Get real UUID */
     );
 
     if (rc != 0) {
@@ -2831,12 +3425,12 @@ void dna_handle_create_group(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Get UUID from group ID - simplified, actual impl would query database */
-    snprintf(group_uuid, sizeof(group_uuid), "%08x-0000-0000-0000-000000000000", group_id);
+    /* Allocate heap copy for async callback (caller must free) */
+    uuid_copy = strdup(group_uuid);
 
 done:
     task->callback.group_created(task->request_id, error,
-                                  (error == DNA_OK) ? group_uuid : NULL,
+                                  uuid_copy,  /* Heap-allocated, callback must free */
                                   task->user_data);
 }
 
@@ -2855,6 +3449,122 @@ void dna_handle_send_group_message(dna_engine_t *engine, dna_task_t *task) {
     );
 
     if (rc != 0) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+    }
+
+done:
+    task->callback.completion(task->request_id, error, task->user_data);
+}
+
+void dna_handle_get_group_conversation(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+    dna_message_t *messages = NULL;
+    int count = 0;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    const char *group_uuid = task->params.get_group_conversation.group_uuid;
+
+    /* Get group messages directly from group_messages table in groups.db */
+    dna_group_message_t *group_msgs = NULL;
+    size_t msg_count = 0;
+
+    int rc = dna_group_outbox_db_get_messages(group_uuid, 0, 0, &group_msgs, &msg_count);
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get group conversation: %d", rc);
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    QGP_LOG_WARN(LOG_TAG, "[GROUP] Got %zu messages for group %s", msg_count, group_uuid);
+
+    if (msg_count > 0) {
+        messages = calloc(msg_count, sizeof(dna_message_t));
+        if (!messages) {
+            dna_group_outbox_free_messages(group_msgs, msg_count);
+            error = DNA_ERROR_INTERNAL;
+            goto done;
+        }
+
+        /* Messages from DB are in DESC order, reverse to ASC for UI */
+        for (size_t i = 0; i < msg_count; i++) {
+            size_t src_idx = msg_count - 1 - i;  /* Reverse order */
+            dna_group_message_t *src = &group_msgs[src_idx];
+
+            messages[i].id = (int64_t)i;  /* Use index as ID since message_id is string */
+            strncpy(messages[i].sender, src->sender_fingerprint, 128);
+            strncpy(messages[i].recipient, group_uuid, 36);
+
+            /* Use decrypted plaintext */
+            if (src->plaintext) {
+                messages[i].plaintext = strdup(src->plaintext);
+            } else {
+                messages[i].plaintext = strdup("[Decryption failed]");
+            }
+
+            /* Convert timestamp_ms to seconds */
+            messages[i].timestamp = src->timestamp_ms / 1000;
+
+            /* Determine if outgoing */
+            messages[i].is_outgoing = (strcmp(src->sender_fingerprint, engine->fingerprint) == 0);
+
+            /* Group messages are always delivered */
+            messages[i].status = 3;  /* delivered */
+            messages[i].message_type = 0;  /* text */
+        }
+        count = (int)msg_count;
+
+        dna_group_outbox_free_messages(group_msgs, msg_count);
+    }
+
+done:
+    task->callback.messages(task->request_id, error, messages, count, task->user_data);
+}
+
+void dna_handle_add_group_member(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    /* Look up group_id from UUID using local cache */
+    dht_group_cache_entry_t *entries = NULL;
+    int entry_count = 0;
+    if (dht_groups_list_for_user(engine->fingerprint, &entries, &entry_count) != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    int group_id = -1;
+    for (int i = 0; i < entry_count; i++) {
+        if (strcmp(entries[i].group_uuid, task->params.add_group_member.group_uuid) == 0) {
+            group_id = entries[i].local_id;
+            break;
+        }
+    }
+    dht_groups_free_cache_entries(entries, entry_count);
+
+    if (group_id < 0) {
+        error = DNA_ENGINE_ERROR_NOT_FOUND;
+        goto done;
+    }
+
+    /* Add member using messenger API */
+    int rc = messenger_add_group_member(
+        engine->messenger,
+        group_id,
+        task->params.add_group_member.fingerprint
+    );
+
+    if (rc == -3) {
+        error = DNA_ENGINE_ERROR_ALREADY_EXISTS;  // Already a member
+    } else if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
     }
 
@@ -2912,22 +3622,32 @@ done:
 void dna_handle_accept_invitation(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
 
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: START group=%s <<<", task->params.invitation.group_uuid);
+
     if (!engine->identity_loaded || !engine->messenger) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
         goto done;
     }
 
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: Calling messenger <<<");
     int rc = messenger_accept_group_invitation(
         engine->messenger,
         task->params.invitation.group_uuid
     );
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: messenger returned %d <<<", rc);
 
     if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
+    } else {
+        /* Subscribe to the newly accepted group for real-time messages */
+        QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: Subscribing to groups <<<");
+        dna_engine_subscribe_all_groups(engine);
     }
 
 done:
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: callback error=%d <<<", error);
     task->callback.completion(task->request_id, error, task->user_data);
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: DONE <<<");
 }
 
 void dna_handle_reject_invitation(dna_engine_t *engine, dna_task_t *task) {
@@ -4700,6 +5420,25 @@ dna_request_id_t dna_engine_get_conversation(
     return dna_submit_task(engine, TASK_GET_CONVERSATION, &params, cb, user_data);
 }
 
+dna_request_id_t dna_engine_get_conversation_page(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
+    int limit,
+    int offset,
+    dna_messages_page_cb callback,
+    void *user_data
+) {
+    if (!engine || !contact_fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_conversation_page.contact, contact_fingerprint, 128);
+    params.get_conversation_page.limit = limit > 0 ? limit : 50;
+    params.get_conversation_page.offset = offset >= 0 ? offset : 0;
+
+    dna_task_callback_t cb = { .messages_page = callback };
+    return dna_submit_task(engine, TASK_GET_CONVERSATION_PAGE, &params, cb, user_data);
+}
+
 dna_request_id_t dna_engine_check_offline_messages(
     dna_engine_t *engine,
     dna_completion_cb callback,
@@ -4709,6 +5448,43 @@ dna_request_id_t dna_engine_check_offline_messages(
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_CHECK_OFFLINE_MESSAGES, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_check_offline_messages_from(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !contact_fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+    if (!engine->identity_loaded || !engine->messenger) {
+        callback(1, DNA_ENGINE_ERROR_NO_IDENTITY, user_data);
+        return 1;
+    }
+
+    size_t fp_len = strlen(contact_fingerprint);
+    if (fp_len < 64) {
+        QGP_LOG_ERROR(LOG_TAG, "[OFFLINE] Invalid fingerprint length: %zu", fp_len);
+        callback(1, DNA_ENGINE_ERROR_INVALID_PARAM, user_data);
+        return 1;
+    }
+
+    /* Check offline messages from specific contact's outbox.
+     * This is faster than checking all contacts and provides
+     * immediate updates when entering a specific chat. */
+    QGP_LOG_INFO(LOG_TAG, "[OFFLINE] Checking messages from %.20s...", contact_fingerprint);
+
+    size_t offline_count = 0;
+    int rc = messenger_transport_check_offline_messages(engine->messenger, contact_fingerprint, &offline_count);
+    if (rc == 0) {
+        QGP_LOG_INFO(LOG_TAG, "[OFFLINE] From %.20s...: %zu new messages", contact_fingerprint, offline_count);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "[OFFLINE] Check from %.20s... failed: %d", contact_fingerprint, rc);
+    }
+
+    /* Call completion callback (0 = success for any result including 0 messages) */
+    callback(1, rc == 0 ? DNA_OK : DNA_ENGINE_ERROR_NETWORK, user_data);
+    return 1;
 }
 
 int dna_engine_get_unread_count(
@@ -4748,6 +5524,254 @@ int dna_engine_delete_message_sync(
     if (!engine->messenger) return -1;
 
     return messenger_delete_message(engine->messenger, message_id);
+}
+
+/* ============================================================================
+ * MESSAGE RETRY (Bulletproof Message Delivery)
+ * ============================================================================
+ *
+ * v0.4.59: "Never Give Up" retry system
+ * - No max retry limit (keeps trying until delivered or stale)
+ * - Exponential backoff: 30s, 60s, 120s, ... max 1 hour
+ * - Stale marking: 30+ day old messages marked stale (shown differently in UI)
+ * - DHT check: Only retry when DHT is connected with ≥1 peer
+ */
+
+#define MESSAGE_RETRY_MAX_RETRIES 0  /* 0 = unlimited retries (never give up) */
+#define MESSAGE_STALE_DAYS 30        /* Mark as stale after 30 days */
+#define MESSAGE_BACKOFF_BASE_SECS 30 /* Base backoff: 30 seconds */
+#define MESSAGE_BACKOFF_MAX_SECS 3600 /* Max backoff: 1 hour */
+
+/* Mutex to prevent concurrent retry calls (e.g., DHT reconnect + manual retry race) */
+static pthread_mutex_t retry_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/**
+ * Calculate retry backoff interval based on retry_count
+ * Exponential: 30s, 60s, 120s, 240s, 480s, 960s, 1920s, 3600s (max)
+ */
+static int get_retry_backoff_secs(int retry_count) {
+    if (retry_count <= 0) return MESSAGE_BACKOFF_BASE_SECS;
+
+    /* Cap the exponent to prevent overflow (2^7 = 128, 30*128 = 3840 > 3600) */
+    int exp = retry_count < 7 ? retry_count : 7;
+    int interval = MESSAGE_BACKOFF_BASE_SECS * (1 << exp);
+
+    return interval > MESSAGE_BACKOFF_MAX_SECS ? MESSAGE_BACKOFF_MAX_SECS : interval;
+}
+
+/**
+ * Check if message is ready for retry based on exponential backoff
+ * Returns true if enough time has passed since message creation + backoff
+ */
+static bool is_ready_for_retry(backup_message_t *msg) {
+    if (!msg) return false;
+
+    /* First attempt (retry_count=0) always allowed */
+    if (msg->retry_count == 0) return true;
+
+    /* Calculate next retry time based on backoff */
+    int backoff_secs = get_retry_backoff_secs(msg->retry_count);
+    time_t next_retry_at = msg->timestamp + (msg->retry_count * backoff_secs);
+    time_t now = time(NULL);
+
+    return now >= next_retry_at;
+}
+
+/**
+ * Retry a single pending/failed message
+ *
+ * v14: Re-encrypts plaintext and queues to DHT with a new seq_num.
+ * Uses messenger_send_message which handles encryption, DHT queueing, and duplicate detection.
+ * Status stays PENDING until watermark confirms DELIVERED. Increments retry_count on failure.
+ *
+ * @param engine Engine instance
+ * @param msg Message to retry (from message_backup_get_pending_messages)
+ * @return 0 on success, -1 on failure
+ */
+static int retry_single_message(dna_engine_t *engine, backup_message_t *msg) {
+    if (!engine || !msg) return -1;
+    if (!engine->messenger) return -1;
+
+    message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
+    if (!backup_ctx) return -1;
+
+    /* v14: Messages are stored as plaintext - need to re-encrypt before sending */
+    if (!msg->plaintext || strlen(msg->plaintext) == 0) {
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Message %d has no plaintext - cannot retry", msg->id);
+        return -1;
+    }
+
+    /* Call messenger_send_message to re-encrypt and send
+     * This handles:
+     * - Loading recipient's Kyber public key
+     * - Multi-recipient encryption
+     * - DHT queueing
+     * - Duplicate detection (skips DB save if message exists) */
+    const char *recipients[] = { msg->recipient };
+    int rc = messenger_send_message(
+        engine->messenger,
+        recipients,
+        1,                      /* recipient_count */
+        msg->plaintext,         /* message content */
+        msg->group_id,          /* group_id (0 for direct) */
+        msg->message_type       /* message_type */
+    );
+
+    if (rc == 0 || rc == 1) {
+        /* Success - queued to DHT (rc=0) or duplicate skipped (rc=1)
+         * Status stays PENDING - will become DELIVERED via watermark confirmation. */
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d to %.20s... re-encrypted and queued (status=PENDING)",
+                     msg->id, msg->recipient);
+        return 0;
+    } else if (rc == -3) {
+        /* KEY_UNAVAILABLE - recipient's public key not cached and DHT unavailable
+         * Don't increment retry count - will retry when DHT reconnects */
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Message %d to %.20s... key unavailable (will retry later)",
+                     msg->id, msg->recipient);
+        return -1;
+    } else {
+        /* Failed - increment retry count */
+        message_backup_increment_retry_count(backup_ctx, msg->id);
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Message %d to %.20s... failed (retry_count=%d)",
+                     msg->id, msg->recipient, msg->retry_count + 1);
+        return -1;
+    }
+}
+
+int dna_engine_retry_pending_messages(dna_engine_t *engine) {
+    if (!engine) return -1;
+    if (!engine->messenger) return -1;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (!dht_ctx) return -1;
+
+    /* Skip retry if DHT is not connected - retries will fail and block for timeout
+     * Messages will be retried when DHT reconnects (triggers this function again) */
+    if (!dht_context_is_ready(dht_ctx)) {
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Skipping retry - DHT not connected");
+        return 0;
+    }
+
+    message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
+    if (!backup_ctx) return -1;
+
+    /* Lock to prevent concurrent retry calls */
+    pthread_mutex_lock(&retry_mutex);
+
+    /* Get all pending/failed messages (0 = unlimited, no retry_count filter) */
+    backup_message_t *messages = NULL;
+    int count = 0;
+    int rc = message_backup_get_pending_messages(
+        backup_ctx,
+        MESSAGE_RETRY_MAX_RETRIES,  /* 0 = unlimited */
+        &messages,
+        &count
+    );
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[RETRY] Failed to query pending messages");
+        pthread_mutex_unlock(&retry_mutex);
+        return -1;
+    }
+
+    if (count == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "[RETRY] No pending messages to retry");
+        pthread_mutex_unlock(&retry_mutex);
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[RETRY] Found %d pending/failed messages to process", count);
+
+    int success_count = 0;
+    int fail_count = 0;
+    int skipped_backoff = 0;
+    int marked_stale = 0;
+
+    /* Process each message */
+    for (int i = 0; i < count; i++) {
+        backup_message_t *msg = &messages[i];
+
+        /* Check if message is stale (30+ days old) */
+        int age_days = message_backup_get_age_days(backup_ctx, msg->id);
+        if (age_days >= MESSAGE_STALE_DAYS) {
+            message_backup_mark_stale(backup_ctx, msg->id);
+            marked_stale++;
+            QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d marked STALE (age=%d days)", msg->id, age_days);
+            continue;
+        }
+
+        /* Check exponential backoff - skip if not ready for retry yet */
+        if (!is_ready_for_retry(msg)) {
+            skipped_backoff++;
+            continue;
+        }
+
+        /* Retry the message */
+        if (retry_single_message(engine, msg) == 0) {
+            success_count++;
+        } else {
+            fail_count++;
+        }
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[RETRY] Completed: %d succeeded, %d failed, %d backoff, %d stale",
+                 success_count, fail_count, skipped_backoff, marked_stale);
+
+    /* Note: Delivery confirmation handled by persistent watermark listeners */
+
+    /* Free messages array */
+    message_backup_free_messages(messages, count);
+
+    pthread_mutex_unlock(&retry_mutex);
+    return success_count;
+}
+
+int dna_engine_retry_message(dna_engine_t *engine, int message_id) {
+    if (!engine || message_id <= 0) return -1;
+    if (!engine->messenger) return -1;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (!dht_ctx) return -1;
+    (void)dht_ctx;  /* Used by retry_single_message via dna_get_dht_ctx */
+
+    message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
+    if (!backup_ctx) return -1;
+
+    /* Lock to prevent concurrent retry calls */
+    pthread_mutex_lock(&retry_mutex);
+
+    /* Get all pending/failed messages (we'll filter by ID) */
+    backup_message_t *messages = NULL;
+    int count = 0;
+    int rc = message_backup_get_pending_messages(
+        backup_ctx,
+        0,  /* 0 = unlimited - allow manual retry regardless of retry_count */
+        &messages,
+        &count
+    );
+
+    if (rc != 0 || count == 0) {
+        pthread_mutex_unlock(&retry_mutex);
+        return -1;
+    }
+
+    /* Find the specific message */
+    int result = -1;
+    for (int i = 0; i < count; i++) {
+        if (messages[i].id == message_id) {
+            result = retry_single_message(engine, &messages[i]);
+            break;
+        }
+    }
+
+    message_backup_free_messages(messages, count);
+
+    if (result == -1) {
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Message %d not found or not retryable", message_id);
+    }
+
+    pthread_mutex_unlock(&retry_mutex);
+    return result;
 }
 
 /* Groups */
@@ -4818,6 +5842,42 @@ dna_request_id_t dna_engine_send_group_message(
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_SEND_GROUP_MESSAGE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_group_conversation(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_messages_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_group_conversation.group_uuid, group_uuid, 36);
+
+    dna_task_callback_t cb = { .messages = callback };
+    return dna_submit_task(engine, TASK_GET_GROUP_CONVERSATION, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_add_group_member(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !fingerprint || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    strncpy(params.add_group_member.group_uuid, group_uuid, 36);
+    strncpy(params.add_group_member.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_ADD_GROUP_MEMBER, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_get_invitations(
@@ -4980,79 +6040,7 @@ bool dna_engine_is_peer_online(dna_engine_t *engine, const char *fingerprint) {
         return false;
     }
 
-    return messenger_p2p_peer_online(engine->messenger, fingerprint);
-}
-
-int dna_engine_request_turn_credentials(dna_engine_t *engine, int timeout_ms) {
-    if (!engine || !engine->identity_loaded) {
-        QGP_LOG_ERROR(LOG_TAG, "Engine not initialized or no identity loaded");
-        return -1;
-    }
-
-    if (timeout_ms <= 0) {
-        timeout_ms = 10000;  // Default 10 seconds
-    }
-
-    // Get data directory
-    const char *data_dir = engine->data_dir;
-    if (!data_dir) {
-        data_dir = qgp_platform_app_data_dir();
-    }
-    if (!data_dir) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory");
-        return -1;
-    }
-
-    // Build path to signing key (v0.3.0: flat structure)
-    char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/keys/identity.dsa", data_dir);
-
-    // Load signing key (handle encrypted keys)
-    qgp_key_t *sign_key = NULL;
-    int load_rc;
-    if (engine->keys_encrypted && engine->session_password) {
-        load_rc = qgp_key_load_encrypted(key_path, engine->session_password, &sign_key);
-    } else {
-        load_rc = qgp_key_load(key_path, &sign_key);
-    }
-
-    if (load_rc != 0 || !sign_key) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load signing key: %s", key_path);
-        return -1;
-    }
-
-    if (!sign_key->public_key || !sign_key->private_key) {
-        QGP_LOG_ERROR(LOG_TAG, "Signing key missing public or private component");
-        qgp_key_free(sign_key);
-        return -1;
-    }
-
-    // Initialize TURN credential system
-    turn_credentials_init();
-
-    // Request credentials
-    turn_credentials_t creds;
-    memset(&creds, 0, sizeof(creds));
-
-    QGP_LOG_INFO(LOG_TAG, "Requesting TURN credentials (timeout: %dms)...", timeout_ms);
-
-    int result = turn_credentials_request(
-        engine->fingerprint,
-        sign_key->public_key,
-        sign_key->private_key,
-        &creds,
-        timeout_ms
-    );
-
-    qgp_key_free(sign_key);
-
-    if (result != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to obtain TURN credentials");
-        return -1;
-    }
-
-    QGP_LOG_INFO(LOG_TAG, "Successfully obtained TURN credentials (%zu servers)", creds.server_count);
-    return 0;
+    return messenger_transport_peer_online(engine->messenger, fingerprint);
 }
 
 dna_request_id_t dna_engine_lookup_presence(
@@ -5111,6 +6099,29 @@ dna_request_id_t dna_engine_sync_groups(
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_SYNC_GROUPS, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_sync_group_by_uuid(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+    if (strlen(group_uuid) != 36) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params;
+    memset(&params, 0, sizeof(params));
+    snprintf(params.sync_group_by_uuid.group_uuid,
+             sizeof(params.sync_group_by_uuid.group_uuid),
+             "%s", group_uuid);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SYNC_GROUP_BY_UUID, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_get_registered_name(
@@ -5189,12 +6200,14 @@ static bool outbox_listen_callback(
         QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Dispatching event to Flutter...");
         dna_dispatch_event(ctx->engine, &event);
         QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Event dispatched successfully");
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] >>> About to return true (continue listening)");
     } else if (expired) {
         QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Value expired (ignoring)");
     } else {
         QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Empty value received (ignoring)");
     }
 
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] >>> CALLBACK RETURNING TRUE <<<");
     return true;  /* Continue listening */
 }
 
@@ -5221,7 +6234,7 @@ size_t dna_engine_listen_outbox(
         return 0;
     }
 
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Setting up listener for %.32s... (len=%zu)",
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Setting up daily bucket listener for %.32s... (len=%zu)",
                  contact_fingerprint, fp_len);
 
     pthread_mutex_lock(&engine->outbox_listeners_mutex);
@@ -5231,7 +6244,8 @@ size_t dna_engine_listen_outbox(
         if (engine->outbox_listeners[i].active &&
             strcmp(engine->outbox_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
             /* Verify listener is actually active in DHT layer */
-            if (dht_is_listener_active(engine->outbox_listeners[i].dht_token)) {
+            if (engine->outbox_listeners[i].dm_listen_ctx &&
+                dht_is_listener_active(engine->outbox_listeners[i].dht_token)) {
                 QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Already listening (token=%zu verified active)",
                              engine->outbox_listeners[i].dht_token);
                 pthread_mutex_unlock(&engine->outbox_listeners_mutex);
@@ -5240,6 +6254,10 @@ size_t dna_engine_listen_outbox(
                 /* Stale entry - DHT listener was suspended/cancelled but engine not updated */
                 QGP_LOG_WARN(LOG_TAG, "[LISTEN] Stale entry (token=%zu inactive in DHT), recreating",
                              engine->outbox_listeners[i].dht_token);
+                if (engine->outbox_listeners[i].dm_listen_ctx) {
+                    dht_dm_outbox_unsubscribe(dht_ctx, engine->outbox_listeners[i].dm_listen_ctx);
+                    engine->outbox_listeners[i].dm_listen_ctx = NULL;
+                }
                 engine->outbox_listeners[i].active = false;
                 /* Don't return - continue to create new listener */
                 break;
@@ -5254,27 +6272,6 @@ size_t dna_engine_listen_outbox(
         return 0;
     }
 
-    /* Generate chunk[0] key for contact's outbox to me.
-     * Chunked storage uses: SHA3-512(base_key + ":chunk:0")[0:32]
-     * Base key format: contact_fp + ":outbox:" + my_fp */
-    char base_key[512];
-    snprintf(base_key, sizeof(base_key), "%s:outbox:%s",
-             contact_fingerprint, engine->fingerprint);
-
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] base_key=%s", base_key);
-
-    uint8_t chunk0_key[DHT_CHUNK_KEY_SIZE];  /* 32 bytes */
-    if (dht_chunked_make_key(base_key, 0, chunk0_key) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to generate chunk key");
-        pthread_mutex_unlock(&engine->outbox_listeners_mutex);
-        return 0;
-    }
-
-    /* Log chunk0_key for debugging key mismatch issues */
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] chunk0_key=%02x%02x%02x%02x%02x%02x%02x%02x...",
-                 chunk0_key[0], chunk0_key[1], chunk0_key[2], chunk0_key[3],
-                 chunk0_key[4], chunk0_key[5], chunk0_key[6], chunk0_key[7]);
-
     /* Create callback context (will be freed when listener is cancelled) */
     outbox_listener_ctx_t *ctx = malloc(sizeof(outbox_listener_ctx_t));
     if (!ctx) {
@@ -5286,16 +6283,30 @@ size_t dna_engine_listen_outbox(
     strncpy(ctx->contact_fingerprint, contact_fingerprint, sizeof(ctx->contact_fingerprint) - 1);
     ctx->contact_fingerprint[sizeof(ctx->contact_fingerprint) - 1] = '\0';
 
-    /* Start DHT listen on chunk[0] key */
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Calling dht_listen_ex() with cleanup callback...");
-    size_t token = dht_listen_ex(dht_ctx, chunk0_key, DHT_CHUNK_KEY_SIZE,
-                                  outbox_listen_callback, ctx, outbox_listener_cleanup);
-    if (token == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] dht_listen_ex() returned 0 (failed)");
-        free(ctx);  /* Cleanup not called on failure, free manually */
+    /*
+     * v0.4.81: Use daily bucket subscribe with day rotation support.
+     * Key format: contact_fp:outbox:my_fp:DAY_BUCKET
+     * Day rotation is handled by dht_dm_outbox_check_day_rotation() called from heartbeat.
+     */
+    QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Calling dht_dm_outbox_subscribe() for daily bucket...");
+
+    dht_dm_listen_ctx_t *dm_listen_ctx = NULL;
+    int result = dht_dm_outbox_subscribe(dht_ctx,
+                                          engine->fingerprint,      /* my_fp (recipient) */
+                                          contact_fingerprint,      /* contact_fp (sender) */
+                                          outbox_listen_callback,
+                                          ctx,
+                                          &dm_listen_ctx);
+
+    if (result != 0 || !dm_listen_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] dht_dm_outbox_subscribe() failed");
+        free(ctx);
         pthread_mutex_unlock(&engine->outbox_listeners_mutex);
         return 0;
     }
+
+    /* Get token from dm_listen_ctx */
+    size_t token = dm_listen_ctx->listen_token;
 
     /* Store listener info */
     int idx = engine->outbox_listener_count++;
@@ -5305,9 +6316,10 @@ size_t dna_engine_listen_outbox(
         sizeof(engine->outbox_listeners[idx].contact_fingerprint) - 1] = '\0';
     engine->outbox_listeners[idx].dht_token = token;
     engine->outbox_listeners[idx].active = true;
+    engine->outbox_listeners[idx].dm_listen_ctx = dm_listen_ctx;
 
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] ✓ DHT listener active: token=%zu, total_listeners=%d",
-                 token, engine->outbox_listener_count);
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] ✓ Daily bucket listener active: token=%zu, day=%lu, total=%d",
+                 token, (unsigned long)dm_listen_ctx->current_day, engine->outbox_listener_count);
 
     pthread_mutex_unlock(&engine->outbox_listeners_mutex);
     return token;
@@ -5329,12 +6341,16 @@ void dna_engine_cancel_outbox_listener(
         if (engine->outbox_listeners[i].active &&
             strcmp(engine->outbox_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
 
-            /* Cancel DHT listener */
-            if (dht_ctx) {
+            /* Cancel daily bucket listener (v0.4.81+) */
+            if (engine->outbox_listeners[i].dm_listen_ctx) {
+                dht_dm_outbox_unsubscribe(dht_ctx, engine->outbox_listeners[i].dm_listen_ctx);
+                engine->outbox_listeners[i].dm_listen_ctx = NULL;
+            } else if (dht_ctx && engine->outbox_listeners[i].dht_token != 0) {
+                /* Legacy fallback: direct DHT cancel */
                 dht_cancel_listen(dht_ctx, engine->outbox_listeners[i].dht_token);
             }
 
-            QGP_LOG_INFO(LOG_TAG, "Cancelled outbox listener for %s... (token=%zu)",
+            QGP_LOG_INFO(LOG_TAG, "Cancelled outbox listener for %.32s... (token=%zu)",
                          contact_fingerprint, engine->outbox_listeners[i].dht_token);
 
             /* Mark as inactive (compact later) */
@@ -5352,6 +6368,34 @@ void dna_engine_cancel_outbox_listener(
     pthread_mutex_unlock(&engine->outbox_listeners_mutex);
 }
 
+/**
+ * Debug: Log all active outbox listeners
+ * Called to verify which contacts have active listeners
+ */
+void dna_engine_log_active_listeners(dna_engine_t *engine) {
+    if (!engine) return;
+
+    pthread_mutex_lock(&engine->outbox_listeners_mutex);
+
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN-DEBUG] === ACTIVE OUTBOX LISTENERS (%d) ===",
+                 engine->outbox_listener_count);
+
+    for (int i = 0; i < engine->outbox_listener_count; i++) {
+        if (engine->outbox_listeners[i].active) {
+            bool dht_active = dht_is_listener_active(engine->outbox_listeners[i].dht_token);
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN-DEBUG]   [%d] %.32s... token=%zu dht_active=%d",
+                         i,
+                         engine->outbox_listeners[i].contact_fingerprint,
+                         engine->outbox_listeners[i].dht_token,
+                         dht_active);
+        }
+    }
+
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN-DEBUG] === END LISTENERS ===");
+
+    pthread_mutex_unlock(&engine->outbox_listeners_mutex);
+}
+
 int dna_engine_listen_all_contacts(dna_engine_t *engine)
 {
     QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] dna_engine_listen_all_contacts() called");
@@ -5365,10 +6409,30 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
         return 0;
     }
 
-    /* Race condition prevention: only one listener setup at a time */
+    /* Race condition prevention: only one listener setup at a time
+     * If another thread is setting up listeners, wait for it to complete.
+     * This prevents silent failures where the second caller gets 0 listeners. */
     if (engine->listeners_starting) {
-        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Listener setup already in progress, skipping duplicate call");
-        return 0;
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN] Listener setup already in progress, waiting...");
+        /* Wait up to 5 seconds for the other thread to finish */
+        for (int wait_count = 0; wait_count < 50 && engine->listeners_starting; wait_count++) {
+            qgp_platform_sleep_ms(100);
+        }
+        if (engine->listeners_starting) {
+            /* Other thread took too long - something is wrong, but don't block forever */
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN] Timed out waiting for listener setup, proceeding anyway");
+        } else {
+            /* Other thread finished - return its listener count (already set up) */
+            QGP_LOG_INFO(LOG_TAG, "[LISTEN] Other thread finished listener setup, returning existing count");
+            /* Count existing active listeners and return that */
+            pthread_mutex_lock(&engine->outbox_listeners_mutex);
+            int existing_count = 0;
+            for (int i = 0; i < DNA_MAX_OUTBOX_LISTENERS; i++) {
+                if (engine->outbox_listeners[i].active) existing_count++;
+            }
+            pthread_mutex_unlock(&engine->outbox_listeners_mutex);
+            return existing_count;
+        }
     }
     engine->listeners_starting = true;
 
@@ -5435,6 +6499,12 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
         } else {
             QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Failed to start presence listener for contact[%zu] (fp_len=%zu)", i, id_len);
         }
+
+        /* Start watermark listener (for delivery confirmation) */
+        size_t watermark_token = dna_engine_start_watermark_listener(engine, contact_id);
+        if (watermark_token > 0) {
+            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Watermark listener started for contact[%zu], token=%zu", i, watermark_token);
+        }
     }
 
     /* Cleanup */
@@ -5449,8 +6519,12 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     }
 
     engine->listeners_starting = false;
-    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Started %d/%zu outbox + %d/%zu presence + contact_req listeners",
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Started %d/%zu outbox + %d/%zu presence + watermark listeners",
                  started, count, presence_started, count);
+
+    /* Debug: log all active listeners for troubleshooting */
+    dna_engine_log_active_listeners(engine);
+
     return started;
 }
 
@@ -5465,8 +6539,15 @@ void dna_engine_cancel_all_outbox_listeners(dna_engine_t *engine)
     pthread_mutex_lock(&engine->outbox_listeners_mutex);
 
     for (int i = 0; i < engine->outbox_listener_count; i++) {
-        if (engine->outbox_listeners[i].active && dht_ctx) {
-            dht_cancel_listen(dht_ctx, engine->outbox_listeners[i].dht_token);
+        if (engine->outbox_listeners[i].active) {
+            /* Free daily bucket context (v0.5.0+) */
+            if (engine->outbox_listeners[i].dm_listen_ctx) {
+                dht_dm_outbox_unsubscribe(dht_ctx, engine->outbox_listeners[i].dm_listen_ctx);
+                engine->outbox_listeners[i].dm_listen_ctx = NULL;
+            } else if (dht_ctx && engine->outbox_listeners[i].dht_token != 0) {
+                /* Legacy fallback */
+                dht_cancel_listen(dht_ctx, engine->outbox_listeners[i].dht_token);
+            }
             QGP_LOG_DEBUG(LOG_TAG, "Cancelled outbox listener for %s...",
                           engine->outbox_listeners[i].contact_fingerprint);
         }
@@ -5532,12 +6613,11 @@ static bool presence_listen_callback(
     memcpy(json_buf, value, copy_len);
     json_buf[copy_len] = '\0';
 
-    peer_info_t peer_info;
-    memset(&peer_info, 0, sizeof(peer_info));
-
+    /* v0.4.61: timestamp-only presence (privacy - no IP disclosure) */
+    uint64_t last_seen = 0;
     time_t presence_timestamp = time(NULL);  /* Fallback to now if parse fails */
-    if (parse_presence_json(json_buf, &peer_info) == 0 && peer_info.last_seen > 0) {
-        presence_timestamp = (time_t)peer_info.last_seen;
+    if (parse_presence_json(json_buf, &last_seen) == 0 && last_seen > 0) {
+        presence_timestamp = (time_t)last_seen;
     }
 
     /* Update cache with actual timestamp from presence data */
@@ -5770,7 +6850,7 @@ static void contact_request_listener_cleanup(void *user_data) {
 
 /**
  * DHT callback when contact request data changes
- * Fires DNA_EVENT_CONTACT_REQUEST_RECEIVED when new request arrives
+ * Fires DNA_EVENT_CONTACT_REQUEST_RECEIVED only for genuinely new requests
  */
 static bool contact_request_listen_callback(
     const uint8_t *value,
@@ -5788,8 +6868,37 @@ static bool contact_request_listen_callback(
         return true;  /* Continue listening */
     }
 
-    QGP_LOG_INFO(LOG_TAG, "[CONTACT_REQ] DHT listener fired - new contact request data (%zu bytes)",
-                 value_len);
+    /* Parse the contact request to check if it's from a known contact */
+    dht_contact_request_t request = {0};
+    if (dht_deserialize_contact_request(value, value_len, &request) != 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "[CONTACT_REQ] Failed to parse request data (%zu bytes)", value_len);
+        return true;  /* Continue listening, might be corrupt data */
+    }
+
+    /* Skip if sender is already a contact */
+    if (contacts_db_exists(request.sender_fingerprint)) {
+        QGP_LOG_DEBUG(LOG_TAG, "[CONTACT_REQ] Ignoring request from existing contact: %.20s...",
+                      request.sender_fingerprint);
+        return true;  /* Continue listening */
+    }
+
+    /* Skip if we already have a pending request from this sender */
+    if (contacts_db_request_exists(request.sender_fingerprint)) {
+        QGP_LOG_DEBUG(LOG_TAG, "[CONTACT_REQ] Ignoring duplicate request from: %.20s...",
+                      request.sender_fingerprint);
+        return true;  /* Continue listening */
+    }
+
+    /* Skip if sender is blocked */
+    if (contacts_db_is_blocked(request.sender_fingerprint)) {
+        QGP_LOG_DEBUG(LOG_TAG, "[CONTACT_REQ] Ignoring request from blocked user: %.20s...",
+                      request.sender_fingerprint);
+        return true;  /* Continue listening */
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[CONTACT_REQ] New contact request from: %.20s... (%s)",
+                 request.sender_fingerprint,
+                 request.sender_name[0] ? request.sender_name : "unknown");
 
     /* Dispatch event to notify UI */
     dna_event_t event = {0};
@@ -5896,47 +7005,49 @@ void dna_engine_cancel_contact_request_listener(dna_engine_t *engine)
 }
 
 /* ============================================================================
- * DELIVERY TRACKERS (Message delivery confirmation)
+ * PERSISTENT WATERMARK LISTENERS (Message delivery confirmation)
  * ============================================================================ */
 
 /**
- * Callback context for delivery tracker
- */
-typedef struct {
-    dna_engine_t *engine;
-    char recipient[129];
-} delivery_tracker_ctx_t;
-
-/**
- * Internal callback for watermark updates
+ * Internal callback for persistent watermark updates
  * Updates message status and dispatches DNA_EVENT_MESSAGE_DELIVERED
  */
-static void delivery_watermark_callback(
+static void watermark_listener_callback(
     const char *sender,
     const char *recipient,
     uint64_t seq_num,
     void *user_data
 ) {
-    delivery_tracker_ctx_t *ctx = (delivery_tracker_ctx_t *)user_data;
-    if (!ctx || !ctx->engine) {
+    dna_engine_t *engine = (dna_engine_t *)user_data;
+    if (!engine) {
         return;
     }
 
-    dna_engine_t *engine = ctx->engine;
-
-    QGP_LOG_INFO(LOG_TAG, "Delivery confirmed: %.20s... → %.20s... seq=%lu",
+    QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Received: %.20s... → %.20s... seq=%lu",
                  sender, recipient, (unsigned long)seq_num);
 
-    /* Update tracker's last known watermark */
-    pthread_mutex_lock(&engine->delivery_trackers_mutex);
-    for (int i = 0; i < engine->delivery_tracker_count; i++) {
-        if (engine->delivery_trackers[i].active &&
-            strcmp(engine->delivery_trackers[i].recipient, recipient) == 0) {
-            engine->delivery_trackers[i].last_known_watermark = seq_num;
+    /* Check if this is a new watermark (higher seq than we've seen) */
+    uint64_t last_known = 0;
+
+    pthread_mutex_lock(&engine->watermark_listeners_mutex);
+    for (int i = 0; i < engine->watermark_listener_count; i++) {
+        if (engine->watermark_listeners[i].active &&
+            strcmp(engine->watermark_listeners[i].contact_fingerprint, recipient) == 0) {
+            last_known = engine->watermark_listeners[i].last_known_watermark;
+            if (seq_num > last_known) {
+                engine->watermark_listeners[i].last_known_watermark = seq_num;
+            }
             break;
         }
     }
-    pthread_mutex_unlock(&engine->delivery_trackers_mutex);
+    pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+
+    /* Skip if we've already processed this or a higher watermark */
+    if (seq_num <= last_known) {
+        QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK] Ignoring old/duplicate (seq=%lu <= last=%lu)",
+                     (unsigned long)seq_num, (unsigned long)last_known);
+        return;
+    }
 
     /* Update message status in database (all messages with seq <= seq_num are delivered) */
     if (engine->messenger && engine->messenger->backup_ctx) {
@@ -5947,7 +7058,7 @@ static void delivery_watermark_callback(
             seq_num
         );
         if (updated > 0) {
-            QGP_LOG_INFO(LOG_TAG, "Updated %d messages to DELIVERED status", updated);
+            QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Updated %d messages to DELIVERED", updated);
         }
     }
 
@@ -5962,119 +7073,144 @@ static void delivery_watermark_callback(
     dna_dispatch_event(engine, &event);
 }
 
-int dna_engine_track_delivery(
+/**
+ * Start persistent watermark listener for a contact
+ *
+ * IMPORTANT: This function releases the mutex before DHT calls to prevent
+ * ABBA deadlock (watermark_listeners_mutex vs DHT listeners_mutex).
+ *
+ * @param engine Engine instance
+ * @param contact_fingerprint Contact to listen for watermarks from
+ * @return DHT listener token (>0 on success, 0 on failure)
+ */
+size_t dna_engine_start_watermark_listener(
     dna_engine_t *engine,
-    const char *recipient_fingerprint
+    const char *contact_fingerprint
 ) {
-    if (!engine || !recipient_fingerprint || !engine->identity_loaded) {
-        QGP_LOG_ERROR(LOG_TAG, "Cannot track delivery: invalid params or no identity");
-        return -1;
+    if (!engine || !contact_fingerprint || !engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Cannot start: invalid params or no identity");
+        return 0;
+    }
+
+    /* Validate fingerprints */
+    size_t my_fp_len = strlen(engine->fingerprint);
+    size_t contact_len = strlen(contact_fingerprint);
+    if (my_fp_len != 128 || contact_len != 128) {
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Invalid fingerprint length: mine=%zu contact=%zu",
+                      my_fp_len, contact_len);
+        return 0;
     }
 
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
     if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Cannot track delivery: DHT not available");
-        return -1;
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] DHT not available");
+        return 0;
     }
 
-    pthread_mutex_lock(&engine->delivery_trackers_mutex);
+    /* Phase 1: Check duplicates and capacity under mutex */
+    pthread_mutex_lock(&engine->watermark_listeners_mutex);
 
-    /* Check if already tracking this recipient */
-    for (int i = 0; i < engine->delivery_tracker_count; i++) {
-        if (engine->delivery_trackers[i].active &&
-            strcmp(engine->delivery_trackers[i].recipient, recipient_fingerprint) == 0) {
-            QGP_LOG_DEBUG(LOG_TAG, "Already tracking delivery for %s...", recipient_fingerprint);
-            pthread_mutex_unlock(&engine->delivery_trackers_mutex);
-            return 0;  /* Already tracking - success */
+    for (int i = 0; i < engine->watermark_listener_count; i++) {
+        if (engine->watermark_listeners[i].active &&
+            strcmp(engine->watermark_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
+            QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK] Already listening for %.20s...", contact_fingerprint);
+            size_t existing = engine->watermark_listeners[i].dht_token;
+            pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+            return existing;
         }
     }
 
-    /* Check capacity */
-    if (engine->delivery_tracker_count >= DNA_MAX_DELIVERY_TRACKERS) {
-        QGP_LOG_ERROR(LOG_TAG, "Maximum delivery trackers reached (%d)", DNA_MAX_DELIVERY_TRACKERS);
-        pthread_mutex_unlock(&engine->delivery_trackers_mutex);
-        return -1;
+    if (engine->watermark_listener_count >= DNA_MAX_WATERMARK_LISTENERS) {
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Maximum listeners reached (%d)", DNA_MAX_WATERMARK_LISTENERS);
+        pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+        return 0;
     }
 
-    /* Create callback context */
-    delivery_tracker_ctx_t *ctx = malloc(sizeof(delivery_tracker_ctx_t));
-    if (!ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate delivery tracker context");
-        pthread_mutex_unlock(&engine->delivery_trackers_mutex);
-        return -1;
-    }
-    ctx->engine = engine;
-    strncpy(ctx->recipient, recipient_fingerprint, sizeof(ctx->recipient) - 1);
-    ctx->recipient[sizeof(ctx->recipient) - 1] = '\0';
+    /* Copy fingerprint for use outside mutex */
+    char fp_copy[129];
+    strncpy(fp_copy, contact_fingerprint, sizeof(fp_copy) - 1);
+    fp_copy[128] = '\0';
 
-    /* Start watermark listener
-     * Key: SHA3-512(recipient + ":watermark:" + sender)
-     * sender = my fingerprint, recipient = contact */
+    pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+
+    /* Phase 2: DHT operations WITHOUT holding mutex (prevents ABBA deadlock) */
+
+    /* Pre-fetch current watermark to filter stale cached values AND mark delivered */
+    uint64_t current_watermark = 0;
+    dht_get_watermark(dht_ctx, fp_copy, engine->fingerprint, &current_watermark);
+    QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK] Pre-fetched for %.20s...: seq=%lu",
+                 fp_copy, (unsigned long)current_watermark);
+
+    /* If we have a watermark, mark those messages as delivered NOW.
+     * This handles the case where we missed listener callbacks (e.g., fresh install,
+     * or messages sent from another device). Without this, the pre-fetch value
+     * becomes the baseline and we ignore listener callbacks with lower seq. */
+    if (current_watermark > 0 && engine->messenger && engine->messenger->backup_ctx) {
+        int updated = message_backup_mark_delivered_up_to_seq(
+            engine->messenger->backup_ctx,
+            fp_copy,                /* Contact sent us watermark */
+            engine->fingerprint,    /* We sent the messages */
+            current_watermark
+        );
+        if (updated > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Pre-fetch: marked %d messages as DELIVERED (seq<=%lu)",
+                         updated, (unsigned long)current_watermark);
+        }
+    }
+
+    /* Start DHT watermark listener */
     size_t token = dht_listen_watermark(dht_ctx,
                                         engine->fingerprint,
-                                        recipient_fingerprint,
-                                        delivery_watermark_callback,
-                                        ctx);
+                                        fp_copy,
+                                        watermark_listener_callback,
+                                        engine);
     if (token == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to start watermark listener for %s...", recipient_fingerprint);
-        free(ctx);
-        pthread_mutex_unlock(&engine->delivery_trackers_mutex);
-        return -1;
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Failed to start listener for %.20s...", fp_copy);
+        return 0;
     }
 
-    /* Store tracker info */
-    int idx = engine->delivery_tracker_count++;
-    strncpy(engine->delivery_trackers[idx].recipient, recipient_fingerprint,
-            sizeof(engine->delivery_trackers[idx].recipient) - 1);
-    engine->delivery_trackers[idx].recipient[sizeof(engine->delivery_trackers[idx].recipient) - 1] = '\0';
-    engine->delivery_trackers[idx].listener_token = token;
-    engine->delivery_trackers[idx].last_known_watermark = 0;
-    engine->delivery_trackers[idx].active = true;
+    /* Phase 3: Store listener info under mutex */
+    pthread_mutex_lock(&engine->watermark_listeners_mutex);
 
-    QGP_LOG_INFO(LOG_TAG, "Started delivery tracker for %s... (token=%zu)",
-                 recipient_fingerprint, token);
-
-    pthread_mutex_unlock(&engine->delivery_trackers_mutex);
-    return 0;
-}
-
-void dna_engine_untrack_delivery(
-    dna_engine_t *engine,
-    const char *recipient_fingerprint
-) {
-    if (!engine || !recipient_fingerprint) {
-        return;
+    /* Re-check capacity (race condition) */
+    if (engine->watermark_listener_count >= DNA_MAX_WATERMARK_LISTENERS) {
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Capacity reached after DHT start, cancelling");
+        pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+        dht_cancel_watermark_listener(dht_ctx, token);
+        return 0;
     }
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-
-    pthread_mutex_lock(&engine->delivery_trackers_mutex);
-
-    for (int i = 0; i < engine->delivery_tracker_count; i++) {
-        if (engine->delivery_trackers[i].active &&
-            strcmp(engine->delivery_trackers[i].recipient, recipient_fingerprint) == 0) {
-
-            /* Cancel the watermark listener */
-            if (dht_ctx) {
-                dht_cancel_watermark_listener(dht_ctx, engine->delivery_trackers[i].listener_token);
-            }
-
-            QGP_LOG_INFO(LOG_TAG, "Cancelled delivery tracker for %s...",
-                         recipient_fingerprint);
-
-            /* Remove by swapping with last element */
-            if (i < engine->delivery_tracker_count - 1) {
-                engine->delivery_trackers[i] = engine->delivery_trackers[engine->delivery_tracker_count - 1];
-            }
-            engine->delivery_tracker_count--;
-            break;
+    /* Check if another thread added this listener */
+    for (int i = 0; i < engine->watermark_listener_count; i++) {
+        if (engine->watermark_listeners[i].active &&
+            strcmp(engine->watermark_listeners[i].contact_fingerprint, fp_copy) == 0) {
+            QGP_LOG_WARN(LOG_TAG, "[WATERMARK] Race: duplicate for %.20s..., cancelling", fp_copy);
+            pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+            dht_cancel_watermark_listener(dht_ctx, token);
+            return engine->watermark_listeners[i].dht_token;
         }
     }
 
-    pthread_mutex_unlock(&engine->delivery_trackers_mutex);
+    /* Store listener */
+    int idx = engine->watermark_listener_count++;
+    strncpy(engine->watermark_listeners[idx].contact_fingerprint, fp_copy,
+            sizeof(engine->watermark_listeners[idx].contact_fingerprint) - 1);
+    engine->watermark_listeners[idx].contact_fingerprint[128] = '\0';
+    engine->watermark_listeners[idx].dht_token = token;
+    engine->watermark_listeners[idx].last_known_watermark = current_watermark;
+    engine->watermark_listeners[idx].active = true;
+
+    QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Started listener for %.20s... (token=%zu, baseline=%lu)",
+                 fp_copy, token, (unsigned long)current_watermark);
+
+    pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+    return token;
 }
 
-void dna_engine_cancel_all_delivery_trackers(dna_engine_t *engine)
+/**
+ * Cancel all watermark listeners (called on engine destroy or identity unload)
+ */
+void dna_engine_cancel_all_watermark_listeners(dna_engine_t *engine)
 {
     if (!engine) {
         return;
@@ -6082,21 +7218,57 @@ void dna_engine_cancel_all_delivery_trackers(dna_engine_t *engine)
 
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
 
-    pthread_mutex_lock(&engine->delivery_trackers_mutex);
+    pthread_mutex_lock(&engine->watermark_listeners_mutex);
 
-    for (int i = 0; i < engine->delivery_tracker_count; i++) {
-        if (engine->delivery_trackers[i].active && dht_ctx) {
-            dht_cancel_watermark_listener(dht_ctx, engine->delivery_trackers[i].listener_token);
-            QGP_LOG_DEBUG(LOG_TAG, "Cancelled delivery tracker for %s...",
-                          engine->delivery_trackers[i].recipient);
+    for (int i = 0; i < engine->watermark_listener_count; i++) {
+        if (engine->watermark_listeners[i].active && dht_ctx) {
+            dht_cancel_watermark_listener(dht_ctx, engine->watermark_listeners[i].dht_token);
+            QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK] Cancelled listener for %.20s...",
+                          engine->watermark_listeners[i].contact_fingerprint);
         }
-        engine->delivery_trackers[i].active = false;
+        engine->watermark_listeners[i].active = false;
     }
 
-    engine->delivery_tracker_count = 0;
-    QGP_LOG_INFO(LOG_TAG, "Cancelled all delivery trackers");
+    engine->watermark_listener_count = 0;
+    QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Cancelled all listeners");
 
-    pthread_mutex_unlock(&engine->delivery_trackers_mutex);
+    pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+}
+
+/**
+ * Cancel watermark listener for a specific contact
+ * Called when a contact is removed.
+ */
+void dna_engine_cancel_watermark_listener(dna_engine_t *engine, const char *contact_fingerprint)
+{
+    if (!engine || !contact_fingerprint) {
+        return;
+    }
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+
+    pthread_mutex_lock(&engine->watermark_listeners_mutex);
+
+    for (int i = 0; i < engine->watermark_listener_count; i++) {
+        if (engine->watermark_listeners[i].active &&
+            strcmp(engine->watermark_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
+
+            if (dht_ctx) {
+                dht_cancel_watermark_listener(dht_ctx, engine->watermark_listeners[i].dht_token);
+            }
+
+            QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Cancelled listener for %.20s...", contact_fingerprint);
+
+            /* Remove by swapping with last element */
+            if (i < engine->watermark_listener_count - 1) {
+                engine->watermark_listeners[i] = engine->watermark_listeners[engine->watermark_listener_count - 1];
+            }
+            engine->watermark_listener_count--;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&engine->watermark_listeners_mutex);
 }
 
 /* ============================================================================
@@ -6120,7 +7292,7 @@ void dna_handle_refresh_presence(dna_engine_t *engine, dna_task_t *task) {
     if (!engine->messenger) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
-        if (messenger_p2p_refresh_presence(engine->messenger) != 0) {
+        if (messenger_transport_refresh_presence(engine->messenger) != 0) {
             error = DNA_ENGINE_ERROR_NETWORK;
         }
     }
@@ -6139,7 +7311,7 @@ void dna_handle_lookup_presence(dna_engine_t *engine, dna_task_t *task) {
     if (!engine->messenger) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
-        if (messenger_p2p_lookup_presence(engine->messenger,
+        if (messenger_transport_lookup_presence(engine->messenger,
                 task->params.lookup_presence.fingerprint,
                 &last_seen) == 0 && last_seen > 0) {
             /* Update presence cache with DHT result */
@@ -6202,6 +7374,43 @@ void dna_handle_sync_groups(dna_engine_t *engine, dna_task_t *task) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
         if (messenger_sync_groups(engine->messenger) != 0) {
+            error = DNA_ENGINE_ERROR_NETWORK;
+        }
+    }
+
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_sync_group_by_uuid(dna_engine_t *engine, dna_task_t *task) {
+    if (task->cancelled) return;
+
+    int error = DNA_OK;
+    const char *group_uuid = task->params.sync_group_by_uuid.group_uuid;
+
+    if (!engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+    } else if (!group_uuid || strlen(group_uuid) != 36) {
+        error = DNA_ENGINE_ERROR_INVALID_PARAM;
+    } else {
+        dht_context_t *dht_ctx = dht_singleton_get();
+        if (dht_ctx) {
+            int ret = dht_groups_sync_from_dht(dht_ctx, group_uuid);
+            if (ret != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to sync group %s from DHT: %d", group_uuid, ret);
+                error = DNA_ENGINE_ERROR_NETWORK;
+            } else {
+                QGP_LOG_INFO(LOG_TAG, "Successfully synced group %s from DHT", group_uuid);
+                // Also sync GEK for this group
+                int gek_ret = messenger_sync_group_gek(group_uuid);
+                if (gek_ret != 0) {
+                    QGP_LOG_WARN(LOG_TAG, "Failed to sync GEK for group %s (non-fatal)", group_uuid);
+                } else {
+                    QGP_LOG_INFO(LOG_TAG, "Successfully synced GEK for group %s", group_uuid);
+                }
+            }
+        } else {
             error = DNA_ENGINE_ERROR_NETWORK;
         }
     }
@@ -7415,6 +8624,73 @@ dna_request_id_t dna_engine_restore_messages(
 }
 
 /* ============================================================================
+ * BACKUP CHECK API
+ * ============================================================================ */
+
+dna_request_id_t dna_engine_check_backup_exists(
+    dna_engine_t *engine,
+    dna_backup_info_cb callback,
+    void *user_data)
+{
+    dna_request_id_t request_id = dna_next_request_id(engine);
+
+    if (!engine || !callback) {
+        QGP_LOG_ERROR(LOG_TAG, "check_backup_exists: invalid parameters");
+        if (callback) {
+            dna_backup_info_t info = {0};
+            callback(request_id, -1, &info, user_data);
+        }
+        return request_id;
+    }
+
+    if (engine->fingerprint[0] == '\0') {
+        QGP_LOG_ERROR(LOG_TAG, "check_backup_exists: no identity loaded");
+        dna_backup_info_t info = {0};
+        callback(request_id, -1, &info, user_data);
+        return request_id;
+    }
+
+    // Get DHT context
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "check_backup_exists: DHT not initialized");
+        dna_backup_info_t info = {0};
+        callback(request_id, -1, &info, user_data);
+        return request_id;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Checking if backup exists for fingerprint %.20s...",
+                 engine->fingerprint);
+
+    // Use dht_message_backup_get_info to check without full download
+    uint64_t timestamp = 0;
+    int message_count = -1;
+    int result = dht_message_backup_get_info(dht_ctx, engine->fingerprint,
+                                              &timestamp, &message_count);
+
+    dna_backup_info_t info = {0};
+    if (result == 0) {
+        info.exists = true;
+        info.timestamp = timestamp;
+        info.message_count = message_count;
+        QGP_LOG_INFO(LOG_TAG, "Backup found: timestamp=%llu, messages=%d",
+                     (unsigned long long)timestamp, message_count);
+        callback(request_id, 0, &info, user_data);
+    } else if (result == -2) {
+        info.exists = false;
+        info.timestamp = 0;
+        info.message_count = 0;
+        QGP_LOG_INFO(LOG_TAG, "No backup found in DHT");
+        callback(request_id, 0, &info, user_data);
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to check backup: %d", result);
+        callback(request_id, result, &info, user_data);
+    }
+
+    return request_id;
+}
+
+/* ============================================================================
  * VERSION CHECK API
  * ============================================================================ */
 
@@ -7510,7 +8786,8 @@ int dna_engine_publish_version(
         dht_ctx,
         dht_key, sizeof(dht_key),
         (const uint8_t *)json_str, json_len,
-        VERSION_VALUE_ID
+        VERSION_VALUE_ID,
+        "version_publish"
     );
 
     json_object_put(root);

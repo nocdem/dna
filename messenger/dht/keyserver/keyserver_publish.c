@@ -168,9 +168,12 @@ int dht_keyserver_publish(
 
     QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] Publishing to DHT key: %s\n", profile_base_key);
 
+    // Use PERMANENT TTL for identity profiles - they should never expire
+    // and PERMANENT values are persisted differently (expires_at=0) which
+    // improves survival across bootstrap node restarts
     int ret = dht_chunked_publish(dht_ctx, profile_base_key,
                                   (uint8_t*)json, strlen(json),
-                                  DHT_CHUNK_TTL_365DAY);
+                                  DHT_CHUNK_TTL_PERMANENT);
     free(json);
 
     if (ret != DHT_CHUNK_OK) {
@@ -189,10 +192,10 @@ int dht_keyserver_publish(
 
     dna_identity_free(identity);
 
-    // Publish name:lookup alias
+    // Publish name:lookup alias - also PERMANENT for consistent persistence
     ret = dht_chunked_publish(dht_ctx, alias_base_key,
                               (uint8_t*)fingerprint, 128,
-                              DHT_CHUNK_TTL_365DAY);
+                              DHT_CHUNK_TTL_PERMANENT);
 
     if (ret != DHT_CHUNK_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to publish name alias (lookups may not work)\n");
@@ -237,16 +240,17 @@ int dht_keyserver_publish_alias(
     QGP_LOG_INFO(LOG_TAG, "Publishing alias: '%s' → %s\n", name, fingerprint);
     QGP_LOG_INFO(LOG_TAG, "Alias base key: %s\n", alias_base_key);
 
+    // Use PERMANENT TTL for name aliases
     int ret = dht_chunked_publish(dht_ctx, alias_base_key,
                                   (uint8_t*)fingerprint, 128,
-                                  DHT_CHUNK_TTL_365DAY);
+                                  DHT_CHUNK_TTL_PERMANENT);
 
     if (ret != DHT_CHUNK_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to publish alias: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "✓ Alias published successfully (TTL=365 days)\n");
+    QGP_LOG_INFO(LOG_TAG, "✓ Alias published successfully (TTL=PERMANENT)\n");
     return 0;
 }
 
@@ -317,9 +321,10 @@ int dht_keyserver_update(
     char base_key[256];
     snprintf(base_key, sizeof(base_key), "%s:profile", new_fingerprint);
 
+    // Use PERMANENT TTL for identity updates
     ret = dht_chunked_publish(dht_ctx, base_key,
                               (uint8_t*)json, strlen(json),
-                              DHT_CHUNK_TTL_365DAY);
+                              DHT_CHUNK_TTL_PERMANENT);
     free(json);
     dna_identity_free(identity);
 
@@ -328,7 +333,7 @@ int dht_keyserver_update(
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "✓ Identity updated successfully\n");
+    QGP_LOG_INFO(LOG_TAG, "✓ Identity updated successfully (TTL=PERMANENT)\n");
     return 0;
 }
 

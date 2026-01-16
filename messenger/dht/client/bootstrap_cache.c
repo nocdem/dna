@@ -62,7 +62,9 @@ int bootstrap_cache_init(const char *db_path) {
         db_path = default_path;
     }
 
-    int rc = sqlite3_open(db_path, &g_bootstrap_db);
+    // Open with FULLMUTEX for thread safety (DHT callbacks + main thread)
+    int rc = sqlite3_open_v2(db_path, &g_bootstrap_db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s", sqlite3_errmsg(g_bootstrap_db));
         sqlite3_close(g_bootstrap_db);

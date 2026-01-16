@@ -73,7 +73,7 @@ cmake \
 # Build
 echo ""
 echo "Building..."
-make -j$(nproc) dna_lib dht_lib p2p_transport kem dsa
+make -j$(nproc) dna_lib dht_lib transport_lib kem dsa
 
 # Show results
 echo ""

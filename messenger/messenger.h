@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "dna_api.h"
-#include "p2p/p2p_transport.h"
+#include "transport/transport.h"
 #include "message_backup.h"
 
 #ifdef __cplusplus
@@ -51,8 +51,8 @@ typedef struct {
     dna_context_t *dna_ctx;      // DNA API context
 
     // P2P Transport (Phase 9.1b: Hybrid P2P messaging)
-    p2p_transport_t *p2p_transport;  // P2P transport layer (NULL if disabled)
-    bool p2p_enabled;                 // Enable/disable P2P messaging
+    transport_t *transport_ctx;  // Transport layer (NULL if disabled)
+    bool transport_enabled;                 // Enable/disable P2P messaging
 
     // Session password for encrypted keys (v0.2.17+)
     char *session_password;          // Password for encrypted keys (NULL if unencrypted)
@@ -99,6 +99,14 @@ messenger_context_t* messenger_init(const char *identity);
  * @param ctx: Messenger context to free
  */
 void messenger_free(messenger_context_t *ctx);
+
+/**
+ * Get message backup context from messenger
+ *
+ * @param ctx: Messenger context
+ * @return: Message backup context, or NULL if not initialized
+ */
+message_backup_context_t* messenger_get_backup_ctx(messenger_context_t *ctx);
 
 /**
  * Set session password for encrypted key operations (v0.2.17+)
@@ -510,6 +518,7 @@ typedef struct {
  * @param members: Array of member identities (excluding creator, who is added automatically)
  * @param member_count: Number of members
  * @param group_id_out: Output group ID
+ * @param uuid_out: Output UUID buffer (must be at least 37 bytes), can be NULL
  * @return: 0 on success, -1 on error
  */
 int messenger_create_group(
@@ -518,7 +527,8 @@ int messenger_create_group(
     const char *description,
     const char **members,
     size_t member_count,
-    int *group_id_out
+    int *group_id_out,
+    char *uuid_out
 );
 
 /**
@@ -676,6 +686,20 @@ int messenger_reject_group_invitation(
 );
 
 /**
+ * Sync GEK (Group Encryption Key) from DHT for an existing group
+ *
+ * Fetches the Initial Key Packet from DHT, extracts the GEK using
+ * this user's Kyber private key, and stores it locally.
+ *
+ * Use this to manually sync GEK for groups where the invitation was
+ * accepted before the automatic GEK sync was implemented.
+ *
+ * @param group_uuid: Group UUID (36 chars)
+ * @return: 0 on success, -1 on error
+ */
+int messenger_sync_group_gek(const char *group_uuid);
+
+/**
  * Sync groups and invitations from DHT and offline messages
  *
  * This function:
@@ -704,25 +728,6 @@ int messenger_send_group_message(
     messenger_context_t *ctx,
     const char *group_uuid,
     const char *message
-);
-
-/**
- * Load group conversation messages (Phase 6.2)
- *
- * Retrieves all messages for a specific group from local SQLite database.
- * Messages are returned ENCRYPTED - caller must decrypt each message.
- *
- * @param ctx: Messenger context
- * @param group_uuid: Group UUID (36 chars)
- * @param messages_out: Output array of messages (caller must free with message_backup_free_messages)
- * @param count_out: Number of messages returned
- * @return: 0 on success, -1 on error
- */
-int messenger_load_group_messages(
-    messenger_context_t *ctx,
-    const char *group_uuid,
-    backup_message_t **messages_out,
-    int *count_out
 );
 
 /**

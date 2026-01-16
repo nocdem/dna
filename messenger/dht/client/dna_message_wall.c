@@ -661,7 +661,7 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
     QGP_LOG_INFO(LOG_TAG, "Registering contributor in index\n");
     ret = dht_put_signed(dht_ctx, (const uint8_t *)contrib_key, strlen(contrib_key),
                          (const uint8_t *)poster_fingerprint, strlen(poster_fingerprint),
-                         1, DHT_CHUNK_TTL_30DAY);
+                         1, DHT_CHUNK_TTL_30DAY, "wall_contributor");
 
     if (ret != 0) {
         // Non-fatal - poster data is already stored

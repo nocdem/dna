@@ -1,13 +1,15 @@
 // App Lifecycle Observer - handles app state changes
 // Phase 14: DHT-only messaging with reliable Android background support
 
-import 'dart:io' show Platform;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../platform/platform_handler.dart';
 import '../providers/engine_provider.dart';
 import '../providers/event_handler.dart';
 import '../providers/contacts_provider.dart';
 import '../providers/contact_profile_cache_provider.dart';
+import '../providers/messages_provider.dart';
+import '../services/cache_database.dart';
 
 /// Provider that tracks whether the app is currently in foreground (resumed)
 /// Used by event_handler to determine whether to show notifications
@@ -61,11 +63,18 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     try {
       final engine = await ref.read(engineProvider.future);
 
-      // Re-attach event callback on Android (was detached on pause for JNI to handle background)
-      // Desktop platforms keep callback attached since they don't have JNI fallback
-      if (Platform.isAndroid) {
-        engine.attachEventCallback();
-      }
+      // Platform-specific resume handling
+      // Android: Re-attach event callback, fetch offline messages
+      // Desktop: No-op (callback stays attached)
+      await PlatformHandler.instance.onResume(engine);
+
+      // Always resume presence heartbeat first (marks us as online)
+      // This is safe even if DHT is disconnected - heartbeat will just fail silently
+      // until DHT reconnects
+      engine.resumePresence();
+
+      // Resume Dart-side polling timers (handles presence refresh + contact requests)
+      ref.read(eventHandlerProvider).resumePolling();
 
       // Check if DHT is actually still connected (may have dropped while idle)
       final isDhtConnected = engine.isDhtConnected();
@@ -77,31 +86,28 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
         engine.networkChanged();
         // DHT connected event will update state and restart listeners
-      } else {
-        // DHT still connected - just resume normal operations
-        // Resume C-side presence heartbeat (marks us as online)
-        engine.resumePresence();
-
-        // Resume Dart-side polling timers (handles presence refresh + contact requests)
-        ref.read(eventHandlerProvider).resumePolling();
       }
 
       // Force refresh contact profiles from DHT (fixes stale display names)
       // This ensures users see up-to-date names when they open the app
       await _refreshContactProfiles(engine);
 
-      // Refresh contacts to get updated presence status (seamless update)
-      await ref.read(contactsProvider.notifier).refresh();
+      // Invalidate contacts to force reload (shows new unread counts, last messages)
+      ref.invalidate(contactsProvider);
 
-      // Note: Offline messages are handled by C-side push notification callback
-      // (messenger_push_notification_callback) which triggers poll on DHT listen events
+      // Refresh current conversation if one is open
+      // This ensures messages received while backgrounded are visible
+      final selectedContact = ref.read(selectedContactProvider);
+      if (selectedContact != null) {
+        ref.invalidate(conversationProvider(selectedContact.fingerprint));
+      }
     } catch (_) {
       // Error during resume - silently continue
     }
   }
 
-  /// Refresh all contact profiles from DHT
-  /// Called on app resume to ensure display names are up-to-date
+  /// Refresh stale contact profiles from DHT
+  /// Only refreshes profiles older than 1 hour to avoid hammering DHT on reconnect
   Future<void> _refreshContactProfiles(dynamic engine) async {
     try {
       // Get current contacts
@@ -110,19 +116,34 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
         return;
       }
 
-      // Refresh profiles in parallel (batched to avoid overloading DHT)
-      const batchSize = 5;
-      for (var i = 0; i < contacts.length; i += batchSize) {
-        final batch = contacts.skip(i).take(batchSize).toList();
+      // Filter to only stale profiles (older than 1 hour)
+      const maxAge = Duration(hours: 1);
+      final db = CacheDatabase.instance;
+      final staleContacts = <String>[];
+
+      for (final contact in contacts) {
+        if (await db.isProfileStale(contact.fingerprint, maxAge)) {
+          staleContacts.add(contact.fingerprint);
+        }
+      }
+
+      if (staleContacts.isEmpty) {
+        return; // All profiles are fresh, nothing to refresh
+      }
+
+      // Refresh stale profiles in parallel (batched to avoid overloading DHT)
+      const batchSize = 3;
+      for (var i = 0; i < staleContacts.length; i += batchSize) {
+        final batch = staleContacts.skip(i).take(batchSize).toList();
         await Future.wait(
-          batch.map((contact) async {
+          batch.map((fingerprint) async {
             try {
               // Force refresh from DHT (bypasses cache)
-              final profile = await engine.refreshContactProfile(contact.fingerprint);
+              final profile = await engine.refreshContactProfile(fingerprint);
               if (profile != null) {
                 // Update Flutter-side cache too
                 ref.read(contactProfileCacheProvider.notifier)
-                    .updateProfile(contact.fingerprint, profile);
+                    .updateProfile(fingerprint, profile);
               }
             } catch (_) {
               // Individual profile refresh failed - continue with others
@@ -155,12 +176,10 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Pause C-side presence heartbeat (stops marking us as online)
       engine.pausePresence();
 
-      // On Android: Detach Flutter event callback - JNI notification helper handles
-      // background notifications directly via native Android NotificationManager.
-      // On Desktop: Keep callback attached since there's no JNI fallback.
-      if (Platform.isAndroid) {
-        engine.detachEventCallback();
-      }
+      // Platform-specific pause handling
+      // Android: Detach Flutter event callback (JNI handles background notifications)
+      // Desktop: No-op (callback stays attached)
+      PlatformHandler.instance.onPause(engine);
     } catch (_) {
       // Error during pause - silently continue
     }

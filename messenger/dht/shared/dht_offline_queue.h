@@ -383,6 +383,17 @@ void dht_cancel_watermark_listener(
     size_t token
 );
 
+/**
+ * Sync pending outbox caches to DHT
+ *
+ * Iterates all cached outboxes that failed to publish (needs_dht_sync=true)
+ * and attempts to republish them. Call this when DHT becomes ready.
+ *
+ * @param ctx DHT context
+ * @return Number of entries successfully synced
+ */
+int dht_offline_queue_sync_pending(dht_context_t *ctx);
+
 #ifdef __cplusplus
 }
 #endif

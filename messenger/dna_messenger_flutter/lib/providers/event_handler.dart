@@ -1,8 +1,8 @@
 // Event Handler - Listens to engine events and updates UI state
 import 'dart:async';
-import 'dart:io' show Platform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
+import '../platform/platform_handler.dart';
 import '../utils/lifecycle_observer.dart';
 import 'engine_provider.dart';
 import 'contacts_provider.dart';
@@ -107,12 +107,22 @@ class EventHandler {
         _updateSelectedContactPresence(fp, false);
 
       case MessageReceivedEvent(message: final msg):
+        // Check if this is a group invitation - handle separately
+        if (msg.type == MessageType.groupInvitation) {
+          _ref.invalidate(invitationsProvider);
+          break;
+        }
+
         // New message received - refresh conversation from DB (decrypts messages)
         final contactFp = msg.isOutgoing ? msg.recipient : msg.sender;
         final selectedContact = _ref.read(selectedContactProvider);
         final isChatOpen = selectedContact != null &&
             selectedContact.fingerprint == contactFp;
         final appInForeground = _ref.read(appInForegroundProvider);
+
+        // Debug logging for badge issue investigation
+        final engine = _ref.read(engineProvider).valueOrNull;
+        engine?.debugLog('EVENT', 'MESSAGE_RECEIVED: isOutgoing=${msg.isOutgoing}, contactFp=${contactFp.substring(0, 16)}..., isChatOpen=$isChatOpen, appInForeground=$appInForeground');
 
         // Always invalidate the conversation provider
         _ref.invalidate(conversationProvider(contactFp));
@@ -126,9 +136,12 @@ class EventHandler {
         if (!msg.isOutgoing && (!appInForeground || !isChatOpen)) {
           // Increment unread count for incoming messages when chat not open
           _ref.read(unreadCountsProvider.notifier).incrementCount(contactFp);
+          engine?.debugLog('EVENT', 'MESSAGE_RECEIVED: Incremented unread count for $contactFp');
 
           // Show notification for incoming message
           _showMessageNotification(contactFp, msg.plaintext);
+        } else {
+          engine?.debugLog('EVENT', 'MESSAGE_RECEIVED: Skipped unread increment (outgoing=${msg.isOutgoing}, chatOpen=$isChatOpen)');
         }
 
         // NOTE: We intentionally do NOT invalidate(contactsProvider) here.
@@ -136,14 +149,16 @@ class EventHandler {
         // Unread counts are already updated via incrementCount() above.
         // Full contact list rebuilds cause unnecessary UI churn and presence bouncing.
 
-      case MessageSentEvent():
+      case MessageSentEvent(messageId: final msgId):
         // Debounced refresh - only once after last message sent
+        print('[DART-HANDLER] MessageSentEvent received, msgId=$msgId');
         _scheduleConversationRefresh();
         break;
 
-      case MessageDeliveredEvent(messageId: final id):
-        // Update message status to delivered
-        _updateMessageStatus(id, MessageStatus.delivered);
+      case MessageDeliveredEvent(contactFingerprint: final contactFp):
+        // Messages delivered to contact - reload conversation from DB (status already updated)
+        _ref.invalidate(conversationProvider(contactFp));
+        break;
 
       case MessageReadEvent(messageId: final id):
         _updateMessageStatus(id, MessageStatus.read);
@@ -184,6 +199,13 @@ class EventHandler {
         });
         break;
 
+      case GroupMessageReceivedEvent(groupUuid: final uuid, newCount: final count):
+        // New group messages received via DHT listener - refresh group conversation
+        _ref.invalidate(groupConversationProvider(uuid));
+        // Also refresh groups list to update any preview/badge
+        _ref.invalidate(groupsProvider);
+        break;
+
       case ErrorEvent(message: final errorMsg):
         // Store error for UI to display
         _ref.read(lastErrorProvider.notifier).state = errorMsg;
@@ -203,11 +225,16 @@ class EventHandler {
   /// Schedule a debounced conversation refresh
   /// Coalesces rapid MessageSentEvents into a single refresh
   void _scheduleConversationRefresh() {
+    print('[DART-HANDLER] _scheduleConversationRefresh called');
     _refreshTimer?.cancel();
     _refreshTimer = Timer(const Duration(milliseconds: 300), () {
       final selectedContact = _ref.read(selectedContactProvider);
+      print('[DART-HANDLER] Timer fired, selectedContact=${selectedContact?.fingerprint?.substring(0, 16) ?? "null"}');
       if (selectedContact != null) {
-        _ref.invalidate(conversationProvider(selectedContact.fingerprint));
+        print('[DART-HANDLER] Calling refresh() on conversation');
+        // Use refresh() instead of invalidate() to force immediate rebuild
+        // invalidate() only marks stale, doesn't trigger rebuild until next read
+        _ref.read(conversationProvider(selectedContact.fingerprint).notifier).refresh();
       }
     });
   }
@@ -232,11 +259,10 @@ class EventHandler {
       final openChatFp = selectedContact?.fingerprint;
 
       _ref.read(engineProvider).whenData((engine) async {
-        // On Desktop, we need to fetch messages ourselves.
-        // On Android, native code already fetched via background_fetch_thread.
-        if (!Platform.isAndroid) {
-          await engine.checkOfflineMessages();
-        }
+        // Platform-specific outbox handling
+        // Android: Native code already fetched via background_fetch_thread
+        // Desktop: Must call checkOfflineMessages() to fetch
+        await PlatformHandler.instance.onOutboxUpdated(engine);
 
         // Process each contact that had updates
         for (final fp in fingerprints) {

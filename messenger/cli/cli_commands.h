@@ -250,39 +250,6 @@ int cmd_balance(dna_engine_t *engine, int wallet_index);
 int cmd_online(dna_engine_t *engine, const char *fingerprint);
 
 /* ============================================================================
- * NAT TRAVERSAL COMMANDS (STUN/ICE/TURN)
- * ============================================================================ */
-
-/**
- * Test STUN connectivity and show public IP
- * @return 0 on success, negative on error
- */
-int cmd_stun_test(void);
-
-/**
- * Show ICE connection status and candidates
- * @param engine DNA engine instance
- * @return 0 on success, negative on error
- */
-int cmd_ice_status(dna_engine_t *engine);
-
-/**
- * Request or show TURN credentials
- * @param engine DNA engine instance
- * @param request If true, request new credentials; if false, show cached
- * @return 0 on success, negative on error
- */
-int cmd_turn_creds(dna_engine_t *engine, bool request);
-
-/**
- * Test TURN relay connectivity with all servers
- * Requests credentials and tests allocation on each TURN server.
- * @param engine DNA engine instance
- * @return 0 on success, negative on error
- */
-int cmd_turn_test(dna_engine_t *engine);
-
-/* ============================================================================
  * VERSION COMMANDS
  * ============================================================================ */
 
@@ -308,6 +275,83 @@ int cmd_publish_version(dna_engine_t *engine,
  * @return 0 on success, negative on error
  */
 int cmd_check_version(dna_engine_t *engine);
+
+/* ============================================================================
+ * GROUP COMMANDS (GEK System)
+ * ============================================================================ */
+
+/**
+ * List all groups the user belongs to
+ * @param engine DNA engine instance
+ * @return 0 on success, negative on error
+ */
+int cmd_group_list(dna_engine_t *engine);
+
+/**
+ * Create a new group
+ * @param engine DNA engine instance
+ * @param name Group name
+ * @return 0 on success, negative on error
+ */
+int cmd_group_create(dna_engine_t *engine, const char *name);
+
+/**
+ * Send a message to a group
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID
+ * @param message Message text
+ * @return 0 on success, negative on error
+ */
+int cmd_group_send(dna_engine_t *engine, const char *group_uuid, const char *message);
+
+/**
+ * Show group info and members
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID
+ * @return 0 on success, negative on error
+ */
+int cmd_group_info(dna_engine_t *engine, const char *group_uuid);
+
+/**
+ * Invite a member to a group
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID
+ * @param fingerprint Member fingerprint to invite
+ * @return 0 on success, negative on error
+ */
+int cmd_group_invite(dna_engine_t *engine, const char *group_uuid, const char *fingerprint);
+
+/**
+ * Sync a specific group from DHT to local cache
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID to sync
+ * @return 0 on success, negative on error
+ */
+int cmd_group_sync(dna_engine_t *engine, const char *group_uuid);
+
+/**
+ * Publish GEK for a group to DHT
+ *
+ * Only the group creator/owner can publish GEK. This generates or rotates
+ * the GEK and publishes it to DHT so members can fetch it.
+ *
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID to publish GEK for
+ * @return 0 on success, negative on error
+ */
+int cmd_group_publish_gek(dna_engine_t *engine, const char *group_uuid);
+
+/* ============================================================================
+ * DHT DEBUG COMMANDS
+ * ============================================================================ */
+
+/**
+ * Fetch and display the DHT bootstrap registry
+ * Shows all registered bootstrap nodes with their status.
+ * @param engine DNA engine instance
+ * @return 0 on success, negative on error
+ */
+int cmd_bootstrap_registry(dna_engine_t *engine);
 
 /* ============================================================================
  * COMMAND PARSER

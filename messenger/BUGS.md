@@ -13,9 +13,23 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-(none)
+- [ ] **[FLUTTER] P3 - Avatar not restored when reinstalling from scratch** - After fresh install and restoring identity from seed phrase, avatar is not correctly restored from DHT. Profile data (name, etc.) may restore but avatar image is missing or not displayed.
+
+- [x] **[CLI] P2 - DHT PUT_SIGNED high failure rate** - Logs showed ~77% failure rate (986 failed vs 298 stored). Error: "PUT_SIGNED: Failed to store on any node". **Root cause:** Burst flooding from chunked operations (10-50 rapid PUTs per action) overwhelming DHT nodes. **Fix:** Added 100ms delay between chunk PUTs in `dht_chunked.c` to rate-limit operations. (v0.4.23)
+
+- [ ] **[FLUTTER] P3 - Presence status not updating in open chat** - When viewing a chat, the contact's online/offline status doesn't update in real-time. User has to close the chat to see updated presence in contacts list. The chat header should reflect live presence changes.
+
+- [ ] **[FLUTTER] P2 - Chat window causes constant image flashing** - Sent/received images in chat flash repeatedly. Chat window implementation needs refactoring to avoid unnecessary rebuilds. Consider using `const` widgets, `RepaintBoundary`, or caching decoded images.
+
+---
+
+## Feature Requests
+
+- [ ] **[CLI] P2 - DHT key derivation leaks communication metadata** - Current outbox/watermark keys are deterministic: `SHA3-512(sender:outbox:recipient)`. A third party who knows both fingerprints can calculate these keys and monitor DHT to detect if/when two parties communicate (timing, frequency, direction). Message content remains encrypted, but existence of communication is leaked. **Proposed fix:** Add per-contact random 32-byte salt exchanged during contact establishment. New key format: `SHA3-512(salt:sender:outbox:recipient)`. Third parties cannot calculate keys without the salt. **See:** [docs/PRIVACY_DHT_KEY_DERIVATION.md](docs/PRIVACY_DHT_KEY_DERIVATION.md) for full analysis and implementation plan.
 
 ## Fixed Bugs
+
+- [x] **[MIXED] P1 - Message status stuck on clock icon until app restart** - Messages were delivered (watermark updates DB to DELIVERED) but Flutter UI kept showing clock icon. **Root cause:** Watermark key mismatch - `dht_publish_watermark_async()` and `dht_get_watermark()` used raw string key while `dht_listen_watermark()` used SHA3-512 hash. Publisher and listener were on different DHT keys. **Fix:** v0.4.23 fixed publish to use SHA3-512, v0.4.24 fixed get to use SHA3-512. Also added MESSAGE_DELIVERED event handler in Flutter and fixed event data type (contactFingerprint instead of messageId). (v0.4.24, v0.99.114)
 
 - [x] **[MIXED] P2 - DHT listeners not working on desktop** - Contact request listener, outbox listeners, and presence listeners didn't fire on desktop (Linux/Windows). Worked on Android. Three bugs: (1) Identity load checked `p2p_enabled` before starting listeners, but P2P transport often fails on desktop while DHT works fine - fixed by removing check (v0.3.156). (2) When contact count=0, function returned early without starting contact request listener - users with no contacts couldn't receive requests - fixed by starting contact_req listener before early return (v0.3.157). (3) Flutter event handler refreshed contacts before auto-approval completed - fixed by waiting for contactRequestsProvider fetch to complete before refreshing (v0.99.98).
 

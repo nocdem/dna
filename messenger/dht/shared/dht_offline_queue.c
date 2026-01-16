@@ -1,4 +1,5 @@
 #include "dht_offline_queue.h"
+#include "dht_dm_outbox.h"  /* Daily bucket messaging (v0.4.81+) */
 #include "dht_chunked.h"
 #include "../core/dht_listen.h"
 #include "../crypto/utils/qgp_sha3.h"
@@ -10,6 +11,7 @@
 #include <errno.h>
 
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"  /* qgp_platform_sleep_ms */
 #include "messenger/messages.h"  /* DNA_MESSAGE_MAX_CIPHERTEXT_SIZE */
 
 #define LOG_TAG "DHT_OFFLINE"
@@ -36,6 +38,7 @@ typedef struct {
     size_t count;                        // Number of messages
     time_t last_update;                  // When cache was last updated
     bool valid;                          // True if entry is in use
+    bool needs_dht_sync;                 // True if failed to publish, needs retry
 } outbox_cache_entry_t;
 
 static outbox_cache_entry_t g_outbox_cache[OUTBOX_CACHE_MAX_ENTRIES];
@@ -71,7 +74,8 @@ static outbox_cache_entry_t *outbox_cache_find(const char *base_key) {
 }
 
 // Store messages in cache (takes ownership of messages array)
-static void outbox_cache_store(const char *base_key, dht_offline_message_t *messages, size_t count) {
+// needs_sync: true if DHT publish failed, entry needs retry
+static void outbox_cache_store_ex(const char *base_key, dht_offline_message_t *messages, size_t count, bool needs_sync) {
     outbox_cache_init();
 
     // Find existing entry or empty slot
@@ -112,6 +116,12 @@ static void outbox_cache_store(const char *base_key, dht_offline_message_t *mess
     entry->count = count;
     entry->last_update = time(NULL);
     entry->valid = true;
+    entry->needs_dht_sync = needs_sync;
+}
+
+// Wrapper for backward compatibility
+static void outbox_cache_store(const char *base_key, dht_offline_message_t *messages, size_t count) {
+    outbox_cache_store_ex(base_key, messages, count, false);
 }
 
 // Platform-specific network byte order functions
@@ -465,7 +475,10 @@ error:
 }
 
 /**
- * Store encrypted message in DHT for offline recipient (with watermark pruning)
+ * Store encrypted message in DHT for offline recipient
+ *
+ * v0.4.81+: Redirects to daily bucket API (dht_dm_queue_message).
+ * No watermark pruning - TTL handles cleanup automatically.
  */
 int dht_queue_message(
     dht_context_t *ctx,
@@ -476,233 +489,21 @@ int dht_queue_message(
     uint64_t seq_num,
     uint32_t ttl_seconds)
 {
-    if (!ctx || !sender || !recipient || !ciphertext || ciphertext_len == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for queueing message\n");
-        return -1;
-    }
-
-    if (ttl_seconds == 0) {
-        ttl_seconds = DHT_OFFLINE_QUEUE_DEFAULT_TTL;
-    }
-
-    // Lock to prevent race conditions when multiple messages are sent quickly
-    // Without this, parallel sends can overwrite each other's queue updates
-    QGP_LOG_DEBUG(LOG_TAG, "Waiting for queue mutex (seq=%lu)...", (unsigned long)seq_num);
-    pthread_mutex_lock(&g_queue_mutex);
-    QGP_LOG_DEBUG(LOG_TAG, "Acquired queue mutex (seq=%lu)", (unsigned long)seq_num);
-
-    struct timespec queue_start, get_start, deserialize_start, serialize_start, put_start;
-    clock_gettime(CLOCK_MONOTONIC, &queue_start);
-
-    QGP_LOG_INFO(LOG_TAG, "Queueing message from %.16s... to %.16s... (%zu bytes, seq=%lu, TTL=%u)",
-           sender, recipient, ciphertext_len, (unsigned long)seq_num, ttl_seconds);
-
-    // Generate sender's outbox base key (Spillway)
-    char base_key[512];
-    make_outbox_base_key(sender, recipient, base_key, sizeof(base_key));
-
-    QGP_LOG_INFO(LOG_TAG, "Outbox base key: %s\n", base_key);
-
-    // 1. Get recipient's watermark (highest seq_num they've received from us)
-    uint64_t watermark_seq = 0;
-    dht_get_watermark(ctx, recipient, sender, &watermark_seq);
-    QGP_LOG_INFO(LOG_TAG, "Recipient watermark: seq=%lu\n", (unsigned long)watermark_seq);
-
-    // 2. Try to get existing queue from LOCAL CACHE first (fast!)
-    //    Only fetch from DHT network if cache miss (slow, but only once per recipient)
-    dht_offline_message_t *existing_messages = NULL;
-    size_t existing_count = 0;
-    long get_ms = 0;
-
-    outbox_cache_entry_t *cache_entry = outbox_cache_find(base_key);
-    if (cache_entry && cache_entry->count > 0) {
-        // CACHE HIT - copy messages from cache (fast!)
-        QGP_LOG_DEBUG(LOG_TAG, "Cache HIT: %zu messages in local cache", cache_entry->count);
-        existing_count = cache_entry->count;
-        existing_messages = (dht_offline_message_t*)calloc(existing_count, sizeof(dht_offline_message_t));
-        if (existing_messages) {
-            for (size_t i = 0; i < existing_count; i++) {
-                existing_messages[i].seq_num = cache_entry->messages[i].seq_num;
-                existing_messages[i].timestamp = cache_entry->messages[i].timestamp;
-                existing_messages[i].expiry = cache_entry->messages[i].expiry;
-                existing_messages[i].sender = strdup(cache_entry->messages[i].sender);
-                existing_messages[i].recipient = strdup(cache_entry->messages[i].recipient);
-                existing_messages[i].ciphertext_len = cache_entry->messages[i].ciphertext_len;
-                existing_messages[i].ciphertext = (uint8_t*)malloc(cache_entry->messages[i].ciphertext_len);
-                if (existing_messages[i].ciphertext) {
-                    memcpy(existing_messages[i].ciphertext, cache_entry->messages[i].ciphertext,
-                           cache_entry->messages[i].ciphertext_len);
-                }
-            }
-        }
-        get_ms = 0;  // Instant from cache
-    } else {
-        // CACHE MISS - fetch from DHT network (slow, but only once)
-        QGP_LOG_DEBUG(LOG_TAG, "Cache MISS: fetching from DHT network...");
-        uint8_t *existing_data = NULL;
-        size_t existing_len = 0;
-
-        clock_gettime(CLOCK_MONOTONIC, &get_start);
-        int get_result = dht_chunked_fetch(ctx, base_key, &existing_data, &existing_len);
-        struct timespec get_end;
-        clock_gettime(CLOCK_MONOTONIC, &get_end);
-        get_ms = (get_end.tv_sec - get_start.tv_sec) * 1000 +
-                      (get_end.tv_nsec - get_start.tv_nsec) / 1000000;
-
-        if (get_result == DHT_CHUNK_OK && existing_data && existing_len > 0) {
-            QGP_LOG_INFO(LOG_TAG, "DHT fetch: %zu bytes in %ld ms", existing_len, get_ms);
-
-            clock_gettime(CLOCK_MONOTONIC, &deserialize_start);
-            if (dht_deserialize_messages(existing_data, existing_len, &existing_messages, &existing_count) == 0) {
-                struct timespec deserialize_end;
-                clock_gettime(CLOCK_MONOTONIC, &deserialize_end);
-                long deserialize_ms = (deserialize_end.tv_sec - deserialize_start.tv_sec) * 1000 +
-                                      (deserialize_end.tv_nsec - deserialize_start.tv_nsec) / 1000000;
-                (void)deserialize_ms;  // Used only in debug builds
-                QGP_LOG_DEBUG(LOG_TAG, "Deserialized %zu messages in %ld ms", existing_count, deserialize_ms);
-            }
-            free(existing_data);
-        } else {
-            QGP_LOG_DEBUG(LOG_TAG, "No existing queue in DHT (fetch took %ld ms)", get_ms);
-        }
-    }
-
-    // 3. Prune messages where seq_num <= watermark (already delivered)
-    size_t kept_count = 0;
-    if (existing_count > 0 && watermark_seq > 0) {
-        // Count messages to keep
-        for (size_t i = 0; i < existing_count; i++) {
-            if (existing_messages[i].seq_num > watermark_seq) {
-                kept_count++;
-            }
-        }
-
-        size_t pruned = existing_count - kept_count;
-        if (pruned > 0) {
-            QGP_LOG_INFO(LOG_TAG, "Pruning %zu delivered messages (seq <= %lu)\n",
-                   pruned, (unsigned long)watermark_seq);
-
-            // Create new array with only undelivered messages
-            dht_offline_message_t *kept_messages = NULL;
-            if (kept_count > 0) {
-                kept_messages = (dht_offline_message_t*)calloc(kept_count, sizeof(dht_offline_message_t));
-                size_t k = 0;
-                for (size_t i = 0; i < existing_count; i++) {
-                    if (existing_messages[i].seq_num > watermark_seq) {
-                        kept_messages[k++] = existing_messages[i];
-                    } else {
-                        dht_offline_message_free(&existing_messages[i]);
-                    }
-                }
-            } else {
-                // All messages were delivered, free them all
-                for (size_t i = 0; i < existing_count; i++) {
-                    dht_offline_message_free(&existing_messages[i]);
-                }
-            }
-
-            free(existing_messages);
-            existing_messages = kept_messages;
-            existing_count = kept_count;
-        }
-    }
-
-    // 4. Create new message with seq_num
-    dht_offline_message_t new_msg = {
-        .seq_num = seq_num,
-        .timestamp = (uint64_t)time(NULL),
-        .expiry = (uint64_t)time(NULL) + ttl_seconds,
-        .sender = strdup(sender),
-        .recipient = strdup(recipient),
-        .ciphertext = (uint8_t*)malloc(ciphertext_len),
-        .ciphertext_len = ciphertext_len
-    };
-
-    if (!new_msg.sender || !new_msg.recipient || !new_msg.ciphertext) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate memory for new message\n");
-        dht_offline_message_free(&new_msg);
-        dht_offline_messages_free(existing_messages, existing_count);
-        pthread_mutex_unlock(&g_queue_mutex);
-        return -1;
-    }
-
-    memcpy(new_msg.ciphertext, ciphertext, ciphertext_len);
-
-    // 5. APPEND new message to pruned queue
-    size_t new_count = existing_count + 1;
-    dht_offline_message_t *all_messages = (dht_offline_message_t*)calloc(new_count, sizeof(dht_offline_message_t));
-    if (!all_messages) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate combined message array\n");
-        dht_offline_message_free(&new_msg);
-        dht_offline_messages_free(existing_messages, existing_count);
-        pthread_mutex_unlock(&g_queue_mutex);
-        return -1;
-    }
-
-    // Copy kept messages
-    for (size_t i = 0; i < existing_count; i++) {
-        all_messages[i] = existing_messages[i];
-    }
-
-    // Add new message at end
-    all_messages[existing_count] = new_msg;
-
-    // Free old array (but not the message contents, they're now in all_messages)
-    if (existing_messages) {
-        free(existing_messages);
-    }
-
-    QGP_LOG_INFO(LOG_TAG, "Appended new message to outbox (%zu total after pruning)\n", new_count);
-
-    // 6. Serialize combined queue
-    uint8_t *serialized = NULL;
-    size_t serialized_len = 0;
-    clock_gettime(CLOCK_MONOTONIC, &serialize_start);
-    if (dht_serialize_messages(all_messages, new_count, &serialized, &serialized_len) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize message queue\n");
-        dht_offline_messages_free(all_messages, new_count);
-        pthread_mutex_unlock(&g_queue_mutex);
-        return -1;
-    }
-    struct timespec serialize_end;
-    clock_gettime(CLOCK_MONOTONIC, &serialize_end);
-    long serialize_ms = (serialize_end.tv_sec - serialize_start.tv_sec) * 1000 +
-                        (serialize_end.tv_nsec - serialize_start.tv_nsec) / 1000000;
-
-    QGP_LOG_INFO(LOG_TAG, "Serialized queue: %zu messages, %zu bytes (took %ld ms)\n",
-           new_count, serialized_len, serialize_ms);
-
-    // 7. Store in DHT via chunked layer (7-day TTL for offline queue)
-    QGP_LOG_INFO(LOG_TAG, "→ DHT CHUNKED_PUBLISH: Queueing offline message (%zu total in queue)\n", new_count);
-    clock_gettime(CLOCK_MONOTONIC, &put_start);
-    int put_result = dht_chunked_publish(ctx, base_key, serialized, serialized_len, DHT_CHUNK_TTL_7DAY);
-    struct timespec put_end;
-    clock_gettime(CLOCK_MONOTONIC, &put_end);
-    long put_ms = (put_end.tv_sec - put_start.tv_sec) * 1000 +
-                  (put_end.tv_nsec - put_start.tv_nsec) / 1000000;
-
-    free(serialized);
-
-    if (put_result != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to store queue in DHT: %s (put took %ld ms)\n",
-                dht_chunked_strerror(put_result), put_ms);
-        dht_offline_messages_free(all_messages, new_count);
-        pthread_mutex_unlock(&g_queue_mutex);
-        return -1;
-    }
-
-    // Success - update local cache with new queue (takes ownership of all_messages)
-    outbox_cache_store(base_key, all_messages, new_count);
-
-    struct timespec queue_end;
-    clock_gettime(CLOCK_MONOTONIC, &queue_end);
-    long total_queue_ms = (queue_end.tv_sec - queue_start.tv_sec) * 1000 +
-                          (queue_end.tv_nsec - queue_start.tv_nsec) / 1000000;
-
-    QGP_LOG_INFO(LOG_TAG, "✓ Message queued successfully (seq=%lu, total: %ld ms, get: %ld ms, put: %ld ms)\n",
-           (unsigned long)seq_num, total_queue_ms, get_ms, put_ms);
-    pthread_mutex_unlock(&g_queue_mutex);
-    return 0;
+    /*
+     * v0.4.81: Redirect to daily bucket API
+     *
+     * Old behavior (removed):
+     * - Watermark fetch + pruning (lines 515-617)
+     * - Static key: sender:outbox:recipient
+     *
+     * New behavior:
+     * - Daily bucket key: sender:outbox:recipient:DAY
+     * - No watermark pruning (TTL auto-expire)
+     * - Watermark still used for delivery reports (separate API)
+     */
+    QGP_LOG_DEBUG(LOG_TAG, "Redirecting to daily bucket API (v0.4.81+)");
+    return dht_dm_queue_message(ctx, sender, recipient, ciphertext,
+                                 ciphertext_len, seq_num, ttl_seconds);
 }
 
 /**
@@ -1040,9 +841,9 @@ static void *watermark_publish_thread(void *arg) {
         return NULL;
     }
 
-    // Generate watermark key
-    char base_key[512];
-    make_watermark_base_key(wctx->recipient, wctx->sender, base_key, sizeof(base_key));
+    // Generate watermark key (SHA3-512 hash to match listener key format)
+    uint8_t key[64];
+    dht_generate_watermark_key(wctx->recipient, wctx->sender, key);
 
     // Serialize seq_num to 8 bytes big-endian
     uint8_t value[8];
@@ -1055,18 +856,36 @@ static void *watermark_publish_thread(void *arg) {
     value[6] = (uint8_t)(wctx->seq_num >> 8);
     value[7] = (uint8_t)(wctx->seq_num);
 
-    // Put signed with value_id=1 (replacement) and watermark TTL
-    int result = dht_put_signed(wctx->ctx,
-                                 (const uint8_t*)base_key, strlen(base_key),
+    // Retry with exponential backoff (PUT_SIGNED can fail transiently)
+    int max_retries = 3;
+    int delay_ms = 500;
+    int result = -1;
+
+    for (int attempt = 1; attempt <= max_retries; attempt++) {
+        result = dht_put_signed(wctx->ctx,
+                                 key, 64,
                                  value, sizeof(value),
                                  1,  // value_id=1 for replacement
-                                 DHT_WATERMARK_TTL);
+                                 DHT_WATERMARK_TTL,
+                                 "watermark");
 
-    if (result == 0) {
-        QGP_LOG_DEBUG(LOG_TAG, "Watermark published: %.20s... → %.20s... seq=%lu\n",
-               wctx->recipient, wctx->sender, (unsigned long)wctx->seq_num);
-    } else {
-        QGP_LOG_WARN(LOG_TAG, "Watermark publish failed (will retry on next receive)\n");
+        if (result == 0) {
+            QGP_LOG_WARN(LOG_TAG, "[WATERMARK-PUT] Published OK: %.20s... → %.20s... seq=%lu (attempt %d)\n",
+                   wctx->recipient, wctx->sender, (unsigned long)wctx->seq_num, attempt);
+            break;
+        }
+
+        if (attempt < max_retries) {
+            QGP_LOG_WARN(LOG_TAG, "[WATERMARK-PUT] Failed attempt %d/%d, retrying in %dms...\n",
+                   attempt, max_retries, delay_ms);
+            qgp_platform_sleep_ms(delay_ms);
+            delay_ms *= 2;  // Exponential backoff: 500, 1000, 2000
+        }
+    }
+
+    if (result != 0) {
+        QGP_LOG_WARN(LOG_TAG, "[WATERMARK-PUT] FAILED after %d attempts: %.20s... → %.20s... seq=%lu\n",
+               max_retries, wctx->recipient, wctx->sender, (unsigned long)wctx->seq_num);
     }
 
     free(wctx);
@@ -1128,15 +947,15 @@ int dht_get_watermark(dht_context_t *ctx,
 
     *seq_num_out = 0;  // Default: no watermark found
 
-    // Generate watermark key
-    char base_key[512];
-    make_watermark_base_key(recipient, sender, base_key, sizeof(base_key));
+    // Generate watermark key (SHA3-512 hash to match listener/publish key format)
+    uint8_t key[64];
+    dht_generate_watermark_key(recipient, sender, key);
 
     // Try to fetch from DHT
     uint8_t *value = NULL;
     size_t value_len = 0;
 
-    int result = dht_get(ctx, (const uint8_t*)base_key, strlen(base_key), &value, &value_len);
+    int result = dht_get(ctx, key, 64, &value, &value_len);
 
     if (result == 0 && value && value_len == 8) {
         // Deserialize 8 bytes big-endian to uint64_t
@@ -1191,7 +1010,22 @@ static bool watermark_listen_callback(
 ) {
     watermark_listener_ctx_t *ctx = (watermark_listener_ctx_t *)user_data;
     if (!ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK-LISTEN] NULL context received!\n");
         return false;  // Stop listening
+    }
+
+    // Debug: log pointer for correlation with allocation
+    QGP_LOG_INFO(LOG_TAG, "[WATERMARK-LISTEN] Callback with ctx=%p\n", (void*)ctx);
+
+    // Validate context integrity - check sender starts with hex char
+    if (ctx->sender[0] == '\0' ||
+        !((ctx->sender[0] >= '0' && ctx->sender[0] <= '9') ||
+          (ctx->sender[0] >= 'a' && ctx->sender[0] <= 'f') ||
+          (ctx->sender[0] >= 'A' && ctx->sender[0] <= 'F'))) {
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK-LISTEN] CORRUPTED CONTEXT! ctx=%p sender[0]=0x%02x\n",
+                      (void*)ctx, (unsigned char)ctx->sender[0]);
+        // Don't crash - just skip this callback
+        return true;  // Keep listening but skip processing
     }
 
     // Ignore expiration notifications
@@ -1216,11 +1050,12 @@ static bool watermark_listen_callback(
                        ((uint64_t)value[6] << 8) |
                        ((uint64_t)value[7]);
 
-    QGP_LOG_INFO(LOG_TAG, "Watermark update: %.20s... → %.20s... seq=%lu\n",
+    QGP_LOG_WARN(LOG_TAG, "[WATERMARK-LISTEN] Received: %.20s... → %.20s... seq=%lu\n",
            ctx->recipient, ctx->sender, (unsigned long)seq_num);
 
-    // Invoke user callback
+    // Invoke user callback (triggers DELIVERED status update)
     if (ctx->user_cb) {
+        QGP_LOG_WARN(LOG_TAG, "[WATERMARK-LISTEN] Invoking delivery callback...\n");
         ctx->user_cb(ctx->sender, ctx->recipient, seq_num, ctx->user_data);
     }
 
@@ -1254,6 +1089,15 @@ size_t dht_listen_watermark(
         return 0;
     }
 
+    // Validate fingerprint lengths (should be 128 hex chars)
+    size_t sender_len = strlen(sender);
+    size_t recipient_len = strlen(recipient);
+    if (sender_len != 128 || recipient_len != 128) {
+        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Invalid fingerprint length: sender=%zu recipient=%zu (expected 128)\n",
+                      sender_len, recipient_len);
+        return 0;
+    }
+
     // Allocate listener context
     watermark_listener_ctx_t *wctx = (watermark_listener_ctx_t *)calloc(1, sizeof(watermark_listener_ctx_t));
     if (!wctx) {
@@ -1262,9 +1106,15 @@ size_t dht_listen_watermark(
     }
 
     strncpy(wctx->sender, sender, sizeof(wctx->sender) - 1);
+    wctx->sender[sizeof(wctx->sender) - 1] = '\0';
     strncpy(wctx->recipient, recipient, sizeof(wctx->recipient) - 1);
+    wctx->recipient[sizeof(wctx->recipient) - 1] = '\0';
     wctx->user_cb = callback;
     wctx->user_data = user_data;
+
+    // Debug: log pointer and content for tracking corruption
+    QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Context allocated at %p: sender=%.20s... recipient=%.20s...\n",
+                 (void*)wctx, wctx->sender, wctx->recipient);
 
     // Generate watermark key: SHA3-512(recipient + ":watermark:" + sender)
     uint8_t key[64];
@@ -1274,10 +1124,11 @@ size_t dht_listen_watermark(
            recipient, sender);
 
     // Start DHT listen with cleanup callback for proper memory management
+    // NOTE: dht_listen_ex() calls cleanup on ALL failure paths, so don't free here
     size_t token = dht_listen_ex(ctx, key, 64, watermark_listen_callback, wctx, watermark_listener_cleanup);
     if (token == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT listen for watermark\n");
-        free(wctx);
+        // wctx already freed by cleanup callback in dht_listen_ex
         return 0;
     }
 
@@ -1298,4 +1149,63 @@ void dht_cancel_watermark_listener(
     QGP_LOG_INFO(LOG_TAG, "Cancelling watermark listener (token=%zu)\n", token);
     dht_cancel_listen(ctx, token);
     // Cleanup callback (watermark_listener_cleanup) frees the context
+}
+
+/**
+ * Sync pending outbox caches to DHT
+ *
+ * Iterates all cached outboxes that failed to publish (needs_dht_sync=true)
+ * and attempts to republish them. Call this when DHT becomes ready.
+ *
+ * @param ctx DHT context
+ * @return Number of entries successfully synced
+ */
+int dht_offline_queue_sync_pending(dht_context_t *ctx) {
+    if (!ctx) return 0;
+
+    pthread_mutex_lock(&g_queue_mutex);
+    outbox_cache_init();
+
+    int synced = 0;
+    int pending = 0;
+
+    for (int i = 0; i < OUTBOX_CACHE_MAX_ENTRIES; i++) {
+        if (!g_outbox_cache[i].valid || !g_outbox_cache[i].needs_dht_sync) {
+            continue;
+        }
+
+        pending++;
+        outbox_cache_entry_t *entry = &g_outbox_cache[i];
+
+        QGP_LOG_INFO(LOG_TAG, "Syncing pending outbox: %s (%zu messages)\n",
+                     entry->base_key, entry->count);
+
+        // Serialize messages
+        uint8_t *serialized = NULL;
+        size_t serialized_len = 0;
+        if (dht_serialize_messages(entry->messages, entry->count, &serialized, &serialized_len) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to serialize pending outbox\n");
+            continue;
+        }
+
+        // Try to publish
+        int result = dht_chunked_publish(ctx, entry->base_key, serialized, serialized_len, DHT_CHUNK_TTL_7DAY);
+        free(serialized);
+
+        if (result == DHT_CHUNK_OK) {
+            entry->needs_dht_sync = false;
+            synced++;
+            QGP_LOG_INFO(LOG_TAG, "Successfully synced pending outbox\n");
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Still failed to sync outbox: %s\n", dht_chunked_strerror(result));
+        }
+    }
+
+    pthread_mutex_unlock(&g_queue_mutex);
+
+    if (pending > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Synced %d/%d pending outboxes\n", synced, pending);
+    }
+
+    return synced;
 }

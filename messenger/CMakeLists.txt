@@ -69,8 +69,8 @@ include(${CMAKE_SOURCE_DIR}/cmake/PlatformDetect.cmake)
 # External dependencies (OpenSSL, CURL, json-c, SQLite3)
 include(${CMAKE_SOURCE_DIR}/cmake/Dependencies.cmake)
 
-# libjuice for NAT traversal (ICE/STUN)
-include(${CMAKE_SOURCE_DIR}/cmake/Libjuice.cmake)
+# libjuice removed in v0.4.61 for privacy (was ICE/STUN NAT traversal)
+# include(${CMAKE_SOURCE_DIR}/cmake/Libjuice.cmake)
 
 # =============================================================================
 # Vendored Cryptographic Libraries
@@ -92,7 +92,7 @@ set(OPENDHT_TOOLS ON CACHE BOOL "Enable OpenDHT-PQ tools for dna-nodus" FORCE)
 set(SKIP_INSTALL_ALL ON CACHE BOOL "Skip install for vendored opendht-pq" FORCE)
 add_subdirectory(vendor/opendht-pq)  # OpenDHT-PQ with Dilithium5 support
 add_subdirectory(dht)               # DHT integration (uses vendor/opendht-pq)
-add_subdirectory(p2p)               # P2P transport layer
+add_subdirectory(transport)         # Transport layer (DHT-only messaging)
 
 # =============================================================================
 # Blockchain Minimal Library
@@ -172,12 +172,12 @@ add_library(dna_lib ${DNA_LIB_TYPE}
     messenger/contacts.c
     messenger/keygen.c
     messenger/messages.c
-    messenger/gsk.c             # Group Symmetric Key (v0.09)
-    messenger/gsk_encryption.c  # GSK KEM encryption (H3 security fix)
-    messenger/gsk_packet.c      # GSK packet builder
+    messenger/gek.c             # Group Encryption Key (GEK system)
+    messenger/groups.c          # Group management (GEK system)
+    messenger/group_database.c  # Group database (separate from messages.db)
     # Messenger facade (delegates to messenger/ modules)
     messenger.c
-    messenger_p2p.c             # P2P integration layer
+    messenger_transport.c       # Transport integration layer
     # Local message backup (SQLite)
     message_backup.c
     database/presence_cache.c   # Fast presence cache (O(1) lookup)
@@ -226,10 +226,10 @@ target_link_libraries(dna_lib
     dsa
     secp256k1          # secp256k1 for Ethereum/Bitcoin key derivation
     cellframe_minimal  # Blockchain transaction building (uint256, signing)
-    dht_lib            # DHT library (MUST come BEFORE p2p_transport for Windows stub symbols)
-    p2p_transport      # P2P transport layer (links libjuice for NAT traversal)
-    dht_lib            # Link dht_lib again to resolve circular deps with p2p_transport
-    p2p_transport      # Link p2p_transport again for static linking order
+    dht_lib            # DHT library (MUST come BEFORE transport_lib for Windows stub symbols)
+    transport_lib      # Transport layer (DHT-only messaging)
+    dht_lib            # Link dht_lib again to resolve circular deps with transport_lib
+    transport_lib      # Link transport_lib again for static linking order
     ${JSONC_LIBRARIES}
     ${PLATFORM_LIBS}
 )
@@ -280,13 +280,13 @@ target_include_directories(dna_lib PUBLIC
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/include       # Unified Engine API headers
     ${CMAKE_SOURCE_DIR}/src/api       # Internal API headers
-    ${CMAKE_SOURCE_DIR}/p2p           # P2P transport headers
+    ${CMAKE_SOURCE_DIR}/transport      # Transport layer headers
     ${CMAKE_SOURCE_DIR}/dht           # DHT headers
     ${CMAKE_SOURCE_DIR}/blockchain/cellframe  # Cellframe blockchain headers
     ${CMAKE_SOURCE_DIR}/blockchain/solana     # Solana blockchain headers
     ${CMAKE_SOURCE_DIR}/blockchain/tron       # TRON blockchain headers
     ${OPENSSL_INCLUDE_DIR}
-    ${JUICE_INCLUDE_DIRS}             # libjuice headers
+    # JUICE_INCLUDE_DIRS removed in v0.4.61 - libjuice no longer used
 )
 
 # Add json-c include directories if found

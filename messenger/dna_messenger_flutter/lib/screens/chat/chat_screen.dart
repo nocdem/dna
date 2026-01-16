@@ -17,6 +17,7 @@ import '../../widgets/formatted_text.dart';
 import '../../widgets/image_message_bubble.dart';
 import '../../services/image_attachment_service.dart';
 import 'contact_profile_dialog.dart';
+import 'widgets/message_bubble.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -38,17 +39,31 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _isSearching = false;
   String _searchQuery = '';
   final _searchController = TextEditingController();
+  final _searchFocusNode = FocusNode();
 
   @override
   void initState() {
     super.initState();
     // Listen to text changes to update send button state
     _messageController.addListener(_onTextChanged);
+    // Listen to scroll for loading older messages
+    _scrollController.addListener(_onScroll);
 
     // Mark messages as read when chat opens
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _markMessagesAsRead();
     });
+  }
+
+  void _onScroll() {
+    // For reversed ListView, maxScrollExtent is the "top" (older messages)
+    if (_scrollController.position.pixels >=
+        _scrollController.position.maxScrollExtent - 200) {
+      final contact = ref.read(selectedContactProvider);
+      if (contact != null) {
+        ref.read(conversationProvider(contact.fingerprint).notifier).loadMore();
+      }
+    }
   }
 
   Future<void> _markMessagesAsRead() async {
@@ -73,14 +88,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   /// Check offline messages silently (no UI feedback)
   /// Called automatically when chat opens
+  /// Uses targeted fetch for this specific contact (faster than checking all)
   Future<void> _checkOfflineMessagesSilent() async {
     final contact = ref.read(selectedContactProvider);
     if (contact == null) return;
 
     try {
       final engine = await ref.read(engineProvider.future);
-      log('CHAT', 'Auto-checking offline messages for ${contact.fingerprint.substring(0, 16)}...');
-      await engine.checkOfflineMessages();
+      log('CHAT', 'Auto-checking offline messages from ${contact.fingerprint.substring(0, 16)}...');
+
+      // Use targeted fetch for this specific contact (faster than checking all)
+      await engine.checkOfflineMessagesFrom(contact.fingerprint);
 
       // Refresh conversation to show any new messages
       if (mounted) {
@@ -92,16 +110,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   @override
-  void dispose() {
+  void deactivate() {
     // Clear selected contact when leaving chat screen
-    // This ensures isChatOpen=false for incoming message handling
-    ref.read(selectedContactProvider.notifier).state = null;
+    // Capture notifier before widget is disposed, then defer the state change
+    final notifier = ref.read(selectedContactProvider.notifier);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) return; // Only clear if widget is actually being disposed
+      notifier.state = null;
+    });
+    super.deactivate();
+  }
 
+  @override
+  void dispose() {
     _messageController.removeListener(_onTextChanged);
+    _scrollController.removeListener(_onScroll);
     _messageController.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
     _searchController.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
@@ -112,6 +140,41 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
     _justInsertedEmoji = false;
     // Note: send button state handled by ValueListenableBuilder - no setState needed
+  }
+
+  /// Retry a failed message
+  void _retryMessage(int messageId) async {
+    final contact = ref.read(selectedContactProvider);
+    if (contact == null) return;
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final success = engine.retryMessage(messageId);
+      if (success) {
+        // Refresh conversation to show updated status
+        ref.invalidate(conversationProvider(contact.fingerprint));
+      } else {
+        // Show error snackbar
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Failed to retry message'),
+              backgroundColor: DnaColors.snackbarError,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      log('CHAT', 'Retry failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Retry error: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _checkOfflineMessages() async {
@@ -228,6 +291,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         title: _isSearching
             ? TextField(
                 controller: _searchController,
+                focusNode: _searchFocusNode,
                 autofocus: true,
                 decoration: InputDecoration(
                   hintText: 'Search messages...',
@@ -292,6 +356,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     setState(() {
                       _isSearching = true;
                     });
+                    // Request focus after the TextField is built
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      _searchFocusNode.requestFocus();
+                    });
                   },
                 ),
                 // Jump to date button
@@ -332,7 +400,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               // Messages list
               Expanded(
                 child: messages.when(
-                  data: (list) => _buildMessageList(context, list, starredIds),
+                  data: (list) => _buildMessageList(context, list, starredIds, contact),
                   loading: () => const Center(child: CircularProgressIndicator()),
                   error: (error, stack) => Center(
                     child: Column(
@@ -414,7 +482,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
-  Widget _buildMessageList(BuildContext context, List<Message> messages, Set<int> starredIds) {
+  Widget _buildMessageList(BuildContext context, List<Message> messages, Set<int> starredIds, Contact contact) {
     // Filter messages if searching
     final filteredMessages = _searchQuery.isEmpty
         ? messages
@@ -471,12 +539,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       );
     }
 
+    final isLoadingMore = ref.watch(isLoadingMoreProvider(contact.fingerprint));
+    final hasMore = ref.watch(hasMoreMessagesProvider(contact.fingerprint));
+    // Add 1 for loading indicator if loading or has more
+    final extraItems = (isLoadingMore || hasMore) ? 1 : 0;
+
     return ListView.builder(
       controller: _scrollController,
       reverse: true,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      itemCount: filteredMessages.length,
+      itemCount: filteredMessages.length + extraItems,
       itemBuilder: (context, index) {
+        // Last item (appears at top in reversed list) is the loading indicator
+        if (index == filteredMessages.length) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            child: Center(
+              child: isLoadingMore
+                  ? const SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const SizedBox.shrink(),
+            ),
+          );
+        }
         // Reverse index since list is reversed
         final message = filteredMessages[filteredMessages.length - 1 - index];
         final prevMessage = index < filteredMessages.length - 1
@@ -519,12 +607,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   color: DnaColors.primary,
                 ),
               ),
-              child: GestureDetector(
+              child: MessageBubbleWrapper(
+                message: message,
+                isStarred: starredIds.contains(message.id),
                 onTap: () => _showMessageInfo(message),
                 onLongPress: () => _showMessageActions(message),
+                onReply: _replyMessage,
+                onCopy: _copyMessage,
+                onForward: _forwardMessage,
+                onStar: (msg) => _toggleStarMessage(msg, contact.fingerprint),
+                onDelete: _confirmDeleteMessage,
+                onRetry: message.isOutgoing &&
+                        (message.status == MessageStatus.failed || message.status == MessageStatus.pending || message.status == MessageStatus.stale)
+                    ? () => _retryMessage(message.id)
+                    : null,
                 child: _MessageBubble(
                   message: message,
                   isStarred: starredIds.contains(message.id),
+                  onRetry: message.isOutgoing &&
+                          (message.status == MessageStatus.failed || message.status == MessageStatus.pending || message.status == MessageStatus.stale)
+                      ? () => _retryMessage(message.id)
+                      : null,
                 ),
               ),
             ),
@@ -570,57 +673,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Widget _buildInputArea(BuildContext context, Contact contact) {
     final theme = Theme.of(context);
     final dhtState = ref.watch(dhtConnectionStateProvider);
-    final isConnected = dhtState == DhtConnectionState.connected;
-    final isConnecting = dhtState == DhtConnectionState.connecting;
+    final isDisconnected = dhtState == DhtConnectionState.disconnected;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // DHT Status Banner - shows when not connected
-        if (!isConnected)
+        // DHT Status Banner - only shows when fully disconnected
+        if (isDisconnected)
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: isConnecting
-                ? DnaColors.textWarning.withAlpha(30)
-                : DnaColors.textError.withAlpha(30),
+            color: DnaColors.textError.withAlpha(30),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                if (isConnecting) ...[
-                  SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: DnaColors.textWarning,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Connecting to network...',
-                    style: TextStyle(
-                      color: DnaColors.textWarning,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ] else ...[
-                  FaIcon(
-                    FontAwesomeIcons.cloudBolt,
-                    size: 14,
+                FaIcon(
+                  FontAwesomeIcons.cloudBolt,
+                  size: 14,
+                  color: DnaColors.textError,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Disconnected - messages will queue',
+                  style: TextStyle(
                     color: DnaColors.textError,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
                   ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Disconnected - messages will queue',
-                    style: TextStyle(
-                      color: DnaColors.textError,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
+                ),
               ],
             ),
           ),
@@ -1102,6 +1182,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         statusText = 'Read';
         statusIcon = FontAwesomeIcons.checkDouble;
         statusColor = DnaColors.primary;
+        break;
+      case MessageStatus.stale:
+        statusText = 'Stale (30+ days)';
+        statusIcon = FontAwesomeIcons.hourglassEnd;
+        statusColor = DnaColors.textMuted;
         break;
     }
 
@@ -1803,8 +1888,9 @@ class _ContactAvatar extends ConsumerWidget {
 class _MessageBubble extends StatelessWidget {
   final Message message;
   final bool isStarred;
+  final VoidCallback? onRetry;
 
-  const _MessageBubble({required this.message, this.isStarred = false});
+  const _MessageBubble({required this.message, this.isStarred = false, this.onRetry});
 
   /// Check if message is a CPUNK transfer by parsing JSON content
   Map<String, dynamic>? _parseTransferData() {
@@ -1828,6 +1914,26 @@ class _MessageBubble extends StatelessWidget {
       }
     } catch (_) {
       // Not JSON or invalid format - treat as regular message
+    }
+    return null;
+  }
+
+  /// Check if message is a group invitation by parsing JSON content
+  Map<String, dynamic>? _parseInvitationData() {
+    // Check message type first
+    if (message.type == MessageType.groupInvitation) {
+      try {
+        final data = jsonDecode(message.plaintext) as Map<String, dynamic>;
+        // Accept both formats: with and without underscores
+        final type = data['type'] as String?;
+        if (type == 'group_invite' || type == 'groupinvite') {
+          return data;
+        }
+      } catch (_) {
+        // Not valid JSON - still try to show as invitation
+      }
+      // Return minimal data if JSON parsing failed but type is invitation
+      return {'type': 'group_invite'};
     }
     return null;
   }
@@ -1875,6 +1981,12 @@ class _MessageBubble extends StatelessWidget {
     final imageData = _parseImageData();
     if (imageData != null) {
       return ImageMessageBubble(message: message, imageData: imageData);
+    }
+
+    // Handle group invitations with special bubble
+    final invitationData = _parseInvitationData();
+    if (invitationData != null) {
+      return _InvitationBubble(message: message, invitationData: invitationData);
     }
 
     // Handle transfer messages with special bubble (detected by JSON tag)
@@ -2051,24 +2163,40 @@ class _MessageBubble extends StatelessWidget {
     final color = theme.colorScheme.onPrimary.withAlpha(179);
     const size = 16.0;
 
-    if (status == MessageStatus.pending) {
-      // Show spinner for pending messages
-      return SizedBox(
-        width: size,
-        height: size,
-        child: CircularProgressIndicator(
-          strokeWidth: 1.5,
-          color: color,
+    if (status == MessageStatus.failed) {
+      // Show tappable retry icon for failed messages
+      return GestureDetector(
+        onTap: onRetry,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FaIcon(
+              FontAwesomeIcons.circleExclamation,
+              size: size - 2,
+              color: DnaColors.textWarning,
+            ),
+            if (onRetry != null) ...[
+              const SizedBox(width: 4),
+              FaIcon(
+                FontAwesomeIcons.arrowsRotate,
+                size: size - 2,
+                color: DnaColors.textWarning,
+              ),
+            ],
+          ],
         ),
       );
     }
 
-    if (status == MessageStatus.failed) {
-      // Show red error icon for failed messages
-      return FaIcon(
-        FontAwesomeIcons.circleExclamation,
-        size: size,
-        color: DnaColors.textWarning,
+    // Show tappable retry for pending messages (tap clock to retry)
+    if (status == MessageStatus.pending && onRetry != null) {
+      return GestureDetector(
+        onTap: onRetry,
+        child: FaIcon(
+          FontAwesomeIcons.clock,
+          size: size,
+          color: color,
+        ),
       );
     }
 
@@ -2082,15 +2210,21 @@ class _MessageBubble extends StatelessWidget {
   IconData _getStatusIcon(MessageStatus status) {
     switch (status) {
       case MessageStatus.pending:
+        // Clock for pending (queued, waiting for DHT PUT)
         return FontAwesomeIcons.clock;
       case MessageStatus.sent:
+        // Single tick for sent (DHT PUT succeeded)
         return FontAwesomeIcons.check;
       case MessageStatus.failed:
         return FontAwesomeIcons.circleExclamation;
       case MessageStatus.delivered:
         return FontAwesomeIcons.checkDouble;
       case MessageStatus.read:
-        return FontAwesomeIcons.checkDouble; // Would be colored differently
+        // Blue double-check for read (colored in the widget)
+        return FontAwesomeIcons.checkDouble;
+      case MessageStatus.stale:
+        // Hourglass for stale (30+ days old)
+        return FontAwesomeIcons.hourglassEnd;
     }
   }
 }
@@ -2515,6 +2649,208 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
   }
 }
 
+/// Special bubble for group invitation messages
+class _InvitationBubble extends ConsumerStatefulWidget {
+  final Message message;
+  final Map<String, dynamic> invitationData;
+
+  const _InvitationBubble({required this.message, required this.invitationData});
+
+  @override
+  ConsumerState<_InvitationBubble> createState() => _InvitationBubbleState();
+}
+
+class _InvitationBubbleState extends ConsumerState<_InvitationBubble> {
+  bool _isProcessing = false;
+
+  String _shortenFingerprint(String fingerprint) {
+    if (fingerprint.length <= 16) return fingerprint;
+    return '${fingerprint.substring(0, 8)}...${fingerprint.substring(fingerprint.length - 8)}';
+  }
+
+  Future<void> _acceptInvitation(String groupUuid, String groupName) async {
+    setState(() => _isProcessing = true);
+    try {
+      await ref.read(invitationsProvider.notifier).acceptInvitation(groupUuid);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Joined "$groupName"')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to accept: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
+  Future<void> _declineInvitation(String groupUuid) async {
+    setState(() => _isProcessing = true);
+    try {
+      await ref.read(invitationsProvider.notifier).rejectInvitation(groupUuid);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Invitation declined')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to decline: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isOutgoing = widget.message.isOutgoing;
+    final data = widget.invitationData;
+
+    // Extract invitation data - try both formats (with/without underscores)
+    final groupUuid = (data['group_uuid'] ?? data['groupuuid'] ?? '') as String;
+    final groupName = (data['group_name'] ?? data['groupname'] ?? 'Unknown Group') as String;
+    final inviter = (data['inviter'] ?? widget.message.sender) as String;
+    final memberCount = (data['member_count'] ?? data['membercount'] ?? 0) as int;
+
+    return Align(
+      alignment: isOutgoing ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: EdgeInsets.only(
+          top: 4,
+          bottom: 4,
+          left: isOutgoing ? 48 : 0,
+          right: isOutgoing ? 0 : 48,
+        ),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              theme.colorScheme.secondary.withAlpha(30),
+              theme.colorScheme.primary.withAlpha(20),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(16),
+            topRight: const Radius.circular(16),
+            bottomLeft: Radius.circular(isOutgoing ? 16 : 4),
+            bottomRight: Radius.circular(isOutgoing ? 4 : 16),
+          ),
+          border: Border.all(color: theme.colorScheme.secondary.withAlpha(60)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Header with icon
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircleAvatar(
+                  radius: 16,
+                  backgroundColor: theme.colorScheme.secondary.withAlpha(40),
+                  child: FaIcon(
+                    FontAwesomeIcons.userGroup,
+                    size: 14,
+                    color: theme.colorScheme.secondary,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Group Invitation',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.secondary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (!isOutgoing)
+                      Text(
+                        'From ${_shortenFingerprint(inviter)}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontSize: 10,
+                          color: DnaColors.textMuted,
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+
+            // Group name
+            Text(
+              groupName,
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            if (memberCount > 0)
+              Text(
+                '$memberCount member${memberCount == 1 ? '' : 's'}',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: DnaColors.textMuted,
+                ),
+              ),
+
+            // Accept/Decline buttons (only for incoming invitations)
+            if (!isOutgoing && groupUuid.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextButton(
+                    onPressed: _isProcessing ? null : () => _declineInvitation(groupUuid),
+                    child: const Text('Decline'),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: _isProcessing ? null : () => _acceptInvitation(groupUuid, groupName),
+                    child: _isProcessing
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('Accept'),
+                  ),
+                ],
+              ),
+            ],
+
+            // Timestamp
+            const SizedBox(height: 6),
+            Text(
+              DateFormat.jm().format(widget.message.timestamp),
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontSize: 10,
+                color: DnaColors.textMuted,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// Special bubble for CPUNK transfer messages
 class _TransferBubble extends StatelessWidget {
   final Message message;
@@ -2665,13 +3001,19 @@ class _TransferBubble extends StatelessWidget {
                   FaIcon(
                     message.status == MessageStatus.pending
                         ? FontAwesomeIcons.clock
-                        : (message.status == MessageStatus.failed
-                            ? FontAwesomeIcons.circleExclamation
-                            : FontAwesomeIcons.check),
+                        : (message.status == MessageStatus.sent
+                            ? FontAwesomeIcons.check
+                            : (message.status == MessageStatus.failed
+                                ? FontAwesomeIcons.circleExclamation
+                                : (message.status == MessageStatus.stale
+                                    ? FontAwesomeIcons.hourglassEnd
+                                    : FontAwesomeIcons.checkDouble))),
                     size: 14,
                     color: message.status == MessageStatus.failed
                         ? DnaColors.textWarning
-                        : theme.colorScheme.onPrimary.withAlpha(179),
+                        : (message.status == MessageStatus.stale
+                            ? theme.colorScheme.onPrimary.withAlpha(128)
+                            : theme.colorScheme.onPrimary.withAlpha(179)),
                   ),
                 ],
               ],

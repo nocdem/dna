@@ -32,7 +32,7 @@
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include "messenger.h"
-#include "messenger_p2p.h"  // Phase 9.1b: P2P delivery integration
+#include "messenger_transport.h"  // Phase 9.1b: P2P delivery integration
 #include "dna_config.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_dilithium.h"
@@ -50,7 +50,7 @@
 #include "dht/core/dht_keyserver.h"   // Phase 9.4: DHT-based keyserver
 #include "dht/core/dht_context.h"     // Phase 9.4: DHT context management
 #include "dht/client/dht_contactlist.h" // DHT contact list sync
-#include "p2p/p2p_transport.h"   // For getting DHT context
+#include "transport/transport.h"   // For getting DHT context
 #include "database/contacts_db.h"         // Phase 9.4: Local contacts database
 #include "messenger/identity.h"  // Phase: Modularization - Identity utilities
 #include "messenger/init.h"      // Phase: Modularization - Context management

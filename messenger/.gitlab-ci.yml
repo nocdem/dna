@@ -605,5 +605,6 @@ deploy:artifacts:
     - chmod +x scripts/deploy-artifacts.sh
     - sh scripts/deploy-artifacts.sh
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
+    # Only deploy to website when commit message contains [RELEASE]
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_MESSAGE =~ /\[RELEASE\]/
       when: on_success

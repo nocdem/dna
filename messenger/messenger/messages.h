@@ -161,6 +161,27 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
                                  message_info_t **messages_out, int *count_out);
 
 /**
+ * Get conversation messages with pagination (API version)
+ *
+ * Returns array of message_info_t structs for GUI/API use.
+ * Messages ordered by timestamp DESC (newest first) for efficient chat loading.
+ * Caller must free array with messenger_free_messages().
+ *
+ * @param ctx: Messenger context
+ * @param other_identity: Contact identity
+ * @param limit: Max messages to return (page size)
+ * @param offset: Messages to skip (for pagination)
+ * @param messages_out: Output message array (caller must free)
+ * @param count_out: Messages returned in this page
+ * @param total_out: Total messages in conversation
+ * @return: 0 on success, -1 on error
+ */
+int messenger_get_conversation_page(messenger_context_t *ctx, const char *other_identity,
+                                     int limit, int offset,
+                                     message_info_t **messages_out, int *count_out,
+                                     int *total_out);
+
+/**
  * Search messages by date range
  *
  * Lists messages within date range (YYYY-MM-DD format).

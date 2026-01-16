@@ -12,23 +12,34 @@
  * DHT Key Derivation:
  * SHA3-512(fingerprint + ":message_backup") -> 64-byte DHT storage key
  *
- * Data Format (before encryption):
+ * Data Format v2 (before encryption):
  * {
- *   "version": 1,
+ *   "version": 2,
  *   "fingerprint": "abc123...",
  *   "timestamp": 1703894400,
  *   "message_count": 150,
- *   "messages": [
+ *   "messages": [...],
+ *
+ *   "gek_count": 3,
+ *   "geks": [
  *     {
- *       "sender": "abc...",
- *       "recipient": "def...",
- *       "encrypted_message_base64": "...",
- *       "encrypted_len": 1234,
- *       "timestamp": 1703894000,
- *       "is_outgoing": true,
- *       "status": 1,
- *       "group_id": 0,
- *       "message_type": 0
+ *       "group_uuid": "uuid-v4-string",
+ *       "gek_version": 5,
+ *       "gek_base64": "encrypted-gek-bytes",
+ *       "created_at": 1703890000,
+ *       "expires_at": 1704494800
+ *     }
+ *   ],
+ *
+ *   "group_count": 2,
+ *   "groups": [
+ *     {
+ *       "uuid": "uuid-v4-string",
+ *       "name": "Group Name",
+ *       "owner_fingerprint": "abc123...",
+ *       "is_owner": true,
+ *       "members": ["fp1", "fp2"],
+ *       "created_at": 1703890000
  *     }
  *   ]
  * }
@@ -62,7 +73,10 @@ extern "C" {
 
 // Magic bytes for message backup format validation
 #define DHT_MSGBACKUP_MAGIC 0x4D534742  // "MSGB"
-#define DHT_MSGBACKUP_VERSION 1
+#define DHT_MSGBACKUP_VERSION 3
+
+// Version 2 adds GEK and group data to backup
+// Version 3 changes encrypted_message to plaintext (v14 schema)
 
 // Default TTL: 7 days (604,800 seconds)
 #define DHT_MSGBACKUP_DEFAULT_TTL 604800

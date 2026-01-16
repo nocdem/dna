@@ -4,9 +4,11 @@
  */
 
 #include "messenger.h"
-#include "messenger_p2p.h"  // For messenger_p2p_check_offline_messages
-#include "messenger/gsk.h"  // GSK rotation (Phase 5 - v0.09)
+#include "messenger_transport.h"  // For messenger_transport_check_offline_messages
+#include "messenger/gek.h"  // GEK rotation
 #include "dht/shared/dht_groups.h"
+#include "dht/shared/dht_gek_storage.h"  // GEK fetch from DHT
+#include "crypto/utils/qgp_sha3.h"  // For fingerprint calculation
 #include "dht/core/dht_context.h"
 #include "dht/client/dht_singleton.h"  // For dht_singleton_get
 #include "dht/client/dna_group_outbox.h"  // Group outbox (feed pattern)
@@ -15,7 +17,7 @@
 #include "dna_api.h"  // For dna_decrypt_message_raw
 #include "crypto/utils/qgp_types.h"  // For qgp_key_load/free
 #include "crypto/utils/qgp_platform.h"  // For qgp_platform_home_dir
-// p2p_transport.h no longer needed - Phase 14 uses dht_singleton_get() directly
+// transport_ctx.h no longer needed - Phase 14 uses dht_singleton_get() directly
 #include <json-c/json.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,7 +64,8 @@ static int get_group_uuid_by_id(const char *identity, int group_id, char *uuid_o
 // ============================================================================
 
 int messenger_create_group(messenger_context_t *ctx, const char *name, const char *description,
-                            const char **members, size_t member_count, int *group_id_out) {
+                            const char **members, size_t member_count, int *group_id_out,
+                            char *uuid_out) {
     if (!ctx || !name || !group_id_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to create_group\n");
         return -1;
@@ -118,15 +121,19 @@ int messenger_create_group(messenger_context_t *ctx, const char *name, const cha
     }
 
     *group_id_out = local_id;
+    if (uuid_out) {
+        strncpy(uuid_out, group_uuid, 36);
+        uuid_out[36] = '\0';
+    }
     QGP_LOG_INFO(LOG_TAG, "Created group '%s' (local_id=%d, uuid=%s)\n", name, local_id, group_uuid);
 
-    // Phase 13: Create initial GSK (version 0) and publish to DHT
-    QGP_LOG_INFO(LOG_TAG, "Creating initial GSK for group %s...\n", group_uuid);
-    if (gsk_rotate_on_member_add(dht_ctx, group_uuid, ctx->identity) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Warning: Initial GSK creation failed (non-fatal)\n");
-        // Continue - group is created, but GSK needs to be created later
+    // Phase 13: Create initial GEK (version 0) and publish to DHT
+    QGP_LOG_INFO(LOG_TAG, "Creating initial GEK for group %s...\n", group_uuid);
+    if (gek_rotate_on_member_add(dht_ctx, group_uuid, ctx->identity) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Warning: Initial GEK creation failed (non-fatal)\n");
+        // Continue - group is created, but GEK needs to be created later
     } else {
-        QGP_LOG_INFO(LOG_TAG, "Initial GSK created and published to DHT\n");
+        QGP_LOG_INFO(LOG_TAG, "Initial GEK created and published to DHT\n");
     }
 
     // Send invitations to all initial members (not the creator)
@@ -308,18 +315,18 @@ int messenger_add_group_member(messenger_context_t *ctx, int group_id, const cha
     // Add member in DHT
     int ret = dht_groups_add_member(dht_ctx, group_uuid, identity, ctx->identity);
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to add member to DHT\n");
-        return -1;
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add member to DHT (ret=%d)\n", ret);
+        return ret;  // Preserve specific error code: -2=unauthorized, -3=already member
     }
 
     // Sync back to local cache
     dht_groups_sync_from_dht(dht_ctx, group_uuid);
 
-    // Phase 5 (v0.09): Rotate GSK when member is added
-    QGP_LOG_INFO(LOG_TAG, "Rotating GSK for group %s after adding member...\n", group_uuid);
-    if (gsk_rotate_on_member_add(dht_ctx, group_uuid, ctx->identity) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Warning: GSK rotation failed (non-fatal)\n");
-        // Continue - member is still added, but GSK rotation failed
+    // Phase 5 (v0.09): Rotate GEK when member is added
+    QGP_LOG_INFO(LOG_TAG, "Rotating GEK for group %s after adding member...\n", group_uuid);
+    if (gek_rotate_on_member_add(dht_ctx, group_uuid, ctx->identity) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Warning: GEK rotation failed (non-fatal)\n");
+        // Continue - member is still added, but GEK rotation failed
     }
 
     // Fetch group metadata to get name and member count for invitation
@@ -375,11 +382,11 @@ int messenger_remove_group_member(messenger_context_t *ctx, int group_id, const 
     // Sync back to local cache
     dht_groups_sync_from_dht(dht_ctx, group_uuid);
 
-    // Phase 5 (v0.09): Rotate GSK when member is removed
-    QGP_LOG_INFO(LOG_TAG, "Rotating GSK for group %s after removing member...\n", group_uuid);
-    if (gsk_rotate_on_member_remove(dht_ctx, group_uuid, ctx->identity) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Warning: GSK rotation failed (non-fatal)\n");
-        // Continue - member is still removed, but GSK rotation failed
+    // Phase 5 (v0.09): Rotate GEK when member is removed
+    QGP_LOG_INFO(LOG_TAG, "Rotating GEK for group %s after removing member...\n", group_uuid);
+    if (gek_rotate_on_member_remove(dht_ctx, group_uuid, ctx->identity) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Warning: GEK rotation failed (non-fatal)\n");
+        // Continue - member is still removed, but GEK rotation failed
     }
 
     QGP_LOG_INFO(LOG_TAG, "Removed member %s from group %d\n", identity, group_id);
@@ -459,71 +466,6 @@ int messenger_update_group_info(messenger_context_t *ctx, int group_id, const ch
     return 0;
 }
 
-int messenger_get_group_conversation(messenger_context_t *ctx, int group_id, message_info_t **messages_out, int *count_out) {
-    if (!ctx || !messages_out || !count_out) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to get_group_conversation\n");
-        return -1;
-    }
-
-    *messages_out = NULL;
-    *count_out = 0;
-
-    // Get messages from message_backup (Phase 5.2)
-    // Use fingerprint (canonical) for consistent database path
-    const char *db_identity = ctx->fingerprint ? ctx->fingerprint : ctx->identity;
-    message_backup_context_t *backup_ctx = message_backup_init(db_identity);
-    if (!backup_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to init message backup\n");
-        return -1;
-    }
-
-    backup_message_t *backup_messages = NULL;
-    int backup_count = 0;
-    int ret = message_backup_get_group_conversation(backup_ctx, group_id, &backup_messages, &backup_count);
-    message_backup_close(backup_ctx);
-
-    if (ret != 0 || backup_count == 0) {
-        return (ret == 0) ? 0 : -1;
-    }
-
-    // Convert backup_message_t to message_info_t
-    message_info_t *messages = calloc(backup_count, sizeof(message_info_t));
-    if (!messages) {
-        message_backup_free_messages(backup_messages, backup_count);
-        return -1;
-    }
-
-    for (int i = 0; i < backup_count; i++) {
-        messages[i].id = backup_messages[i].id;
-        messages[i].sender = strdup(backup_messages[i].sender);
-        messages[i].recipient = strdup(backup_messages[i].recipient);
-
-        // Convert time_t to timestamp string
-        messages[i].timestamp = timestamp_to_string(backup_messages[i].timestamp);
-
-        // Convert status to string
-        const char *status_str = (backup_messages[i].status == 0) ? "pending" :
-                                  (backup_messages[i].status == 1) ? "sent" : "failed";
-        messages[i].status = strdup(status_str);
-
-        // Set delivered_at and read_at (NULL for now, would need actual timestamps)
-        messages[i].delivered_at = backup_messages[i].delivered ? strdup("delivered") : NULL;
-        messages[i].read_at = backup_messages[i].read ? strdup("read") : NULL;
-        messages[i].plaintext = NULL;  // Not decrypted yet
-
-        // Note: encrypted_message is not copied to message_info_t
-        // Messages must be decrypted separately via messenger_decrypt_message()
-    }
-
-    message_backup_free_messages(backup_messages, backup_count);
-
-    *messages_out = messages;
-    *count_out = backup_count;
-
-    QGP_LOG_INFO(LOG_TAG, "Retrieved %d group messages (group_id=%d)\n", backup_count, group_id);
-    return 0;
-}
-
 void messenger_free_groups(group_info_t *groups, int count) {
     if (!groups) return;
 
@@ -586,20 +528,26 @@ int messenger_send_group_invitation(messenger_context_t *ctx, const char *group_
  * Accept a group invitation
  */
 int messenger_accept_group_invitation(messenger_context_t *ctx, const char *group_uuid) {
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: START uuid=%s <<<\n", group_uuid ? group_uuid : "(null)");
+
     if (!ctx || !group_uuid) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to accept_group_invitation\n");
         return -1;
     }
 
     // Get invitation details
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: Getting invitation from DB <<<\n");
     group_invitation_t *invitation = NULL;
     int ret = group_invitations_get(group_uuid, &invitation);
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: group_invitations_get returned %d, invitation=%p <<<\n", ret, (void*)invitation);
+
     if (ret != 0 || !invitation) {
         QGP_LOG_ERROR(LOG_TAG, "Invitation not found: %s\n", group_uuid);
         return -1;
     }
 
     // Sync group metadata from DHT
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: Getting DHT context <<<\n");
     dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
         QGP_LOG_ERROR(LOG_TAG, "DHT not initialized\n");
@@ -607,19 +555,126 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
         return -1;
     }
 
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: Calling dht_groups_sync_from_dht <<<\n");
     ret = dht_groups_sync_from_dht(dht_ctx, group_uuid);
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: dht_groups_sync_from_dht returned %d <<<\n", ret);
+
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to sync group from DHT\n");
         group_invitations_free(invitation, 1);
         return -1;
     }
 
+    // Fetch GEK (Initial Key Packet) from DHT and store locally
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: Fetching GEK from DHT <<<\n");
+    do {
+        // Load user's Kyber private key for IKP extraction
+        const char *data_dir = qgp_platform_app_data_dir();
+        if (!data_dir) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory for GEK fetch\n");
+            break;
+        }
+
+        // v0.3.0: Flat structure - keys/identity.kem
+        char kyber_path[512];
+        snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", data_dir);
+
+        qgp_key_t *kyber_key = NULL;
+        if (qgp_key_load(kyber_path, &kyber_key) != 0 || !kyber_key) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key for GEK extraction\n");
+            break;
+        }
+
+        if (kyber_key->private_key_size != 3168) {
+            QGP_LOG_ERROR(LOG_TAG, "Invalid Kyber key size: %zu\n", kyber_key->private_key_size);
+            qgp_key_free(kyber_key);
+            break;
+        }
+
+        // Load Dilithium public key to compute fingerprint
+        char dilithium_path[512];
+        snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
+
+        qgp_key_t *dilithium_key = NULL;
+        if (qgp_key_load(dilithium_path, &dilithium_key) != 0 || !dilithium_key) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key for fingerprint\n");
+            qgp_key_free(kyber_key);
+            break;
+        }
+
+        // Compute fingerprint (SHA3-512 of Dilithium public key)
+        uint8_t my_fingerprint[64];
+        if (qgp_sha3_512(dilithium_key->public_key, 2592, my_fingerprint) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to compute fingerprint\n");
+            qgp_key_free(kyber_key);
+            qgp_key_free(dilithium_key);
+            break;
+        }
+        qgp_key_free(dilithium_key);
+
+        // Get group metadata to find current GEK version
+        dht_group_metadata_t *group_meta = NULL;
+        ret = dht_groups_get(dht_ctx, group_uuid, &group_meta);
+        if (ret != 0 || !group_meta) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to get group metadata for GEK version\n");
+            qgp_key_free(kyber_key);
+            break;
+        }
+
+        uint32_t gek_version = group_meta->gek_version;
+        QGP_LOG_INFO(LOG_TAG, "Group metadata indicates GEK version %u\n", gek_version);
+        dht_groups_free_metadata(group_meta);
+
+        // Fetch the specific GEK version from metadata
+        uint8_t *ikp_packet = NULL;
+        size_t ikp_size = 0;
+        ret = dht_gek_fetch(dht_ctx, group_uuid, gek_version, &ikp_packet, &ikp_size);
+
+        if (ret != 0 || !ikp_packet || ikp_size == 0) {
+            QGP_LOG_WARN(LOG_TAG, "No GEK v%u found in DHT for group %s (may be published later)\n",
+                         gek_version, group_uuid);
+            qgp_key_free(kyber_key);
+            break;
+        }
+
+        QGP_LOG_INFO(LOG_TAG, "Found IKP for group %s version %u (%zu bytes)\n",
+                     group_uuid, gek_version, ikp_size);
+
+        // Extract GEK from IKP using my fingerprint and Kyber private key
+        uint8_t gek[GEK_KEY_SIZE];
+        uint32_t extracted_version = 0;
+        ret = ikp_extract(ikp_packet, ikp_size, my_fingerprint,
+                          kyber_key->private_key, gek, &extracted_version);
+        free(ikp_packet);
+        qgp_key_free(kyber_key);
+
+        if (ret != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to extract GEK from IKP (not a member?)\n");
+            break;
+        }
+
+        // Store GEK locally
+        ret = gek_store(group_uuid, extracted_version, gek);
+        qgp_secure_memzero(gek, GEK_KEY_SIZE);
+
+        if (ret != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to store GEK locally\n");
+            break;
+        }
+
+        QGP_LOG_INFO(LOG_TAG, "Successfully stored GEK v%u for group %s\n",
+                     extracted_version, group_uuid);
+    } while (0);
+
     // Update invitation status to accepted
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: Updating status <<<\n");
     group_invitations_update_status(group_uuid, INVITATION_STATUS_ACCEPTED);
 
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: Freeing invitation <<<\n");
     group_invitations_free(invitation, 1);
 
     QGP_LOG_INFO(LOG_TAG, "Accepted group invitation: %s\n", group_uuid);
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: DONE <<<\n");
     return 0;
 }
 
@@ -644,6 +699,127 @@ int messenger_reject_group_invitation(messenger_context_t *ctx, const char *grou
 }
 
 /**
+ * Sync GEK (Group Encryption Key) from DHT for an existing group
+ *
+ * Fetches the Initial Key Packet from DHT, extracts the GEK using
+ * this user's Kyber private key, and stores it locally.
+ *
+ * @param group_uuid Group UUID (36 chars)
+ * @return 0 on success, -1 on error
+ */
+int messenger_sync_group_gek(const char *group_uuid) {
+    if (!group_uuid || strlen(group_uuid) != 36) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid group_uuid for GEK sync\n");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Syncing GEK for group %s...\n", group_uuid);
+
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not initialized\n");
+        return -1;
+    }
+
+    // Load user's Kyber private key for IKP extraction
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory for GEK sync\n");
+        return -1;
+    }
+
+    // v0.3.0: Flat structure - keys/identity.kem
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", data_dir);
+
+    qgp_key_t *kyber_key = NULL;
+    if (qgp_key_load(kyber_path, &kyber_key) != 0 || !kyber_key) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key for GEK sync\n");
+        return -1;
+    }
+
+    if (kyber_key->private_key_size != 3168) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid Kyber key size: %zu\n", kyber_key->private_key_size);
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    // Load Dilithium public key to compute fingerprint
+    char dilithium_path[512];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
+
+    qgp_key_t *dilithium_key = NULL;
+    if (qgp_key_load(dilithium_path, &dilithium_key) != 0 || !dilithium_key) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key for fingerprint\n");
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    // Compute fingerprint (SHA3-512 of Dilithium public key)
+    uint8_t my_fingerprint[64];
+    if (qgp_sha3_512(dilithium_key->public_key, 2592, my_fingerprint) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to compute fingerprint\n");
+        qgp_key_free(kyber_key);
+        qgp_key_free(dilithium_key);
+        return -1;
+    }
+    qgp_key_free(dilithium_key);
+
+    // Get group metadata to find current GEK version
+    dht_group_metadata_t *group_meta = NULL;
+    int ret = dht_groups_get(dht_ctx, group_uuid, &group_meta);
+    if (ret != 0 || !group_meta) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get group metadata for GEK sync\n");
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    uint32_t gek_version = group_meta->gek_version;
+    QGP_LOG_INFO(LOG_TAG, "Group metadata indicates GEK version %u\n", gek_version);
+    dht_groups_free_metadata(group_meta);
+
+    // Fetch the specific GEK version from metadata
+    uint8_t *ikp_packet = NULL;
+    size_t ikp_size = 0;
+    ret = dht_gek_fetch(dht_ctx, group_uuid, gek_version, &ikp_packet, &ikp_size);
+
+    if (ret != 0 || !ikp_packet || ikp_size == 0) {
+        QGP_LOG_WARN(LOG_TAG, "No GEK v%u found in DHT for group %s\n", gek_version, group_uuid);
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Found IKP for group %s version %u (%zu bytes)\n",
+                 group_uuid, gek_version, ikp_size);
+
+    // Extract GEK from IKP using my fingerprint and Kyber private key
+    uint8_t gek[GEK_KEY_SIZE];
+    uint32_t extracted_version = 0;
+    ret = ikp_extract(ikp_packet, ikp_size, my_fingerprint,
+                      kyber_key->private_key, gek, &extracted_version);
+    free(ikp_packet);
+    qgp_key_free(kyber_key);
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to extract GEK from IKP (not a member?)\n");
+        return -1;
+    }
+
+    // Store GEK locally
+    ret = gek_store(group_uuid, extracted_version, gek);
+    qgp_secure_memzero(gek, GEK_KEY_SIZE);
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store GEK locally\n");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Successfully synced GEK v%u for group %s\n",
+                 extracted_version, group_uuid);
+    return 0;
+}
+
+/**
  * Sync groups from offline messages and DHT
  *
  * This function:
@@ -661,9 +837,9 @@ int messenger_sync_groups(messenger_context_t *ctx) {
     QGP_LOG_INFO(LOG_TAG, "Syncing groups and invitations...\n");
 
     // Step 1: Check for offline messages (which may contain invitations)
-    if (ctx->p2p_enabled && ctx->p2p_transport) {
+    if (ctx->transport_enabled && ctx->transport_ctx) {
         size_t offline_count = 0;
-        messenger_p2p_check_offline_messages(ctx, NULL, &offline_count);
+        messenger_transport_check_offline_messages(ctx, NULL, &offline_count);
         if (offline_count > 0) {
             QGP_LOG_INFO(LOG_TAG, "Retrieved %zu offline messages (may include invitations)\n", offline_count);
         }
@@ -737,48 +913,14 @@ int messenger_sync_groups(messenger_context_t *ctx) {
                 continue;
             }
 
-            // Decrypt the message
-            uint8_t *plaintext = NULL;
-            size_t plaintext_len = 0;
-            uint8_t *sender_pubkey = NULL;
-            size_t sender_pubkey_len = 0;
-            uint8_t *signature = NULL;
-            size_t signature_len = 0;
-            uint64_t sender_timestamp = 0;
-
-            dna_error_t err = dna_decrypt_message_raw(
-                ctx->dna_ctx,
-                messages[j].encrypted_message,
-                messages[j].encrypted_len,
-                kyber_key->private_key,  // Kyber1024 private key
-                &plaintext,
-                &plaintext_len,
-                &sender_pubkey,
-                &sender_pubkey_len,
-                &signature,
-                &signature_len,
-                &sender_timestamp  // v0.08: Extract sender's timestamp
-            );
-
-            if (err != DNA_OK || !plaintext) {
-                if (signature) free(signature);
-                continue;  // Skip messages we can't decrypt
+            // v14: Messages are stored as plaintext - no decryption needed
+            const char *plaintext = messages[j].plaintext;
+            if (!plaintext || strlen(plaintext) == 0) {
+                continue;  // Skip empty messages
             }
 
-            // Ensure null-terminated for JSON parsing
-            char *plaintext_str = malloc(plaintext_len + 1);
-            if (!plaintext_str) {
-                free(plaintext);
-                free(sender_pubkey);
-                if (signature) free(signature);
-                continue;
-            }
-            memcpy(plaintext_str, plaintext, plaintext_len);
-            plaintext_str[plaintext_len] = '\0';
-            
             // Try to parse as JSON
-            json_object *j_msg = json_tokener_parse(plaintext_str);
-            free(plaintext_str);
+            json_object *j_msg = json_tokener_parse(plaintext);
             if (j_msg) {
                 json_object *j_type = json_object_object_get(j_msg, "type");
 
@@ -818,16 +960,13 @@ int messenger_sync_groups(messenger_context_t *ctx) {
 
                 json_object_put(j_msg);
             }
-
-            free(plaintext);
-            free(sender_pubkey);
-            if (signature) free(signature);
+            // v14: No signature/plaintext cleanup needed - plaintext is from struct
         }
 
         message_backup_free_messages(messages, message_count);
     }
 
-    // Free Kyber key (secure wipe)
+    // v14: Kyber key no longer needed for plaintext messages
     qgp_key_free(kyber_key);
 
     // Free contacts list
@@ -853,7 +992,7 @@ int messenger_sync_groups(messenger_context_t *ctx) {
  * Send message to a group using feed-pattern outbox
  *
  * NEW IMPLEMENTATION (v0.10+):
- * - Message encrypted ONCE with GSK (AES-256-GCM)
+ * - Message encrypted ONCE with GEK (AES-256-GCM)
  * - Stored ONCE in DHT (feed pattern)
  * - All members poll via dht_get_all()
  * - Storage: O(message_size) vs O(N * message_size) in old system
@@ -884,9 +1023,9 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
         QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
         return -1;
     }
+    // v0.3.0: Flat structure - keys/identity.dsa
     char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium.pqkey",
-             data_dir2, ctx->identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir2);
 
     FILE *fp = fopen(dilithium_path, "rb");
     if (!fp) {
@@ -927,81 +1066,4 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
                 dna_group_outbox_strerror(result));
         return -1;
     }
-}
-
-/**
- * Load group conversation messages from group outbox
- *
- * NEW IMPLEMENTATION (v0.10+):
- * Retrieves messages from the group_messages table (feed pattern storage).
- * Messages are already decrypted during sync.
- *
- * @param ctx Messenger context
- * @param group_uuid Group UUID (36 chars)
- * @param messages_out Output array of messages (caller must free)
- * @param count_out Number of messages returned
- * @return 0 on success, -1 on error
- */
-int messenger_load_group_messages(messenger_context_t *ctx, const char *group_uuid,
-                                   backup_message_t **messages_out, int *count_out) {
-    if (!ctx || !group_uuid || !messages_out || !count_out) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters\n");
-        return -1;
-    }
-
-    QGP_LOG_INFO(LOG_TAG, "Loading messages for group %s (from group_messages table)\n", group_uuid);
-
-    // Load from new group_messages table
-    dna_group_message_t *group_msgs = NULL;
-    size_t group_count = 0;
-
-    int result = dna_group_outbox_db_get_messages(group_uuid, 0, 0, &group_msgs, &group_count);
-    if (result != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load group messages from database\n");
-        *messages_out = NULL;
-        *count_out = 0;
-        return -1;
-    }
-
-    if (group_count == 0) {
-        *messages_out = NULL;
-        *count_out = 0;
-        return 0;
-    }
-
-    // Convert dna_group_message_t to backup_message_t for compatibility
-    backup_message_t *messages = calloc(group_count, sizeof(backup_message_t));
-    if (!messages) {
-        dna_group_outbox_free_messages(group_msgs, group_count);
-        return -1;
-    }
-
-    for (size_t i = 0; i < group_count; i++) {
-        messages[i].id = (int)i;  // Use index as ID
-        strncpy(messages[i].sender, group_msgs[i].sender_fingerprint, sizeof(messages[i].sender) - 1);
-        strncpy(messages[i].recipient, group_uuid, sizeof(messages[i].recipient) - 1);
-        messages[i].timestamp = (time_t)(group_msgs[i].timestamp_ms / 1000);
-        messages[i].delivered = 1;
-        messages[i].read = 0;
-        messages[i].status = 1;  // SENT
-        messages[i].group_id = 0;  // Not used in new system
-        messages[i].message_type = 0;  // CHAT
-
-        // Copy encrypted message (for compatibility)
-        if (group_msgs[i].ciphertext && group_msgs[i].ciphertext_len > 0) {
-            messages[i].encrypted_message = malloc(group_msgs[i].ciphertext_len);
-            if (messages[i].encrypted_message) {
-                memcpy(messages[i].encrypted_message, group_msgs[i].ciphertext, group_msgs[i].ciphertext_len);
-                messages[i].encrypted_len = group_msgs[i].ciphertext_len;
-            }
-        }
-    }
-
-    dna_group_outbox_free_messages(group_msgs, group_count);
-
-    *messages_out = messages;
-    *count_out = (int)group_count;
-
-    QGP_LOG_INFO(LOG_TAG, "Loaded %zu group messages\n", group_count);
-    return 0;
 }

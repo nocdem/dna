@@ -181,6 +181,10 @@ extern "C" size_t dht_listen_ex(
             std::lock_guard<std::mutex> lock(listeners_mutex);
             if (active_listeners.size() >= DHT_MAX_LISTENERS) {
                 QGP_LOG_ERROR(LOG_TAG, "Maximum listeners reached (%d)", DHT_MAX_LISTENERS);
+                // Call cleanup to free user_data (consistent with other failure paths)
+                if (cleanup) {
+                    cleanup(user_data);
+                }
                 return 0;
             }
         }
@@ -207,16 +211,19 @@ extern "C" size_t dht_listen_ex(
             const std::vector<std::shared_ptr<dht::Value>>& values,
             bool expired
         ) -> bool {
+            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN-DHT] Callback: token=%zu, values=%zu, expired=%d",
+                         token, values.size(), expired);
+
             // Check if listener is still active
             std::lock_guard<std::mutex> lock(listeners_mutex);
             if (!listener_ctx->active) {
-                QGP_LOG_DEBUG(LOG_TAG, "Token %zu is no longer active, stopping", token);
+                QGP_LOG_DEBUG(LOG_TAG, "[LISTEN-DHT] Token %zu inactive, stopping", token);
                 return false;
             }
 
             // Handle expiration notification
             if (expired) {
-                QGP_LOG_DEBUG(LOG_TAG, "Token %zu received expiration notification", token);
+                QGP_LOG_DEBUG(LOG_TAG, "[LISTEN-DHT] Token %zu expired", token);
                 bool continue_listening = listener_ctx->callback(
                     nullptr, 0, true, listener_ctx->user_data
                 );
@@ -225,10 +232,10 @@ extern "C" size_t dht_listen_ex(
 
             // Handle value notifications
             if (values.empty()) {
-                return true;
+                return true;  // No new data, continue listening
             }
 
-            QGP_LOG_DEBUG(LOG_TAG, "Token %zu received %zu value(s)", token, values.size());
+            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN-DHT] Token %zu: %zu value(s)", token, values.size());
 
             // Invoke C callback for each value
             bool continue_listening = true;
@@ -236,6 +243,12 @@ extern "C" size_t dht_listen_ex(
                 if (!val || val->data.empty()) {
                     continue;
                 }
+
+                QGP_LOG_DEBUG(LOG_TAG, "[LISTEN-DHT] Token %zu: id=%llu, seq=%llu, %zu bytes",
+                             token,
+                             (unsigned long long)val->id,
+                             (unsigned long long)val->seq,
+                             val->data.size());
 
                 bool result = listener_ctx->callback(
                     val->data.data(),
@@ -245,7 +258,7 @@ extern "C" size_t dht_listen_ex(
                 );
 
                 if (!result) {
-                    QGP_LOG_DEBUG(LOG_TAG, "Token %zu callback returned false, stopping", token);
+                    QGP_LOG_DEBUG(LOG_TAG, "[LISTEN-DHT] Token %zu: callback stopped", token);
                     continue_listening = false;
                     break;
                 }
@@ -262,6 +275,10 @@ extern "C" size_t dht_listen_ex(
             auto status = listener_ctx->future_token.wait_for(std::chrono::seconds(5));
             if (status == std::future_status::timeout) {
                 QGP_LOG_ERROR(LOG_TAG, "Timeout waiting for OpenDHT token (5s) - DHT may be in bad state");
+                // CRITICAL: Mark listener as inactive BEFORE freeing user_data
+                // The OpenDHT listener was already started at ctx->runner.listen() above.
+                // Without this, the callback could fire with freed user_data → use-after-free!
+                listener_ctx->active = false;
                 if (cleanup) {
                     cleanup(user_data);
                 }
@@ -272,6 +289,9 @@ extern "C" size_t dht_listen_ex(
                           token, listener_ctx->opendht_token);
         } catch (const std::exception& e) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to get OpenDHT token: %s", e.what());
+            // CRITICAL: Mark listener as inactive BEFORE freeing user_data
+            // The OpenDHT listener was already started at ctx->runner.listen() above.
+            listener_ctx->active = false;
             // Call cleanup if provided
             if (cleanup) {
                 cleanup(user_data);

@@ -17,7 +17,9 @@
 #include "database/group_invitations.h"
 #include "dht/shared/dht_groups.h"
 #include "dht/shared/dht_offline_queue.h"
+#include "dht/shared/dht_dm_outbox.h"  /* Daily bucket DM outbox (v0.4.81+) */
 #include "dht/shared/dht_contact_request.h"
+#include "dht/client/dna_group_outbox.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -70,12 +72,15 @@ typedef enum {
     /* Messaging */
     TASK_SEND_MESSAGE,
     TASK_GET_CONVERSATION,
+    TASK_GET_CONVERSATION_PAGE,
     TASK_CHECK_OFFLINE_MESSAGES,
 
     /* Groups */
     TASK_GET_GROUPS,
     TASK_CREATE_GROUP,
     TASK_SEND_GROUP_MESSAGE,
+    TASK_GET_GROUP_CONVERSATION,
+    TASK_ADD_GROUP_MEMBER,
     TASK_GET_INVITATIONS,
     TASK_ACCEPT_INVITATION,
     TASK_REJECT_INVITATION,
@@ -92,6 +97,7 @@ typedef enum {
     TASK_SYNC_CONTACTS_TO_DHT,
     TASK_SYNC_CONTACTS_FROM_DHT,
     TASK_SYNC_GROUPS,
+    TASK_SYNC_GROUP_BY_UUID,
     TASK_GET_REGISTERED_NAME,
 
     /* Feed */
@@ -200,6 +206,13 @@ typedef union {
         char contact[129];
     } get_conversation;
 
+    /* Get conversation page (paginated) */
+    struct {
+        char contact[129];
+        int limit;
+        int offset;
+    } get_conversation_page;
+
     /* Create group */
     struct {
         char name[256];
@@ -212,6 +225,17 @@ typedef union {
         char group_uuid[37];
         char *message;  /* Heap allocated, task owns */
     } send_group_message;
+
+    /* Get group conversation */
+    struct {
+        char group_uuid[37];
+    } get_group_conversation;
+
+    /* Add group member */
+    struct {
+        char group_uuid[37];
+        char fingerprint[129];
+    } add_group_member;
 
     /* Accept/reject invitation */
     struct {
@@ -300,6 +324,11 @@ typedef union {
         char fingerprint[129];
     } lookup_presence;
 
+    /* Sync group by UUID */
+    struct {
+        char group_uuid[37];
+    } sync_group_by_uuid;
+
 } dna_task_params_t;
 
 /**
@@ -315,6 +344,7 @@ typedef union {
     dna_contact_requests_cb contact_requests;
     dna_blocked_users_cb blocked_users;
     dna_messages_cb messages;
+    dna_messages_page_cb messages_page;
     dna_groups_cb groups;
     dna_group_created_cb group_created;
     dna_invitations_cb invitations;
@@ -394,9 +424,10 @@ typedef struct {
 #define DNA_MAX_OUTBOX_LISTENERS 128
 
 typedef struct {
-    char contact_fingerprint[129];  /* Contact we're listening to */
-    size_t dht_token;               /* Token from dht_listen() */
-    bool active;                    /* True if listener is active */
+    char contact_fingerprint[129];      /* Contact we're listening to */
+    size_t dht_token;                   /* Token from dht_listen() */
+    bool active;                        /* True if listener is active */
+    dht_dm_listen_ctx_t *dm_listen_ctx; /* Daily bucket context (v0.4.81+, day rotation) */
 } dna_outbox_listener_t;
 
 /**
@@ -420,19 +451,20 @@ typedef struct {
 } dna_contact_request_listener_t;
 
 /**
- * Delivery tracker entry (for message delivery confirmation)
+ * Persistent watermark listener entry (for delivery confirmation)
  *
- * Tracks watermark updates from recipients to confirm message delivery.
- * When recipient publishes watermark >= sent seq_num, message is DELIVERED.
+ * Watermark listeners are persistent - one per contact, stays active for the
+ * session lifetime. They receive watermark updates and update message delivery
+ * status in bulk (all messages with seq <= watermark become DELIVERED).
  */
-#define DNA_MAX_DELIVERY_TRACKERS 128
+#define DNA_MAX_WATERMARK_LISTENERS 128
 
 typedef struct {
-    char recipient[129];            /* Recipient fingerprint we're tracking */
+    char contact_fingerprint[129];  /* Contact we're tracking watermarks from */
     uint64_t last_known_watermark;  /* Last watermark value received */
-    size_t listener_token;          /* Token from dht_listen_watermark() */
-    bool active;                    /* True if tracker is active */
-} dna_delivery_tracker_t;
+    size_t dht_token;               /* Token from dht_listen_watermark() */
+    bool active;                    /* True if listener is active */
+} dna_watermark_listener_t;
 
 /**
  * DNA Engine internal state
@@ -479,10 +511,16 @@ struct dna_engine {
     dna_contact_request_listener_t contact_request_listener;
     pthread_mutex_t contact_request_listener_mutex;
 
-    /* Delivery trackers (for message delivery confirmation) */
-    dna_delivery_tracker_t delivery_trackers[DNA_MAX_DELIVERY_TRACKERS];
-    int delivery_tracker_count;
-    pthread_mutex_t delivery_trackers_mutex;
+    /* Persistent watermark listeners (for message delivery confirmation) */
+    dna_watermark_listener_t watermark_listeners[DNA_MAX_WATERMARK_LISTENERS];
+    int watermark_listener_count;
+    pthread_mutex_t watermark_listeners_mutex;
+
+    /* Group outbox listeners (for real-time group message notifications) */
+    #define DNA_MAX_GROUP_LISTENERS 64
+    dna_group_listen_ctx_t *group_listen_contexts[DNA_MAX_GROUP_LISTENERS];
+    int group_listen_count;
+    pthread_mutex_t group_listen_mutex;
 
     /* Event callback */
     dna_event_cb event_callback;
@@ -616,12 +654,14 @@ void dna_handle_get_blocked_users(dna_engine_t *engine, dna_task_t *task);
 /* Messaging */
 void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_conversation_page(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task);
 
 /* Groups */
 void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_create_group(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_send_group_message(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_group_conversation(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_invitations(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_accept_invitation(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_reject_invitation(dna_engine_t *engine, dna_task_t *task);
@@ -638,6 +678,7 @@ void dna_handle_lookup_presence(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_contacts_to_dht(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_contacts_from_dht(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_groups(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_sync_group_by_uuid(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_subscribe_to_contacts(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_registered_name(dna_engine_t *engine, dna_task_t *task);
 
@@ -665,6 +706,62 @@ void dna_handle_get_comment_votes(dna_engine_t *engine, dna_task_t *task);
  * Free task parameters (heap-allocated parts)
  */
 void dna_free_task_params(dna_task_t *task);
+
+/* ============================================================================
+ * INTERNAL FUNCTIONS - Group Messaging
+ * ============================================================================ */
+
+/**
+ * Fire Android callback for group messages (internal helper)
+ * Called from group outbox subscribe callback when new messages arrive.
+ *
+ * @param group_uuid    UUID of the group
+ * @param group_name    Display name of the group (may be NULL)
+ * @param new_count     Number of new messages
+ */
+void dna_engine_fire_group_message_callback(
+    const char *group_uuid,
+    const char *group_name,
+    size_t new_count
+);
+
+/**
+ * Subscribe to all groups (internal)
+ * Called at engine init after DHT connects. Sets up listeners for all groups
+ * the user is a member of. Also performs full sync of last 7 days.
+ *
+ * @param engine    Engine instance
+ * @return Number of groups subscribed to
+ */
+int dna_engine_subscribe_all_groups(dna_engine_t *engine);
+
+/**
+ * Unsubscribe from all groups (internal)
+ * Called at engine shutdown or DHT disconnection.
+ *
+ * @param engine    Engine instance
+ */
+void dna_engine_unsubscribe_all_groups(dna_engine_t *engine);
+
+/**
+ * Check day rotation for all group listeners (internal)
+ * Called periodically (e.g., every 60 seconds) to rotate listeners at midnight UTC.
+ *
+ * @param engine    Engine instance
+ * @return Number of groups that rotated
+ */
+int dna_engine_check_group_day_rotation(dna_engine_t *engine);
+
+/**
+ * @brief Check and rotate 1-1 DM outbox listeners at day boundary
+ *
+ * Called from heartbeat thread every 4 minutes. Actual rotation only happens
+ * at midnight UTC when the day bucket number changes (v0.4.81+).
+ *
+ * @param engine    Engine instance
+ * @return Number of DM outbox listeners that rotated
+ */
+int dna_engine_check_outbox_day_rotation(dna_engine_t *engine);
 
 #ifdef __cplusplus
 }

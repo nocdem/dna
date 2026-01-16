@@ -8,6 +8,7 @@
  */
 
 #include "dht_chunked.h"
+#include "../core/dht_stats.h"
 #include "../../crypto/utils/qgp_sha3.h"
 #include <zstd.h>
 #include <stdio.h>
@@ -18,10 +19,12 @@
 #include <zlib.h>  // For crc32
 
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 
 #define LOG_TAG "DHT_CHUNK"
 #ifdef _WIN32
 #include <winsock2.h>
+#include <windows.h>
 #else
 #include <arpa/inet.h>
 #endif
@@ -35,6 +38,15 @@
 
 /** Maximum parallel fetches at once */
 #define DHT_CHUNK_MAX_PARALLEL      64
+
+/** Maximum retry attempts for failed chunks (handles DHT propagation delays) */
+#define DHT_CHUNK_MAX_RETRIES       3
+
+/** Delay between retry attempts in milliseconds */
+#define DHT_CHUNK_RETRY_DELAY_MS    500
+
+/** Timeout for synchronous PUT completion (5 seconds) */
+#define DHT_CHUNK_PUT_TIMEOUT_MS    5000
 
 /*============================================================================
  * Internal Structures
@@ -156,26 +168,34 @@ static int decompress_data(const uint8_t *in, size_t in_len,
         return -1;
     }
 
-    uint8_t *buf = (uint8_t *)malloc(expected_size);
+    // Allocate 2x buffer to handle stale chunk headers from DHT consistency issues
+    // When DHT PUT partially fails, chunk 0 (with header) may be stale while
+    // data chunks have more content than the header claims
+    size_t buffer_size = expected_size * 2;
+    if (buffer_size < expected_size) buffer_size = expected_size;  // Overflow check
+
+    uint8_t *buf = (uint8_t *)malloc(buffer_size);
     if (!buf) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate decompression buffer\n");
         return -1;
     }
 
-    size_t decompressed_size = ZSTD_decompress(buf, expected_size, in, in_len);
+    size_t decompressed_size = ZSTD_decompress(buf, buffer_size, in, in_len);
 
     if (ZSTD_isError(decompressed_size)) {
-        QGP_LOG_WARN(LOG_TAG, "ZSTD decompression failed (stale DHT data?): %s",
+        QGP_LOG_WARN(LOG_TAG, "ZSTD decompression failed: %s",
                 ZSTD_getErrorName(decompressed_size));
         free(buf);
         return -1;
     }
 
+    // Allow size mismatch due to stale headers - just warn and continue
     if (decompressed_size != expected_size) {
-        QGP_LOG_ERROR(LOG_TAG, "Decompressed size mismatch: %zu != %zu\n",
+        QGP_LOG_WARN(LOG_TAG, "Decompressed size mismatch (stale header?): %zu != %zu (using actual)\n",
                 decompressed_size, expected_size);
-        free(buf);
-        return -1;
+        // Reallocate to actual size to avoid wasting memory
+        uint8_t *resized = (uint8_t *)realloc(buf, decompressed_size);
+        if (resized) buf = resized;
     }
 
     *out = buf;
@@ -434,7 +454,21 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
            data_len, compressed_len, total_chunks, base_key);
 
     // Step 4: Publish each chunk
-    for (uint32_t i = 0; i < total_chunks; i++) {
+    // IMPORTANT: Publish chunk 0 LAST since it contains the header with original_size.
+    // This minimizes inconsistency if some PUTs fail - chunk 0's header will match
+    // the data chunks that were published before it.
+    // Order: 1, 2, ..., N-1, 0
+    for (uint32_t iter = 0; iter < total_chunks; iter++) {
+        // Reorder: skip 0 first, do it last
+        uint32_t i;
+        if (total_chunks == 1) {
+            i = 0;  // Only one chunk, must be 0
+        } else if (iter < total_chunks - 1) {
+            i = iter + 1;  // Do chunks 1, 2, ..., N-1 first
+        } else {
+            i = 0;  // Do chunk 0 last
+        }
+
         size_t offset = (size_t)i * DHT_CHUNK_DATA_SIZE;
         size_t chunk_size = (i == total_chunks - 1)
             ? (compressed_len - offset)
@@ -477,17 +511,48 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
                    dht_key[4], dht_key[5], dht_key[6], dht_key[7], base_key);
         }
 
-        // Publish to DHT
-        if (dht_put_signed(ctx, dht_key, DHT_CHUNK_KEY_SIZE,
-                          serialized, serialized_len,
-                          value_id, ttl_seconds) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to publish chunk %u to DHT\n", i);
+        // Build caller string showing feature type by detecting keywords
+        char caller[64];
+        if (strstr(base_key, ":outbox:")) {
+            snprintf(caller, sizeof(caller), "chunk:outbox");
+        } else if (strstr(base_key, ":profile")) {
+            snprintf(caller, sizeof(caller), "chunk:profile");
+        } else if (strstr(base_key, ":contacts")) {
+            snprintf(caller, sizeof(caller), "chunk:contacts");
+        } else if (strstr(base_key, ":backup")) {
+            snprintf(caller, sizeof(caller), "chunk:backup");
+        } else if (strstr(base_key, "dna:group:")) {
+            snprintf(caller, sizeof(caller), "chunk:group");
+        } else if (strstr(base_key, ":gek:")) {
+            snprintf(caller, sizeof(caller), "chunk:gek");
+        } else {
+            // Unknown format, show first 48 chars
+            snprintf(caller, sizeof(caller), "chunk:%.48s", base_key);
+        }
+
+        // Publish to DHT using SYNC version to detect actual failures
+        // This allows retry logic to properly increment retry_count on failure
+        int put_result = dht_put_signed_sync(ctx, dht_key, DHT_CHUNK_KEY_SIZE,
+                                              serialized, serialized_len,
+                                              value_id, ttl_seconds, caller,
+                                              DHT_CHUNK_PUT_TIMEOUT_MS);
+        if (put_result != 0) {
+            if (put_result == -2) {
+                QGP_LOG_WARN(LOG_TAG, "Chunk %u PUT timed out (DHT may be reinitializing)\n", i);
+            } else {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to publish chunk %u to DHT (result=%d)\n", i, put_result);
+            }
             free(serialized);
             free(compressed);
             return DHT_CHUNK_ERR_DHT_PUT;
         }
 
         free(serialized);
+
+        // Rate limit: 100ms delay between chunks to avoid overwhelming DHT nodes
+        if (i < total_chunks - 1) {
+            qgp_platform_sleep_ms(100);
+        }
     }
 
     free(compressed);
@@ -604,10 +669,65 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
     }
     pthread_mutex_unlock(&pctx.mutex);
 
-    // Step 5: Verify all chunks received
+    // Step 5: Verify all chunks received, retry failed ones
+    // DHT is async - chunks may not be fully propagated when receiver fetches immediately
+    int retry;
+    for (retry = 0; retry < DHT_CHUNK_MAX_RETRIES; retry++) {
+        // Count failed chunks
+        uint32_t failed_count = 0;
+        for (uint32_t i = 0; i < total_chunks; i++) {
+            if (!pctx.slots[i].received || pctx.slots[i].error) {
+                failed_count++;
+            }
+        }
+
+        if (failed_count == 0) {
+            break;  // All chunks received successfully
+        }
+
+        if (retry > 0) {
+            QGP_LOG_INFO(LOG_TAG, "Retry %d: %u chunks still missing, retrying...\n",
+                         retry, failed_count);
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "%u chunks missing, will retry (DHT propagation delay)\n",
+                         failed_count);
+        }
+
+        // Brief delay before retry to allow DHT propagation
+        qgp_platform_sleep_ms(DHT_CHUNK_RETRY_DELAY_MS);
+
+        // Retry each failed chunk synchronously
+        for (uint32_t i = 0; i < total_chunks; i++) {
+            if (!pctx.slots[i].received || pctx.slots[i].error) {
+                uint8_t chunk_key[DHT_CHUNK_KEY_SIZE];
+                if (dht_chunked_make_key(base_key, i, chunk_key) != 0) {
+                    continue;
+                }
+
+                uint8_t *chunk_data = NULL;
+                size_t chunk_len = 0;
+                if (dht_get(ctx, chunk_key, DHT_CHUNK_KEY_SIZE, &chunk_data, &chunk_len) == 0
+                    && chunk_data && chunk_len > 0) {
+                    // Success - update slot
+                    if (pctx.slots[i].data) {
+                        free(pctx.slots[i].data);
+                    }
+                    pctx.slots[i].data = chunk_data;
+                    pctx.slots[i].data_len = chunk_len;
+                    pctx.slots[i].received = true;
+                    pctx.slots[i].error = false;
+                    QGP_LOG_DEBUG(LOG_TAG, "Retry succeeded for chunk %u\n", i);
+                } else {
+                    if (chunk_data) free(chunk_data);
+                }
+            }
+        }
+    }
+
+    // Final verification after all retries
     for (uint32_t i = 0; i < total_chunks; i++) {
         if (!pctx.slots[i].received || pctx.slots[i].error) {
-            QGP_LOG_ERROR(LOG_TAG, "Missing or error chunk %u\n", i);
+            QGP_LOG_ERROR(LOG_TAG, "Missing chunk %u after %d retries\n", i, DHT_CHUNK_MAX_RETRIES);
             goto cleanup_error;
         }
     }
@@ -746,6 +866,20 @@ int dht_chunked_delete(dht_context_t *ctx, const char *base_key,
         return DHT_CHUNK_ERR_ALLOC;
     }
 
+    // Build caller string showing feature type by detecting keywords
+    char caller[64];
+    if (strstr(base_key, ":outbox:")) {
+        snprintf(caller, sizeof(caller), "chunk_del:outbox");
+    } else if (strstr(base_key, ":profile")) {
+        snprintf(caller, sizeof(caller), "chunk_del:profile");
+    } else if (strstr(base_key, ":contacts")) {
+        snprintf(caller, sizeof(caller), "chunk_del:contacts");
+    } else if (strstr(base_key, "dna:group:")) {
+        snprintf(caller, sizeof(caller), "chunk_del:group");
+    } else {
+        snprintf(caller, sizeof(caller), "chunk_del:%.44s", base_key);
+    }
+
     for (uint32_t i = 0; i < total_chunks; i++) {
         uint8_t chunk_key[DHT_CHUNK_KEY_SIZE];
         if (dht_chunked_make_key(base_key, i, chunk_key) != 0) {
@@ -755,7 +889,12 @@ int dht_chunked_delete(dht_context_t *ctx, const char *base_key,
         // Overwrite with empty marker (short TTL)
         dht_put_signed(ctx, chunk_key, DHT_CHUNK_KEY_SIZE,
                       serialized, serialized_len,
-                      value_id, 60);  // 1 minute TTL for quick expiry
+                      value_id, 60, caller);  // 1 minute TTL for quick expiry
+
+        // Rate limit: 100ms delay between chunks to avoid overwhelming DHT nodes
+        if (i < total_chunks - 1) {
+            qgp_platform_sleep_ms(100);
+        }
     }
 
     free(serialized);
@@ -776,6 +915,7 @@ const char *dht_chunked_strerror(int error) {
         case DHT_CHUNK_ERR_INCOMPLETE:  return "Missing chunks";
         case DHT_CHUNK_ERR_TIMEOUT:     return "Fetch timeout";
         case DHT_CHUNK_ERR_ALLOC:       return "Memory allocation failed";
+        case DHT_CHUNK_ERR_NOT_CONNECTED: return "DHT not connected";
         default:                        return "Unknown error";
     }
 }
@@ -949,4 +1089,532 @@ void dht_chunked_batch_results_free(dht_chunked_batch_result_t *results, size_t 
         }
     }
     free(results);
+}
+
+/*============================================================================
+ * Multi-Writer Fetch Functions (for single-key group messaging)
+ *============================================================================*/
+
+/**
+ * Fetch MY OWN data from a multi-writer key
+ *
+ * Uses dht_get_all_with_ids() to fetch all values and filters by our value_id.
+ * Essential for group messaging where multiple senders write to the same key.
+ */
+int dht_chunked_fetch_mine(
+    dht_context_t *ctx,
+    const char *base_key,
+    uint8_t **data_out,
+    size_t *data_len_out
+) {
+    if (!ctx || !base_key || !data_out || !data_len_out) {
+        return DHT_CHUNK_ERR_NULL_PARAM;
+    }
+
+    *data_out = NULL;
+    *data_len_out = 0;
+
+    /* Get my own value_id */
+    uint64_t my_value_id = 0;
+    if (dht_get_owner_value_id(ctx, &my_value_id) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "FETCH_MINE: Failed to get my value_id\n");
+        return DHT_CHUNK_ERR_DHT_GET;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "FETCH_MINE: Looking for my value_id=%llu at %s\n",
+                  (unsigned long long)my_value_id, base_key);
+
+    /* Generate chunk0 key */
+    uint8_t chunk0_key[DHT_CHUNK_KEY_SIZE];
+    dht_chunked_make_key(base_key, 0, chunk0_key);
+
+    /* Fetch all chunk0 values with their value_ids */
+    uint8_t **raw_values = NULL;
+    size_t *raw_lens = NULL;
+    uint64_t *value_ids = NULL;
+    size_t raw_count = 0;
+
+    int ret = dht_get_all_with_ids(ctx, chunk0_key, DHT_CHUNK_KEY_SIZE,
+                                    &raw_values, &raw_lens, &value_ids, &raw_count);
+
+    if (ret != 0 || raw_count == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "FETCH_MINE: No values found\n");
+        return DHT_CHUNK_OK;  /* No values - not an error for "mine" */
+    }
+
+    /* Find MY chunk0 by value_id */
+    int my_index = -1;
+    for (size_t i = 0; i < raw_count; i++) {
+        if (value_ids[i] == my_value_id) {
+            my_index = (int)i;
+            QGP_LOG_DEBUG(LOG_TAG, "FETCH_MINE: Found my chunk0 at index %zu\n", i);
+            break;
+        }
+    }
+
+    if (my_index < 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "FETCH_MINE: My value not found among %zu values\n", raw_count);
+        /* Free all fetched values */
+        for (size_t i = 0; i < raw_count; i++) {
+            free(raw_values[i]);
+        }
+        free(raw_values);
+        free(raw_lens);
+        free(value_ids);
+        return DHT_CHUNK_OK;  /* Not found - not an error */
+    }
+
+    /* Parse my chunk0 header */
+    dht_chunk_header_t header;
+    const uint8_t *payload;
+    if (deserialize_chunk(raw_values[my_index], raw_lens[my_index], &header, &payload) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "FETCH_MINE: Invalid chunk format\n");
+        for (size_t i = 0; i < raw_count; i++) {
+            free(raw_values[i]);
+        }
+        free(raw_values);
+        free(raw_lens);
+        free(value_ids);
+        return DHT_CHUNK_ERR_INVALID_FORMAT;
+    }
+
+    /* Validate and verify CRC */
+    if (header.magic != DHT_CHUNK_MAGIC || header.version != DHT_CHUNK_VERSION) {
+        for (size_t i = 0; i < raw_count; i++) {
+            free(raw_values[i]);
+        }
+        free(raw_values);
+        free(raw_lens);
+        free(value_ids);
+        return DHT_CHUNK_ERR_INVALID_FORMAT;
+    }
+
+    uint32_t computed_crc = crc32(0L, payload, header.chunk_data_size);
+    if (computed_crc != header.checksum) {
+        for (size_t i = 0; i < raw_count; i++) {
+            free(raw_values[i]);
+        }
+        free(raw_values);
+        free(raw_lens);
+        free(value_ids);
+        return DHT_CHUNK_ERR_CHECKSUM;
+    }
+
+    uint32_t total_chunks = header.total_chunks;
+    uint32_t original_size = header.original_size;
+
+    /* Single-chunk case - decompress directly */
+    if (total_chunks == 1) {
+        ret = decompress_data(payload, header.chunk_data_size, original_size,
+                              data_out, data_len_out);
+        for (size_t i = 0; i < raw_count; i++) {
+            free(raw_values[i]);
+        }
+        free(raw_values);
+        free(raw_lens);
+        free(value_ids);
+        return (ret == 0) ? DHT_CHUNK_OK : DHT_CHUNK_ERR_DECOMPRESS;
+    }
+
+    /* Multi-chunk case - SINGLE PASS: fetch, store, then assemble
+     * No double-fetch!
+     */
+
+    /* Allocate array to store chunk payloads (chunks 1..N-1) */
+    uint8_t **chunk_payloads = calloc(total_chunks - 1, sizeof(uint8_t *));
+    size_t *chunk_sizes = calloc(total_chunks - 1, sizeof(size_t));
+    if (!chunk_payloads || !chunk_sizes) {
+        free(chunk_payloads);
+        free(chunk_sizes);
+        for (size_t i = 0; i < raw_count; i++) {
+            free(raw_values[i]);
+        }
+        free(raw_values);
+        free(raw_lens);
+        free(value_ids);
+        return DHT_CHUNK_ERR_ALLOC;
+    }
+
+    size_t compressed_size = header.chunk_data_size;  /* Start with chunk0 */
+    bool fetch_error = false;
+
+    /* Single pass: fetch all my chunks, store payloads */
+    for (uint32_t c = 1; c < total_chunks && !fetch_error; c++) {
+        uint8_t chunk_key[DHT_CHUNK_KEY_SIZE];
+        dht_chunked_make_key(base_key, c, chunk_key);
+
+        uint8_t **chunk_values = NULL;
+        size_t *chunk_lens = NULL;
+        uint64_t *chunk_ids = NULL;
+        size_t chunk_count = 0;
+
+        ret = dht_get_all_with_ids(ctx, chunk_key, DHT_CHUNK_KEY_SIZE,
+                                    &chunk_values, &chunk_lens, &chunk_ids, &chunk_count);
+
+        if (ret != 0 || chunk_count == 0) {
+            QGP_LOG_ERROR(LOG_TAG, "FETCH_MINE: Missing chunk %u\n", c);
+            fetch_error = true;
+            continue;
+        }
+
+        /* Find MY chunk by value_id */
+        int chunk_idx = -1;
+        for (size_t j = 0; j < chunk_count; j++) {
+            if (chunk_ids[j] == my_value_id) {
+                chunk_idx = (int)j;
+                break;
+            }
+        }
+
+        if (chunk_idx < 0) {
+            QGP_LOG_ERROR(LOG_TAG, "FETCH_MINE: My chunk %u not found\n", c);
+            fetch_error = true;
+        } else {
+            dht_chunk_header_t ch;
+            const uint8_t *ch_payload;
+            if (deserialize_chunk(chunk_values[chunk_idx], chunk_lens[chunk_idx],
+                                  &ch, &ch_payload) == 0 && ch.chunk_index == c) {
+                /* Store a COPY of the payload */
+                chunk_payloads[c - 1] = malloc(ch.chunk_data_size);
+                if (chunk_payloads[c - 1]) {
+                    memcpy(chunk_payloads[c - 1], ch_payload, ch.chunk_data_size);
+                    chunk_sizes[c - 1] = ch.chunk_data_size;
+                    compressed_size += ch.chunk_data_size;
+                } else {
+                    fetch_error = true;
+                }
+            } else {
+                QGP_LOG_ERROR(LOG_TAG, "FETCH_MINE: Invalid chunk %u format\n", c);
+                fetch_error = true;
+            }
+        }
+
+        /* Free fetched values */
+        for (size_t j = 0; j < chunk_count; j++) {
+            free(chunk_values[j]);
+        }
+        free(chunk_values);
+        free(chunk_lens);
+        free(chunk_ids);
+    }
+
+    if (fetch_error) {
+        for (uint32_t c = 0; c < total_chunks - 1; c++) {
+            free(chunk_payloads[c]);
+        }
+        free(chunk_payloads);
+        free(chunk_sizes);
+        for (size_t i = 0; i < raw_count; i++) {
+            free(raw_values[i]);
+        }
+        free(raw_values);
+        free(raw_lens);
+        free(value_ids);
+        return DHT_CHUNK_ERR_INCOMPLETE;
+    }
+
+    /* Allocate buffer for compressed data */
+    uint8_t *compressed = malloc(compressed_size);
+    if (!compressed) {
+        for (uint32_t c = 0; c < total_chunks - 1; c++) {
+            free(chunk_payloads[c]);
+        }
+        free(chunk_payloads);
+        free(chunk_sizes);
+        for (size_t i = 0; i < raw_count; i++) {
+            free(raw_values[i]);
+        }
+        free(raw_values);
+        free(raw_lens);
+        free(value_ids);
+        return DHT_CHUNK_ERR_ALLOC;
+    }
+
+    /* Assemble: chunk0 first, then stored chunks */
+    size_t offset = 0;
+    memcpy(compressed + offset, payload, header.chunk_data_size);
+    offset += header.chunk_data_size;
+
+    for (uint32_t c = 0; c < total_chunks - 1; c++) {
+        if (chunk_payloads[c] && chunk_sizes[c] > 0) {
+            memcpy(compressed + offset, chunk_payloads[c], chunk_sizes[c]);
+            offset += chunk_sizes[c];
+        }
+        free(chunk_payloads[c]);
+    }
+    free(chunk_payloads);
+    free(chunk_sizes);
+
+    /* Cleanup chunk0 values */
+    for (size_t i = 0; i < raw_count; i++) {
+        free(raw_values[i]);
+    }
+    free(raw_values);
+    free(raw_lens);
+    free(value_ids);
+
+    /* Decompress */
+    ret = decompress_data(compressed, offset, original_size, data_out, data_len_out);
+    free(compressed);
+
+    return (ret == 0) ? DHT_CHUNK_OK : DHT_CHUNK_ERR_DECOMPRESS;
+}
+
+/**
+ * Fetch ALL values from ALL writers at a key
+ *
+ * For multi-writer keys (like group outbox), fetches all published values
+ * from all different value_id owners. Uses value_id to properly group
+ * multi-chunk data per writer.
+ */
+int dht_chunked_fetch_all(
+    dht_context_t *ctx,
+    const char *base_key,
+    uint8_t ***values_out,
+    size_t **lens_out,
+    size_t *count_out
+) {
+    if (!ctx || !base_key || !values_out || !lens_out || !count_out) {
+        return DHT_CHUNK_ERR_NULL_PARAM;
+    }
+
+    *values_out = NULL;
+    *lens_out = NULL;
+    *count_out = 0;
+
+    /* Generate chunk0 key */
+    uint8_t chunk0_key[DHT_CHUNK_KEY_SIZE];
+    dht_chunked_make_key(base_key, 0, chunk0_key);
+
+    /* Fetch ALL chunk0 values with their value_ids */
+    uint8_t **raw_values = NULL;
+    size_t *raw_lens = NULL;
+    uint64_t *value_ids = NULL;
+    size_t raw_count = 0;
+
+    int ret = dht_get_all_with_ids(ctx, chunk0_key, DHT_CHUNK_KEY_SIZE,
+                                    &raw_values, &raw_lens, &value_ids, &raw_count);
+
+    if (ret != 0 || raw_count == 0) {
+        return DHT_CHUNK_OK;  /* No values found - not an error */
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "FETCH_ALL: Got %zu chunk0 values at %s\n", raw_count, base_key);
+
+    /* Allocate output arrays */
+    uint8_t **out_data = calloc(raw_count, sizeof(uint8_t *));
+    size_t *out_lens = calloc(raw_count, sizeof(size_t));
+    if (!out_data || !out_lens) {
+        for (size_t i = 0; i < raw_count; i++) {
+            free(raw_values[i]);
+        }
+        free(raw_values);
+        free(raw_lens);
+        free(value_ids);
+        free(out_data);
+        free(out_lens);
+        return DHT_CHUNK_ERR_ALLOC;
+    }
+
+    size_t valid_count = 0;
+
+    /* Process each writer's chunk0 */
+    for (size_t i = 0; i < raw_count; i++) {
+        if (!raw_values[i] || raw_lens[i] == 0) {
+            continue;
+        }
+
+        uint64_t writer_id = value_ids[i];
+
+        /* Parse chunk0 header */
+        dht_chunk_header_t header;
+        const uint8_t *payload;
+        if (deserialize_chunk(raw_values[i], raw_lens[i], &header, &payload) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "FETCH_ALL: Invalid chunk0 format for writer %zu (id=%llu)\n",
+                         i, (unsigned long long)writer_id);
+            free(raw_values[i]);
+            continue;
+        }
+
+        /* Validate header */
+        if (header.magic != DHT_CHUNK_MAGIC || header.version != DHT_CHUNK_VERSION) {
+            QGP_LOG_WARN(LOG_TAG, "FETCH_ALL: Bad magic/version for writer %zu\n", i);
+            free(raw_values[i]);
+            continue;
+        }
+
+        /* Verify CRC32 */
+        uint32_t computed_crc = crc32(0L, payload, header.chunk_data_size);
+        if (computed_crc != header.checksum) {
+            QGP_LOG_WARN(LOG_TAG, "FETCH_ALL: CRC mismatch for writer %zu\n", i);
+            free(raw_values[i]);
+            continue;
+        }
+
+        uint32_t total_chunks = header.total_chunks;
+        uint32_t original_size = header.original_size;
+
+        /* Single-chunk case - decompress directly */
+        if (total_chunks == 1) {
+            uint8_t *decompressed = NULL;
+            size_t decompressed_len = 0;
+            if (decompress_data(payload, header.chunk_data_size, original_size,
+                               &decompressed, &decompressed_len) == 0) {
+                out_data[valid_count] = decompressed;
+                out_lens[valid_count] = decompressed_len;
+                valid_count++;
+            }
+            free(raw_values[i]);
+            continue;
+        }
+
+        /* Multi-chunk case - fetch remaining chunks for this specific writer by value_id
+         * SINGLE PASS: Store chunk payloads, calculate size, then assemble.
+         * No double-fetch!
+         */
+        QGP_LOG_DEBUG(LOG_TAG, "FETCH_ALL: Writer %zu has %u chunks, fetching...\n", i, total_chunks);
+
+        /* Allocate array to store chunk payloads (chunks 1..N-1) */
+        uint8_t **chunk_payloads = calloc(total_chunks - 1, sizeof(uint8_t *));
+        size_t *chunk_sizes = calloc(total_chunks - 1, sizeof(size_t));
+        if (!chunk_payloads || !chunk_sizes) {
+            free(chunk_payloads);
+            free(chunk_sizes);
+            free(raw_values[i]);
+            continue;
+        }
+
+        size_t compressed_size = header.chunk_data_size;  /* Start with chunk0 */
+        bool chunk_missing = false;
+
+        /* Single pass: fetch all chunks, store payloads, calculate total size */
+        for (uint32_t c = 1; c < total_chunks && !chunk_missing; c++) {
+            uint8_t chunk_key[DHT_CHUNK_KEY_SIZE];
+            dht_chunked_make_key(base_key, c, chunk_key);
+
+            uint8_t **chunk_values = NULL;
+            size_t *chunk_lens = NULL;
+            uint64_t *chunk_ids = NULL;
+            size_t chunk_count = 0;
+
+            ret = dht_get_all_with_ids(ctx, chunk_key, DHT_CHUNK_KEY_SIZE,
+                                        &chunk_values, &chunk_lens, &chunk_ids, &chunk_count);
+
+            if (ret != 0 || chunk_count == 0) {
+                QGP_LOG_WARN(LOG_TAG, "FETCH_ALL: Missing chunk %u for writer %zu\n", c, i);
+                chunk_missing = true;
+                continue;
+            }
+
+            /* Find this writer's chunk by value_id */
+            int found_idx = -1;
+            for (size_t j = 0; j < chunk_count; j++) {
+                if (chunk_ids[j] == writer_id) {
+                    found_idx = (int)j;
+                    break;
+                }
+            }
+
+            if (found_idx < 0) {
+                QGP_LOG_WARN(LOG_TAG, "FETCH_ALL: Chunk %u not found for writer id=%llu\n",
+                             c, (unsigned long long)writer_id);
+                chunk_missing = true;
+            } else {
+                dht_chunk_header_t ch;
+                const uint8_t *ch_payload;
+                if (deserialize_chunk(chunk_values[found_idx], chunk_lens[found_idx],
+                                      &ch, &ch_payload) == 0 && ch.chunk_index == c) {
+                    /* Store a COPY of the payload (will free chunk_values below) */
+                    chunk_payloads[c - 1] = malloc(ch.chunk_data_size);
+                    if (chunk_payloads[c - 1]) {
+                        memcpy(chunk_payloads[c - 1], ch_payload, ch.chunk_data_size);
+                        chunk_sizes[c - 1] = ch.chunk_data_size;
+                        compressed_size += ch.chunk_data_size;
+                    } else {
+                        chunk_missing = true;
+                    }
+                } else {
+                    chunk_missing = true;
+                }
+            }
+
+            /* Free all fetched values */
+            for (size_t j = 0; j < chunk_count; j++) {
+                free(chunk_values[j]);
+            }
+            free(chunk_values);
+            free(chunk_lens);
+            free(chunk_ids);
+        }
+
+        if (chunk_missing) {
+            QGP_LOG_WARN(LOG_TAG, "FETCH_ALL: Skipping writer %zu due to missing chunks\n", i);
+            for (uint32_t c = 0; c < total_chunks - 1; c++) {
+                free(chunk_payloads[c]);
+            }
+            free(chunk_payloads);
+            free(chunk_sizes);
+            free(raw_values[i]);
+            continue;
+        }
+
+        /* Allocate buffer for compressed data */
+        uint8_t *compressed = malloc(compressed_size);
+        if (!compressed) {
+            for (uint32_t c = 0; c < total_chunks - 1; c++) {
+                free(chunk_payloads[c]);
+            }
+            free(chunk_payloads);
+            free(chunk_sizes);
+            free(raw_values[i]);
+            continue;
+        }
+
+        /* Assemble: chunk0 first, then stored chunks */
+        size_t offset = 0;
+        memcpy(compressed + offset, payload, header.chunk_data_size);
+        offset += header.chunk_data_size;
+
+        for (uint32_t c = 0; c < total_chunks - 1; c++) {
+            if (chunk_payloads[c] && chunk_sizes[c] > 0) {
+                memcpy(compressed + offset, chunk_payloads[c], chunk_sizes[c]);
+                offset += chunk_sizes[c];
+            }
+            free(chunk_payloads[c]);
+        }
+        free(chunk_payloads);
+        free(chunk_sizes);
+
+        /* Decompress assembled data */
+        uint8_t *decompressed = NULL;
+        size_t decompressed_len = 0;
+        if (decompress_data(compressed, offset, original_size,
+                           &decompressed, &decompressed_len) == 0) {
+            out_data[valid_count] = decompressed;
+            out_lens[valid_count] = decompressed_len;
+            valid_count++;
+            QGP_LOG_DEBUG(LOG_TAG, "FETCH_ALL: Successfully assembled %u chunks for writer %zu\n",
+                          total_chunks, i);
+        }
+
+        free(compressed);
+        free(raw_values[i]);
+    }
+
+    free(raw_values);
+    free(raw_lens);
+    free(value_ids);
+
+    if (valid_count == 0) {
+        free(out_data);
+        free(out_lens);
+        return DHT_CHUNK_OK;  /* No valid values */
+    }
+
+    *values_out = out_data;
+    *lens_out = out_lens;
+    *count_out = valid_count;
+
+    QGP_LOG_DEBUG(LOG_TAG, "FETCH_ALL: Returning %zu values\n", valid_count);
+    return DHT_CHUNK_OK;
 }

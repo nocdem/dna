@@ -169,34 +169,16 @@ class GroupsScreen extends ConsumerWidget {
   }
 
   void _showCreateGroupDialog(BuildContext context, WidgetRef ref) {
-    _showComingSoonDialog(context);
+    showDialog(
+      context: context,
+      builder: (context) => _CreateGroupDialog(ref: ref),
+    );
   }
 
   void _openGroupChat(BuildContext context, WidgetRef ref, Group group) {
-    _showComingSoonDialog(context);
-  }
-
-  void _showComingSoonDialog(BuildContext context) {
-    final theme = Theme.of(context);
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        icon: FaIcon(
-          FontAwesomeIcons.userGroup,
-          size: 48,
-          color: theme.colorScheme.primary,
-        ),
-        title: const Text('Group Chat'),
-        content: const Text(
-          'Group messaging is coming in a future version.\n\nStay tuned for updates!',
-          textAlign: TextAlign.center,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('OK'),
-          ),
-        ],
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => GroupChatScreen(group: group),
       ),
     );
   }
@@ -527,31 +509,9 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
       ),
       body: Column(
         children: [
-          // Group message history - feature in development
+          // Group message history
           Expanded(
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  FaIcon(
-                    FontAwesomeIcons.screwdriverWrench,
-                    size: 64,
-                    color: theme.colorScheme.primary.withAlpha(128),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Group chat in development',
-                    style: theme.textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'You can send messages, but message history\nis not yet available in this version.',
-                    style: theme.textTheme.bodySmall,
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
+            child: _buildMessageList(theme),
           ),
 
           // Message input
@@ -609,6 +569,83 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
     );
   }
 
+  Widget _buildMessageList(ThemeData theme) {
+    final conversation = ref.watch(groupConversationProvider(widget.group.uuid));
+
+    return conversation.when(
+      data: (messages) {
+        if (messages.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FaIcon(
+                  FontAwesomeIcons.comments,
+                  size: 64,
+                  color: theme.colorScheme.primary.withAlpha(128),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'No messages yet',
+                  style: theme.textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Send a message to start the conversation',
+                  style: theme.textTheme.bodySmall,
+                ),
+              ],
+            ),
+          );
+        }
+
+        // Scroll to bottom when new messages arrive
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollController.hasClients) {
+            _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+          }
+        });
+
+        return ListView.builder(
+          controller: _scrollController,
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          itemCount: messages.length,
+          itemBuilder: (context, index) {
+            final message = messages[index];
+            return _GroupMessageBubble(
+              message: message,
+              theme: theme,
+            );
+          },
+        );
+      },
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (error, stack) => Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FaIcon(
+              FontAwesomeIcons.triangleExclamation,
+              size: 48,
+              color: theme.colorScheme.error,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Failed to load messages',
+              style: theme.textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: () => ref.invalidate(groupConversationProvider(widget.group.uuid)),
+              icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 16),
+              label: const Text('Retry'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _sendMessage() async {
     final message = _messageController.text.trim();
     if (message.isEmpty) return;
@@ -621,14 +658,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
         widget.group.uuid,
         message,
       );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Message sent'),
-            duration: Duration(seconds: 1),
-          ),
-        );
-      }
+      // Refresh conversation to show the sent message
+      ref.invalidate(groupConversationProvider(widget.group.uuid));
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -643,5 +674,87 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
         setState(() => _isSending = false);
       }
     }
+  }
+}
+
+/// Message bubble widget for group chat
+class _GroupMessageBubble extends ConsumerWidget {
+  final Message message;
+  final ThemeData theme;
+
+  const _GroupMessageBubble({
+    required this.message,
+    required this.theme,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isOutgoing = message.isOutgoing;
+    final alignment = isOutgoing ? Alignment.centerRight : Alignment.centerLeft;
+    final bubbleColor = isOutgoing
+        ? theme.colorScheme.primary
+        : theme.colorScheme.surfaceContainerHighest;
+    final textColor = isOutgoing
+        ? theme.colorScheme.onPrimary
+        : theme.colorScheme.onSurface;
+
+    // Format timestamp
+    final timestamp = message.timestamp;
+    final timeStr = '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+
+    // Convert sender fingerprint to display name if contact exists
+    String senderDisplay = 'You';
+    if (!isOutgoing) {
+      final contacts = ref.watch(contactsProvider).valueOrNull ?? [];
+      final contact = contacts.where((c) => c.fingerprint == message.sender).firstOrNull;
+      senderDisplay = contact?.displayName.isNotEmpty == true
+          ? contact!.displayName
+          : '${message.sender.substring(0, 8)}...';
+    }
+
+    return Align(
+      alignment: alignment,
+      child: Container(
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.75,
+        ),
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: bubbleColor,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Column(
+          crossAxisAlignment: isOutgoing ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          children: [
+            // Sender name (only for incoming messages)
+            if (!isOutgoing)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  senderDisplay,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            // Message text
+            Text(
+              message.plaintext,
+              style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+            ),
+            // Timestamp
+            const SizedBox(height: 4),
+            Text(
+              timeStr,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: textColor.withAlpha(179),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

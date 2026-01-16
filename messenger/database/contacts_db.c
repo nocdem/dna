@@ -172,8 +172,9 @@ int contacts_db_init(const char *owner_identity) {
         return -1;
     }
 
-    // Open database
-    int rc = sqlite3_open(db_path, &g_db);
+    // Open database with FULLMUTEX for thread safety (DHT callbacks + main thread)
+    int rc = sqlite3_open_v2(db_path, &g_db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", sqlite3_errmsg(g_db));
         sqlite3_close(g_db);
@@ -696,9 +697,10 @@ int contacts_db_migrate_from_global(const char *owner_identity) {
 
     QGP_LOG_INFO(LOG_TAG, "Migrating contacts from global database to '%s'\n", owner_identity);
 
-    // Open old database
+    // Open old database with FULLMUTEX for thread safety
     sqlite3 *old_db = NULL;
-    int rc = sqlite3_open(old_db_path, &old_db);
+    int rc = sqlite3_open_v2(old_db_path, &old_db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to open old database: %s\n", sqlite3_errmsg(old_db));
         if (old_db) sqlite3_close(old_db);

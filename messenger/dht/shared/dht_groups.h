@@ -34,6 +34,7 @@ typedef struct {
     char creator[129];              // Creator DNA fingerprint (128 hex chars + null)
     uint64_t created_at;            // Unix timestamp
     uint32_t version;               // Version number (for updates)
+    uint32_t gek_version;           // Current GEK (Group Encryption Key) version
     uint32_t member_count;          // Number of members
     char **members;                 // Array of member identities
 } dht_group_metadata_t;
@@ -152,6 +153,23 @@ int dht_groups_remove_member(
 );
 
 /**
+ * Update GEK version in group metadata
+ *
+ * Called after GEK rotation to update the current GEK version.
+ * Invitees use this to know which IKP version to fetch.
+ *
+ * @param dht_ctx: DHT context
+ * @param group_uuid: Group UUID
+ * @param new_gek_version: New GEK version number
+ * @return: 0 on success, -1 on error
+ */
+int dht_groups_update_gek_version(
+    dht_context_t *dht_ctx,
+    const char *group_uuid,
+    uint32_t new_gek_version
+);
+
+/**
  * Delete group from DHT
  * Only creator can delete
  *
@@ -198,6 +216,23 @@ int dht_groups_get_uuid_by_local_id(
 );
 
 /**
+ * Get local group ID from group UUID (Phase 7 - Group Messages)
+ *
+ * Reverse helper function to map group_uuid to local_id.
+ * Useful for functions that receive UUID from DHT/events.
+ *
+ * @param identity: User identity (for per-user group cache)
+ * @param group_uuid: Group UUID (36 chars)
+ * @param local_id_out: Output local group ID
+ * @return: 0 on success, -1 on error, -2 if not found
+ */
+int dht_groups_get_local_id_by_uuid(
+    const char *identity,
+    const char *group_uuid,
+    int *local_id_out
+);
+
+/**
  * Sync group metadata from DHT to local cache
  *
  * @param dht_ctx: DHT context
@@ -223,6 +258,31 @@ int dht_groups_get_member_count(
     const char *group_uuid,
     int *count_out
 );
+
+/**
+ * Get member fingerprints for a group from local cache
+ *
+ * Queries dht_group_members table for member identities.
+ * Fast local lookup, no DHT query.
+ *
+ * @param group_uuid: Group UUID
+ * @param members_out: Output array of fingerprints (caller frees with dht_groups_free_members)
+ * @param count_out: Number of members returned
+ * @return: 0 on success, -1 on error
+ */
+int dht_groups_get_members(
+    const char *group_uuid,
+    char ***members_out,
+    int *count_out
+);
+
+/**
+ * Free member fingerprint array from dht_groups_get_members
+ *
+ * @param members: Array to free
+ * @param count: Number of members
+ */
+void dht_groups_free_members(char **members, int count);
 
 /**
  * Free group metadata structure

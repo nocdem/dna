@@ -846,8 +846,9 @@ extern "C" int dht_put_permanent(dht_context_t *ctx,
 extern "C" int dht_put_signed_permanent(dht_context_t *ctx,
                                         const uint8_t *key, size_t key_len,
                                         const uint8_t *value, size_t value_len,
-                                        uint64_t value_id) {
-    return dht_put_signed(ctx, key, key_len, value, value_len, value_id, UINT_MAX);
+                                        uint64_t value_id,
+                                        const char *caller) {
+    return dht_put_signed(ctx, key, key_len, value, value_len, value_id, UINT_MAX, caller);
 }
 
 /**
@@ -869,7 +870,8 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
                               const uint8_t *key, size_t key_len,
                               const uint8_t *value, size_t value_len,
                               uint64_t value_id,
-                              unsigned int ttl_seconds) {
+                              unsigned int ttl_seconds,
+                              const char *caller) {
     if (!ctx || !key || !value) {
         QGP_LOG_ERROR("DHT", "NULL parameter in dht_put_signed");
         return -1;
@@ -879,6 +881,17 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         QGP_LOG_ERROR("DHT", "Node not running");
         return -1;
     }
+
+    // Check if DHT has nodes in routing table before attempting PUT
+    // Without nodes, async PUT will fail with nodes_tried=0
+    if (!dht_context_is_ready(ctx)) {
+        QGP_LOG_INFO("DHT", "PUT_SIGNED [%s]: DHT not ready (no nodes) - deferring",
+                     caller ? caller : "unknown");
+        return -2;  // Not connected - caller should retry later
+    }
+
+    // Capture caller string for async callback
+    std::string caller_str = caller ? caller : "unknown";
 
     try {
         // Hash the key to get infohash
@@ -912,30 +925,156 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
             sprintf(&key_hex_start[i * 2], "%02x", key[i]);
         }
         key_hex_start[40] = '\0';
-        QGP_LOG_DEBUG("DHT", "PUT_SIGNED: key=%s... (%zu bytes, TTL=%us, type=0x%x, id=%llu)",
-                     key_hex_start, value_len, ttl_seconds, dht_value->type, (unsigned long long)value_id);
+        QGP_LOG_DEBUG("DHT", "PUT_SIGNED [%s]: key=%s... (%zu bytes, TTL=%us, type=0x%x, id=%llu)",
+                     caller_str.c_str(), key_hex_start, value_len, ttl_seconds, dht_value->type, (unsigned long long)value_id);
 
         // Use putSigned() instead of put() to enable editing/replacement
         // Note: putSigned() doesn't support creation_time parameter (uses current time)
         // Permanent flag controls whether value expires based on ValueType
-        // Fire-and-forget publish - don't block on network confirmation
-        // Race conditions prevented by local outbox cache in dht_queue_message
+        // ASYNC: Fire-and-forget to avoid blocking. Callback logs result but doesn't block caller.
+        // Message status will be updated via watermark confirmation from recipient.
+        size_t val_size = value_len;
         ctx->runner.putSigned(hash, dht_value,
-                             [key_hex_start](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
+                             [key_hex_start, caller_str, val_size](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
                                  if (success) {
-                                     QGP_LOG_DEBUG("DHT", "PUT_SIGNED: Stored on %zu node(s)", nodes.size());
+                                     QGP_LOG_DEBUG("DHT", "PUT_SIGNED [%s]: Stored on %zu node(s) (size=%zu)", caller_str.c_str(), nodes.size(), val_size);
                                  } else {
-                                     QGP_LOG_WARN("DHT", "PUT_SIGNED: Failed to store on any node (key=%s...)", key_hex_start);
+                                     // Log more details on failure
+                                     QGP_LOG_WARN("DHT", "PUT_SIGNED [%s]: FAILED key=%s size=%zu nodes_tried=%zu",
+                                                  caller_str.c_str(), key_hex_start, val_size, nodes.size());
                                  }
                              },
                              true);  // permanent=true for maintain_storage behavior
 
-        // Store value to persistent storage (if enabled)
+        // Store value to persistent storage (if enabled) for republishing
         persist_value_if_enabled(ctx, key, key_len, value, value_len, dht_value->type, ttl_seconds);
 
-        return 0;
+        return 0;  // Async - assume success, status updated via watermark
     } catch (const std::exception& e) {
         QGP_LOG_ERROR("DHT", "Exception in dht_put_signed: %s", e.what());
+        return -1;
+    }
+}
+
+/**
+ * Context for synchronous PUT completion tracking
+ */
+struct put_sync_ctx {
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool completed;
+    bool success;
+    size_t nodes_count;
+};
+
+/**
+ * Put SIGNED value in DHT with SYNCHRONOUS completion tracking
+ *
+ * Waits for the DHT callback to report actual success/failure, allowing
+ * callers to detect when PUT operations fail (e.g., nodes_tried=0).
+ */
+extern "C" int dht_put_signed_sync(dht_context_t *ctx,
+                                    const uint8_t *key, size_t key_len,
+                                    const uint8_t *value, size_t value_len,
+                                    uint64_t value_id,
+                                    unsigned int ttl_seconds,
+                                    const char *caller,
+                                    int timeout_ms) {
+    if (!ctx || !key || !value) {
+        QGP_LOG_ERROR("DHT", "NULL parameter in dht_put_signed_sync");
+        return -1;
+    }
+
+    if (!ctx->running) {
+        QGP_LOG_WARN("DHT", "dht_put_signed_sync: Node not running");
+        return -1;
+    }
+
+    try {
+        // Create InfoHash from key bytes
+        dht::InfoHash hash = dht::InfoHash::get(key, key_len);
+
+        // Create value with specified ID
+        auto dht_value = std::make_shared<dht::Value>(value, value_len);
+
+        // Set TTL (0 = use default 7 days)
+        if (ttl_seconds == 0) {
+            ttl_seconds = 7 * 24 * 3600;  // 7 days
+        }
+
+        // Choose ValueType based on TTL (365/30/7 days) - same as dht_put_signed()
+        if (ttl_seconds >= 365 * 24 * 3600) {
+            dht_value->type = 0x1002;  // 365-day
+        } else if (ttl_seconds >= 30 * 24 * 3600) {
+            dht_value->type = 0x1003;  // 30-day
+        } else {
+            dht_value->type = 0x1001;  // 7-day
+        }
+
+        dht_value->id = value_id;
+
+        // Caller string for logging
+        std::string caller_str = caller ? caller : "sync_put";
+
+        // Key hex for logging
+        char key_hex_start[41];
+        for (int i = 0; i < 20 && i < (int)key_len; i++) {
+            sprintf(&key_hex_start[i * 2], "%02x", key[i]);
+        }
+        key_hex_start[40] = '\0';
+
+        QGP_LOG_DEBUG("DHT", "PUT_SIGNED_SYNC [%s]: key=%s... (%zu bytes, TTL=%us)",
+                     caller_str.c_str(), key_hex_start, value_len, ttl_seconds);
+
+        // Create sync context
+        auto sync_ctx = std::make_shared<put_sync_ctx>();
+        sync_ctx->completed = false;
+        sync_ctx->success = false;
+        sync_ctx->nodes_count = 0;
+
+        // Fire async PUT with callback that signals completion
+        ctx->runner.putSigned(hash, dht_value,
+            [sync_ctx, key_hex_start, caller_str, value_len](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes) {
+                {
+                    std::lock_guard<std::mutex> lock(sync_ctx->mtx);
+                    sync_ctx->success = success;
+                    sync_ctx->nodes_count = nodes.size();
+                    sync_ctx->completed = true;
+                }
+                sync_ctx->cv.notify_one();
+
+                // Log result
+                if (success) {
+                    QGP_LOG_DEBUG("DHT", "PUT_SIGNED_SYNC [%s]: OK on %zu node(s) (size=%zu)",
+                                 caller_str.c_str(), nodes.size(), value_len);
+                } else {
+                    QGP_LOG_WARN("DHT", "PUT_SIGNED_SYNC [%s]: FAILED key=%s nodes_tried=%zu",
+                                caller_str.c_str(), key_hex_start, nodes.size());
+                }
+            },
+            true);  // permanent=true
+
+        // Wait for completion with timeout
+        {
+            std::unique_lock<std::mutex> lock(sync_ctx->mtx);
+            if (!sync_ctx->cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                                        [&sync_ctx] { return sync_ctx->completed; })) {
+                // Timeout
+                QGP_LOG_WARN("DHT", "PUT_SIGNED_SYNC [%s]: TIMEOUT after %dms",
+                            caller_str.c_str(), timeout_ms);
+                return -2;  // Timeout
+            }
+        }
+
+        // Return based on actual result
+        if (sync_ctx->success) {
+            return 0;  // Confirmed success
+        } else {
+            return -1;  // Confirmed failure (nodes_tried=0 or other error)
+        }
+
+    } catch (const std::exception& e) {
+        QGP_LOG_ERROR("DHT", "Exception in dht_put_signed_sync: %s", e.what());
         return -1;
     }
 }
@@ -1074,8 +1213,8 @@ extern "C" int dht_get(dht_context_t *ctx,
         auto start_network = std::chrono::steady_clock::now();
         auto future = ctx->runner.get(hash);
 
-        // Wait with 10 second timeout (30s was too long for mobile UX)
-        auto status = future.wait_for(std::chrono::seconds(10));
+        // Wait with 2 second timeout (reduced from 10s to fail faster offline)
+        auto status = future.wait_for(std::chrono::seconds(2));
         if (status == std::future_status::timeout) {
             auto network_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start_network).count();
@@ -1220,10 +1359,10 @@ extern "C" int dht_get_all(dht_context_t *ctx,
         // Get all values using future-based API
         auto future = ctx->runner.get(hash);
 
-        // Wait with 10 second timeout (30s was too long for mobile UX)
-        auto status = future.wait_for(std::chrono::seconds(10));
+        // Wait with 2 second timeout (reduced from 10s to fail faster offline)
+        auto status = future.wait_for(std::chrono::seconds(2));
         if (status == std::future_status::timeout) {
-            QGP_LOG_INFO("DHT", "GET_ALL: Timeout after 10 seconds");
+            QGP_LOG_INFO("DHT", "GET_ALL: Timeout after 2 seconds");
             return -2;  // Timeout error
         }
 
@@ -1289,6 +1428,98 @@ extern "C" int dht_get_all(dht_context_t *ctx,
         return 0;
     } catch (const std::exception& e) {
         QGP_LOG_ERROR("DHT", "Exception in dht_get_all: %s", e.what());
+        return -1;
+    }
+}
+
+/**
+ * Get all values from DHT with their value_ids
+ *
+ * Same as dht_get_all() but also returns value_id for each value.
+ * Essential for multi-writer scenarios where we need to:
+ * - Filter by our own value_id (fetch "mine")
+ * - Group multi-chunk data by value_id
+ */
+extern "C" int dht_get_all_with_ids(dht_context_t *ctx,
+                                     const uint8_t *key, size_t key_len,
+                                     uint8_t ***values_out, size_t **values_len_out,
+                                     uint64_t **value_ids_out,
+                                     size_t *count_out) {
+    if (!key || !values_out || !values_len_out || !value_ids_out || !count_out) {
+        QGP_LOG_ERROR("DHT", "NULL parameter in dht_get_all_with_ids");
+        return -1;
+    }
+    DHT_GET_VALIDATE_CTX(ctx, "dht_get_all_with_ids");
+
+    try {
+        auto hash = dht::InfoHash::get(key, key_len);
+        QGP_LOG_DEBUG("DHT", "GET_ALL_WITH_IDS: %s", hash.toString().c_str());
+
+        auto future = ctx->runner.get(hash);
+        auto status = future.wait_for(std::chrono::seconds(2));
+        if (status == std::future_status::timeout) {
+            QGP_LOG_INFO("DHT", "GET_ALL_WITH_IDS: Timeout after 2 seconds");
+            return -2;
+        }
+
+        auto values = future.get();
+        if (values.empty()) {
+            QGP_LOG_DEBUG("DHT", "GET_ALL_WITH_IDS: No values found");
+            return -1;
+        }
+
+        QGP_LOG_DEBUG("DHT", "GET_ALL_WITH_IDS: Found %zu value(s)", values.size());
+
+        // Allocate arrays
+        uint8_t **value_array = (uint8_t**)malloc(values.size() * sizeof(uint8_t*));
+        size_t *len_array = (size_t*)malloc(values.size() * sizeof(size_t));
+        uint64_t *id_array = (uint64_t*)malloc(values.size() * sizeof(uint64_t));
+
+        if (!value_array || !len_array || !id_array) {
+            QGP_LOG_ERROR("DHT", "malloc failed in dht_get_all_with_ids");
+            free(value_array);
+            free(len_array);
+            free(id_array);
+            return -1;
+        }
+
+        // Copy each value with its value_id
+        for (size_t i = 0; i < values.size(); i++) {
+            auto val = values[i];
+            if (!val || val->data.empty()) {
+                value_array[i] = nullptr;
+                len_array[i] = 0;
+                id_array[i] = 0;
+                continue;
+            }
+
+            value_array[i] = (uint8_t*)malloc(val->data.size());
+            if (!value_array[i]) {
+                for (size_t j = 0; j < i; j++) {
+                    free(value_array[j]);
+                }
+                free(value_array);
+                free(len_array);
+                free(id_array);
+                return -1;
+            }
+
+            memcpy(value_array[i], val->data.data(), val->data.size());
+            len_array[i] = val->data.size();
+            id_array[i] = val->id;  // <-- The key addition: return value_id!
+
+            QGP_LOG_DEBUG("DHT", "  Value %zu: %zu bytes, id=%llu",
+                         i+1, val->data.size(), (unsigned long long)val->id);
+        }
+
+        *values_out = value_array;
+        *values_len_out = len_array;
+        *value_ids_out = id_array;
+        *count_out = values.size();
+
+        return 0;
+    } catch (const std::exception& e) {
+        QGP_LOG_ERROR("DHT", "Exception in dht_get_all_with_ids: %s", e.what());
         return -1;
     }
 }

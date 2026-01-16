@@ -120,3 +120,82 @@ Native system notifications on all platforms when messages arrive, even when app
 - `src/api/dna_engine.c` - call notification functions on message receive
 
 ---
+
+## Delivery & Read Receipts
+
+**Priority:** Medium
+**Status:** Not Started
+
+### Current State
+- Message status values exist: PENDING(0), SENT(1), FAILED(2), DELIVERED(3), READ(4)
+- Functions exist to update local status: `message_backup_mark_delivered()`, `message_backup_mark_read()`
+- **No mechanism to notify sender** when recipient receives/reads message
+- DELIVERED and READ statuses are never actually set in practice
+
+### What's Missing
+1. Receipt message type (e.g., `MESSAGE_TYPE_RECEIPT = 2`)
+2. Send delivery receipt when message received from DHT
+3. Send read receipt when user opens/views message
+4. Listener for incoming receipts to update sender's message status
+5. UI indicators (double-check for delivered, blue double-check for read)
+
+### Desired Behavior
+- **Delivered:** When recipient's device receives message, sender sees double-checkmark
+- **Read:** When recipient opens chat/views message, sender sees blue double-checkmark
+- Privacy option: Allow users to disable sending read receipts
+
+### Implementation Plan
+
+**1. Define Receipt Message Format:**
+```c
+// Minimal receipt payload (inside encrypted message)
+typedef struct {
+    uint8_t receipt_type;      // 1 = delivered, 2 = read
+    uint64_t original_timestamp; // Timestamp of original message
+    char original_sender[129];   // Who sent the message we're acknowledging
+} receipt_payload_t;
+```
+
+**2. Send Delivery Receipt (on message receive):**
+```
+Recipient receives message from DHT
+    │
+    ├─ Save message locally
+    │
+    └─ Queue delivery receipt to sender's outbox (Spillway)
+        └─ Encrypted with sender's Kyber pubkey
+```
+
+**3. Send Read Receipt (on message view):**
+```
+User opens chat screen / scrolls to unread messages
+    │
+    └─ For each newly-viewed message:
+        └─ Queue read receipt to sender's outbox
+```
+
+**4. Process Incoming Receipts:**
+```
+Receive receipt from contact's outbox
+    │
+    ├─ Decrypt & verify signature
+    │
+    ├─ Find matching message by (sender, timestamp)
+    │
+    └─ Update status: DELIVERED(3) or READ(4)
+```
+
+### Files to Modify
+- `messenger/messages.h` - Add MESSAGE_TYPE_RECEIPT
+- `messenger/messages.c` - Add `messenger_send_receipt()`
+- `src/api/dna_engine.c` - Call send_receipt on message receive, process incoming receipts
+- `message_backup.c` - Query to find message by sender+timestamp
+- `lib/screens/chat/chat_screen.dart` - Send read receipts when messages viewed
+- `lib/widgets/message_bubble.dart` - Show delivered/read indicators
+
+### Privacy Considerations
+- Add user preference: "Send read receipts" (default: on)
+- Delivery receipts could also be optional but are less privacy-sensitive
+- Store preference in profile or local settings
+
+---

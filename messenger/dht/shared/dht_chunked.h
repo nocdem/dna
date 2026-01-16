@@ -85,7 +85,8 @@ typedef enum {
     DHT_CHUNK_ERR_CHECKSUM = -7,    /** CRC32 checksum mismatch */
     DHT_CHUNK_ERR_INCOMPLETE = -8,  /** Missing chunks */
     DHT_CHUNK_ERR_TIMEOUT = -9,     /** Fetch timeout */
-    DHT_CHUNK_ERR_ALLOC = -10       /** Memory allocation failed */
+    DHT_CHUNK_ERR_ALLOC = -10,      /** Memory allocation failed */
+    DHT_CHUNK_ERR_NOT_CONNECTED = -11  /** DHT not connected (no nodes in routing table) */
 } dht_chunk_error_t;
 
 /*============================================================================
@@ -106,7 +107,7 @@ typedef enum {
  *    d. dht_put_signed(key, serialized, value_id, ttl)
  *
  * @param ctx         DHT context
- * @param base_key    Base key string (e.g., "fingerprint:profile" or "uuid:gsk:1")
+ * @param base_key    Base key string (e.g., "fingerprint:profile" or "uuid:gek:1")
  * @param data        Data to publish
  * @param data_len    Data length in bytes
  * @param ttl_seconds TTL in seconds (use DHT_CHUNK_TTL_* constants)
@@ -144,6 +145,47 @@ int dht_chunked_fetch(
     const char *base_key,
     uint8_t **data_out,
     size_t *data_len_out
+);
+
+/**
+ * Fetch MY OWN data from DHT (using my value_id)
+ *
+ * Same as dht_chunked_fetch() but only fetches the value belonging
+ * to the current identity (matching dht_get_owner_value_id()).
+ * Used when multiple writers publish to the same key.
+ *
+ * @param ctx          DHT context
+ * @param base_key     Base key string (same as used in publish)
+ * @param data_out     Output buffer (allocated by function, caller must free)
+ * @param data_len_out Output data length
+ * @return DHT_CHUNK_OK on success, error code on failure
+ */
+int dht_chunked_fetch_mine(
+    dht_context_t *ctx,
+    const char *base_key,
+    uint8_t **data_out,
+    size_t *data_len_out
+);
+
+/**
+ * Fetch ALL values from ALL writers at a key
+ *
+ * For multi-writer keys (like group outbox), fetches all published values
+ * from all different value_id owners. Returns array of decompressed data.
+ *
+ * @param ctx          DHT context
+ * @param base_key     Base key string
+ * @param values_out   Output: Array of decompressed data pointers (caller frees each + array)
+ * @param lens_out     Output: Array of data lengths (caller frees)
+ * @param count_out    Output: Number of values fetched
+ * @return DHT_CHUNK_OK on success, error code on failure
+ */
+int dht_chunked_fetch_all(
+    dht_context_t *ctx,
+    const char *base_key,
+    uint8_t ***values_out,
+    size_t **lens_out,
+    size_t *count_out
 );
 
 /**

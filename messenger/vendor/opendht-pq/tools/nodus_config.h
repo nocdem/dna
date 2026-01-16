@@ -3,6 +3,9 @@
  *
  * JSON config file loader for dna-nodus.
  * Default path: /etc/dna-nodus.conf
+ *
+ * Privacy: STUN/TURN removed in v0.4.61
+ * TURN config fields kept for backwards compatibility but ignored.
  */
 
 #ifndef NODUS_CONFIG_H
@@ -14,14 +17,12 @@
 
 // Default values
 #define NODUS_DEFAULT_DHT_PORT 4000
-#define NODUS_DEFAULT_TURN_PORT 3478
-#define NODUS_DEFAULT_CREDENTIAL_PORT 3479
-#define NODUS_DEFAULT_RELAY_PORT_BEGIN 49152
-#define NODUS_DEFAULT_RELAY_PORT_END 65535
-#define NODUS_DEFAULT_CREDENTIAL_TTL 604800  // 7 days in seconds
 #define NODUS_DEFAULT_SEED_NODE "154.38.182.161:4000"
 #define NODUS_DEFAULT_PERSISTENCE_PATH "/var/lib/dna-dht/bootstrap.state"
 #define NODUS_DEFAULT_CONFIG_PATH "/etc/dna-nodus.conf"
+
+// TURN defaults removed in v0.4.61 - no longer used
+// These were: turn_port=3478, credential_port=3479, relay_ports=49152-65535
 
 struct NodusConfig {
     // DHT settings
@@ -29,12 +30,13 @@ struct NodusConfig {
     std::vector<std::string> seed_nodes;
     std::string persistence_path = NODUS_DEFAULT_PERSISTENCE_PATH;
 
-    // TURN settings
-    uint16_t turn_port = NODUS_DEFAULT_TURN_PORT;
-    uint16_t credential_port = NODUS_DEFAULT_CREDENTIAL_PORT;
-    uint16_t relay_port_begin = NODUS_DEFAULT_RELAY_PORT_BEGIN;
-    uint16_t relay_port_end = NODUS_DEFAULT_RELAY_PORT_END;
-    uint32_t credential_ttl_seconds = NODUS_DEFAULT_CREDENTIAL_TTL;
+    // TURN settings removed in v0.4.61 for privacy
+    // Fields kept for config file backwards compatibility (ignored)
+    uint16_t turn_port = 0;              // Deprecated, ignored
+    uint16_t credential_port = 0;        // Deprecated, ignored
+    uint16_t relay_port_begin = 0;       // Deprecated, ignored
+    uint16_t relay_port_end = 0;         // Deprecated, ignored
+    uint32_t credential_ttl_seconds = 0; // Deprecated, ignored
 
     // General settings
     std::string identity = "dna-bootstrap-node";

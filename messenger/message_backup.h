@@ -35,6 +35,16 @@ typedef struct message_backup_context message_backup_context_t;
 #define MESSAGE_TYPE_CPUNK_TRANSFER 2
 
 /**
+ * Message Status Values
+ */
+#define MESSAGE_STATUS_PENDING   0  // Queued for sending
+#define MESSAGE_STATUS_SENT      1  // Legacy (unused)
+#define MESSAGE_STATUS_FAILED    2  // Temporary failure
+#define MESSAGE_STATUS_DELIVERED 3  // Watermark confirmed
+#define MESSAGE_STATUS_READ      4  // Read receipt received
+#define MESSAGE_STATUS_STALE     5  // 30+ days old, never delivered (v0.4.59)
+
+/**
  * Invitation Status (Phase 6.2 - only for MESSAGE_TYPE_GROUP_INVITATION)
  * NOTE: These match the enum in database/group_invitations.h
  */
@@ -44,21 +54,24 @@ typedef struct message_backup_context message_backup_context_t;
 
 /**
  * Message Structure (for retrieval)
- * NOTE: Messages stored ENCRYPTED in database for security
+ * NOTE: Messages stored as PLAINTEXT in database (v14+)
+ *       Database encryption will be handled by SQLCipher later
  */
 typedef struct {
     int id;
     char sender[256];
     char recipient[256];
-    uint8_t *encrypted_message;  // Encrypted ciphertext (binary)
-    size_t encrypted_len;
+    char *plaintext;                      // Decrypted message content (UTF-8)
+    char sender_fingerprint[129];         // Sender fingerprint hex (128 chars + null)
     time_t timestamp;
     bool delivered;
     bool read;
-    int status;  // 0=PENDING, 1=SENT, 2=FAILED
+    int status;  // 0=PENDING (queued), 1=SENT (legacy), 2=FAILED, 3=DELIVERED (watermark confirmed), 4=READ, 5=STALE
     int group_id;  // Group ID (0 for direct messages, >0 for group messages) - Phase 5.2
     int message_type;  // 0=chat, 1=group_invitation - Phase 6.2
     int invitation_status;  // 0=pending, 1=accepted, 2=declined - Phase 6.2
+    int retry_count;  // Number of send retry attempts (for failed messages)
+    bool is_outgoing;  // true if we sent it, false if we received it
 } backup_message_t;
 
 /**
@@ -73,30 +86,32 @@ typedef struct {
 message_backup_context_t* message_backup_init(const char *identity);
 
 /**
- * Check if message already exists in database (by ciphertext hash)
+ * Check if message already exists in database (by sender + recipient + timestamp)
  *
  * Prevents duplicate messages from being stored (e.g., when polling DHT offline queue).
  *
  * @param ctx Backup context
- * @param encrypted_message Encrypted message ciphertext (binary)
- * @param encrypted_len Length of encrypted message
+ * @param sender_fp Sender fingerprint (hex string)
+ * @param recipient Recipient identity
+ * @param timestamp Message timestamp
  * @return true if message exists, false otherwise
  */
-bool message_backup_exists_ciphertext(message_backup_context_t *ctx,
-                                       const uint8_t *encrypted_message,
-                                       size_t encrypted_len);
+bool message_backup_exists(message_backup_context_t *ctx,
+                           const char *sender_fp,
+                           const char *recipient,
+                           time_t timestamp);
 
 /**
- * Save a message to local backup (ENCRYPTED)
+ * Save a message to local backup (PLAINTEXT)
  *
- * Stores the encrypted ciphertext for security. Messages remain encrypted at rest.
- * Decryption only happens in RAM when displaying to user.
+ * Stores the decrypted plaintext directly. Database encryption will be
+ * handled at the SQLite level (SQLCipher) in a future update.
  *
  * @param ctx Backup context
- * @param sender Sender identity
- * @param recipient Recipient identity
- * @param encrypted_message Encrypted message ciphertext (binary)
- * @param encrypted_len Length of encrypted message
+ * @param sender Sender identity (fingerprint hex)
+ * @param recipient Recipient identity (fingerprint hex)
+ * @param plaintext Decrypted message content (UTF-8)
+ * @param sender_fingerprint Sender's fingerprint (hex, 128 chars)
  * @param timestamp Message timestamp
  * @param is_outgoing true if we sent it, false if we received it
  * @param group_id Group ID (0 for direct messages, >0 for group) - Phase 5.2
@@ -106,12 +121,13 @@ bool message_backup_exists_ciphertext(message_backup_context_t *ctx,
 int message_backup_save(message_backup_context_t *ctx,
                         const char *sender,
                         const char *recipient,
-                        const uint8_t *encrypted_message,
-                        size_t encrypted_len,
+                        const char *plaintext,
+                        const char *sender_fingerprint,
                         time_t timestamp,
                         bool is_outgoing,
                         int group_id,
-                        int message_type);
+                        int message_type,
+                        uint64_t offline_seq);
 
 /**
  * Mark message as delivered
@@ -145,10 +161,59 @@ int message_backup_get_unread_count(message_backup_context_t *ctx, const char *c
  *
  * @param ctx Backup context
  * @param message_id Message ID from database
- * @param status New status (0=PENDING, 1=SENT, 2=FAILED)
+ * @param status New status (0=PENDING, 2=FAILED, 3=DELIVERED)
  * @return 0 on success, -1 on error
  */
 int message_backup_update_status(message_backup_context_t *ctx, int message_id, int status);
+
+/**
+ * Increment retry count for a message
+ *
+ * @param ctx Backup context
+ * @param message_id Message ID from database
+ * @return 0 on success, -1 on error
+ */
+int message_backup_increment_retry_count(message_backup_context_t *ctx, int message_id);
+
+/**
+ * Mark message as stale (30+ days without delivery)
+ *
+ * Messages marked stale are shown differently in UI but not deleted.
+ * User can still manually retry or delete stale messages.
+ *
+ * @param ctx Backup context
+ * @param message_id Message ID from database
+ * @return 0 on success, -1 on error
+ */
+int message_backup_mark_stale(message_backup_context_t *ctx, int message_id);
+
+/**
+ * Get message age in days
+ *
+ * Calculates days since message was created (timestamp field).
+ *
+ * @param ctx Backup context
+ * @param message_id Message ID from database
+ * @return Age in days (>=0), or -1 on error
+ */
+int message_backup_get_age_days(message_backup_context_t *ctx, int message_id);
+
+/**
+ * Get all pending/failed messages for retry
+ *
+ * Returns outgoing messages with status PENDING(0) or FAILED(2) that haven't
+ * exceeded MAX_RETRIES. Used for automatic retry on identity load and DHT reconnect.
+ *
+ * @param ctx Backup context
+ * @param max_retries Maximum retry attempts (0 = unlimited, no filtering by retry_count)
+ * @param messages_out Array of messages (caller must free with message_backup_free_messages)
+ * @param count_out Number of messages returned
+ * @return 0 on success, -1 on error
+ */
+int message_backup_get_pending_messages(message_backup_context_t *ctx,
+                                         int max_retries,
+                                         backup_message_t **messages_out,
+                                         int *count_out);
 
 /**
  * Update message status by sender/recipient/timestamp
@@ -159,7 +224,7 @@ int message_backup_update_status(message_backup_context_t *ctx, int message_id, 
  * @param sender Sender fingerprint
  * @param recipient Recipient fingerprint
  * @param timestamp Message timestamp
- * @param status New status (0=PENDING, 1=SENT, 2=FAILED)
+ * @param status New status (0=PENDING, 2=FAILED, 3=DELIVERED)
  * @return 0 on success, -1 on error
  */
 int message_backup_update_status_by_key(
@@ -193,6 +258,30 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
                                      const char *contact_identity,
                                      backup_message_t **messages_out,
                                      int *count_out);
+
+/**
+ * Get conversation history with pagination
+ *
+ * Returns a page of messages between current user and specified contact.
+ * Messages are ordered by timestamp DESC (newest first) for efficient
+ * loading in reverse-scroll chat UIs.
+ *
+ * @param ctx Backup context
+ * @param contact_identity Contact identity
+ * @param limit Max messages to return (page size, e.g. 50)
+ * @param offset Number of messages to skip (for pagination)
+ * @param messages_out Array of messages (caller must free)
+ * @param count_out Number of messages returned in this page
+ * @param total_out Total messages in conversation (for has_more check)
+ * @return 0 on success, -1 on error
+ */
+int message_backup_get_conversation_page(message_backup_context_t *ctx,
+                                          const char *contact_identity,
+                                          int limit,
+                                          int offset,
+                                          backup_message_t **messages_out,
+                                          int *count_out,
+                                          int *total_out);
 
 /**
  * Get group conversation history (Phase 5.2)
@@ -261,7 +350,7 @@ void message_backup_free_messages(backup_message_t *messages, int count);
 /**
  * Get database handle from backup context
  *
- * Used by modules that need direct database access (e.g., GSK subsystem).
+ * Used by modules that need direct database access (e.g., GEK subsystem).
  *
  * @param ctx Backup context
  * @return SQLite database handle or NULL if ctx is NULL
@@ -313,6 +402,26 @@ int message_backup_mark_delivered_up_to_seq(
     const char *sender,
     const char *recipient,
     uint64_t max_seq_num
+);
+
+/**
+ * Get unique recipients with pending outgoing messages
+ *
+ * Returns list of unique recipient fingerprints that have undelivered
+ * outgoing messages (status=PENDING). Used to restore delivery trackers
+ * on app startup.
+ *
+ * @param ctx Backup context
+ * @param recipients_out Array to receive recipient fingerprints (caller allocates)
+ * @param max_recipients Maximum number of recipients to return
+ * @param count_out Receives actual count of recipients
+ * @return 0 on success, -1 on error
+ */
+int message_backup_get_pending_recipients(
+    message_backup_context_t *ctx,
+    char recipients_out[][129],
+    int max_recipients,
+    int *count_out
 );
 
 /**

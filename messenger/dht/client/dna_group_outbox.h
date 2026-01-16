@@ -2,15 +2,18 @@
  * @file dna_group_outbox.h
  * @brief Group Message Outbox via DHT
  *
- * Feed-pattern group messaging with owner-namespaced storage:
- * - Message encrypted once with GSK (AES-256-GCM)
- * - Stored ONCE in DHT per hour bucket per group
- * - All senders write to SAME key with unique value_id (from dht_get_owner_value_id())
- * - All members fetch via dht_get_all()
- * - Storage: O(message_size) per message vs O(N x message_size) in old system
+ * Single-key group messaging with multi-writer DHT storage:
+ * - Message encrypted once with GEK (AES-256-GCM)
+ * - All members write to SAME key (different value_id per sender)
+ * - Storage uses chunked ZSTD compression (unlimited size)
+ * - Real-time notifications via single dht_listen() per group
+ * - Day-based buckets (7 days retention)
  *
  * Key Format:
- *   dna:group:<group_uuid>:out:<hour_bucket>
+ *   dna:group:<group_uuid>:out:<day_bucket>
+ *
+ * Each sender writes their own bucket JSON with their value_id.
+ * dht_get_all() retrieves all senders' buckets at once.
  *
  * Message ID Format:
  *   <sender_fingerprint>_<group_uuid>_<timestamp_ms>
@@ -18,6 +21,7 @@
  * Part of DNA Messenger
  *
  * @date 2025-11-29
+ * @updated 2026-01-15 - Single-key architecture, 1 listener per group
  */
 
 #ifndef DNA_GROUP_OUTBOX_H
@@ -45,8 +49,14 @@ extern "C" {
 /** TTL for group outbox buckets (7 days in seconds) */
 #define DNA_GROUP_OUTBOX_TTL (7 * 24 * 3600)
 
-/** Maximum hour buckets to sync on catch-up (7 days x 24 hours) */
-#define DNA_GROUP_OUTBOX_MAX_CATCHUP_BUCKETS 168
+/** Seconds per day for bucket calculation */
+#define DNA_GROUP_OUTBOX_SECONDS_PER_DAY 86400
+
+/** Maximum days to sync on catch-up (7 days) */
+#define DNA_GROUP_OUTBOX_MAX_CATCHUP_DAYS 7
+
+/** Key format for shared group storage (all members write here) */
+#define DNA_GROUP_OUTBOX_KEY_FMT "dna:group:%s:out:%lu"
 
 /** AES-256-GCM nonce size */
 #define DNA_GROUP_OUTBOX_NONCE_SIZE 12
@@ -64,7 +74,7 @@ extern "C" {
 typedef enum {
     DNA_GROUP_OUTBOX_OK = 0,
     DNA_GROUP_OUTBOX_ERR_NULL_PARAM = -1,
-    DNA_GROUP_OUTBOX_ERR_NO_GSK = -2,
+    DNA_GROUP_OUTBOX_ERR_NO_GEK = -2,
     DNA_GROUP_OUTBOX_ERR_ENCRYPT = -3,
     DNA_GROUP_OUTBOX_ERR_DECRYPT = -4,
     DNA_GROUP_OUTBOX_ERR_SIGN = -5,
@@ -83,9 +93,9 @@ typedef enum {
  *============================================================================*/
 
 /**
- * @brief Single group message (encrypted with GSK)
+ * @brief Single group message (encrypted with GEK)
  *
- * Stored in DHT at: dna:group:<group_uuid>:out:<hour_bucket>
+ * Stored in DHT at: dna:group:<group_uuid>:out:<day_bucket>
  * Multiple senders write to same key with their value_id
  */
 typedef struct {
@@ -93,7 +103,7 @@ typedef struct {
     char sender_fingerprint[129];               /* SHA3-512 fingerprint of sender */
     char group_uuid[37];                        /* UUID v4 of group */
     uint64_t timestamp_ms;                      /* Unix timestamp in milliseconds */
-    uint32_t gsk_version;                       /* GSK version used for encryption */
+    uint32_t gsk_version;                       /* GEK version used for encryption */
 
     /* Encrypted payload (AES-256-GCM) */
     uint8_t nonce[DNA_GROUP_OUTBOX_NONCE_SIZE]; /* 12-byte nonce */
@@ -110,19 +120,41 @@ typedef struct {
 } dna_group_message_t;
 
 /**
- * @brief Hour bucket containing messages from this sender
+ * @brief Day bucket containing messages from a single sender
  *
- * Each sender maintains their own bucket at the shared key.
- * dht_get_all() returns all senders' buckets in one call.
+ * Each sender writes their bucket at the shared key with their value_id.
+ * Key format: dna:group:<uuid>:out:<day>
+ * Multiple buckets exist at each key (one per sender).
  */
 typedef struct {
     char group_uuid[37];
     char sender_fingerprint[129];
-    uint64_t hour_bucket;                       /* unix_timestamp / 3600 */
+    uint64_t day_bucket;                        /* unix_timestamp / 86400 */
     dna_group_message_t *messages;              /* Array of messages */
     size_t message_count;
     size_t allocated_count;
 } dna_group_outbox_bucket_t;
+
+/*============================================================================
+ * Listen Context Structures (for real-time notifications)
+ *============================================================================*/
+
+/**
+ * @brief Listen context for entire group
+ *
+ * Single DHT listener for all group messages.
+ * Key: dna:group:<uuid>:out:<day>
+ * All senders write to this key with different value_id.
+ * Created by dna_group_outbox_subscribe(), freed by unsubscribe().
+ */
+typedef struct {
+    char group_uuid[37];                        /* Group UUID */
+    uint64_t current_day;                       /* Current day bucket being listened */
+    size_t listen_token;                        /* Single token from dht_listen_ex() */
+    void (*on_new_message)(const char *group_uuid, size_t new_count, void *user_data);
+    void *user_data;                            /* User data for callback */
+    dht_context_t *dht_ctx;                     /* DHT context (for resubscription) */
+} dna_group_listen_ctx_t;
 
 /*============================================================================
  * Send API
@@ -132,10 +164,10 @@ typedef struct {
  * @brief Send a message to group outbox
  *
  * Flow:
- * 1. gsk_load_active(group_uuid) -> get GSK + version
+ * 1. gek_load_active(group_uuid) -> get GEK + version
  * 2. hour_bucket = time(NULL) / 3600
  * 3. Generate message_id: sprintf("%s_%s_%lu", my_fingerprint, group_uuid, timestamp_ms)
- * 4. Encrypt plaintext with GSK (AES-256-GCM)
+ * 4. Encrypt plaintext with GEK (AES-256-GCM)
  * 5. Sign with Dilithium5
  * 6. dht_get_owner_value_id() -> my unique value_id
  * 7. dht_get() my existing messages at this key (my value_id slot)
@@ -164,14 +196,15 @@ int dna_group_outbox_send(
  *============================================================================*/
 
 /**
- * @brief Fetch all messages from a group outbox for a specific hour
+ * @brief Fetch all messages from all senders for a specific day
  *
- * Uses dht_get_all() to retrieve all senders' messages in one call.
- * Messages are decrypted and signature-verified.
+ * Uses dht_get_all() to fetch all values at the shared key.
+ * Each value is a bucket from one sender.
+ * Messages are NOT decrypted (caller must decrypt with GEK).
  *
  * @param dht_ctx DHT context
  * @param group_uuid Group UUID
- * @param hour_bucket Hour bucket to fetch (unix_timestamp / 3600, 0 = current hour)
+ * @param day_bucket Day bucket (unix_timestamp / 86400, 0 = current day)
  * @param messages_out Output: Array of messages (caller must free with dna_group_outbox_free_messages)
  * @param count_out Output: Number of messages
  * @return DNA_GROUP_OUTBOX_OK on success, error code on failure
@@ -179,22 +212,22 @@ int dna_group_outbox_send(
 int dna_group_outbox_fetch(
     dht_context_t *dht_ctx,
     const char *group_uuid,
-    uint64_t hour_bucket,
+    uint64_t day_bucket,
     dna_group_message_t **messages_out,
     size_t *count_out
 );
 
 /**
- * @brief Sync all hours since last sync for a group
+ * @brief Sync all days since last sync for a group
  *
  * Flow:
- * 1. Get last_sync_hour from group_sync_state table
- * 2. current_hour = time(NULL) / 3600
- * 3. For each hour from (last_sync_hour + 1) to current_hour:
- *    - Fetch bucket via dht_get_all()
+ * 1. Get last_sync_day from group_sync_state table
+ * 2. current_day = time(NULL) / 86400
+ * 3. For each day from (last_sync_day + 1) to current_day:
+ *    - Fetch all senders' buckets via dht_get_all()
  *    - Dedupe against existing messages by message_id
- *    - Store new messages in group_messages table
- * 4. Update last_sync_hour in group_sync_state
+ *    - Decrypt and store new messages in group_messages table
+ * 4. Update last_sync_day in group_sync_state
  *
  * @param dht_ctx DHT context
  * @param group_uuid Group UUID
@@ -228,26 +261,26 @@ int dna_group_outbox_sync_all(
  *============================================================================*/
 
 /**
- * @brief Get current hour bucket
+ * @brief Get current day bucket
  *
- * @return Current unix timestamp / 3600
+ * @return Current unix timestamp / 86400 (days since epoch)
  */
-uint64_t dna_group_outbox_get_hour_bucket(void);
+uint64_t dna_group_outbox_get_day_bucket(void);
 
 /**
  * @brief Generate DHT key for group outbox
  *
- * Key format: dna:group:<group_uuid>:out:<hour_bucket>
+ * Key format: dna:group:<group_uuid>:out:<day_bucket>
  *
  * @param group_uuid Group UUID
- * @param hour_bucket Hour bucket (unix_timestamp / 3600)
+ * @param day_bucket Day bucket (unix_timestamp / 86400)
  * @param key_out Output buffer for key string (must be at least 128 bytes)
  * @param key_out_size Size of output buffer
  * @return 0 on success, -1 on error
  */
 int dna_group_outbox_make_key(
     const char *group_uuid,
-    uint64_t hour_bucket,
+    uint64_t day_bucket,
     char *key_out,
     size_t key_out_size
 );
@@ -326,27 +359,80 @@ int dna_group_outbox_db_get_messages(
 );
 
 /**
- * @brief Get last sync hour for a group
+ * @brief Get last sync day for a group
  *
  * @param group_uuid Group UUID
- * @param last_sync_hour_out Output: Last synced hour bucket (0 if never synced)
+ * @param last_sync_day_out Output: Last synced day bucket (0 if never synced)
  * @return 0 on success, -1 on error
  */
-int dna_group_outbox_db_get_last_sync_hour(
+int dna_group_outbox_db_get_last_sync_day(
     const char *group_uuid,
-    uint64_t *last_sync_hour_out
+    uint64_t *last_sync_day_out
 );
 
 /**
- * @brief Update last sync hour for a group
+ * @brief Update last sync day for a group
  *
  * @param group_uuid Group UUID
- * @param last_sync_hour Hour bucket that was synced
+ * @param last_sync_day Day bucket that was synced
  * @return 0 on success, -1 on error
  */
-int dna_group_outbox_db_set_last_sync_hour(
+int dna_group_outbox_db_set_last_sync_day(
     const char *group_uuid,
-    uint64_t last_sync_hour
+    uint64_t last_sync_day
+);
+
+/*============================================================================
+ * Listen API (Real-time notifications via DHT listen)
+ *============================================================================*/
+
+/**
+ * @brief Subscribe to group for real-time message notifications
+ *
+ * Creates single dht_listen() on the shared group key.
+ * Callback fires when ANY member publishes new messages.
+ *
+ * @param dht_ctx DHT context
+ * @param group_uuid Group UUID
+ * @param on_new_message Callback when new messages arrive
+ * @param user_data User data for callback
+ * @param ctx_out Output: Listen context (caller must free with unsubscribe)
+ * @return 0 on success, error code on failure
+ */
+int dna_group_outbox_subscribe(
+    dht_context_t *dht_ctx,
+    const char *group_uuid,
+    void (*on_new_message)(const char *group_uuid, size_t new_count, void *user_data),
+    void *user_data,
+    dna_group_listen_ctx_t **ctx_out
+);
+
+/**
+ * @brief Unsubscribe from group
+ *
+ * Cancels the dht_listen() subscription and frees context.
+ *
+ * @param dht_ctx DHT context (may be NULL if already freed)
+ * @param ctx Listen context to free
+ */
+void dna_group_outbox_unsubscribe(
+    dht_context_t *dht_ctx,
+    dna_group_listen_ctx_t *ctx
+);
+
+/**
+ * @brief Check and rotate listener if day changed
+ *
+ * Call this periodically (e.g., every minute).
+ * If day changed, cancels old listener and subscribes to new day.
+ *
+ * @param dht_ctx DHT context
+ * @param ctx Listen context
+ * @return 1 if rotated, 0 if no change, -1 on error
+ */
+int dna_group_outbox_check_day_rotation(
+    dht_context_t *dht_ctx,
+    dna_group_listen_ctx_t *ctx
 );
 
 /*============================================================================

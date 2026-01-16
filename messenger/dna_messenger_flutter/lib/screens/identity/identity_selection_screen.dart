@@ -1,5 +1,6 @@
 // Identity Selection Screen - Unified onboarding flow
 // v0.3.0: Single-user model with merged create/restore flow
+// v0.4.60: Added auto-sync backup check on identity load
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -9,6 +10,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
+import '../../utils/logger.dart' show log, logError;
 
 /// Entry point for onboarding - in v0.3.0 single-user model, this just shows the unified flow
 class IdentitySelectionScreen extends ConsumerWidget {
@@ -747,6 +749,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     try {
       await ref.read(identitiesProvider.notifier).loadIdentity(_fingerprint!);
 
+      // v0.4.60: Check for DHT backup and offer to restore
+      if (mounted) {
+        await _checkAndOfferRestore();
+      }
+
       if (mounted) {
         Navigator.of(context).popUntil((route) => route.isFirst);
       }
@@ -761,6 +768,142 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         setState(() => _step = _OnboardingStep.confirmProfile);
       }
     }
+  }
+
+  /// v0.4.60: Check for backup in DHT and offer to restore messages
+  Future<void> _checkAndOfferRestore() async {
+    try {
+      final engine = ref.read(engineProvider).valueOrNull;
+      if (engine == null) return;
+
+      log('ONBOARD', 'Checking for DHT backup...');
+      final backupInfo = await engine.checkBackupExists();
+
+      if (!backupInfo.exists || !mounted) {
+        log('ONBOARD', 'No backup found');
+        return;
+      }
+
+      log('ONBOARD', 'Backup found: ${backupInfo.messageCount} messages');
+
+      // Show restore dialog
+      final shouldRestore = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: Row(
+            children: [
+              FaIcon(FontAwesomeIcons.cloudArrowDown, color: Theme.of(context).colorScheme.primary),
+              const SizedBox(width: 12),
+              const Text('Backup Found'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Found ${backupInfo.messageCount} messages${backupInfo.messageCount == -1 ? "" : ""} from your DHT backup.',
+              ),
+              if (backupInfo.timestamp != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Last backup: ${_formatBackupDate(backupInfo.timestamp!)}',
+                  style: TextStyle(
+                    color: DnaColors.textMuted,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primary.withAlpha(26),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    FaIcon(FontAwesomeIcons.circleInfo, size: 18, color: Theme.of(context).colorScheme.primary),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        'This will restore your messages, groups, and group encryption keys.',
+                        style: TextStyle(fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Skip'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Restore'),
+            ),
+          ],
+        ),
+      );
+
+      if (shouldRestore == true && mounted) {
+        // Show restoring indicator
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                ),
+                SizedBox(width: 12),
+                Text('Restoring messages...'),
+              ],
+            ),
+            duration: Duration(seconds: 30),
+          ),
+        );
+
+        final result = await engine.restoreMessages();
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
+          if (result.success) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Restored ${result.processedCount} messages'),
+                backgroundColor: DnaColors.snackbarSuccess,
+              ),
+            );
+          } else {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(result.errorMessage ?? 'Restore failed'),
+                backgroundColor: DnaColors.snackbarError,
+              ),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      logError('ONBOARD', 'Backup check failed: $e');
+      // Silently fail - don't block the user from loading their identity
+    }
+  }
+
+  String _formatBackupDate(DateTime date) {
+    final now = DateTime.now();
+    final diff = now.difference(date);
+    if (diff.inMinutes < 60) return '${diff.inMinutes} minutes ago';
+    if (diff.inHours < 24) return '${diff.inHours} hours ago';
+    if (diff.inDays < 7) return '${diff.inDays} days ago';
+    return '${date.day}/${date.month}/${date.year}';
   }
 
   // ==================== STEP 4b: Enter Nickname ====================
@@ -909,6 +1052,12 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
       // Register name on DHT (this publishes full profile including wallet addresses)
       await ref.read(identitiesProvider.notifier).registerName(nickname);
+
+      // v0.4.60: Check for DHT backup and offer to restore
+      // (user may be restoring from seed on new device with existing backup)
+      if (mounted) {
+        await _checkAndOfferRestore();
+      }
 
       if (mounted) {
         Navigator.of(context).popUntil((route) => route.isFirst);
