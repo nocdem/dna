@@ -832,9 +832,11 @@ int dna_group_outbox_db_store_message(const dna_group_message_t *msg) {
         return DNA_GROUP_OUTBOX_ERR_DB;
     }
 
-    /* Convert message_id string to integer hash */
+    /* Convert full message_id string to integer hash
+     * message_id format: <128char_fingerprint>_<uuid>_<timestamp>
+     * Must hash ENTIRE string - first 16 chars are always same (fingerprint start) */
     int64_t msg_id_int = 0;
-    for (size_t i = 0; msg->message_id[i] && i < 16; i++) {
+    for (size_t i = 0; msg->message_id[i]; i++) {
         msg_id_int = (msg_id_int * 31) + (unsigned char)msg->message_id[i];
     }
 
@@ -869,9 +871,11 @@ int dna_group_outbox_db_message_exists(const char *message_id) {
         return -1;
     }
 
-    /* Convert message_id string to integer hash (same as store) */
+    /* Convert full message_id string to integer hash (same as store)
+     * message_id format: <128char_fingerprint>_<uuid>_<timestamp>
+     * Must hash ENTIRE string - first 16 chars are always same (fingerprint start) */
     int64_t msg_id_int = 0;
-    for (size_t i = 0; message_id[i] && i < 16; i++) {
+    for (size_t i = 0; message_id[i]; i++) {
         msg_id_int = (msg_id_int * 31) + (unsigned char)message_id[i];
     }
 
