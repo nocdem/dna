@@ -202,6 +202,8 @@ class EventHandler {
       case GroupMessageReceivedEvent(groupUuid: final uuid, newCount: final count):
         // New group messages received via DHT listener - refresh group conversation
         _ref.invalidate(groupConversationProvider(uuid));
+        // Force UI rebuild via refresh trigger (same pattern as direct messages)
+        _ref.read(groupConversationRefreshTriggerProvider.notifier).state++;
         // Also refresh groups list to update any preview/badge
         _ref.invalidate(groupsProvider);
         break;

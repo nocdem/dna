@@ -570,6 +570,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
   }
 
   Widget _buildMessageList(ThemeData theme) {
+    // Watch refresh trigger to force rebuild when new messages arrive via listener
+    ref.watch(groupConversationRefreshTriggerProvider);
     final conversation = ref.watch(groupConversationProvider(widget.group.uuid));
 
     return conversation.when(

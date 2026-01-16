@@ -96,6 +96,22 @@ class InvitationsNotifier extends AsyncNotifier<List<Invitation>> {
 /// Selected group for chat
 final selectedGroupProvider = StateProvider<Group?>((ref) => null);
 
+/// Refresh trigger for group conversations - increment to force rebuild
+final groupConversationRefreshTriggerProvider = StateProvider<int>((ref) => 0);
+
+/// Current group conversation provider (for the selected group)
+/// Watches refresh trigger to force rebuilds when new messages arrive via listener
+final currentGroupConversationProvider = Provider<AsyncValue<List<Message>>>((ref) {
+  // Watch the refresh trigger to force rebuilds
+  ref.watch(groupConversationRefreshTriggerProvider);
+
+  final group = ref.watch(selectedGroupProvider);
+  if (group == null) {
+    return const AsyncValue.data([]);
+  }
+  return ref.watch(groupConversationProvider(group.uuid));
+});
+
 /// Group conversation provider - keyed by group UUID
 final groupConversationProvider = AsyncNotifierProviderFamily<GroupConversationNotifier, List<Message>, String>(
   GroupConversationNotifier.new,

@@ -269,61 +269,65 @@ void cmd_help(void) {
     printf("\nDNA Messenger CLI Commands:\n\n");
 
     printf("IDENTITY:\n");
-    printf("  create <name>              - Create new identity (generates BIP39 mnemonic)\n");
-    printf("  restore <mnemonic...>      - Restore identity from 24-word mnemonic\n");
-    printf("  delete <fingerprint>       - Delete an identity permanently\n");
-    printf("  list                       - List all available identities\n");
-    printf("  load <fingerprint>         - Load an identity (can use prefix)\n");
-    printf("  whoami                     - Show current identity\n");
-    printf("  change-password            - Change password for current identity\n");
-    printf("  register <name>            - Register a name on DHT\n");
-    printf("  name                       - Show registered name\n");
-    printf("  lookup <name>              - Check if name is available\n");
-    printf("  lookup-profile <name|fp>   - View any user's DHT profile\n");
-    printf("  profile [field=value]      - Show or update profile\n");
+    printf("  create <name>              Create new identity (generates BIP39 mnemonic)\n");
+    printf("  restore <mnemonic...>      Restore identity from 24-word mnemonic\n");
+    printf("  delete <fingerprint>       Delete an identity permanently\n");
+    printf("  list                       List all available identities\n");
+    printf("  load <fingerprint>         Load an identity (can use prefix)\n");
+    printf("  whoami                     Show current identity\n");
+    printf("  change-password            Change password for current identity\n");
+    printf("  register <name>            Register a name on DHT\n");
+    printf("  name                       Show registered name\n");
+    printf("  lookup <name>              Check if name is available\n");
+    printf("  lookup-profile <name|fp>   View any user's DHT profile\n");
+    printf("  profile [field=value]      Show or update profile\n");
     printf("\n");
 
-    printf("CONTACTS:\n");
-    printf("  contacts                   - List all contacts\n");
-    printf("  add-contact <name|fp>      - Add contact by name or fingerprint\n");
-    printf("  remove-contact <fp>        - Remove a contact\n");
-    printf("  request <fp> [message]     - Send contact request\n");
-    printf("  requests                   - List pending contact requests\n");
-    printf("  approve <fp>               - Approve a contact request\n");
+    printf("CONTACT COMMANDS:\n");
+    printf("  contacts                    List all contacts\n");
+    printf("  add-contact <name|fp>       Add contact\n");
+    printf("  remove-contact <fp>         Remove contact\n");
+    printf("  request <name|fp> [msg]     Send contact request\n");
+    printf("  requests                    List pending requests\n");
+    printf("  approve <fp>                Approve contact request\n");
+    printf("  listen                      Subscribe to contacts and listen (stays running)\n");
+    printf("  turn-creds [--force]        Show/request TURN credentials\n");
     printf("\n");
 
     printf("MESSAGING:\n");
-    printf("  send <fp> <message>        - Send message to recipient\n");
-    printf("  messages <fp>              - Show conversation with contact\n");
-    printf("  check-offline              - Check for offline messages\n");
-    printf("  listen                     - Subscribe to contacts' outboxes (stay running)\n");
+    printf("  send <name|fp> <message>   Send message to recipient\n");
+    printf("  messages <name|fp>         Show conversation with contact\n");
+    printf("  check-offline              Check for offline messages\n");
+    printf("\n");
+
+    printf("GROUP COMMANDS:\n");
+    printf("  group-list                  List all groups\n");
+    printf("  group-create <name>         Create a new group\n");
+    printf("  group-send <uuid> <msg>     Send message to group\n");
+    printf("  group-info <uuid>           Show group info and members\n");
+    printf("  group-invite <uuid> <name|fp>  Invite member to group\n");
+    printf("  group-sync <uuid>           Sync group from DHT to local cache\n");
+    printf("  group-publish-gek <uuid>    Publish GEK to DHT (owner only)\n");
     printf("\n");
 
     printf("WALLET:\n");
-    printf("  wallets                    - List wallets\n");
-    printf("  balance <index>            - Show wallet balances\n");
+    printf("  wallets                    List wallets\n");
+    printf("  balance <index>            Show wallet balances\n");
     printf("\n");
 
     printf("NETWORK:\n");
-    printf("  online <fp>                - Check if peer is online\n");
-    printf("\n");
-
-    printf("NAT TRAVERSAL:\n");
-    printf("  stun-test                  - Test STUN connectivity\n");
-    printf("  ice-status                 - Show ICE connection status\n");
-    printf("  turn-creds [--force]       - Show/request TURN credentials\n");
-    printf("  turn-test                  - Test TURN relay with all servers\n");
+    printf("  online <name|fp>           Check if peer is online\n");
     printf("\n");
 
     printf("VERSION:\n");
-    printf("  publish-version            - Publish version info to DHT\n");
+    printf("  publish-version            Publish version info to DHT\n");
     printf("    --lib <ver> --lib-min <ver> --app <ver> --app-min <ver> --nodus <ver> --nodus-min <ver>\n");
-    printf("  check-version              - Check latest version from DHT\n");
+    printf("  check-version              Check latest version from DHT\n");
     printf("\n");
 
     printf("OTHER:\n");
-    printf("  help                       - Show this help message\n");
-    printf("  quit / exit                - Exit the CLI\n");
+    printf("  help                       Show this help message\n");
+    printf("  quit / exit                Exit the CLI\n");
     printf("\n");
 }
 
