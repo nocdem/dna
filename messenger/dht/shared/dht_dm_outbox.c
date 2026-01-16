@@ -627,7 +627,7 @@ void dht_dm_outbox_unsubscribe(
     /* Cancel DHT listener if active */
     if (listen_ctx->listen_token != 0 && ctx) {
         dht_cancel_listen(ctx, listen_ctx->listen_token);
-        QGP_LOG_DEBUG(LOG_TAG, "Cancelled listener token=%zu for %.16s...",
+        QGP_LOG_DEBUG(LOG_TAG, "Unsubscribed token=%zu for %.16s...",
                      listen_ctx->listen_token, listen_ctx->contact_fp);
     }
 

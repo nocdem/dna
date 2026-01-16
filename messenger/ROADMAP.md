@@ -1,5 +1,7 @@
 # DNA Messenger - Roadmap
 
+**DNA = Decentralized Network Applications**
+
 **Version:** 0.5.x | **Last Updated:** 2026-01-16
 
 ---
@@ -16,7 +18,7 @@
 | Spillway Protocol v2 | Production Ready |
 | User Profiles & Avatars | Production Ready |
 | DNA Board (Social) | Alpha |
-| cpunk Wallet | Production Ready |
+| DNA Wallet | Production Ready |
 | Android SDK (JNI) | Production Ready |
 | Flutter App (Android/Linux/Windows) | Beta |
 
@@ -71,7 +73,7 @@
 - Dilithium5 signed posts
 - 30-day TTL, 100 messages max
 
-### cpunk Wallet
+### DNA Wallet
 - Multi-chain: CF20 (Cellframe), ERC20, TRC20, SPL networks
 - Tokens: CPUNK, CELL, KEL, NYS, QEVM, ETH, SOL, TRX, USDT
 - Send tokens directly from chat (auto-resolves contact wallet)
@@ -144,7 +146,7 @@
 | 0.1.100 | 2025-11-16 | DHT refactoring complete, profile system unification |
 | 0.1.80 | 2025-11-10 | ImGui GUI migration (Qt → ImGui) |
 | 0.1.50 | 2025-11-03 | PostgreSQL → SQLite migration complete |
-| 0.1.30 | 2025-10-23 | cpunk wallet integration |
+| 0.1.30 | 2025-10-23 | DNA Wallet integration |
 | 0.1.0 | 2025-10-14 | Initial fork from QGP |
 
 ---

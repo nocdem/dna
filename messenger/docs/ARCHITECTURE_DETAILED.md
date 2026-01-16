@@ -76,7 +76,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 - **Fingerprint Identity**: SHA3-512(Dilithium_pubkey) = 128 hex chars
 - **BIP39 Recovery**: Deterministic key generation from mnemonic
 - **Offline Queue**: 7-day TTL for messages to offline recipients
-- **cpunk Wallet**: Cellframe blockchain integration
+- **DNA Wallet**: Multi-chain blockchain integration
 
 ---
 

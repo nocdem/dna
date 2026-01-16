@@ -1,7 +1,8 @@
 # DNA Messenger
 
 <p align="center">
-  <strong>Quantum-Proof Encrypted Messenger with Integrated Multi-Chain Wallet</strong>
+  <strong>Decentralized Network Applications</strong><br>
+  Quantum-Proof Encrypted Messenger with Integrated Multi-Chain Wallet
 </p>
 
 <p align="center">
@@ -134,6 +135,32 @@ cd dna_messenger_flutter && flutter build apk
 - Messages: `~/.dna/messages.db`
 - Keys: `~/.dna/<fingerprint>/keys/`
 - Logs: `~/.dna/logs/`
+
+---
+
+## Network Infrastructure
+
+### OpenDHT-PQ
+
+DNA Messenger uses a **forked version of OpenDHT** with post-quantum cryptography:
+
+- **Dilithium5 signatures** replace RSA-2048 (FIPS 204 compliant)
+- **Mandatory signing** — All DHT values must be cryptographically signed
+- **Binary identity format** — `.dsa`, `.pub`, `.cert` key files
+- Source: `vendor/opendht-pq/`
+
+### DNA Nodus (Bootstrap Server)
+
+Lightweight DHT bootstrap nodes that help peers discover each other:
+
+- **Purpose:** Peer discovery and DHT entry point only
+- **No message relay** — Messages go peer-to-peer via DHT, not through servers
+- **No logging** — Bootstrap nodes never see message content or metadata
+- **Persistence:** SQLite-backed DHT state survives restarts
+- **Config:** `/etc/dna-nodus.conf` (JSON)
+- **Port:** 4000/UDP
+
+Public bootstrap nodes are operated by cpunk.io — see [docs/DNA_NODUS.md](docs/DNA_NODUS.md) for deployment info.
 
 ---
 

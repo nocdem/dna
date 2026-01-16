@@ -531,11 +531,11 @@ make && ./fuzz_<target> ../fuzz/corpus/<target>/ -max_total_time=60
 
 ## Project Overview
 
-Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 security** (256-bit quantum).
+Post-quantum E2E encrypted messenger with DNA Wallet. **NIST Category 5 security** (256-bit quantum).
 
 **Crypto:** Kyber1024 (ML-KEM-1024), Dilithium5 (ML-DSA-87), AES-256-GCM, SHA3-512
 
-**Key Features:** E2E encrypted messaging • GSK group encryption • DHT groups • Per-identity contacts • User profiles • Wall posts • cpunk wallet • DHT-only messaging • Offline queueing (7d) • BIP39 recovery • SQLite • ImGui GUI • Android SDK (JNI)
+**Key Features:** E2E encrypted messaging • GSK group encryption • DHT groups • Per-identity contacts • User profiles • Wall posts • DNA Wallet • DHT-only messaging • Offline queueing (7d) • BIP39 recovery • SQLite • ImGui GUI • Android SDK (JNI)
 
 
 ---
@@ -680,7 +680,7 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 - **Phase 4:** Desktop GUI (ImGui) + Wallet Integration
 - **Phase 5.1-5.9:** P2P Architecture (DHT, GSK, Message Format v0.08) - ICE removed v0.4.61
 - **Phase 6:** Android SDK (JNI bindings, Java classes, Gradle project)
-- **Phase 8:** cpunk Wallet Integration
+- **Phase 8:** DNA Wallet Integration
 - **Phase 9.1-9.6:** P2P Transport, Offline Queue, DHT Migrations
 - **Phase 10.1-10.4:** User Profiles, DNA Board, Avatars, Voting
 - **Phase 11:** ICE NAT Traversal (removed in v0.4.61 for privacy)
