@@ -129,9 +129,41 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
     COMPONENT Runtime)
 endif()
 
-# DNA Messenger native library
-set(DNA_LIB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libs/libdna_lib.so")
-if(EXISTS "${DNA_LIB_PATH}")
-  install(FILES "${DNA_LIB_PATH}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+# =============================================================================
+# DNA native library (libdna_lib.so) bundling
+# =============================================================================
+# Repo root from here: dna_messenger_flutter/linux -> ../..
+get_filename_component(DNA_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+
+# Prefer native build output produced by the repo root build:
+#   cmake -S . -B build ... && cmake --build build
+set(DNA_NATIVE_BUILD_DIR "${DNA_REPO_ROOT}/build")
+set(DNA_NATIVE_SO_CANDIDATE_1 "${DNA_NATIVE_BUILD_DIR}/libdna_lib.so")
+set(DNA_NATIVE_SO_CANDIDATE_2 "${DNA_NATIVE_BUILD_DIR}/lib/libdna_lib.so")
+
+# Backward-compatible fallback (optional)
+set(DNA_NATIVE_SO_FALLBACK "${CMAKE_CURRENT_SOURCE_DIR}/libs/libdna_lib.so")
+
+set(DNA_NATIVE_SO "")
+if(EXISTS "${DNA_NATIVE_SO_CANDIDATE_1}")
+  set(DNA_NATIVE_SO "${DNA_NATIVE_SO_CANDIDATE_1}")
+elseif(EXISTS "${DNA_NATIVE_SO_CANDIDATE_2}")
+  set(DNA_NATIVE_SO "${DNA_NATIVE_SO_CANDIDATE_2}")
+elseif(EXISTS "${DNA_NATIVE_SO_FALLBACK}")
+  set(DNA_NATIVE_SO "${DNA_NATIVE_SO_FALLBACK}")
+endif()
+
+if(DNA_NATIVE_SO)
+  message(STATUS "Bundling DNA native library: ${DNA_NATIVE_SO}")
+  install(FILES "${DNA_NATIVE_SO}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)
+else()
+  message(WARNING
+    "libdna_lib.so not found; Linux bundle will be built without it.\n"
+    "Expected one of:\n"
+    "  - ${DNA_NATIVE_SO_CANDIDATE_1}\n"
+    "  - ${DNA_NATIVE_SO_CANDIDATE_2}\n"
+    "  - ${DNA_NATIVE_SO_FALLBACK}\n"
+    "Build the native project first (repo root) to produce libdna_lib.so."
+  )
 endif()
