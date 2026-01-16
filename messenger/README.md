@@ -1,260 +1,160 @@
 # DNA Messenger
 
-**Post-quantum encrypted messenger with cpunk wallet**
+<p align="center">
+  <strong>Quantum-Proof Encrypted Messenger with Integrated Multi-Chain Wallet</strong>
+</p>
 
-Secure messaging using **NIST Category 5 post-quantum cryptography** (Kyber1024 + Dilithium5) that remains secure against future quantum computer attacks.
+<p align="center">
+  <a href="#status"><img src="https://img.shields.io/badge/Status-Beta-blue" alt="Beta"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/License-GPLv3-green" alt="GPL v3"></a>
+  <a href="#platforms"><img src="https://img.shields.io/badge/Platforms-Android%20|%20Linux%20|%20Windows-orange" alt="Platforms"></a>
+  <a href="#security"><img src="https://img.shields.io/badge/Security-NIST%20Category%205-red" alt="NIST Cat 5"></a>
+</p>
 
-## Status
-
-**Beta** - Stable API, active development
-
-- **Library Version:** v0.5.2
-- **Flutter App Version:** v0.99.135
-- **Nodus Version:** v0.4.5
-- **Security:** NIST Category 5 (256-bit quantum resistance)
-- **Platforms:** Android, Linux, Windows
-
----
-
-## Applications
-
-### DNA Messenger (Flutter)
-
-Cross-platform messenger application.
-
-- **UI:** Flutter/Dart (Android, Linux, Windows)
-- **Features:** E2E messaging, groups, user profiles, cpunk wallet
-- **Crypto:** Kyber1024 encryption + Dilithium5 signatures + AES-256-GCM
-- **Storage:** Local SQLite (no centralized server)
-- **Network:** DHT-based messaging with offline queue
-
-```bash
-# Desktop (Linux/Windows)
-cd dna_messenger_flutter && flutter run
-
-# Android
-flutter build apk
-```
-
-### DNA Messenger CLI
-
-Command-line interface for debugging and testing.
-
-```bash
-# Build
-cd build && make dna-messenger-cli
-
-# Usage
-./cli/dna-messenger-cli --help
-./cli/dna-messenger-cli send <name> "message"
-./cli/dna-messenger-cli contacts
-./cli/dna-messenger-cli whoami
-```
-
-See [docs/CLI_TESTING.md](docs/CLI_TESTING.md) for full documentation.
-
-### dna-nodus (v0.4.5)
-
-DHT bootstrap server for the DNA network infrastructure.
-
-- **Purpose:** Bootstrap peer discovery, DHT persistence
-- **Security:** Mandatory Dilithium5 signatures on all DHT values
-- **Persistence:** SQLite database survives restarts
-- **Config:** JSON file at `/etc/dna-nodus.conf` (no CLI args)
-- **Port:** 4000 (UDP) - DHT operations
-
-```bash
-# Build and deploy
-bash /opt/dna-messenger/build-nodus.sh
-```
-
-**Public Bootstrap Nodes:**
-| Server | IP | DHT Port |
-|--------|-----|----------|
-| US-1 | 154.38.182.161 | 4000 |
-| EU-1 | 164.68.105.227 | 4000 |
-| EU-2 | 164.68.116.180 | 4000 |
-
-See [docs/DNA_NODUS.md](docs/DNA_NODUS.md) for full documentation.
+<p align="center">
+  <em>Your messages and crypto stay private—even against future quantum computers.</em>
+</p>
 
 ---
 
-## Features
+## What is DNA Messenger?
 
-### Messaging
-- End-to-end encryption (Kyber1024 + AES-256-GCM)
-- 1:1 direct messaging with delivery/read receipts
-- Group chats with GSK encryption (200x faster than per-recipient)
-- Offline message queueing (7-day DHT storage)
-- Message threading and comments
+DNA Messenger is a **fully decentralized** messenger and **multi-chain crypto wallet** built with **NIST-approved post-quantum cryptography**.
 
-### Groups
-- DHT-based decentralized groups
-- Group Symmetric Key (GSK) for efficient encryption
-- Automatic key rotation on member changes
-- Group ownership transfer with 7-day liveness check
-- P2P group invitations
+- **No central servers** — Messages travel through a distributed hash table (DHT)
+- **No IP leakage** — Your real IP is never exposed to contacts or third parties
+- **No metadata collection** — We can't see who talks to whom
+- **Quantum-resistant** — Protected against both current and future quantum attacks
 
-### Networking
-- DHT-only transport layer (privacy-first architecture)
-- Spillway Protocol v2 with daily bucket message retrieval
-- No IP address leakage to peers or third parties
-- Offline message queueing via DHT (7-day TTL)
-- Bootstrap nodes for peer discovery only
+---
 
-### User Profiles
-- Display name, bio, location, website, avatar
-- DHT storage with 7-day cache
-- Avatar system (128x128 JPEG, circular display with crop/pan/zoom)
+## Key Features
 
-### DNA Board (Social)
-- Decentralized message wall per user
-- Community voting (thumbs up/down)
-- Dilithium5 signed posts
-- 30-day TTL, 100 messages max
+### Secure Messaging
+- **End-to-end encryption** with Kyber1024 + AES-256-GCM
+- **1:1 and group chats** with delivery/read receipts
+- **Offline message queue** — Messages wait up to 7 days if you're offline
+- **Group encryption (GSK)** — 200x faster than encrypting per-recipient
+- **User profiles** with avatars, bio, and social wall
 
-### cpunk Wallet
-- Multi-chain support: CF20 (Cellframe), ERC20, TRC20, SPL
-- Tokens: CPUNK, CELL, KEL, NYS, QEVM, ETH, SOL, TRX, USDT
-- Send tokens directly from chat conversations
-- Address book for saved recipients
-- Send/receive with QR codes
-- Transaction history
+### Integrated Multi-Chain Wallet
+- **4 Networks:** Cellframe (CF20), Ethereum (ERC20), TRON (TRC20), Solana (SPL)
+- **9+ Tokens:** CPUNK, CELL, KEL, NYS, QEVM, ETH, SOL, TRX, USDT
+- **Send crypto from chat** — Auto-resolves contact's wallet address
+- **Address book** — Save frequently used addresses
+- **QR codes** — Easy send/receive
+- **Full transaction history**
 
-### Security
-- BIP39 24-word recovery phrases
-- Per-identity contact lists with DHT sync
-- Cryptographically signed reverse mappings
-- No centralized message storage
-- App lock (biometric + PIN) for mobile
+### Privacy-First Architecture
+- **DHT-only transport** — No relay servers that can log traffic
+- **Spillway Protocol v2** — Efficient offline message retrieval
+- **Dilithium5 signatures** — All DHT data cryptographically signed
+- **BIP39 recovery** — 24-word seed phrase backup
+
+---
+
+## Security
+
+**NIST Category 5** — Maximum quantum resistance (256-bit security level)
+
+| Algorithm | Standard | Purpose |
+|-----------|----------|---------|
+| **Kyber1024** | ML-KEM-1024 (FIPS 203) | Key encapsulation |
+| **Dilithium5** | ML-DSA-87 (FIPS 204) | Digital signatures |
+| **AES-256-GCM** | NIST | Symmetric encryption |
+| **SHA3-512** | NIST | Hashing |
+
+Your keys never leave your device. Recovery via BIP39 seed phrase.
 
 ---
 
 ## Quick Start
 
-### Pre-Built Binaries
+### Download
 
-Download from GitLab CI/CD:
-- https://gitlab.cpunk.io/cpunk/dna-messenger/-/artifacts
+Pre-built binaries: **[GitLab Releases](https://gitlab.cpunk.io/cpunk/dna-messenger/-/releases)**
 
-### Build from Source (Linux)
+### Build from Source
 
 ```bash
-# Install C library dependencies (Debian/Ubuntu)
+# Dependencies (Debian/Ubuntu)
 sudo apt install git cmake g++ libssl-dev libsqlite3-dev libcurl4-openssl-dev \
                  libjson-c-dev libargon2-dev libfmt-dev libreadline-dev \
                  libasio-dev libmsgpack-cxx-dev
 
-# Build C library
+# Build
 git clone https://github.com/nocdem/dna-messenger.git
-cd dna-messenger
-mkdir build && cd build
+cd dna-messenger && mkdir build && cd build
 cmake .. && make -j$(nproc)
 
-# Build Flutter app (requires Flutter SDK)
+# Run Flutter app
 cd ../dna_messenger_flutter
-flutter pub get
-flutter run
+flutter pub get && flutter run
 ```
 
-### Build for Android
+### Android
 
 ```bash
-# Build C library for Android (requires Android NDK)
 ./build-cross-compile.sh android-arm64
-
-# Build Flutter APK
-cd dna_messenger_flutter
-flutter build apk
+cd dna_messenger_flutter && flutter build apk
 ```
-
-### CLI Tool
-
-```bash
-# Build CLI (no Flutter required)
-cd build
-make dna-messenger-cli
-./cli/dna-messenger-cli --help
-```
-
----
-
-## Cryptography
-
-**NIST Category 5** - Maximum quantum resistance (256-bit security)
-
-| Algorithm | Standard | Purpose | Size |
-|-----------|----------|---------|------|
-| **Kyber1024** | ML-KEM-1024 (FIPS 203) | Key encapsulation | 1568-byte ciphertext |
-| **Dilithium5** | ML-DSA-87 (FIPS 204) | Digital signatures | 4627-byte signatures |
-| **AES-256-GCM** | NIST | Symmetric encryption | 256-bit keys |
-| **SHA3-512** | NIST | Hashing | 512-bit output |
-
-### OpenDHT-PQ Fork
-
-DNA Messenger includes a **forked OpenDHT** with post-quantum cryptography:
-
-- Replaced RSA-2048 with Dilithium5 (FIPS 204)
-- All DHT values require mandatory signatures
-- Binary identity files (.dsa, .pub, .cert)
-- Location: `vendor/opendht-pq/`
-
----
-
-## Recovery
-
-**Backup Your Keys:**
-1. Write down your 24-word BIP39 recovery phrase during identity creation
-2. Store it safely offline (never digitally)
-3. Optional: Add passphrase for extra security
-
-**Restore:**
-1. Choose "Restore from seed phrase" at startup
-2. Enter your 24 words
-3. Keys regenerated and verified
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────┐     ┌─────────────────┐
-│   DNA Messenger     │────▶│   dna-nodus     │
-│  (Flutter + C lib)  │     │ (Bootstrap Node)│
-└─────────┬───────────┘     └────────┬────────┘
-          │                          │
-          ▼                          ▼
-┌─────────────────────────────────────────────┐
-│              OpenDHT-PQ Network             │
-│   (Post-Quantum Distributed Hash Table)     │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                     DNA Messenger App                        │
+│              Flutter UI + C Engine (FFI)                     │
+└─────────────────────────┬────────────────────────────────────┘
+                          │
+                          ▼
+┌──────────────────────────────────────────────────────────────┐
+│                   OpenDHT-PQ Network                         │
+│         Post-Quantum DHT (Dilithium5 signatures)             │
+│                                                              │
+│   ┌─────────┐    ┌─────────┐    ┌─────────┐                 │
+│   │ US-1    │    │ EU-1    │    │ EU-2    │  Bootstrap      │
+│   │ :4000   │    │ :4000   │    │ :4000   │  Nodes          │
+│   └─────────┘    └─────────┘    └─────────┘                 │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 **Components:**
-- **Flutter App:** Cross-platform UI (Android, Linux, Windows)
-- **C Library:** Core cryptography, DHT, database (libdna_engine.so)
-- **FFI Bindings:** Dart-to-C interface via dart:ffi
+- **Flutter App** — Cross-platform UI (Android, Linux, Windows)
+- **C Library** — Core crypto, DHT, database (`libdna_engine.so`)
+- **OpenDHT-PQ** — Forked OpenDHT with post-quantum crypto
 
-**Data Storage:**
-- Messages: Local SQLite (`~/.dna/messages.db`)
-- Contacts: Per-identity SQLite (`~/.dna/<identity>_contacts.db`)
-- Keys: Local encrypted (`~/.dna/<fingerprint>/keys/*.dsa`, `*.kem`)
-- Logs: Persistent logs (`~/.dna/logs/`)
-- Public data: DHT with local cache
+**Local Storage:**
+- Messages: `~/.dna/messages.db`
+- Keys: `~/.dna/<fingerprint>/keys/`
+- Logs: `~/.dna/logs/`
+
+---
+
+## Versions
+
+| Component | Version |
+|-----------|---------|
+| C Library | v0.5.2 |
+| Flutter App | v0.99.135 |
+| DNA Nodus | v0.4.5 |
 
 ---
 
 ## Documentation
 
-- **[Architecture](docs/ARCHITECTURE_DETAILED.md)** - System design and directory structure
-- **[Flutter UI](docs/FLUTTER_UI.md)** - Flutter app documentation
-- **[CLI Testing](docs/CLI_TESTING.md)** - CLI tool reference
-- **[DNA Engine API](docs/DNA_ENGINE_API.md)** - Core engine API
-- **[Functions Reference](docs/FUNCTIONS.md)** - All function signatures
-- **[DHT System](docs/DHT_SYSTEM.md)** - DHT architecture
-- **[Message System](docs/MESSAGE_SYSTEM.md)** - Message handling
-- **[DNA Nodus](docs/DNA_NODUS.md)** - Bootstrap server
-- **[Roadmap](ROADMAP.md)** - Development phases
+| Doc | Description |
+|-----|-------------|
+| [Architecture](docs/ARCHITECTURE_DETAILED.md) | System design |
+| [Flutter UI](docs/FLUTTER_UI.md) | App documentation |
+| [CLI Testing](docs/CLI_TESTING.md) | Command-line tool |
+| [DNA Engine API](docs/DNA_ENGINE_API.md) | Core API reference |
+| [DHT System](docs/DHT_SYSTEM.md) | DHT architecture |
+| [Message System](docs/MESSAGE_SYSTEM.md) | Message handling |
+| [DNA Nodus](docs/DNA_NODUS.md) | Bootstrap server |
+| [Roadmap](ROADMAP.md) | Development phases |
 
 ---
 
@@ -262,18 +162,20 @@ DNA Messenger includes a **forked OpenDHT** with post-quantum cryptography:
 
 - **GitLab (Primary):** https://gitlab.cpunk.io/cpunk/dna-messenger
 - **GitHub (Mirror):** https://github.com/nocdem/dna-messenger
-- **cpunk.io:** https://cpunk.io
-- **cpunk.club:** https://cpunk.club
-- **Telegram:** https://web.telegram.org/k/#@chippunk_official
+- **Website:** https://cpunk.io
+- **Community:** https://cpunk.club
+- **Telegram:** [@chippunk_official](https://t.me/chippunk_official)
 
 ---
 
 ## License
 
-GNU General Public License v3.0
+**GNU General Public License v3.0**
 
 Forked from [QGP (Quantum Good Privacy)](https://github.com/nocdem/qgp)
 
 ---
 
-**Warning:** Beta software. Use with caution for sensitive communications.
+<p align="center">
+  <strong>Beta software.</strong> Use with appropriate caution for sensitive communications.
+</p>
