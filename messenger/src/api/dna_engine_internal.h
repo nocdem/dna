@@ -17,6 +17,7 @@
 #include "database/group_invitations.h"
 #include "dht/shared/dht_groups.h"
 #include "dht/shared/dht_offline_queue.h"
+#include "dht/shared/dht_dm_outbox.h"  /* Daily bucket DM outbox (v0.4.81+) */
 #include "dht/shared/dht_contact_request.h"
 #include "dht/client/dna_group_outbox.h"
 
@@ -423,9 +424,10 @@ typedef struct {
 #define DNA_MAX_OUTBOX_LISTENERS 128
 
 typedef struct {
-    char contact_fingerprint[129];  /* Contact we're listening to */
-    size_t dht_token;               /* Token from dht_listen() */
-    bool active;                    /* True if listener is active */
+    char contact_fingerprint[129];      /* Contact we're listening to */
+    size_t dht_token;                   /* Token from dht_listen() */
+    bool active;                        /* True if listener is active */
+    dht_dm_listen_ctx_t *dm_listen_ctx; /* Daily bucket context (v0.4.81+, day rotation) */
 } dna_outbox_listener_t;
 
 /**
@@ -749,6 +751,17 @@ void dna_engine_unsubscribe_all_groups(dna_engine_t *engine);
  * @return Number of groups that rotated
  */
 int dna_engine_check_group_day_rotation(dna_engine_t *engine);
+
+/**
+ * @brief Check and rotate 1-1 DM outbox listeners at day boundary
+ *
+ * Called from heartbeat thread every 4 minutes. Actual rotation only happens
+ * at midnight UTC when the day bucket number changes (v0.4.81+).
+ *
+ * @param engine    Engine instance
+ * @return Number of DM outbox listeners that rotated
+ */
+int dna_engine_check_outbox_day_rotation(dna_engine_t *engine);
 
 #ifdef __cplusplus
 }

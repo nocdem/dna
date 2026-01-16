@@ -610,6 +610,9 @@ static void* presence_heartbeat_thread(void *arg) {
         /* Check for day rotation on group listeners (runs every 4 min, actual
          * rotation only happens at midnight UTC when day bucket changes) */
         dna_engine_check_group_day_rotation(engine);
+
+        /* Check for day rotation on 1-1 DM outbox listeners (v0.4.81+) */
+        dna_engine_check_outbox_day_rotation(engine);
     }
 
     QGP_LOG_INFO(LOG_TAG, "Presence heartbeat thread stopped");
@@ -1362,6 +1365,52 @@ int dna_engine_check_group_day_rotation(dna_engine_t *engine) {
 
     if (rotated > 0) {
         QGP_LOG_INFO(LOG_TAG, "[GROUP] Day rotation completed for %d groups", rotated);
+    }
+    return rotated;
+}
+
+/**
+ * @brief Check and rotate day bucket for 1-1 DM outbox listeners
+ *
+ * Called from heartbeat thread every 4 minutes. Actual rotation only happens
+ * at midnight UTC when the day bucket number changes.
+ *
+ * Flow:
+ * 1. Get current day bucket
+ * 2. For each active listener, check if day changed
+ * 3. If changed: cancel old listener, subscribe to new day, sync yesterday
+ *
+ * @param engine Engine instance
+ * @return Number of listeners rotated (0 if no change)
+ */
+int dna_engine_check_outbox_day_rotation(dna_engine_t *engine) {
+    if (!engine) return 0;
+
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) return 0;
+
+    int rotated = 0;
+    pthread_mutex_lock(&engine->outbox_listeners_mutex);
+
+    for (int i = 0; i < engine->outbox_listener_count; i++) {
+        if (engine->outbox_listeners[i].active &&
+            engine->outbox_listeners[i].dm_listen_ctx) {
+
+            int result = dht_dm_outbox_check_day_rotation(
+                dht_ctx, engine->outbox_listeners[i].dm_listen_ctx);
+
+            if (result > 0) {
+                rotated++;
+                QGP_LOG_INFO(LOG_TAG, "[DM-OUTBOX] Day rotation for contact %.32s...",
+                             engine->outbox_listeners[i].contact_fingerprint);
+            }
+        }
+    }
+
+    pthread_mutex_unlock(&engine->outbox_listeners_mutex);
+
+    if (rotated > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[DM-OUTBOX] Day rotation completed for %d contacts", rotated);
     }
     return rotated;
 }
@@ -6184,7 +6233,7 @@ size_t dna_engine_listen_outbox(
         return 0;
     }
 
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Setting up listener for %.32s... (len=%zu)",
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Setting up daily bucket listener for %.32s... (len=%zu)",
                  contact_fingerprint, fp_len);
 
     pthread_mutex_lock(&engine->outbox_listeners_mutex);
@@ -6194,7 +6243,8 @@ size_t dna_engine_listen_outbox(
         if (engine->outbox_listeners[i].active &&
             strcmp(engine->outbox_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
             /* Verify listener is actually active in DHT layer */
-            if (dht_is_listener_active(engine->outbox_listeners[i].dht_token)) {
+            if (engine->outbox_listeners[i].dm_listen_ctx &&
+                dht_is_listener_active(engine->outbox_listeners[i].dht_token)) {
                 QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Already listening (token=%zu verified active)",
                              engine->outbox_listeners[i].dht_token);
                 pthread_mutex_unlock(&engine->outbox_listeners_mutex);
@@ -6203,6 +6253,10 @@ size_t dna_engine_listen_outbox(
                 /* Stale entry - DHT listener was suspended/cancelled but engine not updated */
                 QGP_LOG_WARN(LOG_TAG, "[LISTEN] Stale entry (token=%zu inactive in DHT), recreating",
                              engine->outbox_listeners[i].dht_token);
+                if (engine->outbox_listeners[i].dm_listen_ctx) {
+                    dht_dm_outbox_unsubscribe(dht_ctx, engine->outbox_listeners[i].dm_listen_ctx);
+                    engine->outbox_listeners[i].dm_listen_ctx = NULL;
+                }
                 engine->outbox_listeners[i].active = false;
                 /* Don't return - continue to create new listener */
                 break;
@@ -6217,27 +6271,6 @@ size_t dna_engine_listen_outbox(
         return 0;
     }
 
-    /* Generate chunk[0] key for contact's outbox to me.
-     * Chunked storage uses: SHA3-512(base_key + ":chunk:0")[0:32]
-     * Base key format: contact_fp + ":outbox:" + my_fp */
-    char base_key[512];
-    snprintf(base_key, sizeof(base_key), "%s:outbox:%s",
-             contact_fingerprint, engine->fingerprint);
-
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] base_key=%s", base_key);
-
-    uint8_t chunk0_key[DHT_CHUNK_KEY_SIZE];  /* 32 bytes */
-    if (dht_chunked_make_key(base_key, 0, chunk0_key) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to generate chunk key");
-        pthread_mutex_unlock(&engine->outbox_listeners_mutex);
-        return 0;
-    }
-
-    /* Log chunk0_key for debugging key mismatch issues */
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] chunk0_key=%02x%02x%02x%02x%02x%02x%02x%02x...",
-                 chunk0_key[0], chunk0_key[1], chunk0_key[2], chunk0_key[3],
-                 chunk0_key[4], chunk0_key[5], chunk0_key[6], chunk0_key[7]);
-
     /* Create callback context (will be freed when listener is cancelled) */
     outbox_listener_ctx_t *ctx = malloc(sizeof(outbox_listener_ctx_t));
     if (!ctx) {
@@ -6249,16 +6282,30 @@ size_t dna_engine_listen_outbox(
     strncpy(ctx->contact_fingerprint, contact_fingerprint, sizeof(ctx->contact_fingerprint) - 1);
     ctx->contact_fingerprint[sizeof(ctx->contact_fingerprint) - 1] = '\0';
 
-    /* Start DHT listen on chunk[0] key */
-    QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Calling dht_listen_ex() with cleanup callback...");
-    size_t token = dht_listen_ex(dht_ctx, chunk0_key, DHT_CHUNK_KEY_SIZE,
-                                  outbox_listen_callback, ctx, outbox_listener_cleanup);
-    if (token == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] dht_listen_ex() returned 0 (failed)");
-        /* ctx already freed by cleanup callback in dht_listen_ex */
+    /*
+     * v0.4.81: Use daily bucket subscribe with day rotation support.
+     * Key format: contact_fp:outbox:my_fp:DAY_BUCKET
+     * Day rotation is handled by dht_dm_outbox_check_day_rotation() called from heartbeat.
+     */
+    QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Calling dht_dm_outbox_subscribe() for daily bucket...");
+
+    dht_dm_listen_ctx_t *dm_listen_ctx = NULL;
+    int result = dht_dm_outbox_subscribe(dht_ctx,
+                                          engine->fingerprint,      /* my_fp (recipient) */
+                                          contact_fingerprint,      /* contact_fp (sender) */
+                                          outbox_listen_callback,
+                                          ctx,
+                                          &dm_listen_ctx);
+
+    if (result != 0 || !dm_listen_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] dht_dm_outbox_subscribe() failed");
+        free(ctx);
         pthread_mutex_unlock(&engine->outbox_listeners_mutex);
         return 0;
     }
+
+    /* Get token from dm_listen_ctx */
+    size_t token = dm_listen_ctx->listen_token;
 
     /* Store listener info */
     int idx = engine->outbox_listener_count++;
@@ -6268,9 +6315,10 @@ size_t dna_engine_listen_outbox(
         sizeof(engine->outbox_listeners[idx].contact_fingerprint) - 1] = '\0';
     engine->outbox_listeners[idx].dht_token = token;
     engine->outbox_listeners[idx].active = true;
+    engine->outbox_listeners[idx].dm_listen_ctx = dm_listen_ctx;
 
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] ✓ DHT listener active: token=%zu, total_listeners=%d",
-                 token, engine->outbox_listener_count);
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] ✓ Daily bucket listener active: token=%zu, day=%lu, total=%d",
+                 token, (unsigned long)dm_listen_ctx->current_day, engine->outbox_listener_count);
 
     pthread_mutex_unlock(&engine->outbox_listeners_mutex);
     return token;
@@ -6292,12 +6340,16 @@ void dna_engine_cancel_outbox_listener(
         if (engine->outbox_listeners[i].active &&
             strcmp(engine->outbox_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
 
-            /* Cancel DHT listener */
-            if (dht_ctx) {
+            /* Cancel daily bucket listener (v0.4.81+) */
+            if (engine->outbox_listeners[i].dm_listen_ctx) {
+                dht_dm_outbox_unsubscribe(dht_ctx, engine->outbox_listeners[i].dm_listen_ctx);
+                engine->outbox_listeners[i].dm_listen_ctx = NULL;
+            } else if (dht_ctx && engine->outbox_listeners[i].dht_token != 0) {
+                /* Legacy fallback: direct DHT cancel */
                 dht_cancel_listen(dht_ctx, engine->outbox_listeners[i].dht_token);
             }
 
-            QGP_LOG_INFO(LOG_TAG, "Cancelled outbox listener for %s... (token=%zu)",
+            QGP_LOG_INFO(LOG_TAG, "Cancelled outbox listener for %.32s... (token=%zu)",
                          contact_fingerprint, engine->outbox_listeners[i].dht_token);
 
             /* Mark as inactive (compact later) */

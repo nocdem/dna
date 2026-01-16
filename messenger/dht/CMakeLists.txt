@@ -22,6 +22,7 @@ set(DHT_COMMON_SOURCES
     # Shared modules (Phase 4)
     shared/dht_value_storage.cpp
     shared/dht_offline_queue.c
+    shared/dht_dm_outbox.c    # Daily bucket DM outbox (v0.4.81+)
     shared/dht_groups.c
     shared/dht_profile.c
     shared/dht_gek_storage.c  # GEK chunked storage
