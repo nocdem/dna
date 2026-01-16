@@ -676,23 +676,31 @@ static void transport_message_received_internal(
             }
             json_object_put(j_msg);
         }
-        free(plaintext);
+        // v14: Don't free plaintext here - we need it for backup save below
     }
 
     time_t msg_timestamp = sender_timestamp ? (time_t)sender_timestamp : time(NULL);
 
-    int result = message_backup_save(
-        ctx->backup_ctx,
-        sender_identity,
-        ctx->identity,
-        message,
-        message_len,
-        msg_timestamp,
-        false,
-        0,
-        message_type,
-        0
-    );
+    // v14: Save plaintext message (not encrypted ciphertext)
+    // Only save if decryption succeeded
+    int result = -1;
+    if (decrypt_result == DNA_OK && plaintext && plaintext_len > 0) {
+        result = message_backup_save(
+            ctx->backup_ctx,
+            sender_identity,        // sender fingerprint
+            ctx->identity,          // recipient fingerprint
+            (const char*)plaintext, // plaintext message (v14)
+            sender_identity,        // sender_fingerprint for duplicate detection (v14)
+            msg_timestamp,
+            false,                  // is_outgoing = false (incoming message)
+            0,                      // group_id (0 for direct messages)
+            message_type,
+            0                       // offline_seq (0 for incoming)
+        );
+        free(plaintext);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "Cannot save message - decryption failed (result=%d)\n", decrypt_result);
+    }
 
     if (result == 0) {
         QGP_LOG_INFO(LOG_TAG, "Message from %s stored (type=%d)\n", sender_identity, message_type);

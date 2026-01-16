@@ -134,14 +134,14 @@ static char* serialize_messages_to_json(
             json_object_object_add(msg_obj, "sender", json_object_new_string(messages[m].sender));
             json_object_object_add(msg_obj, "recipient", json_object_new_string(messages[m].recipient));
 
-            // Base64 encode the encrypted message
-            char *enc_b64 = qgp_base64_encode(messages[m].encrypted_message, messages[m].encrypted_len, NULL);
-            if (enc_b64) {
-                json_object_object_add(msg_obj, "encrypted_message_base64", json_object_new_string(enc_b64));
-                free(enc_b64);
+            // v3: Store plaintext directly (v14 schema - no encryption in DB)
+            if (messages[m].plaintext) {
+                json_object_object_add(msg_obj, "plaintext", json_object_new_string(messages[m].plaintext));
             }
-
-            json_object_object_add(msg_obj, "encrypted_len", json_object_new_int64(messages[m].encrypted_len));
+            // Store sender fingerprint for duplicate detection
+            if (messages[m].sender_fingerprint[0] != '\0') {
+                json_object_object_add(msg_obj, "sender_fingerprint", json_object_new_string(messages[m].sender_fingerprint));
+            }
             json_object_object_add(msg_obj, "timestamp", json_object_new_int64(messages[m].timestamp));
             json_object_object_add(msg_obj, "is_outgoing", json_object_new_boolean(
                 strcmp(messages[m].sender, fingerprint) == 0));
@@ -292,68 +292,63 @@ static int deserialize_and_import_messages(
         json_object *msg_obj = json_object_array_get_idx(messages_array, i);
         if (!msg_obj) continue;
 
-        // Extract fields
+        // Extract fields (v3 format: plaintext instead of encrypted_message)
         json_object *sender_obj = NULL, *recipient_obj = NULL;
-        json_object *enc_b64_obj = NULL, *timestamp_obj = NULL;
+        json_object *plaintext_obj = NULL, *timestamp_obj = NULL;
         json_object *is_outgoing_obj = NULL, *group_id_obj = NULL;
-        json_object *message_type_obj = NULL;
+        json_object *message_type_obj = NULL, *sender_fp_obj = NULL;
 
         json_object_object_get_ex(msg_obj, "sender", &sender_obj);
         json_object_object_get_ex(msg_obj, "recipient", &recipient_obj);
-        json_object_object_get_ex(msg_obj, "encrypted_message_base64", &enc_b64_obj);
+        json_object_object_get_ex(msg_obj, "plaintext", &plaintext_obj);
         json_object_object_get_ex(msg_obj, "timestamp", &timestamp_obj);
         json_object_object_get_ex(msg_obj, "is_outgoing", &is_outgoing_obj);
         json_object_object_get_ex(msg_obj, "group_id", &group_id_obj);
         json_object_object_get_ex(msg_obj, "message_type", &message_type_obj);
+        json_object_object_get_ex(msg_obj, "sender_fingerprint", &sender_fp_obj);
 
-        if (!sender_obj || !recipient_obj || !enc_b64_obj || !timestamp_obj) {
-            QGP_LOG_WARN(LOG_TAG, "Skipping message %zu: missing required fields", i);
+        // v3 requires plaintext field - skip old v2 encrypted format
+        if (!sender_obj || !recipient_obj || !plaintext_obj || !timestamp_obj) {
+            // Check if this is old v2 encrypted format
+            json_object *enc_b64_obj = NULL;
+            if (json_object_object_get_ex(msg_obj, "encrypted_message_base64", &enc_b64_obj)) {
+                QGP_LOG_WARN(LOG_TAG, "Skipping message %zu: old v2 encrypted format not supported in v3", i);
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "Skipping message %zu: missing required fields", i);
+            }
             skipped++;
             continue;
         }
 
         const char *sender = json_object_get_string(sender_obj);
         const char *recipient = json_object_get_string(recipient_obj);
-        const char *enc_b64 = json_object_get_string(enc_b64_obj);
+        const char *plaintext = json_object_get_string(plaintext_obj);
         time_t timestamp = (time_t)json_object_get_int64(timestamp_obj);
         bool is_outgoing = is_outgoing_obj ? json_object_get_boolean(is_outgoing_obj) : false;
         int group_id = group_id_obj ? json_object_get_int(group_id_obj) : 0;
         int message_type = message_type_obj ? json_object_get_int(message_type_obj) : 0;
+        const char *sender_fp = sender_fp_obj ? json_object_get_string(sender_fp_obj) : sender;
 
-        // Decode base64 encrypted message
-        size_t enc_len = 0;
-        uint8_t *encrypted_message = qgp_base64_decode(enc_b64, &enc_len);
-        if (!encrypted_message || enc_len == 0) {
-            QGP_LOG_WARN(LOG_TAG, "Skipping message %zu: failed to decode base64", i);
-            if (encrypted_message) free(encrypted_message);
-            skipped++;
-            continue;
-        }
-
-        // Check if message already exists (duplicate check)
-        if (message_backup_exists_ciphertext(msg_ctx, encrypted_message, enc_len)) {
+        // Check if message already exists (v3: use sender_fp + recipient + timestamp)
+        if (message_backup_exists(msg_ctx, sender_fp, recipient, timestamp)) {
             QGP_LOG_DEBUG(LOG_TAG, "Skipping message %zu: duplicate", i);
-            free(encrypted_message);
             skipped++;
             continue;
         }
 
-        // Import message to SQLite
-        // Legacy backups don't have offline_seq, so pass 0
+        // Import message to SQLite (v3 format: plaintext)
         int result = message_backup_save(
             msg_ctx,
             sender,
             recipient,
-            encrypted_message,
-            enc_len,
+            plaintext,      // v3: plaintext message
+            sender_fp,      // v3: sender fingerprint
             timestamp,
             is_outgoing,
             group_id,
             message_type,
-            0  // offline_seq = 0 (legacy backup format)
+            0  // offline_seq = 0 (backup doesn't preserve this)
         );
-
-        free(encrypted_message);
 
         if (result == 0) {
             restored++;

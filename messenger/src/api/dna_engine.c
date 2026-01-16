@@ -5530,7 +5530,8 @@ static bool is_ready_for_retry(backup_message_t *msg) {
 /**
  * Retry a single pending/failed message
  *
- * Re-queues the message to DHT with a new seq_num.
+ * v14: Re-encrypts plaintext and queues to DHT with a new seq_num.
+ * Uses messenger_send_message which handles encryption, DHT queueing, and duplicate detection.
  * Status stays PENDING until watermark confirms DELIVERED. Increments retry_count on failure.
  *
  * @param engine Engine instance
@@ -5541,36 +5542,43 @@ static int retry_single_message(dna_engine_t *engine, backup_message_t *msg) {
     if (!engine || !msg) return -1;
     if (!engine->messenger) return -1;
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-    if (!dht_ctx) return -1;
-
     message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
     if (!backup_ctx) return -1;
 
-    const char *my_fp = dna_engine_get_fingerprint(engine);
-    if (!my_fp) return -1;
+    /* v14: Messages are stored as plaintext - need to re-encrypt before sending */
+    if (!msg->plaintext || strlen(msg->plaintext) == 0) {
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Message %d has no plaintext - cannot retry", msg->id);
+        return -1;
+    }
 
-    /* Get a new seq_num for this recipient */
-    uint64_t seq_num = message_backup_get_next_seq(backup_ctx, msg->recipient);
-
-    /* Re-queue to DHT */
-    int rc = dht_queue_message(
-        dht_ctx,
-        my_fp,
-        msg->recipient,
-        msg->encrypted_message,
-        msg->encrypted_len,
-        seq_num,
-        DHT_OFFLINE_QUEUE_DEFAULT_TTL
+    /* Call messenger_send_message to re-encrypt and send
+     * This handles:
+     * - Loading recipient's Kyber public key
+     * - Multi-recipient encryption
+     * - DHT queueing
+     * - Duplicate detection (skips DB save if message exists) */
+    const char *recipients[] = { msg->recipient };
+    int rc = messenger_send_message(
+        engine->messenger,
+        recipients,
+        1,                      /* recipient_count */
+        msg->plaintext,         /* message content */
+        msg->group_id,          /* group_id (0 for direct) */
+        msg->message_type       /* message_type */
     );
 
-    if (rc == 0) {
-        /* Success - queued to DHT (async)
-         * Status stays PENDING - will become DELIVERED via watermark confirmation.
-         * With async PUT, rc=0 just means "queued", not "stored in DHT". */
-        QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d to %.20s... queued (seq=%llu, status=PENDING)",
-                     msg->id, msg->recipient, (unsigned long long)seq_num);
+    if (rc == 0 || rc == 1) {
+        /* Success - queued to DHT (rc=0) or duplicate skipped (rc=1)
+         * Status stays PENDING - will become DELIVERED via watermark confirmation. */
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d to %.20s... re-encrypted and queued (status=PENDING)",
+                     msg->id, msg->recipient);
         return 0;
+    } else if (rc == -3) {
+        /* KEY_UNAVAILABLE - recipient's public key not cached and DHT unavailable
+         * Don't increment retry count - will retry when DHT reconnects */
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Message %d to %.20s... key unavailable (will retry later)",
+                     msg->id, msg->recipient);
+        return -1;
     } else {
         /* Failed - increment retry count */
         message_backup_increment_retry_count(backup_ctx, msg->id);

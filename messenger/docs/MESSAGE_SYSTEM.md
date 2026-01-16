@@ -1111,26 +1111,33 @@ if (qgp_sha3_512(sender_sign_key->public_key,
 ### 9.1 Messages Table (messages.db)
 
 ```sql
--- Source: message_backup.c:48-64
+-- Source: message_backup.c - Schema v14
+-- NOTE: v14 stores plaintext directly (no per-message encryption)
+--       Database encryption handled by SQLCipher in future update
 
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   sender TEXT NOT NULL,
   recipient TEXT NOT NULL,
-  sender_fingerprint BLOB,          -- SHA3-512 fingerprint (64 bytes, v0.07)
-  encrypted_message BLOB NOT NULL,  -- Encrypted ciphertext
-  encrypted_len INTEGER NOT NULL,   -- Ciphertext length
+  sender_fingerprint TEXT,          -- SHA3-512 fingerprint (128 hex chars, v14)
+  plaintext TEXT NOT NULL,          -- Decrypted message content (v14)
   timestamp INTEGER NOT NULL,
   delivered INTEGER DEFAULT 1,
   read INTEGER DEFAULT 0,
   is_outgoing INTEGER DEFAULT 0,
-  status INTEGER DEFAULT 1,         -- 0=PENDING, 1=SENT(legacy), 2=FAILED, 3=DELIVERED, 4=READ
+  status INTEGER DEFAULT 1,         -- 0=PENDING, 1=SENT(legacy), 2=FAILED, 3=DELIVERED, 4=READ, 5=STALE
   group_id INTEGER DEFAULT 0,       -- 0=direct message, >0=group ID
   message_type INTEGER DEFAULT 0,   -- 0=chat, 1=group_invitation
   invitation_status INTEGER DEFAULT 0,  -- 0=pending, 1=accepted, 2=declined
-  retry_count INTEGER DEFAULT 0     -- (v10) Retry attempts for failed messages
+  retry_count INTEGER DEFAULT 0,    -- Retry attempts for failed messages
+  offline_seq INTEGER DEFAULT 0     -- DHT offline queue sequence number
 );
 ```
+
+**Breaking Change (v14):** Schema v14 is incompatible with v13 and earlier.
+- Old `encrypted_message BLOB` replaced with `plaintext TEXT`
+- Migration: Old messages table dropped, fresh start required
+- Transport encryption (DHT) remains unchanged - only storage changed
 
 ### 9.2 Indexes
 

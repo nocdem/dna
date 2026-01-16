@@ -73,9 +73,10 @@ extern "C" {
 
 // Magic bytes for message backup format validation
 #define DHT_MSGBACKUP_MAGIC 0x4D534742  // "MSGB"
-#define DHT_MSGBACKUP_VERSION 2
+#define DHT_MSGBACKUP_VERSION 3
 
 // Version 2 adds GEK and group data to backup
+// Version 3 changes encrypted_message to plaintext (v14 schema)
 
 // Default TTL: 7 days (604,800 seconds)
 #define DHT_MSGBACKUP_DEFAULT_TTL 604800

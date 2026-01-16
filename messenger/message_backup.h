@@ -54,14 +54,15 @@ typedef struct message_backup_context message_backup_context_t;
 
 /**
  * Message Structure (for retrieval)
- * NOTE: Messages stored ENCRYPTED in database for security
+ * NOTE: Messages stored as PLAINTEXT in database (v14+)
+ *       Database encryption will be handled by SQLCipher later
  */
 typedef struct {
     int id;
     char sender[256];
     char recipient[256];
-    uint8_t *encrypted_message;  // Encrypted ciphertext (binary)
-    size_t encrypted_len;
+    char *plaintext;                      // Decrypted message content (UTF-8)
+    char sender_fingerprint[129];         // Sender fingerprint hex (128 chars + null)
     time_t timestamp;
     bool delivered;
     bool read;
@@ -70,6 +71,7 @@ typedef struct {
     int message_type;  // 0=chat, 1=group_invitation - Phase 6.2
     int invitation_status;  // 0=pending, 1=accepted, 2=declined - Phase 6.2
     int retry_count;  // Number of send retry attempts (for failed messages)
+    bool is_outgoing;  // true if we sent it, false if we received it
 } backup_message_t;
 
 /**
@@ -84,30 +86,32 @@ typedef struct {
 message_backup_context_t* message_backup_init(const char *identity);
 
 /**
- * Check if message already exists in database (by ciphertext hash)
+ * Check if message already exists in database (by sender + recipient + timestamp)
  *
  * Prevents duplicate messages from being stored (e.g., when polling DHT offline queue).
  *
  * @param ctx Backup context
- * @param encrypted_message Encrypted message ciphertext (binary)
- * @param encrypted_len Length of encrypted message
+ * @param sender_fp Sender fingerprint (hex string)
+ * @param recipient Recipient identity
+ * @param timestamp Message timestamp
  * @return true if message exists, false otherwise
  */
-bool message_backup_exists_ciphertext(message_backup_context_t *ctx,
-                                       const uint8_t *encrypted_message,
-                                       size_t encrypted_len);
+bool message_backup_exists(message_backup_context_t *ctx,
+                           const char *sender_fp,
+                           const char *recipient,
+                           time_t timestamp);
 
 /**
- * Save a message to local backup (ENCRYPTED)
+ * Save a message to local backup (PLAINTEXT)
  *
- * Stores the encrypted ciphertext for security. Messages remain encrypted at rest.
- * Decryption only happens in RAM when displaying to user.
+ * Stores the decrypted plaintext directly. Database encryption will be
+ * handled at the SQLite level (SQLCipher) in a future update.
  *
  * @param ctx Backup context
- * @param sender Sender identity
- * @param recipient Recipient identity
- * @param encrypted_message Encrypted message ciphertext (binary)
- * @param encrypted_len Length of encrypted message
+ * @param sender Sender identity (fingerprint hex)
+ * @param recipient Recipient identity (fingerprint hex)
+ * @param plaintext Decrypted message content (UTF-8)
+ * @param sender_fingerprint Sender's fingerprint (hex, 128 chars)
  * @param timestamp Message timestamp
  * @param is_outgoing true if we sent it, false if we received it
  * @param group_id Group ID (0 for direct messages, >0 for group) - Phase 5.2
@@ -117,8 +121,8 @@ bool message_backup_exists_ciphertext(message_backup_context_t *ctx,
 int message_backup_save(message_backup_context_t *ctx,
                         const char *sender,
                         const char *recipient,
-                        const uint8_t *encrypted_message,
-                        size_t encrypted_len,
+                        const char *plaintext,
+                        const char *sender_fingerprint,
                         time_t timestamp,
                         bool is_outgoing,
                         int group_id,

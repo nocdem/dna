@@ -135,7 +135,10 @@ IKP functions for distributing GEK to group members via Kyber1024 encryption.
 
 **File:** `message_backup.h`
 
-Local SQLite database for message backup. Stores encrypted messages per-identity at `~/.dna/<fingerprint>_messages.db`.
+Local SQLite database for message backup. Stores **plaintext** messages per-identity at `~/.dna/db/messages.db` (v14).
+
+**v14 Schema Change:** Messages stored as plaintext (previously encrypted BLOB).
+Database-level encryption (SQLCipher) planned for future.
 
 ### 4.1 Initialization
 
@@ -149,8 +152,8 @@ Local SQLite database for message backup. Stores encrypted messages per-identity
 
 | Function | Description |
 |----------|-------------|
-| `int message_backup_save(...)` | Save encrypted message to local backup |
-| `bool message_backup_exists_ciphertext(...)` | Check if message exists by ciphertext hash |
+| `int message_backup_save(ctx, sender, recipient, plaintext, sender_fp, timestamp, is_outgoing, group_id, message_type, offline_seq)` | Save plaintext message to local backup (v14) |
+| `bool message_backup_exists(ctx, sender_fp, recipient, timestamp)` | Check if message exists (v14: by sender_fp+recipient+timestamp) |
 | `int message_backup_delete(message_backup_context_t*, int)` | Delete message by ID |
 | `void message_backup_free_messages(backup_message_t*, int)` | Free message array |
 

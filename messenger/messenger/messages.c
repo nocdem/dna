@@ -469,8 +469,8 @@ int messenger_send_message(
             ctx->backup_ctx,
             ctx->identity,      // sender
             recipients[i],      // recipient
-            ciphertext,         // encrypted message
-            ciphertext_len,     // encrypted length
+            message,            // plaintext (v14 - decrypted message)
+            ctx->identity,      // sender_fingerprint (v14)
             now,                // timestamp
             true,               // is_outgoing = true (we're sending)
             group_id,           // group_id (0 for direct, >0 for group) - Phase 6.2
@@ -668,127 +668,37 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     }
 
     const char *sender = target_msg->sender;
-    const uint8_t *ciphertext = target_msg->encrypted_message;
-    size_t ciphertext_len = target_msg->encrypted_len;
 
     printf("\n========================================\n");
     printf(" Message #%d from %s\n", message_id, sender);
     printf("========================================\n\n");
 
-    // Load recipient's private Kyber1024 key (ML-KEM-1024) from filesystem
-    // v0.3.0: Flat structure - keys/identity.kem
-    const char *home_kyber1 = qgp_platform_app_data_dir();
-    char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", home_kyber1);
-
-    qgp_key_t *kyber_key = NULL;
-    if (qgp_key_load(kyber_path, &kyber_key) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Cannot load private key from %s", kyber_path);
+    // v14: Messages are stored as plaintext - no decryption needed
+    const char *plaintext = target_msg->plaintext;
+    if (!plaintext) {
+        QGP_LOG_ERROR(LOG_TAG, "Message %d has no plaintext content", message_id);
         message_backup_free_messages(all_messages, all_count);
         return -1;
-    }
-
-    if (kyber_key->private_key_size != 3168) {  // Kyber1024 secret key size
-        QGP_LOG_ERROR(LOG_TAG, "Invalid Kyber1024 private key size: %zu (expected 3168)",
-                kyber_key->private_key_size);
-        qgp_key_free(kyber_key);
-        message_backup_free_messages(all_messages, all_count);
-        return -1;
-    }
-
-    // Decrypt message using raw key
-    uint8_t *plaintext = NULL;
-    size_t plaintext_len = 0;
-    uint8_t *sender_sign_pubkey_from_msg = NULL;
-    size_t sender_sign_pubkey_len = 0;
-    uint8_t *signature = NULL;
-    size_t signature_len = 0;
-    uint64_t sender_timestamp = 0;
-
-    dna_error_t err = dna_decrypt_message_raw(
-        ctx->dna_ctx,
-        ciphertext,
-        ciphertext_len,
-        kyber_key->private_key,
-        &plaintext,
-        &plaintext_len,
-        &sender_sign_pubkey_from_msg,  // v0.07: This is now 64-byte fingerprint, not pubkey
-        &sender_sign_pubkey_len,
-        &signature,
-        &signature_len,
-        &sender_timestamp  // v0.08: Extract sender's timestamp
-    );
-
-    // Free Kyber key (secure wipes private key internally)
-    qgp_key_free(kyber_key);
-
-    if (err != DNA_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Decryption failed: %s", dna_error_string(err));
-        message_backup_free_messages(all_messages, all_count);
-        return -1;
-    }
-
-    // v0.07: sender_sign_pubkey_from_msg is now the 64-byte fingerprint
-    // Look up actual pubkey from keyserver using fingerprint
-    uint8_t *sender_sign_pubkey_keyserver = NULL;
-    uint8_t *sender_enc_pubkey_keyserver = NULL;
-    size_t sender_sign_len_keyserver = 0, sender_enc_len_keyserver = 0;
-
-    // Convert fingerprint to hex for keyserver lookup
-    char fingerprint_hex[129];
-    for (int i = 0; i < 64; i++) {
-        sprintf(fingerprint_hex + (i * 2), "%02x", sender_sign_pubkey_from_msg[i]);
-    }
-    fingerprint_hex[128] = '\0';
-
-    // Query keyserver by fingerprint (cache-first, then DHT)
-    int sig_verified = 0;
-    if (messenger_load_pubkey(ctx, sender, &sender_sign_pubkey_keyserver, &sender_sign_len_keyserver,
-                               &sender_enc_pubkey_keyserver, &sender_enc_len_keyserver, NULL) != 0) {
-        QGP_LOG_WARN(LOG_TAG, "Could not load sender '%s' pubkey from keyserver", sender);
-        QGP_LOG_WARN(LOG_TAG, "Message decrypted but signature NOT verified!");
-        QGP_LOG_WARN(LOG_TAG, "Fingerprint: %s", fingerprint_hex);
-    } else {
-        // v0.07: Verify signature using looked-up public key
-        if (signature && signature_len > 0) {
-            if (qgp_dsa87_verify(signature, signature_len, plaintext, plaintext_len,
-                                 sender_sign_pubkey_keyserver) == 0) {
-                sig_verified = 1;
-            } else {
-                QGP_LOG_ERROR(LOG_TAG, "✗ Signature verification FAILED (fingerprint: %.16s...)\n", fingerprint_hex);
-                QGP_LOG_WARN(LOG_TAG, "Message may be forged or corrupted!");
-            }
-        } else {
-            QGP_LOG_ERROR(LOG_TAG, "No signature found in message\n");
-        }
-        free(sender_sign_pubkey_keyserver);
-        free(sender_enc_pubkey_keyserver);
     }
 
     // Display message
     printf("Message:\n");
     printf("----------------------------------------\n");
-    printf("%.*s\n", (int)plaintext_len, plaintext);
+    printf("%s\n", plaintext);
     printf("----------------------------------------\n");
 
-    // Display sender timestamp (v0.08)
-    struct tm *tm_info = localtime((time_t*)&sender_timestamp);
+    // Display timestamp
+    struct tm *tm_info = localtime(&target_msg->timestamp);
     char time_str[64];
     strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
-    printf("Sent: %s (sender's time)\n", time_str);
+    printf("Sent: %s\n", time_str);
 
-    if (sig_verified) {
-        printf("✓ Signature verified from %s\n", sender);
-        printf("✓ Sender identity verified against keyserver\n");
-    } else {
-        printf("⚠ WARNING: Signature NOT verified!\n");
-        printf("  Sender: %s (unverified)\n", sender);
+    // Display sender fingerprint if available
+    if (target_msg->sender_fingerprint[0] != '\0') {
+        printf("Sender fingerprint: %.20s...\n", target_msg->sender_fingerprint);
     }
 
     // Cleanup
-    free(plaintext);
-    free(sender_sign_pubkey_from_msg);
-    if (signature) free(signature);
     message_backup_free_messages(all_messages, all_count);
     printf("\n");
     return 0;
@@ -801,7 +711,7 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
     }
 
     // Fetch message from SQLite local database
-    // Support decrypting both received messages (recipient = identity) AND sent messages (sender = identity)
+    // Support both received messages (recipient = identity) AND sent messages (sender = identity)
     backup_message_t *all_messages = NULL;
     int all_count = 0;
 
@@ -826,77 +736,25 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
         return -1;
     }
 
-    const uint8_t *ciphertext = target_msg->encrypted_message;
-    size_t ciphertext_len = target_msg->encrypted_len;
-
-    // Load recipient's private Kyber1024 key (ML-KEM-1024) from filesystem
-    // v0.3.0: Flat structure - keys/identity.kem
-    const char *home_kyber2 = qgp_platform_app_data_dir();
-    char kyber_path2[512];
-    snprintf(kyber_path2, sizeof(kyber_path2), "%s/keys/identity.kem", home_kyber2);
-
-    qgp_key_t *kyber_key = NULL;
-    if (qgp_key_load(kyber_path2, &kyber_key) != 0) {
+    // v14: Messages are stored as plaintext - no decryption needed
+    const char *plaintext = target_msg->plaintext;
+    if (!plaintext) {
+        QGP_LOG_ERROR(LOG_TAG, "Message %d has no plaintext content", message_id);
         message_backup_free_messages(all_messages, all_count);
         return -1;
     }
 
-    if (kyber_key->private_key_size != 3168) {  // Kyber1024 secret key size
-        qgp_key_free(kyber_key);
-        message_backup_free_messages(all_messages, all_count);
-        return -1;
-    }
+    size_t plaintext_len = strlen(plaintext);
 
-    // Decrypt message using raw key
-    uint8_t *plaintext = NULL;
-    size_t plaintext_len = 0;
-    uint8_t *sender_sign_pubkey_from_msg = NULL;
-    size_t sender_sign_pubkey_len = 0;
-    uint8_t *signature = NULL;
-    size_t signature_len = 0;
-    uint64_t sender_timestamp = 0;
-
-    dna_error_t err = dna_decrypt_message_raw(
-        ctx->dna_ctx,
-        ciphertext,
-        ciphertext_len,
-        kyber_key->private_key,
-        &plaintext,
-        &plaintext_len,
-        &sender_sign_pubkey_from_msg,  // v0.07: Now 64-byte fingerprint
-        &sender_sign_pubkey_len,
-        &signature,
-        &signature_len,
-        &sender_timestamp  // v0.08: Extract sender's timestamp
-    );
-
-    // Free Kyber key (secure wipes private key internally)
-    qgp_key_free(kyber_key);
-
-    if (err != DNA_OK) {
-        message_backup_free_messages(all_messages, all_count);
-        return -1;
-    }
-
-    // v0.07: sender_sign_pubkey_from_msg is 64-byte fingerprint
-    // Keyserver lookup and signature verification handled by caller if needed
-
-    free(sender_sign_pubkey_from_msg);
-    if (signature) free(signature);
-    message_backup_free_messages(all_messages, all_count);
-
-    // Return plaintext as null-terminated string
-    *plaintext_out = (char*)malloc(plaintext_len + 1);
+    // Return plaintext as null-terminated string (caller must free)
+    *plaintext_out = strdup(plaintext);
     if (!*plaintext_out) {
-        free(plaintext);
+        message_backup_free_messages(all_messages, all_count);
         return -1;
     }
 
-    memcpy(*plaintext_out, plaintext, plaintext_len);
-    (*plaintext_out)[plaintext_len] = '\0';
     *plaintext_len_out = plaintext_len;
-
-    free(plaintext);
+    message_backup_free_messages(all_messages, all_count);
     return 0;
 }
 
@@ -1048,28 +906,7 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
         return -1;
     }
 
-    // Load Kyber key ONCE for all decryptions (massive performance improvement)
-    const char *home_kyber = qgp_platform_app_data_dir();
-    char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", home_kyber);
-
-    qgp_key_t *kyber_key = NULL;
-    if (qgp_key_load(kyber_path, &kyber_key) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key for decryption");
-        free(messages);
-        message_backup_free_messages(backup_messages, backup_count);
-        return -1;
-    }
-
-    if (kyber_key->private_key_size != 3168) {  // Kyber1024 secret key size
-        QGP_LOG_ERROR(LOG_TAG, "Invalid Kyber key size: %zu", kyber_key->private_key_size);
-        qgp_key_free(kyber_key);
-        free(messages);
-        message_backup_free_messages(backup_messages, backup_count);
-        return -1;
-    }
-
-    // Convert and decrypt each message
+    // v14: No decryption needed - messages stored as plaintext
     for (int i = 0; i < backup_count; i++) {
         messages[i].id = backup_messages[i].id;
         messages[i].sender = strdup(backup_messages[i].sender);
@@ -1083,7 +920,6 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
         }
 
         // Convert status int to string: 0=pending, 1=sent, 2=failed, 3=delivered, 4=read
-        // Check status field FIRST, fall back to read/delivered flags only for old messages
         if (backup_messages[i].status == 4) {
             messages[i].status = strdup("read");
         } else if (backup_messages[i].status == 3) {
@@ -1105,53 +941,12 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
             }
         }
 
-        // For now, we don't have separate timestamps for delivered/read
-        // We could add these to SQLite schema later if needed
         messages[i].delivered_at = backup_messages[i].delivered ? strdup(messages[i].timestamp) : NULL;
         messages[i].read_at = backup_messages[i].read ? strdup(messages[i].timestamp) : NULL;
-        messages[i].message_type = backup_messages[i].message_type;  // Phase 6.2: Copy message type
+        messages[i].message_type = backup_messages[i].message_type;
 
-        // Decrypt message inline (key already loaded - no disk I/O per message)
-        if (backup_messages[i].encrypted_message && backup_messages[i].encrypted_len > 0) {
-            uint8_t *plaintext = NULL;
-            size_t plaintext_len = 0;
-            uint8_t *sender_fp = NULL;
-            size_t sender_fp_len = 0;
-            uint8_t *signature = NULL;
-            size_t signature_len = 0;
-            uint64_t sender_timestamp = 0;
-
-            dna_error_t err = dna_decrypt_message_raw(
-                ctx->dna_ctx,
-                backup_messages[i].encrypted_message,
-                backup_messages[i].encrypted_len,
-                kyber_key->private_key,
-                &plaintext,
-                &plaintext_len,
-                &sender_fp,
-                &sender_fp_len,
-                &signature,
-                &signature_len,
-                &sender_timestamp
-            );
-
-            if (err == DNA_OK && plaintext) {
-                // Copy plaintext as null-terminated string
-                messages[i].plaintext = (char*)malloc(plaintext_len + 1);
-                if (messages[i].plaintext) {
-                    memcpy(messages[i].plaintext, plaintext, plaintext_len);
-                    messages[i].plaintext[plaintext_len] = '\0';
-                }
-                free(plaintext);
-            } else {
-                messages[i].plaintext = strdup("[Decryption failed]");
-            }
-
-            free(sender_fp);
-            free(signature);
-        } else {
-            messages[i].plaintext = strdup("[No message data]");
-        }
+        // v14: Direct plaintext copy - no decryption needed
+        messages[i].plaintext = backup_messages[i].plaintext ? strdup(backup_messages[i].plaintext) : strdup("");
 
         if (!messages[i].sender || !messages[i].recipient || !messages[i].timestamp || !messages[i].status) {
             // Clean up on failure
@@ -1165,14 +960,10 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
                 free(messages[j].plaintext);
             }
             free(messages);
-            qgp_key_free(kyber_key);
             message_backup_free_messages(backup_messages, backup_count);
             return -1;
         }
     }
-
-    // Free Kyber key after all decryptions (secure wipe)
-    qgp_key_free(kyber_key);
 
     *messages_out = messages;
     message_backup_free_messages(backup_messages, backup_count);
@@ -1220,28 +1011,7 @@ int messenger_get_conversation_page(messenger_context_t *ctx, const char *other_
         return -1;
     }
 
-    // Load Kyber key ONCE for all decryptions
-    const char *home_kyber = qgp_platform_app_data_dir();
-    char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", home_kyber);
-
-    qgp_key_t *kyber_key = NULL;
-    if (qgp_key_load(kyber_path, &kyber_key) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key for decryption");
-        free(messages);
-        message_backup_free_messages(backup_messages, backup_count);
-        return -1;
-    }
-
-    if (kyber_key->private_key_size != 3168) {  // Kyber1024 secret key size
-        QGP_LOG_ERROR(LOG_TAG, "Invalid Kyber key size: %zu", kyber_key->private_key_size);
-        qgp_key_free(kyber_key);
-        free(messages);
-        message_backup_free_messages(backup_messages, backup_count);
-        return -1;
-    }
-
-    // Convert and decrypt each message
+    // v14: No decryption needed - messages stored as plaintext
     for (int i = 0; i < backup_count; i++) {
         messages[i].id = backup_messages[i].id;
         messages[i].sender = strdup(backup_messages[i].sender);
@@ -1251,7 +1021,7 @@ int messenger_get_conversation_page(messenger_context_t *ctx, const char *other_
         struct tm *tm_info = localtime(&backup_messages[i].timestamp);
         messages[i].timestamp = (char*)malloc(32);
         if (messages[i].timestamp) {
-            strftime(messages[i].timestamp, 32, "%Y-%m-%d %H:%M:%SS", tm_info);
+            strftime(messages[i].timestamp, 32, "%Y-%m-%d %H:%M:%S", tm_info);
         }
 
         // Convert status int to string
@@ -1280,46 +1050,8 @@ int messenger_get_conversation_page(messenger_context_t *ctx, const char *other_
         messages[i].read_at = backup_messages[i].read ? strdup(messages[i].timestamp) : NULL;
         messages[i].message_type = backup_messages[i].message_type;
 
-        // Decrypt message inline
-        if (backup_messages[i].encrypted_message && backup_messages[i].encrypted_len > 0) {
-            uint8_t *plaintext = NULL;
-            size_t plaintext_len = 0;
-            uint8_t *sender_fp = NULL;
-            size_t sender_fp_len = 0;
-            uint8_t *signature = NULL;
-            size_t signature_len = 0;
-            uint64_t sender_timestamp = 0;
-
-            dna_error_t err = dna_decrypt_message_raw(
-                ctx->dna_ctx,
-                backup_messages[i].encrypted_message,
-                backup_messages[i].encrypted_len,
-                kyber_key->private_key,
-                &plaintext,
-                &plaintext_len,
-                &sender_fp,
-                &sender_fp_len,
-                &signature,
-                &signature_len,
-                &sender_timestamp
-            );
-
-            if (err == DNA_OK && plaintext) {
-                messages[i].plaintext = (char*)malloc(plaintext_len + 1);
-                if (messages[i].plaintext) {
-                    memcpy(messages[i].plaintext, plaintext, plaintext_len);
-                    messages[i].plaintext[plaintext_len] = '\0';
-                }
-                free(plaintext);
-            } else {
-                messages[i].plaintext = strdup("[Decryption failed]");
-            }
-
-            free(sender_fp);
-            free(signature);
-        } else {
-            messages[i].plaintext = strdup("[No message data]");
-        }
+        // v14: Direct plaintext copy - no decryption needed
+        messages[i].plaintext = backup_messages[i].plaintext ? strdup(backup_messages[i].plaintext) : strdup("");
 
         if (!messages[i].sender || !messages[i].recipient || !messages[i].timestamp || !messages[i].status) {
             // Clean up on failure
@@ -1333,13 +1065,11 @@ int messenger_get_conversation_page(messenger_context_t *ctx, const char *other_
                 free(messages[j].plaintext);
             }
             free(messages);
-            qgp_key_free(kyber_key);
             message_backup_free_messages(backup_messages, backup_count);
             return -1;
         }
     }
 
-    qgp_key_free(kyber_key);
     *messages_out = messages;
     message_backup_free_messages(backup_messages, backup_count);
 

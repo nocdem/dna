@@ -913,48 +913,14 @@ int messenger_sync_groups(messenger_context_t *ctx) {
                 continue;
             }
 
-            // Decrypt the message
-            uint8_t *plaintext = NULL;
-            size_t plaintext_len = 0;
-            uint8_t *sender_pubkey = NULL;
-            size_t sender_pubkey_len = 0;
-            uint8_t *signature = NULL;
-            size_t signature_len = 0;
-            uint64_t sender_timestamp = 0;
-
-            dna_error_t err = dna_decrypt_message_raw(
-                ctx->dna_ctx,
-                messages[j].encrypted_message,
-                messages[j].encrypted_len,
-                kyber_key->private_key,  // Kyber1024 private key
-                &plaintext,
-                &plaintext_len,
-                &sender_pubkey,
-                &sender_pubkey_len,
-                &signature,
-                &signature_len,
-                &sender_timestamp  // v0.08: Extract sender's timestamp
-            );
-
-            if (err != DNA_OK || !plaintext) {
-                if (signature) free(signature);
-                continue;  // Skip messages we can't decrypt
+            // v14: Messages are stored as plaintext - no decryption needed
+            const char *plaintext = messages[j].plaintext;
+            if (!plaintext || strlen(plaintext) == 0) {
+                continue;  // Skip empty messages
             }
 
-            // Ensure null-terminated for JSON parsing
-            char *plaintext_str = malloc(plaintext_len + 1);
-            if (!plaintext_str) {
-                free(plaintext);
-                free(sender_pubkey);
-                if (signature) free(signature);
-                continue;
-            }
-            memcpy(plaintext_str, plaintext, plaintext_len);
-            plaintext_str[plaintext_len] = '\0';
-            
             // Try to parse as JSON
-            json_object *j_msg = json_tokener_parse(plaintext_str);
-            free(plaintext_str);
+            json_object *j_msg = json_tokener_parse(plaintext);
             if (j_msg) {
                 json_object *j_type = json_object_object_get(j_msg, "type");
 
@@ -994,16 +960,13 @@ int messenger_sync_groups(messenger_context_t *ctx) {
 
                 json_object_put(j_msg);
             }
-
-            free(plaintext);
-            free(sender_pubkey);
-            if (signature) free(signature);
+            // v14: No signature/plaintext cleanup needed - plaintext is from struct
         }
 
         message_backup_free_messages(messages, message_count);
     }
 
-    // Free Kyber key (secure wipe)
+    // v14: Kyber key no longer needed for plaintext messages
     qgp_key_free(kyber_key);
 
     // Free contacts list
