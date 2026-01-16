@@ -6,10 +6,11 @@ Secure messaging using **NIST Category 5 post-quantum cryptography** (Kyber1024 
 
 ## Status
 
-**Alpha** - Breaking changes expected
+**Beta** - Stable API, active development
 
-- **Library Version:** v0.3.112
-- **Flutter App Version:** v0.99.61
+- **Library Version:** v0.5.2
+- **Flutter App Version:** v0.99.135
+- **Nodus Version:** v0.4.5
 - **Security:** NIST Category 5 (256-bit quantum resistance)
 - **Platforms:** Android, Linux, Windows
 
@@ -52,17 +53,15 @@ cd build && make dna-messenger-cli
 
 See [docs/CLI_TESTING.md](docs/CLI_TESTING.md) for full documentation.
 
-### dna-nodus (v0.4)
+### dna-nodus (v0.4.5)
 
-DHT bootstrap + STUN/TURN server for the DNA network infrastructure.
+DHT bootstrap server for the DNA network infrastructure.
 
-- **Purpose:** Bootstrap peer discovery, DHT persistence, NAT relay
+- **Purpose:** Bootstrap peer discovery, DHT persistence
 - **Security:** Mandatory Dilithium5 signatures on all DHT values
 - **Persistence:** SQLite database survives restarts
 - **Config:** JSON file at `/etc/dna-nodus.conf` (no CLI args)
-- **Ports:**
-  - 4000 (UDP) - DHT operations
-  - 3478 (UDP) - STUN/TURN relay
+- **Port:** 4000 (UDP) - DHT operations
 
 ```bash
 # Build and deploy
@@ -70,11 +69,11 @@ bash /opt/dna-messenger/build-nodus.sh
 ```
 
 **Public Bootstrap Nodes:**
-| Server | IP | DHT | TURN |
-|--------|-----|-----|------|
-| US-1 | 154.38.182.161 | :4000 | :3478 |
-| EU-1 | 164.68.105.227 | :4000 | :3478 |
-| EU-2 | 164.68.116.180 | :4000 | :3478 |
+| Server | IP | DHT Port |
+|--------|-----|----------|
+| US-1 | 154.38.182.161 | 4000 |
+| EU-1 | 164.68.105.227 | 4000 |
+| EU-2 | 164.68.116.180 | 4000 |
 
 See [docs/DNA_NODUS.md](docs/DNA_NODUS.md) for full documentation.
 
@@ -97,11 +96,11 @@ See [docs/DNA_NODUS.md](docs/DNA_NODUS.md) for full documentation.
 - P2P group invitations
 
 ### Networking
-- P2P transport via OpenDHT
-- ICE NAT traversal (libjuice + STUN)
-- 3-tier fallback: LAN direct → ICE → DHT queue
-- ~85-90% direct connection success rate
-- No relay servers required
+- DHT-only transport layer (privacy-first architecture)
+- Spillway Protocol v2 with daily bucket message retrieval
+- No IP address leakage to peers or third parties
+- Offline message queueing via DHT (7-day TTL)
+- Bootstrap nodes for peer discovery only
 
 ### User Profiles
 - Display name, bio, location, website, avatar
@@ -115,9 +114,11 @@ See [docs/DNA_NODUS.md](docs/DNA_NODUS.md) for full documentation.
 - 30-day TTL, 100 messages max
 
 ### cpunk Wallet
-- CPUNK, CELL, KEL token balances
-- Send/receive via Cellframe RPC
-- QR code generation
+- Multi-chain support: CF20 (Cellframe), ERC20, TRC20, SPL
+- Tokens: CPUNK, CELL, KEL, NYS, QEVM, ETH, SOL, TRX, USDT
+- Send tokens directly from chat conversations
+- Address book for saved recipients
+- Send/receive with QR codes
 - Transaction history
 
 ### Security
@@ -275,4 +276,4 @@ Forked from [QGP (Quantum Good Privacy)](https://github.com/nocdem/qgp)
 
 ---
 
-**Warning:** Alpha software. Do not use for sensitive communications yet.
+**Warning:** Beta software. Use with caution for sensitive communications.

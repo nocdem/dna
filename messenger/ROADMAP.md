@@ -1,22 +1,24 @@
 # DNA Messenger - Roadmap
 
-**Version:** 0.1.x | **Last Updated:** 2025-11-28
+**Version:** 0.5.x | **Last Updated:** 2026-01-16
 
 ---
 
 ## Current Status
 
-**Active Development:** Phase 7 (Android UI)
+**Active Development:** Phase 7 (Flutter UI - Cross-Platform)
 
 | Component | Status |
 |-----------|--------|
 | Core Messaging | Production Ready |
 | Group Encryption (GSK) | Production Ready |
-| ICE NAT Traversal | Production Ready |
+| DHT-Only Transport | Production Ready |
+| Spillway Protocol v2 | Production Ready |
 | User Profiles & Avatars | Production Ready |
 | DNA Board (Social) | Alpha |
 | cpunk Wallet | Production Ready |
 | Android SDK (JNI) | Production Ready |
+| Flutter App (Android/Linux/Windows) | Beta |
 
 ---
 
@@ -44,9 +46,9 @@
 - P2P group invitations
 
 ### Networking
-- P2P transport layer (OpenDHT + TCP)
-- ICE NAT traversal (libjuice + STUN)
-- 3-tier fallback: LAN → ICE → DHT queue
+- DHT-only transport layer (privacy-first, no IP leakage)
+- Spillway Protocol v2: daily bucket message architecture
+- Multi-device message sync (v0.4.60)
 - Bootstrap node infrastructure (3 public nodes)
 - DHT value persistence (SQLite-backed)
 
@@ -58,7 +60,7 @@
 
 ### User Profiles
 - Display name, bio, location, website
-- Avatar system (64x64 JPEG, circular display)
+- Avatar system (128x128 JPEG, circular display with crop/pan/zoom)
 - DHT storage with 7-day cache
 - Profile editor and viewer
 
@@ -70,9 +72,11 @@
 - 30-day TTL, 100 messages max
 
 ### cpunk Wallet
-- CPUNK, CELL, KEL token balances
-- Send/receive via Cellframe RPC
-- QR code generation
+- Multi-chain: CF20 (Cellframe), ERC20, TRC20, SPL networks
+- Tokens: CPUNK, CELL, KEL, NYS, QEVM, ETH, SOL, TRX, USDT
+- Send tokens directly from chat (auto-resolves contact wallet)
+- Address book for saved recipients
+- Send/receive with QR codes
 - Transaction history
 
 ### Android SDK (Phase 6)
@@ -87,12 +91,14 @@
 
 ## In Progress
 
-### Phase 7: Android UI
-- Native Kotlin + Jetpack Compose UI
+### Phase 7: Flutter UI (Cross-Platform)
+- Flutter/Dart UI for Android, Linux, Windows
 - Chat list and conversation screens
 - Contact and group management
 - Wallet integration (balances, send)
 - Profile and settings screens
+- Debug log viewer (in-app)
+- Biometric + PIN app lock
 
 ---
 
@@ -109,7 +115,7 @@
 - Kyber1024 session keys (bypasses WebRTC's quantum-vulnerable DTLS)
 - libsrtp2 + AES-256-GCM media encryption
 - libopus audio, libvpx video
-- ICE NAT traversal via libjuice
+- DHT-based signaling (privacy-preserving, no ICE)
 
 ### Phase 10+: Future
 - iOS application
@@ -124,17 +130,20 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 0.5.2 | 2026-01-16 | Memory leak fix in outbox listeners |
+| 0.5.0 | 2026-01-15 | Spillway Protocol v2: daily bucket architecture |
+| 0.4.61 | 2026-01-10 | **ICE/STUN/TURN removal** - DHT-only privacy architecture |
+| 0.4.60 | 2026-01-08 | Multi-device message sync |
+| 0.4.50 | 2025-12-20 | Flutter UI beta (Android/Linux/Windows) |
+| 0.4.0 | 2025-12-15 | Major DM outbox architecture refactor |
+| 0.3.50 | 2025-12-10 | Debug log viewer, app lock (biometric + PIN) |
+| 0.2.0 | 2025-12-01 | Flutter migration begins (ImGui → Flutter) |
 | 0.1.130+ | 2025-11-28 | Android SDK (JNI bindings, Java classes, Gradle project) |
 | 0.1.120+ | 2025-11-21 | GSK group encryption (200x speedup) |
-| 0.1.115 | 2025-11-18 | Message format v0.08, ICE NAT traversal production-ready |
-| 0.1.110 | 2025-11-17 | P2P group invitations, community voting, avatar system |
+| 0.1.115 | 2025-11-18 | Message format v0.08 (fingerprint privacy) |
 | 0.1.100 | 2025-11-16 | DHT refactoring complete, profile system unification |
-| 0.1.90 | 2025-11-13 | Encrypted DHT identity backup |
 | 0.1.80 | 2025-11-10 | ImGui GUI migration (Qt → ImGui) |
-| 0.1.70 | 2025-11-05 | Per-identity contact lists with DHT sync |
-| 0.1.60 | 2025-11-04 | DHT keyserver with signed reverse mappings |
 | 0.1.50 | 2025-11-03 | PostgreSQL → SQLite migration complete |
-| 0.1.40 | 2025-11-02 | Offline message queueing |
 | 0.1.30 | 2025-10-23 | cpunk wallet integration |
 | 0.1.0 | 2025-10-14 | Initial fork from QGP |
 
@@ -143,9 +152,32 @@
 ## Technical Debt
 
 - [ ] Forward secrecy implementation
-- [ ] Multi-device message sync
+- [x] Multi-device message sync (v0.4.60)
 - [ ] Security audit
 - [ ] Performance optimization for large groups (100+ members)
+
+---
+
+## Major Architecture Changes
+
+### v0.5.0: Spillway Protocol v2 (2026-01-15)
+Daily bucket architecture for offline message retrieval:
+- Messages organized by UTC day buckets instead of individual keys
+- Significantly reduced DHT lookups for offline sync
+- Improved multi-device message consistency
+
+### v0.4.61: DHT-Only Architecture (2026-01-10)
+Removed ICE/STUN/TURN for privacy:
+- No IP address leakage to peers or third parties
+- All messaging via DHT (no direct peer connections)
+- Bootstrap nodes provide discovery only, not relay
+- Privacy-first design principle
+
+### v0.2.0: Flutter Migration (2025-12-01)
+UI framework migration:
+- ImGui (C++) → Flutter (Dart)
+- Single codebase for Android, Linux, Windows
+- Native platform integration via FFI
 
 ---
 
@@ -158,4 +190,4 @@
 
 ---
 
-**Project Start:** 2025-10-14 | **Current Phase:** 7 | **Next Milestone:** Android UI (Phase 7)
+**Project Start:** 2025-10-14 | **Current Phase:** 7 | **Next Milestone:** Flutter UI completion + iOS
