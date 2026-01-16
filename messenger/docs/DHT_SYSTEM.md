@@ -1,8 +1,8 @@
 # DHT System Documentation
 
-**Last Updated:** 2025-12-30
+**Last Updated:** 2026-01-16
 **Phase:** 14 (DHT-Only Messaging)
-**Version:** 0.3.0
+**Version:** 0.5.0
 
 Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) system, covering both client operations and the dna-nodus bootstrap server.
 
@@ -685,7 +685,54 @@ void dht_value_storage_free(dht_value_storage_t *storage);
 
 ---
 
-### 5.2 dht_offline_queue.h/c
+### 5.2 dht_dm_outbox.h/c (v0.5.0+)
+
+**Daily bucket system** for 1-1 direct messages - replaces static key outbox.
+
+#### Key Format
+```
+sender_fp:outbox:recipient_fp:DAY_BUCKET
+where DAY_BUCKET = unix_timestamp / 86400
+```
+
+#### Features
+- **TTL-based cleanup**: 7-day auto-expire, no watermark pruning needed
+- **Day rotation**: Listeners rotate at midnight UTC
+- **3-day sync**: Yesterday + today + tomorrow (clock skew tolerance)
+- **Chunked storage**: Supports large message lists per day
+
+#### API
+```c
+// Key generation
+uint64_t dht_dm_outbox_get_day_bucket(void);
+int dht_dm_outbox_make_key(const char *sender_fp, const char *recipient_fp,
+                           uint64_t day_bucket, char *key_out, size_t key_out_size);
+
+// Send
+int dht_dm_queue_message(dht_context_t *ctx, const char *sender, const char *recipient,
+                         const uint8_t *ciphertext, size_t ciphertext_len,
+                         uint64_t seq_num, uint32_t ttl_seconds);
+
+// Receive
+int dht_dm_outbox_sync_recent(dht_context_t *ctx, const char *my_fp, const char *contact_fp,
+                              dht_offline_message_t **messages_out, size_t *count_out);
+int dht_dm_outbox_sync_full(dht_context_t *ctx, const char *my_fp, const char *contact_fp,
+                            dht_offline_message_t **messages_out, size_t *count_out);
+
+// Listen with day rotation
+int dht_dm_outbox_subscribe(dht_context_t *ctx, const char *my_fp, const char *contact_fp,
+                            dht_listen_callback_t callback, void *user_data,
+                            dht_dm_listen_ctx_t **listen_ctx_out);
+void dht_dm_outbox_unsubscribe(dht_context_t *ctx, dht_dm_listen_ctx_t *listen_ctx);
+int dht_dm_outbox_check_day_rotation(dht_context_t *ctx, dht_dm_listen_ctx_t *listen_ctx);
+```
+
+---
+
+### 5.2.1 dht_offline_queue.h/c (Legacy)
+
+**Note:** As of v0.5.0, `dht_queue_message()` redirects to `dht_dm_queue_message()`.
+Watermark functions are kept for delivery report notifications.
 
 Sender-based outbox for offline message delivery (Spillway Protocol) with watermark pruning.
 

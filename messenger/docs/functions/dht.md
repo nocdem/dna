@@ -119,11 +119,30 @@ Core DHT (Distributed Hash Table) operations for decentralized storage.
 
 Shared DHT modules for offline messaging, groups, profiles, and storage.
 
-### 10.1 Offline Queue (`dht_offline_queue.h`)
+### 10.1 DM Outbox Daily Buckets (`dht_dm_outbox.h`) - v0.5.0+
 
 | Function | Description |
 |----------|-------------|
-| `int dht_queue_message(...)` | Store message in sender's outbox |
+| `uint64_t dht_dm_outbox_get_day_bucket(void)` | Get current day bucket (timestamp/86400) |
+| `int dht_dm_outbox_make_key(...)` | Generate DHT key for day bucket |
+| `int dht_dm_queue_message(...)` | Queue message to daily bucket (chunked storage) |
+| `int dht_dm_outbox_sync_day(...)` | Sync messages from specific day |
+| `int dht_dm_outbox_sync_recent(...)` | Sync 3 days (yesterday, today, tomorrow) |
+| `int dht_dm_outbox_sync_full(...)` | Sync last 8 days |
+| `int dht_dm_outbox_sync_all_contacts_recent(...)` | Sync all contacts (parallel) |
+| `int dht_dm_outbox_subscribe(...)` | Subscribe with day rotation support |
+| `void dht_dm_outbox_unsubscribe(...)` | Unsubscribe from contact's outbox |
+| `int dht_dm_outbox_check_day_rotation(...)` | Check/rotate listener at midnight |
+| `void dht_dm_outbox_cache_clear(void)` | Clear local outbox cache |
+| `int dht_dm_outbox_cache_sync_pending(...)` | Sync pending cached entries |
+
+### 10.1.1 Offline Queue Legacy (`dht_offline_queue.h`)
+
+**Note:** `dht_queue_message()` now redirects to `dht_dm_queue_message()` (v0.5.0+)
+
+| Function | Description |
+|----------|-------------|
+| `int dht_queue_message(...)` | Store message (redirects to daily bucket API) |
 | `int dht_retrieve_queued_messages_from_contacts(...)` | Retrieve messages from contacts (sequential) |
 | `int dht_retrieve_queued_messages_from_contacts_parallel(...)` | Retrieve messages (parallel, 10-100× faster) |
 | `void dht_offline_message_free(dht_offline_message_t*)` | Free single message |

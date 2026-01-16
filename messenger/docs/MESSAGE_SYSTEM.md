@@ -1,7 +1,7 @@
 # DNA Messenger - Message System Documentation
 
-**Version:** v0.08 (Phase 14 - DHT-Only Messaging)
-**Last Updated:** 2026-01-10
+**Version:** v0.09 (Phase 14 - DHT-Only Messaging, Spillway v2)
+**Last Updated:** 2026-01-16
 **Security Level:** NIST Category 5 (256-bit quantum)
 
 This document describes how the DNA Messenger message system works, with all facts verified directly from source code.
@@ -667,70 +667,72 @@ execution restrictions make P2P connections unreliable.
 
 **Source:** `transport/transport.h:20-25`
 
-### 6.3 DHT Offline Queue (Spillway Protocol)
+### 6.3 DHT Offline Queue (Spillway Protocol v2 - Daily Buckets)
 
-**Spillway Protocol** = Sender-Based Outbox Architecture with Watermark Pruning
+**Spillway Protocol v2** = Sender-Based Outbox with Daily Buckets (v0.5.0+)
 
-**Source:** `dht/shared/dht_offline_queue.h:14-37`
+**Source:** `dht/shared/dht_dm_outbox.h`, `dht/shared/dht_dm_outbox.c`
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                 SPILLWAY PROTOCOL: SENDER-BASED OUTBOX                       │
+│             SPILLWAY PROTOCOL v2: DAILY BUCKET OUTBOX (v0.5.0+)             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  STORAGE KEY GENERATION:                                                    │
-│  ───────────────────────                                                    │
-│  key = SHA3-512(sender_fingerprint + ":outbox:" + recipient_fingerprint)    │
+│  KEY FORMAT:                                                                │
+│  ───────────                                                                │
+│  key = sender_fp:outbox:recipient_fp:DAY_BUCKET                             │
 │                                                                             │
-│  Example:                                                                   │
-│    sender    = "a3f9e2d1c5b8..."  (128 hex chars)                          │
-│    recipient = "b4a7f89012e3..."  (128 hex chars)                          │
-│    input     = "a3f9e2d1c5b8...:outbox:b4a7f89012e3..."                    │
-│    key       = SHA3-512(input) → 64 bytes                                  │
+│  where DAY_BUCKET = unix_timestamp / 86400 (days since epoch)               │
+│                                                                             │
+│  Example (2026-01-16, day 20470):                                           │
+│    alice_fp:outbox:bob_fp:20470  (today's messages)                         │
+│    alice_fp:outbox:bob_fp:20469  (yesterday's messages)                     │
 │                                                                             │
 │  STORAGE:                                                                   │
 │  ────────                                                                   │
-│  ┌────────────────────────────────────────────────────┐                    │
-│  │ dht_put_signed(key, messages, value_id=1)          │                    │
-│  │                                                    │                    │
-│  │ - Uses Dilithium5 signature for authentication    │                    │
-│  │ - value_id=1 enables REPLACEMENT (not append)     │                    │
-│  │ - TTL: 7 days (604,800 seconds)                   │                    │
-│  └────────────────────────────────────────────────────┘                    │
+│  ┌────────────────────────────────────────────────────────────┐             │
+│  │ dht_chunked_publish(key, messages)                         │             │
+│  │                                                             │             │
+│  │ - Uses Dilithium5 signature for authentication             │             │
+│  │ - Chunked storage (supports large message lists)           │             │
+│  │ - TTL: 7 days (auto-expire, no pruning needed)             │             │
+│  │ - Max 500 messages per day bucket (DoS prevention)         │             │
+│  └────────────────────────────────────────────────────────────┘             │
 │                                                                             │
-│  RETRIEVAL:                                                                 │
-│  ──────────                                                                 │
-│  ┌────────────────────────────────────────────────────┐                    │
-│  │ FOR each contact in my_contacts:                   │                    │
-│  │   key = SHA3-512(contact + ":outbox:" + me)        │                    │
-│  │   messages = dht_get(key)                          │                    │
-│  │   deliver_to_callback(messages)                    │                    │
-│  └────────────────────────────────────────────────────┘                    │
+│  SYNC STRATEGY (3-day parallel):                                            │
+│  ───────────────────────────────                                            │
+│  ┌────────────────────────────────────────────────────────────┐             │
+│  │ Recent sync: yesterday + today + tomorrow (clock skew)     │             │
+│  │ Full sync:   last 8 days (today-6 to today+1)              │             │
+│  │                                                             │             │
+│  │ FOR each contact:                                           │             │
+│  │   parallel_fetch(day-1, day, day+1)  // 3 days in parallel │             │
+│  │   merge_and_deduplicate(messages)                          │             │
+│  └────────────────────────────────────────────────────────────┘             │
 │                                                                             │
-│  Delivery: Real-time via DHT listen (push notifications)                   │
+│  LISTEN & DAY ROTATION:                                                     │
+│  ───────────────────────                                                    │
+│  ┌────────────────────────────────────────────────────────────┐             │
+│  │ 1. Subscribe to contact's today bucket                     │             │
+│  │ 2. Heartbeat checks day rotation every 4 minutes           │             │
+│  │ 3. At midnight UTC: rotate to new day's bucket             │             │
+│  │ 4. Sync yesterday one more time (catch late messages)      │             │
+│  └────────────────────────────────────────────────────────────┘             │
 │                                                                             │
-│  WATERMARK PRUNING:                                                         │
-│  ──────────────────                                                         │
-│  ┌────────────────────────────────────────────────────────────────────┐    │
-│  │ 1. Alice sends msgs to Bob with seq_num (1, 2, 3...)               │    │
-│  │ 2. Bob receives, publishes watermark: seq=3                        │    │
-│  │ 3. Alice sends new msg (seq=4), fetches Bob's watermark            │    │
-│  │ 4. Alice prunes outbox: removes msgs where seq <= 3                │    │
-│  │ 5. Result: Bounded outbox, only undelivered messages remain        │    │
-│  └────────────────────────────────────────────────────────────────────┘    │
+│  WATERMARK (for delivery reports only):                                     │
+│  ───────────────────────────────────────                                    │
+│  - Watermark Key: SHA3-512(recipient + ":watermark:" + sender)              │
+│  - Watermark TTL: 30 days                                                   │
+│  - Used for: DELIVERED status notifications (not for pruning)               │
 │                                                                             │
-│  Watermark Key: SHA3-512(recipient + ":watermark:" + sender)                │
-│  Watermark TTL: 30 days                                                     │
-│  Watermark Value: 8-byte big-endian seq_num                                 │
-│                                                                             │
-│  BENEFITS:                                                                  │
-│  ─────────                                                                  │
-│  ✓ Bounded storage (watermark pruning prevents unbounded growth)           │
-│  ✓ Clock-skew immune (uses monotonic seq_num, not timestamps)              │
-│  ✓ Spam prevention (recipients only query known contacts)                  │
-│  ✓ Sender control (can edit/delete within TTL)                             │
-│  ✓ Parallel retrieval (10-100× speedup)                                    │
-│  ✓ Async watermarks (fire-and-forget, self-healing on retry)               │
+│  BENEFITS vs v1:                                                            │
+│  ───────────────                                                            │
+│  ✓ No watermark pruning needed (TTL auto-expire)                            │
+│  ✓ Bounded storage (max 500 msgs/day × 7 days = 3500 max)                   │
+│  ✓ Parallel sync (3 days fetched simultaneously)                            │
+│  ✓ Clock-skew tolerant (+/- 1 day buffer)                                   │
+│  ✓ Consistent with group outbox architecture                                │
+│  ✓ Simpler implementation (no read-modify-write for pruning)                │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
