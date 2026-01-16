@@ -1,195 +1,337 @@
-# DNA Messenger - Roadmap
-
-**DNA = Decentralized Network Applications**
+# DNA Messenger - Development Roadmap
 
 **Version:** 0.5.x | **Last Updated:** 2026-01-16
 
 ---
 
-## Current Status
+## Project Timeline
 
-**Active Development:** Phase 7 (Flutter UI - Cross-Platform)
-
-| Component | Status |
-|-----------|--------|
-| Core Messaging | Production Ready |
-| Group Encryption (GSK) | Production Ready |
-| DHT-Only Transport | Production Ready |
-| Spillway Protocol v2 | Production Ready |
-| User Profiles & Avatars | Production Ready |
-| DNA Board (Social) | Alpha |
-| DNA Wallet | Production Ready |
-| Android SDK (JNI) | Production Ready |
-| Flutter App (Android/Linux/Windows) | Beta |
+```
+Oct 2025                              Jan 2026
+   │                                     │
+   ▼                                     ▼
+   ┌─────┬─────┬─────┬─────┬─────┬─────┬─────┐
+   │ P2  │ P3  │ P4  │ P5  │ P6  │ P7  │ NOW │
+   │ API │ CLI │ DHT │ GUI │ SDK │ App │     │
+   └─────┴─────┴─────┴─────┴─────┴─────┴─────┘
+     │     │     │     │     │     │
+     │     │     │     │     │     └─ Flutter cross-platform
+     │     │     │     │     └─ Android JNI SDK
+     │     │     │     └─ Qt → ImGui → Flutter
+     │     │     └─ P2P Transport, DHT, GSK
+     │     └─ PostgreSQL → SQLite
+     └─ Core library API
+```
 
 ---
 
-## Completed Features
+## Current Status
 
-### Core Infrastructure
-- Post-quantum cryptography (Kyber1024 + Dilithium5 - NIST Category 5)
-- OpenDHT-PQ fork (RSA-2048 → Dilithium5)
-- Local SQLite storage (no centralized database)
-- BIP39 24-word recovery phrases
-- Cross-platform (Linux, Windows via MXE)
+**Active:** Phase 7 (Flutter UI - Cross-Platform)
+
+| Component | Status | Version |
+|-----------|--------|---------|
+| C Library (libdna_engine) | Production | v0.5.2 |
+| Flutter App | Beta | v0.99.136 |
+| Android SDK (JNI) | Production | v0.5.2 |
+| DNA Nodus (Bootstrap) | Production | v0.4.5 |
+
+---
+
+## Development History
+
+### Phase 1: Foundation (October 2025)
+**Fork from QGP (Quantum Good Privacy)**
+
+- Forked QGP codebase as starting point
+- Post-quantum cryptography foundation (Kyber1024 + Dilithium5)
+- NIST Category 5 security level (256-bit quantum resistance)
+- Basic key generation and encryption primitives
+
+### Phase 2: Library API (October 2025)
+**Core messenger library development**
+
+- `dna_engine.h` - Public C API design
+- Kyber1024 key encapsulation
+- Dilithium5 digital signatures
+- AES-256-GCM symmetric encryption
+- SHA3-512 hashing
+- BIP39 24-word seed phrase generation
+- Key derivation from mnemonic
+
+### Phase 3: CLI Messenger (October 2025)
+**PostgreSQL-based command-line messenger**
+
+- PostgreSQL keyserver for public key distribution
+- CLI interface for sending/receiving messages
+- Multi-recipient encryption
+- Message decryption with sender verification
+- Server configuration system
+- Cross-platform build (Linux, Windows)
+
+### Phase 4: P2P Network (October-November 2025)
+**Decentralized transport layer**
+
+- OpenDHT-PQ fork (RSA → Dilithium5)
+- DHT-based message routing
+- Offline message queueing (7-day TTL)
+- Bootstrap node infrastructure
+- NAT traversal with ICE/STUN *(later removed)*
+- Presence system for online status
+
+### Phase 5: Desktop GUI (November 2025)
+**Qt5 → ImGui migration**
+
+```
+Qt5 GUI (v0.1.60)
+    │
+    │  Too heavy, complex deployment
+    ▼
+ImGui GUI (v0.1.80)
+    │
+    │  C++ only, no mobile support
+    ▼
+Flutter UI (v0.2.0+)
+```
+
+- Initial Qt5 GUI with theming (cpunk.io cyan, cpunk.club orange)
+- Auto-update mechanism
+- Message search and filtering
+- **Migration to ImGui** - Lighter, embedded in C++
+- Custom styling and font scaling
+- Push notifications with sound alerts
+
+### Phase 5.5: Database Migration (November 2025)
+**PostgreSQL → SQLite**
+
+- Removed centralized PostgreSQL dependency
+- Local SQLite storage per user
+- Per-identity contact databases
+- DHT keyserver with signed reverse mappings
+- Encrypted DHT identity backup
+
+### Phase 6: Android SDK (November 2025)
+**JNI bindings for mobile**
+
+- Complete JNI bindings for `dna_engine.h`
+- Java SDK classes:
+  - `DNAEngine` - Main API wrapper
+  - `Contact`, `Message`, `Group`
+  - `Wallet`, `Transaction`
+- Android Gradle library project
+- Pre-built `libdna_jni.so` (arm64-v8a)
+- 26 native methods exposed
+- All dependencies statically linked (16MB)
+
+### Phase 7: Flutter UI (December 2025 - Present)
+**Cross-platform mobile & desktop**
+
+- **Flutter/Dart** single codebase
+- Platforms: Android, Linux, Windows (iOS planned)
+- dart:ffi bindings to C library
+- Riverpod state management
+- Features implemented:
+  - Chat list and conversations
+  - Contact management
+  - Group creation and messaging
+  - DNA Wallet (multi-chain)
+  - User profiles with avatars
+  - Settings and debug log viewer
+  - Biometric + PIN app lock
+  - QR code scanning
+
+---
+
+## Architecture Evolution
+
+### v0.1.x: Centralized Era (Oct-Nov 2025)
+```
+Client → PostgreSQL Server → Client
+```
+- Central keyserver for public keys
+- Direct database queries
+- Simple but not scalable
+
+### v0.2.x-v0.3.x: Hybrid Era (Nov-Dec 2025)
+```
+Client → DHT ←→ Client
+           ↓
+    Bootstrap Nodes
+           ↓
+    ICE/STUN/TURN
+```
+- DHT for decentralized storage
+- ICE for NAT traversal
+- 3-tier fallback: LAN → ICE → DHT
+
+### v0.4.x: Privacy Era (Dec 2025 - Jan 2026)
+```
+Client → DHT ←→ Client
+           ↓
+    Bootstrap Nodes (discovery only)
+```
+- **ICE/STUN/TURN removed** (v0.4.61)
+- DHT-only transport
+- No IP leakage to peers
+- Privacy-first architecture
+
+### v0.5.x: Efficiency Era (Jan 2026)
+```
+Client → DHT (daily buckets) ←→ Client
+```
+- **Spillway Protocol v2**
+- Daily bucket message organization
+- Reduced DHT lookups for offline sync
+- Multi-device message consistency
+
+---
+
+## Key Milestones
+
+| Version | Date | Milestone |
+|---------|------|-----------|
+| v0.1.0 | 2025-10-14 | Initial fork from QGP |
+| v0.1.30 | 2025-10-23 | DNA Wallet integration |
+| v0.1.50 | 2025-11-03 | PostgreSQL → SQLite migration |
+| v0.1.80 | 2025-11-10 | Qt → ImGui GUI migration |
+| v0.1.100 | 2025-11-16 | DHT refactoring, profile unification |
+| v0.1.115 | 2025-11-18 | Message format v0.08 (fingerprint privacy) |
+| v0.1.120+ | 2025-11-21 | GSK group encryption (200x speedup) |
+| v0.1.130+ | 2025-11-28 | Android SDK complete |
+| v0.2.0 | 2025-12-01 | Flutter migration begins |
+| v0.3.50 | 2025-12-10 | Debug log viewer, app lock |
+| v0.3.162 | 2025-12-18 | QR authentication with Dilithium5 |
+| v0.4.0 | 2025-12-15 | DM outbox architecture refactor |
+| v0.4.50 | 2025-12-20 | Flutter UI beta |
+| v0.4.60 | 2026-01-08 | Multi-device message sync |
+| v0.4.61 | 2026-01-10 | **ICE/STUN/TURN removal** - DHT-only |
+| v0.5.0 | 2026-01-15 | Spillway Protocol v2 |
+| v0.5.2 | 2026-01-16 | Memory leak fixes, stability |
+
+---
+
+## Features Completed
 
 ### Messaging
-- End-to-end encrypted 1:1 messaging
-- Message format v0.08 (fingerprint privacy, 28% size reduction)
-- Delivery and read receipts
-- Desktop notifications
-- Offline message queueing (7-day DHT TTL)
+- [x] End-to-end encryption (Kyber1024 + AES-256-GCM)
+- [x] 1:1 direct messaging
+- [x] Group messaging with GSK encryption
+- [x] Delivery and read receipts
+- [x] Offline message queue (7-day TTL)
+- [x] Message format v0.08 (fingerprint privacy)
+- [x] Multi-device sync
 
 ### Groups
-- DHT-based decentralized groups
-- GSK (Group Symmetric Key) encryption - 200x performance improvement
-- Automatic key rotation on member changes
-- Group ownership transfer with liveness checks
-- P2P group invitations
+- [x] DHT-based decentralized groups
+- [x] GSK (Group Symmetric Key) - 200x faster
+- [x] Automatic key rotation on member changes
+- [x] Group ownership transfer
+- [x] P2P group invitations
+- [x] GEK (Group Encryption Key) versioning
 
-### Networking
-- DHT-only transport layer (privacy-first, no IP leakage)
-- Spillway Protocol v2: daily bucket message architecture
-- Multi-device message sync (v0.4.60)
-- Bootstrap node infrastructure (3 public nodes)
-- DHT value persistence (SQLite-backed)
+### Network
+- [x] OpenDHT-PQ (Dilithium5 signatures)
+- [x] DHT-only transport (no ICE)
+- [x] Spillway Protocol v2 (daily buckets)
+- [x] Bootstrap node infrastructure
+- [x] "Never Give Up" retry system
+- [x] Chunked DHT storage for large values
 
-### Identity & Contacts
-- Per-identity contact lists
-- DHT sync with Kyber1024 self-encryption
-- Signed reverse mappings (fingerprint → identity)
-- Multi-device support via BIP39
+### Identity
+- [x] BIP39 24-word recovery
+- [x] Per-identity contact lists
+- [x] DHT contact sync (Kyber1024 encrypted)
+- [x] Signed reverse mappings
+- [x] Multi-device via seed phrase
 
-### User Profiles
-- Display name, bio, location, website
-- Avatar system (128x128 JPEG, circular display with crop/pan/zoom)
-- DHT storage with 7-day cache
-- Profile editor and viewer
+### Profiles
+- [x] Display name, bio, location, website
+- [x] Avatar (128x128 JPEG, crop/pan/zoom)
+- [x] DHT storage with 7-day cache
+- [x] Profile editor
 
-### DNA Board (Alpha)
-- Decentralized message wall
-- Community voting (thumbs up/down)
-- Comment threading
-- Dilithium5 signed posts
-- 30-day TTL, 100 messages max
+### DNA Board
+- [x] Decentralized message wall
+- [x] Community voting
+- [x] Comment threading
+- [x] Dilithium5 signed posts
 
 ### DNA Wallet
-- Multi-chain: CF20 (Cellframe), ERC20, TRC20, SPL networks
-- Tokens: CPUNK, CELL, KEL, NYS, QEVM, ETH, SOL, TRX, USDT
-- Send tokens directly from chat (auto-resolves contact wallet)
-- Address book for saved recipients
-- Send/receive with QR codes
-- Transaction history
+- [x] Multi-chain: CF20, ERC20, TRC20, SPL
+- [x] 9+ tokens supported
+- [x] Send from chat (auto wallet resolve)
+- [x] Address book
+- [x] QR codes
+- [x] Transaction history
 
-### Android SDK (Phase 6)
-- JNI bindings for all dna_engine.h functions
-- Java SDK classes (DNAEngine, Contact, Message, Group, etc.)
-- Android Gradle library project
-- Pre-built libdna_jni.so (16MB arm64-v8a)
-- All dependencies statically linked (no external .so)
-- 26 native methods exposed
+### Security
+- [x] NIST Category 5 quantum resistance
+- [x] Biometric + PIN app lock
+- [x] No IP leakage (DHT-only)
+- [x] No metadata collection
 
 ---
 
 ## In Progress
 
-### Phase 7: Flutter UI (Cross-Platform)
-- Flutter/Dart UI for Android, Linux, Windows
-- Chat list and conversation screens
-- Contact and group management
-- Wallet integration (balances, send)
-- Profile and settings screens
-- Debug log viewer (in-app)
-- Biometric + PIN app lock
+### Phase 7 Completion
+- [ ] iOS build support
+- [ ] Desktop notifications (Linux/Windows)
+- [ ] File/image sharing
+- [ ] Message search
+- [ ] Chat export
 
 ---
 
 ## Planned
 
 ### Phase 8: Web Messenger
-- WebAssembly crypto module (Emscripten)
-- Browser-based client (HTML5/CSS3)
+- WebAssembly crypto module
+- Browser-based client
 - Progressive Web App (PWA)
-- IndexedDB for local storage
+- IndexedDB storage
 
-### Phase 9: Voice/Video Calls
-- Post-quantum key exchange via DNA messaging
-- Kyber1024 session keys (bypasses WebRTC's quantum-vulnerable DTLS)
-- libsrtp2 + AES-256-GCM media encryption
-- libopus audio, libvpx video
-- DHT-based signaling (privacy-preserving, no ICE)
+### Phase 9: Voice/Video
+- Post-quantum key exchange
+- Kyber1024 session keys
+- AES-256-GCM media encryption
+- DHT-based signaling
 
 ### Phase 10+: Future
-- iOS application
-- Forward secrecy (ephemeral session keys)
-- File transfer
-- Tor integration (metadata protection)
-- Enterprise features (SSO, audit logging)
-
----
-
-## Version History
-
-| Version | Date | Highlights |
-|---------|------|------------|
-| 0.5.2 | 2026-01-16 | Memory leak fix in outbox listeners |
-| 0.5.0 | 2026-01-15 | Spillway Protocol v2: daily bucket architecture |
-| 0.4.61 | 2026-01-10 | **ICE/STUN/TURN removal** - DHT-only privacy architecture |
-| 0.4.60 | 2026-01-08 | Multi-device message sync |
-| 0.4.50 | 2025-12-20 | Flutter UI beta (Android/Linux/Windows) |
-| 0.4.0 | 2025-12-15 | Major DM outbox architecture refactor |
-| 0.3.50 | 2025-12-10 | Debug log viewer, app lock (biometric + PIN) |
-| 0.2.0 | 2025-12-01 | Flutter migration begins (ImGui → Flutter) |
-| 0.1.130+ | 2025-11-28 | Android SDK (JNI bindings, Java classes, Gradle project) |
-| 0.1.120+ | 2025-11-21 | GSK group encryption (200x speedup) |
-| 0.1.115 | 2025-11-18 | Message format v0.08 (fingerprint privacy) |
-| 0.1.100 | 2025-11-16 | DHT refactoring complete, profile system unification |
-| 0.1.80 | 2025-11-10 | ImGui GUI migration (Qt → ImGui) |
-| 0.1.50 | 2025-11-03 | PostgreSQL → SQLite migration complete |
-| 0.1.30 | 2025-10-23 | DNA Wallet integration |
-| 0.1.0 | 2025-10-14 | Initial fork from QGP |
+- iOS native app
+- Forward secrecy
+- Tor integration
+- Enterprise features
 
 ---
 
 ## Technical Debt
 
-- [ ] Forward secrecy implementation
-- [x] Multi-device message sync (v0.4.60)
+- [ ] Forward secrecy (ephemeral keys)
 - [ ] Security audit
-- [ ] Performance optimization for large groups (100+ members)
-
----
-
-## Major Architecture Changes
-
-### v0.5.0: Spillway Protocol v2 (2026-01-15)
-Daily bucket architecture for offline message retrieval:
-- Messages organized by UTC day buckets instead of individual keys
-- Significantly reduced DHT lookups for offline sync
-- Improved multi-device message consistency
-
-### v0.4.61: DHT-Only Architecture (2026-01-10)
-Removed ICE/STUN/TURN for privacy:
-- No IP address leakage to peers or third parties
-- All messaging via DHT (no direct peer connections)
-- Bootstrap nodes provide discovery only, not relay
-- Privacy-first design principle
-
-### v0.2.0: Flutter Migration (2025-12-01)
-UI framework migration:
-- ImGui (C++) → Flutter (Dart)
-- Single codebase for Android, Linux, Windows
-- Native platform integration via FFI
+- [ ] Large group optimization (100+ members)
+- [ ] Desktop notification system
+- [x] ~~Multi-device sync~~ (v0.4.60)
+- [x] ~~ICE complexity~~ (removed v0.4.61)
 
 ---
 
 ## Contributing
 
-- Check `CLAUDE.md` for development guidelines
-- Follow existing code patterns
-- Submit PRs to `main` branch
-- Test on Linux and Windows before committing
+1. Check `CLAUDE.md` for guidelines
+2. Follow existing code patterns
+3. Test on Linux and Windows
+4. Submit PRs to `main` branch
 
 ---
 
-**Project Start:** 2025-10-14 | **Current Phase:** 7 | **Next Milestone:** Flutter UI completion + iOS
+## Links
+
+- **GitLab:** https://gitlab.cpunk.io/cpunk/dna-messenger
+- **GitHub:** https://github.com/nocdem/dna-messenger
+- **Website:** https://cpunk.io
+- **Community:** https://cpunk.club
+
+---
+
+**Project Start:** 2025-10-14 | **Current Phase:** 7 | **Next:** iOS + Web
