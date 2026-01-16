@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-01-15 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.4.79 | Flutter v0.99.133 | Nodus v0.4.5
+**Versions:** Library v0.4.79 | Flutter v0.99.135 | Nodus v0.4.5
 
 ---
 

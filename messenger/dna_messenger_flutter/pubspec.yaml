@@ -2,7 +2,7 @@ name: dna_messenger
 description: "Post-quantum encrypted P2P messenger with integrated cryptocurrency wallet"
 publish_to: 'none'
 
-version: 0.99.134+10034
+version: 0.99.135+10035
 
 environment:
   sdk: ^3.10.0

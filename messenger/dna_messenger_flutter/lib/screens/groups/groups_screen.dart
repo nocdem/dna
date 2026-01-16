@@ -678,7 +678,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
 }
 
 /// Message bubble widget for group chat
-class _GroupMessageBubble extends StatelessWidget {
+class _GroupMessageBubble extends ConsumerWidget {
   final Message message;
   final ThemeData theme;
 
@@ -688,7 +688,7 @@ class _GroupMessageBubble extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final isOutgoing = message.isOutgoing;
     final alignment = isOutgoing ? Alignment.centerRight : Alignment.centerLeft;
     final bubbleColor = isOutgoing
@@ -702,8 +702,15 @@ class _GroupMessageBubble extends StatelessWidget {
     final timestamp = message.timestamp;
     final timeStr = '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
 
-    // Shorten sender fingerprint for display (first 8 chars)
-    final senderDisplay = isOutgoing ? 'You' : message.sender.substring(0, 8);
+    // Convert sender fingerprint to display name if contact exists
+    String senderDisplay = 'You';
+    if (!isOutgoing) {
+      final contacts = ref.watch(contactsProvider).valueOrNull ?? [];
+      final contact = contacts.where((c) => c.fingerprint == message.sender).firstOrNull;
+      senderDisplay = contact?.displayName.isNotEmpty == true
+          ? contact!.displayName
+          : '${message.sender.substring(0, 8)}...';
+    }
 
     return Align(
       alignment: alignment,
