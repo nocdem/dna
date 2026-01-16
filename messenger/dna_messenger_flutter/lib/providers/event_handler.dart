@@ -1,8 +1,8 @@
 // Event Handler - Listens to engine events and updates UI state
 import 'dart:async';
-import 'dart:io' show Platform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
+import '../platform/platform_handler.dart';
 import '../utils/lifecycle_observer.dart';
 import 'engine_provider.dart';
 import 'contacts_provider.dart';
@@ -259,11 +259,10 @@ class EventHandler {
       final openChatFp = selectedContact?.fingerprint;
 
       _ref.read(engineProvider).whenData((engine) async {
-        // On Desktop, we need to fetch messages ourselves.
-        // On Android, native code already fetched via background_fetch_thread.
-        if (!Platform.isAndroid) {
-          await engine.checkOfflineMessages();
-        }
+        // Platform-specific outbox handling
+        // Android: Native code already fetched via background_fetch_thread
+        // Desktop: Must call checkOfflineMessages() to fetch
+        await PlatformHandler.instance.onOutboxUpdated(engine);
 
         // Process each contact that had updates
         for (final fp in fingerprints) {

@@ -702,37 +702,6 @@ DNA_API void dna_engine_set_android_notification_callback(
 );
 
 /**
- * Contact request notification callback
- *
- * Called when a new contact request is received from DHT.
- *
- * @param requester_fingerprint  Fingerprint of the requester (128 hex chars)
- * @param display_name           Display name of requester or NULL
- * @param message                Request message or NULL
- * @param user_data              User data passed when setting callback
- */
-typedef void (*dna_android_contact_request_cb)(
-    const char *requester_fingerprint,
-    const char *display_name,
-    const char *message,
-    void *user_data
-);
-
-/**
- * Set Android notification callback for contact requests
- *
- * This callback is called when DNA_EVENT_CONTACT_REQUEST_RECEIVED fires,
- * allowing Android to show native notifications for new contact requests.
- *
- * @param callback  Notification callback function (NULL to disable)
- * @param user_data User data passed to callback
- */
-DNA_API void dna_engine_set_android_contact_request_callback(
-    dna_android_contact_request_cb callback,
-    void *user_data
-);
-
-/**
  * Group message notification callback
  *
  * Called when new group messages arrive via DHT listen (real-time push).
@@ -2084,47 +2053,37 @@ DNA_API int dna_engine_refresh_listeners(
 );
 
 /* ============================================================================
- * 7.6 DELIVERY TRACKERS (Message delivery confirmation)
+ * 7.6 WATERMARK LISTENERS (Message delivery confirmation)
  * ============================================================================ */
 
 /**
- * Start tracking delivery status for a recipient
+ * Start persistent watermark listener for a contact
  *
- * Listens for watermark updates from the recipient. When they retrieve
- * messages and publish their watermark, this fires DNA_EVENT_MESSAGE_DELIVERED
- * and updates message status in the local database.
+ * Starts a watermark listener for the contact to track message delivery.
+ * When the contact reads messages, their watermark is updated in DHT.
+ * When our listener receives an update, messages are marked DELIVERED
+ * and DNA_EVENT_MESSAGE_DELIVERED is fired.
  *
- * Call this after sending an offline message to start tracking delivery.
- * Duplicate calls for the same recipient are ignored (idempotent).
+ * This is automatically called for all contacts in dna_engine_listen_all_contacts().
+ * Use this when adding a new contact to start delivery tracking immediately.
  *
  * @param engine               Engine instance
- * @param recipient_fingerprint Recipient's fingerprint (128 hex chars)
- * @return                     0 on success, negative on error
+ * @param contact_fingerprint  Contact's fingerprint (128 hex chars)
+ * @return                     DHT listener token (>0 on success, 0 on failure)
  */
-DNA_API int dna_engine_track_delivery(
+DNA_API size_t dna_engine_start_watermark_listener(
     dna_engine_t *engine,
-    const char *recipient_fingerprint
+    const char *contact_fingerprint
 );
 
 /**
- * Stop tracking delivery for a recipient
+ * Cancel all persistent watermark listeners
  *
- * Cancels the watermark listener for the specified recipient.
- *
- * @param engine               Engine instance
- * @param recipient_fingerprint Recipient's fingerprint
- */
-DNA_API void dna_engine_untrack_delivery(
-    dna_engine_t *engine,
-    const char *recipient_fingerprint
-);
-
-/**
- * Cancel all active delivery trackers
+ * Called automatically on engine destroy or identity unload.
  *
  * @param engine    Engine instance
  */
-DNA_API void dna_engine_cancel_all_delivery_trackers(
+DNA_API void dna_engine_cancel_all_watermark_listeners(
     dna_engine_t *engine
 );
 

@@ -73,7 +73,6 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `int dna_engine_set_message_queue_capacity(...)` | Set message queue capacity |
 | `dna_request_id_t dna_engine_get_conversation(...)` | Get conversation with contact |
 | `dna_request_id_t dna_engine_get_conversation_page(...)` | Get conversation page (paginated, newest first) |
-| `void dna_engine_set_android_contact_request_callback(...)` | Set Android callback for contact request notifications |
 | `dna_request_id_t dna_engine_check_offline_messages(...)` | Force check for offline messages |
 | `int dna_engine_delete_message_sync(...)` | Delete message from local database |
 | `int dna_engine_retry_pending_messages(...)` | Retry all pending/failed messages |
@@ -136,13 +135,13 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `void dna_engine_cancel_presence_listener(dna_engine_t*, const char*)` | Cancel presence listener for contact |
 | `void dna_engine_cancel_all_presence_listeners(dna_engine_t*)` | Cancel all presence listeners |
 
-## 1.11 Delivery Trackers
+## 1.11 Watermark Listeners
 
 | Function | Description |
 |----------|-------------|
-| `int dna_engine_track_delivery(dna_engine_t*, const char*)` | Start tracking delivery for recipient |
-| `void dna_engine_untrack_delivery(dna_engine_t*, const char*)` | Stop tracking delivery |
-| `void dna_engine_cancel_all_delivery_trackers(dna_engine_t*)` | Cancel all delivery trackers |
+| `size_t dna_engine_start_watermark_listener(dna_engine_t*, const char*)` | Start persistent watermark listener for contact |
+| `void dna_engine_cancel_watermark_listener(dna_engine_t*, const char*)` | Cancel watermark listener for contact |
+| `void dna_engine_cancel_all_watermark_listeners(dna_engine_t*)` | Cancel all watermark listeners |
 
 ## 1.12 Feed (DNA Board)
 

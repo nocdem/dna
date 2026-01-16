@@ -3194,16 +3194,22 @@ class DnaEngine {
 
     void onComplete(int requestId, int error, Pointer<Utf8> groupUuid,
                     Pointer<Void> userData) {
-      // Free allocated memory
+      // Free allocated memory (input params)
       calloc.free(namePtr);
       for (var i = 0; i < memberFingerprints.length; i++) {
         calloc.free(membersPtr[i]);
       }
       calloc.free(membersPtr);
 
-      if (error == 0) {
-        completer.complete(groupUuid.toDartString());
+      if (error == 0 && groupUuid != nullptr) {
+        final uuid = groupUuid.toDartString();
+        // Free C-allocated string (strdup'd in dna_handle_create_group)
+        calloc.free(groupUuid);
+        completer.complete(uuid);
       } else {
+        if (groupUuid != nullptr) {
+          calloc.free(groupUuid);
+        }
         completer.completeError(DnaEngineException.fromCode(error, _bindings));
       }
       _cleanupRequest(localId);

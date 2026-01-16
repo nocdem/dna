@@ -29,7 +29,7 @@ class DnaMessengerService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "dna_messenger_service"
         private const val NETWORK_CHANGE_DEBOUNCE_MS = 2000L  // 2 seconds debounce
-        private const val WAKELOCK_TIMEOUT_MS = 10 * 60 * 1000L  // 10 minutes
+        private const val WAKELOCK_TIMEOUT_MS = 30 * 60 * 1000L  // 30 minutes
         private const val LISTEN_RENEWAL_INTERVAL_MS = 5 * 60 * 60 * 1000L  // 5 hours (before 6h expiry)
         private const val HEALTH_CHECK_INTERVAL_MS = 15 * 60 * 1000L  // 15 minutes
         private const val MAX_RECONNECT_RETRIES = 5
@@ -62,7 +62,6 @@ class DnaMessengerService : Service() {
     private var lastNetworkChangeTime: Long = 0
     private var currentNetworkId: String? = null
     private var hadPreviousNetwork: Boolean = false  // Track if we had a network before disconnect
-    private var notificationHelper: DnaNotificationHelper? = null
     private var reconnectRetryCount: Int = 0
     private var listenRenewalHandler: android.os.Handler? = null
     private var healthCheckHandler: android.os.Handler? = null
@@ -140,21 +139,19 @@ class DnaMessengerService : Service() {
         startListenRenewalTimer()
         startHealthCheckTimer()
 
-        // Initialize native notification helper for background message notifications
-        try {
-            notificationHelper = DnaNotificationHelper(this)
-            android.util.Log.i(TAG, "Notification helper initialized")
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "Failed to initialize notification helper: ${e.message}")
+        // Use singleton notification helper from MainActivity
+        // If not initialized yet (service started without MainActivity), init it now
+        if (MainActivity.notificationHelper == null) {
+            MainActivity.initNotificationHelper(this)
         }
+        android.util.Log.i(TAG, "Using singleton notification helper: ${MainActivity.notificationHelper != null}")
     }
 
     private fun stopForegroundService() {
         android.util.Log.i(TAG, "Stopping foreground service")
 
-        // Unregister notification helper
-        notificationHelper?.unregister()
-        notificationHelper = null
+        // Note: Don't unregister notification helper here - it's managed by MainActivity
+        // and may be needed for future service restarts
 
         stopListenRenewalTimer()
         stopHealthCheckTimer()
@@ -394,18 +391,24 @@ class DnaMessengerService : Service() {
         hadPreviousNetwork = false
     }
 
+    private var lastReconnectNetworkId: String? = null
+
     private fun handleNetworkChange(newNetworkId: String) {
         val now = System.currentTimeMillis()
 
-        // Debounce rapid network changes (e.g., WiFi disconnect/cellular connect)
-        if (now - lastNetworkChangeTime < NETWORK_CHANGE_DEBOUNCE_MS) {
-            android.util.Log.d(TAG, "Network change debounced (too soon after previous)")
+        // Smart debounce: only debounce rapid reconnects to the SAME network.
+        // If switching to a DIFFERENT network, always reconnect immediately.
+        val isSameNetwork = lastReconnectNetworkId == newNetworkId
+        if (isSameNetwork && now - lastNetworkChangeTime < NETWORK_CHANGE_DEBOUNCE_MS) {
+            android.util.Log.d(TAG, "Network change debounced (same network $newNetworkId, too soon)")
             return
         }
+
         lastNetworkChangeTime = now
+        lastReconnectNetworkId = newNetworkId
         reconnectRetryCount = 0  // Reset retry count on new network change
 
-        android.util.Log.i(TAG, "Network changed to $newNetworkId - checking connectivity...")
+        android.util.Log.i(TAG, "Network changed to $newNetworkId (same=$isSameNetwork) - checking connectivity...")
         updateNotification("Reconnecting...")
 
         attemptReconnectWithBackoff()
@@ -459,7 +462,11 @@ class DnaMessengerService : Service() {
         try {
             val result = nativeReinitDht()
             when (result) {
-                0 -> android.util.Log.i(TAG, "DHT reinit successful")
+                0 -> {
+                    android.util.Log.i(TAG, "DHT reinit successful")
+                    // Verify listeners restarted after a delay (listener setup is async)
+                    scheduleListenerVerification()
+                }
                 -1 -> android.util.Log.d(TAG, "DHT not initialized yet, skipping reinit")
                 else -> android.util.Log.e(TAG, "DHT reinit failed: $result")
             }
@@ -475,5 +482,41 @@ class DnaMessengerService : Service() {
         android.os.Handler(mainLooper).postDelayed({
             updateNotification("Decentralized mode active — background service running to receive messages")
         }, 3000)
+    }
+
+    /**
+     * Verify listeners restarted after DHT reinit.
+     * Listener setup is async (runs on background thread), so we check after a delay.
+     * If listeners didn't start, trigger another reinit.
+     */
+    private var listenerVerificationRetries = 0
+    private val MAX_LISTENER_VERIFICATION_RETRIES = 3
+    private val LISTENER_VERIFICATION_DELAY_MS = 10000L  // 10 seconds
+
+    private fun scheduleListenerVerification() {
+        android.os.Handler(mainLooper).postDelayed({
+            if (!isRunning) return@postDelayed
+
+            val isHealthy = try {
+                nativeIsDhtHealthy()
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "Listener verification error: ${e.message}")
+                false
+            }
+
+            if (isHealthy) {
+                android.util.Log.i(TAG, "Listener verification: DHT healthy, listeners active")
+                listenerVerificationRetries = 0
+            } else {
+                listenerVerificationRetries++
+                if (listenerVerificationRetries < MAX_LISTENER_VERIFICATION_RETRIES) {
+                    android.util.Log.w(TAG, "Listener verification: unhealthy, retry $listenerVerificationRetries/$MAX_LISTENER_VERIFICATION_RETRIES")
+                    performDhtReinit()
+                } else {
+                    android.util.Log.e(TAG, "Listener verification: failed after $MAX_LISTENER_VERIFICATION_RETRIES retries")
+                    listenerVerificationRetries = 0
+                }
+            }
+        }, LISTENER_VERIFICATION_DELAY_MS)
     }
 }

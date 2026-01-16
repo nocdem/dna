@@ -11,11 +11,11 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
+import '../../platform/android/notification_settings.dart';
 import '../../providers/providers.dart';
-import '../../providers/notification_settings_provider.dart';
 import '../../providers/version_check_provider.dart';
 import '../../theme/dna_theme.dart';
-import '../../utils/logger.dart';
+import '../../utils/platform_utils.dart';
 import '../profile/profile_editor_screen.dart';
 import 'app_lock_settings_screen.dart';
 import 'blocked_users_screen.dart';
@@ -58,8 +58,8 @@ class SettingsScreen extends ConsumerWidget {
           ),
           // Contacts
           _ContactsSection(),
-          // Notifications
-          _NotificationsSection(),
+          // Notifications (Android only)
+          const _NotificationsSection(),
           // Security
           _SecuritySection(),
           // Data (backup/restore)
@@ -266,60 +266,23 @@ class _ContactsSection extends ConsumerWidget {
   }
 }
 
-class _NotificationsSection extends ConsumerStatefulWidget {
-  @override
-  ConsumerState<_NotificationsSection> createState() => _NotificationsSectionState();
-}
-
-class _NotificationsSectionState extends ConsumerState<_NotificationsSection> {
-  static const _channel = MethodChannel('io.cpunk.dna_messenger/service');
-
-  Future<void> _toggleNotifications(bool enabled) async {
-    if (enabled) {
-      // Request notification permission on Android 13+
-      try {
-        final granted = await _channel.invokeMethod<bool>('requestNotificationPermission');
-        if (granted != true) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Notification permission denied'),
-                duration: Duration(seconds: 2),
-              ),
-            );
-          }
-          return; // Don't enable if permission denied
-        }
-      } catch (e) {
-        // Method channel not available (shouldn't happen on Android)
-        log('SETTINGS', 'Error requesting notification permission: $e');
-      }
-    }
-
-    ref.read(notificationSettingsProvider.notifier).setEnabled(enabled);
-  }
+/// Notifications section - Android only
+/// Desktop notifications not yet implemented (see MISSING_FEATURES.md)
+class _NotificationsSection extends StatelessWidget {
+  const _NotificationsSection();
 
   @override
   Widget build(BuildContext context) {
-    // Only show notifications section on Android
-    // Desktop notifications not yet implemented (see MISSING_FEATURES.md)
-    if (!Platform.isAndroid) {
+    // Only show on Android - Desktop notifications not implemented yet
+    if (!PlatformUtils.isAndroid) {
       return const SizedBox.shrink();
     }
 
-    final settings = ref.watch(notificationSettingsProvider);
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const _SectionHeader('Notifications'),
-        SwitchListTile(
-          secondary: const FaIcon(FontAwesomeIcons.bell),
-          title: const Text('Enable Notifications'),
-          subtitle: const Text('Show alerts for new messages'),
-          value: settings.enabled,
-          onChanged: _toggleNotifications,
-        ),
+      children: const [
+        _SectionHeader('Notifications'),
+        AndroidNotificationSettings(),
       ],
     );
   }
