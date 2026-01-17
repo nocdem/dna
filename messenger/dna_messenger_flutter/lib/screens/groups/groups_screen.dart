@@ -482,27 +482,42 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        titleSpacing: 0,
+        title: Row(
           children: [
-            Text(widget.group.name),
-            Text(
-              '${widget.group.memberCount} members',
-              style: theme.textTheme.bodySmall,
+            CircleAvatar(
+              radius: 18,
+              backgroundColor: theme.colorScheme.secondary.withAlpha(51),
+              child: FaIcon(
+                FontAwesomeIcons.users,
+                size: 16,
+                color: theme.colorScheme.secondary,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    widget.group.name,
+                    style: theme.textTheme.titleMedium,
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                  ),
+                  Text(
+                    '${widget.group.memberCount} members',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ],
+              ),
             ),
           ],
         ),
         actions: [
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.circleInfo),
-            onPressed: () {
-              // Show group info
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('Group UUID: ${widget.group.uuid}'),
-                ),
-              );
-            },
+            onPressed: () => _showGroupInfo(context),
             tooltip: 'Group Info',
           ),
         ],
@@ -516,52 +531,57 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
 
           // Message input
           Container(
-            padding: const EdgeInsets.all(8),
+            padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               color: theme.colorScheme.surface,
               border: Border(
                 top: BorderSide(
-                  color: theme.dividerColor,
+                  color: theme.colorScheme.primary.withAlpha(51),
                 ),
               ),
             ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _messageController,
-                    decoration: InputDecoration(
-                      hintText: 'Type a message...',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                        borderSide: BorderSide.none,
+            child: SafeArea(
+              top: false,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _messageController,
+                      decoration: InputDecoration(
+                        hintText: 'Type a message...',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(24),
+                          borderSide: BorderSide.none,
+                        ),
+                        filled: true,
+                        fillColor: theme.scaffoldBackgroundColor,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
                       ),
-                      filled: true,
-                      fillColor: theme.scaffoldBackgroundColor,
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
-                      ),
+                      minLines: 1,
+                      maxLines: 5,
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (_) => _sendMessage(),
+                      onChanged: (_) => setState(() {}),
                     ),
-                    textInputAction: TextInputAction.send,
-                    onSubmitted: (_) => _sendMessage(),
-                    onChanged: (_) => setState(() {}),
                   ),
-                ),
-                const SizedBox(width: 8),
-                IconButton.filled(
-                  onPressed: _messageController.text.trim().isEmpty || _isSending
-                      ? null
-                      : _sendMessage,
-                  icon: _isSending
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const FaIcon(FontAwesomeIcons.paperPlane),
-                ),
-              ],
+                  const SizedBox(width: 8),
+                  IconButton.filled(
+                    onPressed: _messageController.text.trim().isEmpty || _isSending
+                        ? null
+                        : _sendMessage,
+                    icon: _isSending
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const FaIcon(FontAwesomeIcons.paperPlane),
+                  ),
+                ],
+              ),
             ),
           ),
         ],
@@ -676,6 +696,14 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
         setState(() => _isSending = false);
       }
     }
+  }
+
+  void _showGroupInfo(BuildContext context) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Group UUID: ${widget.group.uuid}'),
+      ),
+    );
   }
 }
 
