@@ -1,4 +1,5 @@
 // Chat Screen - Conversation with message bubbles
+import 'dart:async' show unawaited;
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -82,16 +83,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Refresh contact profile in background (for latest avatar/name)
     ref.read(contactProfileCacheProvider.notifier).refreshProfile(contact.fingerprint);
 
-    // Auto-check offline messages when chat opens (silent, no snackbar)
-    _checkOfflineMessagesSilent();
+    // Auto-check offline messages in background (fire-and-forget)
+    // Use unawaited to explicitly mark this as intentionally not awaited
+    unawaited(_checkOfflineMessagesSilent());
   }
 
-  /// Check offline messages silently (no UI feedback)
+  /// Check offline messages with loading indicator
   /// Called automatically when chat opens
   /// Uses targeted fetch for this specific contact (faster than checking all)
   Future<void> _checkOfflineMessagesSilent() async {
     final contact = ref.read(selectedContactProvider);
     if (contact == null) return;
+
+    // Show loading indicator
+    if (mounted) {
+      setState(() => _isCheckingOffline = true);
+    }
 
     try {
       final engine = await ref.read(engineProvider.future);
@@ -106,6 +113,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
     } catch (e) {
       log('CHAT', 'Silent offline check failed: $e');
+    } finally {
+      // Hide loading indicator
+      if (mounted) {
+        setState(() => _isCheckingOffline = false);
+      }
     }
   }
 
@@ -397,6 +409,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           // Main content column
           Column(
             children: [
+              // Fetching messages indicator
+              if (_isCheckingOffline)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  color: theme.colorScheme.primary.withAlpha(26),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Fetching latest messages...',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               // Messages list
               Expanded(
                 child: messages.when(
