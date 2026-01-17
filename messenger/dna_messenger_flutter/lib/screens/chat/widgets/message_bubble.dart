@@ -107,7 +107,6 @@ class _MessageBubbleWrapperState extends State<MessageBubbleWrapper>
 
     // Only animate if requested (new messages only)
     if (widget.animate) {
-      print('[ANIM] Animating message ${widget.message.id}');
       _controller.forward();
     } else {
       // Skip to end for existing messages
