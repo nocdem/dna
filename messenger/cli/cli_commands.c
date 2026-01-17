@@ -1724,6 +1724,7 @@ static void on_groups_list(dna_request_id_t request_id, int error,
             memcpy(ctx->groups, groups, sizeof(dna_group_t) * count);
             ctx->group_count = count;
         }
+        free(groups);  /* Free original from engine */
     }
     ctx->wait.done = true;
     pthread_cond_signal(&ctx->wait.cond);
