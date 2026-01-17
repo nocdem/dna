@@ -523,8 +523,8 @@ abstract class DnaEventType {
   static const int DNA_EVENT_IDENTITY_LOADED = 11;
   static const int DNA_EVENT_CONTACT_REQUEST_RECEIVED = 12;
   static const int DNA_EVENT_OUTBOX_UPDATED = 13;  // Contact's outbox has new messages
-  static const int DNA_EVENT_ERROR = 14;
-  static const int DNA_EVENT_GROUP_MESSAGE_RECEIVED = 15;  // New group messages via DHT listen
+  static const int DNA_EVENT_GROUP_MESSAGE_RECEIVED = 14;  // New group messages via DHT listen
+  static const int DNA_EVENT_ERROR = 15;
 }
 
 /// Event data union - message received
