@@ -1089,7 +1089,9 @@ int dht_groups_sync_from_dht(
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
 
-    // Update members
+    // Update members atomically (transaction prevents race conditions)
+    sqlite3_exec(g_db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+
     const char *delete_sql = "DELETE FROM dht_group_members WHERE group_uuid = ?";
     sqlite3_prepare_v2(g_db, delete_sql, -1, &stmt, NULL);
     sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_STATIC);
@@ -1109,6 +1111,8 @@ int dht_groups_sync_from_dht(
         sqlite3_step(stmt);
         sqlite3_finalize(stmt);
     }
+
+    sqlite3_exec(g_db, "COMMIT", NULL, NULL, NULL);
 
     dht_groups_free_metadata(meta);
 
