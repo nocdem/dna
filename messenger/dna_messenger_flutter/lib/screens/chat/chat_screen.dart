@@ -642,6 +642,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 builder: (context) {
                   // Check if this is a new message that should animate
                   final shouldAnimate = _initialLoadDone && !_seenMessageIds.contains(message.id);
+                  print('[ANIM] msg ${message.id}: initialLoadDone=$_initialLoadDone, inSeenSet=${_seenMessageIds.contains(message.id)}, shouldAnimate=$shouldAnimate');
                   // Mark as seen so it won't animate again on rebuild
                   if (shouldAnimate) {
                     _seenMessageIds.add(message.id);
