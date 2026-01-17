@@ -1102,7 +1102,7 @@ static bool group_message_listen_callback(
 
     dna_group_listen_ctx_t *ctx = (dna_group_listen_ctx_t *)user_data;
 
-    QGP_LOG_DEBUG(LOG_TAG, "Listen callback for group %s\n", ctx->group_uuid);
+    QGP_LOG_WARN(LOG_TAG, "[GROUP-LISTEN] >>> CALLBACK FIRED for group %s", ctx->group_uuid);
 
     /* Fetch ALL messages from the shared key (all senders) */
     dna_group_message_t *messages = NULL;
@@ -1119,7 +1119,10 @@ static bool group_message_listen_callback(
     int ret = dna_group_outbox_fetch(dht_ctx, ctx->group_uuid, ctx->current_day,
                                       &messages, &count);
 
+    QGP_LOG_WARN(LOG_TAG, "[GROUP-LISTEN] Fetch result: ret=%d messages=%p count=%zu", ret, (void*)messages, count);
+
     if (ret != 0 || !messages || count == 0) {
+        QGP_LOG_WARN(LOG_TAG, "[GROUP-LISTEN] No messages from fetch, returning");
         return true;
     }
 
@@ -1172,10 +1175,14 @@ static bool group_message_listen_callback(
 
     dna_group_outbox_free_messages(messages, count);
 
+    QGP_LOG_WARN(LOG_TAG, "[GROUP-LISTEN] Processed: total=%zu new=%zu callback=%p", count, new_count, (void*)ctx->on_new_message);
+
     /* Fire user callback if new messages */
     if (new_count > 0 && ctx->on_new_message) {
-        QGP_LOG_INFO(LOG_TAG, "Group %s: %zu new messages\n", ctx->group_uuid, new_count);
+        QGP_LOG_WARN(LOG_TAG, "[GROUP-LISTEN] >>> FIRING EVENT: group=%s new_count=%zu", ctx->group_uuid, new_count);
         ctx->on_new_message(ctx->group_uuid, new_count, ctx->user_data);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "[GROUP-LISTEN] NOT firing event: new_count=%zu", new_count);
     }
 
     return true;  /* Continue listening */
