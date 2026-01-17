@@ -150,8 +150,20 @@ class DnaMessengerService : Service() {
         // Only restart if notifications are enabled
         val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
         val notificationsEnabled = prefs.getBoolean("flutter.notifications_enabled", true)
+        android.util.Log.i(TAG, "Notifications enabled in prefs: $notificationsEnabled")
 
         if (notificationsEnabled) {
+            // Re-post the foreground notification immediately to prevent it from being dismissed
+            // This is needed because some Android versions briefly hide the notification on task removal
+            try {
+                val notification = createNotification("Decentralized mode active — background service running to receive messages")
+                val notificationManager = getSystemService(NotificationManager::class.java)
+                notificationManager.notify(NOTIFICATION_ID, notification)
+                android.util.Log.i(TAG, "Re-posted foreground notification")
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "Failed to re-post notification: ${e.message}")
+            }
+
             // Schedule restart via AlarmManager for immediate restart
             val restartIntent = Intent(this, DnaMessengerService::class.java).apply {
                 action = "START"
@@ -167,7 +179,7 @@ class DnaMessengerService : Service() {
                 System.currentTimeMillis() + 1000, // 1 second delay
                 pendingIntent
             )
-            android.util.Log.i(TAG, "Service restart scheduled")
+            android.util.Log.i(TAG, "Service restart scheduled via AlarmManager")
         }
 
         super.onTaskRemoved(rootIntent)
@@ -175,12 +187,32 @@ class DnaMessengerService : Service() {
 
     private fun startForegroundService() {
         android.util.Log.i(TAG, "Starting foreground service")
-        val notification = createNotification("Decentralized mode active — background service running to receive messages")
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        // Ensure notification channel exists before starting foreground
+        createNotificationChannel()
+
+        // Check notification permission on Android 13+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val hasPermission = checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            android.util.Log.i(TAG, "Notification permission granted: $hasPermission")
+            if (!hasPermission) {
+                android.util.Log.w(TAG, "POST_NOTIFICATIONS permission not granted - foreground notification may not show")
+            }
+        }
+
+        val notification = createNotification("Decentralized mode active — background service running to receive messages")
+        android.util.Log.i(TAG, "Created notification with ID=$NOTIFICATION_ID, channel=$CHANNEL_ID")
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            android.util.Log.i(TAG, "startForeground() called successfully")
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "startForeground() failed: ${e.message}")
         }
 
         acquireWakeLock()
@@ -269,6 +301,19 @@ class DnaMessengerService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val notificationManager = getSystemService(NotificationManager::class.java)
+
+            // Check if channel already exists
+            val existingChannel = notificationManager.getNotificationChannel(CHANNEL_ID)
+            if (existingChannel != null) {
+                android.util.Log.d(TAG, "Notification channel exists, importance=${existingChannel.importance}")
+                // Check if user disabled the channel
+                if (existingChannel.importance == NotificationManager.IMPORTANCE_NONE) {
+                    android.util.Log.w(TAG, "Notification channel is disabled by user!")
+                }
+                return
+            }
+
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "DNA Messenger Service",
@@ -277,8 +322,8 @@ class DnaMessengerService : Service() {
                 description = "Keeps DHT connection alive for message delivery"
                 setShowBadge(false)
             }
-            val notificationManager = getSystemService(NotificationManager::class.java)
             notificationManager.createNotificationChannel(channel)
+            android.util.Log.i(TAG, "Created notification channel: $CHANNEL_ID")
         }
     }
 
