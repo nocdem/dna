@@ -261,10 +261,9 @@ class EventHandler {
       final openChatFp = selectedContact?.fingerprint;
 
       _ref.read(engineProvider).whenData((engine) async {
-        // Platform-specific outbox handling
-        // Android: Native code already fetched via background_fetch_thread
-        // Desktop: Must call checkOfflineMessages() to fetch
-        await PlatformHandler.instance.onOutboxUpdated(engine);
+        // Fetch messages only from contacts whose outboxes triggered the event.
+        // Much faster than checkOfflineMessages() which checks ALL contacts.
+        await PlatformHandler.instance.onOutboxUpdated(engine, fingerprints);
 
         // Process each contact that had updates
         for (final fp in fingerprints) {

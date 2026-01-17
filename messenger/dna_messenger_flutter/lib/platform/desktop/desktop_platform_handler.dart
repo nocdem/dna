@@ -22,10 +22,12 @@ class DesktopPlatformHandler implements PlatformHandler {
   }
 
   @override
-  Future<void> onOutboxUpdated(DnaEngine engine) async {
-    // Desktop: Flutter must fetch messages ourselves
-    // No JNI background_fetch_thread to do it for us
-    await engine.checkOfflineMessages();
+  Future<void> onOutboxUpdated(DnaEngine engine, Set<String> contactFingerprints) async {
+    // Fetch messages only from contacts whose outboxes triggered the event.
+    // Much faster than checkOfflineMessages() which checks ALL contacts.
+    for (final fp in contactFingerprints) {
+      await engine.checkOfflineMessagesFrom(fp);
+    }
   }
 
   @override
