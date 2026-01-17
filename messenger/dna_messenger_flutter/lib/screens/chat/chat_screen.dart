@@ -497,7 +497,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   Widget _buildMessageList(BuildContext context, List<Message> messages, Set<int> starredIds, Contact contact) {
     // Track seen messages for animation (only animate truly new ones)
-    // After initial load, mark all current messages as seen
+    // On initial load, mark all current messages as seen (no animation for them)
     if (!_initialLoadDone && messages.isNotEmpty) {
       // First load - mark all as seen (no animation)
       for (final msg in messages) {
@@ -509,12 +509,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           setState(() => _initialLoadDone = true);
         }
       });
-    } else if (_initialLoadDone) {
-      // After initial load, add new message IDs to seen set
-      for (final msg in messages) {
-        _seenMessageIds.add(msg.id);
-      }
     }
+    // NOTE: Don't add messages to _seenMessageIds here after initial load!
+    // New messages should NOT be in the set so they get animated.
+    // They get added to _seenMessageIds after being rendered (see below).
 
     // Filter messages if searching
     final filteredMessages = _searchQuery.isEmpty
@@ -640,30 +638,39 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   color: DnaColors.primary,
                 ),
               ),
-              child: MessageBubbleWrapper(
-                message: message,
-                isStarred: starredIds.contains(message.id),
-                // Only animate new messages (not seen before and after initial load)
-                animate: _initialLoadDone && !_seenMessageIds.contains(message.id),
-                onTap: () => _showMessageInfo(message),
-                onLongPress: () => _showMessageActions(message),
-                onReply: _replyMessage,
-                onCopy: _copyMessage,
-                onForward: _forwardMessage,
-                onStar: (msg) => _toggleStarMessage(msg, contact.fingerprint),
-                onDelete: _confirmDeleteMessage,
-                onRetry: message.isOutgoing &&
-                        (message.status == MessageStatus.failed || message.status == MessageStatus.pending || message.status == MessageStatus.stale)
-                    ? () => _retryMessage(message.id)
-                    : null,
-                child: _MessageBubble(
-                  message: message,
-                  isStarred: starredIds.contains(message.id),
-                  onRetry: message.isOutgoing &&
-                          (message.status == MessageStatus.failed || message.status == MessageStatus.pending || message.status == MessageStatus.stale)
-                      ? () => _retryMessage(message.id)
-                      : null,
-                ),
+              child: Builder(
+                builder: (context) {
+                  // Check if this is a new message that should animate
+                  final shouldAnimate = _initialLoadDone && !_seenMessageIds.contains(message.id);
+                  // Mark as seen so it won't animate again on rebuild
+                  if (shouldAnimate) {
+                    _seenMessageIds.add(message.id);
+                  }
+                  return MessageBubbleWrapper(
+                    message: message,
+                    isStarred: starredIds.contains(message.id),
+                    animate: shouldAnimate,
+                    onTap: () => _showMessageInfo(message),
+                    onLongPress: () => _showMessageActions(message),
+                    onReply: _replyMessage,
+                    onCopy: _copyMessage,
+                    onForward: _forwardMessage,
+                    onStar: (msg) => _toggleStarMessage(msg, contact.fingerprint),
+                    onDelete: _confirmDeleteMessage,
+                    onRetry: message.isOutgoing &&
+                            (message.status == MessageStatus.failed || message.status == MessageStatus.pending || message.status == MessageStatus.stale)
+                        ? () => _retryMessage(message.id)
+                        : null,
+                    child: _MessageBubble(
+                      message: message,
+                      isStarred: starredIds.contains(message.id),
+                      onRetry: message.isOutgoing &&
+                              (message.status == MessageStatus.failed || message.status == MessageStatus.pending || message.status == MessageStatus.stale)
+                          ? () => _retryMessage(message.id)
+                          : null,
+                    ),
+                  );
+                },
               ),
             ),
           ],
