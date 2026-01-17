@@ -3482,6 +3482,7 @@ done:
 void dna_handle_get_group_info(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     dna_group_info_t *info = NULL;
+    dht_group_cache_entry_t *cache_entry = NULL;
     const char *group_uuid = task->params.get_group_info.group_uuid;
 
     if (!engine->identity_loaded) {
@@ -3489,10 +3490,10 @@ void dna_handle_get_group_info(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Get group from local cache */
-    groups_info_t group_info;
-    if (groups_get_info(group_uuid, &group_info) != 0) {
-        error = DNA_ENGINE_ERROR_NOT_FOUND;
+    /* Get group from DHT cache (same source as dna_engine_get_groups) */
+    int rc = dht_groups_get_cache_entry(group_uuid, &cache_entry);
+    if (rc != 0) {
+        error = (rc == -2) ? DNA_ENGINE_ERROR_NOT_FOUND : DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }
 
@@ -3502,11 +3503,13 @@ void dna_handle_get_group_info(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    strncpy(info->uuid, group_info.uuid, 36);
-    strncpy(info->name, group_info.name, sizeof(info->name) - 1);
-    strncpy(info->creator, group_info.owner_fp, 128);
-    info->created_at = group_info.created_at;
-    info->is_owner = group_info.is_owner;
+    strncpy(info->uuid, cache_entry->group_uuid, 36);
+    strncpy(info->name, cache_entry->name, sizeof(info->name) - 1);
+    strncpy(info->creator, cache_entry->creator, 128);
+    info->created_at = cache_entry->created_at;
+
+    /* Check if current user is the owner */
+    info->is_owner = (strcmp(engine->fingerprint, cache_entry->creator) == 0);
 
     /* Get member count */
     int member_count = 0;
@@ -3522,6 +3525,7 @@ void dna_handle_get_group_info(dna_engine_t *engine, dna_task_t *task) {
     }
 
 done:
+    if (cache_entry) free(cache_entry);
     task->callback.group_info(task->request_id, error, info, task->user_data);
 }
 
@@ -3529,6 +3533,9 @@ void dna_handle_get_group_members(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     dna_group_member_t *members = NULL;
     int count = 0;
+    dht_group_cache_entry_t *cache_entry = NULL;
+    char **dht_members = NULL;
+    int dht_member_count = 0;
     const char *group_uuid = task->params.get_group_members.group_uuid;
 
     if (!engine->identity_loaded) {
@@ -3536,22 +3543,20 @@ void dna_handle_get_group_members(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Get group info for owner check */
-    groups_info_t group_info;
-    if (groups_get_info(group_uuid, &group_info) != 0) {
-        error = DNA_ENGINE_ERROR_NOT_FOUND;
+    /* Get group from DHT cache for owner info */
+    int rc = dht_groups_get_cache_entry(group_uuid, &cache_entry);
+    if (rc != 0) {
+        error = (rc == -2) ? DNA_ENGINE_ERROR_NOT_FOUND : DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }
 
-    /* Get members from local database */
-    groups_member_t *local_members = NULL;
-    int member_count = 0;
-    if (groups_get_members(group_uuid, &local_members, &member_count) != 0 || member_count == 0) {
-        /* No members in local DB, return just owner */
+    /* Get members from DHT group_members table */
+    if (dht_groups_get_members(group_uuid, &dht_members, &dht_member_count) != 0 || dht_member_count == 0) {
+        /* No members in DHT table, return just owner */
         members = calloc(1, sizeof(dna_group_member_t));
         if (members) {
-            strncpy(members[0].fingerprint, group_info.owner_fp, 128);
-            members[0].added_at = group_info.created_at;
+            strncpy(members[0].fingerprint, cache_entry->creator, 128);
+            members[0].added_at = cache_entry->created_at;
             members[0].is_owner = true;
             count = 1;
         }
@@ -3559,22 +3564,23 @@ void dna_handle_get_group_members(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Convert to dna_group_member_t */
-    members = calloc(member_count, sizeof(dna_group_member_t));
+    members = calloc(dht_member_count, sizeof(dna_group_member_t));
     if (!members) {
-        free(local_members);
+        dht_groups_free_members(dht_members, dht_member_count);
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
 
-    for (int i = 0; i < member_count; i++) {
-        strncpy(members[i].fingerprint, local_members[i].fingerprint, 128);
-        members[i].added_at = local_members[i].added_at;
-        members[i].is_owner = (strcmp(local_members[i].fingerprint, group_info.owner_fp) == 0);
+    for (int i = 0; i < dht_member_count; i++) {
+        strncpy(members[i].fingerprint, dht_members[i], 128);
+        members[i].added_at = cache_entry->created_at;  /* DHT doesn't store per-member add time */
+        members[i].is_owner = (strcmp(dht_members[i], cache_entry->creator) == 0);
     }
-    count = member_count;
-    free(local_members);
+    count = dht_member_count;
+    dht_groups_free_members(dht_members, dht_member_count);
 
 done:
+    if (cache_entry) free(cache_entry);
     task->callback.group_members(task->request_id, error, members, count, task->user_data);
 }
 
