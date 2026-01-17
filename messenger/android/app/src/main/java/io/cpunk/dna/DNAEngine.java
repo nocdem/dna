@@ -104,6 +104,56 @@ public class DNAEngine {
     }
 
     /**
+     * Load identity in background mode (v0.5.5+)
+     *
+     * Lightweight initialization for background service:
+     * - Skips transport, presence, wallet initialization
+     * - Keeps DHT listeners active for notifications
+     *
+     * Call upgradeToForeground() when app comes to foreground.
+     */
+    public long loadIdentityBackground(String fingerprint, CompletionCallback callback) {
+        return nativeLoadIdentityBackground(fingerprint, callback);
+    }
+
+    /**
+     * Upgrade from background mode to foreground mode (v0.5.5+)
+     *
+     * Completes initialization that was skipped in background mode:
+     * - Initializes transport layer
+     * - Starts presence heartbeat
+     * - Syncs contacts from DHT
+     * - Checks offline messages
+     * - Retries pending messages
+     * - Creates missing blockchain wallets
+     *
+     * Safe to call if already in FULL mode (returns 0).
+     *
+     * @return 0 on success, -1 on error
+     */
+    public int upgradeToForeground() {
+        return nativeUpgradeToForeground();
+    }
+
+    /**
+     * Get current initialization mode (v0.5.5+)
+     *
+     * @return 0 = FULL (foreground), 1 = BACKGROUND
+     */
+    public int getInitMode() {
+        return nativeGetInitMode();
+    }
+
+    /**
+     * Check if identity is loaded (v0.5.5+)
+     *
+     * @return true if identity is loaded, false otherwise
+     */
+    public boolean isIdentityLoaded() {
+        return nativeIsIdentityLoaded();
+    }
+
+    /**
      * Register human-readable name
      */
     public long registerName(String name, CompletionCallback callback) {
@@ -321,6 +371,10 @@ public class DNAEngine {
     // v0.3.0: nativeListIdentities removed - single-user model
     private native long nativeCreateIdentity(byte[] signingSeed, byte[] encryptionSeed, IdentityCreatedCallback callback);
     private native long nativeLoadIdentity(String fingerprint, CompletionCallback callback);
+    private native long nativeLoadIdentityBackground(String fingerprint, CompletionCallback callback);  // v0.5.5+
+    private native int nativeUpgradeToForeground();  // v0.5.5+
+    private native int nativeGetInitMode();  // v0.5.5+
+    private native boolean nativeIsIdentityLoaded();  // v0.5.5+
     private native long nativeRegisterName(String name, CompletionCallback callback);
     private native long nativeGetDisplayName(String fingerprint, DisplayNameCallback callback);
 

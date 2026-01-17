@@ -98,12 +98,6 @@ static void print_usage(const char *prog_name) {
     printf("NETWORK COMMANDS:\n");
     printf("  online <fp>                 Check if peer is online\n");
     printf("\n");
-    printf("NAT TRAVERSAL COMMANDS:\n");
-    printf("  stun-test                   Test STUN and show public IP\n");
-    printf("  ice-status                  Show ICE connection status\n");
-    printf("  turn-creds [--force]        Show/request TURN credentials\n");
-    printf("  turn-test                   Test TURN relay with all servers\n");
-    printf("\n");
     printf("VERSION COMMANDS:\n");
     printf("  publish-version             Publish version info to DHT\n");
     printf("    --lib <ver> --app <ver> --nodus <ver> [--lib-min <ver>] [--app-min <ver>] [--nodus-min <ver>]\n");

@@ -1048,9 +1048,23 @@ class DnaEngine {
   DnaEngine._();
 
   /// Create and initialize the DNA engine
+  ///
+  /// On Android (v0.5.5+): Checks for existing global engine first.
+  /// If the background service already created an engine, this reuses it
+  /// for seamless handoff between JNI and Flutter FFI.
   static Future<DnaEngine> create({String? dataDir}) async {
     final engine = DnaEngine._();
     engine._bindings = DnaBindings(_loadLibrary());
+
+    // Android: Check for existing global engine (created by service)
+    if (Platform.isAndroid) {
+      final globalEngine = engine._bindings.dna_engine_get_global();
+      if (globalEngine != nullptr) {
+        engine._engine = globalEngine;
+        engine._setupEventCallback();
+        return engine;
+      }
+    }
 
     final dataDirPtr = dataDir?.toNativeUtf8() ?? nullptr;
     engine._engine = engine._bindings.dna_engine_create(dataDirPtr.cast());
@@ -1061,6 +1075,11 @@ class DnaEngine {
 
     if (engine._engine == nullptr) {
       throw DnaEngineException(-100, 'Failed to create engine');
+    }
+
+    // Android: Set as global so service can access it
+    if (Platform.isAndroid) {
+      engine._bindings.dna_engine_set_global(engine._engine);
     }
 
     engine._setupEventCallback();
@@ -1516,7 +1535,26 @@ class DnaEngine {
   ///
   /// In v0.3.0 single-user model, fingerprint is optional. If not provided,
   /// the fingerprint will be computed from the flat key file.
+  ///
+  /// On Android (v0.5.5+): If identity was already loaded by the background
+  /// service in BACKGROUND mode, this upgrades to FULL mode instead of
+  /// reloading. This provides seamless handoff between service and Flutter.
   Future<void> loadIdentity({String? fingerprint, String? password}) async {
+    // Android: Check if service already loaded identity in background mode
+    if (Platform.isAndroid && isIdentityLoaded()) {
+      final mode = getInitMode();
+      if (mode == 1) {  // BACKGROUND mode
+        // Upgrade to FULL mode instead of reloading
+        final result = upgradeToForeground();
+        if (result != 0) {
+          throw DnaEngineException(result, 'Failed to upgrade to foreground mode');
+        }
+        return;
+      }
+      // Already in FULL mode, nothing to do
+      return;
+    }
+
     final completer = Completer<void>();
     final localId = _nextLocalId++;
 
@@ -1555,6 +1593,104 @@ class DnaEngine {
     }
 
     return completer.future;
+  }
+
+  /// Load identity in background mode (Android only, v0.5.5+)
+  ///
+  /// Lightweight initialization for background service:
+  /// - Skips transport, presence, wallet initialization
+  /// - Keeps DHT listeners active for notifications
+  ///
+  /// Call [upgradeToForeground] when app comes to foreground.
+  ///
+  /// Throws [UnsupportedError] if called on non-Android platform.
+  Future<void> loadIdentityBackground({String? fingerprint, String? password}) async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('loadIdentityBackground is only available on Android');
+    }
+
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final fpPtr = (fingerprint ?? '').toNativeUtf8();
+    final pwPtr = password?.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(fpPtr);
+      if (pwPtr != null) calloc.free(pwPtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    // mode: 1 = DNA_INIT_MODE_BACKGROUND
+    final requestId = _bindings.dna_engine_load_identity_with_mode(
+      _engine,
+      fpPtr.cast(),
+      pwPtr?.cast() ?? nullptr,
+      1,  // DNA_INIT_MODE_BACKGROUND
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fpPtr);
+      if (pwPtr != null) calloc.free(pwPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Upgrade from background mode to foreground mode (Android only, v0.5.5+)
+  ///
+  /// Completes initialization that was skipped in background mode:
+  /// - Initializes transport layer
+  /// - Starts presence heartbeat
+  /// - Syncs contacts from DHT
+  /// - Checks offline messages
+  /// - Retries pending messages
+  /// - Creates missing blockchain wallets
+  ///
+  /// Safe to call if already in FULL mode (returns 0).
+  /// Throws [UnsupportedError] if called on non-Android platform.
+  ///
+  /// Returns 0 on success, -1 on error.
+  int upgradeToForeground() {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('upgradeToForeground is only available on Android');
+    }
+    return _bindings.dna_engine_upgrade_to_foreground(_engine);
+  }
+
+  /// Check if identity is already loaded (Android only, v0.5.5+)
+  ///
+  /// Returns true if identity is loaded (by service or by previous loadIdentity call).
+  /// On non-Android platforms, always returns false.
+  bool isIdentityLoaded() {
+    if (!Platform.isAndroid) {
+      return false;
+    }
+    return _bindings.dna_engine_is_identity_loaded(_engine);
+  }
+
+  /// Get current initialization mode (Android only, v0.5.5+)
+  ///
+  /// Returns: 0 = FULL (foreground), 1 = BACKGROUND (service)
+  /// On non-Android platforms, always returns 0 (FULL).
+  int getInitMode() {
+    if (!Platform.isAndroid) {
+      return 0;  // FULL mode
+    }
+    return _bindings.dna_engine_get_init_mode(_engine);
   }
 
   /// Get the encrypted mnemonic (recovery phrase) for the current identity

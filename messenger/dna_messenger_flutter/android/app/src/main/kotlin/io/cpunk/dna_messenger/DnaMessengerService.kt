@@ -22,6 +22,11 @@ import androidx.core.app.NotificationCompat
  *
  * Phase 14: Android background execution for reliable DHT-only messaging.
  * Note: Polling removed in favor of DHT listeners for better battery life.
+ *
+ * v0.5.5+: Lightweight background mode available via DNAEngine:
+ * - loadIdentityBackground(): Load identity with minimal resources
+ * - upgradeToForeground(): Complete initialization when app opens
+ * See io.cpunk.dna.DNAEngine for integration.
  */
 class DnaMessengerService : Service() {
     companion object {
@@ -54,6 +59,37 @@ class DnaMessengerService : Service() {
          */
         @JvmStatic
         external fun nativeIsDhtHealthy(): Boolean
+
+        /**
+         * Initialize engine if not already done.
+         * Called when service starts fresh (after process killed).
+         * Returns: true if engine is ready (created or already existed)
+         */
+        @JvmStatic
+        external fun nativeEnsureEngine(dataDir: String): Boolean
+
+        /**
+         * Check if identity is already loaded.
+         * Returns: true if identity loaded, false if need to load
+         */
+        @JvmStatic
+        external fun nativeIsIdentityLoaded(): Boolean
+
+        /**
+         * Load identity in background mode (DHT + listeners only).
+         * Called when service starts fresh but Flutter isn't running.
+         * Note: This is a blocking call for simplicity in service context.
+         * Returns: 0 on success, negative on error
+         */
+        @JvmStatic
+        external fun nativeLoadIdentityBackgroundSync(fingerprint: String): Int
+
+        /**
+         * Get current init mode.
+         * Returns: 0 = FULL, 1 = BACKGROUND
+         */
+        @JvmStatic
+        external fun nativeGetInitMode(): Int
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -145,6 +181,53 @@ class DnaMessengerService : Service() {
             MainActivity.initNotificationHelper(this)
         }
         android.util.Log.i(TAG, "Using singleton notification helper: ${MainActivity.notificationHelper != null}")
+
+        // v0.5.5+: Check if identity needs to be loaded in background mode
+        // This handles the case where process was killed but service restarts
+        ensureIdentityLoaded()
+    }
+
+    /**
+     * Ensure identity is loaded for DHT listeners (v0.5.5+)
+     *
+     * When the process is killed but service restarts (START_STICKY),
+     * we need to reload identity in BACKGROUND mode for notifications.
+     */
+    private fun ensureIdentityLoaded() {
+        try {
+            // Check if identity already loaded (Flutter might have done it)
+            if (nativeIsIdentityLoaded()) {
+                val mode = nativeGetInitMode()
+                android.util.Log.i(TAG, "Identity already loaded (mode=$mode)")
+                return
+            }
+
+            // Get fingerprint from SharedPreferences (set by Flutter)
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val fingerprint = prefs.getString("flutter.identity_fingerprint", null)
+            if (fingerprint.isNullOrEmpty()) {
+                android.util.Log.i(TAG, "No stored fingerprint - waiting for Flutter to create identity")
+                return
+            }
+
+            // Ensure engine is initialized
+            val dataDir = filesDir.absolutePath + "/dna_messenger"
+            if (!nativeEnsureEngine(dataDir)) {
+                android.util.Log.e(TAG, "Failed to ensure engine")
+                return
+            }
+
+            // Load identity in BACKGROUND mode (DHT + listeners only)
+            android.util.Log.i(TAG, "Loading identity in BACKGROUND mode: ${fingerprint.take(16)}...")
+            val result = nativeLoadIdentityBackgroundSync(fingerprint)
+            if (result == 0) {
+                android.util.Log.i(TAG, "Identity loaded in BACKGROUND mode - notifications active")
+            } else {
+                android.util.Log.e(TAG, "Failed to load identity: $result")
+            }
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "ensureIdentityLoaded error: ${e.message}")
+        }
     }
 
     private fun stopForegroundService() {
