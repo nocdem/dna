@@ -1085,7 +1085,13 @@ void dna_group_outbox_free_bucket(dna_group_outbox_bucket_t *bucket) {
  * Internal: DHT listen callback for group messages
  *
  * Called when ANY sender publishes to the shared group key.
- * Fetches all messages and dedupes against local DB.
+ *
+ * IMPORTANT: Do NOT do blocking DHT operations (like fetch) inside this callback!
+ * The callback runs in OpenDHT's internal thread. Doing a DHT GET here causes
+ * deadlock/timeout because the thread is busy handling this callback.
+ *
+ * Instead, we just fire the event immediately. Flutter will handle the actual
+ * fetch via its own async mechanism.
  */
 static bool group_message_listen_callback(
     const uint8_t *value,
@@ -1093,96 +1099,22 @@ static bool group_message_listen_callback(
     bool expired,
     void *user_data
 ) {
-    (void)value;
-    (void)value_len;
-
     if (expired || !user_data) {
         return true;  /* Continue listening */
     }
 
     dna_group_listen_ctx_t *ctx = (dna_group_listen_ctx_t *)user_data;
 
-    QGP_LOG_WARN(LOG_TAG, "[GROUP-LISTEN] >>> CALLBACK FIRED for group %s", ctx->group_uuid);
+    /* Only fire event if we got actual data */
+    if (value && value_len > 0) {
+        QGP_LOG_WARN(LOG_TAG, "[GROUP-LISTEN] >>> NEW VALUE for group %s (len=%zu) - firing event immediately",
+                     ctx->group_uuid, value_len);
 
-    /* Fetch ALL messages from the shared key (all senders) */
-    dna_group_message_t *messages = NULL;
-    size_t count = 0;
-
-    dht_context_t *dht_ctx = ctx->dht_ctx;
-    if (!dht_ctx) {
-        dht_ctx = dht_singleton_get();
-    }
-    if (!dht_ctx) {
-        return true;
-    }
-
-    int ret = dna_group_outbox_fetch(dht_ctx, ctx->group_uuid, ctx->current_day,
-                                      &messages, &count);
-
-    QGP_LOG_WARN(LOG_TAG, "[GROUP-LISTEN] Fetch result: ret=%d messages=%p count=%zu", ret, (void*)messages, count);
-
-    if (ret != 0 || !messages || count == 0) {
-        QGP_LOG_WARN(LOG_TAG, "[GROUP-LISTEN] No messages from fetch, returning");
-        return true;
-    }
-
-    /* Process and store new messages */
-    size_t new_count = 0;
-    for (size_t i = 0; i < count; i++) {
-        /* Check if already stored */
-        if (dna_group_outbox_db_message_exists(messages[i].message_id) == 1) {
-            continue;
+        /* Fire event immediately - let Flutter handle the fetch
+         * This avoids DHT deadlock from fetching inside callback */
+        if (ctx->on_new_message) {
+            ctx->on_new_message(ctx->group_uuid, 1, ctx->user_data);
         }
-
-        /* Decrypt message - load GEK by message's version */
-        if (messages[i].ciphertext && messages[i].ciphertext_len > 0) {
-            uint8_t gek[GEK_KEY_SIZE];
-            int gek_loaded = gek_load(ctx->group_uuid, messages[i].gsk_version, gek);
-            if (gek_loaded != 0) {
-                /* Try auto-sync from DHT */
-                if (messenger_sync_group_gek(ctx->group_uuid) == 0) {
-                    gek_loaded = gek_load(ctx->group_uuid, messages[i].gsk_version, gek);
-                }
-            }
-            if (gek_loaded == 0) {
-                uint8_t *plaintext = malloc(messages[i].ciphertext_len);
-                if (plaintext) {
-                    size_t plaintext_len = 0;
-                    if (qgp_aes256_decrypt(gek, messages[i].ciphertext, messages[i].ciphertext_len,
-                                           (const uint8_t *)messages[i].message_id, strlen(messages[i].message_id),
-                                           messages[i].nonce, messages[i].tag,
-                                           plaintext, &plaintext_len) == 0) {
-                        messages[i].plaintext = malloc(plaintext_len + 1);
-                        if (messages[i].plaintext) {
-                            memcpy(messages[i].plaintext, plaintext, plaintext_len);
-                            messages[i].plaintext[plaintext_len] = '\0';
-                        }
-                    }
-                    free(plaintext);
-                }
-                qgp_secure_memzero(gek, GEK_KEY_SIZE);
-            } else {
-                QGP_LOG_WARN(LOG_TAG, "No GEK v%u for group %s in listen callback\n",
-                             messages[i].gsk_version, ctx->group_uuid);
-            }
-        }
-
-        /* Store in database */
-        if (dna_group_outbox_db_store_message(&messages[i]) == 0) {
-            new_count++;
-        }
-    }
-
-    dna_group_outbox_free_messages(messages, count);
-
-    QGP_LOG_WARN(LOG_TAG, "[GROUP-LISTEN] Processed: total=%zu new=%zu callback=%p", count, new_count, (void*)ctx->on_new_message);
-
-    /* Fire user callback if new messages */
-    if (new_count > 0 && ctx->on_new_message) {
-        QGP_LOG_WARN(LOG_TAG, "[GROUP-LISTEN] >>> FIRING EVENT: group=%s new_count=%zu", ctx->group_uuid, new_count);
-        ctx->on_new_message(ctx->group_uuid, new_count, ctx->user_data);
-    } else {
-        QGP_LOG_WARN(LOG_TAG, "[GROUP-LISTEN] NOT firing event: new_count=%zu", new_count);
     }
 
     return true;  /* Continue listening */

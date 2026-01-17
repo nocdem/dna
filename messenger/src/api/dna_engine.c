@@ -7615,6 +7615,15 @@ void dna_handle_sync_group_by_uuid(dna_engine_t *engine, dna_task_t *task) {
                 } else {
                     QGP_LOG_INFO(LOG_TAG, "Successfully synced GEK for group %s", group_uuid);
                 }
+
+                // Sync messages from DHT to local DB
+                size_t msg_count = 0;
+                int msg_ret = dna_group_outbox_sync(dht_ctx, group_uuid, &msg_count);
+                if (msg_ret != 0) {
+                    QGP_LOG_WARN(LOG_TAG, "Failed to sync messages for group %s (non-fatal)", group_uuid);
+                } else if (msg_count > 0) {
+                    QGP_LOG_INFO(LOG_TAG, "Synced %zu new messages for group %s", msg_count, group_uuid);
+                }
             }
         } else {
             error = DNA_ENGINE_ERROR_NETWORK;
