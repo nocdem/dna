@@ -341,6 +341,7 @@ int messenger_contacts_auto_sync(messenger_context_t *ctx);
  * @param message: Plaintext message
  * @param group_id: Group ID (0 for direct messages, >0 for group messages)
  * @param message_type: Message type (MESSAGE_TYPE_CHAT or MESSAGE_TYPE_GROUP_INVITATION)
+ * @param timestamp: Message timestamp (0 = use current time)
  * @return: 0 on success, -1 on error
  */
 int messenger_send_message(
@@ -349,7 +350,8 @@ int messenger_send_message(
     size_t recipient_count,
     const char *message,
     int group_id,
-    int message_type
+    int message_type,
+    time_t timestamp
 );
 
 /**

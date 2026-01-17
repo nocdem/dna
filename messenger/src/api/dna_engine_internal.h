@@ -202,6 +202,7 @@ typedef union {
     struct {
         char recipient[129];
         char *message;  /* Heap allocated, task owns */
+        time_t queued_at;  /* Timestamp when user sent (for ordering) */
     } send_message;
 
     /* Get conversation */
@@ -408,6 +409,7 @@ typedef struct {
     char *message;           /* Heap allocated, queue owns */
     int slot_id;             /* Unique slot ID for tracking */
     bool in_use;             /* True if slot contains valid message */
+    time_t queued_at;        /* Timestamp when message was queued (for ordering) */
 } dna_message_queue_entry_t;
 
 /**

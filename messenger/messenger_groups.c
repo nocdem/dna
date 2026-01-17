@@ -510,7 +510,7 @@ int messenger_send_group_invitation(messenger_context_t *ctx, const char *group_
     const char *json_str = json_object_to_json_string_ext(j_invite, JSON_C_TO_STRING_PLAIN);
 
     // Send as encrypted message (group_id=0, message_type=GROUP_INVITATION)
-    int ret = messenger_send_message(ctx, &recipient, 1, json_str, 0, MESSAGE_TYPE_GROUP_INVITATION);
+    int ret = messenger_send_message(ctx, &recipient, 1, json_str, 0, MESSAGE_TYPE_GROUP_INVITATION, 0);
 
     json_object_put(j_invite);
 

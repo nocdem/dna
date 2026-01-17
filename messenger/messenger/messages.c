@@ -314,7 +314,8 @@ int messenger_send_message(
     size_t recipient_count,
     const char *message,
     int group_id,
-    int message_type
+    int message_type,
+    time_t timestamp
 ) {
     if (!ctx || !recipients || !message || recipient_count == 0 || recipient_count > 254) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments (recipient_count must be 1-254)");
@@ -445,7 +446,7 @@ int messenger_send_message(
 
     // Store in SQLite local database - one row per actual recipient (not sender)
     // Track message IDs and sequence numbers for status updates
-    time_t now = time(NULL);
+    time_t now = (timestamp > 0) ? timestamp : time(NULL);
     int *message_ids = malloc(recipient_count * sizeof(int));
     uint64_t *seq_nums = malloc(recipient_count * sizeof(uint64_t));
     if (!message_ids || !seq_nums) {

@@ -3135,7 +3135,8 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task) {
         1,
         task->params.send_message.message,
         0,  /* group_id = 0 for direct messages */
-        0   /* message_type = chat */
+        0,  /* message_type = chat */
+        task->params.send_message.queued_at
     );
 
     if (rc != 0) {
@@ -5483,6 +5484,7 @@ dna_request_id_t dna_engine_send_message(
     dna_task_params_t params = {0};
     strncpy(params.send_message.recipient, recipient_fingerprint, 128);
     params.send_message.message = strdup(message);
+    params.send_message.queued_at = time(NULL);  /* Capture send time */
     if (!params.send_message.message) {
         return DNA_REQUEST_ID_INVALID;
     }
@@ -5502,6 +5504,9 @@ int dna_engine_queue_message(
     if (!engine->identity_loaded) {
         return -2; /* No identity loaded */
     }
+
+    /* Capture timestamp NOW - this is when user clicked send */
+    time_t queued_at = time(NULL);
 
     pthread_mutex_lock(&engine->message_queue.mutex);
 
@@ -5536,6 +5541,7 @@ int dna_engine_queue_message(
     }
     entry->slot_id = engine->message_queue.next_slot_id++;
     entry->in_use = true;
+    entry->queued_at = queued_at;
     engine->message_queue.size++;
 
     int slot_id = entry->slot_id;
@@ -5545,6 +5551,7 @@ int dna_engine_queue_message(
     dna_task_params_t params = {0};
     strncpy(params.send_message.recipient, recipient_fingerprint, 128);
     params.send_message.message = strdup(message);
+    params.send_message.queued_at = queued_at;
     if (params.send_message.message) {
         dna_task_callback_t cb = { .completion = NULL };
         dna_submit_task(engine, TASK_SEND_MESSAGE, &params, cb, (void*)(intptr_t)slot_id);
@@ -5812,7 +5819,8 @@ static int retry_single_message(dna_engine_t *engine, backup_message_t *msg) {
         1,                      /* recipient_count */
         msg->plaintext,         /* message content */
         msg->group_id,          /* group_id (0 for direct) */
-        msg->message_type       /* message_type */
+        msg->message_type,      /* message_type */
+        msg->timestamp          /* preserve original timestamp for ordering */
     );
 
     if (rc == 0 || rc == 1) {
