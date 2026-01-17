@@ -3448,6 +3448,23 @@ void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task) {
     }
 
     if (entry_count > 0) {
+        /* Sync all groups from DHT first to get latest data */
+        dht_context_t *dht_ctx = dht_singleton_get();
+        if (dht_ctx) {
+            for (int i = 0; i < entry_count; i++) {
+                dht_groups_sync_from_dht(dht_ctx, entries[i].group_uuid);
+            }
+        }
+
+        /* Re-fetch after sync to get updated data */
+        dht_groups_free_cache_entries(entries, entry_count);
+        entries = NULL;
+        entry_count = 0;
+        if (dht_groups_list_for_user(engine->fingerprint, &entries, &entry_count) != 0) {
+            error = DNA_ENGINE_ERROR_DATABASE;
+            goto done;
+        }
+
         groups = calloc(entry_count, sizeof(dna_group_t));
         if (!groups) {
             dht_groups_free_cache_entries(entries, entry_count);
@@ -3549,7 +3566,13 @@ void dna_handle_get_group_members(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Get group from DHT cache for owner info */
+    /* Sync from DHT first to get latest member list */
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (dht_ctx) {
+        dht_groups_sync_from_dht(dht_ctx, group_uuid);
+    }
+
+    /* Get group from local cache (now up-to-date) */
     int rc = dht_groups_get_cache_entry(group_uuid, &cache_entry);
     if (rc != 0) {
         error = (rc == -2) ? DNA_ENGINE_ERROR_NOT_FOUND : DNA_ENGINE_ERROR_DATABASE;
