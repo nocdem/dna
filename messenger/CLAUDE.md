@@ -431,6 +431,32 @@ When adding NEW functions to the platform layer:
 - **DLL exports**: Public API functions need proper export macros for shared library builds
 - **Path separators**: Preserve original separator (`\` vs `/`) when manipulating paths
 
+**Platform-Specific Code Guidelines:**
+
+For **C library** platform-specific behavior:
+- Use `#ifdef __ANDROID__` for Android-only code
+- Use `#ifdef __APPLE__` for iOS/macOS-only code
+- Use `#ifdef _WIN32` for Windows-only code
+- Example:
+  ```c
+  #ifdef __ANDROID__
+      // Android: Skip auto-fetch, let Flutter handle on resume
+      QGP_LOG_INFO(TAG, "Skipping auto-fetch (Android)");
+  #else
+      // Desktop: Fetch immediately
+      transport_check_offline_messages(...);
+  #endif
+  ```
+
+For **Flutter app** platform-specific behavior:
+- **DO NOT** use `Platform.isAndroid`, `Platform.isIOS`, or similar boolean checks in business logic
+- **DO** use the platform handler pattern with platform-specific directories:
+  - `lib/platform/platform_handler.dart` - Abstract interface
+  - `lib/platform/android/android_platform_handler.dart` - Android implementation
+  - `lib/platform/desktop/desktop_platform_handler.dart` - Desktop implementation
+- Access via `PlatformHandler.instance` singleton
+- This keeps platform logic isolated and testable
+
 ## LOCAL TESTING POLICY
 - **BUILD ONLY**: Only verify that the build succeeds locally (`cmake .. && make`)
 - **NO GUI TESTING**: Do NOT attempt to run or test the GUI application locally - this machine has no monitor
