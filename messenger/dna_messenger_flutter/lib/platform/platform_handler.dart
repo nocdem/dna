@@ -47,6 +47,6 @@ abstract class PlatformHandler {
   /// Whether this platform supports native notifications
   bool get supportsNativeNotifications;
 
-  /// Whether this platform supports QR code scanning (camera access)
-  bool get supportsQrScanner;
+  /// Whether this platform supports camera access (QR scanner, selfie, etc.)
+  bool get supportsCamera;
 }

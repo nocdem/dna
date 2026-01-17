@@ -46,5 +46,5 @@ class AndroidPlatformHandler implements PlatformHandler {
   bool get supportsNativeNotifications => true;
 
   @override
-  bool get supportsQrScanner => true;
+  bool get supportsCamera => true;
 }

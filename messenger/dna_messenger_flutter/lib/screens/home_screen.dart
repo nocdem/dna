@@ -49,7 +49,7 @@ class _MainNavigationState extends ConsumerState<_MainNavigation> {
   @override
   Widget build(BuildContext context) {
     final currentTab = ref.watch(currentTabProvider);
-    final supportsQr = PlatformHandler.instance.supportsQrScanner;
+    final supportsCamera = PlatformHandler.instance.supportsCameraScanner;
 
     return Scaffold(
       key: _scaffoldKey,
@@ -60,7 +60,7 @@ class _MainNavigationState extends ConsumerState<_MainNavigation> {
           ContactsScreen(onMenuPressed: _openDrawer),
           GroupsScreen(onMenuPressed: _openDrawer),
           WalletScreen(onMenuPressed: _openDrawer),
-          if (supportsQr) QrScannerScreen(onMenuPressed: _openDrawer),
+          if (supportsCamera) QrScannerScreen(onMenuPressed: _openDrawer),
           SettingsScreen(onMenuPressed: _openDrawer),
         ],
       ),
@@ -78,9 +78,9 @@ class _NavigationDrawer extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final currentTab = ref.watch(currentTabProvider);
-    final supportsQr = PlatformHandler.instance.supportsQrScanner;
+    final supportsCamera = PlatformHandler.instance.supportsCameraScanner;
     // Settings tab index: 4 on mobile (with QR), 3 on desktop (no QR)
-    final settingsTabIndex = supportsQr ? 4 : 3;
+    final settingsTabIndex = supportsCamera ? 4 : 3;
 
     void selectTab(int index) {
       ref.read(currentTabProvider.notifier).state = index;
@@ -120,7 +120,7 @@ class _NavigationDrawer extends ConsumerWidget {
                     selected: currentTab == 2,
                     onTap: () => selectTab(2),
                   ),
-                  if (supportsQr)
+                  if (supportsCamera)
                     _DrawerItem(
                       icon: FontAwesomeIcons.qrcode,
                       selectedIcon: FontAwesomeIcons.qrcode,

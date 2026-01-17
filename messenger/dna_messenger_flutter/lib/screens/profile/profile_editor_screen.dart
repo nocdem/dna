@@ -12,6 +12,7 @@ import 'package:image/image.dart' as img;
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
+import '../../platform/platform_handler.dart';
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 import 'avatar_crop_screen.dart';
@@ -496,12 +497,11 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
   }
 
   Future<void> _pickAvatar(ProfileEditorNotifier notifier) async {
-    // Check if on desktop (camera not supported)
-    final isDesktop = Platform.isLinux || Platform.isWindows || Platform.isMacOS;
+    final supportsCamera = PlatformHandler.instance.supportsCamera;
 
-    // On desktop, skip the bottom sheet and go straight to gallery
+    // On desktop (no camera), skip the bottom sheet and go straight to gallery
     ImageSource? source;
-    if (isDesktop) {
+    if (!supportsCamera) {
       source = ImageSource.gallery;
     } else {
       // Show bottom sheet to choose between camera and gallery
@@ -642,7 +642,13 @@ class _AvatarSection extends StatelessWidget {
                   radius: 16,
                   backgroundColor: theme.colorScheme.primary,
                   child: IconButton(
-                    icon: const FaIcon(FontAwesomeIcons.camera, size: 16),
+                    // Show camera icon on mobile, gallery icon on desktop
+                    icon: FaIcon(
+                      PlatformHandler.instance.supportsCamera
+                          ? FontAwesomeIcons.camera
+                          : FontAwesomeIcons.images,
+                      size: 16,
+                    ),
                     color: theme.colorScheme.onPrimary,
                     onPressed: onPickImage,
                     padding: EdgeInsets.zero,
