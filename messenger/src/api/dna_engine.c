@@ -90,6 +90,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/key_encryption.h"
+#include "crypto/utils/qgp_dilithium.h"
 
 /* Blockchain/Wallet includes for send_tokens */
 #include "cellframe_wallet.h"
@@ -178,6 +179,11 @@ static void *g_android_notification_data = NULL;
 static dna_android_group_message_cb g_android_group_message_cb = NULL;
 static void *g_android_group_message_data = NULL;
 
+/* Android contact request notification callback.
+ * Called when new contact requests arrive via DHT listen. */
+static dna_android_contact_request_cb g_android_contact_request_cb = NULL;
+static void *g_android_contact_request_data = NULL;
+
 /* Global engine accessors (for messenger layer event dispatch) */
 void dna_engine_set_global(dna_engine_t *engine) {
     g_dht_callback_engine = engine;
@@ -219,7 +225,12 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
         QGP_LOG_INFO(LOG_TAG, "[RETRY] DHT reconnect: retried %d pending messages", retried);
     }
 
-    /* Also check for missed incoming messages after reconnect */
+    /* Check for missed incoming messages after reconnect.
+     * Android: Skip auto-fetch - Flutter handles fetching when app resumes.
+     *          This prevents watermarks being published while app is backgrounded,
+     *          which would mark messages as "delivered" before user sees them.
+     * Desktop: Fetch immediately since there's no background service. */
+#ifndef __ANDROID__
     if (engine->messenger && engine->messenger->transport_ctx) {
         QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: checking for missed messages");
         size_t received = 0;
@@ -228,6 +239,9 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
             QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: received %zu missed messages", received);
         }
     }
+#else
+    QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: skipping auto-fetch (Android - Flutter handles on resume)");
+#endif
 
     /* Wait for DHT routing table to stabilize after reconnect, then retry again.
      * The immediate retry above may fail if routing table is still sparse. */
@@ -837,6 +851,20 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
             g_android_notification_cb(fp, display_name, g_android_notification_data);
         }
     }
+
+#ifdef __ANDROID__
+    /* Android: Contact request notification - show notification when request arrives */
+    if (event->type == DNA_EVENT_CONTACT_REQUEST_RECEIVED && g_android_contact_request_cb) {
+        const char *user_fingerprint = event->data.contact_request_received.request.fingerprint;
+        const char *user_display_name = event->data.contact_request_received.request.display_name;
+
+        QGP_LOG_INFO(LOG_TAG, "[ANDROID-CONTACT-REQ] Contact request from %.16s... name=%s",
+                     user_fingerprint, user_display_name[0] ? user_display_name : "(unknown)");
+        g_android_contact_request_cb(user_fingerprint,
+                                     user_display_name[0] ? user_display_name : NULL,
+                                     g_android_contact_request_data);
+    }
+#endif
 }
 
 void dna_free_event(dna_event_t *event) {
@@ -1193,6 +1221,16 @@ void dna_engine_set_android_group_message_callback(
     g_android_group_message_cb = callback;
     g_android_group_message_data = user_data;
     QGP_LOG_INFO(LOG_TAG, "Android group message callback %s",
+                 callback ? "registered" : "cleared");
+}
+
+void dna_engine_set_android_contact_request_callback(
+    dna_android_contact_request_cb callback,
+    void *user_data
+) {
+    g_android_contact_request_cb = callback;
+    g_android_contact_request_data = user_data;
+    QGP_LOG_INFO(LOG_TAG, "Android contact request callback %s",
                  callback ? "registered" : "cleared");
 }
 
@@ -1674,6 +1712,17 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
 
     /* Profile cache is now global - initialized in dna_engine_create() */
 
+    /* Android background mode check (v0.5.5+)
+     * In background mode, skip heavy initialization to save resources.
+     * DHT listeners will still work for notifications. */
+#ifdef __ANDROID__
+    dna_init_mode_t init_mode = task->params.load_identity.mode;
+    engine->init_mode = init_mode;
+    engine->transport_initialized = false;
+    engine->presence_initialized = false;
+
+    if (init_mode == DNA_INIT_MODE_FULL) {
+#endif
     /* Sync contacts from DHT (restore on new device)
      * This must happen BEFORE subscribing to contacts for push notifications.
      * If DHT has a newer contact list, it will be merged into local SQLite. */
@@ -1695,6 +1744,9 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     } else {
         /* P2P initialized successfully - complete P2P setup */
         /* Note: Presence already registered in messenger_transport_init() */
+#ifdef __ANDROID__
+        engine->transport_initialized = true;
+#endif
 
         /* 1. Check for offline messages (Spillway: query contacts' outboxes) */
         size_t offline_count = 0;
@@ -1712,7 +1764,17 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         if (dna_start_presence_heartbeat(engine) != 0) {
             QGP_LOG_WARN(LOG_TAG, "Warning: Failed to start presence heartbeat");
         }
+#ifdef __ANDROID__
+        else {
+            engine->presence_initialized = true;
+        }
+#endif
     }
+#ifdef __ANDROID__
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "Android background mode: skipping transport/presence init");
+    }
+#endif
 
     /* Mark identity as loaded BEFORE starting listeners (they check this flag) */
     engine->identity_loaded = true;
@@ -1734,6 +1796,9 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         int group_count = dna_engine_subscribe_all_groups(engine);
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: subscribed to %d groups", group_count);
 
+#ifdef __ANDROID__
+        if (init_mode == DNA_INIT_MODE_FULL) {
+#endif
         /* 3. Retry any pending/failed messages from previous sessions
          * Messages may have been queued while offline or failed to send.
          * Now that DHT is connected, retry them. */
@@ -1757,11 +1822,17 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         } else {
             QGP_LOG_ERROR(LOG_TAG, "[RETRY] FAILED to spawn stabilization thread: rc=%d", spawn_rc);
         }
+#ifdef __ANDROID__
+        }
+#endif
 
         /* Note: Delivery confirmation is now handled by persistent watermark listeners
          * started in dna_engine_listen_all_contacts() for each contact. */
     }
 
+#ifdef __ANDROID__
+    if (init_mode == DNA_INIT_MODE_FULL) {
+#endif
     /* Silent background: Create any missing blockchain wallets
      * This uses the encrypted seed stored during identity creation.
      * Non-fatal if seed doesn't exist or wallet creation fails.
@@ -1790,6 +1861,9 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
             qgp_key_free(kem_key);
         }
     }
+#ifdef __ANDROID__
+    }
+#endif
 
     /* NOTE: Removed blocking DHT profile verification (v0.3.141)
      *
@@ -3061,7 +3135,8 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task) {
         1,
         task->params.send_message.message,
         0,  /* group_id = 0 for direct messages */
-        0   /* message_type = chat */
+        0,  /* message_type = chat */
+        task->params.send_message.queued_at
     );
 
     if (rc != 0) {
@@ -4835,6 +4910,131 @@ dna_request_id_t dna_engine_load_identity(
     return dna_submit_task(engine, TASK_LOAD_IDENTITY, &params, cb, user_data);
 }
 
+#ifdef __ANDROID__
+dna_request_id_t dna_engine_load_identity_with_mode(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *password,
+    dna_init_mode_t mode,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.load_identity.fingerprint, fingerprint, 128);
+    params.load_identity.password = password ? strdup(password) : NULL;
+    params.load_identity.mode = mode;
+
+    QGP_LOG_INFO(LOG_TAG, "Load identity with mode: %s",
+                 mode == DNA_INIT_MODE_BACKGROUND ? "BACKGROUND" : "FULL");
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_LOAD_IDENTITY, &params, cb, user_data);
+}
+
+int dna_engine_upgrade_to_foreground(dna_engine_t *engine) {
+    if (!engine || !engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "Cannot upgrade: engine or identity not loaded");
+        return -1;
+    }
+
+    if (engine->init_mode == DNA_INIT_MODE_FULL) {
+        QGP_LOG_INFO(LOG_TAG, "Already in FULL mode, nothing to upgrade");
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Upgrading from BACKGROUND to FULL mode");
+    const char *fingerprint = engine->fingerprint;
+
+    /* 1. Sync contacts from DHT (restore on new device) */
+    if (engine->messenger) {
+        int sync_result = messenger_sync_contacts_from_dht(engine->messenger);
+        if (sync_result == 0) {
+            QGP_LOG_INFO(LOG_TAG, "Upgrade: Synced contacts from DHT");
+        } else if (sync_result == -2) {
+            QGP_LOG_INFO(LOG_TAG, "Upgrade: No contact list in DHT");
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Upgrade: Warning: Failed to sync contacts from DHT");
+        }
+    }
+
+    /* 2. Initialize P2P transport if not already done */
+    if (!engine->transport_initialized && engine->messenger) {
+        if (messenger_transport_init(engine->messenger) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "Upgrade: Warning: Failed to initialize P2P transport");
+        } else {
+            engine->transport_initialized = true;
+            QGP_LOG_INFO(LOG_TAG, "Upgrade: P2P transport initialized");
+
+            /* Check for offline messages */
+            size_t offline_count = 0;
+            if (messenger_transport_check_offline_messages(engine->messenger, NULL, &offline_count) == 0) {
+                if (offline_count > 0) {
+                    QGP_LOG_INFO(LOG_TAG, "Upgrade: Received %zu offline messages", offline_count);
+                }
+            }
+        }
+    }
+
+    /* 3. Start presence heartbeat if not already running */
+    if (!engine->presence_initialized) {
+        if (dna_start_presence_heartbeat(engine) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "Upgrade: Warning: Failed to start presence heartbeat");
+        } else {
+            engine->presence_initialized = true;
+            QGP_LOG_INFO(LOG_TAG, "Upgrade: Presence heartbeat started");
+        }
+    }
+
+    /* 4. Retry pending messages */
+    int retried = dna_engine_retry_pending_messages(engine);
+    if (retried > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Upgrade: Retried %d pending messages", retried);
+    }
+
+    /* 5. Create missing blockchain wallets */
+    {
+        char kyber_path[512];
+        snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", engine->data_dir);
+
+        qgp_key_t *kem_key = NULL;
+        int load_rc;
+        if (engine->keys_encrypted && engine->session_password) {
+            load_rc = qgp_key_load_encrypted(kyber_path, engine->session_password, &kem_key);
+        } else {
+            load_rc = qgp_key_load(kyber_path, &kem_key);
+        }
+
+        if (load_rc == 0 && kem_key &&
+            kem_key->private_key && kem_key->private_key_size == 3168) {
+            int wallets_created = 0;
+            if (blockchain_create_missing_wallets(fingerprint, kem_key->private_key, &wallets_created) == 0) {
+                if (wallets_created > 0) {
+                    QGP_LOG_INFO(LOG_TAG, "Upgrade: Auto-created %d missing blockchain wallets", wallets_created);
+                }
+            }
+            qgp_key_free(kem_key);
+        }
+    }
+
+    engine->init_mode = DNA_INIT_MODE_FULL;
+    QGP_LOG_INFO(LOG_TAG, "Upgrade to FULL mode complete");
+    return 0;
+}
+
+dna_init_mode_t dna_engine_get_init_mode(dna_engine_t *engine) {
+    if (!engine || !engine->identity_loaded) {
+        return DNA_INIT_MODE_FULL;  /* Default to FULL if not loaded */
+    }
+    return engine->init_mode;
+}
+
+bool dna_engine_is_identity_loaded(dna_engine_t *engine) {
+    return engine && engine->identity_loaded;
+}
+#endif /* __ANDROID__ */
+
 dna_request_id_t dna_engine_register_name(
     dna_engine_t *engine,
     const char *name,
@@ -5284,6 +5484,7 @@ dna_request_id_t dna_engine_send_message(
     dna_task_params_t params = {0};
     strncpy(params.send_message.recipient, recipient_fingerprint, 128);
     params.send_message.message = strdup(message);
+    params.send_message.queued_at = time(NULL);  /* Capture send time */
     if (!params.send_message.message) {
         return DNA_REQUEST_ID_INVALID;
     }
@@ -5303,6 +5504,9 @@ int dna_engine_queue_message(
     if (!engine->identity_loaded) {
         return -2; /* No identity loaded */
     }
+
+    /* Capture timestamp NOW - this is when user clicked send */
+    time_t queued_at = time(NULL);
 
     pthread_mutex_lock(&engine->message_queue.mutex);
 
@@ -5337,6 +5541,7 @@ int dna_engine_queue_message(
     }
     entry->slot_id = engine->message_queue.next_slot_id++;
     entry->in_use = true;
+    entry->queued_at = queued_at;
     engine->message_queue.size++;
 
     int slot_id = entry->slot_id;
@@ -5346,6 +5551,7 @@ int dna_engine_queue_message(
     dna_task_params_t params = {0};
     strncpy(params.send_message.recipient, recipient_fingerprint, 128);
     params.send_message.message = strdup(message);
+    params.send_message.queued_at = queued_at;
     if (params.send_message.message) {
         dna_task_callback_t cb = { .completion = NULL };
         dna_submit_task(engine, TASK_SEND_MESSAGE, &params, cb, (void*)(intptr_t)slot_id);
@@ -5613,7 +5819,8 @@ static int retry_single_message(dna_engine_t *engine, backup_message_t *msg) {
         1,                      /* recipient_count */
         msg->plaintext,         /* message content */
         msg->group_id,          /* group_id (0 for direct) */
-        msg->message_type       /* message_type */
+        msg->message_type,      /* message_type */
+        msg->timestamp          /* preserve original timestamp for ordering */
     );
 
     if (rc == 0 || rc == 1) {
@@ -9487,4 +9694,107 @@ dna_request_id_t dna_engine_sync_addressbook_from_dht(
 
     task_sync_addressbook_from_dht(task);
     return 1;
+}
+
+/* ============================================================================
+ * SIGNING API (for QR Auth and external authentication)
+ * ============================================================================ */
+
+/**
+ * Sign arbitrary data with the loaded identity's Dilithium5 key
+ */
+int dna_engine_sign_data(
+    dna_engine_t *engine,
+    const uint8_t *data,
+    size_t data_len,
+    uint8_t *signature_out,
+    size_t *sig_len_out)
+{
+    if (!engine || !data || !signature_out || !sig_len_out) {
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    if (!engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "sign_data: no identity loaded");
+        return DNA_ENGINE_ERROR_NO_IDENTITY;
+    }
+
+    /* Load the private signing key */
+    qgp_key_t *sign_key = dna_load_private_key(engine);
+    if (!sign_key) {
+        QGP_LOG_ERROR(LOG_TAG, "sign_data: failed to load private key");
+        return DNA_ENGINE_ERROR_NO_IDENTITY;
+    }
+
+    /* Verify key has private key data */
+    if (!sign_key->private_key || sign_key->private_key_size == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "sign_data: key has no private key data");
+        qgp_key_free(sign_key);
+        return DNA_ERROR_CRYPTO;
+    }
+
+    /* Sign with Dilithium5 */
+    int ret = qgp_dsa87_sign(signature_out, sig_len_out,
+                             data, data_len,
+                             sign_key->private_key);
+
+    qgp_key_free(sign_key);
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "sign_data: qgp_dsa87_sign failed");
+        return DNA_ERROR_CRYPTO;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "sign_data: signed %zu bytes, signature length %zu",
+                  data_len, *sig_len_out);
+    return 0;
+}
+
+/**
+ * Get the loaded identity's Dilithium5 signing public key
+ */
+int dna_engine_get_signing_public_key(
+    dna_engine_t *engine,
+    uint8_t *pubkey_out,
+    size_t pubkey_out_len)
+{
+    if (!engine || !pubkey_out) {
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    if (!engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "get_signing_public_key: no identity loaded");
+        return DNA_ENGINE_ERROR_NO_IDENTITY;
+    }
+
+    /* Load the signing key (contains public key) */
+    qgp_key_t *sign_key = dna_load_private_key(engine);
+    if (!sign_key) {
+        QGP_LOG_ERROR(LOG_TAG, "get_signing_public_key: failed to load key");
+        return DNA_ENGINE_ERROR_NO_IDENTITY;
+    }
+
+    /* Verify key has public key data */
+    if (!sign_key->public_key || sign_key->public_key_size == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "get_signing_public_key: key has no public key data");
+        qgp_key_free(sign_key);
+        return DNA_ERROR_CRYPTO;
+    }
+
+    /* Check buffer size */
+    if (pubkey_out_len < sign_key->public_key_size) {
+        QGP_LOG_ERROR(LOG_TAG, "get_signing_public_key: buffer too small (%zu < %zu)",
+                      pubkey_out_len, sign_key->public_key_size);
+        qgp_key_free(sign_key);
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    /* Copy public key to output buffer */
+    memcpy(pubkey_out, sign_key->public_key, sign_key->public_key_size);
+    size_t result = sign_key->public_key_size;
+
+    qgp_key_free(sign_key);
+
+    QGP_LOG_DEBUG(LOG_TAG, "get_signing_public_key: returned %zu bytes", result);
+    return (int)result;
 }

@@ -35,15 +35,18 @@ abstract class PlatformHandler {
   /// Desktop: No-op (callback stays attached)
   void onPause(DnaEngine engine);
 
-  /// Called when outbox has new messages
+  /// Called when outbox has new messages from specific contacts
   ///
-  /// Android: Native code already fetched via background_fetch_thread, just sync UI
-  /// Desktop: Must call checkOfflineMessages() to fetch
-  Future<void> onOutboxUpdated(DnaEngine engine);
+  /// [contactFingerprints] - Set of contact fingerprints whose outboxes have updates.
+  /// Fetches messages only from these specific contacts instead of ALL contacts.
+  Future<void> onOutboxUpdated(DnaEngine engine, Set<String> contactFingerprints);
 
   /// Whether this platform supports foreground service
   bool get supportsForegroundService;
 
   /// Whether this platform supports native notifications
   bool get supportsNativeNotifications;
+
+  /// Whether this platform supports camera access (QR scanner, selfie, etc.)
+  bool get supportsCamera;
 }

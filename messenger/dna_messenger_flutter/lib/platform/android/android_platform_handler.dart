@@ -32,11 +32,12 @@ class AndroidPlatformHandler implements PlatformHandler {
   }
 
   @override
-  Future<void> onOutboxUpdated(DnaEngine engine) async {
-    // Flutter handles message fetching on all platforms (unified behavior).
-    // C auto-fetch only runs when Flutter is detached (app backgrounded/killed).
-    // This avoids race conditions between C and Flutter both trying to fetch.
-    await engine.checkOfflineMessages();
+  Future<void> onOutboxUpdated(DnaEngine engine, Set<String> contactFingerprints) async {
+    // Fetch messages only from contacts whose outboxes triggered the event.
+    // Much faster than checkOfflineMessages() which checks ALL contacts.
+    for (final fp in contactFingerprints) {
+      await engine.checkOfflineMessagesFrom(fp);
+    }
   }
 
   @override
@@ -44,4 +45,7 @@ class AndroidPlatformHandler implements PlatformHandler {
 
   @override
   bool get supportsNativeNotifications => true;
+
+  @override
+  bool get supportsCamera => true;
 }

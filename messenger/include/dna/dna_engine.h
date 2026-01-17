@@ -736,6 +736,37 @@ DNA_API void dna_engine_set_android_group_message_callback(
 );
 
 /**
+ * Contact request notification callback
+ *
+ * Called when a new contact request is received via DHT listener.
+ * This allows Android to show native notifications for incoming
+ * contact requests even when Flutter is backgrounded.
+ *
+ * @param user_fingerprint   Fingerprint of the user sending the request
+ * @param user_display_name  Display name of the requester (may be NULL)
+ * @param user_data          User data passed when setting callback
+ */
+typedef void (*dna_android_contact_request_cb)(
+    const char *user_fingerprint,
+    const char *user_display_name,
+    void *user_data
+);
+
+/**
+ * Set Android notification callback for contact requests
+ *
+ * This callback is called when DNA_EVENT_CONTACT_REQUEST_RECEIVED fires,
+ * allowing Android to show native notifications even when Flutter is detached.
+ *
+ * @param callback  Notification callback function (NULL to disable)
+ * @param user_data User data passed to callback
+ */
+DNA_API void dna_engine_set_android_contact_request_callback(
+    dna_android_contact_request_cb callback,
+    void *user_data
+);
+
+/**
  * Destroy engine and release all resources
  *
  * Stops all worker threads, closes network connections,
@@ -905,6 +936,86 @@ DNA_API dna_request_id_t dna_engine_load_identity(
     dna_completion_cb callback,
     void *user_data
 );
+
+#ifdef __ANDROID__
+/**
+ * Android initialization mode for background service optimization
+ *
+ * DNA_INIT_MODE_FULL: Complete initialization (transport, presence, wallet)
+ *                     Use when app is in foreground.
+ *
+ * DNA_INIT_MODE_BACKGROUND: Lightweight DHT-only initialization
+ *                           Use when running in background service.
+ *                           Skips transport, presence heartbeat, and wallet.
+ *                           DHT listeners remain active for notifications.
+ */
+typedef enum {
+    DNA_INIT_MODE_FULL = 0,        /* Full init (Android foreground, all platforms) */
+    DNA_INIT_MODE_BACKGROUND = 1   /* DHT+listeners only (Android background service) */
+} dna_init_mode_t;
+
+/**
+ * Load identity with initialization mode (Android only)
+ *
+ * Like dna_engine_load_identity(), but allows specifying initialization mode.
+ * In BACKGROUND mode, skips heavy initialization (transport, presence, wallet)
+ * while keeping DHT listeners active for push notifications.
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Identity fingerprint to load
+ * @param password    Password for encrypted keys (NULL if unencrypted)
+ * @param mode        Initialization mode (FULL or BACKGROUND)
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_load_identity_with_mode(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *password,
+    dna_init_mode_t mode,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Upgrade from background mode to foreground mode (Android only)
+ *
+ * When app comes to foreground after background service was running,
+ * this completes the initialization that was skipped in BACKGROUND mode:
+ * - Initializes transport layer
+ * - Starts presence heartbeat
+ * - Syncs contacts from DHT
+ * - Checks offline messages
+ * - Retries pending messages
+ * - Creates missing blockchain wallets
+ *
+ * Safe to call multiple times - no-op if already in FULL mode.
+ *
+ * @param engine    Engine instance
+ * @return          0 on success, -1 on error
+ */
+DNA_API int dna_engine_upgrade_to_foreground(dna_engine_t *engine);
+
+/**
+ * Get current initialization mode (Android only)
+ *
+ * Returns the mode that was used when loading identity.
+ *
+ * @param engine    Engine instance
+ * @return          Current mode (DNA_INIT_MODE_FULL or DNA_INIT_MODE_BACKGROUND),
+ *                  or DNA_INIT_MODE_FULL if engine is NULL or identity not loaded
+ */
+DNA_API dna_init_mode_t dna_engine_get_init_mode(dna_engine_t *engine);
+
+/**
+ * Check if identity is loaded (Android only)
+ *
+ * @param engine    Engine instance
+ * @return          true if identity is loaded, false otherwise
+ */
+DNA_API bool dna_engine_is_identity_loaded(dna_engine_t *engine);
+#endif /* __ANDROID__ */
 
 /**
  * Register human-readable name in DHT
@@ -2905,6 +3016,54 @@ DNA_API int dna_engine_publish_version(
 DNA_API int dna_engine_check_version_dht(
     dna_engine_t *engine,
     dna_version_check_result_t *result_out
+);
+
+/* ============================================================================
+ * SIGNING (for QR Auth and external authentication)
+ * ============================================================================ */
+
+/**
+ * Sign arbitrary data with the loaded identity's Dilithium5 key
+ *
+ * Creates a detached signature over the provided data using the current
+ * identity's private signing key. Used for QR-based authentication flows
+ * where the app needs to prove identity to external services.
+ *
+ * @param engine         Engine instance (must have identity loaded)
+ * @param data           Data to sign
+ * @param data_len       Length of data in bytes
+ * @param signature_out  Output buffer for signature (must be at least 4627 bytes)
+ * @param sig_len_out    Output: actual signature length
+ * @return               0 on success, negative on error:
+ *                       DNA_ENGINE_ERROR_NO_IDENTITY - no identity loaded
+ *                       DNA_ERROR_INVALID_ARG - null parameters
+ *                       DNA_ERROR_CRYPTO - signing failed
+ */
+DNA_API int dna_engine_sign_data(
+    dna_engine_t *engine,
+    const uint8_t *data,
+    size_t data_len,
+    uint8_t *signature_out,
+    size_t *sig_len_out
+);
+
+/**
+ * Get the loaded identity's Dilithium5 signing public key
+ *
+ * Copies the raw public key bytes into the provided buffer.
+ * Dilithium5 public key size is 2592 bytes.
+ *
+ * @param engine         Engine instance
+ * @param pubkey_out     Output buffer for public key (must be at least 2592 bytes)
+ * @param pubkey_out_len Size of output buffer
+ * @return               Number of bytes written (2592) on success, negative on error:
+ *                       DNA_ENGINE_ERROR_NO_IDENTITY - no identity loaded
+ *                       DNA_ERROR_INVALID_ARG - null parameters or buffer too small
+ */
+DNA_API int dna_engine_get_signing_public_key(
+    dna_engine_t *engine,
+    uint8_t *pubkey_out,
+    size_t pubkey_out_len
 );
 
 #ifdef __cplusplus

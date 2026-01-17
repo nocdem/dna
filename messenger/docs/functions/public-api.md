@@ -28,6 +28,8 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `int dna_engine_delete_identity_sync(...)` | Delete identity and all local data |
 | `bool dna_engine_has_identity(...)` | Check if identity exists (v0.3.0 single-user) |
 | `dna_request_id_t dna_engine_load_identity(...)` | Load and activate identity, bootstrap DHT |
+| `dna_request_id_t dna_engine_load_identity_with_mode(...)` | **Android only (v0.5.5+):** Load identity with init mode (FULL or BACKGROUND) |
+| `int dna_engine_upgrade_to_foreground(...)` | **Android only (v0.5.5+):** Upgrade from BACKGROUND to FULL mode |
 | `dna_request_id_t dna_engine_register_name(...)` | Register human-readable name in DHT |
 | `dna_request_id_t dna_engine_get_display_name(...)` | Lookup display name for fingerprint |
 | `dna_request_id_t dna_engine_get_avatar(...)` | Get avatar for fingerprint |
@@ -235,3 +237,19 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 **Structures:**
 - `dna_version_info_t` - Version info from DHT (library/app/nodus current+minimum, publisher, timestamp)
 - `dna_version_check_result_t` - Check result with update_available flags
+
+## 1.20 Signing API (for QR Auth)
+
+| Function | Description |
+|----------|-------------|
+| `int dna_engine_sign_data(engine, data, data_len, signature_out, sig_len_out)` | Sign arbitrary data with loaded identity's Dilithium5 key |
+| `int dna_engine_get_signing_public_key(engine, pubkey_out, pubkey_out_len)` | Get the loaded identity's Dilithium5 signing public key |
+
+**Notes:**
+- `signature_out` must be at least 4627 bytes (Dilithium5 max signature size)
+- `pubkey_out` must be at least 2592 bytes (Dilithium5 public key size)
+- Used for QR-based authentication flows where app needs to prove identity to external services
+- `sign_data` returns 0 on success, `DNA_ENGINE_ERROR_NO_IDENTITY` if no identity loaded
+- `get_signing_public_key` returns bytes written (2592) on success, negative on error
+
+**Protocol Documentation:** See [QR_AUTH.md](../QR_AUTH.md) for full QR authentication protocol specification (v1/v2/v3), payload formats, RP binding, and canonical signing.

@@ -1107,6 +1107,42 @@ class DnaBindings {
     _dna_engine_destroy(engine);
   }
 
+  // Global engine for seamless JNI/FFI handoff (Android v0.5.5+)
+  late final _dna_engine_get_global = _lib.lookupFunction<
+      Pointer<dna_engine_t> Function(),
+      Pointer<dna_engine_t> Function()>('dna_engine_get_global');
+
+  Pointer<dna_engine_t> dna_engine_get_global() {
+    return _dna_engine_get_global();
+  }
+
+  late final _dna_engine_set_global = _lib.lookupFunction<
+      Void Function(Pointer<dna_engine_t>),
+      void Function(Pointer<dna_engine_t>)>('dna_engine_set_global');
+
+  void dna_engine_set_global(Pointer<dna_engine_t> engine) {
+    _dna_engine_set_global(engine);
+  }
+
+  // Android-only: Check if identity loaded (v0.5.5+)
+  late final _dna_engine_is_identity_loaded = _lib.lookupFunction<
+      Bool Function(Pointer<dna_engine_t>),
+      bool Function(Pointer<dna_engine_t>)>('dna_engine_is_identity_loaded');
+
+  bool dna_engine_is_identity_loaded(Pointer<dna_engine_t> engine) {
+    return _dna_engine_is_identity_loaded(engine);
+  }
+
+  // Android-only: Get init mode (v0.5.5+)
+  // Returns: 0 = FULL, 1 = BACKGROUND
+  late final _dna_engine_get_init_mode = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>),
+      int Function(Pointer<dna_engine_t>)>('dna_engine_get_init_mode');
+
+  int dna_engine_get_init_mode(Pointer<dna_engine_t> engine) {
+    return _dna_engine_get_init_mode(engine);
+  }
+
   late final _dna_engine_set_event_callback = _lib.lookupFunction<
       Void Function(
           Pointer<dna_engine_t>, Pointer<DnaEventCb>, Pointer<Void>),
@@ -1256,6 +1292,34 @@ class DnaBindings {
     Pointer<Void> user_data,
   ) {
     return _dna_engine_load_identity(engine, fingerprint, password, callback, user_data);
+  }
+
+  // Android-only: Load identity with initialization mode (v0.5.5+)
+  // mode: 0 = FULL (foreground), 1 = BACKGROUND (service)
+  late final _dna_engine_load_identity_with_mode = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Int32, Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          int, Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_load_identity_with_mode');
+
+  int dna_engine_load_identity_with_mode(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+    Pointer<Utf8> password,
+    int mode,  // 0 = FULL, 1 = BACKGROUND
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_load_identity_with_mode(engine, fingerprint, password, mode, callback, user_data);
+  }
+
+  // Android-only: Upgrade from background to foreground mode (v0.5.5+)
+  late final _dna_engine_upgrade_to_foreground = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>),
+      int Function(Pointer<dna_engine_t>)>('dna_engine_upgrade_to_foreground');
+
+  int dna_engine_upgrade_to_foreground(Pointer<dna_engine_t> engine) {
+    return _dna_engine_upgrade_to_foreground(engine);
   }
 
   late final _dna_engine_get_mnemonic = _lib.lookupFunction<
@@ -2953,6 +3017,41 @@ class DnaBindings {
   void dna_free_addressbook_entries(
       Pointer<dna_addressbook_entry_t> entries, int count) {
     _dna_free_addressbook_entries(entries, count);
+  }
+
+  // ==========================================================================
+  // SIGNING API (for QR Auth)
+  // ==========================================================================
+
+  /// Sign data with the loaded identity's Dilithium5 key
+  late final _dna_engine_sign_data = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Uint8>, Size,
+          Pointer<Uint8>, Pointer<Size>),
+      int Function(Pointer<dna_engine_t>, Pointer<Uint8>, int, Pointer<Uint8>,
+          Pointer<Size>)>('dna_engine_sign_data');
+
+  int dna_engine_sign_data(
+    Pointer<dna_engine_t> engine,
+    Pointer<Uint8> data,
+    int dataLen,
+    Pointer<Uint8> signatureOut,
+    Pointer<Size> sigLenOut,
+  ) {
+    return _dna_engine_sign_data(engine, data, dataLen, signatureOut, sigLenOut);
+  }
+
+  /// Get the loaded identity's Dilithium5 signing public key
+  late final _dna_engine_get_signing_public_key = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Uint8>, Size),
+      int Function(Pointer<dna_engine_t>, Pointer<Uint8>, int)>(
+      'dna_engine_get_signing_public_key');
+
+  int dna_engine_get_signing_public_key(
+    Pointer<dna_engine_t> engine,
+    Pointer<Uint8> pubkeyOut,
+    int pubkeyOutLen,
+  ) {
+    return _dna_engine_get_signing_public_key(engine, pubkeyOut, pubkeyOutLen);
   }
 }
 

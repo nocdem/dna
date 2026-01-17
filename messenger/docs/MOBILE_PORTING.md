@@ -1,6 +1,6 @@
 # DNA Messenger Mobile Porting Guide
 
-**Last Updated:** 2025-12-24
+**Last Updated:** 2026-01-17
 **Status:** Android SDK Complete (Phases 1-6, 14)
 **Target:** Android first, iOS later
 
@@ -397,6 +397,68 @@ void _handleNetworkChange() async {
   }
 }
 ```
+
+#### Android Background Mode (v0.5.5+)
+
+**Lightweight initialization for background service when app is closed.**
+
+When the app is killed but the ForegroundService keeps running, full engine initialization
+wastes resources. Background mode provides a two-tier initialization:
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `DNA_INIT_MODE_FULL` (0) | Complete init (transport, presence, wallet) | App in foreground |
+| `DNA_INIT_MODE_BACKGROUND` (1) | DHT + listeners only | Background service |
+
+**C API (Android-only, wrapped in `#ifdef __ANDROID__`):**
+```c
+typedef enum {
+    DNA_INIT_MODE_FULL = 0,
+    DNA_INIT_MODE_BACKGROUND = 1
+} dna_init_mode_t;
+
+// Load identity with mode
+dna_request_id_t dna_engine_load_identity_with_mode(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *password,
+    dna_init_mode_t mode,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+// Upgrade when app opens
+int dna_engine_upgrade_to_foreground(dna_engine_t *engine);
+```
+
+**Java SDK:**
+```java
+// Load in background mode
+long requestId = engine.loadIdentityBackground(fingerprint, callback);
+
+// Upgrade when app opens
+int result = engine.upgradeToForeground();
+```
+
+**Flutter FFI:**
+```dart
+// Load in background mode (Android only)
+await engine.loadIdentityBackground(fingerprint: fp);
+
+// Upgrade when app opens (Android only)
+engine.upgradeToForeground();
+```
+
+**Resource Savings in Background Mode:**
+
+| Component | Background Mode |
+|-----------|-----------------|
+| Transport context | Skipped (~50KB + threads) |
+| Presence heartbeat | Skipped (1 thread) |
+| Offline message fetch | Deferred |
+| Contact DHT sync | Deferred |
+| Wallet creation | Deferred |
+| DHT listeners | **Active** (for notifications) |
 
 ---
 

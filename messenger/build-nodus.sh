@@ -164,7 +164,7 @@ EOF
         # Create release service
         sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null << EOF
 [Unit]
-Description=DNA Nodus - Post-Quantum DHT Bootstrap + STUN/TURN Server
+Description=DNA Nodus - Post-Quantum DHT Bootstrap Server
 Documentation=https://gitlab.cpunk.io/cpunk/dna-messenger
 After=network-online.target
 Wants=network-online.target

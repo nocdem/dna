@@ -22,11 +22,29 @@ import androidx.core.app.NotificationCompat
  *
  * Phase 14: Android background execution for reliable DHT-only messaging.
  * Note: Polling removed in favor of DHT listeners for better battery life.
+ *
+ * v0.5.5+: Lightweight background mode available via DNAEngine:
+ * - loadIdentityBackground(): Load identity with minimal resources
+ * - upgradeToForeground(): Complete initialization when app opens
+ * See io.cpunk.dna.DNAEngine for integration.
  */
 class DnaMessengerService : Service() {
     companion object {
         private const val TAG = "DnaMessengerService"
         private const val NOTIFICATION_ID = 1001
+
+        // Ensure native library is loaded before any JNI calls
+        private var libraryLoaded = false
+
+        init {
+            try {
+                System.loadLibrary("dna_lib")
+                libraryLoaded = true
+                android.util.Log.i(TAG, "Native library loaded in service companion")
+            } catch (e: UnsatisfiedLinkError) {
+                android.util.Log.e(TAG, "Failed to load native library: ${e.message}")
+            }
+        }
         private const val CHANNEL_ID = "dna_messenger_service"
         private const val NETWORK_CHANGE_DEBOUNCE_MS = 2000L  // 2 seconds debounce
         private const val WAKELOCK_TIMEOUT_MS = 30 * 60 * 1000L  // 30 minutes
@@ -54,6 +72,37 @@ class DnaMessengerService : Service() {
          */
         @JvmStatic
         external fun nativeIsDhtHealthy(): Boolean
+
+        /**
+         * Initialize engine if not already done.
+         * Called when service starts fresh (after process killed).
+         * Returns: true if engine is ready (created or already existed)
+         */
+        @JvmStatic
+        external fun nativeEnsureEngine(dataDir: String): Boolean
+
+        /**
+         * Check if identity is already loaded.
+         * Returns: true if identity loaded, false if need to load
+         */
+        @JvmStatic
+        external fun nativeIsIdentityLoaded(): Boolean
+
+        /**
+         * Load identity in background mode (DHT + listeners only).
+         * Called when service starts fresh but Flutter isn't running.
+         * Note: This is a blocking call for simplicity in service context.
+         * Returns: 0 on success, negative on error
+         */
+        @JvmStatic
+        external fun nativeLoadIdentityBackgroundSync(fingerprint: String): Int
+
+        /**
+         * Get current init mode.
+         * Returns: 0 = FULL, 1 = BACKGROUND
+         */
+        @JvmStatic
+        external fun nativeGetInitMode(): Int
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -101,8 +150,20 @@ class DnaMessengerService : Service() {
         // Only restart if notifications are enabled
         val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
         val notificationsEnabled = prefs.getBoolean("flutter.notifications_enabled", true)
+        android.util.Log.i(TAG, "Notifications enabled in prefs: $notificationsEnabled")
 
         if (notificationsEnabled) {
+            // Re-post the foreground notification immediately to prevent it from being dismissed
+            // This is needed because some Android versions briefly hide the notification on task removal
+            try {
+                val notification = createNotification("Decentralized mode active — background service running to receive messages")
+                val notificationManager = getSystemService(NotificationManager::class.java)
+                notificationManager.notify(NOTIFICATION_ID, notification)
+                android.util.Log.i(TAG, "Re-posted foreground notification")
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "Failed to re-post notification: ${e.message}")
+            }
+
             // Schedule restart via AlarmManager for immediate restart
             val restartIntent = Intent(this, DnaMessengerService::class.java).apply {
                 action = "START"
@@ -118,7 +179,7 @@ class DnaMessengerService : Service() {
                 System.currentTimeMillis() + 1000, // 1 second delay
                 pendingIntent
             )
-            android.util.Log.i(TAG, "Service restart scheduled")
+            android.util.Log.i(TAG, "Service restart scheduled via AlarmManager")
         }
 
         super.onTaskRemoved(rootIntent)
@@ -126,12 +187,32 @@ class DnaMessengerService : Service() {
 
     private fun startForegroundService() {
         android.util.Log.i(TAG, "Starting foreground service")
-        val notification = createNotification("Decentralized mode active — background service running to receive messages")
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        // Ensure notification channel exists before starting foreground
+        createNotificationChannel()
+
+        // Check notification permission on Android 13+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val hasPermission = checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            android.util.Log.i(TAG, "Notification permission granted: $hasPermission")
+            if (!hasPermission) {
+                android.util.Log.w(TAG, "POST_NOTIFICATIONS permission not granted - foreground notification may not show")
+            }
+        }
+
+        val notification = createNotification("Decentralized mode active — background service running to receive messages")
+        android.util.Log.i(TAG, "Created notification with ID=$NOTIFICATION_ID, channel=$CHANNEL_ID")
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            android.util.Log.i(TAG, "startForeground() called successfully")
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "startForeground() failed: ${e.message}")
         }
 
         acquireWakeLock()
@@ -145,6 +226,58 @@ class DnaMessengerService : Service() {
             MainActivity.initNotificationHelper(this)
         }
         android.util.Log.i(TAG, "Using singleton notification helper: ${MainActivity.notificationHelper != null}")
+
+        // v0.5.5+: Check if identity needs to be loaded in background mode
+        // This handles the case where process was killed but service restarts
+        ensureIdentityLoaded()
+    }
+
+    /**
+     * Ensure identity is loaded for DHT listeners (v0.5.5+)
+     *
+     * When the process is killed but service restarts (START_STICKY),
+     * we need to reload identity in BACKGROUND mode for notifications.
+     */
+    private fun ensureIdentityLoaded() {
+        if (!libraryLoaded) {
+            android.util.Log.e(TAG, "Native library not loaded - cannot ensure identity")
+            return
+        }
+
+        try {
+            // Check if identity already loaded (Flutter might have done it)
+            if (nativeIsIdentityLoaded()) {
+                val mode = nativeGetInitMode()
+                android.util.Log.i(TAG, "Identity already loaded (mode=$mode)")
+                return
+            }
+
+            // Get fingerprint from SharedPreferences (set by Flutter)
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val fingerprint = prefs.getString("flutter.identity_fingerprint", null)
+            if (fingerprint.isNullOrEmpty()) {
+                android.util.Log.i(TAG, "No stored fingerprint - waiting for Flutter to create identity")
+                return
+            }
+
+            // Ensure engine is initialized
+            val dataDir = filesDir.absolutePath + "/dna_messenger"
+            if (!nativeEnsureEngine(dataDir)) {
+                android.util.Log.e(TAG, "Failed to ensure engine")
+                return
+            }
+
+            // Load identity in BACKGROUND mode (DHT + listeners only)
+            android.util.Log.i(TAG, "Loading identity in BACKGROUND mode: ${fingerprint.take(16)}...")
+            val result = nativeLoadIdentityBackgroundSync(fingerprint)
+            if (result == 0) {
+                android.util.Log.i(TAG, "Identity loaded in BACKGROUND mode - notifications active")
+            } else {
+                android.util.Log.e(TAG, "Failed to load identity: $result")
+            }
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "ensureIdentityLoaded error: ${e.message}")
+        }
     }
 
     private fun stopForegroundService() {
@@ -168,6 +301,19 @@ class DnaMessengerService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val notificationManager = getSystemService(NotificationManager::class.java)
+
+            // Check if channel already exists
+            val existingChannel = notificationManager.getNotificationChannel(CHANNEL_ID)
+            if (existingChannel != null) {
+                android.util.Log.d(TAG, "Notification channel exists, importance=${existingChannel.importance}")
+                // Check if user disabled the channel
+                if (existingChannel.importance == NotificationManager.IMPORTANCE_NONE) {
+                    android.util.Log.w(TAG, "Notification channel is disabled by user!")
+                }
+                return
+            }
+
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "DNA Messenger Service",
@@ -176,8 +322,8 @@ class DnaMessengerService : Service() {
                 description = "Keeps DHT connection alive for message delivery"
                 setShowBadge(false)
             }
-            val notificationManager = getSystemService(NotificationManager::class.java)
             notificationManager.createNotificationChannel(channel)
+            android.util.Log.i(TAG, "Created notification channel: $CHANNEL_ID")
         }
     }
 
@@ -301,6 +447,8 @@ class DnaMessengerService : Service() {
     }
 
     private fun performHealthCheck() {
+        if (!libraryLoaded) return
+
         try {
             val isHealthy = nativeIsDhtHealthy()
             android.util.Log.d(TAG, "DHT health check: healthy=$isHealthy")
@@ -456,6 +604,11 @@ class DnaMessengerService : Service() {
      * Perform actual DHT reinitialization
      */
     private fun performDhtReinit() {
+        if (!libraryLoaded) {
+            android.util.Log.e(TAG, "Native library not loaded - cannot reinit DHT")
+            return
+        }
+
         android.util.Log.i(TAG, "Network validated - reinitializing DHT")
 
         // Reinit DHT directly via JNI (works even when Flutter isn't running)
@@ -498,7 +651,7 @@ class DnaMessengerService : Service() {
             if (!isRunning) return@postDelayed
 
             val isHealthy = try {
-                nativeIsDhtHealthy()
+                if (libraryLoaded) nativeIsDhtHealthy() else false
             } catch (e: Exception) {
                 android.util.Log.e(TAG, "Listener verification error: ${e.message}")
                 false

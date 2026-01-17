@@ -6,15 +6,19 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../providers/providers.dart';
 import '../providers/event_handler.dart';
 import '../theme/dna_theme.dart';
+import '../platform/platform_handler.dart';
 // v0.3.0: IdentitySelectionScreen import removed - single-user model
 // Feed disabled - will be reimplemented in the future
 // import 'feed/feed_screen.dart';
 import 'contacts/contacts_screen.dart';
 import 'groups/groups_screen.dart';
 import 'wallet/wallet_screen.dart';
+import 'qr/qr_scanner_screen.dart';
 import 'settings/settings_screen.dart';
 
-/// Current tab index (0=Chats, 1=Groups, 2=Wallet, 3=Settings)
+/// Current tab index
+/// Mobile: 0=Chats, 1=Groups, 2=Wallet, 3=QR Scanner, 4=Settings
+/// Desktop: 0=Chats, 1=Groups, 2=Wallet, 3=Settings (no QR)
 final currentTabProvider = StateProvider<int>((ref) => 0);
 
 /// v0.3.0: Single-user model - HomeScreen always shows main navigation
@@ -45,6 +49,7 @@ class _MainNavigationState extends ConsumerState<_MainNavigation> {
   @override
   Widget build(BuildContext context) {
     final currentTab = ref.watch(currentTabProvider);
+    final supportsCamera = PlatformHandler.instance.supportsCamera;
 
     return Scaffold(
       key: _scaffoldKey,
@@ -55,6 +60,7 @@ class _MainNavigationState extends ConsumerState<_MainNavigation> {
           ContactsScreen(onMenuPressed: _openDrawer),
           GroupsScreen(onMenuPressed: _openDrawer),
           WalletScreen(onMenuPressed: _openDrawer),
+          if (supportsCamera) QrScannerScreen(onMenuPressed: _openDrawer),
           SettingsScreen(onMenuPressed: _openDrawer),
         ],
       ),
@@ -72,6 +78,9 @@ class _NavigationDrawer extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final currentTab = ref.watch(currentTabProvider);
+    final supportsCamera = PlatformHandler.instance.supportsCamera;
+    // Settings tab index: 4 on mobile (with QR), 3 on desktop (no QR)
+    final settingsTabIndex = supportsCamera ? 4 : 3;
 
     void selectTab(int index) {
       ref.read(currentTabProvider.notifier).state = index;
@@ -111,6 +120,14 @@ class _NavigationDrawer extends ConsumerWidget {
                     selected: currentTab == 2,
                     onTap: () => selectTab(2),
                   ),
+                  if (supportsCamera)
+                    _DrawerItem(
+                      icon: FontAwesomeIcons.qrcode,
+                      selectedIcon: FontAwesomeIcons.qrcode,
+                      label: 'QR Scanner',
+                      selected: currentTab == 3,
+                      onTap: () => selectTab(3),
+                    ),
                   const Padding(
                     padding: EdgeInsets.symmetric(horizontal: 16),
                     child: Divider(),
@@ -119,8 +136,8 @@ class _NavigationDrawer extends ConsumerWidget {
                     icon: FontAwesomeIcons.gear,
                     selectedIcon: FontAwesomeIcons.gear,
                     label: 'Settings',
-                    selected: currentTab == 3,
-                    onTap: () => selectTab(3),
+                    selected: currentTab == settingsTabIndex,
+                    onTap: () => selectTab(settingsTabIndex),
                   ),
                 ],
               ),

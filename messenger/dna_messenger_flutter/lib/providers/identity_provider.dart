@@ -1,5 +1,7 @@
 // Identity Provider - Identity management state
+import 'dart:io' show Platform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/cache_database.dart';
 import 'engine_provider.dart';
 import 'identity_profile_cache_provider.dart';
@@ -142,6 +144,13 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     // (DHT PUT is async and may not be queryable yet)
     await ref.read(identityProfileCacheProvider.notifier).updateIdentity(fingerprint, name, '');
 
+    // Android: Store fingerprint for background service
+    if (Platform.isAndroid) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('identity_fingerprint', fingerprint);
+      engine.debugLog('IDENTITY', 'createIdentityFromMnemonic - fingerprint stored for service');
+    }
+
     // Invalidate profile providers to fetch fresh profile with name
     ref.invalidate(userProfileProvider);
     ref.invalidate(fullProfileProvider);
@@ -169,6 +178,13 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
 
     await refresh();
 
+    // Android: Store fingerprint for background service
+    if (Platform.isAndroid) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('identity_fingerprint', fingerprint);
+      engine.debugLog('IDENTITY', 'restoreIdentityFromMnemonic - fingerprint stored for service');
+    }
+
     // Invalidate profile providers to fetch fresh profile from DHT
     ref.invalidate(userProfileProvider);
     ref.invalidate(fullProfileProvider);
@@ -180,6 +196,13 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     final engine = await ref.read(engineProvider.future);
     final fingerprint = await engine.createIdentity(name, signingSeed, encryptionSeed);
     await refresh();
+
+    // Android: Store fingerprint for background service
+    if (Platform.isAndroid) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('identity_fingerprint', fingerprint);
+      engine.debugLog('IDENTITY', 'createIdentity - fingerprint stored for service');
+    }
 
     // Invalidate profile providers to fetch fresh profile with name
     ref.invalidate(userProfileProvider);
@@ -214,6 +237,14 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     // Get actual fingerprint after loading (important when auto-detected)
     final loadedFp = engine.fingerprint;
     engine.debugLog('IDENTITY', 'loadIdentity DONE - loaded fp=${loadedFp?.substring(0, 16) ?? "null"}');
+
+    // Android v0.5.5+: Store fingerprint for background service
+    // Service reads this when it starts fresh after process killed
+    if (Platform.isAndroid && loadedFp != null) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('identity_fingerprint', loadedFp);
+      engine.debugLog('IDENTITY', 'loadIdentity - fingerprint stored for service');
+    }
 
     // Set fingerprint AFTER identity is loaded - this triggers UI rebuild
     // via identityLoadedProvider which watches currentFingerprintProvider

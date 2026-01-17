@@ -1,11 +1,15 @@
 package io.cpunk.dna_messenger
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import java.io.File
@@ -19,6 +23,7 @@ import java.io.FileOutputStream
 class MainActivity : FlutterFragmentActivity() {
     companion object {
         private const val TAG = "MainActivity"
+        private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1002
 
         /**
          * Singleton notification helper - shared between MainActivity and ForegroundService.
@@ -86,6 +91,10 @@ class MainActivity : FlutterFragmentActivity() {
         // Copy CA bundle from assets to app data directory for curl SSL
         copyCACertificateBundle()
 
+        // Request notification permission on Android 13+ if notifications are enabled in settings
+        // This ensures the foreground service notification is visible
+        requestNotificationPermissionIfNeeded()
+
         // Register broadcast receiver for service messages
         val pollFilter = IntentFilter("io.cpunk.dna_messenger.POLL_MESSAGES")
         val networkFilter = IntentFilter("io.cpunk.dna_messenger.NETWORK_CHANGED")
@@ -96,6 +105,44 @@ class MainActivity : FlutterFragmentActivity() {
         } else {
             registerReceiver(messageReceiver, pollFilter)
             registerReceiver(networkReceiver, networkFilter)
+        }
+    }
+
+    /**
+     * Request notification permission if:
+     * - Android 13+ (API 33+)
+     * - Permission not already granted
+     * - User has notifications enabled in app settings
+     *
+     * This ensures the foreground service notification is visible when
+     * the service starts automatically (e.g., after swipe away or boot).
+     */
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val hasPermission = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (hasPermission) {
+                android.util.Log.d(TAG, "Notification permission already granted")
+                return
+            }
+
+            // Check if user has notifications enabled in app settings
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val notificationsEnabled = prefs.getBoolean("flutter.notifications_enabled", true)
+
+            if (notificationsEnabled) {
+                android.util.Log.i(TAG, "Requesting notification permission (notifications enabled in settings)")
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    NOTIFICATION_PERMISSION_REQUEST_CODE
+                )
+            } else {
+                android.util.Log.d(TAG, "Notifications disabled in settings, not requesting permission")
+            }
         }
     }
 

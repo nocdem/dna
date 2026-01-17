@@ -136,6 +136,9 @@ typedef union {
     struct {
         char fingerprint[129];
         char *password;          /* Password for encrypted keys (NULL if unencrypted) */
+#ifdef __ANDROID__
+        dna_init_mode_t mode;    /* Android: background vs foreground init mode */
+#endif
     } load_identity;
 
     /* Register name */
@@ -199,6 +202,7 @@ typedef union {
     struct {
         char recipient[129];
         char *message;  /* Heap allocated, task owns */
+        time_t queued_at;  /* Timestamp when user sent (for ordering) */
     } send_message;
 
     /* Get conversation */
@@ -405,6 +409,7 @@ typedef struct {
     char *message;           /* Heap allocated, queue owns */
     int slot_id;             /* Unique slot ID for tracking */
     bool in_use;             /* True if slot contains valid message */
+    time_t queued_at;        /* Timestamp when message was queued (for ordering) */
 } dna_message_queue_entry_t;
 
 /**
@@ -538,6 +543,13 @@ struct dna_engine {
     /* Presence heartbeat (announces our presence every 4 minutes) */
     pthread_t presence_heartbeat_thread;
     atomic_bool presence_active;  /* false when app in background (Android) */
+
+#ifdef __ANDROID__
+    /* Android background mode (v0.5.5+) */
+    dna_init_mode_t init_mode;       /* Current initialization mode */
+    bool transport_initialized;       /* True if messenger_transport_init() called */
+    bool presence_initialized;        /* True if presence heartbeat started */
+#endif
 
     /* Request ID generation */
     atomic_uint_fast64_t next_request_id;

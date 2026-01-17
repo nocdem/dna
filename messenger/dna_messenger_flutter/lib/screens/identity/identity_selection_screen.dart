@@ -749,6 +749,15 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     try {
       await ref.read(identitiesProvider.notifier).loadIdentity(_fingerprint!);
 
+      // Cache the restored profile so sidebar shows correct name immediately
+      if (_existingName != null && _existingName!.isNotEmpty) {
+        ref.read(identityProfileCacheProvider.notifier).updateIdentity(
+          _fingerprint!,
+          _existingName!,
+          _existingAvatar ?? '',
+        );
+      }
+
       // v0.4.60: Check for DHT backup and offer to restore
       if (mounted) {
         await _checkAndOfferRestore();

@@ -550,6 +550,68 @@ dna_engine_load_identity(engine, fingerprint, NULL, callback, NULL);
 
 ---
 
+### dna_engine_load_identity_with_mode (Android only, v0.5.5+)
+
+```c
+#ifdef __ANDROID__
+typedef enum {
+    DNA_INIT_MODE_FULL = 0,        // Full init (foreground)
+    DNA_INIT_MODE_BACKGROUND = 1   // DHT+listeners only (background service)
+} dna_init_mode_t;
+
+dna_request_id_t dna_engine_load_identity_with_mode(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *password,
+    dna_init_mode_t mode,
+    dna_completion_cb callback,
+    void *user_data
+);
+#endif
+```
+
+Loads identity with initialization mode selection. In BACKGROUND mode, skips heavy
+initialization (transport, presence, wallet) while keeping DHT listeners active.
+
+**Parameters:**
+- `engine` - Engine instance
+- `fingerprint` - Identity fingerprint (empty string = auto-detect)
+- `password` - Password for encrypted keys (NULL if unencrypted)
+- `mode` - `DNA_INIT_MODE_FULL` or `DNA_INIT_MODE_BACKGROUND`
+- `callback` - Completion callback
+- `user_data` - User data for callback
+
+**Use Case:** When Android ForegroundService is running but app is closed,
+use BACKGROUND mode to save resources. Call `dna_engine_upgrade_to_foreground()`
+when app comes to foreground.
+
+---
+
+### dna_engine_upgrade_to_foreground (Android only, v0.5.5+)
+
+```c
+#ifdef __ANDROID__
+int dna_engine_upgrade_to_foreground(dna_engine_t *engine);
+#endif
+```
+
+Upgrades from BACKGROUND mode to FULL mode after identity was loaded in background.
+
+**Returns:** 0 on success, -1 on error
+
+**What it does:**
+1. Syncs contacts from DHT
+2. Initializes P2P transport (if not already)
+3. Starts presence heartbeat (if not already)
+4. Checks offline messages
+5. Retries pending messages
+6. Creates missing blockchain wallets
+7. Sets mode to FULL
+
+**Safe to call if already in FULL mode** - returns 0 immediately.
+
+---
+
 ### dna_engine_change_password_sync
 
 ```c

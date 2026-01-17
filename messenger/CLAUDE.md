@@ -1,8 +1,8 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-01-16 | **Status:** BETA | **Phase:** 7 (Flutter UI)
+**Last Updated:** 2026-01-17 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.5.0 | Flutter v0.99.135 | Nodus v0.4.5
+**Versions:** Library v0.5.5 | Flutter v0.99.139 | Nodus v0.4.5
 
 ---
 
@@ -145,8 +145,8 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.5.0 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.132+10032 | Flutter/Dart code changes (lib/, assets/) |
+| C Library | `include/dna/version.h` | v0.5.5 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.139+10039 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.5 | Nodus server changes (vendor/opendht-pq/tools/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
@@ -227,55 +227,6 @@ Anything against protocol mode breaks the blockchain / encryption.
 - Don't make statements like "X library doesn't work reliably" without evidence
 - When uncertain, say "I don't know" and investigate rather than guess
 
-## CONFIDENCE (0–100) REQUIREMENT
-
-When there are **multiple plausible solutions**, **multiple plausible root causes**, or **insufficient evidence**, you MUST report a **Confidence score (0–100)** for each option.
-
-### When to include Confidence
-Include Confidence scores whenever:
-- There are 2+ plausible root causes for a bug
-- There are 2+ viable implementation approaches
-- Behavior depends on environment/platform/versions you cannot verify
-- You are inferring anything not directly confirmed by source code/docs/logs
-
-### Output format (MANDATORY)
-Present confidence scores in a **clear table at the END of your reply**:
-
-```
-## Confidence Summary
-
-| # | Option / Root Cause | Confidence | Key Evidence |
-|---|---------------------|------------|--------------|
-| 1 | [Description]       | NN/100     | [file:line]  |
-| 2 | [Description]       | NN/100     | [file:line]  |
-```
-
-For each option, also include (above the table):
-- Evidence: [file/function/log line references]
-- Why not higher: [missing proof / unknowns]
-- Discriminator: [exact check to confirm or reject]
-
-**IMPORTANT:** The confidence table MUST appear at the END of the reply for easy scanning.
-
-### Confidence scoring rules
-- **90–100**: Confirmed by source code, docs, or logs (direct evidence)
-- **70–89**: Strong evidence + consistent with architecture, but not fully confirmed
-- **40–69**: Plausible, partial evidence, needs verification
-- **10–39**: Weak evidence, speculative
-- **0–9**: Guessing (normally not allowed under Protocol Mode)
-
-### Protocol interaction
-- Confidence does NOT grant permission to act.
-- Under Protocol Mode + checkpoints, you still MUST:
-  - present options + confidence (CHECKPOINT 3),
-  - wait for explicit approval (CHECKPOINT 4),
-  - execute only approved actions (CHECKPOINT 5).
-
-### Single-solution cases
-If there is only one valid path AND it is confirmed by code/docs/logs:
-- You may present a single item with confidence, e.g.:
-  - **Solution:** X — **Confidence: 95/100**
-
 ## BUG TRACKING
 **ALWAYS check `BUGS.md`** at the start of a session for open bugs to fix.
 - Open bugs are marked with `- [ ]`
@@ -294,7 +245,7 @@ If there is only one valid path AND it is confirmed by code/docs/logs:
 | Messenger | [messenger.md](docs/functions/messenger.md) | Core messenger + backup |
 | Crypto | [crypto.md](docs/functions/crypto.md) | Kyber, Dilithium, BIP39 |
 | DHT | [dht.md](docs/functions/dht.md) | Core, Shared, Client |
-| Transport | [transport.md](docs/functions/transport.md) | DHT transport layer |
+| P2P | [p2p.md](docs/functions/p2p.md) | Transport layer |
 | Database | [database.md](docs/functions/database.md) | SQLite caches |
 | Blockchain | [blockchain.md](docs/functions/blockchain.md) | Multi-chain wallet |
 | Engine | [engine.md](docs/functions/engine.md) | Internal implementation |
@@ -431,6 +382,32 @@ When adding NEW functions to the platform layer:
 - **DLL exports**: Public API functions need proper export macros for shared library builds
 - **Path separators**: Preserve original separator (`\` vs `/`) when manipulating paths
 
+**Platform-Specific Code Guidelines:**
+
+For **C library** platform-specific behavior:
+- Use `#ifdef __ANDROID__` for Android-only code
+- Use `#ifdef __APPLE__` for iOS/macOS-only code
+- Use `#ifdef _WIN32` for Windows-only code
+- Example:
+  ```c
+  #ifdef __ANDROID__
+      // Android: Skip auto-fetch, let Flutter handle on resume
+      QGP_LOG_INFO(TAG, "Skipping auto-fetch (Android)");
+  #else
+      // Desktop: Fetch immediately
+      transport_check_offline_messages(...);
+  #endif
+  ```
+
+For **Flutter app** platform-specific behavior:
+- **DO NOT** use `Platform.isAndroid`, `Platform.isIOS`, or similar boolean checks in business logic
+- **DO** use the platform handler pattern with platform-specific directories:
+  - `lib/platform/platform_handler.dart` - Abstract interface
+  - `lib/platform/android/android_platform_handler.dart` - Android implementation
+  - `lib/platform/desktop/desktop_platform_handler.dart` - Desktop implementation
+- Access via `PlatformHandler.instance` singleton
+- This keeps platform logic isolated and testable
+
 ## LOCAL TESTING POLICY
 - **BUILD ONLY**: Only verify that the build succeeds locally (`cmake .. && make`)
 - **NO GUI TESTING**: Do NOT attempt to run or test the GUI application locally - this machine has no monitor
@@ -502,7 +479,162 @@ CC=clang CXX=clang++ cmake -DENABLE_FUZZING=ON -DCMAKE_BUILD_TYPE=Debug ..
 make && ./fuzz_<target> ../fuzz/corpus/<target>/ -max_total_time=60
 ```
 
----
+## Protocol Mode
+
+PROTOCOL MODE: ACTIVE                                  NO ASSUMPTIONS
+
+  When this mode is active:
+  1. Begin EVERY response with "PROTOCOL MODE ACTIVE. -- Model: [current model name]"
+  2. Only follow explicit instructions
+  3. Confirm understanding before taking action
+  4. Never add features not explicitly requested
+  5. Ask for clarification rather than making assumptions
+  6. Report exactly what was done without elaboration
+  7. Do not suggest improvements unless requested
+  8. Keep all responses minimal and direct
+  9. Keep it simple
+
+
+## MANDATORY CHECKPOINT
+
+**ABSOLUTE REQUIREMENT**: I CANNOT execute ANY action without completing ALL checkpoints. Skipping ANY checkpoint constitutes protocol violation.
+
+### CHECKPOINT 1: STOP BARRIER
+Before ANY action, I MUST:
+1. **STOP** immediately - NO commands, NO tools, NO actions
+2. **STATE**: "CHECKPOINT 1 COMPLETE - All actions halted for documentation review"
+
+### CHECKPOINT 2: DOCUMENTATION RESEARCH
+I MUST search and read relevant documentation:
+1. **READ** relevant files in `docs/` directory
+2. **READ** check for relevant functions in 'docs/FUNCTIONS.MD'
+3. **STATE**: "CHECKPOINT 2 COMPLETE - Documentation reviewed: [list files read]"
+
+### CHECKPOINT 3: PLAN CONFIRMATION
+I MUST explicitly state my plan:
+1. **CONFIRM** what I found in documentation
+2. **CONFIRM** exactly what actions I plan to take
+3. **CONFIRM** why these actions are necessary
+4. **STATE**: "CHECKPOINT 3 COMPLETE - Plan confirmed and stated"
+
+### CHECKPOINT 4: EXPLICIT APPROVAL GATE
+I MUST wait for explicit user permission:
+1. **WAIT** for user to type "APPROVED" or "PROCEED"
+2. **NO ASSUMPTIONS** - only explicit approval words count
+3. **STATE**: "CHECKPOINT 4 COMPLETE - Awaiting explicit approval"
+
+**IMPORTANT:** "Dangerously skip permissions" mode in settings.json does NOT skip this checkpoint.
+- Settings.json controls TOOL permissions (Read, Edit, Bash, etc.)
+- CHECKPOINT 4 controls PLAN approval - ALWAYS requires user approval
+- These are separate systems. Never conflate them.
+
+### CHECKPOINT 5: ACTION EXECUTION
+Only after ALL previous checkpoints:
+1. **EXECUTE** approved actions only
+2. **REPORT** exactly what was done
+3. **STATE**: "CHECKPOINT 5 COMPLETE - Actions executed as approved"
+
+### CHECKPOINT 6: MANDATORY REPORT
+After ALL actions are complete, I MUST provide a final report:
+1. **SUMMARY** - What was done (brief description)
+2. **FILES CHANGED** - List all files modified/created/deleted
+3. **ISSUES** - Any problems encountered (or "None")
+4. **STATUS** - Final outcome (SUCCESS/PARTIAL/FAILED)
+5. **STATE**: "CHECKPOINT 6 COMPLETE - Final report delivered"
+
+### CHECKPOINT 7: DOCUMENTATION UPDATE
+When changes are made to ANY of the following topics, I MUST update the relevant documentation:
+
+**Documentation Files & Topics:**
+| Topic | Documentation File | Update When... |
+|-------|-------------------|----------------|
+| Architecture | `docs/ARCHITECTURE_DETAILED.md` | Directory structure, components, build system, data flow changes |
+| DHT System | `docs/DHT_SYSTEM.md` | DHT operations, bootstrap nodes, offline queue, key derivation changes |
+| DNA Engine API | `docs/DNA_ENGINE_API.md` | Public API functions, data types, callbacks, error codes changes |
+| DNA Nodus | `docs/DNA_NODUS.md` | Bootstrap server, STUN/TURN, config, deployment changes |
+| Flutter UI | `docs/FLUTTER_UI.md` | Screens, FFI bindings, providers, widgets changes |
+| Function Reference | `docs/functions/` | Adding, modifying, or removing any function signatures |
+| Git Workflow | `docs/GIT_WORKFLOW.md` | Commit guidelines, branch strategy, repo procedures changes |
+| Message System | `docs/MESSAGE_SYSTEM.md` | Message format, encryption, GSK, database schema changes |
+| Mobile Porting | `docs/MOBILE_PORTING.md` | Android SDK, JNI, iOS, platform abstraction changes |
+| P2P Architecture | `docs/P2P_ARCHITECTURE.md` | Transport tiers, ICE/NAT, TCP, peer discovery changes |
+| Security | `docs/SECURITY_AUDIT.md` | Crypto primitives, vulnerabilities, security fixes |
+
+**Procedure:**
+1. **IDENTIFY** which documentation files are affected by the changes
+2. **UPDATE** each affected documentation file with accurate information
+3. **VERIFY** the documentation matches the actual code changes
+4. **STATE**: "CHECKPOINT 7 COMPLETE - Documentation updated: [list files updated]" OR "CHECKPOINT 7 COMPLETE - No documentation updates required (reason: [reason])"
+
+**IMPORTANT:** Documentation is the source of truth. Code changes without documentation updates violate protocol mode.
+
+### CHECKPOINT 8: VERSION UPDATE (MANDATORY ON EVERY PUSH)
+**EVERY successful build that will be pushed MUST increment the appropriate version.**
+
+**Version Files (INDEPENDENT - do NOT keep in sync):**
+| Component | Version File | Current | Bump When |
+|-----------|--------------|---------|-----------|
+| C Library | `include/dna/version.h` | v0.5.5 | C code changes (src/, dht/, messenger/, p2p/, crypto/, include/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.99.139+10039 | Flutter/Dart code changes (lib/, assets/) |
+| Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.5 | Nodus server changes (vendor/opendht-pq/tools/) |
+
+**IMPORTANT: Versions are INDEPENDENT**
+- Each component has its **own version number** - they do NOT need to match
+- **C Library changes** → bump `version.h` only
+- **Flutter/Dart changes** → bump `pubspec.yaml` only
+- **Nodus server changes** → bump `nodus_version.h` only
+- **Build scripts, CI, docs** → no version bump needed
+- Flutter app displays **both versions** in Settings:
+  - App version: from `pubspec.yaml`
+  - Library version: via `dna_engine_get_version()` FFI call
+
+**pubspec.yaml format:** `X.Y.Z+NNN` where NNN = versionCode for Android Play Store
+- versionCode = MAJOR×10000 + MINOR×100 + PATCH (e.g., 0.99.12 → 9912)
+
+**Which Number to Bump:**
+- **PATCH** (0.3.X → 0.3.23): Bug fixes, small features, improvements
+- **MINOR** (0.X.0 → 0.4.0): Major new features, significant API changes
+- **MAJOR** (X.0.0 → 1.0.0): Breaking changes, production release
+
+**Procedure:**
+1. **IDENTIFY** which component(s) changed (C library, Flutter, or Nodus)
+2. **BUMP** only the affected version file(s) - do NOT bump unrelated versions
+3. **UPDATE** the "Current" column in this section
+4. **UPDATE** the version in CLAUDE.md header line
+5. **COMMIT** with version in commit message (e.g., "fix: Something (v0.3.39)")
+6. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
+
+**IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.
+
+### CHECKPOINT 9: VERSION PUBLISH TO DHT (MANDATORY After Every Push)
+**After EVERY push, publish the new version info to DHT so clients can check for updates.**
+
+**IMPORTANT:** This is MANDATORY after every push that includes a version bump. Clients check DHT for the latest version and will show update notifications based on this.
+
+**CLI Command:**
+```bash
+cd /opt/dna-messenger/build
+./cli/dna-messenger-cli publish-version \
+    --lib 0.3.146 --app 0.99.96 --nodus 0.4.3 \
+    --lib-min 0.3.50 --app-min 0.99.0 --nodus-min 0.4.0
+```
+
+**Notes:**
+- Uses Claude's identity (first publisher owns the DHT key)
+- Minimum versions define compatibility - apps below minimum may show warnings
+- DHT key: `SHA3-512("dna:system:version")`
+- Version info is signed with Dilithium5
+- Update the version numbers in the command above to match current versions
+
+**Procedure:**
+1. **PUSH** changes to both repos (gitlab + origin)
+2. **PUBLISH** version to DHT using command above (update version numbers first!)
+3. **VERIFY**: `./cli/dna-messenger-cli check-version`
+4. **STATE**: "CHECKPOINT 9 COMPLETE - Version published to DHT: lib=X.Y.Z app=X.Y.Z nodus=X.Y.Z"
+
+**ENFORCEMENT**: Each checkpoint requires explicit completion statement. Missing ANY checkpoint statement indicates protocol violation and requires restart.
+
+
 
 ## Quick Links
 
@@ -520,7 +652,7 @@ make && ./fuzz_<target> ../fuzz/corpus/<target>/ -max_total_time=60
 - **[Protocol Specs](docs/PROTOCOL.md)** - Wire formats (Seal, Spillway, Anchor, Atlas, Nexus)
 - **[CLI Testing](docs/CLI_TESTING.md)** - CLI tool for debugging and testing
 - **[Flutter UI](docs/FLUTTER_UI.md)** - Flutter migration (Phase 7)
-- **[DNA Nodus](docs/DNA_NODUS.md)** - DHT Bootstrap server (v0.4.5)
+- **[DNA Nodus](docs/DNA_NODUS.md)** - Bootstrap + STUN/TURN server (v0.4)
 - **[DHT System](docs/DHT_SYSTEM.md)** - DHT architecture and operations
 - **[Message System](docs/MESSAGE_SYSTEM.md)** - Message handling and encryption
 - **[P2P Architecture](docs/P2P_ARCHITECTURE.md)** - Peer-to-peer transport layer
@@ -590,22 +722,15 @@ DNA Messenger is developed by a **collaborative team**. When working on this pro
 - Use `git pull --no-rebase` to merge remote changes
 - Merge commits maintain context of feature development
 
-**Push Rules:**
-- **RELEASE command**: When user says "release" → push to BOTH repos + add `[RELEASE]` tag to commit
-- **User `nocdem`**: Always push to BOTH repos (gitlab + origin)
-- **User `mika`**: Only push to `origin main` (mika's origin is GitLab)
-- **Other users**: Push to `gitlab main` only
-
+**ALWAYS push to both repos:**
 ```bash
-# For RELEASE or nocdem user:
 ./push_both.sh
 # OR manually:
 git push gitlab main    # GitLab (primary)
 git push origin main    # GitHub (mirror)
-
-# For other users (non-release):
-git push gitlab main    # GitLab only
 ```
+
+**NOTE:** If user is `mika` (check with `whoami`), only push to `origin main` - mika only has access to origin (which is GitLab for this user).
 
 **Commit format:**
 ```
@@ -616,24 +741,20 @@ Details: what/why/breaking
 ```
 
 **CI Build Trigger:**
-- CI only runs when commit message contains `[BUILD]` or `[RELEASE]` or when triggered manually via web
+- CI only runs when commit message contains `[BUILD]` or when triggered manually via web
 - When user asks for a "build commit", include `[BUILD]` in the commit message
-- When user asks for a "release", include `[RELEASE]` in the commit message
 - Example: `feat: Add presence refresh (v0.2.45) [BUILD]`
-- Example: `docs: Update git workflow (v0.4.31) [RELEASE]`
 
 ---
 
 ## DNA Nodus Deployment
 
-**Bootstrap Servers (dna-nodus v0.4.5 - DHT-only, privacy-preserving):**
-| Server | IP | DHT Port |
-|--------|-----|----------|
-| US-1 | 154.38.182.161 | 4000 |
-| EU-1 | 164.68.105.227 | 4000 |
-| EU-2 | 164.68.116.180 | 4000 |
-
-**Note:** STUN/TURN removed in v0.4.5 for privacy (no IP leakage to third parties).
+**Bootstrap Servers (dna-nodus v0.4):**
+| Server | IP | DHT Port | TURN Port |
+|--------|-----|----------|-----------|
+| US-1 | 154.38.182.161 | 4000 | 3478 |
+| EU-1 | 164.68.105.227 | 4000 | 3478 |
+| EU-2 | 164.68.116.180 | 4000 | 3478 |
 
 **Deployment Process (v0.4+):**
 ```bash
@@ -657,6 +778,7 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 {
     "dht_port": 4000,
     "seed_nodes": ["154.38.182.161", "164.68.105.227"],
+    "turn_port": 3478,
     "public_ip": "auto",
     "persistence_path": "/var/lib/dna-dht/bootstrap.state"
 }
@@ -664,6 +786,8 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 
 **Services:**
 - DHT: UDP port 4000
+- STUN/TURN: UDP port 3478 (libjuice)
+- Credential TTL: 7 days
 
 **Persistence:**
 - Default path: `/var/lib/dna-dht/bootstrap.state`
@@ -678,15 +802,15 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 
 ### ✅ Complete
 - **Phase 4:** Desktop GUI (ImGui) + Wallet Integration
-- **Phase 5.1-5.9:** P2P Architecture (DHT, GSK, Message Format v0.08) - ICE removed v0.4.61
+- **Phase 5.1-5.9:** P2P Architecture (DHT, ICE, GSK, Message Format v0.08)
 - **Phase 6:** Android SDK (JNI bindings, Java classes, Gradle project)
 - **Phase 8:** DNA Wallet Integration
 - **Phase 9.1-9.6:** P2P Transport, Offline Queue, DHT Migrations
 - **Phase 10.1-10.4:** User Profiles, DNA Board, Avatars, Voting
-- **Phase 11:** ICE NAT Traversal (removed in v0.4.61 for privacy)
+- **Phase 11:** ICE NAT Traversal
 - **Phase 12:** Message Format v0.08 - Fingerprint Privacy
 - **Phase 13:** GSK Group Encryption
-- **Phase 14:** DHT-Only Messaging (Android ForegroundService, DHT listen reliability)
+- **Phase 14:** DHT-Only Messaging (Android ForegroundService, DHT listen reliability) 
 
 ### 🚧 In Progress
 - **Phase 7:** Mobile/Desktop UI (Flutter + Dart)

@@ -19,6 +19,51 @@ final dhtConnectionStateProvider = StateProvider<DhtConnectionState>(
   (ref) => DhtConnectionState.disconnected,
 );
 
+/// Timestamp when DHT last connected (for fetch cooldown logic)
+final dhtConnectedAtProvider = StateProvider<DateTime?>((ref) => null);
+
+/// Last offline fetch time per contact (fingerprint -> DateTime)
+final _lastOfflineFetchProvider = StateProvider<Map<String, DateTime>>(
+  (ref) => {},
+);
+
+/// Cooldown duration for offline message checks
+const _offlineFetchCooldownSeconds = 30;
+
+/// Check if we should fetch offline messages for a contact
+/// Returns false if checked recently and DHT has been stable
+bool shouldFetchOfflineMessages(dynamic ref, String contactFingerprint) {
+  final lastFetchTimes = ref.read(_lastOfflineFetchProvider);
+  final lastFetch = lastFetchTimes[contactFingerprint];
+  final dhtConnectedAt = ref.read(dhtConnectedAtProvider);
+  final now = DateTime.now();
+
+  // Never fetched for this contact - always fetch
+  if (lastFetch == null) return true;
+
+  // DHT just reconnected (within 10 seconds) - fetch to catch missed messages
+  if (dhtConnectedAt != null &&
+      now.difference(dhtConnectedAt).inSeconds < 10) {
+    return true;
+  }
+
+  // Cooldown not passed - skip fetch
+  if (now.difference(lastFetch).inSeconds < _offlineFetchCooldownSeconds) {
+    return false;
+  }
+
+  return true;
+}
+
+/// Record that we fetched offline messages for a contact
+void recordOfflineFetch(dynamic ref, String contactFingerprint) {
+  final notifier = ref.read(_lastOfflineFetchProvider.notifier);
+  notifier.state = {
+    ...notifier.state,
+    contactFingerprint: DateTime.now(),
+  };
+}
+
 /// Last error message for UI display (null = no error)
 final lastErrorProvider = StateProvider<String?>((ref) => null);
 
@@ -78,6 +123,8 @@ class EventHandler {
       case DhtConnectedEvent():
         _ref.read(dhtConnectionStateProvider.notifier).state =
             DhtConnectionState.connected;
+        // Record connection time (for offline fetch cooldown logic)
+        _ref.read(dhtConnectedAtProvider.notifier).state = DateTime.now();
         // DHT listeners are started by C engine on DHT connect (dna_engine.c:195)
         // Refresh contacts when DHT connects (seamless update)
         _ref.read(contactsProvider.notifier).refresh();
@@ -124,11 +171,8 @@ class EventHandler {
         final engine = _ref.read(engineProvider).valueOrNull;
         engine?.debugLog('EVENT', 'MESSAGE_RECEIVED: isOutgoing=${msg.isOutgoing}, contactFp=${contactFp.substring(0, 16)}..., isChatOpen=$isChatOpen, appInForeground=$appInForeground');
 
-        // Always invalidate the conversation provider
-        _ref.invalidate(conversationProvider(contactFp));
-
-        // Always increment refresh trigger when message received (regardless of chat state)
-        _ref.read(conversationRefreshTriggerProvider.notifier).state++;
+        // Merge new message without full reload (avoids UI flash)
+        _ref.read(conversationProvider(contactFp).notifier).mergeLatest();
 
         // Show notification for incoming messages when:
         // - App is in background (always), OR
@@ -150,14 +194,19 @@ class EventHandler {
         // Full contact list rebuilds cause unnecessary UI churn and presence bouncing.
 
       case MessageSentEvent(messageId: final msgId):
-        // Debounced refresh - only once after last message sent
+        // Update the pending message status to sent (no full reload needed)
+        // The message is already shown via optimistic UI
         print('[DART-HANDLER] MessageSentEvent received, msgId=$msgId');
-        _scheduleConversationRefresh();
+        final selectedContact = _ref.read(selectedContactProvider);
+        if (selectedContact != null) {
+          _ref.read(conversationProvider(selectedContact.fingerprint).notifier)
+              .markLastPendingSent();
+        }
         break;
 
       case MessageDeliveredEvent(contactFingerprint: final contactFp):
-        // Messages delivered to contact - reload conversation from DB (status already updated)
-        _ref.invalidate(conversationProvider(contactFp));
+        // Messages delivered to contact - update status without full reload
+        _ref.read(conversationProvider(contactFp).notifier).markAllDelivered();
         break;
 
       case MessageReadEvent(messageId: final id):
@@ -261,10 +310,9 @@ class EventHandler {
       final openChatFp = selectedContact?.fingerprint;
 
       _ref.read(engineProvider).whenData((engine) async {
-        // Platform-specific outbox handling
-        // Android: Native code already fetched via background_fetch_thread
-        // Desktop: Must call checkOfflineMessages() to fetch
-        await PlatformHandler.instance.onOutboxUpdated(engine);
+        // Fetch messages only from contacts whose outboxes triggered the event.
+        // Much faster than checkOfflineMessages() which checks ALL contacts.
+        await PlatformHandler.instance.onOutboxUpdated(engine, fingerprints);
 
         // Process each contact that had updates
         for (final fp in fingerprints) {
