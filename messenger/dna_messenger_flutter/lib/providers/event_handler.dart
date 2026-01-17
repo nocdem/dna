@@ -252,15 +252,19 @@ class EventHandler {
         // New group messages received via DHT listener
         // IMPORTANT: Callback fires immediately without fetching (to avoid DHT thread deadlock)
         // So we must sync messages from DHT here before refreshing the UI
+        print('[GROUP-MSG] >>> GroupMessageReceivedEvent: uuid=$uuid count=$count');
         _ref.read(engineProvider).whenData((engine) async {
+          print('[GROUP-MSG] Inside whenData - syncing group $uuid');
           // Sync messages from DHT to local DB (runs on worker thread, not DHT callback thread)
           await engine.syncGroupByUuid(uuid);
+          print('[GROUP-MSG] Sync complete - invalidating providers');
           // Now refresh the conversation from local DB
           _ref.invalidate(groupConversationProvider(uuid));
           // Force UI rebuild via refresh trigger
           _ref.read(groupConversationRefreshTriggerProvider.notifier).state++;
           // Also refresh groups list to update any preview/badge
           _ref.invalidate(groupsProvider);
+          print('[GROUP-MSG] Providers invalidated, trigger incremented');
         });
         break;
 
