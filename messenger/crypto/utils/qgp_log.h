@@ -188,30 +188,25 @@ void qgp_log_file_write(qgp_log_level_t level, const char *tag, const char *fmt,
         } } while(0)
 
 #else
-    /* Non-Android: use standard stdio with filtering + ring buffer + file logging */
+    /* Non-Android: ring buffer + file logging only (no console output) */
 
-    /* DEBUG logs are always compiled in and filtered at runtime via qgp_log_should_log() */
     #define QGP_LOG_DEBUG(tag, fmt, ...) \
         do { if (qgp_log_should_log(QGP_LOG_LEVEL_DEBUG, tag)) { \
-            fprintf(stdout, "[%s] DEBUG: " fmt "\n", tag, ##__VA_ARGS__); \
             qgp_log_ring_add(QGP_LOG_LEVEL_DEBUG, tag, fmt, ##__VA_ARGS__); \
             qgp_log_file_write(QGP_LOG_LEVEL_DEBUG, tag, fmt, ##__VA_ARGS__); \
         } } while(0)
     #define QGP_LOG_INFO(tag, fmt, ...) \
         do { if (qgp_log_should_log(QGP_LOG_LEVEL_INFO, tag)) { \
-            fprintf(stdout, "[%s] " fmt "\n", tag, ##__VA_ARGS__); \
             qgp_log_ring_add(QGP_LOG_LEVEL_INFO, tag, fmt, ##__VA_ARGS__); \
             qgp_log_file_write(QGP_LOG_LEVEL_INFO, tag, fmt, ##__VA_ARGS__); \
         } } while(0)
     #define QGP_LOG_WARN(tag, fmt, ...) \
         do { if (qgp_log_should_log(QGP_LOG_LEVEL_WARN, tag)) { \
-            fprintf(stderr, "[%s] WARN: " fmt "\n", tag, ##__VA_ARGS__); \
             qgp_log_ring_add(QGP_LOG_LEVEL_WARN, tag, fmt, ##__VA_ARGS__); \
             qgp_log_file_write(QGP_LOG_LEVEL_WARN, tag, fmt, ##__VA_ARGS__); \
         } } while(0)
     #define QGP_LOG_ERROR(tag, fmt, ...) \
         do { if (qgp_log_should_log(QGP_LOG_LEVEL_ERROR, tag)) { \
-            fprintf(stderr, "[%s] ERROR: " fmt "\n", tag, ##__VA_ARGS__); \
             qgp_log_ring_add(QGP_LOG_LEVEL_ERROR, tag, fmt, ##__VA_ARGS__); \
             qgp_log_file_write(QGP_LOG_LEVEL_ERROR, tag, fmt, ##__VA_ARGS__); \
         } } while(0)
