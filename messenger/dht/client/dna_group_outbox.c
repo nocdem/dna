@@ -634,24 +634,6 @@ int dna_group_outbox_sync(
     uint64_t current_day = dna_group_outbox_get_day_bucket();
     size_t new_count = 0;
 
-    /* Load GEK for decryption */
-    uint8_t gek[GEK_KEY_SIZE];
-    if (gek_load_active(group_uuid, gek, NULL) != 0) {
-        /* GEK not found locally - try auto-sync from DHT */
-        QGP_LOG_WARN(LOG_TAG, "No local GEK for group %s, attempting auto-sync from DHT...\n", group_uuid);
-        if (messenger_sync_group_gek(group_uuid) == 0) {
-            /* Sync succeeded, retry load */
-            if (gek_load_active(group_uuid, gek, NULL) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "GEK load failed after sync for group %s (skipping)\n", group_uuid);
-                return DNA_GROUP_OUTBOX_ERR_NO_GEK;
-            }
-            QGP_LOG_INFO(LOG_TAG, "Auto-synced GEK for group %s\n", group_uuid);
-        } else {
-            QGP_LOG_ERROR(LOG_TAG, "Auto-sync failed, no active GEK for group %s (skipping)\n", group_uuid);
-            return DNA_GROUP_OUTBOX_ERR_NO_GEK;
-        }
-    }
-
     /* Determine start day */
     uint64_t start_day = last_sync_day > 0
         ? last_sync_day + 1
@@ -685,23 +667,37 @@ int dna_group_outbox_sync(
                 continue; /* Already have it */
             }
 
-            /* Decrypt message */
+            /* Decrypt message - load GEK by message's version */
             if (messages[i].ciphertext && messages[i].ciphertext_len > 0) {
-                uint8_t *plaintext = malloc(messages[i].ciphertext_len);
-                if (plaintext) {
-                    size_t plaintext_len = 0;
-                    /* AAD = message_id */
-                    if (qgp_aes256_decrypt(gek, messages[i].ciphertext, messages[i].ciphertext_len,
-                                           (const uint8_t *)messages[i].message_id, strlen(messages[i].message_id),
-                                           messages[i].nonce, messages[i].tag,
-                                           plaintext, &plaintext_len) == 0) {
-                        messages[i].plaintext = malloc(plaintext_len + 1);
-                        if (messages[i].plaintext) {
-                            memcpy(messages[i].plaintext, plaintext, plaintext_len);
-                            messages[i].plaintext[plaintext_len] = '\0';
-                        }
+                uint8_t gek[GEK_KEY_SIZE];
+                int gek_loaded = gek_load(group_uuid, messages[i].gsk_version, gek);
+                if (gek_loaded != 0) {
+                    /* Try auto-sync from DHT */
+                    if (messenger_sync_group_gek(group_uuid) == 0) {
+                        gek_loaded = gek_load(group_uuid, messages[i].gsk_version, gek);
                     }
-                    free(plaintext);
+                }
+                if (gek_loaded == 0) {
+                    uint8_t *plaintext = malloc(messages[i].ciphertext_len);
+                    if (plaintext) {
+                        size_t plaintext_len = 0;
+                        /* AAD = message_id */
+                        if (qgp_aes256_decrypt(gek, messages[i].ciphertext, messages[i].ciphertext_len,
+                                               (const uint8_t *)messages[i].message_id, strlen(messages[i].message_id),
+                                               messages[i].nonce, messages[i].tag,
+                                               plaintext, &plaintext_len) == 0) {
+                            messages[i].plaintext = malloc(plaintext_len + 1);
+                            if (messages[i].plaintext) {
+                                memcpy(messages[i].plaintext, plaintext, plaintext_len);
+                                messages[i].plaintext[plaintext_len] = '\0';
+                            }
+                        }
+                        free(plaintext);
+                    }
+                    qgp_secure_memzero(gek, GEK_KEY_SIZE);
+                } else {
+                    QGP_LOG_WARN(LOG_TAG, "No GEK v%u for group %s, cannot decrypt\n",
+                                 messages[i].gsk_version, group_uuid);
                 }
             }
 
@@ -1127,14 +1123,6 @@ static bool group_message_listen_callback(
         return true;
     }
 
-    /* Load GEK for decryption */
-    uint8_t gek[GEK_KEY_SIZE];
-    if (gek_load_active(ctx->group_uuid, gek, NULL) != 0) {
-        QGP_LOG_WARN(LOG_TAG, "No GEK for group %s in listen callback\n", ctx->group_uuid);
-        dna_group_outbox_free_messages(messages, count);
-        return true;
-    }
-
     /* Process and store new messages */
     size_t new_count = 0;
     for (size_t i = 0; i < count; i++) {
@@ -1143,22 +1131,36 @@ static bool group_message_listen_callback(
             continue;
         }
 
-        /* Decrypt message */
+        /* Decrypt message - load GEK by message's version */
         if (messages[i].ciphertext && messages[i].ciphertext_len > 0) {
-            uint8_t *plaintext = malloc(messages[i].ciphertext_len);
-            if (plaintext) {
-                size_t plaintext_len = 0;
-                if (qgp_aes256_decrypt(gek, messages[i].ciphertext, messages[i].ciphertext_len,
-                                       (const uint8_t *)messages[i].message_id, strlen(messages[i].message_id),
-                                       messages[i].nonce, messages[i].tag,
-                                       plaintext, &plaintext_len) == 0) {
-                    messages[i].plaintext = malloc(plaintext_len + 1);
-                    if (messages[i].plaintext) {
-                        memcpy(messages[i].plaintext, plaintext, plaintext_len);
-                        messages[i].plaintext[plaintext_len] = '\0';
-                    }
+            uint8_t gek[GEK_KEY_SIZE];
+            int gek_loaded = gek_load(ctx->group_uuid, messages[i].gsk_version, gek);
+            if (gek_loaded != 0) {
+                /* Try auto-sync from DHT */
+                if (messenger_sync_group_gek(ctx->group_uuid) == 0) {
+                    gek_loaded = gek_load(ctx->group_uuid, messages[i].gsk_version, gek);
                 }
-                free(plaintext);
+            }
+            if (gek_loaded == 0) {
+                uint8_t *plaintext = malloc(messages[i].ciphertext_len);
+                if (plaintext) {
+                    size_t plaintext_len = 0;
+                    if (qgp_aes256_decrypt(gek, messages[i].ciphertext, messages[i].ciphertext_len,
+                                           (const uint8_t *)messages[i].message_id, strlen(messages[i].message_id),
+                                           messages[i].nonce, messages[i].tag,
+                                           plaintext, &plaintext_len) == 0) {
+                        messages[i].plaintext = malloc(plaintext_len + 1);
+                        if (messages[i].plaintext) {
+                            memcpy(messages[i].plaintext, plaintext, plaintext_len);
+                            messages[i].plaintext[plaintext_len] = '\0';
+                        }
+                    }
+                    free(plaintext);
+                }
+                qgp_secure_memzero(gek, GEK_KEY_SIZE);
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "No GEK v%u for group %s in listen callback\n",
+                             messages[i].gsk_version, ctx->group_uuid);
             }
         }
 
