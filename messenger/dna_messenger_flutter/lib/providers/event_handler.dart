@@ -19,6 +19,51 @@ final dhtConnectionStateProvider = StateProvider<DhtConnectionState>(
   (ref) => DhtConnectionState.disconnected,
 );
 
+/// Timestamp when DHT last connected (for fetch cooldown logic)
+final dhtConnectedAtProvider = StateProvider<DateTime?>((ref) => null);
+
+/// Last offline fetch time per contact (fingerprint -> DateTime)
+final _lastOfflineFetchProvider = StateProvider<Map<String, DateTime>>(
+  (ref) => {},
+);
+
+/// Cooldown duration for offline message checks
+const _offlineFetchCooldownSeconds = 30;
+
+/// Check if we should fetch offline messages for a contact
+/// Returns false if checked recently and DHT has been stable
+bool shouldFetchOfflineMessages(dynamic ref, String contactFingerprint) {
+  final lastFetchTimes = ref.read(_lastOfflineFetchProvider);
+  final lastFetch = lastFetchTimes[contactFingerprint];
+  final dhtConnectedAt = ref.read(dhtConnectedAtProvider);
+  final now = DateTime.now();
+
+  // Never fetched for this contact - always fetch
+  if (lastFetch == null) return true;
+
+  // DHT just reconnected (within 10 seconds) - fetch to catch missed messages
+  if (dhtConnectedAt != null &&
+      now.difference(dhtConnectedAt).inSeconds < 10) {
+    return true;
+  }
+
+  // Cooldown not passed - skip fetch
+  if (now.difference(lastFetch).inSeconds < _offlineFetchCooldownSeconds) {
+    return false;
+  }
+
+  return true;
+}
+
+/// Record that we fetched offline messages for a contact
+void recordOfflineFetch(dynamic ref, String contactFingerprint) {
+  final notifier = ref.read(_lastOfflineFetchProvider.notifier);
+  notifier.state = {
+    ...notifier.state,
+    contactFingerprint: DateTime.now(),
+  };
+}
+
 /// Last error message for UI display (null = no error)
 final lastErrorProvider = StateProvider<String?>((ref) => null);
 
@@ -78,6 +123,8 @@ class EventHandler {
       case DhtConnectedEvent():
         _ref.read(dhtConnectionStateProvider.notifier).state =
             DhtConnectionState.connected;
+        // Record connection time (for offline fetch cooldown logic)
+        _ref.read(dhtConnectedAtProvider.notifier).state = DateTime.now();
         // DHT listeners are started by C engine on DHT connect (dna_engine.c:195)
         // Refresh contacts when DHT connects (seamless update)
         _ref.read(contactsProvider.notifier).refresh();
