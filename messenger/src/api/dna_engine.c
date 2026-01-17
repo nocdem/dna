@@ -224,7 +224,12 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
         QGP_LOG_INFO(LOG_TAG, "[RETRY] DHT reconnect: retried %d pending messages", retried);
     }
 
-    /* Also check for missed incoming messages after reconnect */
+    /* Check for missed incoming messages after reconnect.
+     * Android: Skip auto-fetch - Flutter handles fetching when app resumes.
+     *          This prevents watermarks being published while app is backgrounded,
+     *          which would mark messages as "delivered" before user sees them.
+     * Desktop: Fetch immediately since there's no background service. */
+#ifndef __ANDROID__
     if (engine->messenger && engine->messenger->transport_ctx) {
         QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: checking for missed messages");
         size_t received = 0;
@@ -233,6 +238,9 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
             QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: received %zu missed messages", received);
         }
     }
+#else
+    QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: skipping auto-fetch (Android - Flutter handles on resume)");
+#endif
 
     /* Wait for DHT routing table to stabilize after reconnect, then retry again.
      * The immediate retry above may fail if routing table is still sparse. */
