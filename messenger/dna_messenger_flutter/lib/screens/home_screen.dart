@@ -49,7 +49,7 @@ class _MainNavigationState extends ConsumerState<_MainNavigation> {
   @override
   Widget build(BuildContext context) {
     final currentTab = ref.watch(currentTabProvider);
-    final supportsCamera = PlatformHandler.instance.supportsCameraScanner;
+    final supportsCamera = PlatformHandler.instance.supportsCamera;
 
     return Scaffold(
       key: _scaffoldKey,
@@ -78,7 +78,7 @@ class _NavigationDrawer extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final currentTab = ref.watch(currentTabProvider);
-    final supportsCamera = PlatformHandler.instance.supportsCameraScanner;
+    final supportsCamera = PlatformHandler.instance.supportsCamera;
     // Settings tab index: 4 on mobile (with QR), 3 on desktop (no QR)
     final settingsTabIndex = supportsCamera ? 4 : 3;
 
