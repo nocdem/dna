@@ -47,6 +47,9 @@ class MessageBubbleWrapper extends StatefulWidget {
   /// Delete action
   final MessageCallback onDelete;
 
+  /// Whether to animate this bubble (only for new messages)
+  final bool animate;
+
   const MessageBubbleWrapper({
     super.key,
     required this.child,
@@ -60,6 +63,7 @@ class MessageBubbleWrapper extends StatefulWidget {
     this.onTap,
     this.onLongPress,
     this.onRetry,
+    this.animate = false,
   });
 
   @override
@@ -101,8 +105,13 @@ class _MessageBubbleWrapperState extends State<MessageBubbleWrapper>
       curve: Curves.easeOutCubic,
     ));
 
-    // Start animation
-    _controller.forward();
+    // Only animate if requested (new messages only)
+    if (widget.animate) {
+      _controller.forward();
+    } else {
+      // Skip to end for existing messages
+      _controller.value = 1.0;
+    }
   }
 
   @override

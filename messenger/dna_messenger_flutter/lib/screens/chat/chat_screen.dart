@@ -35,6 +35,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _justInsertedEmoji = false;
   Message? _replyingTo; // Message being replied to
 
+  // Track seen message IDs to only animate new ones
+  final Set<int> _seenMessageIds = {};
+  bool _initialLoadDone = false;
+
   // Search state
   bool _isSearching = false;
   String _searchQuery = '';
@@ -492,6 +496,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Widget _buildMessageList(BuildContext context, List<Message> messages, Set<int> starredIds, Contact contact) {
+    // Track seen messages for animation (only animate truly new ones)
+    // After initial load, mark all current messages as seen
+    if (!_initialLoadDone && messages.isNotEmpty) {
+      // First load - mark all as seen (no animation)
+      for (final msg in messages) {
+        _seenMessageIds.add(msg.id);
+      }
+      // Use post-frame callback to avoid setState during build
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          setState(() => _initialLoadDone = true);
+        }
+      });
+    } else if (_initialLoadDone) {
+      // After initial load, add new message IDs to seen set
+      for (final msg in messages) {
+        _seenMessageIds.add(msg.id);
+      }
+    }
+
     // Filter messages if searching
     final filteredMessages = _searchQuery.isEmpty
         ? messages
@@ -619,6 +643,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               child: MessageBubbleWrapper(
                 message: message,
                 isStarred: starredIds.contains(message.id),
+                // Only animate new messages (not seen before and after initial load)
+                animate: _initialLoadDone && !_seenMessageIds.contains(message.id),
                 onTap: () => _showMessageInfo(message),
                 onLongPress: () => _showMessageActions(message),
                 onReply: _replyMessage,
