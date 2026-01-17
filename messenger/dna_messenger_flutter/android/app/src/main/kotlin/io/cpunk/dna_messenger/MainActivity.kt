@@ -24,6 +24,7 @@ class MainActivity : FlutterFragmentActivity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1002
+        private const val CAMERA_PERMISSION_REQUEST_CODE = 1003
 
         /**
          * Singleton notification helper - shared between MainActivity and ForegroundService.
@@ -95,6 +96,10 @@ class MainActivity : FlutterFragmentActivity() {
         // This ensures the foreground service notification is visible
         requestNotificationPermissionIfNeeded()
 
+        // Request camera permission for QR scanner
+        // Ask early so user doesn't get interrupted when opening QR tab
+        requestCameraPermissionIfNeeded()
+
         // Register broadcast receiver for service messages
         val pollFilter = IntentFilter("io.cpunk.dna_messenger.POLL_MESSAGES")
         val networkFilter = IntentFilter("io.cpunk.dna_messenger.NETWORK_CHANGED")
@@ -144,6 +149,29 @@ class MainActivity : FlutterFragmentActivity() {
                 android.util.Log.d(TAG, "Notifications disabled in settings, not requesting permission")
             }
         }
+    }
+
+    /**
+     * Request camera permission if not already granted.
+     * Ask early at startup so user doesn't get interrupted when opening QR scanner.
+     */
+    private fun requestCameraPermissionIfNeeded() {
+        val hasPermission = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (hasPermission) {
+            android.util.Log.d(TAG, "Camera permission already granted")
+            return
+        }
+
+        android.util.Log.i(TAG, "Requesting camera permission at startup")
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.CAMERA),
+            CAMERA_PERMISSION_REQUEST_CODE
+        )
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
