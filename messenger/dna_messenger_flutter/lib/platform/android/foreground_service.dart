@@ -1,8 +1,10 @@
 // Android Foreground Service - Background execution management
 // Phase 14: DHT-only messaging with reliable Android background support
 //
-// This file is ANDROID-ONLY. It should only be imported on Android.
+// This file is ANDROID-ONLY but can be safely imported on other platforms.
+// Platform checks prevent any actual service operations on non-Android.
 
+import 'dart:io' show Platform;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../providers/engine_provider.dart';
@@ -87,14 +89,20 @@ class ForegroundServiceNotifier extends StateNotifier<bool> {
   void _init() {
     if (_initialized) return;
     _initialized = true;
+    print('[ForegroundService] _init called');
 
     // Listen for identity changes to start/stop service
     _ref.listen<String?>(currentFingerprintProvider, (previous, next) {
+      final prevShort = previous != null && previous.length >= 16 ? previous.substring(0, 16) : previous;
+      final nextShort = next != null && next.length >= 16 ? next.substring(0, 16) : next;
+      print('[ForegroundService] fingerprint changed: prev=$prevShort, next=$nextShort');
       if (next != null && next.isNotEmpty && (previous == null || previous.isEmpty)) {
         // Identity loaded - start service
+        print('[ForegroundService] Identity loaded, starting service');
         _startService();
       } else if ((next == null || next.isEmpty) && previous != null && previous.isNotEmpty) {
         // Identity unloaded - stop service
+        print('[ForegroundService] Identity unloaded, stopping service');
         _stopService();
       }
     }, fireImmediately: true);
@@ -124,13 +132,24 @@ class ForegroundServiceNotifier extends StateNotifier<bool> {
 
   /// Start the foreground service (only if notifications enabled)
   Future<void> _startService() async {
+    // Only run on Android
+    if (!Platform.isAndroid) {
+      print('[ForegroundService] Not Android, skipping service start');
+      return;
+    }
+
+    print('[ForegroundService] _startService called');
+
     // Check if user has notifications enabled
     final notificationSettings = _ref.read(notificationSettingsProvider);
+    print('[ForegroundService] notifications enabled: ${notificationSettings.enabled}');
     if (!notificationSettings.enabled) {
+      print('[ForegroundService] Notifications disabled, not starting service');
       return; // User disabled background notifications
     }
 
     final success = await ForegroundServiceManager.startService();
+    print('[ForegroundService] startService result: $success');
     state = success;
   }
 
