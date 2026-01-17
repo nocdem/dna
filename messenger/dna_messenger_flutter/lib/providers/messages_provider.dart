@@ -194,6 +194,107 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
     });
   }
 
+  /// Mark all sent messages as delivered
+  /// Called when MessageDeliveredEvent fires
+  void markAllDelivered() {
+    state.whenData((messages) {
+      bool changed = false;
+      final updated = messages.map((msg) {
+        if (msg.isOutgoing && msg.status == MessageStatus.sent) {
+          changed = true;
+          return Message(
+            id: msg.id,
+            sender: msg.sender,
+            recipient: msg.recipient,
+            plaintext: msg.plaintext,
+            timestamp: msg.timestamp,
+            isOutgoing: msg.isOutgoing,
+            status: MessageStatus.delivered,
+            type: msg.type,
+          );
+        }
+        return msg;
+      }).toList();
+
+      if (changed) {
+        state = AsyncValue.data(updated);
+      }
+    });
+  }
+
+  /// Update last pending outgoing message to sent status
+  /// Called when MessageSentEvent fires - the pending message needs status update
+  void markLastPendingSent() {
+    state.whenData((messages) {
+      // Find last outgoing message with pending status
+      for (int i = messages.length - 1; i >= 0; i--) {
+        final msg = messages[i];
+        if (msg.isOutgoing && msg.status == MessageStatus.pending) {
+          final updated = List<Message>.from(messages);
+          updated[i] = Message(
+            id: msg.id,
+            sender: msg.sender,
+            recipient: msg.recipient,
+            plaintext: msg.plaintext,
+            timestamp: msg.timestamp,
+            isOutgoing: msg.isOutgoing,
+            status: MessageStatus.sent,
+            type: msg.type,
+          );
+          state = AsyncValue.data(updated);
+          return;
+        }
+      }
+    });
+  }
+
+  /// Merge new messages from DB without showing loading state
+  /// Used when new message received - fetches from DB and adds to list
+  Future<void> mergeLatest() async {
+    final currentMessages = state.valueOrNull ?? [];
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final page = await engine.getConversationPage(arg, _pageSize, 0);
+      final newMessages = page.messages.reversed.toList();
+
+      // Find messages not in current list (by ID or by content+timestamp for pending)
+      final currentIds = currentMessages.map((m) => m.id).toSet();
+      final toAdd = <Message>[];
+
+      for (final msg in newMessages) {
+        if (!currentIds.contains(msg.id)) {
+          // Check if it's not a pending message we already show
+          final isDuplicate = currentMessages.any((m) =>
+            m.plaintext == msg.plaintext &&
+            m.sender == msg.sender &&
+            m.recipient == msg.recipient &&
+            m.timestamp.difference(msg.timestamp).abs().inSeconds < 5
+          );
+          if (!isDuplicate) {
+            toAdd.add(msg);
+          }
+        }
+      }
+
+      if (toAdd.isNotEmpty) {
+        // Merge and sort by timestamp
+        final merged = [...currentMessages, ...toAdd];
+        merged.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+        state = AsyncValue.data(merged);
+
+        // Update pagination state
+        ref.read(_paginationStateProvider(arg).notifier).state = _PaginationState(
+          total: page.total,
+          loadedCount: merged.length,
+        );
+      }
+    } catch (e) {
+      // On error, fall back to full refresh
+      await refresh();
+    }
+  }
+
   /// Delete a message from local database
   /// Returns true on success
   Future<bool> deleteMessage(int messageId) async {

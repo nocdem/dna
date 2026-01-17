@@ -171,11 +171,8 @@ class EventHandler {
         final engine = _ref.read(engineProvider).valueOrNull;
         engine?.debugLog('EVENT', 'MESSAGE_RECEIVED: isOutgoing=${msg.isOutgoing}, contactFp=${contactFp.substring(0, 16)}..., isChatOpen=$isChatOpen, appInForeground=$appInForeground');
 
-        // Always invalidate the conversation provider
-        _ref.invalidate(conversationProvider(contactFp));
-
-        // Always increment refresh trigger when message received (regardless of chat state)
-        _ref.read(conversationRefreshTriggerProvider.notifier).state++;
+        // Merge new message without full reload (avoids UI flash)
+        _ref.read(conversationProvider(contactFp).notifier).mergeLatest();
 
         // Show notification for incoming messages when:
         // - App is in background (always), OR
@@ -197,14 +194,19 @@ class EventHandler {
         // Full contact list rebuilds cause unnecessary UI churn and presence bouncing.
 
       case MessageSentEvent(messageId: final msgId):
-        // Debounced refresh - only once after last message sent
+        // Update the pending message status to sent (no full reload needed)
+        // The message is already shown via optimistic UI
         print('[DART-HANDLER] MessageSentEvent received, msgId=$msgId');
-        _scheduleConversationRefresh();
+        final selectedContact = _ref.read(selectedContactProvider);
+        if (selectedContact != null) {
+          _ref.read(conversationProvider(selectedContact.fingerprint).notifier)
+              .markLastPendingSent();
+        }
         break;
 
       case MessageDeliveredEvent(contactFingerprint: final contactFp):
-        // Messages delivered to contact - reload conversation from DB (status already updated)
-        _ref.invalidate(conversationProvider(contactFp));
+        // Messages delivered to contact - update status without full reload
+        _ref.read(conversationProvider(contactFp).notifier).markAllDelivered();
         break;
 
       case MessageReadEvent(messageId: final id):
