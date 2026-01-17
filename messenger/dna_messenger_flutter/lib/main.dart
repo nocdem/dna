@@ -15,6 +15,10 @@ import 'utils/window_state.dart';
 import 'utils/lifecycle_observer.dart';
 import 'utils/logger.dart';
 
+/// Global RouteObserver for screens that need to know when they're covered/uncovered
+/// Used by QrScannerScreen to stop camera when covered by another route
+final RouteObserver<ModalRoute<void>> routeObserver = RouteObserver<ModalRoute<void>>();
+
 void main() {
   // Run app with error zone to capture uncaught exceptions
   // All initialization must be inside the zone to avoid zone mismatch
@@ -52,6 +56,7 @@ class DnaMessengerApp extends ConsumerWidget {
       title: 'DNA Messenger',
       debugShowCheckedModeBanner: false,
       theme: DnaTheme.theme,
+      navigatorObservers: [routeObserver],
       home: const _AppLoader(),
     );
   }

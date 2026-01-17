@@ -12,9 +12,10 @@ import '../theme/dna_theme.dart';
 import 'contacts/contacts_screen.dart';
 import 'groups/groups_screen.dart';
 import 'wallet/wallet_screen.dart';
+import 'qr/qr_scanner_screen.dart';
 import 'settings/settings_screen.dart';
 
-/// Current tab index (0=Chats, 1=Groups, 2=Wallet, 3=Settings)
+/// Current tab index (0=Chats, 1=Groups, 2=Wallet, 3=QR Scanner, 4=Settings)
 final currentTabProvider = StateProvider<int>((ref) => 0);
 
 /// v0.3.0: Single-user model - HomeScreen always shows main navigation
@@ -55,6 +56,7 @@ class _MainNavigationState extends ConsumerState<_MainNavigation> {
           ContactsScreen(onMenuPressed: _openDrawer),
           GroupsScreen(onMenuPressed: _openDrawer),
           WalletScreen(onMenuPressed: _openDrawer),
+          QrScannerScreen(onMenuPressed: _openDrawer),
           SettingsScreen(onMenuPressed: _openDrawer),
         ],
       ),
@@ -111,6 +113,13 @@ class _NavigationDrawer extends ConsumerWidget {
                     selected: currentTab == 2,
                     onTap: () => selectTab(2),
                   ),
+                  _DrawerItem(
+                    icon: FontAwesomeIcons.qrcode,
+                    selectedIcon: FontAwesomeIcons.qrcode,
+                    label: 'QR Scanner',
+                    selected: currentTab == 3,
+                    onTap: () => selectTab(3),
+                  ),
                   const Padding(
                     padding: EdgeInsets.symmetric(horizontal: 16),
                     child: Divider(),
@@ -119,8 +128,8 @@ class _NavigationDrawer extends ConsumerWidget {
                     icon: FontAwesomeIcons.gear,
                     selectedIcon: FontAwesomeIcons.gear,
                     label: 'Settings',
-                    selected: currentTab == 3,
-                    onTap: () => selectTab(3),
+                    selected: currentTab == 4,
+                    onTap: () => selectTab(4),
                   ),
                 ],
               ),

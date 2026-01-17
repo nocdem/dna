@@ -2938,6 +2938,54 @@ DNA_API int dna_engine_check_version_dht(
     dna_version_check_result_t *result_out
 );
 
+/* ============================================================================
+ * SIGNING (for QR Auth and external authentication)
+ * ============================================================================ */
+
+/**
+ * Sign arbitrary data with the loaded identity's Dilithium5 key
+ *
+ * Creates a detached signature over the provided data using the current
+ * identity's private signing key. Used for QR-based authentication flows
+ * where the app needs to prove identity to external services.
+ *
+ * @param engine         Engine instance (must have identity loaded)
+ * @param data           Data to sign
+ * @param data_len       Length of data in bytes
+ * @param signature_out  Output buffer for signature (must be at least 4627 bytes)
+ * @param sig_len_out    Output: actual signature length
+ * @return               0 on success, negative on error:
+ *                       DNA_ENGINE_ERROR_NO_IDENTITY - no identity loaded
+ *                       DNA_ERROR_INVALID_ARG - null parameters
+ *                       DNA_ERROR_CRYPTO - signing failed
+ */
+DNA_API int dna_engine_sign_data(
+    dna_engine_t *engine,
+    const uint8_t *data,
+    size_t data_len,
+    uint8_t *signature_out,
+    size_t *sig_len_out
+);
+
+/**
+ * Get the loaded identity's Dilithium5 signing public key
+ *
+ * Copies the raw public key bytes into the provided buffer.
+ * Dilithium5 public key size is 2592 bytes.
+ *
+ * @param engine         Engine instance
+ * @param pubkey_out     Output buffer for public key (must be at least 2592 bytes)
+ * @param pubkey_out_len Size of output buffer
+ * @return               Number of bytes written (2592) on success, negative on error:
+ *                       DNA_ENGINE_ERROR_NO_IDENTITY - no identity loaded
+ *                       DNA_ERROR_INVALID_ARG - null parameters or buffer too small
+ */
+DNA_API int dna_engine_get_signing_public_key(
+    dna_engine_t *engine,
+    uint8_t *pubkey_out,
+    size_t pubkey_out_len
+);
+
 #ifdef __cplusplus
 }
 #endif

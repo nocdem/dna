@@ -4674,6 +4674,93 @@ class DnaEngine {
   }
 
   // ---------------------------------------------------------------------------
+  // SIGNING (for QR Auth)
+  // ---------------------------------------------------------------------------
+
+  /// Sign arbitrary data with the loaded identity's Dilithium5 key
+  ///
+  /// Used for QR-based authentication flows where the app needs to prove
+  /// identity to external services.
+  ///
+  /// Returns the signature as Uint8List (up to 4627 bytes for Dilithium5).
+  /// Throws [DnaEngineException] on error.
+  /// Dilithium5 max signature size is 4627 bytes
+  static const int _dilithium5MaxSigLen = 4627;
+
+  Uint8List signData(Uint8List data) {
+    final dataPtr = calloc<Uint8>(data.length);
+    final signaturePtr = calloc<Uint8>(_dilithium5MaxSigLen);
+    final sigLenPtr = calloc<Size>();
+
+    try {
+      // Copy input data
+      dataPtr.asTypedList(data.length).setAll(0, data);
+
+      final rc = _bindings.dna_engine_sign_data(
+        _engine,
+        dataPtr,
+        data.length,
+        signaturePtr,
+        sigLenPtr,
+      );
+
+      if (rc != 0) {
+        throw DnaEngineException.fromCode(rc, _bindings);
+      }
+
+      final sigLen = sigLenPtr.value;
+
+      // HARDEN: validate returned length
+      if (sigLen == 0 || sigLen > _dilithium5MaxSigLen) {
+        throw DnaEngineException(-1, 'Invalid signature length: $sigLen');
+      }
+
+      // Fast copy
+      return Uint8List.fromList(signaturePtr.asTypedList(sigLen));
+    } finally {
+      calloc.free(dataPtr);
+      calloc.free(signaturePtr);
+      calloc.free(sigLenPtr);
+    }
+  }
+
+  /// Dilithium5 public key size is 2592 bytes
+  static const int _dilithium5PubKeyLen = 2592;
+
+  /// Get the loaded identity's Dilithium5 signing public key
+  ///
+  /// Returns the raw public key bytes (2592 bytes for Dilithium5).
+  /// Throws [DnaEngineException] on error (e.g., no identity loaded).
+  Uint8List get signingPublicKey {
+    // Use 4096 buffer to be safe
+    const bufferSize = 4096;
+    final pubkeyPtr = calloc<Uint8>(bufferSize);
+
+    try {
+      final rc = _bindings.dna_engine_get_signing_public_key(
+        _engine,
+        pubkeyPtr,
+        bufferSize,
+      );
+
+      if (rc < 0) {
+        throw DnaEngineException.fromCode(rc, _bindings);
+      }
+
+      // rc is the number of bytes written
+      if (rc == 0 || rc > bufferSize) {
+        throw DnaEngineException(-1, 'Invalid public key length: $rc');
+      }
+
+      // Fast copy
+      return Uint8List.fromList(pubkeyPtr.asTypedList(rc));
+    } finally {
+      calloc.free(pubkeyPtr);
+    }
+  }
+
+
+  // ---------------------------------------------------------------------------
   // CLEANUP
   // ---------------------------------------------------------------------------
 

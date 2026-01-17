@@ -4,13 +4,17 @@ project(dna C CXX)  # C for core library, C++ for DHT components
 # =============================================================================
 # Build Options
 # =============================================================================
-option(BUILD_SHARED_LIB "Build dna_lib as shared library (for Flutter)" OFF)
+# Default to SHARED on Linux desktop (needed for Flutter Linux native library loading)
+if(UNIX AND NOT APPLE AND NOT ANDROID)
+    option(BUILD_SHARED_LIB "Build dna_lib as shared library (for Flutter)" ON)
+else()
+    option(BUILD_SHARED_LIB "Build dna_lib as shared library (for Flutter)" OFF)
+endif()
+
 option(BUILD_DNA_SEND "Build dna-send CLI tool" OFF)
 
-# Enable Position Independent Code for shared library builds
-if(BUILD_SHARED_LIB)
-    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-endif()
+# Shared libs need PIC; harmless to enable globally and avoids PIC linker surprises
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # =============================================================================
 # Compiler Warnings
@@ -85,12 +89,20 @@ include(${CMAKE_SOURCE_DIR}/cmake/Secp256k1.cmake)
 # =============================================================================
 # DHT and P2P Transport Layer
 # =============================================================================
-# Force OpenDHT-PQ to build as static library (not shared)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static OpenDHT-PQ library" FORCE)
+# Force OpenDHT-PQ to build as static library (not shared) WITHOUT poisoning the whole build
+set(_SAVED_BUILD_SHARED_LIBS "${BUILD_SHARED_LIBS}")
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries (OpenDHT-PQ only)" FORCE)
+
 set(BUILD_TESTING OFF CACHE BOOL "Disable OpenDHT-PQ tests (not updated for Dilithium5)" FORCE)
 set(OPENDHT_TOOLS ON CACHE BOOL "Enable OpenDHT-PQ tools for dna-nodus" FORCE)
 set(SKIP_INSTALL_ALL ON CACHE BOOL "Skip install for vendored opendht-pq" FORCE)
+
 add_subdirectory(vendor/opendht-pq)  # OpenDHT-PQ with Dilithium5 support
+
+# Restore whatever the parent project wanted
+set(BUILD_SHARED_LIBS "${_SAVED_BUILD_SHARED_LIBS}" CACHE BOOL "Build shared libraries" FORCE)
+unset(_SAVED_BUILD_SHARED_LIBS)
+
 add_subdirectory(dht)               # DHT integration (uses vendor/opendht-pq)
 add_subdirectory(transport)         # Transport layer (DHT-only messaging)
 
@@ -149,75 +161,132 @@ set(COMMON_SOURCES
 # =============================================================================
 # DNA Messenger Library (libdna)
 # =============================================================================
-if(BUILD_SHARED_LIB)
-    set(DNA_LIB_TYPE SHARED)
-else()
-    set(DNA_LIB_TYPE STATIC)
-endif()
 
 # Windows DLL export macro
 if(BUILD_SHARED_LIB AND WIN32)
     add_compile_definitions(DNA_LIB_EXPORTS)
 endif()
 
-add_library(dna_lib ${DNA_LIB_TYPE}
-    dna_api.c
-    # Unified Engine API (Core/GUI separation)
-    src/api/dna_engine.c
-    # Modular messenger components
-    messenger/identity.c
-    messenger/init.c
-    messenger/status.c
-    messenger/keys.c
-    messenger/contacts.c
-    messenger/keygen.c
-    messenger/messages.c
-    messenger/gek.c             # Group Encryption Key (GEK system)
-    messenger/groups.c          # Group management (GEK system)
-    messenger/group_database.c  # Group database (separate from messages.db)
-    # Messenger facade (delegates to messenger/ modules)
-    messenger.c
-    messenger_transport.c       # Transport integration layer
-    # Local message backup (SQLite)
-    message_backup.c
-    database/presence_cache.c   # Fast presence cache (O(1) lookup)
-    messenger_groups.c          # DHT-based group messaging
-    database/keyserver_cache.c  # SQLite keyserver cache
-    database/contacts_db.c      # Local contacts database
-    database/addressbook_db.c   # Wallet address book database
-    database/profile_cache.c    # Profile cache database (7-day TTL)
-    database/profile_manager.c  # Smart profile fetching (cache + DHT)
-    database/cache_manager.c    # Unified cache lifecycle manager
-    database/group_invitations.c # Group invitation tracking database
-    blockchain/cellframe/cellframe_wallet.c        # Cellframe wallet integration
-    blockchain/cellframe/cellframe_wallet_create.c # Cellframe wallet creation from seed
-    blockchain/cellframe/cellframe_rpc.c           # Blockchain RPC client
-    blockchain/cellframe/cellframe_addr.c          # Blockchain address utilities
-    blockchain/blockchain_wallet.c                 # Generic multi-chain wallet interface
-    blockchain/blockchain_registry.c               # Modular blockchain registry
-    blockchain/ethereum/eth_chain.c                # Ethereum blockchain_ops implementation
-    blockchain/cellframe/cell_chain.c              # Cellframe blockchain_ops implementation
-    blockchain/ethereum/eth_wallet_create.c        # Ethereum wallet creation (BIP-44)
-    blockchain/ethereum/eth_rpc.c                  # Ethereum JSON-RPC client
-    blockchain/ethereum/eth_rlp.c                  # Ethereum RLP encoding
-    blockchain/ethereum/eth_tx.c                   # Ethereum transaction building/signing
-    blockchain/solana/sol_chain.c                  # Solana blockchain_ops implementation
-    blockchain/solana/sol_wallet.c                 # Solana wallet (SLIP-10 Ed25519)
-    blockchain/solana/sol_rpc.c                    # Solana JSON-RPC client
-    blockchain/solana/sol_tx.c                     # Solana transaction building/signing
-    blockchain/solana/sol_spl.c                    # SPL token support (USDT, USDC)
-    blockchain/ethereum/eth_erc20.c                # ERC-20 token support (USDT, USDC)
-    blockchain/tron/trx_base58.c                   # TRON Base58Check encoding
-    blockchain/tron/trx_wallet_create.c            # TRON wallet creation (BIP-44)
-    blockchain/tron/trx_rpc.c                      # TRON JSON-RPC client (TronGrid)
-    blockchain/tron/trx_chain.c                    # TRON blockchain_ops implementation
-    blockchain/tron/trx_tx.c                       # TRON transaction building/signing
-    blockchain/tron/trx_trc20.c                    # TRC-20 token support (USDT, USDC)
-    crypto/bip32/bip32.c                           # BIP-32 HD key derivation
-    crypto/utils/keccak256.c                       # Keccak-256 (Ethereum hash)
-    crypto/utils/base58.c       # Base58 encoding for addresses
-    ${COMMON_SOURCES}
-)
+# Build dna_lib as either SHARED or STATIC based on BUILD_SHARED_LIB
+if(BUILD_SHARED_LIB)
+    add_library(dna_lib SHARED
+        dna_api.c
+        # Unified Engine API (Core/GUI separation)
+        src/api/dna_engine.c
+        # Modular messenger components
+        messenger/identity.c
+        messenger/init.c
+        messenger/status.c
+        messenger/keys.c
+        messenger/contacts.c
+        messenger/keygen.c
+        messenger/messages.c
+        messenger/gek.c             # Group Encryption Key (GEK system)
+        messenger/groups.c          # Group management (GEK system)
+        messenger/group_database.c  # Group database (separate from messages.db)
+        # Messenger facade (delegates to messenger/ modules)
+        messenger.c
+        messenger_transport.c       # Transport integration layer
+        # Local message backup (SQLite)
+        message_backup.c
+        database/presence_cache.c   # Fast presence cache (O(1) lookup)
+        messenger_groups.c          # DHT-based group messaging
+        database/keyserver_cache.c  # SQLite keyserver cache
+        database/contacts_db.c      # Local contacts database
+        database/addressbook_db.c   # Wallet address book database
+        database/profile_cache.c    # Profile cache database (7-day TTL)
+        database/profile_manager.c  # Smart profile fetching (cache + DHT)
+        database/cache_manager.c    # Unified cache lifecycle manager
+        database/group_invitations.c # Group invitation tracking database
+        blockchain/cellframe/cellframe_wallet.c        # Cellframe wallet integration
+        blockchain/cellframe/cellframe_wallet_create.c # Cellframe wallet creation from seed
+        blockchain/cellframe/cellframe_rpc.c           # Blockchain RPC client
+        blockchain/cellframe/cellframe_addr.c          # Blockchain address utilities
+        blockchain/blockchain_wallet.c                 # Generic multi-chain wallet interface
+        blockchain/blockchain_registry.c               # Modular blockchain registry
+        blockchain/ethereum/eth_chain.c                # Ethereum blockchain_ops implementation
+        blockchain/cellframe/cell_chain.c              # Cellframe blockchain_ops implementation
+        blockchain/ethereum/eth_wallet_create.c        # Ethereum wallet creation (BIP-44)
+        blockchain/ethereum/eth_rpc.c                  # Ethereum JSON-RPC client
+        blockchain/ethereum/eth_rlp.c                  # Ethereum RLP encoding
+        blockchain/ethereum/eth_tx.c                   # Ethereum transaction building/signing
+        blockchain/solana/sol_chain.c                  # Solana blockchain_ops implementation
+        blockchain/solana/sol_wallet.c                 # Solana wallet (SLIP-10 Ed25519)
+        blockchain/solana/sol_rpc.c                    # Solana JSON-RPC client
+        blockchain/solana/sol_tx.c                     # Solana transaction building/signing
+        blockchain/solana/sol_spl.c                    # SPL token support (USDT, USDC)
+        blockchain/ethereum/eth_erc20.c                # ERC-20 token support (USDT, USDC)
+        blockchain/tron/trx_base58.c                   # TRON Base58Check encoding
+        blockchain/tron/trx_wallet_create.c            # TRON wallet creation (BIP-44)
+        blockchain/tron/trx_rpc.c                      # TRON JSON-RPC client (TronGrid)
+        blockchain/tron/trx_chain.c                    # TRON blockchain_ops implementation
+        blockchain/tron/trx_tx.c                       # TRON transaction building/signing
+        blockchain/tron/trx_trc20.c                    # TRC-20 token support (USDT, USDC)
+        crypto/bip32/bip32.c                           # BIP-32 HD key derivation
+        crypto/utils/keccak256.c                       # Keccak-256 (Ethereum hash)
+        crypto/utils/base58.c       # Base58 encoding for addresses
+        ${COMMON_SOURCES}
+    )
+else()
+    add_library(dna_lib STATIC
+        dna_api.c
+        # Unified Engine API (Core/GUI separation)
+        src/api/dna_engine.c
+        # Modular messenger components
+        messenger/identity.c
+        messenger/init.c
+        messenger/status.c
+        messenger/keys.c
+        messenger/contacts.c
+        messenger/keygen.c
+        messenger/messages.c
+        messenger/gek.c             # Group Encryption Key (GEK system)
+        messenger/groups.c          # Group management (GEK system)
+        messenger/group_database.c  # Group database (separate from messages.db)
+        # Messenger facade (delegates to messenger/ modules)
+        messenger.c
+        messenger_transport.c       # Transport integration layer
+        # Local message backup (SQLite)
+        message_backup.c
+        database/presence_cache.c   # Fast presence cache (O(1) lookup)
+        messenger_groups.c          # DHT-based group messaging
+        database/keyserver_cache.c  # SQLite keyserver cache
+        database/contacts_db.c      # Local contacts database
+        database/addressbook_db.c   # Wallet address book database
+        database/profile_cache.c    # Profile cache database (7-day TTL)
+        database/profile_manager.c  # Smart profile fetching (cache + DHT)
+        database/cache_manager.c    # Unified cache lifecycle manager
+        database/group_invitations.c # Group invitation tracking database
+        blockchain/cellframe/cellframe_wallet.c        # Cellframe wallet integration
+        blockchain/cellframe/cellframe_wallet_create.c # Cellframe wallet creation from seed
+        blockchain/cellframe/cellframe_rpc.c           # Blockchain RPC client
+        blockchain/cellframe/cellframe_addr.c          # Blockchain address utilities
+        blockchain/blockchain_wallet.c                 # Generic multi-chain wallet interface
+        blockchain/blockchain_registry.c               # Modular blockchain registry
+        blockchain/ethereum/eth_chain.c                # Ethereum blockchain_ops implementation
+        blockchain/cellframe/cell_chain.c              # Cellframe blockchain_ops implementation
+        blockchain/ethereum/eth_wallet_create.c        # Ethereum wallet creation (BIP-44)
+        blockchain/ethereum/eth_rpc.c                  # Ethereum JSON-RPC client
+        blockchain/ethereum/eth_rlp.c                  # Ethereum RLP encoding
+        blockchain/ethereum/eth_tx.c                   # Ethereum transaction building/signing
+        blockchain/solana/sol_chain.c                  # Solana blockchain_ops implementation
+        blockchain/solana/sol_wallet.c                 # Solana wallet (SLIP-10 Ed25519)
+        blockchain/solana/sol_rpc.c                    # Solana JSON-RPC client
+        blockchain/solana/sol_tx.c                     # Solana transaction building/signing
+        blockchain/solana/sol_spl.c                    # SPL token support (USDT, USDC)
+        blockchain/ethereum/eth_erc20.c                # ERC-20 token support (USDT, USDC)
+        blockchain/tron/trx_base58.c                   # TRON Base58Check encoding
+        blockchain/tron/trx_wallet_create.c            # TRON wallet creation (BIP-44)
+        blockchain/tron/trx_rpc.c                      # TRON JSON-RPC client (TronGrid)
+        blockchain/tron/trx_chain.c                    # TRON blockchain_ops implementation
+        blockchain/tron/trx_tx.c                       # TRON transaction building/signing
+        blockchain/tron/trx_trc20.c                    # TRC-20 token support (USDT, USDC)
+        crypto/bip32/bip32.c                           # BIP-32 HD key derivation
+        crypto/utils/keccak256.c                       # Keccak-256 (Ethereum hash)
+        crypto/utils/base58.c       # Base58 encoding for addresses
+        ${COMMON_SOURCES}
+    )
+endif()
 
 # Core library dependencies
 target_link_libraries(dna_lib
