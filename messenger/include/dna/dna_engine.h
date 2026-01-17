@@ -147,6 +147,28 @@ typedef struct {
 } dna_group_t;
 
 /**
+ * Group member information
+ */
+typedef struct {
+    char fingerprint[129];      /* Member fingerprint */
+    uint64_t added_at;          /* When member was added (Unix timestamp) */
+    bool is_owner;              /* True if this member is the group owner */
+} dna_group_member_t;
+
+/**
+ * Extended group information (includes GEK version)
+ */
+typedef struct {
+    char uuid[37];              /* UUID v4 string */
+    char name[256];             /* Group name */
+    char creator[129];          /* Creator fingerprint */
+    int member_count;           /* Number of members */
+    uint64_t created_at;        /* Unix timestamp */
+    bool is_owner;              /* True if we are the owner */
+    uint32_t gek_version;       /* Current GEK version */
+} dna_group_info_t;
+
+/**
  * Group invitation
  */
 typedef struct {
@@ -379,6 +401,27 @@ typedef void (*dna_groups_cb)(
     dna_request_id_t request_id,
     int error,
     dna_group_t *groups,
+    int count,
+    void *user_data
+);
+
+/**
+ * Group info callback (extended info with GEK version)
+ */
+typedef void (*dna_group_info_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_group_info_t *info,
+    void *user_data
+);
+
+/**
+ * Group members callback
+ */
+typedef void (*dna_group_members_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_group_member_t *members,
     int count,
     void *user_data
 );
@@ -1685,6 +1728,38 @@ DNA_API dna_request_id_t dna_engine_get_groups(
 );
 
 /**
+ * Get extended group info (includes GEK version)
+ *
+ * @param engine     Engine instance
+ * @param group_uuid Group UUID
+ * @param callback   Called with group info
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_get_group_info(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_group_info_cb callback,
+    void *user_data
+);
+
+/**
+ * Get group members
+ *
+ * @param engine     Engine instance
+ * @param group_uuid Group UUID
+ * @param callback   Called with members array
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_get_group_members(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_group_members_cb callback,
+    void *user_data
+);
+
+/**
  * Create new group
  *
  * Creates group with GEK (Group Encryption Key) encryption.
@@ -2507,6 +2582,16 @@ DNA_API void dna_free_messages(dna_message_t *messages, int count);
  * Free groups array returned by callbacks
  */
 DNA_API void dna_free_groups(dna_group_t *groups, int count);
+
+/**
+ * Free group info returned by callbacks
+ */
+DNA_API void dna_free_group_info(dna_group_info_t *info);
+
+/**
+ * Free group members array returned by callbacks
+ */
+DNA_API void dna_free_group_members(dna_group_member_t *members, int count);
 
 /**
  * Free invitations array returned by callbacks

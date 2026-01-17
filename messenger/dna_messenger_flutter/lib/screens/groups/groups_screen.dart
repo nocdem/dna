@@ -699,10 +699,306 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
   }
 
   void _showGroupInfo(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Group UUID: ${widget.group.uuid}'),
+    showDialog(
+      context: context,
+      builder: (context) => _GroupInfoDialog(groupUuid: widget.group.uuid),
+    );
+  }
+}
+
+/// Dialog showing detailed group information
+class _GroupInfoDialog extends ConsumerStatefulWidget {
+  final String groupUuid;
+
+  const _GroupInfoDialog({required this.groupUuid});
+
+  @override
+  ConsumerState<_GroupInfoDialog> createState() => _GroupInfoDialogState();
+}
+
+class _GroupInfoDialogState extends ConsumerState<_GroupInfoDialog> {
+  GroupInfo? _groupInfo;
+  List<GroupMember>? _members;
+  bool _isLoading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadGroupInfo();
+  }
+
+  Future<void> _loadGroupInfo() async {
+    try {
+      final engine = await ref.read(engineProvider.future);
+
+      // Fetch both info and members in parallel
+      final results = await Future.wait([
+        engine.getGroupInfo(widget.groupUuid),
+        engine.getGroupMembers(widget.groupUuid),
+      ]);
+
+      if (mounted) {
+        setState(() {
+          _groupInfo = results[0] as GroupInfo;
+          _members = results[1] as List<GroupMember>;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return AlertDialog(
+      title: Row(
+        children: [
+          FaIcon(
+            FontAwesomeIcons.circleInfo,
+            size: 20,
+            color: theme.colorScheme.primary,
+          ),
+          const SizedBox(width: 12),
+          const Text('Group Info'),
+        ],
       ),
+      content: _isLoading
+          ? const SizedBox(
+              height: 100,
+              child: Center(child: CircularProgressIndicator()),
+            )
+          : _error != null
+              ? _buildError(theme)
+              : _buildContent(theme),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Close'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildError(ThemeData theme) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        FaIcon(
+          FontAwesomeIcons.triangleExclamation,
+          size: 48,
+          color: theme.colorScheme.error,
+        ),
+        const SizedBox(height: 16),
+        Text(
+          'Failed to load group info',
+          style: theme.textTheme.titleMedium,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          _error!,
+          style: theme.textTheme.bodySmall,
+          textAlign: TextAlign.center,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildContent(ThemeData theme) {
+    final info = _groupInfo!;
+    final members = _members ?? [];
+    final contacts = ref.watch(contactsProvider).valueOrNull ?? [];
+
+    // Format creation date
+    final createdStr =
+        '${info.createdAt.year}-${info.createdAt.month.toString().padLeft(2, '0')}-${info.createdAt.day.toString().padLeft(2, '0')}';
+
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Group name
+          _InfoRow(
+            icon: FontAwesomeIcons.users,
+            label: 'Name',
+            value: info.name,
+          ),
+          const Divider(height: 24),
+
+          // UUID
+          _InfoRow(
+            icon: FontAwesomeIcons.fingerprint,
+            label: 'UUID',
+            value: info.uuid,
+            isMonospace: true,
+          ),
+          const Divider(height: 24),
+
+          // GEK Version
+          _InfoRow(
+            icon: FontAwesomeIcons.key,
+            label: 'GEK Version',
+            value: 'v${info.gekVersion}',
+          ),
+          const Divider(height: 24),
+
+          // Member count
+          _InfoRow(
+            icon: FontAwesomeIcons.userGroup,
+            label: 'Members',
+            value: '${info.memberCount}',
+          ),
+          const Divider(height: 24),
+
+          // Created at
+          _InfoRow(
+            icon: FontAwesomeIcons.calendar,
+            label: 'Created',
+            value: createdStr,
+          ),
+          const Divider(height: 24),
+
+          // Role
+          _InfoRow(
+            icon: info.isOwner ? FontAwesomeIcons.crown : FontAwesomeIcons.user,
+            label: 'Your Role',
+            value: info.isOwner ? 'Owner' : 'Member',
+            valueColor: info.isOwner ? DnaColors.textInfo : null,
+          ),
+
+          // Members section
+          if (members.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            Text(
+              'Members',
+              style: theme.textTheme.titleSmall?.copyWith(
+                color: theme.colorScheme.primary,
+              ),
+            ),
+            const SizedBox(height: 8),
+            ...members.map((member) {
+              // Look up contact name
+              final contact = contacts
+                  .where((c) => c.fingerprint == member.fingerprint)
+                  .firstOrNull;
+              final displayName = contact?.displayName.isNotEmpty == true
+                  ? contact!.displayName
+                  : _shortenFingerprint(member.fingerprint);
+
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  children: [
+                    FaIcon(
+                      member.isOwner
+                          ? FontAwesomeIcons.crown
+                          : FontAwesomeIcons.user,
+                      size: 14,
+                      color: member.isOwner
+                          ? DnaColors.textInfo
+                          : theme.colorScheme.onSurface.withAlpha(179),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        displayName,
+                        style: theme.textTheme.bodyMedium,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (member.isOwner)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: DnaColors.textInfo.withAlpha(26),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          'Owner',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: DnaColors.textInfo,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            }),
+          ],
+        ],
+      ),
+    );
+  }
+
+  String _shortenFingerprint(String fingerprint) {
+    if (fingerprint.length <= 16) return fingerprint;
+    return '${fingerprint.substring(0, 8)}...${fingerprint.substring(fingerprint.length - 8)}';
+  }
+}
+
+/// Info row widget for displaying key-value pairs
+class _InfoRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final bool isMonospace;
+  final Color? valueColor;
+
+  const _InfoRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.isMonospace = false,
+    this.valueColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        FaIcon(
+          icon,
+          size: 16,
+          color: theme.colorScheme.primary.withAlpha(179),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withAlpha(153),
+                ),
+              ),
+              const SizedBox(height: 2),
+              SelectableText(
+                value,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontFamily: isMonospace ? 'monospace' : null,
+                  color: valueColor,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

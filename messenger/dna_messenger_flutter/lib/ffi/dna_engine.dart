@@ -142,6 +142,60 @@ class AddressBookEntry {
   }
 }
 
+/// Group member information
+class GroupMember {
+  final String fingerprint;
+  final DateTime addedAt;
+  final bool isOwner;
+
+  GroupMember({
+    required this.fingerprint,
+    required this.addedAt,
+    required this.isOwner,
+  });
+
+  factory GroupMember.fromNative(dna_group_member_t native) {
+    return GroupMember(
+      fingerprint: native.fingerprint.toDartString(129),
+      addedAt: DateTime.fromMillisecondsSinceEpoch(native.added_at * 1000),
+      isOwner: native.is_owner,
+    );
+  }
+}
+
+/// Extended group information (includes GEK version)
+class GroupInfo {
+  final String uuid;
+  final String name;
+  final String creator;
+  final int memberCount;
+  final DateTime createdAt;
+  final bool isOwner;
+  final int gekVersion;
+
+  GroupInfo({
+    required this.uuid,
+    required this.name,
+    required this.creator,
+    required this.memberCount,
+    required this.createdAt,
+    required this.isOwner,
+    required this.gekVersion,
+  });
+
+  factory GroupInfo.fromNative(dna_group_info_t native) {
+    return GroupInfo(
+      uuid: native.uuid.toDartString(37),
+      name: native.name.toDartString(256),
+      creator: native.creator.toDartString(129),
+      memberCount: native.member_count,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(native.created_at * 1000),
+      isOwner: native.is_owner,
+      gekVersion: native.gek_version,
+    );
+  }
+}
+
 /// Contact request information (ICQ-style request)
 class ContactRequest {
   final String fingerprint;
@@ -4895,6 +4949,95 @@ class DnaEngine {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // GROUP INFO OPERATIONS
+  // ---------------------------------------------------------------------------
+
+  /// Get extended group information including GEK version
+  Future<GroupInfo> getGroupInfo(String groupUuid) async {
+    final completer = Completer<GroupInfo>();
+    final localId = _nextLocalId++;
+
+    final uuidPtr = groupUuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<dna_group_info_t> info,
+        Pointer<Void> userData) {
+      calloc.free(uuidPtr);
+
+      if (error == 0 && info != nullptr) {
+        final result = GroupInfo.fromNative(info.ref);
+        _bindings.dna_free_group_info(info);
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaGroupInfoCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_group_info(
+      _engine,
+      uuidPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(uuidPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get list of group members
+  Future<List<GroupMember>> getGroupMembers(String groupUuid) async {
+    final completer = Completer<List<GroupMember>>();
+    final localId = _nextLocalId++;
+
+    final uuidPtr = groupUuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_group_member_t> members, int count, Pointer<Void> userData) {
+      calloc.free(uuidPtr);
+
+      if (error == 0) {
+        final result = <GroupMember>[];
+        for (var i = 0; i < count; i++) {
+          result.add(GroupMember.fromNative((members + i).ref));
+        }
+        if (count > 0) {
+          _bindings.dna_free_group_members(members, count);
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaGroupMembersCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_group_members(
+      _engine,
+      uuidPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(uuidPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
 
   // ---------------------------------------------------------------------------
   // CLEANUP

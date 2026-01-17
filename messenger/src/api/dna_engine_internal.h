@@ -77,6 +77,8 @@ typedef enum {
 
     /* Groups */
     TASK_GET_GROUPS,
+    TASK_GET_GROUP_INFO,
+    TASK_GET_GROUP_MEMBERS,
     TASK_CREATE_GROUP,
     TASK_SEND_GROUP_MESSAGE,
     TASK_GET_GROUP_CONVERSATION,
@@ -224,6 +226,16 @@ typedef union {
         int member_count;
     } create_group;
 
+    /* Get group info */
+    struct {
+        char group_uuid[37];
+    } get_group_info;
+
+    /* Get group members */
+    struct {
+        char group_uuid[37];
+    } get_group_members;
+
     /* Send group message */
     struct {
         char group_uuid[37];
@@ -350,6 +362,8 @@ typedef union {
     dna_messages_cb messages;
     dna_messages_page_cb messages_page;
     dna_groups_cb groups;
+    dna_group_info_cb group_info;
+    dna_group_members_cb group_members;
     dna_group_created_cb group_created;
     dna_invitations_cb invitations;
     dna_wallets_cb wallets;
@@ -671,6 +685,8 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task);
 
 /* Groups */
 void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_group_info(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_group_members(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_create_group(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_send_group_message(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_group_conversation(dna_engine_t *engine, dna_task_t *task);

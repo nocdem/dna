@@ -92,6 +92,10 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_get_invitations(...)` | Get pending group invitations |
 | `dna_request_id_t dna_engine_accept_invitation(...)` | Accept group invitation |
 | `dna_request_id_t dna_engine_reject_invitation(...)` | Reject group invitation |
+| `dna_request_id_t dna_engine_get_group_info(...)` | Get extended group info (name, GEK version, etc.) |
+| `dna_request_id_t dna_engine_get_group_members(...)` | Get list of group members |
+| `void dna_free_group_info(dna_group_info_t*)` | Free group info struct |
+| `void dna_free_group_members(dna_group_member_t*, int)` | Free group members array |
 
 ## 1.7 Wallet (Cellframe + Multi-Chain)
 
