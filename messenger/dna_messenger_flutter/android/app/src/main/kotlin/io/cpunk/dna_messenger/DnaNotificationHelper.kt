@@ -126,6 +126,49 @@ class DnaNotificationHelper(private val context: Context) {
         android.util.Log.i(TAG, "Notification shown for $senderName")
     }
 
+    /**
+     * Called from native code (JNI) when a contact request is received.
+     * This method is called from a native thread, not the main thread.
+     */
+    fun onContactRequestReceived(userFingerprint: String, displayName: String?) {
+        android.util.Log.i(TAG, "onContactRequestReceived: fp=${userFingerprint.take(16)}... name=$displayName")
+
+        if (!areNotificationsEnabled()) {
+            android.util.Log.i(TAG, "Notifications disabled by user, skipping")
+            return
+        }
+
+        val senderName = displayName ?: "${userFingerprint.take(8)}..."
+        showContactRequestNotification(senderName, userFingerprint)
+    }
+
+    private fun showContactRequestNotification(senderName: String, userFingerprint: String) {
+        val pendingIntent = PendingIntent.getActivity(
+            context, 0,
+            context.packageManager.getLaunchIntentForPackage(context.packageName),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification = NotificationCompat.Builder(context, MESSAGE_CHANNEL_ID)
+            .setContentTitle("Contact Request")
+            .setContentText("$senderName wants to add you as a contact")
+            .setSmallIcon(android.R.drawable.ic_menu_add)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_SOCIAL)
+            .setVibrate(longArrayOf(0, 250, 250, 250))
+            .setLocalOnly(false)
+            .build()
+
+        val notificationManager = context.getSystemService(NotificationManager::class.java)
+        // Use different base ID for contact requests
+        val notificationId = MESSAGE_NOTIFICATION_ID + 10000 + userFingerprint.hashCode()
+        notificationManager.notify(notificationId, notification)
+
+        android.util.Log.i(TAG, "Contact request notification shown for $senderName")
+    }
+
     fun unregister() {
         try {
             nativeSetNotificationHelper(null)

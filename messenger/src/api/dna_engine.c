@@ -178,6 +178,11 @@ static void *g_android_notification_data = NULL;
 static dna_android_group_message_cb g_android_group_message_cb = NULL;
 static void *g_android_group_message_data = NULL;
 
+/* Android contact request notification callback.
+ * Called when new contact requests arrive via DHT listen. */
+static dna_android_contact_request_cb g_android_contact_request_cb = NULL;
+static void *g_android_contact_request_data = NULL;
+
 /* Global engine accessors (for messenger layer event dispatch) */
 void dna_engine_set_global(dna_engine_t *engine) {
     g_dht_callback_engine = engine;
@@ -837,6 +842,20 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
             g_android_notification_cb(fp, display_name, g_android_notification_data);
         }
     }
+
+#ifdef __ANDROID__
+    /* Android: Contact request notification - show notification when request arrives */
+    if (event->type == DNA_EVENT_CONTACT_REQUEST_RECEIVED && g_android_contact_request_cb) {
+        const char *user_fingerprint = event->data.contact_request_received.request.fingerprint;
+        const char *user_display_name = event->data.contact_request_received.request.display_name;
+
+        QGP_LOG_INFO(LOG_TAG, "[ANDROID-CONTACT-REQ] Contact request from %.16s... name=%s",
+                     user_fingerprint, user_display_name[0] ? user_display_name : "(unknown)");
+        g_android_contact_request_cb(user_fingerprint,
+                                     user_display_name[0] ? user_display_name : NULL,
+                                     g_android_contact_request_data);
+    }
+#endif
 }
 
 void dna_free_event(dna_event_t *event) {
@@ -1193,6 +1212,16 @@ void dna_engine_set_android_group_message_callback(
     g_android_group_message_cb = callback;
     g_android_group_message_data = user_data;
     QGP_LOG_INFO(LOG_TAG, "Android group message callback %s",
+                 callback ? "registered" : "cleared");
+}
+
+void dna_engine_set_android_contact_request_callback(
+    dna_android_contact_request_cb callback,
+    void *user_data
+) {
+    g_android_contact_request_cb = callback;
+    g_android_contact_request_data = user_data;
+    QGP_LOG_INFO(LOG_TAG, "Android contact request callback %s",
                  callback ? "registered" : "cleared");
 }
 

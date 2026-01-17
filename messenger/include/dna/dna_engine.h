@@ -736,6 +736,37 @@ DNA_API void dna_engine_set_android_group_message_callback(
 );
 
 /**
+ * Contact request notification callback
+ *
+ * Called when a new contact request is received via DHT listener.
+ * This allows Android to show native notifications for incoming
+ * contact requests even when Flutter is backgrounded.
+ *
+ * @param user_fingerprint   Fingerprint of the user sending the request
+ * @param user_display_name  Display name of the requester (may be NULL)
+ * @param user_data          User data passed when setting callback
+ */
+typedef void (*dna_android_contact_request_cb)(
+    const char *user_fingerprint,
+    const char *user_display_name,
+    void *user_data
+);
+
+/**
+ * Set Android notification callback for contact requests
+ *
+ * This callback is called when DNA_EVENT_CONTACT_REQUEST_RECEIVED fires,
+ * allowing Android to show native notifications even when Flutter is detached.
+ *
+ * @param callback  Notification callback function (NULL to disable)
+ * @param user_data User data passed to callback
+ */
+DNA_API void dna_engine_set_android_contact_request_callback(
+    dna_android_contact_request_cb callback,
+    void *user_data
+);
+
+/**
  * Destroy engine and release all resources
  *
  * Stops all worker threads, closes network connections,
