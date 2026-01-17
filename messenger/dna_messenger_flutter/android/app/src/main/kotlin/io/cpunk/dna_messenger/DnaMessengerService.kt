@@ -32,6 +32,19 @@ class DnaMessengerService : Service() {
     companion object {
         private const val TAG = "DnaMessengerService"
         private const val NOTIFICATION_ID = 1001
+
+        // Ensure native library is loaded before any JNI calls
+        private var libraryLoaded = false
+
+        init {
+            try {
+                System.loadLibrary("dna_lib")
+                libraryLoaded = true
+                android.util.Log.i(TAG, "Native library loaded in service companion")
+            } catch (e: UnsatisfiedLinkError) {
+                android.util.Log.e(TAG, "Failed to load native library: ${e.message}")
+            }
+        }
         private const val CHANNEL_ID = "dna_messenger_service"
         private const val NETWORK_CHANGE_DEBOUNCE_MS = 2000L  // 2 seconds debounce
         private const val WAKELOCK_TIMEOUT_MS = 30 * 60 * 1000L  // 30 minutes
@@ -194,6 +207,11 @@ class DnaMessengerService : Service() {
      * we need to reload identity in BACKGROUND mode for notifications.
      */
     private fun ensureIdentityLoaded() {
+        if (!libraryLoaded) {
+            android.util.Log.e(TAG, "Native library not loaded - cannot ensure identity")
+            return
+        }
+
         try {
             // Check if identity already loaded (Flutter might have done it)
             if (nativeIsIdentityLoaded()) {
@@ -384,6 +402,8 @@ class DnaMessengerService : Service() {
     }
 
     private fun performHealthCheck() {
+        if (!libraryLoaded) return
+
         try {
             val isHealthy = nativeIsDhtHealthy()
             android.util.Log.d(TAG, "DHT health check: healthy=$isHealthy")
@@ -539,6 +559,11 @@ class DnaMessengerService : Service() {
      * Perform actual DHT reinitialization
      */
     private fun performDhtReinit() {
+        if (!libraryLoaded) {
+            android.util.Log.e(TAG, "Native library not loaded - cannot reinit DHT")
+            return
+        }
+
         android.util.Log.i(TAG, "Network validated - reinitializing DHT")
 
         // Reinit DHT directly via JNI (works even when Flutter isn't running)
@@ -581,7 +606,7 @@ class DnaMessengerService : Service() {
             if (!isRunning) return@postDelayed
 
             val isHealthy = try {
-                nativeIsDhtHealthy()
+                if (libraryLoaded) nativeIsDhtHealthy() else false
             } catch (e: Exception) {
                 android.util.Log.e(TAG, "Listener verification error: ${e.message}")
                 false
