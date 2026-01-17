@@ -33,4 +33,7 @@ class DesktopPlatformHandler implements PlatformHandler {
 
   @override
   bool get supportsNativeNotifications => false; // TODO: libnotify, Win32 Toast
+
+  @override
+  bool get supportsQrScanner => false;
 }
