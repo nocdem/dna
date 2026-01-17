@@ -20,7 +20,6 @@ import '../profile/profile_editor_screen.dart';
 import 'app_lock_settings_screen.dart';
 import 'blocked_users_screen.dart';
 import 'contacts_management_screen.dart';
-import 'debug_log_screen.dart';
 
 /// Provider for app package info (version from pubspec.yaml)
 final packageInfoProvider = FutureProvider<PackageInfo>((ref) async {
@@ -844,37 +843,6 @@ class _LogSettingsSection extends ConsumerStatefulWidget {
 }
 
 class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
-  bool _debugLogEnabled = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadCurrentSettings();
-  }
-
-  Future<void> _loadCurrentSettings() async {
-    final engineAsync = ref.read(engineProvider);
-    engineAsync.whenData((engine) {
-      if (mounted) {
-        setState(() {
-          _debugLogEnabled = engine.debugLogIsEnabled();
-        });
-      }
-    });
-  }
-
-  void _toggleDebugLog(bool enabled) {
-    final engineAsync = ref.read(engineProvider);
-    engineAsync.whenData((engine) {
-      engine.debugLogEnable(enabled);
-      if (mounted) {
-        setState(() {
-          _debugLogEnabled = enabled;
-        });
-      }
-    });
-  }
-
   /// Get the logs directory path
   String _getLogsDir() {
     if (Platform.isLinux || Platform.isMacOS) {
@@ -1029,41 +997,10 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader('Logs'),
-        // Debug Log Toggle
-        SwitchListTile(
-          secondary: Icon(
-            FontAwesomeIcons.fileLines,
-            color: _debugLogEnabled ? theme.colorScheme.primary : null,
-          ),
-          title: const Text('Debug Log Capture'),
-          subtitle: Text(_debugLogEnabled ? 'Capturing logs to buffer' : 'Disabled'),
-          value: _debugLogEnabled,
-          onChanged: _toggleDebugLog,
-        ),
-        // View Debug Logs
-        ListTile(
-          leading: const FaIcon(FontAwesomeIcons.eye),
-          title: const Text('View Debug Logs'),
-          subtitle: const Text('Open in-app log viewer'),
-          trailing: const FaIcon(FontAwesomeIcons.chevronRight),
-          enabled: _debugLogEnabled,
-          onTap: _debugLogEnabled
-              ? () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => const DebugLogScreen(),
-                    ),
-                  );
-                }
-              : null,
-        ),
         // Open/Share Logs
         ListTile(
           leading: FaIcon(
