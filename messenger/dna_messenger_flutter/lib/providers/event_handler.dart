@@ -58,7 +58,7 @@ bool shouldFetchOfflineMessages(dynamic ref, String contactFingerprint) {
 /// Record that we fetched offline messages for a contact
 void recordOfflineFetch(dynamic ref, String contactFingerprint) {
   final notifier = ref.read(_lastOfflineFetchProvider.notifier);
-  notifier.state = {
+  notifier.state = <String, DateTime>{
     ...notifier.state,
     contactFingerprint: DateTime.now(),
   };
