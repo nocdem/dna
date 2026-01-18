@@ -511,6 +511,15 @@ int messenger_send_message(
     // 3. DELIVERED (3) - watermark received from recipient, double tick
     size_t dht_success = 0;
     for (size_t i = 0; i < recipient_count; i++) {
+        // v0.5.33: Skip DHT queue for duplicates - already queued previously
+        // This prevents massive chunk re-uploads during retry storms
+        if (message_ids[i] == 0) {
+            QGP_LOG_INFO(LOG_TAG, "[SEND] Skipping DHT queue for duplicate to %.20s... (already queued)",
+                         recipients[i]);
+            dht_success++;  // Count as success since original was queued
+            continue;
+        }
+
         // Queue directly to DHT - no P2P attempt for messaging
         // Pass seq_num that was already saved with the message
         if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len, seq_nums[i]) == 0) {
