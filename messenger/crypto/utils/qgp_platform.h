@@ -306,6 +306,23 @@ const char* qgp_platform_ca_bundle_path(void);
 int qgp_platform_sanitize_filename(const char *filename);
 
 /* ============================================================================
+ * System Information
+ * ============================================================================ */
+
+/**
+ * Get the number of available CPU cores
+ *
+ * Returns the number of online processors available for parallel work.
+ *
+ * Linux/Android: Uses sysconf(_SC_NPROCESSORS_ONLN)
+ * Windows: Uses GetSystemInfo() -> dwNumberOfProcessors
+ * macOS/iOS: Uses sysconf(_SC_NPROCESSORS_ONLN)
+ *
+ * @return Number of CPU cores (minimum 1)
+ */
+int qgp_platform_cpu_count(void);
+
+/* ============================================================================
  * Platform Detection Macros
  * ============================================================================ */
 

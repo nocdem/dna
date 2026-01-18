@@ -55,8 +55,10 @@ class WalletsNotifier extends AsyncNotifier<List<Wallet>> {
       rethrow;
     }
 
-    // Refresh balances after send
+    // Refresh balances and transactions after send
     ref.invalidate(balancesProvider(walletIndex));
+    ref.invalidate(allBalancesProvider);
+    ref.invalidate(transactionsProvider((walletIndex: walletIndex, network: network)));
 
     return txHash;
   }

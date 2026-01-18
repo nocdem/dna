@@ -30,6 +30,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_load_identity(...)` | Load and activate identity, bootstrap DHT |
 | `dna_request_id_t dna_engine_load_identity_minimal(...)` | Load identity with minimal init - DHT + listeners only (v0.5.24+) |
 | `bool dna_engine_is_identity_loaded(...)` | Check if identity is currently loaded (v0.5.24+) |
+| `bool dna_engine_is_transport_ready(...)` | Check if transport layer is initialized (v0.5.26+) |
 | `dna_request_id_t dna_engine_register_name(...)` | Register human-readable name in DHT |
 | `dna_request_id_t dna_engine_get_display_name(...)` | Lookup display name for fingerprint |
 | `dna_request_id_t dna_engine_get_avatar(...)` | Get avatar for fingerprint |

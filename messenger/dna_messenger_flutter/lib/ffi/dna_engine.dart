@@ -1604,11 +1604,18 @@ class DnaEngine {
   /// the fingerprint will be computed from the flat key file.
   ///
   /// Single-owner model (v0.5.24+): Flutter owns the engine when app is open.
-  /// If identity is already loaded, this is a no-op.
+  /// If identity is already loaded with transport ready, this is a no-op.
+  /// If identity is loaded but transport not ready (minimal mode), will upgrade to full mode.
   Future<void> loadIdentity({String? fingerprint, String? password}) async {
-    // Single-owner model: If identity already loaded, nothing to do
+    // Check if identity already loaded
     if (isIdentityLoaded()) {
-      return;
+      // If transport is ready, nothing to do
+      if (isTransportReady()) {
+        return;
+      }
+      // Transport not ready (loaded in minimal mode by service)
+      // Proceed with full load to initialize transport
+      debugLog('IDENTITY', 'Identity loaded but transport not ready - upgrading to full mode');
     }
 
     final completer = Completer<void>();
@@ -1656,6 +1663,14 @@ class DnaEngine {
   /// Returns true if identity is loaded, false otherwise.
   bool isIdentityLoaded() {
     return _bindings.dna_engine_is_identity_loaded(_engine);
+  }
+
+  /// Check if transport layer is ready
+  ///
+  /// Returns false if identity was loaded in minimal mode (DHT only).
+  /// When false, offline message fetching won't work.
+  bool isTransportReady() {
+    return _bindings.dna_engine_is_transport_ready(_engine);
   }
 
   /// Get the encrypted mnemonic (recovery phrase) for the current identity

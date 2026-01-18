@@ -559,11 +559,38 @@ void* dna_worker_thread(void *arg) {
     return NULL;
 }
 
+/**
+ * Get optimal worker thread count based on CPU cores.
+ * Returns: cores + 4 (for I/O bound work), clamped to min/max bounds.
+ */
+static int dna_get_optimal_worker_count(void) {
+    int cores = qgp_platform_cpu_count();
+
+    /* For I/O bound work (network, disk), more threads than cores is beneficial */
+    int workers = cores + 4;
+
+    /* Clamp to bounds */
+    if (workers < DNA_WORKER_THREAD_MIN) workers = DNA_WORKER_THREAD_MIN;
+    if (workers > DNA_WORKER_THREAD_MAX) workers = DNA_WORKER_THREAD_MAX;
+
+    return workers;
+}
+
 int dna_start_workers(dna_engine_t *engine) {
     if (!engine) return -1;
     atomic_store(&engine->shutdown_requested, false);
 
-    for (int i = 0; i < DNA_WORKER_THREAD_COUNT; i++) {
+    /* Calculate optimal thread count based on CPU cores */
+    engine->worker_count = dna_get_optimal_worker_count();
+    engine->worker_threads = calloc(engine->worker_count, sizeof(pthread_t));
+    if (!engine->worker_threads) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate worker threads array");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Starting %d worker threads (based on CPU cores)", engine->worker_count);
+
+    for (int i = 0; i < engine->worker_count; i++) {
         int rc = pthread_create(&engine->worker_threads[i], NULL, dna_worker_thread, engine);
         if (rc != 0) {
             /* Stop already-started threads */
@@ -572,6 +599,9 @@ int dna_start_workers(dna_engine_t *engine) {
             for (int j = 0; j < i; j++) {
                 pthread_join(engine->worker_threads[j], NULL);
             }
+            free(engine->worker_threads);
+            engine->worker_threads = NULL;
+            engine->worker_count = 0;
             return -1;
         }
     }
@@ -579,16 +609,20 @@ int dna_start_workers(dna_engine_t *engine) {
 }
 
 void dna_stop_workers(dna_engine_t *engine) {
-    if (!engine) return;
+    if (!engine || !engine->worker_threads) return;
     atomic_store(&engine->shutdown_requested, true);
 
     pthread_mutex_lock(&engine->task_mutex);
     pthread_cond_broadcast(&engine->task_cond);
     pthread_mutex_unlock(&engine->task_mutex);
 
-    for (int i = 0; i < DNA_WORKER_THREAD_COUNT; i++) {
+    for (int i = 0; i < engine->worker_count; i++) {
         pthread_join(engine->worker_threads[i], NULL);
     }
+
+    free(engine->worker_threads);
+    engine->worker_threads = NULL;
+    engine->worker_count = 0;
 }
 
 /* ============================================================================
@@ -5044,6 +5078,10 @@ bool dna_engine_is_identity_loaded(dna_engine_t *engine) {
     return engine && engine->identity_loaded;
 }
 
+bool dna_engine_is_transport_ready(dna_engine_t *engine) {
+    return engine && engine->messenger && engine->messenger->transport_ctx != NULL;
+}
+
 dna_request_id_t dna_engine_load_identity_minimal(
     dna_engine_t *engine,
     const char *fingerprint,
@@ -5854,8 +5892,11 @@ static int retry_single_message(dna_engine_t *engine, backup_message_t *msg) {
 
     if (rc == 0 || rc == 1) {
         /* Success - queued to DHT (rc=0) or duplicate skipped (rc=1)
-         * Status stays PENDING - will become DELIVERED via watermark confirmation. */
-        QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d to %.20s... re-encrypted and queued (status=PENDING)",
+         * Update status to SENT (1) using original message ID.
+         * For duplicates, messenger_send_message() can't update status (message_id=0)
+         * so we must do it here to prevent infinite retry loops. */
+        message_backup_update_status(backup_ctx, msg->id, 1);
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d to %.20s... re-encrypted and queued, status=SENT",
                      msg->id, msg->recipient);
         return 0;
     } else if (rc == -3) {
@@ -7435,6 +7476,16 @@ size_t dna_engine_start_watermark_listener(
         if (updated > 0) {
             QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Pre-fetch: marked %d messages as DELIVERED (seq<=%lu)",
                          updated, (unsigned long)current_watermark);
+
+            /* Dispatch event to Flutter so UI updates (double checkmark) */
+            dna_event_t event = {0};
+            event.type = DNA_EVENT_MESSAGE_DELIVERED;
+            strncpy(event.data.message_delivered.recipient, fp_copy,
+                    sizeof(event.data.message_delivered.recipient) - 1);
+            event.data.message_delivered.seq_num = current_watermark;
+            event.data.message_delivered.timestamp = (uint64_t)time(NULL);
+            dna_dispatch_event(engine, &event);
+            QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Pre-fetch: dispatched MESSAGE_DELIVERED event");
         }
     }
 

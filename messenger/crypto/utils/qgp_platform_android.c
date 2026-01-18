@@ -495,3 +495,15 @@ int qgp_platform_sanitize_filename(const char *filename) {
 
     return 1;  /* Filename is safe */
 }
+
+/* ============================================================================
+ * System Information
+ * ============================================================================ */
+
+int qgp_platform_cpu_count(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    if (n < 1) {
+        return 1;  /* Fallback to 1 if detection fails */
+    }
+    return (int)n;
+}
