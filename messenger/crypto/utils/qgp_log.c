@@ -25,6 +25,7 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dirent.h>
 #endif
 
 /* Maximum number of tags in filter list */
@@ -440,68 +441,121 @@ static long get_file_size(FILE *f) {
     return size;
 }
 
-/* Build log directory and file paths */
+/* Build log directory and file paths with timestamp */
 static void build_log_paths(void) {
     const char *data_dir = qgp_platform_app_data_dir();
     if (!data_dir) {
         return;
     }
 
+    /* Get current timestamp for filename */
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char timestamp[32];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H-%M-%S", tm_info);
+
     /* Build logs directory path */
 #ifdef _WIN32
     snprintf(g_log_dir_path, sizeof(g_log_dir_path), "%s\\logs", data_dir);
-    snprintf(g_log_file_path, sizeof(g_log_file_path), "%s\\dna.log", g_log_dir_path);
+    snprintf(g_log_file_path, sizeof(g_log_file_path), "%s\\dna_%s.log", g_log_dir_path, timestamp);
 #else
     snprintf(g_log_dir_path, sizeof(g_log_dir_path), "%s/logs", data_dir);
-    snprintf(g_log_file_path, sizeof(g_log_file_path), "%s/dna.log", g_log_dir_path);
+    snprintf(g_log_file_path, sizeof(g_log_file_path), "%s/dna_%s.log", g_log_dir_path, timestamp);
 #endif
 }
 
-/* Rotate log files: dna.log -> dna.1.log -> dna.2.log -> ... -> delete oldest */
-static void rotate_log_files(void) {
-    if (g_log_file_path[0] == '\0') {
+/* Clean up log files older than max_age_days */
+#define QGP_LOG_MAX_AGE_DAYS 7
+
+static void cleanup_old_logs(void) {
+    if (g_log_dir_path[0] == '\0') {
         return;
     }
 
-    char old_path[QGP_LOG_FILE_PATH_MAX];
-    char new_path[QGP_LOG_FILE_PATH_MAX];
+    time_t now = time(NULL);
+    time_t max_age = (time_t)QGP_LOG_MAX_AGE_DAYS * 24 * 60 * 60;
 
-    /* Close current file before rotation */
+#ifdef _WIN32
+    /* Windows: Use FindFirstFile/FindNextFile */
+    char search_path[QGP_LOG_FILE_PATH_MAX];
+    snprintf(search_path, sizeof(search_path), "%s\\dna_*.log", g_log_dir_path);
+
+    WIN32_FIND_DATAA find_data;
+    HANDLE hFind = FindFirstFileA(search_path, &find_data);
+    if (hFind == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    do {
+        char file_path[QGP_LOG_FILE_PATH_MAX];
+        snprintf(file_path, sizeof(file_path), "%s\\%s", g_log_dir_path, find_data.cFileName);
+
+        struct stat st;
+        if (stat(file_path, &st) == 0) {
+            if ((now - st.st_mtime) > max_age) {
+                remove(file_path);
+            }
+        }
+    } while (FindNextFileA(hFind, &find_data));
+
+    FindClose(hFind);
+#else
+    /* POSIX: Use opendir/readdir */
+    DIR *dir = opendir(g_log_dir_path);
+    if (!dir) {
+        return;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        /* Only process dna_*.log files */
+        if (strncmp(entry->d_name, "dna_", 4) != 0) {
+            continue;
+        }
+        size_t len = strlen(entry->d_name);
+        if (len < 5 || strcmp(entry->d_name + len - 4, ".log") != 0) {
+            continue;
+        }
+
+        char file_path[QGP_LOG_FILE_PATH_MAX];
+        snprintf(file_path, sizeof(file_path), "%s/%s", g_log_dir_path, entry->d_name);
+
+        struct stat st;
+        if (stat(file_path, &st) == 0) {
+            if ((now - st.st_mtime) > max_age) {
+                remove(file_path);
+            }
+        }
+    }
+
+    closedir(dir);
+#endif
+}
+
+/* Rotate to new timestamped file when current file gets too big */
+static void rotate_log_files(void) {
     if (g_log_file) {
         fclose(g_log_file);
         g_log_file = NULL;
     }
 
-    /* Delete oldest file if it exists (e.g., dna.3.log when max_files=3) */
-#ifdef _WIN32
-    snprintf(old_path, sizeof(old_path), "%s\\dna.%d.log", g_log_dir_path, g_file_max_files);
-#else
-    snprintf(old_path, sizeof(old_path), "%s/dna.%d.log", g_log_dir_path, g_file_max_files);
-#endif
-    remove(old_path);
+    /* Create new file with fresh timestamp */
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char timestamp[32];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H-%M-%S", tm_info);
 
-    /* Shift existing rotated files: dna.2.log -> dna.3.log, dna.1.log -> dna.2.log, etc. */
-    for (int i = g_file_max_files - 1; i >= 1; i--) {
 #ifdef _WIN32
-        snprintf(old_path, sizeof(old_path), "%s\\dna.%d.log", g_log_dir_path, i);
-        snprintf(new_path, sizeof(new_path), "%s\\dna.%d.log", g_log_dir_path, i + 1);
+    snprintf(g_log_file_path, sizeof(g_log_file_path), "%s\\dna_%s.log", g_log_dir_path, timestamp);
 #else
-        snprintf(old_path, sizeof(old_path), "%s/dna.%d.log", g_log_dir_path, i);
-        snprintf(new_path, sizeof(new_path), "%s/dna.%d.log", g_log_dir_path, i + 1);
+    snprintf(g_log_file_path, sizeof(g_log_file_path), "%s/dna_%s.log", g_log_dir_path, timestamp);
 #endif
-        rename(old_path, new_path);  /* Fails silently if old_path doesn't exist */
-    }
 
-    /* Rotate current log: dna.log -> dna.1.log */
-#ifdef _WIN32
-    snprintf(new_path, sizeof(new_path), "%s\\dna.1.log", g_log_dir_path);
-#else
-    snprintf(new_path, sizeof(new_path), "%s/dna.1.log", g_log_dir_path);
-#endif
-    rename(g_log_file_path, new_path);
-
-    /* Reopen fresh log file */
     g_log_file = fopen(g_log_file_path, "a");
+    if (g_log_file) {
+        fprintf(g_log_file, "\n=== DNA Messenger Log Continued: %s (rotation) ===\n", timestamp);
+        fflush(g_log_file);
+    }
 }
 
 /* Initialize file logging (called on first write) */
@@ -535,7 +589,10 @@ static bool init_file_logging(void) {
         }
     }
 
-    /* Open log file in append mode */
+    /* Clean up old log files (older than 7 days) */
+    cleanup_old_logs();
+
+    /* Open log file (new timestamped file for this session) */
     g_log_file = fopen(g_log_file_path, "a");
     if (!g_log_file) {
         qgp_log_ring_add(QGP_LOG_LEVEL_ERROR, "LOG", "fopen failed: file='%s' errno=%d",
