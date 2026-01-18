@@ -1,6 +1,8 @@
 // App Lifecycle Observer - handles app state changes
 // Phase 14: DHT-only messaging with reliable Android background support
+// v0.6.0+: Destroy engine on pause, recreate on resume (single-owner model)
 
+import 'dart:io';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../platform/platform_handler.dart';
@@ -54,7 +56,7 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     // Mark app as in foreground (for notification logic)
     ref.read(appInForegroundProvider.notifier).state = true;
 
-    // Check if identity is loaded
+    // Check if identity was loaded before going to background
     final fingerprint = ref.read(currentFingerprintProvider);
     if (fingerprint == null || fingerprint.isEmpty) {
       return;
@@ -67,6 +69,12 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Android: Re-attach event callback, fetch offline messages
       // Desktop: No-op (callback stays attached)
       await PlatformHandler.instance.onResume(engine);
+
+      // v0.6.0+: On Android, engine was destroyed on pause, need to reload identity
+      // The engine was recreated by the provider, but identity is not loaded
+      if (Platform.isAndroid && engine.fingerprint == null) {
+        await engine.loadIdentity(fingerprint: fingerprint);
+      }
 
       // Always resume presence heartbeat first (marks us as online)
       // This is safe even if DHT is disconnected - heartbeat will just fail silently
@@ -180,6 +188,14 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Android: Detach Flutter event callback (JNI handles background notifications)
       // Desktop: No-op (callback stays attached)
       PlatformHandler.instance.onPause(engine);
+
+      // v0.6.0+: On Android, destroy engine to release identity lock
+      // Service will acquire the lock and handle DHT operations
+      // Engine will be recreated on resume
+      // NOTE: invalidate() triggers onDispose which calls engine.dispose()
+      if (Platform.isAndroid) {
+        ref.invalidate(engineProvider);
+      }
     } catch (_) {
       // Error during pause - silently continue
     }
