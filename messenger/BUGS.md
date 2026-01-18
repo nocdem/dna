@@ -33,6 +33,8 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 - [ ] **[FLUTTER] P2 - Chat window causes constant image flashing** - Sent/received images in chat flash repeatedly. Chat window implementation needs refactoring to avoid unnecessary rebuilds. Consider using `const` widgets, `RepaintBoundary`, or caching decoded images.
 
+- [ ] **[FLUTTER] P4 - No way to view starred messages** - Users can star messages in chat but there's no search or filter to find starred messages. Should add a "Starred Messages" view accessible from settings or chat menu.
+
 ---
 
 ## Feature Requests

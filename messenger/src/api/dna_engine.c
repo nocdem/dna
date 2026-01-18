@@ -5889,8 +5889,11 @@ static int retry_single_message(dna_engine_t *engine, backup_message_t *msg) {
 
     if (rc == 0 || rc == 1) {
         /* Success - queued to DHT (rc=0) or duplicate skipped (rc=1)
-         * Status stays PENDING - will become DELIVERED via watermark confirmation. */
-        QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d to %.20s... re-encrypted and queued (status=PENDING)",
+         * Update status to SENT (1) using original message ID.
+         * For duplicates, messenger_send_message() can't update status (message_id=0)
+         * so we must do it here to prevent infinite retry loops. */
+        message_backup_update_status(backup_ctx, msg->id, 1);
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d to %.20s... re-encrypted and queued, status=SENT",
                      msg->id, msg->recipient);
         return 0;
     } else if (rc == -3) {
