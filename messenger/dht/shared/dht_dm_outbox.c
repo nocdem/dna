@@ -243,6 +243,19 @@ int dht_dm_queue_message(
         }
     }
 
+    /* Check for duplicate by seq_num - skip if already exists (retry handling) */
+    for (size_t i = 0; i < existing_count; i++) {
+        if (existing_messages[i].seq_num == seq_num) {
+            QGP_LOG_WARN(LOG_TAG, "Message seq=%lu already in bucket, skipping duplicate",
+                         (unsigned long)seq_num);
+            if (existing_messages) {
+                dht_offline_messages_free(existing_messages, existing_count);
+            }
+            pthread_mutex_unlock(&g_dm_cache_mutex);
+            return 0;  /* Success - message already there */
+        }
+    }
+
     /* Create new message */
     dht_offline_message_t new_msg = {0};
     new_msg.seq_num = seq_num;
