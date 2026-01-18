@@ -1,5 +1,6 @@
 // Android Platform Handler - Android-specific behavior
 // Phase 14: DHT-only messaging with ForegroundService
+// v0.5.24+: Single-owner model - Flutter and Service never share engine
 
 import '../../ffi/dna_engine.dart';
 import '../platform_handler.dart';
@@ -9,26 +10,17 @@ import '../platform_handler.dart';
 /// Android differences from Desktop:
 /// - ForegroundService keeps DHT alive when app backgrounded
 /// - JNI notification helper handles background notifications
-/// - Event callback must be detached when backgrounded (JNI takes over)
-/// - Native code fetches messages via background_fetch_thread
+/// - Single-owner model: Flutter owns engine when open, Service owns when closed
 class AndroidPlatformHandler implements PlatformHandler {
   @override
   Future<void> onResume(DnaEngine engine) async {
-    // Re-attach Flutter event callback
-    // Was detached on pause so JNI could handle background notifications
-    engine.attachEventCallback();
-
     // Fetch any messages that arrived while app was backgrounded
-    // Notifications were shown but messages not fetched (to avoid race condition)
     await engine.checkOfflineMessages();
   }
 
   @override
   void onPause(DnaEngine engine) {
-    // Detach Flutter event callback
-    // JNI notification helper handles background notifications directly
-    // via native Android NotificationManager
-    engine.detachEventCallback();
+    // Nothing to do - Flutter keeps engine until app closed
   }
 
   @override

@@ -398,67 +398,71 @@ void _handleNetworkChange() async {
 }
 ```
 
-#### Android Background Mode (v0.5.5+)
+#### Single-Owner Model (v0.5.24+)
 
-**Lightweight initialization for background service when app is closed.**
+**Simplified service/Flutter coordination - only one owns the engine at a time.**
 
-When the app is killed but the ForegroundService keeps running, full engine initialization
-wastes resources. Background mode provides a two-tier initialization:
+Previous versions used complex "background mode" with handoff between Flutter and Service.
+v0.5.24 simplifies this to a "single owner" model where Flutter and Service never share
+the engine simultaneously.
 
-| Mode | Description | Use Case |
-|------|-------------|----------|
-| `DNA_INIT_MODE_FULL` (0) | Complete init (transport, presence, wallet) | App in foreground |
-| `DNA_INIT_MODE_BACKGROUND` (1) | DHT + listeners only | Background service |
+**Architecture:**
+```
+Flutter OWNS engine  OR  Service OWNS engine  (never both)
+         ↓                        ↓
+   destroy + signal         destroy + signal
+         ↓                        ↓
+   Service creates          Flutter creates
+```
 
-**C API (Android-only, wrapped in `#ifdef __ANDROID__`):**
+**Lifecycle Flow:**
+
+1. **App Opens:**
+   - Flutter creates new engine with `dna_engine_create()`
+   - Flutter loads identity (full init, DHT connects)
+   - DHT reconnects in ~2-3 seconds
+
+2. **App Closes:**
+   - Flutter destroys engine with `dna_engine_destroy()`
+   - Service creates new engine with `dna_engine_create()`
+   - Service loads identity (full init, DHT connects)
+   - DHT reconnects in ~2-3 seconds
+
+**Trade-off:** 2-3 second DHT reconnect when switching between Flutter and Service.
+
+**Benefit:** Removed ~370 lines of complex handoff code, eliminated race conditions.
+
+**C API:**
 ```c
-typedef enum {
-    DNA_INIT_MODE_FULL = 0,
-    DNA_INIT_MODE_BACKGROUND = 1
-} dna_init_mode_t;
+// Full initialization (Flutter uses this)
+dna_request_id_t dna_engine_load_identity(engine, fingerprint, password, callback, user_data);
 
-// Load identity with mode
-dna_request_id_t dna_engine_load_identity_with_mode(
-    dna_engine_t *engine,
-    const char *fingerprint,
-    const char *password,
-    dna_init_mode_t mode,
-    dna_completion_cb callback,
-    void *user_data
-);
+// Minimal initialization - DHT + listeners only (Service uses this)
+dna_request_id_t dna_engine_load_identity_minimal(engine, fingerprint, password, callback, user_data);
 
-// Upgrade when app opens
-int dna_engine_upgrade_to_foreground(dna_engine_t *engine);
+// Check if identity is loaded
+bool dna_engine_is_identity_loaded(dna_engine_t *engine);
 ```
 
-**Java SDK:**
-```java
-// Load in background mode
-long requestId = engine.loadIdentityBackground(fingerprint, callback);
+**JNI API:**
+```c
+// Service uses synchronous minimal load (blocking, for simplicity)
+int nativeLoadIdentityMinimalSync(fingerprint);  // Returns 0 on success
 
-// Upgrade when app opens
-int result = engine.upgradeToForeground();
+// Check if identity loaded
+bool nativeIsIdentityLoaded();
 ```
 
-**Flutter FFI:**
-```dart
-// Load in background mode (Android only)
-await engine.loadIdentityBackground(fingerprint: fp);
+**What minimal mode skips:**
+- P2P transport layer
+- Presence heartbeat
+- Contact sync from DHT
+- Pending message retry
+- Wallet creation
 
-// Upgrade when app opens (Android only)
-engine.upgradeToForeground();
-```
-
-**Resource Savings in Background Mode:**
-
-| Component | Background Mode |
-|-----------|-----------------|
-| Transport context | Skipped (~50KB + threads) |
-| Presence heartbeat | Skipped (1 thread) |
-| Offline message fetch | Deferred |
-| Contact DHT sync | Deferred |
-| Wallet creation | Deferred |
-| DHT listeners | **Active** (for notifications) |
+**What minimal mode keeps:**
+- DHT connection
+- DHT listeners (for message notifications)
 
 ---
 

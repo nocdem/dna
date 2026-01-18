@@ -138,9 +138,7 @@ typedef union {
     struct {
         char fingerprint[129];
         char *password;          /* Password for encrypted keys (NULL if unencrypted) */
-#ifdef __ANDROID__
-        dna_init_mode_t mode;    /* Android: background vs foreground init mode */
-#endif
+        bool minimal;            /* true = DHT+listeners only, skip transport/presence/wallet */
     } load_identity;
 
     /* Register name */
@@ -557,13 +555,6 @@ struct dna_engine {
     /* Presence heartbeat (announces our presence every 4 minutes) */
     pthread_t presence_heartbeat_thread;
     atomic_bool presence_active;  /* false when app in background (Android) */
-
-#ifdef __ANDROID__
-    /* Android background mode (v0.5.5+) */
-    dna_init_mode_t init_mode;       /* Current initialization mode */
-    bool transport_initialized;       /* True if messenger_transport_init() called */
-    bool presence_initialized;        /* True if presence heartbeat started */
-#endif
 
     /* Request ID generation */
     atomic_uint_fast64_t next_request_id;

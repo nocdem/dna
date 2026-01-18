@@ -1219,16 +1219,6 @@ class DnaBindings {
     return _dna_engine_is_identity_loaded(engine);
   }
 
-  // Android-only: Get init mode (v0.5.5+)
-  // Returns: 0 = FULL, 1 = BACKGROUND
-  late final _dna_engine_get_init_mode = _lib.lookupFunction<
-      Int32 Function(Pointer<dna_engine_t>),
-      int Function(Pointer<dna_engine_t>)>('dna_engine_get_init_mode');
-
-  int dna_engine_get_init_mode(Pointer<dna_engine_t> engine) {
-    return _dna_engine_get_init_mode(engine);
-  }
-
   late final _dna_engine_set_event_callback = _lib.lookupFunction<
       Void Function(
           Pointer<dna_engine_t>, Pointer<DnaEventCb>, Pointer<Void>),
@@ -1378,34 +1368,6 @@ class DnaBindings {
     Pointer<Void> user_data,
   ) {
     return _dna_engine_load_identity(engine, fingerprint, password, callback, user_data);
-  }
-
-  // Android-only: Load identity with initialization mode (v0.5.5+)
-  // mode: 0 = FULL (foreground), 1 = BACKGROUND (service)
-  late final _dna_engine_load_identity_with_mode = _lib.lookupFunction<
-      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
-          Int32, Pointer<DnaCompletionCb>, Pointer<Void>),
-      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
-          int, Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_load_identity_with_mode');
-
-  int dna_engine_load_identity_with_mode(
-    Pointer<dna_engine_t> engine,
-    Pointer<Utf8> fingerprint,
-    Pointer<Utf8> password,
-    int mode,  // 0 = FULL, 1 = BACKGROUND
-    Pointer<DnaCompletionCb> callback,
-    Pointer<Void> user_data,
-  ) {
-    return _dna_engine_load_identity_with_mode(engine, fingerprint, password, mode, callback, user_data);
-  }
-
-  // Android-only: Upgrade from background to foreground mode (v0.5.5+)
-  late final _dna_engine_upgrade_to_foreground = _lib.lookupFunction<
-      Int32 Function(Pointer<dna_engine_t>),
-      int Function(Pointer<dna_engine_t>)>('dna_engine_upgrade_to_foreground');
-
-  int dna_engine_upgrade_to_foreground(Pointer<dna_engine_t> engine) {
-    return _dna_engine_upgrade_to_foreground(engine);
   }
 
   late final _dna_engine_get_mnemonic = _lib.lookupFunction<
