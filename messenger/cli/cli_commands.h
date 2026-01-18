@@ -390,6 +390,7 @@ int cmd_messages_page(dna_engine_t *engine, const char *identifier, int limit, i
 int cmd_sync_contacts_up(dna_engine_t *engine);
 int cmd_sync_contacts_down(dna_engine_t *engine);
 int cmd_sync_groups(dna_engine_t *engine);
+int cmd_sync_groups_up(dna_engine_t *engine);
 int cmd_refresh_presence(dna_engine_t *engine);
 int cmd_presence(dna_engine_t *engine, const char *identifier);
 

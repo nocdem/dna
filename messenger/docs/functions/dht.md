@@ -314,6 +314,25 @@ Files removed:
 | `bool dht_contactlist_exists(dht_context_t*, const char*)` | Check if contact list exists |
 | `int dht_contactlist_get_timestamp(dht_context_t*, const char*, uint64_t*)` | Get contact list timestamp |
 
+### 11.4a Group List (`dht_grouplist.h`) - v0.5.26+
+
+Per-identity encrypted group membership list storage in DHT.
+
+| Function | Description |
+|----------|-------------|
+| `int dht_grouplist_init(void)` | Initialize group list subsystem |
+| `void dht_grouplist_cleanup(void)` | Cleanup group list subsystem |
+| `int dht_grouplist_publish(dht_context_t*, const char*, const char**, size_t, ...)` | Publish encrypted group list (Kyber1024 + Dilithium5) |
+| `int dht_grouplist_fetch(dht_context_t*, const char*, char***, size_t*, ...)` | Fetch and decrypt group list |
+| `void dht_grouplist_free_groups(char**, size_t)` | Free groups array |
+| `void dht_grouplist_free(dht_grouplist_t*)` | Free group list structure |
+| `bool dht_grouplist_exists(dht_context_t*, const char*)` | Check if group list exists in DHT |
+| `int dht_grouplist_get_timestamp(dht_context_t*, const char*, uint64_t*)` | Get group list timestamp |
+
+**DHT Key:** `SHA3-512(fingerprint + ":grouplist")`
+**Magic:** `GLST` (0x474C5354)
+**Security:** Self-encrypted with Kyber1024, signed with Dilithium5
+
 ### 11.5 DNA Profile (`dna_profile.h`)
 
 | Function | Description |
