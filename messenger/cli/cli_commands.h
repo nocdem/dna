@@ -354,6 +354,124 @@ int cmd_group_publish_gek(dna_engine_t *engine, const char *group_uuid);
 int cmd_bootstrap_registry(dna_engine_t *engine);
 
 /* ============================================================================
+ * PHASE 1: CONTACT BLOCKING & REQUESTS (6 commands)
+ * ============================================================================ */
+
+int cmd_block(dna_engine_t *engine, const char *identifier);
+int cmd_unblock(dna_engine_t *engine, const char *fingerprint);
+int cmd_blocked(dna_engine_t *engine);
+int cmd_is_blocked(dna_engine_t *engine, const char *fingerprint);
+int cmd_deny(dna_engine_t *engine, const char *fingerprint);
+int cmd_request_count(dna_engine_t *engine);
+
+/* ============================================================================
+ * PHASE 2: MESSAGE QUEUE OPERATIONS (5 commands)
+ * ============================================================================ */
+
+int cmd_queue_status(dna_engine_t *engine);
+int cmd_queue_send(dna_engine_t *engine, const char *recipient, const char *message);
+int cmd_set_queue_capacity(dna_engine_t *engine, int capacity);
+int cmd_retry_pending(dna_engine_t *engine);
+int cmd_retry_message(dna_engine_t *engine, int64_t message_id);
+
+/* ============================================================================
+ * PHASE 3: MESSAGE MANAGEMENT (4 commands)
+ * ============================================================================ */
+
+int cmd_delete_message(dna_engine_t *engine, int64_t message_id);
+int cmd_mark_read(dna_engine_t *engine, const char *identifier);
+int cmd_unread(dna_engine_t *engine, const char *identifier);
+int cmd_messages_page(dna_engine_t *engine, const char *identifier, int limit, int offset);
+
+/* ============================================================================
+ * PHASE 4: DHT SYNC OPERATIONS (5 commands)
+ * ============================================================================ */
+
+int cmd_sync_contacts_up(dna_engine_t *engine);
+int cmd_sync_contacts_down(dna_engine_t *engine);
+int cmd_sync_groups(dna_engine_t *engine);
+int cmd_refresh_presence(dna_engine_t *engine);
+int cmd_presence(dna_engine_t *engine, const char *identifier);
+
+/* ============================================================================
+ * PHASE 5: DEBUG LOGGING (7 commands)
+ * ============================================================================ */
+
+int cmd_log_level(dna_engine_t *engine, const char *level);
+int cmd_log_tags(dna_engine_t *engine, const char *tags);
+int cmd_debug_log(dna_engine_t *engine, bool enable);
+int cmd_debug_entries(dna_engine_t *engine, int max_entries);
+int cmd_debug_count(dna_engine_t *engine);
+int cmd_debug_clear(dna_engine_t *engine);
+int cmd_debug_export(dna_engine_t *engine, const char *filepath);
+
+/* ============================================================================
+ * PHASE 6: GROUP EXTENSIONS (4 commands)
+ * ============================================================================ */
+
+int cmd_group_members(dna_engine_t *engine, const char *group_uuid);
+int cmd_invitations(dna_engine_t *engine);
+int cmd_invite_accept(dna_engine_t *engine, const char *group_uuid);
+int cmd_invite_reject(dna_engine_t *engine, const char *group_uuid);
+
+/* ============================================================================
+ * PHASE 7: PRESENCE CONTROL (3 commands)
+ * ============================================================================ */
+
+int cmd_pause_presence(dna_engine_t *engine);
+int cmd_resume_presence(dna_engine_t *engine);
+int cmd_network_changed(dna_engine_t *engine);
+
+/* ============================================================================
+ * PHASE 8: CONTACT & IDENTITY EXTENSIONS (5 commands)
+ * ============================================================================ */
+
+int cmd_set_nickname(dna_engine_t *engine, const char *fingerprint, const char *nickname);
+int cmd_get_avatar(dna_engine_t *engine, const char *fingerprint);
+int cmd_get_mnemonic(dna_engine_t *engine);
+int cmd_refresh_profile(dna_engine_t *engine, const char *fingerprint);
+int cmd_dht_status(dna_engine_t *engine);
+
+/* ============================================================================
+ * PHASE 9: WALLET OPERATIONS (3 commands)
+ * ============================================================================ */
+
+int cmd_send_tokens(dna_engine_t *engine, int wallet_idx, const char *network,
+                    const char *token, const char *to_address, const char *amount);
+int cmd_transactions(dna_engine_t *engine, int wallet_idx);
+int cmd_estimate_gas(dna_engine_t *engine, int network_id);
+
+/* ============================================================================
+ * PHASE 10: FEED/DNA BOARD (11 commands)
+ * ============================================================================ */
+
+int cmd_feed_channels(dna_engine_t *engine);
+int cmd_feed_init(dna_engine_t *engine);
+int cmd_feed_create_channel(dna_engine_t *engine, const char *name, const char *description);
+int cmd_feed_posts(dna_engine_t *engine, const char *channel_id);
+int cmd_feed_post(dna_engine_t *engine, const char *channel_id, const char *content);
+int cmd_feed_vote(dna_engine_t *engine, const char *post_id, bool upvote);
+int cmd_feed_votes(dna_engine_t *engine, const char *post_id);
+int cmd_feed_comments(dna_engine_t *engine, const char *post_id);
+int cmd_feed_comment(dna_engine_t *engine, const char *post_id, const char *content);
+int cmd_feed_comment_vote(dna_engine_t *engine, const char *comment_id, bool upvote);
+int cmd_feed_comment_votes(dna_engine_t *engine, const char *comment_id);
+
+/* ============================================================================
+ * PHASE 11: MESSAGE BACKUP (2 commands)
+ * ============================================================================ */
+
+int cmd_backup_messages(dna_engine_t *engine);
+int cmd_restore_messages(dna_engine_t *engine);
+
+/* ============================================================================
+ * PHASE 12: SIGNING API (2 commands)
+ * ============================================================================ */
+
+int cmd_sign(dna_engine_t *engine, const char *data);
+int cmd_signing_pubkey(dna_engine_t *engine);
+
+/* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */
 
