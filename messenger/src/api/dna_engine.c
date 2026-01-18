@@ -203,6 +203,12 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
 
     QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: starting listener setup...");
 
+    /* v0.6.0+: Check shutdown before each major operation */
+    if (atomic_load(&engine->shutdown_requested)) {
+        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Shutdown requested, aborting listener setup");
+        goto cleanup;
+    }
+
     /* Cancel stale engine-level listener tracking before creating new ones.
      * After network change + DHT reinit, global listeners are suspended but
      * engine-level arrays still show active=true, blocking new listener creation. */
@@ -210,12 +216,18 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
     dna_engine_cancel_all_presence_listeners(engine);
     dna_engine_cancel_contact_request_listener(engine);
 
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+
     int count = dna_engine_listen_all_contacts(engine);
     QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: started %d listeners", count);
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
     /* Subscribe to all groups for real-time notifications */
     int group_count = dna_engine_subscribe_all_groups(engine);
     QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: subscribed to %d groups", group_count);
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
     /* Retry pending/failed messages after DHT reconnect
      * Messages may have failed during the previous session or network outage.
@@ -224,6 +236,8 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
     if (retried > 0) {
         QGP_LOG_INFO(LOG_TAG, "[RETRY] DHT reconnect: retried %d pending messages", retried);
     }
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
     /* Check for missed incoming messages after reconnect.
      * Android: Skip auto-fetch - Flutter handles fetching when app resumes.
@@ -243,17 +257,31 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
     QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: skipping auto-fetch (Android - Flutter handles on resume)");
 #endif
 
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+
     /* Wait for DHT routing table to stabilize after reconnect, then retry again.
-     * The immediate retry above may fail if routing table is still sparse. */
+     * The immediate retry above may fail if routing table is still sparse.
+     * Sleep in 1-second intervals to check shutdown flag. */
     QGP_LOG_INFO(LOG_TAG, "[RETRY] Listener thread: waiting %d seconds for stabilization...",
                  DHT_STABILIZATION_SECONDS);
-    qgp_platform_sleep_ms(DHT_STABILIZATION_SECONDS * 1000);
+    for (int i = 0; i < DHT_STABILIZATION_SECONDS; i++) {
+        if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+        qgp_platform_sleep_ms(1000);
+    }
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
     int retried_post_stable = dna_engine_retry_pending_messages(engine);
     if (retried_post_stable > 0) {
         QGP_LOG_INFO(LOG_TAG, "[RETRY] Reconnect post-stabilization: retried %d messages", retried_post_stable);
     }
 
+cleanup:
+    /* v0.6.0+: Mark thread as not running before exit */
+    pthread_mutex_lock(&engine->background_threads_mutex);
+    engine->setup_listeners_running = false;
+    pthread_mutex_unlock(&engine->background_threads_mutex);
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: exiting");
     return NULL;
 }
 
@@ -274,13 +302,25 @@ static void *dna_engine_stabilization_retry_thread(void *arg) {
         return NULL;
     }
 
+    /* v0.6.0+: Check shutdown before starting */
+    if (atomic_load(&engine->shutdown_requested)) {
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Shutdown requested, aborting stabilization");
+        goto cleanup;
+    }
+
     /* Wait for DHT routing table to stabilize.
      * Early retries fail with nodes_tried=0 because routing table only has
      * bootstrap nodes. After 15 seconds, routing table is populated with
-     * nodes discovered through DHT crawling. */
+     * nodes discovered through DHT crawling.
+     * Sleep in 1-second intervals to check shutdown flag. */
     QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread: waiting %d seconds for routing table...",
                  DHT_STABILIZATION_SECONDS);
-    qgp_platform_sleep_ms(DHT_STABILIZATION_SECONDS * 1000);
+    for (int i = 0; i < DHT_STABILIZATION_SECONDS; i++) {
+        if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+        qgp_platform_sleep_ms(1000);
+    }
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
     QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread: woke up, starting retries...");
 
@@ -295,6 +335,8 @@ static void *dna_engine_stabilization_retry_thread(void *arg) {
         }
     }
 
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+
     /* 2. Sync any pending outboxes (messages that failed to publish earlier) */
     dht_context_t *dht_ctx = dht_singleton_get();
     if (dht_ctx) {
@@ -303,6 +345,8 @@ static void *dna_engine_stabilization_retry_thread(void *arg) {
             QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: synced %d pending outboxes", synced);
         }
     }
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
     /* 3. Retry pending messages from backup database */
     int retried = dna_engine_retry_pending_messages(engine);
@@ -313,6 +357,12 @@ static void *dna_engine_stabilization_retry_thread(void *arg) {
     }
 
     QGP_LOG_WARN(LOG_TAG, "[RETRY] >>> STABILIZATION THREAD COMPLETE <<<");
+
+cleanup:
+    /* v0.6.0+: Mark thread as not running before exit */
+    pthread_mutex_lock(&engine->background_threads_mutex);
+    engine->stabilization_retry_running = false;
+    pthread_mutex_unlock(&engine->background_threads_mutex);
     return NULL;
 }
 
@@ -344,13 +394,25 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
          * dht_listen_ex()'s future.get(), we deadlock (OpenDHT needs this thread). */
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT connected, identity_loaded=%d", engine->identity_loaded);
         if (engine->identity_loaded) {
-            /* Spawn background thread for listener setup to avoid deadlock */
-            pthread_t listener_thread;
-            if (pthread_create(&listener_thread, NULL, dna_engine_setup_listeners_thread, engine) == 0) {
-                pthread_detach(listener_thread);
-                QGP_LOG_INFO(LOG_TAG, "[LISTEN] Spawned background thread for listener setup");
+            /* v0.6.0+: Track thread for clean shutdown (no detach) */
+            pthread_mutex_lock(&engine->background_threads_mutex);
+            if (engine->setup_listeners_running) {
+                /* Previous thread still running - skip (it will handle everything) */
+                pthread_mutex_unlock(&engine->background_threads_mutex);
+                QGP_LOG_INFO(LOG_TAG, "[LISTEN] Listener setup thread already running, skipping");
             } else {
-                QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to spawn listener setup thread");
+                /* Spawn new thread and track it */
+                engine->setup_listeners_running = true;
+                pthread_mutex_unlock(&engine->background_threads_mutex);
+                if (pthread_create(&engine->setup_listeners_thread, NULL,
+                                   dna_engine_setup_listeners_thread, engine) == 0) {
+                    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Spawned background thread for listener setup");
+                } else {
+                    pthread_mutex_lock(&engine->background_threads_mutex);
+                    engine->setup_listeners_running = false;
+                    pthread_mutex_unlock(&engine->background_threads_mutex);
+                    QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to spawn listener setup thread");
+                }
             }
         } else {
             QGP_LOG_WARN(LOG_TAG, "[LISTEN] Skipping listeners (no identity loaded yet)");
@@ -1211,6 +1273,11 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     engine->group_listen_count = 0;
     memset(engine->group_listen_contexts, 0, sizeof(engine->group_listen_contexts));
 
+    /* v0.6.0+: Initialize background thread tracking */
+    pthread_mutex_init(&engine->background_threads_mutex, NULL);
+    engine->setup_listeners_running = false;
+    engine->stabilization_retry_running = false;
+
     /* Initialize task queue */
     dna_task_queue_init(&engine->task_queue);
 
@@ -1531,8 +1598,26 @@ void dna_engine_destroy(dna_engine_t *engine) {
         g_dht_callback_engine = NULL;
     }
 
-    /* Stop worker threads */
+    /* Stop worker threads (also sets shutdown_requested = true) */
     dna_stop_workers(engine);
+
+    /* v0.6.0+: Wait for background threads to exit (they check shutdown_requested) */
+    pthread_mutex_lock(&engine->background_threads_mutex);
+    bool join_setup = engine->setup_listeners_running;
+    bool join_stab = engine->stabilization_retry_running;
+    pthread_mutex_unlock(&engine->background_threads_mutex);
+
+    if (join_setup) {
+        QGP_LOG_INFO(LOG_TAG, "Waiting for setup_listeners thread to exit...");
+        pthread_join(engine->setup_listeners_thread, NULL);
+        QGP_LOG_INFO(LOG_TAG, "setup_listeners thread exited");
+    }
+    if (join_stab) {
+        QGP_LOG_INFO(LOG_TAG, "Waiting for stabilization_retry thread to exit...");
+        pthread_join(engine->stabilization_retry_thread, NULL);
+        QGP_LOG_INFO(LOG_TAG, "stabilization_retry thread exited");
+    }
+    pthread_mutex_destroy(&engine->background_threads_mutex);
 
     /* Stop presence heartbeat thread */
     dna_stop_presence_heartbeat(engine);
@@ -1902,17 +1987,29 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
             /* Spawn post-stabilization retry thread.
              * DHT callback's listener thread only spawns if identity_loaded was true
              * when callback fired. In the common case (DHT connects before identity
-             * loads), we need this dedicated thread to retry after routing table fills. */
+             * loads), we need this dedicated thread to retry after routing table fills.
+             * v0.6.0+: Track thread for clean shutdown (no detach) */
             QGP_LOG_WARN(LOG_TAG, "[RETRY] About to spawn stabilization thread (engine=%p, messenger=%p)",
                          (void*)engine, (void*)engine->messenger);
-            pthread_t stabilization_thread;
-            int spawn_rc = pthread_create(&stabilization_thread, NULL, dna_engine_stabilization_retry_thread, engine);
-            QGP_LOG_WARN(LOG_TAG, "[RETRY] pthread_create returned %d", spawn_rc);
-            if (spawn_rc == 0) {
-                pthread_detach(stabilization_thread);
-                QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread spawned successfully");
+            pthread_mutex_lock(&engine->background_threads_mutex);
+            if (engine->stabilization_retry_running) {
+                /* Previous thread still running - skip */
+                pthread_mutex_unlock(&engine->background_threads_mutex);
+                QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread already running, skipping");
             } else {
-                QGP_LOG_ERROR(LOG_TAG, "[RETRY] FAILED to spawn stabilization thread: rc=%d", spawn_rc);
+                engine->stabilization_retry_running = true;
+                pthread_mutex_unlock(&engine->background_threads_mutex);
+                int spawn_rc = pthread_create(&engine->stabilization_retry_thread, NULL,
+                                              dna_engine_stabilization_retry_thread, engine);
+                QGP_LOG_WARN(LOG_TAG, "[RETRY] pthread_create returned %d", spawn_rc);
+                if (spawn_rc == 0) {
+                    QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread spawned successfully");
+                } else {
+                    pthread_mutex_lock(&engine->background_threads_mutex);
+                    engine->stabilization_retry_running = false;
+                    pthread_mutex_unlock(&engine->background_threads_mutex);
+                    QGP_LOG_ERROR(LOG_TAG, "[RETRY] FAILED to spawn stabilization thread: rc=%d", spawn_rc);
+                }
             }
         }
 

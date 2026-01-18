@@ -567,6 +567,13 @@ struct dna_engine {
     bool presence_heartbeat_started;  /* v0.6.0+: Track if thread was started */
     atomic_bool presence_active;  /* false when app in background (Android) */
 
+    /* Background task threads (v0.6.0+: tracked for clean shutdown) */
+    pthread_t setup_listeners_thread;      /* Listener setup thread handle */
+    pthread_t stabilization_retry_thread;  /* Stabilization retry thread handle */
+    bool setup_listeners_running;          /* True while thread is active */
+    bool stabilization_retry_running;      /* True while thread is active */
+    pthread_mutex_t background_threads_mutex;  /* Protects running flags */
+
     /* Request ID generation */
     atomic_uint_fast64_t next_request_id;
 };

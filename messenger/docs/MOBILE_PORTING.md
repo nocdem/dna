@@ -1,6 +1,6 @@
 # DNA Messenger Mobile Porting Guide
 
-**Last Updated:** 2026-01-17
+**Last Updated:** 2026-01-18
 **Status:** Android SDK Complete (Phases 1-6, 14)
 **Target:** Android first, iOS later
 
@@ -508,6 +508,13 @@ Each engine now owns its own DHT context (no global singleton):
 struct dna_engine {
     dht_context_t *dht_ctx;      // Engine owns this
     int identity_lock_fd;         // File lock (-1 if not held)
+
+    // v0.6.1+: Background thread tracking for clean shutdown
+    pthread_t setup_listeners_thread;
+    pthread_t stabilization_retry_thread;
+    bool setup_listeners_running;
+    bool stabilization_retry_running;
+    pthread_mutex_t background_threads_mutex;
     // ... other fields
 };
 ```
@@ -517,6 +524,18 @@ The singleton pattern is kept for backwards compatibility using "borrowed contex
 - Engine lends to singleton via `dht_singleton_set_borrowed_context(engine->dht_ctx)`
 - Code using `dht_singleton_get()` still works
 - On destroy: clear borrowed context, then free engine's context
+
+#### Background Thread Tracking (v0.6.1+)
+
+Background threads are now tracked and joined on shutdown to prevent use-after-free crashes:
+
+1. **Listener setup thread** - spawned on DHT connect to setup listeners
+2. **Stabilization retry thread** - spawned on identity load, waits 15s then retries messages
+
+Previously these were detached (`pthread_detach`), which caused crashes when the engine was destroyed while threads were still running. Now:
+- Threads check `shutdown_requested` flag after sleeps
+- Engine tracks thread handles and running state
+- `dna_engine_destroy()` joins threads before freeing resources
 
 #### Coordination Summary (v0.6.0+)
 
