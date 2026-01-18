@@ -4983,31 +4983,30 @@ class DnaEngine {
     if (_isDisposed) return;
     _isDisposed = true;
 
-    print('[DART] dispose: starting...');
-
     _eventController.close();
 
-    // IMPORTANT: Clear the C callback pointer BEFORE closing the Dart callback
-    // This prevents the C code from invoking a deleted callback when the app
-    // goes to background but the background service is still running
-    print('[DART] dispose: clearing event callback...');
+    // IMPORTANT: Clear the C callback pointer FIRST
+    // This sets disposing=true in C, which prevents new callbacks from being invoked.
     _bindings.dna_engine_set_event_callback(_engine, nullptr, nullptr);
-    _eventCallback?.close();
 
-    // Clean up pending requests
-    print('[DART] dispose: closing ${_pendingRequests.length} pending requests...');
-    for (final request in _pendingRequests.values) {
-      request.callback.close();
-    }
+    // Save pending request callbacks before clearing - we'll close them AFTER destroy
+    final pendingCallbacks = _pendingRequests.values.map((r) => r.callback).toList();
     _pendingRequests.clear();
 
-    print('[DART] dispose: calling dna_engine_destroy...');
+    // Destroy the engine - this stops all C threads and cleans up DHT
+    // After this returns, no C code can invoke any callbacks
     _bindings.dna_engine_destroy(_engine);
-    print('[DART] dispose: dna_engine_destroy returned');
+
+    // NOW it's safe to close ALL NativeCallables - engine is destroyed,
+    // no more C code can possibly invoke them
+    _eventCallback?.close();
+    _eventCallback = null;
+    for (final callback in pendingCallbacks) {
+      callback.close();
+    }
 
     // Null out the pointer to catch any use-after-free in Dart
     _engine = nullptr;
-    print('[DART] dispose: done');
   }
 }
 
