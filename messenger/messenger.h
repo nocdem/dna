@@ -716,6 +716,17 @@ int messenger_sync_group_gek(const char *group_uuid);
 int messenger_sync_groups(messenger_context_t *ctx);
 
 /**
+ * Sync groups to DHT (local -> DHT)
+ *
+ * Publishes the user's group membership list to DHT.
+ * Group list is self-encrypted with Kyber1024 and signed with Dilithium5.
+ *
+ * @param ctx: Messenger context
+ * @return: 0 on success, -1 on error
+ */
+int messenger_sync_groups_to_dht(messenger_context_t *ctx);
+
+/**
  * Send message to a group (Phase 6.2)
  *
  * Looks up group members from DHT and sends encrypted message to all members

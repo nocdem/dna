@@ -12,6 +12,8 @@
 #include "dht/core/dht_context.h"
 #include "dht/client/dht_singleton.h"  // For dht_singleton_get
 #include "dht/client/dna_group_outbox.h"  // Group outbox (feed pattern)
+#include "dht/client/dht_grouplist.h"  // Group list DHT sync (v0.5.26+)
+#include "messenger/groups.h"  // For groups_export_all
 #include "message_backup.h"  // Phase 5.2
 #include "database/group_invitations.h"  // Group invitation management
 #include "dna_api.h"  // For dna_decrypt_message_raw
@@ -982,6 +984,128 @@ int messenger_sync_groups(messenger_context_t *ctx) {
     }
 
     return 0;
+}
+
+/**
+ * Sync groups to DHT (local -> DHT)
+ *
+ * Publishes the user's group membership list to DHT.
+ * Uses dht_grouplist layer for encryption and storage.
+ */
+int messenger_sync_groups_to_dht(messenger_context_t *ctx) {
+    if (!ctx || !ctx->identity) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid context for group DHT sync\n");
+        return -1;
+    }
+
+    // Get DHT context from singleton
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT singleton not available\n");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[GROUPLIST_PUBLISH] messenger_sync_groups_to_dht called for %.16s...\n", ctx->identity);
+
+    // Load user's keys
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
+        return -1;
+    }
+
+    // Load Kyber keypair (try encrypted if password available, fallback to unencrypted)
+    char kyber_path[1024];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", data_dir);
+
+    qgp_key_t *kyber_key = NULL;
+    if (ctx->session_password) {
+        if (qgp_key_load_encrypted(kyber_path, ctx->session_password, &kyber_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load encrypted Kyber key\n");
+            return -1;
+        }
+    } else {
+        if (qgp_key_load(kyber_path, &kyber_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key\n");
+            return -1;
+        }
+    }
+
+    // Load Dilithium keypair
+    char dilithium_path[1024];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
+
+    qgp_key_t *dilithium_key = NULL;
+    if (ctx->session_password) {
+        if (qgp_key_load_encrypted(dilithium_path, ctx->session_password, &dilithium_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load encrypted Dilithium key\n");
+            qgp_key_free(kyber_key);
+            return -1;
+        }
+    } else {
+        if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key\n");
+            qgp_key_free(kyber_key);
+            return -1;
+        }
+    }
+
+    // Get group list from local database using groups_export_all()
+    groups_export_entry_t *entries = NULL;
+    size_t entry_count = 0;
+
+    int ret = groups_export_all(&entries, &entry_count);
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to export groups from local database\n");
+        qgp_key_free(kyber_key);
+        qgp_key_free(dilithium_key);
+        return -1;
+    }
+
+    // Extract UUIDs into string array
+    const char **group_uuids = NULL;
+    if (entry_count > 0) {
+        group_uuids = malloc(entry_count * sizeof(char*));
+        if (!group_uuids) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to allocate group UUIDs array\n");
+            groups_free_export_entries(entries, entry_count);
+            qgp_key_free(kyber_key);
+            qgp_key_free(dilithium_key);
+            return -1;
+        }
+
+        for (size_t i = 0; i < entry_count; i++) {
+            group_uuids[i] = entries[i].uuid;
+            QGP_LOG_DEBUG(LOG_TAG, "Group[%zu]: %s (%s)\n", i, entries[i].uuid, entries[i].name);
+        }
+    }
+
+    // Publish to DHT
+    int result = dht_grouplist_publish(
+        dht_ctx,
+        ctx->identity,
+        group_uuids,
+        entry_count,
+        kyber_key->public_key,
+        kyber_key->private_key,
+        dilithium_key->public_key,
+        dilithium_key->private_key,
+        0  // Use default 7-day TTL
+    );
+
+    // Cleanup
+    if (group_uuids) free(group_uuids);
+    groups_free_export_entries(entries, entry_count);
+    qgp_key_free(kyber_key);
+    qgp_key_free(dilithium_key);
+
+    if (result == 0) {
+        QGP_LOG_INFO(LOG_TAG, "Successfully synced %zu groups to DHT\n", entry_count);
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sync groups to DHT\n");
+    }
+
+    return result;
 }
 
 // ============================================================================

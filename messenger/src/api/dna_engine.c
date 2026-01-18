@@ -1072,6 +1072,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_SYNC_GROUPS:
             dna_handle_sync_groups(engine, task);
             break;
+        case TASK_SYNC_GROUPS_TO_DHT:
+            dna_handle_sync_groups_to_dht(engine, task);
+            break;
         case TASK_SYNC_GROUP_BY_UUID:
             dna_handle_sync_group_by_uuid(engine, task);
             break;
@@ -6410,6 +6413,19 @@ dna_request_id_t dna_engine_sync_groups(
     return dna_submit_task(engine, TASK_SYNC_GROUPS, NULL, cb, user_data);
 }
 
+dna_request_id_t dna_engine_sync_groups_to_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SYNC_GROUPS_TO_DHT, NULL, cb, user_data);
+}
+
 dna_request_id_t dna_engine_sync_group_by_uuid(
     dna_engine_t *engine,
     const char *group_uuid,
@@ -7693,6 +7709,25 @@ void dna_handle_sync_groups(dna_engine_t *engine, dna_task_t *task) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
         if (messenger_sync_groups(engine->messenger) != 0) {
+            error = DNA_ENGINE_ERROR_NETWORK;
+        }
+    }
+
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_sync_groups_to_dht(dna_engine_t *engine, dna_task_t *task) {
+    if (task->cancelled) return;
+
+    int error = DNA_OK;
+
+    if (!engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "[GROUPLIST_PUBLISH] sync_groups_to_dht handler: calling sync");
+        if (messenger_sync_groups_to_dht(engine->messenger) != 0) {
             error = DNA_ENGINE_ERROR_NETWORK;
         }
     }

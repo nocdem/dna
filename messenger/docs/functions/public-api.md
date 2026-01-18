@@ -118,6 +118,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_sync_contacts_to_dht(...)` | Sync contacts to DHT |
 | `dna_request_id_t dna_engine_sync_contacts_from_dht(...)` | Sync contacts from DHT |
 | `dna_request_id_t dna_engine_sync_groups(...)` | Sync groups from DHT |
+| `dna_request_id_t dna_engine_sync_groups_to_dht(...)` | Sync groups to DHT (v0.5.26+) |
 | `dna_request_id_t dna_engine_sync_group_by_uuid(...)` | Sync specific group by UUID from DHT |
 | `int dna_engine_request_turn_credentials(dna_engine_t*, int)` | **DEPRECATED v0.4.61** - Always returns -1 |
 | `dna_request_id_t dna_engine_get_registered_name(...)` | Get registered name for current identity |

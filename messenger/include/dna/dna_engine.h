@@ -2103,6 +2103,20 @@ DNA_API dna_request_id_t dna_engine_sync_groups(
 );
 
 /**
+ * Sync groups to DHT (publish local group list)
+ *
+ * @param engine    Engine instance
+ * @param callback  Called on completion
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_sync_groups_to_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
  * Sync a specific group from DHT to local cache
  *
  * Uses the group UUID to fetch metadata from DHT and update local database.

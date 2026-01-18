@@ -2762,6 +2762,30 @@ int cmd_sync_groups(dna_engine_t *engine) {
     return 0;
 }
 
+int cmd_sync_groups_up(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Syncing groups to DHT...\n");
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_sync_groups_to_dht(engine, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to sync groups to DHT: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Groups synced to DHT successfully!\n");
+    return 0;
+}
+
 int cmd_refresh_presence(dna_engine_t *engine) {
     if (!engine) {
         printf("Error: Engine not initialized\n");
