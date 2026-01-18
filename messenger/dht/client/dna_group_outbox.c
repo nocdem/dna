@@ -139,7 +139,7 @@ static int message_to_json(const dna_group_message_t *msg, json_object **json_ou
     json_object_object_add(root, "sender", json_object_new_string(msg->sender_fingerprint));
     json_object_object_add(root, "group", json_object_new_string(msg->group_uuid));
     json_object_object_add(root, "timestamp_ms", json_object_new_int64(msg->timestamp_ms));
-    json_object_object_add(root, "gsk_version", json_object_new_int(msg->gsk_version));
+    json_object_object_add(root, "gsk_version", json_object_new_int(msg->gek_version));
 
     /* Nonce (base64) */
     char *nonce_b64 = qgp_base64_encode(msg->nonce, DNA_GROUP_OUTBOX_NONCE_SIZE, NULL);
@@ -195,7 +195,7 @@ static int message_from_json(json_object *root, dna_group_message_t *msg) {
     if (json_object_object_get_ex(root, "timestamp_ms", &j_val))
         msg->timestamp_ms = json_object_get_int64(j_val);
     if (json_object_object_get_ex(root, "gsk_version", &j_val))
-        msg->gsk_version = (uint32_t)json_object_get_int(j_val);
+        msg->gek_version = (uint32_t)json_object_get_int(j_val);
 
     /* Nonce (base64) */
     if (json_object_object_get_ex(root, "nonce", &j_val)) {
@@ -421,7 +421,7 @@ int dna_group_outbox_send(
     strncpy(new_msg.sender_fingerprint, sender_fingerprint, sizeof(new_msg.sender_fingerprint) - 1);
     strncpy(new_msg.group_uuid, group_uuid, sizeof(new_msg.group_uuid) - 1);
     new_msg.timestamp_ms = timestamp_ms;
-    new_msg.gsk_version = gek_version;
+    new_msg.gek_version = gek_version;
     memcpy(new_msg.nonce, nonce, DNA_GROUP_OUTBOX_NONCE_SIZE);
     new_msg.ciphertext = ciphertext;
     new_msg.ciphertext_len = ciphertext_len;
@@ -680,11 +680,11 @@ int dna_group_outbox_sync(
             /* Decrypt message - load GEK by message's version */
             if (messages[i].ciphertext && messages[i].ciphertext_len > 0) {
                 uint8_t gek[GEK_KEY_SIZE];
-                int gek_loaded = gek_load(group_uuid, messages[i].gsk_version, gek);
+                int gek_loaded = gek_load(group_uuid, messages[i].gek_version, gek);
                 if (gek_loaded != 0) {
                     /* Try auto-sync from DHT */
                     if (messenger_sync_group_gek(group_uuid) == 0) {
-                        gek_loaded = gek_load(group_uuid, messages[i].gsk_version, gek);
+                        gek_loaded = gek_load(group_uuid, messages[i].gek_version, gek);
                     }
                 }
                 if (gek_loaded == 0) {
@@ -707,7 +707,7 @@ int dna_group_outbox_sync(
                     qgp_secure_memzero(gek, GEK_KEY_SIZE);
                 } else {
                     QGP_LOG_WARN(LOG_TAG, "No GEK v%u for group %s, cannot decrypt\n",
-                                 messages[i].gsk_version, group_uuid);
+                                 messages[i].gek_version, group_uuid);
                 }
             }
 
@@ -774,11 +774,11 @@ static int sync_day_range(
             /* Decrypt message - load GEK by message's version */
             if (messages[i].ciphertext && messages[i].ciphertext_len > 0) {
                 uint8_t gek[GEK_KEY_SIZE];
-                int gek_loaded = gek_load(group_uuid, messages[i].gsk_version, gek);
+                int gek_loaded = gek_load(group_uuid, messages[i].gek_version, gek);
                 if (gek_loaded != 0) {
                     /* Try auto-sync from DHT */
                     if (messenger_sync_group_gek(group_uuid) == 0) {
-                        gek_loaded = gek_load(group_uuid, messages[i].gsk_version, gek);
+                        gek_loaded = gek_load(group_uuid, messages[i].gek_version, gek);
                     }
                 }
                 if (gek_loaded == 0) {
@@ -800,7 +800,7 @@ static int sync_day_range(
                     qgp_secure_memzero(gek, GEK_KEY_SIZE);
                 } else {
                     QGP_LOG_WARN(LOG_TAG, "No GEK v%u for group %s, cannot decrypt\n",
-                                 messages[i].gsk_version, group_uuid);
+                                 messages[i].gek_version, group_uuid);
                 }
             }
 
@@ -1009,7 +1009,7 @@ int dna_group_outbox_db_store_message(const dna_group_message_t *msg) {
     sqlite3_bind_int64(stmt, 2, msg_id_int);
     sqlite3_bind_text(stmt, 3, msg->sender_fingerprint, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 4, (sqlite3_int64)msg->timestamp_ms);
-    sqlite3_bind_int(stmt, 5, (int)msg->gsk_version);
+    sqlite3_bind_int(stmt, 5, (int)msg->gek_version);
     if (msg->plaintext) {
         sqlite3_bind_text(stmt, 6, msg->plaintext, -1, SQLITE_TRANSIENT);
     } else {
@@ -1127,7 +1127,7 @@ int dna_group_outbox_db_get_messages(
         msg->timestamp_ms = (uint64_t)sqlite3_column_int64(stmt, 3);
 
         /* Column 4: gek_version */
-        msg->gsk_version = (uint32_t)sqlite3_column_int(stmt, 4);
+        msg->gek_version = (uint32_t)sqlite3_column_int(stmt, 4);
 
         /* Column 5: plaintext */
         const char *text = (const char *)sqlite3_column_text(stmt, 5);

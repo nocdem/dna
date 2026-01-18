@@ -456,7 +456,7 @@ void dht_generate_watermark_key(
 
 The Nexus Protocol provides efficient group encryption using a shared symmetric key. Like a nexus (connection point), all group members connect through a shared secret that enables ~200x faster encryption than per-recipient Kyber.
 
-### 6.2 GSK (Group Symmetric Key)
+### 6.2 GEK (Group Symmetric Key)
 
 - **Key Size:** 32 bytes (AES-256)
 - **Generation:** Random on group creation
@@ -474,20 +474,20 @@ Header:
 
 Recipient Entry:
   kyber_ciphertext = zeros (not used)
-  wrapped_dek = AES-wrap(DEK, GSK)  // GSK as KEK
+  wrapped_dek = AES-wrap(DEK, GEK)  // GEK as KEK
 ```
 
 ### 6.4 Key Rotation
 
 | Event | Action |
 |-------|--------|
-| Member joins | Encrypt current GSK with new member's Kyber pubkey |
-| Member leaves | Generate new GSK, distribute to remaining members |
-| Key compromise | Generate new GSK, distribute to all members |
+| Member joins | Encrypt current GEK with new member's Kyber pubkey |
+| Member leaves | Generate new GEK, distribute to remaining members |
+| Key compromise | Generate new GEK, distribute to all members |
 
 ### 6.5 Forward Secrecy
 
-- New GSK on member removal
+- New GEK on member removal
 - Old members cannot decrypt new messages
 - Per-message DEK provides forward secrecy within sessions
 
@@ -496,7 +496,7 @@ Recipient Entry:
 | Method | Encryption Time | Size Overhead |
 |--------|-----------------|---------------|
 | Seal (per-recipient) | ~50ms/recipient | 1608 bytes/recipient |
-| Nexus (GSK) | ~0.25ms total | 40 bytes fixed |
+| Nexus (GEK) | ~0.25ms total | 40 bytes fixed |
 
 **Source:** `messenger/gsk.c`, `messenger/gsk.h`
 

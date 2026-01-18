@@ -118,7 +118,7 @@ typedef struct {
  */
 typedef enum {
     MSG_TYPE_DIRECT_PQC = 0x00,  // Per-recipient Kyber1024
-    MSG_TYPE_GROUP_GSK  = 0x01   // Group symmetric key (AES-256-GCM)
+    MSG_TYPE_GROUP_GEK  = 0x01   // Group encryption key (AES-256-GCM)
 } message_type_t;
 
 // ============================================================================

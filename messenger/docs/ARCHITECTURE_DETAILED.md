@@ -1,6 +1,6 @@
 # DNA Messenger - Comprehensive Architecture Documentation
 
-**Version:** 0.1.x | **Last Updated:** 2025-12-15 | **Phase:** 13 (GSK v0.09)
+**Version:** 0.1.x | **Last Updated:** 2025-12-15 | **Phase:** 13 (GEK v0.09)
 
 This document provides a complete technical architecture reference for DNA Messenger, derived entirely from source code analysis.
 
@@ -70,7 +70,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 ### Key Features
 
 - **E2E Encryption**: Per-message Kyber1024 encapsulation + AES-256-GCM
-- **GSK Groups**: Group Symmetric Key for 200x faster group encryption
+- **GEK Groups**: Group Symmetric Key for 200x faster group encryption
 - **DHT-based**: Decentralized key storage, presence, offline queuing
 - **P2P Messaging**: Direct TCP with DHT fallback
 - **Fingerprint Identity**: SHA3-512(Dilithium_pubkey) = 128 hex chars
@@ -105,7 +105,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 │   ├── core/                 # DHT context, keyserver, bootstrap
 │   ├── client/               # Identity, profile, wall, contacts
 │   ├── keyserver/            # Public key storage
-│   └── shared/               # Groups, offline queue, GSK storage
+│   └── shared/               # Groups, offline queue, GEK storage
 │
 ├── transport/                      # Peer-to-peer transport
 │   └── transport/            # TCP connections, DHT presence
@@ -116,7 +116,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 │   ├── messages.c            # Message handling
 │   ├── contacts.c            # Contact management
 │   ├── gsk.c                 # Group Symmetric Key
-│   └── gsk_packet.c          # GSK packet builder
+│   └── gsk_packet.c          # GEK packet builder
 │
 ├── database/                 # SQLite persistence
 │   ├── contacts_db.c/h       # Per-identity contacts
@@ -838,7 +838,7 @@ int messenger_mark_delivered(ctx, message_id);
 int messenger_mark_conversation_read(ctx, sender_identity);
 ```
 
-### 7.5 Group Symmetric Key (GSK)
+### 7.5 Group Symmetric Key (GEK)
 
 **Location:** `messenger/gsk.h`
 
@@ -846,11 +846,11 @@ int messenger_mark_conversation_read(ctx, sender_identity);
 
 **Parameters:**
 ```c
-#define GSK_KEY_SIZE 32            // AES-256 (32 bytes)
-#define GSK_DEFAULT_EXPIRY (7 * 24 * 3600)  // 7 days
+#define GEK_KEY_SIZE 32            // AES-256 (32 bytes)
+#define GEK_DEFAULT_EXPIRY (7 * 24 * 3600)  // 7 days
 ```
 
-**GSK Entry:**
+**GEK Entry:**
 ```c
 typedef struct {
     char group_uuid[37];       // UUID v4
@@ -927,7 +927,7 @@ int messenger_reject_group_invitation(ctx, group_uuid);
 │   └── dht_identity.enc               # Encrypted DHT identity backup
 ├── <fingerprint>_contacts.db          # Per-identity contacts
 ├── <fingerprint>_profiles.db          # Profile cache (7-day TTL)
-└── <fingerprint>_groups.db            # Group GSK storage
+└── <fingerprint>_groups.db            # Group GEK storage
 ```
 
 ### 8.2 Message Backup
@@ -1797,7 +1797,7 @@ nohup ./vendor/opendht-pq/tools/dna-nodus \
 | | Nonce | 12 bytes |
 | | Tag | 16 bytes |
 | **SHA3-512** | Output | 64 bytes (128 hex) |
-| **GSK** | Key | 32 bytes |
+| **GEK** | Key | 32 bytes |
 
 ## Appendix B: Error Codes
 
@@ -1822,4 +1822,4 @@ DNA_ENGINE_ERROR_PERMISSION     = -108
 | Profiles | 7 days |
 | Groups | 7 days |
 | Offline messages | 7 days |
-| GSK | 7 days |
+| GEK | 7 days |

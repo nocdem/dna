@@ -32,27 +32,27 @@ All previously identified issues have been addressed:
 |----|----------|-------|--------|
 | H1 | HIGH | Seed derivation memory not wiped | **FIXED** (2026-01-03) |
 | H2 | HIGH | Private keys stored unencrypted at rest | **FIXED** (2025-12-15) |
-| H3 | HIGH | GSK stored unencrypted in SQLite | **FIXED** (2026-01-03) |
+| H3 | HIGH | GEK stored unencrypted in SQLite | **FIXED** (2026-01-03) |
 | M1-M12 | MEDIUM | Various memory/protocol issues | **FIXED/MITIGATED** |
 | L1-L8 | LOW | Build hardening, debug code, etc. | **FIXED/MITIGATED** |
 
 ### 1.2 New Security Findings
 
-#### S1. GSK Packet Member Count Validation [MEDIUM]
+#### S1. GEK Packet Member Count Validation [MEDIUM]
 
 **Location:** `messenger/gsk_packet.c`
 
-**Issue:** The `member_count` field in GSK packets lacks an upper bound validation check. While the field is a uint8_t (max 255), there's no explicit check against a defined maximum member limit before allocation.
+**Issue:** The `member_count` field in GEK packets lacks an upper bound validation check. While the field is a uint8_t (max 255), there's no explicit check against a defined maximum member limit before allocation.
 
 **Risk:** Potential memory exhaustion if malicious packet specifies large member count.
 
 **Recommendation:**
 ```c
-#define GSK_MAX_MEMBERS 100  // Define reasonable limit
+#define GEK_MAX_MEMBERS 100  // Define reasonable limit
 
-if (member_count > GSK_MAX_MEMBERS) {
+if (member_count > GEK_MAX_MEMBERS) {
     QGP_LOG_ERROR(LOG_TAG, "Member count %u exceeds maximum %u",
-                  member_count, GSK_MAX_MEMBERS);
+                  member_count, GEK_MAX_MEMBERS);
     return NULL;
 }
 ```
@@ -133,7 +133,7 @@ The following security aspects were verified as properly implemented:
 
 4. **Key Management**
    - Private keys encrypted at rest (PBKDF2-SHA256 + AES-256-GCM)
-   - GSKs encrypted with Kyber1024 KEM before SQLite storage
+   - GEKs encrypted with Kyber1024 KEM before SQLite storage
    - Wallet private keys derived on-demand, not stored
 
 5. **Build Hardening**
@@ -232,7 +232,7 @@ cleanup:
 | Category | Tests | Coverage |
 |----------|-------|----------|
 | DHT Operations | test_pq_put_get, test_pq_encrypted_put, test_signed_put, test_dht_listen, test_pq_dht_bootstrap | Good |
-| GSK Encryption | test_gsk, test_gsk_simple | Good |
+| GEK Encryption | test_gsk, test_gsk_simple | Good |
 | DHT Offline | test_dht_offline_performance, test_offline_queue_bug | Good |
 | Identity | test_identity_backup, test_pq_node_identity | Good |
 | Profile | test_dna_profile | Good |
@@ -385,7 +385,7 @@ cleanup:
 | Component | Tested | Untested Critical |
 |-----------|--------|-------------------|
 | DHT Operations | 90% | - |
-| GSK Encryption | 80% | - |
+| GEK Encryption | 80% | - |
 | Dilithium5 Signatures | 100% | - |
 | Profile System | 80% | - |
 | **AES-256-GCM** | 0% | **qgp_aes256_encrypt/decrypt** |
@@ -507,7 +507,7 @@ Main Thread
 |----|------|--------|---------|
 | P0-1 | Add AES-256-GCM unit tests (T1) | ✅ Done | v0.3.74 |
 | P0-2 | Resolve TODOs in gsk.c, dht_offline_queue.c (C1) | ✅ Done | v0.3.74 |
-| P0-3 | Add GSK member_count upper bound check (S1) | ✅ Done | v0.3.74 |
+| P0-3 | Add GEK member_count upper bound check (S1) | ✅ Done | v0.3.74 |
 
 ### 5.2 SHOULD FIX Before Beta (P1) ✅ COMPLETE
 
@@ -545,7 +545,7 @@ Main Thread
 
 - [x] Add AES-256-GCM unit tests with NIST test vectors (v0.3.74)
 - [x] Review and resolve TODOs in production code (v0.3.74)
-- [x] Add GSK member_count validation (max 16 members) (v0.3.74)
+- [x] Add GEK member_count validation (max 16 members) (v0.3.74)
 - [ ] Verify all security fixes from SECURITY_AUDIT.md are in place
 - [ ] Run fuzz tests for minimum 1 hour each target
 - [ ] Build and verify on all platforms (Linux, Windows, Android)
@@ -596,7 +596,7 @@ The main gaps are in **test coverage**, particularly for core crypto primitives.
 
 All P0 and P1 items have been completed (v0.3.74-v0.3.76). The codebase is ready for beta release:
 - AES-256-GCM, key encryption, Kyber1024, BIP39/BIP32 all have unit tests
-- GSK member validation added (max 16 members)
+- GEK member validation added (max 16 members)
 - NULL checks added to internal engine functions
 - TODOs clarified as design notes / deferred work
 

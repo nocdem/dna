@@ -589,7 +589,7 @@ engine.upgradeToForeground();
 - [ ] P2P connections establish (direct + NAT traversal)
 - [ ] Messages send and receive
 - [ ] Offline queue works (7-day expiry)
-- [ ] Group messaging works (GSK encryption)
+- [ ] Group messaging works (GEK encryption)
 - [ ] Identity creation from BIP39 seeds
 - [ ] Contact management (add/remove)
 - [ ] Network transitions handled (WiFi ↔ Cellular)

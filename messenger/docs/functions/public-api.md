@@ -87,7 +87,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | Function | Description |
 |----------|-------------|
 | `dna_request_id_t dna_engine_get_groups(...)` | Get groups current identity belongs to |
-| `dna_request_id_t dna_engine_create_group(...)` | Create new group with GSK encryption |
+| `dna_request_id_t dna_engine_create_group(...)` | Create new group with GEK encryption |
 | `dna_request_id_t dna_engine_send_group_message(...)` | Send message to group |
 | `dna_request_id_t dna_engine_get_invitations(...)` | Get pending group invitations |
 | `dna_request_id_t dna_engine_accept_invitation(...)` | Accept group invitation |

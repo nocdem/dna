@@ -18,7 +18,7 @@ Oct 2025                              Jan 2026
      │     │     │     │     │     └─ Flutter cross-platform
      │     │     │     │     └─ Android JNI SDK
      │     │     │     └─ Qt → ImGui → Flutter
-     │     │     └─ P2P Transport, DHT, GSK
+     │     │     └─ P2P Transport, DHT, GEK
      │     └─ PostgreSQL → SQLite
      └─ Core library API
 ```
@@ -196,7 +196,7 @@ Client → DHT (daily buckets) ←→ Client
 | v0.1.80 | 2025-11-10 | Qt → ImGui GUI migration |
 | v0.1.100 | 2025-11-16 | DHT refactoring, profile unification |
 | v0.1.115 | 2025-11-18 | Message format v0.08 (fingerprint privacy) |
-| v0.1.120+ | 2025-11-21 | GSK group encryption (200x speedup) |
+| v0.1.120+ | 2025-11-21 | GEK group encryption (200x speedup) |
 | v0.1.130+ | 2025-11-28 | Android SDK complete |
 | v0.2.0 | 2025-12-01 | Flutter migration begins |
 | v0.3.50 | 2025-12-10 | Debug log viewer, app lock |
@@ -215,7 +215,7 @@ Client → DHT (daily buckets) ←→ Client
 ### Messaging
 - [x] End-to-end encryption (Kyber1024 + AES-256-GCM)
 - [x] 1:1 direct messaging
-- [x] Group messaging with GSK encryption
+- [x] Group messaging with GEK encryption
 - [x] Delivery and read receipts
 - [x] Offline message queue (7-day TTL)
 - [x] Message format v0.08 (fingerprint privacy)
@@ -223,7 +223,7 @@ Client → DHT (daily buckets) ←→ Client
 
 ### Groups
 - [x] DHT-based decentralized groups
-- [x] GSK (Group Symmetric Key) - 200x faster
+- [x] GEK (Group Symmetric Key) - 200x faster
 - [x] Automatic key rotation on member changes
 - [x] Group ownership transfer
 - [x] P2P group invitations

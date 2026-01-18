@@ -52,7 +52,7 @@ typedef struct {
     uint8_t version;            // 0x08 (Category 5 + encrypted timestamp)
     uint8_t enc_key_type;       // QGP_KEY_TYPE_KEM1024
     uint8_t recipient_count;    // Number of recipients (1-255)
-    uint8_t message_type;       // MSG_TYPE_DIRECT_PQC or MSG_TYPE_GROUP_GSK
+    uint8_t message_type;       // MSG_TYPE_DIRECT_PQC or MSG_TYPE_GROUP_GEK
     uint32_t encrypted_size;    // Size of encrypted data
     uint32_t signature_size;    // Size of signature
 } messenger_enc_header_t;
