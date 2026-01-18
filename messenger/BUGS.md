@@ -17,6 +17,8 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 - [ ] **[FLUTTER] P3 - Background notification toggle doesn't re-request permissions** - When user disables then re-enables "Background Notifications" in settings, it doesn't prompt for notification permissions again. Should call `requestNotificationPermission()` when toggling ON.
 
+- [ ] **[FLUTTER] P3 - Camera permission not re-requested after fresh install** - After completely removing the app (including files and cache) and reinstalling, the app doesn't re-ask for camera permission when opening QR code scanner. Should use `permission_handler` package to explicitly check and request camera permission before starting scanner.
+
 - [x] **[FLUTTER] P2 - Auto sync toggle freezes app** - Clicking the "Auto Sync" switch in settings freezes the entire app for ~5 seconds while backup runs synchronously. **Fix:** Made `dna_engine_backup_messages()` async - spawns background thread, returns immediately, callback fires on completion. Flutter already had loading indicators but they couldn't render while blocked. (v0.5.32)
 
 - [x] **[FLUTTER] P2 - Sync Now button freezes app** - The manual "Sync Now" button freezes the app during sync with no feedback. **Fix:** Backup now runs on background thread. Flutter's existing CircularProgressIndicator now shows properly. (v0.5.32)
