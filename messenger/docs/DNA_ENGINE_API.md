@@ -550,65 +550,59 @@ dna_engine_load_identity(engine, fingerprint, NULL, callback, NULL);
 
 ---
 
-### dna_engine_load_identity_with_mode (Android only, v0.5.5+)
+### dna_engine_is_identity_loaded (v0.5.24+)
 
 ```c
-#ifdef __ANDROID__
-typedef enum {
-    DNA_INIT_MODE_FULL = 0,        // Full init (foreground)
-    DNA_INIT_MODE_BACKGROUND = 1   // DHT+listeners only (background service)
-} dna_init_mode_t;
-
-dna_request_id_t dna_engine_load_identity_with_mode(
-    dna_engine_t *engine,
-    const char *fingerprint,
-    const char *password,
-    dna_init_mode_t mode,
-    dna_completion_cb callback,
-    void *user_data
-);
-#endif
+bool dna_engine_is_identity_loaded(dna_engine_t *engine);
 ```
 
-Loads identity with initialization mode selection. In BACKGROUND mode, skips heavy
-initialization (transport, presence, wallet) while keeping DHT listeners active.
+Checks if an identity is currently loaded on the engine.
 
 **Parameters:**
 - `engine` - Engine instance
-- `fingerprint` - Identity fingerprint (empty string = auto-detect)
-- `password` - Password for encrypted keys (NULL if unencrypted)
-- `mode` - `DNA_INIT_MODE_FULL` or `DNA_INIT_MODE_BACKGROUND`
-- `callback` - Completion callback
-- `user_data` - User data for callback
 
-**Use Case:** When Android ForegroundService is running but app is closed,
-use BACKGROUND mode to save resources. Call `dna_engine_upgrade_to_foreground()`
-when app comes to foreground.
+**Returns:** `true` if identity is loaded, `false` otherwise
+
+**Use Case:** Android ForegroundService checks if identity is already loaded
+before attempting to load it. Part of single-owner model where Flutter and
+Service never share the engine simultaneously.
 
 ---
 
-### dna_engine_upgrade_to_foreground (Android only, v0.5.5+)
+### dna_engine_load_identity_minimal (v0.5.24+)
 
 ```c
-#ifdef __ANDROID__
-int dna_engine_upgrade_to_foreground(dna_engine_t *engine);
-#endif
+dna_request_id_t dna_engine_load_identity_minimal(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *password,
+    dna_completion_cb callback,
+    void *user_data
+);
 ```
 
-Upgrades from BACKGROUND mode to FULL mode after identity was loaded in background.
+Lightweight version for background services. Only initializes DHT connection
+and DHT listeners for message notifications.
 
-**Returns:** 0 on success, -1 on error
+**Skips (to save resources when app is closed):**
+- P2P transport layer
+- Presence heartbeat
+- Contact sync from DHT
+- Pending message retry
+- Wallet creation
 
-**What it does:**
-1. Syncs contacts from DHT
-2. Initializes P2P transport (if not already)
-3. Starts presence heartbeat (if not already)
-4. Checks offline messages
-5. Retries pending messages
-6. Creates missing blockchain wallets
-7. Sets mode to FULL
+**Parameters:**
+- `engine` - Engine instance
+- `fingerprint` - Identity fingerprint to load
+- `password` - Password for encrypted keys (NULL if unencrypted)
+- `callback` - Completion callback
+- `user_data` - User data for callback
 
-**Safe to call if already in FULL mode** - returns 0 immediately.
+**Returns:** Request ID (0 on immediate error)
+
+**Use Case:** Android ForegroundService uses this when the app is closed.
+DHT listeners detect new messages and trigger notifications. Actual message
+download happens when Flutter opens and calls `checkOfflineMessages()`.
 
 ---
 

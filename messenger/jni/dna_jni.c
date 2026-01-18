@@ -911,69 +911,6 @@ Java_io_cpunk_dna_DNAEngine_nativeLoadIdentity(JNIEnv *env, jobject thiz,
 }
 
 /**
- * Load identity in background mode (Android only, v0.5.5+)
- *
- * Lightweight initialization for background service:
- * - Skips transport, presence, wallet initialization
- * - Keeps DHT listeners active for notifications
- *
- * Call nativeUpgradeToForeground() when app comes to foreground.
- */
-JNIEXPORT jlong JNICALL
-Java_io_cpunk_dna_DNAEngine_nativeLoadIdentityBackground(JNIEnv *env, jobject thiz,
-                                                          jstring fingerprint, jobject callback) {
-    if (!g_engine || !callback || !fingerprint) return 0;
-
-    const char *fp = (*env)->GetStringUTFChars(env, fingerprint, NULL);
-    jni_callback_ctx_t *ctx = create_callback_ctx(env, callback);
-
-    LOGI("Loading identity in BACKGROUND mode: %s", fp);
-    dna_request_id_t req_id = dna_engine_load_identity_with_mode(
-        g_engine, fp, NULL, DNA_INIT_MODE_BACKGROUND, jni_completion_callback, ctx);
-
-    (*env)->ReleaseStringUTFChars(env, fingerprint, fp);
-    return (jlong)req_id;
-}
-
-/**
- * Upgrade from background mode to foreground mode (Android only, v0.5.5+)
- *
- * Completes initialization that was skipped in background mode:
- * - Initializes transport layer
- * - Starts presence heartbeat
- * - Syncs contacts from DHT
- * - Checks offline messages
- * - Retries pending messages
- * - Creates missing blockchain wallets
- *
- * Safe to call if already in FULL mode (returns 0).
- *
- * @return 0 on success, -1 on error
- */
-JNIEXPORT jint JNICALL
-Java_io_cpunk_dna_DNAEngine_nativeUpgradeToForeground(JNIEnv *env, jobject thiz) {
-    if (!g_engine) {
-        LOGE("Cannot upgrade: engine not initialized");
-        return -1;
-    }
-
-    LOGI("Upgrading to foreground mode");
-    return dna_engine_upgrade_to_foreground(g_engine);
-}
-
-/**
- * Get current initialization mode (v0.5.5+)
- * Returns: 0 = FULL, 1 = BACKGROUND
- */
-JNIEXPORT jint JNICALL
-Java_io_cpunk_dna_DNAEngine_nativeGetInitMode(JNIEnv *env, jobject thiz) {
-    if (!g_engine) {
-        return 0;  /* FULL mode by default if no engine */
-    }
-    return (jint)dna_engine_get_init_mode(g_engine);
-}
-
-/**
  * Check if identity is loaded (v0.5.5+)
  */
 JNIEXPORT jboolean JNICALL
@@ -1380,35 +1317,37 @@ static void sync_load_callback(dna_request_id_t id, int error, void *user_data) 
 }
 
 /**
- * Load identity in background mode - synchronous version (v0.5.5+)
+ * Load identity with minimal initialization - synchronous version (v0.5.24+)
  * Used by DnaMessengerService when it starts without Flutter.
+ * Performs minimal initialization (DHT + listeners only) to save resources.
+ * Skips: transport, presence heartbeat, wallet creation, pending message retry.
  * Returns: 0 on success, negative on error
  */
 JNIEXPORT jint JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeLoadIdentityBackgroundSync(JNIEnv *env, jobject thiz, jstring fingerprint) {
+Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeLoadIdentityMinimalSync(JNIEnv *env, jobject thiz, jstring fingerprint) {
     if (!g_engine || !fingerprint) {
-        LOGE("nativeLoadIdentityBackgroundSync: engine or fingerprint is NULL");
+        LOGE("nativeLoadIdentityMinimalSync: engine or fingerprint is NULL");
         return -1;
     }
 
     const char *fp = (*env)->GetStringUTFChars(env, fingerprint, NULL);
     if (!fp) {
-        LOGE("nativeLoadIdentityBackgroundSync: failed to get fingerprint string");
+        LOGE("nativeLoadIdentityMinimalSync: failed to get fingerprint string");
         return -2;
     }
 
-    LOGI("nativeLoadIdentityBackgroundSync: Loading identity in BACKGROUND mode: %.16s...", fp);
+    LOGI("nativeLoadIdentityMinimalSync: Loading identity (minimal): %.16s...", fp);
 
     /* Synchronous wrapper using callback context */
     sync_load_ctx_t ctx = { .result = -100, .done = false };
 
-    dna_request_id_t req_id = dna_engine_load_identity_with_mode(
-        g_engine, fp, NULL, DNA_INIT_MODE_BACKGROUND, sync_load_callback, &ctx);
+    dna_request_id_t req_id = dna_engine_load_identity_minimal(
+        g_engine, fp, NULL, sync_load_callback, &ctx);
 
     (*env)->ReleaseStringUTFChars(env, fingerprint, fp);
 
     if (req_id == 0) {
-        LOGE("nativeLoadIdentityBackgroundSync: Failed to submit request");
+        LOGE("nativeLoadIdentityMinimalSync: Failed to submit request");
         return -3;
     }
 
@@ -1420,27 +1359,15 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeLoadIdentityBackgroundSyn
     }
 
     if (!ctx.done) {
-        LOGE("nativeLoadIdentityBackgroundSync: Timeout waiting for identity load");
+        LOGE("nativeLoadIdentityMinimalSync: Timeout waiting for identity load");
         return -4;
     }
 
     if (ctx.result == 0) {
-        LOGI("nativeLoadIdentityBackgroundSync: Identity loaded successfully in BACKGROUND mode");
+        LOGI("nativeLoadIdentityMinimalSync: Identity loaded (minimal mode) - notifications active");
     } else {
-        LOGE("nativeLoadIdentityBackgroundSync: Identity load failed: %d", ctx.result);
+        LOGE("nativeLoadIdentityMinimalSync: Identity load failed: %d", ctx.result);
     }
 
     return ctx.result;
-}
-
-/**
- * Get current init mode (v0.5.5+)
- * Returns: 0 = FULL, 1 = BACKGROUND
- */
-JNIEXPORT jint JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeGetInitMode(JNIEnv *env, jobject thiz) {
-    if (!g_engine) {
-        return 0;  /* FULL mode by default */
-    }
-    return (jint)dna_engine_get_init_mode(g_engine);
 }

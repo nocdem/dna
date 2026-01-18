@@ -754,6 +754,10 @@ class UserProfile {
   String website;
   String avatarBase64;
 
+  // Cached decoded avatar (lazy, computed once on first access)
+  Uint8List? _cachedAvatarBytes;
+  bool _avatarDecoded = false;
+
   UserProfile({
     this.backbone = '',
     this.alvin = '',
@@ -889,18 +893,27 @@ class UserProfile {
     );
   }
 
-  /// Decode avatar base64 with padding fix
+  /// Decode avatar base64 with padding fix (cached - only decodes once)
   /// Buffer limit is 20483 bytes which may truncate padding characters
   Uint8List? decodeAvatar() {
-    if (avatarBase64.isEmpty) return null;
+    // Return cached result if already decoded
+    if (_avatarDecoded) return _cachedAvatarBytes;
+
+    _avatarDecoded = true;
+    if (avatarBase64.isEmpty) {
+      _cachedAvatarBytes = null;
+      return null;
+    }
     try {
       var b64 = avatarBase64;
       final remainder = b64.length % 4;
       if (remainder > 0) {
         b64 = b64 + '=' * (4 - remainder);
       }
-      return base64Decode(b64);
+      _cachedAvatarBytes = base64Decode(b64);
+      return _cachedAvatarBytes;
     } catch (e) {
+      _cachedAvatarBytes = null;
       return null;
     }
   }
@@ -1590,22 +1603,11 @@ class DnaEngine {
   /// In v0.3.0 single-user model, fingerprint is optional. If not provided,
   /// the fingerprint will be computed from the flat key file.
   ///
-  /// On Android (v0.5.5+): If identity was already loaded by the background
-  /// service in BACKGROUND mode, this upgrades to FULL mode instead of
-  /// reloading. This provides seamless handoff between service and Flutter.
+  /// Single-owner model (v0.5.24+): Flutter owns the engine when app is open.
+  /// If identity is already loaded, this is a no-op.
   Future<void> loadIdentity({String? fingerprint, String? password}) async {
-    // Android: Check if service already loaded identity in background mode
-    if (Platform.isAndroid && isIdentityLoaded()) {
-      final mode = getInitMode();
-      if (mode == 1) {  // BACKGROUND mode
-        // Upgrade to FULL mode instead of reloading
-        final result = upgradeToForeground();
-        if (result != 0) {
-          throw DnaEngineException(result, 'Failed to upgrade to foreground mode');
-        }
-        return;
-      }
-      // Already in FULL mode, nothing to do
+    // Single-owner model: If identity already loaded, nothing to do
+    if (isIdentityLoaded()) {
       return;
     }
 
@@ -1649,102 +1651,11 @@ class DnaEngine {
     return completer.future;
   }
 
-  /// Load identity in background mode (Android only, v0.5.5+)
+  /// Check if identity is already loaded
   ///
-  /// Lightweight initialization for background service:
-  /// - Skips transport, presence, wallet initialization
-  /// - Keeps DHT listeners active for notifications
-  ///
-  /// Call [upgradeToForeground] when app comes to foreground.
-  ///
-  /// Throws [UnsupportedError] if called on non-Android platform.
-  Future<void> loadIdentityBackground({String? fingerprint, String? password}) async {
-    if (!Platform.isAndroid) {
-      throw UnsupportedError('loadIdentityBackground is only available on Android');
-    }
-
-    final completer = Completer<void>();
-    final localId = _nextLocalId++;
-
-    final fpPtr = (fingerprint ?? '').toNativeUtf8();
-    final pwPtr = password?.toNativeUtf8();
-
-    void onComplete(int requestId, int error, Pointer<Void> userData) {
-      calloc.free(fpPtr);
-      if (pwPtr != null) calloc.free(pwPtr);
-
-      if (error == 0) {
-        completer.complete();
-      } else {
-        completer.completeError(DnaEngineException.fromCode(error, _bindings));
-      }
-      _cleanupRequest(localId);
-    }
-
-    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
-    _pendingRequests[localId] = _PendingRequest(callback: callback);
-
-    // mode: 1 = DNA_INIT_MODE_BACKGROUND
-    final requestId = _bindings.dna_engine_load_identity_with_mode(
-      _engine,
-      fpPtr.cast(),
-      pwPtr?.cast() ?? nullptr,
-      1,  // DNA_INIT_MODE_BACKGROUND
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
-
-    if (requestId == 0) {
-      calloc.free(fpPtr);
-      if (pwPtr != null) calloc.free(pwPtr);
-      _cleanupRequest(localId);
-      throw DnaEngineException(-1, 'Failed to submit request');
-    }
-
-    return completer.future;
-  }
-
-  /// Upgrade from background mode to foreground mode (Android only, v0.5.5+)
-  ///
-  /// Completes initialization that was skipped in background mode:
-  /// - Initializes transport layer
-  /// - Starts presence heartbeat
-  /// - Syncs contacts from DHT
-  /// - Checks offline messages
-  /// - Retries pending messages
-  /// - Creates missing blockchain wallets
-  ///
-  /// Safe to call if already in FULL mode (returns 0).
-  /// Throws [UnsupportedError] if called on non-Android platform.
-  ///
-  /// Returns 0 on success, -1 on error.
-  int upgradeToForeground() {
-    if (!Platform.isAndroid) {
-      throw UnsupportedError('upgradeToForeground is only available on Android');
-    }
-    return _bindings.dna_engine_upgrade_to_foreground(_engine);
-  }
-
-  /// Check if identity is already loaded (Android only, v0.5.5+)
-  ///
-  /// Returns true if identity is loaded (by service or by previous loadIdentity call).
-  /// On non-Android platforms, always returns false.
+  /// Returns true if identity is loaded, false otherwise.
   bool isIdentityLoaded() {
-    if (!Platform.isAndroid) {
-      return false;
-    }
     return _bindings.dna_engine_is_identity_loaded(_engine);
-  }
-
-  /// Get current initialization mode (Android only, v0.5.5+)
-  ///
-  /// Returns: 0 = FULL (foreground), 1 = BACKGROUND (service)
-  /// On non-Android platforms, always returns 0 (FULL).
-  int getInitMode() {
-    if (!Platform.isAndroid) {
-      return 0;  // FULL mode
-    }
-    return _bindings.dna_engine_get_init_mode(_engine);
   }
 
   /// Get the encrypted mnemonic (recovery phrase) for the current identity

@@ -1729,21 +1729,16 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
 
     /* Profile cache is now global - initialized in dna_engine_create() */
 
-    /* Android background mode check (v0.5.5+)
-     * In background mode, skip heavy initialization to save resources.
-     * DHT listeners will still work for notifications. */
-#ifdef __ANDROID__
-    dna_init_mode_t init_mode = task->params.load_identity.mode;
-    engine->init_mode = init_mode;
-    engine->transport_initialized = false;
-    engine->presence_initialized = false;
+    /* Check if minimal mode (background service) - skip heavy initialization */
+    bool minimal_mode = task->params.load_identity.minimal;
+    if (minimal_mode) {
+        QGP_LOG_INFO(LOG_TAG, "Minimal mode: skipping transport, presence, wallet init");
+    }
 
-    if (init_mode == DNA_INIT_MODE_FULL) {
-#endif
-    /* Sync contacts from DHT (restore on new device)
+    /* Full mode only: Sync contacts from DHT (restore on new device)
      * This must happen BEFORE subscribing to contacts for push notifications.
      * If DHT has a newer contact list, it will be merged into local SQLite. */
-    if (engine->messenger) {
+    if (!minimal_mode && engine->messenger) {
         int sync_result = messenger_sync_contacts_from_dht(engine->messenger);
         if (sync_result == 0) {
             QGP_LOG_INFO(LOG_TAG, "Synced contacts from DHT");
@@ -1754,53 +1749,43 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         }
     }
 
-    /* Initialize P2P transport for DHT and messaging */
-    if (messenger_transport_init(engine->messenger) != 0) {
-        QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize P2P transport\n");
-        /* Non-fatal - continue without P2P, DHT operations will still work via singleton */
-    } else {
-        /* P2P initialized successfully - complete P2P setup */
-        /* Note: Presence already registered in messenger_transport_init() */
-#ifdef __ANDROID__
-        engine->transport_initialized = true;
-#endif
-
-        /* 1. Check for offline messages (Spillway: query contacts' outboxes) */
-        size_t offline_count = 0;
-        if (messenger_transport_check_offline_messages(engine->messenger, NULL, &offline_count) == 0) {
-            if (offline_count > 0) {
-                QGP_LOG_INFO(LOG_TAG, "Received %zu offline messages\n", offline_count);
-            } else {
-                QGP_LOG_INFO(LOG_TAG, "No offline messages found\n");
-            }
+    /* Full mode only: Initialize P2P transport for DHT and messaging */
+    if (!minimal_mode) {
+        if (messenger_transport_init(engine->messenger) != 0) {
+            QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize P2P transport\n");
+            /* Non-fatal - continue without P2P, DHT operations will still work via singleton */
         } else {
-            QGP_LOG_INFO(LOG_TAG, "Warning: Failed to check offline messages\n");
-        }
+            /* P2P initialized successfully - complete P2P setup */
+            /* Note: Presence already registered in messenger_transport_init() */
 
-        /* Start presence heartbeat thread (announces our presence every 4 minutes) */
-        if (dna_start_presence_heartbeat(engine) != 0) {
-            QGP_LOG_WARN(LOG_TAG, "Warning: Failed to start presence heartbeat");
+            /* 1. Check for offline messages (Spillway: query contacts' outboxes) */
+            size_t offline_count = 0;
+            if (messenger_transport_check_offline_messages(engine->messenger, NULL, &offline_count) == 0) {
+                if (offline_count > 0) {
+                    QGP_LOG_INFO(LOG_TAG, "Received %zu offline messages\n", offline_count);
+                } else {
+                    QGP_LOG_INFO(LOG_TAG, "No offline messages found\n");
+                }
+            } else {
+                QGP_LOG_INFO(LOG_TAG, "Warning: Failed to check offline messages\n");
+            }
+
+            /* Start presence heartbeat thread (announces our presence every 4 minutes) */
+            if (dna_start_presence_heartbeat(engine) != 0) {
+                QGP_LOG_WARN(LOG_TAG, "Warning: Failed to start presence heartbeat");
+            }
         }
-#ifdef __ANDROID__
-        else {
-            engine->presence_initialized = true;
-        }
-#endif
     }
-#ifdef __ANDROID__
-    } else {
-        QGP_LOG_INFO(LOG_TAG, "Android background mode: skipping transport/presence init");
-    }
-#endif
 
     /* Mark identity as loaded BEFORE starting listeners (they check this flag) */
     engine->identity_loaded = true;
     QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity loaded, identity_loaded flag set to true");
 
-    /* 2. Start outbox listeners for Flutter events (DNA_EVENT_OUTBOX_UPDATED)
+    /* Start outbox listeners for Flutter events (DNA_EVENT_OUTBOX_UPDATED)
      * When DHT value changes, fires event -> Flutter polls + refreshes UI
      * Must be AFTER identity_loaded=true since listeners check this flag
-     * Note: DHT listeners don't require P2P transport - they work via DHT directly */
+     * Note: DHT listeners don't require P2P transport - they work via DHT directly
+     * IMPORTANT: Listeners are needed in BOTH full and minimal mode for notifications */
     if (engine->messenger) {
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: starting outbox listeners...");
         int listener_count = dna_engine_listen_all_contacts(engine);
@@ -1813,48 +1798,42 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         int group_count = dna_engine_subscribe_all_groups(engine);
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: subscribed to %d groups", group_count);
 
-#ifdef __ANDROID__
-        if (init_mode == DNA_INIT_MODE_FULL) {
-#endif
-        /* 3. Retry any pending/failed messages from previous sessions
-         * Messages may have been queued while offline or failed to send.
-         * Now that DHT is connected, retry them. */
-        int retried = dna_engine_retry_pending_messages(engine);
-        if (retried > 0) {
-            QGP_LOG_INFO(LOG_TAG, "[RETRY] Identity load: retried %d pending messages", retried);
-        }
+        /* Full mode only: Retry pending messages and spawn stabilization thread */
+        if (!minimal_mode) {
+            /* 3. Retry any pending/failed messages from previous sessions
+             * Messages may have been queued while offline or failed to send.
+             * Now that DHT is connected, retry them. */
+            int retried = dna_engine_retry_pending_messages(engine);
+            if (retried > 0) {
+                QGP_LOG_INFO(LOG_TAG, "[RETRY] Identity load: retried %d pending messages", retried);
+            }
 
-        /* Spawn post-stabilization retry thread.
-         * DHT callback's listener thread only spawns if identity_loaded was true
-         * when callback fired. In the common case (DHT connects before identity
-         * loads), we need this dedicated thread to retry after routing table fills. */
-        QGP_LOG_WARN(LOG_TAG, "[RETRY] About to spawn stabilization thread (engine=%p, messenger=%p)",
-                     (void*)engine, (void*)engine->messenger);
-        pthread_t stabilization_thread;
-        int spawn_rc = pthread_create(&stabilization_thread, NULL, dna_engine_stabilization_retry_thread, engine);
-        QGP_LOG_WARN(LOG_TAG, "[RETRY] pthread_create returned %d", spawn_rc);
-        if (spawn_rc == 0) {
-            pthread_detach(stabilization_thread);
-            QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread spawned successfully");
-        } else {
-            QGP_LOG_ERROR(LOG_TAG, "[RETRY] FAILED to spawn stabilization thread: rc=%d", spawn_rc);
+            /* Spawn post-stabilization retry thread.
+             * DHT callback's listener thread only spawns if identity_loaded was true
+             * when callback fired. In the common case (DHT connects before identity
+             * loads), we need this dedicated thread to retry after routing table fills. */
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] About to spawn stabilization thread (engine=%p, messenger=%p)",
+                         (void*)engine, (void*)engine->messenger);
+            pthread_t stabilization_thread;
+            int spawn_rc = pthread_create(&stabilization_thread, NULL, dna_engine_stabilization_retry_thread, engine);
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] pthread_create returned %d", spawn_rc);
+            if (spawn_rc == 0) {
+                pthread_detach(stabilization_thread);
+                QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread spawned successfully");
+            } else {
+                QGP_LOG_ERROR(LOG_TAG, "[RETRY] FAILED to spawn stabilization thread: rc=%d", spawn_rc);
+            }
         }
-#ifdef __ANDROID__
-        }
-#endif
 
         /* Note: Delivery confirmation is now handled by persistent watermark listeners
          * started in dna_engine_listen_all_contacts() for each contact. */
     }
 
-#ifdef __ANDROID__
-    if (init_mode == DNA_INIT_MODE_FULL) {
-#endif
-    /* Silent background: Create any missing blockchain wallets
+    /* Full mode only: Create any missing blockchain wallets
      * This uses the encrypted seed stored during identity creation.
      * Non-fatal if seed doesn't exist or wallet creation fails.
      * v0.3.0: Flat structure - keys/identity.kem */
-    {
+    if (!minimal_mode) {
         char kyber_path[512];
         snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", engine->data_dir);
 
@@ -1878,9 +1857,6 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
             qgp_key_free(kem_key);
         }
     }
-#ifdef __ANDROID__
-    }
-#endif
 
     /* NOTE: Removed blocking DHT profile verification (v0.3.141)
      *
@@ -5061,12 +5037,14 @@ dna_request_id_t dna_engine_load_identity(
     return dna_submit_task(engine, TASK_LOAD_IDENTITY, &params, cb, user_data);
 }
 
-#ifdef __ANDROID__
-dna_request_id_t dna_engine_load_identity_with_mode(
+bool dna_engine_is_identity_loaded(dna_engine_t *engine) {
+    return engine && engine->identity_loaded;
+}
+
+dna_request_id_t dna_engine_load_identity_minimal(
     dna_engine_t *engine,
     const char *fingerprint,
     const char *password,
-    dna_init_mode_t mode,
     dna_completion_cb callback,
     void *user_data
 ) {
@@ -5075,116 +5053,13 @@ dna_request_id_t dna_engine_load_identity_with_mode(
     dna_task_params_t params = {0};
     strncpy(params.load_identity.fingerprint, fingerprint, 128);
     params.load_identity.password = password ? strdup(password) : NULL;
-    params.load_identity.mode = mode;
+    params.load_identity.minimal = true;
 
-    QGP_LOG_INFO(LOG_TAG, "Load identity with mode: %s",
-                 mode == DNA_INIT_MODE_BACKGROUND ? "BACKGROUND" : "FULL");
+    QGP_LOG_INFO(LOG_TAG, "Load identity (minimal): DHT + listeners only");
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_LOAD_IDENTITY, &params, cb, user_data);
 }
-
-int dna_engine_upgrade_to_foreground(dna_engine_t *engine) {
-    if (!engine || !engine->identity_loaded) {
-        QGP_LOG_ERROR(LOG_TAG, "Cannot upgrade: engine or identity not loaded");
-        return -1;
-    }
-
-    if (engine->init_mode == DNA_INIT_MODE_FULL) {
-        QGP_LOG_INFO(LOG_TAG, "Already in FULL mode, nothing to upgrade");
-        return 0;
-    }
-
-    QGP_LOG_INFO(LOG_TAG, "Upgrading from BACKGROUND to FULL mode");
-    const char *fingerprint = engine->fingerprint;
-
-    /* 1. Sync contacts from DHT (restore on new device) */
-    if (engine->messenger) {
-        int sync_result = messenger_sync_contacts_from_dht(engine->messenger);
-        if (sync_result == 0) {
-            QGP_LOG_INFO(LOG_TAG, "Upgrade: Synced contacts from DHT");
-        } else if (sync_result == -2) {
-            QGP_LOG_INFO(LOG_TAG, "Upgrade: No contact list in DHT");
-        } else {
-            QGP_LOG_WARN(LOG_TAG, "Upgrade: Warning: Failed to sync contacts from DHT");
-        }
-    }
-
-    /* 2. Initialize P2P transport if not already done */
-    if (!engine->transport_initialized && engine->messenger) {
-        if (messenger_transport_init(engine->messenger) != 0) {
-            QGP_LOG_WARN(LOG_TAG, "Upgrade: Warning: Failed to initialize P2P transport");
-        } else {
-            engine->transport_initialized = true;
-            QGP_LOG_INFO(LOG_TAG, "Upgrade: P2P transport initialized");
-
-            /* Check for offline messages */
-            size_t offline_count = 0;
-            if (messenger_transport_check_offline_messages(engine->messenger, NULL, &offline_count) == 0) {
-                if (offline_count > 0) {
-                    QGP_LOG_INFO(LOG_TAG, "Upgrade: Received %zu offline messages", offline_count);
-                }
-            }
-        }
-    }
-
-    /* 3. Start presence heartbeat if not already running */
-    if (!engine->presence_initialized) {
-        if (dna_start_presence_heartbeat(engine) != 0) {
-            QGP_LOG_WARN(LOG_TAG, "Upgrade: Warning: Failed to start presence heartbeat");
-        } else {
-            engine->presence_initialized = true;
-            QGP_LOG_INFO(LOG_TAG, "Upgrade: Presence heartbeat started");
-        }
-    }
-
-    /* 4. Retry pending messages */
-    int retried = dna_engine_retry_pending_messages(engine);
-    if (retried > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Upgrade: Retried %d pending messages", retried);
-    }
-
-    /* 5. Create missing blockchain wallets */
-    {
-        char kyber_path[512];
-        snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", engine->data_dir);
-
-        qgp_key_t *kem_key = NULL;
-        int load_rc;
-        if (engine->keys_encrypted && engine->session_password) {
-            load_rc = qgp_key_load_encrypted(kyber_path, engine->session_password, &kem_key);
-        } else {
-            load_rc = qgp_key_load(kyber_path, &kem_key);
-        }
-
-        if (load_rc == 0 && kem_key &&
-            kem_key->private_key && kem_key->private_key_size == 3168) {
-            int wallets_created = 0;
-            if (blockchain_create_missing_wallets(fingerprint, kem_key->private_key, &wallets_created) == 0) {
-                if (wallets_created > 0) {
-                    QGP_LOG_INFO(LOG_TAG, "Upgrade: Auto-created %d missing blockchain wallets", wallets_created);
-                }
-            }
-            qgp_key_free(kem_key);
-        }
-    }
-
-    engine->init_mode = DNA_INIT_MODE_FULL;
-    QGP_LOG_INFO(LOG_TAG, "Upgrade to FULL mode complete");
-    return 0;
-}
-
-dna_init_mode_t dna_engine_get_init_mode(dna_engine_t *engine) {
-    if (!engine || !engine->identity_loaded) {
-        return DNA_INIT_MODE_FULL;  /* Default to FULL if not loaded */
-    }
-    return engine->init_mode;
-}
-
-bool dna_engine_is_identity_loaded(dna_engine_t *engine) {
-    return engine && engine->identity_loaded;
-}
-#endif /* __ANDROID__ */
 
 dna_request_id_t dna_engine_register_name(
     dna_engine_t *engine,

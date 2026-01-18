@@ -579,6 +579,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       controller: _scrollController,
       reverse: true,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      cacheExtent: 500.0, // Pre-render items for smoother scrolling
       itemCount: filteredMessages.length + extraItems,
       itemBuilder: (context, index) {
         // Last item (appears at top in reversed list) is the loading indicator

@@ -980,85 +980,44 @@ DNA_API dna_request_id_t dna_engine_load_identity(
     void *user_data
 );
 
-#ifdef __ANDROID__
 /**
- * Android initialization mode for background service optimization
- *
- * DNA_INIT_MODE_FULL: Complete initialization (transport, presence, wallet)
- *                     Use when app is in foreground.
- *
- * DNA_INIT_MODE_BACKGROUND: Lightweight DHT-only initialization
- *                           Use when running in background service.
- *                           Skips transport, presence heartbeat, and wallet.
- *                           DHT listeners remain active for notifications.
- */
-typedef enum {
-    DNA_INIT_MODE_FULL = 0,        /* Full init (Android foreground, all platforms) */
-    DNA_INIT_MODE_BACKGROUND = 1   /* DHT+listeners only (Android background service) */
-} dna_init_mode_t;
-
-/**
- * Load identity with initialization mode (Android only)
- *
- * Like dna_engine_load_identity(), but allows specifying initialization mode.
- * In BACKGROUND mode, skips heavy initialization (transport, presence, wallet)
- * while keeping DHT listeners active for push notifications.
- *
- * @param engine      Engine instance
- * @param fingerprint Identity fingerprint to load
- * @param password    Password for encrypted keys (NULL if unencrypted)
- * @param mode        Initialization mode (FULL or BACKGROUND)
- * @param callback    Called on completion
- * @param user_data   User data for callback
- * @return            Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_load_identity_with_mode(
-    dna_engine_t *engine,
-    const char *fingerprint,
-    const char *password,
-    dna_init_mode_t mode,
-    dna_completion_cb callback,
-    void *user_data
-);
-
-/**
- * Upgrade from background mode to foreground mode (Android only)
- *
- * When app comes to foreground after background service was running,
- * this completes the initialization that was skipped in BACKGROUND mode:
- * - Initializes transport layer
- * - Starts presence heartbeat
- * - Syncs contacts from DHT
- * - Checks offline messages
- * - Retries pending messages
- * - Creates missing blockchain wallets
- *
- * Safe to call multiple times - no-op if already in FULL mode.
- *
- * @param engine    Engine instance
- * @return          0 on success, -1 on error
- */
-DNA_API int dna_engine_upgrade_to_foreground(dna_engine_t *engine);
-
-/**
- * Get current initialization mode (Android only)
- *
- * Returns the mode that was used when loading identity.
- *
- * @param engine    Engine instance
- * @return          Current mode (DNA_INIT_MODE_FULL or DNA_INIT_MODE_BACKGROUND),
- *                  or DNA_INIT_MODE_FULL if engine is NULL or identity not loaded
- */
-DNA_API dna_init_mode_t dna_engine_get_init_mode(dna_engine_t *engine);
-
-/**
- * Check if identity is loaded (Android only)
+ * Check if identity is loaded
  *
  * @param engine    Engine instance
  * @return          true if identity is loaded, false otherwise
  */
 DNA_API bool dna_engine_is_identity_loaded(dna_engine_t *engine);
-#endif /* __ANDROID__ */
+
+/**
+ * Load identity with minimal initialization (v0.5.24+)
+ *
+ * Lightweight version for background services. Only initializes:
+ * - DHT connection
+ * - DHT listeners for message notifications
+ *
+ * Skips (to save resources when app is closed):
+ * - P2P transport layer
+ * - Presence heartbeat
+ * - Contact sync from DHT
+ * - Pending message retry
+ * - Wallet creation
+ *
+ * Use dna_engine_load_identity() for full initialization when app is open.
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Identity fingerprint to load
+ * @param password    Password for encrypted keys (NULL if unencrypted)
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_load_identity_minimal(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *password,
+    dna_completion_cb callback,
+    void *user_data
+);
 
 /**
  * Register human-readable name in DHT

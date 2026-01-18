@@ -23,10 +23,9 @@ import androidx.core.app.NotificationCompat
  * Phase 14: Android background execution for reliable DHT-only messaging.
  * Note: Polling removed in favor of DHT listeners for better battery life.
  *
- * v0.5.5+: Lightweight background mode available via DNAEngine:
- * - loadIdentityBackground(): Load identity with minimal resources
- * - upgradeToForeground(): Complete initialization when app opens
- * See io.cpunk.dna.DNAEngine for integration.
+ * v0.5.24+: Single-owner model - Flutter and Service never share engine.
+ * When Flutter opens, Service releases engine. When Flutter closes,
+ * Service creates new engine. DHT reconnects in 2-3 seconds.
  */
 class DnaMessengerService : Service() {
     companion object {
@@ -89,20 +88,14 @@ class DnaMessengerService : Service() {
         external fun nativeIsIdentityLoaded(): Boolean
 
         /**
-         * Load identity in background mode (DHT + listeners only).
+         * Load identity with minimal initialization (DHT + listeners only).
          * Called when service starts fresh but Flutter isn't running.
+         * Skips transport, presence, wallet to save resources.
          * Note: This is a blocking call for simplicity in service context.
          * Returns: 0 on success, negative on error
          */
         @JvmStatic
-        external fun nativeLoadIdentityBackgroundSync(fingerprint: String): Int
-
-        /**
-         * Get current init mode.
-         * Returns: 0 = FULL, 1 = BACKGROUND
-         */
-        @JvmStatic
-        external fun nativeGetInitMode(): Int
+        external fun nativeLoadIdentityMinimalSync(fingerprint: String): Int
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -233,10 +226,11 @@ class DnaMessengerService : Service() {
     }
 
     /**
-     * Ensure identity is loaded for DHT listeners (v0.5.5+)
+     * Ensure identity is loaded for DHT listeners (v0.5.24+)
      *
+     * Single-owner model: Service owns engine when Flutter is not running.
      * When the process is killed but service restarts (START_STICKY),
-     * we need to reload identity in BACKGROUND mode for notifications.
+     * we reload identity with full initialization for notifications.
      */
     private fun ensureIdentityLoaded() {
         if (!libraryLoaded) {
@@ -247,8 +241,7 @@ class DnaMessengerService : Service() {
         try {
             // Check if identity already loaded (Flutter might have done it)
             if (nativeIsIdentityLoaded()) {
-                val mode = nativeGetInitMode()
-                android.util.Log.i(TAG, "Identity already loaded (mode=$mode)")
+                android.util.Log.i(TAG, "Identity already loaded")
                 return
             }
 
@@ -267,11 +260,11 @@ class DnaMessengerService : Service() {
                 return
             }
 
-            // Load identity in BACKGROUND mode (DHT + listeners only)
-            android.util.Log.i(TAG, "Loading identity in BACKGROUND mode: ${fingerprint.take(16)}...")
-            val result = nativeLoadIdentityBackgroundSync(fingerprint)
+            // Load identity with minimal initialization (DHT + listeners only)
+            android.util.Log.i(TAG, "Loading identity (minimal): ${fingerprint.take(16)}...")
+            val result = nativeLoadIdentityMinimalSync(fingerprint)
             if (result == 0) {
-                android.util.Log.i(TAG, "Identity loaded in BACKGROUND mode - notifications active")
+                android.util.Log.i(TAG, "Identity loaded (minimal mode) - notifications active")
             } else {
                 android.util.Log.e(TAG, "Failed to load identity: $result")
             }
