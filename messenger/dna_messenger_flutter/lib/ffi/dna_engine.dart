@@ -4989,21 +4989,19 @@ class DnaEngine {
     // This sets disposing=true in C, which prevents new callbacks from being invoked.
     _bindings.dna_engine_set_event_callback(_engine, nullptr, nullptr);
 
-    // Save pending request callbacks before clearing - we'll close them AFTER destroy
-    final pendingCallbacks = _pendingRequests.values.map((r) => r.callback).toList();
+    // Clear pending requests map (callbacks will check _isDisposed and return early)
     _pendingRequests.clear();
 
     // Destroy the engine - this stops all C threads and cleans up DHT
-    // After this returns, no C code can invoke any callbacks
     _bindings.dna_engine_destroy(_engine);
 
-    // NOW it's safe to close ALL NativeCallables - engine is destroyed,
-    // no more C code can possibly invoke them
-    _eventCallback?.close();
-    _eventCallback = null;
-    for (final callback in pendingCallbacks) {
-      callback.close();
-    }
+    // NOTE: We intentionally do NOT close NativeCallables here.
+    // Dart docs: "Any outstanding calls to the callback from native code will
+    // cause undefined behavior" when close() is called.
+    // Even after engine destroy, there may be callbacks already scheduled on
+    // the Dart event loop that haven't run yet. Closing would crash them.
+    // The callbacks check _isDisposed and return early, so they're safe.
+    // NativeCallables are cleaned up when the isolate exits.
 
     // Null out the pointer to catch any use-after-free in Dart
     _engine = nullptr;
