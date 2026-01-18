@@ -1603,22 +1603,11 @@ class DnaEngine {
   /// In v0.3.0 single-user model, fingerprint is optional. If not provided,
   /// the fingerprint will be computed from the flat key file.
   ///
-  /// On Android (v0.5.5+): If identity was already loaded by the background
-  /// service in BACKGROUND mode, this upgrades to FULL mode instead of
-  /// reloading. This provides seamless handoff between service and Flutter.
+  /// Single-owner model (v0.5.24+): Flutter owns the engine when app is open.
+  /// If identity is already loaded, this is a no-op.
   Future<void> loadIdentity({String? fingerprint, String? password}) async {
-    // Android: Check if service already loaded identity in background mode
-    if (Platform.isAndroid && isIdentityLoaded()) {
-      final mode = getInitMode();
-      if (mode == 1) {  // BACKGROUND mode
-        // Upgrade to FULL mode instead of reloading
-        final result = upgradeToForeground();
-        if (result != 0) {
-          throw DnaEngineException(result, 'Failed to upgrade to foreground mode');
-        }
-        return;
-      }
-      // Already in FULL mode, nothing to do
+    // Single-owner model: If identity already loaded, nothing to do
+    if (isIdentityLoaded()) {
       return;
     }
 
