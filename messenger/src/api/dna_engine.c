@@ -782,7 +782,7 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
 
     /* Debug logging for GROUP_MESSAGE_RECEIVED event dispatch */
     if (event->type == DNA_EVENT_GROUP_MESSAGE_RECEIVED) {
-        QGP_LOG_WARN(LOG_TAG, "[EVENT] GROUP_MESSAGE dispatch: callback=%p, disposing=%d, attached=%d",
+        QGP_LOG_INFO(LOG_TAG, "[EVENT] GROUP_MESSAGE dispatch: callback=%p, disposing=%d, attached=%d",
                      (void*)callback, disposing, flutter_attached);
     }
 
@@ -797,7 +797,7 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
                 QGP_LOG_WARN(LOG_TAG, "[EVENT] MESSAGE_SENT callback invoked");
             }
             if (event->type == DNA_EVENT_GROUP_MESSAGE_RECEIVED) {
-                QGP_LOG_WARN(LOG_TAG, "[EVENT] GROUP_MESSAGE callback invoked");
+                QGP_LOG_INFO(LOG_TAG, "[EVENT] GROUP_MESSAGE callback invoked");
             }
         }
     }
@@ -1282,16 +1282,13 @@ static void on_group_new_message(const char *group_uuid, size_t new_count, void 
 
     /* Fire DNA event */
     dna_engine_t *engine = dna_engine_get_global();
-    QGP_LOG_WARN(LOG_TAG, "[GROUP] Dispatching event: engine=%p", (void*)engine);
     if (engine) {
         dna_event_t event = {0};
         event.type = DNA_EVENT_GROUP_MESSAGE_RECEIVED;
         strncpy(event.data.group_message.group_uuid, group_uuid,
                 sizeof(event.data.group_message.group_uuid) - 1);
         event.data.group_message.new_count = (int)new_count;
-        QGP_LOG_WARN(LOG_TAG, "[GROUP] Calling dna_dispatch_event type=%d uuid=%s", event.type, group_uuid);
         dna_dispatch_event(engine, &event);
-        QGP_LOG_WARN(LOG_TAG, "[GROUP] dna_dispatch_event returned");
     } else {
         QGP_LOG_ERROR(LOG_TAG, "[GROUP] Cannot dispatch - engine is NULL!");
     }
