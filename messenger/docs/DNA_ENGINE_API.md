@@ -569,6 +569,27 @@ Service never share the engine simultaneously.
 
 ---
 
+### dna_engine_is_transport_ready (v0.5.26+)
+
+```c
+bool dna_engine_is_transport_ready(dna_engine_t *engine);
+```
+
+Checks if the transport layer is initialized. Returns false if identity was
+loaded in minimal mode (DHT only, no transport).
+
+**Parameters:**
+- `engine` - Engine instance
+
+**Returns:** `true` if transport is ready, `false` otherwise
+
+**Use Case:** Flutter checks if transport is ready after identity load. If
+identity was loaded by Android ForegroundService in minimal mode before Flutter
+started, transport won't be initialized. Flutter detects this and reloads
+identity in full mode to enable offline message fetching.
+
+---
+
 ### dna_engine_load_identity_minimal (v0.5.24+)
 
 ```c

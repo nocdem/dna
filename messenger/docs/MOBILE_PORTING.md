@@ -442,6 +442,9 @@ dna_request_id_t dna_engine_load_identity_minimal(engine, fingerprint, password,
 
 // Check if identity is loaded
 bool dna_engine_is_identity_loaded(dna_engine_t *engine);
+
+// Check if transport layer is ready (v0.5.26+)
+bool dna_engine_is_transport_ready(dna_engine_t *engine);
 ```
 
 **JNI API:**
@@ -463,6 +466,55 @@ bool nativeIsIdentityLoaded();
 **What minimal mode keeps:**
 - DHT connection
 - DHT listeners (for message notifications)
+
+#### Single-Owner Model (v0.5.24+)
+
+Flutter and ForegroundService never share the engine simultaneously:
+
+1. **When Flutter opens:** Flutter owns the engine, service pauses DHT operations
+2. **When Flutter closes:** Service can take over with minimal mode
+
+**Auto-Upgrade from Minimal to Full Mode (v0.5.26+):**
+
+If ForegroundService loads identity in minimal mode before Flutter opens:
+1. Flutter's `loadIdentity()` detects transport is not ready via `isTransportReady()`
+2. Flutter proceeds to call C `dna_engine_load_identity()` (full mode)
+3. C code frees existing messenger and reinitializes with transport
+
+**Platform Handler (Flutter side):**
+```dart
+// lib/platform/android/android_platform_handler.dart
+
+@override
+Future<void> onResume(DnaEngine engine) async {
+  // Tell service to stop DHT operations - Flutter is taking over
+  await ForegroundServiceManager.setFlutterActive(true);
+
+  // Reattach event callback (was detached in onPause)
+  engine.attachEventCallback();
+
+  // Fetch any messages that arrived while app was backgrounded
+  await engine.checkOfflineMessages();
+}
+
+@override
+void onPause(DnaEngine engine) {
+  // Detach callback BEFORE Flutter is destroyed to prevent crash
+  engine.detachEventCallback();
+
+  // Tell service it can take over DHT operations
+  ForegroundServiceManager.setFlutterActive(false);
+}
+```
+
+**Service Side (Kotlin):**
+```kotlin
+// When flutterActive=true, service skips:
+// - DHT health checks
+// - DHT reinitializations
+// - Listen renewal timer
+// - Identity loading
+```
 
 ---
 
