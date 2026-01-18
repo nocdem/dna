@@ -1694,18 +1694,25 @@ void dna_engine_destroy(dna_engine_t *engine) {
         qgp_platform_release_identity_lock(engine->identity_lock_fd);
         engine->identity_lock_fd = -1;
     }
+    QGP_LOG_INFO(LOG_TAG, "DESTROY: lock released, clearing password...");
 
     /* Securely clear session password */
     if (engine->session_password) {
+        QGP_LOG_INFO(LOG_TAG, "DESTROY: session_password=%p", (void*)engine->session_password);
         qgp_secure_memzero(engine->session_password, strlen(engine->session_password));
         free(engine->session_password);
         engine->session_password = NULL;
     }
+    QGP_LOG_INFO(LOG_TAG, "DESTROY: password cleared, freeing data_dir...");
 
     /* Free data directory */
+    QGP_LOG_INFO(LOG_TAG, "DESTROY: data_dir=%p", (void*)engine->data_dir);
     free(engine->data_dir);
+    QGP_LOG_INFO(LOG_TAG, "DESTROY: data_dir freed, freeing engine...");
 
+    QGP_LOG_INFO(LOG_TAG, "DESTROY: engine=%p - about to free", (void*)engine);
     free(engine);
+    QGP_LOG_INFO(LOG_TAG, "DESTROY: engine freed, done");
 }
 
 const char* dna_engine_get_fingerprint(dna_engine_t *engine) {
