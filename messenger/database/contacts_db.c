@@ -276,6 +276,15 @@ int contacts_db_init(const char *owner_identity) {
         sqlite3_free(err_msg);
     }
 
+    // Add last_dm_sync column for smart sync (migration v0.5.22)
+    const char *sql_add_dm_sync =
+        "ALTER TABLE contacts ADD COLUMN last_dm_sync INTEGER DEFAULT 0;";
+    rc = sqlite3_exec(g_db, sql_add_dm_sync, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        /* Ignore error - column may already exist */
+        sqlite3_free(err_msg);
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Initialized for identity '%s': %s\n", owner_identity, db_path);
     return 0;
 }
@@ -646,6 +655,70 @@ int contacts_db_update_nickname(const char *identity, const char *nickname) {
     }
 
     QGP_LOG_INFO(LOG_TAG, "Updated nickname for: %.20s...\n", identity);
+    return 0;
+}
+
+// Get DM sync timestamp for a contact
+uint64_t contacts_db_get_dm_sync_timestamp(const char *identity) {
+    if (!g_db) {
+        return 0;
+    }
+
+    if (!identity || strlen(identity) != 128) {
+        return 0;
+    }
+
+    const char *sql = "SELECT last_dm_sync FROM contacts WHERE identity = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        return 0;
+    }
+
+    sqlite3_bind_text(stmt, 1, identity, -1, SQLITE_TRANSIENT);
+
+    uint64_t timestamp = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        timestamp = (uint64_t)sqlite3_column_int64(stmt, 0);
+    }
+
+    sqlite3_finalize(stmt);
+    return timestamp;
+}
+
+// Set DM sync timestamp for a contact
+int contacts_db_set_dm_sync_timestamp(const char *identity, uint64_t timestamp) {
+    if (!g_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    if (!identity || strlen(identity) != 128) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid identity for dm_sync update\n");
+        return -1;
+    }
+
+    const char *sql = "UPDATE contacts SET last_dm_sync = ? WHERE identity = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare dm_sync update: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)timestamp);
+    sqlite3_bind_text(stmt, 2, identity, -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update dm_sync: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
     return 0;
 }
 

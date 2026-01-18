@@ -699,7 +699,40 @@ where DAY_BUCKET = unix_timestamp / 86400
 - **TTL-based cleanup**: 7-day auto-expire, no watermark pruning needed
 - **Day rotation**: Listeners rotate at midnight UTC
 - **3-day sync**: Yesterday + today + tomorrow (clock skew tolerance)
+- **8-day full sync**: Complete DHT retention window for recovery
 - **Chunked storage**: Supports large message lists per day
+- **Smart sync (v0.5.22)**: Auto-detects when full sync is needed
+
+#### Unified Smart Sync (v0.5.22+)
+
+Both DMs and Groups use the same smart sync strategy for efficient message retrieval:
+
+| Condition | Sync Mode | Days Fetched |
+|-----------|-----------|--------------|
+| Regular sync (last sync < 3 days) | RECENT | 3 (yesterday, today, tomorrow) |
+| Extended offline (last sync > 3 days) | FULL | 8 (today-6 to today+1) |
+| Never synced (timestamp = 0) | FULL | 8 |
+
+**Key principle:** Always include tomorrow for clock skew tolerance (+/- 1 day).
+
+**DM Implementation:**
+- `contacts.last_dm_sync` column tracks per-contact sync timestamps
+- `transport_check_offline_messages()` checks oldest timestamp
+- If any contact > 3 days since sync OR never synced → full 8-day sync
+- Timestamps updated on successful sync
+
+**Group Implementation:**
+- `group_sync_state.last_sync_timestamp` column tracks per-group sync timestamps
+- `dna_group_outbox_sync_all()` checks each group's timestamp
+- Calls `dna_group_outbox_sync_full()` or `dna_group_outbox_sync_recent()` per group
+- Timestamps updated on successful sync
+
+**GET Timeout:** DHT GET operations use 30-second timeout (v0.5.22+) for reliable retrieval.
+
+**Benefits:**
+- Users offline for 4+ days now receive all messages within DHT retention window
+- Recent syncs are 3x faster (3 days vs 8 days)
+- Clock skew between devices handled automatically
 
 #### API
 ```c
@@ -713,11 +746,19 @@ int dht_dm_queue_message(dht_context_t *ctx, const char *sender, const char *rec
                          const uint8_t *ciphertext, size_t ciphertext_len,
                          uint64_t seq_num, uint32_t ttl_seconds);
 
-// Receive
+// Receive (single contact)
 int dht_dm_outbox_sync_recent(dht_context_t *ctx, const char *my_fp, const char *contact_fp,
                               dht_offline_message_t **messages_out, size_t *count_out);
 int dht_dm_outbox_sync_full(dht_context_t *ctx, const char *my_fp, const char *contact_fp,
                             dht_offline_message_t **messages_out, size_t *count_out);
+
+// Receive (all contacts - used by transport layer)
+int dht_dm_outbox_sync_all_contacts_recent(dht_context_t *ctx, const char *my_fp,
+                                           const char **contact_list, size_t contact_count,
+                                           dht_offline_message_t **messages_out, size_t *count_out);
+int dht_dm_outbox_sync_all_contacts_full(dht_context_t *ctx, const char *my_fp,
+                                         const char **contact_list, size_t contact_count,
+                                         dht_offline_message_t **messages_out, size_t *count_out);
 
 // Listen with day rotation
 int dht_dm_outbox_subscribe(dht_context_t *ctx, const char *my_fp, const char *contact_fp,

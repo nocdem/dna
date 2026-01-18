@@ -7,8 +7,13 @@
 #include "crypto/utils/qgp_log.h"
 #include "dht/client/dht_singleton.h"
 #include "dht/shared/dht_dm_outbox.h"  /* v0.5.0+ daily bucket API */
+#include "database/contacts_db.h"       /* v0.5.22+ smart sync timestamps */
+#include <time.h>
 
 #define LOG_TAG "SPILLWAY"
+
+/* 3 days in seconds - threshold for full sync */
+#define SMART_SYNC_FULL_THRESHOLD (3 * 86400)
 
 /**
  * Queue offline message in sender's DHT outbox (Spillway)
@@ -152,18 +157,66 @@ int transport_check_offline_messages(
     dht_offline_message_t *messages = NULL;
     size_t count = 0;
 
-    // Use daily bucket sync (v0.5.0+) - 3 days parallel per contact
-    int result = dht_dm_outbox_sync_all_contacts_recent(
-        dht,
-        ctx->config.identity,  // My fingerprint (recipient)
-        (const char **)sender_fps_array,
-        sender_count,
-        &messages,
-        &count
-    );
+    /* Smart sync: check oldest last_sync timestamp to decide full vs recent sync */
+    uint64_t now = (uint64_t)time(NULL);
+    bool need_full_sync = false;
 
-    QGP_LOG_INFO(LOG_TAG, "[OFFLINE] DHT retrieve: result=%d, count=%zu (from %zu senders)\n",
-                 result, count, sender_count);
+    if (!sender_fp) {  /* All contacts mode - check timestamps */
+        uint64_t oldest_sync = now;
+
+        for (size_t i = 0; i < sender_count; i++) {
+            uint64_t last_sync = contacts_db_get_dm_sync_timestamp(sender_fps_array[i]);
+            if (last_sync == 0) {
+                /* Never synced this contact - need full sync */
+                need_full_sync = true;
+                QGP_LOG_DEBUG(LOG_TAG, "Contact %.16s... never synced - need full sync",
+                             sender_fps_array[i]);
+                break;
+            }
+            if (last_sync < oldest_sync) {
+                oldest_sync = last_sync;
+            }
+        }
+
+        if (!need_full_sync && (now - oldest_sync) > SMART_SYNC_FULL_THRESHOLD) {
+            need_full_sync = true;
+            QGP_LOG_INFO(LOG_TAG, "Smart sync: oldest sync %lu seconds ago (>3 days) - need full sync",
+                        (unsigned long)(now - oldest_sync));
+        }
+    }
+
+    int result;
+    if (need_full_sync) {
+        QGP_LOG_INFO(LOG_TAG, "Smart sync: FULL (8 days) from %zu contacts", sender_count);
+        result = dht_dm_outbox_sync_all_contacts_full(
+            dht,
+            ctx->config.identity,
+            (const char **)sender_fps_array,
+            sender_count,
+            &messages,
+            &count
+        );
+    } else {
+        QGP_LOG_DEBUG(LOG_TAG, "Smart sync: RECENT (3 days) from %zu contacts", sender_count);
+        result = dht_dm_outbox_sync_all_contacts_recent(
+            dht,
+            ctx->config.identity,
+            (const char **)sender_fps_array,
+            sender_count,
+            &messages,
+            &count
+        );
+    }
+
+    /* Update sync timestamps on success for all-contacts mode */
+    if (result == 0 && !sender_fp) {
+        for (size_t i = 0; i < sender_count; i++) {
+            contacts_db_set_dm_sync_timestamp(sender_fps_array[i], now);
+        }
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[OFFLINE] DHT retrieve: result=%d, count=%zu (from %zu senders, %s)\n",
+                 result, count, sender_count, need_full_sync ? "full" : "recent");
 
     free(sender_fps_array);
     if (contacts) contacts_db_free_list(contacts);

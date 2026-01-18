@@ -226,6 +226,29 @@ int dht_dm_outbox_sync_all_contacts_recent(
     size_t *count_out
 );
 
+/**
+ * @brief Sync all messages from last 8 days from all contacts
+ *
+ * For each contact, syncs today-6 to today+1 (8 days total).
+ * Use this on login after extended offline period (>3 days).
+ *
+ * @param ctx DHT context
+ * @param my_fp My fingerprint (recipient)
+ * @param contact_list Array of contact fingerprints (senders)
+ * @param contact_count Number of contacts
+ * @param messages_out Output array (caller must free with dht_offline_messages_free)
+ * @param count_out Output count
+ * @return 0 on success, -1 on failure
+ */
+int dht_dm_outbox_sync_all_contacts_full(
+    dht_context_t *ctx,
+    const char *my_fp,
+    const char **contact_list,
+    size_t contact_count,
+    dht_offline_message_t **messages_out,
+    size_t *count_out
+);
+
 /*============================================================================
  * Listen API (Real-time notifications with day rotation)
  *============================================================================*/

@@ -531,6 +531,62 @@ int dht_dm_outbox_sync_all_contacts_recent(
     return 0;
 }
 
+int dht_dm_outbox_sync_all_contacts_full(
+    dht_context_t *ctx,
+    const char *my_fp,
+    const char **contact_list,
+    size_t contact_count,
+    dht_offline_message_t **messages_out,
+    size_t *count_out
+) {
+    if (!ctx || !my_fp || !contact_list || !messages_out || !count_out) {
+        return -1;
+    }
+
+    *messages_out = NULL;
+    *count_out = 0;
+
+    if (contact_count == 0) {
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Full sync (8 days) from %zu contacts", contact_count);
+
+    /* Collect messages from all contacts using full 8-day sync */
+    dht_offline_message_t *all_messages = NULL;
+    size_t total_count = 0;
+
+    for (size_t i = 0; i < contact_count; i++) {
+        dht_offline_message_t *contact_messages = NULL;
+        size_t contact_count_out = 0;
+
+        if (dht_dm_outbox_sync_full(ctx, my_fp, contact_list[i],
+                                     &contact_messages, &contact_count_out) == 0 &&
+            contact_messages && contact_count_out > 0) {
+
+            /* Append to combined array */
+            dht_offline_message_t *combined = (dht_offline_message_t*)realloc(
+                all_messages, (total_count + contact_count_out) * sizeof(dht_offline_message_t));
+
+            if (combined) {
+                all_messages = combined;
+                memcpy(&all_messages[total_count], contact_messages,
+                       contact_count_out * sizeof(dht_offline_message_t));
+                total_count += contact_count_out;
+                free(contact_messages);
+            } else {
+                dht_offline_messages_free(contact_messages, contact_count_out);
+            }
+        }
+    }
+
+    *messages_out = all_messages;
+    *count_out = total_count;
+
+    QGP_LOG_INFO(LOG_TAG, "Full sync complete: %zu messages from %zu contacts", total_count, contact_count);
+    return 0;
+}
+
 /*============================================================================
  * Listen API
  *============================================================================*/
