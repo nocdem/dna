@@ -872,8 +872,11 @@ int messenger_transport_check_offline_messages(
     size_t *messages_received)
 {
     if (!ctx || !ctx->transport_enabled || !ctx->transport_ctx) {
+        /* Transport not ready - return success with 0 messages instead of error.
+         * This is graceful degradation: offline check is optional, shouldn't block UI. */
+        QGP_LOG_DEBUG(LOG_TAG, "Transport not ready for offline check - skipping");
         if (messages_received) *messages_received = 0;
-        return -1;
+        return 0;
     }
 
     QGP_LOG_DEBUG(LOG_TAG, "Checking for offline messages in DHT (sender=%s)...",
