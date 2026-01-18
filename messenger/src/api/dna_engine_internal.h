@@ -33,7 +33,7 @@ extern "C" {
  * ============================================================================ */
 
 #define DNA_TASK_QUEUE_SIZE 256
-#define DNA_WORKER_THREAD_COUNT 4
+#define DNA_WORKER_THREAD_COUNT 8
 #define DNA_REQUEST_ID_INVALID 0
 #define DNA_MESSAGE_QUEUE_DEFAULT_CAPACITY 20
 #define DNA_MESSAGE_QUEUE_MAX_CAPACITY 100
