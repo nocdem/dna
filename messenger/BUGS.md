@@ -13,6 +13,14 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
+- [ ] **[FLUTTER] P4 - Group chat send icon doesn't match normal chat** - The send button icon in group chat screen is different from the one used in 1:1 chat screens. Should be consistent across all chat types.
+
+- [ ] **[FLUTTER] P3 - Background notification toggle doesn't re-request permissions** - When user disables then re-enables "Background Notifications" in settings, it doesn't prompt for notification permissions again. Should call `requestNotificationPermission()` when toggling ON.
+
+- [ ] **[FLUTTER] P2 - Auto sync toggle freezes app** - Clicking the "Auto Sync" switch in settings freezes the entire app for ~5 seconds while backup runs synchronously. Should run async with loading indicator.
+
+- [ ] **[FLUTTER] P2 - Sync Now button freezes app** - The manual "Sync Now" button freezes the app during sync with no feedback. Should show loading indicator and toast on success/failure.
+
 - [ ] **[FLUTTER] P3 - Avatar not restored when reinstalling from scratch** - After fresh install and restoring identity from seed phrase, avatar is not correctly restored from DHT. Profile data (name, etc.) may restore but avatar image is missing or not displayed.
 
 - [x] **[CLI] P2 - DHT PUT_SIGNED high failure rate** - Logs showed ~77% failure rate (986 failed vs 298 stored). Error: "PUT_SIGNED: Failed to store on any node". **Root cause:** Burst flooding from chunked operations (10-50 rapid PUTs per action) overwhelming DHT nodes. **Fix:** Added 100ms delay between chunk PUTs in `dht_chunked.c` to rate-limit operations. (v0.4.23)
