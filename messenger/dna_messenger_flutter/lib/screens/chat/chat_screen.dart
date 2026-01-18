@@ -113,9 +113,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       // Record fetch time for cooldown
       recordOfflineFetch(ref, contact.fingerprint);
 
-      // Refresh conversation to show any new messages
+      // Merge any new messages without showing loading state
       if (mounted) {
-        ref.invalidate(conversationProvider(contact.fingerprint));
+        await ref.read(conversationProvider(contact.fingerprint).notifier).mergeLatest();
       }
     } catch (e) {
       log('CHAT', 'Offline check failed: $e');
