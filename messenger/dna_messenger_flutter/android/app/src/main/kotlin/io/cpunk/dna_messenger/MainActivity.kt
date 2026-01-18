@@ -85,6 +85,12 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // CRITICAL: Tell service Flutter is active IMMEDIATELY
+        // This prevents the service from loading identity before Flutter registers its callback.
+        // Without this, the service owns the DHT context and all events go to /dev/null.
+        DnaMessengerService.setFlutterActive(true)
+        android.util.Log.i(TAG, "Flutter active set to true (prevents service from stealing DHT)")
+
         // Initialize notification helper EARLY - before DHT connects
         // This ensures we catch all DHT events from the very beginning
         initNotificationHelper(this)
