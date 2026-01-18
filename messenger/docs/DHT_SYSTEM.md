@@ -889,7 +889,7 @@ Group metadata storage in DHT.
 
 ### 5.4 dht_gsk_storage.h/c
 
-Chunked storage for large GSK (Group Symmetric Key) packets.
+Chunked storage for large GEK (Group Symmetric Key) packets.
 
 - 50KB chunk size
 - Maximum 4 chunks (~200KB total)

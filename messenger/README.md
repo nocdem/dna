@@ -35,7 +35,7 @@ DNA Messenger is a **fully decentralized** messenger and **multi-chain crypto wa
 - **End-to-end encryption** with Kyber1024 + AES-256-GCM
 - **1:1 and group chats** with delivery/read receipts
 - **Offline message queue** — Messages wait up to 7 days if you're offline
-- **Group encryption (GSK)** — 200x faster than encrypting per-recipient
+- **Group encryption (GEK)** — 200x faster than encrypting per-recipient
 - **User profiles** with avatars, bio, and social wall
 
 ### Integrated Multi-Chain Wallet

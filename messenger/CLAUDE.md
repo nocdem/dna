@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-01-17 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.5.22 | Flutter v0.99.160 | Nodus v0.4.5
+**Versions:** Library v0.5.23 | Flutter v0.99.160 | Nodus v0.4.5
 
 ---
 
@@ -126,7 +126,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 | Flutter UI | `docs/FLUTTER_UI.md` | Screens, FFI bindings, providers, widgets changes |
 | Function Reference | `docs/functions/` | Adding, modifying, or removing any function signatures |
 | Git Workflow | `docs/GIT_WORKFLOW.md` | Commit guidelines, branch strategy, repo procedures changes |
-| Message System | `docs/MESSAGE_SYSTEM.md` | Message format, encryption, GSK, database schema changes |
+| Message System | `docs/MESSAGE_SYSTEM.md` | Message format, encryption, GEK, database schema changes |
 | Mobile Porting | `docs/MOBILE_PORTING.md` | Android SDK, JNI, iOS, platform abstraction changes |
 | Transport Layer | `docs/P2P_ARCHITECTURE.md` | DHT transport, presence, peer discovery changes |
 | Security | `docs/SECURITY_AUDIT.md` | Crypto primitives, vulnerabilities, security fixes |
@@ -173,7 +173,13 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 3. **UPDATE** the "Current" column in this section
 4. **UPDATE** the version in CLAUDE.md header line
 5. **COMMIT** with version in commit message (e.g., "fix: Something (v0.3.39)")
-6. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
+6. **TEST MESSAGE** (C Library changes only): After push, send test messages:
+   ```bash
+   cd /opt/dna-messenger/build
+   ./cli/dna-messenger-cli send nocdem "C lib update (vX.Y.Z): <commit message>"
+   ./cli/dna-messenger-cli group-send dna-dev "C lib update (vX.Y.Z): <commit message>"
+   ```
+7. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
 
 **IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.
 
@@ -555,7 +561,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 | Flutter UI | `docs/FLUTTER_UI.md` | Screens, FFI bindings, providers, widgets changes |
 | Function Reference | `docs/functions/` | Adding, modifying, or removing any function signatures |
 | Git Workflow | `docs/GIT_WORKFLOW.md` | Commit guidelines, branch strategy, repo procedures changes |
-| Message System | `docs/MESSAGE_SYSTEM.md` | Message format, encryption, GSK, database schema changes |
+| Message System | `docs/MESSAGE_SYSTEM.md` | Message format, encryption, GEK, database schema changes |
 | Mobile Porting | `docs/MOBILE_PORTING.md` | Android SDK, JNI, iOS, platform abstraction changes |
 | P2P Architecture | `docs/P2P_ARCHITECTURE.md` | Transport tiers, ICE/NAT, TCP, peer discovery changes |
 | Security | `docs/SECURITY_AUDIT.md` | Crypto primitives, vulnerabilities, security fixes |
@@ -602,7 +608,13 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 3. **UPDATE** the "Current" column in this section
 4. **UPDATE** the version in CLAUDE.md header line
 5. **COMMIT** with version in commit message (e.g., "fix: Something (v0.3.39)")
-6. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
+6. **TEST MESSAGE** (C Library changes only): After push, send test messages:
+   ```bash
+   cd /opt/dna-messenger/build
+   ./cli/dna-messenger-cli send nocdem "C lib update (vX.Y.Z): <commit message>"
+   ./cli/dna-messenger-cli group-send dna-dev "C lib update (vX.Y.Z): <commit message>"
+   ```
+7. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
 
 **IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.
 
@@ -667,7 +679,7 @@ Post-quantum E2E encrypted messenger with DNA Wallet. **NIST Category 5 security
 
 **Crypto:** Kyber1024 (ML-KEM-1024), Dilithium5 (ML-DSA-87), AES-256-GCM, SHA3-512
 
-**Key Features:** E2E encrypted messaging • GSK group encryption • DHT groups • Per-identity contacts • User profiles • Wall posts • DNA Wallet • DHT-only messaging • Offline queueing (7d) • BIP39 recovery • SQLite • ImGui GUI • Android SDK (JNI)
+**Key Features:** E2E encrypted messaging • GEK group encryption • DHT groups • Per-identity contacts • User profiles • Wall posts • DNA Wallet • DHT-only messaging • Offline queueing (7d) • BIP39 recovery • SQLite • ImGui GUI • Android SDK (JNI)
 
 
 ---
@@ -802,14 +814,14 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 
 ### ✅ Complete
 - **Phase 4:** Desktop GUI (ImGui) + Wallet Integration
-- **Phase 5.1-5.9:** P2P Architecture (DHT, ICE, GSK, Message Format v0.08)
+- **Phase 5.1-5.9:** P2P Architecture (DHT, ICE, GEK, Message Format v0.08)
 - **Phase 6:** Android SDK (JNI bindings, Java classes, Gradle project)
 - **Phase 8:** DNA Wallet Integration
 - **Phase 9.1-9.6:** P2P Transport, Offline Queue, DHT Migrations
 - **Phase 10.1-10.4:** User Profiles, DNA Board, Avatars, Voting
 - **Phase 11:** ICE NAT Traversal
 - **Phase 12:** Message Format v0.08 - Fingerprint Privacy
-- **Phase 13:** GSK Group Encryption
+- **Phase 13:** GEK Group Encryption
 - **Phase 14:** DHT-Only Messaging (Android ForegroundService, DHT listen reliability) 
 
 ### 🚧 In Progress

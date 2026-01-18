@@ -62,9 +62,9 @@ Low-level cryptographic API for message encryption/decryption with post-quantum 
 | `dna_error_t dna_key_fingerprint(...)` | Get key fingerprint (SHA256) |
 | `dna_error_t dna_fingerprint_to_hex(...)` | Convert fingerprint to hex string |
 
-## 2.9 Group Messaging (GSK)
+## 2.9 Group Messaging (GEK)
 
 | Function | Description |
 |----------|-------------|
-| `dna_error_t dna_encrypt_message_gsk(...)` | Encrypt message with Group Symmetric Key |
-| `dna_error_t dna_decrypt_message_gsk(...)` | Decrypt GSK-encrypted message |
+| `dna_error_t dna_encrypt_message_gek(...)` | Encrypt message with Group Symmetric Key |
+| `dna_error_t dna_decrypt_message_gek(...)` | Decrypt GEK-encrypted message |

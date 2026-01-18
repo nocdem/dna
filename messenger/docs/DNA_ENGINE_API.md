@@ -1265,9 +1265,9 @@ dna_request_id_t dna_engine_create_group(
 );
 ```
 
-Creates group with GSK (Group Symmetric Key) encryption.
+Creates group with GEK (Group Symmetric Key) encryption.
 
-**GSK Encryption:**
+**GEK Encryption:**
 - 200x faster than individual PQ encryption
 - Single AES-256 key shared by all members
 - Key wrapped with Kyber1024 for each member
@@ -1286,7 +1286,7 @@ dna_request_id_t dna_engine_send_group_message(
 );
 ```
 
-Sends message to group using GSK encryption.
+Sends message to group using GEK encryption.
 
 ---
 
@@ -1614,4 +1614,4 @@ Use `dna_engine_error_string(error)` for human-readable messages.
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture
 - [MESSAGE_FORMATS.md](MESSAGE_FORMATS.md) - Wire protocol
-- [GSK_IMPLEMENTATION.md](GSK_IMPLEMENTATION.md) - Group encryption
+- [GEK_IMPLEMENTATION.md](GEK_IMPLEMENTATION.md) - Group encryption

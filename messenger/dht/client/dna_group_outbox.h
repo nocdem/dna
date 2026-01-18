@@ -112,7 +112,7 @@ typedef struct {
     char sender_fingerprint[129];               /* SHA3-512 fingerprint of sender */
     char group_uuid[37];                        /* UUID v4 of group */
     uint64_t timestamp_ms;                      /* Unix timestamp in milliseconds */
-    uint32_t gsk_version;                       /* GEK version used for encryption */
+    uint32_t gek_version;                       /* GEK version used for encryption */
 
     /* Encrypted payload (AES-256-GCM) */
     uint8_t nonce[DNA_GROUP_OUTBOX_NONCE_SIZE]; /* 12-byte nonce */

@@ -44,7 +44,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 **Example:**
 ```
-feat: Add GSK group encryption (Phase 13)
+feat: Add GEK group encryption (Phase 13)
 
 - Implement AES-256 shared keys for groups
 - 200x performance improvement for large groups
@@ -52,7 +52,7 @@ feat: Add GSK group encryption (Phase 13)
 - Dilithium5 owner signatures
 - 57/57 unit tests passing
 
-Breaking: Requires GSK support for group messaging
+Breaking: Requires GEK support for group messaging
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 

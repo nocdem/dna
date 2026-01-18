@@ -49,7 +49,7 @@ The following critical issues have been resolved:
 
 ## 1. C/C++ Core - TODOs and Stubs
 
-### 1.1 GSK Module (HIGH PRIORITY)
+### 1.1 GEK Module (HIGH PRIORITY)
 
 **File:** `messenger/gsk.c`
 
@@ -60,7 +60,7 @@ The following critical issues have been resolved:
 
 **Action Required:**
 - [x] ~~Integrate proper key loading from messenger context (line 491)~~ - **FIXED v0.4.16: Updated to use `keys/identity.dsa`**
-- [ ] Implement P2P notifications for GSK rotation (line 559) or document as Phase 8
+- [ ] Implement P2P notifications for GEK rotation (line 559) or document as Phase 8
 
 ### 1.2 Database
 
@@ -198,7 +198,7 @@ if (!_disposed && mounted) {  // ERROR: 'mounted' doesn't exist on StateNotifier
 - [x] Document or remove DEBUG_BLOCKCHAIN_SIGNING blocks (retained, properly guarded)
 
 ### Phase 3: Maintenance
-- [ ] Address GSK module TODOs (Phase 8 features)
+- [ ] Address GEK module TODOs (Phase 8 features)
 - [ ] Implement Windows multiple file selection
 - [ ] Implement Windows/macOS focus detection
 - [ ] Add presence_cache_count() function

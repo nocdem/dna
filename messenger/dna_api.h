@@ -260,20 +260,20 @@ dna_error_t dna_fingerprint_to_hex(
 );
 
 // ============================================================================
-// GROUP MESSAGING WITH GSK (Phase 13 - v0.09)
+// GROUP MESSAGING WITH GEK (Phase 13 - v0.09)
 // ============================================================================
 
 /**
- * Encrypt message with Group Symmetric Key (GSK)
+ * Encrypt message with Group Encryption Key (GEK)
  *
- * Encrypts a group message using AES-256-GCM with the active GSK.
+ * Encrypts a group message using AES-256-GCM with the active GEK.
  * Much more efficient than per-recipient encryption for large groups.
  *
- * Message Format (MSG_TYPE_GROUP_GSK = 0x01):
+ * Message Format (MSG_TYPE_GROUP_GEK = 0x01):
  * [Header: version(1) | enc_key_type(1) | recipient_count(1) | message_type(1) |
  *          encrypted_size(4) | signature_size(4)]
  * [Group UUID (37 bytes)]
- * [GSK Version (4 bytes, network byte order)]
+ * [GEK Version (4 bytes, network byte order)]
  * [Nonce (12 bytes)]
  * [Ciphertext: sender_fingerprint(64) || timestamp(8) || plaintext]
  * [Tag (16 bytes)]
@@ -286,8 +286,8 @@ dna_error_t dna_fingerprint_to_hex(
  * @param plaintext: Message plaintext
  * @param plaintext_len: Plaintext length
  * @param group_uuid: Group UUID (36-char UUID v4 string)
- * @param gsk: Group symmetric key (32 bytes)
- * @param gsk_version: GSK version number
+ * @param gek: Group encryption key (32 bytes)
+ * @param gek_version: GEK version number
  * @param sender_fingerprint: Sender's fingerprint (64 bytes binary)
  * @param sender_sign_privkey: Sender's Dilithium5 private key (for signing)
  * @param timestamp: Message timestamp (Unix time, uint64_t)
@@ -295,13 +295,13 @@ dna_error_t dna_fingerprint_to_hex(
  * @param ciphertext_len_out: Output ciphertext length
  * @return: DNA_OK on success, error code otherwise
  */
-dna_error_t dna_encrypt_message_gsk(
+dna_error_t dna_encrypt_message_gek(
     dna_context_t *ctx,
     const uint8_t *plaintext,
     size_t plaintext_len,
     const char *group_uuid,
-    const uint8_t gsk[32],
-    uint32_t gsk_version,
+    const uint8_t gek[32],
+    uint32_t gek_version,
     const uint8_t sender_fingerprint[64],
     const uint8_t *sender_sign_privkey,
     uint64_t timestamp,
@@ -310,36 +310,36 @@ dna_error_t dna_encrypt_message_gsk(
 );
 
 /**
- * Decrypt message with Group Symmetric Key (GSK)
+ * Decrypt message with Group Encryption Key (GEK)
  *
- * Decrypts a group message encrypted with AES-256-GCM + GSK.
+ * Decrypts a group message encrypted with AES-256-GCM + GEK.
  * Verifies Dilithium5 signature.
  *
  * @param ctx: DNA context
  * @param ciphertext: Message ciphertext
  * @param ciphertext_len: Ciphertext length
- * @param gsk: Group symmetric key (32 bytes)
+ * @param gek: Group encryption key (32 bytes)
  * @param sender_dilithium_pubkey: Sender's Dilithium5 public key (for signature verification)
  * @param plaintext_out: Output plaintext buffer (caller must free)
  * @param plaintext_len_out: Output plaintext length
  * @param sender_fingerprint_out: Sender's fingerprint (64 bytes, caller must allocate or pass NULL)
  * @param timestamp_out: Message timestamp (can be NULL if not needed)
  * @param group_uuid_out: Group UUID (37 bytes, caller must allocate or pass NULL)
- * @param gsk_version_out: GSK version (can be NULL if not needed)
+ * @param gek_version_out: GEK version (can be NULL if not needed)
  * @return: DNA_OK on success, error code otherwise
  */
-dna_error_t dna_decrypt_message_gsk(
+dna_error_t dna_decrypt_message_gek(
     dna_context_t *ctx,
     const uint8_t *ciphertext,
     size_t ciphertext_len,
-    const uint8_t gsk[32],
+    const uint8_t gek[32],
     const uint8_t *sender_dilithium_pubkey,
     uint8_t **plaintext_out,
     size_t *plaintext_len_out,
     uint8_t sender_fingerprint_out[64],
     uint64_t *timestamp_out,
     char group_uuid_out[37],
-    uint32_t *gsk_version_out
+    uint32_t *gek_version_out
 );
 
 // ============================================================================
