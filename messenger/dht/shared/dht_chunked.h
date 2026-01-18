@@ -42,11 +42,18 @@ extern "C" {
 /** Magic bytes for chunk format validation ("DNAC" = DNA Chunked) */
 #define DHT_CHUNK_MAGIC         0x444E4143
 
-/** Protocol version */
-#define DHT_CHUNK_VERSION       1
+/** Protocol versions */
+#define DHT_CHUNK_VERSION_V1    1
+#define DHT_CHUNK_VERSION_V2    2
+#define DHT_CHUNK_VERSION       DHT_CHUNK_VERSION_V2  /* Current write version */
 
-/** Chunk header size in bytes */
-#define DHT_CHUNK_HEADER_SIZE   25
+/** Chunk header sizes in bytes */
+#define DHT_CHUNK_HEADER_SIZE_V1   25                 /* v1: no content hash */
+#define DHT_CHUNK_HEADER_SIZE_V2   57                 /* v2: 25 + 32 hash (chunk 0 only) */
+#define DHT_CHUNK_HEADER_SIZE      DHT_CHUNK_HEADER_SIZE_V1  /* Non-chunk-0 size */
+
+/** Content hash size (SHA3-256 of original uncompressed data) */
+#define DHT_CHUNK_HASH_SIZE     32
 
 /**
  * Maximum payload per chunk (45KB - header)
@@ -241,6 +248,37 @@ int dht_chunked_make_key(
  * @return Estimated number of chunks (after compression estimate)
  */
 uint32_t dht_chunked_estimate_chunks(size_t data_len);
+
+/*============================================================================
+ * Metadata API Functions (for smart sync optimization)
+ *============================================================================*/
+
+/**
+ * Fetch chunk 0 metadata only (for smart sync hash comparison)
+ *
+ * Retrieves only the chunk 0 header to get the content hash without
+ * downloading all chunks. Use for sync optimization:
+ * 1. Call this to get remote content hash
+ * 2. Compare with locally cached hash
+ * 3. If match, skip full fetch (data unchanged)
+ * 4. If mismatch, call dht_chunked_fetch() for full data
+ *
+ * @param ctx              DHT context
+ * @param base_key         Base key string
+ * @param hash_out         Output: 32-byte content hash (filled if v2, zeroed if v1)
+ * @param original_size_out Output: Original uncompressed data size
+ * @param total_chunks_out Output: Total number of chunks (optional, can be NULL)
+ * @param is_v2_out        Output: True if chunk was v2+ (has valid content hash)
+ * @return DHT_CHUNK_OK on success, error code on failure
+ */
+int dht_chunked_fetch_metadata(
+    dht_context_t *ctx,
+    const char *base_key,
+    uint8_t hash_out[DHT_CHUNK_HASH_SIZE],
+    uint32_t *original_size_out,
+    uint32_t *total_chunks_out,
+    bool *is_v2_out
+);
 
 /*============================================================================
  * Batch API Functions
