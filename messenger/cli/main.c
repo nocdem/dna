@@ -109,9 +109,9 @@ static void print_usage(const char *prog_name) {
     printf("GROUP COMMANDS:\n");
     printf("  group-list                  List all groups\n");
     printf("  group-create <name>         Create a new group\n");
-    printf("  group-send <uuid> <msg>     Send message to group\n");
+    printf("  group-send <name|uuid> <msg>  Send message to group\n");
     printf("  group-info <uuid>           Show group info and members\n");
-    printf("  group-invite <uuid> <fp>    Invite member to group\n");
+    printf("  group-invite <uuid> <name|fp>  Invite member to group\n");
     printf("  group-sync <uuid>           Sync group from DHT to local cache\n");
     printf("  group-publish-gek <uuid>    Publish GEK to DHT (owner only)\n");
     printf("\n");
@@ -535,7 +535,7 @@ int main(int argc, char *argv[]) {
     }
     else if (strcmp(command, "group-send") == 0) {
         if (optind + 2 >= argc) {
-            fprintf(stderr, "Error: 'group-send' requires <uuid> and <message> arguments\n");
+            fprintf(stderr, "Error: 'group-send' requires <name|uuid> and <message> arguments\n");
             result = 1;
         } else {
             result = cmd_group_send(g_engine, argv[optind + 1], argv[optind + 2]);

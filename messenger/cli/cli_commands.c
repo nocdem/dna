@@ -303,7 +303,7 @@ void cmd_help(void) {
     printf("GROUP COMMANDS:\n");
     printf("  group-list                  List all groups\n");
     printf("  group-create <name>         Create a new group\n");
-    printf("  group-send <uuid> <msg>     Send message to group\n");
+    printf("  group-send <name|uuid> <msg>  Send message to group\n");
     printf("  group-info <uuid>           Show group info and members\n");
     printf("  group-invite <uuid> <name|fp>  Invite member to group\n");
     printf("  group-sync <uuid>           Sync group from DHT to local cache\n");
@@ -1758,6 +1758,72 @@ static void on_group_message_sent(dna_request_id_t request_id, int error, void *
     pthread_mutex_unlock(&wait->mutex);
 }
 
+/**
+ * Check if string looks like a UUID (36 chars with dashes)
+ */
+static bool is_uuid_format(const char *str) {
+    if (!str || strlen(str) != 36) return false;
+    /* Check format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx */
+    for (int i = 0; i < 36; i++) {
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (str[i] != '-') return false;
+        } else {
+            if (!isxdigit((unsigned char)str[i])) return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Resolve group name or UUID to UUID
+ * If input is already a UUID, returns it. Otherwise searches by name.
+ * Returns 0 on success with uuid_out filled, -1 on error.
+ */
+static int resolve_group_identifier(dna_engine_t *engine, const char *name_or_uuid, char *uuid_out) {
+    if (!engine || !name_or_uuid || !uuid_out) return -1;
+
+    /* If already a UUID, just copy it */
+    if (is_uuid_format(name_or_uuid)) {
+        strncpy(uuid_out, name_or_uuid, 36);
+        uuid_out[36] = '\0';
+        return 0;
+    }
+
+    /* Otherwise, look up by name */
+    cli_group_wait_t ctx = {0};
+    cli_wait_init(&ctx.wait);
+    ctx.groups = NULL;
+    ctx.group_count = 0;
+
+    dna_request_id_t req_id = dna_engine_get_groups(engine, on_groups_list, &ctx);
+    if (req_id == 0) {
+        cli_wait_destroy(&ctx.wait);
+        return -1;
+    }
+
+    int result = cli_wait_for(&ctx.wait);
+    cli_wait_destroy(&ctx.wait);
+
+    if (result != 0 || !ctx.groups) {
+        if (ctx.groups) free(ctx.groups);
+        return -1;
+    }
+
+    /* Search by name (case-insensitive) */
+    int found = -1;
+    for (int i = 0; i < ctx.group_count; i++) {
+        if (strcasecmp(ctx.groups[i].name, name_or_uuid) == 0) {
+            strncpy(uuid_out, ctx.groups[i].uuid, 36);
+            uuid_out[36] = '\0';
+            found = 0;
+            break;
+        }
+    }
+
+    free(ctx.groups);
+    return found;
+}
+
 int cmd_group_list(dna_engine_t *engine) {
     if (!engine) {
         printf("Error: Engine not initialized\n");
@@ -1841,18 +1907,25 @@ int cmd_group_create(dna_engine_t *engine, const char *name) {
     return 0;
 }
 
-int cmd_group_send(dna_engine_t *engine, const char *group_uuid, const char *message) {
-    if (!engine || !group_uuid || !message) {
+int cmd_group_send(dna_engine_t *engine, const char *name_or_uuid, const char *message) {
+    if (!engine || !name_or_uuid || !message) {
         printf("Error: Missing arguments\n");
         return -1;
     }
 
-    printf("Sending message to group %s...\n", group_uuid);
+    /* Resolve name to UUID if needed */
+    char resolved_uuid[37];
+    if (resolve_group_identifier(engine, name_or_uuid, resolved_uuid) != 0) {
+        printf("Error: Group '%s' not found\n", name_or_uuid);
+        return -1;
+    }
+
+    printf("Sending message to group %s...\n", resolved_uuid);
 
     cli_wait_t wait;
     cli_wait_init(&wait);
 
-    dna_request_id_t req_id = dna_engine_send_group_message(engine, group_uuid, message, on_group_message_sent, &wait);
+    dna_request_id_t req_id = dna_engine_send_group_message(engine, resolved_uuid, message, on_group_message_sent, &wait);
     if (req_id == 0) {
         printf("Error: Failed to initiate group message send\n");
         cli_wait_destroy(&wait);
