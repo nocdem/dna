@@ -8771,6 +8771,190 @@ int dna_engine_debug_log_export(const char *filepath) {
  * MESSAGE BACKUP/RESTORE IMPLEMENTATION
  * ============================================================================ */
 
+/* Context for async backup thread */
+typedef struct {
+    dna_engine_t *engine;
+    dna_request_id_t request_id;
+    dna_backup_result_cb callback;
+    void *user_data;
+    qgp_key_t *kyber_key;
+    qgp_key_t *dilithium_key;
+} backup_thread_ctx_t;
+
+/* Context for async restore thread */
+typedef struct {
+    dna_engine_t *engine;
+    dna_request_id_t request_id;
+    dna_backup_result_cb callback;
+    void *user_data;
+    qgp_key_t *kyber_key;
+    qgp_key_t *dilithium_key;
+} restore_thread_ctx_t;
+
+/* Background thread for message backup (never blocks UI) */
+static void *backup_thread_func(void *arg) {
+    backup_thread_ctx_t *ctx = (backup_thread_ctx_t *)arg;
+    if (!ctx) return NULL;
+
+    QGP_LOG_INFO(LOG_TAG, "[BACKUP-THREAD] Starting async backup...");
+
+    dna_engine_t *engine = ctx->engine;
+    if (!engine || !engine->messenger || !engine->identity_loaded) {
+        QGP_LOG_WARN(LOG_TAG, "[BACKUP-THREAD] Engine not ready, aborting");
+        if (ctx->callback) {
+            ctx->callback(ctx->request_id, -1, 0, 0, ctx->user_data);
+        }
+        qgp_key_free(ctx->kyber_key);
+        qgp_key_free(ctx->dilithium_key);
+        free(ctx);
+        return NULL;
+    }
+
+    /* Get DHT context */
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "[BACKUP-THREAD] DHT not available");
+        if (ctx->callback) {
+            ctx->callback(ctx->request_id, -1, 0, 0, ctx->user_data);
+        }
+        qgp_key_free(ctx->kyber_key);
+        qgp_key_free(ctx->dilithium_key);
+        free(ctx);
+        return NULL;
+    }
+
+    /* Get message backup context */
+    message_backup_context_t *msg_ctx = engine->messenger->backup_ctx;
+    if (!msg_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "[BACKUP-THREAD] Backup context not available");
+        if (ctx->callback) {
+            ctx->callback(ctx->request_id, -1, 0, 0, ctx->user_data);
+        }
+        qgp_key_free(ctx->kyber_key);
+        qgp_key_free(ctx->dilithium_key);
+        free(ctx);
+        return NULL;
+    }
+
+    /* Perform backup (slow DHT operation) */
+    int message_count = 0;
+    int result = dht_message_backup_publish(
+        dht_ctx,
+        msg_ctx,
+        engine->fingerprint,
+        ctx->kyber_key->public_key,
+        ctx->kyber_key->private_key,
+        ctx->dilithium_key->public_key,
+        ctx->dilithium_key->private_key,
+        &message_count
+    );
+
+    /* Cleanup keys */
+    qgp_key_free(ctx->kyber_key);
+    qgp_key_free(ctx->dilithium_key);
+
+    /* Invoke callback with results */
+    if (result == 0) {
+        QGP_LOG_INFO(LOG_TAG, "[BACKUP-THREAD] Backup completed: %d messages", message_count);
+        if (ctx->callback) {
+            ctx->callback(ctx->request_id, 0, message_count, 0, ctx->user_data);
+        }
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "[BACKUP-THREAD] Backup failed: %d", result);
+        if (ctx->callback) {
+            ctx->callback(ctx->request_id, result, 0, 0, ctx->user_data);
+        }
+    }
+
+    free(ctx);
+    return NULL;
+}
+
+/* Background thread for message restore (never blocks UI) */
+static void *restore_thread_func(void *arg) {
+    restore_thread_ctx_t *ctx = (restore_thread_ctx_t *)arg;
+    if (!ctx) return NULL;
+
+    QGP_LOG_INFO(LOG_TAG, "[RESTORE-THREAD] Starting async restore...");
+
+    dna_engine_t *engine = ctx->engine;
+    if (!engine || !engine->messenger || !engine->identity_loaded) {
+        QGP_LOG_WARN(LOG_TAG, "[RESTORE-THREAD] Engine not ready, aborting");
+        if (ctx->callback) {
+            ctx->callback(ctx->request_id, -1, 0, 0, ctx->user_data);
+        }
+        qgp_key_free(ctx->kyber_key);
+        qgp_key_free(ctx->dilithium_key);
+        free(ctx);
+        return NULL;
+    }
+
+    /* Get DHT context */
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "[RESTORE-THREAD] DHT not available");
+        if (ctx->callback) {
+            ctx->callback(ctx->request_id, -1, 0, 0, ctx->user_data);
+        }
+        qgp_key_free(ctx->kyber_key);
+        qgp_key_free(ctx->dilithium_key);
+        free(ctx);
+        return NULL;
+    }
+
+    /* Get message backup context */
+    message_backup_context_t *msg_ctx = engine->messenger->backup_ctx;
+    if (!msg_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "[RESTORE-THREAD] Backup context not available");
+        if (ctx->callback) {
+            ctx->callback(ctx->request_id, -1, 0, 0, ctx->user_data);
+        }
+        qgp_key_free(ctx->kyber_key);
+        qgp_key_free(ctx->dilithium_key);
+        free(ctx);
+        return NULL;
+    }
+
+    /* Perform restore (slow DHT operation) */
+    int restored_count = 0;
+    int skipped_count = 0;
+    int result = dht_message_backup_restore(
+        dht_ctx,
+        msg_ctx,
+        engine->fingerprint,
+        ctx->kyber_key->private_key,
+        ctx->dilithium_key->public_key,
+        &restored_count,
+        &skipped_count
+    );
+
+    /* Cleanup keys */
+    qgp_key_free(ctx->kyber_key);
+    qgp_key_free(ctx->dilithium_key);
+
+    /* Invoke callback with results */
+    if (result == 0) {
+        QGP_LOG_INFO(LOG_TAG, "[RESTORE-THREAD] Restore completed: %d restored, %d skipped",
+                     restored_count, skipped_count);
+        if (ctx->callback) {
+            ctx->callback(ctx->request_id, 0, restored_count, skipped_count, ctx->user_data);
+        }
+    } else if (result == -2) {
+        QGP_LOG_INFO(LOG_TAG, "[RESTORE-THREAD] No backup found in DHT");
+        if (ctx->callback) {
+            ctx->callback(ctx->request_id, -2, 0, 0, ctx->user_data);
+        }
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "[RESTORE-THREAD] Restore failed: %d", result);
+        if (ctx->callback) {
+            ctx->callback(ctx->request_id, result, 0, 0, ctx->user_data);
+        }
+    }
+
+    free(ctx);
+    return NULL;
+}
+
 dna_request_id_t dna_engine_backup_messages(
     dna_engine_t *engine,
     dna_backup_result_cb callback,
@@ -8789,23 +8973,7 @@ dna_request_id_t dna_engine_backup_messages(
 
     dna_request_id_t request_id = dna_next_request_id(engine);
 
-    // Get DHT context
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available for backup");
-        callback(request_id, -1, 0, 0, user_data);
-        return request_id;
-    }
-
-    // Get message backup context
-    message_backup_context_t *msg_ctx = engine->messenger->backup_ctx;
-    if (!msg_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Message backup context not available");
-        callback(request_id, -1, 0, 0, user_data);
-        return request_id;
-    }
-
-    // Load keys (same pattern as messenger_sync_contacts_to_dht)
+    /* Load keys on main thread for fast-fail validation */
     const char *data_dir = qgp_platform_app_data_dir();
     if (!data_dir) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory");
@@ -8813,8 +8981,7 @@ dna_request_id_t dna_engine_backup_messages(
         return request_id;
     }
 
-    // Load Kyber keypair
-    /* v0.3.0: Flat structure - keys/identity.kem */
+    /* Load Kyber keypair (v0.3.0: flat structure - keys/identity.kem) */
     char kyber_path[1024];
     snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", data_dir);
 
@@ -8833,7 +9000,7 @@ dna_request_id_t dna_engine_backup_messages(
         }
     }
 
-    // Load Dilithium keypair (v0.3.0: flat structure)
+    /* Load Dilithium keypair (v0.3.0: flat structure) */
     char dilithium_path[1024];
     snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
 
@@ -8854,30 +9021,36 @@ dna_request_id_t dna_engine_backup_messages(
         }
     }
 
-    // Perform backup
-    int message_count = 0;
-    int result = dht_message_backup_publish(
-        dht_ctx,
-        msg_ctx,
-        engine->fingerprint,
-        kyber_key->public_key,
-        kyber_key->private_key,
-        dilithium_key->public_key,
-        dilithium_key->private_key,
-        &message_count
-    );
-
-    qgp_key_free(kyber_key);
-    qgp_key_free(dilithium_key);
-
-    if (result == 0) {
-        QGP_LOG_INFO(LOG_TAG, "Message backup completed: %d messages", message_count);
-        callback(request_id, 0, message_count, 0, user_data);
-    } else {
-        QGP_LOG_ERROR(LOG_TAG, "Message backup failed: %d", result);
-        callback(request_id, result, 0, 0, user_data);
+    /* Allocate thread context - keys ownership transferred to thread */
+    backup_thread_ctx_t *ctx = (backup_thread_ctx_t *)malloc(sizeof(backup_thread_ctx_t));
+    if (!ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate backup thread context");
+        qgp_key_free(kyber_key);
+        qgp_key_free(dilithium_key);
+        callback(request_id, -1, 0, 0, user_data);
+        return request_id;
     }
 
+    ctx->engine = engine;
+    ctx->request_id = request_id;
+    ctx->callback = callback;
+    ctx->user_data = user_data;
+    ctx->kyber_key = kyber_key;
+    ctx->dilithium_key = dilithium_key;
+
+    /* Spawn detached thread for async backup (never blocks UI) */
+    pthread_t backup_thread;
+    if (pthread_create(&backup_thread, NULL, backup_thread_func, ctx) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to spawn backup thread");
+        qgp_key_free(kyber_key);
+        qgp_key_free(dilithium_key);
+        free(ctx);
+        callback(request_id, -1, 0, 0, user_data);
+        return request_id;
+    }
+    pthread_detach(backup_thread);
+
+    QGP_LOG_INFO(LOG_TAG, "Backup thread spawned (request_id=%llu)", (unsigned long long)request_id);
     return request_id;
 }
 
@@ -8899,23 +9072,7 @@ dna_request_id_t dna_engine_restore_messages(
 
     dna_request_id_t request_id = dna_next_request_id(engine);
 
-    // Get DHT context
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available for restore");
-        callback(request_id, -1, 0, 0, user_data);
-        return request_id;
-    }
-
-    // Get message backup context
-    message_backup_context_t *msg_ctx = engine->messenger->backup_ctx;
-    if (!msg_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Message backup context not available");
-        callback(request_id, -1, 0, 0, user_data);
-        return request_id;
-    }
-
-    // Load keys
+    /* Load keys on main thread for fast-fail validation */
     const char *data_dir = qgp_platform_app_data_dir();
     if (!data_dir) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory");
@@ -8923,8 +9080,7 @@ dna_request_id_t dna_engine_restore_messages(
         return request_id;
     }
 
-    // Load Kyber keypair (only need private key for decryption)
-    /* v0.3.0: Flat structure - keys/identity.kem */
+    /* Load Kyber keypair (v0.3.0: flat structure - keys/identity.kem) */
     char kyber_path[1024];
     snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", data_dir);
 
@@ -8943,7 +9099,7 @@ dna_request_id_t dna_engine_restore_messages(
         }
     }
 
-    // Load Dilithium keypair (v0.3.0: flat structure)
+    /* Load Dilithium keypair (v0.3.0: flat structure) */
     char dilithium_path[1024];
     snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
 
@@ -8964,34 +9120,36 @@ dna_request_id_t dna_engine_restore_messages(
         }
     }
 
-    // Perform restore
-    int restored_count = 0;
-    int skipped_count = 0;
-    int result = dht_message_backup_restore(
-        dht_ctx,
-        msg_ctx,
-        engine->fingerprint,
-        kyber_key->private_key,
-        dilithium_key->public_key,
-        &restored_count,
-        &skipped_count
-    );
-
-    qgp_key_free(kyber_key);
-    qgp_key_free(dilithium_key);
-
-    if (result == 0) {
-        QGP_LOG_INFO(LOG_TAG, "Message restore completed: %d restored, %d skipped",
-                     restored_count, skipped_count);
-        callback(request_id, 0, restored_count, skipped_count, user_data);
-    } else if (result == -2) {
-        QGP_LOG_INFO(LOG_TAG, "No message backup found in DHT");
-        callback(request_id, -2, 0, 0, user_data);
-    } else {
-        QGP_LOG_ERROR(LOG_TAG, "Message restore failed: %d", result);
-        callback(request_id, result, 0, 0, user_data);
+    /* Allocate thread context - keys ownership transferred to thread */
+    restore_thread_ctx_t *ctx = (restore_thread_ctx_t *)malloc(sizeof(restore_thread_ctx_t));
+    if (!ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate restore thread context");
+        qgp_key_free(kyber_key);
+        qgp_key_free(dilithium_key);
+        callback(request_id, -1, 0, 0, user_data);
+        return request_id;
     }
 
+    ctx->engine = engine;
+    ctx->request_id = request_id;
+    ctx->callback = callback;
+    ctx->user_data = user_data;
+    ctx->kyber_key = kyber_key;
+    ctx->dilithium_key = dilithium_key;
+
+    /* Spawn detached thread for async restore (never blocks UI) */
+    pthread_t restore_thread;
+    if (pthread_create(&restore_thread, NULL, restore_thread_func, ctx) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to spawn restore thread");
+        qgp_key_free(kyber_key);
+        qgp_key_free(dilithium_key);
+        free(ctx);
+        callback(request_id, -1, 0, 0, user_data);
+        return request_id;
+    }
+    pthread_detach(restore_thread);
+
+    QGP_LOG_INFO(LOG_TAG, "Restore thread spawned (request_id=%llu)", (unsigned long long)request_id);
     return request_id;
 }
 
