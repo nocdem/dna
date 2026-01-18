@@ -82,6 +82,10 @@ class _NavigationDrawer extends ConsumerWidget {
     // Settings tab index: 4 on mobile (with QR), 3 on desktop (no QR)
     final settingsTabIndex = supportsCamera ? 4 : 3;
 
+    // Watch unread counts for badges
+    final chatUnreadCount = ref.watch(totalUnreadCountProvider);
+    final groupUnreadCount = ref.watch(totalGroupUnreadCountProvider);
+
     void selectTab(int index) {
       ref.read(currentTabProvider.notifier).state = index;
       Navigator.of(context).pop();
@@ -105,6 +109,7 @@ class _NavigationDrawer extends ConsumerWidget {
                     label: 'Chats',
                     selected: currentTab == 0,
                     onTap: () => selectTab(0),
+                    badgeCount: chatUnreadCount,
                   ),
                   _DrawerItem(
                     icon: FontAwesomeIcons.users,
@@ -112,6 +117,7 @@ class _NavigationDrawer extends ConsumerWidget {
                     label: 'Groups',
                     selected: currentTab == 1,
                     onTap: () => selectTab(1),
+                    badgeCount: groupUnreadCount,
                   ),
                   _DrawerItem(
                     icon: FontAwesomeIcons.wallet,
@@ -158,6 +164,7 @@ class _DrawerItem extends StatelessWidget {
   final String label;
   final bool selected;
   final VoidCallback onTap;
+  final int badgeCount;
 
   const _DrawerItem({
     required this.icon,
@@ -165,6 +172,7 @@ class _DrawerItem extends StatelessWidget {
     required this.label,
     required this.selected,
     required this.onTap,
+    this.badgeCount = 0,
   });
 
   @override
@@ -182,6 +190,23 @@ class _DrawerItem extends StatelessWidget {
           fontWeight: selected ? FontWeight.w600 : null,
         ),
       ),
+      trailing: badgeCount > 0
+          ? Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primary,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                badgeCount > 99 ? '99+' : badgeCount.toString(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            )
+          : null,
       selected: selected,
       onTap: onTap,
     );
