@@ -111,8 +111,8 @@ class GroupsScreen extends ConsumerWidget {
             ),
             ...invitations.map((inv) => _InvitationTile(
               invitation: inv,
-              onAccept: () => _acceptInvitation(context, ref, inv),
-              onDecline: () => _declineInvitation(context, ref, inv),
+              onAccept: () async => _acceptInvitation(context, ref, inv),
+              onDecline: () async => _declineInvitation(context, ref, inv),
             )),
             const Divider(),
           ],
@@ -325,16 +325,48 @@ class _GroupTile extends ConsumerWidget {
   }
 }
 
-class _InvitationTile extends StatelessWidget {
+class _InvitationTile extends StatefulWidget {
   final Invitation invitation;
-  final VoidCallback onAccept;
-  final VoidCallback onDecline;
+  final Future<void> Function() onAccept;
+  final Future<void> Function() onDecline;
 
   const _InvitationTile({
     required this.invitation,
     required this.onAccept,
     required this.onDecline,
   });
+
+  @override
+  State<_InvitationTile> createState() => _InvitationTileState();
+}
+
+class _InvitationTileState extends State<_InvitationTile> {
+  bool _isAccepting = false;
+  bool _isDeclining = false;
+
+  bool get _isLoading => _isAccepting || _isDeclining;
+
+  Future<void> _handleAccept() async {
+    setState(() => _isAccepting = true);
+    try {
+      await widget.onAccept();
+    } finally {
+      if (mounted) {
+        setState(() => _isAccepting = false);
+      }
+    }
+  }
+
+  Future<void> _handleDecline() async {
+    setState(() => _isDeclining = true);
+    try {
+      await widget.onDecline();
+    } finally {
+      if (mounted) {
+        setState(() => _isDeclining = false);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -362,11 +394,11 @@ class _InvitationTile extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        invitation.groupName,
+                        widget.invitation.groupName,
                         style: theme.textTheme.titleMedium,
                       ),
                       Text(
-                        'Invited by ${_shortenFingerprint(invitation.inviter)}',
+                        'Invited by ${_shortenFingerprint(widget.invitation.inviter)}',
                         style: theme.textTheme.bodySmall,
                       ),
                     ],
@@ -379,13 +411,28 @@ class _InvitationTile extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
                 TextButton(
-                  onPressed: onDecline,
-                  child: const Text('Decline'),
+                  onPressed: _isLoading ? null : _handleDecline,
+                  child: _isDeclining
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Decline'),
                 ),
                 const SizedBox(width: 8),
                 ElevatedButton(
-                  onPressed: onAccept,
-                  child: const Text('Accept'),
+                  onPressed: _isLoading ? null : _handleAccept,
+                  child: _isAccepting
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text('Accept'),
                 ),
               ],
             ),
