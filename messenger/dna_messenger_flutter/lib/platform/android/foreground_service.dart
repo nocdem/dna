@@ -64,6 +64,16 @@ class ForegroundServiceManager {
     }
   }
 
+  /// Tell service whether Flutter is active (in foreground)
+  /// When active, service pauses DHT operations to avoid interference
+  static Future<void> setFlutterActive(bool active) async {
+    try {
+      await _channel.invokeMethod<void>('setFlutterActive', {'active': active});
+    } on PlatformException {
+      // Silently ignore - service might not be running
+    }
+  }
+
   /// Set up handler for service callbacks
   static void setMethodCallHandler(
       Future<dynamic> Function(MethodCall call)? handler) {

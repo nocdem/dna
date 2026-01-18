@@ -61,6 +61,11 @@ class DnaServiceMethodChannel(
                 "hasNotificationPermission" -> {
                     result.success(hasNotificationPermission())
                 }
+                "setFlutterActive" -> {
+                    val active = call.argument<Boolean>("active") ?: false
+                    setFlutterActive(active)
+                    result.success(null)
+                }
                 else -> {
                     result.notImplemented()
                 }
@@ -141,6 +146,11 @@ class DnaServiceMethodChannel(
             action = "POLL_NOW"
         }
         context.startService(intent)
+    }
+
+    private fun setFlutterActive(active: Boolean) {
+        android.util.Log.i(TAG, "Setting Flutter active: $active")
+        DnaMessengerService.setFlutterActive(active)
     }
 
     /**

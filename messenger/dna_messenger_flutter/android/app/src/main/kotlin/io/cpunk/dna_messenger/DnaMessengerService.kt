@@ -55,7 +55,19 @@ class DnaMessengerService : Service() {
         @Volatile
         private var isRunning = false
 
+        @Volatile
+        private var flutterActive = false
+
         fun isServiceRunning(): Boolean = isRunning
+
+        /**
+         * Set whether Flutter is active (in foreground).
+         * When true, service pauses DHT operations to avoid interference.
+         */
+        fun setFlutterActive(active: Boolean) {
+            android.util.Log.i(TAG, "Flutter active: $active")
+            flutterActive = active
+        }
 
         /**
          * Direct DHT reinit via JNI - doesn't need Flutter/engine.
@@ -238,6 +250,12 @@ class DnaMessengerService : Service() {
             return
         }
 
+        // Skip if Flutter is active - it owns the engine
+        if (flutterActive) {
+            android.util.Log.i(TAG, "Flutter active - skipping service identity load")
+            return
+        }
+
         try {
             // Check if identity already loaded (Flutter might have done it)
             if (nativeIsIdentityLoaded()) {
@@ -402,8 +420,12 @@ class DnaMessengerService : Service() {
         listenRenewalHandler?.postDelayed(object : Runnable {
             override fun run() {
                 if (isRunning) {
-                    android.util.Log.i(TAG, "Listen renewal timer fired - reinitializing DHT to refresh subscriptions")
-                    performDhtReinit()
+                    if (flutterActive) {
+                        android.util.Log.d(TAG, "Listen renewal skipped - Flutter active")
+                    } else {
+                        android.util.Log.i(TAG, "Listen renewal timer fired - reinitializing DHT to refresh subscriptions")
+                        performDhtReinit()
+                    }
                     listenRenewalHandler?.postDelayed(this, LISTEN_RENEWAL_INTERVAL_MS)
                 }
             }
@@ -441,6 +463,12 @@ class DnaMessengerService : Service() {
 
     private fun performHealthCheck() {
         if (!libraryLoaded) return
+
+        // Skip health check when Flutter is active - it owns the DHT
+        if (flutterActive) {
+            android.util.Log.d(TAG, "DHT health check skipped - Flutter active")
+            return
+        }
 
         try {
             val isHealthy = nativeIsDhtHealthy()
@@ -599,6 +627,12 @@ class DnaMessengerService : Service() {
     private fun performDhtReinit() {
         if (!libraryLoaded) {
             android.util.Log.e(TAG, "Native library not loaded - cannot reinit DHT")
+            return
+        }
+
+        // Skip DHT reinit when Flutter is active - it owns the DHT
+        if (flutterActive) {
+            android.util.Log.d(TAG, "DHT reinit skipped - Flutter active")
             return
         }
 

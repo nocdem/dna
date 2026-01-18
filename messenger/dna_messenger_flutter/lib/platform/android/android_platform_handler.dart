@@ -4,6 +4,7 @@
 
 import '../../ffi/dna_engine.dart';
 import '../platform_handler.dart';
+import 'foreground_service.dart';
 
 /// Android-specific platform handler
 ///
@@ -14,13 +15,24 @@ import '../platform_handler.dart';
 class AndroidPlatformHandler implements PlatformHandler {
   @override
   Future<void> onResume(DnaEngine engine) async {
+    // Tell service to stop DHT operations - Flutter is taking over
+    await ForegroundServiceManager.setFlutterActive(true);
+
+    // Reattach event callback (was detached in onPause)
+    engine.attachEventCallback();
+
     // Fetch any messages that arrived while app was backgrounded
     await engine.checkOfflineMessages();
   }
 
   @override
   void onPause(DnaEngine engine) {
-    // Nothing to do - Flutter keeps engine until app closed
+    // Detach callback BEFORE Flutter is destroyed to prevent crash
+    // when DHT listener fires after Dart NativeCallable is freed
+    engine.detachEventCallback();
+
+    // Tell service it can take over DHT operations
+    ForegroundServiceManager.setFlutterActive(false);
   }
 
   @override
