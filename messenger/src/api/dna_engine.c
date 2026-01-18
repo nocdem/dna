@@ -840,6 +840,10 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
     /* Android: When OUTBOX_UPDATED fires and Flutter is NOT attached, just show notification.
      * Don't fetch - let Flutter handle fetching when user opens app.
      * This avoids race conditions between C auto-fetch and Flutter fetch. */
+    if (event->type == DNA_EVENT_OUTBOX_UPDATED) {
+        QGP_LOG_INFO(LOG_TAG, "[ANDROID-NOTIFY] OUTBOX_UPDATED: cb=%p flutter_attached=%d",
+                     (void*)g_android_notification_cb, flutter_attached);
+    }
     if (event->type == DNA_EVENT_OUTBOX_UPDATED && g_android_notification_cb && !flutter_attached) {
         const char *contact_fp = event->data.outbox_updated.contact_fingerprint;
         const char *display_name = NULL;
