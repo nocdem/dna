@@ -17,13 +17,13 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 - [ ] **[FLUTTER] P3 - Background notification toggle doesn't re-request permissions** - When user disables then re-enables "Background Notifications" in settings, it doesn't prompt for notification permissions again. Should call `requestNotificationPermission()` when toggling ON.
 
-- [ ] **[FLUTTER] P2 - Auto sync toggle freezes app** - Clicking the "Auto Sync" switch in settings freezes the entire app for ~5 seconds while backup runs synchronously. Should run async with loading indicator.
+- [x] **[FLUTTER] P2 - Auto sync toggle freezes app** - Clicking the "Auto Sync" switch in settings freezes the entire app for ~5 seconds while backup runs synchronously. **Fix:** Made `dna_engine_backup_messages()` async - spawns background thread, returns immediately, callback fires on completion. Flutter already had loading indicators but they couldn't render while blocked. (v0.5.32)
 
-- [ ] **[FLUTTER] P2 - Sync Now button freezes app** - The manual "Sync Now" button freezes the app during sync with no feedback. Should show loading indicator and toast on success/failure.
+- [x] **[FLUTTER] P2 - Sync Now button freezes app** - The manual "Sync Now" button freezes the app during sync with no feedback. **Fix:** Backup now runs on background thread. Flutter's existing CircularProgressIndicator now shows properly. (v0.5.32)
 
-- [ ] **[FLUTTER] P2 - Backup Messages button freezes app** - In the backup messages modal, clicking backup freezes the entire app while backup runs synchronously. Should show loading indicator in modal and run async.
+- [x] **[FLUTTER] P2 - Backup Messages button freezes app** - In the backup messages modal, clicking backup freezes the entire app while backup runs synchronously. **Fix:** `dna_engine_backup_messages()` spawns detached pthread for DHT operations. (v0.5.32)
 
-- [ ] **[FLUTTER] P2 - Restore Messages button freezes app** - In the restore messages modal, clicking restore freezes the entire app while restore runs synchronously. Should show loading indicator in modal and run async.
+- [x] **[FLUTTER] P2 - Restore Messages button freezes app** - In the restore messages modal, clicking restore freezes the entire app while restore runs synchronously. **Fix:** `dna_engine_restore_messages()` spawns detached pthread for DHT operations. (v0.5.32)
 
 - [ ] **[FLUTTER] P3 - Avatar not restored when reinstalling from scratch** - After fresh install and restoring identity from seed phrase, avatar is not correctly restored from DHT. Profile data (name, etc.) may restore but avatar image is missing or not displayed.
 
