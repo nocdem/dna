@@ -7457,6 +7457,16 @@ size_t dna_engine_start_watermark_listener(
         if (updated > 0) {
             QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Pre-fetch: marked %d messages as DELIVERED (seq<=%lu)",
                          updated, (unsigned long)current_watermark);
+
+            /* Dispatch event to Flutter so UI updates (double checkmark) */
+            dna_event_t event = {0};
+            event.type = DNA_EVENT_MESSAGE_DELIVERED;
+            strncpy(event.data.message_delivered.recipient, fp_copy,
+                    sizeof(event.data.message_delivered.recipient) - 1);
+            event.data.message_delivered.seq_num = current_watermark;
+            event.data.message_delivered.timestamp = (uint64_t)time(NULL);
+            dna_dispatch_event(engine, &event);
+            QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Pre-fetch: dispatched MESSAGE_DELIVERED event");
         }
     }
 
