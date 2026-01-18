@@ -1219,6 +1219,14 @@ class DnaBindings {
     return _dna_engine_is_identity_loaded(engine);
   }
 
+  late final _dna_engine_is_transport_ready = _lib.lookupFunction<
+      Bool Function(Pointer<dna_engine_t>),
+      bool Function(Pointer<dna_engine_t>)>('dna_engine_is_transport_ready');
+
+  bool dna_engine_is_transport_ready(Pointer<dna_engine_t> engine) {
+    return _dna_engine_is_transport_ready(engine);
+  }
+
   late final _dna_engine_set_event_callback = _lib.lookupFunction<
       Void Function(
           Pointer<dna_engine_t>, Pointer<DnaEventCb>, Pointer<Void>),

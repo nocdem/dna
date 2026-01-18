@@ -989,6 +989,17 @@ DNA_API dna_request_id_t dna_engine_load_identity(
 DNA_API bool dna_engine_is_identity_loaded(dna_engine_t *engine);
 
 /**
+ * Check if transport layer is initialized
+ *
+ * Returns false if identity was loaded in minimal mode (DHT only).
+ * When false, offline message fetching won't work - need to reload identity in full mode.
+ *
+ * @param engine    Engine instance
+ * @return          true if transport is ready, false otherwise
+ */
+DNA_API bool dna_engine_is_transport_ready(dna_engine_t *engine);
+
+/**
  * Load identity with minimal initialization (v0.5.24+)
  *
  * Lightweight version for background services. Only initializes:

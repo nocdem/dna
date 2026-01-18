@@ -5041,6 +5041,10 @@ bool dna_engine_is_identity_loaded(dna_engine_t *engine) {
     return engine && engine->identity_loaded;
 }
 
+bool dna_engine_is_transport_ready(dna_engine_t *engine) {
+    return engine && engine->messenger && engine->messenger->transport_ctx != NULL;
+}
+
 dna_request_id_t dna_engine_load_identity_minimal(
     dna_engine_t *engine,
     const char *fingerprint,
