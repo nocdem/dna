@@ -33,7 +33,8 @@ extern "C" {
  * ============================================================================ */
 
 #define DNA_TASK_QUEUE_SIZE 256
-#define DNA_WORKER_THREAD_COUNT 8
+#define DNA_WORKER_THREAD_MIN 4      /* Minimum workers (low-end devices) */
+#define DNA_WORKER_THREAD_MAX 24     /* Maximum workers (diminishing returns beyond) */
 #define DNA_REQUEST_ID_INVALID 0
 #define DNA_MESSAGE_QUEUE_DEFAULT_CAPACITY 20
 #define DNA_MESSAGE_QUEUE_MAX_CAPACITY 100
@@ -546,7 +547,8 @@ struct dna_engine {
     pthread_mutex_t event_mutex;
 
     /* Threading */
-    pthread_t worker_threads[DNA_WORKER_THREAD_COUNT];
+    pthread_t *worker_threads;       /* Dynamically allocated based on CPU cores */
+    int worker_count;                /* Actual number of worker threads */
     dna_task_queue_t task_queue;
     atomic_bool shutdown_requested;
     pthread_mutex_t task_mutex;

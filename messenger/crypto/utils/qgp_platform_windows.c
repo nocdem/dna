@@ -490,4 +490,15 @@ void qgp_platform_set_network_callback(qgp_network_callback_t callback, void *us
     /* Mobile implementations (Android) call this on state changes */
 }
 
+/* ============================================================================
+ * System Information
+ * ============================================================================ */
+
+int qgp_platform_cpu_count(void) {
+    SYSTEM_INFO sysinfo;
+    GetSystemInfo(&sysinfo);
+    int count = (int)sysinfo.dwNumberOfProcessors;
+    return count > 0 ? count : 1;
+}
+
 #endif /* _WIN32 */
