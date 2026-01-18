@@ -754,6 +754,10 @@ class UserProfile {
   String website;
   String avatarBase64;
 
+  // Cached decoded avatar (lazy, computed once on first access)
+  Uint8List? _cachedAvatarBytes;
+  bool _avatarDecoded = false;
+
   UserProfile({
     this.backbone = '',
     this.alvin = '',
@@ -889,18 +893,27 @@ class UserProfile {
     );
   }
 
-  /// Decode avatar base64 with padding fix
+  /// Decode avatar base64 with padding fix (cached - only decodes once)
   /// Buffer limit is 20483 bytes which may truncate padding characters
   Uint8List? decodeAvatar() {
-    if (avatarBase64.isEmpty) return null;
+    // Return cached result if already decoded
+    if (_avatarDecoded) return _cachedAvatarBytes;
+
+    _avatarDecoded = true;
+    if (avatarBase64.isEmpty) {
+      _cachedAvatarBytes = null;
+      return null;
+    }
     try {
       var b64 = avatarBase64;
       final remainder = b64.length % 4;
       if (remainder > 0) {
         b64 = b64 + '=' * (4 - remainder);
       }
-      return base64Decode(b64);
+      _cachedAvatarBytes = base64Decode(b64);
+      return _cachedAvatarBytes;
     } catch (e) {
+      _cachedAvatarBytes = null;
       return null;
     }
   }

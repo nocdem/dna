@@ -101,6 +101,7 @@ class ContactsScreen extends ConsumerWidget {
       },
       child: ListView.builder(
         itemCount: contacts.length,
+        cacheExtent: 500.0, // Pre-render items for smoother scrolling
         itemBuilder: (context, index) {
           final contact = contacts[index];
           return _ContactTile(
@@ -177,15 +178,19 @@ class _ContactTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final unreadCounts = ref.watch(unreadCountsProvider);
-    final unreadCount = unreadCounts.maybeWhen(
-      data: (counts) => counts[contact.fingerprint] ?? 0,
-      orElse: () => 0,
+
+    // Use select() to only rebuild when this specific contact's unread count changes
+    final unreadCount = ref.watch(
+      unreadCountsProvider.select((async) => async.maybeWhen(
+        data: (counts) => counts[contact.fingerprint] ?? 0,
+        orElse: () => 0,
+      )),
     );
 
-    // Get cached profile (for avatar and display name)
-    final profileCache = ref.watch(contactProfileCacheProvider);
-    final cachedProfile = profileCache[contact.fingerprint];
+    // Use select() to only rebuild when this specific contact's profile changes
+    final cachedProfile = ref.watch(
+      contactProfileCacheProvider.select((cache) => cache[contact.fingerprint]),
+    );
     final avatarBytes = cachedProfile?.decodeAvatar();
 
     // Use cached display name if contact.displayName is empty (fallback chain)
