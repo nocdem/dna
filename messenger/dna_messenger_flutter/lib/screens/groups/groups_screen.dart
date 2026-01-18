@@ -176,6 +176,9 @@ class GroupsScreen extends ConsumerWidget {
   }
 
   void _openGroupChat(BuildContext context, WidgetRef ref, Group group) {
+    // Clear unread count when opening group chat
+    ref.read(groupUnreadCountsProvider.notifier).clearCount(group.uuid);
+
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => GroupChatScreen(group: group),
@@ -264,15 +267,20 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-class _GroupTile extends StatelessWidget {
+class _GroupTile extends ConsumerWidget {
   final Group group;
   final VoidCallback onTap;
 
   const _GroupTile({required this.group, required this.onTap});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final unreadCounts = ref.watch(groupUnreadCountsProvider);
+    final unreadCount = unreadCounts.maybeWhen(
+      data: (counts) => counts[group.uuid] ?? 0,
+      orElse: () => 0,
+    );
 
     return ListTile(
       leading: CircleAvatar(
@@ -282,9 +290,36 @@ class _GroupTile extends StatelessWidget {
           color: theme.colorScheme.secondary,
         ),
       ),
-      title: Text(group.name),
+      title: Text(
+        group.name,
+        style: unreadCount > 0
+            ? const TextStyle(fontWeight: FontWeight.bold)
+            : null,
+      ),
       subtitle: Text('${group.memberCount} members'),
-      trailing: const FaIcon(FontAwesomeIcons.chevronRight),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (unreadCount > 0)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primary,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                unreadCount > 99 ? '99+' : unreadCount.toString(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          const SizedBox(width: 4),
+          const FaIcon(FontAwesomeIcons.chevronRight),
+        ],
+      ),
       onTap: onTap,
     );
   }
@@ -470,7 +505,18 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
   bool _isSending = false;
 
   @override
+  void initState() {
+    super.initState();
+    // Mark this group chat as open (prevents unread count increment while viewing)
+    Future.microtask(() {
+      ref.read(openGroupUuidProvider.notifier).state = widget.group.uuid;
+    });
+  }
+
+  @override
   void dispose() {
+    // Mark group chat as closed
+    ref.read(openGroupUuidProvider.notifier).state = null;
     _messageController.dispose();
     _scrollController.dispose();
     super.dispose();

@@ -252,6 +252,11 @@ class EventHandler {
         // New group messages received via DHT listener
         // IMPORTANT: Callback fires immediately without fetching (to avoid DHT thread deadlock)
         // So we must sync messages from DHT here before refreshing the UI
+
+        // Check if this group chat is currently open
+        final openGroupUuid = _ref.read(openGroupUuidProvider);
+        final isGroupChatOpen = openGroupUuid == uuid;
+
         _ref.read(engineProvider).whenData((engine) async {
           // Sync messages from DHT to local DB (runs on worker thread, not DHT callback thread)
           await engine.syncGroupByUuid(uuid);
@@ -261,6 +266,11 @@ class EventHandler {
           _ref.read(groupConversationRefreshTriggerProvider.notifier).state++;
           // Also refresh groups list to update any preview/badge
           _ref.invalidate(groupsProvider);
+
+          // Increment unread count if chat is not open
+          if (!isGroupChatOpen && count > 0) {
+            _ref.read(groupUnreadCountsProvider.notifier).incrementCount(uuid, count);
+          }
         });
         break;
 
