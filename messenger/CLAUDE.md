@@ -176,8 +176,8 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 6. **TEST MESSAGE** (C Library changes only): After push, send test messages:
    ```bash
    cd /opt/dna-messenger/build
-   ./cli/dna-messenger-cli send nocdem "C library update test (vX.Y.Z)"
-   ./cli/dna-messenger-cli group-send dna-dev "C library update test (vX.Y.Z)"
+   ./cli/dna-messenger-cli send nocdem "C lib update (vX.Y.Z): <commit message>"
+   ./cli/dna-messenger-cli group-send dna-dev "C lib update (vX.Y.Z): <commit message>"
    ```
 7. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
 
@@ -611,8 +611,8 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 6. **TEST MESSAGE** (C Library changes only): After push, send test messages:
    ```bash
    cd /opt/dna-messenger/build
-   ./cli/dna-messenger-cli send nocdem "C library update test (vX.Y.Z)"
-   ./cli/dna-messenger-cli group-send dna-dev "C library update test (vX.Y.Z)"
+   ./cli/dna-messenger-cli send nocdem "C lib update (vX.Y.Z): <commit message>"
+   ./cli/dna-messenger-cli group-send dna-dev "C lib update (vX.Y.Z): <commit message>"
    ```
 7. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
 
