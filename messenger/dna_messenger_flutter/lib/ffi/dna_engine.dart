@@ -4983,21 +4983,31 @@ class DnaEngine {
     if (_isDisposed) return;
     _isDisposed = true;
 
+    print('[DART] dispose: starting...');
+
     _eventController.close();
 
     // IMPORTANT: Clear the C callback pointer BEFORE closing the Dart callback
     // This prevents the C code from invoking a deleted callback when the app
     // goes to background but the background service is still running
+    print('[DART] dispose: clearing event callback...');
     _bindings.dna_engine_set_event_callback(_engine, nullptr, nullptr);
     _eventCallback?.close();
 
     // Clean up pending requests
+    print('[DART] dispose: closing ${_pendingRequests.length} pending requests...');
     for (final request in _pendingRequests.values) {
       request.callback.close();
     }
     _pendingRequests.clear();
 
+    print('[DART] dispose: calling dna_engine_destroy...');
     _bindings.dna_engine_destroy(_engine);
+    print('[DART] dispose: dna_engine_destroy returned');
+
+    // Null out the pointer to catch any use-after-free in Dart
+    _engine = nullptr;
+    print('[DART] dispose: done');
   }
 }
 
