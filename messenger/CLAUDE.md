@@ -173,7 +173,13 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 3. **UPDATE** the "Current" column in this section
 4. **UPDATE** the version in CLAUDE.md header line
 5. **COMMIT** with version in commit message (e.g., "fix: Something (v0.3.39)")
-6. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
+6. **TEST MESSAGE** (C Library changes only): After push, send test messages:
+   ```bash
+   cd /opt/dna-messenger/build
+   ./cli/dna-messenger-cli send nocdem "C library update test (vX.Y.Z)"
+   ./cli/dna-messenger-cli group-send dna-dev "C library update test (vX.Y.Z)"
+   ```
+7. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
 
 **IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.
 
@@ -602,7 +608,13 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 3. **UPDATE** the "Current" column in this section
 4. **UPDATE** the version in CLAUDE.md header line
 5. **COMMIT** with version in commit message (e.g., "fix: Something (v0.3.39)")
-6. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
+6. **TEST MESSAGE** (C Library changes only): After push, send test messages:
+   ```bash
+   cd /opt/dna-messenger/build
+   ./cli/dna-messenger-cli send nocdem "C library update test (vX.Y.Z)"
+   ./cli/dna-messenger-cli group-send dna-dev "C library update test (vX.Y.Z)"
+   ```
+7. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
 
 **IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.
 
