@@ -97,3 +97,53 @@ int qgp_sha3_512_fingerprint(const uint8_t *pubkey, size_t pubkey_len, char *fin
 
     return qgp_sha3_512_hex(pubkey, pubkey_len, fingerprint_out, QGP_SHA3_512_HEX_LENGTH);
 }
+
+/**
+ * Compute SHA3-256 hash of data
+ *
+ * Uses OpenSSL EVP interface for SHA3-256.
+ * Requires OpenSSL 1.1.1 or later (SHA3 support).
+ *
+ * @param data Input data to hash
+ * @param len Length of input data in bytes
+ * @param hash_out Output buffer for hash (must be at least 32 bytes)
+ * @return 0 on success, -1 on error
+ */
+int qgp_sha3_256(const uint8_t *data, size_t len, uint8_t *hash_out) {
+    if (!data || !hash_out) {
+        return -1;
+    }
+
+    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+    if (!mdctx) {
+        return -1;
+    }
+
+    // Initialize SHA3-256 digest
+    if (EVP_DigestInit_ex(mdctx, EVP_sha3_256(), NULL) != 1) {
+        EVP_MD_CTX_free(mdctx);
+        return -1;
+    }
+
+    // Update with input data
+    if (EVP_DigestUpdate(mdctx, data, len) != 1) {
+        EVP_MD_CTX_free(mdctx);
+        return -1;
+    }
+
+    // Finalize and get digest
+    unsigned int hash_len = 0;
+    if (EVP_DigestFinal_ex(mdctx, hash_out, &hash_len) != 1) {
+        EVP_MD_CTX_free(mdctx);
+        return -1;
+    }
+
+    EVP_MD_CTX_free(mdctx);
+
+    // Verify we got the expected length
+    if (hash_len != QGP_SHA3_256_DIGEST_LENGTH) {
+        return -1;
+    }
+
+    return 0;
+}

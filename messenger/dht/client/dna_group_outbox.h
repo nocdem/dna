@@ -456,6 +456,42 @@ int dna_group_outbox_db_set_sync_timestamp(
 );
 
 /*============================================================================
+ * Day Content Hash Cache (for sync optimization v0.5.25)
+ *============================================================================*/
+
+/**
+ * @brief Get cached content hash for a day bucket
+ *
+ * Used for smart sync - compare with DHT chunk metadata to skip unchanged days.
+ *
+ * @param group_uuid Group UUID
+ * @param day_bucket Day bucket (unix_timestamp / 86400)
+ * @param hash_out Output: 32-byte hash buffer (zeroed if not found)
+ * @return 0 if found, -1 if not found or error
+ */
+int dna_group_outbox_db_get_day_hash(
+    const char *group_uuid,
+    uint64_t day_bucket,
+    uint8_t hash_out[32]
+);
+
+/**
+ * @brief Set content hash for a day bucket
+ *
+ * Called after successful sync to cache the content hash.
+ *
+ * @param group_uuid Group UUID
+ * @param day_bucket Day bucket (unix_timestamp / 86400)
+ * @param hash 32-byte content hash from DHT chunk v2
+ * @return 0 on success, -1 on error
+ */
+int dna_group_outbox_db_set_day_hash(
+    const char *group_uuid,
+    uint64_t day_bucket,
+    const uint8_t hash[32]
+);
+
+/*============================================================================
  * Listen API (Real-time notifications via DHT listen)
  *============================================================================*/
 

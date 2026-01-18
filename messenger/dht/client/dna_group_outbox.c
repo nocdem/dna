@@ -754,12 +754,48 @@ static int sync_day_range(
                   group_uuid, (unsigned long)start_day, (unsigned long)end_day);
 
     for (uint64_t day = start_day; day <= end_day; day++) {
+        /* Generate DHT key for this day */
+        char day_key[128];
+        if (dna_group_outbox_make_key(group_uuid, day, day_key, sizeof(day_key)) != 0) {
+            continue;
+        }
+
+        /* Smart sync optimization (v0.5.25): Check content hash first */
+        uint8_t remote_hash[32];
+        uint32_t remote_size = 0;
+        bool is_v2 = false;
+
+        int meta_ret = dht_chunked_fetch_metadata(dht_ctx, day_key, remote_hash, &remote_size, NULL, &is_v2);
+        if (meta_ret != DHT_CHUNK_OK) {
+            /* No data for this day - skip */
+            QGP_LOG_DEBUG(LOG_TAG, "Day %lu: no data\n", (unsigned long)day);
+            continue;
+        }
+
+        /* If v2 chunk, compare with cached hash */
+        if (is_v2) {
+            uint8_t local_hash[32];
+            if (dna_group_outbox_db_get_day_hash(group_uuid, day, local_hash) == 0) {
+                /* Have cached hash - compare */
+                if (memcmp(remote_hash, local_hash, 32) == 0) {
+                    QGP_LOG_DEBUG(LOG_TAG, "Day %lu: unchanged (hash match), skipping\n", (unsigned long)day);
+                    continue;  /* Skip this day - data unchanged */
+                }
+                QGP_LOG_DEBUG(LOG_TAG, "Day %lu: changed (hash mismatch), fetching\n", (unsigned long)day);
+            }
+        }
+
+        /* Hash mismatch or v1 data or no cached hash - do full fetch */
         dna_group_message_t *messages = NULL;
         size_t count = 0;
 
         int ret = dna_group_outbox_fetch(dht_ctx, group_uuid, day, &messages, &count);
 
         if (ret != DNA_GROUP_OUTBOX_OK || !messages || count == 0) {
+            /* Store hash even if no messages (empty bucket) */
+            if (is_v2) {
+                dna_group_outbox_db_set_day_hash(group_uuid, day, remote_hash);
+            }
             continue;
         }
 
@@ -811,6 +847,11 @@ static int sync_day_range(
         }
 
         dna_group_outbox_free_messages(messages, count);
+
+        /* After successful fetch, store the content hash for future optimization */
+        if (is_v2) {
+            dna_group_outbox_db_set_day_hash(group_uuid, day, remote_hash);
+        }
     }
 
     if (new_message_count_out) {
@@ -966,6 +1007,22 @@ int dna_group_outbox_db_init(void) {
     if (err_msg) {
         /* Ignore error - column may already exist */
         sqlite3_free(err_msg);
+    }
+
+    /* Migration: Add group_day_cache table for content hash caching (v0.5.25) */
+    const char *create_day_cache =
+        "CREATE TABLE IF NOT EXISTS group_day_cache ("
+        "  group_uuid TEXT NOT NULL,"
+        "  day_bucket INTEGER NOT NULL,"
+        "  content_hash BLOB,"
+        "  updated_at INTEGER NOT NULL,"
+        "  PRIMARY KEY (group_uuid, day_bucket)"
+        ")";
+    rc = sqlite3_exec(group_outbox_db, create_day_cache, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create group_day_cache table: %s\n", err_msg);
+        sqlite3_free(err_msg);
+        /* Non-fatal - sync will still work, just without hash optimization */
     }
 
     QGP_LOG_INFO(LOG_TAG, "Database tables initialized\n");
@@ -1275,6 +1332,96 @@ int dna_group_outbox_db_set_sync_timestamp(
     sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 2, (sqlite3_int64)timestamp);
     sqlite3_bind_int64(stmt, 3, (sqlite3_int64)timestamp);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+/*============================================================================
+ * Day Content Hash Cache (for sync optimization v0.5.25)
+ *============================================================================*/
+
+/**
+ * Get cached content hash for a day bucket
+ *
+ * @param group_uuid Group UUID
+ * @param day_bucket Day bucket
+ * @param hash_out Output: 32-byte hash buffer (zeroed if not found)
+ * @return 0 if found, -1 if not found or error
+ */
+int dna_group_outbox_db_get_day_hash(
+    const char *group_uuid,
+    uint64_t day_bucket,
+    uint8_t hash_out[32]
+) {
+    if (!group_outbox_db || !group_uuid || !hash_out) {
+        memset(hash_out, 0, 32);
+        return -1;
+    }
+
+    const char *sql = "SELECT content_hash FROM group_day_cache WHERE group_uuid = ? AND day_bucket = ?";
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(group_outbox_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        memset(hash_out, 0, 32);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)day_bucket);
+
+    rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(stmt, 0);
+        int blob_size = sqlite3_column_bytes(stmt, 0);
+        if (blob && blob_size == 32) {
+            memcpy(hash_out, blob, 32);
+            sqlite3_finalize(stmt);
+            return 0;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+    memset(hash_out, 0, 32);
+    return -1;
+}
+
+/**
+ * Set content hash for a day bucket
+ *
+ * @param group_uuid Group UUID
+ * @param day_bucket Day bucket
+ * @param hash 32-byte hash
+ * @return 0 on success, -1 on error
+ */
+int dna_group_outbox_db_set_day_hash(
+    const char *group_uuid,
+    uint64_t day_bucket,
+    const uint8_t hash[32]
+) {
+    if (!group_outbox_db || !group_uuid || !hash) {
+        return -1;
+    }
+
+    const char *sql =
+        "INSERT INTO group_day_cache (group_uuid, day_bucket, content_hash, updated_at) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(group_uuid, day_bucket) DO UPDATE SET content_hash = excluded.content_hash, "
+        "updated_at = excluded.updated_at";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(group_outbox_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare day_hash update: %s", sqlite3_errmsg(group_outbox_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)day_bucket);
+    sqlite3_bind_blob(stmt, 3, hash, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)time(NULL));
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);

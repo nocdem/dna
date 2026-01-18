@@ -210,10 +210,14 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 
 ### 10.6 Chunked Storage (`dht_chunked.h`)
 
+Transparent chunking for large data storage in DHT with ZSTD compression.
+Chunk format v2 (v0.5.25+) adds content hash to chunk 0 for smart sync optimization.
+
 | Function | Description |
 |----------|-------------|
-| `int dht_chunked_publish(dht_context_t*, const char*, const uint8_t*, size_t, uint32_t)` | Publish with chunking |
+| `int dht_chunked_publish(dht_context_t*, const char*, const uint8_t*, size_t, uint32_t)` | Publish with chunking (v2: includes SHA3-256 content hash) |
 | `int dht_chunked_fetch(dht_context_t*, const char*, uint8_t**, size_t*)` | Fetch chunked data |
+| `int dht_chunked_fetch_metadata(dht_context_t*, const char*, uint8_t[32], uint32_t*, uint32_t*, bool*)` | Fetch chunk 0 metadata only (v0.5.25+) |
 | `int dht_chunked_delete(dht_context_t*, const char*, uint32_t)` | Delete chunked data |
 | `const char* dht_chunked_strerror(int)` | Get error message |
 | `int dht_chunked_make_key(const char*, uint32_t, uint8_t[32])` | Generate chunk key |

@@ -54,4 +54,14 @@ int qgp_sha3_512_hex(const uint8_t *data, size_t len, char *hex_out, size_t hex_
  */
 int qgp_sha3_512_fingerprint(const uint8_t *pubkey, size_t pubkey_len, char *fingerprint_out);
 
+/**
+ * Compute SHA3-256 hash of data
+ *
+ * @param data Input data to hash
+ * @param len Length of input data in bytes
+ * @param hash_out Output buffer for hash (must be at least 32 bytes)
+ * @return 0 on success, -1 on error
+ */
+int qgp_sha3_256(const uint8_t *data, size_t len, uint8_t *hash_out);
+
 #endif // QGP_SHA3_H

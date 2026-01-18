@@ -54,15 +54,20 @@
 
 /**
  * Chunk header structure (internal representation)
+ *
+ * v1 (25 bytes): magic + version + total_chunks + chunk_index + chunk_data_size + original_size + checksum
+ * v2 (57 bytes for chunk0): v1 fields + 32-byte content_hash (SHA3-256 of original uncompressed data)
  */
 typedef struct {
     uint32_t magic;           // DHT_CHUNK_MAGIC
-    uint8_t  version;         // DHT_CHUNK_VERSION
+    uint8_t  version;         // DHT_CHUNK_VERSION_V1 or DHT_CHUNK_VERSION_V2
     uint32_t total_chunks;    // Total number of chunks
     uint32_t chunk_index;     // This chunk's index (0-based)
     uint32_t chunk_data_size; // Size of payload in this chunk
     uint32_t original_size;   // Uncompressed total size (only chunk0)
     uint32_t checksum;        // CRC32 of chunk payload
+    uint8_t  content_hash[DHT_CHUNK_HASH_SIZE]; // SHA3-256 of original data (chunk0 only, v2+)
+    bool     has_content_hash; // True if version >= 2 and chunk_index == 0
 } dht_chunk_header_t;
 
 /**
@@ -206,9 +211,14 @@ static int decompress_data(const uint8_t *in, size_t in_len,
 /**
  * Serialize chunk header + data to binary format
  *
- * Format (25 bytes header):
+ * v1 Format (25 bytes header):
  * [4B magic][1B version][4B total_chunks][4B chunk_index]
  * [4B chunk_data_size][4B original_size][4B checksum][payload...]
+ *
+ * v2 Format for chunk 0 (57 bytes header):
+ * [4B magic][1B version][4B total_chunks][4B chunk_index]
+ * [4B chunk_data_size][4B original_size][4B checksum]
+ * [32B content_hash (SHA3-256 of original data)][payload...]
  *
  * @param header Chunk header
  * @param payload Chunk payload data
@@ -222,7 +232,13 @@ static int serialize_chunk(const dht_chunk_header_t *header,
                            uint8_t **out, size_t *out_len) {
     if (!header || !payload || !out || !out_len) return -1;
 
-    size_t total_size = DHT_CHUNK_HEADER_SIZE + payload_len;
+    // Calculate header size: v2 chunk0 has extra 32 bytes for content hash
+    size_t header_size = DHT_CHUNK_HEADER_SIZE_V1;
+    if (header->version >= DHT_CHUNK_VERSION_V2 && header->chunk_index == 0) {
+        header_size = DHT_CHUNK_HEADER_SIZE_V2;
+    }
+
+    size_t total_size = header_size + payload_len;
     uint8_t *buf = (uint8_t *)malloc(total_size);
     if (!buf) return -1;
 
@@ -261,6 +277,12 @@ static int serialize_chunk(const dht_chunk_header_t *header,
     memcpy(ptr, &crc_net, 4);
     ptr += 4;
 
+    // Content hash (32 bytes) - v2+ chunk 0 only
+    if (header->version >= DHT_CHUNK_VERSION_V2 && header->chunk_index == 0) {
+        memcpy(ptr, header->content_hash, DHT_CHUNK_HASH_SIZE);
+        ptr += DHT_CHUNK_HASH_SIZE;
+    }
+
     // Payload
     memcpy(ptr, payload, payload_len);
 
@@ -272,6 +294,10 @@ static int serialize_chunk(const dht_chunk_header_t *header,
 /**
  * Deserialize chunk from binary format
  *
+ * Supports both v1 and v2 formats:
+ * - v1: 25-byte header (all chunks)
+ * - v2: 57-byte header for chunk 0 (includes content hash), 25-byte for others
+ *
  * @param data Serialized chunk data
  * @param data_len Data length
  * @param header Output header structure
@@ -281,9 +307,13 @@ static int serialize_chunk(const dht_chunk_header_t *header,
 static int deserialize_chunk(const uint8_t *data, size_t data_len,
                              dht_chunk_header_t *header,
                              const uint8_t **payload_out) {
-    if (!data || !header || data_len < DHT_CHUNK_HEADER_SIZE) {
+    if (!data || !header || data_len < DHT_CHUNK_HEADER_SIZE_V1) {
         return -1;
     }
+
+    // Initialize content hash fields
+    header->has_content_hash = false;
+    memset(header->content_hash, 0, DHT_CHUNK_HASH_SIZE);
 
     const uint8_t *ptr = data;
 
@@ -299,11 +329,12 @@ static int deserialize_chunk(const uint8_t *data, size_t data_len,
         return -1;
     }
 
-    // Version
+    // Version - accept v1 or v2
     header->version = *ptr++;
-    if (header->version != DHT_CHUNK_VERSION) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid version: %u (expected %u)\n",
-                header->version, DHT_CHUNK_VERSION);
+    if (header->version != DHT_CHUNK_VERSION_V1 &&
+        header->version != DHT_CHUNK_VERSION_V2) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid version: %u (expected 1 or 2)\n",
+                header->version);
         return -1;
     }
 
@@ -337,10 +368,27 @@ static int deserialize_chunk(const uint8_t *data, size_t data_len,
     header->checksum = ntohl(crc_net);
     ptr += 4;
 
+    // Content hash (32 bytes) - v2+ chunk 0 only
+    if (header->version >= DHT_CHUNK_VERSION_V2 && header->chunk_index == 0) {
+        if (ptr + DHT_CHUNK_HASH_SIZE > data + data_len) {
+            QGP_LOG_ERROR(LOG_TAG, "Chunk 0 v2 truncated (missing content hash)\n");
+            return -1;
+        }
+        memcpy(header->content_hash, ptr, DHT_CHUNK_HASH_SIZE);
+        ptr += DHT_CHUNK_HASH_SIZE;
+        header->has_content_hash = true;
+    }
+
+    // Calculate expected header size for this chunk
+    size_t expected_header_size = DHT_CHUNK_HEADER_SIZE_V1;
+    if (header->version >= DHT_CHUNK_VERSION_V2 && header->chunk_index == 0) {
+        expected_header_size = DHT_CHUNK_HEADER_SIZE_V2;
+    }
+
     // Validate payload size
-    if (DHT_CHUNK_HEADER_SIZE + header->chunk_data_size > data_len) {
-        QGP_LOG_ERROR(LOG_TAG, "Chunk size mismatch: %u + %u > %zu\n",
-                DHT_CHUNK_HEADER_SIZE, header->chunk_data_size, data_len);
+    if (expected_header_size + header->chunk_data_size > data_len) {
+        QGP_LOG_ERROR(LOG_TAG, "Chunk size mismatch: %zu + %u > %zu\n",
+                expected_header_size, header->chunk_data_size, data_len);
         return -1;
     }
 
@@ -436,6 +484,14 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
         return DHT_CHUNK_ERR_NULL_PARAM;
     }
 
+    // Step 0: Compute content hash of original data (BEFORE compression)
+    // This ensures same data = same hash regardless of compression timing/order
+    uint8_t content_hash[DHT_CHUNK_HASH_SIZE];
+    if (qgp_sha3_256(data, data_len, content_hash) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to compute content hash\n");
+        return DHT_CHUNK_ERR_ALLOC;
+    }
+
     // Step 1: Compress data
     uint8_t *compressed = NULL;
     size_t compressed_len = 0;
@@ -450,8 +506,9 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
     uint64_t value_id = 1;
     dht_get_owner_value_id(ctx, &value_id);
 
-    QGP_LOG_DEBUG(LOG_TAG, "[CHUNK_PUBLISH] Publishing %zu bytes -> %zu compressed -> %u chunks (base_key=%s)\n",
-           data_len, compressed_len, total_chunks, base_key);
+    QGP_LOG_DEBUG(LOG_TAG, "[CHUNK_PUBLISH] Publishing %zu bytes -> %zu compressed -> %u chunks (base_key=%s) content_hash=%02x%02x%02x%02x...\n",
+           data_len, compressed_len, total_chunks, base_key,
+           content_hash[0], content_hash[1], content_hash[2], content_hash[3]);
 
     // Step 4: Publish each chunk
     // IMPORTANT: Publish chunk 0 LAST since it contains the header with original_size.
@@ -482,8 +539,16 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
             .chunk_index = i,
             .chunk_data_size = (uint32_t)chunk_size,
             .original_size = (i == 0) ? (uint32_t)data_len : 0,
-            .checksum = compute_crc32(compressed + offset, chunk_size)
+            .checksum = compute_crc32(compressed + offset, chunk_size),
+            .has_content_hash = (i == 0)
         };
+
+        // Add content hash for chunk 0 (v2 format)
+        if (i == 0) {
+            memcpy(header.content_hash, content_hash, DHT_CHUNK_HASH_SIZE);
+        } else {
+            memset(header.content_hash, 0, DHT_CHUNK_HASH_SIZE);
+        }
 
         // Serialize chunk
         uint8_t *serialized = NULL;
@@ -918,6 +983,69 @@ const char *dht_chunked_strerror(int error) {
         case DHT_CHUNK_ERR_NOT_CONNECTED: return "DHT not connected";
         default:                        return "Unknown error";
     }
+}
+
+/*============================================================================
+ * Metadata API Implementation (for smart sync optimization)
+ *============================================================================*/
+
+int dht_chunked_fetch_metadata(
+    dht_context_t *ctx,
+    const char *base_key,
+    uint8_t hash_out[DHT_CHUNK_HASH_SIZE],
+    uint32_t *original_size_out,
+    uint32_t *total_chunks_out,
+    bool *is_v2_out
+) {
+    if (!ctx || !base_key || !hash_out || !original_size_out || !is_v2_out) {
+        return DHT_CHUNK_ERR_NULL_PARAM;
+    }
+
+    // Initialize outputs
+    memset(hash_out, 0, DHT_CHUNK_HASH_SIZE);
+    *original_size_out = 0;
+    if (total_chunks_out) *total_chunks_out = 0;
+    *is_v2_out = false;
+
+    // Generate chunk0 key
+    uint8_t chunk0_key[DHT_CHUNK_KEY_SIZE];
+    if (dht_chunked_make_key(base_key, 0, chunk0_key) != 0) {
+        return DHT_CHUNK_ERR_ALLOC;
+    }
+
+    // Fetch chunk0 only
+    uint8_t *chunk0_data = NULL;
+    size_t chunk0_len = 0;
+    if (dht_get(ctx, chunk0_key, DHT_CHUNK_KEY_SIZE, &chunk0_data, &chunk0_len) != 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "FETCH_METADATA: No chunk0 found for key=%s\n", base_key);
+        return DHT_CHUNK_ERR_DHT_GET;
+    }
+
+    // Parse header (don't need payload for metadata-only fetch)
+    dht_chunk_header_t header;
+    if (deserialize_chunk(chunk0_data, chunk0_len, &header, NULL) != 0) {
+        free(chunk0_data);
+        return DHT_CHUNK_ERR_INVALID_FORMAT;
+    }
+
+    // Extract metadata
+    *original_size_out = header.original_size;
+    if (total_chunks_out) *total_chunks_out = header.total_chunks;
+
+    // Check if v2 with content hash
+    if (header.has_content_hash) {
+        memcpy(hash_out, header.content_hash, DHT_CHUNK_HASH_SIZE);
+        *is_v2_out = true;
+        QGP_LOG_DEBUG(LOG_TAG, "FETCH_METADATA: v2 chunk0 hash=%02x%02x%02x%02x... original_size=%u chunks=%u\n",
+                      hash_out[0], hash_out[1], hash_out[2], hash_out[3],
+                      header.original_size, header.total_chunks);
+    } else {
+        QGP_LOG_DEBUG(LOG_TAG, "FETCH_METADATA: v1 chunk0 (no hash) original_size=%u chunks=%u\n",
+                      header.original_size, header.total_chunks);
+    }
+
+    free(chunk0_data);
+    return DHT_CHUNK_OK;
 }
 
 /*============================================================================

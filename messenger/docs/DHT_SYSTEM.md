@@ -907,6 +907,85 @@ User profile storage in DHT.
 
 ---
 
+### 5.6 dht_chunked.h/c (Chunked Storage Layer)
+
+Transparent chunking for large data storage in DHT with ZSTD compression.
+
+#### Chunk Format
+
+**v1 (25-byte header):**
+```
+[4B magic "DNAC"][1B version=1][4B total_chunks][4B chunk_index]
+[4B chunk_data_size][4B original_size][4B crc32][payload...]
+```
+
+**v2 (57-byte header for chunk 0 only, v0.5.25+):**
+```
+[4B magic "DNAC"][1B version=2][4B total_chunks][4B chunk_index]
+[4B chunk_data_size][4B original_size][4B crc32]
+[32B content_hash (SHA3-256 of original uncompressed data)]
+[payload...]
+```
+
+Non-chunk-0 in v2 uses same 25-byte format as v1 (no hash needed).
+
+#### Content Hash (v0.5.25+)
+
+The content hash enables **smart sync optimization**:
+
+1. Fetch chunk 0 only (metadata)
+2. Compare SHA3-256 hash with locally cached hash
+3. If match → skip (data unchanged)
+4. If mismatch → fetch all chunks
+
+**Why SHA3-256 of original data?**
+- Hash computed BEFORE compression ensures content identity
+- Same data = same hash, regardless of compression timing
+- 32 bytes is compact yet collision-resistant
+
+#### Backward Compatibility
+
+| Client | Reading v1 | Reading v2 | Writing |
+|--------|------------|------------|---------|
+| Old (v1) | ✅ Works | ❌ Rejects | v1 |
+| New (v2) | ✅ Works | ✅ Works | v2 |
+
+After 7-day TTL, all DHT data becomes v2 as old clients update.
+
+#### Key Functions
+
+```c
+// Publish data with chunking + compression + content hash
+int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
+                        const uint8_t *data, size_t data_len, uint32_t ttl);
+
+// Fetch and decompress data
+int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
+                      uint8_t **data_out, size_t *data_len_out);
+
+// Fetch metadata only (for hash comparison, v0.5.25+)
+int dht_chunked_fetch_metadata(dht_context_t *ctx, const char *base_key,
+                               uint8_t hash_out[32], uint32_t *original_size_out,
+                               uint32_t *total_chunks_out, bool *is_v2_out);
+
+// Batch fetch multiple keys in parallel
+int dht_chunked_fetch_batch(dht_context_t *ctx, const char **base_keys,
+                            size_t key_count, dht_chunked_batch_result_t **results_out);
+```
+
+#### Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `DHT_CHUNK_MAGIC` | 0x444E4143 | "DNAC" in hex |
+| `DHT_CHUNK_VERSION` | 2 | Current write version |
+| `DHT_CHUNK_HEADER_SIZE_V1` | 25 | v1 header size |
+| `DHT_CHUNK_HEADER_SIZE_V2` | 57 | v2 chunk 0 header size |
+| `DHT_CHUNK_HASH_SIZE` | 32 | SHA3-256 output size |
+| `DHT_CHUNK_DATA_SIZE` | 44975 | Payload per chunk |
+
+---
+
 ## 6. Keyserver (`dht/keyserver/`)
 
 ### Architecture
