@@ -1175,12 +1175,16 @@ class DnaEngine {
   }
 
   void _onEventReceived(Pointer<dna_event_t> eventPtr, Pointer<Void> userData) {
-    // DEBUG: Print to stdout/logcat immediately
+    // CRITICAL: Check _isDisposed BEFORE dereferencing any pointers!
+    // After dispose, C memory may be freed - dereferencing would crash.
+    if (_isDisposed) {
+      print('[DART-EVENT] Callback invoked after dispose, ignoring');
+      return;
+    }
+
     final event = eventPtr.ref;
     final type = event.type;
-    print('[DART-EVENT] _onEventReceived called, type=$type, disposed=$_isDisposed');
-
-    if (_isDisposed) return;
+    print('[DART-EVENT] _onEventReceived called, type=$type');
 
     DnaEvent? dartEvent;
 
