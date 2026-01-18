@@ -5020,10 +5020,12 @@ class DnaEngine {
     // The callbacks check _isDisposed and return early, so they're safe.
     // NativeCallables are cleaned up when the isolate exits.
 
-    // Null out the pointer to catch any use-after-free in Dart
-    print('[DART-DISPOSE] Setting _engine = nullptr...');
-    _engine = nullptr;
-    print('[DART-DISPOSE] dispose() complete');
+    // Don't null out _engine immediately - pending callbacks might still
+    // reference it. They'll check _isDisposed and return early, but the
+    // pointer access itself can crash if _engine is null.
+    // The engine is destroyed, so it's a dangling pointer, but at least
+    // Dart won't crash trying to pass nullptr to FFI.
+    print('[DART-DISPOSE] dispose() complete (engine destroyed, pointer kept for safety)');
   }
 }
 

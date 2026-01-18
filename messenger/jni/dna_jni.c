@@ -741,16 +741,10 @@ static void jni_contact_request_callback(const char *user_fingerprint, const cha
 
 JNIEXPORT jboolean JNICALL
 Java_io_cpunk_dna_DNAEngine_nativeCreate(JNIEnv *env, jobject thiz, jstring data_dir) {
-    /* Check if engine already exists (could be created by Flutter FFI) */
+    /* v0.6.0+: Each component (Flutter/Service) owns its own engine.
+     * No global sharing - coordination via identity lock instead. */
     if (g_engine) {
         LOGI("Engine already created (JNI)");
-        return JNI_TRUE;
-    }
-
-    /* Check for global engine (could be set by Flutter) */
-    g_engine = dna_engine_get_global();
-    if (g_engine) {
-        LOGI("Using existing global engine");
         return JNI_TRUE;
     }
 
@@ -762,9 +756,6 @@ Java_io_cpunk_dna_DNAEngine_nativeCreate(JNIEnv *env, jobject thiz, jstring data
         LOGE("Failed to create engine");
         return JNI_FALSE;
     }
-
-    /* Set as global so Flutter FFI can find it */
-    dna_engine_set_global(g_engine);
 
     /* Set DEBUG log level by default on Android for easier debugging */
     dna_engine_set_log_level("DEBUG");
@@ -1259,8 +1250,9 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeIsDhtHealthy(JNIEnv *env,
 }
 
 /**
- * Ensure engine is initialized (v0.5.5+)
+ * Ensure engine is initialized (v0.6.0+)
  * Called by DnaMessengerService when it starts fresh after process killed.
+ * v0.6.0: No global sharing - Service owns its own engine, coordinated via identity lock.
  */
 JNIEXPORT jboolean JNICALL
 Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeEnsureEngine(JNIEnv *env, jobject thiz, jstring data_dir) {
@@ -1270,14 +1262,7 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeEnsureEngine(JNIEnv *env,
         return JNI_TRUE;
     }
 
-    /* Check for global engine (might be set by Flutter) */
-    g_engine = dna_engine_get_global();
-    if (g_engine) {
-        LOGI("nativeEnsureEngine: Using existing global engine");
-        return JNI_TRUE;
-    }
-
-    /* Create new engine */
+    /* Create new engine - Service owns its own, doesn't share with Flutter */
     const char *dir = data_dir ? (*env)->GetStringUTFChars(env, data_dir, NULL) : NULL;
     g_engine = dna_engine_create(dir);
     if (dir) (*env)->ReleaseStringUTFChars(env, data_dir, dir);
@@ -1287,8 +1272,7 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeEnsureEngine(JNIEnv *env,
         return JNI_FALSE;
     }
 
-    dna_engine_set_global(g_engine);
-    LOGI("nativeEnsureEngine: Engine created and set as global");
+    LOGI("nativeEnsureEngine: Engine created (Service-owned)");
     return JNI_TRUE;
 }
 
