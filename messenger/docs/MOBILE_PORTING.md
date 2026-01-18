@@ -398,39 +398,58 @@ void _handleNetworkChange() async {
 }
 ```
 
-#### Single-Owner Model (v0.5.24+)
+#### Single-Owner Model with Identity Lock (v0.6.0+)
 
-**Simplified service/Flutter coordination - only one owns the engine at a time.**
+**Each owner (Flutter/Service) creates and destroys its own engine with file-based mutex.**
 
-Previous versions used complex "background mode" with handoff between Flutter and Service.
-v0.5.24 simplifies this to a "single owner" model where Flutter and Service never share
-the engine simultaneously.
+v0.6.0 introduces an identity lock mechanism that prevents race conditions between
+Flutter and ForegroundService. When identity is loaded, the engine acquires a file lock.
+Only one process can hold the lock at a time.
 
 **Architecture:**
 ```
-Flutter OWNS engine  OR  Service OWNS engine  (never both)
-         ↓                        ↓
-   destroy + signal         destroy + signal
-         ↓                        ↓
-   Service creates          Flutter creates
+┌─────────────────────────────────────────────────────────────┐
+│               IDENTITY (persistent storage)                  │
+│  - fingerprint (SharedPreferences)                          │
+│  - mnemonic → derives DHT keys on demand                    │
+└───────────────────────────┬─────────────────────────────────┘
+                            │
+            ┌───────────────┴───────────────┐
+            ▼                               ▼
+┌───────────────────────┐       ┌───────────────────────┐
+│   FLUTTER (foreground)│       │   SERVICE (background)│
+│                       │       │                       │
+│   engine->dht_ctx     │       │   engine->dht_ctx     │
+│   (engine-owned)      │       │   (engine-owned)      │
+│                       │       │                       │
+│   identity_lock_fd    │       │   identity_lock_fd    │
+│   (file-based mutex)  │       │   (file-based mutex)  │
+└───────────────────────┘       └───────────────────────┘
+
+         ▲                               ▲
+         │         FILE LOCK             │
+         └───────────── ⚡ ───────────────┘
+
+    Only ONE can hold the identity lock at a time.
 ```
 
 **Lifecycle Flow:**
 
 1. **App Opens:**
-   - Flutter creates new engine with `dna_engine_create()`
-   - Flutter loads identity (full init, DHT connects)
-   - DHT reconnects in ~2-3 seconds
+   - Service checks lock: `nativeIsIdentityLocked(dataDir)` → returns true if Flutter holds it
+   - Flutter creates engine with `dna_engine_create()`
+   - Flutter loads identity → acquires identity lock + creates engine-owned DHT
+   - Service releases its engine when `flutterActive=true`
 
 2. **App Closes:**
-   - Flutter destroys engine with `dna_engine_destroy()`
-   - Service creates new engine with `dna_engine_create()`
-   - Service loads identity (full init, DHT connects)
+   - Flutter destroys engine → releases identity lock
+   - Service waits, then creates new engine
+   - Service loads identity (minimal mode) → acquires lock + creates DHT
    - DHT reconnects in ~2-3 seconds
 
 **Trade-off:** 2-3 second DHT reconnect when switching between Flutter and Service.
 
-**Benefit:** Removed ~370 lines of complex handoff code, eliminated race conditions.
+**Benefit:** File-based lock guarantees no race conditions. Engine owns its DHT context.
 
 **C API:**
 ```c
@@ -443,14 +462,28 @@ dna_request_id_t dna_engine_load_identity_minimal(engine, fingerprint, password,
 // Check if identity is loaded
 bool dna_engine_is_identity_loaded(dna_engine_t *engine);
 
-// Check if transport layer is ready (v0.5.26+)
+// Check if transport layer is ready
 bool dna_engine_is_transport_ready(dna_engine_t *engine);
+```
+
+**Platform Abstraction (identity lock):**
+```c
+// qgp_platform.h
+int qgp_platform_acquire_identity_lock(const char *data_dir);  // Returns fd or -1
+void qgp_platform_release_identity_lock(int lock_fd);
+int qgp_platform_is_identity_locked(const char *data_dir);     // Returns 1 if locked
 ```
 
 **JNI API:**
 ```c
 // Service uses synchronous minimal load (blocking, for simplicity)
-int nativeLoadIdentityMinimalSync(fingerprint);  // Returns 0 on success
+int nativeLoadIdentityMinimalSync(fingerprint);  // Returns 0 on success, -117 if locked
+
+// Check if identity locked by Flutter
+bool nativeIsIdentityLocked(dataDir);
+
+// Release service's engine (when Flutter takes over)
+void nativeReleaseEngine();
 
 // Check if identity loaded
 bool nativeIsIdentityLoaded();
@@ -464,15 +497,33 @@ bool nativeIsIdentityLoaded();
 - Wallet creation
 
 **What minimal mode keeps:**
-- DHT connection
+- DHT connection (engine-owned context)
 - DHT listeners (for message notifications)
 
-#### Single-Owner Model (v0.5.24+)
+#### Engine-Owned DHT Context (v0.6.0+)
 
-Flutter and ForegroundService never share the engine simultaneously:
+Each engine now owns its own DHT context (no global singleton):
 
-1. **When Flutter opens:** Flutter owns the engine, service pauses DHT operations
-2. **When Flutter closes:** Service can take over with minimal mode
+```c
+struct dna_engine {
+    dht_context_t *dht_ctx;      // Engine owns this
+    int identity_lock_fd;         // File lock (-1 if not held)
+    // ... other fields
+};
+```
+
+The singleton pattern is kept for backwards compatibility using "borrowed context":
+- Engine creates DHT via `dht_create_context_with_identity()`
+- Engine lends to singleton via `dht_singleton_set_borrowed_context(engine->dht_ctx)`
+- Code using `dht_singleton_get()` still works
+- On destroy: clear borrowed context, then free engine's context
+
+#### Coordination Summary (v0.6.0+)
+
+Flutter and ForegroundService coordination:
+
+1. **When Flutter opens:** Flutter acquires lock, service detects lock and releases its engine
+2. **When Flutter closes:** Flutter releases lock, service acquires lock with minimal mode
 
 **Auto-Upgrade from Minimal to Full Mode (v0.5.26+):**
 

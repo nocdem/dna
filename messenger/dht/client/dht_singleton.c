@@ -21,6 +21,9 @@
 // Global DHT context (singleton)
 static dht_context_t *g_dht_context = NULL;
 
+// v0.6.0+: Flag to track if context is "borrowed" from engine (don't free on cleanup)
+static bool g_context_borrowed = false;
+
 // Global config (loaded once)
 static dna_config_t g_config = {0};
 static bool g_config_loaded = false;
@@ -264,9 +267,20 @@ void dht_singleton_cleanup(void)
     dht_bootstrap_discovery_stop();
 
     if (g_dht_context) {
-        QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP START (ctx=%p) <<<", (void*)g_dht_context);
-        dht_context_free(g_dht_context);
-        g_dht_context = NULL;
+        QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP START (ctx=%p, borrowed=%d) <<<",
+                     (void*)g_dht_context, g_context_borrowed);
+
+        if (g_context_borrowed) {
+            // v0.6.0+: Context is borrowed from engine - DON'T free it
+            // Engine will free it in dna_engine_destroy()
+            QGP_LOG_INFO(LOG_TAG, "Context is borrowed - not freeing (engine owns it)");
+            g_dht_context = NULL;
+            g_context_borrowed = false;
+        } else {
+            // Original behavior: singleton owns context, free it
+            dht_context_free(g_dht_context);
+            g_dht_context = NULL;
+        }
         QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP DONE <<<");
     } else {
         QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP: no context to clean <<<");
@@ -409,5 +423,114 @@ void dht_singleton_set_status_callback(dht_status_callback_t callback, void *use
         }
     } else {
         QGP_LOG_INFO(LOG_TAG, "Status callback stored (will register when DHT starts)");
+    }
+}
+
+/**
+ * Create a new DHT context with identity (v0.6.0+ engine-owned model)
+ *
+ * Creates a DHT context owned by the caller, not stored in global singleton.
+ * Used by dna_engine to create per-engine DHT contexts.
+ */
+dht_context_t* dht_create_context_with_identity(dht_identity_t *user_identity) {
+    if (!user_identity) {
+        QGP_LOG_ERROR(LOG_TAG, "dht_create_context_with_identity: NULL identity");
+        return NULL;
+    }
+
+    // Load config (shared with singleton)
+    ensure_config();
+
+    QGP_LOG_INFO(LOG_TAG, "Creating engine-owned DHT context with identity...");
+
+    // Configure DHT
+    dht_config_t dht_config = {0};
+    dht_config.port = 0;  // Let OS assign random port
+    dht_config.is_bootstrap = false;
+    strncpy(dht_config.identity, "dna-user", sizeof(dht_config.identity) - 1);
+
+    // Try cached bootstrap nodes first
+    int cached_count = dht_bootstrap_from_cache(&dht_config, 3);
+    if (cached_count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Using %d cached bootstrap nodes", cached_count);
+    } else {
+        // Fall back to hardcoded nodes
+        if (g_config.bootstrap_count > 0) {
+            QGP_LOG_INFO(LOG_TAG, "No cached nodes, using hardcoded: %s", g_config.bootstrap_nodes[0]);
+            strncpy(dht_config.bootstrap_nodes[0], g_config.bootstrap_nodes[0],
+                    sizeof(dht_config.bootstrap_nodes[0]) - 1);
+            dht_config.bootstrap_count = 1;
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "No bootstrap nodes configured");
+            return NULL;
+        }
+    }
+
+    // No persistence for client DHT
+    dht_config.persistence_path[0] = '\0';
+
+    // Create DHT context
+    dht_context_t *ctx = dht_context_new(&dht_config);
+    if (!ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create DHT context");
+        return NULL;
+    }
+
+    // Start DHT with provided identity
+    if (dht_context_start_with_identity(ctx, user_identity) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT with identity");
+        dht_context_free(ctx);
+        return NULL;
+    }
+
+    // Wait for DHT to connect (max 5 seconds)
+    QGP_LOG_INFO(LOG_TAG, "Waiting for engine DHT connection...");
+    int wait_count = 0;
+    while (!dht_context_is_ready(ctx) && wait_count < 50) {
+        qgp_platform_sleep_ms(100);
+        wait_count++;
+    }
+
+    if (dht_context_is_ready(ctx)) {
+        QGP_LOG_INFO(LOG_TAG, "Engine DHT connected after %d00ms", wait_count);
+
+        // Start background discovery (non-blocking)
+        if (dht_bootstrap_discovery_start(ctx) == 0) {
+            QGP_LOG_INFO(LOG_TAG, "Background bootstrap discovery started");
+        }
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "Engine DHT not connected after 5s (will retry in background)");
+    }
+
+    return ctx;
+}
+
+/**
+ * Set the global singleton context (v0.6.0+ engine bridging)
+ *
+ * Allows engine-owned contexts to be accessible via dht_singleton_get().
+ * When engine creates its own DHT context, it can "lend" it to the singleton
+ * so that code still using dht_singleton_get() gets the engine's context.
+ */
+void dht_singleton_set_borrowed_context(dht_context_t *ctx) {
+    if (g_dht_context && !g_context_borrowed) {
+        // There's an existing non-borrowed context - clean it up first
+        QGP_LOG_WARN(LOG_TAG, "Replacing owned context with borrowed one");
+        dht_context_free(g_dht_context);
+    }
+
+    g_dht_context = ctx;
+    g_context_borrowed = (ctx != NULL);
+
+    if (ctx) {
+        QGP_LOG_INFO(LOG_TAG, "Singleton now uses borrowed context (ctx=%p)", (void*)ctx);
+
+        // Re-register stored status callback on new context
+        if (g_status_callback) {
+            dht_context_set_status_callback(ctx, g_status_callback, g_status_callback_user_data);
+            QGP_LOG_INFO(LOG_TAG, "Re-registered status callback on borrowed context");
+        }
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "Singleton context cleared");
     }
 }

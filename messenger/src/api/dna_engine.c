@@ -1147,6 +1147,10 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
         return NULL;
     }
 
+    /* v0.6.0+: Initialize DHT context and identity lock (will be set during identity load) */
+    engine->dht_ctx = NULL;
+    engine->identity_lock_fd = -1;
+
     /* Load config and apply log settings BEFORE any logging */
     dna_config_t config;
     memset(&config, 0, sizeof(config));
@@ -1581,6 +1585,24 @@ void dna_engine_destroy(dna_engine_t *engine) {
     profile_manager_close();
     keyserver_cache_cleanup();
 
+    /* v0.6.0+: Cleanup engine-owned DHT context */
+    if (engine->dht_ctx) {
+        QGP_LOG_INFO(LOG_TAG, "Cleaning up engine-owned DHT context");
+        /* Clear borrowed context from singleton FIRST (prevents use-after-free) */
+        dht_singleton_set_borrowed_context(NULL);
+        /* Now safe to free the context */
+        dht_context_stop(engine->dht_ctx);
+        dht_context_free(engine->dht_ctx);
+        engine->dht_ctx = NULL;
+    }
+
+    /* v0.6.0+: Release identity lock */
+    if (engine->identity_lock_fd >= 0) {
+        QGP_LOG_INFO(LOG_TAG, "Releasing identity lock (fd=%d)", engine->identity_lock_fd);
+        qgp_platform_release_identity_lock(engine->identity_lock_fd);
+        engine->identity_lock_fd = -1;
+    }
+
     /* Securely clear session password */
     if (engine->session_password) {
         qgp_secure_memzero(engine->session_password, strlen(engine->session_password));
@@ -1659,6 +1681,18 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         QGP_LOG_INFO(LOG_TAG, "v0.3.0: Computed fingerprint from flat key file");
     }
 
+    /* v0.6.0+: Acquire identity lock (single-owner model)
+     * Prevents Flutter and ForegroundService from running simultaneously */
+    if (engine->identity_lock_fd < 0) {
+        engine->identity_lock_fd = qgp_platform_acquire_identity_lock(engine->data_dir);
+        if (engine->identity_lock_fd < 0) {
+            QGP_LOG_WARN(LOG_TAG, "Identity lock held by another process - cannot load");
+            error = DNA_ENGINE_ERROR_IDENTITY_LOCKED;
+            goto done;
+        }
+        QGP_LOG_INFO(LOG_TAG, "v0.6.0+: Identity lock acquired (fd=%d)", engine->identity_lock_fd);
+    }
+
     /* Free existing session password if any */
     if (engine->session_password) {
         /* Secure clear before freeing */
@@ -1725,8 +1759,17 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     strncpy(engine->fingerprint, fingerprint, 128);
     engine->fingerprint[128] = '\0';
 
-    /* Load DHT identity */
-    messenger_load_dht_identity(fingerprint);
+    /* v0.6.0+: Load DHT identity and create engine-owned context */
+    if (messenger_load_dht_identity_for_engine(fingerprint, &engine->dht_ctx) == 0) {
+        QGP_LOG_INFO(LOG_TAG, "Engine-owned DHT context created");
+        /* Lend context to singleton for backwards compatibility with code that
+         * still uses dht_singleton_get() directly */
+        dht_singleton_set_borrowed_context(engine->dht_ctx);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "Failed to create engine DHT context (falling back to singleton)");
+        /* Fallback: try singleton-based load for compatibility */
+        messenger_load_dht_identity(fingerprint);
+    }
 
     /* Load KEM keys for GEK encryption (H3 security fix) */
     {
@@ -4910,8 +4953,14 @@ int dna_engine_restore_identity_sync(
         return DNA_ERROR_CRYPTO;
     }
 
-    /* Step 2: Load DHT identity for later operations */
-    messenger_load_dht_identity(fingerprint_out);
+    /* Step 2: v0.6.0+: Load DHT identity into engine-owned context */
+    if (messenger_load_dht_identity_for_engine(fingerprint_out, &engine->dht_ctx) == 0) {
+        QGP_LOG_INFO(LOG_TAG, "Engine-owned DHT context created for restored identity");
+        dht_singleton_set_borrowed_context(engine->dht_ctx);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "Fallback: using singleton DHT for restored identity");
+        messenger_load_dht_identity(fingerprint_out);
+    }
 
     QGP_LOG_INFO(LOG_TAG, "Identity restored from seed: %.16s...", fingerprint_out);
 
@@ -8051,7 +8100,11 @@ void dna_free_profile(dna_profile_t *profile) {
 
 /* Helper: Get DHT context (uses singleton - P2P transport reserved for voice/video) */
 static dht_context_t* dna_get_dht_ctx(dna_engine_t *engine) {
-    (void)engine;  /* Unused until voice/video P2P */
+    /* v0.6.0+: Engine owns its own DHT context (no global singleton) */
+    if (engine && engine->dht_ctx) {
+        return engine->dht_ctx;
+    }
+    /* Fallback to singleton during migration (will be removed) */
     return dht_singleton_get();
 }
 

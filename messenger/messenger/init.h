@@ -9,6 +9,7 @@
 #define MESSENGER_INIT_H
 
 #include "messenger_core.h"
+#include "../dht/core/dht_context.h"  /* v0.6.0+: For dht_context_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -62,6 +63,19 @@ int messenger_load_dht_identity(const char *fingerprint);
  * @return: 0 on success, -1 on error
  */
 int messenger_prepare_dht_from_mnemonic(const char *mnemonic);
+
+/**
+ * Load DHT identity and create engine-owned DHT context (v0.6.0+)
+ *
+ * Similar to messenger_load_dht_identity() but returns the DHT context
+ * instead of storing it in the global singleton. Used by dna_engine to
+ * implement per-engine DHT ownership.
+ *
+ * @param fingerprint: User fingerprint (128 hex chars)
+ * @param ctx_out: Output pointer for created DHT context (caller owns)
+ * @return: 0 on success, -1 on error
+ */
+int messenger_load_dht_identity_for_engine(const char *fingerprint, dht_context_t **ctx_out);
 
 #ifdef __cplusplus
 }

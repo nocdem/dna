@@ -437,7 +437,32 @@ const char* dht_strerror(int error_code);
 
 ### 4.1 dht_singleton.h/c
 
-Global singleton pattern for application-wide DHT access.
+**v0.6.0+: Engine-Owned DHT Context**
+
+As of v0.6.0, each engine instance owns its own DHT context. The singleton pattern
+is kept for backwards compatibility but now uses a "borrowed context" model:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│               IDENTITY (persistent storage)                  │
+│  - fingerprint (SharedPreferences)                          │
+│  - mnemonic → derives DHT keys on demand                    │
+└───────────────────────────┬─────────────────────────────────┘
+                            │
+            ┌───────────────┴───────────────┐
+            ▼                               ▼
+┌───────────────────────┐       ┌───────────────────────┐
+│   FLUTTER (foreground)│       │   SERVICE (background)│
+│                       │       │                       │
+│   dna_engine_create() │       │   dna_engine_create() │
+│   ↓                   │       │   ↓                   │
+│   engine owns DHT ctx │       │   engine owns DHT ctx │
+│   (via identity lock) │       │   (via identity lock) │
+└───────────────────────┘       └───────────────────────┘
+
+    Only ONE can hold the identity lock at a time.
+    File-based mutex prevents race conditions.
+```
 
 #### Bootstrap Configuration
 
@@ -456,13 +481,11 @@ static const char *FALLBACK_NODES[] = {
 #### API
 
 ```c
-// Initialize DHT (ephemeral identity)
+// DEPRECATED: Use engine-owned context instead
 int dht_singleton_init(void);
-
-// Initialize with user-provided identity
 int dht_singleton_init_with_identity(dht_identity_t *user_identity);
 
-// Get DHT context
+// Get DHT context (returns borrowed context from engine, or NULL)
 dht_context_t* dht_singleton_get(void);
 
 // Check if initialized
@@ -470,17 +493,22 @@ bool dht_singleton_is_initialized(void);
 
 // Cleanup on shutdown
 void dht_singleton_cleanup(void);
+
+// v0.6.0+: Create engine-owned DHT context
+dht_context_t* dht_create_context_with_identity(dht_identity_t *user_identity);
+
+// v0.6.0+: Set borrowed context (engine lends its context to singleton)
+void dht_singleton_set_borrowed_context(dht_context_t *ctx);
 ```
 
-#### Initialization Flow
+#### Initialization Flow (v0.6.0+)
 
-1. Create DHT context (memory-only, no persistence)
-2. Bootstrap to seed node
-3. Wait for DHT ready (polling every 100ms, max 3 seconds)
-4. Query bootstrap registry
-5. Filter active nodes (last_seen < 15 minutes)
-6. Bootstrap to discovered nodes
-7. Wait 1 second for connections to stabilize
+1. Engine acquires identity lock (file-based mutex)
+2. Engine loads DHT identity from encrypted backup
+3. Engine creates its own DHT context via `dht_create_context_with_identity()`
+4. Engine lends context to singleton via `dht_singleton_set_borrowed_context()`
+5. DHT bootstraps to seed nodes (async)
+6. On engine destroy: clear borrowed context, stop/free DHT, release lock
 
 ---
 

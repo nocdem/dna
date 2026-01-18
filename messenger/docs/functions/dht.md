@@ -258,16 +258,20 @@ High-level DHT client operations including singleton management, identity backup
 
 ### 11.1 DHT Singleton (`dht_singleton.h`)
 
+**v0.6.0+:** Engine owns DHT context. Singleton uses "borrowed context" for backwards compatibility.
+
 | Function | Description |
 |----------|-------------|
-| `int dht_singleton_init(void)` | Initialize global DHT singleton (ephemeral identity) |
-| `int dht_singleton_init_with_identity(dht_identity_t*)` | Initialize DHT singleton with user identity |
-| `dht_context_t* dht_singleton_get(void)` | Get global DHT singleton instance |
+| `int dht_singleton_init(void)` | DEPRECATED: Initialize global DHT singleton (ephemeral identity) |
+| `int dht_singleton_init_with_identity(dht_identity_t*)` | DEPRECATED: Initialize DHT singleton with user identity |
+| `dht_context_t* dht_singleton_get(void)` | Get DHT context (borrowed from engine, or NULL) |
 | `bool dht_singleton_is_initialized(void)` | Check if singleton is initialized |
 | `bool dht_singleton_is_ready(void)` | Check if DHT is connected and ready |
 | `void dht_singleton_cleanup(void)` | Cleanup global DHT singleton |
 | `int dht_singleton_reinit(void)` | Reinitialize DHT after network change (restarts with same identity) |
 | `void dht_singleton_set_status_callback(dht_status_callback_t, void*)` | Set connection status callback |
+| `dht_context_t* dht_create_context_with_identity(dht_identity_t*)` | v0.6.0+: Create engine-owned DHT context |
+| `void dht_singleton_set_borrowed_context(dht_context_t*)` | v0.6.0+: Set borrowed context from engine |
 
 **Bootstrap Discovery (`dht_bootstrap_discovery.h`):**
 

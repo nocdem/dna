@@ -62,11 +62,26 @@ class DnaMessengerService : Service() {
 
         /**
          * Set whether Flutter is active (in foreground).
-         * When true, service pauses DHT operations to avoid interference.
+         * v0.6.0+: When Flutter becomes active, service releases its engine.
+         * This allows Flutter to acquire the identity lock and own the DHT.
          */
         fun setFlutterActive(active: Boolean) {
-            android.util.Log.i(TAG, "Flutter active: $active")
+            val wasActive = flutterActive
             flutterActive = active
+            android.util.Log.i(TAG, "Flutter active: $active (was: $wasActive)")
+
+            // v0.6.0+: When Flutter becomes active, release service's engine
+            if (active && !wasActive) {
+                android.util.Log.i(TAG, "Flutter taking over - releasing service engine")
+                try {
+                    if (libraryLoaded) {
+                        nativeReleaseEngine()
+                        android.util.Log.i(TAG, "Service engine released for Flutter")
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "Failed to release engine: ${e.message}")
+                }
+            }
         }
 
         /**
@@ -104,10 +119,29 @@ class DnaMessengerService : Service() {
          * Called when service starts fresh but Flutter isn't running.
          * Skips transport, presence, wallet to save resources.
          * Note: This is a blocking call for simplicity in service context.
-         * Returns: 0 on success, negative on error
+         * Returns: 0 on success, -117 if identity locked by Flutter, other negative on error
          */
         @JvmStatic
         external fun nativeLoadIdentityMinimalSync(fingerprint: String): Int
+
+        /**
+         * Check if identity lock is held by another process (v0.6.0+)
+         * When true, Flutter has the lock and service should not try to load identity.
+         * Returns: true if locked (Flutter active), false if available
+         */
+        @JvmStatic
+        external fun nativeIsIdentityLocked(dataDir: String): Boolean
+
+        /**
+         * Release service's engine (v0.6.0+)
+         * Called when Flutter becomes active and wants to take over.
+         * Service should call this to release its engine and identity lock.
+         */
+        @JvmStatic
+        external fun nativeReleaseEngine()
+
+        // Error code for identity lock held by another process
+        private const val ERROR_IDENTITY_LOCKED = -117
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -238,11 +272,11 @@ class DnaMessengerService : Service() {
     }
 
     /**
-     * Ensure identity is loaded for DHT listeners (v0.5.24+)
+     * Ensure identity is loaded for DHT listeners (v0.6.0+)
      *
      * Single-owner model: Service owns engine when Flutter is not running.
-     * When the process is killed but service restarts (START_STICKY),
-     * we reload identity with full initialization for notifications.
+     * v0.6.0+: Uses identity lock to prevent race conditions with Flutter.
+     * If Flutter has the lock, service waits. When Flutter releases, service takes over.
      */
     private fun ensureIdentityLoaded() {
         if (!libraryLoaded) {
@@ -271,8 +305,15 @@ class DnaMessengerService : Service() {
                 return
             }
 
-            // Ensure engine is initialized
             val dataDir = filesDir.absolutePath + "/dna_messenger"
+
+            // v0.6.0+: Check if identity lock is held before trying to load
+            if (nativeIsIdentityLocked(dataDir)) {
+                android.util.Log.i(TAG, "Identity locked by Flutter - service will wait")
+                return
+            }
+
+            // Ensure engine is initialized
             if (!nativeEnsureEngine(dataDir)) {
                 android.util.Log.e(TAG, "Failed to ensure engine")
                 return
@@ -281,10 +322,14 @@ class DnaMessengerService : Service() {
             // Load identity with minimal initialization (DHT + listeners only)
             android.util.Log.i(TAG, "Loading identity (minimal): ${fingerprint.take(16)}...")
             val result = nativeLoadIdentityMinimalSync(fingerprint)
-            if (result == 0) {
-                android.util.Log.i(TAG, "Identity loaded (minimal mode) - notifications active")
-            } else {
-                android.util.Log.e(TAG, "Failed to load identity: $result")
+            when (result) {
+                0 -> android.util.Log.i(TAG, "Identity loaded (minimal mode) - notifications active")
+                ERROR_IDENTITY_LOCKED -> {
+                    android.util.Log.w(TAG, "Identity locked - Flutter acquired lock during load")
+                    // Release our engine since we can't use it
+                    nativeReleaseEngine()
+                }
+                else -> android.util.Log.e(TAG, "Failed to load identity: $result")
             }
         } catch (e: Exception) {
             android.util.Log.e(TAG, "ensureIdentityLoaded error: ${e.message}")

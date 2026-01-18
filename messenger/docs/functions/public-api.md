@@ -207,11 +207,18 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 
 ## 1.16 Global Engine Access
 
+**v0.6.0+:** Global engine functions are deprecated. Each caller (Flutter/Service) owns its own engine.
+
 | Function | Description |
 |----------|-------------|
-| `void dna_engine_set_global(dna_engine_t*)` | Set global engine instance |
-| `dna_engine_t* dna_engine_get_global(void)` | Get global engine instance |
+| `void dna_engine_set_global(dna_engine_t*)` | DEPRECATED: Set global engine instance |
+| `dna_engine_t* dna_engine_get_global(void)` | DEPRECATED: Get global engine instance |
 | `void dna_dispatch_event(dna_engine_t*, const dna_event_t*)` | Dispatch event to Flutter/GUI layer |
+
+**Error Codes (v0.6.0+):**
+| Code | Constant | Description |
+|------|----------|-------------|
+| -117 | `DNA_ENGINE_ERROR_IDENTITY_LOCKED` | Identity lock held by another process |
 
 ## 1.17 Debug Log API
 

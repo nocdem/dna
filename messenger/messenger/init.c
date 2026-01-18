@@ -495,3 +495,132 @@ int messenger_load_dht_identity(const char *fingerprint) {
 
     return 0;
 }
+
+/**
+ * Load DHT identity and create engine-owned DHT context (v0.6.0+)
+ *
+ * Same as messenger_load_dht_identity() but returns a new DHT context
+ * instead of storing in global singleton.
+ */
+int messenger_load_dht_identity_for_engine(const char *fingerprint, dht_context_t **ctx_out) {
+    if (!fingerprint || strlen(fingerprint) != 128 || !ctx_out) {
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Invalid params for engine DHT identity");
+        return -1;
+    }
+
+    *ctx_out = NULL;
+    QGP_LOG_INFO(LOG_TAG_DHT, "Loading DHT identity for engine (%.16s...)", fingerprint);
+
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Cannot get data directory");
+        return -1;
+    }
+
+    dht_identity_t *dht_identity = NULL;
+
+    // Method 1: Try to load cached dht_identity.bin (fast path)
+    char dht_id_path[512];
+    snprintf(dht_id_path, sizeof(dht_id_path), "%s/dht_identity.bin", data_dir);
+
+    FILE *f = fopen(dht_id_path, "rb");
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        size_t file_size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+
+        uint8_t *buffer = malloc(file_size);
+        if (buffer && fread(buffer, 1, file_size, f) == file_size) {
+            if (dht_identity_import_from_buffer(buffer, file_size, &dht_identity) == 0) {
+                QGP_LOG_INFO(LOG_TAG_DHT, "Loaded from cached dht_identity.bin");
+            }
+            free(buffer);
+        }
+        fclose(f);
+    }
+
+    // Method 2: Derive from mnemonic if not cached
+    if (!dht_identity) {
+        QGP_LOG_INFO(LOG_TAG_DHT, "Deriving DHT identity from mnemonic...");
+
+        char kyber_path[512];
+        if (messenger_find_key_path(data_dir, fingerprint, ".kem", kyber_path) != 0) {
+            QGP_LOG_ERROR(LOG_TAG_DHT, "Kyber key not found");
+            return -1;
+        }
+
+        qgp_key_t *kyber_key = NULL;
+        if (qgp_key_load(kyber_path, &kyber_key) != 0 || !kyber_key) {
+            QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to load Kyber key");
+            return -1;
+        }
+
+        char mnemonic[512] = {0};
+        if (mnemonic_storage_load(mnemonic, sizeof(mnemonic),
+                                   kyber_key->private_key, data_dir) != 0) {
+            QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to load mnemonic");
+            qgp_key_free(kyber_key);
+            return -1;
+        }
+        qgp_key_free(kyber_key);
+
+        uint8_t master_seed[64];
+        if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
+            QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to convert mnemonic");
+            qgp_secure_memzero(mnemonic, sizeof(mnemonic));
+            return -1;
+        }
+        qgp_secure_memzero(mnemonic, sizeof(mnemonic));
+
+        uint8_t dht_seed[32];
+        uint8_t full_hash[64];
+        uint8_t seed_input[64 + 12];
+        memcpy(seed_input, master_seed, 64);
+        memcpy(seed_input + 64, "dht_identity", 12);
+        qgp_secure_memzero(master_seed, sizeof(master_seed));
+
+        if (qgp_sha3_512(seed_input, sizeof(seed_input), full_hash) != 0) {
+            qgp_secure_memzero(seed_input, sizeof(seed_input));
+            return -1;
+        }
+        qgp_secure_memzero(seed_input, sizeof(seed_input));
+
+        memcpy(dht_seed, full_hash, 32);
+        qgp_secure_memzero(full_hash, sizeof(full_hash));
+
+        if (dht_identity_generate_from_seed(dht_seed, &dht_identity) != 0) {
+            qgp_secure_memzero(dht_seed, sizeof(dht_seed));
+            return -1;
+        }
+        qgp_secure_memzero(dht_seed, sizeof(dht_seed));
+
+        QGP_LOG_INFO(LOG_TAG_DHT, "Derived DHT identity from mnemonic");
+
+        // Cache for next time
+        uint8_t *dht_id_buffer = NULL;
+        size_t dht_id_size = 0;
+        if (dht_identity_export_to_buffer(dht_identity, &dht_id_buffer, &dht_id_size) == 0) {
+            FILE *cache_f = fopen(dht_id_path, "wb");
+            if (cache_f) {
+                fwrite(dht_id_buffer, 1, dht_id_size, cache_f);
+                fclose(cache_f);
+            }
+            free(dht_id_buffer);
+        }
+    }
+
+    // Create engine-owned DHT context (NOT singleton)
+    QGP_LOG_INFO(LOG_TAG_DHT, ">>> ENGINE DHT INIT START <<<");
+
+    *ctx_out = dht_create_context_with_identity(dht_identity);
+    if (!*ctx_out) {
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to create engine DHT context");
+        dht_identity_free(dht_identity);
+        return -1;
+    }
+
+    // Don't free dht_identity - owned by DHT context now
+    QGP_LOG_INFO(LOG_TAG_DHT, ">>> ENGINE DHT INIT COMPLETE <<<");
+
+    return 0;
+}

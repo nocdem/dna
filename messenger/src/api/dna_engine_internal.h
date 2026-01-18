@@ -20,6 +20,7 @@
 #include "dht/shared/dht_dm_outbox.h"  /* Daily bucket DM outbox (v0.4.81+) */
 #include "dht/shared/dht_contact_request.h"
 #include "dht/client/dna_group_outbox.h"
+#include "dht/core/dht_context.h"  /* v0.6.0+: Engine owns DHT context */
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -491,6 +492,12 @@ typedef struct {
 struct dna_engine {
     /* Configuration */
     char *data_dir;              /* Data directory path (owned) */
+
+    /* DHT context (v0.6.0+: engine owns its own DHT, no global singleton) */
+    dht_context_t *dht_ctx;      /* DHT context owned by this engine */
+
+    /* Identity lock (prevents multiple engines from loading same identity) */
+    int identity_lock_fd;        /* File lock descriptor (-1 if not held) */
 
     /* Messenger backend */
     messenger_context_t *messenger;  /* Core messenger context */

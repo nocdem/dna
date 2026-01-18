@@ -323,6 +323,45 @@ int qgp_platform_sanitize_filename(const char *filename);
 int qgp_platform_cpu_count(void);
 
 /* ============================================================================
+ * Identity Lock (v0.6.0+ - Single-Owner Engine Model)
+ * ============================================================================ */
+
+/**
+ * Acquire exclusive lock on identity directory
+ *
+ * Prevents multiple engines (Flutter + Service) from loading the same identity
+ * simultaneously. Uses file-based locking that works across JNI and FFI.
+ *
+ * Linux/Android: Uses flock() with LOCK_EX | LOCK_NB
+ * Windows: Uses LockFileEx() with LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY
+ *
+ * @param data_dir Data directory containing identity
+ * @return Lock file descriptor on success (>= 0), -1 if lock already held by another process
+ */
+int qgp_platform_acquire_identity_lock(const char *data_dir);
+
+/**
+ * Release identity lock
+ *
+ * Releases the exclusive lock acquired by qgp_platform_acquire_identity_lock().
+ * Safe to call with -1 (no-op).
+ *
+ * @param lock_fd Lock file descriptor from acquire_identity_lock()
+ */
+void qgp_platform_release_identity_lock(int lock_fd);
+
+/**
+ * Check if identity lock is held (non-blocking probe)
+ *
+ * Attempts to acquire the lock non-blocking to check if it's available,
+ * then immediately releases if acquired.
+ *
+ * @param data_dir Data directory containing identity
+ * @return 1 if lock is currently held by another process, 0 if available
+ */
+int qgp_platform_is_identity_locked(const char *data_dir);
+
+/* ============================================================================
  * Platform Detection Macros
  * ============================================================================ */
 

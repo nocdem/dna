@@ -1116,22 +1116,13 @@ class DnaEngine {
 
   /// Create and initialize the DNA engine
   ///
-  /// On Android (v0.5.5+): Checks for existing global engine first.
-  /// If the background service already created an engine, this reuses it
-  /// for seamless handoff between JNI and Flutter FFI.
+  /// v0.6.0+: Each caller (Flutter/Service) owns its own engine and DHT context.
+  /// The identity lock mechanism in C code prevents simultaneous access.
+  /// When identity is loaded, the engine acquires a file lock and creates
+  /// its own DHT context - no global sharing needed.
   static Future<DnaEngine> create({String? dataDir}) async {
     final engine = DnaEngine._();
     engine._bindings = DnaBindings(_loadLibrary());
-
-    // Android: Check for existing global engine (created by service)
-    if (Platform.isAndroid) {
-      final globalEngine = engine._bindings.dna_engine_get_global();
-      if (globalEngine != nullptr) {
-        engine._engine = globalEngine;
-        engine._setupEventCallback();
-        return engine;
-      }
-    }
 
     final dataDirPtr = dataDir?.toNativeUtf8() ?? nullptr;
     engine._engine = engine._bindings.dna_engine_create(dataDirPtr.cast());
@@ -1142,11 +1133,6 @@ class DnaEngine {
 
     if (engine._engine == nullptr) {
       throw DnaEngineException(-100, 'Failed to create engine');
-    }
-
-    // Android: Set as global so service can access it
-    if (Platform.isAndroid) {
-      engine._bindings.dna_engine_set_global(engine._engine);
     }
 
     engine._setupEventCallback();

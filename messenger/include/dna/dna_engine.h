@@ -80,6 +80,7 @@ typedef uint64_t dna_request_id_t;
 #define DNA_ENGINE_ERROR_INSUFFICIENT_BALANCE (-114)  /* Insufficient token balance for transaction */
 #define DNA_ENGINE_ERROR_RENT_MINIMUM (-115)  /* Solana: amount below rent-exempt minimum for new account */
 #define DNA_ENGINE_ERROR_KEY_UNAVAILABLE (-116)  /* Recipient public key not cached and DHT lookup failed */
+#define DNA_ENGINE_ERROR_IDENTITY_LOCKED (-117)  /* v0.6.0+: Identity lock held by another process (Flutter/Service) */
 
 /**
  * Get human-readable error message for engine errors

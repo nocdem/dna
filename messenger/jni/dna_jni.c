@@ -18,6 +18,7 @@
 #include "dna/dna_engine.h"
 #include "dht/client/dht_singleton.h"
 #include "dht/core/dht_listen.h"
+#include "crypto/utils/qgp_platform.h"  /* v0.6.0+: For identity lock check */
 
 #define LOG_TAG "DNA-JNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -1370,4 +1371,54 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeLoadIdentityMinimalSync(J
     }
 
     return ctx.result;
+}
+
+/* ============================================================================
+ * v0.6.0+: IDENTITY LOCK / SERVICE ENGINE MANAGEMENT
+ * ============================================================================ */
+
+/**
+ * Check if identity lock is held by another process (v0.6.0+)
+ *
+ * The identity lock prevents both Flutter and Service from loading identity
+ * simultaneously. Service can use this to check if Flutter has the lock.
+ *
+ * Returns: JNI_TRUE if lock is held (don't try to load), JNI_FALSE if available
+ */
+JNIEXPORT jboolean JNICALL
+Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeIsIdentityLocked(JNIEnv *env, jobject thiz, jstring data_dir) {
+    if (!data_dir) {
+        LOGE("nativeIsIdentityLocked: data_dir is NULL");
+        return JNI_FALSE;
+    }
+
+    const char *dir = (*env)->GetStringUTFChars(env, data_dir, NULL);
+    if (!dir) {
+        return JNI_FALSE;
+    }
+
+    int is_locked = qgp_platform_is_identity_locked(dir);
+    (*env)->ReleaseStringUTFChars(env, data_dir, dir);
+
+    LOGI("nativeIsIdentityLocked: %s", is_locked ? "YES (Flutter has lock)" : "NO (available)");
+    return is_locked ? JNI_TRUE : JNI_FALSE;
+}
+
+/**
+ * Release service's engine (v0.6.0+)
+ *
+ * Called when Flutter becomes active and wants to take over.
+ * Service should call this to release its engine and identity lock.
+ */
+JNIEXPORT void JNICALL
+Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReleaseEngine(JNIEnv *env, jobject thiz) {
+    if (g_engine) {
+        LOGI("nativeReleaseEngine: Releasing service engine for Flutter takeover");
+        dna_engine_destroy(g_engine);
+        g_engine = NULL;
+        dna_engine_set_global(NULL);
+        LOGI("nativeReleaseEngine: Engine released, identity lock freed");
+    } else {
+        LOGI("nativeReleaseEngine: No engine to release");
+    }
 }

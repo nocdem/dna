@@ -26,6 +26,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <dirent.h>
+#include <sys/file.h>  /* For flock() */
 
 /* Android random: getrandom() available in API 28+, use syscall for API 24-27 */
 #if __ANDROID_API__ >= 28
@@ -506,4 +507,84 @@ int qgp_platform_cpu_count(void) {
         return 1;  /* Fallback to 1 if detection fails */
     }
     return (int)n;
+}
+
+/* ============================================================================
+ * Identity Lock (v0.6.0+ - Single-Owner Engine Model)
+ * Uses flock() for file-based locking across processes (Flutter FFI vs JNI Service)
+ * ============================================================================ */
+
+int qgp_platform_acquire_identity_lock(const char *data_dir) {
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "acquire_identity_lock: NULL data_dir");
+        return -1;
+    }
+
+    /* Build lock file path: data_dir/identity.lock */
+    char lock_path[4096];
+    snprintf(lock_path, sizeof(lock_path), "%s/identity.lock", data_dir);
+
+    /* Ensure data directory exists */
+    qgp_platform_mkdir(data_dir);
+
+    /* Open/create lock file */
+    int fd = open(lock_path, O_CREAT | O_RDWR, 0600);
+    if (fd < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "acquire_identity_lock: failed to open %s: %s",
+                      lock_path, strerror(errno));
+        return -1;
+    }
+
+    /* Try to acquire exclusive lock (non-blocking) */
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        if (errno == EWOULDBLOCK) {
+            QGP_LOG_WARN(LOG_TAG, "acquire_identity_lock: lock already held by another process");
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "acquire_identity_lock: flock failed: %s", strerror(errno));
+        }
+        close(fd);
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "acquire_identity_lock: lock acquired (fd=%d)", fd);
+    return fd;
+}
+
+void qgp_platform_release_identity_lock(int lock_fd) {
+    if (lock_fd < 0) {
+        return;  /* No lock to release */
+    }
+
+    /* Release the lock and close the file descriptor */
+    flock(lock_fd, LOCK_UN);
+    close(lock_fd);
+    QGP_LOG_INFO(LOG_TAG, "release_identity_lock: lock released (fd=%d)", lock_fd);
+}
+
+int qgp_platform_is_identity_locked(const char *data_dir) {
+    if (!data_dir) {
+        return 0;
+    }
+
+    /* Build lock file path */
+    char lock_path[4096];
+    snprintf(lock_path, sizeof(lock_path), "%s/identity.lock", data_dir);
+
+    /* Try to open lock file */
+    int fd = open(lock_path, O_RDONLY);
+    if (fd < 0) {
+        /* Lock file doesn't exist - not locked */
+        return 0;
+    }
+
+    /* Try to acquire exclusive lock (non-blocking) to check status */
+    if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+        /* Got the lock - it was available, release immediately */
+        flock(fd, LOCK_UN);
+        close(fd);
+        return 0;  /* Not locked */
+    }
+
+    close(fd);
+    return 1;  /* Lock is held by another process */
 }

@@ -133,6 +133,37 @@ int dht_singleton_reinit(void);
  */
 void dht_singleton_set_status_callback(dht_status_callback_t callback, void *user_data);
 
+/**
+ * Create a new DHT context with identity (v0.6.0+ engine-owned model)
+ *
+ * Unlike dht_singleton_init_with_identity(), this creates a DHT context
+ * that is owned by the caller, not stored in the global singleton.
+ * Used by dna_engine to create per-engine DHT contexts.
+ *
+ * The caller is responsible for:
+ * - Storing the returned context
+ * - Calling dht_context_stop() + dht_context_free() on cleanup
+ * - Managing any status callbacks
+ *
+ * @param user_identity DHT identity to use (ownership transferred to DHT)
+ * @return Created DHT context, or NULL on error
+ */
+dht_context_t* dht_create_context_with_identity(dht_identity_t *user_identity);
+
+/**
+ * Set the global singleton context (v0.6.0+ engine bridging)
+ *
+ * Allows engine-owned contexts to be accessible via dht_singleton_get().
+ * This is a transitional mechanism for backwards compatibility with code
+ * that still uses the singleton pattern.
+ *
+ * NOTE: The engine still owns the context - singleton does NOT free it.
+ * When calling this with NULL, it just clears the pointer.
+ *
+ * @param ctx DHT context to set (NULL to clear)
+ */
+void dht_singleton_set_borrowed_context(dht_context_t *ctx);
+
 #ifdef __cplusplus
 }
 #endif
