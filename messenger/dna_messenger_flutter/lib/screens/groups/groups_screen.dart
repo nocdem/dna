@@ -515,8 +515,13 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
 
   @override
   void dispose() {
-    // Mark group chat as closed
-    ref.read(openGroupUuidProvider.notifier).state = null;
+    // Mark group chat as closed - wrapped in try-catch because ref may be
+    // invalid if widget was disposed during rapid navigation
+    try {
+      ref.read(openGroupUuidProvider.notifier).state = null;
+    } catch (_) {
+      // Widget already fully disposed, state cleanup not needed
+    }
     _messageController.dispose();
     _scrollController.dispose();
     super.dispose();
