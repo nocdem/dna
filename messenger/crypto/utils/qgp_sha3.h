@@ -19,6 +19,9 @@
 #define QGP_SHA3_512_DIGEST_LENGTH 64  // SHA3-512 output size in bytes
 #define QGP_SHA3_512_HEX_LENGTH 129    // 128 hex chars + null terminator
 
+#define QGP_SHA3_256_DIGEST_LENGTH 32  // SHA3-256 output size in bytes
+#define QGP_SHA3_256_HEX_LENGTH 65     // 64 hex chars + null terminator
+
 /**
  * Compute SHA3-512 hash of data
  *

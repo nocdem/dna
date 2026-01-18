@@ -114,6 +114,85 @@ static void print_usage(const char *prog_name) {
     printf("  group-invite <uuid> <name|fp>  Invite member to group\n");
     printf("  group-sync <uuid>           Sync group from DHT to local cache\n");
     printf("  group-publish-gek <uuid>    Publish GEK to DHT (owner only)\n");
+    printf("  group-members <uuid>        List group members\n");
+    printf("  invitations                 List pending group invitations\n");
+    printf("  invite-accept <uuid>        Accept group invitation\n");
+    printf("  invite-reject <uuid>        Reject group invitation\n");
+    printf("\n");
+    printf("BLOCKING COMMANDS:\n");
+    printf("  block <name|fp>             Block a user\n");
+    printf("  unblock <fp>                Unblock a user\n");
+    printf("  blocked                     List blocked users\n");
+    printf("  is-blocked <fp>             Check if user is blocked\n");
+    printf("  deny <fp>                   Deny contact request\n");
+    printf("  request-count               Count pending contact requests\n");
+    printf("\n");
+    printf("MESSAGE QUEUE COMMANDS:\n");
+    printf("  queue-status                Show message queue status\n");
+    printf("  queue-send <fp> <msg>       Queue message for async sending\n");
+    printf("  set-queue-capacity <n>      Set message queue capacity\n");
+    printf("  retry-pending               Retry all pending messages\n");
+    printf("  retry-message <id>          Retry single message by ID\n");
+    printf("\n");
+    printf("MESSAGE MANAGEMENT COMMANDS:\n");
+    printf("  delete-message <id>         Delete message by ID\n");
+    printf("  mark-read <name|fp>         Mark conversation as read\n");
+    printf("  unread <name|fp>            Get unread count for contact\n");
+    printf("  messages-page <fp> [n] [off]  Paginated messages (limit, offset)\n");
+    printf("\n");
+    printf("DHT SYNC COMMANDS:\n");
+    printf("  sync-contacts-up            Push contacts to DHT\n");
+    printf("  sync-contacts-down          Pull contacts from DHT\n");
+    printf("  sync-groups                 Sync all groups from DHT\n");
+    printf("  refresh-presence            Refresh presence in DHT\n");
+    printf("  presence <name|fp>          Lookup peer presence\n");
+    printf("  dht-status                  Check DHT connection status\n");
+    printf("\n");
+    printf("DEBUG COMMANDS:\n");
+    printf("  log-level [level]           Get/set log level (DEBUG/INFO/WARN/ERROR)\n");
+    printf("  log-tags [tags]             Get/set log tag filter\n");
+    printf("  debug-log <on|off>          Enable/disable debug logging\n");
+    printf("  debug-entries [n]           Get recent log entries (default 50)\n");
+    printf("  debug-count                 Get log entry count\n");
+    printf("  debug-clear                 Clear debug log\n");
+    printf("  debug-export <file>         Export debug log to file\n");
+    printf("\n");
+    printf("PRESENCE CONTROL COMMANDS:\n");
+    printf("  pause-presence              Pause presence updates\n");
+    printf("  resume-presence             Resume presence updates\n");
+    printf("  network-changed             Reinit DHT after network change\n");
+    printf("\n");
+    printf("IDENTITY EXTENSION COMMANDS:\n");
+    printf("  set-nickname <fp> <nick>    Set local nickname for contact\n");
+    printf("  get-avatar <fp>             Get contact avatar info\n");
+    printf("  get-mnemonic                Show recovery phrase (24 words)\n");
+    printf("  refresh-profile <fp>        Force refresh contact profile from DHT\n");
+    printf("\n");
+    printf("EXTENDED WALLET COMMANDS:\n");
+    printf("  send-tokens <w> <net> <tok> <to> <amt>  Send tokens\n");
+    printf("  transactions <wallet_idx>   Show transaction history\n");
+    printf("  estimate-gas <network_id>   Estimate ETH gas fees\n");
+    printf("\n");
+    printf("DNA BOARD COMMANDS:\n");
+    printf("  feed-channels               List feed channels\n");
+    printf("  feed-init                   Initialize default channels\n");
+    printf("  feed-create-channel <name> [desc]  Create channel\n");
+    printf("  feed-posts <channel_id>     List posts in channel\n");
+    printf("  feed-post <channel_id> <text>  Create post\n");
+    printf("  feed-vote <post_id> <up|down>  Vote on post\n");
+    printf("  feed-votes <post_id>        Get vote counts\n");
+    printf("  feed-comments <post_id>     List comments on post\n");
+    printf("  feed-comment <post_id> <text>  Add comment\n");
+    printf("  feed-comment-vote <id> <up|down>  Vote on comment\n");
+    printf("  feed-comment-votes <id>     Get comment votes\n");
+    printf("\n");
+    printf("BACKUP COMMANDS:\n");
+    printf("  backup-messages             Backup messages to DHT\n");
+    printf("  restore-messages            Restore messages from DHT\n");
+    printf("\n");
+    printf("SIGNING COMMANDS:\n");
+    printf("  sign <data>                 Sign data with Dilithium5\n");
+    printf("  signing-pubkey              Get signing public key\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s create alice\n", prog_name);
@@ -572,6 +651,379 @@ int main(int argc, char *argv[]) {
         } else {
             result = cmd_group_publish_gek(g_engine, argv[optind + 1]);
         }
+    }
+
+    /* ====== PHASE 1: CONTACT BLOCKING & REQUESTS ====== */
+    else if (strcmp(command, "block") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'block' requires <name|fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_block(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "unblock") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'unblock' requires <fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_unblock(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "blocked") == 0) {
+        result = cmd_blocked(g_engine);
+    }
+    else if (strcmp(command, "is-blocked") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'is-blocked' requires <fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_is_blocked(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "deny") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'deny' requires <fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_deny(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "request-count") == 0) {
+        result = cmd_request_count(g_engine);
+    }
+
+    /* ====== PHASE 2: MESSAGE QUEUE OPERATIONS ====== */
+    else if (strcmp(command, "queue-status") == 0) {
+        result = cmd_queue_status(g_engine);
+    }
+    else if (strcmp(command, "queue-send") == 0) {
+        if (optind + 2 >= argc) {
+            fprintf(stderr, "Error: 'queue-send' requires <fingerprint> and <message> arguments\n");
+            result = 1;
+        } else {
+            result = cmd_queue_send(g_engine, argv[optind + 1], argv[optind + 2]);
+        }
+    }
+    else if (strcmp(command, "set-queue-capacity") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'set-queue-capacity' requires <capacity> argument\n");
+            result = 1;
+        } else {
+            result = cmd_set_queue_capacity(g_engine, atoi(argv[optind + 1]));
+        }
+    }
+    else if (strcmp(command, "retry-pending") == 0) {
+        result = cmd_retry_pending(g_engine);
+    }
+    else if (strcmp(command, "retry-message") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'retry-message' requires <message_id> argument\n");
+            result = 1;
+        } else {
+            result = cmd_retry_message(g_engine, atoll(argv[optind + 1]));
+        }
+    }
+
+    /* ====== PHASE 3: MESSAGE MANAGEMENT ====== */
+    else if (strcmp(command, "delete-message") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'delete-message' requires <message_id> argument\n");
+            result = 1;
+        } else {
+            result = cmd_delete_message(g_engine, atoll(argv[optind + 1]));
+        }
+    }
+    else if (strcmp(command, "mark-read") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'mark-read' requires <name|fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_mark_read(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "unread") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'unread' requires <name|fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_unread(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "messages-page") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'messages-page' requires <name|fingerprint> [limit] [offset] arguments\n");
+            result = 1;
+        } else {
+            int limit = (optind + 2 < argc) ? atoi(argv[optind + 2]) : 50;
+            int offset = (optind + 3 < argc) ? atoi(argv[optind + 3]) : 0;
+            result = cmd_messages_page(g_engine, argv[optind + 1], limit, offset);
+        }
+    }
+
+    /* ====== PHASE 4: DHT SYNC OPERATIONS ====== */
+    else if (strcmp(command, "sync-contacts-up") == 0) {
+        result = cmd_sync_contacts_up(g_engine);
+    }
+    else if (strcmp(command, "sync-contacts-down") == 0) {
+        result = cmd_sync_contacts_down(g_engine);
+    }
+    else if (strcmp(command, "sync-groups") == 0) {
+        result = cmd_sync_groups(g_engine);
+    }
+    else if (strcmp(command, "refresh-presence") == 0) {
+        result = cmd_refresh_presence(g_engine);
+    }
+    else if (strcmp(command, "presence") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'presence' requires <name|fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_presence(g_engine, argv[optind + 1]);
+        }
+    }
+
+    /* ====== PHASE 5: DEBUG LOGGING ====== */
+    else if (strcmp(command, "log-level") == 0) {
+        const char *level = (optind + 1 < argc) ? argv[optind + 1] : NULL;
+        result = cmd_log_level(g_engine, level);
+    }
+    else if (strcmp(command, "log-tags") == 0) {
+        const char *tags = (optind + 1 < argc) ? argv[optind + 1] : NULL;
+        result = cmd_log_tags(g_engine, tags);
+    }
+    else if (strcmp(command, "debug-log") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'debug-log' requires <on|off> argument\n");
+            result = 1;
+        } else {
+            bool enable = (strcmp(argv[optind + 1], "on") == 0 ||
+                          strcmp(argv[optind + 1], "true") == 0 ||
+                          strcmp(argv[optind + 1], "1") == 0);
+            result = cmd_debug_log(g_engine, enable);
+        }
+    }
+    else if (strcmp(command, "debug-entries") == 0) {
+        int count = (optind + 1 < argc) ? atoi(argv[optind + 1]) : 50;
+        result = cmd_debug_entries(g_engine, count);
+    }
+    else if (strcmp(command, "debug-count") == 0) {
+        result = cmd_debug_count(g_engine);
+    }
+    else if (strcmp(command, "debug-clear") == 0) {
+        result = cmd_debug_clear(g_engine);
+    }
+    else if (strcmp(command, "debug-export") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'debug-export' requires <filepath> argument\n");
+            result = 1;
+        } else {
+            result = cmd_debug_export(g_engine, argv[optind + 1]);
+        }
+    }
+
+    /* ====== PHASE 6: GROUP EXTENSIONS ====== */
+    else if (strcmp(command, "group-members") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'group-members' requires <uuid> argument\n");
+            result = 1;
+        } else {
+            result = cmd_group_members(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "invitations") == 0) {
+        result = cmd_invitations(g_engine);
+    }
+    else if (strcmp(command, "invite-accept") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'invite-accept' requires <uuid> argument\n");
+            result = 1;
+        } else {
+            result = cmd_invite_accept(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "invite-reject") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'invite-reject' requires <uuid> argument\n");
+            result = 1;
+        } else {
+            result = cmd_invite_reject(g_engine, argv[optind + 1]);
+        }
+    }
+
+    /* ====== PHASE 7: PRESENCE CONTROL ====== */
+    else if (strcmp(command, "pause-presence") == 0) {
+        result = cmd_pause_presence(g_engine);
+    }
+    else if (strcmp(command, "resume-presence") == 0) {
+        result = cmd_resume_presence(g_engine);
+    }
+    else if (strcmp(command, "network-changed") == 0) {
+        result = cmd_network_changed(g_engine);
+    }
+
+    /* ====== PHASE 8: CONTACT & IDENTITY EXTENSIONS ====== */
+    else if (strcmp(command, "set-nickname") == 0) {
+        if (optind + 2 >= argc) {
+            fprintf(stderr, "Error: 'set-nickname' requires <fingerprint> <nickname> arguments\n");
+            result = 1;
+        } else {
+            result = cmd_set_nickname(g_engine, argv[optind + 1], argv[optind + 2]);
+        }
+    }
+    else if (strcmp(command, "get-avatar") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'get-avatar' requires <fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_get_avatar(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "get-mnemonic") == 0) {
+        result = cmd_get_mnemonic(g_engine);
+    }
+    else if (strcmp(command, "refresh-profile") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'refresh-profile' requires <fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_refresh_profile(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "dht-status") == 0) {
+        result = cmd_dht_status(g_engine);
+    }
+
+    /* ====== PHASE 9: WALLET OPERATIONS ====== */
+    else if (strcmp(command, "send-tokens") == 0) {
+        if (optind + 5 >= argc) {
+            fprintf(stderr, "Error: 'send-tokens' requires <wallet_idx> <network> <token> <to> <amount> arguments\n");
+            result = 1;
+        } else {
+            result = cmd_send_tokens(g_engine, atoi(argv[optind + 1]),
+                                     argv[optind + 2], argv[optind + 3],
+                                     argv[optind + 4], argv[optind + 5]);
+        }
+    }
+    else if (strcmp(command, "transactions") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'transactions' requires <wallet_index> argument\n");
+            result = 1;
+        } else {
+            result = cmd_transactions(g_engine, atoi(argv[optind + 1]));
+        }
+    }
+    else if (strcmp(command, "estimate-gas") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'estimate-gas' requires <network_id> argument\n");
+            result = 1;
+        } else {
+            result = cmd_estimate_gas(g_engine, atoi(argv[optind + 1]));
+        }
+    }
+
+    /* ====== PHASE 10: FEED/DNA BOARD ====== */
+    else if (strcmp(command, "feed-channels") == 0) {
+        result = cmd_feed_channels(g_engine);
+    }
+    else if (strcmp(command, "feed-init") == 0) {
+        result = cmd_feed_init(g_engine);
+    }
+    else if (strcmp(command, "feed-create-channel") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'feed-create-channel' requires <name> [description] arguments\n");
+            result = 1;
+        } else {
+            const char *desc = (optind + 2 < argc) ? argv[optind + 2] : NULL;
+            result = cmd_feed_create_channel(g_engine, argv[optind + 1], desc);
+        }
+    }
+    else if (strcmp(command, "feed-posts") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'feed-posts' requires <channel_id> argument\n");
+            result = 1;
+        } else {
+            result = cmd_feed_posts(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "feed-post") == 0) {
+        if (optind + 2 >= argc) {
+            fprintf(stderr, "Error: 'feed-post' requires <channel_id> <content> arguments\n");
+            result = 1;
+        } else {
+            result = cmd_feed_post(g_engine, argv[optind + 1], argv[optind + 2]);
+        }
+    }
+    else if (strcmp(command, "feed-vote") == 0) {
+        if (optind + 2 >= argc) {
+            fprintf(stderr, "Error: 'feed-vote' requires <post_id> <up|down> arguments\n");
+            result = 1;
+        } else {
+            bool upvote = (strcmp(argv[optind + 2], "up") == 0);
+            result = cmd_feed_vote(g_engine, argv[optind + 1], upvote);
+        }
+    }
+    else if (strcmp(command, "feed-votes") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'feed-votes' requires <post_id> argument\n");
+            result = 1;
+        } else {
+            result = cmd_feed_votes(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "feed-comments") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'feed-comments' requires <post_id> argument\n");
+            result = 1;
+        } else {
+            result = cmd_feed_comments(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "feed-comment") == 0) {
+        if (optind + 2 >= argc) {
+            fprintf(stderr, "Error: 'feed-comment' requires <post_id> <content> arguments\n");
+            result = 1;
+        } else {
+            result = cmd_feed_comment(g_engine, argv[optind + 1], argv[optind + 2]);
+        }
+    }
+    else if (strcmp(command, "feed-comment-vote") == 0) {
+        if (optind + 2 >= argc) {
+            fprintf(stderr, "Error: 'feed-comment-vote' requires <comment_id> <up|down> arguments\n");
+            result = 1;
+        } else {
+            bool upvote = (strcmp(argv[optind + 2], "up") == 0);
+            result = cmd_feed_comment_vote(g_engine, argv[optind + 1], upvote);
+        }
+    }
+    else if (strcmp(command, "feed-comment-votes") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'feed-comment-votes' requires <comment_id> argument\n");
+            result = 1;
+        } else {
+            result = cmd_feed_comment_votes(g_engine, argv[optind + 1]);
+        }
+    }
+
+    /* ====== PHASE 11: MESSAGE BACKUP ====== */
+    else if (strcmp(command, "backup-messages") == 0) {
+        result = cmd_backup_messages(g_engine);
+    }
+    else if (strcmp(command, "restore-messages") == 0) {
+        result = cmd_restore_messages(g_engine);
+    }
+
+    /* ====== PHASE 12: SIGNING API ====== */
+    else if (strcmp(command, "sign") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'sign' requires <data> argument\n");
+            result = 1;
+        } else {
+            result = cmd_sign(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "signing-pubkey") == 0) {
+        result = cmd_signing_pubkey(g_engine);
     }
 
     /* ====== UNKNOWN COMMAND ====== */

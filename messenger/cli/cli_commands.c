@@ -2131,6 +2131,2052 @@ int cmd_group_publish_gek(dna_engine_t *engine, const char *group_uuid) {
 }
 
 /* ============================================================================
+ * PHASE 1: CONTACT BLOCKING & REQUESTS (6 commands)
+ * ============================================================================ */
+
+/* Callback for blocked users list */
+static void on_blocked_users(dna_request_id_t request_id, int error,
+                              dna_blocked_user_t *users, int count, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0 && users && count > 0) {
+        wait->fingerprint_count = count;
+        printf("\nBlocked users (%d):\n", count);
+        for (int i = 0; i < count; i++) {
+            printf("  %d. %.32s...\n", i + 1, users[i].fingerprint);
+            if (users[i].reason[0]) {
+                printf("     Reason: %s\n", users[i].reason);
+            }
+            if (users[i].blocked_at > 0) {
+                time_t ts = (time_t)users[i].blocked_at;
+                char time_str[32];
+                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+                printf("     Blocked: %s\n", time_str);
+            }
+        }
+        printf("\n");
+    } else if (error == 0) {
+        printf("No blocked users.\n");
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+
+    if (users) {
+        dna_free_blocked_users(users, count);
+    }
+}
+
+int cmd_block(dna_engine_t *engine, const char *identifier) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    const char *fp = dna_engine_get_fingerprint(engine);
+    if (!fp) {
+        printf("Error: No identity loaded\n");
+        return -1;
+    }
+
+    if (!identifier || strlen(identifier) == 0) {
+        printf("Error: Name or fingerprint required\n");
+        return -1;
+    }
+
+    /* Resolve name to fingerprint if needed */
+    char resolved_fp[129] = {0};
+    size_t id_len = strlen(identifier);
+
+    if (id_len == 128) {
+        strncpy(resolved_fp, identifier, 128);
+    } else {
+        printf("Resolving name '%s'...\n", identifier);
+        cli_wait_t lookup_wait;
+        cli_wait_init(&lookup_wait);
+
+        dna_engine_lookup_name(engine, identifier, on_display_name, &lookup_wait);
+        int lookup_result = cli_wait_for(&lookup_wait);
+
+        if (lookup_result != 0 || strlen(lookup_wait.display_name) == 0) {
+            printf("Error: Name '%s' not found in DHT\n", identifier);
+            cli_wait_destroy(&lookup_wait);
+            return -1;
+        }
+
+        strncpy(resolved_fp, lookup_wait.display_name, 128);
+        cli_wait_destroy(&lookup_wait);
+        printf("Resolved to: %.16s...\n", resolved_fp);
+    }
+
+    printf("Blocking user %.16s...\n", resolved_fp);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_block_user(engine, resolved_fp, NULL, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to block user: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("User blocked successfully!\n");
+    return 0;
+}
+
+int cmd_unblock(dna_engine_t *engine, const char *fingerprint) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!fingerprint || strlen(fingerprint) == 0) {
+        printf("Error: Fingerprint required\n");
+        return -1;
+    }
+
+    printf("Unblocking user %.16s...\n", fingerprint);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_unblock_user(engine, fingerprint, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to unblock user: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("User unblocked successfully!\n");
+    return 0;
+}
+
+int cmd_blocked(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    const char *fp = dna_engine_get_fingerprint(engine);
+    if (!fp) {
+        printf("Error: No identity loaded\n");
+        return -1;
+    }
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_get_blocked_users(engine, on_blocked_users, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get blocked users: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+int cmd_is_blocked(dna_engine_t *engine, const char *fingerprint) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!fingerprint || strlen(fingerprint) == 0) {
+        printf("Error: Fingerprint required\n");
+        return -1;
+    }
+
+    bool blocked = dna_engine_is_user_blocked(engine, fingerprint);
+    printf("User %.16s... is %s\n", fingerprint, blocked ? "BLOCKED" : "not blocked");
+
+    return 0;
+}
+
+int cmd_deny(dna_engine_t *engine, const char *fingerprint) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!fingerprint || strlen(fingerprint) == 0) {
+        printf("Error: Fingerprint required\n");
+        return -1;
+    }
+
+    printf("Denying contact request from %.16s...\n", fingerprint);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_deny_contact_request(engine, fingerprint, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to deny request: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Contact request denied.\n");
+    return 0;
+}
+
+int cmd_request_count(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    int count = dna_engine_get_contact_request_count(engine);
+    if (count < 0) {
+        printf("Error: Failed to get request count\n");
+        return -1;
+    }
+
+    printf("Pending contact requests: %d\n", count);
+    return 0;
+}
+
+/* ============================================================================
+ * PHASE 2: MESSAGE QUEUE OPERATIONS (5 commands)
+ * ============================================================================ */
+
+int cmd_queue_status(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    int size = dna_engine_get_message_queue_size(engine);
+    int capacity = dna_engine_get_message_queue_capacity(engine);
+
+    printf("\nMessage Queue Status:\n");
+    printf("  Size:     %d messages\n", size);
+    printf("  Capacity: %d messages\n", capacity);
+    printf("  Usage:    %.1f%%\n", capacity > 0 ? (100.0 * size / capacity) : 0.0);
+    printf("\n");
+
+    return 0;
+}
+
+int cmd_queue_send(dna_engine_t *engine, const char *recipient, const char *message) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!recipient || strlen(recipient) == 0) {
+        printf("Error: Recipient required\n");
+        return -1;
+    }
+
+    if (!message || strlen(message) == 0) {
+        printf("Error: Message required\n");
+        return -1;
+    }
+
+    printf("Queuing message to %.16s...\n", recipient);
+
+    int result = dna_engine_queue_message(engine, recipient, message);
+    if (result != 0) {
+        printf("Error: Failed to queue message: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Message queued successfully!\n");
+    return 0;
+}
+
+int cmd_set_queue_capacity(dna_engine_t *engine, int capacity) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (capacity < 1) {
+        printf("Error: Capacity must be at least 1\n");
+        return -1;
+    }
+
+    int result = dna_engine_set_message_queue_capacity(engine, capacity);
+    if (result != 0) {
+        printf("Error: Failed to set queue capacity: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Message queue capacity set to %d\n", capacity);
+    return 0;
+}
+
+int cmd_retry_pending(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Retrying all pending messages...\n");
+
+    int result = dna_engine_retry_pending_messages(engine);
+    if (result < 0) {
+        printf("Error: Failed to retry messages: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Retried %d pending messages.\n", result);
+    return 0;
+}
+
+int cmd_retry_message(dna_engine_t *engine, int64_t message_id) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Retrying message %lld...\n", (long long)message_id);
+
+    int result = dna_engine_retry_message(engine, message_id);
+    if (result != 0) {
+        printf("Error: Failed to retry message: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Message retry initiated.\n");
+    return 0;
+}
+
+/* ============================================================================
+ * PHASE 3: MESSAGE MANAGEMENT (4 commands)
+ * ============================================================================ */
+
+int cmd_delete_message(dna_engine_t *engine, int64_t message_id) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Deleting message %lld...\n", (long long)message_id);
+
+    int result = dna_engine_delete_message_sync(engine, message_id);
+    if (result != 0) {
+        printf("Error: Failed to delete message: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Message deleted.\n");
+    return 0;
+}
+
+int cmd_mark_read(dna_engine_t *engine, const char *identifier) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!identifier || strlen(identifier) == 0) {
+        printf("Error: Contact name or fingerprint required\n");
+        return -1;
+    }
+
+    /* Resolve name to fingerprint if needed */
+    char resolved_fp[129] = {0};
+    size_t id_len = strlen(identifier);
+
+    if (id_len == 128) {
+        strncpy(resolved_fp, identifier, 128);
+    } else {
+        cli_wait_t lookup_wait;
+        cli_wait_init(&lookup_wait);
+
+        dna_engine_lookup_name(engine, identifier, on_display_name, &lookup_wait);
+        int lookup_result = cli_wait_for(&lookup_wait);
+
+        if (lookup_result != 0 || strlen(lookup_wait.display_name) == 0) {
+            printf("Error: Name '%s' not found in DHT\n", identifier);
+            cli_wait_destroy(&lookup_wait);
+            return -1;
+        }
+
+        strncpy(resolved_fp, lookup_wait.display_name, 128);
+        cli_wait_destroy(&lookup_wait);
+    }
+
+    printf("Marking conversation with %.16s... as read...\n", resolved_fp);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_mark_conversation_read(engine, resolved_fp, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to mark as read: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Conversation marked as read.\n");
+    return 0;
+}
+
+int cmd_unread(dna_engine_t *engine, const char *identifier) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!identifier || strlen(identifier) == 0) {
+        printf("Error: Contact name or fingerprint required\n");
+        return -1;
+    }
+
+    /* Resolve name to fingerprint if needed */
+    char resolved_fp[129] = {0};
+    size_t id_len = strlen(identifier);
+
+    if (id_len == 128) {
+        strncpy(resolved_fp, identifier, 128);
+    } else {
+        cli_wait_t lookup_wait;
+        cli_wait_init(&lookup_wait);
+
+        dna_engine_lookup_name(engine, identifier, on_display_name, &lookup_wait);
+        int lookup_result = cli_wait_for(&lookup_wait);
+
+        if (lookup_result != 0 || strlen(lookup_wait.display_name) == 0) {
+            printf("Error: Name '%s' not found in DHT\n", identifier);
+            cli_wait_destroy(&lookup_wait);
+            return -1;
+        }
+
+        strncpy(resolved_fp, lookup_wait.display_name, 128);
+        cli_wait_destroy(&lookup_wait);
+    }
+
+    int count = dna_engine_get_unread_count(engine, resolved_fp);
+    if (count < 0) {
+        printf("Error: Failed to get unread count\n");
+        return -1;
+    }
+
+    printf("Unread messages with %.16s...: %d\n", resolved_fp, count);
+    return 0;
+}
+
+/* Callback for paginated messages (with total count) */
+static void on_messages_page(dna_request_id_t request_id, int error,
+                              dna_message_t *messages, int count, int total, void *user_data) {
+    (void)request_id;
+    (void)total;  /* Could use this for pagination info */
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+    wait->message_count = 0;
+    wait->messages = NULL;
+
+    if (error == 0 && messages && count > 0) {
+        wait->messages = malloc(count * sizeof(dna_message_t));
+        if (wait->messages) {
+            memcpy(wait->messages, messages, count * sizeof(dna_message_t));
+            /* Copy plaintext strings */
+            for (int i = 0; i < count; i++) {
+                if (messages[i].plaintext) {
+                    wait->messages[i].plaintext = strdup(messages[i].plaintext);
+                }
+            }
+            wait->message_count = count;
+        }
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+
+    /* Free original messages */
+    if (messages) {
+        for (int i = 0; i < count; i++) {
+            if (messages[i].plaintext) free(messages[i].plaintext);
+        }
+        free(messages);
+    }
+}
+
+int cmd_messages_page(dna_engine_t *engine, const char *identifier, int limit, int offset) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!identifier || strlen(identifier) == 0) {
+        printf("Error: Contact name or fingerprint required\n");
+        return -1;
+    }
+
+    /* Resolve name to fingerprint if needed */
+    char resolved_fp[129] = {0};
+    size_t id_len = strlen(identifier);
+
+    if (id_len == 128) {
+        strncpy(resolved_fp, identifier, 128);
+    } else {
+        cli_wait_t lookup_wait;
+        cli_wait_init(&lookup_wait);
+
+        dna_engine_lookup_name(engine, identifier, on_display_name, &lookup_wait);
+        int lookup_result = cli_wait_for(&lookup_wait);
+
+        if (lookup_result != 0 || strlen(lookup_wait.display_name) == 0) {
+            printf("Error: Name '%s' not found in DHT\n", identifier);
+            cli_wait_destroy(&lookup_wait);
+            return -1;
+        }
+
+        strncpy(resolved_fp, lookup_wait.display_name, 128);
+        cli_wait_destroy(&lookup_wait);
+    }
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_get_conversation_page(engine, resolved_fp, limit, offset, on_messages_page, &wait);
+    int result = cli_wait_for(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get messages: %s\n", dna_engine_error_string(result));
+        cli_wait_destroy(&wait);
+        return result;
+    }
+
+    if (wait.message_count == 0) {
+        printf("No messages in this range (offset=%d, limit=%d).\n", offset, limit);
+    } else {
+        printf("\nMessages with %.16s... (offset=%d, limit=%d, got %d):\n\n",
+               resolved_fp, offset, limit, wait.message_count);
+        for (int i = 0; i < wait.message_count; i++) {
+            time_t ts = (time_t)wait.messages[i].timestamp;
+            char time_str[32];
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+
+            const char *direction = wait.messages[i].is_outgoing ? ">>>" : "<<<";
+            printf("[%s] %s %s\n", time_str, direction,
+                   wait.messages[i].plaintext ? wait.messages[i].plaintext : "(empty)");
+
+            if (wait.messages[i].plaintext) {
+                free(wait.messages[i].plaintext);
+            }
+        }
+        free(wait.messages);
+        printf("\n");
+    }
+
+    cli_wait_destroy(&wait);
+    return 0;
+}
+
+/* ============================================================================
+ * PHASE 4: DHT SYNC OPERATIONS (5 commands)
+ * ============================================================================ */
+
+int cmd_sync_contacts_up(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Syncing contacts to DHT...\n");
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_sync_contacts_to_dht(engine, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to sync contacts to DHT: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Contacts synced to DHT successfully!\n");
+    return 0;
+}
+
+int cmd_sync_contacts_down(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Syncing contacts from DHT...\n");
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_sync_contacts_from_dht(engine, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to sync contacts from DHT: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Contacts synced from DHT successfully!\n");
+    return 0;
+}
+
+int cmd_sync_groups(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Syncing all groups from DHT...\n");
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_sync_groups(engine, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to sync groups: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Groups synced from DHT successfully!\n");
+    return 0;
+}
+
+int cmd_refresh_presence(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Refreshing presence in DHT...\n");
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_refresh_presence(engine, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to refresh presence: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Presence refreshed in DHT!\n");
+    return 0;
+}
+
+/* Callback for presence lookup */
+static void on_presence_lookup(dna_request_id_t request_id, int error,
+                                uint64_t last_seen, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0) {
+        if (last_seen > 0) {
+            time_t ts = (time_t)last_seen;
+            char time_str[32];
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+            /* If last_seen is recent (within 5 min), consider online */
+            time_t now = time(NULL);
+            if (now - ts < 300) {
+                printf("Status: ONLINE\n");
+            } else {
+                printf("Status: OFFLINE\n");
+            }
+            printf("Last seen: %s\n", time_str);
+        } else {
+            printf("Status: Unknown (never seen)\n");
+        }
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+}
+
+int cmd_presence(dna_engine_t *engine, const char *identifier) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!identifier || strlen(identifier) == 0) {
+        printf("Error: Name or fingerprint required\n");
+        return -1;
+    }
+
+    /* Resolve name to fingerprint if needed */
+    char resolved_fp[129] = {0};
+    size_t id_len = strlen(identifier);
+
+    if (id_len == 128) {
+        strncpy(resolved_fp, identifier, 128);
+    } else {
+        cli_wait_t lookup_wait;
+        cli_wait_init(&lookup_wait);
+
+        dna_engine_lookup_name(engine, identifier, on_display_name, &lookup_wait);
+        int lookup_result = cli_wait_for(&lookup_wait);
+
+        if (lookup_result != 0 || strlen(lookup_wait.display_name) == 0) {
+            printf("Error: Name '%s' not found in DHT\n", identifier);
+            cli_wait_destroy(&lookup_wait);
+            return -1;
+        }
+
+        strncpy(resolved_fp, lookup_wait.display_name, 128);
+        cli_wait_destroy(&lookup_wait);
+    }
+
+    printf("Looking up presence for %.16s...\n", resolved_fp);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_lookup_presence(engine, resolved_fp, on_presence_lookup, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to lookup presence: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+/* ============================================================================
+ * PHASE 5: DEBUG LOGGING (7 commands)
+ * ============================================================================ */
+
+int cmd_log_level(dna_engine_t *engine, const char *level) {
+    (void)engine;  /* Not needed for global log settings */
+
+    if (!level) {
+        /* Get current level */
+        const char *current = dna_engine_get_log_level();
+        printf("Current log level: %s\n", current ? current : "(not set)");
+        return 0;
+    }
+
+    /* Set level */
+    int result = dna_engine_set_log_level(level);
+    if (result != 0) {
+        printf("Error: Failed to set log level\n");
+        printf("Valid levels: DEBUG, INFO, WARN, ERROR\n");
+        return -1;
+    }
+
+    printf("Log level set to: %s\n", level);
+    return 0;
+}
+
+int cmd_log_tags(dna_engine_t *engine, const char *tags) {
+    (void)engine;
+
+    if (!tags) {
+        /* Get current tags */
+        const char *current = dna_engine_get_log_tags();
+        printf("Current log tags: %s\n", current ? current : "(all)");
+        return 0;
+    }
+
+    /* Set tags */
+    int result = dna_engine_set_log_tags(tags);
+    if (result != 0) {
+        printf("Error: Failed to set log tags\n");
+        return -1;
+    }
+
+    printf("Log tags set to: %s\n", tags);
+    return 0;
+}
+
+int cmd_debug_log(dna_engine_t *engine, bool enable) {
+    (void)engine;
+
+    dna_engine_debug_log_enable(enable);
+    printf("Debug logging %s\n", enable ? "ENABLED" : "DISABLED");
+    return 0;
+}
+
+int cmd_debug_entries(dna_engine_t *engine, int max_entries) {
+    (void)engine;
+
+    if (max_entries <= 0) max_entries = 50;
+    if (max_entries > 200) max_entries = 200;
+
+    dna_debug_log_entry_t *entries = malloc(sizeof(dna_debug_log_entry_t) * max_entries);
+    if (!entries) {
+        printf("Error: Out of memory\n");
+        return -1;
+    }
+
+    int count = dna_engine_debug_log_get_entries(entries, max_entries);
+    if (count < 0) {
+        printf("Error: Failed to get debug log entries\n");
+        free(entries);
+        return -1;
+    }
+
+    if (count == 0) {
+        printf("No debug log entries.\n");
+    } else {
+        printf("\nDebug log entries (%d):\n", count);
+        printf("----------------------------------------\n");
+        for (int i = 0; i < count; i++) {
+            time_t ts = (time_t)(entries[i].timestamp_ms / 1000);
+            char time_str[32];
+            strftime(time_str, sizeof(time_str), "%H:%M:%S", localtime(&ts));
+
+            const char *level_str = "???";
+            switch (entries[i].level) {
+                case 0: level_str = "DBG"; break;
+                case 1: level_str = "INF"; break;
+                case 2: level_str = "WRN"; break;
+                case 3: level_str = "ERR"; break;
+            }
+
+            printf("[%s] [%s] [%s] %s\n",
+                   time_str, level_str, entries[i].tag, entries[i].message);
+        }
+        printf("----------------------------------------\n");
+    }
+
+    free(entries);
+    return 0;
+}
+
+int cmd_debug_count(dna_engine_t *engine) {
+    (void)engine;
+
+    int count = dna_engine_debug_log_count();
+    printf("Debug log entries: %d\n", count);
+    return 0;
+}
+
+int cmd_debug_clear(dna_engine_t *engine) {
+    (void)engine;
+
+    dna_engine_debug_log_clear();
+    printf("Debug log cleared.\n");
+    return 0;
+}
+
+int cmd_debug_export(dna_engine_t *engine, const char *filepath) {
+    (void)engine;
+
+    if (!filepath || strlen(filepath) == 0) {
+        printf("Error: File path required\n");
+        return -1;
+    }
+
+    int result = dna_engine_debug_log_export(filepath);
+    if (result != 0) {
+        printf("Error: Failed to export debug log\n");
+        return -1;
+    }
+
+    printf("Debug log exported to: %s\n", filepath);
+    return 0;
+}
+
+/* ============================================================================
+ * PHASE 6: GROUP EXTENSIONS (4 commands)
+ * ============================================================================ */
+
+/* Callback for group members */
+static void on_group_members(dna_request_id_t request_id, int error,
+                              dna_group_member_t *members, int count, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0 && members && count > 0) {
+        printf("\nGroup members (%d):\n", count);
+        for (int i = 0; i < count; i++) {
+            printf("  %d. %.32s...\n", i + 1, members[i].fingerprint);
+            printf("     Role: %s\n", members[i].is_owner ? "owner" : "member");
+            if (members[i].added_at > 0) {
+                time_t ts = (time_t)members[i].added_at;
+                char time_str[32];
+                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+                printf("     Added: %s\n", time_str);
+            }
+        }
+        printf("\n");
+    } else if (error == 0) {
+        printf("No members in group.\n");
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+
+    if (members) {
+        dna_free_group_members(members, count);
+    }
+}
+
+int cmd_group_members(dna_engine_t *engine, const char *group_uuid) {
+    if (!engine || !group_uuid) {
+        printf("Error: Engine not initialized or UUID missing\n");
+        return -1;
+    }
+
+    printf("Getting members for group %s...\n", group_uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_get_group_members(engine, group_uuid, on_group_members, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get group members: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+/* Callback for invitations */
+static void on_invitations(dna_request_id_t request_id, int error,
+                           dna_invitation_t *invitations, int count, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0 && invitations && count > 0) {
+        printf("\nPending group invitations (%d):\n", count);
+        for (int i = 0; i < count; i++) {
+            printf("  %d. Group: %s\n", i + 1, invitations[i].group_name);
+            printf("     UUID: %s\n", invitations[i].group_uuid);
+            printf("     From: %.32s...\n", invitations[i].inviter);
+            if (invitations[i].invited_at > 0) {
+                time_t ts = (time_t)invitations[i].invited_at;
+                char time_str[32];
+                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+                printf("     Invited: %s\n", time_str);
+            }
+        }
+        printf("\nUse 'invite-accept <uuid>' or 'invite-reject <uuid>' to respond.\n\n");
+    } else if (error == 0) {
+        printf("No pending group invitations.\n");
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+
+    if (invitations) {
+        dna_free_invitations(invitations, count);
+    }
+}
+
+int cmd_invitations(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_get_invitations(engine, on_invitations, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get invitations: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+int cmd_invite_accept(dna_engine_t *engine, const char *group_uuid) {
+    if (!engine || !group_uuid) {
+        printf("Error: Engine not initialized or UUID missing\n");
+        return -1;
+    }
+
+    printf("Accepting invitation to group %s...\n", group_uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_accept_invitation(engine, group_uuid, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to accept invitation: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Invitation accepted! You are now a member of the group.\n");
+    return 0;
+}
+
+int cmd_invite_reject(dna_engine_t *engine, const char *group_uuid) {
+    if (!engine || !group_uuid) {
+        printf("Error: Engine not initialized or UUID missing\n");
+        return -1;
+    }
+
+    printf("Rejecting invitation to group %s...\n", group_uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_reject_invitation(engine, group_uuid, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to reject invitation: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Invitation rejected.\n");
+    return 0;
+}
+
+/* ============================================================================
+ * PHASE 7: PRESENCE CONTROL (3 commands)
+ * ============================================================================ */
+
+int cmd_pause_presence(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    dna_engine_pause_presence(engine);
+    printf("Presence updates paused.\n");
+    return 0;
+}
+
+int cmd_resume_presence(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    dna_engine_resume_presence(engine);
+    printf("Presence updates resumed.\n");
+    return 0;
+}
+
+int cmd_network_changed(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Reinitializing DHT after network change...\n");
+
+    int result = dna_engine_network_changed(engine);
+    if (result != 0) {
+        printf("Error: Failed to reinitialize: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("DHT reinitialized successfully.\n");
+    return 0;
+}
+
+/* ============================================================================
+ * PHASE 8: CONTACT & IDENTITY EXTENSIONS (5 commands)
+ * ============================================================================ */
+
+int cmd_set_nickname(dna_engine_t *engine, const char *fingerprint, const char *nickname) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!fingerprint || strlen(fingerprint) == 0) {
+        printf("Error: Fingerprint required\n");
+        return -1;
+    }
+
+    if (!nickname) {
+        printf("Error: Nickname required (use empty string to clear)\n");
+        return -1;
+    }
+
+    int result = dna_engine_set_contact_nickname_sync(engine, fingerprint, nickname);
+    if (result != 0) {
+        printf("Error: Failed to set nickname: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    if (strlen(nickname) > 0) {
+        printf("Nickname set to '%s' for %.16s...\n", nickname, fingerprint);
+    } else {
+        printf("Nickname cleared for %.16s...\n", fingerprint);
+    }
+    return 0;
+}
+
+/* Callback for avatar (receives base64 string via dna_display_name_cb) */
+static void on_avatar_result(dna_request_id_t request_id, int error,
+                              const char *avatar_base64, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0 && avatar_base64 && strlen(avatar_base64) > 0) {
+        printf("Avatar: %zu bytes (base64)\n", strlen(avatar_base64));
+    } else if (error == 0) {
+        printf("No avatar set.\n");
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+}
+
+int cmd_get_avatar(dna_engine_t *engine, const char *fingerprint) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!fingerprint || strlen(fingerprint) == 0) {
+        printf("Error: Fingerprint required\n");
+        return -1;
+    }
+
+    printf("Getting avatar for %.16s...\n", fingerprint);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_get_avatar(engine, fingerprint, on_avatar_result, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get avatar: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+int cmd_get_mnemonic(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    char mnemonic[512];
+    int result = dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic));
+    if (result != 0) {
+        printf("Error: Failed to get mnemonic: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("\n*** RECOVERY PHRASE (24 words) ***\n");
+    printf("Keep this safe! Anyone with this phrase can access your identity.\n\n");
+    qgp_display_mnemonic(mnemonic);
+    printf("\n");
+
+    /* Clear from memory */
+    qgp_secure_memzero(mnemonic, sizeof(mnemonic));
+    return 0;
+}
+
+/* Callback for profile refresh */
+static void on_profile_refresh(dna_request_id_t request_id, int error,
+                                dna_profile_t *profile, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0 && profile) {
+        printf("Profile refreshed successfully!\n");
+        if (profile->display_name[0]) {
+            printf("  Name: %s\n", profile->display_name);
+        }
+        if (profile->bio[0]) {
+            printf("  Bio: %s\n", profile->bio);
+        }
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+
+    if (profile) {
+        dna_free_profile(profile);
+    }
+}
+
+int cmd_refresh_profile(dna_engine_t *engine, const char *fingerprint) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!fingerprint || strlen(fingerprint) == 0) {
+        printf("Error: Fingerprint required\n");
+        return -1;
+    }
+
+    printf("Refreshing profile for %.16s...\n", fingerprint);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_refresh_contact_profile(engine, fingerprint, on_profile_refresh, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to refresh profile: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+int cmd_dht_status(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    int connected = dna_engine_is_dht_connected(engine);
+    printf("DHT Status: %s\n", connected ? "CONNECTED" : "DISCONNECTED");
+    return 0;
+}
+
+/* ============================================================================
+ * PHASE 9: WALLET OPERATIONS (3 commands)
+ * ============================================================================ */
+
+/* Callback for send tokens (receives tx_hash) */
+static void on_send_tokens(dna_request_id_t request_id, int error,
+                            const char *tx_hash, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0 && tx_hash) {
+        printf("Transaction hash: %s\n", tx_hash);
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+}
+
+int cmd_send_tokens(dna_engine_t *engine, int wallet_idx, const char *network,
+                    const char *token, const char *to_address, const char *amount) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!network || !token || !to_address || !amount) {
+        printf("Error: All parameters required\n");
+        return -1;
+    }
+
+    printf("Sending %s %s to %s on %s...\n", amount, token, to_address, network);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    /* API: (engine, wallet_index, recipient_address, amount, token, network, gas_speed, callback, user_data) */
+    dna_engine_send_tokens(engine, wallet_idx, to_address, amount, token, network, 0, on_send_tokens, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to send tokens: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Tokens sent successfully!\n");
+    return 0;
+}
+
+/* Callback for transactions */
+static void on_transactions(dna_request_id_t request_id, int error,
+                            dna_transaction_t *transactions, int count, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0 && transactions && count > 0) {
+        printf("\nTransactions (%d):\n", count);
+        for (int i = 0; i < count; i++) {
+            /* direction is "sent" or "received" string */
+            const char *dir_label = (strcmp(transactions[i].direction, "sent") == 0) ? "SENT" : "RECEIVED";
+            printf("  %d. [%s] %s %s %s\n", i + 1, transactions[i].timestamp, dir_label,
+                   transactions[i].amount, transactions[i].token);
+            printf("     %s: %s\n",
+                   (strcmp(transactions[i].direction, "sent") == 0) ? "To" : "From",
+                   transactions[i].other_address);
+            printf("     Status: %s\n", transactions[i].status);
+            if (transactions[i].tx_hash[0]) {
+                printf("     Hash: %.16s...\n", transactions[i].tx_hash);
+            }
+        }
+        printf("\n");
+    } else if (error == 0) {
+        printf("No transactions found.\n");
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+
+    if (transactions) {
+        dna_free_transactions(transactions, count);
+    }
+}
+
+int cmd_transactions(dna_engine_t *engine, int wallet_idx) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Getting transactions for wallet %d...\n", wallet_idx);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    /* API requires network parameter - use "Backbone" as default */
+    dna_engine_get_transactions(engine, wallet_idx, "Backbone", on_transactions, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get transactions: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+int cmd_estimate_gas(dna_engine_t *engine, int network_id) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    dna_gas_estimate_t estimate;
+    int result = dna_engine_estimate_eth_gas(network_id, &estimate);
+    if (result != 0) {
+        printf("Error: Failed to estimate gas\n");
+        return result;
+    }
+
+    printf("\nGas Estimate (Network %d):\n", network_id);
+    printf("  Gas Price: %lu wei\n", (unsigned long)estimate.gas_price);
+    printf("  Gas Limit: %lu\n", (unsigned long)estimate.gas_limit);
+    printf("  Est. Fee:  %s ETH\n", estimate.fee_eth);
+    printf("\n");
+
+    return 0;
+}
+
+/* ============================================================================
+ * PHASE 10: FEED/DNA BOARD (11 commands)
+ * ============================================================================ */
+
+/* Callback for feed channels */
+static void on_feed_channels(dna_request_id_t request_id, int error,
+                              dna_channel_info_t *channels, int count, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0 && channels && count > 0) {
+        printf("\nFeed channels (%d):\n", count);
+        for (int i = 0; i < count; i++) {
+            printf("  %d. %s\n", i + 1, channels[i].name);
+            printf("     ID: %s\n", channels[i].channel_id);
+            if (channels[i].description[0]) {
+                printf("     Description: %s\n", channels[i].description);
+            }
+            printf("     Posts: %d\n", channels[i].post_count);
+        }
+        printf("\n");
+    } else if (error == 0) {
+        printf("No feed channels found.\n");
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+
+    if (channels) {
+        dna_free_feed_channels(channels, count);
+    }
+}
+
+int cmd_feed_channels(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_get_feed_channels(engine, on_feed_channels, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get feed channels: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+int cmd_feed_init(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Initializing default feed channels...\n");
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_init_default_channels(engine, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to initialize channels: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Default channels initialized.\n");
+    return 0;
+}
+
+/* Callback for channel creation */
+static void on_channel_created(dna_request_id_t request_id, int error,
+                                dna_channel_info_t *channel, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0 && channel) {
+        printf("Channel created:\n");
+        printf("  Name: %s\n", channel->name);
+        printf("  ID: %s\n", channel->channel_id);
+        if (channel->description[0]) {
+            printf("  Description: %s\n", channel->description);
+        }
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+}
+
+int cmd_feed_create_channel(dna_engine_t *engine, const char *name, const char *description) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!name || strlen(name) == 0) {
+        printf("Error: Channel name required\n");
+        return -1;
+    }
+
+    printf("Creating feed channel '%s'...\n", name);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_create_feed_channel(engine, name, description ? description : "", on_channel_created, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to create channel: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Channel '%s' created successfully!\n", name);
+    return 0;
+}
+
+/* Callback for feed posts */
+static void on_feed_posts(dna_request_id_t request_id, int error,
+                          dna_post_info_t *posts, int count, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0 && posts && count > 0) {
+        printf("\nFeed posts (%d):\n", count);
+        for (int i = 0; i < count; i++) {
+            time_t ts = (time_t)(posts[i].timestamp / 1000);  /* Convert ms to seconds */
+            char time_str[32];
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+
+            printf("\n  --- Post %d ---\n", i + 1);
+            printf("  ID: %s\n", posts[i].post_id);
+            printf("  Author: %.16s...\n", posts[i].author_fingerprint);
+            printf("  Time: %s\n", time_str);
+            printf("  Content: %s\n", posts[i].text ? posts[i].text : "(empty)");
+            printf("  Votes: +%d / -%d\n", posts[i].upvotes, posts[i].downvotes);
+            printf("  Comments: %d\n", posts[i].comment_count);
+        }
+        printf("\n");
+    } else if (error == 0) {
+        printf("No posts in this channel.\n");
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+
+    if (posts) {
+        dna_free_feed_posts(posts, count);
+    }
+}
+
+int cmd_feed_posts(dna_engine_t *engine, const char *channel_id) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!channel_id || strlen(channel_id) == 0) {
+        printf("Error: Channel ID required\n");
+        return -1;
+    }
+
+    printf("Getting posts for channel %s...\n", channel_id);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_get_feed_posts(engine, channel_id, NULL, on_feed_posts, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get posts: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+/* Callback for post creation */
+static void on_post_created(dna_request_id_t request_id, int error,
+                             dna_post_info_t *post, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0 && post) {
+        printf("Post created:\n");
+        printf("  ID: %s\n", post->post_id);
+        printf("  Content: %s\n", post->text ? post->text : "(empty)");
+        dna_free_feed_post(post);
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+}
+
+int cmd_feed_post(dna_engine_t *engine, const char *channel_id, const char *content) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!channel_id || !content) {
+        printf("Error: Channel ID and content required\n");
+        return -1;
+    }
+
+    printf("Creating post in channel %s...\n", channel_id);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_create_feed_post(engine, channel_id, content, on_post_created, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to create post: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Post created successfully!\n");
+    return 0;
+}
+
+int cmd_feed_vote(dna_engine_t *engine, const char *post_id, bool upvote) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!post_id) {
+        printf("Error: Post ID required\n");
+        return -1;
+    }
+
+    printf("Voting %s on post %s...\n", upvote ? "UP" : "DOWN", post_id);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_cast_feed_vote(engine, post_id, upvote ? 1 : -1, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to vote: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Vote cast successfully!\n");
+    return 0;
+}
+
+/* Callback for post vote counts (returns post with vote data) */
+static void on_post_votes(dna_request_id_t request_id, int error,
+                          dna_post_info_t *post, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0 && post) {
+        printf("Post votes: +%d / -%d (score: %d)\n",
+               post->upvotes, post->downvotes, post->upvotes - post->downvotes);
+        printf("Your vote: %s\n", post->user_vote > 0 ? "UP" :
+                                   post->user_vote < 0 ? "DOWN" : "none");
+        dna_free_feed_post(post);
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+}
+
+int cmd_feed_votes(dna_engine_t *engine, const char *post_id) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!post_id) {
+        printf("Error: Post ID required\n");
+        return -1;
+    }
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_get_feed_votes(engine, post_id, on_post_votes, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get votes: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+/* Callback for feed comments */
+static void on_feed_comments(dna_request_id_t request_id, int error,
+                              dna_comment_info_t *comments, int count, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0 && comments && count > 0) {
+        printf("\nComments (%d):\n", count);
+        for (int i = 0; i < count; i++) {
+            time_t ts = (time_t)(comments[i].timestamp / 1000);  /* Convert ms to seconds */
+            char time_str[32];
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+
+            printf("  %d. [%s] %.16s...: %s\n", i + 1, time_str,
+                   comments[i].author_fingerprint,
+                   comments[i].text ? comments[i].text : "(empty)");
+            printf("     ID: %s  Votes: +%d/-%d\n",
+                   comments[i].comment_id, comments[i].upvotes, comments[i].downvotes);
+        }
+        printf("\n");
+    } else if (error == 0) {
+        printf("No comments on this post.\n");
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+
+    if (comments) {
+        dna_free_feed_comments(comments, count);
+    }
+}
+
+int cmd_feed_comments(dna_engine_t *engine, const char *post_id) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!post_id) {
+        printf("Error: Post ID required\n");
+        return -1;
+    }
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_get_feed_comments(engine, post_id, on_feed_comments, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get comments: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+/* Callback for comment creation */
+static void on_comment_created(dna_request_id_t request_id, int error,
+                                dna_comment_info_t *comment, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0 && comment) {
+        printf("Comment created:\n");
+        printf("  ID: %s\n", comment->comment_id);
+        printf("  Content: %s\n", comment->text ? comment->text : "(empty)");
+        dna_free_feed_comment(comment);
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+}
+
+int cmd_feed_comment(dna_engine_t *engine, const char *post_id, const char *content) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!post_id || !content) {
+        printf("Error: Post ID and content required\n");
+        return -1;
+    }
+
+    printf("Adding comment to post %s...\n", post_id);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_add_feed_comment(engine, post_id, content, on_comment_created, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to add comment: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Comment added successfully!\n");
+    return 0;
+}
+
+int cmd_feed_comment_vote(dna_engine_t *engine, const char *comment_id, bool upvote) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!comment_id) {
+        printf("Error: Comment ID required\n");
+        return -1;
+    }
+
+    printf("Voting %s on comment %s...\n", upvote ? "UP" : "DOWN", comment_id);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_cast_comment_vote(engine, comment_id, upvote ? 1 : -1, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to vote: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Vote cast successfully!\n");
+    return 0;
+}
+
+/* Callback for comment vote counts (returns comment with vote data) */
+static void on_comment_votes(dna_request_id_t request_id, int error,
+                              dna_comment_info_t *comment, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0 && comment) {
+        printf("Comment votes: +%d / -%d (score: %d)\n",
+               comment->upvotes, comment->downvotes, comment->upvotes - comment->downvotes);
+        printf("Your vote: %s\n", comment->user_vote > 0 ? "UP" :
+                                   comment->user_vote < 0 ? "DOWN" : "none");
+        dna_free_feed_comment(comment);
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+}
+
+int cmd_feed_comment_votes(dna_engine_t *engine, const char *comment_id) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!comment_id) {
+        printf("Error: Comment ID required\n");
+        return -1;
+    }
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_get_comment_votes(engine, comment_id, on_comment_votes, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get votes: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+/* ============================================================================
+ * PHASE 11: MESSAGE BACKUP (2 commands)
+ * ============================================================================ */
+
+/* Callback for backup/restore results */
+static void on_backup_result(dna_request_id_t request_id, int error,
+                              int processed_count, int skipped_count, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+
+    if (error == 0) {
+        printf("  Processed: %d messages\n", processed_count);
+        printf("  Skipped: %d messages (duplicates)\n", skipped_count);
+    }
+
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+}
+
+int cmd_backup_messages(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Backing up messages to DHT...\n");
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_backup_messages(engine, on_backup_result, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to backup messages: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Messages backed up to DHT successfully!\n");
+    return 0;
+}
+
+int cmd_restore_messages(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Restoring messages from DHT...\n");
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_restore_messages(engine, on_backup_result, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to restore messages: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Messages restored from DHT successfully!\n");
+    return 0;
+}
+
+/* ============================================================================
+ * PHASE 12: SIGNING API (2 commands)
+ * ============================================================================ */
+
+int cmd_sign(dna_engine_t *engine, const char *data) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!data || strlen(data) == 0) {
+        printf("Error: Data to sign required\n");
+        return -1;
+    }
+
+    uint8_t signature[4627];  /* Dilithium5 max signature size */
+    size_t sig_len = 0;
+
+    int result = dna_engine_sign_data(engine, (const uint8_t *)data, strlen(data),
+                                       signature, &sig_len);
+    if (result != 0) {
+        printf("Error: Failed to sign data: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Signature (%zu bytes):\n", sig_len);
+    /* Print as hex */
+    for (size_t i = 0; i < sig_len && i < 64; i++) {
+        printf("%02x", signature[i]);
+    }
+    if (sig_len > 64) {
+        printf("... (truncated)");
+    }
+    printf("\n");
+
+    return 0;
+}
+
+int cmd_signing_pubkey(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    uint8_t pubkey[2592];  /* Dilithium5 public key size */
+    int result = dna_engine_get_signing_public_key(engine, pubkey, sizeof(pubkey));
+    if (result < 0) {
+        printf("Error: Failed to get signing public key: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Signing public key (%d bytes):\n", result);
+    /* Print first 64 bytes as hex */
+    for (int i = 0; i < 64 && i < result; i++) {
+        printf("%02x", pubkey[i]);
+    }
+    if (result > 64) {
+        printf("... (truncated)");
+    }
+    printf("\n");
+
+    return 0;
+}
+
+/* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */
 
