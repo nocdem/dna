@@ -47,29 +47,32 @@ class SettingsScreen extends ConsumerWidget {
               )
             : null,
       ),
-      body: ListView(
-        children: [
-          // Profile section
-          _ProfileSection(
-            fingerprint: fingerprint,
-            simpleProfile: simpleProfile,
-            fullProfile: fullProfile,
-          ),
-          // Contacts
-          _ContactsSection(),
-          // Notifications (Android only)
-          const _NotificationsSection(),
-          // Security
-          _SecuritySection(),
-          // Data (backup/restore)
-          _DataSection(),
-          // Logs settings
-          _LogSettingsSection(),
-          // Identity
-          _IdentitySection(fingerprint: fingerprint),
-          // About
-          _AboutSection(),
-        ],
+      body: SafeArea(
+        top: false,
+        child: ListView(
+          children: [
+            // Profile section
+            _ProfileSection(
+              fingerprint: fingerprint,
+              simpleProfile: simpleProfile,
+              fullProfile: fullProfile,
+            ),
+            // Contacts
+            _ContactsSection(),
+            // Notifications (Android only)
+            const _NotificationsSection(),
+            // Security
+            _SecuritySection(),
+            // Data (backup/restore)
+            _DataSection(),
+            // Logs settings
+            _LogSettingsSection(),
+            // Identity
+            _IdentitySection(fingerprint: fingerprint),
+            // About
+            _AboutSection(),
+          ],
+        ),
       ),
     );
   }

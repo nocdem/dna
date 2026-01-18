@@ -209,7 +209,9 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
           ? const Center(child: CircularProgressIndicator())
           : Form(
               key: _formKey,
-              child: ListView(
+              child: SafeArea(
+                top: false,
+                child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
                   // Avatar section
@@ -377,6 +379,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                 ],
               ),
             ),
+            ),
     );
   }
 
@@ -413,14 +416,18 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     final theme = Theme.of(context);
 
     return Card(
+      clipBehavior: Clip.antiAlias,
       child: ExpansionTile(
         leading: FaIcon(icon, color: theme.colorScheme.primary),
         title: Text(title, style: theme.textTheme.titleSmall),
         initiallyExpanded: isExpanded,
         onExpansionChanged: onExpansionChanged,
+        // Remove the default dividers that look strange with rounded Card corners
+        shape: const Border(),
+        collapsedShape: const Border(),
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
             child: Column(children: children),
           ),
         ],
