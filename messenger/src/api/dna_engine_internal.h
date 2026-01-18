@@ -564,6 +564,7 @@ struct dna_engine {
 
     /* Presence heartbeat (announces our presence every 4 minutes) */
     pthread_t presence_heartbeat_thread;
+    bool presence_heartbeat_started;  /* v0.6.0+: Track if thread was started */
     atomic_bool presence_active;  /* false when app in background (Android) */
 
     /* Request ID generation */

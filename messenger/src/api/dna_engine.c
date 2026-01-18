@@ -385,6 +385,7 @@ const char* dna_engine_error_string(int error) {
     if (error == DNA_ENGINE_ERROR_INVALID_SIGNATURE) return "Profile signature verification failed (corrupted or stale DHT data)";
     if (error == DNA_ENGINE_ERROR_INSUFFICIENT_BALANCE) return "Insufficient balance";
     if (error == DNA_ENGINE_ERROR_RENT_MINIMUM) return "Amount too small - Solana requires minimum ~0.00089 SOL for new accounts";
+    if (error == DNA_ENGINE_ERROR_IDENTITY_LOCKED) return "Identity locked by another process (close the GUI app first)";
     /* Fall back to base dna_api.h error strings */
     if (error == DNA_ERROR_INVALID_ARG) return "Invalid argument";
     if (error == DNA_ERROR_NOT_FOUND) return "Not found";
@@ -674,12 +675,18 @@ static int dna_start_presence_heartbeat(dna_engine_t *engine) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to start presence heartbeat thread");
         return -1;
     }
+    engine->presence_heartbeat_started = true;
     return 0;
 }
 
 static void dna_stop_presence_heartbeat(dna_engine_t *engine) {
+    /* v0.6.0+: Only join if thread was started (prevents crash on early failure) */
+    if (!engine->presence_heartbeat_started) {
+        return;
+    }
     /* Thread will exit when shutdown_requested is true */
     pthread_join(engine->presence_heartbeat_thread, NULL);
+    engine->presence_heartbeat_started = false;
 }
 
 void dna_engine_pause_presence(dna_engine_t *engine) {
