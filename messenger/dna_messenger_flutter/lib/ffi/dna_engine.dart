@@ -4980,20 +4980,33 @@ class DnaEngine {
 
   /// Dispose the engine and release all resources
   void dispose() {
-    if (_isDisposed) return;
+    print('[DART-DISPOSE] dispose() called, _isDisposed=$_isDisposed');
+    if (_isDisposed) {
+      print('[DART-DISPOSE] Already disposed, returning');
+      return;
+    }
     _isDisposed = true;
+    print('[DART-DISPOSE] Set _isDisposed=true');
 
+    print('[DART-DISPOSE] Closing event controller...');
     _eventController.close();
+    print('[DART-DISPOSE] Event controller closed');
 
     // IMPORTANT: Clear the C callback pointer FIRST
     // This sets disposing=true in C, which prevents new callbacks from being invoked.
+    print('[DART-DISPOSE] Clearing C event callback...');
     _bindings.dna_engine_set_event_callback(_engine, nullptr, nullptr);
+    print('[DART-DISPOSE] C event callback cleared');
 
     // Clear pending requests map (callbacks will check _isDisposed and return early)
+    print('[DART-DISPOSE] Clearing ${_pendingRequests.length} pending requests...');
     _pendingRequests.clear();
+    print('[DART-DISPOSE] Pending requests cleared');
 
     // Destroy the engine - this stops all C threads and cleans up DHT
+    print('[DART-DISPOSE] Calling dna_engine_destroy()...');
     _bindings.dna_engine_destroy(_engine);
+    print('[DART-DISPOSE] dna_engine_destroy() returned');
 
     // NOTE: We intentionally do NOT close NativeCallables here.
     // Dart docs: "Any outstanding calls to the callback from native code will
@@ -5004,7 +5017,9 @@ class DnaEngine {
     // NativeCallables are cleaned up when the isolate exits.
 
     // Null out the pointer to catch any use-after-free in Dart
+    print('[DART-DISPOSE] Setting _engine = nullptr...');
     _engine = nullptr;
+    print('[DART-DISPOSE] dispose() complete');
   }
 }
 
