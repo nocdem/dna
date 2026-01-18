@@ -86,8 +86,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Refresh contact profile in background (for latest avatar/name)
     ref.read(contactProfileCacheProvider.notifier).refreshProfile(contact.fingerprint);
 
-    // Auto-check offline messages when chat opens (silent, no snackbar)
-    _checkOfflineMessagesSilent();
+    // NOTE: DHT offline check removed from chat open - it was downloading ~1MB
+    // of data just to find duplicates. New messages arrive via DHT listeners
+    // and background sync instead.
   }
 
   /// Check offline messages with cooldown
