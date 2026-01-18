@@ -140,6 +140,58 @@ final class dna_group_t extends Struct {
   external int created_at;
 }
 
+/// Group member information
+final class dna_group_member_t extends Struct {
+  @Array(129)
+  external Array<Char> fingerprint;
+
+  // 7 bytes padding to align uint64_t to 8-byte boundary (129 -> 136)
+  @Array(7)
+  external Array<Uint8> _padding1;
+
+  @Uint64()
+  external int added_at;
+
+  @Bool()
+  external bool is_owner;
+}
+
+/// Extended group information (includes GEK version)
+final class dna_group_info_t extends Struct {
+  @Array(37)
+  external Array<Char> uuid;
+
+  @Array(256)
+  external Array<Char> name;
+
+  @Array(129)
+  external Array<Char> creator;
+
+  // 2 bytes padding (422 -> 424)
+  @Array(2)
+  external Array<Uint8> _padding1;
+
+  @Int32()
+  external int member_count;
+
+  // 4 bytes padding to align uint64_t (428 -> 432)
+  @Array(4)
+  external Array<Uint8> _padding2;
+
+  @Uint64()
+  external int created_at;
+
+  @Bool()
+  external bool is_owner;
+
+  // 3 bytes padding to align uint32_t (441 -> 444)
+  @Array(3)
+  external Array<Uint8> _padding3;
+
+  @Uint32()
+  external int gek_version;
+}
+
 /// Group invitation
 final class dna_invitation_t extends Struct {
   @Array(37)
@@ -471,8 +523,8 @@ abstract class DnaEventType {
   static const int DNA_EVENT_IDENTITY_LOADED = 11;
   static const int DNA_EVENT_CONTACT_REQUEST_RECEIVED = 12;
   static const int DNA_EVENT_OUTBOX_UPDATED = 13;  // Contact's outbox has new messages
-  static const int DNA_EVENT_ERROR = 14;
-  static const int DNA_EVENT_GROUP_MESSAGE_RECEIVED = 15;  // New group messages via DHT listen
+  static const int DNA_EVENT_GROUP_MESSAGE_RECEIVED = 14;  // New group messages via DHT listen
+  static const int DNA_EVENT_ERROR = 15;
 }
 
 /// Event data union - message received
@@ -721,6 +773,25 @@ typedef DnaGroupsCbNative = Void Function(
 );
 typedef DnaGroupsCb = NativeFunction<DnaGroupsCbNative>;
 
+/// Group info callback - Native
+typedef DnaGroupInfoCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_group_info_t> info,
+  Pointer<Void> user_data,
+);
+typedef DnaGroupInfoCb = NativeFunction<DnaGroupInfoCbNative>;
+
+/// Group members callback - Native
+typedef DnaGroupMembersCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_group_member_t> members,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaGroupMembersCb = NativeFunction<DnaGroupMembersCbNative>;
+
 /// Group created callback - Native
 typedef DnaGroupCreatedCbNative = Void Function(
   Uint64 request_id,
@@ -940,6 +1011,21 @@ typedef DnaGroupsCbDart = void Function(
   int requestId,
   int error,
   Pointer<dna_group_t> groups,
+  int count,
+  Pointer<Void> userData,
+);
+
+typedef DnaGroupInfoCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_group_info_t> info,
+  Pointer<Void> userData,
+);
+
+typedef DnaGroupMembersCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_group_member_t> members,
   int count,
   Pointer<Void> userData,
 );
@@ -1870,6 +1956,36 @@ class DnaBindings {
     return _dna_engine_get_groups(engine, callback, user_data);
   }
 
+  late final _dna_engine_get_group_info = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaGroupInfoCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaGroupInfoCb>, Pointer<Void>)>('dna_engine_get_group_info');
+
+  int dna_engine_get_group_info(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> group_uuid,
+    Pointer<DnaGroupInfoCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_group_info(engine, group_uuid, callback, user_data);
+  }
+
+  late final _dna_engine_get_group_members = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaGroupMembersCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaGroupMembersCb>, Pointer<Void>)>('dna_engine_get_group_members');
+
+  int dna_engine_get_group_members(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> group_uuid,
+    Pointer<DnaGroupMembersCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_group_members(engine, group_uuid, callback, user_data);
+  }
+
   late final _dna_engine_send_group_message = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
           Pointer<DnaCompletionCb>, Pointer<Void>),
@@ -2215,6 +2331,22 @@ class DnaBindings {
 
   void dna_free_invitations(Pointer<dna_invitation_t> invitations, int count) {
     _dna_free_invitations(invitations, count);
+  }
+
+  late final _dna_free_group_info = _lib.lookupFunction<
+      Void Function(Pointer<dna_group_info_t>),
+      void Function(Pointer<dna_group_info_t>)>('dna_free_group_info');
+
+  void dna_free_group_info(Pointer<dna_group_info_t> info) {
+    _dna_free_group_info(info);
+  }
+
+  late final _dna_free_group_members = _lib.lookupFunction<
+      Void Function(Pointer<dna_group_member_t>, Int32),
+      void Function(Pointer<dna_group_member_t>, int)>('dna_free_group_members');
+
+  void dna_free_group_members(Pointer<dna_group_member_t> members, int count) {
+    _dna_free_group_members(members, count);
   }
 
   late final _dna_free_contact_requests = _lib.lookupFunction<

@@ -129,7 +129,8 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 | `int dht_dm_outbox_sync_day(...)` | Sync messages from specific day |
 | `int dht_dm_outbox_sync_recent(...)` | Sync 3 days (yesterday, today, tomorrow) |
 | `int dht_dm_outbox_sync_full(...)` | Sync last 8 days |
-| `int dht_dm_outbox_sync_all_contacts_recent(...)` | Sync all contacts (parallel) |
+| `int dht_dm_outbox_sync_all_contacts_recent(...)` | Sync 3 days from all contacts (parallel) |
+| `int dht_dm_outbox_sync_all_contacts_full(...)` | Sync 8 days from all contacts (v0.5.22+, for smart sync) |
 | `int dht_dm_outbox_subscribe(...)` | Subscribe with day rotation support |
 | `void dht_dm_outbox_unsubscribe(...)` | Unsubscribe from contact's outbox |
 | `int dht_dm_outbox_check_day_rotation(...)` | Check/rotate listener at midnight |
@@ -428,14 +429,16 @@ Files removed:
 |----------|-------------|
 | `int dna_group_outbox_send(dht_context_t*, const char*, const char*, const char*, const uint8_t*, char*)` | Send message to group outbox |
 | `int dna_group_outbox_fetch(dht_context_t*, const char*, uint64_t, dna_group_message_t**, size_t*)` | Fetch messages from group outbox |
-| `int dna_group_outbox_sync(dht_context_t*, const char*, size_t*)` | Sync all hours since last sync |
-| `int dna_group_outbox_sync_all(dht_context_t*, const char*, size_t*)` | Sync all groups user is member of |
+| `int dna_group_outbox_sync(dht_context_t*, const char*, size_t*)` | Sync all days since last sync |
+| `int dna_group_outbox_sync_all(dht_context_t*, const char*, size_t*)` | Sync all groups with smart sync (v0.5.22+) |
+| `int dna_group_outbox_sync_recent(dht_context_t*, const char*, size_t*)` | Sync 3 days: yesterday, today, tomorrow (v0.5.22+) |
+| `int dna_group_outbox_sync_full(dht_context_t*, const char*, size_t*)` | Sync 8 days: today-6 to today+1 (v0.5.22+) |
 
 #### Utility Functions
 
 | Function | Description |
 |----------|-------------|
-| `uint64_t dna_group_outbox_get_hour_bucket(void)` | Get current hour bucket |
+| `uint64_t dna_group_outbox_get_day_bucket(void)` | Get current day bucket (timestamp/86400) |
 | `int dna_group_outbox_make_key(const char*, uint64_t, char*, size_t)` | Generate DHT key for outbox |
 | `int dna_group_outbox_make_message_id(const char*, const char*, uint64_t, char*)` | Generate message ID |
 | `const char* dna_group_outbox_strerror(int)` | Get error message |
@@ -448,8 +451,10 @@ Files removed:
 | `int dna_group_outbox_db_store_message(const dna_group_message_t*)` | Store message in database |
 | `int dna_group_outbox_db_message_exists(const char*)` | Check if message exists |
 | `int dna_group_outbox_db_get_messages(const char*, size_t, size_t, dna_group_message_t**, size_t*)` | Get messages for group |
-| `int dna_group_outbox_db_get_last_sync_hour(const char*, uint64_t*)` | Get last sync hour |
-| `int dna_group_outbox_db_set_last_sync_hour(const char*, uint64_t)` | Update last sync hour |
+| `int dna_group_outbox_db_get_last_sync_day(const char*, uint64_t*)` | Get last sync day bucket |
+| `int dna_group_outbox_db_set_last_sync_day(const char*, uint64_t)` | Update last sync day bucket |
+| `int dna_group_outbox_db_get_sync_timestamp(const char*, uint64_t*)` | Get smart sync timestamp (v0.5.22+) |
+| `int dna_group_outbox_db_set_sync_timestamp(const char*, uint64_t)` | Set smart sync timestamp (v0.5.22+) |
 
 #### Memory Management
 

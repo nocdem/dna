@@ -21,6 +21,7 @@
 #include "../../message_backup.h"
 #include "../../crypto/utils/qgp_aes.h"
 #include "../../crypto/utils/qgp_dilithium.h"
+#include "../../crypto/utils/qgp_platform.h"
 #include "../core/dht_context.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -634,28 +635,19 @@ int dna_group_outbox_sync(
     uint64_t current_day = dna_group_outbox_get_day_bucket();
     size_t new_count = 0;
 
-    /* Load GEK for decryption */
-    uint8_t gek[GEK_KEY_SIZE];
-    if (gek_load_active(group_uuid, gek, NULL) != 0) {
-        /* GEK not found locally - try auto-sync from DHT */
-        QGP_LOG_WARN(LOG_TAG, "No local GEK for group %s, attempting auto-sync from DHT...\n", group_uuid);
-        if (messenger_sync_group_gek(group_uuid) == 0) {
-            /* Sync succeeded, retry load */
-            if (gek_load_active(group_uuid, gek, NULL) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "GEK load failed after sync for group %s (skipping)\n", group_uuid);
-                return DNA_GROUP_OUTBOX_ERR_NO_GEK;
-            }
-            QGP_LOG_INFO(LOG_TAG, "Auto-synced GEK for group %s\n", group_uuid);
-        } else {
-            QGP_LOG_ERROR(LOG_TAG, "Auto-sync failed, no active GEK for group %s (skipping)\n", group_uuid);
-            return DNA_GROUP_OUTBOX_ERR_NO_GEK;
-        }
-    }
-
     /* Determine start day */
     uint64_t start_day = last_sync_day > 0
         ? last_sync_day + 1
         : current_day - DNA_GROUP_OUTBOX_MAX_CATCHUP_DAYS;
+
+    /* Cap at max catchup days even for extended offline (v0.5.22) */
+    uint64_t min_start = current_day > DNA_GROUP_OUTBOX_MAX_CATCHUP_DAYS
+        ? current_day - DNA_GROUP_OUTBOX_MAX_CATCHUP_DAYS : 0;
+    if (start_day < min_start) {
+        QGP_LOG_INFO(LOG_TAG, "Capping group sync at %d days (was %lu days behind)",
+                    DNA_GROUP_OUTBOX_MAX_CATCHUP_DAYS, (unsigned long)(current_day - start_day));
+        start_day = min_start;
+    }
     if (start_day > current_day) start_day = current_day;
 
     QGP_LOG_INFO(LOG_TAG, "Syncing days %lu to %lu\n", (unsigned long)start_day, (unsigned long)current_day);
@@ -685,23 +677,37 @@ int dna_group_outbox_sync(
                 continue; /* Already have it */
             }
 
-            /* Decrypt message */
+            /* Decrypt message - load GEK by message's version */
             if (messages[i].ciphertext && messages[i].ciphertext_len > 0) {
-                uint8_t *plaintext = malloc(messages[i].ciphertext_len);
-                if (plaintext) {
-                    size_t plaintext_len = 0;
-                    /* AAD = message_id */
-                    if (qgp_aes256_decrypt(gek, messages[i].ciphertext, messages[i].ciphertext_len,
-                                           (const uint8_t *)messages[i].message_id, strlen(messages[i].message_id),
-                                           messages[i].nonce, messages[i].tag,
-                                           plaintext, &plaintext_len) == 0) {
-                        messages[i].plaintext = malloc(plaintext_len + 1);
-                        if (messages[i].plaintext) {
-                            memcpy(messages[i].plaintext, plaintext, plaintext_len);
-                            messages[i].plaintext[plaintext_len] = '\0';
-                        }
+                uint8_t gek[GEK_KEY_SIZE];
+                int gek_loaded = gek_load(group_uuid, messages[i].gsk_version, gek);
+                if (gek_loaded != 0) {
+                    /* Try auto-sync from DHT */
+                    if (messenger_sync_group_gek(group_uuid) == 0) {
+                        gek_loaded = gek_load(group_uuid, messages[i].gsk_version, gek);
                     }
-                    free(plaintext);
+                }
+                if (gek_loaded == 0) {
+                    uint8_t *plaintext = malloc(messages[i].ciphertext_len);
+                    if (plaintext) {
+                        size_t plaintext_len = 0;
+                        /* AAD = message_id */
+                        if (qgp_aes256_decrypt(gek, messages[i].ciphertext, messages[i].ciphertext_len,
+                                               (const uint8_t *)messages[i].message_id, strlen(messages[i].message_id),
+                                               messages[i].nonce, messages[i].tag,
+                                               plaintext, &plaintext_len) == 0) {
+                            messages[i].plaintext = malloc(plaintext_len + 1);
+                            if (messages[i].plaintext) {
+                                memcpy(messages[i].plaintext, plaintext, plaintext_len);
+                                messages[i].plaintext[plaintext_len] = '\0';
+                            }
+                        }
+                        free(plaintext);
+                    }
+                    qgp_secure_memzero(gek, GEK_KEY_SIZE);
+                } else {
+                    QGP_LOG_WARN(LOG_TAG, "No GEK v%u for group %s, cannot decrypt\n",
+                                 messages[i].gsk_version, group_uuid);
                 }
             }
 
@@ -727,6 +733,135 @@ int dna_group_outbox_sync(
     return DNA_GROUP_OUTBOX_OK;
 }
 
+/**
+ * Internal helper: Sync messages for a specific day range
+ * Shared logic for sync_recent and sync_full
+ */
+static int sync_day_range(
+    dht_context_t *dht_ctx,
+    const char *group_uuid,
+    uint64_t start_day,
+    uint64_t end_day,
+    size_t *new_message_count_out
+) {
+    if (!dht_ctx || !group_uuid) {
+        return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
+    }
+
+    size_t new_count = 0;
+
+    QGP_LOG_DEBUG(LOG_TAG, "Syncing group %s days %lu to %lu\n",
+                  group_uuid, (unsigned long)start_day, (unsigned long)end_day);
+
+    for (uint64_t day = start_day; day <= end_day; day++) {
+        dna_group_message_t *messages = NULL;
+        size_t count = 0;
+
+        int ret = dna_group_outbox_fetch(dht_ctx, group_uuid, day, &messages, &count);
+
+        if (ret != DNA_GROUP_OUTBOX_OK || !messages || count == 0) {
+            continue;
+        }
+
+        QGP_LOG_DEBUG(LOG_TAG, "Processing %zu messages from day %lu\n", count, (unsigned long)day);
+
+        for (size_t i = 0; i < count; i++) {
+            /* Check if already stored */
+            if (dna_group_outbox_db_message_exists(messages[i].message_id) == 1) {
+                continue;
+            }
+
+            /* Decrypt message - load GEK by message's version */
+            if (messages[i].ciphertext && messages[i].ciphertext_len > 0) {
+                uint8_t gek[GEK_KEY_SIZE];
+                int gek_loaded = gek_load(group_uuid, messages[i].gsk_version, gek);
+                if (gek_loaded != 0) {
+                    /* Try auto-sync from DHT */
+                    if (messenger_sync_group_gek(group_uuid) == 0) {
+                        gek_loaded = gek_load(group_uuid, messages[i].gsk_version, gek);
+                    }
+                }
+                if (gek_loaded == 0) {
+                    uint8_t *plaintext = malloc(messages[i].ciphertext_len);
+                    if (plaintext) {
+                        size_t plaintext_len = 0;
+                        if (qgp_aes256_decrypt(gek, messages[i].ciphertext, messages[i].ciphertext_len,
+                                               (const uint8_t *)messages[i].message_id, strlen(messages[i].message_id),
+                                               messages[i].nonce, messages[i].tag,
+                                               plaintext, &plaintext_len) == 0) {
+                            messages[i].plaintext = malloc(plaintext_len + 1);
+                            if (messages[i].plaintext) {
+                                memcpy(messages[i].plaintext, plaintext, plaintext_len);
+                                messages[i].plaintext[plaintext_len] = '\0';
+                            }
+                        }
+                        free(plaintext);
+                    }
+                    qgp_secure_memzero(gek, GEK_KEY_SIZE);
+                } else {
+                    QGP_LOG_WARN(LOG_TAG, "No GEK v%u for group %s, cannot decrypt\n",
+                                 messages[i].gsk_version, group_uuid);
+                }
+            }
+
+            /* Store in database */
+            if (dna_group_outbox_db_store_message(&messages[i]) == 0) {
+                new_count++;
+            }
+        }
+
+        dna_group_outbox_free_messages(messages, count);
+    }
+
+    if (new_message_count_out) {
+        *new_message_count_out = new_count;
+    }
+
+    return DNA_GROUP_OUTBOX_OK;
+}
+
+int dna_group_outbox_sync_recent(
+    dht_context_t *dht_ctx,
+    const char *group_uuid,
+    size_t *new_message_count_out
+) {
+    if (!dht_ctx || !group_uuid) {
+        return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
+    }
+
+    uint64_t current_day = dna_group_outbox_get_day_bucket();
+
+    /* Recent sync: yesterday, today, tomorrow (3 days) */
+    uint64_t start_day = current_day > 0 ? current_day - 1 : 0;
+    uint64_t end_day = current_day + 1;  /* Include tomorrow for clock skew */
+
+    QGP_LOG_INFO(LOG_TAG, "Smart sync RECENT: group %.8s... days %lu-%lu\n",
+                 group_uuid, (unsigned long)start_day, (unsigned long)end_day);
+
+    return sync_day_range(dht_ctx, group_uuid, start_day, end_day, new_message_count_out);
+}
+
+int dna_group_outbox_sync_full(
+    dht_context_t *dht_ctx,
+    const char *group_uuid,
+    size_t *new_message_count_out
+) {
+    if (!dht_ctx || !group_uuid) {
+        return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
+    }
+
+    uint64_t current_day = dna_group_outbox_get_day_bucket();
+
+    /* Full sync: today-6 to today+1 (8 days total) */
+    uint64_t start_day = current_day > 6 ? current_day - 6 : 0;
+    uint64_t end_day = current_day + 1;  /* Include tomorrow for clock skew */
+
+    QGP_LOG_INFO(LOG_TAG, "Smart sync FULL: group %.8s... days %lu-%lu\n",
+                 group_uuid, (unsigned long)start_day, (unsigned long)end_day);
+
+    return sync_day_range(dht_ctx, group_uuid, start_day, end_day, new_message_count_out);
+}
+
 int dna_group_outbox_sync_all(
     dht_context_t *dht_ctx,
     const char *my_fingerprint,
@@ -750,14 +885,35 @@ int dna_group_outbox_sync_all(
     }
 
     size_t total_new = 0;
+    uint64_t now = (uint64_t)time(NULL);
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         const char *group_uuid = (const char *)sqlite3_column_text(stmt, 0);
         if (!group_uuid) continue;
 
+        /* Smart sync decision per group */
+        uint64_t last_sync = 0;
+        dna_group_outbox_db_get_sync_timestamp(group_uuid, &last_sync);
+
+        bool need_full = (last_sync == 0) ||
+                         ((now - last_sync) > DNA_GROUP_SMART_SYNC_THRESHOLD);
+
         size_t new_count = 0;
-        int ret = dna_group_outbox_sync(dht_ctx, group_uuid, &new_count);
+        int ret;
+
+        if (need_full) {
+            QGP_LOG_INFO(LOG_TAG, "Group %.8s...: FULL sync (last=%lu, age=%lu sec)\n",
+                        group_uuid, (unsigned long)last_sync, (unsigned long)(now - last_sync));
+            ret = dna_group_outbox_sync_full(dht_ctx, group_uuid, &new_count);
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "Group %.8s...: RECENT sync (last=%lu, age=%lu sec)\n",
+                         group_uuid, (unsigned long)last_sync, (unsigned long)(now - last_sync));
+            ret = dna_group_outbox_sync_recent(dht_ctx, group_uuid, &new_count);
+        }
+
+        /* Update timestamp on success */
         if (ret == DNA_GROUP_OUTBOX_OK) {
+            dna_group_outbox_db_set_sync_timestamp(group_uuid, now);
             total_new += new_count;
         }
     }
@@ -801,6 +957,15 @@ int dna_group_outbox_db_init(void) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to create group_sync_state table: %s\n", err_msg);
         sqlite3_free(err_msg);
         return -1;
+    }
+
+    /* Migration: Add last_sync_timestamp for smart sync (v0.5.22) */
+    const char *add_timestamp =
+        "ALTER TABLE group_sync_state ADD COLUMN last_sync_timestamp INTEGER DEFAULT 0;";
+    rc = sqlite3_exec(group_outbox_db, add_timestamp, NULL, NULL, &err_msg);
+    if (err_msg) {
+        /* Ignore error - column may already exist */
+        sqlite3_free(err_msg);
     }
 
     QGP_LOG_INFO(LOG_TAG, "Database tables initialized\n");
@@ -1053,6 +1218,70 @@ int dna_group_outbox_db_set_last_sync_day(
     return dna_group_outbox_db_set_last_sync_hour(group_uuid, last_sync_day);
 }
 
+/* Smart sync timestamp functions (v0.5.22) */
+int dna_group_outbox_db_get_sync_timestamp(
+    const char *group_uuid,
+    uint64_t *timestamp_out
+) {
+    if (!group_uuid || !timestamp_out || !group_outbox_db) {
+        if (timestamp_out) *timestamp_out = 0;
+        return -1;
+    }
+
+    const char *sql = "SELECT last_sync_timestamp FROM group_sync_state WHERE group_uuid = ?";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(group_outbox_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        *timestamp_out = 0;
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        *timestamp_out = (uint64_t)sqlite3_column_int64(stmt, 0);
+    } else {
+        *timestamp_out = 0;
+    }
+
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
+int dna_group_outbox_db_set_sync_timestamp(
+    const char *group_uuid,
+    uint64_t timestamp
+) {
+    if (!group_uuid || !group_outbox_db) {
+        return -1;
+    }
+
+    /* Update existing row or insert new one */
+    const char *sql =
+        "INSERT INTO group_sync_state (group_uuid, last_sync_hour, last_sync_time, last_sync_timestamp) "
+        "VALUES (?, 0, ?, ?) "
+        "ON CONFLICT(group_uuid) DO UPDATE SET last_sync_timestamp = excluded.last_sync_timestamp, "
+        "last_sync_time = excluded.last_sync_time";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(group_outbox_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare sync_timestamp update: %s", sqlite3_errmsg(group_outbox_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)timestamp);
+    sqlite3_bind_int64(stmt, 3, (sqlite3_int64)timestamp);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
 /*============================================================================
  * Memory Management
  *============================================================================*/
@@ -1089,7 +1318,13 @@ void dna_group_outbox_free_bucket(dna_group_outbox_bucket_t *bucket) {
  * Internal: DHT listen callback for group messages
  *
  * Called when ANY sender publishes to the shared group key.
- * Fetches all messages and dedupes against local DB.
+ *
+ * IMPORTANT: Do NOT do blocking DHT operations (like fetch) inside this callback!
+ * The callback runs in OpenDHT's internal thread. Doing a DHT GET here causes
+ * deadlock/timeout because the thread is busy handling this callback.
+ *
+ * Instead, we just fire the event immediately. Flutter will handle the actual
+ * fetch via its own async mechanism.
  */
 static bool group_message_listen_callback(
     const uint8_t *value,
@@ -1097,83 +1332,22 @@ static bool group_message_listen_callback(
     bool expired,
     void *user_data
 ) {
-    (void)value;
-    (void)value_len;
-
     if (expired || !user_data) {
         return true;  /* Continue listening */
     }
 
     dna_group_listen_ctx_t *ctx = (dna_group_listen_ctx_t *)user_data;
 
-    QGP_LOG_DEBUG(LOG_TAG, "Listen callback for group %s\n", ctx->group_uuid);
+    /* Only fire event if we got actual data */
+    if (value && value_len > 0) {
+        QGP_LOG_WARN(LOG_TAG, "[GROUP-LISTEN] >>> NEW VALUE for group %s (len=%zu) - firing event immediately",
+                     ctx->group_uuid, value_len);
 
-    /* Fetch ALL messages from the shared key (all senders) */
-    dna_group_message_t *messages = NULL;
-    size_t count = 0;
-
-    dht_context_t *dht_ctx = ctx->dht_ctx;
-    if (!dht_ctx) {
-        dht_ctx = dht_singleton_get();
-    }
-    if (!dht_ctx) {
-        return true;
-    }
-
-    int ret = dna_group_outbox_fetch(dht_ctx, ctx->group_uuid, ctx->current_day,
-                                      &messages, &count);
-
-    if (ret != 0 || !messages || count == 0) {
-        return true;
-    }
-
-    /* Load GEK for decryption */
-    uint8_t gek[GEK_KEY_SIZE];
-    if (gek_load_active(ctx->group_uuid, gek, NULL) != 0) {
-        QGP_LOG_WARN(LOG_TAG, "No GEK for group %s in listen callback\n", ctx->group_uuid);
-        dna_group_outbox_free_messages(messages, count);
-        return true;
-    }
-
-    /* Process and store new messages */
-    size_t new_count = 0;
-    for (size_t i = 0; i < count; i++) {
-        /* Check if already stored */
-        if (dna_group_outbox_db_message_exists(messages[i].message_id) == 1) {
-            continue;
+        /* Fire event immediately - let Flutter handle the fetch
+         * This avoids DHT deadlock from fetching inside callback */
+        if (ctx->on_new_message) {
+            ctx->on_new_message(ctx->group_uuid, 1, ctx->user_data);
         }
-
-        /* Decrypt message */
-        if (messages[i].ciphertext && messages[i].ciphertext_len > 0) {
-            uint8_t *plaintext = malloc(messages[i].ciphertext_len);
-            if (plaintext) {
-                size_t plaintext_len = 0;
-                if (qgp_aes256_decrypt(gek, messages[i].ciphertext, messages[i].ciphertext_len,
-                                       (const uint8_t *)messages[i].message_id, strlen(messages[i].message_id),
-                                       messages[i].nonce, messages[i].tag,
-                                       plaintext, &plaintext_len) == 0) {
-                    messages[i].plaintext = malloc(plaintext_len + 1);
-                    if (messages[i].plaintext) {
-                        memcpy(messages[i].plaintext, plaintext, plaintext_len);
-                        messages[i].plaintext[plaintext_len] = '\0';
-                    }
-                }
-                free(plaintext);
-            }
-        }
-
-        /* Store in database */
-        if (dna_group_outbox_db_store_message(&messages[i]) == 0) {
-            new_count++;
-        }
-    }
-
-    dna_group_outbox_free_messages(messages, count);
-
-    /* Fire user callback if new messages */
-    if (new_count > 0 && ctx->on_new_message) {
-        QGP_LOG_INFO(LOG_TAG, "Group %s: %zu new messages\n", ctx->group_uuid, new_count);
-        ctx->on_new_message(ctx->group_uuid, new_count, ctx->user_data);
     }
 
     return true;  /* Continue listening */

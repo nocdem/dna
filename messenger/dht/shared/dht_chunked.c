@@ -45,8 +45,8 @@
 /** Delay between retry attempts in milliseconds */
 #define DHT_CHUNK_RETRY_DELAY_MS    500
 
-/** Timeout for synchronous PUT completion (5 seconds) */
-#define DHT_CHUNK_PUT_TIMEOUT_MS    5000
+/** Timeout for synchronous PUT completion (60 seconds for reliable delivery) */
+#define DHT_CHUNK_PUT_TIMEOUT_MS    60000
 
 /*============================================================================
  * Internal Structures

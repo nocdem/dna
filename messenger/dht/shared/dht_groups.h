@@ -199,6 +199,18 @@ int dht_groups_list_for_user(
 );
 
 /**
+ * Get single group cache entry by UUID
+ *
+ * @param group_uuid: Group UUID to look up
+ * @param entry_out: Output cache entry (caller must free)
+ * @return: 0 on success, -1 on error, -2 if not found
+ */
+int dht_groups_get_cache_entry(
+    const char *group_uuid,
+    dht_group_cache_entry_t **entry_out
+);
+
+/**
  * Get group UUID from local group ID (Phase 6.1)
  *
  * Helper function to map local_id to group_uuid.

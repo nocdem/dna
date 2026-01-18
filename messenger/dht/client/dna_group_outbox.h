@@ -55,6 +55,15 @@ extern "C" {
 /** Maximum days to sync on catch-up (7 days) */
 #define DNA_GROUP_OUTBOX_MAX_CATCHUP_DAYS 7
 
+/** Smart sync threshold: 3 days in seconds */
+#define DNA_GROUP_SMART_SYNC_THRESHOLD (3 * 86400)
+
+/** Days to sync on recent check (yesterday, today, tomorrow) */
+#define DNA_GROUP_OUTBOX_RECENT_DAYS 3
+
+/** Days to sync on full check (today-6 to today+1 = 8 days) */
+#define DNA_GROUP_OUTBOX_FULL_DAYS 8
+
 /** Key format for shared group storage (all members write here) */
 #define DNA_GROUP_OUTBOX_KEY_FMT "dna:group:%s:out:%lu"
 
@@ -244,6 +253,7 @@ int dna_group_outbox_sync(
  * @brief Sync all groups the user is a member of
  *
  * Iterates through dht_group_members table and syncs each group.
+ * Uses smart sync: recent (3 days) if synced within 3 days, full (8 days) otherwise.
  *
  * @param dht_ctx DHT context
  * @param my_fingerprint User's fingerprint
@@ -254,6 +264,40 @@ int dna_group_outbox_sync_all(
     dht_context_t *dht_ctx,
     const char *my_fingerprint,
     size_t *total_new_messages_out
+);
+
+/**
+ * @brief Sync recent messages for a group (3 days: yesterday, today, tomorrow)
+ *
+ * Use this for periodic sync when recently online (<3 days).
+ * Includes tomorrow for clock skew tolerance.
+ *
+ * @param dht_ctx DHT context
+ * @param group_uuid Group UUID
+ * @param new_message_count_out Output: Number of new messages stored (optional)
+ * @return DNA_GROUP_OUTBOX_OK on success, error code on failure
+ */
+int dna_group_outbox_sync_recent(
+    dht_context_t *dht_ctx,
+    const char *group_uuid,
+    size_t *new_message_count_out
+);
+
+/**
+ * @brief Sync full message history for a group (8 days: today-6 to today+1)
+ *
+ * Use this after extended offline (>3 days) or for first sync.
+ * Includes tomorrow for clock skew tolerance.
+ *
+ * @param dht_ctx DHT context
+ * @param group_uuid Group UUID
+ * @param new_message_count_out Output: Number of new messages stored (optional)
+ * @return DNA_GROUP_OUTBOX_OK on success, error code on failure
+ */
+int dna_group_outbox_sync_full(
+    dht_context_t *dht_ctx,
+    const char *group_uuid,
+    size_t *new_message_count_out
 );
 
 /*============================================================================
@@ -380,6 +424,35 @@ int dna_group_outbox_db_get_last_sync_day(
 int dna_group_outbox_db_set_last_sync_day(
     const char *group_uuid,
     uint64_t last_sync_day
+);
+
+/**
+ * @brief Get smart sync timestamp for a group
+ *
+ * Used to determine if full sync (8 days) is needed.
+ * Returns 0 if never synced.
+ *
+ * @param group_uuid Group UUID
+ * @param timestamp_out Output: Unix timestamp of last sync
+ * @return 0 on success, -1 on error
+ */
+int dna_group_outbox_db_get_sync_timestamp(
+    const char *group_uuid,
+    uint64_t *timestamp_out
+);
+
+/**
+ * @brief Set smart sync timestamp for a group
+ *
+ * Called after successful sync to update tracking.
+ *
+ * @param group_uuid Group UUID
+ * @param timestamp Unix timestamp of sync
+ * @return 0 on success, -1 on error
+ */
+int dna_group_outbox_db_set_sync_timestamp(
+    const char *group_uuid,
+    uint64_t timestamp
 );
 
 /*============================================================================

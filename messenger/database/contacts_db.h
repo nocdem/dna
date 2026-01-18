@@ -194,6 +194,25 @@ int contacts_db_update_last_seen(const char *identity, uint64_t last_seen);
 int contacts_db_update_nickname(const char *identity, const char *nickname);
 
 /**
+ * Get DM sync timestamp for a contact
+ * Used by smart sync to determine if full sync (8 days) is needed
+ *
+ * @param identity: Contact fingerprint (128 hex chars)
+ * @return: Unix timestamp of last DM sync, or 0 if never synced
+ */
+uint64_t contacts_db_get_dm_sync_timestamp(const char *identity);
+
+/**
+ * Set DM sync timestamp for a contact
+ * Called after successful DM sync
+ *
+ * @param identity: Contact fingerprint (128 hex chars)
+ * @param timestamp: Unix timestamp of sync
+ * @return: 0 on success, -1 on error
+ */
+int contacts_db_set_dm_sync_timestamp(const char *identity, uint64_t timestamp);
+
+/**
  * Close database
  * Call on shutdown
  */

@@ -780,6 +780,12 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
                      (void*)callback, disposing, flutter_attached, event->data.message_status.new_status);
     }
 
+    /* Debug logging for GROUP_MESSAGE_RECEIVED event dispatch */
+    if (event->type == DNA_EVENT_GROUP_MESSAGE_RECEIVED) {
+        QGP_LOG_INFO(LOG_TAG, "[EVENT] GROUP_MESSAGE dispatch: callback=%p, disposing=%d, attached=%d",
+                     (void*)callback, disposing, flutter_attached);
+    }
+
     if (flutter_attached) {
         /* Heap-allocate a copy for async callbacks (Dart NativeCallable.listener)
          * The caller (Dart) must call dna_free_event() after processing */
@@ -789,6 +795,9 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
             callback(heap_event, user_data);
             if (event->type == DNA_EVENT_MESSAGE_SENT) {
                 QGP_LOG_WARN(LOG_TAG, "[EVENT] MESSAGE_SENT callback invoked");
+            }
+            if (event->type == DNA_EVENT_GROUP_MESSAGE_RECEIVED) {
+                QGP_LOG_INFO(LOG_TAG, "[EVENT] GROUP_MESSAGE callback invoked");
             }
         }
     }
@@ -966,6 +975,12 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         /* Groups */
         case TASK_GET_GROUPS:
             dna_handle_get_groups(engine, task);
+            break;
+        case TASK_GET_GROUP_INFO:
+            dna_handle_get_group_info(engine, task);
+            break;
+        case TASK_GET_GROUP_MEMBERS:
+            dna_handle_get_group_members(engine, task);
             break;
         case TASK_CREATE_GROUP:
             dna_handle_create_group(engine, task);
@@ -1274,6 +1289,8 @@ static void on_group_new_message(const char *group_uuid, size_t new_count, void 
                 sizeof(event.data.group_message.group_uuid) - 1);
         event.data.group_message.new_count = (int)new_count;
         dna_dispatch_event(engine, &event);
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "[GROUP] Cannot dispatch - engine is NULL!");
     }
 }
 
@@ -3442,6 +3459,23 @@ void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task) {
     }
 
     if (entry_count > 0) {
+        /* Sync all groups from DHT first to get latest data */
+        dht_context_t *dht_ctx = dht_singleton_get();
+        if (dht_ctx) {
+            for (int i = 0; i < entry_count; i++) {
+                dht_groups_sync_from_dht(dht_ctx, entries[i].group_uuid);
+            }
+        }
+
+        /* Re-fetch after sync to get updated data */
+        dht_groups_free_cache_entries(entries, entry_count);
+        entries = NULL;
+        entry_count = 0;
+        if (dht_groups_list_for_user(engine->fingerprint, &entries, &entry_count) != 0) {
+            error = DNA_ENGINE_ERROR_DATABASE;
+            goto done;
+        }
+
         groups = calloc(entry_count, sizeof(dna_group_t));
         if (!groups) {
             dht_groups_free_cache_entries(entries, entry_count);
@@ -3471,6 +3505,123 @@ void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task) {
 done:
     task->callback.groups(task->request_id, error, groups, count, task->user_data);
     /* Note: caller (Flutter) owns the memory and frees via dna_free_groups() */
+}
+
+void dna_handle_get_group_info(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+    dna_group_info_t *info = NULL;
+    dht_group_cache_entry_t *cache_entry = NULL;
+    const char *group_uuid = task->params.get_group_info.group_uuid;
+
+    if (!engine->identity_loaded) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    /* Sync from DHT first to get latest member list */
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (dht_ctx) {
+        dht_groups_sync_from_dht(dht_ctx, group_uuid);
+    }
+
+    /* Get group from local cache (now up-to-date) */
+    int rc = dht_groups_get_cache_entry(group_uuid, &cache_entry);
+    if (rc != 0) {
+        error = (rc == -2) ? DNA_ENGINE_ERROR_NOT_FOUND : DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    info = calloc(1, sizeof(dna_group_info_t));
+    if (!info) {
+        error = DNA_ERROR_INTERNAL;
+        goto done;
+    }
+
+    strncpy(info->uuid, cache_entry->group_uuid, 36);
+    strncpy(info->name, cache_entry->name, sizeof(info->name) - 1);
+    strncpy(info->creator, cache_entry->creator, 128);
+    info->created_at = cache_entry->created_at;
+
+    /* Check if current user is the owner */
+    info->is_owner = (strcmp(engine->fingerprint, cache_entry->creator) == 0);
+
+    /* Get member count */
+    int member_count = 0;
+    dht_groups_get_member_count(group_uuid, &member_count);
+    info->member_count = member_count;
+
+    /* Get active GEK version */
+    uint8_t gek[32];
+    uint32_t gek_version = 0;
+    if (gek_load_active(group_uuid, gek, &gek_version) == 0) {
+        info->gek_version = gek_version;
+        qgp_secure_memzero(gek, 32);
+    }
+
+done:
+    if (cache_entry) free(cache_entry);
+    task->callback.group_info(task->request_id, error, info, task->user_data);
+}
+
+void dna_handle_get_group_members(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+    dna_group_member_t *members = NULL;
+    int count = 0;
+    dht_group_cache_entry_t *cache_entry = NULL;
+    char **dht_members = NULL;
+    int dht_member_count = 0;
+    const char *group_uuid = task->params.get_group_members.group_uuid;
+
+    if (!engine->identity_loaded) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    /* Sync from DHT first to get latest member list */
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (dht_ctx) {
+        dht_groups_sync_from_dht(dht_ctx, group_uuid);
+    }
+
+    /* Get group from local cache (now up-to-date) */
+    int rc = dht_groups_get_cache_entry(group_uuid, &cache_entry);
+    if (rc != 0) {
+        error = (rc == -2) ? DNA_ENGINE_ERROR_NOT_FOUND : DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    /* Get members from DHT group_members table */
+    if (dht_groups_get_members(group_uuid, &dht_members, &dht_member_count) != 0 || dht_member_count == 0) {
+        /* No members in DHT table, return just owner */
+        members = calloc(1, sizeof(dna_group_member_t));
+        if (members) {
+            strncpy(members[0].fingerprint, cache_entry->creator, 128);
+            members[0].added_at = cache_entry->created_at;
+            members[0].is_owner = true;
+            count = 1;
+        }
+        goto done;
+    }
+
+    /* Convert to dna_group_member_t */
+    members = calloc(dht_member_count, sizeof(dna_group_member_t));
+    if (!members) {
+        dht_groups_free_members(dht_members, dht_member_count);
+        error = DNA_ERROR_INTERNAL;
+        goto done;
+    }
+
+    for (int i = 0; i < dht_member_count; i++) {
+        strncpy(members[i].fingerprint, dht_members[i], 128);
+        members[i].added_at = cache_entry->created_at;  /* DHT doesn't store per-member add time */
+        members[i].is_owner = (strcmp(dht_members[i], cache_entry->creator) == 0);
+    }
+    count = dht_member_count;
+    dht_groups_free_members(dht_members, dht_member_count);
+
+done:
+    if (cache_entry) free(cache_entry);
+    task->callback.group_members(task->request_id, error, members, count, task->user_data);
 }
 
 void dna_handle_create_group(dna_engine_t *engine, dna_task_t *task) {
@@ -5992,6 +6143,38 @@ dna_request_id_t dna_engine_get_groups(
     return dna_submit_task(engine, TASK_GET_GROUPS, NULL, cb, user_data);
 }
 
+dna_request_id_t dna_engine_get_group_info(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_group_info_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !callback) return DNA_REQUEST_ID_INVALID;
+    if (strlen(group_uuid) != 36) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_group_info.group_uuid, group_uuid, 36);
+
+    dna_task_callback_t cb = { .group_info = callback };
+    return dna_submit_task(engine, TASK_GET_GROUP_INFO, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_group_members(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_group_members_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !callback) return DNA_REQUEST_ID_INVALID;
+    if (strlen(group_uuid) != 36) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_group_members.group_uuid, group_uuid, 36);
+
+    dna_task_callback_t cb = { .group_members = callback };
+    return dna_submit_task(engine, TASK_GET_GROUP_MEMBERS, &params, cb, user_data);
+}
+
 dna_request_id_t dna_engine_create_group(
     dna_engine_t *engine,
     const char *name,
@@ -7615,6 +7798,15 @@ void dna_handle_sync_group_by_uuid(dna_engine_t *engine, dna_task_t *task) {
                 } else {
                     QGP_LOG_INFO(LOG_TAG, "Successfully synced GEK for group %s", group_uuid);
                 }
+
+                // Sync messages from DHT to local DB
+                size_t msg_count = 0;
+                int msg_ret = dna_group_outbox_sync(dht_ctx, group_uuid, &msg_count);
+                if (msg_ret != 0) {
+                    QGP_LOG_WARN(LOG_TAG, "Failed to sync messages for group %s (non-fatal)", group_uuid);
+                } else if (msg_count > 0) {
+                    QGP_LOG_INFO(LOG_TAG, "Synced %zu new messages for group %s", msg_count, group_uuid);
+                }
             }
         } else {
             error = DNA_ENGINE_ERROR_NETWORK;
@@ -7809,6 +8001,15 @@ void dna_free_messages(dna_message_t *messages, int count) {
 void dna_free_groups(dna_group_t *groups, int count) {
     (void)count;
     free(groups);
+}
+
+void dna_free_group_info(dna_group_info_t *info) {
+    free(info);
+}
+
+void dna_free_group_members(dna_group_member_t *members, int count) {
+    (void)count;
+    free(members);
 }
 
 void dna_free_invitations(dna_invitation_t *invitations, int count) {

@@ -884,6 +884,64 @@ int dht_groups_list_for_user(
     return 0;
 }
 
+// Get single group cache entry by UUID
+int dht_groups_get_cache_entry(
+    const char *group_uuid,
+    dht_group_cache_entry_t **entry_out
+) {
+    if (!group_uuid || !entry_out || !g_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to get_cache_entry\n");
+        return -1;
+    }
+
+    *entry_out = NULL;
+
+    const char *sql =
+        "SELECT local_id, group_uuid, name, creator, created_at, last_sync "
+        "FROM dht_group_cache WHERE group_uuid = ?";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare query: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -2;  // Not found
+    }
+
+    dht_group_cache_entry_t *entry = malloc(sizeof(dht_group_cache_entry_t));
+    if (!entry) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    entry->local_id = sqlite3_column_int(stmt, 0);
+
+    const char *db_uuid = (const char*)sqlite3_column_text(stmt, 1);
+    const char *db_name = (const char*)sqlite3_column_text(stmt, 2);
+    const char *db_creator = (const char*)sqlite3_column_text(stmt, 3);
+
+    strncpy(entry->group_uuid, db_uuid ? db_uuid : "", 36);
+    entry->group_uuid[36] = '\0';
+    strncpy(entry->name, db_name ? db_name : "", 127);
+    entry->name[127] = '\0';
+    strncpy(entry->creator, db_creator ? db_creator : "", 128);
+    entry->creator[128] = '\0';
+    entry->created_at = sqlite3_column_int64(stmt, 4);
+    entry->last_sync = sqlite3_column_int64(stmt, 5);
+
+    sqlite3_finalize(stmt);
+
+    *entry_out = entry;
+    return 0;
+}
+
 // Get group UUID from local group ID (Phase 6.1)
 int dht_groups_get_uuid_by_local_id(
     const char *identity,
@@ -1031,7 +1089,9 @@ int dht_groups_sync_from_dht(
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
 
-    // Update members
+    // Update members atomically (transaction prevents race conditions)
+    sqlite3_exec(g_db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+
     const char *delete_sql = "DELETE FROM dht_group_members WHERE group_uuid = ?";
     sqlite3_prepare_v2(g_db, delete_sql, -1, &stmt, NULL);
     sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_STATIC);
@@ -1051,6 +1111,8 @@ int dht_groups_sync_from_dht(
         sqlite3_step(stmt);
         sqlite3_finalize(stmt);
     }
+
+    sqlite3_exec(g_db, "COMMIT", NULL, NULL, NULL);
 
     dht_groups_free_metadata(meta);
 

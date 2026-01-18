@@ -1213,8 +1213,8 @@ extern "C" int dht_get(dht_context_t *ctx,
         auto start_network = std::chrono::steady_clock::now();
         auto future = ctx->runner.get(hash);
 
-        // Wait with 2 second timeout (reduced from 10s to fail faster offline)
-        auto status = future.wait_for(std::chrono::seconds(2));
+        // Wait with 30 second timeout for reliable DHT retrieval
+        auto status = future.wait_for(std::chrono::seconds(30));
         if (status == std::future_status::timeout) {
             auto network_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start_network).count();
@@ -1359,10 +1359,10 @@ extern "C" int dht_get_all(dht_context_t *ctx,
         // Get all values using future-based API
         auto future = ctx->runner.get(hash);
 
-        // Wait with 2 second timeout (reduced from 10s to fail faster offline)
-        auto status = future.wait_for(std::chrono::seconds(2));
+        // Wait with 30 second timeout for reliable DHT retrieval
+        auto status = future.wait_for(std::chrono::seconds(30));
         if (status == std::future_status::timeout) {
-            QGP_LOG_INFO("DHT", "GET_ALL: Timeout after 2 seconds");
+            QGP_LOG_INFO("DHT", "GET_ALL: Timeout after 30 seconds");
             return -2;  // Timeout error
         }
 
@@ -1456,9 +1456,10 @@ extern "C" int dht_get_all_with_ids(dht_context_t *ctx,
         QGP_LOG_DEBUG("DHT", "GET_ALL_WITH_IDS: %s", hash.toString().c_str());
 
         auto future = ctx->runner.get(hash);
-        auto status = future.wait_for(std::chrono::seconds(2));
+        // Wait with 30 second timeout for reliable DHT retrieval
+        auto status = future.wait_for(std::chrono::seconds(30));
         if (status == std::future_status::timeout) {
-            QGP_LOG_INFO("DHT", "GET_ALL_WITH_IDS: Timeout after 2 seconds");
+            QGP_LOG_INFO("DHT", "GET_ALL_WITH_IDS: Timeout after 30 seconds");
             return -2;
         }
 
