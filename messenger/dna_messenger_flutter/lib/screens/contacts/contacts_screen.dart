@@ -8,9 +8,28 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../providers/contact_requests_provider.dart';
+import '../../providers/listener_state_provider.dart';
 import '../../theme/dna_theme.dart';
+import '../../utils/logger.dart' show log;
 import '../chat/chat_screen.dart';
 import 'contact_requests_screen.dart';
+
+/// Ensure contact has active DHT listener (lazy loading optimization)
+/// v0.6.3: Only sets up listener if not already active
+void _ensureContactListener(WidgetRef ref, String fingerprint) {
+  final listenerState = ref.read(listenerStateProvider.notifier);
+
+  if (!listenerState.hasListener(fingerprint)) {
+    // Try to get engine and set up listener
+    ref.read(engineProvider).whenData((engine) {
+      final token = engine.listenOutbox(fingerprint);
+      if (token > 0) {
+        listenerState.markActive(fingerprint);
+        log('LAZY', 'Listener started for ${fingerprint.substring(0, 16)}...');
+      }
+    });
+  }
+}
 
 class ContactsScreen extends ConsumerWidget {
   final VoidCallback? onMenuPressed;
@@ -206,6 +225,11 @@ class _ContactTile extends ConsumerWidget {
         ref.read(contactProfileCacheProvider.notifier).fetchAndCache(contact.fingerprint);
       });
     }
+
+    // v0.6.3: Lazy load listener when contact becomes visible
+    Future.microtask(() {
+      _ensureContactListener(ref, contact.fingerprint);
+    });
 
     return ListTile(
       leading: SizedBox(

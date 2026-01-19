@@ -17,3 +17,4 @@ export 'foreground_service_provider.dart'; // Phase 14: Android background servi
 export 'app_lock_provider.dart';
 export 'starred_messages_provider.dart';
 export 'sync_settings_provider.dart';
+export 'listener_state_provider.dart'; // v0.6.3: Mobile lazy loading optimization

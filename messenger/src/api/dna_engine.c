@@ -144,6 +144,26 @@ void dna_engine_cancel_all_presence_listeners(dna_engine_t *engine);
 void dna_engine_cancel_contact_request_listener(dna_engine_t *engine);
 size_t dna_engine_start_contact_request_listener(dna_engine_t *engine);
 void dna_engine_cancel_watermark_listener(dna_engine_t *engine, const char *contact_fingerprint);
+size_t dna_engine_listen_outbox(dna_engine_t *engine, const char *contact_fingerprint);
+size_t dna_engine_start_presence_listener(dna_engine_t *engine, const char *contact_fingerprint);
+size_t dna_engine_start_watermark_listener(dna_engine_t *engine, const char *contact_fingerprint);
+
+/* Parallel listener setup for mobile performance optimization */
+typedef struct {
+    dna_engine_t *engine;
+    char fingerprint[129];
+} parallel_listener_ctx_t;
+
+static void *parallel_listener_worker(void *arg) {
+    parallel_listener_ctx_t *ctx = (parallel_listener_ctx_t *)arg;
+    if (!ctx || !ctx->engine) return NULL;
+
+    dna_engine_listen_outbox(ctx->engine, ctx->fingerprint);
+    dna_engine_start_presence_listener(ctx->engine, ctx->fingerprint);
+    dna_engine_start_watermark_listener(ctx->engine, ctx->fingerprint);
+
+    return NULL;
+}
 
 /**
  * Validate identity name - must be lowercase only
@@ -1947,17 +1967,9 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
             /* P2P initialized successfully - complete P2P setup */
             /* Note: Presence already registered in messenger_transport_init() */
 
-            /* 1. Check for offline messages (Spillway: query contacts' outboxes) */
-            size_t offline_count = 0;
-            if (messenger_transport_check_offline_messages(engine->messenger, NULL, &offline_count) == 0) {
-                if (offline_count > 0) {
-                    QGP_LOG_INFO(LOG_TAG, "Received %zu offline messages\n", offline_count);
-                } else {
-                    QGP_LOG_INFO(LOG_TAG, "No offline messages found\n");
-                }
-            } else {
-                QGP_LOG_INFO(LOG_TAG, "Warning: Failed to check offline messages\n");
-            }
+            /* PERF: Skip full offline sync on startup - lazy sync when user opens chat.
+             * Listeners will catch NEW messages. Old messages sync via checkContactOffline(). */
+            QGP_LOG_INFO(LOG_TAG, "Skipping offline sync (lazy loading enabled)\n");
 
             /* Start presence heartbeat thread (announces our presence every 4 minutes) */
             if (dna_start_presence_heartbeat(engine) != 0) {
@@ -1970,15 +1982,13 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     engine->identity_loaded = true;
     QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity loaded, identity_loaded flag set to true");
 
-    /* Start outbox listeners for Flutter events (DNA_EVENT_OUTBOX_UPDATED)
-     * When DHT value changes, fires event -> Flutter polls + refreshes UI
-     * Must be AFTER identity_loaded=true since listeners check this flag
-     * Note: DHT listeners don't require P2P transport - they work via DHT directly
-     * IMPORTANT: Listeners are needed in BOTH full and minimal mode for notifications */
+    /* PERF: Skip automatic listener setup - Flutter uses lazy loading,
+     * Service calls listen_all_contacts explicitly after identity load.
+     * Contact request listener is lightweight, always start it.
+     * Groups still need subscription for real-time messages. */
     if (engine->messenger) {
-        QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: starting outbox listeners...");
-        int listener_count = dna_engine_listen_all_contacts(engine);
-        QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: started %d listeners", listener_count);
+        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Identity load: skipping auto-listeners (lazy loading)");
+        dna_engine_start_contact_request_listener(engine);
 
         /* Subscribe to group outboxes for real-time group messages.
          * This is critical: DHT usually connects before identity loads, so the
@@ -6963,42 +6973,65 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
 
     QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Found %zu contacts in database", list->count);
 
-    /* Start listener for each contact (outbox + presence) */
-    int started = 0;
-    int presence_started = 0;
+    /* PERF: Start listeners in parallel (mobile performance optimization)
+     * Uses thread pool with max 8 concurrent threads to avoid overwhelming mobile devices.
+     * Each thread sets up outbox + presence + watermark listeners for one contact. */
     size_t count = list->count;
+    int max_parallel = 8;  /* Reasonable limit for mobile devices */
+
+    parallel_listener_ctx_t *tasks = calloc(count, sizeof(parallel_listener_ctx_t));
+    pthread_t *threads = calloc(count, sizeof(pthread_t));
+    if (!tasks || !threads) {
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to allocate parallel task memory");
+        free(tasks);
+        free(threads);
+        contacts_db_free_list(list);
+        engine->listeners_starting = false;
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Starting parallel listeners for %zu contacts (max %d concurrent)",
+                 count, max_parallel);
+
+    size_t active = 0;   /* Index of oldest non-joined thread */
+    size_t started = 0;  /* Number of threads started */
+
     for (size_t i = 0; i < count; i++) {
         const char *contact_id = list->contacts[i].identity;
-        size_t id_len = contact_id ? strlen(contact_id) : 0;
-        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Contact[%zu]: %.32s... (len=%zu)",
-                     i, contact_id ? contact_id : "(null)", id_len);
+        if (!contact_id) continue;
 
-        /* Start outbox listener (for messages) */
-        size_t token = dna_engine_listen_outbox(engine, contact_id);
-        if (token > 0) {
-            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Outbox listener started for contact[%zu], token=%zu", i, token);
+        /* Initialize task context */
+        tasks[i].engine = engine;
+        strncpy(tasks[i].fingerprint, contact_id, 128);
+        tasks[i].fingerprint[128] = '\0';
+
+        /* Spawn worker thread */
+        if (pthread_create(&threads[i], NULL, parallel_listener_worker, &tasks[i]) == 0) {
             started++;
+            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Thread[%zu] started for %.32s...", i, contact_id);
         } else {
-            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Failed to start outbox listener for contact[%zu]", i);
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN] Failed to create thread for contact[%zu]", i);
+            continue;
         }
 
-        /* Start presence listener (for online status) */
-        size_t presence_token = dna_engine_start_presence_listener(engine, contact_id);
-        if (presence_token > 0) {
-            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Presence listener started for contact[%zu], token=%zu", i, presence_token);
-            presence_started++;
-        } else {
-            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Failed to start presence listener for contact[%zu] (fp_len=%zu)", i, id_len);
-        }
-
-        /* Start watermark listener (for delivery confirmation) */
-        size_t watermark_token = dna_engine_start_watermark_listener(engine, contact_id);
-        if (watermark_token > 0) {
-            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Watermark listener started for contact[%zu], token=%zu", i, watermark_token);
+        /* Limit concurrent threads: wait for oldest when at max */
+        if (started - active >= (size_t)max_parallel) {
+            pthread_join(threads[active], NULL);
+            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Thread[%zu] joined", active);
+            active++;
         }
     }
 
-    /* Cleanup */
+    /* Wait for remaining threads */
+    for (size_t i = active; i < started; i++) {
+        pthread_join(threads[i], NULL);
+        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Thread[%zu] joined (final)", i);
+    }
+
+    free(tasks);
+    free(threads);
+
+    /* Cleanup contact list */
     contacts_db_free_list(list);
 
     /* Start contact request listener (for real-time contact request notifications) */
@@ -7010,8 +7043,7 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     }
 
     engine->listeners_starting = false;
-    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Started %d/%zu outbox + %d/%zu presence + watermark listeners",
-                 started, count, presence_started, count);
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Parallel setup complete: %zu contacts processed", count);
 
     /* Debug: log all active listeners for troubleshooting */
     dna_engine_log_active_listeners(engine);

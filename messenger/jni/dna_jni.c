@@ -1418,3 +1418,25 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReleaseEngine(JNIEnv *env
         LOGI("nativeReleaseEngine: No engine to release");
     }
 }
+
+/**
+ * Start listeners for all contacts (v0.6.3+)
+ *
+ * Called by DnaMessengerService after identity is loaded.
+ * Service needs all listeners active for push notifications when app is killed.
+ * Uses parallel subscription internally for faster setup on mobile.
+ *
+ * @return Number of contacts with listeners started, or 0 on error
+ */
+JNIEXPORT jint JNICALL
+Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeListenAllContacts(JNIEnv *env, jobject thiz) {
+    if (!g_engine) {
+        LOGW("nativeListenAllContacts: No engine available");
+        return 0;
+    }
+
+    LOGI("nativeListenAllContacts: Starting listeners for all contacts...");
+    int count = dna_engine_listen_all_contacts(g_engine);
+    LOGI("nativeListenAllContacts: Started listeners for %d contacts", count);
+    return (jint)count;
+}

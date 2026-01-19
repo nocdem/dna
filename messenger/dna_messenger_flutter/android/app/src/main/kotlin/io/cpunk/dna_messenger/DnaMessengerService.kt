@@ -148,6 +148,16 @@ class DnaMessengerService : Service() {
         @JvmStatic
         external fun nativeReleaseEngine()
 
+        /**
+         * Start listeners for all contacts (v0.6.3+)
+         * Called after identity is loaded in service mode.
+         * Service needs all listeners for push notifications when app is killed.
+         * Uses parallel subscription internally for faster setup.
+         * Returns: number of contacts with listeners started
+         */
+        @JvmStatic
+        external fun nativeListenAllContacts(): Int
+
         // Error code for identity lock held by another process
         private const val ERROR_IDENTITY_LOCKED = -117
     }
@@ -329,11 +339,17 @@ class DnaMessengerService : Service() {
                 return
             }
 
-            // Load identity with minimal initialization (DHT + listeners only)
+            // Load identity with minimal initialization (DHT only, no listeners)
             android.util.Log.i(TAG, "Loading identity (minimal): ${fingerprint.take(16)}...")
             val result = nativeLoadIdentityMinimalSync(fingerprint)
             when (result) {
-                0 -> android.util.Log.i(TAG, "Identity loaded (minimal mode) - notifications active")
+                0 -> {
+                    android.util.Log.i(TAG, "Identity loaded (minimal mode)")
+                    // v0.6.3+: Explicitly start listeners for all contacts
+                    // Service needs all listeners for notifications when app is killed
+                    val listenerCount = nativeListenAllContacts()
+                    android.util.Log.i(TAG, "Started listeners for $listenerCount contacts - notifications active")
+                }
                 ERROR_IDENTITY_LOCKED -> {
                     android.util.Log.w(TAG, "Identity locked - Flutter acquired lock during load")
                     // Release our engine since we can't use it
