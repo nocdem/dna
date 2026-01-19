@@ -560,6 +560,9 @@ static void jni_transactions_callback(dna_request_id_t request_id, int error,
 static jobject g_event_listener = NULL;
 
 static void jni_event_callback(const dna_event_t *event, void *user_data) {
+    /* CRITICAL: Check g_jvm first - if NULL, JVM is shutting down */
+    if (!g_jvm) return;
+
     if (!g_event_listener || !event) return;
 
     int did_attach = 0;
@@ -626,6 +629,11 @@ static jobject g_notification_helper = NULL;
 static void jni_android_notification_callback(const char *contact_fingerprint, const char *display_name, void *user_data) {
     (void)user_data;
 
+    /* CRITICAL: Check g_jvm first - if NULL, JVM is shutting down */
+    if (!g_jvm) {
+        return;  /* Silent return - JVM shutdown in progress */
+    }
+
     if (!g_notification_helper || !contact_fingerprint) {
         LOGD("Android notification callback: no helper or fingerprint");
         return;
@@ -685,6 +693,11 @@ static void jni_android_notification_callback(const char *contact_fingerprint, c
  */
 static void jni_contact_request_callback(const char *user_fingerprint, const char *user_display_name, void *user_data) {
     (void)user_data;
+
+    /* CRITICAL: Check g_jvm first - if NULL, JVM is shutting down */
+    if (!g_jvm) {
+        return;  /* Silent return - JVM shutdown in progress */
+    }
 
     if (!g_notification_helper || !user_fingerprint) {
         LOGD("Contact request callback: no helper or fingerprint");
@@ -1400,7 +1413,6 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReleaseEngine(JNIEnv *env
         LOGI("nativeReleaseEngine: Releasing service engine for Flutter takeover");
         dna_engine_destroy(g_engine);
         g_engine = NULL;
-        dna_engine_set_global(NULL);
         LOGI("nativeReleaseEngine: Engine released, identity lock freed");
     } else {
         LOGI("nativeReleaseEngine: No engine to release");

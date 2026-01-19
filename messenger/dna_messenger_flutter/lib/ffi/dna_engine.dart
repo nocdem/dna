@@ -4983,8 +4983,13 @@ class DnaEngine {
   }
 
   /// Dispose the engine and release all resources
-  void dispose() {
-    print('[DART-DISPOSE] dispose() called, _isDisposed=$_isDisposed');
+  ///
+  /// NOTE: On Android swipe-away, the process will be killed anyway, so we
+  /// skip the full cleanup to avoid race conditions with pending callbacks.
+  /// The OS handles memory cleanup. For clean shutdown (e.g., logout), the
+  /// full cleanup runs.
+  void dispose({bool forceCleanup = false}) {
+    print('[DART-DISPOSE] dispose() called, _isDisposed=$_isDisposed, forceCleanup=$forceCleanup');
     if (_isDisposed) {
       print('[DART-DISPOSE] Already disposed, returning');
       return;
@@ -4992,40 +4997,39 @@ class DnaEngine {
     _isDisposed = true;
     print('[DART-DISPOSE] Set _isDisposed=true');
 
-    print('[DART-DISPOSE] Closing event controller...');
-    _eventController.close();
-    print('[DART-DISPOSE] Event controller closed');
-
-    // IMPORTANT: Clear the C callback pointer FIRST
-    // This sets disposing=true in C, which prevents new callbacks from being invoked.
+    // Clear the C callback pointer to prevent new callbacks
     print('[DART-DISPOSE] Clearing C event callback...');
     _bindings.dna_engine_set_event_callback(_engine, nullptr, nullptr);
     print('[DART-DISPOSE] C event callback cleared');
 
-    // Clear pending requests map (callbacks will check _isDisposed and return early)
+    // Clear pending requests
     print('[DART-DISPOSE] Clearing ${_pendingRequests.length} pending requests...');
     _pendingRequests.clear();
     print('[DART-DISPOSE] Pending requests cleared');
 
-    // Destroy the engine - this stops all C threads and cleans up DHT
+    // Close the event controller
+    print('[DART-DISPOSE] Closing event controller...');
+    _eventController.close();
+    print('[DART-DISPOSE] Event controller closed');
+
+    // On Android, ALWAYS skip engine destroy to avoid race conditions.
+    // DHT callbacks may still be in flight holding stale function pointers.
+    // The process will be killed anyway, OS cleans up memory.
+    // Note: forceCleanup is ignored on Android - there's no safe way to destroy.
+    if (Platform.isAndroid) {
+      print('[DART-DISPOSE] Android: skipping engine destroy (race condition safety)');
+      return;
+    }
+
+    // Full cleanup for desktop or explicit logout
     print('[DART-DISPOSE] Calling dna_engine_destroy()...');
     _bindings.dna_engine_destroy(_engine);
     print('[DART-DISPOSE] dna_engine_destroy() returned');
 
-    // NOTE: We intentionally do NOT close NativeCallables here.
-    // Dart docs: "Any outstanding calls to the callback from native code will
-    // cause undefined behavior" when close() is called.
-    // Even after engine destroy, there may be callbacks already scheduled on
-    // the Dart event loop that haven't run yet. Closing would crash them.
-    // The callbacks check _isDisposed and return early, so they're safe.
-    // NativeCallables are cleaned up when the isolate exits.
-
-    // Don't null out _engine immediately - pending callbacks might still
-    // reference it. They'll check _isDisposed and return early, but the
-    // pointer access itself can crash if _engine is null.
-    // The engine is destroyed, so it's a dangling pointer, but at least
-    // Dart won't crash trying to pass nullptr to FFI.
-    print('[DART-DISPOSE] dispose() complete (engine destroyed, pointer kept for safety)');
+    _eventCallback?.close();
+    _eventCallback = null;
+    _engine = nullptr;
+    print('[DART-DISPOSE] dispose() complete (full cleanup)');
   }
 }
 

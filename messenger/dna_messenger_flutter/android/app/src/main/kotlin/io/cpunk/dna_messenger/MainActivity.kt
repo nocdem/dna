@@ -195,6 +195,17 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onDestroy() {
+        android.util.Log.i(TAG, "onDestroy: cleaning up")
+
+        // Tell service Flutter is no longer active - service should take over DHT
+        DnaMessengerService.setFlutterActive(false)
+        android.util.Log.i(TAG, "Flutter active set to false - service can take over")
+
+        // CRITICAL: Unregister notification helper BEFORE engine is destroyed
+        // This clears g_notification_helper and g_android_notification_cb in native code,
+        // preventing crashes from DHT callbacks firing during shutdown.
+        cleanupNotificationHelper()
+
         try {
             unregisterReceiver(messageReceiver)
             unregisterReceiver(networkReceiver)

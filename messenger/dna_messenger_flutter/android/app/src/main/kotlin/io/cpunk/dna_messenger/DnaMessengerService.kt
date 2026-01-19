@@ -60,18 +60,22 @@ class DnaMessengerService : Service() {
 
         fun isServiceRunning(): Boolean = isRunning
 
+        // Reference to service instance for triggering identity load
+        @Volatile
+        private var serviceInstance: DnaMessengerService? = null
+
         /**
          * Set whether Flutter is active (in foreground).
          * v0.6.0+: When Flutter becomes active, service releases its engine.
-         * This allows Flutter to acquire the identity lock and own the DHT.
+         * When Flutter becomes inactive, service takes over DHT.
          */
         fun setFlutterActive(active: Boolean) {
             val wasActive = flutterActive
             flutterActive = active
             android.util.Log.i(TAG, "Flutter active: $active (was: $wasActive)")
 
-            // v0.6.0+: When Flutter becomes active, release service's engine
             if (active && !wasActive) {
+                // Flutter taking over - release service's engine
                 android.util.Log.i(TAG, "Flutter taking over - releasing service engine")
                 try {
                     if (libraryLoaded) {
@@ -81,6 +85,10 @@ class DnaMessengerService : Service() {
                 } catch (e: Exception) {
                     android.util.Log.e(TAG, "Failed to release engine: ${e.message}")
                 }
+            } else if (!active && wasActive) {
+                // Flutter going away - service should take over DHT
+                android.util.Log.i(TAG, "Flutter inactive - service taking over DHT")
+                serviceInstance?.ensureIdentityLoadedAsync()
             }
         }
 
@@ -160,6 +168,7 @@ class DnaMessengerService : Service() {
         android.util.Log.i(TAG, "Service created")
         createNotificationChannel()
         isRunning = true
+        serviceInstance = this
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -179,6 +188,7 @@ class DnaMessengerService : Service() {
     override fun onDestroy() {
         android.util.Log.i(TAG, "Service destroyed")
         isRunning = false
+        serviceInstance = null
         releaseWakeLock()
         super.onDestroy()
     }
@@ -334,6 +344,24 @@ class DnaMessengerService : Service() {
         } catch (e: Exception) {
             android.util.Log.e(TAG, "ensureIdentityLoaded error: ${e.message}")
         }
+    }
+
+    /**
+     * Async version of ensureIdentityLoaded - runs on background thread.
+     * Called when Flutter goes inactive and service needs to take over.
+     */
+    fun ensureIdentityLoadedAsync() {
+        Thread {
+            android.util.Log.i(TAG, "ensureIdentityLoadedAsync: starting on background thread")
+
+            // Reinitialize notification helper if needed (MainActivity may have cleaned it up)
+            if (MainActivity.notificationHelper == null) {
+                android.util.Log.i(TAG, "Reinitializing notification helper for background mode")
+                MainActivity.initNotificationHelper(this)
+            }
+
+            ensureIdentityLoaded()
+        }.start()
     }
 
     private fun stopForegroundService() {
