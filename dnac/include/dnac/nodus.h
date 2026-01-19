@@ -91,6 +91,7 @@ typedef struct {
     dnac_nodus_status_t status;                  /**< Approval status */
     uint8_t nodus_id[32];                        /**< Server ID */
     uint8_t signature[DNAC_SIGNATURE_SIZE];      /**< Server's signature (anchor) */
+    uint8_t server_pubkey[DNAC_PUBKEY_SIZE];     /**< Server's Dilithium5 public key */
     uint64_t timestamp;                          /**< Response timestamp */
     char error_message[256];                     /**< Error message if rejected */
 } dnac_spend_response_t;

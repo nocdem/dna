@@ -1,19 +1,32 @@
 # DNAC Implementation Roadmap
 
-**Project:** DNAC - Post-Quantum Zero-Knowledge Cash over DHT
-**Version:** v0.1.0
-**Status:** Phase 1 Complete
+**Project:** DNAC - Post-Quantum Digital Cash over DHT
+**Version:** v0.1.13
+**Status:** Phase 13 Complete (Wallet Recovery)
 
 ---
 
 ## Overview
 
-DNAC is a post-quantum ZK cash system that integrates with DNA Messenger:
+DNAC is a post-quantum digital cash system that integrates with DNA Messenger:
 - **UTXO model** for transactions
-- **Hybrid ZK** (classical Pedersen + Bulletproofs for commitments, PQ Dilithium for signatures)
 - **DHT** for transport (payments as messages)
 - **Nodus servers** for nullifier anchoring (2-of-3 consensus)
 - **Fee model** where Nodus servers earn commission
+- **Dilithium5** (Post-Quantum) signatures for authorization
+
+### Protocol Versions
+
+| Version | Status | Amounts | Commitments | Range Proofs |
+|---------|--------|---------|-------------|--------------|
+| **v1** | Active | Transparent | None | None |
+| **v2** | Future | Hidden | Pedersen | Bulletproofs |
+
+**Current Implementation: Protocol v1 (Transparent)**
+- Amounts are plaintext in transactions
+- Verification: sum(inputs) == sum(outputs) + fee
+- Pedersen commitments implemented but not used
+- v2 ZK can be added later without breaking v1
 
 ---
 
@@ -29,81 +42,101 @@ DNAC is a post-quantum ZK cash system that integrates with DNA Messenger:
 - [x] Create include/dnac/version.h (v0.1.0)
 - [x] Verify builds and links against libdna
 
-### Phase 2: Database Schema (~70% done)
+### Phase 2: Database Schema ✅ COMPLETE
 - [x] Design SQLite schema for:
   - `dnac_utxos` table
   - `dnac_transactions` table
   - `dnac_pending_spends` table
-- [ ] Add schema versioning/migration support
-- [ ] Implement transaction storage functions
-- [ ] Implement pending spend functions
-- [ ] Integrate database with dnac_context
+- [x] Add schema versioning/migration support
+- [x] Implement transaction storage functions
+- [x] Implement pending spend functions
+- [x] Implement debug UTXO lookup by commitment
 
-### Phase 3: Pedersen Commitments
-- [ ] Implement Pedersen commitment: `C = g^v · h^r`
-- [ ] Implement commitment addition (homomorphic)
-- [ ] Implement blinding factor arithmetic
-- [ ] Unit tests for commitments
+### Phase 3: v1 Transparent Mode ✅ COMPLETE
+- [x] Define protocol versioning (v1 transparent, v2 PQ ZK)
+- [x] Update UTXO and transaction structures for v1
+- [x] Implement v1 balance verification (plaintext sum)
+- [x] Remove classical ZK code (Pedersen) to maintain full PQ
 
-### Phase 4: Range Proofs (Bulletproofs)
-- [ ] Evaluate libraries: secp256k1-zkp or implement
+**Note:** Pedersen commitments were implemented but removed to keep
+the entire system post-quantum safe. v2 will use PQ ZK (STARKs).
+
+### Phase 4: PQ Zero-Knowledge (STARKs) - DEFERRED TO v2
+- [ ] Evaluate STARK libraries (winterfell, stone, ethSTARK)
+- [ ] Design STARK-based range proofs for amounts
 - [ ] Implement range proof generation
 - [ ] Implement range proof verification
-- [ ] Unit tests for range proofs
-- [ ] Benchmark proof size (~700 bytes target)
+- [ ] Benchmark proof size (~50-200 KB expected)
+- [ ] Evaluate proof aggregation for multi-output transactions
 
-### Phase 5: Wallet Core
-- [ ] Implement UTXO structure and storage
-- [ ] Implement balance calculation
-- [ ] Implement UTXO selection algorithms
-- [ ] Implement wallet sync from DB
-- [ ] CLI: `dnac balance`
-- [ ] CLI: `dnac utxos`
+**v2 ZK Design (PQ-safe):**
+- STARKs: Hash-based, no trusted setup, post-quantum secure
+- Proof size (~100KB) acceptable - DHT uses chunked storage
+- Alternative: Lattice-based ZK when mature
 
-### Phase 6: Transaction Building
-- [ ] Define transaction wire format
-- [ ] Implement transaction builder
-- [ ] Implement commitment creation for outputs
-- [ ] Implement balance proof (inputs = outputs)
-- [ ] Implement serialization/deserialization
-- [ ] Unit tests for transactions
+### Phase 5: Wallet Core ✅ COMPLETE
+- [x] Create db.h header for database functions
+- [x] Implement wallet init/shutdown with DNA engine
+- [x] Implement balance calculation from UTXOs
+- [x] Implement UTXO storage, retrieval, mark spent
+- [x] Implement UTXO selection (smallest-first greedy)
+- [ ] CLI: `dnac balance` (Phase 12)
+- [ ] CLI: `dnac utxos` (Phase 12)
 
-### Phase 7: Nodus Client
-- [ ] Define Nodus protocol (SpendRequest/SpendResponse)
-- [ ] Implement Nodus client (TCP or DHT-based)
-- [ ] Implement anchor request flow
-- [ ] Implement 2-of-3 signature collection
-- [ ] Handle timeouts and retries
-- [ ] CLI: `dnac nodus-list`
+### Phase 6: Transaction Building ✅ COMPLETE
+- [x] Define v1 wire format (transparent amounts)
+- [x] Implement transaction serialization
+- [x] Implement transaction deserialization
+- [x] Implement transaction builder with UTXO selection
+- [x] Implement Dilithium5 signing via DNA engine
+- [ ] Unit tests for transactions (deferred)
 
-### Phase 8: Send Flow
-- [ ] Integrate: UTXO selection → TX build → anchor → broadcast
-- [ ] Implement fee calculation
-- [ ] Implement pending spend tracking
-- [ ] Implement payment message creation
-- [ ] CLI: `dnac send <recipient> <amount> [memo]`
-- [ ] End-to-end test with real Nodus
+### Phase 7: Nodus Client ✅ COMPLETE
+- [x] Define Nodus protocol (SpendRequest/SpendResponse)
+- [x] Implement Nodus client (DHT-based)
+- [x] Implement anchor request flow
+- [x] Implement 2-of-3 signature collection
+- [x] Handle timeouts and retries
+- [ ] CLI: `dnac nodus-list` (deferred to Phase 12)
 
-### Phase 9: Receive Flow
-- [ ] Add MESSAGE_TYPE_PAYMENT to libdna
-- [ ] Implement payment message handler
-- [ ] Decrypt and extract UTXO data
-- [ ] Store received UTXO in wallet
-- [ ] Update balance on receive
-- [ ] CLI: `dnac sync`
+### Phase 8: Send Flow ✅ COMPLETE
+- [x] Integrate: UTXO selection → TX build → anchor → broadcast
+- [x] Implement fee calculation
+- [x] Implement pending spend tracking
+- [x] Implement payment message creation (DHT-based)
+- [ ] CLI: `dnac send <recipient> <amount> [memo]` (deferred to Phase 12)
+- [ ] End-to-end test with real Nodus (deferred to Phase 14)
 
-### Phase 10: Transaction History
-- [ ] Implement transaction history storage
-- [ ] Implement history queries
-- [ ] CLI: `dnac history`
-- [ ] CLI: `dnac tx <hash>` (details)
+### Phase 9: Receive Flow ✅ COMPLETE
+- [x] Implement payment inbox (DHT-based discovery)
+- [x] Implement dnac_sync_wallet() to fetch payments
+- [x] Extract UTXO data from transactions
+- [x] Store received UTXOs in wallet database
+- [x] Call payment callback on receive
+- [ ] CLI: `dnac sync` (deferred to Phase 12)
 
-### Phase 11: Nodus Fee Implementation
-- [ ] Add fee output to transactions
-- [ ] Nodus extracts fee UTXO
-- [ ] Fee goes to anchoring Nodus
+### Phase 10: Transaction History ✅ COMPLETE
+- [x] Connect dnac_get_history() to database queries
+- [x] Connect dnac_debug_get_utxo() to database
+- [x] Store received transactions in history during sync
+- [ ] CLI: `dnac history` (deferred to Phase 12)
+- [ ] CLI: `dnac tx <hash>` (deferred to Phase 12)
 
-### Phase 12: Flutter Integration
+### Phase 11: Nodus Fee Implementation ✅ COMPLETE
+- [x] Add fingerprint field to dnac_nodus_info_t
+- [x] Derive fingerprint from Nodus pubkey (SHA3-512)
+- [x] Add fee output to transactions (addressed to Nodus)
+- [x] Nodus can extract fee UTXO via their fingerprint
+- [x] Updated balance verification (sum(in) == sum(out))
+
+### Phase 12: dnac-cli ✅ COMPLETE
+- [x] Create standalone CLI executable (src/cli/)
+- [x] Implement balance, utxos, send, sync commands
+- [x] Implement history, tx, nodus-list commands
+- [x] CMake integration with DNAC_BUILD_CLI option
+- [x] Flutter integration deferred to release
+
+### Phase 12b: Flutter Integration (RELEASE ONLY)
 - [ ] Create FFI bindings (dnac_bindings.dart)
 - [ ] Create DnacProvider
 - [ ] Add wallet balance widget
@@ -111,12 +144,19 @@ DNAC is a post-quantum ZK cash system that integrates with DNA Messenger:
 - [ ] Add payment message bubble in chat
 - [ ] Add transaction history screen
 
-### Phase 13: Testing & Hardening
+### Phase 13: Wallet Recovery ✅ COMPLETE
+- [x] Implement DHT payment scan for recovery
+- [x] Implement `dnac_wallet_recover()` function
+- [x] CLI: `dnac recover` (scan and restore from seed)
+- [ ] Deterministic blinding derivation (deferred to v2)
+
+### Phase 14: Testing & Hardening
 - [ ] Integration tests (send/receive flow)
 - [ ] Multi-party tests (Alice → Bob → Charlie)
 - [ ] Double-spend attempt tests
 - [ ] Nodus failure/timeout tests
 - [ ] Fuzz testing for parsing
+- [ ] Wallet recovery tests
 
 ---
 
@@ -180,6 +220,7 @@ dnac utxos                       # List UTXOs
 dnac send <fp|name> <amount> [memo]  # Send payment
 dnac history                     # Transaction history
 dnac sync                        # Sync wallet from network
+dnac recover                     # Recover wallet from seed (DHT scan)
 dnac nodus-list                  # Show Nodus servers
 dnac debug utxo <commitment>     # Debug UTXO
 dnac debug nullifier <null>      # Check if spent
@@ -248,9 +289,40 @@ CREATE TABLE dnac_pending_spends (
 
 ---
 
+## Deterministic Blinding Design
+
+Blinding factors are derived deterministically from the master seed, enabling wallet recovery without backups.
+
+### Derivation
+
+```
+blinding = SHAKE256(
+    master_seed ||           // 64 bytes from BIP39
+    "dnac:blind:" ||         // domain separator
+    tx_hash ||               // 64 bytes
+    output_index             // 4 bytes, little-endian
+)[0:32]                      // first 32 bytes
+```
+
+### Recovery Process
+
+1. Restore identity from BIP39 mnemonic
+2. Scan DHT for payments to your fingerprint
+3. For each payment, re-derive blinding factor
+4. Verify: `commitment == Pedersen(amount, derived_blinding)`
+5. If match, restore UTXO to local wallet
+
+### Benefits
+
+- Always recoverable from seed phrase alone
+- No DHT backup infrastructure needed
+- Works even after extended offline periods
+
+---
+
 ## Dependencies
 
 - **libdna** - DNA Messenger library (identity, DHT, crypto primitives)
-- **OpenSSL** - SHA3, AES
+- **OpenSSL** - SHA3, AES, SHAKE256
 - **SQLite3** - Database
 - **secp256k1-zkp** - Bulletproofs (optional, or implement from scratch)

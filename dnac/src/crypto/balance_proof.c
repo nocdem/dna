@@ -2,16 +2,19 @@
  * @file balance_proof.c
  * @brief Balance proof (inputs = outputs) implementation
  *
- * Proves that sum(input_values) = sum(output_values) without revealing values.
+ * **PROTOCOL VERSION: v2 ONLY**
+ *
+ * v1 (current): Balance verified by sum(inputs) == sum(outputs) in plaintext.
+ * v2 (future): Uses homomorphic commitment property for ZK balance proof.
  */
 
-#include "dnac/commitment.h"
+#include "dnac/dnac.h"
 #include "dnac/transaction.h"
 
 /**
- * @brief Create balance proof for transaction
+ * @brief Create balance proof for transaction (v2 only)
  *
- * Uses homomorphic property: sum(input_commits) - sum(output_commits) = commit(0, excess)
+ * Not implemented in v1 - amounts are transparent.
  */
 int dnac_balance_proof_create(const dnac_transaction_t *tx,
                               const uint8_t (*input_blindings)[32],
@@ -23,13 +26,19 @@ int dnac_balance_proof_create(const dnac_transaction_t *tx,
     (void)output_blindings;
     (void)excess_commitment;
     (void)excess_signature;
-    return -1; /* Not implemented */
+
+    /* v1: Not used - balance verified by plaintext sum */
+    return DNAC_ERROR_INVALID_PARAM;
 }
 
 /**
- * @brief Verify balance proof
+ * @brief Verify balance proof (v2 only)
+ *
+ * Not implemented in v1 - use dnac_tx_verify() instead.
  */
 int dnac_balance_proof_verify(const dnac_transaction_t *tx) {
     (void)tx;
-    return -1;
+
+    /* v1: Not used - balance verified by plaintext sum */
+    return DNAC_ERROR_INVALID_PARAM;
 }

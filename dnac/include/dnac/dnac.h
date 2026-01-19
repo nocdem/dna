@@ -1,16 +1,18 @@
 /**
  * @file dnac.h
- * @brief DNAC - Post-Quantum Zero-Knowledge Cash over DHT
+ * @brief DNAC - Post-Quantum Digital Cash over DHT
  *
  * Main public API for DNAC wallet operations.
  *
- * DNAC is a privacy-preserving digital cash system using:
+ * DNAC is a digital cash system using:
  * - UTXO model for transactions
- * - Pedersen commitments for amount hiding
- * - Bulletproofs for range proofs
  * - Dilithium5 (PQ) signatures for authorization
  * - DHT for payment message transport
  * - Nodus 2-of-3 anchoring for double-spend prevention
+ *
+ * Protocol Versions:
+ * - v1: Transparent amounts (current)
+ * - v2: ZK amounts with Pedersen commitments + Bulletproofs (future)
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -47,15 +49,31 @@ extern "C" {
 #define DNAC_ERROR_ANCHOR_FAILED       -11
 #define DNAC_ERROR_TIMEOUT             -12
 #define DNAC_ERROR_NOT_FOUND           -13
+#define DNAC_ERROR_SIGN_FAILED         -14
+#define DNAC_ERROR_INVALID_SIGNATURE   -15
+#define DNAC_ERROR_RANDOM_FAILED       -16
+
+/* ============================================================================
+ * Protocol Versions
+ * ========================================================================== */
+
+/** Protocol version 1: Transparent amounts */
+#define DNAC_PROTOCOL_V1            1
+
+/** Protocol version 2: ZK amounts (future) */
+#define DNAC_PROTOCOL_V2            2
+
+/** Current protocol version */
+#define DNAC_PROTOCOL_VERSION       DNAC_PROTOCOL_V1
 
 /* ============================================================================
  * Constants
  * ========================================================================== */
 
-/** Pedersen commitment size (compressed curve point) */
+/** Pedersen commitment size (compressed curve point) - used in v2 */
 #define DNAC_COMMITMENT_SIZE        33
 
-/** Blinding factor size (scalar) */
+/** Blinding factor size (scalar) - used in v2 */
 #define DNAC_BLINDING_SIZE          32
 
 /** Nullifier size (SHA3-512 hash) */
@@ -64,7 +82,7 @@ extern "C" {
 /** Transaction hash size (SHA3-512) */
 #define DNAC_TX_HASH_SIZE           64
 
-/** Range proof size (Bulletproof, ~700 bytes typical) */
+/** Range proof size (Bulletproof, ~700 bytes typical) - used in v2 */
 #define DNAC_RANGE_PROOF_MAX_SIZE   800
 
 /** Dilithium5 signature size */
@@ -116,18 +134,25 @@ typedef enum {
 
 /**
  * @brief Unspent Transaction Output
+ *
+ * Supports both v1 (transparent) and v2 (ZK) protocols:
+ * - v1: amount is plaintext, commitment/blinding unused
+ * - v2: amount hidden in commitment, blinding used for ZK proofs
  */
 struct dnac_utxo {
-    uint8_t commitment[DNAC_COMMITMENT_SIZE];   /**< Pedersen commitment C = g^v * h^r */
+    uint8_t version;                             /**< Protocol version (1=transparent, 2=ZK) */
     uint8_t tx_hash[DNAC_TX_HASH_SIZE];         /**< Transaction that created this UTXO */
     uint32_t output_index;                       /**< Index within transaction */
-    uint64_t amount;                             /**< Amount (known to owner only) */
-    uint8_t blinding_factor[DNAC_BLINDING_SIZE]; /**< Blinding factor r */
+    uint64_t amount;                             /**< Amount (v1: public, v2: private) */
     uint8_t nullifier[DNAC_NULLIFIER_SIZE];      /**< Nullifier for spending */
     char owner_fingerprint[DNAC_FINGERPRINT_SIZE]; /**< Owner's identity fingerprint */
     dnac_utxo_status_t status;                   /**< Current status */
     uint64_t received_at;                        /**< Unix timestamp when received */
     uint64_t spent_at;                           /**< Unix timestamp when spent (0 if unspent) */
+
+    /* v2 ZK fields (unused in v1) */
+    uint8_t commitment[DNAC_COMMITMENT_SIZE];   /**< Pedersen commitment (v2 only) */
+    uint8_t blinding_factor[DNAC_BLINDING_SIZE]; /**< Blinding factor (v2 only) */
 };
 
 /**
@@ -156,6 +181,7 @@ typedef struct {
     char id[65];                /**< Server ID (32 bytes hex) */
     char address[256];          /**< IP:port or hostname */
     uint8_t pubkey[DNAC_PUBKEY_SIZE]; /**< Dilithium5 public key */
+    char fingerprint[DNAC_FINGERPRINT_SIZE]; /**< Fingerprint derived from pubkey */
     bool is_available;          /**< Currently reachable */
     uint64_t last_seen;         /**< Last successful contact */
 } dnac_nodus_info_t;
@@ -262,6 +288,18 @@ void dnac_free_utxos(dnac_utxo_t *utxos, int count);
  * @return DNAC_SUCCESS or error code
  */
 int dnac_sync_wallet(dnac_context_t *ctx);
+
+/**
+ * @brief Recover wallet from DHT
+ *
+ * Clears existing UTXOs and scans DHT inbox for all payments.
+ * Use this after restoring identity from seed phrase.
+ *
+ * @param ctx DNAC context
+ * @param recovered_count Output number of UTXOs recovered (can be NULL)
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count);
 
 /* ============================================================================
  * Send Functions

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(dnac VERSION 0.1.0 LANGUAGES C)
 
 # ============================================================================
-# DNAC - Post-Quantum Zero-Knowledge Cash over DHT
+# DNAC - Post-Quantum Digital Cash over DHT
 # ============================================================================
 
 set(CMAKE_C_STANDARD 11)
@@ -67,8 +67,7 @@ set(DNAC_SOURCES
     # Version
     src/version.c
 
-    # Crypto
-    src/crypto/pedersen.c
+    # Crypto (v2 ZK stubs - not used in v1)
     src/crypto/bulletproofs.c
     src/crypto/balance_proof.c
 
@@ -135,6 +134,84 @@ if(SECP256K1_FOUND)
 endif()
 
 # ============================================================================
+# CLI Executable
+# ============================================================================
+
+option(DNAC_BUILD_CLI "Build dnac-cli executable" ON)
+
+if(DNAC_BUILD_CLI)
+    set(DNAC_CLI_SOURCES
+        src/cli/main.c
+        src/cli/commands.c
+    )
+
+    add_executable(dnac-cli ${DNAC_CLI_SOURCES})
+
+    target_link_libraries(dnac-cli
+        dnac
+    )
+
+    # Link libdna directly for dna_engine functions
+    if(EXISTS "${DNA_BUILD_DIR}/libdna_lib.so")
+        target_link_libraries(dnac-cli ${DNA_BUILD_DIR}/libdna_lib.so)
+    else()
+        target_link_libraries(dnac-cli ${DNA_BUILD_DIR}/libdna_lib.a)
+    endif()
+
+    target_link_libraries(dnac-cli
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        ${SQLITE3_LIBRARIES}
+        pthread
+        m
+    )
+
+    install(TARGETS dnac-cli RUNTIME DESTINATION bin)
+endif()
+
+# ============================================================================
+# Anchor Server
+# ============================================================================
+
+option(DNAC_BUILD_ANCHOR_SERVER "Build dnac-anchor server" OFF)
+
+if(DNAC_BUILD_ANCHOR_SERVER)
+    set(DNAC_ANCHOR_SOURCES
+        src/anchor-server/main.c
+        src/anchor-server/server.c
+        src/anchor-server/nullifier.c
+        src/anchor-server/replication.c
+    )
+
+    add_executable(dnac-anchor ${DNAC_ANCHOR_SOURCES})
+
+    target_include_directories(dnac-anchor PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/anchor-server
+    )
+
+    target_link_libraries(dnac-anchor
+        dnac
+    )
+
+    # Link libdna directly for dna_engine functions
+    if(EXISTS "${DNA_BUILD_DIR}/libdna_lib.so")
+        target_link_libraries(dnac-anchor ${DNA_BUILD_DIR}/libdna_lib.so)
+    else()
+        target_link_libraries(dnac-anchor ${DNA_BUILD_DIR}/libdna_lib.a)
+    endif()
+
+    target_link_libraries(dnac-anchor
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        ${SQLITE3_LIBRARIES}
+        pthread
+        m
+    )
+
+    install(TARGETS dnac-anchor RUNTIME DESTINATION bin)
+endif()
+
+# ============================================================================
 # Tests
 # ============================================================================
 
@@ -143,8 +220,6 @@ if(DNAC_BUILD_TESTS)
 
     # Test executables
     set(DNAC_TESTS
-        test_pedersen
-        test_bulletproofs
         test_transaction
         test_wallet
     )
@@ -182,5 +257,6 @@ message(STATUS "  Build type:     ${CMAKE_BUILD_TYPE}")
 message(STATUS "  DNA Messenger:  ${DNA_MESSENGER_DIR}")
 message(STATUS "  DNA Build:      ${DNA_BUILD_DIR}")
 message(STATUS "  secp256k1:      ${SECP256K1_FOUND}")
+message(STATUS "  CLI:            ${DNAC_BUILD_CLI}")
 message(STATUS "  Tests:          ${DNAC_BUILD_TESTS}")
 message(STATUS "")

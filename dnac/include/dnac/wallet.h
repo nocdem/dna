@@ -95,6 +95,28 @@ int dnac_wallet_select_utxos(dnac_context_t *ctx,
  */
 int dnac_wallet_calculate_balance(dnac_context_t *ctx, dnac_balance_t *balance);
 
+/* ============================================================================
+ * Context Accessors (internal use)
+ * ========================================================================== */
+
+#include <sqlite3.h>
+#include <dna/dna_engine.h>
+
+/**
+ * @brief Get database handle from context
+ */
+sqlite3* dnac_get_db(dnac_context_t *ctx);
+
+/**
+ * @brief Get owner fingerprint from context
+ */
+const char* dnac_get_owner_fingerprint(dnac_context_t *ctx);
+
+/**
+ * @brief Get DNA engine from context
+ */
+dna_engine_t* dnac_get_engine(dnac_context_t *ctx);
+
 #ifdef __cplusplus
 }
 #endif

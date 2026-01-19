@@ -1,6 +1,11 @@
 /**
  * @file range_proof.h
- * @brief Bulletproofs Range Proof API
+ * @brief Bulletproofs Range Proof API (v2 only)
+ *
+ * **PROTOCOL VERSION: v2 ONLY**
+ *
+ * This module is NOT used in protocol v1 (transparent amounts).
+ * In v1, amounts are plaintext and verified by sum(inputs) == sum(outputs).
  *
  * Range proofs prove that a committed value lies within a range [0, 2^n)
  * without revealing the actual value.
@@ -23,11 +28,26 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#include "commitment.h"
+#include "dnac.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* ============================================================================
+ * Protocol Version Note
+ * ========================================================================== */
+
+/**
+ * Range proofs are ONLY used in protocol v2 (ZK amounts).
+ *
+ * In v1 (current): Amounts are transparent, no range proofs needed.
+ * In v2 (future):  Amounts are hidden in commitments, range proofs
+ *                  ensure values are positive and prevent overflow.
+ *
+ * All functions in this module will return DNAC_ERROR_INVALID_PARAM
+ * when called in v1 mode. This is a placeholder for future v2 implementation.
+ */
 
 /* ============================================================================
  * Constants
