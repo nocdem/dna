@@ -4984,12 +4984,12 @@ class DnaEngine {
 
   /// Dispose the engine and release all resources
   ///
-  /// NOTE: On Android swipe-away, the process will be killed anyway, so we
-  /// skip the full cleanup to avoid race conditions with pending callbacks.
-  /// The OS handles memory cleanup. For clean shutdown (e.g., logout), the
-  /// full cleanup runs.
-  void dispose({bool forceCleanup = false}) {
-    print('[DART-DISPOSE] dispose() called, _isDisposed=$_isDisposed, forceCleanup=$forceCleanup');
+  /// On Android, the C code releases the identity lock FIRST before any cleanup
+  /// that might crash due to DHT callback races. This allows ForegroundService
+  /// to take over immediately. Any crash after lock release doesn't matter -
+  /// the process will die anyway and OS cleans up memory.
+  void dispose() {
+    print('[DART-DISPOSE] dispose() called, _isDisposed=$_isDisposed');
     if (_isDisposed) {
       print('[DART-DISPOSE] Already disposed, returning');
       return;
@@ -5012,24 +5012,21 @@ class DnaEngine {
     _eventController.close();
     print('[DART-DISPOSE] Event controller closed');
 
-    // On Android, ALWAYS skip engine destroy to avoid race conditions.
-    // DHT callbacks may still be in flight holding stale function pointers.
-    // The process will be killed anyway, OS cleans up memory.
-    // Note: forceCleanup is ignored on Android - there's no safe way to destroy.
-    if (Platform.isAndroid) {
-      print('[DART-DISPOSE] Android: skipping engine destroy (race condition safety)');
-      return;
-    }
-
-    // Full cleanup for desktop or explicit logout
+    // Call destroy - on Android, the C code releases the identity lock FIRST
+    // before any cleanup that might crash. Even if a crash occurs later,
+    // the lock is already free and ForegroundService can take over.
     print('[DART-DISPOSE] Calling dna_engine_destroy()...');
     _bindings.dna_engine_destroy(_engine);
     print('[DART-DISPOSE] dna_engine_destroy() returned');
 
-    _eventCallback?.close();
-    _eventCallback = null;
+    // On Android, skip NativeCallable cleanup - process will die anyway
+    // and closing these while callbacks might be in flight causes crashes.
+    if (!Platform.isAndroid) {
+      _eventCallback?.close();
+      _eventCallback = null;
+    }
     _engine = nullptr;
-    print('[DART-DISPOSE] dispose() complete (full cleanup)');
+    print('[DART-DISPOSE] dispose() complete');
   }
 }
 

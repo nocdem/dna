@@ -1592,6 +1592,19 @@ int dna_engine_check_outbox_day_rotation(dna_engine_t *engine) {
 void dna_engine_destroy(dna_engine_t *engine) {
     if (!engine) return;
 
+#ifdef __ANDROID__
+    /* ANDROID: Release identity lock FIRST before any cleanup.
+     * This allows ForegroundService to take over DHT immediately.
+     * If destroy crashes later due to callback races, lock is already released.
+     * The OS will clean up leaked memory when process dies. */
+    if (engine->identity_lock_fd >= 0) {
+        QGP_LOG_INFO(LOG_TAG, "Android: Releasing identity lock early (fd=%d)",
+                     engine->identity_lock_fd);
+        qgp_platform_release_identity_lock(engine->identity_lock_fd);
+        engine->identity_lock_fd = -1;
+    }
+#endif
+
     /* Clear DHT status callback before stopping anything */
     if (g_dht_callback_engine == engine) {
         dht_singleton_set_status_callback(NULL, NULL);
