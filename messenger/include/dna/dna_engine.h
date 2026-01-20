@@ -2995,11 +2995,13 @@ DNA_API dna_request_id_t dna_engine_restore_messages(
 
 /**
  * Backup info structure for check_backup_exists
+ * NOTE: Explicit padding for cross-platform FFI compatibility (32-bit vs 64-bit)
  */
 typedef struct {
     bool exists;              /* True if backup found in DHT */
+    uint8_t _padding[7];      /* Explicit padding for 8-byte alignment */
     uint64_t timestamp;       /* Backup timestamp (Unix epoch) */
-    int message_count;        /* Number of messages (-1 if unknown) */
+    int32_t message_count;    /* Number of messages (-1 if unknown) */
 } dna_backup_info_t;
 
 /**
