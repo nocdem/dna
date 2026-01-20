@@ -36,6 +36,8 @@ extern "C" {
 #define DNA_TASK_QUEUE_SIZE 256
 #define DNA_WORKER_THREAD_MIN 4      /* Minimum workers (low-end devices) */
 #define DNA_WORKER_THREAD_MAX 24     /* Maximum workers (diminishing returns beyond) */
+#define DNA_PARALLEL_MIN 2           /* Minimum parallel ops (low-end 2-core devices) */
+#define DNA_PARALLEL_MAX 8           /* Maximum parallel ops (diminishing returns beyond) */
 #define DNA_REQUEST_ID_INVALID 0
 #define DNA_MESSAGE_QUEUE_DEFAULT_CAPACITY 20
 #define DNA_MESSAGE_QUEUE_MAX_CAPACITY 100
