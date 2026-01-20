@@ -4784,7 +4784,7 @@ class DnaEngine {
   /// Fetches user's contact list from DHT and replaces local contacts.
   /// DHT is authoritative - deletions propagate.
   Future<void> syncContactsFromDht() async {
-    final localId = _nextRequestId++;
+    final localId = _nextLocalId++;
     final completer = Completer<void>();
 
     void onComplete(int requestId, int error, Pointer<Void> userData) {
@@ -4818,7 +4818,7 @@ class DnaEngine {
   /// Fetches user's personal group list from DHT and restores
   /// group metadata to local database. Used for multi-device sync.
   Future<void> restoreGroupsFromDht() async {
-    final localId = _nextRequestId++;
+    final localId = _nextLocalId++;
     final completer = Completer<void>();
 
     void onComplete(int requestId, int error, Pointer<Void> userData) {
