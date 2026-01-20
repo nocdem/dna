@@ -671,6 +671,21 @@ static int dna_get_optimal_worker_count(void) {
     return workers;
 }
 
+/**
+ * Get optimal parallel operation limit based on CPU cores.
+ * Returns: min(cores, DNA_PARALLEL_MAX), clamped to DNA_PARALLEL_MIN.
+ * Used for: parallel listener setup, batch DHT operations, etc.
+ */
+static int dna_get_parallel_limit(void) {
+    int cores = qgp_platform_cpu_count();
+    int limit = cores;
+
+    if (limit < DNA_PARALLEL_MIN) limit = DNA_PARALLEL_MIN;
+    if (limit > DNA_PARALLEL_MAX) limit = DNA_PARALLEL_MAX;
+
+    return limit;
+}
+
 int dna_start_workers(dna_engine_t *engine) {
     if (!engine) return -1;
     atomic_store(&engine->shutdown_requested, false);
@@ -7006,10 +7021,10 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Found %zu contacts in database", list->count);
 
     /* PERF: Start listeners in parallel (mobile performance optimization)
-     * Uses thread pool with max 8 concurrent threads to avoid overwhelming mobile devices.
+     * Uses thread pool with dynamic limit based on CPU cores (see dna_get_parallel_limit).
      * Each thread sets up outbox + presence + watermark listeners for one contact. */
     size_t count = list->count;
-    int max_parallel = 8;  /* Reasonable limit for mobile devices */
+    int max_parallel = dna_get_parallel_limit();
 
     parallel_listener_ctx_t *tasks = calloc(count, sizeof(parallel_listener_ctx_t));
     pthread_t *threads = calloc(count, sizeof(pthread_t));
@@ -7173,7 +7188,7 @@ int dna_engine_listen_all_contacts_minimal(dna_engine_t *engine)
 
     /* Start MINIMAL listeners in parallel (outbox only - no presence/watermark) */
     size_t count = list->count;
-    int max_parallel = 8;
+    int max_parallel = dna_get_parallel_limit();
 
     parallel_listener_ctx_t *tasks = calloc(count, sizeof(parallel_listener_ctx_t));
     pthread_t *threads = calloc(count, sizeof(pthread_t));
