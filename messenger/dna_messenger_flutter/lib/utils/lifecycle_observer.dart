@@ -1,8 +1,7 @@
 // App Lifecycle Observer - handles app state changes
 // Phase 14: DHT-only messaging with reliable Android background support
-// v0.6.0+: Destroy engine on pause, recreate on resume (single-owner model)
+// v0.6.8+: Keep engine alive during pause, service auto-takeover when Flutter dies
 
-import 'dart:io';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../platform/platform_handler.dart';
@@ -66,19 +65,13 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       final engine = await ref.read(engineProvider.future);
 
       // Platform-specific resume handling
-      // Android: Re-attach event callback, fetch offline messages
-      // Desktop: No-op (callback stays attached)
+      // Android: Notify service, fetch offline messages
+      // Desktop: No-op
       await PlatformHandler.instance.onResume(engine);
 
-      // v0.6.0+: On Android, engine was destroyed on pause, need to reload identity
-      // The engine was recreated by the provider, but identity is not loaded
-      if (Platform.isAndroid && engine.fingerprint == null) {
-        await engine.loadIdentity(fingerprint: fingerprint);
-      }
+      // v0.6.8+: Engine stays alive during pause, no need to reload identity
 
-      // Always resume presence heartbeat first (marks us as online)
-      // This is safe even if DHT is disconnected - heartbeat will just fail silently
-      // until DHT reconnects
+      // Resume presence heartbeat (marks us as online)
       engine.resumePresence();
 
       // Resume Dart-side polling timers (handles presence refresh + contact requests)
@@ -185,17 +178,14 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       engine.pausePresence();
 
       // Platform-specific pause handling
-      // Android: Detach Flutter event callback (JNI handles background notifications)
-      // Desktop: No-op (callback stays attached)
+      // Android: Notify service that Flutter is pausing (service is backup if Flutter dies)
+      // Desktop: No-op
       PlatformHandler.instance.onPause(engine);
 
-      // v0.6.0+: On Android, destroy engine to release identity lock
-      // Service will acquire the lock and handle DHT operations
-      // Engine will be recreated on resume
-      // NOTE: invalidate() triggers onDispose which calls engine.dispose()
-      if (Platform.isAndroid) {
-        ref.invalidate(engineProvider);
-      }
+      // v0.6.8+: Keep engine alive during pause - Flutter handles notifications
+      // Dart VM stays active during pause, so event callback still works.
+      // Service auto-takeover handles the case when Flutter truly dies.
+      // No need to destroy engine on every app switch!
     } catch (_) {
       // Error during pause - silently continue
     }
