@@ -5,6 +5,7 @@
 #include "init.h"
 #include "identity.h"
 #include "gek.h"
+#include "groups.h"
 #include "group_database.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -226,6 +227,17 @@ messenger_context_t* messenger_init(const char *identity) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to initialize GEK subsystem");
         group_database_close(group_database_get_instance());
         message_backup_close(ctx->backup_ctx);
+        free(ctx->identity);
+        free(ctx);
+        return NULL;
+    }
+
+    // Initialize Groups subsystem (sets groups_db for groups_import_all)
+    if (groups_init(NULL) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize groups subsystem");
+        group_database_close(group_database_get_instance());
+        message_backup_close(ctx->backup_ctx);
+        free(ctx->fingerprint);
         free(ctx->identity);
         free(ctx);
         return NULL;

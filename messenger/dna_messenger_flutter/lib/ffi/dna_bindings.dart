@@ -438,6 +438,10 @@ final class dna_backup_info_t extends Struct {
   @Bool()
   external bool exists;
 
+  // 7 bytes padding to align uint64_t to 8-byte boundary (C struct alignment)
+  @Array(7)
+  external Array<Uint8> _padding1;
+
   @Uint64()
   external int timestamp;
 

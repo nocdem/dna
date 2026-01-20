@@ -812,7 +812,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Found ${backupInfo.messageCount} messages${backupInfo.messageCount == -1 ? "" : ""} from your DHT backup.',
+                backupInfo.messageCount == -1
+                    ? 'Found message backup in DHT.'
+                    : 'Found ${backupInfo.messageCount} messages in DHT backup.',
               ),
               if (backupInfo.timestamp != null) ...[
                 const SizedBox(height: 8),
@@ -884,6 +886,10 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           ScaffoldMessenger.of(context).hideCurrentSnackBar();
 
           if (result.success) {
+            // Invalidate providers to refresh restored data (groups, contacts, conversations)
+            ref.invalidate(groupsProvider);
+            ref.invalidate(contactsProvider);
+
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text('Restored ${result.processedCount} messages'),

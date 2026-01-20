@@ -1094,7 +1094,7 @@ class DnaEngineException implements Exception {
 
 class DnaEngine {
   late final DnaBindings _bindings;
-  late final Pointer<dna_engine_t> _engine;
+  late Pointer<dna_engine_t> _engine;
   final _eventController = StreamController<DnaEvent>.broadcast();
 
   // Callback registry to prevent GC
