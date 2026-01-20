@@ -1084,6 +1084,7 @@ void dna_free_event(dna_event_t *event) {
 /* Forward declarations for handlers defined later */
 void dna_handle_refresh_contact_profile(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_add_group_member(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_restore_groups_from_dht(dna_engine_t *engine, dna_task_t *task);
 
 void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
     switch (task->type) {
