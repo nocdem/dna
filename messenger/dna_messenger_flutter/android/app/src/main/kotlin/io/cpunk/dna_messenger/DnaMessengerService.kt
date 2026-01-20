@@ -48,7 +48,8 @@ class DnaMessengerService : Service() {
         private const val NETWORK_CHANGE_DEBOUNCE_MS = 2000L  // 2 seconds debounce
         private const val WAKELOCK_TIMEOUT_MS = 30 * 60 * 1000L  // 30 minutes
         private const val LISTEN_RENEWAL_INTERVAL_MS = 5 * 60 * 60 * 1000L  // 5 hours (before 6h expiry)
-        private const val HEALTH_CHECK_INTERVAL_MS = 15 * 60 * 1000L  // 15 minutes
+        private const val HEALTH_CHECK_INTERVAL_MS = 15 * 60 * 1000L  // 15 minutes (normal mode)
+        private const val HEALTH_CHECK_FAST_INTERVAL_MS = 10 * 1000L  // 10 seconds (takeover detection)
         private const val MAX_RECONNECT_RETRIES = 5
         private val RECONNECT_BACKOFF_MS = longArrayOf(1000, 2000, 5000, 10000, 30000)  // Exponential backoff
 
@@ -57,6 +58,9 @@ class DnaMessengerService : Service() {
 
         @Volatile
         private var flutterActive = false
+
+        @Volatile
+        private var fastHealthCheckMode = false  // v0.6.8+: Fast polling after Flutter dies
 
         fun isServiceRunning(): Boolean = isRunning
 
@@ -68,6 +72,7 @@ class DnaMessengerService : Service() {
          * Set whether Flutter is active (in foreground).
          * v0.6.0+: When Flutter becomes active, service releases its engine.
          * When Flutter becomes inactive, service takes over DHT.
+         * v0.6.8+: Fast health check mode for reliable takeover detection.
          */
         fun setFlutterActive(active: Boolean) {
             val wasActive = flutterActive
@@ -77,6 +82,7 @@ class DnaMessengerService : Service() {
             if (active && !wasActive) {
                 // Flutter taking over - release service's engine
                 android.util.Log.i(TAG, "Flutter taking over - releasing service engine")
+                fastHealthCheckMode = false  // Back to normal mode
                 try {
                     if (libraryLoaded) {
                         nativeReleaseEngine()
@@ -87,7 +93,9 @@ class DnaMessengerService : Service() {
                 }
             } else if (!active && wasActive) {
                 // Flutter going away - service should take over DHT
-                android.util.Log.i(TAG, "Flutter inactive - service taking over DHT")
+                android.util.Log.i(TAG, "Flutter inactive - enabling fast health check for takeover")
+                fastHealthCheckMode = true  // Fast polling to detect lock release
+                serviceInstance?.startFastHealthCheck()
                 serviceInstance?.ensureIdentityLoadedAsync()
             }
         }
@@ -533,15 +541,41 @@ class DnaMessengerService : Service() {
     private fun startHealthCheckTimer() {
         healthCheckHandler?.removeCallbacksAndMessages(null)
         healthCheckHandler = android.os.Handler(mainLooper)
+        val interval = if (fastHealthCheckMode) HEALTH_CHECK_FAST_INTERVAL_MS else HEALTH_CHECK_INTERVAL_MS
         healthCheckHandler?.postDelayed(object : Runnable {
             override fun run() {
                 if (isRunning) {
                     performHealthCheck()
-                    healthCheckHandler?.postDelayed(this, HEALTH_CHECK_INTERVAL_MS)
+                    // Use current mode's interval (may have changed)
+                    val nextInterval = if (fastHealthCheckMode) HEALTH_CHECK_FAST_INTERVAL_MS else HEALTH_CHECK_INTERVAL_MS
+                    healthCheckHandler?.postDelayed(this, nextInterval)
                 }
             }
-        }, HEALTH_CHECK_INTERVAL_MS)
-        android.util.Log.i(TAG, "Health check timer started (${HEALTH_CHECK_INTERVAL_MS / 60000}min interval)")
+        }, interval)
+        android.util.Log.i(TAG, "Health check timer started (${interval / 1000}s interval, fast=$fastHealthCheckMode)")
+    }
+
+    /**
+     * v0.6.8+: Start fast health check mode for quick takeover detection.
+     * Called when Flutter goes inactive - polls every 10s to detect lock release.
+     */
+    fun startFastHealthCheck() {
+        android.util.Log.i(TAG, "Starting fast health check mode (${HEALTH_CHECK_FAST_INTERVAL_MS / 1000}s interval)")
+        fastHealthCheckMode = true
+        // Restart timer with fast interval
+        startHealthCheckTimer()
+    }
+
+    /**
+     * v0.6.8+: Return to normal health check interval.
+     * Called when service successfully takes over or Flutter becomes active.
+     */
+    private fun stopFastHealthCheck() {
+        if (fastHealthCheckMode) {
+            android.util.Log.i(TAG, "Stopping fast health check mode, returning to normal interval")
+            fastHealthCheckMode = false
+            startHealthCheckTimer()  // Restart with normal interval
+        }
     }
 
     private fun stopHealthCheckTimer() {
@@ -550,24 +584,56 @@ class DnaMessengerService : Service() {
         android.util.Log.i(TAG, "Health check timer stopped")
     }
 
+    /**
+     * Health check dispatcher - runs on main thread but dispatches work to background.
+     * v0.6.8+: Never blocks main thread to avoid ANR.
+     */
     private fun performHealthCheck() {
+        Thread {
+            performHealthCheckInternal()
+        }.start()
+    }
+
+    /**
+     * v0.6.8+: Actual health check logic - runs on background thread.
+     * Auto-detects Flutter death and takes over DHT if lock is available.
+     */
+    private fun performHealthCheckInternal() {
         if (!libraryLoaded) return
 
-        // Skip health check when Flutter is active - it owns the DHT
-        if (flutterActive) {
-            android.util.Log.d(TAG, "DHT health check skipped - Flutter active")
-            return
-        }
-
         try {
+            // v0.6.8+: Auto-detect takeover opportunity
+            // Don't rely solely on setFlutterActive message - it may not arrive
+            if (!nativeIsIdentityLoaded()) {
+                val dataDir = filesDir.absolutePath + "/dna_messenger"
+                if (!nativeIsIdentityLocked(dataDir)) {
+                    android.util.Log.i(TAG, "[HEALTH] Identity not loaded and lock available - taking over")
+                    ensureIdentityLoaded()
+                    if (nativeIsIdentityLoaded()) {
+                        // Successfully took over - return to normal health check
+                        stopFastHealthCheck()
+                    }
+                } else {
+                    android.util.Log.d(TAG, "[HEALTH] Identity locked by Flutter - waiting")
+                }
+                return  // Either loaded or locked - check health next time
+            }
+
+            // Skip normal health check when Flutter is active
+            if (flutterActive) {
+                android.util.Log.d(TAG, "[HEALTH] Skipped - Flutter active")
+                return
+            }
+
+            // Normal health check - verify DHT is healthy
             val isHealthy = nativeIsDhtHealthy()
-            android.util.Log.d(TAG, "DHT health check: healthy=$isHealthy")
+            android.util.Log.d(TAG, "[HEALTH] DHT healthy=$isHealthy")
             if (!isHealthy && isNetworkValidated()) {
-                android.util.Log.w(TAG, "DHT unhealthy but network available - triggering reinit")
-                performDhtReinit()
+                android.util.Log.w(TAG, "[HEALTH] DHT unhealthy but network available - triggering reinit")
+                performDhtReinitInternal()
             }
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "Health check error: ${e.message}")
+            android.util.Log.e(TAG, "[HEALTH] Error: ${e.message}")
         }
     }
 
@@ -711,9 +777,19 @@ class DnaMessengerService : Service() {
     }
 
     /**
-     * Perform actual DHT reinitialization
+     * DHT reinit dispatcher - ensures work runs on background thread.
+     * v0.6.8+: Never blocks main thread to avoid ANR.
      */
     private fun performDhtReinit() {
+        Thread {
+            performDhtReinitInternal()
+        }.start()
+    }
+
+    /**
+     * v0.6.8+: Actual DHT reinitialization logic - runs on background thread.
+     */
+    private fun performDhtReinitInternal() {
         if (!libraryLoaded) {
             android.util.Log.e(TAG, "Native library not loaded - cannot reinit DHT")
             return
@@ -747,7 +823,7 @@ class DnaMessengerService : Service() {
         val intent = Intent("io.cpunk.dna_messenger.NETWORK_CHANGED")
         sendBroadcast(intent)
 
-        // Reset notification after delay
+        // Reset notification after delay (must be on main thread)
         android.os.Handler(mainLooper).postDelayed({
             updateNotification("Decentralized mode active — background service running to receive messages")
         }, 3000)
@@ -762,30 +838,43 @@ class DnaMessengerService : Service() {
     private val MAX_LISTENER_VERIFICATION_RETRIES = 3
     private val LISTENER_VERIFICATION_DELAY_MS = 10000L  // 10 seconds
 
+    /**
+     * v0.6.8+: Schedule listener verification on background thread.
+     * Never blocks main thread to avoid ANR.
+     */
     private fun scheduleListenerVerification() {
         android.os.Handler(mainLooper).postDelayed({
             if (!isRunning) return@postDelayed
-
-            val isHealthy = try {
-                if (libraryLoaded) nativeIsDhtHealthy() else false
-            } catch (e: Exception) {
-                android.util.Log.e(TAG, "Listener verification error: ${e.message}")
-                false
-            }
-
-            if (isHealthy) {
-                android.util.Log.i(TAG, "Listener verification: DHT healthy, listeners active")
-                listenerVerificationRetries = 0
-            } else {
-                listenerVerificationRetries++
-                if (listenerVerificationRetries < MAX_LISTENER_VERIFICATION_RETRIES) {
-                    android.util.Log.w(TAG, "Listener verification: unhealthy, retry $listenerVerificationRetries/$MAX_LISTENER_VERIFICATION_RETRIES")
-                    performDhtReinit()
-                } else {
-                    android.util.Log.e(TAG, "Listener verification: failed after $MAX_LISTENER_VERIFICATION_RETRIES retries")
-                    listenerVerificationRetries = 0
-                }
-            }
+            // v0.6.8+: Run JNI call on background thread to avoid ANR
+            Thread {
+                performListenerVerification()
+            }.start()
         }, LISTENER_VERIFICATION_DELAY_MS)
+    }
+
+    /**
+     * v0.6.8+: Actual listener verification - runs on background thread.
+     */
+    private fun performListenerVerification() {
+        val isHealthy = try {
+            if (libraryLoaded) nativeIsDhtHealthy() else false
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Listener verification error: ${e.message}")
+            false
+        }
+
+        if (isHealthy) {
+            android.util.Log.i(TAG, "Listener verification: DHT healthy, listeners active")
+            listenerVerificationRetries = 0
+        } else {
+            listenerVerificationRetries++
+            if (listenerVerificationRetries < MAX_LISTENER_VERIFICATION_RETRIES) {
+                android.util.Log.w(TAG, "Listener verification: unhealthy, retry $listenerVerificationRetries/$MAX_LISTENER_VERIFICATION_RETRIES")
+                performDhtReinitInternal()  // Already on background thread
+            } else {
+                android.util.Log.e(TAG, "Listener verification: failed after $MAX_LISTENER_VERIFICATION_RETRIES retries")
+                listenerVerificationRetries = 0
+            }
+        }
     }
 }

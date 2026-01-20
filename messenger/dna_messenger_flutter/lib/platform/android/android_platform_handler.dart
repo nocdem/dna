@@ -1,6 +1,6 @@
 // Android Platform Handler - Android-specific behavior
 // Phase 14: DHT-only messaging with ForegroundService
-// v0.5.24+: Single-owner model - Flutter and Service never share engine
+// v0.6.8+: Flutter keeps engine during pause, service is backup for when Flutter dies
 
 import '../../ffi/dna_engine.dart';
 import '../platform_handler.dart';
@@ -15,23 +15,22 @@ import 'foreground_service.dart';
 class AndroidPlatformHandler implements PlatformHandler {
   @override
   Future<void> onResume(DnaEngine engine) async {
-    // Tell service to stop DHT operations - Flutter is taking over
+    // Tell service Flutter is active (service releases engine if it took over)
     await ForegroundServiceManager.setFlutterActive(true);
 
-    // Reattach event callback (was detached in onPause)
-    engine.attachEventCallback();
-
-    // Fetch any messages that arrived while app was backgrounded
+    // v0.6.8+: Callback stays attached during pause, no need to re-attach
+    // Just fetch any messages that might have arrived
     await engine.checkOfflineMessages();
   }
 
   @override
   void onPause(DnaEngine engine) {
-    // Detach callback BEFORE Flutter is destroyed to prevent crash
-    // when DHT listener fires after Dart NativeCallable is freed
-    engine.detachEventCallback();
+    // v0.6.8+: Keep callback attached - Flutter handles notifications during pause
+    // Dart VM stays active, so callbacks still fire and show notifications.
+    // No need to detach callback or destroy engine on every app switch!
 
-    // Tell service it can take over DHT operations
+    // Tell service Flutter is pausing (service is backup if Flutter dies)
+    // Service auto-takeover will detect if Flutter truly dies
     ForegroundServiceManager.setFlutterActive(false);
   }
 
