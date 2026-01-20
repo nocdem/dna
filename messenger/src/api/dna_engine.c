@@ -866,21 +866,30 @@ int dna_engine_network_changed(dna_engine_t *engine) {
         dna_engine_cancel_contact_request_listener(engine);
     }
 
-    /* Reinitialize DHT singleton with stored identity.
-     * On success, dht_singleton_reinit() fires the status callback which spawns
-     * dna_engine_setup_listeners_thread(). That thread handles:
-     * - Starting fresh listeners for all contacts
-     * - Retrying pending messages
-     * - Fetching missed incoming messages
-     * - Refreshing presence
-     * NO NEED to duplicate that work here - just reinit and let callback handle the rest. */
-    int result = dht_singleton_reinit();
-    if (result != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT reinit failed");
+    /* v0.6.8+: Recreate DHT context from scratch instead of using dht_singleton_reinit().
+     * This works for both owned and borrowed contexts. The identity is loaded fresh
+     * from the cached dht_identity.bin file. */
+
+    /* Free old context */
+    if (engine->dht_ctx) {
+        QGP_LOG_INFO(LOG_TAG, "Freeing old DHT context");
+        dht_singleton_set_borrowed_context(NULL);  /* Clear singleton reference first */
+        dht_context_free(engine->dht_ctx);
+        engine->dht_ctx = NULL;
+    }
+
+    /* Small delay for network to stabilize */
+    qgp_platform_sleep_ms(500);
+
+    /* Recreate DHT context from identity */
+    if (messenger_load_dht_identity_for_engine(engine->fingerprint, &engine->dht_ctx) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to recreate DHT context");
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "DHT reinit successful - status callback will restart listeners");
+    /* Lend to singleton for backwards compatibility */
+    dht_singleton_set_borrowed_context(engine->dht_ctx);
+    QGP_LOG_INFO(LOG_TAG, "DHT context recreated - status callback will restart listeners");
     return 0;
 }
 

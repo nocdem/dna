@@ -85,6 +85,8 @@ class DnaMessengerService : Service() {
                 fastHealthCheckMode = false  // Back to normal mode
                 try {
                     if (libraryLoaded) {
+                        // v0.6.9+: Clear reconnect helper before releasing engine
+                        nativeSetReconnectHelper(null)
                         nativeReleaseEngine()
                         android.util.Log.i(TAG, "Service engine released for Flutter")
                     }
@@ -165,6 +167,15 @@ class DnaMessengerService : Service() {
          */
         @JvmStatic
         external fun nativeListenAllContacts(): Int
+
+        /**
+         * Set this service as the DHT reconnect handler (v0.6.9+)
+         * When registered, the engine will call onDhtReconnected() after network
+         * changes instead of auto-creating FULL listeners. This allows the service
+         * to create MINIMAL listeners for efficient background operation.
+         */
+        @JvmStatic
+        external fun nativeSetReconnectHelper(helper: Any?)
 
         // Error code for identity lock held by another process
         private const val ERROR_IDENTITY_LOCKED = -117
@@ -353,6 +364,10 @@ class DnaMessengerService : Service() {
             when (result) {
                 0 -> {
                     android.util.Log.i(TAG, "Identity loaded (minimal mode)")
+                    // v0.6.9+: Register as reconnect handler BEFORE starting listeners
+                    // This ensures network changes trigger onDhtReconnected() instead of FULL listeners
+                    nativeSetReconnectHelper(this)
+                    android.util.Log.i(TAG, "Registered as DHT reconnect handler")
                     // v0.6.3+: Explicitly start listeners for all contacts
                     // Service needs all listeners for notifications when app is killed
                     val listenerCount = nativeListenAllContacts()
@@ -368,6 +383,25 @@ class DnaMessengerService : Service() {
         } catch (e: Exception) {
             android.util.Log.e(TAG, "ensureIdentityLoaded error: ${e.message}")
         }
+    }
+
+    /**
+     * Called by JNI when DHT reconnects after network change (v0.6.9+)
+     *
+     * When this callback is registered via nativeSetReconnectHelper(), the engine
+     * calls this instead of auto-creating FULL listeners. This allows the service
+     * to create MINIMAL listeners for efficient background operation.
+     */
+    fun onDhtReconnected() {
+        android.util.Log.i(TAG, "[RECONNECT] DHT reconnected - starting minimal listeners")
+        Thread {
+            try {
+                val listenerCount = nativeListenAllContacts()
+                android.util.Log.i(TAG, "[RECONNECT] Started minimal listeners for $listenerCount contacts")
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "[RECONNECT] Error starting listeners: ${e.message}")
+            }
+        }.start()
     }
 
     /**
