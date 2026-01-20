@@ -747,6 +747,65 @@ static void jni_contact_request_callback(const char *user_fingerprint, const cha
 }
 
 /* ============================================================================
+ * ANDROID DHT RECONNECT CALLBACK
+ * Called when DHT reconnects after network change (for foreground service)
+ * ============================================================================ */
+
+static jobject g_reconnect_helper = NULL;
+
+/**
+ * Native callback invoked by dna_engine when DHT reconnects after network change.
+ * Calls the Java DnaMessengerService.onDhtReconnected() method.
+ *
+ * This allows the foreground service to recreate MINIMAL listeners after
+ * network changes, instead of having the engine create FULL listeners.
+ */
+static void jni_reconnect_callback(void *user_data) {
+    (void)user_data;
+
+    /* CRITICAL: Check g_jvm first - if NULL, JVM is shutting down */
+    if (!g_jvm) {
+        return;  /* Silent return - JVM shutdown in progress */
+    }
+
+    if (!g_reconnect_helper) {
+        LOGD("Reconnect callback: no helper registered");
+        return;
+    }
+
+    int did_attach = 0;
+    JNIEnv *env = get_env(&did_attach);
+    if (!env) {
+        LOGE("Failed to get JNIEnv for reconnect callback");
+        return;
+    }
+
+    LOGI("[RECONNECT] Calling Java DnaMessengerService.onDhtReconnected()");
+
+    jclass cls = (*env)->GetObjectClass(env, g_reconnect_helper);
+    if (!cls) {
+        LOGE("Failed to get reconnect helper class");
+        release_env(did_attach);
+        return;
+    }
+
+    jmethodID method = (*env)->GetMethodID(env, cls, "onDhtReconnected", "()V");
+    if (!method) {
+        (*env)->ExceptionClear(env);
+        LOGE("Failed to get onDhtReconnected method");
+        (*env)->DeleteLocalRef(env, cls);
+        release_env(did_attach);
+        return;
+    }
+
+    (*env)->CallVoidMethod(env, g_reconnect_helper, method);
+    (*env)->DeleteLocalRef(env, cls);
+
+    LOGI("[RECONNECT] Java helper called successfully");
+    release_env(did_attach);
+}
+
+/* ============================================================================
  * JNI NATIVE METHODS
  * ============================================================================ */
 
@@ -791,6 +850,10 @@ Java_io_cpunk_dna_DNAEngine_nativeDestroy(JNIEnv *env, jobject thiz) {
     if (g_notification_helper) {
         (*env)->DeleteGlobalRef(env, g_notification_helper);
         g_notification_helper = NULL;
+    }
+    if (g_reconnect_helper) {
+        (*env)->DeleteGlobalRef(env, g_reconnect_helper);
+        g_reconnect_helper = NULL;
     }
 }
 
@@ -1439,4 +1502,38 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeListenAllContacts(JNIEnv 
     int count = dna_engine_listen_all_contacts_minimal(g_engine);
     LOGI("nativeListenAllContacts: Started minimal listeners for %d contacts", count);
     return (jint)count;
+}
+
+/**
+ * Set the DHT reconnect helper (v0.6.8+)
+ *
+ * The helper object must implement onDhtReconnected().
+ * This is called when DHT reconnects after network change, allowing the
+ * foreground service to recreate MINIMAL listeners.
+ *
+ * When this callback is registered, the engine will NOT automatically spawn
+ * its listener setup thread on DHT reconnection. The service must call
+ * nativeListenAllContacts() in its onDhtReconnected() handler.
+ *
+ * @param helper The helper object (typically DnaMessengerService), or NULL to disable
+ */
+JNIEXPORT void JNICALL
+Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeSetReconnectHelper(JNIEnv *env, jobject thiz, jobject helper) {
+    LOGI("Setting reconnect helper: %p", helper);
+
+    /* Clear existing helper */
+    if (g_reconnect_helper) {
+        (*env)->DeleteGlobalRef(env, g_reconnect_helper);
+        g_reconnect_helper = NULL;
+        dna_engine_set_android_reconnect_callback(NULL, NULL);
+    }
+
+    /* Set new helper */
+    if (helper) {
+        g_reconnect_helper = (*env)->NewGlobalRef(env, helper);
+        dna_engine_set_android_reconnect_callback(jni_reconnect_callback, NULL);
+        LOGI("Reconnect helper registered - service will handle DHT reconnection");
+    } else {
+        LOGI("Reconnect helper cleared - engine will handle DHT reconnection");
+    }
 }

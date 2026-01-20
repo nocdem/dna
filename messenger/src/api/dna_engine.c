@@ -216,6 +216,12 @@ static void *g_android_group_message_data = NULL;
 static dna_android_contact_request_cb g_android_contact_request_cb = NULL;
 static void *g_android_contact_request_data = NULL;
 
+/* Android DHT reconnection callback.
+ * Called when DHT reconnects after network change. Used by foreground service
+ * to recreate MINIMAL listeners. When set, engine skips automatic listener setup. */
+static dna_android_reconnect_cb g_android_reconnect_cb = NULL;
+static void *g_android_reconnect_data = NULL;
+
 /* Global engine accessors (for messenger layer event dispatch) */
 void dna_engine_set_global(dna_engine_t *engine) {
     g_dht_callback_engine = engine;
@@ -424,26 +430,36 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
          * IMPORTANT: Run listener setup on a background thread!
          * This callback runs on OpenDHT's internal thread. If we block here with
          * dht_listen_ex()'s future.get(), we deadlock (OpenDHT needs this thread). */
-        QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT connected, identity_loaded=%d", engine->identity_loaded);
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT connected, identity_loaded=%d reconnect_cb=%p",
+                     engine->identity_loaded, (void*)g_android_reconnect_cb);
         if (engine->identity_loaded) {
-            /* v0.6.0+: Track thread for clean shutdown (no detach) */
-            pthread_mutex_lock(&engine->background_threads_mutex);
-            if (engine->setup_listeners_running) {
-                /* Previous thread still running - skip (it will handle everything) */
-                pthread_mutex_unlock(&engine->background_threads_mutex);
-                QGP_LOG_INFO(LOG_TAG, "[LISTEN] Listener setup thread already running, skipping");
+            /* v0.6.8+: If Android reconnect callback is registered, let the service
+             * handle listener recreation. This allows the foreground service to
+             * create MINIMAL listeners instead of FULL listeners. */
+            if (g_android_reconnect_cb) {
+                QGP_LOG_INFO(LOG_TAG, "[LISTEN] Calling Android reconnect callback (service mode)");
+                g_android_reconnect_cb(g_android_reconnect_data);
             } else {
-                /* Spawn new thread and track it */
-                engine->setup_listeners_running = true;
-                pthread_mutex_unlock(&engine->background_threads_mutex);
-                if (pthread_create(&engine->setup_listeners_thread, NULL,
-                                   dna_engine_setup_listeners_thread, engine) == 0) {
-                    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Spawned background thread for listener setup");
-                } else {
-                    pthread_mutex_lock(&engine->background_threads_mutex);
-                    engine->setup_listeners_running = false;
+                /* Default: spawn listener setup thread for FULL listeners */
+                /* v0.6.0+: Track thread for clean shutdown (no detach) */
+                pthread_mutex_lock(&engine->background_threads_mutex);
+                if (engine->setup_listeners_running) {
+                    /* Previous thread still running - skip (it will handle everything) */
                     pthread_mutex_unlock(&engine->background_threads_mutex);
-                    QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to spawn listener setup thread");
+                    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Listener setup thread already running, skipping");
+                } else {
+                    /* Spawn new thread and track it */
+                    engine->setup_listeners_running = true;
+                    pthread_mutex_unlock(&engine->background_threads_mutex);
+                    if (pthread_create(&engine->setup_listeners_thread, NULL,
+                                       dna_engine_setup_listeners_thread, engine) == 0) {
+                        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Spawned background thread for listener setup");
+                    } else {
+                        pthread_mutex_lock(&engine->background_threads_mutex);
+                        engine->setup_listeners_running = false;
+                        pthread_mutex_unlock(&engine->background_threads_mutex);
+                        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to spawn listener setup thread");
+                    }
                 }
             }
         } else {
@@ -1412,6 +1428,16 @@ void dna_engine_set_android_contact_request_callback(
     g_android_contact_request_cb = callback;
     g_android_contact_request_data = user_data;
     QGP_LOG_INFO(LOG_TAG, "Android contact request callback %s",
+                 callback ? "registered" : "cleared");
+}
+
+void dna_engine_set_android_reconnect_callback(
+    dna_android_reconnect_cb callback,
+    void *user_data
+) {
+    g_android_reconnect_cb = callback;
+    g_android_reconnect_data = user_data;
+    QGP_LOG_INFO(LOG_TAG, "Android reconnect callback %s",
                  callback ? "registered" : "cleared");
 }
 

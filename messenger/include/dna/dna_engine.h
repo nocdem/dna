@@ -811,6 +811,39 @@ DNA_API void dna_engine_set_android_contact_request_callback(
 );
 
 /**
+ * DHT reconnection callback
+ *
+ * Called when DHT reconnects after network change. This allows the Android
+ * foreground service to recreate its MINIMAL listeners instead of having
+ * the engine create FULL listeners automatically.
+ *
+ * When this callback is registered, the engine will NOT spawn its automatic
+ * listener setup thread on DHT reconnection. The callback handler is responsible
+ * for calling nativeListenAllContacts() to recreate listeners.
+ *
+ * @param user_data  User data passed when setting callback
+ */
+typedef void (*dna_android_reconnect_cb)(void *user_data);
+
+/**
+ * Set Android DHT reconnection callback
+ *
+ * This callback is called when DHT reconnects after network changes.
+ * Used by the foreground service to recreate MINIMAL listeners.
+ *
+ * IMPORTANT: When this callback is set, the engine will NOT automatically
+ * spawn its listener setup thread on DHT reconnection. The callback must
+ * handle listener recreation.
+ *
+ * @param callback  Reconnection callback function (NULL to disable and use default)
+ * @param user_data User data passed to callback
+ */
+DNA_API void dna_engine_set_android_reconnect_callback(
+    dna_android_reconnect_cb callback,
+    void *user_data
+);
+
+/**
  * Destroy engine and release all resources
  *
  * Stops all worker threads, closes network connections,

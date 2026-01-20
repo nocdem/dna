@@ -267,3 +267,23 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 - `get_signing_public_key` returns bytes written (2592) on success, negative on error
 
 **Protocol Documentation:** See [QR_AUTH.md](../QR_AUTH.md) for full QR authentication protocol specification (v1/v2/v3), payload formats, RP binding, and canonical signing.
+
+## 1.21 Android Callbacks (v0.6.0+)
+
+| Function | Description |
+|----------|-------------|
+| `void dna_engine_set_android_notification_callback(cb, user_data)` | Set callback for message notifications (when Flutter detached) |
+| `void dna_engine_set_android_group_message_callback(cb, user_data)` | Set callback for group message notifications |
+| `void dna_engine_set_android_contact_request_callback(cb, user_data)` | Set callback for contact request notifications |
+| `void dna_engine_set_android_reconnect_callback(cb, user_data)` | Set DHT reconnection callback for foreground service (v0.6.8+) |
+
+**Callback Types:**
+- `dna_android_notification_cb(fingerprint, display_name, user_data)` - Message notification
+- `dna_android_group_message_cb(group_uuid, group_name, count, user_data)` - Group message notification
+- `dna_android_contact_request_cb(fingerprint, display_name, user_data)` - Contact request notification
+- `dna_android_reconnect_cb(user_data)` - DHT reconnection (for MINIMAL listener recreation)
+
+**Notes:**
+- These callbacks are used by the Android foreground service for background notifications
+- The reconnect callback (v0.6.8+) allows the service to recreate MINIMAL listeners after network changes
+- When reconnect callback is set, the engine does NOT spawn its automatic FULL listener setup thread
