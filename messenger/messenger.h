@@ -727,6 +727,20 @@ int messenger_sync_groups(messenger_context_t *ctx);
 int messenger_sync_groups_to_dht(messenger_context_t *ctx);
 
 /**
+ * Restore groups from DHT to local cache (DHT -> local)
+ *
+ * On fresh startup (especially Android), the local SQLite cache is empty.
+ * This function fetches the user's group list from DHT and syncs each group
+ * to the local cache so they appear in the UI.
+ *
+ * Called during DHT stabilization (after 15-second routing table warmup).
+ *
+ * @param ctx: Messenger context with identity loaded
+ * @return: Number of groups restored, or -1 on error
+ */
+int messenger_restore_groups_from_dht(messenger_context_t *ctx);
+
+/**
  * Send message to a group (Phase 6.2)
  *
  * Looks up group members from DHT and sends encrypted message to all members

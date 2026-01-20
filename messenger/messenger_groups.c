@@ -1191,3 +1191,134 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
         return -1;
     }
 }
+
+// ============================================================================
+// GROUP RESTORATION FROM DHT (Android startup fix)
+// ============================================================================
+
+/**
+ * Restore groups from DHT to local cache
+ *
+ * On fresh startup (especially Android), the local SQLite cache is empty.
+ * This function fetches the user's group list from DHT and syncs each group
+ * to the local cache so they appear in the UI.
+ *
+ * Called during DHT stabilization (after 15-second routing table warmup).
+ *
+ * @param ctx Messenger context with identity loaded
+ * @return Number of groups restored, or -1 on error
+ */
+int messenger_restore_groups_from_dht(messenger_context_t *ctx) {
+    if (!ctx || !ctx->identity) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid context for group restore\n");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[RESTORE] Restoring groups from DHT for %.16s...\n", ctx->identity);
+
+    // Get DHT context
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "[RESTORE] DHT not available\n");
+        return -1;
+    }
+
+    // Load user's keys for decryption/verification
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "[RESTORE] Failed to get data directory\n");
+        return -1;
+    }
+
+    // Load Kyber private key (for decryption)
+    char kyber_path[1024];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", data_dir);
+
+    qgp_key_t *kyber_key = NULL;
+    if (ctx->session_password) {
+        if (qgp_key_load_encrypted(kyber_path, ctx->session_password, &kyber_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "[RESTORE] Failed to load encrypted Kyber key\n");
+            return -1;
+        }
+    } else {
+        if (qgp_key_load(kyber_path, &kyber_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "[RESTORE] Failed to load Kyber key\n");
+            return -1;
+        }
+    }
+
+    // Load Dilithium public key (for signature verification)
+    char dilithium_path[1024];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
+
+    qgp_key_t *dilithium_key = NULL;
+    if (ctx->session_password) {
+        if (qgp_key_load_encrypted(dilithium_path, ctx->session_password, &dilithium_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "[RESTORE] Failed to load encrypted Dilithium key\n");
+            qgp_key_free(kyber_key);
+            return -1;
+        }
+    } else {
+        if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "[RESTORE] Failed to load Dilithium key\n");
+            qgp_key_free(kyber_key);
+            return -1;
+        }
+    }
+
+    // Fetch group list from DHT
+    char **group_uuids = NULL;
+    size_t group_count = 0;
+
+    int ret = dht_grouplist_fetch(
+        dht_ctx,
+        ctx->identity,
+        &group_uuids,
+        &group_count,
+        kyber_key->private_key,
+        dilithium_key->public_key
+    );
+
+    qgp_key_free(kyber_key);
+    qgp_key_free(dilithium_key);
+
+    if (ret == -2) {
+        // Not found in DHT - user has no groups yet
+        QGP_LOG_INFO(LOG_TAG, "[RESTORE] No group list found in DHT (new user or no groups)\n");
+        return 0;
+    }
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[RESTORE] Failed to fetch group list from DHT: %d\n", ret);
+        return -1;
+    }
+
+    if (group_count == 0) {
+        QGP_LOG_INFO(LOG_TAG, "[RESTORE] Group list is empty in DHT\n");
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[RESTORE] Found %zu groups in DHT, syncing to local cache...\n", group_count);
+
+    // Sync each group to local cache
+    int restored = 0;
+    for (size_t i = 0; i < group_count; i++) {
+        if (!group_uuids[i]) continue;
+
+        QGP_LOG_DEBUG(LOG_TAG, "[RESTORE] Syncing group %zu/%zu: %s\n", i + 1, group_count, group_uuids[i]);
+
+        ret = dht_groups_sync_from_dht(dht_ctx, group_uuids[i]);
+        if (ret == 0) {
+            restored++;
+            QGP_LOG_INFO(LOG_TAG, "[RESTORE] Synced group: %s\n", group_uuids[i]);
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "[RESTORE] Failed to sync group %s (may not exist in DHT)\n", group_uuids[i]);
+        }
+    }
+
+    // Free group UUIDs array
+    dht_grouplist_free_groups(group_uuids, group_count);
+
+    QGP_LOG_INFO(LOG_TAG, "[RESTORE] Restored %d/%zu groups from DHT\n", restored, group_count);
+    return restored;
+}
