@@ -154,6 +154,7 @@ typedef struct {
     char fingerprint[129];
 } parallel_listener_ctx_t;
 
+/* Full listener worker - starts outbox + presence + watermark (for Flutter) */
 static void *parallel_listener_worker(void *arg) {
     parallel_listener_ctx_t *ctx = (parallel_listener_ctx_t *)arg;
     if (!ctx || !ctx->engine) return NULL;
@@ -161,6 +162,17 @@ static void *parallel_listener_worker(void *arg) {
     dna_engine_listen_outbox(ctx->engine, ctx->fingerprint);
     dna_engine_start_presence_listener(ctx->engine, ctx->fingerprint);
     dna_engine_start_watermark_listener(ctx->engine, ctx->fingerprint);
+
+    return NULL;
+}
+
+/* Minimal listener worker - outbox only (for Android service/JNI notifications) */
+static void *parallel_listener_worker_minimal(void *arg) {
+    parallel_listener_ctx_t *ctx = (parallel_listener_ctx_t *)arg;
+    if (!ctx || !ctx->engine) return NULL;
+
+    /* Only outbox listener - presence/watermark not needed for notifications */
+    dna_engine_listen_outbox(ctx->engine, ctx->fingerprint);
 
     return NULL;
 }
@@ -6937,6 +6949,26 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     }
     engine->listeners_starting = true;
 
+    /* Wait for DHT to become ready (have peers in routing table)
+     * This ensures listeners actually work instead of silently failing. */
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (dht_ctx && !dht_context_is_ready(dht_ctx)) {
+        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Waiting for DHT to become ready...");
+        int wait_seconds = 0;
+        while (!dht_context_is_ready(dht_ctx) && wait_seconds < 30) {
+            qgp_platform_sleep_ms(1000);
+            wait_seconds++;
+            if (wait_seconds % 5 == 0) {
+                QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Still waiting for DHT... (%d/30s)", wait_seconds);
+            }
+        }
+        if (dht_context_is_ready(dht_ctx)) {
+            QGP_LOG_INFO(LOG_TAG, "[LISTEN] DHT ready after %d seconds", wait_seconds);
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT not ready after 30s, proceeding anyway");
+        }
+    }
+
     QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] identity=%s", engine->fingerprint);
 
     /* Initialize contacts database for current identity */
@@ -7047,6 +7079,158 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
 
     /* Debug: log all active listeners for troubleshooting */
     dna_engine_log_active_listeners(engine);
+
+    return started;
+}
+
+/**
+ * Start listeners for all contacts - MINIMAL version for Android service/JNI
+ *
+ * Only starts notification-relevant listeners (outbox, contact requests, groups).
+ * Skips presence and watermark listeners which are only useful for UI.
+ *
+ * @param engine Engine context
+ * @return Number of contacts with listeners started
+ */
+int dna_engine_listen_all_contacts_minimal(dna_engine_t *engine)
+{
+    QGP_LOG_DEBUG(LOG_TAG, "[LISTEN_MIN] dna_engine_listen_all_contacts_minimal() called");
+
+    if (!engine) {
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN_MIN] engine is NULL");
+        return 0;
+    }
+    if (!engine->identity_loaded) {
+        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN_MIN] identity not loaded yet");
+        return 0;
+    }
+
+    /* Race condition prevention */
+    if (engine->listeners_starting) {
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN_MIN] Listener setup already in progress, waiting...");
+        for (int wait_count = 0; wait_count < 50 && engine->listeners_starting; wait_count++) {
+            qgp_platform_sleep_ms(100);
+        }
+        if (engine->listeners_starting) {
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN_MIN] Timed out waiting for listener setup");
+        } else {
+            pthread_mutex_lock(&engine->outbox_listeners_mutex);
+            int existing_count = 0;
+            for (int i = 0; i < DNA_MAX_OUTBOX_LISTENERS; i++) {
+                if (engine->outbox_listeners[i].active) existing_count++;
+            }
+            pthread_mutex_unlock(&engine->outbox_listeners_mutex);
+            return existing_count;
+        }
+    }
+    engine->listeners_starting = true;
+
+    /* Wait for DHT to become ready */
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (dht_ctx && !dht_context_is_ready(dht_ctx)) {
+        QGP_LOG_INFO(LOG_TAG, "[LISTEN_MIN] Waiting for DHT to become ready...");
+        int wait_seconds = 0;
+        while (!dht_context_is_ready(dht_ctx) && wait_seconds < 30) {
+            qgp_platform_sleep_ms(1000);
+            wait_seconds++;
+        }
+        if (dht_context_is_ready(dht_ctx)) {
+            QGP_LOG_INFO(LOG_TAG, "[LISTEN_MIN] DHT ready after %d seconds", wait_seconds);
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN_MIN] DHT not ready after 30s, proceeding anyway");
+        }
+    }
+
+    /* Initialize contacts database */
+    if (contacts_db_init(engine->fingerprint) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN_MIN] Failed to initialize contacts database");
+        engine->listeners_starting = false;
+        return 0;
+    }
+
+    /* Get all contacts */
+    contact_list_t *list = NULL;
+    int db_result = contacts_db_list(&list);
+    if (db_result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN_MIN] contacts_db_list failed: %d", db_result);
+        if (list) contacts_db_free_list(list);
+        engine->listeners_starting = false;
+        return 0;
+    }
+    if (!list || list->count == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN_MIN] No contacts in database");
+        if (list) contacts_db_free_list(list);
+        /* Still start contact request listener */
+        size_t contact_req_token = dna_engine_start_contact_request_listener(engine);
+        if (contact_req_token > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[LISTEN_MIN] Contact request listener started (no contacts)");
+        }
+        engine->listeners_starting = false;
+        return 0;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "[LISTEN_MIN] Found %zu contacts", list->count);
+
+    /* Start MINIMAL listeners in parallel (outbox only - no presence/watermark) */
+    size_t count = list->count;
+    int max_parallel = 8;
+
+    parallel_listener_ctx_t *tasks = calloc(count, sizeof(parallel_listener_ctx_t));
+    pthread_t *threads = calloc(count, sizeof(pthread_t));
+    if (!tasks || !threads) {
+        free(tasks);
+        free(threads);
+        contacts_db_free_list(list);
+        engine->listeners_starting = false;
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN_MIN] Starting MINIMAL listeners for %zu contacts (outbox only)", count);
+
+    size_t active = 0;
+    size_t started = 0;
+
+    for (size_t i = 0; i < count; i++) {
+        const char *contact_id = list->contacts[i].identity;
+        if (!contact_id) continue;
+
+        tasks[i].engine = engine;
+        strncpy(tasks[i].fingerprint, contact_id, 128);
+        tasks[i].fingerprint[128] = '\0';
+
+        /* Use MINIMAL worker - outbox only, no presence/watermark */
+        if (pthread_create(&threads[i], NULL, parallel_listener_worker_minimal, &tasks[i]) == 0) {
+            started++;
+        }
+
+        if (started - active >= (size_t)max_parallel) {
+            pthread_join(threads[active], NULL);
+            active++;
+        }
+    }
+
+    /* Wait for remaining threads */
+    for (size_t i = active; i < started; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    free(tasks);
+    free(threads);
+    contacts_db_free_list(list);
+
+    /* Start contact request listener (needed for notifications) */
+    size_t contact_req_token = dna_engine_start_contact_request_listener(engine);
+    if (contact_req_token > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[LISTEN_MIN] Contact request listener started");
+    }
+
+    /* Subscribe to all groups (needed for group message notifications) */
+    int group_count = dna_engine_subscribe_all_groups(engine);
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN_MIN] Subscribed to %d groups", group_count);
+
+    engine->listeners_starting = false;
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN_MIN] Minimal setup complete: %zu outbox + contact_req + %d groups",
+                 started, group_count);
 
     return started;
 }

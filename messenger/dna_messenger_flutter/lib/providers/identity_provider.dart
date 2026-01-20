@@ -253,6 +253,15 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     ref.read(currentFingerprintProvider.notifier).state = loadedFp;
     engine.debugLog('IDENTITY', 'loadIdentity - currentFingerprintProvider set');
 
+    // Start all listeners in background (waits for DHT to become ready)
+    // This runs asynchronously so UI isn't blocked while waiting for DHT peers.
+    // Includes: outbox listeners, presence listeners, watermark listeners, contact request listener
+    Future.microtask(() {
+      engine.debugLog('IDENTITY', 'Starting all listeners in background...');
+      final count = engine.listenAllContacts();
+      engine.debugLog('IDENTITY', 'Background listeners started for $count contacts');
+    });
+
     // Invalidate profile providers to fetch fresh profile from DHT
     ref.invalidate(userProfileProvider);
     ref.invalidate(fullProfileProvider);

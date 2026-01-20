@@ -57,31 +57,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Mark messages as read when chat opens
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _markMessagesAsRead();
-      _ensureListenerAndSync(); // v0.6.3: Lazy sync when opening chat
+      _syncMessagesOnOpen(); // v0.6.6: Sync messages when opening chat
     });
   }
 
-  /// v0.6.3: Ensure listener is active and sync old messages for this contact
-  Future<void> _ensureListenerAndSync() async {
+  /// v0.6.6: Sync old messages when opening a chat
+  /// Note: Listeners are now started on identity load (not lazy anymore)
+  Future<void> _syncMessagesOnOpen() async {
     final contact = ref.read(selectedContactProvider);
     if (contact == null) return;
 
     final fingerprint = contact.fingerprint;
-    final listenerState = ref.read(listenerStateProvider.notifier);
-
-    // Ensure listener is active
-    if (!listenerState.hasListener(fingerprint)) {
-      try {
-        final engine = await ref.read(engineProvider.future);
-        final token = engine.listenOutbox(fingerprint);
-        if (token > 0) {
-          listenerState.markActive(fingerprint);
-          log('CHAT', 'Listener started for ${fingerprint.substring(0, 16)}...');
-        }
-      } catch (e) {
-        logError('CHAT', 'Failed to start listener: $e');
-      }
-    }
 
     // Sync old messages for this contact (lazy sync on chat open)
     try {

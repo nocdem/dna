@@ -1435,8 +1435,8 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeListenAllContacts(JNIEnv 
         return 0;
     }
 
-    LOGI("nativeListenAllContacts: Starting listeners for all contacts...");
-    int count = dna_engine_listen_all_contacts(g_engine);
-    LOGI("nativeListenAllContacts: Started listeners for %d contacts", count);
+    LOGI("nativeListenAllContacts: Starting MINIMAL listeners (outbox + contact_req + groups)...");
+    int count = dna_engine_listen_all_contacts_minimal(g_engine);
+    LOGI("nativeListenAllContacts: Started minimal listeners for %d contacts", count);
     return (jint)count;
 }
