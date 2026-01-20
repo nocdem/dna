@@ -2201,6 +2201,22 @@ DNA_API int dna_engine_listen_all_contacts(
 );
 
 /**
+ * Start listeners for all contacts - MINIMAL version for Android service
+ *
+ * Only starts notification-relevant listeners (outbox, contact requests, groups).
+ * Skips presence and watermark listeners which are only useful for UI.
+ * Waits for DHT to become ready before starting listeners.
+ *
+ * Use this from JNI/service when only background notifications are needed.
+ *
+ * @param engine    Engine instance
+ * @return          Number of contacts with listeners started
+ */
+DNA_API int dna_engine_listen_all_contacts_minimal(
+    dna_engine_t *engine
+);
+
+/**
  * Cancel all active outbox listeners
  *
  * @param engine    Engine instance

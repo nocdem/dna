@@ -132,7 +132,8 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 |----------|-------------|
 | `size_t dna_engine_listen_outbox(dna_engine_t*, const char*)` | Start listening for updates to contact's outbox |
 | `void dna_engine_cancel_outbox_listener(dna_engine_t*, const char*)` | Cancel outbox listener |
-| `int dna_engine_listen_all_contacts(dna_engine_t*)` | Start listeners for all contacts (outbox + presence) |
+| `int dna_engine_listen_all_contacts(dna_engine_t*)` | Start all listeners (outbox + presence + watermark), waits for DHT ready |
+| `int dna_engine_listen_all_contacts_minimal(dna_engine_t*)` | Start minimal listeners for notifications (outbox + contact_req + groups only) |
 | `void dna_engine_cancel_all_outbox_listeners(dna_engine_t*)` | Cancel all outbox listeners |
 
 ## 1.10 Presence Listeners
