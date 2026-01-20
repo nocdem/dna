@@ -4779,6 +4779,74 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Sync contacts from DHT to local database
+  ///
+  /// Fetches user's contact list from DHT and replaces local contacts.
+  /// DHT is authoritative - deletions propagate.
+  Future<void> syncContactsFromDht() async {
+    final localId = _nextRequestId++;
+    final completer = Completer<void>();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_sync_contacts_from_dht(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit sync contacts request');
+    }
+
+    return completer.future;
+  }
+
+  /// Restore groups from DHT grouplist to local database
+  ///
+  /// Fetches user's personal group list from DHT and restores
+  /// group metadata to local database. Used for multi-device sync.
+  Future<void> restoreGroupsFromDht() async {
+    final localId = _nextRequestId++;
+    final completer = Completer<void>();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_restore_groups_from_dht(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit restore groups request');
+    }
+
+    return completer.future;
+  }
+
   // ---------------------------------------------------------------------------
   // SIGNING (for QR Auth)
   // ---------------------------------------------------------------------------

@@ -2151,6 +2151,23 @@ DNA_API dna_request_id_t dna_engine_sync_groups_to_dht(
 );
 
 /**
+ * Restore groups from DHT grouplist to local cache
+ *
+ * Fetches user's personal group list from DHT and restores
+ * group metadata to local database. Used for multi-device sync.
+ *
+ * @param engine    Engine instance
+ * @param callback  Called on completion
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_restore_groups_from_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
  * Sync a specific group from DHT to local cache
  *
  * Uses the group UUID to fetch metadata from DHT and update local database.
