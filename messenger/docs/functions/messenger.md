@@ -88,6 +88,7 @@ Core messenger functionality including identity management, key generation, mess
 | `int messenger_reject_group_invitation(...)` | Reject group invitation |
 | `int messenger_sync_groups(messenger_context_t*)` | Sync groups from DHT |
 | `int messenger_sync_groups_to_dht(messenger_context_t*)` | Sync groups to DHT (v0.5.26+) |
+| `int messenger_restore_groups_from_dht(messenger_context_t*)` | Restore groups from DHT to local cache (v0.6.8+) |
 | `int messenger_send_group_message(...)` | Send message to group |
 | `void messenger_free_groups(group_info_t*, int)` | Free group array |
 

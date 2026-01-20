@@ -369,6 +369,22 @@ static void *dna_engine_stabilization_retry_thread(void *arg) {
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
+    /* 1b. Restore groups from DHT to local cache (Android startup fix)
+     * On fresh startup, local SQLite cache is empty. Fetch group list from DHT
+     * and sync each group to local cache so they appear in the UI. */
+    if (engine->messenger) {
+        int restored = messenger_restore_groups_from_dht(engine->messenger);
+        if (restored > 0) {
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: restored %d groups from DHT", restored);
+        } else if (restored == 0) {
+            QGP_LOG_INFO(LOG_TAG, "[RETRY] Post-stabilization: no groups to restore from DHT");
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: group restore failed: %d", restored);
+        }
+    }
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+
     /* 2. Sync any pending outboxes (messages that failed to publish earlier) */
     dht_context_t *dht_ctx = dht_singleton_get();
     if (dht_ctx) {
