@@ -283,12 +283,16 @@ class DnaMessengerService : Service() {
         android.util.Log.i(TAG, "Created notification with ID=$NOTIFICATION_ID, channel=$CHANNEL_ID")
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                // Android 14+: Use REMOTE_MESSAGING (no timeout, designed for messaging apps)
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Android 10-13: REMOTE_MESSAGING available from API 29
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
-            android.util.Log.i(TAG, "startForeground() called successfully")
+            android.util.Log.i(TAG, "startForeground() called successfully (remoteMessaging)")
         } catch (e: Exception) {
             android.util.Log.e(TAG, "startForeground() failed: ${e.message}")
         }
