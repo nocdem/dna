@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-01-19 | **Status:** ALPHA | **Version:** v0.1.14
+**Last Updated:** 2026-01-21 | **Status:** ALPHA | **Version:** v0.1.17
 
 ---
 
@@ -65,12 +65,11 @@ DNAC is a **Post-Quantum Zero-Knowledge Cash** system built on top of DNA Messen
 | Component | Technology |
 |-----------|------------|
 | Token Model | UTXO |
-| Commitments | Pedersen (secp256k1) |
-| Range Proofs | Bulletproofs |
 | Signatures | Dilithium5 (Post-Quantum) |
 | Transport | DHT (via libdna) |
 | Double-Spend Prevention | Nodus 2-of-3 Anchoring |
 | Database | SQLite |
+| ZK (v2 future) | STARKs (Post-Quantum) |
 
 **Architecture:**
 ```
@@ -202,7 +201,6 @@ cmake .. && make -j$(nproc)
 - **libdna** - DNA Messenger library (must be built first at /opt/dna-messenger/build)
 - **OpenSSL** - Cryptographic operations
 - **SQLite3** - Database storage
-- **secp256k1-zkp** - Bulletproofs (optional, for range proofs)
 
 ### Directory Structure
 ```
@@ -215,11 +213,8 @@ cmake .. && make -j$(nproc)
 │   ├── version.h          # Version info
 │   ├── wallet.h           # Wallet internals
 │   ├── transaction.h      # Transaction types
-│   ├── commitment.h       # Pedersen commitments
-│   ├── range_proof.h      # Bulletproofs
 │   └── nodus.h            # Nodus client
 ├── src/
-│   ├── crypto/            # Pedersen, Bulletproofs
 │   ├── wallet/            # Wallet operations
 │   ├── transaction/       # TX building/verification
 │   ├── nodus/             # Nodus client
@@ -231,11 +226,10 @@ cmake .. && make -j$(nproc)
 ### Key Constants
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `DNAC_COMMITMENT_SIZE` | 33 | Pedersen commitment (compressed) |
-| `DNAC_BLINDING_SIZE` | 32 | Blinding factor |
 | `DNAC_NULLIFIER_SIZE` | 64 | SHA3-512 nullifier |
+| `DNAC_TX_HASH_SIZE` | 64 | SHA3-512 transaction hash |
 | `DNAC_SIGNATURE_SIZE` | 4627 | Dilithium5 signature |
-| `DNAC_RANGE_PROOF_MAX_SIZE` | 800 | Bulletproof max size |
+| `DNAC_PUBKEY_SIZE` | 2592 | Dilithium5 public key |
 | `DNAC_ANCHORS_REQUIRED` | 2 | Anchors needed for valid TX |
 
 ---
@@ -279,11 +273,10 @@ git push origin main
 
 ## Security Considerations
 
-1. **Pedersen Commitments** - Use secure random for blinding factors
-2. **Nullifiers** - SHA3-512(secret || UTXO data) to prevent linking
-3. **Range Proofs** - Always verify proofs before accepting transactions
-4. **Nodus Anchoring** - Require 2-of-3 signatures for double-spend prevention
-5. **Key Storage** - Rely on libdna's secure key storage
+1. **Nullifiers** - SHA3-512(secret || UTXO data) to prevent linking
+2. **Nodus Anchoring** - Require 2-of-3 signatures for double-spend prevention
+3. **Key Storage** - Rely on libdna's secure key storage
+4. **Dilithium5** - Post-quantum secure signatures
 
 ---
 

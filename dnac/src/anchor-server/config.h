@@ -10,8 +10,8 @@
 #define DNAC_ANCHOR_CONFIG_H
 
 /* DHT key prefixes */
-#define ANCHOR_REQUEST_PREFIX   "dnac:anchor:request:"
-#define ANCHOR_RESPONSE_PREFIX  "dnac:anchor:response:"
+#define ANCHOR_REQUEST_PREFIX   "dnac:nodus:request:"
+#define ANCHOR_RESPONSE_PREFIX  "dnac:nodus:response:"
 #define ANCHOR_IDENTITY_PREFIX  "dnac:anchor:identity:"
 #define ANCHOR_NULLIFIER_PREFIX "dnac:anchor:nullifier:"
 
