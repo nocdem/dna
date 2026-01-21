@@ -95,6 +95,17 @@ int groups_create(const char *name, const char *owner_fp, char *uuid_out);
 int groups_delete(const char *group_uuid, const char *my_fp);
 
 /**
+ * Leave a group (non-owner)
+ *
+ * Removes group from local database. No ownership check.
+ * Used when a member leaves a group (not deletes it).
+ *
+ * @param group_uuid Group UUID
+ * @return 0 on success, -1 on error
+ */
+int groups_leave(const char *group_uuid);
+
+/**
  * List all groups user belongs to
  *
  * Returns groups from local database.

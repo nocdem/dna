@@ -111,7 +111,13 @@ class SyncSettingsNotifier extends StateNotifier<SyncSettingsState> {
     }
   }
 
-  /// Manually trigger sync now
+  /// Manually trigger sync now (DHT-Authoritative Sync)
+  ///
+  /// Performs full sync:
+  /// 1. Pull contacts from DHT (REPLACE local)
+  /// 2. Restore groups from DHT grouplist
+  /// 3. Restore GEKs from DHT backup
+  /// 4. Fetch messages from DM outboxes
   Future<void> syncNow() async {
     if (state.isSyncing) {
       log('SYNC', 'Sync already in progress, skipping');
@@ -124,28 +130,56 @@ class SyncSettingsNotifier extends StateNotifier<SyncSettingsState> {
       final engineAsync = _ref.read(engineProvider);
       await engineAsync.when(
         data: (engine) async {
-          log('SYNC', 'Starting backup sync...');
-          final result = await engine.backupMessages();
+          log('SYNC', 'Starting DHT-authoritative sync...');
 
-          if (result.success) {
-            final now = DateTime.now();
-            final prefs = await SharedPreferences.getInstance();
-            await prefs.setInt(_kLastSyncTimestamp, now.millisecondsSinceEpoch ~/ 1000);
-
-            state = state.copyWith(
-              isSyncing: false,
-              lastSyncTime: now,
-              clearLastSyncError: true,
-            );
-
-            log('SYNC', 'Sync complete: ${result.processedCount} messages backed up');
-          } else {
-            state = state.copyWith(
-              isSyncing: false,
-              lastSyncError: result.errorMessage ?? 'Backup failed',
-            );
-            logError('SYNC', 'Sync failed: ${result.errorMessage}');
+          // Step 1: Pull contacts from DHT (REPLACE local)
+          try {
+            log('SYNC', 'Step 1/4: Syncing contacts from DHT...');
+            await engine.syncContactsFromDht();
+            log('SYNC', 'Contacts synced from DHT');
+          } catch (e) {
+            log('SYNC', 'Contacts sync failed (non-fatal): $e');
           }
+
+          // Step 2: Restore groups from DHT grouplist
+          try {
+            log('SYNC', 'Step 2/4: Restoring groups from DHT...');
+            await engine.restoreGroupsFromDht();
+            log('SYNC', 'Groups restored from DHT');
+          } catch (e) {
+            log('SYNC', 'Groups restore failed (non-fatal): $e');
+          }
+
+          // Step 3: Restore GEKs from DHT backup (v4 format: GEKs + groups only)
+          try {
+            log('SYNC', 'Step 3/4: Restoring GEKs from DHT backup...');
+            final result = await engine.restoreMessages();
+            log('SYNC', 'GEKs restored: ${result.processedCount}');
+          } catch (e) {
+            log('SYNC', 'GEK restore failed (non-fatal): $e');
+          }
+
+          // Step 4: Fetch messages from DM outboxes
+          try {
+            log('SYNC', 'Step 4/4: Checking offline messages from outboxes...');
+            await engine.checkOfflineMessages();
+            log('SYNC', 'Offline messages checked');
+          } catch (e) {
+            log('SYNC', 'Offline message check failed (non-fatal): $e');
+          }
+
+          // Update timestamp
+          final now = DateTime.now();
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setInt(_kLastSyncTimestamp, now.millisecondsSinceEpoch ~/ 1000);
+
+          state = state.copyWith(
+            isSyncing: false,
+            lastSyncTime: now,
+            clearLastSyncError: true,
+          );
+
+          log('SYNC', 'DHT-authoritative sync complete');
         },
         loading: () {
           state = state.copyWith(

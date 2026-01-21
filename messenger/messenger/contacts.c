@@ -269,34 +269,7 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
         return -1;
     }
 
-    // SAFETY CHECK 3: Prevent deletion of contacts
-    // If local has MORE contacts than DHT, abort (DHT is stale or incomplete)
-    // Only sync from DHT if it has MORE or EQUAL contacts
-    if (local_count > 0 && count < (size_t)local_count) {
-        QGP_LOG_WARN(LOG_TAG, "SAFETY CHECK 3 TRIGGERED: Local=%d, DHT=%zu\n", local_count, count);
-        QGP_LOG_WARN(LOG_TAG, "DHT has fewer contacts - using MERGE mode (may re-add deleted contacts!)\n");
-
-        // MERGE mode: only ADD contacts from DHT that don't exist locally
-        size_t added = 0;
-        for (size_t i = 0; i < count; i++) {
-            if (!is_valid_fingerprint(contacts[i])) {
-                QGP_LOG_WARN(LOG_TAG, "MERGE: Skipping invalid fingerprint from DHT (len=%zu)\n",
-                             contacts[i] ? strlen(contacts[i]) : 0);
-                continue;
-            }
-            if (!contacts_db_exists(contacts[i])) {
-                QGP_LOG_WARN(LOG_TAG, "MERGE: Re-adding contact from DHT: %.16s... (WAS DELETED?)\n", contacts[i]);
-                if (contacts_db_add(contacts[i], NULL) == 0) {
-                    added++;
-                }
-            }
-        }
-        dht_contactlist_free_contacts(contacts, count);
-        QGP_LOG_WARN(LOG_TAG, "MERGE sync complete: re-added %zu contacts from DHT\n", added);
-        return 0;
-    }
-
-    // DHT has equal or more contacts - safe to REPLACE
+    // DHT-AUTHORITATIVE: Always REPLACE local with DHT (deletions propagate)
     QGP_LOG_INFO(LOG_TAG, "REPLACE sync: DHT has %zu contacts (local had %d)\n", count, local_count);
 
     // PRESERVE NICKNAMES: Save local nicknames before clearing (nicknames are local-only)

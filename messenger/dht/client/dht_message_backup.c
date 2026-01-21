@@ -64,7 +64,8 @@ static int make_base_key(const char *fingerprint, char *key_out, size_t key_out_
 }
 
 /**
- * Get all messages from SQLite and serialize to JSON
+ * Serialize GEKs and groups to JSON for backup
+ * v4: Messages removed (fetched from DM outboxes instead)
  */
 static char* serialize_messages_to_json(
     message_backup_context_t *msg_ctx,
@@ -72,17 +73,10 @@ static char* serialize_messages_to_json(
     uint64_t timestamp,
     int *message_count_out)
 {
-    if (!msg_ctx || !fingerprint) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for message serialization");
-        return NULL;
-    }
+    (void)msg_ctx;  // No longer used for messages in v4
 
-    // Get all recent contacts to iterate through conversations
-    char **contacts = NULL;
-    int contact_count = 0;
-
-    if (message_backup_get_recent_contacts(msg_ctx, &contacts, &contact_count) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to get recent contacts");
+    if (!fingerprint) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for backup serialization");
         return NULL;
     }
 
@@ -90,10 +84,6 @@ static char* serialize_messages_to_json(
     json_object *root = json_object_new_object();
     if (!root) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to create JSON object");
-        if (contacts) {
-            for (int i = 0; i < contact_count; i++) free(contacts[i]);
-            free(contacts);
-        }
         return NULL;
     }
 
@@ -102,74 +92,14 @@ static char* serialize_messages_to_json(
     json_object_object_add(root, "fingerprint", json_object_new_string(fingerprint));
     json_object_object_add(root, "timestamp", json_object_new_int64(timestamp));
 
-    // Create messages array
-    json_object *messages_array = json_object_new_array();
-    if (!messages_array) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to create messages array");
-        json_object_put(root);
-        if (contacts) {
-            for (int i = 0; i < contact_count; i++) free(contacts[i]);
-            free(contacts);
-        }
-        return NULL;
-    }
-
-    int total_messages = 0;
-
-    // Iterate through each contact conversation
-    for (int c = 0; c < contact_count; c++) {
-        backup_message_t *messages = NULL;
-        int msg_count = 0;
-
-        if (message_backup_get_conversation(msg_ctx, contacts[c], &messages, &msg_count) != 0) {
-            QGP_LOG_WARN(LOG_TAG, "Failed to get conversation for contact %d", c);
-            continue;
-        }
-
-        // Add each message to array
-        for (int m = 0; m < msg_count; m++) {
-            json_object *msg_obj = json_object_new_object();
-            if (!msg_obj) continue;
-
-            json_object_object_add(msg_obj, "sender", json_object_new_string(messages[m].sender));
-            json_object_object_add(msg_obj, "recipient", json_object_new_string(messages[m].recipient));
-
-            // v3: Store plaintext directly (v14 schema - no encryption in DB)
-            if (messages[m].plaintext) {
-                json_object_object_add(msg_obj, "plaintext", json_object_new_string(messages[m].plaintext));
-            }
-            // Store sender fingerprint for duplicate detection
-            if (messages[m].sender_fingerprint[0] != '\0') {
-                json_object_object_add(msg_obj, "sender_fingerprint", json_object_new_string(messages[m].sender_fingerprint));
-            }
-            json_object_object_add(msg_obj, "timestamp", json_object_new_int64(messages[m].timestamp));
-            json_object_object_add(msg_obj, "is_outgoing", json_object_new_boolean(
-                strcmp(messages[m].sender, fingerprint) == 0));
-            json_object_object_add(msg_obj, "status", json_object_new_int(messages[m].status));
-            json_object_object_add(msg_obj, "group_id", json_object_new_int(messages[m].group_id));
-            json_object_object_add(msg_obj, "message_type", json_object_new_int(messages[m].message_type));
-
-            json_object_array_add(messages_array, msg_obj);
-            total_messages++;
-        }
-
-        message_backup_free_messages(messages, msg_count);
-    }
-
-    // Free contacts
-    if (contacts) {
-        for (int i = 0; i < contact_count; i++) free(contacts[i]);
-        free(contacts);
-    }
-
-    json_object_object_add(root, "message_count", json_object_new_int(total_messages));
-    json_object_object_add(root, "messages", messages_array);
+    // v4: No messages in backup (fetched from DM outboxes)
+    json_object_object_add(root, "message_count", json_object_new_int(0));
 
     if (message_count_out) {
-        *message_count_out = total_messages;
+        *message_count_out = 0;
     }
 
-    // === Add GEK data (v2) ===
+    // === Add GEK data (v2+) ===
     gek_export_entry_t *gek_entries = NULL;
     size_t gek_count = 0;
     if (gek_export_all(&gek_entries, &gek_count) == 0 && gek_count > 0) {
@@ -243,8 +173,8 @@ static char* serialize_messages_to_json(
 
     // Convert to string
     const char *json_str = json_object_to_json_string_ext(root, JSON_C_TO_STRING_PLAIN);
-    QGP_LOG_INFO(LOG_TAG, "Serialized %d messages, %zu GEKs, %zu groups to JSON (%zu bytes)",
-                 total_messages, gek_count, group_count, strlen(json_str));
+    QGP_LOG_INFO(LOG_TAG, "Serialized backup v4: %zu GEKs, %zu groups to JSON (%zu bytes)",
+                 gek_count, group_count, strlen(json_str));
     char *result = strdup(json_str);
 
     json_object_put(root);  // This frees the entire object tree
@@ -273,21 +203,21 @@ static int deserialize_and_import_messages(
         return -1;
     }
 
-    // Extract messages array
+    // Extract messages array (optional in v4 - messages come from DM outboxes)
     json_object *messages_array = NULL;
-    if (!json_object_object_get_ex(root, "messages", &messages_array)) {
-        QGP_LOG_ERROR(LOG_TAG, "No messages array in JSON");
-        json_object_put(root);
-        return -1;
-    }
+    json_object_object_get_ex(root, "messages", &messages_array);
 
-    size_t count = json_object_array_length(messages_array);
+    size_t count = messages_array ? json_object_array_length(messages_array) : 0;
     int restored = 0;
     int skipped = 0;
 
-    QGP_LOG_INFO(LOG_TAG, "Processing %zu messages from backup", count);
+    if (count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Processing %zu messages from backup (v3 format)", count);
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "No messages in backup (v4 format - messages from DM outboxes)");
+    }
 
-    // Process each message
+    // Process each message (v3 backward compatibility)
     for (size_t i = 0; i < count; i++) {
         json_object *msg_obj = json_object_array_get_idx(messages_array, i);
         if (!msg_obj) continue;
@@ -752,13 +682,14 @@ int dht_message_backup_restore(
         return -1;
     }
 
-    // Version
+    // Version (accept v3 and v4 for backward compatibility)
     uint8_t version = blob[offset++];
-    if (version != DHT_MSGBACKUP_VERSION) {
-        QGP_LOG_ERROR(LOG_TAG, "Unsupported version: %d", version);
+    if (version < 3 || version > DHT_MSGBACKUP_VERSION) {
+        QGP_LOG_ERROR(LOG_TAG, "Unsupported version: %d (expected 3-%d)", version, DHT_MSGBACKUP_VERSION);
         free(blob);
         return -1;
     }
+    QGP_LOG_INFO(LOG_TAG, "Backup version: %d", version);
 
     // Timestamp
     uint64_t timestamp;

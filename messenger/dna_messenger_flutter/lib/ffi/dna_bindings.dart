@@ -3115,6 +3115,36 @@ class DnaBindings {
     return _dna_engine_sync_addressbook_from_dht(engine, callback, user_data);
   }
 
+  // Sync contacts from DHT (v0.6.10+)
+  late final _dna_engine_sync_contacts_from_dht = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaCompletionCb>,
+          Pointer<Void>)>('dna_engine_sync_contacts_from_dht');
+
+  int dna_engine_sync_contacts_from_dht(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_sync_contacts_from_dht(engine, callback, user_data);
+  }
+
+  // Restore groups from DHT grouplist (v0.6.10+)
+  late final _dna_engine_restore_groups_from_dht = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaCompletionCb>,
+          Pointer<Void>)>('dna_engine_restore_groups_from_dht');
+
+  int dna_engine_restore_groups_from_dht(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_restore_groups_from_dht(engine, callback, user_data);
+  }
+
   late final _dna_free_addressbook_entries = _lib.lookupFunction<
       Void Function(Pointer<dna_addressbook_entry_t>, Int32),
       void Function(

@@ -244,6 +244,66 @@ int groups_delete(const char *group_uuid, const char *my_fp) {
     return -1;
 }
 
+int groups_leave(const char *group_uuid) {
+    if (!group_uuid) {
+        return -1;
+    }
+
+    if (!groups_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    // Delete from all tables (cascade) - no ownership check (anyone can leave)
+    const char *sql_members = "DELETE FROM group_members WHERE group_uuid = ?";
+    const char *sql_geks = "DELETE FROM group_geks WHERE group_uuid = ?";
+    const char *sql_messages = "DELETE FROM group_messages WHERE group_uuid = ?";
+    const char *sql_group = "DELETE FROM groups WHERE uuid = ?";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc;
+
+    // Delete members
+    rc = sqlite3_prepare_v2(groups_db, sql_members, -1, &stmt, NULL);
+    if (rc == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_TRANSIENT);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    // Delete GEKs
+    rc = sqlite3_prepare_v2(groups_db, sql_geks, -1, &stmt, NULL);
+    if (rc == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_TRANSIENT);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    // Delete messages
+    rc = sqlite3_prepare_v2(groups_db, sql_messages, -1, &stmt, NULL);
+    if (rc == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_TRANSIENT);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    // Delete group
+    rc = sqlite3_prepare_v2(groups_db, sql_group, -1, &stmt, NULL);
+    if (rc == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_TRANSIENT);
+        rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+
+        if (rc == SQLITE_DONE) {
+            QGP_LOG_INFO(LOG_TAG, "Left group %s (removed from local DB)\n", group_uuid);
+            return 0;
+        }
+    }
+
+    QGP_LOG_ERROR(LOG_TAG, "Failed to leave group: %s\n", sqlite3_errmsg(groups_db));
+    return -1;
+}
+
 int groups_list(groups_info_t **groups_out, int *count_out) {
     if (!groups_out || !count_out) {
         return -1;

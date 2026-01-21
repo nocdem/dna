@@ -1084,6 +1084,7 @@ void dna_free_event(dna_event_t *event) {
 /* Forward declarations for handlers defined later */
 void dna_handle_refresh_contact_profile(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_add_group_member(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_restore_groups_from_dht(dna_engine_t *engine, dna_task_t *task);
 
 void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
     switch (task->type) {
@@ -1231,6 +1232,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_SYNC_GROUPS_TO_DHT:
             dna_handle_sync_groups_to_dht(engine, task);
+            break;
+        case TASK_RESTORE_GROUPS_FROM_DHT:
+            dna_handle_restore_groups_from_dht(engine, task);
             break;
         case TASK_SYNC_GROUP_BY_UUID:
             dna_handle_sync_group_by_uuid(engine, task);
@@ -6680,6 +6684,19 @@ dna_request_id_t dna_engine_sync_groups_to_dht(
     return dna_submit_task(engine, TASK_SYNC_GROUPS_TO_DHT, NULL, cb, user_data);
 }
 
+dna_request_id_t dna_engine_restore_groups_from_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_RESTORE_GROUPS_FROM_DHT, NULL, cb, user_data);
+}
+
 dna_request_id_t dna_engine_sync_group_by_uuid(
     dna_engine_t *engine,
     const char *group_uuid,
@@ -8177,6 +8194,28 @@ void dna_handle_sync_groups_to_dht(dna_engine_t *engine, dna_task_t *task) {
         QGP_LOG_INFO(LOG_TAG, "[GROUPLIST_PUBLISH] sync_groups_to_dht handler: calling sync");
         if (messenger_sync_groups_to_dht(engine->messenger) != 0) {
             error = DNA_ENGINE_ERROR_NETWORK;
+        }
+    }
+
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_restore_groups_from_dht(dna_engine_t *engine, dna_task_t *task) {
+    if (task->cancelled) return;
+
+    int error = DNA_OK;
+
+    if (!engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "restore_groups_from_dht handler: calling restore");
+        int restored = messenger_restore_groups_from_dht(engine->messenger);
+        if (restored < 0) {
+            error = DNA_ENGINE_ERROR_NETWORK;
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "Restored %d groups from DHT", restored);
         }
     }
 

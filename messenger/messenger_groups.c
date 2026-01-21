@@ -401,8 +401,36 @@ int messenger_leave_group(messenger_context_t *ctx, int group_id) {
         return -1;
     }
 
-    // User leaves group by removing themselves
-    return messenger_remove_group_member(ctx, group_id, ctx->identity);
+    // Get group UUID before removing (needed for local cleanup)
+    char group_uuid[37] = {0};
+    if (get_group_uuid_by_id(ctx->identity, group_id, group_uuid) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get group UUID for leave_group\n");
+        return -1;
+    }
+
+    // Step 1: Remove ourselves from DHT group member list
+    int ret = messenger_remove_group_member(ctx, group_id, ctx->identity);
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to remove self from DHT group members\n");
+        return -1;
+    }
+
+    // Step 2: Delete group from local database (members, geks, messages, group entry)
+    ret = groups_leave(group_uuid);
+    if (ret != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to delete group from local DB (continuing)\n");
+        // Non-fatal - we're already removed from DHT
+    }
+
+    // Step 3: Sync grouplist to DHT (update personal grouplist)
+    ret = messenger_sync_groups_to_dht(ctx);
+    if (ret != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to sync grouplist to DHT after leave (non-fatal)\n");
+        // Non-fatal - local state is correct
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Left group %d (uuid=%s)\n", group_id, group_uuid);
+    return 0;
 }
 
 int messenger_delete_group(messenger_context_t *ctx, int group_id) {

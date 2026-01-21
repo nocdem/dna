@@ -20,6 +20,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
+#include <sys/stat.h>
 #define stat _stat
 #else
 #include <sys/time.h>
