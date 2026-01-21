@@ -13,9 +13,9 @@
 
 #define DNAC_VERSION_MAJOR 0
 #define DNAC_VERSION_MINOR 1
-#define DNAC_VERSION_PATCH 20
+#define DNAC_VERSION_PATCH 21
 
-#define DNAC_VERSION_STRING "0.1.20"
+#define DNAC_VERSION_STRING "0.1.21"
 
 /**
  * @brief Get DNAC library version string

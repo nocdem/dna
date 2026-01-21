@@ -1,8 +1,8 @@
 # DNAC Implementation Roadmap
 
 **Project:** DNAC - Post-Quantum Digital Cash over DHT
-**Version:** v0.1.16
-**Status:** Phase 13 Complete (Wallet Recovery)
+**Version:** v0.1.21
+**Status:** Phase 15 Complete (Epoch-Based DHT Keys)
 
 ---
 
@@ -156,6 +156,32 @@ DNAC is a post-quantum digital cash system that integrates with DNA Messenger:
 - [ ] Fuzz testing for parsing
 - [ ] Wallet recovery tests
 
+### Phase 15: Epoch-Based DHT Keys ✅ COMPLETE
+- [x] Create `include/dnac/epoch.h` with epoch helper functions
+- [x] Add epoch constants to `src/witness/config.h`
+- [x] Define `dnac_witness_announcement_t` structure
+- [x] Implement announcement serialization/deserialization
+- [x] Implement `witness_publish_announcement()` server function
+- [x] Implement epoch-based request key building
+- [x] Server: Publish announcement on startup and epoch change
+- [x] Server: Listen on current AND previous epoch keys
+- [x] Client: Fetch announcement to discover current epoch
+- [x] Client: Build epoch-based request keys
+- [x] Backward compatibility: Legacy request listener during transition
+
+**Purpose:** Prevent unbounded DHT key accumulation by rotating request keys hourly.
+
+**Key Files:**
+| File | Change |
+|------|--------|
+| `include/dnac/epoch.h` | NEW - Epoch helpers |
+| `include/dnac/witness.h` | Announcement struct/functions |
+| `src/witness/config.h` | Epoch constants |
+| `src/witness/server.c` | Announcement publishing, epoch listeners |
+| `src/witness/main.c` | Epoch tracking, listener rotation |
+| `src/nodus/client.c` | Fetch announcement, epoch keys |
+| `src/nodus/attestation.c` | Announcement serialize/deserialize |
+
 ---
 
 ## Transaction Format (v1)
@@ -198,13 +224,28 @@ Typical size: ~20-25 KB (mostly Dilithium5 signatures)
 ## Nodus 2-of-3 Protocol
 
 ```
-1. Client sends SpendRequest to ALL Nodus servers
-2. Each Nodus checks nullifier not in DB
-3. If new: APPROVE + Dilithium sign + replicate to peers
-4. If exists: REJECT (already spent)
-5. Client collects 2+ signatures → WitnessProof
-6. Transaction with WitnessProof is valid
-7. Conflicts resolved by timestamp (first wins)
+1. Client fetches witness announcement from permanent DHT key
+2. Client extracts current_epoch from announcement
+3. Client sends SpendRequest to epoch-based DHT key for each witness
+4. Each Nodus checks nullifier not in DB
+5. If new: APPROVE + Dilithium sign + replicate to peers
+6. If exists: REJECT (already spent)
+7. Client collects 2+ signatures → WitnessProof
+8. Transaction with WitnessProof is valid
+9. Conflicts resolved by timestamp (first wins)
+```
+
+### DHT Key Structure
+
+```
+Announcement Key: SHA3-512("dnac:witness:announce:" + witness_fp)
+  - Published by witness on startup and epoch change
+  - Contains: current_epoch, witness_pubkey, signature
+
+Request Key: SHA3-512("dnac:nodus:epoch:request:" + witness_fp + ":" + epoch)
+  - Epoch = time(NULL) / 3600 (hourly rotation)
+  - Client PUTs SpendRequest here
+  - Witness listens on current AND previous epoch
 ```
 
 ---
@@ -279,6 +320,9 @@ CREATE TABLE dnac_pending_spends (
 | `DNAC_PUBKEY_SIZE` | 2592 | Dilithium5 public key |
 | `DNAC_WITNESSES_REQUIRED` | 2 | Witnesses needed for valid TX |
 | `DNAC_FEE_RATE_BPS` | 10 | Fee rate (0.1%) |
+| `DNAC_EPOCH_DURATION_SEC` | 3600 | Epoch duration (1 hour) |
+| `WITNESS_EPOCH_ANNOUNCE_TTL_SEC` | 3600 | Announcement TTL |
+| `WITNESS_EPOCH_REQUEST_TTL_SEC` | 300 | Request TTL (5 min) |
 
 ---
 

@@ -4,6 +4,7 @@
  */
 
 #include "dnac/nodus.h"
+#include "dnac/witness.h"
 #include <string.h>
 
 int dnac_spend_request_serialize(const dnac_spend_request_t *request,
@@ -120,6 +121,105 @@ int dnac_spend_response_deserialize(const uint8_t *buffer,
 
     memcpy(response_out->error_message, p, 256);
     response_out->error_message[255] = '\0';
+
+    return 0;
+}
+
+/* ============================================================================
+ * Witness Announcement Serialization
+ * ========================================================================== */
+
+int witness_announcement_serialize(const dnac_witness_announcement_t *announcement,
+                                   uint8_t *buffer,
+                                   size_t buffer_len,
+                                   size_t *written_out) {
+    if (!announcement || !buffer || !written_out) return -1;
+
+    size_t required = DNAC_ANNOUNCEMENT_SERIALIZED_SIZE;
+    if (buffer_len < required) return -1;
+
+    uint8_t *p = buffer;
+
+    /* Version (1 byte) */
+    *p++ = announcement->version;
+
+    /* Witness ID (32 bytes) */
+    memcpy(p, announcement->witness_id, 32);
+    p += 32;
+
+    /* Current epoch (8 bytes, little-endian) */
+    for (int i = 0; i < 8; i++) {
+        p[i] = (announcement->current_epoch >> (i * 8)) & 0xFF;
+    }
+    p += 8;
+
+    /* Epoch duration (8 bytes, little-endian) */
+    for (int i = 0; i < 8; i++) {
+        p[i] = (announcement->epoch_duration >> (i * 8)) & 0xFF;
+    }
+    p += 8;
+
+    /* Timestamp (8 bytes, little-endian) */
+    for (int i = 0; i < 8; i++) {
+        p[i] = (announcement->timestamp >> (i * 8)) & 0xFF;
+    }
+    p += 8;
+
+    /* Witness public key (2592 bytes) */
+    memcpy(p, announcement->witness_pubkey, DNAC_PUBKEY_SIZE);
+    p += DNAC_PUBKEY_SIZE;
+
+    /* Signature (4627 bytes) */
+    memcpy(p, announcement->signature, DNAC_SIGNATURE_SIZE);
+
+    *written_out = required;
+    return 0;
+}
+
+int witness_announcement_deserialize(const uint8_t *buffer,
+                                     size_t buffer_len,
+                                     dnac_witness_announcement_t *announcement_out) {
+    if (!buffer || !announcement_out) return -1;
+
+    size_t required = DNAC_ANNOUNCEMENT_SERIALIZED_SIZE;
+    if (buffer_len < required) return -1;
+
+    const uint8_t *p = buffer;
+
+    /* Version (1 byte) */
+    announcement_out->version = *p++;
+
+    /* Witness ID (32 bytes) */
+    memcpy(announcement_out->witness_id, p, 32);
+    p += 32;
+
+    /* Current epoch (8 bytes, little-endian) */
+    announcement_out->current_epoch = 0;
+    for (int i = 0; i < 8; i++) {
+        announcement_out->current_epoch |= ((uint64_t)p[i]) << (i * 8);
+    }
+    p += 8;
+
+    /* Epoch duration (8 bytes, little-endian) */
+    announcement_out->epoch_duration = 0;
+    for (int i = 0; i < 8; i++) {
+        announcement_out->epoch_duration |= ((uint64_t)p[i]) << (i * 8);
+    }
+    p += 8;
+
+    /* Timestamp (8 bytes, little-endian) */
+    announcement_out->timestamp = 0;
+    for (int i = 0; i < 8; i++) {
+        announcement_out->timestamp |= ((uint64_t)p[i]) << (i * 8);
+    }
+    p += 8;
+
+    /* Witness public key (2592 bytes) */
+    memcpy(announcement_out->witness_pubkey, p, DNAC_PUBKEY_SIZE);
+    p += DNAC_PUBKEY_SIZE;
+
+    /* Signature (4627 bytes) */
+    memcpy(announcement_out->signature, p, DNAC_SIGNATURE_SIZE);
 
     return 0;
 }

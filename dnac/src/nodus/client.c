@@ -13,6 +13,8 @@
 
 #include "dnac/nodus.h"
 #include "dnac/wallet.h"
+#include "dnac/witness.h"
+#include "dnac/epoch.h"
 #include <dna/dna_engine.h>
 #include <string.h>
 #include <stdlib.h>
@@ -67,6 +69,10 @@ extern int dna_engine_verify_signature(dna_engine_t *engine,
 /* DHT key prefixes */
 #define NODUS_REQUEST_PREFIX "dnac:nodus:request:"
 #define NODUS_RESPONSE_PREFIX "dnac:nodus:response:"
+
+/* Epoch-based DHT key prefixes */
+#define NODUS_ANNOUNCE_PREFIX      "dnac:witness:announce:"
+#define NODUS_EPOCH_REQUEST_PREFIX "dnac:nodus:epoch:request:"
 
 /* Retry configuration */
 #define NODUS_MAX_RETRIES       3
@@ -160,6 +166,79 @@ static int build_response_key(const uint8_t *tx_hash, const char *requester_fp,
     offset += fp_len;
 
     return compute_sha3_512(key_data, offset, key_out);
+}
+
+/**
+ * Build permanent announcement key for witness
+ * Key: SHA3-512("dnac:witness:announce:" + witness_fingerprint)
+ */
+static int build_announcement_key(const char *witness_fp, uint8_t *key_out) {
+    uint8_t key_data[256];
+    size_t offset = 0;
+
+    memcpy(key_data, NODUS_ANNOUNCE_PREFIX, strlen(NODUS_ANNOUNCE_PREFIX));
+    offset += strlen(NODUS_ANNOUNCE_PREFIX);
+
+    size_t fp_len = strlen(witness_fp);
+    memcpy(key_data + offset, witness_fp, fp_len);
+    offset += fp_len;
+
+    return compute_sha3_512(key_data, offset, key_out);
+}
+
+/**
+ * Build epoch-based request key
+ * Key: SHA3-512("dnac:nodus:epoch:request:" + witness_fp + ":" + epoch)
+ */
+static int build_epoch_request_key(const char *witness_fp, uint64_t epoch,
+                                   uint8_t *key_out) {
+    uint8_t key_data[256];
+    size_t offset = 0;
+
+    memcpy(key_data, NODUS_EPOCH_REQUEST_PREFIX,
+           strlen(NODUS_EPOCH_REQUEST_PREFIX));
+    offset += strlen(NODUS_EPOCH_REQUEST_PREFIX);
+
+    size_t fp_len = strlen(witness_fp);
+    memcpy(key_data + offset, witness_fp, fp_len);
+    offset += fp_len;
+
+    key_data[offset++] = ':';
+
+    /* Append epoch as 8-byte little-endian */
+    for (int i = 0; i < 8; i++) {
+        key_data[offset++] = (epoch >> (i * 8)) & 0xFF;
+    }
+
+    return compute_sha3_512(key_data, offset, key_out);
+}
+
+/**
+ * Fetch witness announcement from permanent DHT key
+ */
+static int fetch_witness_announcement(dht_context_t *dht,
+                                      const char *witness_fp,
+                                      dnac_witness_announcement_t *announcement_out) {
+    /* Build announcement key */
+    uint8_t announce_key[64];
+    if (build_announcement_key(witness_fp, announce_key) != 0) {
+        return -1;
+    }
+
+    /* GET from DHT */
+    uint8_t *data = NULL;
+    size_t data_len = 0;
+    int rc = dht_get(dht, announce_key, 64, &data, &data_len);
+
+    if (rc != 0 || !data || data_len == 0) {
+        return -1;
+    }
+
+    /* Deserialize */
+    rc = witness_announcement_deserialize(data, data_len, announcement_out);
+    free(data);
+
+    return rc;
 }
 
 /**
@@ -335,26 +414,49 @@ int dnac_witness_request(dnac_context_t *ctx,
         return DNAC_ERROR_CRYPTO;
     }
 
-    /* Send request to all witness servers */
+    /* Get local epoch as fallback */
+    uint64_t local_epoch = dnac_get_current_epoch();
+
+    /* Derive unique value_id from tx_hash */
+    uint64_t value_id = 0;
+    for (int i = 0; i < 8; i++) {
+        value_id |= ((uint64_t)request->tx_hash[i]) << (i * 8);
+    }
+
+    /* Send request to all witness servers using epoch-based keys */
     int servers_contacted = 0;
     for (int i = 0; i < server_count && i < DNAC_MAX_WITNESS_SERVERS; i++) {
-        /* Build request key for this server */
+        uint64_t target_epoch = local_epoch;
+
+        /* Try to fetch announcement to get server's current epoch */
+        if (servers[i].fingerprint[0] != '\0') {
+            dnac_witness_announcement_t announcement;
+            if (fetch_witness_announcement(dht, servers[i].fingerprint, &announcement) == 0) {
+                target_epoch = announcement.current_epoch;
+            }
+        }
+
+        /* Build epoch-based request key */
         uint8_t request_key[64];
-        uint8_t witness_id_bytes[32];
-
-        /* Convert hex ID to bytes */
-        for (int j = 0; j < 32 && servers[i].id[j*2]; j++) {
-            sscanf(&servers[i].id[j*2], "%2hhx", &witness_id_bytes[j]);
+        if (servers[i].fingerprint[0] != '\0') {
+            if (build_epoch_request_key(servers[i].fingerprint, target_epoch, request_key) != 0) {
+                continue;
+            }
+        } else {
+            /* Fallback to old key format if no fingerprint (bootstrap servers) */
+            uint8_t witness_id_bytes[32];
+            for (int j = 0; j < 32 && servers[i].id[j*2]; j++) {
+                sscanf(&servers[i].id[j*2], "%2hhx", &witness_id_bytes[j]);
+            }
+            if (build_request_key(witness_id_bytes, request->tx_hash, request_key) != 0) {
+                continue;
+            }
         }
 
-        if (build_request_key(witness_id_bytes, request->tx_hash, request_key) != 0) {
-            continue;
-        }
-
-        /* PUT request to DHT */
+        /* PUT request to DHT with epoch-based TTL */
         rc = dht_put_signed(dht, request_key, 64, req_buffer, req_len,
-                           1, /* value_id */
-                           60, /* TTL 60 seconds */
+                           value_id,
+                           300, /* TTL 5 minutes for epoch requests */
                            "witness_request");
         if (rc == 0) {
             servers_contacted++;

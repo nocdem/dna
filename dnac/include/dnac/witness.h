@@ -30,6 +30,29 @@ extern "C" {
 #endif
 
 /* ============================================================================
+ * Epoch Announcement Structure
+ * ========================================================================== */
+
+/**
+ * @brief Witness epoch announcement (published to permanent key)
+ *
+ * Each witness publishes this to a permanent DHT key so clients can
+ * discover the current epoch and build the correct request key.
+ */
+typedef struct {
+    uint8_t  version;                           /**< Announcement version (1) */
+    uint8_t  witness_id[32];                    /**< Witness ID (first 32 bytes of fp) */
+    uint64_t current_epoch;                     /**< Current epoch number */
+    uint64_t epoch_duration;                    /**< Epoch duration in seconds */
+    uint64_t timestamp;                         /**< Announcement timestamp */
+    uint8_t  witness_pubkey[DNAC_PUBKEY_SIZE];  /**< Witness Dilithium5 public key */
+    uint8_t  signature[DNAC_SIGNATURE_SIZE];    /**< Signature over above fields */
+} dnac_witness_announcement_t;
+
+/* Serialized size: 1 + 32 + 8 + 8 + 8 + 2592 + 4627 = 7276 bytes */
+#define DNAC_ANNOUNCEMENT_SERIALIZED_SIZE (1 + 32 + 8 + 8 + 8 + DNAC_PUBKEY_SIZE + DNAC_SIGNATURE_SIZE)
+
+/* ============================================================================
  * Listener Context Types
  * ========================================================================== */
 
@@ -170,6 +193,59 @@ size_t witness_start_request_listener(dna_engine_t *engine,
  * @param token Listen token from start function
  */
 void witness_stop_request_listener(dna_engine_t *engine, size_t token);
+
+/* ============================================================================
+ * Epoch Announcement Functions
+ * ========================================================================== */
+
+/**
+ * @brief Publish epoch announcement to permanent DHT key
+ *
+ * Publishes announcement containing current epoch, pubkey, and signature
+ * so clients can discover which epoch key to use for requests.
+ *
+ * @param engine DNA engine with loaded identity
+ * @return 0 on success, -1 on failure
+ */
+int witness_publish_announcement(dna_engine_t *engine);
+
+/**
+ * @brief Start epoch-based request listener
+ *
+ * Listens on both current and previous epoch keys to handle
+ * boundary transitions and clock skew.
+ *
+ * @param engine DNA engine with loaded identity
+ * @param ctx Listener context (must remain valid until stop)
+ * @param current_epoch Current epoch number
+ * @return Listen token (0 on failure)
+ */
+size_t witness_start_epoch_request_listener(dna_engine_t *engine,
+                                            witness_request_ctx_t *ctx,
+                                            uint64_t current_epoch);
+
+/**
+ * @brief Stop epoch request listener
+ *
+ * @param engine DNA engine
+ * @param token Listen token from start function
+ */
+void witness_stop_epoch_request_listener(dna_engine_t *engine, size_t token);
+
+/**
+ * @brief Serialize witness announcement
+ */
+int witness_announcement_serialize(const dnac_witness_announcement_t *announcement,
+                                   uint8_t *buffer,
+                                   size_t buffer_len,
+                                   size_t *written_out);
+
+/**
+ * @brief Deserialize witness announcement
+ */
+int witness_announcement_deserialize(const uint8_t *buffer,
+                                     size_t buffer_len,
+                                     dnac_witness_announcement_t *announcement_out);
 
 /* ============================================================================
  * Replication Functions

@@ -24,6 +24,7 @@
 #include <dna/dna_engine.h>
 #include "dnac/witness.h"
 #include "dnac/version.h"
+#include "dnac/epoch.h"
 #include "config.h"
 
 #include "crypto/utils/qgp_log.h"
@@ -214,19 +215,46 @@ int main(int argc, char *argv[]) {
         .pending_count = &g_pending_work
     };
 
+    /* Track current epoch */
+    uint64_t current_epoch = dnac_get_current_epoch();
+    uint64_t last_announced_epoch = 0;
+
+    /* Publish initial epoch announcement */
+    printf("Publishing epoch announcement (epoch %lu)...\n", (unsigned long)current_epoch);
+    rc = witness_publish_announcement(engine);
+    if (rc == 0) {
+        last_announced_epoch = current_epoch;
+    } else {
+        fprintf(stderr, "Warning: Failed to publish epoch announcement\n");
+    }
+
     /* Start listeners */
     printf("Starting DHT listeners...\n");
+
+    /* Start legacy request listener (for backward compatibility during transition) */
     size_t req_token = witness_start_request_listener(engine, &req_ctx);
+
+    /* Start epoch-based request listeners (current and previous epoch) */
+    size_t epoch_token_current = witness_start_epoch_request_listener(engine, &req_ctx, current_epoch);
+    size_t epoch_token_previous = 0;
+    if (current_epoch > 0) {
+        epoch_token_previous = witness_start_epoch_request_listener(engine, &req_ctx, current_epoch - 1);
+    }
+
+    /* Start replication listener */
     size_t rep_token = witness_start_replication_listener(engine, &rep_ctx);
 
     if (req_token == 0) {
-        fprintf(stderr, "Warning: Failed to start request listener\n");
+        fprintf(stderr, "Warning: Failed to start legacy request listener\n");
+    }
+    if (epoch_token_current == 0) {
+        fprintf(stderr, "Warning: Failed to start epoch request listener\n");
     }
     if (rep_token == 0) {
         fprintf(stderr, "Warning: Failed to start replication listener\n");
     }
 
-    printf("Listening for requests (event-driven)...\n");
+    printf("Listening for requests (event-driven, epoch %lu)...\n", (unsigned long)current_epoch);
 
     /* Main loop - wait for events or periodic tasks */
     time_t last_identity_publish = time(NULL);
@@ -235,7 +263,7 @@ int main(int argc, char *argv[]) {
     while (g_running) {
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_sec += 60;  /* Wake every 60s max for identity refresh check */
+        ts.tv_sec += 60;  /* Wake every 60s max for periodic checks */
 
         pthread_mutex_lock(&g_work_mutex);
         int work_done = g_pending_work;
@@ -245,6 +273,32 @@ int main(int argc, char *argv[]) {
 
         if (work_done > 0) {
             printf("Processed %d event(s)\n", work_done);
+        }
+
+        /* Check for epoch change */
+        uint64_t new_epoch = dnac_get_current_epoch();
+        if (new_epoch != current_epoch) {
+            printf("Epoch changed: %lu -> %lu\n",
+                   (unsigned long)current_epoch, (unsigned long)new_epoch);
+
+            /* Stop old epoch listeners */
+            if (epoch_token_previous != 0) {
+                witness_stop_epoch_request_listener(engine, epoch_token_previous);
+            }
+
+            /* Rotate: current becomes previous */
+            epoch_token_previous = epoch_token_current;
+
+            /* Start listener for new epoch */
+            epoch_token_current = witness_start_epoch_request_listener(engine, &req_ctx, new_epoch);
+
+            current_epoch = new_epoch;
+
+            /* Publish new announcement */
+            if (witness_publish_announcement(engine) == 0) {
+                last_announced_epoch = current_epoch;
+                printf("Published epoch %lu announcement\n", (unsigned long)current_epoch);
+            }
         }
 
         /* Periodically refresh identity in DHT */
@@ -259,6 +313,12 @@ int main(int argc, char *argv[]) {
     printf("Shutting down witness server...\n");
     if (req_token != 0) {
         witness_stop_request_listener(engine, req_token);
+    }
+    if (epoch_token_current != 0) {
+        witness_stop_epoch_request_listener(engine, epoch_token_current);
+    }
+    if (epoch_token_previous != 0) {
+        witness_stop_epoch_request_listener(engine, epoch_token_previous);
     }
     if (rep_token != 0) {
         witness_stop_replication_listener(engine, rep_token);

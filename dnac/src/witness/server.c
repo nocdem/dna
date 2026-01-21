@@ -11,6 +11,7 @@
 
 #include "dnac/witness.h"
 #include "dnac/nodus.h"
+#include "dnac/epoch.h"
 #include "config.h"
 
 #include <string.h>
@@ -119,6 +120,51 @@ static int build_response_key(const uint8_t *tx_hash,
     size_t fp_len = strlen(requester_fp);
     memcpy(key_data + offset, requester_fp, fp_len);
     offset += fp_len;
+
+    return compute_sha3_512(key_data, offset, key_out);
+}
+
+/**
+ * Build permanent announcement key
+ * Key: SHA3-512("dnac:witness:announce:" + witness_fingerprint)
+ */
+static int build_announcement_key(const char *witness_fp, uint8_t *key_out) {
+    uint8_t key_data[256];
+    size_t offset = 0;
+
+    memcpy(key_data, WITNESS_ANNOUNCE_PREFIX, strlen(WITNESS_ANNOUNCE_PREFIX));
+    offset += strlen(WITNESS_ANNOUNCE_PREFIX);
+
+    size_t fp_len = strlen(witness_fp);
+    memcpy(key_data + offset, witness_fp, fp_len);
+    offset += fp_len;
+
+    return compute_sha3_512(key_data, offset, key_out);
+}
+
+/**
+ * Build epoch-based request inbox key
+ * Key: SHA3-512("dnac:nodus:epoch:request:" + witness_fp + ":" + epoch)
+ */
+static int build_epoch_request_key(const char *witness_fp, uint64_t epoch,
+                                   uint8_t *key_out) {
+    uint8_t key_data[256];
+    size_t offset = 0;
+
+    memcpy(key_data, WITNESS_EPOCH_REQUEST_PREFIX,
+           strlen(WITNESS_EPOCH_REQUEST_PREFIX));
+    offset += strlen(WITNESS_EPOCH_REQUEST_PREFIX);
+
+    size_t fp_len = strlen(witness_fp);
+    memcpy(key_data + offset, witness_fp, fp_len);
+    offset += fp_len;
+
+    key_data[offset++] = ':';
+
+    /* Append epoch as 8-byte little-endian */
+    for (int i = 0; i < 8; i++) {
+        key_data[offset++] = (epoch >> (i * 8)) & 0xFF;
+    }
 
     return compute_sha3_512(key_data, offset, key_out);
 }
@@ -470,4 +516,230 @@ void witness_stop_request_listener(dna_engine_t *engine, size_t token) {
 
     dht_cancel_listen(dht, token);
     QGP_LOG_INFO(LOG_TAG, "Stopped request listener");
+}
+
+/* ============================================================================
+ * Epoch Announcement Functions
+ * ========================================================================== */
+
+int witness_publish_announcement(dna_engine_t *engine) {
+    if (!engine) return -1;
+
+    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
+    if (!dht) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT context not available");
+        return -1;
+    }
+
+    const char *fingerprint = dna_engine_get_fingerprint(engine);
+    if (!fingerprint) {
+        QGP_LOG_ERROR(LOG_TAG, "No fingerprint available");
+        return -1;
+    }
+
+    /* Build announcement */
+    dnac_witness_announcement_t announcement;
+    memset(&announcement, 0, sizeof(announcement));
+
+    announcement.version = 1;
+    announcement.current_epoch = dnac_get_current_epoch();
+    announcement.epoch_duration = DNAC_EPOCH_DURATION_SEC;
+    announcement.timestamp = (uint64_t)time(NULL);
+
+    /* Fill witness_id from fingerprint (first 32 bytes of hex fingerprint) */
+    for (int i = 0; i < 32 && fingerprint[i*2]; i++) {
+        sscanf(&fingerprint[i*2], "%2hhx", &announcement.witness_id[i]);
+    }
+
+    /* Get public key */
+    int ret = dna_engine_get_signing_public_key(engine, announcement.witness_pubkey,
+                                                 DNAC_PUBKEY_SIZE);
+    if (ret < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get signing public key");
+        return -1;
+    }
+
+    /* Sign announcement (all fields except signature) */
+    size_t sign_len = sizeof(announcement) - DNAC_SIGNATURE_SIZE;
+    size_t sig_out_len = 0;
+    ret = dna_engine_sign_data(engine, (uint8_t*)&announcement, sign_len,
+                               announcement.signature, &sig_out_len);
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign announcement");
+        return -1;
+    }
+
+    /* Serialize announcement */
+    uint8_t buffer[8192];
+    size_t written = 0;
+    ret = witness_announcement_serialize(&announcement, buffer, sizeof(buffer), &written);
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize announcement");
+        return -1;
+    }
+
+    /* Build announcement key */
+    uint8_t announce_key[64];
+    if (build_announcement_key(fingerprint, announce_key) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to build announcement key");
+        return -1;
+    }
+
+    /* PUT to DHT */
+    ret = dht_put_signed(dht, announce_key, 64, buffer, written,
+                         announcement.current_epoch,  /* value_id = epoch */
+                         WITNESS_EPOCH_ANNOUNCE_TTL_SEC,
+                         "witness_announcement");
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish announcement to DHT");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Published epoch %lu announcement for %.32s...",
+                 (unsigned long)announcement.current_epoch, fingerprint);
+    return 0;
+}
+
+/* ============================================================================
+ * Epoch-Based Request Listener
+ * ========================================================================== */
+
+/**
+ * DHT listener callback for epoch-based requests
+ */
+static bool epoch_request_listener_callback(const uint8_t *value, size_t value_len,
+                                            bool expired, void *user_data) {
+    witness_request_ctx_t *ctx = (witness_request_ctx_t *)user_data;
+    if (!ctx || expired || !value || value_len == 0) return true;
+
+    /* Deserialize request */
+    dnac_spend_request_t request;
+    if (dnac_spend_request_deserialize(value, value_len, &request) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to deserialize incoming epoch request");
+        return true;  /* Continue listening */
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Received witness request via epoch listener");
+
+    /* Process the request */
+    dnac_spend_response_t response;
+    memset(&response, 0, sizeof(response));
+
+    /* Get our identity info */
+    const char *our_fp = dna_engine_get_fingerprint(ctx->engine);
+    if (!our_fp) {
+        return true;  /* Continue listening */
+    }
+
+    /* Convert fingerprint to witness_id bytes */
+    for (int i = 0; i < 32 && our_fp[i*2]; i++) {
+        sscanf(&our_fp[i*2], "%2hhx", &response.witness_id[i]);
+    }
+
+    /* Check if nullifier already spent */
+    if (witness_nullifier_exists(request.nullifier)) {
+        response.status = DNAC_NODUS_STATUS_REJECTED;
+        snprintf(response.error_message, sizeof(response.error_message),
+                 "Nullifier already spent");
+        QGP_LOG_WARN(LOG_TAG, "Rejected: nullifier already spent");
+    } else {
+        /* Record nullifier */
+        if (witness_nullifier_add(request.nullifier, request.tx_hash) != 0) {
+            response.status = DNAC_NODUS_STATUS_ERROR;
+            snprintf(response.error_message, sizeof(response.error_message),
+                     "Database error");
+            QGP_LOG_ERROR(LOG_TAG, "Failed to record nullifier");
+        } else {
+            /* Build data to sign: tx_hash || witness_id || timestamp */
+            response.timestamp = (uint64_t)time(NULL);
+
+            uint8_t sign_data[64 + 32 + 8];
+            memcpy(sign_data, request.tx_hash, 64);
+            memcpy(sign_data + 64, response.witness_id, 32);
+
+            /* Little-endian timestamp */
+            for (int i = 0; i < 8; i++) {
+                sign_data[64 + 32 + i] = (response.timestamp >> (i * 8)) & 0xFF;
+            }
+
+            /* Sign with our Dilithium5 key */
+            size_t sig_len = 0;
+            int ret = dna_engine_sign_data(ctx->engine, sign_data, sizeof(sign_data),
+                                           response.signature, &sig_len);
+            if (ret != 0) {
+                response.status = DNAC_NODUS_STATUS_ERROR;
+                snprintf(response.error_message, sizeof(response.error_message),
+                         "Signing failed");
+                QGP_LOG_ERROR(LOG_TAG, "Failed to sign witness attestation");
+            } else {
+                /* Include our public key in response */
+                dna_engine_get_signing_public_key(ctx->engine, response.server_pubkey,
+                                                  DNAC_PUBKEY_SIZE);
+
+                response.status = DNAC_NODUS_STATUS_APPROVED;
+                QGP_LOG_INFO(LOG_TAG, "Approved witness request (epoch-based)");
+
+                /* Queue nullifier for replication */
+                witness_replicate_nullifier(request.nullifier, request.tx_hash);
+            }
+        }
+    }
+
+    /* Send response */
+    witness_send_response(ctx->engine, &request, &response);
+
+    /* Signal main thread that work was done */
+    pthread_mutex_lock(ctx->mutex);
+    (*ctx->pending_count)++;
+    pthread_cond_signal(ctx->cond);
+    pthread_mutex_unlock(ctx->mutex);
+
+    return true;  /* Continue listening */
+}
+
+size_t witness_start_epoch_request_listener(dna_engine_t *engine,
+                                            witness_request_ctx_t *ctx,
+                                            uint64_t current_epoch) {
+    if (!engine || !ctx) return 0;
+
+    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
+    if (!dht) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT context not available");
+        return 0;
+    }
+
+    const char *our_fp = dna_engine_get_fingerprint(engine);
+    if (!our_fp) {
+        QGP_LOG_ERROR(LOG_TAG, "No fingerprint available");
+        return 0;
+    }
+
+    /* Build epoch request key for current epoch */
+    uint8_t listen_key[64];
+    if (build_epoch_request_key(our_fp, current_epoch, listen_key) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to build epoch request key");
+        return 0;
+    }
+
+    /* Start listening */
+    size_t token = dht_listen(dht, listen_key, 64,
+                              epoch_request_listener_callback, ctx);
+    if (token == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to start epoch request listener");
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Started epoch %lu request listener for %.32s...",
+                 (unsigned long)current_epoch, our_fp);
+    return token;
+}
+
+void witness_stop_epoch_request_listener(dna_engine_t *engine, size_t token) {
+    if (!engine || token == 0) return;
+
+    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
+    if (!dht) return;
+
+    dht_cancel_listen(dht, token);
+    QGP_LOG_INFO(LOG_TAG, "Stopped epoch request listener");
 }

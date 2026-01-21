@@ -1,6 +1,6 @@
 # DNAC Witness Nodes - Alpha/Beta Testing
 
-**Created:** 2026-01-21 | **Version:** v0.1.18
+**Created:** 2026-01-21 | **Version:** v0.1.21
 
 ---
 
@@ -107,6 +107,89 @@ peers = [
 4. If nullifier exists: REJECT (double-spend)
 5. Client collects 2+ attestations
 6. Transaction with 2+ attestations is valid
+
+---
+
+## Epoch-Based DHT Keys (v0.1.21+)
+
+To prevent unbounded DHT key accumulation, witness requests use epoch-based rotating keys.
+
+### Epoch Configuration
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| Epoch Duration | 3600 sec (1 hour) | Time-based rotation |
+| Announcement TTL | 3600 sec | Refreshed each epoch |
+| Request TTL | 300 sec (5 min) | Short-lived requests |
+
+### Key Structure
+
+```
+PERMANENT ANNOUNCEMENT KEY (per witness):
+  SHA3-512("dnac:witness:announce:" + witness_fingerprint)
+
+EPOCH REQUEST KEY (rotates hourly):
+  SHA3-512("dnac:nodus:epoch:request:" + witness_fingerprint + ":" + epoch_number)
+
+Epoch Number = time(NULL) / 3600
+```
+
+### Witness Announcement
+
+Each witness publishes an announcement to its permanent key:
+
+```c
+typedef struct {
+    uint8_t  version;                    /* = 1 */
+    uint8_t  witness_id[32];             /* First 32 bytes of fingerprint */
+    uint64_t current_epoch;              /* Current epoch number */
+    uint64_t epoch_duration;             /* 3600 seconds */
+    uint64_t timestamp;                  /* Announcement time */
+    uint8_t  witness_pubkey[2592];       /* Dilithium5 public key */
+    uint8_t  signature[4627];            /* Dilithium5 signature */
+} dnac_witness_announcement_t;
+```
+
+### Client Flow
+
+```
+1. Client discovers witness fingerprints
+2. Client fetches announcement from permanent key:
+   GET SHA3-512("dnac:witness:announce:" + witness_fp)
+3. Client extracts current_epoch from announcement
+4. Client builds epoch request key:
+   SHA3-512("dnac:nodus:epoch:request:" + witness_fp + ":" + epoch)
+5. Client PUTs SpendRequest to epoch key
+6. Fallback: If announcement unavailable, use local time(NULL)/3600
+```
+
+### Server Flow
+
+```
+1. Server publishes announcement on startup
+2. Server listens on current epoch key AND previous epoch key
+3. On epoch change:
+   a. Publish new announcement
+   b. Stop listener on (epoch - 2)
+   c. Start listener on new epoch
+4. Process requests from both current and previous epoch keys
+```
+
+### Epoch Boundary Handling
+
+```
+Time:   |-------- Epoch N --------|-------- Epoch N+1 --------|
+
+Client: Sends to epoch N          | Sends to epoch N+1
+        at 00:59:59               | at 01:00:01
+
+Server: Polls epoch N             | Polls epoch N+1
+        Polls epoch N-1           | Polls epoch N
+
+Result: Request found in N        | Request found in N+1
+```
+
+The server always polls current AND previous epoch, ensuring no requests are missed at boundaries.
 
 ---
 
