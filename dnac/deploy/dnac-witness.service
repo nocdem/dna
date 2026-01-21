@@ -1,0 +1,13 @@
+[Unit]
+Description=DNAC Witness Server
+After=network.target
+
+[Service]
+Type=simple
+User=nocdem
+ExecStart=/opt/dnac/build/dnac-witness -d /home/nocdem/.dna
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

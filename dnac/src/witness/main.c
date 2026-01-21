@@ -29,6 +29,8 @@
 
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_types.h"
+#include "crypto/utils/qgp_sha3.h"
 
 #define LOG_TAG "WITNESS_MAIN"
 
@@ -94,6 +96,35 @@ static char* get_db_path(const char *data_dir) {
     return path;
 }
 
+/**
+ * Compute fingerprint from identity key file
+ * @param data_dir Data directory containing keys/identity.dsa
+ * @param fingerprint_out Output buffer (must be at least 129 bytes)
+ * @return 0 on success, -1 on error
+ */
+static int compute_identity_fingerprint(const char *data_dir, char *fingerprint_out) {
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/keys/identity.dsa", data_dir);
+
+    qgp_key_t *key = NULL;
+    if (qgp_key_load(key_path, &key) != 0 || !key) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load signing key: %s", key_path);
+        return -1;
+    }
+
+    if (key->type != QGP_KEY_TYPE_DSA87 || !key->public_key) {
+        QGP_LOG_ERROR(LOG_TAG, "Not a Dilithium5 key or missing public key");
+        qgp_key_free(key);
+        return -1;
+    }
+
+    /* Compute SHA3-512 fingerprint of public key */
+    int rc = qgp_sha3_512_fingerprint(key->public_key, key->public_key_size, fingerprint_out);
+
+    qgp_key_free(key);
+    return rc;
+}
+
 int main(int argc, char *argv[]) {
     char *data_dir = NULL;
     int opt;
@@ -144,9 +175,19 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    /* Compute fingerprint from identity file */
+    char fingerprint[129] = {0};
+    rc = compute_identity_fingerprint(data_dir, fingerprint);
+    if (rc != 0) {
+        fprintf(stderr, "Failed to compute identity fingerprint\n");
+        dna_engine_destroy(engine);
+        free(data_dir);
+        return 1;
+    }
+    printf("Identity fingerprint: %.32s...\n", fingerprint);
+
     /* Load identity using async API with minimal mode (DHT only) */
-    /* NULL fingerprint = default/only identity */
-    dna_engine_load_identity_minimal(engine, NULL, NULL,
+    dna_engine_load_identity_minimal(engine, fingerprint, NULL,
                                      identity_loaded_callback, NULL);
 
     /* Wait for load to complete (max 30 seconds) */
@@ -164,8 +205,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    const char *fingerprint = dna_engine_get_fingerprint(engine);
-    printf("Identity loaded: %.32s...\n", fingerprint ? fingerprint : "(unknown)");
+    printf("Identity loaded: %.32s...\n", fingerprint);
 
     /* Initialize nullifier database */
     char *db_path = get_db_path(data_dir);
@@ -198,7 +238,7 @@ int main(int argc, char *argv[]) {
     }
 
     printf("Witness server running. Press Ctrl+C to stop.\n");
-    printf("Fingerprint: %s\n", fingerprint ? fingerprint : "(unknown)");
+    printf("Fingerprint: %s\n", fingerprint);
 
     /* Setup listener contexts */
     witness_request_ctx_t req_ctx = {

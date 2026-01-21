@@ -40,8 +40,9 @@
  * NULL-terminated array.
  */
 static const char *WITNESS_PEERS[] = {
-    /* Add peer fingerprints here after deployment */
-    /* "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef...", */
+    "46de00d4e2ac54bdb70f3867498707ebaca58c65ca7713569fe183ffeeea46bdf380804405430d4684d8fc17b4702003d46d013151749a43fdc6b84d7472709d",  /* node1 - 192.168.0.195 */
+    "d43514f121b508ca304ce741edca0bd1fbe661fe5fbd6f188b6831d0794179977083e9fbae4aa40e7d16ee73918b6e26f9c29011914415732322a2b129303634",  /* treasury - 192.168.0.196 */
+    "7dea0967abe22f720be1b1c0f68131eb1e39d93a5bb58039836fe842a10fefec1db52df710238edcb90216f232da5c621e4a2e92b6c42508b64baf43594935e7",  /* cpunkroot2 - 192.168.0.199 */
     NULL
 };
 

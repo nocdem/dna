@@ -1,6 +1,6 @@
 # DNAC Witness Nodes - Alpha/Beta Testing
 
-**Created:** 2026-01-21 | **Version:** v0.1.22
+**Created:** 2026-01-21 | **Version:** v0.1.23
 
 ---
 
@@ -14,9 +14,17 @@ This document describes the witness node infrastructure for DNAC alpha/beta test
 
 | Name | IP Address | Hostname | Role | Status |
 |------|------------|----------|------|--------|
-| node1 | 192.168.0.195 | chat1 | Witness Server #1 | Pending Setup |
-| treasury | 192.168.0.196 | treasury | Witness Server #2 | Pending Setup |
-| cpunkroot2 | 192.168.0.199 | cpunkroot2 | Witness Server #3 | Pending Setup |
+| node1 | 192.168.0.195 | chat1 | Witness Server #1 | Active |
+| treasury | 192.168.0.196 | treasury | Witness Server #2 | Active |
+| cpunkroot2 | 192.168.0.199 | cpunkroot2 | Witness Server #3 | Active |
+
+### Node Fingerprints
+
+| Node | Fingerprint |
+|------|-------------|
+| node1 | `46de00d4e2ac54bdb70f3867498707ebaca58c65ca7713569fe183ffeeea46bdf380804405430d4684d8fc17b4702003d46d013151749a43fdc6b84d7472709d` |
+| treasury | `d43514f121b508ca304ce741edca0bd1fbe661fe5fbd6f188b6831d0794179977083e9fbae4aa40e7d16ee73918b6e26f9c29011914415732322a2b129303634` |
+| cpunkroot2 | `7dea0967abe22f720be1b1c0f68131eb1e39d93a5bb58039836fe842a10fefec1db52df710238edcb90216f232da5c621e4a2e92b6c42508b64baf43594935e7` |
 
 **SSH Access:** `nocdem@<ip>`
 
@@ -226,7 +234,7 @@ ssh nocdem@192.168.0.195 "systemctl status dnac-witness"
 
 ## Known Issues
 
-1. `src/witness/config.h:32-36` - `WITNESS_PEERS[]` array is empty
+1. ~~`src/witness/config.h:32-36` - `WITNESS_PEERS[]` array is empty~~ **RESOLVED** - All 3 witnesses configured
 2. `src/nodus/discovery.c:118-119` - Bootstrap server pubkeys are zeros
 3. Witness server not yet built by default (requires `-DDNAC_BUILD_WITNESS=ON`)
 
