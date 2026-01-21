@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-01-21 | **Status:** DESIGN | **Version:** v0.1.23
+**Last Updated:** 2026-01-22 | **Status:** DESIGN | **Version:** v0.1.28
 
 ---
 
@@ -268,6 +268,30 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 ```bash
 git push origin main
 ```
+
+---
+
+## Witness Server Protocol
+
+### Version Tracking
+- **Response includes:** `software_version[3]` - [major, minor, patch]
+- **Announcement includes:** `software_version[3]` - [major, minor, patch]
+- Logs show: `witness %.8s... v%d.%d.%d VERIFIED`
+
+### Protocol Versions
+| Version | Field | Format |
+|---------|-------|--------|
+| v1 | Response | status + witness_id + sig + timestamp + error |
+| v2 | Response | + server_pubkey (2592 bytes) |
+| v3 | Response | + software_version (3 bytes) |
+| v1 | Announce | version + witness_id + epoch + duration + ts + pubkey + sig |
+| v2 | Announce | + software_version (3 bytes) |
+
+### Response Queue Pattern
+DHT callbacks cannot call `dht_put_signed()` (mutex deadlock). Solution:
+1. Callbacks queue responses to `g_response_queue[]`
+2. Main loop calls `witness_process_pending_responses()`
+3. Main thread sends queued responses safely
 
 ---
 

@@ -5,12 +5,17 @@
 
 #include "dnac/cli.h"
 #include "dnac/dnac.h"
+#include "dnac/wallet.h"
+#include "dnac/transaction.h"
 #include "dnac/version.h"
+#include <dna/dna_engine.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
 #include <time.h>
+#include <pthread.h>
+#include <stdbool.h>
 
 /* ============================================================================
  * Helper Functions
@@ -381,6 +386,193 @@ int dnac_cli_recover(dnac_context_t *ctx) {
     return 0;
 }
 
+int dnac_cli_mint(dnac_context_t *ctx, const char *recipient, uint64_t amount) {
+    char amount_str[64];
+    format_amount(amount, amount_str, sizeof(amount_str));
+    printf("Minting %s to %s...\n", amount_str, recipient);
+
+    dnac_transaction_t *tx = NULL;
+    int rc = dnac_tx_create_mint(recipient, amount, &tx);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error creating mint transaction: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+
+    printf("Requesting witness authorization...\n");
+    rc = dnac_tx_authorize_mint(ctx, tx);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Witnesses rejected mint: %s\n", dnac_error_string(rc));
+        dnac_free_transaction(tx);
+        return 1;
+    }
+
+    printf("Broadcasting...\n");
+    rc = dnac_tx_broadcast_mint(ctx, tx);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Broadcast failed: %s\n", dnac_error_string(rc));
+        dnac_free_transaction(tx);
+        return 1;
+    }
+
+    printf("SUCCESS! TX: ");
+    for (int i = 0; i < 32; i++) printf("%02x", tx->tx_hash[i]);
+    printf("...\n");
+
+    dnac_free_transaction(tx);
+    return 0;
+}
+
+int dnac_cli_info(dnac_context_t *ctx) {
+    dna_engine_t *engine = dnac_get_engine(ctx);
+    if (!engine) {
+        fprintf(stderr, "Error: Engine not initialized\n");
+        return 1;
+    }
+
+    printf("DNAC Wallet Info\n");
+    printf("================\n");
+    printf("Version:     %s\n", dnac_get_version());
+
+    /* Fingerprint (wallet address) */
+    const char *fp = dna_engine_get_fingerprint(engine);
+    if (fp) {
+        printf("Address:     %.32s...\n", fp);
+        printf("Full:        %s\n", fp);
+    } else {
+        printf("Address:     (not loaded)\n");
+    }
+
+    /* DHT status */
+    int dht_connected = dna_engine_is_dht_connected(engine);
+    printf("DHT:         %s\n", dht_connected ? "Connected" : "Disconnected");
+
+    /* Balance summary */
+    dnac_balance_t balance;
+    if (dnac_get_balance(ctx, &balance) == DNAC_SUCCESS) {
+        char amt[32];
+        format_amount(balance.confirmed, amt, sizeof(amt));
+        printf("Balance:     %s\n", amt);
+    }
+
+    return 0;
+}
+
+int dnac_cli_address(dnac_context_t *ctx) {
+    dna_engine_t *engine = dnac_get_engine(ctx);
+    if (!engine) {
+        fprintf(stderr, "Error: Engine not initialized\n");
+        return 1;
+    }
+
+    const char *fp = dna_engine_get_fingerprint(engine);
+    if (fp) {
+        printf("%s\n", fp);
+    } else {
+        fprintf(stderr, "Error: Identity not loaded\n");
+        return 1;
+    }
+    return 0;
+}
+
+/* Callback context for name lookup */
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    bool done;
+    int result;
+    char fingerprint[129];
+} name_lookup_ctx_t;
+
+static void on_name_lookup(uint64_t request_id, int error,
+                           const char *fingerprint, void *user_data) {
+    (void)request_id;
+    name_lookup_ctx_t *lctx = (name_lookup_ctx_t *)user_data;
+    pthread_mutex_lock(&lctx->mutex);
+    lctx->result = error;
+    if (fingerprint && error == 0) {
+        strncpy(lctx->fingerprint, fingerprint, 128);
+        lctx->fingerprint[128] = '\0';
+    }
+    lctx->done = true;
+    pthread_cond_signal(&lctx->cond);
+    pthread_mutex_unlock(&lctx->mutex);
+
+    /* Free the strdup'd string from dna_handle_lookup_name */
+    if (fingerprint) {
+        free((void*)fingerprint);
+    }
+}
+
+int dnac_cli_query(dnac_context_t *ctx, const char *query) {
+    dna_engine_t *engine = dnac_get_engine(ctx);
+    if (!engine) {
+        fprintf(stderr, "Error: Engine not initialized\n");
+        return 1;
+    }
+
+    /* Determine if query is fingerprint (128 hex) or name */
+    size_t len = strlen(query);
+    bool is_fingerprint = (len == 128);
+
+    /* Validate fingerprint format */
+    if (is_fingerprint) {
+        for (size_t i = 0; i < 128; i++) {
+            char c = query[i];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+                is_fingerprint = false;
+                break;
+            }
+        }
+    }
+
+    const char *fingerprint = NULL;
+    char fp_buf[129] = {0};
+
+    if (is_fingerprint) {
+        fingerprint = query;
+        printf("Looking up fingerprint: %.32s...\n", fingerprint);
+    } else {
+        /* Name lookup */
+        printf("Looking up name: %s\n", query);
+
+        name_lookup_ctx_t lookup = {0};
+        pthread_mutex_init(&lookup.mutex, NULL);
+        pthread_cond_init(&lookup.cond, NULL);
+
+        dna_engine_lookup_name(engine, query, on_name_lookup, &lookup);
+
+        /* Wait for callback */
+        pthread_mutex_lock(&lookup.mutex);
+        while (!lookup.done) {
+            pthread_cond_wait(&lookup.cond, &lookup.mutex);
+        }
+        int result = lookup.result;
+        pthread_mutex_unlock(&lookup.mutex);
+
+        pthread_mutex_destroy(&lookup.mutex);
+        pthread_cond_destroy(&lookup.cond);
+
+        if (result != 0) {
+            fprintf(stderr, "Lookup failed\n");
+            return 1;
+        }
+
+        if (lookup.fingerprint[0] == '\0') {
+            fprintf(stderr, "Name '%s' not registered\n", query);
+            return 1;
+        }
+
+        strncpy(fp_buf, lookup.fingerprint, 128);
+        fingerprint = fp_buf;
+    }
+
+    /* Display result */
+    printf("\nIdentity Found:\n");
+    printf("  Fingerprint: %s\n", fingerprint);
+
+    return 0;
+}
+
 void dnac_cli_print_help(void) {
     printf("dnac-cli - DNAC Wallet Command Line Interface\n\n");
     printf("Usage: dnac-cli [options] <command> [arguments]\n\n");
@@ -389,9 +581,13 @@ void dnac_cli_print_help(void) {
     printf("  -v, --version    Show version information\n");
     printf("  -d, --data-dir   Data directory (default: ~/.dna)\n\n");
     printf("Commands:\n");
+    printf("  info             Show wallet info and status\n");
+    printf("  address          Show wallet address (fingerprint)\n");
+    printf("  query <name|fp>  Lookup identity by name or fingerprint\n");
     printf("  balance          Show wallet balance\n");
     printf("  utxos            List unspent transaction outputs\n");
     printf("  send <fp> <amt>  Send payment to fingerprint\n");
+    printf("  mint <fp> <amt>  Mint new coins to fingerprint (requires witness auth)\n");
     printf("  sync             Sync wallet from DHT network\n");
     printf("  recover          Recover wallet from seed (re-scan DHT)\n");
     printf("  history [n]      Show transaction history (last n entries)\n");
@@ -400,6 +596,7 @@ void dnac_cli_print_help(void) {
     printf("Examples:\n");
     printf("  dnac-cli balance\n");
     printf("  dnac-cli send abc123...def 1000000\n");
+    printf("  dnac-cli mint abc123...def 100000000\n");
     printf("  dnac-cli recover\n");
     printf("  dnac-cli history 10\n");
 }

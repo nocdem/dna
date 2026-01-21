@@ -187,7 +187,21 @@ int main(int argc, char **argv) {
     int result = 0;
 
     /* Dispatch command */
-    if (strcmp(command, "balance") == 0) {
+    if (strcmp(command, "info") == 0) {
+        result = dnac_cli_info(ctx);
+    }
+    else if (strcmp(command, "address") == 0) {
+        result = dnac_cli_address(ctx);
+    }
+    else if (strcmp(command, "query") == 0) {
+        if (cmd_start + 1 >= argc) {
+            fprintf(stderr, "Usage: dnac-cli query <name|fingerprint>\n");
+            result = 1;
+        } else {
+            result = dnac_cli_query(ctx, argv[cmd_start + 1]);
+        }
+    }
+    else if (strcmp(command, "balance") == 0) {
         result = dnac_cli_balance(ctx);
     }
     else if (strcmp(command, "utxos") == 0) {
@@ -227,6 +241,16 @@ int main(int argc, char **argv) {
     }
     else if (strcmp(command, "recover") == 0) {
         result = dnac_cli_recover(ctx);
+    }
+    else if (strcmp(command, "mint") == 0) {
+        if (cmd_start + 2 >= argc) {
+            fprintf(stderr, "Usage: dnac-cli mint <fingerprint> <amount>\n");
+            result = 1;
+        } else {
+            const char *recipient = argv[cmd_start + 1];
+            uint64_t amount = strtoull(argv[cmd_start + 2], NULL, 10);
+            result = dnac_cli_mint(ctx, recipient, amount);
+        }
     }
     else {
         fprintf(stderr, "Error: Unknown command '%s'\n\n", command);
