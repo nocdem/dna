@@ -64,6 +64,27 @@ class ForegroundServiceManager {
     }
   }
 
+  /// Check if exact alarms can be scheduled (Android 12+)
+  /// Returns true on older Android versions or if permission is granted
+  static Future<bool> canScheduleExactAlarms() async {
+    try {
+      final result = await _channel.invokeMethod<bool>('canScheduleExactAlarms');
+      return result ?? true;
+    } on PlatformException {
+      return true;
+    }
+  }
+
+  /// Request exact alarm permission (Android 12+)
+  /// Opens system settings - user must manually enable
+  static Future<void> requestExactAlarmPermission() async {
+    try {
+      await _channel.invokeMethod<void>('requestExactAlarmPermission');
+    } on PlatformException {
+      // Silently ignore
+    }
+  }
+
   /// Tell service whether Flutter is active (in foreground)
   /// When active, service pauses DHT operations to avoid interference
   static Future<void> setFlutterActive(bool active) async {

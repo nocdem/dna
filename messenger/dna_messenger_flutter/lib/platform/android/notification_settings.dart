@@ -20,6 +20,30 @@ class AndroidNotificationSettings extends ConsumerStatefulWidget {
 
 class _AndroidNotificationSettingsState
     extends ConsumerState<AndroidNotificationSettings> {
+  bool _canScheduleExactAlarms = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkExactAlarmPermission();
+  }
+
+  Future<void> _checkExactAlarmPermission() async {
+    final canSchedule = await ForegroundServiceManager.canScheduleExactAlarms();
+    if (mounted) {
+      setState(() {
+        _canScheduleExactAlarms = canSchedule;
+      });
+    }
+  }
+
+  Future<void> _requestExactAlarmPermission() async {
+    await ForegroundServiceManager.requestExactAlarmPermission();
+    // Re-check after returning from settings (user may have toggled it)
+    await Future.delayed(const Duration(milliseconds: 500));
+    await _checkExactAlarmPermission();
+  }
+
   Future<void> _toggleNotifications(bool enabled) async {
     if (enabled) {
       // Request notification permission on Android 13+
@@ -69,6 +93,20 @@ class _AndroidNotificationSettingsState
           value: settings.enabled,
           onChanged: _toggleNotifications,
         ),
+        // Exact alarm permission tile (only show when notifications enabled and permission not granted)
+        if (settings.enabled && !_canScheduleExactAlarms)
+          ListTile(
+            leading: const FaIcon(FontAwesomeIcons.clock),
+            title: const Text('Reliable Message Checking'),
+            subtitle: const Text(
+              'Enable exact alarms for reliable 5-minute message checks. '
+              'Without this, checks may be delayed up to 10 minutes in battery saver mode.',
+            ),
+            trailing: TextButton(
+              onPressed: _requestExactAlarmPermission,
+              child: const Text('Enable'),
+            ),
+          ),
       ],
     );
   }

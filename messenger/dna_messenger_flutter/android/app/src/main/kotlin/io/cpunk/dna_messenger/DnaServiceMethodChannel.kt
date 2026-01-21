@@ -2,6 +2,7 @@ package io.cpunk.dna_messenger
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlarmManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -64,6 +65,13 @@ class DnaServiceMethodChannel(
                 "setFlutterActive" -> {
                     val active = call.argument<Boolean>("active") ?: false
                     setFlutterActive(active)
+                    result.success(null)
+                }
+                "canScheduleExactAlarms" -> {
+                    result.success(canScheduleExactAlarms())
+                }
+                "requestExactAlarmPermission" -> {
+                    requestExactAlarmPermission()
                     result.success(null)
                 }
                 else -> {
@@ -151,6 +159,36 @@ class DnaServiceMethodChannel(
     private fun setFlutterActive(active: Boolean) {
         android.util.Log.i(TAG, "Setting Flutter active: $active")
         DnaMessengerService.setFlutterActive(active)
+    }
+
+    /**
+     * Check if exact alarms can be scheduled (Android 12+)
+     * Returns true on older Android versions or if permission is granted
+     */
+    private fun canScheduleExactAlarms(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            alarmManager.canScheduleExactAlarms()
+        } else {
+            true
+        }
+    }
+
+    /**
+     * Request exact alarm permission (Android 12+)
+     * Opens system settings - user must manually enable
+     */
+    private fun requestExactAlarmPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                val intent = Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                android.util.Log.w(TAG, "Could not open alarm settings: ${e.message}")
+            }
+        }
     }
 
     /**
