@@ -30,7 +30,7 @@
 #define WITNESS_EPOCH_REQUEST_TTL_SEC  300    /* 5 minutes */
 
 /* Listener configuration */
-#define WITNESS_MAX_LISTENERS         2  /* Request + Replication */
+#define WITNESS_MAX_LISTENERS         3  /* Current epoch + Previous epoch + Replication */
 
 /* Database configuration */
 #define WITNESS_DB_FILENAME          "witness_nullifiers.db"

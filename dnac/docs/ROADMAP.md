@@ -1,7 +1,7 @@
 # DNAC Implementation Roadmap
 
 **Project:** DNAC - Post-Quantum Digital Cash over DHT
-**Version:** v0.1.21
+**Version:** v0.1.22
 **Status:** Phase 15 Complete (Epoch-Based DHT Keys)
 
 ---
@@ -167,7 +167,6 @@ DNAC is a post-quantum digital cash system that integrates with DNA Messenger:
 - [x] Server: Listen on current AND previous epoch keys
 - [x] Client: Fetch announcement to discover current epoch
 - [x] Client: Build epoch-based request keys
-- [x] Backward compatibility: Legacy request listener during transition
 
 **Purpose:** Prevent unbounded DHT key accumulation by rotating request keys hourly.
 

@@ -2,7 +2,7 @@
 
 **Current Phase:** Phase 14 - Testing & Hardening
 **Protocol Version:** v1 (Transparent amounts)
-**Updated:** 2026-01-19
+**Updated:** 2026-01-21
 
 ---
 
@@ -120,6 +120,18 @@ Phase 4 (Range Proofs) is deferred until v2 implementation.
 - [x] Implement `dnac_wallet_recover()` function
 - [x] CLI: `dnac-cli recover` (scan and restore from seed)
 - [x] Note: Deterministic blinding derivation deferred to v2
+
+### Phase 15: Epoch-Based DHT Keys ✅
+- [x] Create `include/dnac/epoch.h` with epoch helper functions
+- [x] Add epoch constants to `src/witness/config.h`
+- [x] Define `dnac_witness_announcement_t` structure
+- [x] Implement announcement serialization/deserialization
+- [x] Implement `witness_publish_announcement()` server function
+- [x] Implement epoch-based request key building
+- [x] Server: Publish announcement on startup and epoch change
+- [x] Server: Listen on current AND previous epoch keys (event-driven)
+- [x] Client: Fetch announcement to discover current epoch
+- [x] Client: Build epoch-based request keys
 
 ---
 

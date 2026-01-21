@@ -231,9 +231,6 @@ int main(int argc, char *argv[]) {
     /* Start listeners */
     printf("Starting DHT listeners...\n");
 
-    /* Start legacy request listener (for backward compatibility during transition) */
-    size_t req_token = witness_start_request_listener(engine, &req_ctx);
-
     /* Start epoch-based request listeners (current and previous epoch) */
     size_t epoch_token_current = witness_start_epoch_request_listener(engine, &req_ctx, current_epoch);
     size_t epoch_token_previous = 0;
@@ -244,9 +241,6 @@ int main(int argc, char *argv[]) {
     /* Start replication listener */
     size_t rep_token = witness_start_replication_listener(engine, &rep_ctx);
 
-    if (req_token == 0) {
-        fprintf(stderr, "Warning: Failed to start legacy request listener\n");
-    }
     if (epoch_token_current == 0) {
         fprintf(stderr, "Warning: Failed to start epoch request listener\n");
     }
@@ -311,9 +305,6 @@ int main(int argc, char *argv[]) {
 
     /* Shutdown - cancel listeners */
     printf("Shutting down witness server...\n");
-    if (req_token != 0) {
-        witness_stop_request_listener(engine, req_token);
-    }
     if (epoch_token_current != 0) {
         witness_stop_epoch_request_listener(engine, epoch_token_current);
     }

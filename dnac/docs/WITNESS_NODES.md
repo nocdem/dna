@@ -1,6 +1,6 @@
 # DNAC Witness Nodes - Alpha/Beta Testing
 
-**Created:** 2026-01-21 | **Version:** v0.1.21
+**Created:** 2026-01-21 | **Version:** v0.1.22
 
 ---
 
@@ -183,13 +183,13 @@ Time:   |-------- Epoch N --------|-------- Epoch N+1 --------|
 Client: Sends to epoch N          | Sends to epoch N+1
         at 00:59:59               | at 01:00:01
 
-Server: Polls epoch N             | Polls epoch N+1
-        Polls epoch N-1           | Polls epoch N
+Server: Listens on epoch N        | Listens on epoch N+1
+        Listens on epoch N-1      | Listens on epoch N
 
 Result: Request found in N        | Request found in N+1
 ```
 
-The server always polls current AND previous epoch, ensuring no requests are missed at boundaries.
+The server always listens on current AND previous epoch, ensuring no requests are missed at boundaries.
 
 ---
 

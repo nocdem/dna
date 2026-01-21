@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-01-21 | **Status:** ALPHA | **Version:** v0.1.21
+**Last Updated:** 2026-01-21 | **Status:** DESIGN | **Version:** v0.1.22
 
 ---
 
@@ -286,6 +286,20 @@ git push origin main
 2. **Simplicity** - Keep code simple and focused
 3. **Integration** - Work seamlessly with libdna
 4. **Documentation** - Update docs with all changes
+
+---
+
+## Development Phase Policy
+
+**Current Phase:** DESIGN (pre-alpha)
+
+**Breaking Changes:** ALLOWED
+- No backward compatibility required
+- Clean implementations preferred over compatibility shims
+- Legacy code/protocols can be removed without deprecation period
+- API changes do not require migration paths
+
+**Rationale:** Project is in design phase. Clean architecture takes priority over compatibility.
 
 ---
 
