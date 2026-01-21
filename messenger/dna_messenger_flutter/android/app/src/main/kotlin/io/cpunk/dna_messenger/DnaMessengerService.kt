@@ -266,7 +266,7 @@ class DnaMessengerService : Service() {
 
     /**
      * Schedule the next poll alarm.
-     * Uses setExactAndAllowWhileIdle for reliable wake in Doze mode.
+     * Uses exact alarms if permitted, falls back to inexact on Android 12+.
      */
     private fun schedulePollAlarm() {
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -280,13 +280,24 @@ class DnaMessengerService : Service() {
 
         val triggerTime = System.currentTimeMillis() + POLL_INTERVAL_MS
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+        // Android 12+ requires SCHEDULE_EXACT_ALARM permission for exact alarms
+        // Fall back to inexact if not granted (may delay up to 10 min in Doze)
+        val canScheduleExact = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            alarmManager.canScheduleExactAlarms()
         } else {
-            alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+            true
         }
 
-        android.util.Log.d(TAG, "Poll alarm scheduled for ${POLL_INTERVAL_MS / 1000}s from now")
+        if (canScheduleExact && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+            android.util.Log.d(TAG, "Poll alarm scheduled (exact) for ${POLL_INTERVAL_MS / 1000}s")
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+            android.util.Log.d(TAG, "Poll alarm scheduled (inexact) for ${POLL_INTERVAL_MS / 1000}s")
+        } else {
+            alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+            android.util.Log.d(TAG, "Poll alarm scheduled for ${POLL_INTERVAL_MS / 1000}s")
+        }
     }
 
     private fun cancelPollAlarm() {
