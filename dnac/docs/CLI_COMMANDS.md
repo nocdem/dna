@@ -1,6 +1,6 @@
 # DNAC CLI Commands Reference
 
-**Version:** v0.1.28 | **Last Updated:** 2026-01-22
+**Version:** v0.1.29 | **Last Updated:** 2026-01-22
 
 ---
 
@@ -257,6 +257,16 @@ All commands interact with the DHT network via libdna:
 - Transactions broadcast via DHT
 - Name lookups query DHT name registry
 
+### Permanent Storage (v0.1.29+)
+
+All DHT data is stored permanently using `dht_put_signed_permanent()`:
+- **Payments**: Never expire (cash doesn't expire)
+- **Witness attestations**: Permanent record of double-spend prevention
+- **Witness announcements**: Permanent identity publication
+- **Nullifier replication**: Permanent cross-witness sync
+
+This ensures recipients can receive payments even after extended offline periods.
+
 ---
 
 ## Implementation Notes (v0.1.28)
@@ -361,6 +371,7 @@ dnac-cli send "$FP" "$AMOUNT"
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v0.1.29 | 2026-01-22 | All DHT data now permanent (cash doesn't expire) |
 | v0.1.28 | 2026-01-22 | Added `info`, `address`, `query` commands |
 | v0.1.27 | 2026-01-22 | Witness infrastructure deployment |
 | v0.1.26 | 2026-01-21 | Mint transaction support |

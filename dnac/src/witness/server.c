@@ -12,6 +12,7 @@
 #include "dnac/witness.h"
 #include "dnac/nodus.h"
 #include "dnac/epoch.h"
+#include "dnac/version.h"
 #include "config.h"
 
 #include <string.h>
@@ -24,17 +25,60 @@
 
 #define LOG_TAG "WITNESS_SRV"
 
+/* ============================================================================
+ * Response Queue (avoid calling dht_put from within listener callback)
+ * ========================================================================== */
+
+#define MAX_PENDING_RESPONSES 32
+
+typedef struct {
+    dnac_spend_request_t request;
+    dnac_spend_response_t response;
+    bool valid;
+} pending_response_t;
+
+static pending_response_t g_response_queue[MAX_PENDING_RESPONSES];
+static pthread_mutex_t g_response_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_response_count = 0;
+
+/* Queue a response to be sent from main thread */
+static int queue_response(const dnac_spend_request_t *request,
+                          const dnac_spend_response_t *response) {
+    pthread_mutex_lock(&g_response_mutex);
+    if (g_response_count >= MAX_PENDING_RESPONSES) {
+        pthread_mutex_unlock(&g_response_mutex);
+        QGP_LOG_WARN(LOG_TAG, "Response queue full, dropping response");
+        return -1;
+    }
+    memcpy(&g_response_queue[g_response_count].request, request, sizeof(*request));
+    memcpy(&g_response_queue[g_response_count].response, response, sizeof(*response));
+    g_response_queue[g_response_count].valid = true;
+    g_response_count++;
+    QGP_LOG_DEBUG(LOG_TAG, "Queued response (%d pending)", g_response_count);
+    pthread_mutex_unlock(&g_response_mutex);
+    return 0;
+}
+
+/**
+ * Check if nullifier is all zeros (indicates MINT request)
+ */
+static bool is_mint_request(const uint8_t *nullifier) {
+    for (int i = 0; i < DNAC_NULLIFIER_SIZE; i++) {
+        if (nullifier[i] != 0) return false;
+    }
+    return true;
+}
+
 /* Forward declare DHT context type */
 typedef struct dht_context dht_context_t;
 
 /* DHT functions from libdna */
 extern void* dna_engine_get_dht_context(dna_engine_t *engine);
-extern int dht_put_signed(dht_context_t *ctx,
-                          const uint8_t *key, size_t key_len,
-                          const uint8_t *value, size_t value_len,
-                          uint64_t value_id,
-                          unsigned int ttl_seconds,
-                          const char *caller);
+extern int dht_put_signed_permanent(dht_context_t *ctx,
+                                    const uint8_t *key, size_t key_len,
+                                    const uint8_t *value, size_t value_len,
+                                    uint64_t value_id,
+                                    const char *caller);
 extern int dht_get(dht_context_t *ctx,
                    const uint8_t *key, size_t key_len,
                    uint8_t **value_out, size_t *value_len_out);
@@ -205,9 +249,9 @@ int witness_publish_identity(dna_engine_t *engine) {
         return -1;
     }
 
-    /* Publish pubkey to DHT */
-    ret = dht_put_signed(dht, identity_key, 64, pubkey, DNAC_PUBKEY_SIZE,
-                         1, WITNESS_IDENTITY_TTL_SEC, "witness_identity");
+    /* Publish pubkey to DHT (permanent) */
+    ret = dht_put_signed_permanent(dht, identity_key, 64, pubkey, DNAC_PUBKEY_SIZE,
+                                   1, "witness_identity");
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to publish identity to DHT");
         return -1;
@@ -226,6 +270,9 @@ int witness_process_requests(dna_engine_t *engine) {
     while (witness_get_next_request(engine, &request) == 0) {
         dnac_spend_response_t response;
         memset(&response, 0, sizeof(response));
+        response.software_version[0] = DNAC_VERSION_MAJOR;
+        response.software_version[1] = DNAC_VERSION_MINOR;
+        response.software_version[2] = DNAC_VERSION_PATCH;
 
         /* Get our identity info */
         const char *our_fp = dna_engine_get_fingerprint(engine);
@@ -236,15 +283,18 @@ int witness_process_requests(dna_engine_t *engine) {
             sscanf(&our_fp[i*2], "%2hhx", &response.witness_id[i]);
         }
 
-        /* Check if nullifier already spent */
-        if (witness_nullifier_exists(request.nullifier)) {
+        /* Check for MINT request (zero nullifier) */
+        bool is_mint = is_mint_request(request.nullifier);
+
+        /* For SPEND: check if nullifier already spent */
+        if (!is_mint && witness_nullifier_exists(request.nullifier)) {
             response.status = DNAC_NODUS_STATUS_REJECTED;
             snprintf(response.error_message, sizeof(response.error_message),
                      "Nullifier already spent");
             QGP_LOG_WARN(LOG_TAG, "Rejected: nullifier already spent");
         } else {
-            /* Record nullifier */
-            if (witness_nullifier_add(request.nullifier, request.tx_hash) != 0) {
+            /* For SPEND: Record nullifier. For MINT: skip (no nullifier to record) */
+            if (!is_mint && witness_nullifier_add(request.nullifier, request.tx_hash) != 0) {
                 response.status = DNAC_NODUS_STATUS_ERROR;
                 snprintf(response.error_message, sizeof(response.error_message),
                          "Database error");
@@ -277,10 +327,13 @@ int witness_process_requests(dna_engine_t *engine) {
                                                       DNAC_PUBKEY_SIZE);
 
                     response.status = DNAC_NODUS_STATUS_APPROVED;
-                    QGP_LOG_INFO(LOG_TAG, "Approved witness request");
+                    QGP_LOG_INFO(LOG_TAG, "Approved %s request",
+                                 is_mint ? "MINT" : "SPEND");
 
-                    /* Queue nullifier for replication */
-                    witness_replicate_nullifier(request.nullifier, request.tx_hash);
+                    /* Queue nullifier for replication (skip for MINT) */
+                    if (!is_mint) {
+                        witness_replicate_nullifier(request.nullifier, request.tx_hash);
+                    }
                 }
             }
         }
@@ -332,10 +385,16 @@ int witness_get_next_request(dna_engine_t *engine, dnac_spend_request_t *request
 int witness_send_response(dna_engine_t *engine,
                           const dnac_spend_request_t *request,
                           const dnac_spend_response_t *response) {
-    if (!engine || !request || !response) return -1;
+    if (!engine || !request || !response) {
+        QGP_LOG_ERROR(LOG_TAG, "send_response: null param");
+        return -1;
+    }
 
     dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
-    if (!dht) return -1;
+    if (!dht) {
+        QGP_LOG_ERROR(LOG_TAG, "send_response: no DHT");
+        return -1;
+    }
 
     /* Get requester fingerprint from pubkey (would need to derive or have in request) */
     /* For now, use a simplified approach - derive from sender_pubkey hash */
@@ -348,11 +407,17 @@ int witness_send_response(dna_engine_t *engine,
     }
     requester_fp[128] = '\0';
 
+    QGP_LOG_DEBUG(LOG_TAG, "send_response: requester_fp=%.32s...", requester_fp);
+
     /* Build response key */
     uint8_t response_key[64];
     if (build_response_key(request->tx_hash, requester_fp, response_key) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "send_response: build_response_key failed");
         return -1;
     }
+
+    QGP_LOG_DEBUG(LOG_TAG, "send_response: key=%02x%02x%02x%02x...",
+                  response_key[0], response_key[1], response_key[2], response_key[3]);
 
     /* Serialize response */
     uint8_t buffer[16384];
@@ -363,17 +428,54 @@ int witness_send_response(dna_engine_t *engine,
         return -1;
     }
 
-    /* PUT to DHT */
-    rc = dht_put_signed(dht, response_key, 64, buffer, written,
-                        response->timestamp % 10000,
-                        WITNESS_RESPONSE_TTL_SEC,
-                        "witness_response");
+    QGP_LOG_DEBUG(LOG_TAG, "send_response: serialized %zu bytes", written);
+
+    /* PUT to DHT (permanent) */
+    QGP_LOG_DEBUG(LOG_TAG, "send_response: calling dht_put_signed_permanent...");
+    rc = dht_put_signed_permanent(dht, response_key, 64, buffer, written,
+                                  response->timestamp % 10000,
+                                  "witness_response");
+    QGP_LOG_DEBUG(LOG_TAG, "send_response: dht_put_signed_permanent returned %d", rc);
     if (rc != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to PUT response to DHT");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to PUT response to DHT (rc=%d)", rc);
         return -1;
     }
 
+    QGP_LOG_INFO(LOG_TAG, "Response sent to %.32s...", requester_fp);
     return 0;
+}
+
+/**
+ * Process pending responses from the queue
+ * Call this from main thread, not from callbacks
+ */
+int witness_process_pending_responses(dna_engine_t *engine) {
+    if (!engine) return 0;
+
+    pthread_mutex_lock(&g_response_mutex);
+    int count = g_response_count;
+    pending_response_t local_queue[MAX_PENDING_RESPONSES];
+    if (count > 0) {
+        memcpy(local_queue, g_response_queue, count * sizeof(pending_response_t));
+        g_response_count = 0;
+    }
+    pthread_mutex_unlock(&g_response_mutex);
+
+    if (count == 0) return 0;
+
+    QGP_LOG_DEBUG(LOG_TAG, "Processing %d queued responses", count);
+
+    int sent = 0;
+    for (int i = 0; i < count; i++) {
+        if (local_queue[i].valid) {
+            if (witness_send_response(engine, &local_queue[i].request,
+                                      &local_queue[i].response) == 0) {
+                sent++;
+            }
+        }
+    }
+
+    return sent;
 }
 
 /* ============================================================================
@@ -400,6 +502,9 @@ static bool request_listener_callback(const uint8_t *value, size_t value_len,
     /* Process the request */
     dnac_spend_response_t response;
     memset(&response, 0, sizeof(response));
+        response.software_version[0] = DNAC_VERSION_MAJOR;
+        response.software_version[1] = DNAC_VERSION_MINOR;
+        response.software_version[2] = DNAC_VERSION_PATCH;
 
     /* Get our identity info */
     const char *our_fp = dna_engine_get_fingerprint(ctx->engine);
@@ -412,15 +517,18 @@ static bool request_listener_callback(const uint8_t *value, size_t value_len,
         sscanf(&our_fp[i*2], "%2hhx", &response.witness_id[i]);
     }
 
-    /* Check if nullifier already spent */
-    if (witness_nullifier_exists(request.nullifier)) {
+    /* Check for MINT request (zero nullifier) */
+    bool is_mint = is_mint_request(request.nullifier);
+
+    /* For SPEND: check if nullifier already spent */
+    if (!is_mint && witness_nullifier_exists(request.nullifier)) {
         response.status = DNAC_NODUS_STATUS_REJECTED;
         snprintf(response.error_message, sizeof(response.error_message),
                  "Nullifier already spent");
         QGP_LOG_WARN(LOG_TAG, "Rejected: nullifier already spent");
     } else {
-        /* Record nullifier */
-        if (witness_nullifier_add(request.nullifier, request.tx_hash) != 0) {
+        /* For SPEND: Record nullifier. For MINT: skip (no nullifier to record) */
+        if (!is_mint && witness_nullifier_add(request.nullifier, request.tx_hash) != 0) {
             response.status = DNAC_NODUS_STATUS_ERROR;
             snprintf(response.error_message, sizeof(response.error_message),
                      "Database error");
@@ -453,16 +561,19 @@ static bool request_listener_callback(const uint8_t *value, size_t value_len,
                                                   DNAC_PUBKEY_SIZE);
 
                 response.status = DNAC_NODUS_STATUS_APPROVED;
-                QGP_LOG_INFO(LOG_TAG, "Approved witness request");
+                QGP_LOG_INFO(LOG_TAG, "Approved %s request (listener)",
+                             is_mint ? "MINT" : "SPEND");
 
-                /* Queue nullifier for replication */
-                witness_replicate_nullifier(request.nullifier, request.tx_hash);
+                /* Queue nullifier for replication (skip for MINT) */
+                if (!is_mint) {
+                    witness_replicate_nullifier(request.nullifier, request.tx_hash);
+                }
             }
         }
     }
 
-    /* Send response */
-    witness_send_response(ctx->engine, &request, &response);
+    /* Queue response (can't call dht_put from callback due to mutex) */
+    queue_response(&request, &response);
 
     /* Signal main thread that work was done */
     pthread_mutex_lock(ctx->mutex);
@@ -541,8 +652,11 @@ int witness_publish_announcement(dna_engine_t *engine) {
     dnac_witness_announcement_t announcement;
     memset(&announcement, 0, sizeof(announcement));
 
-    announcement.version = 1;
+    announcement.version = 2;  /* v2 includes software version */
     announcement.current_epoch = dnac_get_current_epoch();
+    announcement.software_version[0] = DNAC_VERSION_MAJOR;
+    announcement.software_version[1] = DNAC_VERSION_MINOR;
+    announcement.software_version[2] = DNAC_VERSION_PATCH;
     announcement.epoch_duration = DNAC_EPOCH_DURATION_SEC;
     announcement.timestamp = (uint64_t)time(NULL);
 
@@ -585,11 +699,10 @@ int witness_publish_announcement(dna_engine_t *engine) {
         return -1;
     }
 
-    /* PUT to DHT */
-    ret = dht_put_signed(dht, announce_key, 64, buffer, written,
-                         announcement.current_epoch,  /* value_id = epoch */
-                         WITNESS_EPOCH_ANNOUNCE_TTL_SEC,
-                         "witness_announcement");
+    /* PUT to DHT (permanent) */
+    ret = dht_put_signed_permanent(dht, announce_key, 64, buffer, written,
+                                   announcement.current_epoch,  /* value_id = epoch */
+                                   "witness_announcement");
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to publish announcement to DHT");
         return -1;
@@ -624,6 +737,9 @@ static bool epoch_request_listener_callback(const uint8_t *value, size_t value_l
     /* Process the request */
     dnac_spend_response_t response;
     memset(&response, 0, sizeof(response));
+        response.software_version[0] = DNAC_VERSION_MAJOR;
+        response.software_version[1] = DNAC_VERSION_MINOR;
+        response.software_version[2] = DNAC_VERSION_PATCH;
 
     /* Get our identity info */
     const char *our_fp = dna_engine_get_fingerprint(ctx->engine);
@@ -636,15 +752,18 @@ static bool epoch_request_listener_callback(const uint8_t *value, size_t value_l
         sscanf(&our_fp[i*2], "%2hhx", &response.witness_id[i]);
     }
 
-    /* Check if nullifier already spent */
-    if (witness_nullifier_exists(request.nullifier)) {
+    /* Check for MINT request (zero nullifier) */
+    bool is_mint = is_mint_request(request.nullifier);
+
+    /* For SPEND: check if nullifier already spent */
+    if (!is_mint && witness_nullifier_exists(request.nullifier)) {
         response.status = DNAC_NODUS_STATUS_REJECTED;
         snprintf(response.error_message, sizeof(response.error_message),
                  "Nullifier already spent");
         QGP_LOG_WARN(LOG_TAG, "Rejected: nullifier already spent");
     } else {
-        /* Record nullifier */
-        if (witness_nullifier_add(request.nullifier, request.tx_hash) != 0) {
+        /* For SPEND: Record nullifier. For MINT: skip (no nullifier to record) */
+        if (!is_mint && witness_nullifier_add(request.nullifier, request.tx_hash) != 0) {
             response.status = DNAC_NODUS_STATUS_ERROR;
             snprintf(response.error_message, sizeof(response.error_message),
                      "Database error");
@@ -677,16 +796,19 @@ static bool epoch_request_listener_callback(const uint8_t *value, size_t value_l
                                                   DNAC_PUBKEY_SIZE);
 
                 response.status = DNAC_NODUS_STATUS_APPROVED;
-                QGP_LOG_INFO(LOG_TAG, "Approved witness request (epoch-based)");
+                QGP_LOG_INFO(LOG_TAG, "Approved %s request (epoch-based)",
+                             is_mint ? "MINT" : "SPEND");
 
-                /* Queue nullifier for replication */
-                witness_replicate_nullifier(request.nullifier, request.tx_hash);
+                /* Queue nullifier for replication (skip for MINT) */
+                if (!is_mint) {
+                    witness_replicate_nullifier(request.nullifier, request.tx_hash);
+                }
             }
         }
     }
 
-    /* Send response */
-    witness_send_response(ctx->engine, &request, &response);
+    /* Queue response (can't call dht_put from callback due to mutex) */
+    queue_response(&request, &response);
 
     /* Signal main thread that work was done */
     pthread_mutex_lock(ctx->mutex);

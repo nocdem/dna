@@ -2,7 +2,7 @@
 
 **Current Phase:** Phase 14 - Testing & Hardening
 **Protocol Version:** v1 (Transparent amounts)
-**Updated:** 2026-01-21
+**Updated:** 2026-01-22
 
 ---
 
@@ -17,12 +17,22 @@ Phase 4 (Range Proofs) is deferred until v2 implementation.
 
 ## Next Up: Phase 14 - Testing & Hardening
 
-- [ ] Integration tests (send/receive flow)
+- [x] Integration tests (send/receive flow) - `test_send_receive` EXISTS (uses synthetic UTXOs)
 - [ ] Multi-party tests (Alice → Bob → Charlie)
-- [ ] Double-spend attempt tests
-- [ ] Nodus failure/timeout tests
+- [x] Double-spend attempt tests - `test_double_spend` EXISTS
+- [~] Nodus failure/timeout tests - PARTIAL (graceful SKIP when unavailable)
 - [ ] Fuzz testing for parsing
 - [ ] Wallet recovery tests
+- [ ] Genesis/coinbase mechanism (currently NO way to create initial funds)
+
+### ⚠️ TEST WARNING: Synthetic Funds
+
+Tests inject fake UTXOs directly via `dnac_db_store_utxo()`:
+- `test_utxo_store`: 1000 coins
+- `test_utxo_select`: 1500 coins (5 UTXOs)
+- `test_db_*`: 350 coins
+
+**This is NOT production-realistic.** Real system needs genesis/mint mechanism.
 
 ---
 
@@ -132,6 +142,20 @@ Phase 4 (Range Proofs) is deferred until v2 implementation.
 - [x] Server: Listen on current AND previous epoch keys (event-driven)
 - [x] Client: Fetch announcement to discover current epoch
 - [x] Client: Build epoch-based request keys
+
+### Phase 16: CLI Query Commands (v0.1.28) ✅
+- [x] `dnac-cli info` - Show wallet info, address, DHT status, balance
+- [x] `dnac-cli address` - Output fingerprint only (for scripting)
+- [x] `dnac-cli query <name|fp>` - Lookup identity by name or fingerprint
+- [x] Auto-detect name vs fingerprint (128 hex = fingerprint)
+- [x] Documentation: `docs/CLI_COMMANDS.md`
+
+### Phase 17: Permanent DHT Storage (v0.1.29) ✅
+- [x] Changed all `dht_put_signed()` → `dht_put_signed_permanent()`
+- [x] Payments now permanent (cash doesn't expire)
+- [x] Witness attestations permanent
+- [x] Nullifier replication permanent
+- [x] Removed unused TTL defines from config.h
 
 ---
 

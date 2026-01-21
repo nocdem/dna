@@ -26,12 +26,11 @@ typedef struct dht_context dht_context_t;
 
 /* DHT functions from libdna */
 extern void* dna_engine_get_dht_context(dna_engine_t *engine);
-extern int dht_put_signed(dht_context_t *ctx,
-                          const uint8_t *key, size_t key_len,
-                          const uint8_t *value, size_t value_len,
-                          uint64_t value_id,
-                          unsigned int ttl_seconds,
-                          const char *caller);
+extern int dht_put_signed_permanent(dht_context_t *ctx,
+                                    const uint8_t *key, size_t key_len,
+                                    const uint8_t *value, size_t value_len,
+                                    uint64_t value_id,
+                                    const char *caller);
 extern int dht_get(dht_context_t *ctx,
                    const uint8_t *key, size_t key_len,
                    uint8_t **value_out, size_t *value_len_out);
@@ -131,9 +130,8 @@ int witness_replicate_nullifier(const uint8_t *nullifier, const uint8_t *tx_hash
             continue;
         }
 
-        int rc = dht_put_signed(dht, rep_key, 64, payload, sizeof(payload),
-                                1, 3600, /* 1 hour TTL */
-                                "nullifier_rep");
+        int rc = dht_put_signed_permanent(dht, rep_key, 64, payload, sizeof(payload),
+                                          1, "nullifier_rep");
         if (rc == 0) {
             replicated++;
         }

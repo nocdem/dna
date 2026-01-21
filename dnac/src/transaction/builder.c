@@ -26,15 +26,11 @@ typedef struct dht_context dht_context_t;
 
 /* DHT functions from libdna */
 extern void* dna_engine_get_dht_context(dna_engine_t *engine);
-extern int dht_put_signed(dht_context_t *ctx,
-                          const uint8_t *key, size_t key_len,
-                          const uint8_t *value, size_t value_len,
-                          uint64_t value_id,
-                          unsigned int ttl_seconds,
-                          const char *caller);
-
-/* Payment message TTL (7 days) */
-#define PAYMENT_MSG_TTL_SEC (7 * 24 * 60 * 60)
+extern int dht_put_signed_permanent(dht_context_t *ctx,
+                                    const uint8_t *key, size_t key_len,
+                                    const uint8_t *value, size_t value_len,
+                                    uint64_t value_id,
+                                    const char *caller);
 
 struct dnac_tx_builder {
     dnac_context_t *ctx;
@@ -346,11 +342,10 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
             continue;
         }
 
-        /* PUT payment to recipient's inbox with tx-derived value_id */
-        rc = dht_put_signed(dht, inbox_key, 64, tx_buffer, tx_len,
-                           payment_value_id,
-                           PAYMENT_MSG_TTL_SEC,
-                           "dnac_payment");
+        /* PUT payment to recipient's inbox (permanent) */
+        rc = dht_put_signed_permanent(dht, inbox_key, 64, tx_buffer, tx_len,
+                                      payment_value_id,
+                                      "dnac_payment");
         if (rc != 0) {
             /* Log but continue - some recipients may still receive */
         }

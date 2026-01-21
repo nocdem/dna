@@ -21,13 +21,6 @@
 
 /* Timing configuration */
 #define WITNESS_REPLICATION_TIMEOUT_MS 5000
-#define WITNESS_REQUEST_TTL_SEC       60
-#define WITNESS_RESPONSE_TTL_SEC      300
-#define WITNESS_IDENTITY_TTL_SEC      3600
-
-/* Epoch configuration */
-#define WITNESS_EPOCH_ANNOUNCE_TTL_SEC 3600   /* 1 hour */
-#define WITNESS_EPOCH_REQUEST_TTL_SEC  300    /* 5 minutes */
 
 /* Listener configuration */
 #define WITNESS_MAX_LISTENERS         3  /* Current epoch + Previous epoch + Replication */

@@ -24,18 +24,18 @@
 
 /* libdna crypto utilities */
 #include "crypto/utils/qgp_dilithium.h"
+#include "crypto/utils/qgp_log.h"
 
 /* Forward declare DHT context type */
 typedef struct dht_context dht_context_t;
 
 /* DHT functions from libdna */
 extern void* dna_engine_get_dht_context(dna_engine_t *engine);
-extern int dht_put_signed(dht_context_t *ctx,
-                          const uint8_t *key, size_t key_len,
-                          const uint8_t *value, size_t value_len,
-                          uint64_t value_id,
-                          unsigned int ttl_seconds,
-                          const char *caller);
+extern int dht_put_signed_permanent(dht_context_t *ctx,
+                                    const uint8_t *key, size_t key_len,
+                                    const uint8_t *value, size_t value_len,
+                                    uint64_t value_id,
+                                    const char *caller);
 extern int dht_get(dht_context_t *ctx,
                    const uint8_t *key, size_t key_len,
                    uint8_t **value_out, size_t *value_len_out);
@@ -263,6 +263,7 @@ static void sleep_ms(int ms) {
  */
 static bool witness_response_callback(const uint8_t *value, size_t value_len,
                                       bool expired, void *user_data) {
+    QGP_LOG_DEBUG(LOG_TAG, "witness_response_callback: len=%zu expired=%d", value_len, expired);
     witness_collect_ctx_t *ctx = (witness_collect_ctx_t *)user_data;
     if (!ctx) return false;
     if (expired || !value || value_len == 0) return true;
@@ -277,12 +278,19 @@ static bool witness_response_callback(const uint8_t *value, size_t value_len,
 
     /* Deserialize response */
     dnac_spend_response_t response;
-    if (dnac_spend_response_deserialize(value, value_len, &response) != 0) {
+    int deser_rc = dnac_spend_response_deserialize(value, value_len, &response);
+    if (deser_rc != 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "response_callback: deserialize failed rc=%d", deser_rc);
         pthread_mutex_unlock(&ctx->mutex);
         return true;  /* Continue listening */
     }
 
+    QGP_LOG_DEBUG(LOG_TAG, "response_callback: status=%d witness_id=%02x%02x%02x%02x...",
+                  response.status, response.witness_id[0], response.witness_id[1],
+                  response.witness_id[2], response.witness_id[3]);
+
     if (response.status != DNAC_NODUS_STATUS_APPROVED) {
+        QGP_LOG_DEBUG(LOG_TAG, "response_callback: not approved, continuing");
         pthread_mutex_unlock(&ctx->mutex);
         return true;
     }
@@ -296,6 +304,7 @@ static bool witness_response_callback(const uint8_t *value, size_t value_len,
         }
         if (memcmp(witness_id_bytes, response.witness_id, 32) == 0) {
             witness_pubkey = ctx->servers[i].pubkey;
+            QGP_LOG_DEBUG(LOG_TAG, "response_callback: found witness pubkey in server list");
             break;
         }
     }
@@ -304,9 +313,11 @@ static bool witness_response_callback(const uint8_t *value, size_t value_len,
     const uint8_t *verify_pubkey = witness_pubkey;
     if (response.server_pubkey[0] != 0) {
         verify_pubkey = response.server_pubkey;
+        QGP_LOG_DEBUG(LOG_TAG, "response_callback: using server_pubkey from response");
     }
 
     if (!verify_pubkey) {
+        QGP_LOG_DEBUG(LOG_TAG, "response_callback: no verify_pubkey available");
         pthread_mutex_unlock(&ctx->mutex);
         return true;
     }
@@ -319,9 +330,16 @@ static bool witness_response_callback(const uint8_t *value, size_t value_len,
     witness.timestamp = response.timestamp;
 
     if (!dnac_witness_verify(&witness, ctx->tx_hash, verify_pubkey)) {
+        QGP_LOG_ERROR(LOG_TAG, "response_callback: witness signature verification FAILED");
         pthread_mutex_unlock(&ctx->mutex);
         return true;
     }
+    QGP_LOG_INFO(LOG_TAG, "response_callback: witness %02x%02x%02x%02x... v%d.%d.%d VERIFIED",
+                 response.witness_id[0], response.witness_id[1],
+                 response.witness_id[2], response.witness_id[3],
+                 response.software_version[0],
+                 response.software_version[1],
+                 response.software_version[2]);
 
     /* Check for duplicate */
     for (int i = 0; i < *ctx->count; i++) {
@@ -397,6 +415,8 @@ int dnac_witness_request(dnac_context_t *ctx,
     const char *owner_fp = dnac_get_owner_fingerprint(ctx);
     if (!owner_fp) return DNAC_ERROR_NOT_INITIALIZED;
 
+    QGP_LOG_DEBUG(LOG_TAG, "owner_fp from ctx: %.32s...", owner_fp);
+
     /* Discover witness servers if needed */
     dnac_witness_info_t *servers = NULL;
     int server_count = 0;
@@ -428,11 +448,25 @@ int dnac_witness_request(dnac_context_t *ctx,
     for (int i = 0; i < server_count && i < DNAC_MAX_WITNESS_SERVERS; i++) {
         uint64_t target_epoch = local_epoch;
 
+        QGP_LOG_DEBUG(LOG_TAG, "Server %d: fp=%.32s... epoch=%lu",
+                      i, servers[i].fingerprint, (unsigned long)local_epoch);
+
         /* Try to fetch announcement to get server's current epoch */
         if (servers[i].fingerprint[0] != '\0') {
             dnac_witness_announcement_t announcement;
             if (fetch_witness_announcement(dht, servers[i].fingerprint, &announcement) == 0) {
-                target_epoch = announcement.current_epoch;
+                /* Only use announcement epoch if it's recent (within 2 hours) */
+                if (announcement.current_epoch >= local_epoch - 2 &&
+                    announcement.current_epoch <= local_epoch + 1) {
+                    target_epoch = announcement.current_epoch;
+                    QGP_LOG_DEBUG(LOG_TAG, "Got announcement: epoch=%lu", (unsigned long)target_epoch);
+                } else {
+                    QGP_LOG_WARN(LOG_TAG, "Stale announcement: epoch=%lu (local=%lu), using local",
+                                 (unsigned long)announcement.current_epoch, (unsigned long)local_epoch);
+                }
+            } else {
+                QGP_LOG_DEBUG(LOG_TAG, "Failed to fetch announcement for %.32s...",
+                              servers[i].fingerprint);
             }
         }
 
@@ -440,8 +474,12 @@ int dnac_witness_request(dnac_context_t *ctx,
         uint8_t request_key[64];
         if (servers[i].fingerprint[0] != '\0') {
             if (build_epoch_request_key(servers[i].fingerprint, target_epoch, request_key) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to build epoch request key");
                 continue;
             }
+            QGP_LOG_DEBUG(LOG_TAG, "Built request key for fp=%.32s... epoch=%lu: %02x%02x%02x%02x...",
+                          servers[i].fingerprint, (unsigned long)target_epoch,
+                          request_key[0], request_key[1], request_key[2], request_key[3]);
         } else {
             /* Fallback to old key format if no fingerprint (bootstrap servers) */
             uint8_t witness_id_bytes[32];
@@ -451,13 +489,14 @@ int dnac_witness_request(dnac_context_t *ctx,
             if (build_request_key(witness_id_bytes, request->tx_hash, request_key) != 0) {
                 continue;
             }
+            QGP_LOG_DEBUG(LOG_TAG, "Built legacy request key: %02x%02x%02x%02x...",
+                          request_key[0], request_key[1], request_key[2], request_key[3]);
         }
 
-        /* PUT request to DHT with epoch-based TTL */
-        rc = dht_put_signed(dht, request_key, 64, req_buffer, req_len,
-                           value_id,
-                           300, /* TTL 5 minutes for epoch requests */
-                           "witness_request");
+        /* PUT request to DHT (permanent) */
+        rc = dht_put_signed_permanent(dht, request_key, 64, req_buffer, req_len,
+                                      value_id,
+                                      "witness_request");
         if (rc == 0) {
             servers_contacted++;
         }
@@ -466,6 +505,21 @@ int dnac_witness_request(dnac_context_t *ctx,
     if (servers_contacted == 0) {
         dnac_free_witness_list(servers, server_count);
         return DNAC_ERROR_NETWORK;
+    }
+
+    /* Debug: compute what fingerprint witness will derive from sender_pubkey */
+    {
+        uint8_t fp_hash[64];
+        compute_sha3_512(request->sender_pubkey, DNAC_PUBKEY_SIZE, fp_hash);
+        char derived_fp[129];
+        for (int i = 0; i < 64; i++) {
+            sprintf(&derived_fp[i*2], "%02x", fp_hash[i]);
+        }
+        derived_fp[128] = '\0';
+        QGP_LOG_DEBUG(LOG_TAG, "sender_pubkey derived fp: %.32s...", derived_fp);
+        if (strncmp(owner_fp, derived_fp, 128) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "FINGERPRINT MISMATCH! owner_fp != sender_pubkey derived");
+        }
     }
 
     /* Build response key */
@@ -636,10 +690,9 @@ int dnac_witness_ping(dnac_context_t *ctx,
     uint8_t ping_data[8];
     memcpy(ping_data, &start, 8);
 
-    int rc = dht_put_signed(dht, ping_key, 64, ping_data, 8,
-                           start % 1000, /* unique value_id */
-                           30, /* TTL */
-                           "nodus_ping");
+    int rc = dht_put_signed_permanent(dht, ping_key, 64, ping_data, 8,
+                                      start % 1000, /* unique value_id */
+                                      "nodus_ping");
     if (rc != 0) return -1;
 
     /* Wait for pong (response at same key from server) */
