@@ -14,23 +14,26 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 
 /**
- * DNA Messenger Foreground Service
+ * DNA Messenger Foreground Service (v0.100.20+)
  *
- * Keeps the DHT connection alive when the app is backgrounded.
- * DHT listeners provide real-time push notifications for messages.
- * Monitors network changes and reinitializes DHT when network switches.
+ * Battery-optimized background service for message notifications.
+ * Uses periodic polling (every 5 minutes) instead of continuous DHT listeners.
  *
- * Phase 14: Android background execution for reliable DHT-only messaging.
- * Note: Polling removed in favor of DHT listeners for better battery life.
+ * Architecture:
+ * - Sleep most of the time (no wakelock)
+ * - Wake every 5 min via AlarmManager
+ * - Check all contacts' outboxes
+ * - Show notifications for new messages
+ * - Go back to sleep
  *
- * v0.5.24+: Single-owner model - Flutter and Service never share engine.
- * When Flutter opens, Service releases engine. When Flutter closes,
- * Service creates new engine. DHT reconnects in 2-3 seconds.
+ * Battery: ~1% duty cycle (vs 100% with continuous listeners)
+ * Message delay: Up to 5 minutes when app is backgrounded
  */
 class DnaMessengerService : Service() {
     companion object {
         private const val TAG = "DnaMessengerService"
         private const val NOTIFICATION_ID = 1001
+        private const val POLL_ALARM_REQUEST_CODE = 2001
 
         // Ensure native library is loaded before any JNI calls
         private var libraryLoaded = false
@@ -45,13 +48,9 @@ class DnaMessengerService : Service() {
             }
         }
         private const val CHANNEL_ID = "dna_messenger_service"
+        private const val POLL_INTERVAL_MS = 5 * 60 * 1000L  // 5 minutes
+        private const val WAKELOCK_TIMEOUT_MS = 30 * 1000L   // 30 seconds (per check only)
         private const val NETWORK_CHANGE_DEBOUNCE_MS = 2000L  // 2 seconds debounce
-        private const val WAKELOCK_TIMEOUT_MS = 30 * 60 * 1000L  // 30 minutes
-        private const val LISTEN_RENEWAL_INTERVAL_MS = 5 * 60 * 60 * 1000L  // 5 hours (before 6h expiry)
-        private const val HEALTH_CHECK_INTERVAL_MS = 15 * 60 * 1000L  // 15 minutes (normal mode)
-        private const val HEALTH_CHECK_FAST_INTERVAL_MS = 10 * 1000L  // 10 seconds (takeover detection)
-        private const val MAX_RECONNECT_RETRIES = 5
-        private val RECONNECT_BACKOFF_MS = longArrayOf(1000, 2000, 5000, 10000, 30000)  // Exponential backoff
 
         @Volatile
         private var isRunning = false
@@ -59,20 +58,16 @@ class DnaMessengerService : Service() {
         @Volatile
         private var flutterActive = false
 
-        @Volatile
-        private var fastHealthCheckMode = false  // v0.6.8+: Fast polling after Flutter dies
-
         fun isServiceRunning(): Boolean = isRunning
 
-        // Reference to service instance for triggering identity load
+        // Reference to service instance for triggering checks
         @Volatile
         private var serviceInstance: DnaMessengerService? = null
 
         /**
          * Set whether Flutter is active (in foreground).
-         * v0.6.0+: When Flutter becomes active, service releases its engine.
-         * When Flutter becomes inactive, service takes over DHT.
-         * v0.6.8+: Fast health check mode for reliable takeover detection.
+         * When Flutter is active, service pauses polling (Flutter handles messaging).
+         * When Flutter becomes inactive, service resumes polling.
          */
         fun setFlutterActive(active: Boolean) {
             val wasActive = flutterActive
@@ -82,11 +77,8 @@ class DnaMessengerService : Service() {
             if (active && !wasActive) {
                 // Flutter taking over - release service's engine
                 android.util.Log.i(TAG, "Flutter taking over - releasing service engine")
-                fastHealthCheckMode = false  // Back to normal mode
                 try {
                     if (libraryLoaded) {
-                        // v0.6.9+: Clear reconnect helper before releasing engine
-                        nativeSetReconnectHelper(null)
                         nativeReleaseEngine()
                         android.util.Log.i(TAG, "Service engine released for Flutter")
                     }
@@ -94,16 +86,14 @@ class DnaMessengerService : Service() {
                     android.util.Log.e(TAG, "Failed to release engine: ${e.message}")
                 }
             } else if (!active && wasActive) {
-                // Flutter going away - service should take over DHT
-                android.util.Log.i(TAG, "Flutter inactive - enabling fast health check for takeover")
-                fastHealthCheckMode = true  // Fast polling to detect lock release
-                serviceInstance?.startFastHealthCheck()
-                serviceInstance?.ensureIdentityLoadedAsync()
+                // Flutter going away - service should take over
+                android.util.Log.i(TAG, "Flutter inactive - service taking over")
+                serviceInstance?.performMessageCheckAsync()
             }
         }
 
         /**
-         * Direct DHT reinit via JNI - doesn't need Flutter/engine.
+         * Direct DHT reinit via JNI.
          * Called when network changes while app is backgrounded.
          * Returns: 0 success, -1 DHT not initialized, -2 reinit failed
          */
@@ -111,71 +101,44 @@ class DnaMessengerService : Service() {
         external fun nativeReinitDht(): Int
 
         /**
-         * Check if DHT is connected and listeners are active.
-         * Returns: true if DHT is healthy, false otherwise
-         */
-        @JvmStatic
-        external fun nativeIsDhtHealthy(): Boolean
-
-        /**
          * Initialize engine if not already done.
-         * Called when service starts fresh (after process killed).
-         * Returns: true if engine is ready (created or already existed)
+         * Returns: true if engine is ready
          */
         @JvmStatic
         external fun nativeEnsureEngine(dataDir: String): Boolean
 
         /**
          * Check if identity is already loaded.
-         * Returns: true if identity loaded, false if need to load
          */
         @JvmStatic
         external fun nativeIsIdentityLoaded(): Boolean
 
         /**
-         * Load identity with minimal initialization (DHT + listeners only).
-         * Called when service starts fresh but Flutter isn't running.
-         * Skips transport, presence, wallet to save resources.
-         * Note: This is a blocking call for simplicity in service context.
-         * Returns: 0 on success, -117 if identity locked by Flutter, other negative on error
+         * Load identity with minimal initialization (DHT only).
+         * Returns: 0 on success, -117 if identity locked, other negative on error
          */
         @JvmStatic
         external fun nativeLoadIdentityMinimalSync(fingerprint: String): Int
 
         /**
-         * Check if identity lock is held by another process (v0.6.0+)
-         * When true, Flutter has the lock and service should not try to load identity.
-         * Returns: true if locked (Flutter active), false if available
+         * Check if identity lock is held by Flutter.
          */
         @JvmStatic
         external fun nativeIsIdentityLocked(dataDir: String): Boolean
 
         /**
-         * Release service's engine (v0.6.0+)
-         * Called when Flutter becomes active and wants to take over.
-         * Service should call this to release its engine and identity lock.
+         * Release service's engine for Flutter takeover.
          */
         @JvmStatic
         external fun nativeReleaseEngine()
 
         /**
-         * Start listeners for all contacts (v0.6.3+)
-         * Called after identity is loaded in service mode.
-         * Service needs all listeners for push notifications when app is killed.
-         * Uses parallel subscription internally for faster setup.
-         * Returns: number of contacts with listeners started
+         * Check all contacts' outboxes for offline messages (v0.100.20+)
+         * Synchronous polling function - replaces continuous listeners.
+         * Returns: 0 on success, negative on error
          */
         @JvmStatic
-        external fun nativeListenAllContacts(): Int
-
-        /**
-         * Set this service as the DHT reconnect handler (v0.6.9+)
-         * When registered, the engine will call onDhtReconnected() after network
-         * changes instead of auto-creating FULL listeners. This allows the service
-         * to create MINIMAL listeners for efficient background operation.
-         */
-        @JvmStatic
-        external fun nativeSetReconnectHelper(helper: Any?)
+        external fun nativeCheckOfflineMessages(): Int
 
         // Error code for identity lock held by another process
         private const val ERROR_IDENTITY_LOCKED = -117
@@ -186,11 +149,7 @@ class DnaMessengerService : Service() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var lastNetworkChangeTime: Long = 0
     private var currentNetworkId: String? = null
-    private var hadPreviousNetwork: Boolean = false  // Track if we had a network before disconnect
-    private var reconnectRetryCount: Int = 0
-    private var listenRenewalHandler: android.os.Handler? = null
-    private var healthCheckHandler: android.os.Handler? = null
-    private var wakeLockRenewalHandler: android.os.Handler? = null
+    private var hadPreviousNetwork: Boolean = false
 
     override fun onCreate() {
         super.onCreate()
@@ -207,6 +166,7 @@ class DnaMessengerService : Service() {
         when (action) {
             "START" -> startForegroundService()
             "STOP" -> stopForegroundService()
+            "POLL" -> performMessageCheckAsync()  // Alarm triggered
         }
 
         return START_STICKY
@@ -218,224 +178,81 @@ class DnaMessengerService : Service() {
         android.util.Log.i(TAG, "Service destroyed")
         isRunning = false
         serviceInstance = null
+        cancelPollAlarm()
         releaseWakeLock()
+        unregisterNetworkCallback()
         super.onDestroy()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        android.util.Log.i(TAG, "Task removed - scheduling service restart")
+        android.util.Log.i(TAG, "Task removed - service continues running")
 
-        // Only restart if notifications are enabled
+        // Only continue if notifications are enabled
         val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
         val notificationsEnabled = prefs.getBoolean("flutter.notifications_enabled", true)
-        android.util.Log.i(TAG, "Notifications enabled in prefs: $notificationsEnabled")
 
         if (notificationsEnabled) {
-            // Re-post the foreground notification immediately to prevent it from being dismissed
-            // This is needed because some Android versions briefly hide the notification on task removal
+            // Re-post the foreground notification
             try {
-                val notification = createNotification("Decentralized mode active — background service running to receive messages")
+                val notification = createNotification("Background service active")
                 val notificationManager = getSystemService(NotificationManager::class.java)
                 notificationManager.notify(NOTIFICATION_ID, notification)
-                android.util.Log.i(TAG, "Re-posted foreground notification")
             } catch (e: Exception) {
                 android.util.Log.e(TAG, "Failed to re-post notification: ${e.message}")
             }
-
-            // Schedule restart via AlarmManager for immediate restart
-            val restartIntent = Intent(this, DnaMessengerService::class.java).apply {
-                action = "START"
-            }
-            val pendingIntent = PendingIntent.getService(
-                this, 1, restartIntent,
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-            )
-
-            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            alarmManager.set(
-                AlarmManager.RTC_WAKEUP,
-                System.currentTimeMillis() + 1000, // 1 second delay
-                pendingIntent
-            )
-            android.util.Log.i(TAG, "Service restart scheduled via AlarmManager")
         }
 
         super.onTaskRemoved(rootIntent)
     }
 
     private fun startForegroundService() {
-        android.util.Log.i(TAG, "Starting foreground service")
+        android.util.Log.i(TAG, "Starting foreground service (polling mode)")
 
-        // Ensure notification channel exists before starting foreground
         createNotificationChannel()
 
         // Check notification permission on Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val hasPermission = checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
                 android.content.pm.PackageManager.PERMISSION_GRANTED
-            android.util.Log.i(TAG, "Notification permission granted: $hasPermission")
             if (!hasPermission) {
-                android.util.Log.w(TAG, "POST_NOTIFICATIONS permission not granted - foreground notification may not show")
+                android.util.Log.w(TAG, "POST_NOTIFICATIONS permission not granted")
             }
         }
 
-        val notification = createNotification("Decentralized mode active — background service running to receive messages")
-        android.util.Log.i(TAG, "Created notification with ID=$NOTIFICATION_ID, channel=$CHANNEL_ID")
+        val notification = createNotification("Background service active")
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                // Android 14+: Use REMOTE_MESSAGING (no timeout, designed for messaging apps)
                 startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // Android 10-13: REMOTE_MESSAGING available from API 29
                 startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
-            android.util.Log.i(TAG, "startForeground() called successfully (remoteMessaging)")
+            android.util.Log.i(TAG, "startForeground() called successfully")
         } catch (e: Exception) {
             android.util.Log.e(TAG, "startForeground() failed: ${e.message}")
         }
 
-        acquireWakeLock()
         registerNetworkCallback()
-        startListenRenewalTimer()
-        startHealthCheckTimer()
 
-        // Use singleton notification helper from MainActivity
-        // If not initialized yet (service started without MainActivity), init it now
+        // Initialize notification helper if needed
         if (MainActivity.notificationHelper == null) {
             MainActivity.initNotificationHelper(this)
         }
-        android.util.Log.i(TAG, "Using singleton notification helper: ${MainActivity.notificationHelper != null}")
 
-        // v0.5.5+: Check if identity needs to be loaded in background mode
-        // This handles the case where process was killed but service restarts
-        ensureIdentityLoaded()
-    }
-
-    /**
-     * Ensure identity is loaded for DHT listeners (v0.6.0+)
-     *
-     * Single-owner model: Service owns engine when Flutter is not running.
-     * v0.6.0+: Uses identity lock to prevent race conditions with Flutter.
-     * If Flutter has the lock, service waits. When Flutter releases, service takes over.
-     */
-    private fun ensureIdentityLoaded() {
-        if (!libraryLoaded) {
-            android.util.Log.e(TAG, "Native library not loaded - cannot ensure identity")
-            return
-        }
-
-        // Skip if Flutter is active - it owns the engine
-        if (flutterActive) {
-            android.util.Log.i(TAG, "Flutter active - skipping service identity load")
-            return
-        }
-
-        try {
-            // Check if identity already loaded (Flutter might have done it)
-            if (nativeIsIdentityLoaded()) {
-                android.util.Log.i(TAG, "Identity already loaded")
-                return
-            }
-
-            // Get fingerprint from SharedPreferences (set by Flutter)
-            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-            val fingerprint = prefs.getString("flutter.identity_fingerprint", null)
-            if (fingerprint.isNullOrEmpty()) {
-                android.util.Log.i(TAG, "No stored fingerprint - waiting for Flutter to create identity")
-                return
-            }
-
-            val dataDir = filesDir.absolutePath + "/dna_messenger"
-
-            // v0.6.0+: Check if identity lock is held before trying to load
-            if (nativeIsIdentityLocked(dataDir)) {
-                android.util.Log.i(TAG, "Identity locked by Flutter - service will wait")
-                return
-            }
-
-            // Ensure engine is initialized
-            if (!nativeEnsureEngine(dataDir)) {
-                android.util.Log.e(TAG, "Failed to ensure engine")
-                return
-            }
-
-            // Load identity with minimal initialization (DHT only, no listeners)
-            android.util.Log.i(TAG, "Loading identity (minimal): ${fingerprint.take(16)}...")
-            val result = nativeLoadIdentityMinimalSync(fingerprint)
-            when (result) {
-                0 -> {
-                    android.util.Log.i(TAG, "Identity loaded (minimal mode)")
-                    // v0.6.9+: Register as reconnect handler BEFORE starting listeners
-                    // This ensures network changes trigger onDhtReconnected() instead of FULL listeners
-                    nativeSetReconnectHelper(this)
-                    android.util.Log.i(TAG, "Registered as DHT reconnect handler")
-                    // v0.6.3+: Explicitly start listeners for all contacts
-                    // Service needs all listeners for notifications when app is killed
-                    val listenerCount = nativeListenAllContacts()
-                    android.util.Log.i(TAG, "Started listeners for $listenerCount contacts - notifications active")
-                }
-                ERROR_IDENTITY_LOCKED -> {
-                    android.util.Log.w(TAG, "Identity locked - Flutter acquired lock during load")
-                    // Release our engine since we can't use it
-                    nativeReleaseEngine()
-                }
-                else -> android.util.Log.e(TAG, "Failed to load identity: $result")
-            }
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "ensureIdentityLoaded error: ${e.message}")
-        }
-    }
-
-    /**
-     * Called by JNI when DHT reconnects after network change (v0.6.9+)
-     *
-     * When this callback is registered via nativeSetReconnectHelper(), the engine
-     * calls this instead of auto-creating FULL listeners. This allows the service
-     * to create MINIMAL listeners for efficient background operation.
-     */
-    fun onDhtReconnected() {
-        android.util.Log.i(TAG, "[RECONNECT] DHT reconnected - starting minimal listeners")
-        Thread {
-            try {
-                val listenerCount = nativeListenAllContacts()
-                android.util.Log.i(TAG, "[RECONNECT] Started minimal listeners for $listenerCount contacts")
-            } catch (e: Exception) {
-                android.util.Log.e(TAG, "[RECONNECT] Error starting listeners: ${e.message}")
-            }
-        }.start()
-    }
-
-    /**
-     * Async version of ensureIdentityLoaded - runs on background thread.
-     * Called when Flutter goes inactive and service needs to take over.
-     */
-    fun ensureIdentityLoadedAsync() {
-        Thread {
-            android.util.Log.i(TAG, "ensureIdentityLoadedAsync: starting on background thread")
-
-            // Reinitialize notification helper if needed (MainActivity may have cleaned it up)
-            if (MainActivity.notificationHelper == null) {
-                android.util.Log.i(TAG, "Reinitializing notification helper for background mode")
-                MainActivity.initNotificationHelper(this)
-            }
-
-            ensureIdentityLoaded()
-        }.start()
+        // Schedule first poll and do an immediate check
+        schedulePollAlarm()
+        performMessageCheckAsync()
     }
 
     private fun stopForegroundService() {
         android.util.Log.i(TAG, "Stopping foreground service")
 
-        // Note: Don't unregister notification helper here - it's managed by MainActivity
-        // and may be needed for future service restarts
-
-        stopListenRenewalTimer()
-        stopHealthCheckTimer()
+        cancelPollAlarm()
         unregisterNetworkCallback()
         releaseWakeLock()
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -445,18 +262,192 @@ class DnaMessengerService : Service() {
         stopSelf()
     }
 
+    // ========== POLLING ==========
+
+    /**
+     * Schedule the next poll alarm.
+     * Uses setExactAndAllowWhileIdle for reliable wake in Doze mode.
+     */
+    private fun schedulePollAlarm() {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val intent = Intent(this, DnaMessengerService::class.java).apply {
+            action = "POLL"
+        }
+        val pendingIntent = PendingIntent.getService(
+            this, POLL_ALARM_REQUEST_CODE, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val triggerTime = System.currentTimeMillis() + POLL_INTERVAL_MS
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+        } else {
+            alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+        }
+
+        android.util.Log.d(TAG, "Poll alarm scheduled for ${POLL_INTERVAL_MS / 1000}s from now")
+    }
+
+    private fun cancelPollAlarm() {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val intent = Intent(this, DnaMessengerService::class.java).apply {
+            action = "POLL"
+        }
+        val pendingIntent = PendingIntent.getService(
+            this, POLL_ALARM_REQUEST_CODE, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        alarmManager.cancel(pendingIntent)
+        android.util.Log.d(TAG, "Poll alarm cancelled")
+    }
+
+    /**
+     * Async wrapper for message check - runs on background thread.
+     */
+    fun performMessageCheckAsync() {
+        Thread {
+            performMessageCheck()
+        }.start()
+    }
+
+    /**
+     * Main polling function - called every 5 minutes.
+     * Acquires short wakelock, checks messages, releases wakelock.
+     */
+    private fun performMessageCheck() {
+        if (!libraryLoaded) {
+            android.util.Log.e(TAG, "[POLL] Native library not loaded")
+            schedulePollAlarm()
+            return
+        }
+
+        // Skip if Flutter is active
+        if (flutterActive) {
+            android.util.Log.d(TAG, "[POLL] Skipped - Flutter active")
+            schedulePollAlarm()
+            return
+        }
+
+        android.util.Log.i(TAG, "[POLL] Starting message check...")
+        val startTime = System.currentTimeMillis()
+
+        // Acquire short wakelock for the check
+        acquireWakeLock()
+
+        try {
+            // Ensure identity is loaded
+            if (!ensureIdentityForCheck()) {
+                android.util.Log.w(TAG, "[POLL] Cannot check - identity not available")
+                return
+            }
+
+            // Check offline messages
+            val result = nativeCheckOfflineMessages()
+            val elapsed = System.currentTimeMillis() - startTime
+
+            if (result >= 0) {
+                android.util.Log.i(TAG, "[POLL] Check completed in ${elapsed}ms (result=$result)")
+            } else {
+                android.util.Log.e(TAG, "[POLL] Check failed in ${elapsed}ms (error=$result)")
+            }
+
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "[POLL] Error: ${e.message}")
+        } finally {
+            releaseWakeLock()
+            schedulePollAlarm()
+        }
+    }
+
+    /**
+     * Ensure identity is loaded for message check.
+     * Returns true if ready to check, false if cannot proceed.
+     */
+    private fun ensureIdentityForCheck(): Boolean {
+        // Already loaded?
+        if (nativeIsIdentityLoaded()) {
+            return true
+        }
+
+        // Get fingerprint from SharedPreferences
+        val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        val fingerprint = prefs.getString("flutter.identity_fingerprint", null)
+        if (fingerprint.isNullOrEmpty()) {
+            android.util.Log.d(TAG, "[POLL] No stored fingerprint")
+            return false
+        }
+
+        val dataDir = filesDir.absolutePath + "/dna_messenger"
+
+        // Check if Flutter has the lock
+        if (nativeIsIdentityLocked(dataDir)) {
+            android.util.Log.d(TAG, "[POLL] Identity locked by Flutter")
+            return false
+        }
+
+        // Ensure engine
+        if (!nativeEnsureEngine(dataDir)) {
+            android.util.Log.e(TAG, "[POLL] Failed to ensure engine")
+            return false
+        }
+
+        // Load identity (minimal mode - DHT only, no listeners)
+        android.util.Log.i(TAG, "[POLL] Loading identity: ${fingerprint.take(16)}...")
+        val result = nativeLoadIdentityMinimalSync(fingerprint)
+
+        return when (result) {
+            0 -> {
+                android.util.Log.i(TAG, "[POLL] Identity loaded successfully")
+                true
+            }
+            ERROR_IDENTITY_LOCKED -> {
+                android.util.Log.w(TAG, "[POLL] Identity locked during load")
+                nativeReleaseEngine()
+                false
+            }
+            else -> {
+                android.util.Log.e(TAG, "[POLL] Identity load failed: $result")
+                false
+            }
+        }
+    }
+
+    // ========== WAKELOCK ==========
+
+    private fun acquireWakeLock() {
+        if (wakeLock == null) {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "DnaMessenger:PollWakeLock"
+            )
+        }
+        wakeLock?.let {
+            if (!it.isHeld) {
+                it.acquire(WAKELOCK_TIMEOUT_MS)
+                android.util.Log.d(TAG, "WakeLock acquired (${WAKELOCK_TIMEOUT_MS / 1000}s timeout)")
+            }
+        }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let {
+            if (it.isHeld) {
+                it.release()
+                android.util.Log.d(TAG, "WakeLock released")
+            }
+        }
+    }
+
+    // ========== NOTIFICATION ==========
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val notificationManager = getSystemService(NotificationManager::class.java)
 
-            // Check if channel already exists
             val existingChannel = notificationManager.getNotificationChannel(CHANNEL_ID)
             if (existingChannel != null) {
-                android.util.Log.d(TAG, "Notification channel exists, importance=${existingChannel.importance}")
-                // Check if user disabled the channel
-                if (existingChannel.importance == NotificationManager.IMPORTANCE_NONE) {
-                    android.util.Log.w(TAG, "Notification channel is disabled by user!")
-                }
                 return
             }
 
@@ -465,11 +456,11 @@ class DnaMessengerService : Service() {
                 "DNA Messenger Service",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Keeps DHT connection alive for message delivery"
+                description = "Background message checking"
                 setShowBadge(false)
             }
             notificationManager.createNotificationChannel(channel)
-            android.util.Log.i(TAG, "Created notification channel: $CHANNEL_ID")
+            android.util.Log.i(TAG, "Created notification channel")
         }
     }
 
@@ -483,7 +474,7 @@ class DnaMessengerService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("DNA Messenger")
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_dialog_info) // TODO: Use app icon
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -491,198 +482,9 @@ class DnaMessengerService : Service() {
             .build()
     }
 
-    private fun updateNotification(text: String) {
-        val notification = createNotification(text)
-        val notificationManager = getSystemService(NotificationManager::class.java)
-        notificationManager.notify(NOTIFICATION_ID, notification)
-    }
-
-    private fun acquireWakeLock() {
-        if (wakeLock == null) {
-            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = powerManager.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "DnaMessenger:ServiceWakeLock"
-            )
-        }
-        wakeLock?.let {
-            if (!it.isHeld) {
-                it.acquire(WAKELOCK_TIMEOUT_MS)
-                android.util.Log.d(TAG, "WakeLock acquired (${WAKELOCK_TIMEOUT_MS / 60000} min timeout)")
-            }
-        }
-        // Schedule renewal before expiry
-        startWakeLockRenewal()
-    }
-
-    private fun startWakeLockRenewal() {
-        wakeLockRenewalHandler?.removeCallbacksAndMessages(null)
-        wakeLockRenewalHandler = android.os.Handler(mainLooper)
-        val renewalInterval = WAKELOCK_TIMEOUT_MS - 60000  // Renew 1 minute before expiry
-        wakeLockRenewalHandler?.postDelayed(object : Runnable {
-            override fun run() {
-                if (isRunning && wakeLock != null) {
-                    wakeLock?.let {
-                        if (it.isHeld) {
-                            it.release()
-                        }
-                        it.acquire(WAKELOCK_TIMEOUT_MS)
-                        android.util.Log.d(TAG, "WakeLock renewed")
-                    }
-                    wakeLockRenewalHandler?.postDelayed(this, renewalInterval)
-                }
-            }
-        }, renewalInterval)
-    }
-
-    private fun releaseWakeLock() {
-        wakeLockRenewalHandler?.removeCallbacksAndMessages(null)
-        wakeLockRenewalHandler = null
-        wakeLock?.let {
-            if (it.isHeld) {
-                it.release()
-                android.util.Log.d(TAG, "WakeLock released")
-            }
-        }
-        wakeLock = null
-    }
-
-    // ========== LISTEN RENEWAL (prevent 6-hour OpenDHT expiry) ==========
-
-    private fun startListenRenewalTimer() {
-        listenRenewalHandler?.removeCallbacksAndMessages(null)
-        listenRenewalHandler = android.os.Handler(mainLooper)
-        listenRenewalHandler?.postDelayed(object : Runnable {
-            override fun run() {
-                if (isRunning) {
-                    if (flutterActive) {
-                        android.util.Log.d(TAG, "Listen renewal skipped - Flutter active")
-                    } else {
-                        android.util.Log.i(TAG, "Listen renewal timer fired - reinitializing DHT to refresh subscriptions")
-                        performDhtReinit()
-                    }
-                    listenRenewalHandler?.postDelayed(this, LISTEN_RENEWAL_INTERVAL_MS)
-                }
-            }
-        }, LISTEN_RENEWAL_INTERVAL_MS)
-        android.util.Log.i(TAG, "Listen renewal timer started (${LISTEN_RENEWAL_INTERVAL_MS / 3600000}h interval)")
-    }
-
-    private fun stopListenRenewalTimer() {
-        listenRenewalHandler?.removeCallbacksAndMessages(null)
-        listenRenewalHandler = null
-        android.util.Log.i(TAG, "Listen renewal timer stopped")
-    }
-
-    // ========== DHT HEALTH CHECK ==========
-
-    private fun startHealthCheckTimer() {
-        healthCheckHandler?.removeCallbacksAndMessages(null)
-        healthCheckHandler = android.os.Handler(mainLooper)
-        val interval = if (fastHealthCheckMode) HEALTH_CHECK_FAST_INTERVAL_MS else HEALTH_CHECK_INTERVAL_MS
-        healthCheckHandler?.postDelayed(object : Runnable {
-            override fun run() {
-                if (isRunning) {
-                    performHealthCheck()
-                    // Use current mode's interval (may have changed)
-                    val nextInterval = if (fastHealthCheckMode) HEALTH_CHECK_FAST_INTERVAL_MS else HEALTH_CHECK_INTERVAL_MS
-                    healthCheckHandler?.postDelayed(this, nextInterval)
-                }
-            }
-        }, interval)
-        android.util.Log.i(TAG, "Health check timer started (${interval / 1000}s interval, fast=$fastHealthCheckMode)")
-    }
-
-    /**
-     * v0.6.8+: Start fast health check mode for quick takeover detection.
-     * Called when Flutter goes inactive - polls every 10s to detect lock release.
-     */
-    fun startFastHealthCheck() {
-        android.util.Log.i(TAG, "Starting fast health check mode (${HEALTH_CHECK_FAST_INTERVAL_MS / 1000}s interval)")
-        fastHealthCheckMode = true
-        // Restart timer with fast interval
-        startHealthCheckTimer()
-    }
-
-    /**
-     * v0.6.8+: Return to normal health check interval.
-     * Called when service successfully takes over or Flutter becomes active.
-     */
-    private fun stopFastHealthCheck() {
-        if (fastHealthCheckMode) {
-            android.util.Log.i(TAG, "Stopping fast health check mode, returning to normal interval")
-            fastHealthCheckMode = false
-            startHealthCheckTimer()  // Restart with normal interval
-        }
-    }
-
-    private fun stopHealthCheckTimer() {
-        healthCheckHandler?.removeCallbacksAndMessages(null)
-        healthCheckHandler = null
-        android.util.Log.i(TAG, "Health check timer stopped")
-    }
-
-    /**
-     * Health check dispatcher - runs on main thread but dispatches work to background.
-     * v0.6.8+: Never blocks main thread to avoid ANR.
-     */
-    private fun performHealthCheck() {
-        Thread {
-            performHealthCheckInternal()
-        }.start()
-    }
-
-    /**
-     * v0.6.8+: Actual health check logic - runs on background thread.
-     * Auto-detects Flutter death and takes over DHT if lock is available.
-     */
-    private fun performHealthCheckInternal() {
-        if (!libraryLoaded) return
-
-        try {
-            // v0.6.8+: Auto-detect takeover opportunity
-            // Don't rely solely on setFlutterActive message - it may not arrive
-            if (!nativeIsIdentityLoaded()) {
-                val dataDir = filesDir.absolutePath + "/dna_messenger"
-                if (!nativeIsIdentityLocked(dataDir)) {
-                    android.util.Log.i(TAG, "[HEALTH] Identity not loaded and lock available - taking over")
-                    ensureIdentityLoaded()
-                    if (nativeIsIdentityLoaded()) {
-                        // Successfully took over - return to normal health check
-                        stopFastHealthCheck()
-                    }
-                } else {
-                    android.util.Log.d(TAG, "[HEALTH] Identity locked by Flutter - waiting")
-                }
-                return  // Either loaded or locked - check health next time
-            }
-
-            // Skip normal health check when Flutter is active
-            if (flutterActive) {
-                android.util.Log.d(TAG, "[HEALTH] Skipped - Flutter active")
-                return
-            }
-
-            // Normal health check - verify DHT is healthy
-            val isHealthy = nativeIsDhtHealthy()
-            android.util.Log.d(TAG, "[HEALTH] DHT healthy=$isHealthy")
-            if (!isHealthy && isNetworkValidated()) {
-                android.util.Log.w(TAG, "[HEALTH] DHT unhealthy but network available - triggering reinit")
-                performDhtReinitInternal()
-            }
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "[HEALTH] Error: ${e.message}")
-        }
-    }
-
     // ========== NETWORK MONITORING ==========
 
     private fun registerNetworkCallback() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
-            android.util.Log.w(TAG, "Network monitoring not available on API < 21")
-            return
-        }
-
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
         val request = NetworkRequest.Builder()
@@ -692,41 +494,29 @@ class DnaMessengerService : Service() {
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 val networkId = network.toString()
-                android.util.Log.i(TAG, "Network available: $networkId (previous: $currentNetworkId, hadPrevious: $hadPreviousNetwork)")
+                android.util.Log.i(TAG, "Network available: $networkId")
 
-                // Trigger reconnect if:
-                // 1. We're switching directly between networks (currentNetworkId != null && different)
-                // 2. We lost previous network and got a new one (hadPreviousNetwork && currentNetworkId == null)
-                val shouldReconnect = when {
-                    currentNetworkId != null && currentNetworkId != networkId -> true  // Direct switch
-                    hadPreviousNetwork && currentNetworkId == null -> true  // Reconnect after disconnect
-                    else -> false  // Initial connect, no need to reinit
+                // Trigger check on network change (not initial connect)
+                val shouldCheck = when {
+                    currentNetworkId != null && currentNetworkId != networkId -> true
+                    hadPreviousNetwork && currentNetworkId == null -> true
+                    else -> false
                 }
 
-                if (shouldReconnect) {
+                if (shouldCheck) {
                     handleNetworkChange(networkId)
                 }
 
                 currentNetworkId = networkId
-                hadPreviousNetwork = true  // We now have a network
+                hadPreviousNetwork = true
             }
 
             override fun onLost(network: Network) {
                 val networkId = network.toString()
                 android.util.Log.i(TAG, "Network lost: $networkId")
-
-                // Clear current network if it's the one that was lost
                 if (currentNetworkId == networkId) {
                     currentNetworkId = null
-                    // Don't clear hadPreviousNetwork - we want to trigger reconnect when new network appears
                 }
-            }
-
-            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                // Log network type changes (WiFi <-> Cellular)
-                val hasWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                val hasCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
-                android.util.Log.d(TAG, "Network capabilities changed: wifi=$hasWifi, cellular=$hasCellular")
             }
         }
 
@@ -742,7 +532,6 @@ class DnaMessengerService : Service() {
         networkCallback?.let { callback ->
             try {
                 connectivityManager?.unregisterNetworkCallback(callback)
-                android.util.Log.i(TAG, "Network callback unregistered")
             } catch (e: Exception) {
                 android.util.Log.e(TAG, "Failed to unregister network callback: ${e.message}")
             }
@@ -753,166 +542,37 @@ class DnaMessengerService : Service() {
         hadPreviousNetwork = false
     }
 
-    private var lastReconnectNetworkId: String? = null
-
     private fun handleNetworkChange(newNetworkId: String) {
         val now = System.currentTimeMillis()
 
-        // Smart debounce: only debounce rapid reconnects to the SAME network.
-        // If switching to a DIFFERENT network, always reconnect immediately.
-        val isSameNetwork = lastReconnectNetworkId == newNetworkId
-        if (isSameNetwork && now - lastNetworkChangeTime < NETWORK_CHANGE_DEBOUNCE_MS) {
-            android.util.Log.d(TAG, "Network change debounced (same network $newNetworkId, too soon)")
+        // Debounce rapid network changes
+        if (now - lastNetworkChangeTime < NETWORK_CHANGE_DEBOUNCE_MS) {
+            android.util.Log.d(TAG, "Network change debounced")
             return
         }
-
         lastNetworkChangeTime = now
-        lastReconnectNetworkId = newNetworkId
-        reconnectRetryCount = 0  // Reset retry count on new network change
 
-        android.util.Log.i(TAG, "Network changed to $newNetworkId (same=$isSameNetwork) - checking connectivity...")
-        updateNotification("Reconnecting...")
+        android.util.Log.i(TAG, "Network changed - triggering immediate check")
 
-        attemptReconnectWithBackoff()
-    }
-
-    private fun attemptReconnectWithBackoff() {
-        if (!isNetworkValidated()) {
-            if (reconnectRetryCount < MAX_RECONNECT_RETRIES) {
-                val delay = RECONNECT_BACKOFF_MS[reconnectRetryCount.coerceAtMost(RECONNECT_BACKOFF_MS.size - 1)]
-                reconnectRetryCount++
-                android.util.Log.w(TAG, "Network not validated, retry $reconnectRetryCount/$MAX_RECONNECT_RETRIES in ${delay}ms")
-                android.os.Handler(mainLooper).postDelayed({
-                    if (isRunning) {
-                        attemptReconnectWithBackoff()
-                    }
-                }, delay)
-            } else {
-                android.util.Log.e(TAG, "Max reconnect retries reached, giving up")
-                updateNotification("Decentralized mode active — background service running to receive messages")
-                reconnectRetryCount = 0
-            }
-            return
-        }
-
-        performDhtReinit()
-    }
-
-    /**
-     * Check if current network has validated internet connectivity
-     */
-    private fun isNetworkValidated(): Boolean {
-        val cm = connectivityManager ?: return false
-        val network = cm.activeNetwork ?: return false
-        val caps = cm.getNetworkCapabilities(network) ?: return false
-
-        // Check for actual internet connectivity (not just connection)
-        val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        val isValidated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-
-        android.util.Log.d(TAG, "Network check: hasInternet=$hasInternet, isValidated=$isValidated")
-        return hasInternet && isValidated
-    }
-
-    /**
-     * DHT reinit dispatcher - ensures work runs on background thread.
-     * v0.6.8+: Never blocks main thread to avoid ANR.
-     */
-    private fun performDhtReinit() {
+        // Reinit DHT and check messages on network change
         Thread {
-            performDhtReinitInternal()
-        }.start()
-    }
+            if (!libraryLoaded || flutterActive) return@Thread
 
-    /**
-     * v0.6.8+: Actual DHT reinitialization logic - runs on background thread.
-     */
-    private fun performDhtReinitInternal() {
-        if (!libraryLoaded) {
-            android.util.Log.e(TAG, "Native library not loaded - cannot reinit DHT")
-            return
-        }
-
-        // Skip DHT reinit when Flutter is active - it owns the DHT
-        if (flutterActive) {
-            android.util.Log.d(TAG, "DHT reinit skipped - Flutter active")
-            return
-        }
-
-        android.util.Log.i(TAG, "Network validated - reinitializing DHT")
-
-        // Reinit DHT directly via JNI (works even when Flutter isn't running)
-        try {
-            val result = nativeReinitDht()
-            when (result) {
-                0 -> {
-                    android.util.Log.i(TAG, "DHT reinit successful")
-                    // Verify listeners restarted after a delay (listener setup is async)
-                    scheduleListenerVerification()
+            try {
+                // Reinit DHT for new network
+                if (nativeIsIdentityLoaded()) {
+                    val result = nativeReinitDht()
+                    android.util.Log.i(TAG, "DHT reinit result: $result")
                 }
-                -1 -> android.util.Log.d(TAG, "DHT not initialized yet, skipping reinit")
-                else -> android.util.Log.e(TAG, "DHT reinit failed: $result")
+
+                // Small delay for DHT to connect
+                Thread.sleep(2000)
+
+                // Check messages
+                performMessageCheck()
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "Network change handling error: ${e.message}")
             }
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "DHT reinit error: ${e.message}")
-        }
-
-        // Also broadcast to Flutter (if running) to refresh listeners
-        val intent = Intent("io.cpunk.dna_messenger.NETWORK_CHANGED")
-        sendBroadcast(intent)
-
-        // Reset notification after delay (must be on main thread)
-        android.os.Handler(mainLooper).postDelayed({
-            updateNotification("Decentralized mode active — background service running to receive messages")
-        }, 3000)
-    }
-
-    /**
-     * Verify listeners restarted after DHT reinit.
-     * Listener setup is async (runs on background thread), so we check after a delay.
-     * If listeners didn't start, trigger another reinit.
-     */
-    private var listenerVerificationRetries = 0
-    private val MAX_LISTENER_VERIFICATION_RETRIES = 3
-    private val LISTENER_VERIFICATION_DELAY_MS = 10000L  // 10 seconds
-
-    /**
-     * v0.6.8+: Schedule listener verification on background thread.
-     * Never blocks main thread to avoid ANR.
-     */
-    private fun scheduleListenerVerification() {
-        android.os.Handler(mainLooper).postDelayed({
-            if (!isRunning) return@postDelayed
-            // v0.6.8+: Run JNI call on background thread to avoid ANR
-            Thread {
-                performListenerVerification()
-            }.start()
-        }, LISTENER_VERIFICATION_DELAY_MS)
-    }
-
-    /**
-     * v0.6.8+: Actual listener verification - runs on background thread.
-     */
-    private fun performListenerVerification() {
-        val isHealthy = try {
-            if (libraryLoaded) nativeIsDhtHealthy() else false
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "Listener verification error: ${e.message}")
-            false
-        }
-
-        if (isHealthy) {
-            android.util.Log.i(TAG, "Listener verification: DHT healthy, listeners active")
-            listenerVerificationRetries = 0
-        } else {
-            listenerVerificationRetries++
-            if (listenerVerificationRetries < MAX_LISTENER_VERIFICATION_RETRIES) {
-                android.util.Log.w(TAG, "Listener verification: unhealthy, retry $listenerVerificationRetries/$MAX_LISTENER_VERIFICATION_RETRIES")
-                performDhtReinitInternal()  // Already on background thread
-            } else {
-                android.util.Log.e(TAG, "Listener verification: failed after $MAX_LISTENER_VERIFICATION_RETRIES retries")
-                listenerVerificationRetries = 0
-            }
-        }
+        }.start()
     }
 }

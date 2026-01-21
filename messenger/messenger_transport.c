@@ -385,14 +385,14 @@ static void transport_message_received_internal(
 // TRANSPORT INITIALIZATION
 // ============================================================================
 
-int messenger_transport_init(messenger_context_t *ctx)
+int messenger_transport_init(messenger_context_t *ctx, bool minimal)
 {
     if (!ctx) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid messenger context");
         return -1;
     }
 
-    QGP_LOG_DEBUG(LOG_TAG, "Initializing transport for identity: %s\n", ctx->identity);
+    QGP_LOG_INFO(LOG_TAG, "Initializing transport (minimal=%d) for: %s", minimal, ctx->identity);
 
     uint8_t *dilithium_privkey = NULL;
     size_t dilithium_privkey_len = 0;
@@ -462,23 +462,26 @@ int messenger_transport_init(messenger_context_t *ctx)
         return -1;
     }
 
-    if (transport_register_presence(ctx->transport_ctx) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to register presence in DHT");
-        transport_free(ctx->transport_ctx);
-        ctx->transport_ctx = NULL;
-        ctx->transport_enabled = false;
-        return -1;
-    }
-
     ctx->transport_enabled = true;
 
-    if (presence_cache_init() != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to initialize presence cache");
-    }
+    /* Minimal mode: skip presence registration (for background polling) */
+    if (!minimal) {
+        if (transport_register_presence(ctx->transport_ctx) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to register presence in DHT");
+            transport_free(ctx->transport_ctx);
+            ctx->transport_ctx = NULL;
+            ctx->transport_enabled = false;
+            return -1;
+        }
 
-    QGP_LOG_DEBUG(LOG_TAG, "Transport initialized successfully");
-    QGP_LOG_DEBUG(LOG_TAG, "DHT port 4000");
-    QGP_LOG_DEBUG(LOG_TAG, "Bootstrap nodes: %d configured\n", g_transport_config.bootstrap_count);
+        if (presence_cache_init() != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to initialize presence cache");
+        }
+
+        QGP_LOG_INFO(LOG_TAG, "Transport initialized (full mode with presence)");
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "Transport initialized (minimal mode, no presence)");
+    }
 
     return 0;
 }

@@ -2040,23 +2040,16 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         }
     }
 
-    /* Full mode only: Initialize P2P transport for DHT and messaging */
-    if (!minimal_mode) {
-        if (messenger_transport_init(engine->messenger) != 0) {
-            QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize P2P transport\n");
-            /* Non-fatal - continue without P2P, DHT operations will still work via singleton */
-        } else {
-            /* P2P initialized successfully - complete P2P setup */
-            /* Note: Presence already registered in messenger_transport_init() */
-
-            /* PERF: Skip full offline sync on startup - lazy sync when user opens chat.
-             * Listeners will catch NEW messages. Old messages sync via checkContactOffline(). */
-            QGP_LOG_INFO(LOG_TAG, "Skipping offline sync (lazy loading enabled)\n");
-
-            /* Start presence heartbeat thread (announces our presence every 4 minutes) */
-            if (dna_start_presence_heartbeat(engine) != 0) {
-                QGP_LOG_WARN(LOG_TAG, "Warning: Failed to start presence heartbeat");
-            }
+    /* Initialize P2P transport for DHT and messaging
+     * - Full mode: includes presence registration + heartbeat
+     * - Minimal mode: transport only for polling (no presence) */
+    if (messenger_transport_init(engine->messenger, minimal_mode) != 0) {
+        QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize P2P transport");
+        /* Non-fatal - continue without P2P, DHT operations will still work via singleton */
+    } else if (!minimal_mode) {
+        /* Full mode only: Start presence heartbeat thread (announces every 4 minutes) */
+        if (dna_start_presence_heartbeat(engine) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "Warning: Failed to start presence heartbeat");
         }
     }
 
@@ -2064,23 +2057,17 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     engine->identity_loaded = true;
     QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity loaded, identity_loaded flag set to true");
 
-    /* PERF: Skip automatic listener setup - Flutter uses lazy loading,
-     * Service calls listen_all_contacts explicitly after identity load.
-     * Contact request listener is lightweight, always start it.
-     * Groups still need subscription for real-time messages. */
-    if (engine->messenger) {
-        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Identity load: skipping auto-listeners (lazy loading)");
+    /* v0.6.13+: Minimal mode skips ALL listeners (battery-optimized polling).
+     * Full mode: start contact request listener and group subscriptions. */
+    if (engine->messenger && !minimal_mode) {
+        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Full mode: starting listeners");
         dna_engine_start_contact_request_listener(engine);
 
-        /* Subscribe to group outboxes for real-time group messages.
-         * This is critical: DHT usually connects before identity loads, so the
-         * background thread (dna_engine_setup_listeners_thread) never runs.
-         * We must subscribe to groups here after identity loads. */
         int group_count = dna_engine_subscribe_all_groups(engine);
-        QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: subscribed to %d groups", group_count);
+        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Subscribed to %d groups", group_count);
 
         /* Full mode only: Retry pending messages and spawn stabilization thread */
-        if (!minimal_mode) {
+        {
             /* 3. Retry any pending/failed messages from previous sessions
              * Messages may have been queued while offline or failed to send.
              * Now that DHT is connected, retry them. */
@@ -5358,7 +5345,7 @@ dna_request_id_t dna_engine_load_identity_minimal(
     params.load_identity.password = password ? strdup(password) : NULL;
     params.load_identity.minimal = true;
 
-    QGP_LOG_INFO(LOG_TAG, "Load identity (minimal): DHT + listeners only");
+    QGP_LOG_INFO(LOG_TAG, "Load identity (minimal): DHT + polling only, no listeners");
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_LOAD_IDENTITY, &params, cb, user_data);

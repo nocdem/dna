@@ -1537,3 +1537,57 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeSetReconnectHelper(JNIEnv
         LOGI("Reconnect helper cleared - engine will handle DHT reconnection");
     }
 }
+
+/**
+ * Check all contacts' outboxes for offline messages (v0.100.20+)
+ *
+ * Synchronous polling function for battery-optimized background service.
+ * Replaces continuous DHT listeners with periodic polling every 5 minutes.
+ *
+ * @return Number of new messages fetched, or negative on error
+ */
+JNIEXPORT jint JNICALL
+Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeCheckOfflineMessages(JNIEnv *env, jobject thiz) {
+    if (!g_engine) {
+        LOGE("nativeCheckOfflineMessages: No engine available");
+        return -1;
+    }
+
+    if (!dna_engine_is_identity_loaded(g_engine)) {
+        LOGE("nativeCheckOfflineMessages: Identity not loaded");
+        return -2;
+    }
+
+    LOGI("nativeCheckOfflineMessages: Checking all contacts' outboxes...");
+
+    /* Synchronous wrapper using callback context */
+    sync_load_ctx_t ctx = { .result = -100, .done = false };
+
+    dna_request_id_t req_id = dna_engine_check_offline_messages(
+        g_engine, sync_load_callback, &ctx);
+
+    if (req_id == 0) {
+        LOGE("nativeCheckOfflineMessages: Failed to submit request");
+        return -3;
+    }
+
+    /* Wait for completion (with timeout) */
+    int wait_count = 0;
+    while (!ctx.done && wait_count < 300) {  /* 30 second timeout */
+        usleep(100000);  /* 100ms */
+        wait_count++;
+    }
+
+    if (!ctx.done) {
+        LOGE("nativeCheckOfflineMessages: Timeout waiting for check");
+        return -4;
+    }
+
+    if (ctx.result == 0) {
+        LOGI("nativeCheckOfflineMessages: Check completed successfully");
+    } else {
+        LOGE("nativeCheckOfflineMessages: Check failed: %d", ctx.result);
+    }
+
+    return ctx.result;
+}

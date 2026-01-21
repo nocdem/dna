@@ -38,9 +38,10 @@ extern "C" {
  * Bootstrap nodes: dna-bootstrap-us-1, dna-bootstrap-eu-1, dna-bootstrap-eu-2
  *
  * @param ctx Messenger context
+ * @param minimal If true, skip presence registration (for background polling)
  * @return 0 on success, -1 on error
  */
-int messenger_transport_init(messenger_context_t *ctx);
+int messenger_transport_init(messenger_context_t *ctx, bool minimal);
 
 /**
  * Shutdown transport for messenger
