@@ -282,21 +282,39 @@ class DnaMessengerService : Service() {
 
         // Android 12+ requires SCHEDULE_EXACT_ALARM permission for exact alarms
         // Fall back to inexact if not granted (may delay up to 10 min in Doze)
-        val canScheduleExact = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            alarmManager.canScheduleExactAlarms()
-        } else {
-            true
+        val canScheduleExact = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                alarmManager.canScheduleExactAlarms()
+            } else {
+                true
+            }
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "canScheduleExactAlarms() failed: ${e.message}")
+            false
         }
 
-        if (canScheduleExact && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-            android.util.Log.d(TAG, "Poll alarm scheduled (exact) for ${POLL_INTERVAL_MS / 1000}s")
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-            android.util.Log.d(TAG, "Poll alarm scheduled (inexact) for ${POLL_INTERVAL_MS / 1000}s")
-        } else {
-            alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-            android.util.Log.d(TAG, "Poll alarm scheduled for ${POLL_INTERVAL_MS / 1000}s")
+        android.util.Log.d(TAG, "canScheduleExact=$canScheduleExact, SDK=${Build.VERSION.SDK_INT}")
+
+        try {
+            if (canScheduleExact && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                android.util.Log.d(TAG, "Poll alarm scheduled (exact) for ${POLL_INTERVAL_MS / 1000}s")
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                android.util.Log.d(TAG, "Poll alarm scheduled (inexact) for ${POLL_INTERVAL_MS / 1000}s")
+            } else {
+                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                android.util.Log.d(TAG, "Poll alarm scheduled for ${POLL_INTERVAL_MS / 1000}s")
+            }
+        } catch (e: SecurityException) {
+            // Fall back to inexact alarm if exact fails
+            android.util.Log.w(TAG, "Exact alarm failed, falling back to inexact: ${e.message}")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                android.util.Log.d(TAG, "Poll alarm scheduled (inexact fallback) for ${POLL_INTERVAL_MS / 1000}s")
+            } else {
+                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+            }
         }
     }
 
