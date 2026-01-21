@@ -1,6 +1,6 @@
 // Android Platform Handler - Android-specific behavior
 // Phase 14: DHT-only messaging with ForegroundService
-// v0.6.9+: Keep engine alive during pause, but detach callback to prevent crash on swipe-away
+// v0.100.23+: Destroy engine on pause, reinit on resume for clean listener state
 
 import '../../ffi/dna_engine.dart';
 import '../platform_handler.dart';
@@ -11,14 +11,18 @@ import 'foreground_service.dart';
 /// Android differences from Desktop:
 /// - ForegroundService keeps DHT alive when app backgrounded
 /// - JNI notification helper handles background notifications
-/// - Engine stays alive during pause (faster resume), but callback detached
+/// - Engine destroyed on pause (listeners canceled), recreated on resume
 class AndroidPlatformHandler implements PlatformHandler {
   @override
-  Future<void> onResume(DnaEngine engine) async {
-    // Tell service Flutter is active (service releases engine if it took over)
+  Future<void> onResumePreEngine() async {
+    // Tell service Flutter is active BEFORE creating engine
+    // Service releases its engine (and DHT lock) so Flutter can create new one
     await ForegroundServiceManager.setFlutterActive(true);
+  }
 
-    // Re-attach callback (was detached in onPause to prevent crash on swipe-away)
+  @override
+  Future<void> onResume(DnaEngine engine) async {
+    // Attach callback (engine is freshly created)
     engine.attachEventCallback();
 
     // Fetch any messages that arrived while backgrounded
@@ -27,11 +31,10 @@ class AndroidPlatformHandler implements PlatformHandler {
 
   @override
   void onPause(DnaEngine engine) {
-    // Detach callback BEFORE app might be killed (swipe-away)
-    // Prevents SIGABRT when C code calls freed Dart NativeCallable
-    engine.detachEventCallback();
+    // Callback already detached by lifecycle_observer before calling this
 
     // Tell service to take over (handles notifications while Flutter is paused)
+    // Service loads identity in minimal mode (polling only, no listeners)
     ForegroundServiceManager.setFlutterActive(false);
   }
 

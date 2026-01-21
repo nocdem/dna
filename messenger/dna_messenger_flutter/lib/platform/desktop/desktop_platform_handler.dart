@@ -12,6 +12,11 @@ import '../platform_handler.dart';
 /// - Flutter must call checkOfflineMessages() to fetch
 class DesktopPlatformHandler implements PlatformHandler {
   @override
+  Future<void> onResumePreEngine() async {
+    // Desktop: no service to notify, nothing to do
+  }
+
+  @override
   Future<void> onResume(DnaEngine engine) async {
     // Desktop: callback stays attached, nothing to do
   }

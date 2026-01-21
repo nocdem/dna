@@ -23,6 +23,12 @@ abstract class PlatformHandler {
     return _instance!;
   }
 
+  /// Called BEFORE creating engine when app comes to foreground
+  ///
+  /// Android: Notify service to release its engine (releases DHT lock)
+  /// Desktop: No-op
+  Future<void> onResumePreEngine();
+
   /// Called when app comes to foreground (resumed)
   ///
   /// Android: Re-attach Flutter event callback, fetch offline messages

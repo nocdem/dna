@@ -1,12 +1,14 @@
 // App Lifecycle Observer - handles app state changes
 // Phase 14: DHT-only messaging with reliable Android background support
-// v0.6.8+: Keep engine alive during pause, service auto-takeover when Flutter dies
+// v0.100.23+: Destroy engine on pause to cancel all listeners, reinit on resume
 
+import 'dart:io' show Platform;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../platform/platform_handler.dart';
 import '../providers/engine_provider.dart';
 import '../providers/event_handler.dart';
+import '../providers/identity_provider.dart';
 import '../providers/contacts_provider.dart';
 import '../providers/contact_profile_cache_provider.dart';
 import '../providers/messages_provider.dart';
@@ -56,38 +58,36 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     ref.read(appInForegroundProvider.notifier).state = true;
 
     // Check if identity was loaded before going to background
+    // currentFingerprintProvider is preserved across engine invalidation
     final fingerprint = ref.read(currentFingerprintProvider);
     if (fingerprint == null || fingerprint.isEmpty) {
       return;
     }
 
     try {
+      // v0.100.23+: Notify service FIRST so it releases its engine
+      // Service must release the DHT lock before Flutter can create new engine
+      if (Platform.isAndroid) {
+        await PlatformHandler.instance.onResumePreEngine();
+      }
+
+      // Get new engine (provider creates fresh instance after invalidation)
       final engine = await ref.read(engineProvider.future);
 
+      // Reload identity into fresh engine
+      // This reloads keys, initializes transport, and starts all listeners
+      await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
+
       // Platform-specific resume handling
-      // Android: Notify service, fetch offline messages
+      // Android: Fetch offline messages
       // Desktop: No-op
       await PlatformHandler.instance.onResume(engine);
-
-      // v0.6.8+: Engine stays alive during pause, no need to reload identity
 
       // Resume presence heartbeat (marks us as online)
       engine.resumePresence();
 
       // Resume Dart-side polling timers (handles presence refresh + contact requests)
       ref.read(eventHandlerProvider).resumePolling();
-
-      // Check if DHT is actually still connected (may have dropped while idle)
-      final isDhtConnected = engine.isDhtConnected();
-
-      if (!isDhtConnected) {
-        // DHT disconnected while idle - trigger reconnection
-        ref.read(dhtConnectionStateProvider.notifier).state =
-            DhtConnectionState.connecting;
-
-        engine.networkChanged();
-        // DHT connected event will update state and restart listeners
-      }
 
       // Force refresh contact profiles from DHT (fixes stale display names)
       // This ensures users see up-to-date names when they open the app
@@ -177,15 +177,19 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Pause C-side presence heartbeat (stops marking us as online)
       engine.pausePresence();
 
+      // Detach event callback before destroying engine
+      engine.detachEventCallback();
+
       // Platform-specific pause handling
-      // Android: Notify service that Flutter is pausing (service is backup if Flutter dies)
+      // Android: Notify service that Flutter is pausing (service takes over)
       // Desktop: No-op
       PlatformHandler.instance.onPause(engine);
 
-      // v0.6.8+: Keep engine alive during pause - Flutter handles notifications
-      // Dart VM stays active during pause, so event callback still works.
-      // Service auto-takeover handles the case when Flutter truly dies.
-      // No need to destroy engine on every app switch!
+      // v0.100.23+: Destroy engine to cancel all DHT listeners
+      // Service runs with minimal mode (polling only, no listeners)
+      // Engine will be recreated when app resumes
+      // NOTE: Do NOT clear currentFingerprintProvider - we need it to reload on resume
+      ref.invalidate(engineProvider);
     } catch (_) {
       // Error during pause - silently continue
     }
