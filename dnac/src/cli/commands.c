@@ -320,10 +320,10 @@ int dnac_cli_tx_details(dnac_context_t *ctx, const char *tx_hash_hex) {
 }
 
 int dnac_cli_nodus_list(dnac_context_t *ctx) {
-    dnac_nodus_info_t *servers = NULL;
+    dnac_witness_info_t *servers = NULL;
     int count = 0;
 
-    int rc = dnac_get_nodus_list(ctx, &servers, &count);
+    int rc = dnac_get_witness_list(ctx, &servers, &count);
     if (rc != DNAC_SUCCESS) {
         fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
         return 1;
@@ -351,7 +351,7 @@ int dnac_cli_nodus_list(dnac_context_t *ctx) {
         printf("%-4d  %-30s  %-10s  %-12s\n", i + 1, servers[i].address, status, fp_short);
     }
 
-    dnac_free_nodus_list(servers, count);
+    dnac_free_witness_list(servers, count);
     return 0;
 }
 

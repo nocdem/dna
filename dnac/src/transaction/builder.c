@@ -141,27 +141,27 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
         }
     }
 
-    /* Add fee output to Nodus server */
+    /* Add fee output to witness server */
     if (fee > 0) {
-        /* Discover Nodus servers to find fee recipient */
-        dnac_nodus_info_t *nodus_servers = NULL;
-        int nodus_count = 0;
-        rc = dnac_nodus_discover(builder->ctx, &nodus_servers, &nodus_count);
+        /* Discover witness servers to find fee recipient */
+        dnac_witness_info_t *witness_servers = NULL;
+        int witness_count = 0;
+        rc = dnac_witness_discover(builder->ctx, &witness_servers, &witness_count);
 
-        if (rc == DNAC_SUCCESS && nodus_count > 0 && nodus_servers[0].fingerprint[0] != '\0') {
-            /* Add fee output to first available Nodus server */
+        if (rc == DNAC_SUCCESS && witness_count > 0 && witness_servers[0].fingerprint[0] != '\0') {
+            /* Add fee output to first available witness server */
             uint8_t fee_seed[32];
-            rc = dnac_tx_add_output(builder->tx, nodus_servers[0].fingerprint, fee, fee_seed);
+            rc = dnac_tx_add_output(builder->tx, witness_servers[0].fingerprint, fee, fee_seed);
             if (rc != DNAC_SUCCESS) {
-                dnac_free_nodus_list(nodus_servers, nodus_count);
+                dnac_free_witness_list(witness_servers, witness_count);
                 free(selected);
                 return rc;
             }
-            dnac_free_nodus_list(nodus_servers, nodus_count);
+            dnac_free_witness_list(witness_servers, witness_count);
         } else {
-            /* No Nodus server available - cannot add fee output */
-            if (nodus_servers) {
-                dnac_free_nodus_list(nodus_servers, nodus_count);
+            /* No witness server available - cannot add fee output */
+            if (witness_servers) {
+                dnac_free_witness_list(witness_servers, witness_count);
             }
             free(selected);
             return DNAC_ERROR_NETWORK;
@@ -277,7 +277,7 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
     dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
     if (!dht) return DNAC_ERROR_NETWORK;
 
-    /* Step 1: Create SpendRequest for anchor collection */
+    /* Step 1: Create SpendRequest for witness collection */
     dnac_spend_request_t request = {0};
     memcpy(request.tx_hash, tx->tx_hash, DNAC_TX_HASH_SIZE);
     memcpy(request.sender_pubkey, tx->sender_pubkey, DNAC_PUBKEY_SIZE);
@@ -291,33 +291,33 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
 
     /* Calculate fee */
     uint64_t total_output = dnac_tx_total_output(tx);
-    request.fee_amount = dnac_nodus_calculate_fee(total_output);
+    request.fee_amount = dnac_witness_calculate_fee(total_output);
 
     /* Step 2: Store pending spend in database */
     uint64_t expires_at = request.timestamp + 300;  /* 5 minute expiry */
     for (int i = 0; i < tx->input_count; i++) {
         rc = dnac_db_store_pending_spend(db, tx->tx_hash,
                                           tx->inputs[i].nullifier,
-                                          DNAC_ANCHORS_REQUIRED, expires_at);
+                                          DNAC_WITNESSES_REQUIRED, expires_at);
         if (rc != DNAC_SUCCESS) {
             /* Non-fatal, continue */
         }
     }
 
-    /* Step 3: Request anchors from Nodus servers */
-    dnac_anchor_t anchors[DNAC_TX_MAX_ANCHORS];
-    int anchor_count = 0;
+    /* Step 3: Request witness signatures */
+    dnac_witness_sig_t witnesses[DNAC_TX_MAX_WITNESSES];
+    int witness_count = 0;
 
-    rc = dnac_nodus_request_anchors(ctx, &request, anchors, &anchor_count);
-    if (rc != DNAC_SUCCESS || anchor_count < DNAC_ANCHORS_REQUIRED) {
+    rc = dnac_witness_request(ctx, &request, witnesses, &witness_count);
+    if (rc != DNAC_SUCCESS || witness_count < DNAC_WITNESSES_REQUIRED) {
         /* Mark pending spends as failed */
         dnac_db_expire_pending_spends(db);
-        return DNAC_ERROR_ANCHOR_FAILED;
+        return DNAC_ERROR_WITNESS_FAILED;
     }
 
-    /* Step 4: Add anchors to transaction */
-    for (int i = 0; i < anchor_count; i++) {
-        rc = dnac_tx_add_anchor(tx, &anchors[i]);
+    /* Step 4: Add witnesses to transaction */
+    for (int i = 0; i < witness_count; i++) {
+        rc = dnac_tx_add_witness(tx, &witnesses[i]);
         if (rc != DNAC_SUCCESS) {
             return rc;
         }

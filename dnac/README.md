@@ -9,7 +9,7 @@ DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger]
 - **Bulletproofs** - Compact zero-knowledge range proofs
 - **Dilithium5 Signatures** - Post-quantum digital signatures (NIST Category 5)
 - **DHT Transport** - Payments delivered via DNA Messenger's DHT network
-- **Nodus 2-of-3 Anchoring** - Fast double-spend prevention
+- **Nodus 2-of-3 Witnessing** - Fast double-spend prevention
 
 ## Architecture
 
@@ -28,8 +28,8 @@ DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger]
                                          │
                                          ▼
                                ┌─────────────────────┐
-                               │   NODUS SERVERS     │
-                               │  (nullifier anchor) │
+                               │  WITNESS SERVERS    │
+                               │ (nullifier witness) │
                                └─────────────────────┘
 ```
 
@@ -86,7 +86,7 @@ DNAC TRANSACTION:
 ├─────────────────────────────────────────────────────────────┤
 │ BALANCE PROOF: excess_commitment + excess_signature         │
 ├─────────────────────────────────────────────────────────────┤
-│ ANCHOR PROOF (2 required): Dilithium signatures from Nodus  │
+│ WITNESS PROOF (2 required): Dilithium attestations          │
 ├─────────────────────────────────────────────────────────────┤
 │ SENDER AUTHORIZATION: Dilithium signature                   │
 └─────────────────────────────────────────────────────────────┘

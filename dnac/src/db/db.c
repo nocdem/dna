@@ -30,11 +30,9 @@ static const char *SCHEMA_SQL =
     /* UTXOs table */
     "CREATE TABLE IF NOT EXISTS dnac_utxos ("
     "    id                  INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "    commitment          BLOB NOT NULL UNIQUE,"
     "    tx_hash             BLOB NOT NULL,"
     "    output_index        INTEGER NOT NULL,"
     "    amount              INTEGER NOT NULL,"
-    "    blinding_factor     BLOB NOT NULL,"
     "    nullifier           BLOB NOT NULL UNIQUE,"
     "    owner_fingerprint   TEXT NOT NULL,"
     "    status              INTEGER NOT NULL DEFAULT 0,"
@@ -62,9 +60,9 @@ static const char *SCHEMA_SQL =
     "    id                  INTEGER PRIMARY KEY AUTOINCREMENT,"
     "    tx_hash             BLOB NOT NULL,"
     "    nullifier           BLOB NOT NULL,"
-    "    anchors_needed      INTEGER NOT NULL DEFAULT 2,"
-    "    anchors_received    INTEGER NOT NULL DEFAULT 0,"
-    "    anchor_signatures   BLOB,"
+    "    witnesses_needed    INTEGER NOT NULL DEFAULT 2,"
+    "    witnesses_received  INTEGER NOT NULL DEFAULT 0,"
+    "    witness_signatures  BLOB,"
     "    created_at          INTEGER NOT NULL,"
     "    expires_at          INTEGER NOT NULL,"
     "    status              INTEGER NOT NULL DEFAULT 0"
@@ -150,23 +148,20 @@ int dnac_db_store_utxo(sqlite3 *db, const dnac_utxo_t *utxo) {
 
     const char *sql =
         "INSERT INTO dnac_utxos "
-        "(commitment, tx_hash, output_index, amount, blinding_factor, "
-        "nullifier, owner_fingerprint, status, received_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        "(tx_hash, output_index, amount, nullifier, owner_fingerprint, status, received_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)";
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) return DNAC_ERROR_DATABASE;
 
-    sqlite3_bind_blob(stmt, 1, utxo->commitment, DNAC_COMMITMENT_SIZE, SQLITE_STATIC);
-    sqlite3_bind_blob(stmt, 2, utxo->tx_hash, DNAC_TX_HASH_SIZE, SQLITE_STATIC);
-    sqlite3_bind_int(stmt, 3, utxo->output_index);
-    sqlite3_bind_int64(stmt, 4, utxo->amount);
-    sqlite3_bind_blob(stmt, 5, utxo->blinding_factor, DNAC_BLINDING_SIZE, SQLITE_STATIC);
-    sqlite3_bind_blob(stmt, 6, utxo->nullifier, DNAC_NULLIFIER_SIZE, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 7, utxo->owner_fingerprint, -1, SQLITE_STATIC);
-    sqlite3_bind_int(stmt, 8, utxo->status);
-    sqlite3_bind_int64(stmt, 9, utxo->received_at);
+    sqlite3_bind_blob(stmt, 1, utxo->tx_hash, DNAC_TX_HASH_SIZE, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 2, utxo->output_index);
+    sqlite3_bind_int64(stmt, 3, utxo->amount);
+    sqlite3_bind_blob(stmt, 4, utxo->nullifier, DNAC_NULLIFIER_SIZE, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 5, utxo->owner_fingerprint, -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 6, utxo->status);
+    sqlite3_bind_int64(stmt, 7, utxo->received_at);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -208,8 +203,8 @@ int dnac_db_get_unspent_utxos(sqlite3 *db,
     if (!utxos) return DNAC_ERROR_OUT_OF_MEMORY;
 
     const char *select_sql =
-        "SELECT commitment, tx_hash, output_index, amount, blinding_factor, "
-        "nullifier, owner_fingerprint, status, received_at, spent_at "
+        "SELECT tx_hash, output_index, amount, nullifier, owner_fingerprint, "
+        "status, received_at, spent_at "
         "FROM dnac_utxos WHERE owner_fingerprint = ? AND status = 0 "
         "ORDER BY amount ASC";
 
@@ -223,18 +218,16 @@ int dnac_db_get_unspent_utxos(sqlite3 *db,
 
     int i = 0;
     while (sqlite3_step(stmt) == SQLITE_ROW && i < count) {
-        memcpy(utxos[i].commitment, sqlite3_column_blob(stmt, 0), DNAC_COMMITMENT_SIZE);
-        memcpy(utxos[i].tx_hash, sqlite3_column_blob(stmt, 1), DNAC_TX_HASH_SIZE);
-        utxos[i].output_index = sqlite3_column_int(stmt, 2);
-        utxos[i].amount = sqlite3_column_int64(stmt, 3);
-        memcpy(utxos[i].blinding_factor, sqlite3_column_blob(stmt, 4), DNAC_BLINDING_SIZE);
-        memcpy(utxos[i].nullifier, sqlite3_column_blob(stmt, 5), DNAC_NULLIFIER_SIZE);
+        memcpy(utxos[i].tx_hash, sqlite3_column_blob(stmt, 0), DNAC_TX_HASH_SIZE);
+        utxos[i].output_index = sqlite3_column_int(stmt, 1);
+        utxos[i].amount = sqlite3_column_int64(stmt, 2);
+        memcpy(utxos[i].nullifier, sqlite3_column_blob(stmt, 3), DNAC_NULLIFIER_SIZE);
         strncpy(utxos[i].owner_fingerprint,
-                (const char*)sqlite3_column_text(stmt, 6),
+                (const char*)sqlite3_column_text(stmt, 4),
                 DNAC_FINGERPRINT_SIZE - 1);
-        utxos[i].status = sqlite3_column_int(stmt, 7);
-        utxos[i].received_at = sqlite3_column_int64(stmt, 8);
-        utxos[i].spent_at = sqlite3_column_int64(stmt, 9);
+        utxos[i].status = sqlite3_column_int(stmt, 5);
+        utxos[i].received_at = sqlite3_column_int64(stmt, 6);
+        utxos[i].spent_at = sqlite3_column_int64(stmt, 7);
         i++;
     }
     sqlite3_finalize(stmt);
@@ -448,13 +441,13 @@ int dnac_db_get_transactions(sqlite3 *db,
 int dnac_db_store_pending_spend(sqlite3 *db,
                                  const uint8_t *tx_hash,
                                  const uint8_t *nullifier,
-                                 int anchors_needed,
+                                 int witnesses_needed,
                                  uint64_t expires_at) {
     if (!db || !tx_hash || !nullifier) return DNAC_ERROR_INVALID_PARAM;
 
     const char *sql =
         "INSERT INTO dnac_pending_spends "
-        "(tx_hash, nullifier, anchors_needed, anchors_received, "
+        "(tx_hash, nullifier, witnesses_needed, witnesses_received, "
         "created_at, expires_at, status) "
         "VALUES (?, ?, ?, 0, strftime('%s','now'), ?, 0)";
 
@@ -464,7 +457,7 @@ int dnac_db_store_pending_spend(sqlite3 *db,
 
     sqlite3_bind_blob(stmt, 1, tx_hash, DNAC_TX_HASH_SIZE, SQLITE_STATIC);
     sqlite3_bind_blob(stmt, 2, nullifier, DNAC_NULLIFIER_SIZE, SQLITE_STATIC);
-    sqlite3_bind_int(stmt, 3, anchors_needed);
+    sqlite3_bind_int(stmt, 3, witnesses_needed);
     sqlite3_bind_int64(stmt, 4, expires_at);
 
     rc = sqlite3_step(stmt);
@@ -473,15 +466,15 @@ int dnac_db_store_pending_spend(sqlite3 *db,
     return (rc == SQLITE_DONE) ? DNAC_SUCCESS : DNAC_ERROR_DATABASE;
 }
 
-int dnac_db_update_pending_anchor(sqlite3 *db,
+int dnac_db_update_pending_witness(sqlite3 *db,
                                    const uint8_t *tx_hash,
-                                   const uint8_t *anchor_sig,
-                                   size_t anchor_sig_len) {
+                                   const uint8_t *witness_sig,
+                                   size_t witness_sig_len) {
     if (!db || !tx_hash) return DNAC_ERROR_INVALID_PARAM;
 
-    /* Get current anchor data */
+    /* Get current witness data */
     const char *select_sql =
-        "SELECT anchor_signatures, anchors_received FROM dnac_pending_spends "
+        "SELECT witness_signatures, witnesses_received FROM dnac_pending_spends "
         "WHERE tx_hash = ? AND status = 0";
 
     sqlite3_stmt *stmt = NULL;
@@ -498,10 +491,10 @@ int dnac_db_update_pending_anchor(sqlite3 *db,
 
     int current_len = sqlite3_column_bytes(stmt, 0);
     const void *current_sigs = sqlite3_column_blob(stmt, 0);
-    int anchors_received = sqlite3_column_int(stmt, 1);
+    int witnesses_received = sqlite3_column_int(stmt, 1);
 
     /* Append new signature */
-    size_t new_len = current_len + anchor_sig_len;
+    size_t new_len = current_len + witness_sig_len;
     uint8_t *new_sigs = malloc(new_len);
     if (!new_sigs) {
         sqlite3_finalize(stmt);
@@ -511,15 +504,15 @@ int dnac_db_update_pending_anchor(sqlite3 *db,
     if (current_len > 0 && current_sigs) {
         memcpy(new_sigs, current_sigs, current_len);
     }
-    if (anchor_sig && anchor_sig_len > 0) {
-        memcpy(new_sigs + current_len, anchor_sig, anchor_sig_len);
+    if (witness_sig && witness_sig_len > 0) {
+        memcpy(new_sigs + current_len, witness_sig, witness_sig_len);
     }
     sqlite3_finalize(stmt);
 
     /* Update record */
     const char *update_sql =
         "UPDATE dnac_pending_spends SET "
-        "anchor_signatures = ?, anchors_received = ? "
+        "witness_signatures = ?, witnesses_received = ? "
         "WHERE tx_hash = ? AND status = 0";
 
     rc = sqlite3_prepare_v2(db, update_sql, -1, &stmt, NULL);
@@ -529,7 +522,7 @@ int dnac_db_update_pending_anchor(sqlite3 *db,
     }
 
     sqlite3_bind_blob(stmt, 1, new_sigs, (int)new_len, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 2, anchors_received + 1);
+    sqlite3_bind_int(stmt, 2, witnesses_received + 1);
     sqlite3_bind_blob(stmt, 3, tx_hash, DNAC_TX_HASH_SIZE, SQLITE_STATIC);
 
     rc = sqlite3_step(stmt);
@@ -541,14 +534,14 @@ int dnac_db_update_pending_anchor(sqlite3 *db,
 
 int dnac_db_get_pending_spend(sqlite3 *db,
                                const uint8_t *tx_hash,
-                               int *anchors_received,
-                               int *anchors_needed,
-                               uint8_t **anchor_sigs,
-                               size_t *anchor_sigs_len) {
+                               int *witnesses_received,
+                               int *witnesses_needed,
+                               uint8_t **witness_sigs,
+                               size_t *witness_sigs_len) {
     if (!db || !tx_hash) return DNAC_ERROR_INVALID_PARAM;
 
     const char *sql =
-        "SELECT anchors_received, anchors_needed, anchor_signatures "
+        "SELECT witnesses_received, witnesses_needed, witness_signatures "
         "FROM dnac_pending_spends WHERE tx_hash = ? AND status = 0";
 
     sqlite3_stmt *stmt = NULL;
@@ -563,22 +556,22 @@ int dnac_db_get_pending_spend(sqlite3 *db,
         return DNAC_ERROR_NOT_FOUND;
     }
 
-    if (anchors_received) *anchors_received = sqlite3_column_int(stmt, 0);
-    if (anchors_needed) *anchors_needed = sqlite3_column_int(stmt, 1);
+    if (witnesses_received) *witnesses_received = sqlite3_column_int(stmt, 0);
+    if (witnesses_needed) *witnesses_needed = sqlite3_column_int(stmt, 1);
 
-    if (anchor_sigs && anchor_sigs_len) {
+    if (witness_sigs && witness_sigs_len) {
         int len = sqlite3_column_bytes(stmt, 2);
         const void *blob = sqlite3_column_blob(stmt, 2);
 
         if (len > 0 && blob) {
-            *anchor_sigs = malloc(len);
-            if (*anchor_sigs) {
-                memcpy(*anchor_sigs, blob, len);
-                *anchor_sigs_len = len;
+            *witness_sigs = malloc(len);
+            if (*witness_sigs) {
+                memcpy(*witness_sigs, blob, len);
+                *witness_sigs_len = len;
             }
         } else {
-            *anchor_sigs = NULL;
-            *anchor_sigs_len = 0;
+            *witness_sigs = NULL;
+            *witness_sigs_len = 0;
         }
     }
 
@@ -624,49 +617,6 @@ int dnac_db_expire_pending_spends(sqlite3 *db) {
     return (rc == SQLITE_DONE) ? DNAC_SUCCESS : DNAC_ERROR_DATABASE;
 }
 
-/* ============================================================================
- * Debug Functions
- * ========================================================================== */
-
-int dnac_db_get_utxo_by_commitment(sqlite3 *db,
-                                    const uint8_t *commitment,
-                                    dnac_utxo_t *utxo) {
-    if (!db || !commitment || !utxo) return DNAC_ERROR_INVALID_PARAM;
-
-    const char *sql =
-        "SELECT commitment, tx_hash, output_index, amount, blinding_factor, "
-        "nullifier, owner_fingerprint, status, received_at, spent_at "
-        "FROM dnac_utxos WHERE commitment = ?";
-
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
-    if (rc != SQLITE_OK) return DNAC_ERROR_DATABASE;
-
-    sqlite3_bind_blob(stmt, 1, commitment, DNAC_COMMITMENT_SIZE, SQLITE_STATIC);
-
-    rc = sqlite3_step(stmt);
-    if (rc != SQLITE_ROW) {
-        sqlite3_finalize(stmt);
-        return DNAC_ERROR_NOT_FOUND;
-    }
-
-    memcpy(utxo->commitment, sqlite3_column_blob(stmt, 0), DNAC_COMMITMENT_SIZE);
-    memcpy(utxo->tx_hash, sqlite3_column_blob(stmt, 1), DNAC_TX_HASH_SIZE);
-    utxo->output_index = sqlite3_column_int(stmt, 2);
-    utxo->amount = sqlite3_column_int64(stmt, 3);
-    memcpy(utxo->blinding_factor, sqlite3_column_blob(stmt, 4), DNAC_BLINDING_SIZE);
-    memcpy(utxo->nullifier, sqlite3_column_blob(stmt, 5), DNAC_NULLIFIER_SIZE);
-    strncpy(utxo->owner_fingerprint,
-            (const char*)sqlite3_column_text(stmt, 6),
-            DNAC_FINGERPRINT_SIZE - 1);
-    utxo->status = sqlite3_column_int(stmt, 7);
-    utxo->received_at = sqlite3_column_int64(stmt, 8);
-    utxo->spent_at = sqlite3_column_int64(stmt, 9);
-
-    sqlite3_finalize(stmt);
-    return DNAC_SUCCESS;
-}
-
 int dnac_db_clear_utxos(sqlite3 *db, const char *owner_fp) {
     if (!db || !owner_fp) return DNAC_ERROR_INVALID_PARAM;
 
@@ -705,15 +655,4 @@ int dnac_get_history(dnac_context_t *ctx,
 void dnac_free_history(dnac_tx_history_t *history, int count) {
     (void)count;
     free(history);
-}
-
-int dnac_debug_get_utxo(dnac_context_t *ctx,
-                        const uint8_t *commitment,
-                        dnac_utxo_t *utxo) {
-    if (!ctx || !commitment || !utxo) return DNAC_ERROR_INVALID_PARAM;
-
-    sqlite3 *db = dnac_get_db(ctx);
-    if (!db) return DNAC_ERROR_NOT_INITIALIZED;
-
-    return dnac_db_get_utxo_by_commitment(db, commitment, utxo);
 }

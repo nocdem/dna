@@ -6,7 +6,7 @@
  * - Header: version(1) + type(1) + timestamp(8) + tx_hash(64)
  * - Inputs: count(1) + [nullifier(64) + amount(8)]...
  * - Outputs: count(1) + [version(1) + fingerprint(129) + amount(8) + seed(32)]...
- * - Anchors: count(1) + [nodus_id(32) + signature(4627) + timestamp(8)]...
+ * - Witnesses: count(1) + [witness_id(32) + signature(4627) + timestamp(8)]...
  * - Sender: pubkey(2592) + signature(4627)
  */
 
@@ -55,9 +55,9 @@ static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
     size += 1;  /* output_count */
     size += tx->output_count * (1 + DNAC_FINGERPRINT_SIZE + 8 + 32);  /* version(1) + fp(129) + amount(8) + seed(32) */
 
-    /* Anchors */
-    size += 1;  /* anchor_count */
-    size += tx->anchor_count * (32 + DNAC_SIGNATURE_SIZE + 8);  /* nodus_id(32) + sig(4627) + timestamp(8) */
+    /* Witnesses */
+    size += 1;  /* witness_count */
+    size += tx->witness_count * (32 + DNAC_SIGNATURE_SIZE + 8);  /* witness_id(32) + sig(4627) + timestamp(8) */
 
     /* Sender */
     size += DNAC_PUBKEY_SIZE;  /* pubkey (2592) */
@@ -102,12 +102,12 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
         WRITE_BLOB(ptr, tx->outputs[i].nullifier_seed, 32);
     }
 
-    /* Anchors */
-    WRITE_U8(ptr, tx->anchor_count);
-    for (int i = 0; i < tx->anchor_count; i++) {
-        WRITE_BLOB(ptr, tx->anchors[i].nodus_id, 32);
-        WRITE_BLOB(ptr, tx->anchors[i].signature, DNAC_SIGNATURE_SIZE);
-        WRITE_U64(ptr, tx->anchors[i].timestamp);
+    /* Witnesses */
+    WRITE_U8(ptr, tx->witness_count);
+    for (int i = 0; i < tx->witness_count; i++) {
+        WRITE_BLOB(ptr, tx->witnesses[i].witness_id, 32);
+        WRITE_BLOB(ptr, tx->witnesses[i].signature, DNAC_SIGNATURE_SIZE);
+        WRITE_U64(ptr, tx->witnesses[i].timestamp);
     }
 
     /* Sender */
@@ -176,24 +176,24 @@ int dnac_tx_deserialize(const uint8_t *buffer,
         READ_BLOB(ptr, tx->outputs[i].nullifier_seed, 32);
     }
 
-    /* Anchors */
-    uint8_t anchor_count;
-    READ_U8(ptr, anchor_count);
-    if (anchor_count > DNAC_TX_MAX_ANCHORS) {
+    /* Witnesses */
+    uint8_t witness_count;
+    READ_U8(ptr, witness_count);
+    if (witness_count > DNAC_TX_MAX_WITNESSES) {
         free(tx);
         return DNAC_ERROR_INVALID_PARAM;
     }
-    tx->anchor_count = anchor_count;
+    tx->witness_count = witness_count;
 
-    for (int i = 0; i < anchor_count; i++) {
-        size_t anchor_size = 32 + DNAC_SIGNATURE_SIZE + 8;
-        if (ptr + anchor_size > end) {
+    for (int i = 0; i < witness_count; i++) {
+        size_t witness_size = 32 + DNAC_SIGNATURE_SIZE + 8;
+        if (ptr + witness_size > end) {
             free(tx);
             return DNAC_ERROR_INVALID_PARAM;
         }
-        READ_BLOB(ptr, tx->anchors[i].nodus_id, 32);
-        READ_BLOB(ptr, tx->anchors[i].signature, DNAC_SIGNATURE_SIZE);
-        READ_U64(ptr, tx->anchors[i].timestamp);
+        READ_BLOB(ptr, tx->witnesses[i].witness_id, 32);
+        READ_BLOB(ptr, tx->witnesses[i].signature, DNAC_SIGNATURE_SIZE);
+        READ_U64(ptr, tx->witnesses[i].timestamp);
     }
 
     /* Sender */

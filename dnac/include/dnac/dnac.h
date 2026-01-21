@@ -8,11 +8,10 @@
  * - UTXO model for transactions
  * - Dilithium5 (PQ) signatures for authorization
  * - DHT for payment message transport
- * - Nodus 2-of-3 anchoring for double-spend prevention
+ * - Nodus 2-of-3 witnessing for double-spend prevention
  *
- * Protocol Versions:
- * - v1: Transparent amounts (current)
- * - v2: ZK amounts with Pedersen commitments + Bulletproofs (future)
+ * Protocol v1: Transparent amounts (current implementation).
+ * v2 will add PQ ZK (STARKs) for hidden amounts when available.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -46,7 +45,7 @@ extern "C" {
 #define DNAC_ERROR_INSUFFICIENT_FUNDS  -8
 #define DNAC_ERROR_DOUBLE_SPEND        -9
 #define DNAC_ERROR_INVALID_PROOF       -10
-#define DNAC_ERROR_ANCHOR_FAILED       -11
+#define DNAC_ERROR_WITNESS_FAILED      -11
 #define DNAC_ERROR_TIMEOUT             -12
 #define DNAC_ERROR_NOT_FOUND           -13
 #define DNAC_ERROR_SIGN_FAILED         -14
@@ -60,7 +59,7 @@ extern "C" {
 /** Protocol version 1: Transparent amounts */
 #define DNAC_PROTOCOL_V1            1
 
-/** Protocol version 2: ZK amounts (future) */
+/** Protocol version 2: PQ ZK amounts (future - STARKs) */
 #define DNAC_PROTOCOL_V2            2
 
 /** Current protocol version */
@@ -70,20 +69,11 @@ extern "C" {
  * Constants
  * ========================================================================== */
 
-/** Pedersen commitment size (compressed curve point) - used in v2 */
-#define DNAC_COMMITMENT_SIZE        33
-
-/** Blinding factor size (scalar) - used in v2 */
-#define DNAC_BLINDING_SIZE          32
-
 /** Nullifier size (SHA3-512 hash) */
 #define DNAC_NULLIFIER_SIZE         64
 
 /** Transaction hash size (SHA3-512) */
 #define DNAC_TX_HASH_SIZE           64
-
-/** Range proof size (Bulletproof, ~700 bytes typical) - used in v2 */
-#define DNAC_RANGE_PROOF_MAX_SIZE   800
 
 /** Dilithium5 signature size */
 #define DNAC_SIGNATURE_SIZE         4627
@@ -119,7 +109,7 @@ typedef struct dnac_tx_builder dnac_tx_builder_t;
  */
 typedef enum {
     DNAC_UTXO_UNSPENT = 0,      /**< Available for spending */
-    DNAC_UTXO_PENDING = 1,      /**< Spend in progress (awaiting anchors) */
+    DNAC_UTXO_PENDING = 1,      /**< Spend in progress (awaiting attestations) */
     DNAC_UTXO_SPENT   = 2       /**< Already spent */
 } dnac_utxo_status_t;
 
@@ -135,24 +125,19 @@ typedef enum {
 /**
  * @brief Unspent Transaction Output
  *
- * Supports both v1 (transparent) and v2 (ZK) protocols:
- * - v1: amount is plaintext, commitment/blinding unused
- * - v2: amount hidden in commitment, blinding used for ZK proofs
+ * Protocol v1: Transparent amounts (current implementation).
+ * v2 will use PQ ZK (STARKs) when available.
  */
 struct dnac_utxo {
-    uint8_t version;                             /**< Protocol version (1=transparent, 2=ZK) */
+    uint8_t version;                             /**< Protocol version */
     uint8_t tx_hash[DNAC_TX_HASH_SIZE];         /**< Transaction that created this UTXO */
     uint32_t output_index;                       /**< Index within transaction */
-    uint64_t amount;                             /**< Amount (v1: public, v2: private) */
+    uint64_t amount;                             /**< Amount in smallest units */
     uint8_t nullifier[DNAC_NULLIFIER_SIZE];      /**< Nullifier for spending */
     char owner_fingerprint[DNAC_FINGERPRINT_SIZE]; /**< Owner's identity fingerprint */
     dnac_utxo_status_t status;                   /**< Current status */
     uint64_t received_at;                        /**< Unix timestamp when received */
     uint64_t spent_at;                           /**< Unix timestamp when spent (0 if unspent) */
-
-    /* v2 ZK fields (unused in v1) */
-    uint8_t commitment[DNAC_COMMITMENT_SIZE];   /**< Pedersen commitment (v2 only) */
-    uint8_t blinding_factor[DNAC_BLINDING_SIZE]; /**< Blinding factor (v2 only) */
 };
 
 /**
@@ -175,7 +160,7 @@ typedef struct {
 } dnac_balance_t;
 
 /**
- * @brief Nodus server information
+ * @brief Witness server information
  */
 typedef struct {
     char id[65];                /**< Server ID (32 bytes hex) */
@@ -184,7 +169,7 @@ typedef struct {
     char fingerprint[DNAC_FINGERPRINT_SIZE]; /**< Fingerprint derived from pubkey */
     bool is_available;          /**< Currently reachable */
     uint64_t last_seen;         /**< Last successful contact */
-} dnac_nodus_info_t;
+} dnac_witness_info_t;
 
 /**
  * @brief Transaction history entry
@@ -290,6 +275,27 @@ void dnac_free_utxos(dnac_utxo_t *utxos, int count);
 int dnac_sync_wallet(dnac_context_t *ctx);
 
 /**
+ * @brief Start listening for incoming payments
+ *
+ * Subscribes to DHT inbox key for real-time payment notifications.
+ * When payments arrive, the payment callback is invoked automatically.
+ *
+ * @param ctx DNAC context
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_start_listening(dnac_context_t *ctx);
+
+/**
+ * @brief Stop listening for incoming payments
+ *
+ * Cancels the DHT inbox subscription.
+ *
+ * @param ctx DNAC context
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_stop_listening(dnac_context_t *ctx);
+
+/**
  * @brief Recover wallet from DHT
  *
  * Clears existing UTXOs and scans DHT inbox for all payments.
@@ -308,7 +314,7 @@ int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count);
 /**
  * @brief Send payment to recipient
  *
- * Creates transaction, collects Nodus anchors, broadcasts via DHT.
+ * Creates transaction, collects witness attestations, broadcasts via DHT.
  *
  * @param ctx DNAC context
  * @param recipient_fingerprint Recipient's identity fingerprint
@@ -370,7 +376,7 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder, dnac_transaction_t **tx_ou
 /**
  * @brief Broadcast transaction
  *
- * Collects Nodus anchors and sends to recipient(s) via DHT.
+ * Collects witness attestations and sends to recipient(s) via DHT.
  *
  * @param ctx DNAC context
  * @param tx Transaction to broadcast
@@ -413,28 +419,28 @@ int dnac_get_history(dnac_context_t *ctx, dnac_tx_history_t **history, int *coun
 void dnac_free_history(dnac_tx_history_t *history, int count);
 
 /* ============================================================================
- * Nodus Functions
+ * Witness Functions
  * ========================================================================== */
 
 /**
- * @brief Get list of known Nodus servers
+ * @brief Get list of known witness servers
  *
  * @param ctx DNAC context
- * @param servers Output array (caller must free with dnac_free_nodus_list)
+ * @param servers Output array (caller must free with dnac_free_witness_list)
  * @param count Output count
  * @return DNAC_SUCCESS or error code
  */
-int dnac_get_nodus_list(dnac_context_t *ctx, dnac_nodus_info_t **servers, int *count);
+int dnac_get_witness_list(dnac_context_t *ctx, dnac_witness_info_t **servers, int *count);
 
 /**
- * @brief Free Nodus list
+ * @brief Free witness list
  */
-void dnac_free_nodus_list(dnac_nodus_info_t *servers, int count);
+void dnac_free_witness_list(dnac_witness_info_t *servers, int count);
 
 /**
  * @brief Check if nullifier has been spent
  *
- * Queries Nodus servers to verify a nullifier hasn't been used.
+ * Queries witness servers to verify a nullifier hasn't been used.
  *
  * @param ctx DNAC context
  * @param nullifier Nullifier to check (DNAC_NULLIFIER_SIZE bytes)
@@ -444,18 +450,8 @@ void dnac_free_nodus_list(dnac_nodus_info_t *servers, int count);
 int dnac_check_nullifier(dnac_context_t *ctx, const uint8_t *nullifier, bool *is_spent);
 
 /* ============================================================================
- * Debug Functions
+ * Utility Functions
  * ========================================================================== */
-
-/**
- * @brief Get debug info for UTXO
- *
- * @param ctx DNAC context
- * @param commitment Commitment to lookup (DNAC_COMMITMENT_SIZE bytes)
- * @param utxo Output UTXO info
- * @return DNAC_SUCCESS or error code
- */
-int dnac_debug_get_utxo(dnac_context_t *ctx, const uint8_t *commitment, dnac_utxo_t *utxo);
 
 /**
  * @brief Get error string for error code

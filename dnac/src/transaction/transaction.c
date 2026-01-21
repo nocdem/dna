@@ -1,9 +1,9 @@
 /**
  * @file transaction.c
- * @brief Transaction creation and management (v1 transparent)
+ * @brief Transaction creation and management
  *
- * Protocol v1: Amounts are transparent (plaintext).
- * Protocol v2: Amounts hidden in Pedersen commitments (future).
+ * Protocol v1: Transparent amounts (current implementation).
+ * v2 will add PQ ZK (STARKs) for hidden amounts when available.
  */
 
 #include "dnac/transaction.h"
@@ -19,6 +19,10 @@
 #include "crypto/utils/qgp_dilithium.h"
 #include "crypto/utils/qgp_random.h"
 
+/* Forward declarations for verification functions (verify.c) */
+extern int verify_witnesses(const dnac_transaction_t *tx);
+extern int verify_sender_signature(const dnac_transaction_t *tx);
+
 dnac_transaction_t* dnac_tx_create(dnac_tx_type_t type) {
     dnac_transaction_t *tx = calloc(1, sizeof(dnac_transaction_t));
     if (!tx) return NULL;
@@ -28,7 +32,7 @@ dnac_transaction_t* dnac_tx_create(dnac_tx_type_t type) {
     tx->timestamp = (uint64_t)time(NULL);
     tx->input_count = 0;
     tx->output_count = 0;
-    tx->anchor_count = 0;
+    tx->witness_count = 0;
 
     return tx;
 }
@@ -68,9 +72,6 @@ int dnac_tx_add_output(dnac_transaction_t *tx,
         memcpy(output->nullifier_seed, nullifier_seed_out, 32);
     }
 
-    /* v1: No commitments or range proofs */
-    /* v2: Would create Pedersen commitment and Bulletproof here */
-
     tx->output_count++;
     return DNAC_SUCCESS;
 }
@@ -109,12 +110,12 @@ int dnac_tx_finalize(dnac_transaction_t *tx,
     return DNAC_SUCCESS;
 }
 
-int dnac_tx_add_anchor(dnac_transaction_t *tx, const dnac_anchor_t *anchor) {
-    if (!tx || !anchor) return DNAC_ERROR_INVALID_PARAM;
-    if (tx->anchor_count >= DNAC_TX_MAX_ANCHORS) return DNAC_ERROR_INVALID_PARAM;
+int dnac_tx_add_witness(dnac_transaction_t *tx, const dnac_witness_sig_t *witness) {
+    if (!tx || !witness) return DNAC_ERROR_INVALID_PARAM;
+    if (tx->witness_count >= DNAC_TX_MAX_WITNESSES) return DNAC_ERROR_INVALID_PARAM;
 
-    memcpy(&tx->anchors[tx->anchor_count], anchor, sizeof(dnac_anchor_t));
-    tx->anchor_count++;
+    memcpy(&tx->witnesses[tx->witness_count], witness, sizeof(dnac_witness_sig_t));
+    tx->witness_count++;
     return DNAC_SUCCESS;
 }
 
@@ -129,15 +130,22 @@ int dnac_tx_verify(const dnac_transaction_t *tx) {
         return DNAC_ERROR_INVALID_PROOF;
     }
 
-    /* Verify we have enough anchors */
-    if (tx->anchor_count < DNAC_ANCHORS_REQUIRED) {
-        return DNAC_ERROR_ANCHOR_FAILED;
+    /* Verify we have enough witnesses */
+    if (tx->witness_count < DNAC_WITNESSES_REQUIRED) {
+        return DNAC_ERROR_WITNESS_FAILED;
     }
 
-    /* TODO: Verify anchor signatures */
-    /* TODO: Verify sender signature */
+    /* Verify witness signatures */
+    int rc = verify_witnesses(tx);
+    if (rc != DNAC_SUCCESS) {
+        return rc;
+    }
 
-    /* v2: Would also verify balance proof and range proofs */
+    /* Verify sender signature */
+    rc = verify_sender_signature(tx);
+    if (rc != DNAC_SUCCESS) {
+        return rc;
+    }
 
     return DNAC_SUCCESS;
 }

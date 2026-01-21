@@ -1,11 +1,11 @@
 /**
  * @file main.c
- * @brief DNAC Anchor Server entry point
+ * @brief DNAC Witness Server entry point
  *
- * The anchor server provides double-spend prevention for DNAC transactions.
+ * The witness server provides double-spend prevention for DNAC transactions.
  * It communicates via DHT (no TCP ports required).
  *
- * Usage: dnac-anchor [options]
+ * Usage: dnac-witness [options]
  *   -d <dir>    Data directory (default: ~/.dna)
  *   -h          Show help
  *
@@ -21,17 +21,17 @@
 #include <time.h>
 
 #include <dna/dna_engine.h>
-#include "dnac/anchor_server.h"
+#include "dnac/witness.h"
 #include "dnac/version.h"
 #include "config.h"
 
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 
-#define LOG_TAG "ANCHOR_MAIN"
+#define LOG_TAG "WITNESS_MAIN"
 
 /* External function to set replication engine */
-extern void anchor_set_replication_engine(dna_engine_t *engine);
+extern void witness_set_replication_engine(dna_engine_t *engine);
 
 /* Global state */
 static volatile int g_running = 1;
@@ -53,7 +53,7 @@ static void identity_loaded_callback(unsigned long request_id, int result, void 
 }
 
 static void print_usage(const char *prog) {
-    printf("DNAC Anchor Server v%s\n", dnac_get_version());
+    printf("DNAC Witness Server v%s\n", dnac_get_version());
     printf("Usage: %s [options]\n", prog);
     printf("Options:\n");
     printf("  -d <dir>    Data directory (default: ~/.dna)\n");
@@ -75,10 +75,10 @@ static char* get_default_data_dir(void) {
 }
 
 static char* get_db_path(const char *data_dir) {
-    size_t len = strlen(data_dir) + strlen("/") + strlen(ANCHOR_DB_FILENAME) + 1;
+    size_t len = strlen(data_dir) + strlen("/") + strlen(WITNESS_DB_FILENAME) + 1;
     char *path = malloc(len);
     if (path) {
-        snprintf(path, len, "%s/%s", data_dir, ANCHOR_DB_FILENAME);
+        snprintf(path, len, "%s/%s", data_dir, WITNESS_DB_FILENAME);
     }
     return path;
 }
@@ -107,7 +107,7 @@ int main(int argc, char *argv[]) {
         data_dir = get_default_data_dir();
     }
 
-    printf("DNAC Anchor Server v%s\n", dnac_get_version());
+    printf("DNAC Witness Server v%s\n", dnac_get_version());
     printf("Data directory: %s\n", data_dir);
 
     /* Set up signal handlers */
@@ -165,7 +165,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    rc = anchor_nullifier_init(db_path);
+    rc = witness_nullifier_init(db_path);
     free(db_path);
 
     if (rc != 0) {
@@ -176,17 +176,17 @@ int main(int argc, char *argv[]) {
     }
 
     /* Set up replication */
-    anchor_set_replication_engine(engine);
+    witness_set_replication_engine(engine);
 
     /* Publish identity to DHT */
     printf("Publishing identity to DHT...\n");
-    rc = anchor_publish_identity(engine);
+    rc = witness_publish_identity(engine);
     if (rc != 0) {
         fprintf(stderr, "Warning: Failed to publish identity to DHT\n");
         /* Continue anyway - may succeed later */
     }
 
-    printf("Anchor server running. Press Ctrl+C to stop.\n");
+    printf("Witness server running. Press Ctrl+C to stop.\n");
     printf("Fingerprint: %s\n", fingerprint ? fingerprint : "(unknown)");
 
     /* Main loop */
@@ -194,14 +194,14 @@ int main(int argc, char *argv[]) {
     const int IDENTITY_REFRESH_SEC = 1800; /* 30 minutes */
 
     while (g_running) {
-        /* Process anchor requests */
-        int processed = anchor_process_requests(engine);
+        /* Process witness requests */
+        int processed = witness_process_requests(engine);
         if (processed > 0) {
-            printf("Processed %d anchor request(s)\n", processed);
+            printf("Processed %d witness request(s)\n", processed);
         }
 
         /* Process incoming replications */
-        int received = anchor_process_replications(engine);
+        int received = witness_process_replications(engine);
         if (received > 0) {
             printf("Received %d replicated nullifier(s)\n", received);
         }
@@ -209,20 +209,20 @@ int main(int argc, char *argv[]) {
         /* Periodically refresh identity in DHT */
         time_t now = time(NULL);
         if (now - last_identity_publish > IDENTITY_REFRESH_SEC) {
-            anchor_publish_identity(engine);
+            witness_publish_identity(engine);
             last_identity_publish = now;
         }
 
         /* Sleep between polls */
-        usleep(ANCHOR_POLL_INTERVAL_MS * 1000);
+        usleep(WITNESS_POLL_INTERVAL_MS * 1000);
     }
 
     /* Cleanup */
-    printf("Shutting down anchor server...\n");
-    anchor_nullifier_shutdown();
+    printf("Shutting down witness server...\n");
+    witness_nullifier_shutdown();
     dna_engine_destroy(engine);
     free(data_dir);
 
-    printf("Anchor server stopped.\n");
+    printf("Witness server stopped.\n");
     return 0;
 }

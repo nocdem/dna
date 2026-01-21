@@ -1,12 +1,12 @@
 /**
  * @file client.c
- * @brief Nodus RPC client (DHT-based)
+ * @brief Witness server client (DHT-based)
  *
- * Implements the client-side of the Nodus anchoring protocol:
- * 1. Client PUTs SpendRequest to Nodus server's request key
- * 2. Nodus checks nullifier, signs if OK, PUTs response
+ * Implements the client-side of the witness attestation protocol:
+ * 1. Client PUTs SpendRequest to witness server's request key
+ * 2. Witness checks nullifier, signs if OK, PUTs response
  * 3. Client GETs responses from all servers
- * 4. Client collects 2+ anchor signatures
+ * 4. Client collects 2+ witness signatures
  *
  * Communication is DHT-based (no direct TCP).
  */
@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include <pthread.h>
 #include <openssl/evp.h>
 
 /* libdna crypto utilities */
@@ -36,6 +37,21 @@ extern int dht_put_signed(dht_context_t *ctx,
 extern int dht_get(dht_context_t *ctx,
                    const uint8_t *key, size_t key_len,
                    uint8_t **value_out, size_t *value_len_out);
+
+/* DHT listen callback type */
+typedef bool (*dht_listen_callback_t)(
+    const uint8_t *value,
+    size_t value_len,
+    bool expired,
+    void *user_data
+);
+
+/* DHT listen functions from libdna */
+extern size_t dht_listen(dht_context_t *ctx,
+                         const uint8_t *key, size_t key_len,
+                         dht_listen_callback_t callback,
+                         void *user_data);
+extern void dht_cancel_listen(dht_context_t *ctx, size_t token);
 
 /* Dilithium5 verification from libdna */
 extern int dna_engine_verify_signature(dna_engine_t *engine,
@@ -58,14 +74,30 @@ extern int dna_engine_verify_signature(dna_engine_t *engine,
 #define NODUS_POLL_INTERVAL_MS  500
 
 /* ============================================================================
+ * Witness Collection Context (for listener callback)
+ * ========================================================================== */
+
+typedef struct {
+    dnac_witness_sig_t *witnesses;       /* Output array */
+    int *count;                          /* Pointer to witness count */
+    int required;                        /* Number of witnesses needed */
+    dnac_witness_info_t *servers;        /* Known servers for pubkey lookup */
+    int server_count;
+    const uint8_t *tx_hash;              /* Transaction hash for verification */
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    bool done;
+} witness_collect_ctx_t;
+
+/* ============================================================================
  * Internal State
  * ========================================================================== */
 
-/* Cached Nodus server list (shared with discovery.c) */
-dnac_nodus_info_t *g_nodus_servers = NULL;
-int g_nodus_count = 0;
-uint64_t g_nodus_cache_time = 0;
-#define NODUS_CACHE_TTL_SEC 300  /* 5 minute cache */
+/* Cached witness server list (shared with discovery.c) */
+dnac_witness_info_t *g_witness_servers = NULL;
+int g_witness_count = 0;
+uint64_t g_witness_cache_time = 0;
+#define WITNESS_CACHE_TTL_SEC 300  /* 5 minute cache */
 
 /* ============================================================================
  * Helper Functions
@@ -90,17 +122,17 @@ static int compute_sha3_512(const uint8_t *data, size_t len, uint8_t *hash_out) 
 }
 
 /**
- * Build DHT key for Nodus request
- * Key: SHA3-512("dnac:nodus:request:" + nodus_id + ":" + tx_hash)
+ * Build DHT key for witness request
+ * Key: SHA3-512("dnac:nodus:request:" + witness_id + ":" + tx_hash)
  */
-static int build_request_key(const uint8_t *nodus_id, const uint8_t *tx_hash,
+static int build_request_key(const uint8_t *witness_id, const uint8_t *tx_hash,
                              uint8_t *key_out) {
     uint8_t key_data[256];
     size_t offset = 0;
 
     memcpy(key_data + offset, NODUS_REQUEST_PREFIX, strlen(NODUS_REQUEST_PREFIX));
     offset += strlen(NODUS_REQUEST_PREFIX);
-    memcpy(key_data + offset, nodus_id, 32);
+    memcpy(key_data + offset, witness_id, 32);
     offset += 32;
     key_data[offset++] = ':';
     memcpy(key_data + offset, tx_hash, DNAC_TX_HASH_SIZE);
@@ -110,7 +142,7 @@ static int build_request_key(const uint8_t *nodus_id, const uint8_t *tx_hash,
 }
 
 /**
- * Build DHT key for Nodus response
+ * Build DHT key for witness response
  * Key: SHA3-512("dnac:nodus:response:" + tx_hash + ":" + requester_fp)
  */
 static int build_response_key(const uint8_t *tx_hash, const char *requester_fp,
@@ -147,44 +179,133 @@ static void sleep_ms(int ms) {
     nanosleep(&ts, NULL);
 }
 
+/**
+ * DHT listener callback for witness responses
+ */
+static bool witness_response_callback(const uint8_t *value, size_t value_len,
+                                      bool expired, void *user_data) {
+    witness_collect_ctx_t *ctx = (witness_collect_ctx_t *)user_data;
+    if (!ctx) return false;
+    if (expired || !value || value_len == 0) return true;
+
+    pthread_mutex_lock(&ctx->mutex);
+
+    /* Already have enough? */
+    if (ctx->done || *ctx->count >= ctx->required) {
+        pthread_mutex_unlock(&ctx->mutex);
+        return false;  /* Stop listening */
+    }
+
+    /* Deserialize response */
+    dnac_spend_response_t response;
+    if (dnac_spend_response_deserialize(value, value_len, &response) != 0) {
+        pthread_mutex_unlock(&ctx->mutex);
+        return true;  /* Continue listening */
+    }
+
+    if (response.status != DNAC_NODUS_STATUS_APPROVED) {
+        pthread_mutex_unlock(&ctx->mutex);
+        return true;
+    }
+
+    /* Find server's public key */
+    const uint8_t *witness_pubkey = NULL;
+    for (int i = 0; i < ctx->server_count; i++) {
+        uint8_t witness_id_bytes[32];
+        for (int j = 0; j < 32; j++) {
+            sscanf(&ctx->servers[i].id[j*2], "%2hhx", &witness_id_bytes[j]);
+        }
+        if (memcmp(witness_id_bytes, response.witness_id, 32) == 0) {
+            witness_pubkey = ctx->servers[i].pubkey;
+            break;
+        }
+    }
+
+    /* Use response.server_pubkey if available */
+    const uint8_t *verify_pubkey = witness_pubkey;
+    if (response.server_pubkey[0] != 0) {
+        verify_pubkey = response.server_pubkey;
+    }
+
+    if (!verify_pubkey) {
+        pthread_mutex_unlock(&ctx->mutex);
+        return true;
+    }
+
+    /* Build witness sig and verify */
+    dnac_witness_sig_t witness;
+    memcpy(witness.witness_id, response.witness_id, 32);
+    memcpy(witness.signature, response.signature, DNAC_SIGNATURE_SIZE);
+    memcpy(witness.server_pubkey, verify_pubkey, DNAC_PUBKEY_SIZE);
+    witness.timestamp = response.timestamp;
+
+    if (!dnac_witness_verify(&witness, ctx->tx_hash, verify_pubkey)) {
+        pthread_mutex_unlock(&ctx->mutex);
+        return true;
+    }
+
+    /* Check for duplicate */
+    for (int i = 0; i < *ctx->count; i++) {
+        if (memcmp(ctx->witnesses[i].witness_id, witness.witness_id, 32) == 0) {
+            pthread_mutex_unlock(&ctx->mutex);
+            return true;  /* Duplicate, continue listening */
+        }
+    }
+
+    /* Store witness signature */
+    ctx->witnesses[*ctx->count] = witness;
+    (*ctx->count)++;
+
+    /* Have enough? Signal completion */
+    if (*ctx->count >= ctx->required) {
+        ctx->done = true;
+        pthread_cond_signal(&ctx->cond);
+        pthread_mutex_unlock(&ctx->mutex);
+        return false;  /* Stop listening */
+    }
+
+    pthread_mutex_unlock(&ctx->mutex);
+    return true;  /* Continue listening */
+}
+
 /* ============================================================================
  * Public Functions
  * ========================================================================== */
 
-int dnac_nodus_init(dnac_context_t *ctx) {
+int dnac_witness_init(dnac_context_t *ctx) {
     if (!ctx) return -1;
 
     /* Clear cached server list */
-    if (g_nodus_servers) {
-        dnac_free_nodus_list(g_nodus_servers, g_nodus_count);
-        g_nodus_servers = NULL;
-        g_nodus_count = 0;
+    if (g_witness_servers) {
+        dnac_free_witness_list(g_witness_servers, g_witness_count);
+        g_witness_servers = NULL;
+        g_witness_count = 0;
     }
-    g_nodus_cache_time = 0;
+    g_witness_cache_time = 0;
 
     return 0;
 }
 
-void dnac_nodus_shutdown(dnac_context_t *ctx) {
+void dnac_witness_shutdown(dnac_context_t *ctx) {
     (void)ctx;
 
     /* Free cached server list */
-    if (g_nodus_servers) {
-        dnac_free_nodus_list(g_nodus_servers, g_nodus_count);
-        g_nodus_servers = NULL;
-        g_nodus_count = 0;
+    if (g_witness_servers) {
+        dnac_free_witness_list(g_witness_servers, g_witness_count);
+        g_witness_servers = NULL;
+        g_witness_count = 0;
     }
 }
 
-int dnac_nodus_request_anchors(dnac_context_t *ctx,
-                               const dnac_spend_request_t *request,
-                               dnac_anchor_t *anchors_out,
-                               int *anchor_count_out) {
-    if (!ctx || !request || !anchors_out || !anchor_count_out) {
+int dnac_witness_request(dnac_context_t *ctx,
+                         const dnac_spend_request_t *request,
+                         dnac_witness_sig_t *witnesses_out,
+                         int *witness_count_out) {
+    if (!ctx || !request || !witnesses_out || !witness_count_out) {
         return DNAC_ERROR_INVALID_PARAM;
     }
 
-    *anchor_count_out = 0;
+    *witness_count_out = 0;
 
     /* Get DNA engine and DHT context */
     dna_engine_t *engine = dnac_get_engine(ctx);
@@ -197,10 +318,10 @@ int dnac_nodus_request_anchors(dnac_context_t *ctx,
     const char *owner_fp = dnac_get_owner_fingerprint(ctx);
     if (!owner_fp) return DNAC_ERROR_NOT_INITIALIZED;
 
-    /* Discover Nodus servers if needed */
-    dnac_nodus_info_t *servers = NULL;
+    /* Discover witness servers if needed */
+    dnac_witness_info_t *servers = NULL;
     int server_count = 0;
-    int rc = dnac_nodus_discover(ctx, &servers, &server_count);
+    int rc = dnac_witness_discover(ctx, &servers, &server_count);
     if (rc != DNAC_SUCCESS || server_count == 0) {
         return DNAC_ERROR_NETWORK;
     }
@@ -210,23 +331,23 @@ int dnac_nodus_request_anchors(dnac_context_t *ctx,
     size_t req_len = 0;
     rc = dnac_spend_request_serialize(request, req_buffer, sizeof(req_buffer), &req_len);
     if (rc != 0) {
-        dnac_free_nodus_list(servers, server_count);
+        dnac_free_witness_list(servers, server_count);
         return DNAC_ERROR_CRYPTO;
     }
 
-    /* Send request to all Nodus servers */
+    /* Send request to all witness servers */
     int servers_contacted = 0;
-    for (int i = 0; i < server_count && i < DNAC_MAX_NODUS_SERVERS; i++) {
+    for (int i = 0; i < server_count && i < DNAC_MAX_WITNESS_SERVERS; i++) {
         /* Build request key for this server */
         uint8_t request_key[64];
-        uint8_t nodus_id_bytes[32];
+        uint8_t witness_id_bytes[32];
 
         /* Convert hex ID to bytes */
         for (int j = 0; j < 32 && servers[i].id[j*2]; j++) {
-            sscanf(&servers[i].id[j*2], "%2hhx", &nodus_id_bytes[j]);
+            sscanf(&servers[i].id[j*2], "%2hhx", &witness_id_bytes[j]);
         }
 
-        if (build_request_key(nodus_id_bytes, request->tx_hash, request_key) != 0) {
+        if (build_request_key(witness_id_bytes, request->tx_hash, request_key) != 0) {
             continue;
         }
 
@@ -234,107 +355,82 @@ int dnac_nodus_request_anchors(dnac_context_t *ctx,
         rc = dht_put_signed(dht, request_key, 64, req_buffer, req_len,
                            1, /* value_id */
                            60, /* TTL 60 seconds */
-                           "nodus_request");
+                           "witness_request");
         if (rc == 0) {
             servers_contacted++;
         }
     }
 
     if (servers_contacted == 0) {
-        dnac_free_nodus_list(servers, server_count);
+        dnac_free_witness_list(servers, server_count);
         return DNAC_ERROR_NETWORK;
     }
 
     /* Build response key */
     uint8_t response_key[64];
     if (build_response_key(request->tx_hash, owner_fp, response_key) != 0) {
-        dnac_free_nodus_list(servers, server_count);
+        dnac_free_witness_list(servers, server_count);
         return DNAC_ERROR_CRYPTO;
     }
 
-    /* Poll for responses until we have enough anchors or timeout */
-    uint64_t start_time = get_time_ms();
-    uint64_t timeout = DNAC_NODUS_TIMEOUT_MS;
+    /* Setup witness collection context */
+    witness_collect_ctx_t collect_ctx = {
+        .witnesses = witnesses_out,
+        .count = witness_count_out,
+        .required = DNAC_WITNESSES_REQUIRED,
+        .servers = servers,
+        .server_count = server_count,
+        .tx_hash = request->tx_hash,
+        .done = false
+    };
+    pthread_mutex_init(&collect_ctx.mutex, NULL);
+    pthread_cond_init(&collect_ctx.cond, NULL);
 
-    while (*anchor_count_out < DNAC_ANCHORS_REQUIRED &&
-           (get_time_ms() - start_time) < timeout) {
-
-        /* GET responses from DHT */
-        uint8_t *resp_data = NULL;
-        size_t resp_len = 0;
-
-        rc = dht_get(dht, response_key, 64, &resp_data, &resp_len);
-        if (rc == 0 && resp_data && resp_len > 0) {
-            /* Deserialize response */
-            dnac_spend_response_t response;
-            if (dnac_spend_response_deserialize(resp_data, resp_len, &response) == 0) {
-                if (response.status == DNAC_NODUS_STATUS_APPROVED) {
-                    /* Find server's public key */
-                    const uint8_t *nodus_pubkey = NULL;
-                    for (int i = 0; i < server_count; i++) {
-                        uint8_t nodus_id_bytes[32];
-                        for (int j = 0; j < 32; j++) {
-                            sscanf(&servers[i].id[j*2], "%2hhx", &nodus_id_bytes[j]);
-                        }
-                        if (memcmp(nodus_id_bytes, response.nodus_id, 32) == 0) {
-                            nodus_pubkey = servers[i].pubkey;
-                            break;
-                        }
-                    }
-
-                    /* Verify anchor signature using pubkey from response */
-                    /* Use response.server_pubkey if available, fall back to discovered pubkey */
-                    const uint8_t *verify_pubkey = nodus_pubkey;
-                    if (response.server_pubkey[0] != 0) {
-                        verify_pubkey = response.server_pubkey;
-                    }
-
-                    if (verify_pubkey) {
-                        dnac_anchor_t anchor;
-                        memcpy(anchor.nodus_id, response.nodus_id, 32);
-                        memcpy(anchor.signature, response.signature, DNAC_SIGNATURE_SIZE);
-                        memcpy(anchor.server_pubkey, verify_pubkey, DNAC_PUBKEY_SIZE);
-                        anchor.timestamp = response.timestamp;
-
-                        if (dnac_nodus_verify_anchor(&anchor, request->tx_hash, verify_pubkey)) {
-                            /* Check for duplicate */
-                            bool is_dup = false;
-                            for (int i = 0; i < *anchor_count_out; i++) {
-                                if (memcmp(anchors_out[i].nodus_id, anchor.nodus_id, 32) == 0) {
-                                    is_dup = true;
-                                    break;
-                                }
-                            }
-
-                            if (!is_dup) {
-                                anchors_out[*anchor_count_out] = anchor;
-                                (*anchor_count_out)++;
-                            }
-                        }
-                    }
-                }
-            }
-            free(resp_data);
-        }
-
-        /* Don't spin too fast */
-        if (*anchor_count_out < DNAC_ANCHORS_REQUIRED) {
-            sleep_ms(NODUS_POLL_INTERVAL_MS);
-        }
+    /* Start listening for witness responses */
+    size_t listen_token = dht_listen(dht, response_key, 64,
+                                     witness_response_callback, &collect_ctx);
+    if (listen_token == 0) {
+        pthread_mutex_destroy(&collect_ctx.mutex);
+        pthread_cond_destroy(&collect_ctx.cond);
+        dnac_free_witness_list(servers, server_count);
+        return DNAC_ERROR_NETWORK;
     }
 
-    dnac_free_nodus_list(servers, server_count);
+    /* Wait for enough witnesses with timeout */
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += DNAC_NODUS_TIMEOUT_MS / 1000;
+    ts.tv_nsec += (DNAC_NODUS_TIMEOUT_MS % 1000) * 1000000;
+    if (ts.tv_nsec >= 1000000000) {
+        ts.tv_sec++;
+        ts.tv_nsec -= 1000000000;
+    }
 
-    if (*anchor_count_out >= DNAC_ANCHORS_REQUIRED) {
+    pthread_mutex_lock(&collect_ctx.mutex);
+    while (!collect_ctx.done && *witness_count_out < DNAC_WITNESSES_REQUIRED) {
+        int wait_rc = pthread_cond_timedwait(&collect_ctx.cond, &collect_ctx.mutex, &ts);
+        if (wait_rc != 0) break;  /* Timeout or error */
+    }
+    pthread_mutex_unlock(&collect_ctx.mutex);
+
+    /* Cancel listener */
+    dht_cancel_listen(dht, listen_token);
+
+    /* Cleanup */
+    pthread_mutex_destroy(&collect_ctx.mutex);
+    pthread_cond_destroy(&collect_ctx.cond);
+    dnac_free_witness_list(servers, server_count);
+
+    if (*witness_count_out >= DNAC_WITNESSES_REQUIRED) {
         return DNAC_SUCCESS;
     }
 
-    return DNAC_ERROR_ANCHOR_FAILED;
+    return DNAC_ERROR_WITNESS_FAILED;
 }
 
-int dnac_nodus_check_nullifier(dnac_context_t *ctx,
-                               const uint8_t *nullifier,
-                               bool *is_spent_out) {
+int dnac_witness_check_nullifier(dnac_context_t *ctx,
+                                 const uint8_t *nullifier,
+                                 bool *is_spent_out) {
     if (!ctx || !nullifier || !is_spent_out) {
         return DNAC_ERROR_INVALID_PARAM;
     }
@@ -377,37 +473,37 @@ int dnac_nodus_check_nullifier(dnac_context_t *ctx,
     return DNAC_SUCCESS;
 }
 
-bool dnac_nodus_verify_anchor(const dnac_anchor_t *anchor,
-                              const uint8_t *tx_hash,
-                              const uint8_t *nodus_pubkey) {
-    if (!anchor || !tx_hash || !nodus_pubkey) return false;
+bool dnac_witness_verify(const dnac_witness_sig_t *witness,
+                         const uint8_t *tx_hash,
+                         const uint8_t *witness_pubkey) {
+    if (!witness || !tx_hash || !witness_pubkey) return false;
 
-    /* Build signed data: tx_hash + nodus_id + timestamp */
+    /* Build signed data: tx_hash + witness_id + timestamp */
     uint8_t signed_data[DNAC_TX_HASH_SIZE + 32 + 8];
     memcpy(signed_data, tx_hash, DNAC_TX_HASH_SIZE);
-    memcpy(signed_data + DNAC_TX_HASH_SIZE, anchor->nodus_id, 32);
+    memcpy(signed_data + DNAC_TX_HASH_SIZE, witness->witness_id, 32);
 
     /* Little-endian timestamp */
     for (int i = 0; i < 8; i++) {
-        signed_data[DNAC_TX_HASH_SIZE + 32 + i] = (anchor->timestamp >> (i * 8)) & 0xFF;
+        signed_data[DNAC_TX_HASH_SIZE + 32 + i] = (witness->timestamp >> (i * 8)) & 0xFF;
     }
 
     /* Verify Dilithium5 signature */
-    int ret = qgp_dsa87_verify(anchor->signature, DNAC_SIGNATURE_SIZE,
+    int ret = qgp_dsa87_verify(witness->signature, DNAC_SIGNATURE_SIZE,
                                signed_data, sizeof(signed_data),
-                               nodus_pubkey);
+                               witness_pubkey);
     return (ret == 0);
 }
 
-uint64_t dnac_nodus_calculate_fee(uint64_t amount) {
+uint64_t dnac_witness_calculate_fee(uint64_t amount) {
     /* 0.1% fee (10 basis points) */
     uint64_t fee = (amount * DNAC_FEE_RATE_BPS) / 10000;
     return fee > 0 ? fee : 1;  /* Minimum 1 unit */
 }
 
-int dnac_nodus_ping(dnac_context_t *ctx,
-                    const uint8_t *server_id,
-                    int *latency_ms_out) {
+int dnac_witness_ping(dnac_context_t *ctx,
+                      const uint8_t *server_id,
+                      int *latency_ms_out) {
     if (!ctx || !server_id || !latency_ms_out) {
         return -1;
     }

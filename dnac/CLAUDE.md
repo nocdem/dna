@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-01-21 | **Status:** ALPHA | **Version:** v0.1.17
+**Last Updated:** 2026-01-21 | **Status:** ALPHA | **Version:** v0.1.19
 
 ---
 
@@ -67,7 +67,7 @@ DNAC is a **Post-Quantum Zero-Knowledge Cash** system built on top of DNA Messen
 | Token Model | UTXO |
 | Signatures | Dilithium5 (Post-Quantum) |
 | Transport | DHT (via libdna) |
-| Double-Spend Prevention | Nodus 2-of-3 Anchoring |
+| Double-Spend Prevention | Nodus 2-of-3 Witnessing |
 | Database | SQLite |
 | ZK (v2 future) | STARKs (Post-Quantum) |
 
@@ -87,8 +87,8 @@ DNAC is a **Post-Quantum Zero-Knowledge Cash** system built on top of DNA Messen
                                          │
                                          ▼
                                ┌─────────────────────┐
-                               │   NODUS SERVERS     │
-                               │  (nullifier anchor) │
+                               │  WITNESS SERVERS    │
+                               │ (nullifier witness) │
                                └─────────────────────┘
 ```
 
@@ -230,7 +230,7 @@ cmake .. && make -j$(nproc)
 | `DNAC_TX_HASH_SIZE` | 64 | SHA3-512 transaction hash |
 | `DNAC_SIGNATURE_SIZE` | 4627 | Dilithium5 signature |
 | `DNAC_PUBKEY_SIZE` | 2592 | Dilithium5 public key |
-| `DNAC_ANCHORS_REQUIRED` | 2 | Anchors needed for valid TX |
+| `DNAC_WITNESSES_REQUIRED` | 2 | Witnesses needed for valid TX |
 
 ---
 
@@ -274,7 +274,7 @@ git push origin main
 ## Security Considerations
 
 1. **Nullifiers** - SHA3-512(secret || UTXO data) to prevent linking
-2. **Nodus Anchoring** - Require 2-of-3 signatures for double-spend prevention
+2. **Nodus Witnessing** - Require 2-of-3 attestations for double-spend prevention
 3. **Key Storage** - Rely on libdna's secure key storage
 4. **Dilithium5** - Post-quantum secure signatures
 

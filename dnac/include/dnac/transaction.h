@@ -2,9 +2,8 @@
  * @file transaction.h
  * @brief DNAC Transaction types and functions
  *
- * Protocol Versions:
- * - v1: Transparent amounts in outputs
- * - v2: ZK amounts with commitments and range proofs (future)
+ * Protocol v1: Transparent amounts (current implementation).
+ * v2 will add PQ ZK (STARKs) for hidden amounts when available.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -25,7 +24,7 @@ extern "C" {
 
 #define DNAC_TX_MAX_INPUTS          16
 #define DNAC_TX_MAX_OUTPUTS         16
-#define DNAC_TX_MAX_ANCHORS         3
+#define DNAC_TX_MAX_WITNESSES       3
 
 /* ============================================================================
  * Transaction Structures
@@ -44,42 +43,37 @@ typedef struct {
 /**
  * @brief Transaction output (v1 transparent)
  *
- * v1: Amount is plaintext, no commitments or range proofs.
- * v2: Would add commitment and range_proof fields.
+ * Protocol v1: Amount is plaintext.
+ * v2 will add PQ ZK fields when STARKs are integrated.
  */
 typedef struct {
-    uint8_t version;                             /**< Output version (1 or 2) */
+    uint8_t version;                             /**< Output version */
     char owner_fingerprint[DNAC_FINGERPRINT_SIZE]; /**< Recipient's fingerprint */
-    uint64_t amount;                             /**< Amount (v1: plaintext) */
+    uint64_t amount;                             /**< Amount in smallest units */
     uint8_t nullifier_seed[32];                  /**< Seed for recipient to derive nullifier */
-
-    /* v2 ZK fields (unused in v1, reserved for future) */
-    uint8_t commitment[DNAC_COMMITMENT_SIZE];   /**< Pedersen commitment (v2 only) */
-    uint8_t range_proof[DNAC_RANGE_PROOF_MAX_SIZE]; /**< Bulletproof (v2 only) */
-    size_t range_proof_len;                      /**< Range proof length (v2 only) */
 } dnac_tx_output_internal_t;
 
 /**
- * @brief Nodus anchor signature
+ * @brief Witness signature (attestation)
  *
- * Anchors from 2+ Nodus servers prevent double-spending.
+ * Signatures from 2+ witness servers prevent double-spending.
  */
 typedef struct {
-    uint8_t nodus_id[32];                        /**< Nodus server ID */
+    uint8_t witness_id[32];                      /**< Witness server ID */
     uint8_t signature[DNAC_SIGNATURE_SIZE];      /**< Dilithium5 signature */
     uint8_t server_pubkey[DNAC_PUBKEY_SIZE];     /**< Server's Dilithium5 public key */
-    uint64_t timestamp;                          /**< Anchor timestamp */
-} dnac_anchor_t;
+    uint64_t timestamp;                          /**< Witness timestamp */
+} dnac_witness_sig_t;
 
 /**
  * @brief Full transaction structure
  *
- * v1 transactions have transparent amounts.
- * v2 transactions (future) will have ZK proofs.
+ * Protocol v1: Transparent amounts.
+ * v2 will add PQ ZK fields when STARKs are integrated.
  */
 struct dnac_transaction {
     /* Header */
-    uint8_t version;                             /**< Protocol version (1 or 2) */
+    uint8_t version;                             /**< Protocol version */
     dnac_tx_type_t type;                         /**< MINT, SPEND, or BURN */
     uint64_t timestamp;                          /**< Unix timestamp */
     uint8_t tx_hash[DNAC_TX_HASH_SIZE];         /**< SHA3-512 of transaction */
@@ -92,17 +86,13 @@ struct dnac_transaction {
     dnac_tx_output_internal_t outputs[DNAC_TX_MAX_OUTPUTS];
     int output_count;
 
-    /* Anchor proofs (2 required for valid transaction) */
-    dnac_anchor_t anchors[DNAC_TX_MAX_ANCHORS];
-    int anchor_count;
+    /* Witness signatures (2 required for valid transaction) */
+    dnac_witness_sig_t witnesses[DNAC_TX_MAX_WITNESSES];
+    int witness_count;
 
     /* Sender authorization (Dilithium5 signature) */
     uint8_t sender_pubkey[DNAC_PUBKEY_SIZE];
     uint8_t sender_signature[DNAC_SIGNATURE_SIZE];
-
-    /* v2 ZK fields (unused in v1) */
-    uint8_t excess_commitment[DNAC_COMMITMENT_SIZE]; /**< Balance proof (v2 only) */
-    uint8_t excess_signature[64];                    /**< Schnorr signature (v2 only) */
 };
 
 /* ============================================================================
@@ -144,8 +134,7 @@ int dnac_tx_add_output(dnac_transaction_t *tx,
  * @brief Finalize transaction
  *
  * Computes hash and signs with sender's Dilithium5 key.
- * For v1: verifies sum(inputs) == sum(outputs) + fee.
- * For v2: would also create balance proof.
+ * Verifies sum(inputs) == sum(outputs).
  *
  * @param tx Transaction
  * @param sender_privkey Sender's Dilithium5 private key
@@ -157,20 +146,18 @@ int dnac_tx_finalize(dnac_transaction_t *tx,
                      const uint8_t *sender_pubkey);
 
 /**
- * @brief Add anchor to transaction
+ * @brief Add witness signature to transaction
  *
  * @param tx Transaction
- * @param anchor Anchor signature from Nodus
+ * @param witness Witness signature from witness server
  * @return DNAC_SUCCESS or error code
  */
-int dnac_tx_add_anchor(dnac_transaction_t *tx, const dnac_anchor_t *anchor);
+int dnac_tx_add_witness(dnac_transaction_t *tx, const dnac_witness_sig_t *witness);
 
 /**
  * @brief Verify transaction
  *
- * Verifies:
- * - v1: sum(inputs) == sum(outputs), signature valid, 2+ anchors
- * - v2: also verifies balance proof and range proofs
+ * Verifies sum(inputs) == sum(outputs), signature valid, 2+ witnesses.
  *
  * @param tx Transaction
  * @return DNAC_SUCCESS if valid, error code otherwise

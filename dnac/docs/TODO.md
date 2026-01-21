@@ -57,7 +57,7 @@ Phase 4 (Range Proofs) is deferred until v2 implementation.
 - [x] Protocol versioning (v1 transparent, v2 PQ ZK)
 - [x] UTXO and transaction structures for v1
 - [x] v1 balance verification (plaintext sum)
-- [x] Removed classical ZK (Pedersen) - full PQ maintained
+- [x] Clean slate for future PQ ZK (STARKs)
 
 ### Phase 5: Wallet Core ✅
 - [x] Database header (db.h) with function declarations
@@ -75,12 +75,12 @@ Phase 4 (Range Proofs) is deferred until v2 implementation.
 ### Phase 7: Nodus Client ✅
 - [x] Define Nodus protocol (SpendRequest/SpendResponse)
 - [x] Implement Nodus client (DHT-based)
-- [x] Implement anchor request flow
+- [x] Implement attestation request flow
 - [x] Implement 2-of-3 signature collection
 - [x] Handle timeouts and retries
 
 ### Phase 8: Send Flow ✅
-- [x] Integrate: UTXO selection → TX build → anchor → broadcast
+- [x] Integrate: UTXO selection → TX build → attest → broadcast
 - [x] Implement fee calculation
 - [x] Implement pending spend tracking
 - [x] Implement payment message creation (DHT-based)
@@ -94,7 +94,6 @@ Phase 4 (Range Proofs) is deferred until v2 implementation.
 
 ### Phase 10: Transaction History ✅
 - [x] Connect dnac_get_history() to database queries
-- [x] Connect dnac_debug_get_utxo() to database
 - [x] Store received transactions in history during sync
 - [x] CLI deferred to Phase 12
 
@@ -128,7 +127,7 @@ Phase 4 (Range Proofs) is deferred until v2 implementation.
 
 ### v1 Transaction Verification
 - Balance: sum(input_amounts) == sum(output_amounts)
-- Anchors: 2+ Nodus Dilithium5 signatures required
+- Witnesses: 2+ Dilithium5 attestations required
 - Sender: Dilithium5 signature on tx_hash
 
 ### v2 PQ ZK (Future)

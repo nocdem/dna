@@ -1,6 +1,6 @@
 /**
- * @file anchor.c
- * @brief Anchor signature handling
+ * @file attestation.c
+ * @brief Witness attestation serialization
  */
 
 #include "dnac/nodus.h"
@@ -85,7 +85,7 @@ int dnac_spend_response_serialize(const dnac_spend_response_t *response,
 
     uint8_t *p = buffer;
     *p++ = (uint8_t)response->status;
-    memcpy(p, response->nodus_id, 32); p += 32;
+    memcpy(p, response->witness_id, 32); p += 32;
     memcpy(p, response->signature, DNAC_SIGNATURE_SIZE); p += DNAC_SIGNATURE_SIZE;
 
     for (int i = 0; i < 8; i++) {
@@ -109,7 +109,7 @@ int dnac_spend_response_deserialize(const uint8_t *buffer,
 
     const uint8_t *p = buffer;
     response_out->status = (dnac_nodus_status_t)*p++;
-    memcpy(response_out->nodus_id, p, 32); p += 32;
+    memcpy(response_out->witness_id, p, 32); p += 32;
     memcpy(response_out->signature, p, DNAC_SIGNATURE_SIZE); p += DNAC_SIGNATURE_SIZE;
 
     response_out->timestamp = 0;

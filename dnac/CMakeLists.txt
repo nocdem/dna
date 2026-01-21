@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(dnac VERSION 0.1.0 LANGUAGES C)
+project(dnac VERSION 0.1.19 LANGUAGES C)
 
 # ============================================================================
 # DNAC - Post-Quantum Digital Cash over DHT
@@ -42,8 +42,6 @@ find_package(PkgConfig REQUIRED)
 find_package(OpenSSL REQUIRED)
 pkg_check_modules(SQLITE3 REQUIRED sqlite3)
 
-# Optional: secp256k1-zkp for Bulletproofs (will use vendored if not found)
-pkg_check_modules(SECP256K1 libsecp256k1)
 
 # ============================================================================
 # Include directories
@@ -67,10 +65,6 @@ set(DNAC_SOURCES
     # Version
     src/version.c
 
-    # Crypto (v2 ZK stubs - not used in v1)
-    src/crypto/bulletproofs.c
-    src/crypto/balance_proof.c
-
     # Wallet
     src/wallet/wallet.c
     src/wallet/utxo.c
@@ -85,7 +79,7 @@ set(DNAC_SOURCES
 
     # Nodus
     src/nodus/client.c
-    src/nodus/anchor.c
+    src/nodus/attestation.c
     src/nodus/discovery.c
 
     # Database
@@ -126,12 +120,6 @@ target_link_libraries(dnac
     m
 )
 
-# secp256k1 if available
-if(SECP256K1_FOUND)
-    target_compile_definitions(dnac PRIVATE HAVE_SECP256K1_ZKP=1)
-    target_link_libraries(dnac ${SECP256K1_LIBRARIES})
-    target_include_directories(dnac PRIVATE ${SECP256K1_INCLUDE_DIRS})
-endif()
 
 # ============================================================================
 # CLI Executable
@@ -170,37 +158,37 @@ if(DNAC_BUILD_CLI)
 endif()
 
 # ============================================================================
-# Anchor Server
+# Witness Server
 # ============================================================================
 
-option(DNAC_BUILD_ANCHOR_SERVER "Build dnac-anchor server" OFF)
+option(DNAC_BUILD_WITNESS "Build dnac-witness server" OFF)
 
-if(DNAC_BUILD_ANCHOR_SERVER)
-    set(DNAC_ANCHOR_SOURCES
-        src/anchor-server/main.c
-        src/anchor-server/server.c
-        src/anchor-server/nullifier.c
-        src/anchor-server/replication.c
+if(DNAC_BUILD_WITNESS)
+    set(DNAC_WITNESS_SOURCES
+        src/witness/main.c
+        src/witness/server.c
+        src/witness/nullifier.c
+        src/witness/replication.c
     )
 
-    add_executable(dnac-anchor ${DNAC_ANCHOR_SOURCES})
+    add_executable(dnac-witness ${DNAC_WITNESS_SOURCES})
 
-    target_include_directories(dnac-anchor PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/anchor-server
+    target_include_directories(dnac-witness PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/witness
     )
 
-    target_link_libraries(dnac-anchor
+    target_link_libraries(dnac-witness
         dnac
     )
 
     # Link libdna directly for dna_engine functions
     if(EXISTS "${DNA_BUILD_DIR}/libdna_lib.so")
-        target_link_libraries(dnac-anchor ${DNA_BUILD_DIR}/libdna_lib.so)
+        target_link_libraries(dnac-witness ${DNA_BUILD_DIR}/libdna_lib.so)
     else()
-        target_link_libraries(dnac-anchor ${DNA_BUILD_DIR}/libdna_lib.a)
+        target_link_libraries(dnac-witness ${DNA_BUILD_DIR}/libdna_lib.a)
     endif()
 
-    target_link_libraries(dnac-anchor
+    target_link_libraries(dnac-witness
         OpenSSL::SSL
         OpenSSL::Crypto
         ${SQLITE3_LIBRARIES}
@@ -208,7 +196,7 @@ if(DNAC_BUILD_ANCHOR_SERVER)
         m
     )
 
-    install(TARGETS dnac-anchor RUNTIME DESTINATION bin)
+    install(TARGETS dnac-witness RUNTIME DESTINATION bin)
 endif()
 
 # ============================================================================
@@ -256,7 +244,6 @@ message(STATUS "  Version:        ${PROJECT_VERSION}")
 message(STATUS "  Build type:     ${CMAKE_BUILD_TYPE}")
 message(STATUS "  DNA Messenger:  ${DNA_MESSENGER_DIR}")
 message(STATUS "  DNA Build:      ${DNA_BUILD_DIR}")
-message(STATUS "  secp256k1:      ${SECP256K1_FOUND}")
 message(STATUS "  CLI:            ${DNAC_BUILD_CLI}")
 message(STATUS "  Tests:          ${DNAC_BUILD_TESTS}")
 message(STATUS "")

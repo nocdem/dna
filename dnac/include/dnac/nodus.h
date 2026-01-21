@@ -1,18 +1,18 @@
 /**
  * @file nodus.h
- * @brief Nodus Server Client API
+ * @brief Witness Server Client API
  *
- * Nodus servers provide double-spend prevention through a 2-of-3
- * anchoring mechanism. Each spend must be acknowledged by at least
- * 2 Nodus servers before it's considered valid.
+ * Witness servers provide double-spend prevention through a 2-of-3
+ * attestation mechanism. Each spend must be acknowledged by at least
+ * 2 witness servers before it's considered valid.
  *
  * Protocol:
- * 1. Client sends SpendRequest to ALL Nodus servers
- * 2. Each Nodus checks if nullifier already exists
+ * 1. Client sends SpendRequest to ALL witness servers
+ * 2. Each witness checks if nullifier already exists
  * 3. If new: APPROVE + sign with Dilithium5 + replicate to peers
  * 4. If exists: REJECT (double-spend attempt)
- * 5. Client collects 2+ signatures → AnchorProof
- * 6. Transaction with AnchorProof is valid
+ * 5. Client collects 2+ signatures → WitnessProof
+ * 6. Transaction with WitnessProof is valid
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -36,11 +36,11 @@ extern "C" {
  * Constants
  * ========================================================================== */
 
-/** Number of anchors required for valid transaction */
-#define DNAC_ANCHORS_REQUIRED           2
+/** Number of witness signatures required for valid transaction */
+#define DNAC_WITNESSES_REQUIRED         2
 
-/** Maximum number of Nodus servers to contact */
-#define DNAC_MAX_NODUS_SERVERS          5
+/** Maximum number of witness servers to contact */
+#define DNAC_MAX_WITNESS_SERVERS        5
 
 /** Timeout for Nodus requests (milliseconds) */
 #define DNAC_NODUS_TIMEOUT_MS           10000
@@ -73,7 +73,7 @@ typedef enum {
  * ========================================================================== */
 
 /**
- * @brief Spend request sent to Nodus servers
+ * @brief Spend request sent to witness servers
  */
 typedef struct {
     uint8_t tx_hash[DNAC_TX_HASH_SIZE];         /**< Transaction hash */
@@ -81,16 +81,16 @@ typedef struct {
     uint8_t sender_pubkey[DNAC_PUBKEY_SIZE];     /**< Sender's public key */
     uint8_t signature[DNAC_SIGNATURE_SIZE];      /**< Sender's signature on tx_hash */
     uint64_t timestamp;                          /**< Request timestamp */
-    uint64_t fee_amount;                         /**< Fee to Nodus */
+    uint64_t fee_amount;                         /**< Fee to witness */
 } dnac_spend_request_t;
 
 /**
- * @brief Spend response from Nodus server
+ * @brief Spend response from witness server
  */
 typedef struct {
     dnac_nodus_status_t status;                  /**< Approval status */
-    uint8_t nodus_id[32];                        /**< Server ID */
-    uint8_t signature[DNAC_SIGNATURE_SIZE];      /**< Server's signature (anchor) */
+    uint8_t witness_id[32];                      /**< Server ID */
+    uint8_t signature[DNAC_SIGNATURE_SIZE];      /**< Server's signature (attestation) */
     uint8_t server_pubkey[DNAC_PUBKEY_SIZE];     /**< Server's Dilithium5 public key */
     uint64_t timestamp;                          /**< Response timestamp */
     char error_message[256];                     /**< Error message if rejected */
@@ -101,46 +101,46 @@ typedef struct {
  * ========================================================================== */
 
 /**
- * @brief Initialize Nodus client
+ * @brief Initialize witness client
  *
  * @param ctx DNAC context
  * @return 0 on success, -1 on failure
  */
-int dnac_nodus_init(dnac_context_t *ctx);
+int dnac_witness_init(dnac_context_t *ctx);
 
 /**
- * @brief Shutdown Nodus client
+ * @brief Shutdown witness client
  */
-void dnac_nodus_shutdown(dnac_context_t *ctx);
+void dnac_witness_shutdown(dnac_context_t *ctx);
 
 /**
- * @brief Discover Nodus servers via DHT
+ * @brief Discover witness servers via DHT
  *
  * @param ctx DNAC context
- * @param servers_out Output array (caller frees with dnac_free_nodus_list)
+ * @param servers_out Output array (caller frees with dnac_free_witness_list)
  * @param count_out Output count
  * @return 0 on success, -1 on failure
  */
-int dnac_nodus_discover(dnac_context_t *ctx,
-                        dnac_nodus_info_t **servers_out,
-                        int *count_out);
+int dnac_witness_discover(dnac_context_t *ctx,
+                          dnac_witness_info_t **servers_out,
+                          int *count_out);
 
 /**
- * @brief Request spend anchors from Nodus servers
+ * @brief Request witness signatures from witness servers
  *
- * Sends spend request to all known Nodus servers and collects
- * anchor signatures. Returns when 2+ anchors received or timeout.
+ * Sends spend request to all known witness servers and collects
+ * signatures. Returns when 2+ signatures received or timeout.
  *
  * @param ctx DNAC context
  * @param request Spend request
- * @param anchors_out Output anchor array (max DNAC_MAX_NODUS_SERVERS)
- * @param anchor_count_out Output anchor count
- * @return 0 on success, DNAC_ERROR_ANCHOR_FAILED if < 2 anchors
+ * @param witnesses_out Output witness signature array (max DNAC_MAX_WITNESS_SERVERS)
+ * @param witness_count_out Output witness count
+ * @return 0 on success, DNAC_ERROR_WITNESS_FAILED if < 2 witnesses
  */
-int dnac_nodus_request_anchors(dnac_context_t *ctx,
-                               const dnac_spend_request_t *request,
-                               dnac_anchor_t *anchors_out,
-                               int *anchor_count_out);
+int dnac_witness_request(dnac_context_t *ctx,
+                         const dnac_spend_request_t *request,
+                         dnac_witness_sig_t *witnesses_out,
+                         int *witness_count_out);
 
 /**
  * @brief Check if nullifier has been spent
@@ -150,21 +150,21 @@ int dnac_nodus_request_anchors(dnac_context_t *ctx,
  * @param is_spent_out Output: true if spent
  * @return 0 on success, -1 on failure
  */
-int dnac_nodus_check_nullifier(dnac_context_t *ctx,
-                               const uint8_t *nullifier,
-                               bool *is_spent_out);
+int dnac_witness_check_nullifier(dnac_context_t *ctx,
+                                 const uint8_t *nullifier,
+                                 bool *is_spent_out);
 
 /**
- * @brief Verify anchor signature
+ * @brief Verify witness signature
  *
- * @param anchor Anchor to verify
- * @param tx_hash Transaction hash that was anchored
- * @param nodus_pubkey Nodus server's public key
+ * @param witness Witness signature to verify
+ * @param tx_hash Transaction hash that was witnessed
+ * @param witness_pubkey Witness server's public key
  * @return true if valid, false otherwise
  */
-bool dnac_nodus_verify_anchor(const dnac_anchor_t *anchor,
-                              const uint8_t *tx_hash,
-                              const uint8_t *nodus_pubkey);
+bool dnac_witness_verify(const dnac_witness_sig_t *witness,
+                         const uint8_t *tx_hash,
+                         const uint8_t *witness_pubkey);
 
 /**
  * @brief Calculate fee for transaction
@@ -172,19 +172,19 @@ bool dnac_nodus_verify_anchor(const dnac_anchor_t *anchor,
  * @param amount Transaction amount
  * @return Fee amount
  */
-uint64_t dnac_nodus_calculate_fee(uint64_t amount);
+uint64_t dnac_witness_calculate_fee(uint64_t amount);
 
 /**
- * @brief Ping Nodus server to check availability
+ * @brief Ping witness server to check availability
  *
  * @param ctx DNAC context
  * @param server_id Server ID to ping
  * @param latency_ms_out Output latency in milliseconds
  * @return 0 if reachable, -1 if not
  */
-int dnac_nodus_ping(dnac_context_t *ctx,
-                    const uint8_t *server_id,
-                    int *latency_ms_out);
+int dnac_witness_ping(dnac_context_t *ctx,
+                      const uint8_t *server_id,
+                      int *latency_ms_out);
 
 /* ============================================================================
  * Serialization

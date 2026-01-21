@@ -75,18 +75,6 @@ int dnac_db_mark_utxo_spent(sqlite3 *db,
                             const uint8_t *spent_in_tx);
 
 /**
- * @brief Get UTXO by commitment (debug)
- *
- * @param db SQLite database handle
- * @param commitment Commitment to look up
- * @param utxo Output UTXO
- * @return DNAC_SUCCESS or error code
- */
-int dnac_db_get_utxo_by_commitment(sqlite3 *db,
-                                    const uint8_t *commitment,
-                                    dnac_utxo_t *utxo);
-
-/**
  * @brief Clear all UTXOs for an owner (for wallet recovery)
  *
  * @param db SQLite database handle
@@ -170,47 +158,47 @@ int dnac_db_get_transactions(sqlite3 *db,
  * @param db SQLite database handle
  * @param tx_hash Transaction hash
  * @param nullifier Nullifier being spent
- * @param anchors_needed Number of anchors required
+ * @param witnesses_needed Number of witnesses required
  * @param expires_at Expiration timestamp
  * @return DNAC_SUCCESS or error code
  */
 int dnac_db_store_pending_spend(sqlite3 *db,
                                  const uint8_t *tx_hash,
                                  const uint8_t *nullifier,
-                                 int anchors_needed,
+                                 int witnesses_needed,
                                  uint64_t expires_at);
 
 /**
- * @brief Update pending spend with new anchor
+ * @brief Update pending spend with new witness signature
  *
  * @param db SQLite database handle
  * @param tx_hash Transaction hash
- * @param anchor_sig Anchor signature to append
- * @param anchor_sig_len Signature length
+ * @param witness_sig Witness signature to append
+ * @param witness_sig_len Signature length
  * @return DNAC_SUCCESS or error code
  */
-int dnac_db_update_pending_anchor(sqlite3 *db,
+int dnac_db_update_pending_witness(sqlite3 *db,
                                    const uint8_t *tx_hash,
-                                   const uint8_t *anchor_sig,
-                                   size_t anchor_sig_len);
+                                   const uint8_t *witness_sig,
+                                   size_t witness_sig_len);
 
 /**
  * @brief Get pending spend info
  *
  * @param db SQLite database handle
  * @param tx_hash Transaction hash
- * @param anchors_received Output anchors received (can be NULL)
- * @param anchors_needed Output anchors needed (can be NULL)
- * @param anchor_sigs Output signatures (caller must free, can be NULL)
- * @param anchor_sigs_len Output signatures length (can be NULL)
+ * @param witnesses_received Output witnesses received (can be NULL)
+ * @param witnesses_needed Output witnesses needed (can be NULL)
+ * @param witness_sigs Output signatures (caller must free, can be NULL)
+ * @param witness_sigs_len Output signatures length (can be NULL)
  * @return DNAC_SUCCESS or error code
  */
 int dnac_db_get_pending_spend(sqlite3 *db,
                                const uint8_t *tx_hash,
-                               int *anchors_received,
-                               int *anchors_needed,
-                               uint8_t **anchor_sigs,
-                               size_t *anchor_sigs_len);
+                               int *witnesses_received,
+                               int *witnesses_needed,
+                               uint8_t **witness_sigs,
+                               size_t *witness_sigs_len);
 
 /**
  * @brief Mark pending spend as complete

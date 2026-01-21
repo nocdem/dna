@@ -1,7 +1,7 @@
 # DNAC Implementation Roadmap
 
 **Project:** DNAC - Post-Quantum Digital Cash over DHT
-**Version:** v0.1.13
+**Version:** v0.1.16
 **Status:** Phase 13 Complete (Wallet Recovery)
 
 ---
@@ -11,22 +11,21 @@
 DNAC is a post-quantum digital cash system that integrates with DNA Messenger:
 - **UTXO model** for transactions
 - **DHT** for transport (payments as messages)
-- **Nodus servers** for nullifier anchoring (2-of-3 consensus)
+- **Nodus servers** for nullifier witnessing (2-of-3 consensus)
 - **Fee model** where Nodus servers earn commission
 - **Dilithium5** (Post-Quantum) signatures for authorization
 
 ### Protocol Versions
 
-| Version | Status | Amounts | Commitments | Range Proofs |
-|---------|--------|---------|-------------|--------------|
-| **v1** | Active | Transparent | None | None |
-| **v2** | Future | Hidden | Pedersen | Bulletproofs |
+| Version | Status | Amounts | ZK System |
+|---------|--------|---------|-----------|
+| **v1** | Active | Transparent | None |
+| **v2** | Future | Hidden | PQ ZK (STARKs) |
 
 **Current Implementation: Protocol v1 (Transparent)**
 - Amounts are plaintext in transactions
-- Verification: sum(inputs) == sum(outputs) + fee
-- Pedersen commitments implemented but not used
-- v2 ZK can be added later without breaking v1
+- Verification: sum(inputs) == sum(outputs)
+- v2 will add PQ ZK (STARKs) when mature
 
 ---
 
@@ -56,10 +55,9 @@ DNAC is a post-quantum digital cash system that integrates with DNA Messenger:
 - [x] Define protocol versioning (v1 transparent, v2 PQ ZK)
 - [x] Update UTXO and transaction structures for v1
 - [x] Implement v1 balance verification (plaintext sum)
-- [x] Remove classical ZK code (Pedersen) to maintain full PQ
+- [x] Clean slate for future PQ ZK integration
 
-**Note:** Pedersen commitments were implemented but removed to keep
-the entire system post-quantum safe. v2 will use PQ ZK (STARKs).
+**Note:** v2 will use PQ ZK (STARKs) for hidden amounts.
 
 ### Phase 4: PQ Zero-Knowledge (STARKs) - DEFERRED TO v2
 - [ ] Evaluate STARK libraries (winterfell, stone, ethSTARK)
@@ -94,13 +92,13 @@ the entire system post-quantum safe. v2 will use PQ ZK (STARKs).
 ### Phase 7: Nodus Client ✅ COMPLETE
 - [x] Define Nodus protocol (SpendRequest/SpendResponse)
 - [x] Implement Nodus client (DHT-based)
-- [x] Implement anchor request flow
+- [x] Implement attestation request flow
 - [x] Implement 2-of-3 signature collection
 - [x] Handle timeouts and retries
 - [ ] CLI: `dnac nodus-list` (deferred to Phase 12)
 
 ### Phase 8: Send Flow ✅ COMPLETE
-- [x] Integrate: UTXO selection → TX build → anchor → broadcast
+- [x] Integrate: UTXO selection → TX build → attest → broadcast
 - [x] Implement fee calculation
 - [x] Implement pending spend tracking
 - [x] Implement payment message creation (DHT-based)
@@ -160,10 +158,10 @@ the entire system post-quantum safe. v2 will use PQ ZK (STARKs).
 
 ---
 
-## Transaction Format
+## Transaction Format (v1)
 
 ```
-DNAC TRANSACTION:
+DNAC TRANSACTION (v1 Transparent):
 ┌─────────────────────────────────────────────────────────────┐
 │ HEADER                                                      │
 │   version: u8 = 1                                           │
@@ -173,27 +171,26 @@ DNAC TRANSACTION:
 ├─────────────────────────────────────────────────────────────┤
 │ INPUTS                                                      │
 │   nullifier: bytes[64]                                      │
-│   key_image: bytes[32]                                      │
+│   amount: u64                   Plaintext amount            │
 ├─────────────────────────────────────────────────────────────┤
 │ OUTPUTS (per output)                                        │
-│   commitment: bytes[33]         Pedersen commitment         │
-│   owner_pubkey: bytes[32]       Encrypted to recipient      │
-│   encrypted_data: bytes[~100]   Amount + blind + secret     │
-│   range_proof: bytes[~700]      Bulletproof                 │
+│   version: u8                                               │
+│   owner_fingerprint: string     Recipient fingerprint       │
+│   amount: u64                   Plaintext amount            │
+│   nullifier_seed: bytes[32]     For recipient               │
 ├─────────────────────────────────────────────────────────────┤
-│ BALANCE PROOF                                               │
-│   excess_commitment: bytes[33]                              │
-│   excess_signature: bytes[64]                               │
-├─────────────────────────────────────────────────────────────┤
-│ ANCHOR PROOF (2 required)                                   │
-│   nodus_id: bytes[32]                                       │
-│   signature: bytes[~2400]       Dilithium                   │
+│ WITNESS PROOF (2 required)                                  │
+│   witness_id: bytes[32]                                     │
+│   signature: bytes[4627]        Dilithium5                  │
+│   server_pubkey: bytes[2592]    Dilithium5                  │
+│   timestamp: u64                                            │
 ├─────────────────────────────────────────────────────────────┤
 │ SENDER AUTHORIZATION                                        │
-│   sender_signature: bytes[~2400] Dilithium                  │
+│   sender_pubkey: bytes[2592]    Dilithium5                  │
+│   sender_signature: bytes[4627] Dilithium5                  │
 └─────────────────────────────────────────────────────────────┘
 
-Typical size: ~8-10 KB (mostly Dilithium signatures)
+Typical size: ~20-25 KB (mostly Dilithium5 signatures)
 ```
 
 ---
@@ -205,8 +202,8 @@ Typical size: ~8-10 KB (mostly Dilithium signatures)
 2. Each Nodus checks nullifier not in DB
 3. If new: APPROVE + Dilithium sign + replicate to peers
 4. If exists: REJECT (already spent)
-5. Client collects 2+ signatures → AnchorProof
-6. Transaction with AnchorProof is valid
+5. Client collects 2+ signatures → WitnessProof
+6. Transaction with WitnessProof is valid
 7. Conflicts resolved by timestamp (first wins)
 ```
 
@@ -233,12 +230,9 @@ dnac debug nullifier <null>      # Check if spent
 ```sql
 CREATE TABLE dnac_utxos (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    commitment          BLOB NOT NULL UNIQUE,
     tx_hash             BLOB NOT NULL,
     output_index        INTEGER NOT NULL,
     amount              INTEGER NOT NULL,
-    blinding_factor     BLOB NOT NULL,
-    spend_secret        BLOB NOT NULL,
     nullifier           BLOB NOT NULL UNIQUE,
     owner_fingerprint   TEXT NOT NULL,
     status              INTEGER NOT NULL DEFAULT 0,
@@ -264,9 +258,9 @@ CREATE TABLE dnac_pending_spends (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     tx_hash             BLOB NOT NULL,
     nullifier           BLOB NOT NULL,
-    anchors_needed      INTEGER NOT NULL DEFAULT 2,
-    anchors_received    INTEGER NOT NULL DEFAULT 0,
-    anchor_signatures   BLOB,
+    witnesses_needed    INTEGER NOT NULL DEFAULT 2,
+    witnesses_received  INTEGER NOT NULL DEFAULT 0,
+    witness_signatures  BLOB,
     created_at          INTEGER NOT NULL,
     expires_at          INTEGER NOT NULL,
     status              INTEGER NOT NULL DEFAULT 0
@@ -279,44 +273,12 @@ CREATE TABLE dnac_pending_spends (
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `DNAC_COMMITMENT_SIZE` | 33 | Pedersen commitment (compressed) |
-| `DNAC_BLINDING_SIZE` | 32 | Blinding factor |
 | `DNAC_NULLIFIER_SIZE` | 64 | SHA3-512 nullifier |
+| `DNAC_TX_HASH_SIZE` | 64 | SHA3-512 transaction hash |
 | `DNAC_SIGNATURE_SIZE` | 4627 | Dilithium5 signature |
-| `DNAC_RANGE_PROOF_MAX_SIZE` | 800 | Bulletproof max size |
-| `DNAC_ANCHORS_REQUIRED` | 2 | Anchors needed for valid TX |
+| `DNAC_PUBKEY_SIZE` | 2592 | Dilithium5 public key |
+| `DNAC_WITNESSES_REQUIRED` | 2 | Witnesses needed for valid TX |
 | `DNAC_FEE_RATE_BPS` | 10 | Fee rate (0.1%) |
-
----
-
-## Deterministic Blinding Design
-
-Blinding factors are derived deterministically from the master seed, enabling wallet recovery without backups.
-
-### Derivation
-
-```
-blinding = SHAKE256(
-    master_seed ||           // 64 bytes from BIP39
-    "dnac:blind:" ||         // domain separator
-    tx_hash ||               // 64 bytes
-    output_index             // 4 bytes, little-endian
-)[0:32]                      // first 32 bytes
-```
-
-### Recovery Process
-
-1. Restore identity from BIP39 mnemonic
-2. Scan DHT for payments to your fingerprint
-3. For each payment, re-derive blinding factor
-4. Verify: `commitment == Pedersen(amount, derived_blinding)`
-5. If match, restore UTXO to local wallet
-
-### Benefits
-
-- Always recoverable from seed phrase alone
-- No DHT backup infrastructure needed
-- Works even after extended offline periods
 
 ---
 
@@ -325,4 +287,3 @@ blinding = SHAKE256(
 - **libdna** - DNA Messenger library (identity, DHT, crypto primitives)
 - **OpenSSL** - SHA3, AES, SHAKE256
 - **SQLite3** - Database
-- **secp256k1-zkp** - Bulletproofs (optional, or implement from scratch)

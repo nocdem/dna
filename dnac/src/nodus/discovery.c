@@ -1,9 +1,9 @@
 /**
  * @file discovery.c
- * @brief Nodus server discovery via DHT
+ * @brief Witness server discovery via DHT
  *
- * Discovers Nodus servers by:
- * 1. Querying DHT for system Nodus server list
+ * Discovers witness servers by:
+ * 1. Querying DHT for system witness server list
  * 2. Falling back to hardcoded bootstrap servers
  * 3. Caching results for performance
  */
@@ -25,47 +25,47 @@ extern int dht_get(dht_context_t *ctx,
                    const uint8_t *key, size_t key_len,
                    uint8_t **value_out, size_t *value_len_out);
 
-/* DHT key for Nodus server list */
-#define NODUS_DHT_KEY "dna:system:nodus-servers"
+/* DHT key for witness server list */
+#define WITNESS_DHT_KEY "dna:system:witness-servers"
 
 /* Cache configuration */
-#define NODUS_CACHE_TTL_SEC 300  /* 5 minute cache */
+#define WITNESS_CACHE_TTL_SEC 300  /* 5 minute cache */
 
 /* Cached server list (shared with client.c) */
-extern dnac_nodus_info_t *g_nodus_servers;
-extern int g_nodus_count;
-extern uint64_t g_nodus_cache_time;
+extern dnac_witness_info_t *g_witness_servers;
+extern int g_witness_count;
+extern uint64_t g_witness_cache_time;
 
 /* ============================================================================
- * Bootstrap Nodus Servers (Hardcoded Fallback)
+ * Bootstrap Witness Servers (Hardcoded Fallback)
  * ========================================================================== */
 
 /*
- * These are the initial Nodus servers for the network.
+ * These are the initial witness servers for the network.
  * They are the same machines that run DNA Messenger bootstrap nodes.
  * In production, the list should be fetched from DHT.
  */
 static const struct {
     const char *id;       /* 32-byte hex server ID */
     const char *address;  /* hostname:port */
-} BOOTSTRAP_NODUS[] = {
+} BOOTSTRAP_WITNESSES[] = {
     /* Server 1 - Primary */
     {
         "0000000000000000000000000000000000000000000000000000000000000001",
-        "nodus1.dna-messenger.io:4100"
+        "witness1.dna-messenger.io:4100"
     },
     /* Server 2 - Secondary */
     {
         "0000000000000000000000000000000000000000000000000000000000000002",
-        "nodus2.dna-messenger.io:4100"
+        "witness2.dna-messenger.io:4100"
     },
     /* Server 3 - Tertiary */
     {
         "0000000000000000000000000000000000000000000000000000000000000003",
-        "nodus3.dna-messenger.io:4100"
+        "witness3.dna-messenger.io:4100"
     }
 };
-#define BOOTSTRAP_NODUS_COUNT 3
+#define BOOTSTRAP_WITNESSES_COUNT 3
 
 /* ============================================================================
  * Helper Functions
@@ -118,21 +118,21 @@ static void derive_fingerprint(const uint8_t *pubkey, char *fingerprint_out) {
 }
 
 /**
- * Parse Nodus server list from DHT value
+ * Parse witness server list from DHT value
  *
  * Format: count(1) + [id(64 hex) + address(256) + pubkey(2592)]...
  */
-static int parse_nodus_list(const uint8_t *data, size_t len,
-                            dnac_nodus_info_t **servers_out, int *count_out) {
+static int parse_witness_list(const uint8_t *data, size_t len,
+                              dnac_witness_info_t **servers_out, int *count_out) {
     if (!data || len < 1 || !servers_out || !count_out) return -1;
 
     uint8_t count = data[0];
-    if (count == 0 || count > DNAC_MAX_NODUS_SERVERS) return -1;
+    if (count == 0 || count > DNAC_MAX_WITNESS_SERVERS) return -1;
 
     size_t entry_size = 64 + 256 + DNAC_PUBKEY_SIZE;  /* id + address + pubkey */
     if (len < 1 + count * entry_size) return -1;
 
-    dnac_nodus_info_t *servers = calloc(count, sizeof(dnac_nodus_info_t));
+    dnac_witness_info_t *servers = calloc(count, sizeof(dnac_witness_info_t));
     if (!servers) return -1;
 
     const uint8_t *ptr = data + 1;
@@ -166,13 +166,13 @@ static int parse_nodus_list(const uint8_t *data, size_t len,
 /**
  * Create bootstrap server list (fallback)
  */
-static int create_bootstrap_list(dnac_nodus_info_t **servers_out, int *count_out) {
-    dnac_nodus_info_t *servers = calloc(BOOTSTRAP_NODUS_COUNT, sizeof(dnac_nodus_info_t));
+static int create_bootstrap_list(dnac_witness_info_t **servers_out, int *count_out) {
+    dnac_witness_info_t *servers = calloc(BOOTSTRAP_WITNESSES_COUNT, sizeof(dnac_witness_info_t));
     if (!servers) return -1;
 
-    for (int i = 0; i < BOOTSTRAP_NODUS_COUNT; i++) {
-        strncpy(servers[i].id, BOOTSTRAP_NODUS[i].id, sizeof(servers[i].id) - 1);
-        strncpy(servers[i].address, BOOTSTRAP_NODUS[i].address, sizeof(servers[i].address) - 1);
+    for (int i = 0; i < BOOTSTRAP_WITNESSES_COUNT; i++) {
+        strncpy(servers[i].id, BOOTSTRAP_WITNESSES[i].id, sizeof(servers[i].id) - 1);
+        strncpy(servers[i].address, BOOTSTRAP_WITNESSES[i].address, sizeof(servers[i].address) - 1);
         /* Note: Bootstrap servers don't have pubkeys in this hardcoded list */
         /* Real pubkeys would be fetched from DHT or stored in config */
         memset(servers[i].pubkey, 0, sizeof(servers[i].pubkey));
@@ -185,7 +185,7 @@ static int create_bootstrap_list(dnac_nodus_info_t **servers_out, int *count_out
     }
 
     *servers_out = servers;
-    *count_out = BOOTSTRAP_NODUS_COUNT;
+    *count_out = BOOTSTRAP_WITNESSES_COUNT;
     return 0;
 }
 
@@ -193,9 +193,9 @@ static int create_bootstrap_list(dnac_nodus_info_t **servers_out, int *count_out
  * Public Functions
  * ========================================================================== */
 
-int dnac_nodus_discover(dnac_context_t *ctx,
-                        dnac_nodus_info_t **servers_out,
-                        int *count_out) {
+int dnac_witness_discover(dnac_context_t *ctx,
+                          dnac_witness_info_t **servers_out,
+                          int *count_out) {
     if (!ctx || !servers_out || !count_out) {
         return DNAC_ERROR_INVALID_PARAM;
     }
@@ -205,14 +205,14 @@ int dnac_nodus_discover(dnac_context_t *ctx,
 
     /* Check cache first */
     uint64_t now = get_time_sec();
-    if (g_nodus_servers && g_nodus_count > 0 &&
-        (now - g_nodus_cache_time) < NODUS_CACHE_TTL_SEC) {
+    if (g_witness_servers && g_witness_count > 0 &&
+        (now - g_witness_cache_time) < WITNESS_CACHE_TTL_SEC) {
         /* Return cached copy */
-        dnac_nodus_info_t *cached = calloc(g_nodus_count, sizeof(dnac_nodus_info_t));
+        dnac_witness_info_t *cached = calloc(g_witness_count, sizeof(dnac_witness_info_t));
         if (cached) {
-            memcpy(cached, g_nodus_servers, g_nodus_count * sizeof(dnac_nodus_info_t));
+            memcpy(cached, g_witness_servers, g_witness_count * sizeof(dnac_witness_info_t));
             *servers_out = cached;
-            *count_out = g_nodus_count;
+            *count_out = g_witness_count;
             return DNAC_SUCCESS;
         }
     }
@@ -230,32 +230,32 @@ int dnac_nodus_discover(dnac_context_t *ctx,
         return create_bootstrap_list(servers_out, count_out);
     }
 
-    /* Build DHT key for Nodus server list */
+    /* Build DHT key for witness server list */
     uint8_t dht_key[64];
-    if (compute_sha3_512((const uint8_t *)NODUS_DHT_KEY, strlen(NODUS_DHT_KEY), dht_key) != 0) {
+    if (compute_sha3_512((const uint8_t *)WITNESS_DHT_KEY, strlen(WITNESS_DHT_KEY), dht_key) != 0) {
         return create_bootstrap_list(servers_out, count_out);
     }
 
-    /* Query DHT for Nodus server list */
+    /* Query DHT for witness server list */
     uint8_t *value = NULL;
     size_t value_len = 0;
     int rc = dht_get(dht, dht_key, 64, &value, &value_len);
 
     if (rc == 0 && value && value_len > 0) {
         /* Parse server list from DHT */
-        dnac_nodus_info_t *servers = NULL;
+        dnac_witness_info_t *servers = NULL;
         int count = 0;
 
-        if (parse_nodus_list(value, value_len, &servers, &count) == 0) {
+        if (parse_witness_list(value, value_len, &servers, &count) == 0) {
             /* Update cache */
-            if (g_nodus_servers) {
-                free(g_nodus_servers);
+            if (g_witness_servers) {
+                free(g_witness_servers);
             }
-            g_nodus_servers = calloc(count, sizeof(dnac_nodus_info_t));
-            if (g_nodus_servers) {
-                memcpy(g_nodus_servers, servers, count * sizeof(dnac_nodus_info_t));
-                g_nodus_count = count;
-                g_nodus_cache_time = now;
+            g_witness_servers = calloc(count, sizeof(dnac_witness_info_t));
+            if (g_witness_servers) {
+                memcpy(g_witness_servers, servers, count * sizeof(dnac_witness_info_t));
+                g_witness_count = count;
+                g_witness_cache_time = now;
             }
 
             *servers_out = servers;
@@ -271,14 +271,14 @@ int dnac_nodus_discover(dnac_context_t *ctx,
     rc = create_bootstrap_list(servers_out, count_out);
     if (rc == 0) {
         /* Cache bootstrap list too */
-        if (g_nodus_servers) {
-            free(g_nodus_servers);
+        if (g_witness_servers) {
+            free(g_witness_servers);
         }
-        g_nodus_servers = calloc(*count_out, sizeof(dnac_nodus_info_t));
-        if (g_nodus_servers) {
-            memcpy(g_nodus_servers, *servers_out, *count_out * sizeof(dnac_nodus_info_t));
-            g_nodus_count = *count_out;
-            g_nodus_cache_time = now;
+        g_witness_servers = calloc(*count_out, sizeof(dnac_witness_info_t));
+        if (g_witness_servers) {
+            memcpy(g_witness_servers, *servers_out, *count_out * sizeof(dnac_witness_info_t));
+            g_witness_count = *count_out;
+            g_witness_cache_time = now;
         }
         return DNAC_SUCCESS;
     }
@@ -286,13 +286,13 @@ int dnac_nodus_discover(dnac_context_t *ctx,
     return DNAC_ERROR_NETWORK;
 }
 
-int dnac_get_nodus_list(dnac_context_t *ctx,
-                        dnac_nodus_info_t **servers,
-                        int *count) {
-    return dnac_nodus_discover(ctx, servers, count);
+int dnac_get_witness_list(dnac_context_t *ctx,
+                          dnac_witness_info_t **servers,
+                          int *count) {
+    return dnac_witness_discover(ctx, servers, count);
 }
 
-void dnac_free_nodus_list(dnac_nodus_info_t *servers, int count) {
+void dnac_free_witness_list(dnac_witness_info_t *servers, int count) {
     (void)count;
     free(servers);
 }
@@ -300,5 +300,5 @@ void dnac_free_nodus_list(dnac_nodus_info_t *servers, int count) {
 int dnac_check_nullifier(dnac_context_t *ctx,
                          const uint8_t *nullifier,
                          bool *is_spent) {
-    return dnac_nodus_check_nullifier(ctx, nullifier, is_spent);
+    return dnac_witness_check_nullifier(ctx, nullifier, is_spent);
 }

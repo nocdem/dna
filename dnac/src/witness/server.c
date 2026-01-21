@@ -1,15 +1,15 @@
 /**
  * @file server.c
- * @brief Anchor server DHT polling and request handling
+ * @brief Witness server DHT polling and request handling
  *
  * Handles incoming SpendRequests from clients, validates them,
- * checks nullifiers, and sends signed anchor responses.
+ * checks nullifiers, and sends signed witness responses.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
  */
 
-#include "dnac/anchor_server.h"
+#include "dnac/witness.h"
 #include "dnac/nodus.h"
 #include "config.h"
 
@@ -20,7 +20,7 @@
 #include "crypto/utils/qgp_dilithium.h"
 #include "crypto/utils/qgp_log.h"
 
-#define LOG_TAG "ANCHOR_SRV"
+#define LOG_TAG "WITNESS_SRV"
 
 /* Forward declare DHT context type */
 typedef struct dht_context dht_context_t;
@@ -66,14 +66,14 @@ static int compute_sha3_512(const uint8_t *data, size_t len, uint8_t *hash_out) 
 
 /**
  * Build DHT key for incoming requests
- * Key: SHA3-512("dnac:anchor:request:" + our_fingerprint + ":" + requester_info)
+ * Key: SHA3-512("dnac:nodus:request:" + our_fingerprint + ":" + requester_info)
  */
 static int build_request_poll_key(const char *our_fingerprint, uint8_t *key_out) {
     uint8_t key_data[512];
     size_t offset = 0;
 
-    memcpy(key_data + offset, ANCHOR_REQUEST_PREFIX, strlen(ANCHOR_REQUEST_PREFIX));
-    offset += strlen(ANCHOR_REQUEST_PREFIX);
+    memcpy(key_data + offset, WITNESS_REQUEST_PREFIX, strlen(WITNESS_REQUEST_PREFIX));
+    offset += strlen(WITNESS_REQUEST_PREFIX);
 
     size_t fp_len = strlen(our_fingerprint);
     memcpy(key_data + offset, our_fingerprint, fp_len);
@@ -84,7 +84,7 @@ static int build_request_poll_key(const char *our_fingerprint, uint8_t *key_out)
 
 /**
  * Build DHT key for response
- * Key: SHA3-512("dnac:anchor:response:" + tx_hash + ":" + requester_fingerprint)
+ * Key: SHA3-512("dnac:nodus:response:" + tx_hash + ":" + requester_fingerprint)
  */
 static int build_response_key(const uint8_t *tx_hash,
                               const char *requester_fp,
@@ -92,8 +92,8 @@ static int build_response_key(const uint8_t *tx_hash,
     uint8_t key_data[512];
     size_t offset = 0;
 
-    memcpy(key_data + offset, ANCHOR_RESPONSE_PREFIX, strlen(ANCHOR_RESPONSE_PREFIX));
-    offset += strlen(ANCHOR_RESPONSE_PREFIX);
+    memcpy(key_data + offset, WITNESS_RESPONSE_PREFIX, strlen(WITNESS_RESPONSE_PREFIX));
+    offset += strlen(WITNESS_RESPONSE_PREFIX);
 
     memcpy(key_data + offset, tx_hash, 64);
     offset += 64;
@@ -107,7 +107,7 @@ static int build_response_key(const uint8_t *tx_hash,
     return compute_sha3_512(key_data, offset, key_out);
 }
 
-int anchor_publish_identity(dna_engine_t *engine) {
+int witness_publish_identity(dna_engine_t *engine) {
     if (!engine) return -1;
 
     dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
@@ -133,8 +133,8 @@ int anchor_publish_identity(dna_engine_t *engine) {
     /* Build identity key */
     uint8_t key_data[256];
     size_t offset = 0;
-    memcpy(key_data, ANCHOR_IDENTITY_PREFIX, strlen(ANCHOR_IDENTITY_PREFIX));
-    offset = strlen(ANCHOR_IDENTITY_PREFIX);
+    memcpy(key_data, WITNESS_IDENTITY_PREFIX, strlen(WITNESS_IDENTITY_PREFIX));
+    offset = strlen(WITNESS_IDENTITY_PREFIX);
     memcpy(key_data + offset, fingerprint, strlen(fingerprint));
     offset += strlen(fingerprint);
 
@@ -145,23 +145,23 @@ int anchor_publish_identity(dna_engine_t *engine) {
 
     /* Publish pubkey to DHT */
     ret = dht_put_signed(dht, identity_key, 64, pubkey, DNAC_PUBKEY_SIZE,
-                         1, ANCHOR_IDENTITY_TTL_SEC, "anchor_identity");
+                         1, WITNESS_IDENTITY_TTL_SEC, "witness_identity");
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to publish identity to DHT");
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Published anchor server identity: %.32s...", fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Published witness server identity: %.32s...", fingerprint);
     return 0;
 }
 
-int anchor_process_requests(dna_engine_t *engine) {
+int witness_process_requests(dna_engine_t *engine) {
     if (!engine) return -1;
 
     int processed = 0;
     dnac_spend_request_t request;
 
-    while (anchor_get_next_request(engine, &request) == 0) {
+    while (witness_get_next_request(engine, &request) == 0) {
         dnac_spend_response_t response;
         memset(&response, 0, sizeof(response));
 
@@ -169,31 +169,31 @@ int anchor_process_requests(dna_engine_t *engine) {
         const char *our_fp = dna_engine_get_fingerprint(engine);
         if (!our_fp) continue;
 
-        /* Convert fingerprint to nodus_id bytes (first 32 bytes of fingerprint hex) */
+        /* Convert fingerprint to witness_id bytes (first 32 bytes of fingerprint hex) */
         for (int i = 0; i < 32 && our_fp[i*2]; i++) {
-            sscanf(&our_fp[i*2], "%2hhx", &response.nodus_id[i]);
+            sscanf(&our_fp[i*2], "%2hhx", &response.witness_id[i]);
         }
 
         /* Check if nullifier already spent */
-        if (anchor_nullifier_exists(request.nullifier)) {
+        if (witness_nullifier_exists(request.nullifier)) {
             response.status = DNAC_NODUS_STATUS_REJECTED;
             snprintf(response.error_message, sizeof(response.error_message),
                      "Nullifier already spent");
             QGP_LOG_WARN(LOG_TAG, "Rejected: nullifier already spent");
         } else {
             /* Record nullifier */
-            if (anchor_nullifier_add(request.nullifier, request.tx_hash) != 0) {
+            if (witness_nullifier_add(request.nullifier, request.tx_hash) != 0) {
                 response.status = DNAC_NODUS_STATUS_ERROR;
                 snprintf(response.error_message, sizeof(response.error_message),
                          "Database error");
                 QGP_LOG_ERROR(LOG_TAG, "Failed to record nullifier");
             } else {
-                /* Build data to sign: tx_hash || nodus_id || timestamp */
+                /* Build data to sign: tx_hash || witness_id || timestamp */
                 response.timestamp = (uint64_t)time(NULL);
 
                 uint8_t sign_data[64 + 32 + 8];
                 memcpy(sign_data, request.tx_hash, 64);
-                memcpy(sign_data + 64, response.nodus_id, 32);
+                memcpy(sign_data + 64, response.witness_id, 32);
 
                 /* Little-endian timestamp */
                 for (int i = 0; i < 8; i++) {
@@ -208,30 +208,30 @@ int anchor_process_requests(dna_engine_t *engine) {
                     response.status = DNAC_NODUS_STATUS_ERROR;
                     snprintf(response.error_message, sizeof(response.error_message),
                              "Signing failed");
-                    QGP_LOG_ERROR(LOG_TAG, "Failed to sign anchor");
+                    QGP_LOG_ERROR(LOG_TAG, "Failed to sign witness attestation");
                 } else {
                     /* Include our public key in response */
                     dna_engine_get_signing_public_key(engine, response.server_pubkey,
                                                       DNAC_PUBKEY_SIZE);
 
                     response.status = DNAC_NODUS_STATUS_APPROVED;
-                    QGP_LOG_INFO(LOG_TAG, "Approved anchor request");
+                    QGP_LOG_INFO(LOG_TAG, "Approved witness request");
 
                     /* Queue nullifier for replication */
-                    anchor_replicate_nullifier(request.nullifier, request.tx_hash);
+                    witness_replicate_nullifier(request.nullifier, request.tx_hash);
                 }
             }
         }
 
         /* Send response */
-        anchor_send_response(engine, &request, &response);
+        witness_send_response(engine, &request, &response);
         processed++;
     }
 
     return processed;
 }
 
-int anchor_get_next_request(dna_engine_t *engine, dnac_spend_request_t *request) {
+int witness_get_next_request(dna_engine_t *engine, dnac_spend_request_t *request) {
     if (!engine || !request) return -1;
 
     dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
@@ -267,9 +267,9 @@ int anchor_get_next_request(dna_engine_t *engine, dnac_spend_request_t *request)
     return 0;
 }
 
-int anchor_send_response(dna_engine_t *engine,
-                         const dnac_spend_request_t *request,
-                         const dnac_spend_response_t *response) {
+int witness_send_response(dna_engine_t *engine,
+                          const dnac_spend_request_t *request,
+                          const dnac_spend_response_t *response) {
     if (!engine || !request || !response) return -1;
 
     dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
@@ -304,8 +304,8 @@ int anchor_send_response(dna_engine_t *engine,
     /* PUT to DHT */
     rc = dht_put_signed(dht, response_key, 64, buffer, written,
                         response->timestamp % 10000,
-                        ANCHOR_RESPONSE_TTL_SEC,
-                        "anchor_response");
+                        WITNESS_RESPONSE_TTL_SEC,
+                        "witness_response");
     if (rc != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to PUT response to DHT");
         return -1;

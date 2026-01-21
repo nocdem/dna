@@ -1,6 +1,6 @@
 /**
  * @file nullifier.c
- * @brief Nullifier database operations for anchor server
+ * @brief Nullifier database operations for witness server
  *
  * Uses SQLite to track spent nullifiers for double-spend prevention.
  *
@@ -8,18 +8,18 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "dnac/anchor_server.h"
+#include "dnac/witness.h"
 #include <sqlite3.h>
 #include <string.h>
 #include <time.h>
 
 #include "crypto/utils/qgp_log.h"
 
-#define LOG_TAG "ANCHOR_DB"
+#define LOG_TAG "WITNESS_DB"
 
 static sqlite3 *nullifier_db = NULL;
 
-int anchor_nullifier_init(const char *db_path) {
+int witness_nullifier_init(const char *db_path) {
     if (nullifier_db) {
         QGP_LOG_WARN(LOG_TAG, "Nullifier DB already initialized");
         return 0;
@@ -55,7 +55,7 @@ int anchor_nullifier_init(const char *db_path) {
     return 0;
 }
 
-void anchor_nullifier_shutdown(void) {
+void witness_nullifier_shutdown(void) {
     if (nullifier_db) {
         sqlite3_close(nullifier_db);
         nullifier_db = NULL;
@@ -63,7 +63,7 @@ void anchor_nullifier_shutdown(void) {
     }
 }
 
-bool anchor_nullifier_exists(const uint8_t *nullifier) {
+bool witness_nullifier_exists(const uint8_t *nullifier) {
     if (!nullifier_db || !nullifier) return false;
 
     sqlite3_stmt *stmt;
@@ -83,7 +83,7 @@ bool anchor_nullifier_exists(const uint8_t *nullifier) {
     return exists;
 }
 
-int anchor_nullifier_add(const uint8_t *nullifier, const uint8_t *tx_hash) {
+int witness_nullifier_add(const uint8_t *nullifier, const uint8_t *tx_hash) {
     if (!nullifier_db || !nullifier || !tx_hash) return -1;
 
     sqlite3_stmt *stmt;
@@ -112,7 +112,7 @@ int anchor_nullifier_add(const uint8_t *nullifier, const uint8_t *tx_hash) {
     return 0;
 }
 
-int anchor_nullifier_mark_replicated(const uint8_t *nullifier) {
+int witness_nullifier_mark_replicated(const uint8_t *nullifier) {
     if (!nullifier_db || !nullifier) return -1;
 
     sqlite3_stmt *stmt;
@@ -132,7 +132,7 @@ int anchor_nullifier_mark_replicated(const uint8_t *nullifier) {
     return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
-int anchor_nullifier_get_unreplicated(uint8_t (*nullifiers)[64], int max_count) {
+int witness_nullifier_get_unreplicated(uint8_t (*nullifiers)[64], int max_count) {
     if (!nullifier_db || !nullifiers || max_count <= 0) return -1;
 
     sqlite3_stmt *stmt;

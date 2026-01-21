@@ -25,6 +25,21 @@ extern int dht_get_all(dht_context_t *ctx,
                        uint8_t ***values_out, size_t **values_len_out,
                        size_t *count_out);
 
+/* DHT listen callback type */
+typedef bool (*dht_listen_callback_t)(
+    const uint8_t *value,
+    size_t value_len,
+    bool expired,
+    void *user_data
+);
+
+/* DHT listen functions from libdna */
+extern size_t dht_listen(dht_context_t *ctx,
+                         const uint8_t *key, size_t key_len,
+                         dht_listen_callback_t callback,
+                         void *user_data);
+extern void dht_cancel_listen(dht_context_t *ctx, size_t token);
+
 /* Default database filename */
 #define DNAC_DB_FILENAME "dnac.db"
 
@@ -34,6 +49,7 @@ struct dnac_context {
     char owner_fingerprint[129];         /* Owner's fingerprint */
     dnac_payment_cb_t payment_cb;
     void *payment_cb_data;
+    size_t inbox_listen_token;           /* DHT listener token for inbox */
     int initialized;
 };
 
@@ -93,6 +109,18 @@ dnac_context_t* dnac_init(void *dna_engine) {
 void dnac_shutdown(dnac_context_t *ctx) {
     if (!ctx) return;
 
+    /* Cancel inbox listener if active */
+    if (ctx->inbox_listen_token != 0) {
+        dna_engine_t *engine = ctx->dna_engine;
+        if (engine) {
+            dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
+            if (dht) {
+                dht_cancel_listen(dht, ctx->inbox_listen_token);
+            }
+        }
+        ctx->inbox_listen_token = 0;
+    }
+
     if (ctx->db) {
         sqlite3_close(ctx->db);
         ctx->db = NULL;
@@ -108,6 +136,133 @@ void dnac_set_payment_callback(dnac_context_t *ctx,
     if (!ctx) return;
     ctx->payment_cb = callback;
     ctx->payment_cb_data = user_data;
+}
+
+/* ============================================================================
+ * Inbox Listener Functions
+ * ========================================================================== */
+
+/* Forward declarations for inbox listener */
+static int compute_sha3_512(const uint8_t *data, size_t len, uint8_t *hash_out);
+static int build_inbox_key(const char *owner_fp, uint8_t *key_out);
+static int derive_nullifier(const char *owner_fp, const uint8_t *seed, uint8_t *nullifier_out);
+static bool utxo_exists(sqlite3 *db, const uint8_t *tx_hash, uint32_t output_index);
+
+/**
+ * DHT inbox listener callback - invoked when payments arrive
+ */
+static bool inbox_listener_callback(const uint8_t *value, size_t value_len,
+                                    bool expired, void *user_data) {
+    dnac_context_t *ctx = (dnac_context_t *)user_data;
+    if (!ctx || !ctx->initialized) return false;
+    if (expired || !value || value_len == 0) return true;
+
+    /* Deserialize transaction */
+    dnac_transaction_t *tx = NULL;
+    int rc = dnac_tx_deserialize(value, value_len, &tx);
+    if (rc != DNAC_SUCCESS || !tx) {
+        return true;  /* Continue listening */
+    }
+
+    /* Verify transaction */
+    rc = dnac_tx_verify(tx);
+    if (rc != DNAC_SUCCESS) {
+        dnac_free_transaction(tx);
+        return true;
+    }
+
+    /* Extract outputs addressed to us */
+    for (int j = 0; j < tx->output_count; j++) {
+        if (strcmp(tx->outputs[j].owner_fingerprint, ctx->owner_fingerprint) != 0) {
+            continue;
+        }
+
+        /* Check if UTXO already exists */
+        if (utxo_exists(ctx->db, tx->tx_hash, (uint32_t)j)) {
+            continue;
+        }
+
+        /* Create UTXO from output */
+        dnac_utxo_t utxo = {0};
+        utxo.version = tx->outputs[j].version;
+        memcpy(utxo.tx_hash, tx->tx_hash, DNAC_TX_HASH_SIZE);
+        utxo.output_index = (uint32_t)j;
+        utxo.amount = tx->outputs[j].amount;
+        strncpy(utxo.owner_fingerprint, ctx->owner_fingerprint,
+                sizeof(utxo.owner_fingerprint) - 1);
+        utxo.status = DNAC_UTXO_UNSPENT;
+        utxo.received_at = (uint64_t)time(NULL);
+
+        /* Derive nullifier from seed */
+        if (derive_nullifier(ctx->owner_fingerprint,
+                             tx->outputs[j].nullifier_seed,
+                             utxo.nullifier) != 0) {
+            continue;
+        }
+
+        /* Store UTXO in database */
+        rc = dnac_db_store_utxo(ctx->db, &utxo);
+        if (rc != DNAC_SUCCESS) {
+            continue;
+        }
+
+        /* Fire payment callback if set */
+        if (ctx->payment_cb) {
+            ctx->payment_cb(&utxo, NULL, ctx->payment_cb_data);
+        }
+    }
+
+    dnac_free_transaction(tx);
+    return true;  /* Continue listening */
+}
+
+int dnac_start_listening(dnac_context_t *ctx) {
+    if (!ctx || !ctx->initialized) return DNAC_ERROR_INVALID_PARAM;
+
+    /* Already listening? */
+    if (ctx->inbox_listen_token != 0) {
+        return DNAC_SUCCESS;
+    }
+
+    dna_engine_t *engine = ctx->dna_engine;
+    if (!engine) return DNAC_ERROR_NOT_INITIALIZED;
+
+    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
+    if (!dht) return DNAC_ERROR_NETWORK;
+
+    /* Build inbox key */
+    uint8_t inbox_key[64];
+    if (build_inbox_key(ctx->owner_fingerprint, inbox_key) != 0) {
+        return DNAC_ERROR_CRYPTO;
+    }
+
+    /* Start listening */
+    size_t token = dht_listen(dht, inbox_key, 64, inbox_listener_callback, ctx);
+    if (token == 0) {
+        return DNAC_ERROR_NETWORK;
+    }
+
+    ctx->inbox_listen_token = token;
+    return DNAC_SUCCESS;
+}
+
+int dnac_stop_listening(dnac_context_t *ctx) {
+    if (!ctx) return DNAC_ERROR_INVALID_PARAM;
+
+    if (ctx->inbox_listen_token == 0) {
+        return DNAC_SUCCESS;  /* Not listening */
+    }
+
+    dna_engine_t *engine = ctx->dna_engine;
+    if (!engine) return DNAC_ERROR_NOT_INITIALIZED;
+
+    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
+    if (dht) {
+        dht_cancel_listen(dht, ctx->inbox_listen_token);
+    }
+
+    ctx->inbox_listen_token = 0;
+    return DNAC_SUCCESS;
 }
 
 /* ============================================================================
@@ -254,7 +409,7 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
             continue;
         }
 
-        /* Verify transaction (optional - trust anchored transactions) */
+        /* Verify transaction (optional - trust witnessed transactions) */
         rc = dnac_tx_verify(tx);
         if (rc != DNAC_SUCCESS) {
             dnac_free_transaction(tx);
@@ -394,7 +549,7 @@ int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count) {
             continue;
         }
 
-        /* Verify transaction (optional - trust anchored transactions) */
+        /* Verify transaction (optional - trust witnessed transactions) */
         rc = dnac_tx_verify(tx);
         if (rc != DNAC_SUCCESS) {
             dnac_free_transaction(tx);
@@ -496,7 +651,7 @@ int dnac_send(dnac_context_t *ctx,
         return rc;
     }
 
-    /* Step 4: Broadcast (gets anchors, sends via DHT) */
+    /* Step 4: Broadcast (gets witness signatures, sends via DHT) */
     rc = dnac_tx_broadcast(ctx, tx, callback, user_data);
     if (rc != DNAC_SUCCESS) {
         dnac_free_transaction(tx);
@@ -550,7 +705,7 @@ const char* dnac_error_string(int error) {
         case DNAC_ERROR_INSUFFICIENT_FUNDS: return "Insufficient funds";
         case DNAC_ERROR_DOUBLE_SPEND: return "Double spend detected";
         case DNAC_ERROR_INVALID_PROOF: return "Invalid proof";
-        case DNAC_ERROR_ANCHOR_FAILED: return "Anchor collection failed";
+        case DNAC_ERROR_WITNESS_FAILED: return "Witness collection failed";
         case DNAC_ERROR_TIMEOUT: return "Operation timed out";
         case DNAC_ERROR_NOT_FOUND: return "Not found";
         default: return "Unknown error";
