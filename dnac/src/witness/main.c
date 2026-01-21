@@ -19,6 +19,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <time.h>
+#include <pthread.h>
 
 #include <dna/dna_engine.h>
 #include "dnac/witness.h"
@@ -38,9 +39,18 @@ static volatile int g_running = 1;
 static volatile int g_identity_loaded = 0;
 static volatile int g_identity_result = -1;
 
+/* Shared state for event-driven listeners */
+static pthread_mutex_t g_work_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_work_cond = PTHREAD_COND_INITIALIZER;
+static int g_pending_work = 0;
+
 static void signal_handler(int sig) {
     (void)sig;
     g_running = 0;
+    /* Signal condvar to wake up main loop */
+    pthread_mutex_lock(&g_work_mutex);
+    pthread_cond_signal(&g_work_cond);
+    pthread_mutex_unlock(&g_work_mutex);
     printf("\nShutting down...\n");
 }
 
@@ -189,21 +199,52 @@ int main(int argc, char *argv[]) {
     printf("Witness server running. Press Ctrl+C to stop.\n");
     printf("Fingerprint: %s\n", fingerprint ? fingerprint : "(unknown)");
 
-    /* Main loop */
+    /* Setup listener contexts */
+    witness_request_ctx_t req_ctx = {
+        .engine = engine,
+        .mutex = &g_work_mutex,
+        .cond = &g_work_cond,
+        .pending_count = &g_pending_work
+    };
+
+    witness_replication_ctx_t rep_ctx = {
+        .engine = engine,
+        .mutex = &g_work_mutex,
+        .cond = &g_work_cond,
+        .pending_count = &g_pending_work
+    };
+
+    /* Start listeners */
+    printf("Starting DHT listeners...\n");
+    size_t req_token = witness_start_request_listener(engine, &req_ctx);
+    size_t rep_token = witness_start_replication_listener(engine, &rep_ctx);
+
+    if (req_token == 0) {
+        fprintf(stderr, "Warning: Failed to start request listener\n");
+    }
+    if (rep_token == 0) {
+        fprintf(stderr, "Warning: Failed to start replication listener\n");
+    }
+
+    printf("Listening for requests (event-driven)...\n");
+
+    /* Main loop - wait for events or periodic tasks */
     time_t last_identity_publish = time(NULL);
     const int IDENTITY_REFRESH_SEC = 1800; /* 30 minutes */
 
     while (g_running) {
-        /* Process witness requests */
-        int processed = witness_process_requests(engine);
-        if (processed > 0) {
-            printf("Processed %d witness request(s)\n", processed);
-        }
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += 60;  /* Wake every 60s max for identity refresh check */
 
-        /* Process incoming replications */
-        int received = witness_process_replications(engine);
-        if (received > 0) {
-            printf("Received %d replicated nullifier(s)\n", received);
+        pthread_mutex_lock(&g_work_mutex);
+        int work_done = g_pending_work;
+        g_pending_work = 0;
+        pthread_cond_timedwait(&g_work_cond, &g_work_mutex, &ts);
+        pthread_mutex_unlock(&g_work_mutex);
+
+        if (work_done > 0) {
+            printf("Processed %d event(s)\n", work_done);
         }
 
         /* Periodically refresh identity in DHT */
@@ -212,16 +253,24 @@ int main(int argc, char *argv[]) {
             witness_publish_identity(engine);
             last_identity_publish = now;
         }
+    }
 
-        /* Sleep between polls */
-        usleep(WITNESS_POLL_INTERVAL_MS * 1000);
+    /* Shutdown - cancel listeners */
+    printf("Shutting down witness server...\n");
+    if (req_token != 0) {
+        witness_stop_request_listener(engine, req_token);
+    }
+    if (rep_token != 0) {
+        witness_stop_replication_listener(engine, rep_token);
     }
 
     /* Cleanup */
-    printf("Shutting down witness server...\n");
     witness_nullifier_shutdown();
     dna_engine_destroy(engine);
     free(data_dir);
+
+    pthread_mutex_destroy(&g_work_mutex);
+    pthread_cond_destroy(&g_work_cond);
 
     printf("Witness server stopped.\n");
     return 0;

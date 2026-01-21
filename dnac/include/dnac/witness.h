@@ -21,12 +21,37 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <pthread.h>
 #include <dna/dna_engine.h>
 #include "dnac/nodus.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* ============================================================================
+ * Listener Context Types
+ * ========================================================================== */
+
+/**
+ * @brief Context for request listener callback
+ */
+typedef struct {
+    dna_engine_t *engine;
+    pthread_mutex_t *mutex;
+    pthread_cond_t *cond;
+    int *pending_count;
+} witness_request_ctx_t;
+
+/**
+ * @brief Context for replication listener callback
+ */
+typedef struct {
+    dna_engine_t *engine;
+    pthread_mutex_t *mutex;
+    pthread_cond_t *cond;
+    int *pending_count;
+} witness_replication_ctx_t;
 
 /* ============================================================================
  * Nullifier Database Functions
@@ -125,6 +150,27 @@ int witness_send_response(dna_engine_t *engine,
                          const dnac_spend_request_t *request,
                          const dnac_spend_response_t *response);
 
+/**
+ * @brief Start request listener (event-driven)
+ *
+ * Starts listening for incoming attestation requests via DHT.
+ * Callbacks run on DHT worker thread.
+ *
+ * @param engine DNA engine with loaded identity
+ * @param ctx Listener context (must remain valid until stop)
+ * @return Listen token (0 on failure)
+ */
+size_t witness_start_request_listener(dna_engine_t *engine,
+                                      witness_request_ctx_t *ctx);
+
+/**
+ * @brief Stop request listener
+ *
+ * @param engine DNA engine
+ * @param token Listen token from start function
+ */
+void witness_stop_request_listener(dna_engine_t *engine, size_t token);
+
 /* ============================================================================
  * Replication Functions
  * ========================================================================== */
@@ -152,6 +198,27 @@ int witness_process_replications(dna_engine_t *engine);
  * @param engine DNA engine with loaded identity
  */
 void witness_set_replication_engine(dna_engine_t *engine);
+
+/**
+ * @brief Start replication listener (event-driven)
+ *
+ * Starts listening for incoming nullifier replications via DHT.
+ * Callbacks run on DHT worker thread.
+ *
+ * @param engine DNA engine with loaded identity
+ * @param ctx Listener context (must remain valid until stop)
+ * @return Listen token (0 on failure)
+ */
+size_t witness_start_replication_listener(dna_engine_t *engine,
+                                          witness_replication_ctx_t *ctx);
+
+/**
+ * @brief Stop replication listener
+ *
+ * @param engine DNA engine
+ * @param token Listen token from start function
+ */
+void witness_stop_replication_listener(dna_engine_t *engine, size_t token);
 
 #ifdef __cplusplus
 }

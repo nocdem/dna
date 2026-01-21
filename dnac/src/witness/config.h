@@ -16,11 +16,13 @@
 #define WITNESS_NULLIFIER_PREFIX "dnac:witness:nullifier:"
 
 /* Timing configuration */
-#define WITNESS_POLL_INTERVAL_MS      100
 #define WITNESS_REPLICATION_TIMEOUT_MS 5000
 #define WITNESS_REQUEST_TTL_SEC       60
 #define WITNESS_RESPONSE_TTL_SEC      300
 #define WITNESS_IDENTITY_TTL_SEC      3600
+
+/* Listener configuration */
+#define WITNESS_MAX_LISTENERS         2  /* Request + Replication */
 
 /* Database configuration */
 #define WITNESS_DB_FILENAME          "witness_nullifiers.db"

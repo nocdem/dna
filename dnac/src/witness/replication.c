@@ -14,6 +14,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <pthread.h>
 #include <openssl/evp.h>
 
 #include "crypto/utils/qgp_log.h"
@@ -34,6 +35,21 @@ extern int dht_put_signed(dht_context_t *ctx,
 extern int dht_get(dht_context_t *ctx,
                    const uint8_t *key, size_t key_len,
                    uint8_t **value_out, size_t *value_len_out);
+
+/* DHT listen callback type */
+typedef bool (*dht_listen_callback_t)(
+    const uint8_t *value,
+    size_t value_len,
+    bool expired,
+    void *user_data
+);
+
+/* DHT listen functions from libdna */
+extern size_t dht_listen(dht_context_t *ctx,
+                         const uint8_t *key, size_t key_len,
+                         dht_listen_callback_t callback,
+                         void *user_data);
+extern void dht_cancel_listen(dht_context_t *ctx, size_t token);
 
 /* Global engine reference for replication (set by main) */
 static dna_engine_t *g_replication_engine = NULL;
@@ -182,4 +198,100 @@ int witness_process_replications(dna_engine_t *engine) {
     }
 
     return received;
+}
+
+/* ============================================================================
+ * Event-Driven Replication Listener
+ * ========================================================================== */
+
+/**
+ * Build DHT key for our replication inbox
+ * Key: SHA3-512("dnac:witness:nullifier:" + our_fingerprint)
+ */
+static int build_replication_inbox_key(const char *our_fingerprint, uint8_t *key_out) {
+    uint8_t key_data[256];
+    size_t offset = 0;
+
+    memcpy(key_data, WITNESS_NULLIFIER_PREFIX, strlen(WITNESS_NULLIFIER_PREFIX));
+    offset = strlen(WITNESS_NULLIFIER_PREFIX);
+    memcpy(key_data + offset, our_fingerprint, strlen(our_fingerprint));
+    offset += strlen(our_fingerprint);
+
+    return compute_sha3_512(key_data, offset, key_out);
+}
+
+/**
+ * DHT listener callback for incoming nullifier replications
+ */
+static bool replication_listener_callback(const uint8_t *value, size_t value_len,
+                                          bool expired, void *user_data) {
+    witness_replication_ctx_t *ctx = (witness_replication_ctx_t *)user_data;
+    if (!ctx || expired || !value || value_len != 128) return true;
+
+    /* Extract nullifier and tx_hash from payload */
+    const uint8_t *nullifier = value;
+    const uint8_t *tx_hash = value + 64;
+
+    /* Add to our database if not exists */
+    if (!witness_nullifier_exists(nullifier)) {
+        if (witness_nullifier_add(nullifier, tx_hash) == 0) {
+            /* Mark as already replicated (we received it) */
+            witness_nullifier_mark_replicated(nullifier);
+            QGP_LOG_DEBUG(LOG_TAG, "Received replicated nullifier via listener");
+
+            /* Signal main thread that work was done */
+            pthread_mutex_lock(ctx->mutex);
+            (*ctx->pending_count)++;
+            pthread_cond_signal(ctx->cond);
+            pthread_mutex_unlock(ctx->mutex);
+        }
+    }
+
+    return true;  /* Continue listening */
+}
+
+size_t witness_start_replication_listener(dna_engine_t *engine,
+                                          witness_replication_ctx_t *ctx) {
+    if (!engine || !ctx) return 0;
+
+    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
+    if (!dht) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT context not available");
+        return 0;
+    }
+
+    extern const char* dna_engine_get_fingerprint(dna_engine_t *engine);
+    const char *our_fp = dna_engine_get_fingerprint(engine);
+    if (!our_fp) {
+        QGP_LOG_ERROR(LOG_TAG, "No fingerprint available");
+        return 0;
+    }
+
+    /* Build replication inbox key */
+    uint8_t inbox_key[64];
+    if (build_replication_inbox_key(our_fp, inbox_key) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to build replication inbox key");
+        return 0;
+    }
+
+    /* Start listening */
+    size_t token = dht_listen(dht, inbox_key, 64,
+                              replication_listener_callback, ctx);
+    if (token == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to start replication listener");
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Started replication listener for %.32s...", our_fp);
+    return token;
+}
+
+void witness_stop_replication_listener(dna_engine_t *engine, size_t token) {
+    if (!engine || token == 0) return;
+
+    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
+    if (!dht) return;
+
+    dht_cancel_listen(dht, token);
+    QGP_LOG_INFO(LOG_TAG, "Stopped replication listener");
 }

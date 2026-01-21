@@ -15,6 +15,7 @@
 
 #include <string.h>
 #include <time.h>
+#include <pthread.h>
 #include <openssl/evp.h>
 
 #include "crypto/utils/qgp_dilithium.h"
@@ -36,6 +37,21 @@ extern int dht_put_signed(dht_context_t *ctx,
 extern int dht_get(dht_context_t *ctx,
                    const uint8_t *key, size_t key_len,
                    uint8_t **value_out, size_t *value_len_out);
+
+/* DHT listen callback type */
+typedef bool (*dht_listen_callback_t)(
+    const uint8_t *value,
+    size_t value_len,
+    bool expired,
+    void *user_data
+);
+
+/* DHT listen functions from libdna */
+extern size_t dht_listen(dht_context_t *ctx,
+                         const uint8_t *key, size_t key_len,
+                         dht_listen_callback_t callback,
+                         void *user_data);
+extern void dht_cancel_listen(dht_context_t *ctx, size_t token);
 
 /* DNA engine functions */
 extern const char* dna_engine_get_fingerprint(dna_engine_t *engine);
@@ -312,4 +328,146 @@ int witness_send_response(dna_engine_t *engine,
     }
 
     return 0;
+}
+
+/* ============================================================================
+ * Event-Driven Request Listener
+ * ========================================================================== */
+
+/**
+ * DHT listener callback for incoming witness requests
+ */
+static bool request_listener_callback(const uint8_t *value, size_t value_len,
+                                      bool expired, void *user_data) {
+    witness_request_ctx_t *ctx = (witness_request_ctx_t *)user_data;
+    if (!ctx || expired || !value || value_len == 0) return true;
+
+    /* Deserialize request */
+    dnac_spend_request_t request;
+    if (dnac_spend_request_deserialize(value, value_len, &request) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to deserialize incoming request");
+        return true;  /* Continue listening */
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Received witness request via listener");
+
+    /* Process the request */
+    dnac_spend_response_t response;
+    memset(&response, 0, sizeof(response));
+
+    /* Get our identity info */
+    const char *our_fp = dna_engine_get_fingerprint(ctx->engine);
+    if (!our_fp) {
+        return true;  /* Continue listening */
+    }
+
+    /* Convert fingerprint to witness_id bytes (first 32 bytes of fingerprint hex) */
+    for (int i = 0; i < 32 && our_fp[i*2]; i++) {
+        sscanf(&our_fp[i*2], "%2hhx", &response.witness_id[i]);
+    }
+
+    /* Check if nullifier already spent */
+    if (witness_nullifier_exists(request.nullifier)) {
+        response.status = DNAC_NODUS_STATUS_REJECTED;
+        snprintf(response.error_message, sizeof(response.error_message),
+                 "Nullifier already spent");
+        QGP_LOG_WARN(LOG_TAG, "Rejected: nullifier already spent");
+    } else {
+        /* Record nullifier */
+        if (witness_nullifier_add(request.nullifier, request.tx_hash) != 0) {
+            response.status = DNAC_NODUS_STATUS_ERROR;
+            snprintf(response.error_message, sizeof(response.error_message),
+                     "Database error");
+            QGP_LOG_ERROR(LOG_TAG, "Failed to record nullifier");
+        } else {
+            /* Build data to sign: tx_hash || witness_id || timestamp */
+            response.timestamp = (uint64_t)time(NULL);
+
+            uint8_t sign_data[64 + 32 + 8];
+            memcpy(sign_data, request.tx_hash, 64);
+            memcpy(sign_data + 64, response.witness_id, 32);
+
+            /* Little-endian timestamp */
+            for (int i = 0; i < 8; i++) {
+                sign_data[64 + 32 + i] = (response.timestamp >> (i * 8)) & 0xFF;
+            }
+
+            /* Sign with our Dilithium5 key */
+            size_t sig_len = 0;
+            int ret = dna_engine_sign_data(ctx->engine, sign_data, sizeof(sign_data),
+                                           response.signature, &sig_len);
+            if (ret != 0) {
+                response.status = DNAC_NODUS_STATUS_ERROR;
+                snprintf(response.error_message, sizeof(response.error_message),
+                         "Signing failed");
+                QGP_LOG_ERROR(LOG_TAG, "Failed to sign witness attestation");
+            } else {
+                /* Include our public key in response */
+                dna_engine_get_signing_public_key(ctx->engine, response.server_pubkey,
+                                                  DNAC_PUBKEY_SIZE);
+
+                response.status = DNAC_NODUS_STATUS_APPROVED;
+                QGP_LOG_INFO(LOG_TAG, "Approved witness request");
+
+                /* Queue nullifier for replication */
+                witness_replicate_nullifier(request.nullifier, request.tx_hash);
+            }
+        }
+    }
+
+    /* Send response */
+    witness_send_response(ctx->engine, &request, &response);
+
+    /* Signal main thread that work was done */
+    pthread_mutex_lock(ctx->mutex);
+    (*ctx->pending_count)++;
+    pthread_cond_signal(ctx->cond);
+    pthread_mutex_unlock(ctx->mutex);
+
+    return true;  /* Continue listening */
+}
+
+size_t witness_start_request_listener(dna_engine_t *engine,
+                                      witness_request_ctx_t *ctx) {
+    if (!engine || !ctx) return 0;
+
+    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
+    if (!dht) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT context not available");
+        return 0;
+    }
+
+    const char *our_fp = dna_engine_get_fingerprint(engine);
+    if (!our_fp) {
+        QGP_LOG_ERROR(LOG_TAG, "No fingerprint available");
+        return 0;
+    }
+
+    /* Build request listen key */
+    uint8_t listen_key[64];
+    if (build_request_poll_key(our_fp, listen_key) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to build request listen key");
+        return 0;
+    }
+
+    /* Start listening */
+    size_t token = dht_listen(dht, listen_key, 64,
+                              request_listener_callback, ctx);
+    if (token == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to start request listener");
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Started request listener for %.32s...", our_fp);
+    return token;
+}
+
+void witness_stop_request_listener(dna_engine_t *engine, size_t token) {
+    if (!engine || token == 0) return;
+
+    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
+    if (!dht) return;
+
+    dht_cancel_listen(dht, token);
+    QGP_LOG_INFO(LOG_TAG, "Stopped request listener");
 }
