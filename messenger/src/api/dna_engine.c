@@ -1389,15 +1389,17 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
 }
 
 /* ============================================================================
- * ASYNC ENGINE CREATION (v0.6.16)
+ * ASYNC ENGINE CREATION (v0.6.18)
  *
  * Spawns a background thread to create the engine, avoiding UI thread blocking.
+ * Uses atomic cancelled flag for safe cancellation when Dart disposes early.
  * ============================================================================ */
 
 typedef struct {
     char *data_dir;
     dna_engine_created_cb callback;
     void *user_data;
+    _Atomic bool *cancelled;  /* Shared with Dart - check before callback */
 } dna_engine_create_async_ctx_t;
 
 static void* dna_engine_create_thread(void *arg) {
@@ -1407,12 +1409,18 @@ static void* dna_engine_create_thread(void *arg) {
     dna_engine_t *engine = dna_engine_create(ctx->data_dir);
     int error = engine ? DNA_OK : DNA_ENGINE_ERROR_INIT;
 
-    /* Call the callback (from background thread - caller must handle thread safety) */
-    if (ctx->callback) {
+    /* Check if cancelled BEFORE calling callback (Dart may have disposed) */
+    bool was_cancelled = ctx->cancelled && atomic_load(ctx->cancelled);
+
+    if (!was_cancelled && ctx->callback) {
         ctx->callback(engine, error, ctx->user_data);
+    } else if (engine) {
+        /* Cancelled - destroy the engine we created */
+        QGP_LOG_INFO(LOG_TAG, "Async engine creation cancelled, destroying engine");
+        dna_engine_destroy(engine);
     }
 
-    /* Cleanup */
+    /* Cleanup - DON'T free cancelled pointer, Dart owns it */
     free(ctx->data_dir);
     free(ctx);
 
@@ -1422,7 +1430,8 @@ static void* dna_engine_create_thread(void *arg) {
 void dna_engine_create_async(
     const char *data_dir,
     dna_engine_created_cb callback,
-    void *user_data
+    void *user_data,
+    _Atomic bool *cancelled
 ) {
     if (!callback) {
         QGP_LOG_ERROR(LOG_TAG, "dna_engine_create_async: callback required");
@@ -1439,6 +1448,7 @@ void dna_engine_create_async(
     ctx->data_dir = data_dir ? strdup(data_dir) : NULL;
     ctx->callback = callback;
     ctx->user_data = user_data;
+    ctx->cancelled = cancelled;
 
     /* Spawn detached thread for engine creation */
     pthread_t thread;

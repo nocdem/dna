@@ -1197,17 +1197,18 @@ class DnaBindings {
     return _dna_engine_create(data_dir);
   }
 
-  // v0.6.16: Async engine creation (non-blocking)
+  // v0.6.18: Async engine creation (non-blocking) with cancellation support
   late final _dna_engine_create_async = _lib.lookupFunction<
-      Void Function(Pointer<Utf8>, Pointer<DnaEngineCreatedCb>, Pointer<Void>),
-      void Function(Pointer<Utf8>, Pointer<DnaEngineCreatedCb>, Pointer<Void>)>('dna_engine_create_async');
+      Void Function(Pointer<Utf8>, Pointer<DnaEngineCreatedCb>, Pointer<Void>, Pointer<Bool>),
+      void Function(Pointer<Utf8>, Pointer<DnaEngineCreatedCb>, Pointer<Void>, Pointer<Bool>)>('dna_engine_create_async');
 
   void dna_engine_create_async(
     Pointer<Utf8> data_dir,
     Pointer<DnaEngineCreatedCb> callback,
     Pointer<Void> user_data,
+    Pointer<Bool> cancelled,
   ) {
-    _dna_engine_create_async(data_dir, callback, user_data);
+    _dna_engine_create_async(data_dir, callback, user_data, cancelled);
   }
 
   late final _dna_engine_destroy = _lib.lookupFunction<

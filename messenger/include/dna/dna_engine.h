@@ -728,11 +728,14 @@ typedef void (*dna_engine_created_cb)(dna_engine_t *engine, int error, void *use
  * @param data_dir  Path to data directory (NULL for default ~/.dna)
  * @param callback  Called when engine is ready (from background thread)
  * @param user_data User data passed to callback
+ * @param cancelled Pointer to atomic bool - set to true to cancel (callback won't fire)
+ *                  Caller owns this memory and must keep it valid until callback fires or cancelled.
  */
 DNA_API void dna_engine_create_async(
     const char *data_dir,
     dna_engine_created_cb callback,
-    void *user_data
+    void *user_data,
+    _Atomic bool *cancelled
 );
 
 /**

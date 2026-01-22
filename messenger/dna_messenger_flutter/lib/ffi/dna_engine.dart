@@ -1104,6 +1104,10 @@ class DnaEngine {
   // Event callback storage
   NativeCallable<DnaEventCbNative>? _eventCallback;
 
+  // Async creation tracking (for cancellation on early dispose)
+  NativeCallable<DnaEngineCreatedCbNative>? _createCallback;
+  Pointer<Bool>? _createCancelledPtr;
+
   bool _isDisposed = false;
 
   /// Event stream for pushed notifications
@@ -1121,24 +1125,61 @@ class DnaEngine {
   /// When identity is loaded, the engine acquires a file lock and creates
   /// its own DHT context - no global sharing needed.
   ///
-  /// v0.6.18+: Yields to event loop before sync FFI to allow UI frame to render.
-  /// This prevents perceived freeze while keeping thread-safe synchronous creation.
+  /// v0.6.18+: Uses async C function with cancellation support to avoid UI freeze.
+  /// If disposed before completion, the cancelled flag prevents callback crash.
   static Future<DnaEngine> create({String? dataDir}) async {
     final engine = DnaEngine._();
     engine._bindings = DnaBindings(_loadLibrary());
 
-    // Yield to event loop - allows pending UI frames to render before FFI blocks
-    await Future<void>.delayed(Duration.zero);
-
+    final completer = Completer<void>();
     final dataDirPtr = dataDir?.toNativeUtf8() ?? nullptr;
-    engine._engine = engine._bindings.dna_engine_create(dataDirPtr.cast());
 
-    if (dataDir != null) {
-      calloc.free(dataDirPtr);
+    // Allocate cancelled flag in native memory (C thread checks this atomically)
+    final cancelledPtr = calloc<Bool>();
+    cancelledPtr.value = false;
+    engine._createCancelledPtr = cancelledPtr;
+
+    // Callback receives engine pointer from background thread
+    void onEngineCreated(Pointer<dna_engine_t> enginePtr, int error, Pointer<Void> userData) {
+      // Check if we were cancelled (shouldn't happen - C checks first, but be safe)
+      if (cancelledPtr.value || completer.isCompleted) {
+        return;
+      }
+
+      if (error != 0 || enginePtr == nullptr) {
+        completer.completeError(DnaEngineException(error, 'Failed to create engine'));
+        return;
+      }
+
+      engine._engine = enginePtr;
+      completer.complete();
     }
 
-    if (engine._engine == nullptr) {
-      throw DnaEngineException(-100, 'Failed to create engine');
+    // Create native callback that can be called from any thread
+    final callback = NativeCallable<DnaEngineCreatedCbNative>.listener(onEngineCreated);
+    engine._createCallback = callback;
+
+    // Start async engine creation (returns immediately, runs on background thread)
+    engine._bindings.dna_engine_create_async(
+      dataDirPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+      cancelledPtr,
+    );
+
+    // Wait for creation to complete (UI thread stays responsive)
+    try {
+      await completer.future;
+    } finally {
+      // Free data dir string (C made its own copy)
+      if (dataDir != null) {
+        calloc.free(dataDirPtr);
+      }
+      // Clean up tracking (callback/cancelled pointer freed in dispose or here)
+      callback.close();
+      calloc.free(cancelledPtr);
+      engine._createCallback = null;
+      engine._createCancelledPtr = null;
     }
 
     engine._setupEventCallback();
@@ -5070,6 +5111,18 @@ class DnaEngine {
     }
     _isDisposed = true;
     print('[DART-DISPOSE] Set _isDisposed=true');
+
+    // Check if async creation is still in progress
+    // If so, set cancelled flag - C thread will destroy engine and skip callback
+    if (_createCancelledPtr != null) {
+      print('[DART-DISPOSE] Async creation in progress, setting cancelled flag');
+      _createCancelledPtr!.value = true;
+      // Don't close callback or free pointer here - create()'s finally block will do it
+      // Don't call dna_engine_destroy - we don't have an engine yet
+      // The C thread will check the flag and destroy the engine itself
+      print('[DART-DISPOSE] Cancelled flag set, returning early');
+      return;
+    }
 
     // Clear the C callback pointer to prevent new callbacks
     print('[DART-DISPOSE] Clearing C event callback...');
