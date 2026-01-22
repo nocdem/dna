@@ -27,7 +27,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 - [x] **[FLUTTER] P2 - Restore Messages button freezes app** - In the restore messages modal, clicking restore freezes the entire app while restore runs synchronously. **Fix:** `dna_engine_restore_messages()` spawns detached pthread for DHT operations. (v0.5.32)
 
-- [ ] **[FLUTTER] P3 - Avatar not restored when reinstalling from scratch** - After fresh install and restoring identity from seed phrase, avatar is not correctly restored from DHT. Profile data (name, etc.) may restore but avatar image is missing or not displayed.
+- [x] **[FLUTTER] P3 - Avatar not restored when reinstalling from scratch** - After fresh install and restoring identity from seed phrase, avatar is not correctly restored from DHT. **Fix:** Changed restore flow to use `lookupProfile()` (single DHT call) instead of separate `getDisplayName()` + `getAvatar()` calls. Now extracts both name and avatar from the unified profile response. (v0.100.25)
 
 - [x] **[CLI] P2 - DHT PUT_SIGNED high failure rate** - Logs showed ~77% failure rate (986 failed vs 298 stored). Error: "PUT_SIGNED: Failed to store on any node". **Root cause:** Burst flooding from chunked operations (10-50 rapid PUTs per action) overwhelming DHT nodes. **Fix:** Added 100ms delay between chunk PUTs in `dht_chunked.c` to rate-limit operations. (v0.4.23)
 
