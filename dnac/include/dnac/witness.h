@@ -40,17 +40,18 @@ extern "C" {
  * discover the current epoch and build the correct request key.
  */
 typedef struct {
-    uint8_t  version;                           /**< Announcement version (1) */
+    uint8_t  version;                           /**< Announcement version (2) */
     uint8_t  witness_id[32];                    /**< Witness ID (first 32 bytes of fp) */
     uint64_t current_epoch;                     /**< Current epoch number */
     uint64_t epoch_duration;                    /**< Epoch duration in seconds */
     uint64_t timestamp;                         /**< Announcement timestamp */
+    uint8_t  software_version[3];               /**< Software version [major, minor, patch] */
     uint8_t  witness_pubkey[DNAC_PUBKEY_SIZE];  /**< Witness Dilithium5 public key */
     uint8_t  signature[DNAC_SIGNATURE_SIZE];    /**< Signature over above fields */
 } dnac_witness_announcement_t;
 
-/* Serialized size: 1 + 32 + 8 + 8 + 8 + 2592 + 4627 = 7276 bytes */
-#define DNAC_ANNOUNCEMENT_SERIALIZED_SIZE (1 + 32 + 8 + 8 + 8 + DNAC_PUBKEY_SIZE + DNAC_SIGNATURE_SIZE)
+/* Serialized size: 1 + 32 + 8 + 8 + 8 + 3 + 2592 + 4627 = 7279 bytes */
+#define DNAC_ANNOUNCEMENT_SERIALIZED_SIZE (1 + 32 + 8 + 8 + 8 + 3 + DNAC_PUBKEY_SIZE + DNAC_SIGNATURE_SIZE)
 
 /* ============================================================================
  * Listener Context Types
@@ -295,6 +296,17 @@ size_t witness_start_replication_listener(dna_engine_t *engine,
  * @param token Listen token from start function
  */
 void witness_stop_replication_listener(dna_engine_t *engine, size_t token);
+
+/**
+ * @brief Process pending responses from the queue
+ *
+ * Must be called from main thread (not from callbacks) to avoid
+ * DHT mutex deadlock. Call periodically from main loop.
+ *
+ * @param engine DNA engine
+ * @return Number of responses sent
+ */
+int witness_process_pending_responses(dna_engine_t *engine);
 
 #ifdef __cplusplus
 }

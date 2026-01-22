@@ -638,8 +638,7 @@ int dnac_db_clear_utxos(sqlite3 *db, const char *owner_fp) {
  * Public API Wrappers (using dnac_context)
  * ========================================================================== */
 
-/* Note: These require dnac_context to hold the db pointer.
- * For now, these are stubs that will be connected when context is implemented. */
+/* Public API wrappers using dnac_context for database access. */
 
 int dnac_get_history(dnac_context_t *ctx,
                      dnac_tx_history_t **history,

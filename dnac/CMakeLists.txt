@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(dnac VERSION 0.1.19 LANGUAGES C)
+project(dnac VERSION 0.2.0 LANGUAGES C)
 
 # ============================================================================
 # DNAC - Post-Quantum Digital Cash over DHT
@@ -23,6 +23,22 @@ message(STATUS "Build Type: ${CMAKE_BUILD_TYPE}")
 
 option(DNAC_BUILD_TESTS "Build DNAC tests" ON)
 option(DNAC_BUILD_SHARED "Build shared library" OFF)
+option(ENABLE_ASAN "Enable AddressSanitizer in Debug builds" ON)
+
+# ============================================================================
+# AddressSanitizer (match dna-messenger pattern)
+# ============================================================================
+
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    if(ENABLE_ASAN)
+        set(CMAKE_C_FLAGS_DEBUG "-g -O0 -DDEBUG -fsanitize=address -fno-omit-frame-pointer")
+        set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -fsanitize=address")
+        message(STATUS "Debug build with AddressSanitizer enabled")
+    else()
+        set(CMAKE_C_FLAGS_DEBUG "-g -O0 -DDEBUG")
+        message(STATUS "Debug build (ASAN disabled)")
+    endif()
+endif()
 
 # ============================================================================
 # Dependencies
@@ -76,14 +92,23 @@ set(DNAC_SOURCES
     src/transaction/builder.c
     src/transaction/serialize.c
     src/transaction/verify.c
+    src/transaction/mint.c
 
     # Nodus
     src/nodus/client.c
     src/nodus/attestation.c
     src/nodus/discovery.c
+    src/nodus/tcp_client.c
 
     # Database
     src/db/db.c
+
+    # BFT Consensus
+    src/bft/serialize.c
+    src/bft/tcp.c
+    src/bft/peer.c
+    src/bft/consensus.c
+    src/bft/roster.c
 )
 
 # ============================================================================
@@ -161,7 +186,7 @@ endif()
 # Witness Server
 # ============================================================================
 
-option(DNAC_BUILD_WITNESS "Build dnac-witness server" OFF)
+option(DNAC_BUILD_WITNESS "Build dnac-witness server" ON)
 
 if(DNAC_BUILD_WITNESS)
     set(DNAC_WITNESS_SOURCES
@@ -169,6 +194,8 @@ if(DNAC_BUILD_WITNESS)
         src/witness/server.c
         src/witness/nullifier.c
         src/witness/replication.c
+        src/witness/bft_main.c
+        src/witness/forward.c
     )
 
     add_executable(dnac-witness ${DNAC_WITNESS_SOURCES})
@@ -206,19 +233,27 @@ endif()
 if(DNAC_BUILD_TESTS)
     enable_testing()
 
-    # Test executables
-    set(DNAC_TESTS
-        test_transaction
-        test_wallet
+    # Real end-to-end test (uses real mint, real witnesses, real DHT)
+    add_executable(test_real tests/test_real.c)
+
+    target_link_libraries(test_real dnac)
+
+    # Link libdna directly for dna_engine functions
+    if(EXISTS "${DNA_BUILD_DIR}/libdna_lib.so")
+        target_link_libraries(test_real ${DNA_BUILD_DIR}/libdna_lib.so)
+    else()
+        target_link_libraries(test_real ${DNA_BUILD_DIR}/libdna_lib.a)
+    endif()
+
+    target_link_libraries(test_real
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        ${SQLITE3_LIBRARIES}
+        pthread
+        m
     )
 
-    foreach(TEST ${DNAC_TESTS})
-        if(EXISTS "${CMAKE_SOURCE_DIR}/tests/${TEST}.c")
-            add_executable(${TEST} tests/${TEST}.c)
-            target_link_libraries(${TEST} dnac)
-            add_test(NAME ${TEST} COMMAND ${TEST})
-        endif()
-    endforeach()
+    add_test(NAME real COMMAND test_real)
 endif()
 
 # ============================================================================

@@ -172,7 +172,7 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
 
     uint8_t sender_pubkey[DNAC_PUBKEY_SIZE];
     rc = dna_engine_get_signing_public_key(engine, sender_pubkey, sizeof(sender_pubkey));
-    if (rc != 0) {
+    if (rc < 0) {  /* Returns size on success, negative on error */
         return DNAC_ERROR_CRYPTO;
     }
 
@@ -258,7 +258,9 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
                       dnac_transaction_t *tx,
                       dnac_callback_t callback,
                       void *user_data) {
-    if (!ctx || !tx) return DNAC_ERROR_INVALID_PARAM;
+    if (!ctx || !tx) {
+        return DNAC_ERROR_INVALID_PARAM;
+    }
 
     int rc;
     dna_engine_t *engine = dnac_get_engine(ctx);

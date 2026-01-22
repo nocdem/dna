@@ -52,13 +52,17 @@ extern "C" {
  * Message Types
  * ========================================================================== */
 
+/**
+ * NODUS client message types.
+ * Starting at 128 to avoid collision with BFT message types (1-11).
+ */
 typedef enum {
-    DNAC_NODUS_MSG_SPEND_REQUEST    = 1,
-    DNAC_NODUS_MSG_SPEND_RESPONSE   = 2,
-    DNAC_NODUS_MSG_CHECK_NULLIFIER  = 3,
-    DNAC_NODUS_MSG_NULLIFIER_STATUS = 4,
-    DNAC_NODUS_MSG_PING             = 5,
-    DNAC_NODUS_MSG_PONG             = 6
+    DNAC_NODUS_MSG_SPEND_REQUEST    = 128,
+    DNAC_NODUS_MSG_SPEND_RESPONSE   = 129,
+    DNAC_NODUS_MSG_CHECK_NULLIFIER  = 130,
+    DNAC_NODUS_MSG_NULLIFIER_STATUS = 131,
+    DNAC_NODUS_MSG_PING             = 132,
+    DNAC_NODUS_MSG_PONG             = 133
 } dnac_nodus_msg_type_t;
 
 typedef enum {
@@ -93,6 +97,7 @@ typedef struct {
     uint8_t signature[DNAC_SIGNATURE_SIZE];      /**< Server's signature (attestation) */
     uint8_t server_pubkey[DNAC_PUBKEY_SIZE];     /**< Server's Dilithium5 public key */
     uint64_t timestamp;                          /**< Response timestamp */
+    uint8_t software_version[3];                 /**< Witness software version [major, minor, patch] */
     char error_message[256];                     /**< Error message if rejected */
 } dnac_spend_response_t;
 

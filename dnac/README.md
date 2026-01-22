@@ -1,6 +1,6 @@
 # DNAC - Post-Quantum Zero-Knowledge Cash over DHT
 
-**Version:** v0.1.29 | **Protocol:** v1 (Transparent Amounts)
+**Version:** v0.2.0 | **Protocol:** v1 (Transparent Amounts)
 
 DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger](https://github.com/nocdem/dna-messenger).
 
@@ -10,8 +10,9 @@ DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger]
 - **Dilithium5 Signatures** - Post-quantum digital signatures (NIST Category 5)
 - **DHT Transport** - Payments delivered via DNA Messenger's DHT network
 - **Permanent Storage** - All data stored permanently on DHT
-- **Nodus 2-of-3 Witnessing** - Fast double-spend prevention
-- **Epoch-Based Discovery** - Witness servers discovered via epoch keys
+- **BFT Consensus** - Byzantine Fault Tolerant witness consensus (PBFT-like)
+- **2-of-3 Witnessing** - Transactions require 2 witness attestations
+- **TCP Mesh Network** - Witnesses communicate via TCP for consensus
 
 ## Protocol Versions
 
@@ -130,12 +131,44 @@ DNAC TRANSACTION v1:
 
 ## Witness Infrastructure
 
-DNAC uses a 3-node witness cluster for double-spend prevention:
+DNAC uses a 3-node BFT witness cluster for double-spend prevention:
 
-- **2-of-3 Threshold** - Transactions require 2 witness attestations
-- **Nullifier Database** - Each witness tracks spent UTXOs
-- **Cross-Replication** - Nullifiers replicated across all witnesses
-- **Epoch-Based Discovery** - Witnesses announce on epoch-based DHT keys
+### BFT Consensus Protocol
+
+```
+Client Request → Any Witness → Forward to Leader → Consensus Round → Response
+
+PROPOSE → PREVOTE → PRECOMMIT → COMMIT
+   │         │          │          │
+   └─ Leader broadcasts proposal
+             └─ All witnesses vote
+                       └─ Quorum (2/3) reached
+                                  └─ Nullifier committed, response sent
+```
+
+### Configuration
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| Witnesses | 3 | Total nodes in cluster |
+| Quorum | 2 | Required for consensus |
+| Leader Election | `(epoch + view) % N` | Rotates hourly |
+| TCP Port | 4200 | Inter-witness communication |
+
+### Deployed Nodes
+
+| Node | Address | Service |
+|------|---------|---------|
+| chat1 | 192.168.0.195:4200 | systemd: dnac-witness |
+| treasury | 192.168.0.196:4200 | systemd: dnac-witness |
+| cpunkroot2 | 192.168.0.199:4200 | systemd: dnac-witness |
+
+### Features
+
+- **Auto-start on boot** - systemd service with `Restart=always`
+- **Nullifier Database** - SQLite-based persistent storage
+- **TCP Mesh** - Full mesh connectivity between witnesses
+- **Request Forwarding** - Non-leaders forward to current leader
 
 ### Permanent DHT Storage
 
@@ -154,13 +187,32 @@ All DHT data is stored permanently:
 
 ## Status
 
-**Design Phase** - v0.1.29. Not for production use.
+**Development Phase** - v0.2.0. Not for production use.
 
-- Core wallet functionality: Working
-- Send/receive: Working
-- Witness infrastructure: Deployed (3 nodes)
-- CLI: Implemented
-- ZK amounts: Deferred to v2
+### Implemented (v0.2.0)
+
+- [x] Core wallet functionality (UTXO management, balance tracking)
+- [x] Send/receive transactions via DHT
+- [x] BFT consensus protocol (PBFT-like)
+- [x] 3-node witness cluster with systemd deployment
+- [x] TCP mesh networking between witnesses
+- [x] Leader election and request forwarding
+- [x] Double-spend prevention via nullifiers
+- [x] End-to-end integration tests
+
+### Tested
+
+- [x] MINT transaction flow
+- [x] SEND transaction flow
+- [x] Double-spend rejection
+- [x] Service auto-restart on reboot
+- [x] Witness mesh reconnection
+
+### Deferred to v2
+
+- [ ] STARK-based zero-knowledge proofs for amount privacy
+- [ ] View change protocol (leader failure recovery)
+- [ ] Dynamic witness roster management
 
 ## License
 

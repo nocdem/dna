@@ -10,6 +10,7 @@
 
 #include "dnac/nodus.h"
 #include "dnac/wallet.h"
+#include "dnac/bft.h"
 #include <dna/dna_engine.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,23 +47,27 @@ extern uint64_t g_witness_cache_time;
  * In production, the list should be fetched from DHT.
  */
 static const struct {
-    const char *id;       /* 32-byte hex server ID */
-    const char *address;  /* hostname:port */
+    const char *id;          /* 32-byte hex server ID (first 64 chars of fingerprint) */
+    const char *address;     /* hostname:port */
+    const char *fingerprint; /* Full 128-char SHA3-512 fingerprint */
 } BOOTSTRAP_WITNESSES[] = {
-    /* Server 1 - Primary */
+    /* node1 (chat1) */
     {
-        "0000000000000000000000000000000000000000000000000000000000000001",
-        "witness1.dna-messenger.io:4100"
+        "46de00d4e2ac54bdb70f3867498707ebaca58c65ca7713569fe183ffeeea46bd",
+        "192.168.0.195:4100",
+        "46de00d4e2ac54bdb70f3867498707ebaca58c65ca7713569fe183ffeeea46bdf380804405430d4684d8fc17b4702003d46d013151749a43fdc6b84d7472709d"
     },
-    /* Server 2 - Secondary */
+    /* treasury */
     {
-        "0000000000000000000000000000000000000000000000000000000000000002",
-        "witness2.dna-messenger.io:4100"
+        "d43514f121b508ca304ce741edca0bd1fbe661fe5fbd6f188b6831d079417997",
+        "192.168.0.196:4100",
+        "d43514f121b508ca304ce741edca0bd1fbe661fe5fbd6f188b6831d0794179977083e9fbae4aa40e7d16ee73918b6e26f9c29011914415732322a2b129303634"
     },
-    /* Server 3 - Tertiary */
+    /* cpunkroot2 */
     {
-        "0000000000000000000000000000000000000000000000000000000000000003",
-        "witness3.dna-messenger.io:4100"
+        "7dea0967abe22f720be1b1c0f68131eb1e39d93a5bb58039836fe842a10fefec",
+        "192.168.0.199:4100",
+        "7dea0967abe22f720be1b1c0f68131eb1e39d93a5bb58039836fe842a10fefec1db52df710238edcb90216f232da5c621e4a2e92b6c42508b64baf43594935e7"
     }
 };
 #define BOOTSTRAP_WITNESSES_COUNT 3
@@ -177,8 +182,9 @@ static int create_bootstrap_list(dnac_witness_info_t **servers_out, int *count_o
         /* Real pubkeys would be fetched from DHT or stored in config */
         memset(servers[i].pubkey, 0, sizeof(servers[i].pubkey));
 
-        /* Derive fingerprint (will be hash of zeros for bootstrap servers) */
-        derive_fingerprint(servers[i].pubkey, servers[i].fingerprint);
+        /* Use pre-computed fingerprints from bootstrap list */
+        strncpy(servers[i].fingerprint, BOOTSTRAP_WITNESSES[i].fingerprint,
+                sizeof(servers[i].fingerprint) - 1);
 
         servers[i].is_available = true;
         servers[i].last_seen = get_time_sec();
@@ -217,57 +223,50 @@ int dnac_witness_discover(dnac_context_t *ctx,
         }
     }
 
-    /* Get DNA engine and DHT context */
+    /* Get DNA engine */
     dna_engine_t *engine = dnac_get_engine(ctx);
-    if (!engine) {
-        /* Fallback to bootstrap list */
-        return create_bootstrap_list(servers_out, count_out);
-    }
 
-    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
-    if (!dht) {
-        /* Fallback to bootstrap list */
-        return create_bootstrap_list(servers_out, count_out);
-    }
+    /* Try BFT roster discovery first (file-based) */
+    dnac_roster_t roster;
+    int rc = dnac_bft_client_discover_roster(engine, &roster);
+    if (rc == DNAC_BFT_SUCCESS && roster.n_witnesses > 0) {
+        /* Convert roster to witness info array */
+        dnac_witness_info_t *servers = calloc(roster.n_witnesses, sizeof(dnac_witness_info_t));
+        if (servers) {
+            for (uint32_t i = 0; i < roster.n_witnesses; i++) {
+                dnac_roster_entry_t *entry = &roster.witnesses[i];
+                dnac_witness_info_t *info = &servers[i];
 
-    /* Build DHT key for witness server list */
-    uint8_t dht_key[64];
-    if (compute_sha3_512((const uint8_t *)WITNESS_DHT_KEY, strlen(WITNESS_DHT_KEY), dht_key) != 0) {
-        return create_bootstrap_list(servers_out, count_out);
-    }
+                /* Convert ID to hex string */
+                for (int j = 0; j < 32; j++) {
+                    snprintf(info->id + j*2, 3, "%02x", entry->witness_id[j]);
+                }
 
-    /* Query DHT for witness server list */
-    uint8_t *value = NULL;
-    size_t value_len = 0;
-    int rc = dht_get(dht, dht_key, 64, &value, &value_len);
+                strncpy(info->address, entry->address, sizeof(info->address) - 1);
+                memcpy(info->pubkey, entry->pubkey, DNAC_PUBKEY_SIZE);
+                info->is_available = entry->active;
+                info->last_seen = entry->joined_epoch * 3600;
 
-    if (rc == 0 && value && value_len > 0) {
-        /* Parse server list from DHT */
-        dnac_witness_info_t *servers = NULL;
-        int count = 0;
-
-        if (parse_witness_list(value, value_len, &servers, &count) == 0) {
-            /* Update cache */
-            if (g_witness_servers) {
-                free(g_witness_servers);
+                /* Derive fingerprint from public key */
+                derive_fingerprint(entry->pubkey, info->fingerprint);
             }
-            g_witness_servers = calloc(count, sizeof(dnac_witness_info_t));
+
+            /* Update cache */
+            if (g_witness_servers) free(g_witness_servers);
+            g_witness_servers = calloc(roster.n_witnesses, sizeof(dnac_witness_info_t));
             if (g_witness_servers) {
-                memcpy(g_witness_servers, servers, count * sizeof(dnac_witness_info_t));
-                g_witness_count = count;
+                memcpy(g_witness_servers, servers, roster.n_witnesses * sizeof(dnac_witness_info_t));
+                g_witness_count = roster.n_witnesses;
                 g_witness_cache_time = now;
             }
 
             *servers_out = servers;
-            *count_out = count;
-            free(value);
+            *count_out = roster.n_witnesses;
             return DNAC_SUCCESS;
         }
-
-        free(value);
     }
 
-    /* DHT query failed - fallback to bootstrap list */
+    /* BFT roster not found - fallback to bootstrap list */
     rc = create_bootstrap_list(servers_out, count_out);
     if (rc == 0) {
         /* Cache bootstrap list too */

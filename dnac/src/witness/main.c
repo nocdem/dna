@@ -3,10 +3,13 @@
  * @brief DNAC Witness Server entry point
  *
  * The witness server provides double-spend prevention for DNAC transactions.
- * It communicates via DHT (no TCP ports required).
+ * Two modes are supported:
+ * - DHT mode (default): Communicates via DHT (no TCP ports required)
+ * - BFT mode (--bft): Uses TCP for BFT consensus with other witnesses
  *
  * Usage: dnac-witness [options]
  *   -d <dir>    Data directory (default: ~/.dna)
+ *   --bft       Enable BFT consensus mode
  *   -h          Show help
  *
  * Copyright (c) 2026 nocdem
@@ -65,11 +68,17 @@ static void identity_loaded_callback(unsigned long request_id, int result, void 
     g_identity_loaded = 1;
 }
 
+/* External BFT main function */
+extern int bft_witness_main(int argc, char *argv[]);
+
 static void print_usage(const char *prog) {
     printf("DNAC Witness Server v%s\n", dnac_get_version());
     printf("Usage: %s [options]\n", prog);
     printf("Options:\n");
     printf("  -d <dir>    Data directory (default: ~/.dna)\n");
+    printf("  --bft       Enable BFT consensus mode (TCP-based)\n");
+    printf("  -p <port>   TCP port for BFT mode (default: 4200)\n");
+    printf("  -a <addr>   My address for BFT roster (IP:port)\n");
     printf("  -h          Show this help\n");
 }
 
@@ -130,8 +139,15 @@ int main(int argc, char *argv[]) {
     int opt;
     int rc;
 
-    /* Parse arguments */
-    while ((opt = getopt(argc, argv, "d:h")) != -1) {
+    /* Check for --bft flag first */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--bft") == 0) {
+            return bft_witness_main(argc, argv);
+        }
+    }
+
+    /* Parse arguments for DHT mode */
+    while ((opt = getopt(argc, argv, "d:p:a:h")) != -1) {
         switch (opt) {
             case 'd':
                 data_dir = strdup(optarg);
@@ -151,6 +167,14 @@ int main(int argc, char *argv[]) {
 
     printf("DNAC Witness Server v%s\n", dnac_get_version());
     printf("Data directory: %s\n", data_dir);
+
+    /* Enable file logging to <data_dir>/logs/dna.log */
+    qgp_log_file_enable(true);
+    qgp_log_set_level(QGP_LOG_LEVEL_DEBUG);
+    printf("File logging enabled: %s/logs/dna.log\n", data_dir);
+
+    /* Log version to file */
+    QGP_LOG_INFO(LOG_TAG, "=== DNAC Witness Server v%s ===", dnac_get_version());
 
     /* Set up signal handlers */
     signal(SIGINT, signal_handler);
@@ -307,6 +331,12 @@ int main(int argc, char *argv[]) {
 
         if (work_done > 0) {
             printf("Processed %d event(s)\n", work_done);
+        }
+
+        /* Process any queued responses (must be done from main thread) */
+        int responses_sent = witness_process_pending_responses(engine);
+        if (responses_sent > 0) {
+            printf("Sent %d queued response(s)\n", responses_sent);
         }
 
         /* Check for epoch change */

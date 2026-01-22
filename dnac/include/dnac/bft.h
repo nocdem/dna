@@ -1,0 +1,747 @@
+/**
+ * @file bft.h
+ * @brief DNAC BFT (Byzantine Fault Tolerant) Consensus API
+ *
+ * Implements a PBFT-like consensus protocol for witness servers:
+ * - 4-phase consensus: PROPOSE → PREVOTE → PRECOMMIT → COMMIT
+ * - Leader rotation: (epoch + view) % N
+ * - View change on leader timeout
+ * - TCP mesh networking between witnesses
+ *
+ * Copyright (c) 2026 nocdem
+ * SPDX-License-Identifier: MIT
+ */
+
+#ifndef DNAC_BFT_H
+#define DNAC_BFT_H
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <pthread.h>
+
+#include "dnac.h"
+#include "dnac/transaction.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ============================================================================
+ * Constants
+ * ========================================================================== */
+
+/** Maximum witnesses in roster */
+#define DNAC_BFT_MAX_WITNESSES          16
+
+/** Default round timeout (milliseconds) */
+#define DNAC_BFT_ROUND_TIMEOUT_MS       5000
+
+/** Default view change timeout (milliseconds) */
+#define DNAC_BFT_VIEW_CHANGE_TIMEOUT_MS 10000
+
+/** Maximum view changes per request before error */
+#define DNAC_BFT_MAX_VIEW_CHANGES       3
+
+/** Default TCP port for BFT mesh */
+#define DNAC_BFT_TCP_PORT               4200
+
+/** Witness ID size */
+#define DNAC_BFT_WITNESS_ID_SIZE        32
+
+/** Maximum address length */
+#define DNAC_BFT_MAX_ADDRESS_LEN        256
+
+/** BFT roster DHT key */
+#define DNAC_BFT_ROSTER_KEY             "dnac:bft:roster"
+
+/** BFT protocol version */
+#define DNAC_BFT_PROTOCOL_VERSION       1
+
+/* ============================================================================
+ * Error Codes
+ * ========================================================================== */
+
+#define DNAC_BFT_SUCCESS                    0
+#define DNAC_BFT_ERROR_INVALID_PARAM       -1
+#define DNAC_BFT_ERROR_OUT_OF_MEMORY       -2
+#define DNAC_BFT_ERROR_NOT_INITIALIZED     -3
+#define DNAC_BFT_ERROR_NETWORK             -4
+#define DNAC_BFT_ERROR_TIMEOUT             -5
+#define DNAC_BFT_ERROR_NO_QUORUM           -6
+#define DNAC_BFT_ERROR_LEADER_FAILED       -7
+#define DNAC_BFT_ERROR_VIEW_CHANGE_FAILED  -8
+#define DNAC_BFT_ERROR_DOUBLE_SPEND        -9
+#define DNAC_BFT_ERROR_INVALID_MESSAGE     -10
+#define DNAC_BFT_ERROR_INVALID_SIGNATURE   -11
+#define DNAC_BFT_ERROR_NOT_LEADER          -12
+#define DNAC_BFT_ERROR_ROSTER_FULL         -13
+#define DNAC_BFT_ERROR_PEER_NOT_FOUND      -14
+#define DNAC_BFT_ERROR_CONNECTION_FAILED   -15
+#define DNAC_BFT_ERROR_NOT_FOUND           -16
+
+/* ============================================================================
+ * Message Types
+ * ========================================================================== */
+
+/**
+ * @brief BFT message types
+ */
+typedef enum {
+    BFT_MSG_PROPOSAL        = 1,    /**< Leader proposes transaction */
+    BFT_MSG_PREVOTE         = 2,    /**< Witness prevote on proposal */
+    BFT_MSG_PRECOMMIT       = 3,    /**< Witness precommit after prevote quorum */
+    BFT_MSG_COMMIT          = 4,    /**< Final commit (triggers nullifier add) */
+    BFT_MSG_VIEW_CHANGE     = 5,    /**< Request view change */
+    BFT_MSG_NEW_VIEW        = 6,    /**< New leader announces view */
+    BFT_MSG_FORWARD_REQ     = 7,    /**< Non-leader forwards request to leader */
+    BFT_MSG_FORWARD_RSP     = 8,    /**< Leader response via forwarder */
+    BFT_MSG_ROSTER_REQUEST  = 9,    /**< Request current roster */
+    BFT_MSG_ROSTER_RESPONSE = 10,   /**< Roster response */
+    BFT_MSG_IDENTIFY        = 11,   /**< Identity exchange on connect */
+} dnac_bft_msg_type_t;
+
+/**
+ * @brief Vote types for PREVOTE/PRECOMMIT
+ */
+typedef enum {
+    BFT_VOTE_APPROVE        = 0,    /**< Approve the proposal */
+    BFT_VOTE_REJECT         = 1,    /**< Reject (e.g., double-spend detected) */
+} dnac_bft_vote_t;
+
+/**
+ * @brief Consensus round phase
+ */
+typedef enum {
+    BFT_PHASE_IDLE          = 0,    /**< No active round */
+    BFT_PHASE_PROPOSE       = 1,    /**< Waiting for proposal */
+    BFT_PHASE_PREVOTE       = 2,    /**< Collecting prevotes */
+    BFT_PHASE_PRECOMMIT     = 3,    /**< Collecting precommits */
+    BFT_PHASE_COMMIT        = 4,    /**< Committing */
+    BFT_PHASE_VIEW_CHANGE   = 5,    /**< View change in progress */
+} dnac_bft_phase_t;
+
+/* ============================================================================
+ * Configuration
+ * ========================================================================== */
+
+/**
+ * @brief BFT configuration
+ */
+typedef struct {
+    uint32_t n_witnesses;               /**< Total witnesses in roster */
+    uint32_t f_tolerance;               /**< Byzantine fault tolerance (n = 3f+1) */
+    uint32_t quorum;                    /**< Required votes (2f+1) */
+    uint32_t round_timeout_ms;          /**< Timeout per round */
+    uint32_t view_change_timeout_ms;    /**< View change timeout */
+    uint32_t max_view_changes;          /**< Max retries before error */
+    uint16_t tcp_port;                  /**< TCP listen port */
+} dnac_bft_config_t;
+
+/**
+ * @brief Initialize config with defaults for given witness count
+ */
+void dnac_bft_config_init(dnac_bft_config_t *config, uint32_t n_witnesses);
+
+/* ============================================================================
+ * Roster Management
+ * ========================================================================== */
+
+/**
+ * @brief Roster entry (single witness)
+ */
+typedef struct {
+    uint8_t witness_id[DNAC_BFT_WITNESS_ID_SIZE];   /**< Witness ID */
+    uint8_t pubkey[DNAC_PUBKEY_SIZE];               /**< Dilithium5 public key */
+    char address[DNAC_BFT_MAX_ADDRESS_LEN];         /**< IP:port */
+    uint64_t joined_epoch;                          /**< When witness joined */
+    bool active;                                    /**< Currently active */
+} dnac_roster_entry_t;
+
+/**
+ * @brief Witness roster
+ */
+typedef struct {
+    uint32_t version;                               /**< Roster version (increments on change) */
+    uint32_t n_witnesses;                           /**< Number of witnesses */
+    dnac_roster_entry_t witnesses[DNAC_BFT_MAX_WITNESSES];
+    uint8_t signature[DNAC_SIGNATURE_SIZE];         /**< Signed by quorum */
+} dnac_roster_t;
+
+/* ============================================================================
+ * BFT Messages
+ * ========================================================================== */
+
+/**
+ * @brief BFT message header (common to all messages)
+ */
+typedef struct {
+    uint8_t version;                                /**< Protocol version */
+    dnac_bft_msg_type_t type;                       /**< Message type */
+    uint64_t round;                                 /**< Consensus round number */
+    uint32_t view;                                  /**< Current view */
+    uint8_t sender_id[DNAC_BFT_WITNESS_ID_SIZE];    /**< Sender witness ID */
+    uint64_t timestamp;                             /**< Message timestamp */
+} dnac_bft_msg_header_t;
+
+/**
+ * @brief Proposal message (from leader)
+ */
+typedef struct {
+    dnac_bft_msg_header_t header;
+    uint8_t tx_hash[DNAC_TX_HASH_SIZE];             /**< Transaction hash */
+    uint8_t nullifier[DNAC_NULLIFIER_SIZE];         /**< Nullifier being spent */
+    uint8_t sender_pubkey[DNAC_PUBKEY_SIZE];        /**< Client's public key */
+    uint8_t client_signature[DNAC_SIGNATURE_SIZE];  /**< Client's signature on tx */
+    uint64_t fee_amount;                            /**< Fee amount */
+    uint8_t signature[DNAC_SIGNATURE_SIZE];         /**< Leader's signature */
+} dnac_bft_proposal_t;
+
+/**
+ * @brief Vote message (PREVOTE or PRECOMMIT)
+ */
+typedef struct {
+    dnac_bft_msg_header_t header;
+    uint8_t tx_hash[DNAC_TX_HASH_SIZE];             /**< Transaction hash being voted on */
+    dnac_bft_vote_t vote;                           /**< APPROVE or REJECT */
+    char reason[256];                               /**< Reason if rejected */
+    uint8_t signature[DNAC_SIGNATURE_SIZE];         /**< Voter's signature */
+} dnac_bft_vote_msg_t;
+
+/**
+ * @brief Commit message
+ */
+typedef struct {
+    dnac_bft_msg_header_t header;
+    uint8_t tx_hash[DNAC_TX_HASH_SIZE];             /**< Transaction hash */
+    uint8_t nullifier[DNAC_NULLIFIER_SIZE];         /**< Nullifier to commit */
+    uint32_t n_precommits;                          /**< Number of precommit proofs */
+    uint8_t signature[DNAC_SIGNATURE_SIZE];         /**< Sender's signature */
+} dnac_bft_commit_t;
+
+/**
+ * @brief View change request
+ */
+typedef struct {
+    dnac_bft_msg_header_t header;
+    uint32_t new_view;                              /**< Requested new view */
+    uint64_t last_committed_round;                  /**< Last successfully committed round */
+    uint8_t signature[DNAC_SIGNATURE_SIZE];         /**< Signature */
+} dnac_bft_view_change_t;
+
+/**
+ * @brief New view announcement (from new leader)
+ */
+typedef struct {
+    dnac_bft_msg_header_t header;
+    uint32_t new_view;                              /**< New view number */
+    uint32_t n_view_change_proofs;                  /**< Number of VIEW-CHANGE proofs */
+    uint8_t signature[DNAC_SIGNATURE_SIZE];         /**< New leader's signature */
+} dnac_bft_new_view_t;
+
+/**
+ * @brief Forward request (non-leader to leader)
+ */
+typedef struct {
+    dnac_bft_msg_header_t header;
+    uint8_t tx_hash[DNAC_TX_HASH_SIZE];
+    uint8_t nullifier[DNAC_NULLIFIER_SIZE];
+    uint8_t sender_pubkey[DNAC_PUBKEY_SIZE];
+    uint8_t client_signature[DNAC_SIGNATURE_SIZE];
+    uint64_t fee_amount;
+    uint8_t forwarder_id[DNAC_BFT_WITNESS_ID_SIZE]; /**< ID of forwarding witness */
+    uint8_t signature[DNAC_SIGNATURE_SIZE];         /**< Forwarder's signature */
+} dnac_bft_forward_req_t;
+
+/**
+ * @brief Forward response (leader via forwarder to client)
+ */
+typedef struct {
+    dnac_bft_msg_header_t header;
+    int status;                                     /**< Result status */
+    uint8_t tx_hash[DNAC_TX_HASH_SIZE];
+    dnac_witness_sig_t witnesses[DNAC_TX_MAX_WITNESSES]; /**< Attestations */
+    int witness_count;
+    uint8_t signature[DNAC_SIGNATURE_SIZE];         /**< Leader's signature */
+} dnac_bft_forward_rsp_t;
+
+/* ============================================================================
+ * Consensus State
+ * ========================================================================== */
+
+/**
+ * @brief Vote tracking for a round
+ */
+typedef struct {
+    uint8_t voter_id[DNAC_BFT_WITNESS_ID_SIZE];
+    dnac_bft_vote_t vote;
+    uint8_t signature[DNAC_SIGNATURE_SIZE];
+} dnac_bft_vote_record_t;
+
+/**
+ * @brief Consensus round state
+ */
+typedef struct {
+    uint64_t round;                                 /**< Round number */
+    uint32_t view;                                  /**< Current view */
+    dnac_bft_phase_t phase;                         /**< Current phase */
+    uint8_t tx_hash[DNAC_TX_HASH_SIZE];             /**< Transaction being processed */
+    uint8_t nullifier[DNAC_NULLIFIER_SIZE];         /**< Nullifier being spent */
+
+    /* Votes collected */
+    dnac_bft_vote_record_t prevotes[DNAC_BFT_MAX_WITNESSES];
+    int prevote_count;
+    int prevote_approve_count;
+
+    dnac_bft_vote_record_t precommits[DNAC_BFT_MAX_WITNESSES];
+    int precommit_count;
+    int precommit_approve_count;
+
+    /* Timing */
+    uint64_t phase_start_time;                      /**< When current phase started */
+
+    /* Client request data (for response) */
+    uint8_t client_pubkey[DNAC_PUBKEY_SIZE];
+    uint8_t client_signature[DNAC_SIGNATURE_SIZE];
+    uint64_t fee_amount;
+
+    /* Forwarder info (if request was forwarded) */
+    bool is_forwarded;
+    uint8_t forwarder_id[DNAC_BFT_WITNESS_ID_SIZE];
+    int forwarder_fd;                               /**< Socket to forwarder */
+
+    /* Direct client connection (if not forwarded) */
+    int client_fd;                                  /**< Socket to client (-1 if none) */
+} dnac_bft_round_state_t;
+
+/**
+ * @brief View change tracking
+ */
+typedef struct {
+    uint32_t target_view;                           /**< View being changed to */
+    uint8_t voter_id[DNAC_BFT_WITNESS_ID_SIZE];
+    uint64_t last_committed_round;
+    uint8_t signature[DNAC_SIGNATURE_SIZE];
+} dnac_bft_view_change_record_t;
+
+/**
+ * @brief Callback function types for BFT consensus
+ */
+typedef bool (*dnac_bft_nullifier_exists_fn)(const uint8_t *nullifier);
+typedef int (*dnac_bft_nullifier_add_fn)(const uint8_t *nullifier, const uint8_t *tx_hash);
+typedef void (*dnac_bft_send_response_fn)(int client_fd, int status, const char *error_msg);
+typedef int (*dnac_bft_complete_forward_fn)(const uint8_t *tx_hash, const uint8_t *witness_id,
+                                            const uint8_t *pubkey);
+
+/**
+ * @brief Main BFT consensus context
+ */
+typedef struct dnac_bft_context {
+    /* Configuration */
+    dnac_bft_config_t config;
+
+    /* Identity */
+    uint8_t my_id[DNAC_BFT_WITNESS_ID_SIZE];
+    uint8_t my_pubkey[DNAC_PUBKEY_SIZE];
+    uint8_t *my_privkey;                            /**< Private key (allocated) */
+    size_t my_privkey_size;
+
+    /* Roster */
+    dnac_roster_t roster;
+    int my_index;                                   /**< My index in roster (-1 if not in) */
+
+    /* Current state */
+    uint64_t current_round;
+    uint32_t current_view;
+    uint64_t last_committed_round;
+    dnac_bft_round_state_t round_state;
+
+    /* View change tracking */
+    dnac_bft_view_change_record_t view_changes[DNAC_BFT_MAX_WITNESSES];
+    int view_change_count;
+    uint32_t view_change_target;
+    bool view_change_in_progress;
+
+    /* Synchronization */
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    bool running;
+
+    /* DNA engine (for DHT operations) */
+    void *dna_engine;
+
+    /* Callbacks (set by witness application) */
+    dnac_bft_nullifier_exists_fn nullifier_exists_cb;   /**< Check nullifier */
+    dnac_bft_nullifier_add_fn nullifier_add_cb;         /**< Add nullifier */
+    dnac_bft_send_response_fn send_response_cb;         /**< Send client response */
+    dnac_bft_complete_forward_fn complete_forward_cb;   /**< Complete pending forward */
+    void *callback_user_data;                           /**< User data for callbacks */
+} dnac_bft_context_t;
+
+/**
+ * @brief Set callbacks for BFT consensus
+ */
+void dnac_bft_set_callbacks(dnac_bft_context_t *ctx,
+                            dnac_bft_nullifier_exists_fn exists_cb,
+                            dnac_bft_nullifier_add_fn add_cb,
+                            dnac_bft_send_response_fn response_cb,
+                            dnac_bft_complete_forward_fn forward_cb,
+                            void *user_data);
+
+/* ============================================================================
+ * Core BFT Functions
+ * ========================================================================== */
+
+/**
+ * @brief Create BFT context
+ *
+ * @param config BFT configuration
+ * @param dna_engine DNA engine for DHT access
+ * @return Context pointer or NULL on failure
+ */
+dnac_bft_context_t* dnac_bft_create(const dnac_bft_config_t *config, void *dna_engine);
+
+/**
+ * @brief Destroy BFT context
+ */
+void dnac_bft_destroy(dnac_bft_context_t *ctx);
+
+/**
+ * @brief Set local identity keys
+ *
+ * @param ctx BFT context
+ * @param witness_id Witness ID (32 bytes)
+ * @param pubkey Dilithium5 public key
+ * @param privkey Dilithium5 private key
+ * @param privkey_size Private key size
+ * @return 0 on success
+ */
+int dnac_bft_set_identity(dnac_bft_context_t *ctx,
+                          const uint8_t *witness_id,
+                          const uint8_t *pubkey,
+                          const uint8_t *privkey,
+                          size_t privkey_size);
+
+/**
+ * @brief Get current leader index
+ *
+ * @param epoch Current epoch
+ * @param view Current view
+ * @param n_witnesses Number of witnesses
+ * @return Leader index in roster
+ */
+int dnac_bft_get_leader_index(uint64_t epoch, uint32_t view, int n_witnesses);
+
+/**
+ * @brief Check if we are the current leader
+ *
+ * @param ctx BFT context
+ * @return true if we are leader
+ */
+bool dnac_bft_is_leader(dnac_bft_context_t *ctx);
+
+/**
+ * @brief Get current quorum requirement
+ *
+ * @param n_witnesses Total witnesses
+ * @return Quorum size (2f+1)
+ */
+int dnac_bft_get_quorum(int n_witnesses);
+
+/* ============================================================================
+ * Consensus Protocol Functions
+ * ========================================================================== */
+
+/**
+ * @brief Start a new consensus round (leader only)
+ *
+ * @param ctx BFT context
+ * @param tx_hash Transaction hash
+ * @param nullifier Nullifier being spent
+ * @param client_pubkey Client's public key
+ * @param client_sig Client's signature
+ * @param fee_amount Fee amount
+ * @return 0 on success
+ */
+int dnac_bft_start_round(dnac_bft_context_t *ctx,
+                         const uint8_t *tx_hash,
+                         const uint8_t *nullifier,
+                         const uint8_t *client_pubkey,
+                         const uint8_t *client_sig,
+                         uint64_t fee_amount);
+
+/**
+ * @brief Handle received proposal (non-leader)
+ *
+ * @param ctx BFT context
+ * @param proposal Proposal message
+ * @return 0 on success
+ */
+int dnac_bft_handle_proposal(dnac_bft_context_t *ctx,
+                             const dnac_bft_proposal_t *proposal);
+
+/**
+ * @brief Handle received vote (prevote or precommit)
+ *
+ * @param ctx BFT context
+ * @param vote Vote message
+ * @return 0 on success
+ */
+int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
+                         const dnac_bft_vote_msg_t *vote);
+
+/**
+ * @brief Handle received commit
+ *
+ * @param ctx BFT context
+ * @param commit Commit message
+ * @return 0 on success
+ */
+int dnac_bft_handle_commit(dnac_bft_context_t *ctx,
+                           const dnac_bft_commit_t *commit);
+
+/**
+ * @brief Check for phase timeout and trigger view change if needed
+ *
+ * @param ctx BFT context
+ * @return 0 if no timeout, 1 if view change triggered, <0 on error
+ */
+int dnac_bft_check_timeout(dnac_bft_context_t *ctx);
+
+/* ============================================================================
+ * View Change Functions
+ * ========================================================================== */
+
+/**
+ * @brief Initiate view change
+ *
+ * @param ctx BFT context
+ * @return 0 on success
+ */
+int dnac_bft_initiate_view_change(dnac_bft_context_t *ctx);
+
+/**
+ * @brief Handle view change request
+ *
+ * @param ctx BFT context
+ * @param vc View change message
+ * @return 0 on success
+ */
+int dnac_bft_handle_view_change(dnac_bft_context_t *ctx,
+                                const dnac_bft_view_change_t *vc);
+
+/**
+ * @brief Handle new view announcement
+ *
+ * @param ctx BFT context
+ * @param nv New view message
+ * @return 0 on success
+ */
+int dnac_bft_handle_new_view(dnac_bft_context_t *ctx,
+                             const dnac_bft_new_view_t *nv);
+
+/* ============================================================================
+ * Roster Functions
+ * ========================================================================== */
+
+/**
+ * @brief Load roster from DHT
+ *
+ * @param ctx BFT context
+ * @return 0 on success
+ */
+int dnac_bft_load_roster(dnac_bft_context_t *ctx);
+
+/**
+ * @brief Save roster to DHT
+ *
+ * @param ctx BFT context
+ * @return 0 on success
+ */
+int dnac_bft_save_roster(dnac_bft_context_t *ctx);
+
+/**
+ * @brief Add witness to roster (requires consensus)
+ *
+ * @param ctx BFT context
+ * @param entry New witness entry
+ * @return 0 on success
+ */
+int dnac_bft_roster_add(dnac_bft_context_t *ctx,
+                        const dnac_roster_entry_t *entry);
+
+/**
+ * @brief Find witness in roster by ID
+ *
+ * @param roster Roster to search
+ * @param witness_id Witness ID to find
+ * @return Index in roster, or -1 if not found
+ */
+int dnac_bft_roster_find(const dnac_roster_t *roster,
+                         const uint8_t *witness_id);
+
+/**
+ * @brief Initialize empty roster
+ */
+int dnac_bft_roster_init(dnac_roster_t *roster);
+
+/**
+ * @brief Initialize roster with self as first entry
+ */
+int dnac_bft_roster_init_with_self(dnac_roster_t *roster,
+                                   const uint8_t *witness_id,
+                                   const uint8_t *pubkey,
+                                   const char *address);
+
+/**
+ * @brief Load roster from DHT
+ */
+int dnac_bft_roster_load_from_dht(dnac_bft_context_t *ctx);
+
+/**
+ * @brief Save roster to DHT
+ */
+int dnac_bft_roster_save_to_dht(dnac_bft_context_t *ctx);
+
+/**
+ * @brief Add witness to roster
+ */
+int dnac_bft_roster_add_witness(dnac_bft_context_t *ctx,
+                                const uint8_t *witness_id,
+                                const uint8_t *pubkey,
+                                const char *address);
+
+/**
+ * @brief Get roster entry by index
+ */
+const dnac_roster_entry_t* dnac_bft_roster_get_entry(const dnac_roster_t *roster,
+                                                      int index);
+
+/**
+ * @brief Client function to discover roster from DHT
+ */
+int dnac_bft_client_discover_roster(void *dna_engine, dnac_roster_t *roster_out);
+
+/* ============================================================================
+ * Serialization Functions
+ * ========================================================================== */
+
+/**
+ * @brief Serialize BFT message header
+ */
+int dnac_bft_header_serialize(const dnac_bft_msg_header_t *header,
+                              uint8_t *buffer, size_t buffer_len,
+                              size_t *written);
+
+/**
+ * @brief Deserialize BFT message header
+ */
+int dnac_bft_header_deserialize(const uint8_t *buffer, size_t buffer_len,
+                                dnac_bft_msg_header_t *header);
+
+/**
+ * @brief Serialize proposal message
+ */
+int dnac_bft_proposal_serialize(const dnac_bft_proposal_t *proposal,
+                                uint8_t *buffer, size_t buffer_len,
+                                size_t *written);
+
+/**
+ * @brief Deserialize proposal message
+ */
+int dnac_bft_proposal_deserialize(const uint8_t *buffer, size_t buffer_len,
+                                  dnac_bft_proposal_t *proposal);
+
+/**
+ * @brief Serialize vote message
+ */
+int dnac_bft_vote_serialize(const dnac_bft_vote_msg_t *vote,
+                            uint8_t *buffer, size_t buffer_len,
+                            size_t *written);
+
+/**
+ * @brief Deserialize vote message
+ */
+int dnac_bft_vote_deserialize(const uint8_t *buffer, size_t buffer_len,
+                              dnac_bft_vote_msg_t *vote);
+
+/**
+ * @brief Serialize commit message
+ */
+int dnac_bft_commit_serialize(const dnac_bft_commit_t *commit,
+                              uint8_t *buffer, size_t buffer_len,
+                              size_t *written);
+
+/**
+ * @brief Deserialize commit message
+ */
+int dnac_bft_commit_deserialize(const uint8_t *buffer, size_t buffer_len,
+                                dnac_bft_commit_t *commit);
+
+/**
+ * @brief Serialize view change message
+ */
+int dnac_bft_view_change_serialize(const dnac_bft_view_change_t *vc,
+                                   uint8_t *buffer, size_t buffer_len,
+                                   size_t *written);
+
+/**
+ * @brief Deserialize view change message
+ */
+int dnac_bft_view_change_deserialize(const uint8_t *buffer, size_t buffer_len,
+                                     dnac_bft_view_change_t *vc);
+
+/**
+ * @brief Serialize roster
+ */
+int dnac_bft_roster_serialize(const dnac_roster_t *roster,
+                              uint8_t *buffer, size_t buffer_len,
+                              size_t *written);
+
+/**
+ * @brief Deserialize roster
+ */
+int dnac_bft_roster_deserialize(const uint8_t *buffer, size_t buffer_len,
+                                dnac_roster_t *roster);
+
+/**
+ * @brief Serialize forward request
+ */
+int dnac_bft_forward_req_serialize(const dnac_bft_forward_req_t *req,
+                                   uint8_t *buffer, size_t buffer_len,
+                                   size_t *written);
+
+/**
+ * @brief Deserialize forward request
+ */
+int dnac_bft_forward_req_deserialize(const uint8_t *buffer, size_t buffer_len,
+                                     dnac_bft_forward_req_t *req);
+
+/**
+ * @brief Serialize forward response
+ */
+int dnac_bft_forward_rsp_serialize(const dnac_bft_forward_rsp_t *rsp,
+                                   uint8_t *buffer, size_t buffer_len,
+                                   size_t *written);
+
+/**
+ * @brief Deserialize forward response
+ */
+int dnac_bft_forward_rsp_deserialize(const uint8_t *buffer, size_t buffer_len,
+                                     dnac_bft_forward_rsp_t *rsp);
+
+/**
+ * @brief Get message type from buffer
+ */
+dnac_bft_msg_type_t dnac_bft_get_msg_type(const uint8_t *buffer, size_t buffer_len);
+
+/**
+ * @brief Get serialized size of message
+ */
+size_t dnac_bft_msg_size(dnac_bft_msg_type_t type);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* DNAC_BFT_H */

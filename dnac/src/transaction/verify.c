@@ -15,11 +15,26 @@
 
 /**
  * @brief Verify balance (v1: plaintext sum check)
+ *
+ * MINT: no inputs, outputs create coins from nothing (witness authorized)
+ * SPEND: sum(inputs) == sum(outputs)
  */
 static int verify_balance_v1(const dnac_transaction_t *tx) {
+    /* MINT: no inputs, outputs create coins from nothing */
+    if (tx->type == DNAC_TX_MINT) {
+        if (tx->input_count != 0) {
+            return DNAC_ERROR_INVALID_PROOF;
+        }
+        uint64_t total_out = dnac_tx_total_output(tx);
+        if (DNAC_MAX_MINT_AMOUNT > 0 && total_out > DNAC_MAX_MINT_AMOUNT) {
+            return DNAC_ERROR_SUPPLY_EXCEEDED;
+        }
+        return DNAC_SUCCESS;
+    }
+
+    /* SPEND: sum(inputs) == sum(outputs) */
     uint64_t total_in = dnac_tx_total_input(tx);
     uint64_t total_out = dnac_tx_total_output(tx);
-
     if (total_in != total_out) {
         return DNAC_ERROR_INVALID_PROOF;
     }
@@ -82,17 +97,19 @@ int dnac_tx_verify_full(const dnac_transaction_t *tx) {
 
     if (!tx) return DNAC_ERROR_INVALID_PARAM;
 
-    /* 1. Verify balance (plaintext sum) */
+    /* 1. Verify balance (or mint rules) */
     rc = verify_balance_v1(tx);
     if (rc != DNAC_SUCCESS) return rc;
 
-    /* 2. Verify witnesses (2+ required) */
+    /* 2. Verify witnesses (2+ required for both SPEND and MINT) */
     rc = verify_witnesses(tx);
     if (rc != DNAC_SUCCESS) return rc;
 
-    /* 3. Verify sender signature */
-    rc = verify_sender_signature(tx);
-    if (rc != DNAC_SUCCESS) return rc;
+    /* 3. Sender signature (skip for MINT - witnesses authorize) */
+    if (tx->type != DNAC_TX_MINT) {
+        rc = verify_sender_signature(tx);
+        if (rc != DNAC_SUCCESS) return rc;
+    }
 
     return DNAC_SUCCESS;
 }

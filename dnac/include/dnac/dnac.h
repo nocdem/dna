@@ -51,6 +51,12 @@ extern "C" {
 #define DNAC_ERROR_SIGN_FAILED         -14
 #define DNAC_ERROR_INVALID_SIGNATURE   -15
 #define DNAC_ERROR_RANDOM_FAILED       -16
+#define DNAC_ERROR_UNAUTHORIZED_MINT   -17
+#define DNAC_ERROR_SUPPLY_EXCEEDED     -18
+
+/* Mint configuration */
+#define DNAC_MINT_WITNESS_REQUIRED     2              /* 2-of-3 for mint */
+#define DNAC_MAX_MINT_AMOUNT           1000000000000ULL  /* Max per mint (0=unlimited) */
 
 /* ============================================================================
  * Protocol Versions

@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-01-22 | **Status:** DESIGN | **Version:** v0.1.29
+**Last Updated:** 2026-01-22 | **Status:** DESIGN | **Version:** v0.2.0
 
 ---
 
@@ -168,15 +168,16 @@ OUTPUT:
 PROTOCOL MODE: ACTIVE                                  NO ASSUMPTIONS
 
 When this mode is active:
-1. Begin EVERY response with "PROTOCOL MODE ACTIVE. -- Model: [current model name]"
-2. Only follow explicit instructions
-3. Confirm understanding before taking action
-4. Never add features not explicitly requested
-5. Ask for clarification rather than making assumptions
-6. Report exactly what was done without elaboration
-7. Do not suggest improvements unless requested
-8. Keep all responses minimal and direct
-9. Keep it simple
+1. VERIFY BEFORE CLAIMING: Never trust comments or summaries over actual code. Comments can be outdated. Test shortcuts don't reflect production capabilities. Always verify claims by reading the implementation.
+2. Begin EVERY response with "PROTOCOL MODE ACTIVE. -- Model: [current model name]"
+3. Only follow explicit instructions
+4. Confirm understanding before taking action
+5. Never add features not explicitly requested
+6. Ask for clarification rather than making assumptions
+7. Report exactly what was done without elaboration
+8. Do not suggest improvements unless requested
+9. Keep all responses minimal and direct
+10. Keep it simple
 
 ---
 
@@ -192,9 +193,34 @@ When this mode is active:
 ## Quick Reference
 
 ### Build
+
+**Prerequisites:** libdna must be built first at `/opt/dna-messenger/build`
+
+**Release Build (recommended for production):**
 ```bash
 mkdir build && cd build
-cmake .. && make -j$(nproc)
+cmake -DCMAKE_BUILD_TYPE=Release .. && make -j$(nproc)
+```
+
+**Debug Build with ASAN (required if libdna was built with ASAN):**
+```bash
+mkdir build && cd build
+cmake -DCMAKE_BUILD_TYPE=Debug \
+      -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" \
+      -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address" ..
+make -j$(nproc)
+```
+
+**Check if libdna has ASAN:**
+```bash
+nm /opt/dna-messenger/build/libdna_lib.so | grep -i asan
+# If output shows __asan symbols, use Debug build with ASAN
+```
+
+**Running with ASAN:**
+```bash
+ASAN_OPTIONS="detect_leaks=0" ./dnac-witness -h
+ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/dnac-asan" ./dnac-witness --bft
 ```
 
 ### Dependencies
@@ -213,12 +239,24 @@ cmake .. && make -j$(nproc)
 │   ├── version.h          # Version info
 │   ├── wallet.h           # Wallet internals
 │   ├── transaction.h      # Transaction types
-│   └── nodus.h            # Nodus client
+│   ├── nodus.h            # Nodus client
+│   ├── bft.h              # BFT consensus API
+│   └── tcp.h              # TCP networking
 ├── src/
 │   ├── wallet/            # Wallet operations
 │   ├── transaction/       # TX building/verification
 │   ├── nodus/             # Nodus client
-│   └── db/                # SQLite operations
+│   ├── db/                # SQLite operations
+│   ├── bft/               # BFT consensus (v0.2.0)
+│   │   ├── consensus.c    # State machine
+│   │   ├── serialize.c    # Message serialization
+│   │   ├── tcp.c          # TCP server/client
+│   │   ├── peer.c         # Peer management
+│   │   └── roster.c       # Witness roster
+│   └── witness/           # Witness server
+│       ├── main.c         # DHT mode entry
+│       ├── bft_main.c     # BFT mode entry
+│       └── forward.c      # Request forwarding
 ├── tests/                 # Unit tests
 └── docs/                  # Documentation
 ```
@@ -272,6 +310,34 @@ git push origin main
 ---
 
 ## Witness Server Protocol
+
+### Operating Modes
+
+**DHT Mode (default):** Communicates via DHT, no TCP ports required
+```bash
+./dnac-witness -d ~/.dna
+```
+
+**BFT Mode (v0.2.0):** TCP-based Byzantine Fault Tolerant consensus
+```bash
+./dnac-witness --bft -p 4200 -a "192.168.0.195:4200"
+```
+
+### BFT Consensus (v0.2.0)
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| Leader Election | `(epoch + view) % N` | Rotates each hour |
+| Quorum | `2f+1` | For `N = 3f+1` witnesses |
+| Round Timeout | 5000ms | Triggers view change |
+| Max View Changes | 3 | Per request before error |
+
+**Consensus Phases:** PROPOSE → PREVOTE → PRECOMMIT → COMMIT
+
+**Witness Nodes:**
+- 192.168.0.195:4200
+- 192.168.0.196:4200
+- 192.168.0.199:4200
 
 ### Version Tracking
 - **Response includes:** `software_version[3]` - [major, minor, patch]

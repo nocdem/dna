@@ -81,7 +81,8 @@ int dnac_spend_response_serialize(const dnac_spend_response_t *response,
                                   size_t *written_out) {
     if (!response || !buffer || !written_out) return -1;
 
-    size_t required = 1 + 32 + DNAC_SIGNATURE_SIZE + 8 + 256;
+    /* v3 format: status + witness_id + signature + timestamp + server_pubkey + version + error_message */
+    size_t required = 1 + 32 + DNAC_SIGNATURE_SIZE + 8 + DNAC_PUBKEY_SIZE + 3 + 256;
     if (buffer_len < required) return -1;
 
     uint8_t *p = buffer;
@@ -94,6 +95,9 @@ int dnac_spend_response_serialize(const dnac_spend_response_t *response,
     }
     p += 8;
 
+    memcpy(p, response->server_pubkey, DNAC_PUBKEY_SIZE); p += DNAC_PUBKEY_SIZE;
+    memcpy(p, response->software_version, 3); p += 3;
+
     memcpy(p, response->error_message, 256);
 
     *written_out = required;
@@ -105,8 +109,14 @@ int dnac_spend_response_deserialize(const uint8_t *buffer,
                                     dnac_spend_response_t *response_out) {
     if (!buffer || !response_out) return -1;
 
-    size_t required = 1 + 32 + DNAC_SIGNATURE_SIZE + 8 + 256;
-    if (buffer_len < required) return -1;
+    /* v3 format: status + witness_id + signature + timestamp + server_pubkey + version + error_message */
+    size_t required_v3 = 1 + 32 + DNAC_SIGNATURE_SIZE + 8 + DNAC_PUBKEY_SIZE + 3 + 256;
+    size_t required_v2 = 1 + 32 + DNAC_SIGNATURE_SIZE + 8 + DNAC_PUBKEY_SIZE + 256;
+    size_t required_v1 = 1 + 32 + DNAC_SIGNATURE_SIZE + 8 + 256;  /* old format without pubkey */
+
+    bool has_version = (buffer_len >= required_v3);
+    bool has_pubkey = (buffer_len >= required_v2);
+    if (buffer_len < required_v1) return -1;
 
     const uint8_t *p = buffer;
     response_out->status = (dnac_nodus_status_t)*p++;
@@ -118,6 +128,20 @@ int dnac_spend_response_deserialize(const uint8_t *buffer,
         response_out->timestamp |= ((uint64_t)p[i]) << (i * 8);
     }
     p += 8;
+
+    if (has_pubkey) {
+        memcpy(response_out->server_pubkey, p, DNAC_PUBKEY_SIZE);
+        p += DNAC_PUBKEY_SIZE;
+    } else {
+        memset(response_out->server_pubkey, 0, DNAC_PUBKEY_SIZE);
+    }
+
+    if (has_version) {
+        memcpy(response_out->software_version, p, 3);
+        p += 3;
+    } else {
+        memset(response_out->software_version, 0, 3);
+    }
 
     memcpy(response_out->error_message, p, 256);
     response_out->error_message[255] = '\0';
@@ -164,6 +188,10 @@ int witness_announcement_serialize(const dnac_witness_announcement_t *announceme
         p[i] = (announcement->timestamp >> (i * 8)) & 0xFF;
     }
     p += 8;
+
+    /* Software version (3 bytes) */
+    memcpy(p, announcement->software_version, 3);
+    p += 3;
 
     /* Witness public key (2592 bytes) */
     memcpy(p, announcement->witness_pubkey, DNAC_PUBKEY_SIZE);
@@ -213,6 +241,14 @@ int witness_announcement_deserialize(const uint8_t *buffer,
         announcement_out->timestamp |= ((uint64_t)p[i]) << (i * 8);
     }
     p += 8;
+
+    /* Software version (3 bytes) - optional for backward compat */
+    if (buffer_len >= DNAC_ANNOUNCEMENT_SERIALIZED_SIZE) {
+        memcpy(announcement_out->software_version, p, 3);
+        p += 3;
+    } else {
+        memset(announcement_out->software_version, 0, 3);
+    }
 
     /* Witness public key (2592 bytes) */
     memcpy(announcement_out->witness_pubkey, p, DNAC_PUBKEY_SIZE);

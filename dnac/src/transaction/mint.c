@@ -166,6 +166,25 @@ int dnac_tx_authorize_mint(dnac_context_t *ctx, dnac_transaction_t *tx) {
     return DNAC_SUCCESS;
 }
 
+/**
+ * Derive nullifier from owner fingerprint and seed
+ * nullifier = SHA3-512(owner_fingerprint || nullifier_seed)
+ */
+static int derive_nullifier_for_mint(const char *owner_fp, const uint8_t *seed,
+                                     uint8_t *nullifier_out) {
+    uint8_t data[256];
+    size_t offset = 0;
+
+    size_t fp_len = strlen(owner_fp);
+    memcpy(data, owner_fp, fp_len);
+    offset = fp_len;
+
+    memcpy(data + offset, seed, 32);
+    offset += 32;
+
+    return compute_sha3_512(data, offset, nullifier_out);
+}
+
 int dnac_tx_broadcast_mint(dnac_context_t *ctx, dnac_transaction_t *tx) {
     if (!ctx || !tx || tx->type != DNAC_TX_MINT) {
         return DNAC_ERROR_INVALID_PARAM;
@@ -180,6 +199,9 @@ int dnac_tx_broadcast_mint(dnac_context_t *ctx, dnac_transaction_t *tx) {
 
     dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
     if (!dht) return DNAC_ERROR_NETWORK;
+
+    /* Get our own fingerprint for "mint to self" detection */
+    const char *our_fp = dnac_get_owner_fingerprint(ctx);
 
     /* Serialize transaction */
     uint8_t tx_buffer[65536];
@@ -205,6 +227,28 @@ int dnac_tx_broadcast_mint(dnac_context_t *ctx, dnac_transaction_t *tx) {
                                       "dnac_mint");
         if (rc != 0) {
             QGP_LOG_WARN(LOG_TAG, "Failed to send mint to recipient %d", i);
+        }
+
+        /* If output is for our own wallet, store UTXO immediately (no DHT round-trip needed) */
+        if (our_fp && strcmp(tx->outputs[i].owner_fingerprint, our_fp) == 0) {
+            dnac_utxo_t utxo = {0};
+            utxo.version = tx->outputs[i].version;
+            memcpy(utxo.tx_hash, tx->tx_hash, DNAC_TX_HASH_SIZE);
+            utxo.output_index = (uint32_t)i;
+            utxo.amount = tx->outputs[i].amount;
+            strncpy(utxo.owner_fingerprint, our_fp, sizeof(utxo.owner_fingerprint) - 1);
+            utxo.status = DNAC_UTXO_UNSPENT;
+            utxo.received_at = (uint64_t)time(NULL);
+
+            /* Derive nullifier from seed */
+            if (derive_nullifier_for_mint(our_fp, tx->outputs[i].nullifier_seed,
+                                          utxo.nullifier) == 0) {
+                rc = dnac_db_store_utxo(db, &utxo);
+                if (rc == DNAC_SUCCESS) {
+                    QGP_LOG_INFO(LOG_TAG, "Stored mint UTXO locally: %llu coins",
+                                 (unsigned long long)utxo.amount);
+                }
+            }
         }
     }
 

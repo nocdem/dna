@@ -215,6 +215,48 @@ uint64_t dnac_tx_total_input(const dnac_transaction_t *tx);
  */
 uint64_t dnac_tx_total_output(const dnac_transaction_t *tx);
 
+/* ============================================================================
+ * Mint (Genesis) Transactions
+ * ========================================================================== */
+
+/**
+ * @brief Create a MINT transaction
+ *
+ * Creates a transaction that mints new coins from nothing.
+ * Requires witness authorization before broadcast.
+ *
+ * @param recipient_fingerprint Recipient's identity fingerprint
+ * @param amount Amount to mint
+ * @param tx_out Output transaction (caller must free with dnac_free_transaction)
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_tx_create_mint(const char *recipient_fingerprint,
+                        uint64_t amount,
+                        dnac_transaction_t **tx_out);
+
+/**
+ * @brief Authorize MINT transaction via witness consensus
+ *
+ * Requests 2-of-3 witness signatures to authorize the mint.
+ * Uses zero nullifier to distinguish from SPEND requests.
+ *
+ * @param ctx DNAC context
+ * @param tx MINT transaction to authorize
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_tx_authorize_mint(dnac_context_t *ctx, dnac_transaction_t *tx);
+
+/**
+ * @brief Broadcast authorized MINT transaction
+ *
+ * Sends the minted coins to recipient via DHT.
+ *
+ * @param ctx DNAC context
+ * @param tx Authorized MINT transaction
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_tx_broadcast_mint(dnac_context_t *ctx, dnac_transaction_t *tx);
+
 #ifdef __cplusplus
 }
 #endif
