@@ -959,7 +959,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               valueListenable: _messageController,
               builder: (context, value, child) {
                 final hasText = value.text.trim().isNotEmpty;
-                return IconButton(
+                return IconButton.filled(
                   icon: const FaIcon(FontAwesomeIcons.paperPlane),
                   onPressed: hasText ? () => _sendMessage(contact) : null,
                 );
