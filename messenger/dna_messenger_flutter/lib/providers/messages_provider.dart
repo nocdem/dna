@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
+import '../utils/lifecycle_observer.dart' show engineResumeInProgressProvider;
 import 'engine_provider.dart';
 import 'contacts_provider.dart';
 
@@ -47,19 +48,18 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
   @override
   Future<List<Message>> build(String arg) async {
     // Preserve existing messages during rebuild (prevents loading flicker on app resume)
-    // When engineProvider is invalidated, this build() is triggered but we want to
-    // keep showing existing messages while fresh data loads silently
     final existingMessages = state.valueOrNull;
     if (existingMessages != null && existingMessages.isNotEmpty) {
       state = AsyncValue.data(existingMessages);
     }
 
-    // Guard: Don't call C library if identity isn't loaded yet
+    // Guard: Don't call C library during engine resume
     // On app resume, engine is created before loadIdentity() completes
     // Without this guard, getConversationPage() fails with "no identity" error
-    final identityLoaded = ref.watch(identityLoadedProvider);
-    if (!identityLoaded) {
-      // Return existing messages (or empty) - will rebuild when identity loads
+    // We watch this provider so we rebuild when resume completes
+    final resumeInProgress = ref.watch(engineResumeInProgressProvider);
+    if (resumeInProgress) {
+      // Return existing messages while resume is in progress
       return existingMessages ?? [];
     }
 

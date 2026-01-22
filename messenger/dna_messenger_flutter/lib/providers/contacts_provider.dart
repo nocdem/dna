@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
+import '../utils/lifecycle_observer.dart' show engineResumeInProgressProvider;
 import 'engine_provider.dart';
 import 'contact_profile_cache_provider.dart';
 
@@ -22,14 +23,21 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
   @override
   Future<List<Contact>> build() async {
     // Preserve existing contacts during rebuild (prevents loading flicker on app resume)
-    // When engineProvider is invalidated, this build() is triggered but we want to
-    // keep showing existing contacts while fresh data loads silently
     final existingContacts = state.valueOrNull;
     if (existingContacts != null && existingContacts.isNotEmpty) {
       state = AsyncValue.data(existingContacts);
     }
 
-    // Only fetch if identity is loaded
+    // Guard: Don't call C library during engine resume
+    // On app resume, engine is created before loadIdentity() completes
+    // We watch this provider so we rebuild when resume completes
+    final resumeInProgress = ref.watch(engineResumeInProgressProvider);
+    if (resumeInProgress) {
+      // Return existing contacts while resume is in progress
+      return existingContacts ?? [];
+    }
+
+    // Only fetch if identity is loaded (for initial launch / after logout)
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
       return [];
