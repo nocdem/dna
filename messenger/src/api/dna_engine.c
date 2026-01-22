@@ -1388,6 +1388,75 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     return engine;
 }
 
+/* ============================================================================
+ * ASYNC ENGINE CREATION (v0.6.16)
+ *
+ * Spawns a background thread to create the engine, avoiding UI thread blocking.
+ * ============================================================================ */
+
+typedef struct {
+    char *data_dir;
+    dna_engine_created_cb callback;
+    void *user_data;
+} dna_engine_create_async_ctx_t;
+
+static void* dna_engine_create_thread(void *arg) {
+    dna_engine_create_async_ctx_t *ctx = (dna_engine_create_async_ctx_t*)arg;
+
+    /* Create engine on this background thread */
+    dna_engine_t *engine = dna_engine_create(ctx->data_dir);
+    int error = engine ? DNA_OK : DNA_ENGINE_ERROR_INIT;
+
+    /* Call the callback (from background thread - caller must handle thread safety) */
+    if (ctx->callback) {
+        ctx->callback(engine, error, ctx->user_data);
+    }
+
+    /* Cleanup */
+    free(ctx->data_dir);
+    free(ctx);
+
+    return NULL;
+}
+
+void dna_engine_create_async(
+    const char *data_dir,
+    dna_engine_created_cb callback,
+    void *user_data
+) {
+    if (!callback) {
+        QGP_LOG_ERROR(LOG_TAG, "dna_engine_create_async: callback required");
+        return;
+    }
+
+    /* Allocate context for thread */
+    dna_engine_create_async_ctx_t *ctx = calloc(1, sizeof(dna_engine_create_async_ctx_t));
+    if (!ctx) {
+        callback(NULL, DNA_ENGINE_ERROR_INIT, user_data);
+        return;
+    }
+
+    ctx->data_dir = data_dir ? strdup(data_dir) : NULL;
+    ctx->callback = callback;
+    ctx->user_data = user_data;
+
+    /* Spawn detached thread for engine creation */
+    pthread_t thread;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+
+    int rc = pthread_create(&thread, &attr, dna_engine_create_thread, ctx);
+    pthread_attr_destroy(&attr);
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create engine init thread: %d", rc);
+        free(ctx->data_dir);
+        free(ctx);
+        callback(NULL, DNA_ENGINE_ERROR_INIT, user_data);
+    }
+}
+
 void dna_engine_set_event_callback(
     dna_engine_t *engine,
     dna_event_cb callback,

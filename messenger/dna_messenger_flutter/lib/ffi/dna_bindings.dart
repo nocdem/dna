@@ -679,6 +679,14 @@ typedef DnaCompletionCbNative = Void Function(
 );
 typedef DnaCompletionCb = NativeFunction<DnaCompletionCbNative>;
 
+/// Engine creation callback - Native (v0.6.16)
+typedef DnaEngineCreatedCbNative = Void Function(
+  Pointer<dna_engine_t> engine,
+  Int32 error,
+  Pointer<Void> user_data,
+);
+typedef DnaEngineCreatedCb = NativeFunction<DnaEngineCreatedCbNative>;
+
 /// Send tokens callback - Native (returns tx_hash on success)
 typedef DnaSendTokensCbNative = Void Function(
   Uint64 request_id,
@@ -1187,6 +1195,19 @@ class DnaBindings {
 
   Pointer<dna_engine_t> dna_engine_create(Pointer<Utf8> data_dir) {
     return _dna_engine_create(data_dir);
+  }
+
+  // v0.6.16: Async engine creation (non-blocking)
+  late final _dna_engine_create_async = _lib.lookupFunction<
+      Void Function(Pointer<Utf8>, Pointer<DnaEngineCreatedCb>, Pointer<Void>),
+      void Function(Pointer<Utf8>, Pointer<DnaEngineCreatedCb>, Pointer<Void>)>('dna_engine_create_async');
+
+  void dna_engine_create_async(
+    Pointer<Utf8> data_dir,
+    Pointer<DnaEngineCreatedCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    _dna_engine_create_async(data_dir, callback, user_data);
   }
 
   late final _dna_engine_destroy = _lib.lookupFunction<

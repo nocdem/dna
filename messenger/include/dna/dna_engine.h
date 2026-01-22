@@ -690,7 +690,7 @@ DNA_API void dna_free_event(dna_event_t *event);
  * ============================================================================ */
 
 /**
- * Create DNA engine instance
+ * Create DNA engine instance (synchronous)
  *
  * Initializes engine and spawns internal worker threads for:
  * - DHT network operations
@@ -698,10 +698,42 @@ DNA_API void dna_free_event(dna_event_t *event);
  * - Offline message polling
  * - RPC queries
  *
+ * WARNING: This blocks the calling thread. On mobile platforms, prefer
+ * dna_engine_create_async() to avoid blocking the UI thread.
+ *
  * @param data_dir  Path to data directory (NULL for default ~/.dna)
  * @return          Engine instance or NULL on error
  */
 DNA_API dna_engine_t* dna_engine_create(const char *data_dir);
+
+/**
+ * Engine creation completion callback
+ *
+ * Called when async engine creation completes.
+ *
+ * @param engine    Created engine instance (or NULL on error)
+ * @param error     0 on success, error code on failure
+ * @param user_data User data passed to create function
+ */
+typedef void (*dna_engine_created_cb)(dna_engine_t *engine, int error, void *user_data);
+
+/**
+ * Create DNA engine instance (asynchronous)
+ *
+ * Non-blocking engine creation that runs initialization on a background thread.
+ * The callback is called when initialization completes.
+ *
+ * This avoids blocking the UI thread on mobile platforms.
+ *
+ * @param data_dir  Path to data directory (NULL for default ~/.dna)
+ * @param callback  Called when engine is ready (from background thread)
+ * @param user_data User data passed to callback
+ */
+DNA_API void dna_engine_create_async(
+    const char *data_dir,
+    dna_engine_created_cb callback,
+    void *user_data
+);
 
 /**
  * Set event callback for pushed events

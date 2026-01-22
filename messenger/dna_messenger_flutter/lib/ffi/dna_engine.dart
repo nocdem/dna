@@ -1120,19 +1120,45 @@ class DnaEngine {
   /// The identity lock mechanism in C code prevents simultaneous access.
   /// When identity is loaded, the engine acquires a file lock and creates
   /// its own DHT context - no global sharing needed.
+  ///
+  /// v0.6.16+: Uses async C function to avoid blocking UI thread.
   static Future<DnaEngine> create({String? dataDir}) async {
     final engine = DnaEngine._();
     engine._bindings = DnaBindings(_loadLibrary());
 
+    final completer = Completer<void>();
     final dataDirPtr = dataDir?.toNativeUtf8() ?? nullptr;
-    engine._engine = engine._bindings.dna_engine_create(dataDirPtr.cast());
 
-    if (dataDir != null) {
-      calloc.free(dataDirPtr);
+    // Callback to receive engine pointer from background thread
+    void onEngineCreated(Pointer<dna_engine_t> enginePtr, int error, Pointer<Void> userData) {
+      if (dataDir != null) {
+        calloc.free(dataDirPtr);
+      }
+
+      if (error != 0 || enginePtr == nullptr) {
+        completer.completeError(DnaEngineException(error, 'Failed to create engine'));
+        return;
+      }
+
+      engine._engine = enginePtr;
+      completer.complete();
     }
 
-    if (engine._engine == nullptr) {
-      throw DnaEngineException(-100, 'Failed to create engine');
+    // Create native callback that can be called from any thread
+    final callback = NativeCallable<DnaEngineCreatedCbNative>.listener(onEngineCreated);
+
+    // Start async engine creation (returns immediately)
+    engine._bindings.dna_engine_create_async(
+      dataDirPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    // Wait for creation to complete (non-blocking for UI)
+    try {
+      await completer.future;
+    } finally {
+      callback.close();
     }
 
     engine._setupEventCallback();
