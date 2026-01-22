@@ -155,14 +155,6 @@ PROPOSE → PREVOTE → PRECOMMIT → COMMIT
 | Leader Election | `(epoch + view) % N` | Rotates hourly |
 | TCP Port | 4200 | Inter-witness communication |
 
-### Deployed Nodes
-
-| Node | Address | Service |
-|------|---------|---------|
-| chat1 | 192.168.0.195:4200 | systemd: dnac-witness |
-| treasury | 192.168.0.196:4200 | systemd: dnac-witness |
-| cpunkroot2 | 192.168.0.199:4200 | systemd: dnac-witness |
-
 ### Features
 
 - **Auto-start on boot** - systemd service with `Restart=always`
