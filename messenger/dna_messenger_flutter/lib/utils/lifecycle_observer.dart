@@ -18,6 +18,11 @@ import '../services/cache_database.dart';
 /// Used by event_handler to determine whether to show notifications
 final appInForegroundProvider = StateProvider<bool>((ref) => true);
 
+/// Provider that tracks whether app resume is in progress
+/// Used by conversationProvider to wait for identity to be loaded in fresh engine
+/// v0.100.31: Fixes race condition where getConversationPage() runs before loadIdentity()
+final resumeInProgressProvider = StateProvider<bool>((ref) => false);
+
 /// Observer for app lifecycle state changes
 ///
 /// Handles:
@@ -64,12 +69,10 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       return;
     }
 
-    // v0.100.30: Clear fingerprint BEFORE engine recreation
-    // This signals conversationProvider to wait (return empty list)
-    // until loadIdentity() completes and sets the fingerprint again.
-    // Fixes race condition: engine.getConversationPage() failing because
-    // identity not yet loaded in the fresh engine.
-    ref.read(currentFingerprintProvider.notifier).state = null;
+    // v0.100.31: Signal that resume is in progress
+    // conversationProvider watches this and returns empty until resume completes
+    // This prevents getConversationPage() from running before loadIdentity()
+    ref.read(resumeInProgressProvider.notifier).state = true;
 
     try {
       // v0.100.23+: Notify service FIRST so it releases its engine
@@ -109,8 +112,12 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       if (selectedContact != null) {
         ref.invalidate(conversationProvider(selectedContact.fingerprint));
       }
+
+      // v0.100.31: Resume complete - allow conversationProvider to load messages
+      ref.read(resumeInProgressProvider.notifier).state = false;
     } catch (_) {
-      // Error during resume - silently continue
+      // Error during resume - still clear the flag so app doesn't get stuck
+      ref.read(resumeInProgressProvider.notifier).state = false;
     }
   }
 
