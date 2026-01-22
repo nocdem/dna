@@ -11,6 +11,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
+import '../../utils/lifecycle_observer.dart' show engineResumeInProgressProvider;
 import '../../providers/listener_state_provider.dart';
 import '../../utils/logger.dart';
 import '../../theme/dna_theme.dart';
@@ -489,22 +490,47 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 child: messages.when(
                   data: (list) => _buildMessageList(context, list, starredIds, contact),
                   loading: () => const Center(child: CircularProgressIndicator()),
-                  error: (error, stack) => Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        FaIcon(FontAwesomeIcons.circleExclamation, color: DnaColors.textWarning),
-                        const SizedBox(height: 8),
-                        Text('Failed to load messages'),
-                        TextButton(
-                          onPressed: () => ref.invalidate(
-                            conversationProvider(contact.fingerprint),
-                          ),
-                          child: const Text('Retry'),
+                  error: (error, stack) {
+                    // Check if we're in the middle of app resume
+                    final resumeInProgress = ref.watch(engineResumeInProgressProvider);
+                    if (resumeInProgress) {
+                      // Show friendly "Reconnecting" message during resume
+                      return Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              'Reconnecting...',
+                              style: TextStyle(color: DnaColors.textMuted),
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                  ),
+                      );
+                    }
+                    // Show actual error if not resuming
+                    return Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          FaIcon(FontAwesomeIcons.circleExclamation, color: DnaColors.textWarning),
+                          const SizedBox(height: 8),
+                          Text('Failed to load messages'),
+                          TextButton(
+                            onPressed: () => ref.invalidate(
+                              conversationProvider(contact.fingerprint),
+                            ),
+                            child: const Text('Retry'),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
               ),
               // Input area
