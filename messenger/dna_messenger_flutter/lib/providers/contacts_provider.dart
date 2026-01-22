@@ -21,6 +21,14 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
 
   @override
   Future<List<Contact>> build() async {
+    // Preserve existing contacts during rebuild (prevents loading flicker on app resume)
+    // When engineProvider is invalidated, this build() is triggered but we want to
+    // keep showing existing contacts while fresh data loads silently
+    final existingContacts = state.valueOrNull;
+    if (existingContacts != null && existingContacts.isNotEmpty) {
+      state = AsyncValue.data(existingContacts);
+    }
+
     // Only fetch if identity is loaded
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {

@@ -18,11 +18,6 @@ import '../services/cache_database.dart';
 /// Used by event_handler to determine whether to show notifications
 final appInForegroundProvider = StateProvider<bool>((ref) => true);
 
-/// Provider that tracks whether app resume is in progress
-/// Used by conversationProvider to wait for identity to be loaded in fresh engine
-/// v0.100.31: Fixes race condition where getConversationPage() runs before loadIdentity()
-final resumeInProgressProvider = StateProvider<bool>((ref) => false);
-
 /// Observer for app lifecycle state changes
 ///
 /// Handles:
@@ -69,11 +64,6 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       return;
     }
 
-    // v0.100.31: Signal that resume is in progress
-    // conversationProvider watches this and returns empty until resume completes
-    // This prevents getConversationPage() from running before loadIdentity()
-    ref.read(resumeInProgressProvider.notifier).state = true;
-
     try {
       // v0.100.23+: Notify service FIRST so it releases its engine
       // Service must release the DHT lock before Flutter can create new engine
@@ -103,21 +93,17 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // This ensures users see up-to-date names when they open the app
       await _refreshContactProfiles(engine);
 
-      // Invalidate contacts to force reload (shows new unread counts, last messages)
-      ref.invalidate(contactsProvider);
+      // Silently refresh contacts (keeps existing data visible, merges new data)
+      await ref.read(contactsProvider.notifier).refresh();
 
-      // Refresh current conversation if one is open
+      // Silently refresh current conversation if one is open
       // This ensures messages received while backgrounded are visible
       final selectedContact = ref.read(selectedContactProvider);
       if (selectedContact != null) {
-        ref.invalidate(conversationProvider(selectedContact.fingerprint));
+        await ref.read(conversationProvider(selectedContact.fingerprint).notifier).mergeLatest();
       }
-
-      // v0.100.31: Resume complete - allow conversationProvider to load messages
-      ref.read(resumeInProgressProvider.notifier).state = false;
     } catch (_) {
-      // Error during resume - still clear the flag so app doesn't get stuck
-      ref.read(resumeInProgressProvider.notifier).state = false;
+      // Error during resume - silently continue
     }
   }
 

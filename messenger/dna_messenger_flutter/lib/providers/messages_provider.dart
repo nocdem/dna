@@ -2,7 +2,6 @@
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
-import '../utils/lifecycle_observer.dart' show resumeInProgressProvider;
 import 'engine_provider.dart';
 import 'contacts_provider.dart';
 
@@ -47,14 +46,12 @@ final isLoadingMoreProvider = Provider.family<bool, String>((ref, fingerprint) {
 class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
   @override
   Future<List<Message>> build(String arg) async {
-    // GUARD: Don't load messages while app resume is in progress
-    // On app resume, engine recreates before identity loads - this prevents the race
-    // v0.100.31: Watch resumeInProgressProvider instead of currentFingerprintProvider
-    // to avoid breaking routing (main.dart watches currentFingerprintProvider)
-    final resumeInProgress = ref.watch(resumeInProgressProvider);
-    if (resumeInProgress) {
-      // Resume in progress - return empty, will rebuild when resume completes
-      return [];
+    // Preserve existing messages during rebuild (prevents loading flicker on app resume)
+    // When engineProvider is invalidated, this build() is triggered but we want to
+    // keep showing existing messages while fresh data loads silently
+    final existingMessages = state.valueOrNull;
+    if (existingMessages != null && existingMessages.isNotEmpty) {
+      state = AsyncValue.data(existingMessages);
     }
 
     final engine = await ref.watch(engineProvider.future);
