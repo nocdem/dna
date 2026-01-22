@@ -2412,11 +2412,9 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     dna_profile_t *profile = NULL;
 
-    if (!engine->identity_loaded || !engine->messenger) {
-        error = DNA_ENGINE_ERROR_NO_IDENTITY;
-        goto done;
-    }
-
+    /* lookupProfile only needs DHT context - it can lookup ANY profile by fingerprint
+     * without requiring local identity to be loaded. This is needed for the restore
+     * flow where we check if a profile exists in DHT before identity is loaded. */
     dht_context_t *dht = dna_get_dht_ctx(engine);
     if (!dht) {
         error = DNA_ENGINE_ERROR_NETWORK;
@@ -5412,7 +5410,8 @@ dna_request_id_t dna_engine_lookup_profile(
     void *user_data
 ) {
     if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
-    if (!engine->identity_loaded) return DNA_REQUEST_ID_INVALID;
+    /* lookupProfile can work without identity loaded - only needs DHT context.
+     * This is needed for restore flow to check if profile exists in DHT. */
     if (strlen(fingerprint) != 128) return DNA_REQUEST_ID_INVALID;
 
     dna_task_params_t params = {0};
