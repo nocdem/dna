@@ -54,6 +54,15 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
       state = AsyncValue.data(existingMessages);
     }
 
+    // Guard: Don't call C library if identity isn't loaded yet
+    // On app resume, engine is created before loadIdentity() completes
+    // Without this guard, getConversationPage() fails with "no identity" error
+    final identityLoaded = ref.watch(identityLoadedProvider);
+    if (!identityLoaded) {
+      // Return existing messages (or empty) - will rebuild when identity loads
+      return existingMessages ?? [];
+    }
+
     final engine = await ref.watch(engineProvider.future);
     // Load initial page (newest messages)
     final page = await engine.getConversationPage(arg, _pageSize, 0);
