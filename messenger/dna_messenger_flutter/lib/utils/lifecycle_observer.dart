@@ -64,6 +64,13 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       return;
     }
 
+    // v0.100.30: Clear fingerprint BEFORE engine recreation
+    // This signals conversationProvider to wait (return empty list)
+    // until loadIdentity() completes and sets the fingerprint again.
+    // Fixes race condition: engine.getConversationPage() failing because
+    // identity not yet loaded in the fresh engine.
+    ref.read(currentFingerprintProvider.notifier).state = null;
+
     try {
       // v0.100.23+: Notify service FIRST so it releases its engine
       // Service must release the DHT lock before Flutter can create new engine

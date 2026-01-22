@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import '../../ffi/dna_engine.dart' as dna;
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 import '../../utils/logger.dart' show log, logError;
@@ -591,32 +592,30 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
       _fingerprint = fingerprint;
 
-      // Check DHT for existing profile
+      // Check DHT for existing profile using lookupProfile (single DHT call for name + avatar)
       final engine = ref.read(engineProvider).valueOrNull;
       if (engine == null) {
         throw Exception('Engine not ready');
       }
 
-      String displayName;
+      dna.UserProfile? profile;
       try {
-        displayName = await engine.getDisplayName(fingerprint);
+        profile = await engine.lookupProfile(fingerprint);
       } catch (e) {
         // Network error - but we can still continue to register
-        displayName = '';
+        profile = null;
       }
 
-      // Check if it's a real registered name (not just a shortened fingerprint)
-      // getDisplayName returns "abc123..." when no name is registered
+      // Check if profile has a real registered name (not empty or shortened fingerprint)
+      final displayName = profile?.displayName ?? '';
       final hasRegisteredName = displayName.isNotEmpty &&
           !displayName.endsWith('...') &&
           !displayName.startsWith(fingerprint.substring(0, 8));
 
       if (hasRegisteredName) {
-        // Profile found in DHT with registered name
+        // Profile found in DHT with registered name - extract both name AND avatar
         _existingName = displayName;
-        try {
-          _existingAvatar = await engine.getAvatar(fingerprint);
-        } catch (_) {}
+        _existingAvatar = profile?.avatarBase64;
 
         if (mounted) {
           setState(() => _step = _OnboardingStep.confirmProfile);

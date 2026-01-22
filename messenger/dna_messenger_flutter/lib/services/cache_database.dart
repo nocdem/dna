@@ -3,6 +3,19 @@ import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 import '../ffi/dna_engine.dart';
 
+/// Starred message metadata
+class StarredMessageInfo {
+  final int messageId;
+  final String contactFp;
+  final DateTime starredAt;
+
+  StarredMessageInfo({
+    required this.messageId,
+    required this.contactFp,
+    required this.starredAt,
+  });
+}
+
 /// Cached identity data (for identity selection screen)
 class CachedIdentity {
   final String fingerprint;
@@ -412,6 +425,28 @@ class CacheDatabase {
       columns: ['message_id'],
     );
     return results.map((row) => row['message_id'] as int).toSet();
+  }
+
+  /// Get all starred messages with metadata, grouped by contact
+  /// Returns a map of contact fingerprint -> list of (messageId, starredAt)
+  Future<Map<String, List<StarredMessageInfo>>> getAllStarredMessagesGrouped() async {
+    final db = await database;
+    final results = await db.query(
+      'starred_messages',
+      orderBy: 'starred_at DESC',
+    );
+
+    final grouped = <String, List<StarredMessageInfo>>{};
+    for (final row in results) {
+      final contactFp = row['contact_fp'] as String;
+      final info = StarredMessageInfo(
+        messageId: row['message_id'] as int,
+        contactFp: contactFp,
+        starredAt: DateTime.fromMillisecondsSinceEpoch(row['starred_at'] as int),
+      );
+      grouped.putIfAbsent(contactFp, () => []).add(info);
+    }
+    return grouped;
   }
 
   /// Star a message

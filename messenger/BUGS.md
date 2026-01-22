@@ -13,7 +13,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-- [ ] **[FLUTTER] P4 - Group chat send icon doesn't match normal chat** - The send button icon in group chat screen is different from the one used in 1:1 chat screens. Should be consistent across all chat types.
+- [x] **[FLUTTER] P4 - Group chat send icon doesn't match normal chat** - The send button icon in group chat screen is different from the one used in 1:1 chat screens. **Fix:** Changed ChatScreen send button from `IconButton()` to `IconButton.filled()` to match GroupChatScreen's styling. Both now use the same filled button style. (v0.100.27)
 
 - [ ] **[FLUTTER] P3 - Background notification toggle doesn't re-request permissions** - When user disables then re-enables "Background Notifications" in settings, it doesn't prompt for notification permissions again. Should call `requestNotificationPermission()` when toggling ON.
 
@@ -27,15 +27,15 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 - [x] **[FLUTTER] P2 - Restore Messages button freezes app** - In the restore messages modal, clicking restore freezes the entire app while restore runs synchronously. **Fix:** `dna_engine_restore_messages()` spawns detached pthread for DHT operations. (v0.5.32)
 
-- [ ] **[FLUTTER] P3 - Avatar not restored when reinstalling from scratch** - After fresh install and restoring identity from seed phrase, avatar is not correctly restored from DHT. Profile data (name, etc.) may restore but avatar image is missing or not displayed.
+- [x] **[FLUTTER] P3 - Avatar not restored when reinstalling from scratch** - After fresh install and restoring identity from seed phrase, avatar is not correctly restored from DHT. **Fix:** Changed restore flow to use `lookupProfile()` (single DHT call) instead of separate `getDisplayName()` + `getAvatar()` calls. Now extracts both name and avatar from the unified profile response. (v0.100.25)
 
 - [x] **[CLI] P2 - DHT PUT_SIGNED high failure rate** - Logs showed ~77% failure rate (986 failed vs 298 stored). Error: "PUT_SIGNED: Failed to store on any node". **Root cause:** Burst flooding from chunked operations (10-50 rapid PUTs per action) overwhelming DHT nodes. **Fix:** Added 100ms delay between chunk PUTs in `dht_chunked.c` to rate-limit operations. (v0.4.23)
 
-- [ ] **[FLUTTER] P3 - Presence status not updating in open chat** - When viewing a chat, the contact's online/offline status doesn't update in real-time. User has to close the chat to see updated presence in contacts list. The chat header should reflect live presence changes.
+- [x] **[FLUTTER] P3 - Presence status not updating in open chat** - When viewing a chat, the contact's online/offline status doesn't update in real-time. **Fix:** Added periodic presence polling (every 20s) for the selected contact while chat is open. Timer starts on chat open and cancels on close. Immediately reflects online/offline changes in the header. (v0.100.26)
 
 - [x] **[FLUTTER] P2 - Chat window causes constant image flashing** - Sent/received images in chat flash repeatedly. **Fix:** Cache decoded avatar bytes in UserProfile (decode once, reuse), added cacheExtent to contacts and chat ListViews, used ref.select() to reduce unnecessary rebuilds. (v0.99.162)
 
-- [ ] **[FLUTTER] P4 - No way to view starred messages** - Users can star messages in chat but there's no search or filter to find starred messages. Should add a "Starred Messages" view accessible from settings or chat menu.
+- [x] **[FLUTTER] P4 - No way to view starred messages** - Users can star messages in chat but there's no search or filter to find starred messages. **Fix:** Added StarredMessagesScreen accessible from Settings > Contacts > Starred Messages. Shows starred messages grouped by contact, tapping opens the chat. Added `getAllStarredMessagesGrouped()` database method. (v0.100.28)
 
 ---
 

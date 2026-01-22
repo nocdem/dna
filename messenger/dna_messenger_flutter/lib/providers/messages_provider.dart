@@ -46,6 +46,14 @@ final isLoadingMoreProvider = Provider.family<bool, String>((ref, fingerprint) {
 class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
   @override
   Future<List<Message>> build(String arg) async {
+    // GUARD: Don't load messages until identity is ready
+    // On app resume, engine recreates before identity loads - this prevents the race
+    final currentFp = ref.watch(currentFingerprintProvider);
+    if (currentFp == null || currentFp.isEmpty) {
+      // Identity not loaded yet - return empty, will rebuild when identity loads
+      return [];
+    }
+
     final engine = await ref.watch(engineProvider.future);
     // Load initial page (newest messages)
     final page = await engine.getConversationPage(arg, _pageSize, 0);
