@@ -35,7 +35,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 - [x] **[FLUTTER] P2 - Chat window causes constant image flashing** - Sent/received images in chat flash repeatedly. **Fix:** Cache decoded avatar bytes in UserProfile (decode once, reuse), added cacheExtent to contacts and chat ListViews, used ref.select() to reduce unnecessary rebuilds. (v0.99.162)
 
-- [ ] **[FLUTTER] P4 - No way to view starred messages** - Users can star messages in chat but there's no search or filter to find starred messages. Should add a "Starred Messages" view accessible from settings or chat menu.
+- [x] **[FLUTTER] P4 - No way to view starred messages** - Users can star messages in chat but there's no search or filter to find starred messages. **Fix:** Added StarredMessagesScreen accessible from Settings > Contacts > Starred Messages. Shows starred messages grouped by contact, tapping opens the chat. Added `getAllStarredMessagesGrouped()` database method. (v0.100.28)
 
 ---
 

@@ -20,6 +20,7 @@ import '../profile/profile_editor_screen.dart';
 import 'app_lock_settings_screen.dart';
 import 'blocked_users_screen.dart';
 import 'contacts_management_screen.dart';
+import 'starred_messages_screen.dart';
 
 /// Provider for app package info (version from pubspec.yaml)
 final packageInfoProvider = FutureProvider<PackageInfo>((ref) async {
@@ -259,6 +260,20 @@ class _ContactsSection extends ConsumerWidget {
               context,
               MaterialPageRoute(
                 builder: (context) => const ContactsManagementScreen(),
+              ),
+            );
+          },
+        ),
+        ListTile(
+          leading: const FaIcon(FontAwesomeIcons.star),
+          title: const Text('Starred Messages'),
+          subtitle: const Text('View bookmarked messages'),
+          trailing: const FaIcon(FontAwesomeIcons.chevronRight),
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const StarredMessagesScreen(),
               ),
             );
           },
