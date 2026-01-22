@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-01-22 | **Status:** DESIGN | **Version:** v0.2.0
+**Last Updated:** 2026-01-22 | **Status:** DESIGN | **Version:** v0.3.0
 
 ---
 
@@ -220,7 +220,7 @@ nm /opt/dna-messenger/build/libdna_lib.so | grep -i asan
 **Running with ASAN:**
 ```bash
 ASAN_OPTIONS="detect_leaks=0" ./dnac-witness -h
-ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/dnac-asan" ./dnac-witness --bft
+ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/dnac-asan" ./dnac-witness -p 4200
 ```
 
 ### Dependencies
@@ -254,8 +254,10 @@ ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/dnac-asan" ./dnac-witness --bft
 │   │   ├── peer.c         # Peer management
 │   │   └── roster.c       # Witness roster
 │   └── witness/           # Witness server
-│       ├── main.c         # DHT mode entry
-│       ├── bft_main.c     # BFT mode entry
+│       ├── main.c         # Entry point
+│       ├── bft_main.c     # BFT consensus main loop
+│       ├── nullifier.c    # Nullifier database
+│       ├── replication.c  # Nullifier replication
 │       └── forward.c      # Request forwarding
 ├── tests/                 # Unit tests
 └── docs/                  # Documentation
@@ -311,19 +313,19 @@ git push origin main
 
 ## Witness Server Protocol
 
-### Operating Modes
+### Usage
 
-**DHT Mode (default):** Communicates via DHT, no TCP ports required
 ```bash
-./dnac-witness -d ~/.dna
+./dnac-witness -p 4200 -a "192.168.0.195:4200" -r roster.txt
 ```
 
-**BFT Mode (v0.2.0):** TCP-based Byzantine Fault Tolerant consensus
-```bash
-./dnac-witness --bft -p 4200 -a "192.168.0.195:4200"
-```
+**Options:**
+- `-d <dir>` - Data directory (default: ~/.dna)
+- `-p <port>` - TCP port (default: 4200)
+- `-a <addr>` - My address for roster (IP:port)
+- `-r <file>` - Initial roster file
 
-### BFT Consensus (v0.2.0)
+### BFT Consensus
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
@@ -352,12 +354,6 @@ git push origin main
 | v3 | Response | + software_version (3 bytes) |
 | v1 | Announce | version + witness_id + epoch + duration + ts + pubkey + sig |
 | v2 | Announce | + software_version (3 bytes) |
-
-### Response Queue Pattern
-DHT callbacks cannot call `dht_put_signed()` (mutex deadlock). Solution:
-1. Callbacks queue responses to `g_response_queue[]`
-2. Main loop calls `witness_process_pending_responses()`
-3. Main thread sends queued responses safely
 
 ---
 

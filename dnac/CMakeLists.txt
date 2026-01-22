@@ -191,9 +191,7 @@ option(DNAC_BUILD_WITNESS "Build dnac-witness server" ON)
 if(DNAC_BUILD_WITNESS)
     set(DNAC_WITNESS_SOURCES
         src/witness/main.c
-        src/witness/server.c
         src/witness/nullifier.c
-        src/witness/replication.c
         src/witness/bft_main.c
         src/witness/forward.c
     )

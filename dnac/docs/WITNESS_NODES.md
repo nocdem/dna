@@ -1,22 +1,22 @@
-# DNAC Witness Nodes - Alpha/Beta Testing
+# DNAC Witness Nodes - BFT Consensus Cluster
 
-**Created:** 2026-01-21 | **Version:** v0.1.23
+**Created:** 2026-01-21 | **Updated:** 2026-01-22 | **Version:** v0.3.0
 
 ---
 
 ## Overview
 
-This document describes the witness node infrastructure for DNAC alpha/beta testing. These nodes provide the 2-of-3 witnessing mechanism required for double-spend prevention.
+This document describes the witness node infrastructure for DNAC. These nodes provide double-spend prevention through BFT (Byzantine Fault Tolerant) consensus using TCP communication.
 
 ---
 
 ## Node Inventory
 
-| Name | IP Address | Hostname | Role | Status |
-|------|------------|----------|------|--------|
-| node1 | 192.168.0.195 | chat1 | Witness Server #1 | Active |
-| treasury | 192.168.0.196 | treasury | Witness Server #2 | Active |
-| cpunkroot2 | 192.168.0.199 | cpunkroot2 | Witness Server #3 | Active |
+| Name | IP Address | Hostname | TCP Port | Status |
+|------|------------|----------|----------|--------|
+| node1 | 192.168.0.195 | chat1 | 4200 | Active |
+| treasury | 192.168.0.196 | treasury | 4200 | Active |
+| cpunkroot2 | 192.168.0.199 | cpunkroot2 | 4200 | Active |
 
 ### Node Fingerprints
 
@@ -38,16 +38,54 @@ This document describes the witness node infrastructure for DNAC alpha/beta test
                     │  (DNAC Wallets)     │
                     └──────────┬──────────┘
                                │
-                               │ DHT
+                               │ TCP (port 4200)
                                │
          ┌─────────────────────┼─────────────────────┐
          │                     │                     │
          ▼                     ▼                     ▼
 ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
 │  Witness #1     │  │  Witness #2     │  │  Witness #3     │
-│  node1          │  │  treasury       │  │  cpunkroot2     │
+│  node1          │◀▶│  treasury       │◀▶│  cpunkroot2     │
 │  192.168.0.195  │  │  192.168.0.196  │  │  192.168.0.199  │
+│  :4200          │  │  :4200          │  │  :4200          │
 └─────────────────┘  └─────────────────┘  └─────────────────┘
+         │                     │                     │
+         └─────────────────────┴─────────────────────┘
+                    BFT Consensus (TCP)
+```
+
+---
+
+## BFT Consensus Protocol
+
+### Parameters
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| Cluster Size | 3 (N=3f+1, f=0) | Byzantine fault tolerance |
+| Quorum | 2 (2f+1) | Votes needed for consensus |
+| Leader Election | `(epoch + view) % N` | Rotates hourly |
+| Round Timeout | 5000ms | Triggers view change |
+| Max View Changes | 3 | Per request before error |
+
+### Consensus Flow
+
+```
+1. Client → Any Witness: SPEND_REQUEST
+2. If not leader → Forward to leader
+3. Leader → All: PROPOSE (nullifier + tx_hash)
+4. All → All: PREVOTE (validate + vote)
+5. On 2f+1 prevotes → All: PRECOMMIT
+6. On 2f+1 precommits → COMMIT (record nullifier)
+7. Leader → Client: SPEND_RESPONSE (approved/rejected)
+```
+
+### Phases
+
+```
+IDLE → PROPOSE → PREVOTE → PRECOMMIT → COMMIT → IDLE
+                    │
+                    └──► VIEW_CHANGE (on timeout)
 ```
 
 ---
@@ -56,163 +94,75 @@ This document describes the witness node infrastructure for DNAC alpha/beta test
 
 Each witness node requires:
 
-1. **libdna** - DNA Messenger library (DHT connectivity)
+1. **libdna** - DNA Messenger library (for identity/crypto)
 2. **libdnac** - DNAC library
 3. **dnac-witness** - Witness server binary
 4. **SQLite3** - Nullifier storage
 5. **Dilithium5 keypair** - For signing attestations
+6. **TCP port 4200** - Open for inter-witness and client connections
 
 ---
 
-## Setup Checklist
+## Setup
 
-### Per-Node Setup
+### Starting a Witness
 
-- [ ] Install dependencies (OpenSSL, SQLite3)
-- [ ] Build and install libdna
-- [ ] Build and install libdnac
-- [ ] Build dnac-witness server
-- [ ] Generate witness keypair
-- [ ] Configure witness identity
-- [ ] Start dnac-witness service
-- [ ] Verify DHT connectivity
+```bash
+# Using roster file
+./dnac-witness -d ~/.dna -p 4200 -a "192.168.0.195:4200" -r roster.txt
 
-### Network Setup
+# Options:
+#   -d <dir>    Data directory (default: ~/.dna)
+#   -p <port>   TCP port (default: 4200)
+#   -a <addr>   My address for roster (IP:port)
+#   -r <file>   Initial roster file
+```
 
-- [ ] All nodes connected to DHT network
-- [ ] Firewall rules allow DHT port (default: 4222)
-- [ ] Nodes can reach each other
-- [ ] Bootstrap node configured
-
----
-
-## Configuration
-
-### Witness Server Config (`/etc/dnac/witness.conf`)
+### Roster File Format
 
 ```
-# Witness node configuration
-witness_id = "<32-byte-hex-id>"
-listen_port = 4222
-data_dir = /var/lib/dnac
-nullifier_db = /var/lib/dnac/nullifiers.db
+# roster.txt - one address per line
+192.168.0.195:4200
+192.168.0.196:4200
+192.168.0.199:4200
+```
 
-# Peer witnesses for nullifier replication
-peers = [
-    "192.168.0.195:4222",
-    "192.168.0.196:4222",
-    "192.168.0.199:4222"
-]
+### Systemd Service
+
+```ini
+# /etc/systemd/system/dnac-witness.service
+[Unit]
+Description=DNAC Witness Server
+After=network.target
+
+[Service]
+Type=simple
+User=nocdem
+ExecStart=/opt/dnac/build/dnac-witness -d /home/nocdem/.dna -p 4200 -a "192.168.0.195:4200" -r /etc/dnac/roster.txt
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
 ```
 
 ---
 
 ## Witnessing Protocol
 
-1. Client sends `SpendRequest` to all 3 witnesses via DHT
-2. Each witness checks nullifier table
-3. If nullifier is new: APPROVE + sign + replicate to peers
-4. If nullifier exists: REJECT (double-spend)
-5. Client collects 2+ attestations
-6. Transaction with 2+ attestations is valid
+1. Client sends `SpendRequest` to any witness via TCP
+2. If witness is not leader, it forwards request to leader
+3. Leader broadcasts `PROPOSE` to all witnesses
+4. Witnesses validate and send `PREVOTE`
+5. On quorum (2 votes): witnesses send `PRECOMMIT`
+6. On quorum: all witnesses record nullifier (`COMMIT`)
+7. Client receives signed `SpendResponse`
 
----
+### Double-Spend Prevention
 
-## Epoch-Based DHT Keys (v0.1.21+)
-
-To prevent unbounded DHT key accumulation, witness requests use epoch-based rotating keys.
-
-### Epoch Configuration
-
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| Epoch Duration | 3600 sec (1 hour) | Time-based rotation |
-| Announcement TTL | 3600 sec | Refreshed each epoch |
-| Request TTL | 300 sec (5 min) | Short-lived requests |
-
-### Key Structure
-
-```
-PERMANENT ANNOUNCEMENT KEY (per witness):
-  SHA3-512("dnac:witness:announce:" + witness_fingerprint)
-
-EPOCH REQUEST KEY (rotates hourly):
-  SHA3-512("dnac:nodus:epoch:request:" + witness_fingerprint + ":" + epoch_number)
-
-Epoch Number = time(NULL) / 3600
-```
-
-### Witness Announcement
-
-Each witness publishes an announcement to its permanent key:
-
-```c
-typedef struct {
-    uint8_t  version;                    /* = 1 */
-    uint8_t  witness_id[32];             /* First 32 bytes of fingerprint */
-    uint64_t current_epoch;              /* Current epoch number */
-    uint64_t epoch_duration;             /* 3600 seconds */
-    uint64_t timestamp;                  /* Announcement time */
-    uint8_t  witness_pubkey[2592];       /* Dilithium5 public key */
-    uint8_t  signature[4627];            /* Dilithium5 signature */
-} dnac_witness_announcement_t;
-```
-
-### Client Flow
-
-```
-1. Client discovers witness fingerprints
-2. Client fetches announcement from permanent key:
-   GET SHA3-512("dnac:witness:announce:" + witness_fp)
-3. Client extracts current_epoch from announcement
-4. Client builds epoch request key:
-   SHA3-512("dnac:nodus:epoch:request:" + witness_fp + ":" + epoch)
-5. Client PUTs SpendRequest to epoch key
-6. Fallback: If announcement unavailable, use local time(NULL)/3600
-```
-
-### Server Flow
-
-```
-1. Server publishes announcement on startup
-2. Server listens on current epoch key AND previous epoch key
-3. On epoch change:
-   a. Publish new announcement
-   b. Stop listener on (epoch - 2)
-   c. Start listener on new epoch
-4. Process requests from both current and previous epoch keys
-```
-
-### Epoch Boundary Handling
-
-```
-Time:   |-------- Epoch N --------|-------- Epoch N+1 --------|
-
-Client: Sends to epoch N          | Sends to epoch N+1
-        at 00:59:59               | at 01:00:01
-
-Server: Listens on epoch N        | Listens on epoch N+1
-        Listens on epoch N-1      | Listens on epoch N
-
-Result: Request found in N        | Request found in N+1
-```
-
-The server always listens on current AND previous epoch, ensuring no requests are missed at boundaries.
-
----
-
-## Testing Phases
-
-### Alpha (Current)
-- Local network testing
-- Manual witness startup
-- Basic transaction flow validation
-
-### Beta (Planned)
-- Extended network testing
-- Automated witness management
-- Stress testing / load testing
-- Nullifier replication verification
+- **Consensus ensures atomicity**: No nullifier can be recorded without 2f+1 agreement
+- **No race conditions**: Unlike DHT mode, BFT prevents concurrent conflicting approvals
+- **Byzantine tolerance**: Can tolerate up to f malicious witnesses (f=0 for N=3)
 
 ---
 
@@ -225,28 +175,40 @@ ssh nocdem@192.168.0.196  # treasury
 ssh nocdem@192.168.0.199  # cpunkroot2
 ```
 
-### Check node status (once deployed)
+### Check node status
 ```bash
 ssh nocdem@192.168.0.195 "systemctl status dnac-witness"
 ```
 
+### View logs
+```bash
+ssh nocdem@192.168.0.195 "journalctl -u dnac-witness -f"
+```
+
+### Check peer connectivity
+```bash
+# From any witness, check TCP connections
+ss -tnp | grep 4200
+```
+
 ---
 
-## Known Issues
+## Troubleshooting
 
-1. ~~`src/witness/config.h:32-36` - `WITNESS_PEERS[]` array is empty~~ **RESOLVED** - All 3 witnesses configured
-2. `src/nodus/discovery.c:118-119` - Bootstrap server pubkeys are zeros
-3. Witness server not yet built by default (requires `-DDNAC_BUILD_WITNESS=ON`)
+### Witness not connecting to peers
+1. Check firewall: `sudo ufw status`
+2. Verify port is open: `nc -zv 192.168.0.196 4200`
+3. Check roster file has correct addresses
 
----
+### Leader election issues
+- Leader = `(epoch + view) % N` where epoch = `time(NULL) / 3600`
+- View changes on consensus timeout (5s)
+- Check logs for `VIEW_CHANGE` messages
 
-## Next Steps
-
-1. Build dnac-witness on each node
-2. Generate Dilithium5 keypairs for each witness
-3. Configure peer list with real fingerprints
-4. Start services and verify DHT connectivity
-5. Test transaction flow between wallets
+### Consensus stalled
+- Ensure at least 2 witnesses are running (quorum = 2)
+- Check for network partitions between witnesses
+- Verify all witnesses have same roster
 
 ---
 

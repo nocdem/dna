@@ -1,16 +1,17 @@
 /**
  * @file bft_main.c
- * @brief BFT-Enabled Witness Server Entry Point
+ * @brief DNAC Witness Server - BFT Consensus Implementation
  *
- * This is the main loop for witnesses running in BFT consensus mode.
- * Key differences from standard DHT-based witness:
+ * This is the main loop for DNAC witness servers using BFT consensus.
+ * Features:
  * - Uses TCP for inter-witness communication
  * - Participates in PBFT-like consensus rounds
  * - Supports leader election and view changes
  *
- * Usage: dnac-witness --bft [options]
+ * Usage: dnac-witness [options]
  *   -d <dir>      Data directory (default: ~/.dna)
  *   -p <port>     TCP port (default: 4200)
+ *   -a <addr>     My address for roster (IP:port)
  *   -r <roster>   Initial roster file (optional)
  *   -h            Show help
  *
@@ -25,7 +26,6 @@
 #include <unistd.h>
 #include <time.h>
 #include <pthread.h>
-#include <getopt.h>
 
 #include <dna/dna_engine.h>
 #include "dnac/bft.h"
@@ -73,7 +73,7 @@ extern int witness_nullifier_add(const uint8_t *nullifier, const uint8_t *tx_has
 static void signal_handler(int sig) {
     (void)sig;
     g_running = 0;
-    printf("\nShutting down BFT witness...\n");
+    printf("\nShutting down witness...\n");
 }
 
 /* ============================================================================
@@ -599,9 +599,9 @@ static void on_tcp_disconnect(int peer_index, void *user_data) {
  * Main
  * ========================================================================== */
 
-static void print_bft_usage(const char *prog) {
-    printf("DNAC BFT Witness Server v%s\n", dnac_get_version());
-    printf("Usage: %s --bft [options]\n", prog);
+static void print_usage(const char *prog) {
+    printf("DNAC Witness Server v%s\n", dnac_get_version());
+    printf("Usage: %s [options]\n", prog);
     printf("Options:\n");
     printf("  -d <dir>      Data directory (default: ~/.dna)\n");
     printf("  -p <port>     TCP port (default: %d)\n", DNAC_BFT_TCP_PORT);
@@ -617,21 +617,12 @@ int bft_witness_main(int argc, char *argv[]) {
     char *roster_file = NULL;
     int opt;
 
-    /* Long options for --bft */
-    static struct option long_options[] = {
-        {"bft", no_argument, 0, 'B'},
-        {0, 0, 0, 0}
-    };
-
     /* Reset optind for re-parsing */
     optind = 1;
-    opterr = 0;  /* Suppress getopt error messages */
 
     /* Parse arguments */
-    while ((opt = getopt_long(argc, argv, "d:p:a:r:h", long_options, NULL)) != -1) {
+    while ((opt = getopt(argc, argv, "d:p:a:r:h")) != -1) {
         switch (opt) {
-            case 'B':  /* --bft flag, already handled */
-                break;
             case 'd':
                 data_dir = strdup(optarg);
                 break;
@@ -645,7 +636,7 @@ int bft_witness_main(int argc, char *argv[]) {
                 roster_file = strdup(optarg);
                 break;
             case 'h':
-                print_bft_usage(argv[0]);
+                print_usage(argv[0]);
                 return 0;
             default:
                 break;
@@ -663,7 +654,7 @@ int bft_witness_main(int argc, char *argv[]) {
         }
     }
 
-    printf("DNAC BFT Witness Server v%s\n", dnac_get_version());
+    printf("DNAC Witness Server v%s\n", dnac_get_version());
     printf("Data directory: %s\n", data_dir);
     printf("TCP port: %u\n", tcp_port);
 
@@ -671,7 +662,7 @@ int bft_witness_main(int argc, char *argv[]) {
     qgp_log_file_enable(true);
     qgp_log_set_level(QGP_LOG_LEVEL_DEBUG);
 
-    QGP_LOG_INFO(LOG_TAG, "=== DNAC BFT Witness Server v%s ===", dnac_get_version());
+    QGP_LOG_INFO(LOG_TAG, "=== DNAC Witness Server v%s ===", dnac_get_version());
 
     /* Set up signal handlers */
     signal(SIGINT, signal_handler);
@@ -926,7 +917,7 @@ int bft_witness_main(int argc, char *argv[]) {
     /* Mark ourselves as running */
     g_bft_ctx->running = true;
 
-    printf("BFT witness running. Press Ctrl+C to stop.\n");
+    printf("witness running. Press Ctrl+C to stop.\n");
 
     /* Check leader status */
     if (dnac_bft_is_leader(g_bft_ctx)) {
@@ -966,7 +957,7 @@ int bft_witness_main(int argc, char *argv[]) {
     }
 
     /* Shutdown */
-    printf("Shutting down BFT witness...\n");
+    printf("Shutting down witness...\n");
 
     bft_peer_manager_shutdown();
     dnac_tcp_server_stop(g_tcp_server);
@@ -984,6 +975,6 @@ int bft_witness_main(int argc, char *argv[]) {
     free(my_address);
     free(roster_file);
 
-    printf("BFT witness stopped.\n");
+    printf("witness stopped.\n");
     return 0;
 }

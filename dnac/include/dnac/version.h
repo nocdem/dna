@@ -2,7 +2,7 @@
  * @file version.h
  * @brief DNAC version information
  *
- * DNAC - Post-Quantum Zero-Knowledge Cash over DHT
+ * DNAC - Post-Quantum Zero-Knowledge Cash
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -12,10 +12,10 @@
 #define DNAC_VERSION_H
 
 #define DNAC_VERSION_MAJOR 0
-#define DNAC_VERSION_MINOR 2
+#define DNAC_VERSION_MINOR 3
 #define DNAC_VERSION_PATCH 0
 
-#define DNAC_VERSION_STRING "0.2.0"
+#define DNAC_VERSION_STRING "0.3.0"
 
 /**
  * @brief Get DNAC library version string
