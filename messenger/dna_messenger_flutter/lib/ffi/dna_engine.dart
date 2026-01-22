@@ -1121,44 +1121,24 @@ class DnaEngine {
   /// When identity is loaded, the engine acquires a file lock and creates
   /// its own DHT context - no global sharing needed.
   ///
-  /// v0.6.16+: Uses async C function to avoid blocking UI thread.
+  /// v0.6.18+: Yields to event loop before sync FFI to allow UI frame to render.
+  /// This prevents perceived freeze while keeping thread-safe synchronous creation.
   static Future<DnaEngine> create({String? dataDir}) async {
     final engine = DnaEngine._();
     engine._bindings = DnaBindings(_loadLibrary());
 
-    final completer = Completer<void>();
+    // Yield to event loop - allows pending UI frames to render before FFI blocks
+    await Future<void>.delayed(Duration.zero);
+
     final dataDirPtr = dataDir?.toNativeUtf8() ?? nullptr;
+    engine._engine = engine._bindings.dna_engine_create(dataDirPtr.cast());
 
-    // Callback to receive engine pointer from background thread
-    void onEngineCreated(Pointer<dna_engine_t> enginePtr, int error, Pointer<Void> userData) {
-      if (dataDir != null) {
-        calloc.free(dataDirPtr);
-      }
-
-      if (error != 0 || enginePtr == nullptr) {
-        completer.completeError(DnaEngineException(error, 'Failed to create engine'));
-        return;
-      }
-
-      engine._engine = enginePtr;
-      completer.complete();
+    if (dataDir != null) {
+      calloc.free(dataDirPtr);
     }
 
-    // Create native callback that can be called from any thread
-    final callback = NativeCallable<DnaEngineCreatedCbNative>.listener(onEngineCreated);
-
-    // Start async engine creation (returns immediately)
-    engine._bindings.dna_engine_create_async(
-      dataDirPtr.cast(),
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
-
-    // Wait for creation to complete (non-blocking for UI)
-    try {
-      await completer.future;
-    } finally {
-      callback.close();
+    if (engine._engine == nullptr) {
+      throw DnaEngineException(-100, 'Failed to create engine');
     }
 
     engine._setupEventCallback();
