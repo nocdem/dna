@@ -69,7 +69,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// Start polling the selected contact's presence for real-time status updates
   void _startPresencePolling() {
     _presenceTimer?.cancel();
-    _presenceTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+    _presenceTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       _pollSelectedContactPresence();
     });
     // Also poll immediately
