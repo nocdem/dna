@@ -23,19 +23,9 @@
 
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/threadpool.h"
 
 #define LOG_TAG "DHT_DM_OUTBOX"
-
-/* Parallel fetch limits (same pattern as dna_engine.c) */
-#define DM_PARALLEL_MIN 2
-#define DM_PARALLEL_MAX 8
-
-static int dm_get_parallel_limit(void) {
-    int cores = qgp_platform_cpu_count();
-    if (cores < DM_PARALLEL_MIN) cores = DM_PARALLEL_MIN;
-    if (cores > DM_PARALLEL_MAX) cores = DM_PARALLEL_MAX;
-    return cores;
-}
 
 /*============================================================================
  * Parallel Fetch Worker (for sync_all_contacts)
@@ -51,14 +41,15 @@ typedef struct {
     int result;                      /* Output: 0 = success */
 } dm_fetch_worker_ctx_t;
 
-static void *dm_fetch_worker(void *arg) {
+/* Thread pool task: fetch messages from one contact's outbox */
+static void dm_fetch_worker(void *arg) {
     dm_fetch_worker_ctx_t *ctx = (dm_fetch_worker_ctx_t *)arg;
     ctx->messages = NULL;
     ctx->count = 0;
     ctx->result = -1;
 
     if (!ctx->ctx || !ctx->my_fp || !ctx->contact_fp) {
-        return NULL;
+        return;
     }
 
     if (ctx->use_full_sync) {
@@ -68,8 +59,6 @@ static void *dm_fetch_worker(void *arg) {
         ctx->result = dht_dm_outbox_sync_recent(ctx->ctx, ctx->my_fp, ctx->contact_fp,
                                                  &ctx->messages, &ctx->count);
     }
-
-    return NULL;
 }
 
 /*============================================================================
@@ -553,17 +542,15 @@ int dht_dm_outbox_sync_all_contacts_recent(
         return 0;
     }
 
-    int max_parallel = dm_get_parallel_limit();
-    QGP_LOG_INFO(LOG_TAG, "Syncing recent messages from %zu contacts (parallel=%d)",
-                 contact_count, max_parallel);
+    QGP_LOG_INFO(LOG_TAG, "Syncing recent messages from %zu contacts via thread pool", contact_count);
 
-    /* Allocate worker contexts and thread handles */
+    /* Allocate worker contexts */
     dm_fetch_worker_ctx_t *workers = calloc(contact_count, sizeof(dm_fetch_worker_ctx_t));
-    pthread_t *threads = calloc(contact_count, sizeof(pthread_t));
-    if (!workers || !threads) {
+    void **args = calloc(contact_count, sizeof(void *));
+    if (!workers || !args) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate parallel fetch memory");
         free(workers);
-        free(threads);
+        free(args);
         return -1;
     }
 
@@ -576,31 +563,13 @@ int dht_dm_outbox_sync_all_contacts_recent(
         workers[i].messages = NULL;
         workers[i].count = 0;
         workers[i].result = -1;
+        args[i] = &workers[i];
     }
 
-    /* Spawn threads with parallel limit */
-    size_t active = 0;   /* Index of oldest non-joined thread */
-    size_t started = 0;  /* Number of threads started */
+    /* Execute all fetches in parallel via thread pool */
+    threadpool_map(dm_fetch_worker, args, contact_count, 0);
 
-    for (size_t i = 0; i < contact_count; i++) {
-        if (pthread_create(&threads[i], NULL, dm_fetch_worker, &workers[i]) == 0) {
-            started++;
-        } else {
-            QGP_LOG_WARN(LOG_TAG, "Failed to create fetch thread for contact[%zu]", i);
-            continue;
-        }
-
-        /* Limit concurrent threads: wait for oldest when at max */
-        if (started - active >= (size_t)max_parallel) {
-            pthread_join(threads[active], NULL);
-            active++;
-        }
-    }
-
-    /* Wait for remaining threads */
-    for (size_t i = active; i < started; i++) {
-        pthread_join(threads[i], NULL);
-    }
+    free(args);
 
     /* Collect results from all workers */
     dht_offline_message_t *all_messages = NULL;
@@ -628,12 +597,11 @@ int dht_dm_outbox_sync_all_contacts_recent(
     }
 
     free(workers);
-    free(threads);
 
     *messages_out = all_messages;
     *count_out = total_count;
 
-    QGP_LOG_INFO(LOG_TAG, "Parallel sync complete: %zu messages from %zu contacts", total_count, contact_count);
+    QGP_LOG_INFO(LOG_TAG, "Thread pool sync complete: %zu messages from %zu contacts", total_count, contact_count);
     return 0;
 }
 
@@ -656,17 +624,15 @@ int dht_dm_outbox_sync_all_contacts_full(
         return 0;
     }
 
-    int max_parallel = dm_get_parallel_limit();
-    QGP_LOG_INFO(LOG_TAG, "Full sync (8 days) from %zu contacts (parallel=%d)",
-                 contact_count, max_parallel);
+    QGP_LOG_INFO(LOG_TAG, "Full sync (8 days) from %zu contacts via thread pool", contact_count);
 
-    /* Allocate worker contexts and thread handles */
+    /* Allocate worker contexts */
     dm_fetch_worker_ctx_t *workers = calloc(contact_count, sizeof(dm_fetch_worker_ctx_t));
-    pthread_t *threads = calloc(contact_count, sizeof(pthread_t));
-    if (!workers || !threads) {
+    void **args = calloc(contact_count, sizeof(void *));
+    if (!workers || !args) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate parallel fetch memory");
         free(workers);
-        free(threads);
+        free(args);
         return -1;
     }
 
@@ -679,31 +645,13 @@ int dht_dm_outbox_sync_all_contacts_full(
         workers[i].messages = NULL;
         workers[i].count = 0;
         workers[i].result = -1;
+        args[i] = &workers[i];
     }
 
-    /* Spawn threads with parallel limit */
-    size_t active = 0;   /* Index of oldest non-joined thread */
-    size_t started = 0;  /* Number of threads started */
+    /* Execute all fetches in parallel via thread pool */
+    threadpool_map(dm_fetch_worker, args, contact_count, 0);
 
-    for (size_t i = 0; i < contact_count; i++) {
-        if (pthread_create(&threads[i], NULL, dm_fetch_worker, &workers[i]) == 0) {
-            started++;
-        } else {
-            QGP_LOG_WARN(LOG_TAG, "Failed to create fetch thread for contact[%zu]", i);
-            continue;
-        }
-
-        /* Limit concurrent threads: wait for oldest when at max */
-        if (started - active >= (size_t)max_parallel) {
-            pthread_join(threads[active], NULL);
-            active++;
-        }
-    }
-
-    /* Wait for remaining threads */
-    for (size_t i = active; i < started; i++) {
-        pthread_join(threads[i], NULL);
-    }
+    free(args);
 
     /* Collect results from all workers */
     dht_offline_message_t *all_messages = NULL;
@@ -731,12 +679,11 @@ int dht_dm_outbox_sync_all_contacts_full(
     }
 
     free(workers);
-    free(threads);
 
     *messages_out = all_messages;
     *count_out = total_count;
 
-    QGP_LOG_INFO(LOG_TAG, "Parallel full sync complete: %zu messages from %zu contacts", total_count, contact_count);
+    QGP_LOG_INFO(LOG_TAG, "Thread pool full sync complete: %zu messages from %zu contacts", total_count, contact_count);
     return 0;
 }
 

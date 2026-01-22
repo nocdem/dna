@@ -58,6 +58,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 
 #include "dna_engine_internal.h"
 #include "dna_api.h"
+#include "crypto/utils/threadpool.h"
 #include "messenger/init.h"
 #include "messenger/messages.h"
 #include "messenger/groups.h"
@@ -155,26 +156,14 @@ typedef struct {
 } parallel_listener_ctx_t;
 
 /* Full listener worker - starts outbox + presence + watermark (for Flutter) */
-static void *parallel_listener_worker(void *arg) {
+/* Thread pool task: setup listeners for one contact */
+static void parallel_listener_worker(void *arg) {
     parallel_listener_ctx_t *ctx = (parallel_listener_ctx_t *)arg;
-    if (!ctx || !ctx->engine) return NULL;
+    if (!ctx || !ctx->engine) return;
 
     dna_engine_listen_outbox(ctx->engine, ctx->fingerprint);
     dna_engine_start_presence_listener(ctx->engine, ctx->fingerprint);
     dna_engine_start_watermark_listener(ctx->engine, ctx->fingerprint);
-
-    return NULL;
-}
-
-/* Minimal listener worker - outbox only (for Android service/JNI notifications) */
-static void *parallel_listener_worker_minimal(void *arg) {
-    parallel_listener_ctx_t *ctx = (parallel_listener_ctx_t *)arg;
-    if (!ctx || !ctx->engine) return NULL;
-
-    /* Only outbox listener - presence/watermark not needed for notifications */
-    dna_engine_listen_outbox(ctx->engine, ctx->fingerprint);
-
-    return NULL;
 }
 
 /**
@@ -286,7 +275,7 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
     if (engine->messenger && engine->messenger->transport_ctx) {
         QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: checking for missed messages");
         size_t received = 0;
-        transport_check_offline_messages(engine->messenger->transport_ctx, NULL, &received);
+        transport_check_offline_messages(engine->messenger->transport_ctx, NULL, true, &received);
         if (received > 0) {
             QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: received %zu missed messages", received);
         }
@@ -703,20 +692,9 @@ static int dna_get_optimal_worker_count(void) {
     return workers;
 }
 
-/**
- * Get optimal parallel operation limit based on CPU cores.
- * Returns: min(cores, DNA_PARALLEL_MAX), clamped to DNA_PARALLEL_MIN.
- * Used for: parallel listener setup, batch DHT operations, etc.
- */
-static int dna_get_parallel_limit(void) {
-    int cores = qgp_platform_cpu_count();
-    int limit = cores;
-
-    if (limit < DNA_PARALLEL_MIN) limit = DNA_PARALLEL_MIN;
-    if (limit > DNA_PARALLEL_MAX) limit = DNA_PARALLEL_MAX;
-
-    return limit;
-}
+/* NOTE: dna_get_parallel_limit() removed in v0.6.15
+ * Parallel operations now use centralized threadpool (crypto/utils/threadpool.c)
+ * which handles optimal sizing via threadpool_optimal_size(). */
 
 int dna_start_workers(dna_engine_t *engine) {
     if (!engine) return -1;
@@ -933,7 +911,7 @@ static void *background_fetch_thread(void *arg) {
         QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetching from %s... (attempt %d/%d)",
                      sender_fp ? sender_fp : "ALL contacts", attempt + 1, max_retries);
 
-        messenger_transport_check_offline_messages(engine->messenger, sender_fp, &offline_count);
+        messenger_transport_check_offline_messages(engine->messenger, sender_fp, true, &offline_count);
 
         if (offline_count > 0) {
             QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetch complete: %zu messages", offline_count);
@@ -3667,11 +3645,15 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
         }
     }
 
-    /* Check DHT offline queue for messages from contacts */
+    /* Check DHT offline queue for messages from contacts.
+     * publish_watermarks=true when user is active (notifies senders we received messages).
+     * publish_watermarks=false for background caching (user hasn't read them yet). */
+    bool publish_watermarks = task->params.check_offline_messages.publish_watermarks;
     size_t offline_count = 0;
-    int rc = messenger_transport_check_offline_messages(engine->messenger, NULL, &offline_count);
+    int rc = messenger_transport_check_offline_messages(engine->messenger, NULL, publish_watermarks, &offline_count);
     if (rc == 0) {
-        QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] Direct messages check complete: %zu new", offline_count);
+        QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] Direct messages check complete: %zu new (watermarks=%s)",
+                     offline_count, publish_watermarks ? "yes" : "no");
     } else {
         QGP_LOG_WARN("DNA_ENGINE", "[OFFLINE] Direct messages check failed with rc=%d", rc);
     }
@@ -5967,8 +5949,25 @@ dna_request_id_t dna_engine_check_offline_messages(
 ) {
     if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
 
+    dna_task_params_t params = {0};
+    params.check_offline_messages.publish_watermarks = true;  /* User is active */
+
     dna_task_callback_t cb = { .completion = callback };
-    return dna_submit_task(engine, TASK_CHECK_OFFLINE_MESSAGES, NULL, cb, user_data);
+    return dna_submit_task(engine, TASK_CHECK_OFFLINE_MESSAGES, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_check_offline_messages_cached(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    params.check_offline_messages.publish_watermarks = false;  /* Background caching only */
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_CHECK_OFFLINE_MESSAGES, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_check_offline_messages_from(
@@ -5996,7 +5995,7 @@ dna_request_id_t dna_engine_check_offline_messages_from(
     QGP_LOG_INFO(LOG_TAG, "[OFFLINE] Checking messages from %.20s...", contact_fingerprint);
 
     size_t offline_count = 0;
-    int rc = messenger_transport_check_offline_messages(engine->messenger, contact_fingerprint, &offline_count);
+    int rc = messenger_transport_check_offline_messages(engine->messenger, contact_fingerprint, true, &offline_count);
     if (rc == 0) {
         QGP_LOG_INFO(LOG_TAG, "[OFFLINE] From %.20s...: %zu new messages", contact_fingerprint, offline_count);
     } else {
@@ -7076,62 +7075,43 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Found %zu contacts in database", list->count);
 
     /* PERF: Start listeners in parallel (mobile performance optimization)
-     * Uses thread pool with dynamic limit based on CPU cores (see dna_get_parallel_limit).
-     * Each thread sets up outbox + presence + watermark listeners for one contact. */
+     * Uses centralized thread pool for parallel listener setup.
+     * Each task sets up outbox + presence + watermark listeners for one contact. */
     size_t count = list->count;
-    int max_parallel = dna_get_parallel_limit();
 
     parallel_listener_ctx_t *tasks = calloc(count, sizeof(parallel_listener_ctx_t));
-    pthread_t *threads = calloc(count, sizeof(pthread_t));
-    if (!tasks || !threads) {
+    void **args = calloc(count, sizeof(void *));
+    if (!tasks || !args) {
         QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to allocate parallel task memory");
         free(tasks);
-        free(threads);
+        free(args);
         contacts_db_free_list(list);
         engine->listeners_starting = false;
         return 0;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Starting parallel listeners for %zu contacts (max %d concurrent)",
-                 count, max_parallel);
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Starting parallel listeners for %zu contacts via thread pool", count);
 
-    size_t active = 0;   /* Index of oldest non-joined thread */
-    size_t started = 0;  /* Number of threads started */
-
+    size_t valid_count = 0;
     for (size_t i = 0; i < count; i++) {
         const char *contact_id = list->contacts[i].identity;
         if (!contact_id) continue;
 
         /* Initialize task context */
-        tasks[i].engine = engine;
-        strncpy(tasks[i].fingerprint, contact_id, 128);
-        tasks[i].fingerprint[128] = '\0';
-
-        /* Spawn worker thread */
-        if (pthread_create(&threads[i], NULL, parallel_listener_worker, &tasks[i]) == 0) {
-            started++;
-            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Thread[%zu] started for %.32s...", i, contact_id);
-        } else {
-            QGP_LOG_WARN(LOG_TAG, "[LISTEN] Failed to create thread for contact[%zu]", i);
-            continue;
-        }
-
-        /* Limit concurrent threads: wait for oldest when at max */
-        if (started - active >= (size_t)max_parallel) {
-            pthread_join(threads[active], NULL);
-            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Thread[%zu] joined", active);
-            active++;
-        }
+        tasks[valid_count].engine = engine;
+        strncpy(tasks[valid_count].fingerprint, contact_id, 128);
+        tasks[valid_count].fingerprint[128] = '\0';
+        args[valid_count] = &tasks[valid_count];
+        valid_count++;
     }
 
-    /* Wait for remaining threads */
-    for (size_t i = active; i < started; i++) {
-        pthread_join(threads[i], NULL);
-        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Thread[%zu] joined (final)", i);
+    /* Execute all listener setups in parallel via thread pool */
+    if (valid_count > 0) {
+        threadpool_map(parallel_listener_worker, args, valid_count, 0);
     }
 
     free(tasks);
-    free(threads);
+    free(args);
 
     /* Cleanup contact list */
     contacts_db_free_list(list);
@@ -7145,165 +7125,17 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     }
 
     engine->listeners_starting = false;
-    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Parallel setup complete: %zu contacts processed", count);
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Parallel setup complete: %zu contacts processed", valid_count);
 
     /* Debug: log all active listeners for troubleshooting */
     dna_engine_log_active_listeners(engine);
 
-    return started;
+    return valid_count;
 }
 
-/**
- * Start listeners for all contacts - MINIMAL version for Android service/JNI
- *
- * Only starts notification-relevant listeners (outbox, contact requests, groups).
- * Skips presence and watermark listeners which are only useful for UI.
- *
- * @param engine Engine context
- * @return Number of contacts with listeners started
- */
-int dna_engine_listen_all_contacts_minimal(dna_engine_t *engine)
-{
-    QGP_LOG_DEBUG(LOG_TAG, "[LISTEN_MIN] dna_engine_listen_all_contacts_minimal() called");
-
-    if (!engine) {
-        QGP_LOG_ERROR(LOG_TAG, "[LISTEN_MIN] engine is NULL");
-        return 0;
-    }
-    if (!engine->identity_loaded) {
-        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN_MIN] identity not loaded yet");
-        return 0;
-    }
-
-    /* Race condition prevention */
-    if (engine->listeners_starting) {
-        QGP_LOG_WARN(LOG_TAG, "[LISTEN_MIN] Listener setup already in progress, waiting...");
-        for (int wait_count = 0; wait_count < 50 && engine->listeners_starting; wait_count++) {
-            qgp_platform_sleep_ms(100);
-        }
-        if (engine->listeners_starting) {
-            QGP_LOG_WARN(LOG_TAG, "[LISTEN_MIN] Timed out waiting for listener setup");
-        } else {
-            pthread_mutex_lock(&engine->outbox_listeners_mutex);
-            int existing_count = 0;
-            for (int i = 0; i < DNA_MAX_OUTBOX_LISTENERS; i++) {
-                if (engine->outbox_listeners[i].active) existing_count++;
-            }
-            pthread_mutex_unlock(&engine->outbox_listeners_mutex);
-            return existing_count;
-        }
-    }
-    engine->listeners_starting = true;
-
-    /* Wait for DHT to become ready */
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-    if (dht_ctx && !dht_context_is_ready(dht_ctx)) {
-        QGP_LOG_INFO(LOG_TAG, "[LISTEN_MIN] Waiting for DHT to become ready...");
-        int wait_seconds = 0;
-        while (!dht_context_is_ready(dht_ctx) && wait_seconds < 30) {
-            qgp_platform_sleep_ms(1000);
-            wait_seconds++;
-        }
-        if (dht_context_is_ready(dht_ctx)) {
-            QGP_LOG_INFO(LOG_TAG, "[LISTEN_MIN] DHT ready after %d seconds", wait_seconds);
-        } else {
-            QGP_LOG_WARN(LOG_TAG, "[LISTEN_MIN] DHT not ready after 30s, proceeding anyway");
-        }
-    }
-
-    /* Initialize contacts database */
-    if (contacts_db_init(engine->fingerprint) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "[LISTEN_MIN] Failed to initialize contacts database");
-        engine->listeners_starting = false;
-        return 0;
-    }
-
-    /* Get all contacts */
-    contact_list_t *list = NULL;
-    int db_result = contacts_db_list(&list);
-    if (db_result != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "[LISTEN_MIN] contacts_db_list failed: %d", db_result);
-        if (list) contacts_db_free_list(list);
-        engine->listeners_starting = false;
-        return 0;
-    }
-    if (!list || list->count == 0) {
-        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN_MIN] No contacts in database");
-        if (list) contacts_db_free_list(list);
-        /* Still start contact request listener */
-        size_t contact_req_token = dna_engine_start_contact_request_listener(engine);
-        if (contact_req_token > 0) {
-            QGP_LOG_INFO(LOG_TAG, "[LISTEN_MIN] Contact request listener started (no contacts)");
-        }
-        engine->listeners_starting = false;
-        return 0;
-    }
-
-    QGP_LOG_DEBUG(LOG_TAG, "[LISTEN_MIN] Found %zu contacts", list->count);
-
-    /* Start MINIMAL listeners in parallel (outbox only - no presence/watermark) */
-    size_t count = list->count;
-    int max_parallel = dna_get_parallel_limit();
-
-    parallel_listener_ctx_t *tasks = calloc(count, sizeof(parallel_listener_ctx_t));
-    pthread_t *threads = calloc(count, sizeof(pthread_t));
-    if (!tasks || !threads) {
-        free(tasks);
-        free(threads);
-        contacts_db_free_list(list);
-        engine->listeners_starting = false;
-        return 0;
-    }
-
-    QGP_LOG_INFO(LOG_TAG, "[LISTEN_MIN] Starting MINIMAL listeners for %zu contacts (outbox only)", count);
-
-    size_t active = 0;
-    size_t started = 0;
-
-    for (size_t i = 0; i < count; i++) {
-        const char *contact_id = list->contacts[i].identity;
-        if (!contact_id) continue;
-
-        tasks[i].engine = engine;
-        strncpy(tasks[i].fingerprint, contact_id, 128);
-        tasks[i].fingerprint[128] = '\0';
-
-        /* Use MINIMAL worker - outbox only, no presence/watermark */
-        if (pthread_create(&threads[i], NULL, parallel_listener_worker_minimal, &tasks[i]) == 0) {
-            started++;
-        }
-
-        if (started - active >= (size_t)max_parallel) {
-            pthread_join(threads[active], NULL);
-            active++;
-        }
-    }
-
-    /* Wait for remaining threads */
-    for (size_t i = active; i < started; i++) {
-        pthread_join(threads[i], NULL);
-    }
-
-    free(tasks);
-    free(threads);
-    contacts_db_free_list(list);
-
-    /* Start contact request listener (needed for notifications) */
-    size_t contact_req_token = dna_engine_start_contact_request_listener(engine);
-    if (contact_req_token > 0) {
-        QGP_LOG_INFO(LOG_TAG, "[LISTEN_MIN] Contact request listener started");
-    }
-
-    /* Subscribe to all groups (needed for group message notifications) */
-    int group_count = dna_engine_subscribe_all_groups(engine);
-    QGP_LOG_INFO(LOG_TAG, "[LISTEN_MIN] Subscribed to %d groups", group_count);
-
-    engine->listeners_starting = false;
-    QGP_LOG_INFO(LOG_TAG, "[LISTEN_MIN] Minimal setup complete: %zu outbox + contact_req + %d groups",
-                 started, group_count);
-
-    return started;
-}
+/* NOTE: dna_engine_listen_all_contacts_minimal() removed in v0.6.15
+ * Android service now uses polling (nativeCheckOfflineMessages) instead of listeners.
+ * Polling is more battery-efficient and doesn't require continuous DHT subscriptions. */
 
 void dna_engine_cancel_all_outbox_listeners(dna_engine_t *engine)
 {

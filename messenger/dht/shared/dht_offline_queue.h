@@ -273,18 +273,19 @@ void dht_generate_watermark_key(
 );
 
 /**
- * Publish watermark asynchronously (fire-and-forget)
+ * Publish watermark synchronously (blocking)
  *
  * Used by recipient after receiving messages from a sender.
  * Publishes the highest seq_num received from that sender.
- * Async: does not block, failure is tolerable (retry on next receive).
+ * Call from thread pool for parallel publishing.
  *
  * @param ctx DHT context
  * @param recipient My fingerprint (watermark owner)
  * @param sender Contact fingerprint (whose messages I received)
  * @param seq_num Latest seq_num received from this sender
+ * @return 0 on success, -1 on failure
  */
-void dht_publish_watermark_async(
+int dht_publish_watermark_sync(
     dht_context_t *ctx,
     const char *recipient,
     const char *sender,

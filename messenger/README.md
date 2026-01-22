@@ -168,8 +168,8 @@ Public bootstrap nodes are operated by cpunk.io — see [docs/DNA_NODUS.md](docs
 
 | Component | Version |
 |-----------|---------|
-| C Library | v0.6.5 |
-| Flutter App | v0.100.9 |
+| C Library | v0.6.15 |
+| Flutter App | v0.100.24 |
 | DNA Nodus | v0.4.5 |
 
 ---

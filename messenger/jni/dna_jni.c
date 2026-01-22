@@ -1493,15 +1493,11 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReleaseEngine(JNIEnv *env
  */
 JNIEXPORT jint JNICALL
 Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeListenAllContacts(JNIEnv *env, jobject thiz) {
-    if (!g_engine) {
-        LOGW("nativeListenAllContacts: No engine available");
-        return 0;
-    }
-
-    LOGI("nativeListenAllContacts: Starting MINIMAL listeners (outbox + contact_req + groups)...");
-    int count = dna_engine_listen_all_contacts_minimal(g_engine);
-    LOGI("nativeListenAllContacts: Started minimal listeners for %d contacts", count);
-    return (jint)count;
+    /* DEPRECATED: Android service now uses polling (nativeCheckOfflineMessages) instead of listeners.
+     * Polling is more battery-efficient and doesn't require continuous DHT subscriptions.
+     * This function is kept for backwards compatibility but does nothing. */
+    LOGI("nativeListenAllContacts: DEPRECATED - use nativeCheckOfflineMessages for polling");
+    return 0;
 }
 
 /**
@@ -1558,12 +1554,14 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeCheckOfflineMessages(JNIE
         return -2;
     }
 
-    LOGI("nativeCheckOfflineMessages: Checking all contacts' outboxes...");
+    LOGI("nativeCheckOfflineMessages: Caching messages from all contacts (no watermarks)...");
 
-    /* Synchronous wrapper using callback context */
+    /* Synchronous wrapper using callback context.
+     * Use _cached variant: messages are being cached by background service,
+     * NOT read by user yet. Watermarks would incorrectly mark as "delivered". */
     sync_load_ctx_t ctx = { .result = -100, .done = false };
 
-    dna_request_id_t req_id = dna_engine_check_offline_messages(
+    dna_request_id_t req_id = dna_engine_check_offline_messages_cached(
         g_engine, sync_load_callback, &ctx);
 
     if (req_id == 0) {
@@ -1584,9 +1582,9 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeCheckOfflineMessages(JNIE
     }
 
     if (ctx.result == 0) {
-        LOGI("nativeCheckOfflineMessages: Check completed successfully");
+        LOGI("nativeCheckOfflineMessages: Caching completed (watermarks deferred until user reads)");
     } else {
-        LOGE("nativeCheckOfflineMessages: Check failed: %d", ctx.result);
+        LOGE("nativeCheckOfflineMessages: Caching failed: %d", ctx.result);
     }
 
     return ctx.result;

@@ -1621,6 +1621,25 @@ DNA_API dna_request_id_t dna_engine_check_offline_messages(
 );
 
 /**
+ * Check for offline messages (background caching mode)
+ *
+ * Like dna_engine_check_offline_messages but does NOT publish watermarks.
+ * Use this for background service polling where messages are cached but
+ * not yet read by the user. Watermarks should only be published when
+ * the user actually views the messages.
+ *
+ * @param engine    Engine instance (must have identity loaded)
+ * @param callback  Called on completion
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_check_offline_messages_cached(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
  * Force check for offline messages from a specific contact
  *
  * Queries only the specified contact's outbox instead of all contacts.
@@ -2250,21 +2269,9 @@ DNA_API int dna_engine_listen_all_contacts(
     dna_engine_t *engine
 );
 
-/**
- * Start listeners for all contacts - MINIMAL version for Android service
- *
- * Only starts notification-relevant listeners (outbox, contact requests, groups).
- * Skips presence and watermark listeners which are only useful for UI.
- * Waits for DHT to become ready before starting listeners.
- *
- * Use this from JNI/service when only background notifications are needed.
- *
- * @param engine    Engine instance
- * @return          Number of contacts with listeners started
- */
-DNA_API int dna_engine_listen_all_contacts_minimal(
-    dna_engine_t *engine
-);
+/* NOTE: dna_engine_listen_all_contacts_minimal() removed in v0.6.15
+ * Android service now uses polling (dna_engine_check_offline_messages_cached)
+ * instead of listeners for better battery efficiency. */
 
 /**
  * Cancel all active outbox listeners

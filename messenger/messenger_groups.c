@@ -869,7 +869,7 @@ int messenger_sync_groups(messenger_context_t *ctx) {
     // Step 1: Check for offline messages (which may contain invitations)
     if (ctx->transport_enabled && ctx->transport_ctx) {
         size_t offline_count = 0;
-        messenger_transport_check_offline_messages(ctx, NULL, &offline_count);
+        messenger_transport_check_offline_messages(ctx, NULL, true, &offline_count);
         if (offline_count > 0) {
             QGP_LOG_INFO(LOG_TAG, "Retrieved %zu offline messages (may include invitations)\n", offline_count);
         }

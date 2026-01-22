@@ -28,7 +28,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `int dna_engine_delete_identity_sync(...)` | Delete identity and all local data |
 | `bool dna_engine_has_identity(...)` | Check if identity exists (v0.3.0 single-user) |
 | `dna_request_id_t dna_engine_load_identity(...)` | Load and activate identity, bootstrap DHT |
-| `dna_request_id_t dna_engine_load_identity_minimal(...)` | Load identity with minimal init - DHT + listeners only (v0.5.24+) |
+| `dna_request_id_t dna_engine_load_identity_minimal(...)` | Load identity with minimal init - DHT + polling only, no presence/listeners (v0.6.15+) |
 | `bool dna_engine_is_identity_loaded(...)` | Check if identity is currently loaded (v0.5.24+) |
 | `bool dna_engine_is_transport_ready(...)` | Check if transport layer is initialized (v0.5.26+) |
 | `dna_request_id_t dna_engine_register_name(...)` | Register human-readable name in DHT |
@@ -76,7 +76,8 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `int dna_engine_set_message_queue_capacity(...)` | Set message queue capacity |
 | `dna_request_id_t dna_engine_get_conversation(...)` | Get conversation with contact |
 | `dna_request_id_t dna_engine_get_conversation_page(...)` | Get conversation page (paginated, newest first) |
-| `dna_request_id_t dna_engine_check_offline_messages(...)` | Force check for offline messages |
+| `dna_request_id_t dna_engine_check_offline_messages(...)` | Force check for offline messages (publishes watermarks) |
+| `dna_request_id_t dna_engine_check_offline_messages_cached(...)` | Check offline messages without publishing watermarks (v0.6.15+, for background service) |
 | `int dna_engine_delete_message_sync(...)` | Delete message from local database |
 | `int dna_engine_retry_pending_messages(...)` | Retry all pending/failed messages |
 | `int dna_engine_retry_message(...)` | Retry single failed message by ID |
@@ -133,7 +134,6 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `size_t dna_engine_listen_outbox(dna_engine_t*, const char*)` | Start listening for updates to contact's outbox |
 | `void dna_engine_cancel_outbox_listener(dna_engine_t*, const char*)` | Cancel outbox listener |
 | `int dna_engine_listen_all_contacts(dna_engine_t*)` | Start all listeners (outbox + presence + watermark), waits for DHT ready |
-| `int dna_engine_listen_all_contacts_minimal(dna_engine_t*)` | Start minimal listeners for notifications (outbox + contact_req + groups only) |
 | `void dna_engine_cancel_all_outbox_listeners(dna_engine_t*)` | Cancel all outbox listeners |
 
 ## 1.10 Presence Listeners

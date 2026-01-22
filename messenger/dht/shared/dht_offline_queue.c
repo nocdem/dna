@@ -823,38 +823,40 @@ void dht_generate_watermark_key(const char *recipient, const char *sender,
 /**
  * Async watermark publish context (for pthread)
  */
-typedef struct {
-    dht_context_t *ctx;
-    char recipient[129];
-    char sender[129];
-    uint64_t seq_num;
-} watermark_publish_ctx_t;
 
 /**
- * Background thread for async watermark publish
+ * Publish watermark synchronously (blocking)
+ *
+ * Called from thread pool workers. Includes retry with exponential backoff.
+ *
+ * @param ctx DHT context
+ * @param recipient Recipient fingerprint (watermark owner / "my" fingerprint)
+ * @param sender Sender fingerprint (whose outbox to prune)
+ * @param seq_num Sequence number to publish
+ * @return 0 on success, -1 on failure
  */
-static void *watermark_publish_thread(void *arg) {
-    watermark_publish_ctx_t *wctx = (watermark_publish_ctx_t *)arg;
-
-    if (!wctx || !wctx->ctx) {
-        free(wctx);
-        return NULL;
+int dht_publish_watermark_sync(dht_context_t *ctx,
+                               const char *recipient,
+                               const char *sender,
+                               uint64_t seq_num) {
+    if (!ctx || !recipient || !sender || seq_num == 0) {
+        return -1;
     }
 
     // Generate watermark key (SHA3-512 hash to match listener key format)
     uint8_t key[64];
-    dht_generate_watermark_key(wctx->recipient, wctx->sender, key);
+    dht_generate_watermark_key(recipient, sender, key);
 
     // Serialize seq_num to 8 bytes big-endian
     uint8_t value[8];
-    value[0] = (uint8_t)(wctx->seq_num >> 56);
-    value[1] = (uint8_t)(wctx->seq_num >> 48);
-    value[2] = (uint8_t)(wctx->seq_num >> 40);
-    value[3] = (uint8_t)(wctx->seq_num >> 32);
-    value[4] = (uint8_t)(wctx->seq_num >> 24);
-    value[5] = (uint8_t)(wctx->seq_num >> 16);
-    value[6] = (uint8_t)(wctx->seq_num >> 8);
-    value[7] = (uint8_t)(wctx->seq_num);
+    value[0] = (uint8_t)(seq_num >> 56);
+    value[1] = (uint8_t)(seq_num >> 48);
+    value[2] = (uint8_t)(seq_num >> 40);
+    value[3] = (uint8_t)(seq_num >> 32);
+    value[4] = (uint8_t)(seq_num >> 24);
+    value[5] = (uint8_t)(seq_num >> 16);
+    value[6] = (uint8_t)(seq_num >> 8);
+    value[7] = (uint8_t)(seq_num);
 
     // Retry with exponential backoff (PUT_SIGNED can fail transiently)
     int max_retries = 3;
@@ -862,17 +864,17 @@ static void *watermark_publish_thread(void *arg) {
     int result = -1;
 
     for (int attempt = 1; attempt <= max_retries; attempt++) {
-        result = dht_put_signed(wctx->ctx,
-                                 key, 64,
-                                 value, sizeof(value),
-                                 1,  // value_id=1 for replacement
-                                 DHT_WATERMARK_TTL,
-                                 "watermark");
+        result = dht_put_signed(ctx,
+                                key, 64,
+                                value, sizeof(value),
+                                1,  // value_id=1 for replacement
+                                DHT_WATERMARK_TTL,
+                                "watermark");
 
         if (result == 0) {
-            QGP_LOG_WARN(LOG_TAG, "[WATERMARK-PUT] Published OK: %.20s... → %.20s... seq=%lu (attempt %d)\n",
-                   wctx->recipient, wctx->sender, (unsigned long)wctx->seq_num, attempt);
-            break;
+            QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK-PUT] Published OK: %.20s... → %.20s... seq=%lu (attempt %d)\n",
+                   recipient, sender, (unsigned long)seq_num, attempt);
+            return 0;
         }
 
         if (attempt < max_retries) {
@@ -883,53 +885,9 @@ static void *watermark_publish_thread(void *arg) {
         }
     }
 
-    if (result != 0) {
-        QGP_LOG_WARN(LOG_TAG, "[WATERMARK-PUT] FAILED after %d attempts: %.20s... → %.20s... seq=%lu\n",
-               max_retries, wctx->recipient, wctx->sender, (unsigned long)wctx->seq_num);
-    }
-
-    free(wctx);
-    return NULL;
-}
-
-/**
- * Publish watermark asynchronously (fire-and-forget)
- */
-void dht_publish_watermark_async(dht_context_t *ctx,
-                                  const char *recipient,
-                                  const char *sender,
-                                  uint64_t seq_num) {
-    if (!ctx || !recipient || !sender || seq_num == 0) {
-        return;
-    }
-
-    // Allocate context for background thread
-    watermark_publish_ctx_t *wctx = (watermark_publish_ctx_t *)calloc(1, sizeof(watermark_publish_ctx_t));
-    if (!wctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate watermark publish context\n");
-        return;
-    }
-
-    wctx->ctx = ctx;
-    strncpy(wctx->recipient, recipient, sizeof(wctx->recipient) - 1);
-    strncpy(wctx->sender, sender, sizeof(wctx->sender) - 1);
-    wctx->seq_num = seq_num;
-
-    // Create detached thread for fire-and-forget
-    pthread_t thread;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-
-    int rc = pthread_create(&thread, &attr, watermark_publish_thread, wctx);
-    pthread_attr_destroy(&attr);
-
-    if (rc != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to create watermark publish thread: %s\n", strerror(rc));
-        free(wctx);
-    } else {
-        QGP_LOG_DEBUG(LOG_TAG, "Spawned async watermark publish: seq=%lu\n", (unsigned long)seq_num);
-    }
+    QGP_LOG_WARN(LOG_TAG, "[WATERMARK-PUT] FAILED after %d attempts: %.20s... → %.20s... seq=%lu\n",
+           max_retries, recipient, sender, (unsigned long)seq_num);
+    return -1;
 }
 
 /**
