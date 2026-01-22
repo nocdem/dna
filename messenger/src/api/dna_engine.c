@@ -5410,7 +5410,8 @@ dna_request_id_t dna_engine_lookup_profile(
     void *user_data
 ) {
     if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
-    if (!engine->identity_loaded) return DNA_REQUEST_ID_INVALID;
+    /* lookupProfile can work without identity loaded - only needs DHT context.
+     * This is needed for restore flow to check if profile exists in DHT. */
     if (strlen(fingerprint) != 128) return DNA_REQUEST_ID_INVALID;
 
     dna_task_params_t params = {0};
