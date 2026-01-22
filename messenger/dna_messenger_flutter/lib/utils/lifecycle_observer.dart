@@ -185,9 +185,13 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Desktop: No-op
       PlatformHandler.instance.onPause(engine);
 
-      // v0.100.23+: Destroy engine to cancel all DHT listeners
-      // Service runs with minimal mode (polling only, no listeners)
-      // Engine will be recreated when app resumes
+      // v0.100.24+: Explicitly dispose engine SYNCHRONOUSLY before invalidating
+      // This ensures all DHT listeners are cancelled and lock is released
+      // BEFORE the service tries to take over. ref.invalidate() is async and
+      // won't wait for dispose to complete.
+      engine.dispose();
+
+      // Invalidate provider so next access creates fresh engine
       // NOTE: Do NOT clear currentFingerprintProvider - we need it to reload on resume
       ref.invalidate(engineProvider);
     } catch (_) {
