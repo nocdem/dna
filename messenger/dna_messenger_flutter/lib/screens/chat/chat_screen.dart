@@ -1,4 +1,5 @@
 // Chat Screen - Conversation with message bubbles
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -46,6 +47,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _searchController = TextEditingController();
   final _searchFocusNode = FocusNode();
 
+  // Presence polling timer for real-time status updates
+  Timer? _presenceTimer;
+
   @override
   void initState() {
     super.initState();
@@ -58,7 +62,54 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _markMessagesAsRead();
       _syncMessagesOnOpen(); // v0.6.6: Sync messages when opening chat
+      _startPresencePolling(); // v0.100.26: Poll presence for real-time updates
     });
+  }
+
+  /// Start polling the selected contact's presence for real-time status updates
+  void _startPresencePolling() {
+    _presenceTimer?.cancel();
+    _presenceTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      _pollSelectedContactPresence();
+    });
+    // Also poll immediately
+    _pollSelectedContactPresence();
+  }
+
+  /// Poll the selected contact's presence and update UI if changed
+  Future<void> _pollSelectedContactPresence() async {
+    final contact = ref.read(selectedContactProvider);
+    if (contact == null) return;
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final lastSeen = await engine.lookupPresence(contact.fingerprint);
+
+      // Consider online if seen within the last 2 minutes
+      final isOnline = DateTime.now().difference(lastSeen).inMinutes < 2;
+
+      // Only update if status changed
+      if (contact.isOnline != isOnline) {
+        ref.read(selectedContactProvider.notifier).state = Contact(
+          fingerprint: contact.fingerprint,
+          displayName: contact.displayName,
+          nickname: contact.nickname,
+          isOnline: isOnline,
+          lastSeen: lastSeen,
+        );
+      } else if (lastSeen.millisecondsSinceEpoch > contact.lastSeen.millisecondsSinceEpoch) {
+        // Update lastSeen even if online status didn't change
+        ref.read(selectedContactProvider.notifier).state = Contact(
+          fingerprint: contact.fingerprint,
+          displayName: contact.displayName,
+          nickname: contact.nickname,
+          isOnline: contact.isOnline,
+          lastSeen: lastSeen,
+        );
+      }
+    } catch (e) {
+      // Silently ignore - presence lookup can fail during network issues
+    }
   }
 
   /// v0.6.6: Sync old messages when opening a chat
@@ -158,6 +209,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   void dispose() {
+    _presenceTimer?.cancel();
     _messageController.removeListener(_onTextChanged);
     _scrollController.removeListener(_onScroll);
     _messageController.dispose();
