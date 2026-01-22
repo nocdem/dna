@@ -5,12 +5,30 @@
 
 #include "transport_core.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/threadpool.h"   /* Parallel watermark publishing */
 #include "dht/client/dht_singleton.h"
 #include "dht/shared/dht_dm_outbox.h"  /* v0.5.0+ daily bucket API */
 #include "database/contacts_db.h"       /* v0.5.22+ smart sync timestamps */
 #include <time.h>
 
 #define LOG_TAG "SPILLWAY"
+
+/* Context for parallel watermark publishing */
+typedef struct {
+    dht_context_t *dht;
+    char my_identity[129];
+    char sender[129];
+    uint64_t max_seq_num;
+} watermark_task_t;
+
+/* Thread pool task: publish single watermark */
+static void watermark_publish_task(void *arg) {
+    watermark_task_t *task = (watermark_task_t *)arg;
+    if (!task) return;
+
+    /* Use synchronous publish since we're already in thread pool worker */
+    dht_publish_watermark_sync(task->dht, task->my_identity, task->sender, task->max_seq_num);
+}
 
 /* 3 days in seconds - threshold for full sync */
 #define SMART_SYNC_FULL_THRESHOLD (3 * 86400)
@@ -81,12 +99,15 @@ int transport_queue_offline_message(
  *
  * @param ctx Transport context
  * @param sender_fp If non-NULL, fetch only from this contact. If NULL, fetch from all contacts.
+ * @param publish_watermarks If true, publish watermarks to tell senders we received their messages.
+ *                           Set false for background service caching (user hasn't read them yet).
  * @param messages_received Output number of messages delivered (optional)
  * @return 0 on success, -1 on error
  */
 int transport_check_offline_messages(
     transport_t *ctx,
     const char *sender_fp,
+    bool publish_watermarks,
     size_t *messages_received)
 {
     QGP_LOG_DEBUG(LOG_TAG, "Checking offline messages (sender=%s)\n",
@@ -291,17 +312,33 @@ int transport_check_offline_messages(
         }
     }
 
-    // Publish watermarks asynchronously (fire-and-forget)
-    // This tells senders which messages we've received so they can prune their outboxes
-    for (size_t i = 0; i < watermark_count; i++) {
-        QGP_LOG_INFO(LOG_TAG, "Publishing watermark for sender %.20s...: seq=%lu\n",
-               watermarks[i].sender, (unsigned long)watermarks[i].max_seq_num);
-        dht_publish_watermark_async(
-            dht,
-            ctx->config.identity,     // My fingerprint (recipient/watermark owner)
-            watermarks[i].sender,     // Sender fingerprint
-            watermarks[i].max_seq_num
-        );
+    // Publish watermarks only if requested (skip for background caching)
+    if (publish_watermarks && watermark_count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Publishing %zu watermarks via thread pool", watermark_count);
+
+        // Build task array for thread pool
+        watermark_task_t *tasks = calloc(watermark_count, sizeof(watermark_task_t));
+        void **task_args = calloc(watermark_count, sizeof(void *));
+
+        if (tasks && task_args) {
+            for (size_t i = 0; i < watermark_count; i++) {
+                tasks[i].dht = dht;
+                strncpy(tasks[i].my_identity, ctx->config.identity, sizeof(tasks[i].my_identity) - 1);
+                strncpy(tasks[i].sender, watermarks[i].sender, sizeof(tasks[i].sender) - 1);
+                tasks[i].max_seq_num = watermarks[i].max_seq_num;
+                task_args[i] = &tasks[i];
+            }
+
+            // Publish all watermarks in parallel using thread pool
+            threadpool_map(watermark_publish_task, task_args, watermark_count, 0);
+
+            free(tasks);
+            free(task_args);
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to allocate watermark task array");
+        }
+    } else if (watermark_count > 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "Skipping %zu watermarks (background caching mode)", watermark_count);
     }
 
     if (watermarks) {

@@ -157,7 +157,7 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 | Function | Description |
 |----------|-------------|
 | `void dht_generate_watermark_key(const char*, const char*, uint8_t*)` | Generate watermark DHT key |
-| `void dht_publish_watermark_async(dht_context_t*, const char*, const char*, uint64_t)` | Publish watermark (async) |
+| `int dht_publish_watermark_sync(dht_context_t*, const char*, const char*, uint64_t)` | Publish watermark (blocking, v0.6.15+) |
 | `int dht_get_watermark(dht_context_t*, const char*, const char*, uint64_t*)` | Get watermark (blocking) |
 | `size_t dht_listen_watermark(dht_context_t*, const char*, const char*, dht_watermark_callback_t, void*)` | Listen for watermark updates |
 | `void dht_cancel_watermark_listener(dht_context_t*, size_t)` | Cancel watermark listener |

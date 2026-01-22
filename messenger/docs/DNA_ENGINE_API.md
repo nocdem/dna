@@ -1,10 +1,11 @@
 # DNA Engine API Reference
 
-**Version:** 1.10.0
-**Date:** 2026-01-09
+**Version:** 1.11.0
+**Date:** 2026-01-22
 **Location:** `include/dna/dna_engine.h`
 
 **Changelog:**
+- v1.11.0 (2026-01-22): Added centralized thread pool for parallel I/O, `dna_engine_check_offline_messages_cached()` for background polling without watermarks, removed `dna_engine_listen_all_contacts_minimal()` (replaced by polling)
 - v1.10.0 (2026-01-09): Made DHT PUT synchronous for accurate status, added DNA_ENGINE_ERROR_KEY_UNAVAILABLE (-116) for offline key lookup failures
 - v1.9.0 (2026-01-09): Added Bulletproof Message Delivery - `dna_engine_retry_pending_messages()` for auto-retry of failed messages on network reconnect/identity load
 - v1.8.0 (2025-12-24): Added Debug Logging API (section 10) - ring buffer log storage, `dna_engine_debug_log_*()` functions for in-app log viewing on mobile
@@ -590,7 +591,7 @@ identity in full mode to enable offline message fetching.
 
 ---
 
-### dna_engine_load_identity_minimal (v0.5.24+)
+### dna_engine_load_identity_minimal (v0.5.24+, updated v0.6.15)
 
 ```c
 dna_request_id_t dna_engine_load_identity_minimal(
@@ -602,12 +603,12 @@ dna_request_id_t dna_engine_load_identity_minimal(
 );
 ```
 
-Lightweight version for background services. Only initializes DHT connection
-and DHT listeners for message notifications.
+Lightweight version for background services. Initializes DHT connection and
+transport for polling-based message retrieval. No listeners, no presence.
 
 **Skips (to save resources when app is closed):**
-- P2P transport layer
-- Presence heartbeat
+- Presence registration and heartbeat
+- DHT listeners (uses polling instead, v0.6.15+)
 - Contact sync from DHT
 - Pending message retry
 - Wallet creation
@@ -622,8 +623,12 @@ and DHT listeners for message notifications.
 **Returns:** Request ID (0 on immediate error)
 
 **Use Case:** Android ForegroundService uses this when the app is closed.
-DHT listeners detect new messages and trigger notifications. Actual message
-download happens when Flutter opens and calls `checkOfflineMessages()`.
+The service periodically calls `checkOfflineMessages()` to poll for new
+messages. When messages are found, it shows a notification.
+
+**v0.6.15 Changes:** Minimal mode now uses polling instead of DHT listeners
+for better battery efficiency. Use `dna_engine_check_offline_messages_cached()`
+for background polling without publishing watermarks.
 
 ---
 
@@ -1222,9 +1227,37 @@ dna_request_id_t dna_engine_check_offline_messages(
 ```
 
 Force check for offline messages in DHT queue (Spillway Protocol: queries contacts' outboxes).
+Publishes watermarks to senders indicating messages have been received.
 
 **Note:** Called automatically by `dna_engine_load_identity()` on startup.
 Use this only for manual refresh (e.g., pull-to-refresh in UI).
+
+---
+
+### dna_engine_check_offline_messages_cached (v0.6.15+)
+
+```c
+dna_request_id_t dna_engine_check_offline_messages_cached(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+```
+
+Check for offline messages without publishing watermarks. Messages are cached
+locally but senders are NOT notified that messages were received.
+
+**Use Case:** Android ForegroundService background polling. Messages are cached
+for notification display, but watermarks are only published when the user
+actually opens the app and views messages. This prevents incorrectly marking
+messages as "delivered" when the user hasn't actually read them.
+
+**Parameters:**
+- `engine` - Engine instance
+- `callback` - Completion callback
+- `user_data` - User data for callback
+
+**Returns:** Request ID (0 on immediate error)
 
 ---
 

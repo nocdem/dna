@@ -173,12 +173,15 @@ int messenger_transport_lookup_presence(
  *
  * @param ctx Messenger context
  * @param sender_fp If non-NULL, fetch only from this contact's outbox. If NULL, fetch from all contacts.
+ * @param publish_watermarks If true, publish watermarks to senders. Set false for background
+ *                           service caching where user hasn't read messages yet.
  * @param messages_received Output - number of messages retrieved (optional)
  * @return 0 on success, -1 on error
  */
 int messenger_transport_check_offline_messages(
     messenger_context_t *ctx,
     const char *sender_fp,
+    bool publish_watermarks,
     size_t *messages_received
 );
 

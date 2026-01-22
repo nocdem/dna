@@ -154,12 +154,15 @@ int transport_register_presence(transport_t *ctx);
  *
  * @param ctx Transport context
  * @param sender_fp If non-NULL, fetch only from this contact's outbox. If NULL, fetch from all contacts.
+ * @param publish_watermarks If true, publish watermarks to tell senders we received messages.
+ *                           Set false for background caching (user hasn't read them yet).
  * @param messages_received Output - number of messages retrieved (can be NULL)
  * @return 0 on success, -1 on failure
  */
 int transport_check_offline_messages(
     transport_t *ctx,
     const char *sender_fp,
+    bool publish_watermarks,
     size_t *messages_received
 );
 
