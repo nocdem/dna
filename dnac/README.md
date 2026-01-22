@@ -9,7 +9,7 @@ DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger]
 - **UTXO Model** - Unspent Transaction Output model for privacy
 - **Dilithium5 Signatures** - Post-quantum digital signatures (NIST Category 5)
 - **DHT Transport** - Payments delivered via DNA Messenger's DHT network
-- **Permanent Storage** - All data stored permanently (cash doesn't expire)
+- **Permanent Storage** - All data stored permanently on DHT
 - **Nodus 2-of-3 Witnessing** - Fast double-spend prevention
 - **Epoch-Based Discovery** - Witness servers discovered via epoch keys
 
@@ -140,10 +140,10 @@ DNAC uses a 3-node witness cluster for double-spend prevention:
 ### Permanent DHT Storage
 
 All DHT data is stored permanently:
-- **Payments** - Never expire (cash doesn't expire)
-- **Witness attestations** - Permanent record
-- **Nullifier replication** - Permanent cross-witness sync
-- **Witness announcements** - Permanent identity publication
+- **Payments**
+- **Witness attestations**
+- **Nullifier replication**
+- **Witness announcements**
 
 ## Security
 
