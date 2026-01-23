@@ -856,9 +856,6 @@ int dna_engine_network_changed(dna_engine_t *engine) {
         engine->dht_ctx = NULL;
     }
 
-    /* Small delay for network to stabilize */
-    qgp_platform_sleep_ms(500);
-
     /* Recreate DHT context from identity */
     if (messenger_load_dht_identity_for_engine(engine->fingerprint, &engine->dht_ctx) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to recreate DHT context");
@@ -890,11 +887,6 @@ static void *background_fetch_thread(void *arg) {
 
     dna_engine_t *engine = ctx->engine;
     const char *sender_fp = ctx->sender_fp[0] ? ctx->sender_fp : NULL;
-
-    /* Delay to let DHT propagate data to more nodes.
-     * 100ms was too short - occasionally caused 0 messages due to
-     * querying nodes that hadn't received the data yet. */
-    qgp_platform_sleep_ms(300);
 
     if (!engine || !engine->messenger || !engine->identity_loaded) {
         QGP_LOG_WARN(LOG_TAG, "[BACKGROUND-THREAD] Engine not ready, aborting fetch");
