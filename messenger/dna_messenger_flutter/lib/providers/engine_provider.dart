@@ -91,15 +91,18 @@ final engineEventsProvider = StreamProvider<DnaEvent>((ref) async* {
 /// Current fingerprint (null if no identity loaded) - set explicitly when loadIdentity is called
 final currentFingerprintProvider = StateProvider<String?>((ref) => null);
 
+/// Identity ready flag - set true AFTER loadIdentity() completes (DHT ready, contacts synced)
+/// Data providers should watch this, not currentFingerprintProvider
+final identityReadyProvider = StateProvider<bool>((ref) => false);
+
 /// Current identity fingerprint (from engine state - may be stale after invalidation)
 final currentIdentityProvider = Provider<String?>((ref) {
   final engineAsync = ref.watch(engineProvider);
   return engineAsync.whenOrNull(data: (engine) => engine.fingerprint);
 });
 
-/// Identity loaded state - uses currentFingerprintProvider which is set explicitly
-/// when loadIdentity is called (avoids relying on engine state which can be invalidated)
+/// Identity loaded state - true when identity is ready for data operations
+/// Uses identityReadyProvider which is set AFTER loadIdentity() completes
 final identityLoadedProvider = Provider<bool>((ref) {
-  final fingerprint = ref.watch(currentFingerprintProvider);
-  return fingerprint != null && fingerprint.isNotEmpty;
+  return ref.watch(identityReadyProvider);
 });

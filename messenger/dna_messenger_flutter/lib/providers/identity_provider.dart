@@ -224,6 +224,9 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
   ///
   /// [fingerprint] - Optional. If not provided, fingerprint is computed from flat key file.
   Future<void> loadIdentity([String? fingerprint]) async {
+    // Mark identity as NOT ready while loading (shows spinner in UI)
+    ref.read(identityReadyProvider.notifier).state = false;
+
     final engine = await ref.read(engineProvider.future);
 
     if (fingerprint != null) {
@@ -246,12 +249,13 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
       engine.debugLog('IDENTITY', 'loadIdentity - fingerprint stored for service');
     }
 
-    // Set fingerprint AFTER identity is loaded - this triggers UI rebuild
-    // via identityLoadedProvider which watches currentFingerprintProvider
-    // NOTE: Do NOT invalidate engineProvider here - it would destroy the engine
-    // and lose the loaded identity state
+    // Set fingerprint for reference (not used for identity loaded check anymore)
     ref.read(currentFingerprintProvider.notifier).state = loadedFp;
     engine.debugLog('IDENTITY', 'loadIdentity - currentFingerprintProvider set');
+
+    // Mark identity as READY - this triggers data providers to fetch
+    ref.read(identityReadyProvider.notifier).state = true;
+    engine.debugLog('IDENTITY', 'loadIdentity - identityReadyProvider set to true');
 
     // Start all listeners in background (waits for DHT to become ready)
     // This runs asynchronously so UI isn't blocked while waiting for DHT peers.
@@ -287,6 +291,7 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
   /// v0.3.0: Deprecated - in single-user model, unloading is only used
   /// for account deletion, which clears fingerprint and returns to onboarding.
   void unloadIdentity() {
+    ref.read(identityReadyProvider.notifier).state = false;
     ref.read(currentFingerprintProvider.notifier).state = null;
     ref.invalidate(engineProvider);
   }

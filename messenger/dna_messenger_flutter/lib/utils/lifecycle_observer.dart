@@ -132,6 +132,9 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     // Mark app as in background (for notification logic - always show notifications when backgrounded)
     ref.read(appInForegroundProvider.notifier).state = false;
 
+    // Mark identity as not ready (triggers spinner on next resume until identity reloaded)
+    ref.read(identityReadyProvider.notifier).state = false;
+
     // Pause Dart-side polling timers FIRST (prevents timer exceptions in background)
     ref.read(eventHandlerProvider).pausePolling();
 
