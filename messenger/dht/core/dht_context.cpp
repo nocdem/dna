@@ -567,8 +567,30 @@ extern "C" void dht_context_stop(dht_context_t *ctx) {
             }
 
             // Step 4: Shutdown and wait for OpenDHT threads
-            QGP_LOG_DEBUG("DHT", "Calling runner.shutdown()...");
-            ctx->runner.shutdown();
+            // IMPORTANT: shutdown() is ASYNC - it queues work on thread pools
+            // We MUST wait for the shutdown callback before calling join()
+            // to ensure all pending operations complete. Otherwise, join()
+            // calls resetDht() which destroys dht_ while thread pool tasks
+            // may still be accessing it -> SEGV in pthread_rwlock_rdlock
+            QGP_LOG_DEBUG("DHT", "Calling runner.shutdown() with completion wait...");
+
+            // Use promise/future to synchronously wait for async shutdown
+            std::promise<void> shutdown_promise;
+            auto shutdown_future = shutdown_promise.get_future();
+
+            ctx->runner.shutdown([&shutdown_promise]() {
+                shutdown_promise.set_value();
+            }, true);  // true = stop immediately, don't maintain storage
+
+            // Wait for shutdown to complete (all pending ops finished)
+            auto status = shutdown_future.wait_for(std::chrono::seconds(10));
+            if (status == std::future_status::timeout) {
+                QGP_LOG_WARN("DHT", "Shutdown timed out after 10s, proceeding anyway");
+            } else {
+                QGP_LOG_DEBUG("DHT", "Shutdown completed, all callbacks finished");
+            }
+
+            // NOW safe to call join() - all thread pool tasks have completed
             QGP_LOG_DEBUG("DHT", "Calling runner.join()...");
             ctx->runner.join();
             QGP_LOG_INFO("DHT", "DHT runner stopped");
