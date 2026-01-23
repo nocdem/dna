@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-01-22 | **Status:** DESIGN | **Version:** v0.3.0
+**Last Updated:** 2026-01-23 | **Status:** DESIGN | **Version:** v0.3.1
 
 ---
 
