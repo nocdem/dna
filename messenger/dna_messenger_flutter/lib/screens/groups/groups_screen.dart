@@ -666,17 +666,43 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  IconButton.filled(
-                    onPressed: _messageController.text.trim().isEmpty || _isSending
-                        ? null
-                        : _sendMessage,
-                    icon: _isSending
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const FaIcon(FontAwesomeIcons.paperPlane),
+                  Builder(
+                    builder: (context) {
+                      final hasText = _messageController.text.trim().isNotEmpty;
+                      final canSend = hasText && !_isSending;
+                      return Material(
+                        color: canSend
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.onSurface.withAlpha(30),
+                        shape: const CircleBorder(),
+                        child: InkWell(
+                          onTap: canSend ? _sendMessage : null,
+                          customBorder: const CircleBorder(),
+                          child: SizedBox(
+                            width: 44,
+                            height: 44,
+                            child: Center(
+                              child: _isSending
+                                  ? SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: theme.colorScheme.onSurface.withAlpha(100),
+                                      ),
+                                    )
+                                  : FaIcon(
+                                      FontAwesomeIcons.paperPlane,
+                                      size: 18,
+                                      color: canSend
+                                          ? theme.colorScheme.onPrimary
+                                          : theme.colorScheme.onSurface.withAlpha(100),
+                                    ),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
                   ),
                 ],
               ),
