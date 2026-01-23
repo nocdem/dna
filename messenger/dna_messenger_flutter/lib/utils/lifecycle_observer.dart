@@ -12,7 +12,6 @@ import '../providers/identity_provider.dart';
 import '../providers/contacts_provider.dart';
 import '../providers/contact_profile_cache_provider.dart';
 import '../providers/messages_provider.dart';
-import '../services/cache_database.dart';
 
 /// Provider that tracks whether the app is currently in foreground (resumed)
 /// Used by event_handler to determine whether to show notifications
@@ -104,44 +103,26 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     }
   }
 
-  /// Refresh stale contact profiles from DHT
-  /// Only refreshes profiles older than 1 hour to avoid hammering DHT on reconnect
+  /// Refresh all contact profiles from DHT on resume
+  /// Ensures profile changes (name, avatar) are visible immediately
   Future<void> _refreshContactProfiles(dynamic engine) async {
     try {
-      // Get current contacts
       final contacts = ref.read(contactsProvider).valueOrNull;
       if (contacts == null || contacts.isEmpty) {
         return;
       }
 
-      // Filter to only stale profiles (older than 1 hour)
-      const maxAge = Duration(hours: 1);
-      final db = CacheDatabase.instance;
-      final staleContacts = <String>[];
-
-      for (final contact in contacts) {
-        if (await db.isProfileStale(contact.fingerprint, maxAge)) {
-          staleContacts.add(contact.fingerprint);
-        }
-      }
-
-      if (staleContacts.isEmpty) {
-        return; // All profiles are fresh, nothing to refresh
-      }
-
-      // Refresh stale profiles in parallel (batched to avoid overloading DHT)
+      // Refresh all profiles in parallel (batched to avoid overloading DHT)
       const batchSize = 3;
-      for (var i = 0; i < staleContacts.length; i += batchSize) {
-        final batch = staleContacts.skip(i).take(batchSize).toList();
+      for (var i = 0; i < contacts.length; i += batchSize) {
+        final batch = contacts.skip(i).take(batchSize).toList();
         await Future.wait(
-          batch.map((fingerprint) async {
+          batch.map((contact) async {
             try {
-              // Force refresh from DHT (bypasses cache)
-              final profile = await engine.refreshContactProfile(fingerprint);
+              final profile = await engine.refreshContactProfile(contact.fingerprint);
               if (profile != null) {
-                // Update Flutter-side cache too
                 ref.read(contactProfileCacheProvider.notifier)
-                    .updateProfile(fingerprint, profile);
+                    .updateProfile(contact.fingerprint, profile);
               }
             } catch (_) {
               // Individual profile refresh failed - continue with others
