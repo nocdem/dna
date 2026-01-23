@@ -257,12 +257,10 @@ class _RequestTile extends ConsumerWidget {
     final profileCache = ref.watch(contactProfileCacheProvider);
     final cachedProfile = profileCache[request.fingerprint];
 
-    // Fallback chain: request.displayName -> cached profile displayName -> fingerprint
+    // v0.6.24: UserProfile.displayName removed - use request.displayName (from C library)
     final displayName = request.displayName.isNotEmpty
         ? request.displayName
-        : (cachedProfile?.displayName.isNotEmpty == true
-            ? cachedProfile!.displayName
-            : _shortenFingerprint(request.fingerprint));
+        : _shortenFingerprint(request.fingerprint);
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),

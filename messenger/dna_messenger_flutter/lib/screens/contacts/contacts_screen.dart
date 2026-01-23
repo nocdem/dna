@@ -193,12 +193,11 @@ class _ContactTile extends ConsumerWidget {
     );
     final avatarBytes = cachedProfile?.decodeAvatar();
 
-    // Use cached display name if contact.displayName is empty (fallback chain)
+    // Use contact.displayName (resolved by C library from registered name)
+    // v0.6.24: UserProfile.displayName removed - Contact.displayName is the source of truth
     final displayName = contact.displayName.isNotEmpty
         ? contact.displayName
-        : (cachedProfile?.displayName.isNotEmpty == true
-            ? cachedProfile!.displayName
-            : _shortenFingerprint(contact.fingerprint));
+        : _shortenFingerprint(contact.fingerprint);
 
     // Trigger fetch if not cached (fire and forget)
     if (cachedProfile == null) {

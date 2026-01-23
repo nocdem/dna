@@ -607,7 +607,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       }
 
       // Check if profile has a real registered name (not empty or shortened fingerprint)
-      final displayName = profile?.displayName ?? '';
+      // v0.6.24: displayName removed - use getDisplayName() to check for registered name
+      String displayName = '';
+      try {
+        displayName = await engine.getDisplayName(fingerprint);
+      } catch (_) {}
       final hasRegisteredName = displayName.isNotEmpty &&
           !displayName.endsWith('...') &&
           !displayName.startsWith(fingerprint.substring(0, 8));

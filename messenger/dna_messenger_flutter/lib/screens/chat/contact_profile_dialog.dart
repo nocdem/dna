@@ -246,9 +246,8 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
   Widget _buildHeader(ThemeData theme) {
     final profile = _profile;
     final hasAvatar = profile != null && profile.avatarBase64.isNotEmpty;
-    final name = profile?.displayName.isNotEmpty == true
-        ? profile!.displayName
-        : widget.displayName;
+    // v0.6.24: UserProfile.displayName removed - use widget.displayName (from Contact)
+    final name = widget.displayName;
 
     return Column(
       children: [
@@ -285,10 +284,8 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
   }
 
   Widget _buildNicknameSection(ThemeData theme) {
-    final profile = _profile;
-    final originalName = profile?.displayName.isNotEmpty == true
-        ? profile!.displayName
-        : widget.displayName;
+    // v0.6.24: UserProfile.displayName removed - use widget.displayName (from Contact)
+    final originalName = widget.displayName;
 
     return InkWell(
       onTap: _showNicknameDialog,
@@ -349,10 +346,8 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
 
   void _showNicknameDialog() {
     final controller = TextEditingController(text: _currentNickname ?? '');
-    final profile = _profile;
-    final originalName = profile?.displayName.isNotEmpty == true
-        ? profile!.displayName
-        : widget.displayName;
+    // v0.6.24: UserProfile.displayName removed - use widget.displayName (from Contact)
+    final originalName = widget.displayName;
 
     showDialog(
       context: context,

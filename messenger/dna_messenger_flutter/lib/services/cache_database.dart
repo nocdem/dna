@@ -491,8 +491,8 @@ class CacheDatabase {
   // ==========================================================================
 
   UserProfile _rowToProfile(Map<String, dynamic> row) {
+    // NOTE: displayName removed from UserProfile in v0.6.24 - use registered name from DHT
     return UserProfile(
-      displayName: row['display_name'] as String? ?? '',
       bio: row['bio'] as String? ?? '',
       location: row['location'] as String? ?? '',
       website: row['website'] as String? ?? '',
