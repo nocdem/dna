@@ -385,14 +385,23 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
         return DNAC_ERROR_CRYPTO;
     }
 
+    /* DEBUG: Print inbox key */
+    fprintf(stderr, "[SYNC] Owner fingerprint: %.16s...\n", ctx->owner_fingerprint);
+    fprintf(stderr, "[SYNC] Inbox key (first 16 bytes): ");
+    for (int i = 0; i < 16; i++) fprintf(stderr, "%02x", inbox_key[i]);
+    fprintf(stderr, "...\n");
+
     /* Step 2: Query DHT for all payments in our inbox */
     uint8_t **values = NULL;
     size_t *values_len = NULL;
     size_t count = 0;
 
+    fprintf(stderr, "[SYNC] Calling dht_get_all...\n");
     int rc = dht_get_all(dht, inbox_key, 64, &values, &values_len, &count);
+    fprintf(stderr, "[SYNC] dht_get_all returned rc=%d, count=%zu\n", rc, count);
     if (rc != 0 || count == 0) {
         /* No payments or error - not fatal */
+        fprintf(stderr, "[SYNC] No payments found (rc=%d, count=%zu)\n", rc, count);
         return DNAC_SUCCESS;
     }
 

@@ -335,6 +335,7 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
     for (int i = 0; i < tx->output_count; i++) {
         /* Skip change outputs (back to ourselves) */
         if (strcmp(tx->outputs[i].owner_fingerprint, owner_fp) == 0) {
+            fprintf(stderr, "[SEND] Skipping change output to self\n");
             continue;
         }
 
@@ -344,12 +345,21 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
             continue;
         }
 
+        /* DEBUG: Print what we're publishing */
+        fprintf(stderr, "[SEND] Publishing to recipient: %.16s...\n", tx->outputs[i].owner_fingerprint);
+        fprintf(stderr, "[SEND] Inbox key (first 16 bytes): ");
+        for (int j = 0; j < 16; j++) fprintf(stderr, "%02x", inbox_key[j]);
+        fprintf(stderr, "...\n");
+        fprintf(stderr, "[SEND] TX size: %zu bytes, value_id: %llu\n", tx_len, (unsigned long long)payment_value_id);
+
         /* PUT payment to recipient's inbox (permanent) */
         rc = dht_put_signed_permanent(dht, inbox_key, 64, tx_buffer, tx_len,
                                       payment_value_id,
                                       "dnac_payment");
+        fprintf(stderr, "[SEND] dht_put_signed_permanent returned: %d\n", rc);
         if (rc != 0) {
             /* Log but continue - some recipients may still receive */
+            fprintf(stderr, "[SEND] WARNING: DHT put failed for output %d\n", i);
         }
     }
 
