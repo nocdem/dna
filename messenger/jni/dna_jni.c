@@ -1483,33 +1483,11 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReleaseEngine(JNIEnv *env
 }
 
 /**
- * Start listeners for all contacts (v0.6.3+)
- *
- * Called by DnaMessengerService after identity is loaded.
- * Service needs all listeners active for push notifications when app is killed.
- * Uses parallel subscription internally for faster setup on mobile.
- *
- * @return Number of contacts with listeners started, or 0 on error
- */
-JNIEXPORT jint JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeListenAllContacts(JNIEnv *env, jobject thiz) {
-    /* DEPRECATED: Android service now uses polling (nativeCheckOfflineMessages) instead of listeners.
-     * Polling is more battery-efficient and doesn't require continuous DHT subscriptions.
-     * This function is kept for backwards compatibility but does nothing. */
-    LOGI("nativeListenAllContacts: DEPRECATED - use nativeCheckOfflineMessages for polling");
-    return 0;
-}
-
-/**
  * Set the DHT reconnect helper (v0.6.8+)
  *
  * The helper object must implement onDhtReconnected().
  * This is called when DHT reconnects after network change, allowing the
- * foreground service to recreate MINIMAL listeners.
- *
- * When this callback is registered, the engine will NOT automatically spawn
- * its listener setup thread on DHT reconnection. The service must call
- * nativeListenAllContacts() in its onDhtReconnected() handler.
+ * foreground service to trigger an immediate message poll.
  *
  * @param helper The helper object (typically DnaMessengerService), or NULL to disable
  */

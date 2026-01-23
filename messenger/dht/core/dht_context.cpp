@@ -27,6 +27,7 @@
 // Use unified QGP logging (respects config log level)
 extern "C" {
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 }
 #define DHT_LOG_TAG "DHT_CONTEXT"
 #define DHT_LOGI(...) QGP_LOG_INFO(DHT_LOG_TAG, __VA_ARGS__)
@@ -608,6 +609,41 @@ extern "C" bool dht_context_is_ready(dht_context_t *ctx) {
 extern "C" bool dht_context_is_running(dht_context_t *ctx) {
     if (!ctx) return false;
     return ctx->running;
+}
+
+/**
+ * Get the number of good nodes in the DHT routing table.
+ * Used to determine if routing table is sufficiently populated for reliable operations.
+ * Returns 0 if context is NULL or not running.
+ */
+extern "C" size_t dht_context_get_node_count(dht_context_t *ctx) {
+    if (!ctx || !ctx->running) return 0;
+
+    try {
+        auto stats_v4 = ctx->runner.getNodesStats(AF_INET);
+        auto stats_v6 = ctx->runner.getNodesStats(AF_INET6);
+        return stats_v4.good_nodes + stats_v6.good_nodes;
+    } catch (const std::exception& e) {
+        QGP_LOG_ERROR("DHT", "Exception in dht_context_get_node_count: %s", e.what());
+        return 0;
+    }
+}
+
+/**
+ * Wait for DHT context to become ready (have at least one good node).
+ */
+extern "C" bool dht_context_wait_for_ready(dht_context_t *ctx, int timeout_ms) {
+    if (!ctx) return false;
+
+    const int poll_interval_ms = 100;
+    int elapsed = 0;
+
+    while (!dht_context_is_ready(ctx) && elapsed < timeout_ms) {
+        qgp_platform_sleep_ms(poll_interval_ms);
+        elapsed += poll_interval_ms;
+    }
+
+    return dht_context_is_ready(ctx);
 }
 
 /**

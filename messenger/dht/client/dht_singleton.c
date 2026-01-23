@@ -1,5 +1,7 @@
 /*
  * DNA Messenger - Global DHT Singleton Implementation
+ *
+ * v0.6.20: Refactored to reduce code duplication
  */
 
 #include "dht_singleton.h"
@@ -18,79 +20,142 @@
 
 #define LOG_TAG "DHT"
 
-// Global DHT context (singleton)
+/* Default timeout for waiting for DHT to become ready (milliseconds) */
+#define DHT_READY_TIMEOUT_MS 5000
+
+/* Global DHT context (singleton) */
 static dht_context_t *g_dht_context = NULL;
 
-// v0.6.0+: Flag to track if context is "borrowed" from engine (don't free on cleanup)
+/* v0.6.0+: Flag to track if context is "borrowed" from engine (don't free on cleanup) */
 static bool g_context_borrowed = false;
 
-// Global config (loaded once)
+/* Global config (loaded once) */
 static dna_config_t g_config = {0};
 static bool g_config_loaded = false;
 
-// Stored callback for re-registration after reinit
+/* Stored callback for re-registration after reinit */
 static dht_status_callback_t g_status_callback = NULL;
 static void *g_status_callback_user_data = NULL;
 
-// Stored identity buffer for reinit after network change
+/* Stored identity buffer for reinit after network change */
 static uint8_t *g_identity_buffer = NULL;
 static size_t g_identity_buffer_size = 0;
 
+/* ============================================================================
+ * HELPER FUNCTIONS
+ * ============================================================================ */
+
+/**
+ * Ensure config is loaded (lazy initialization)
+ */
 static void ensure_config(void) {
     if (!g_config_loaded) {
         dna_config_load(&g_config);
         g_config_loaded = true;
 
-        // Initialize bootstrap cache for decentralized node discovery
+        /* Initialize bootstrap cache for decentralized node discovery */
         if (bootstrap_cache_init(NULL) != 0) {
             QGP_LOG_WARN(LOG_TAG, "Failed to initialize bootstrap cache (discovery disabled)");
         }
     }
 }
 
+/**
+ * Create a client DHT config with bootstrap nodes.
+ * Returns 0 on success, -1 if no bootstrap nodes available.
+ */
+static int create_client_dht_config(dht_config_t *config, const char *identity_name) {
+    if (!config) return -1;
+
+    memset(config, 0, sizeof(dht_config_t));
+    config->port = 0;  /* Let OS assign random port */
+    config->is_bootstrap = false;
+    config->persistence_path[0] = '\0';  /* No persistence for clients */
+
+    if (identity_name) {
+        strncpy(config->identity, identity_name, sizeof(config->identity) - 1);
+    }
+
+    /* Try cached bootstrap nodes first (decentralization) */
+    int cached_count = dht_bootstrap_from_cache(config, 3);
+    if (cached_count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Using %d cached bootstrap nodes", cached_count);
+        return 0;
+    }
+
+    /* Fall back to hardcoded nodes */
+    ensure_config();
+    if (g_config.bootstrap_count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "No cached nodes, using hardcoded: %s", g_config.bootstrap_nodes[0]);
+        strncpy(config->bootstrap_nodes[0], g_config.bootstrap_nodes[0],
+                sizeof(config->bootstrap_nodes[0]) - 1);
+        config->bootstrap_count = 1;
+        return 0;
+    }
+
+    QGP_LOG_ERROR(LOG_TAG, "No bootstrap nodes configured");
+    return -1;
+}
+
+/**
+ * Register status callback on context and fire if already connected.
+ */
+static void register_status_callback(dht_context_t *ctx) {
+    if (!ctx || !g_status_callback) return;
+
+    dht_context_set_status_callback(ctx, g_status_callback, g_status_callback_user_data);
+
+    /* Fire callback immediately if already connected */
+    if (dht_context_is_ready(ctx)) {
+        QGP_LOG_INFO(LOG_TAG, "DHT already connected, firing callback");
+        g_status_callback(true, g_status_callback_user_data);
+    }
+}
+
+/**
+ * Store identity for reinit after network change.
+ */
+static void store_identity_for_reinit(dht_identity_t *identity) {
+    if (!identity) return;
+
+    /* Free previous buffer */
+    if (g_identity_buffer) {
+        free(g_identity_buffer);
+        g_identity_buffer = NULL;
+        g_identity_buffer_size = 0;
+    }
+
+    if (dht_identity_export_to_buffer(identity, &g_identity_buffer, &g_identity_buffer_size) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to store identity for reinit");
+    } else {
+        QGP_LOG_DEBUG(LOG_TAG, "Stored identity for network change reinit (%zu bytes)", g_identity_buffer_size);
+    }
+}
+
+/* ============================================================================
+ * PUBLIC API
+ * ============================================================================ */
+
 int dht_singleton_init(void)
 {
     if (g_dht_context != NULL) {
         QGP_LOG_WARN(LOG_TAG, "Already initialized");
-        return 0;  // Already initialized, not an error
+        return 0;
     }
 
-    // Load config
-    ensure_config();
+    QGP_LOG_INFO(LOG_TAG, "Initializing global DHT context (no identity)...");
 
-    QGP_LOG_INFO(LOG_TAG, "Initializing global DHT context...");
-
-    // Configure DHT
-    dht_config_t dht_config = {0};
-    dht_config.port = 0;  // Let OS assign random port (clients don't need fixed port)
-    dht_config.is_bootstrap = false;
-    strncpy(dht_config.identity, "dna-global", sizeof(dht_config.identity) - 1);
-
-    // STEP 1: Bootstrap to first node from config for cold start
-    if (g_config.bootstrap_count > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Using seed node for cold start: %s", g_config.bootstrap_nodes[0]);
-        strncpy(dht_config.bootstrap_nodes[0], g_config.bootstrap_nodes[0],
-                sizeof(dht_config.bootstrap_nodes[0]) - 1);
-        dht_config.bootstrap_count = 1;
-    } else {
-        QGP_LOG_ERROR(LOG_TAG, "No bootstrap nodes configured");
+    dht_config_t config;
+    if (create_client_dht_config(&config, "dna-global") != 0) {
         return -1;
     }
 
-    // NO PERSISTENCE for client DHT (only bootstrap nodes need persistence)
-    // Client DHT is temporary and should not republish stored values
-    dht_config.persistence_path[0] = '\0';  // Empty = no persistence
-
-    QGP_LOG_INFO(LOG_TAG, "Client DHT mode (no persistence)");
-
-    // Create DHT context
-    g_dht_context = dht_context_new(&dht_config);
+    g_dht_context = dht_context_new(&config);
     if (!g_dht_context) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to create DHT context");
         return -1;
     }
 
-    // Start DHT and bootstrap
     if (dht_context_start(g_dht_context) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT context");
         dht_context_free(g_dht_context);
@@ -104,31 +169,12 @@ int dht_singleton_init(void)
 
 dht_context_t* dht_singleton_get(void)
 {
-    // Debug: log every call
-    bool ctx_exists = (g_dht_context != NULL);
-    bool ctx_running = ctx_exists ? dht_context_is_running(g_dht_context) : false;
-    (void)ctx_running;  // Used only in debug builds
-    QGP_LOG_DEBUG(LOG_TAG, "dht_singleton_get: ctx=%p exists=%d running=%d",
-                  (void*)g_dht_context, ctx_exists, ctx_running);
-
-    // If DHT doesn't exist or is stopped, wait for it to become ready
-    // This handles race conditions during DHT reinit (identity loading)
+    /* If DHT doesn't exist or is stopped, wait for it to become ready */
     if (!g_dht_context || !dht_context_is_running(g_dht_context)) {
-        QGP_LOG_INFO(LOG_TAG, "dht_singleton_get: DHT not ready, waiting...");
-        // Wait up to 5 seconds for DHT to become ready
-        int wait_count = 0;
-        while (wait_count < 50) {
-            if (g_dht_context && dht_context_is_running(g_dht_context)) {
-                QGP_LOG_INFO(LOG_TAG, "DHT became ready after %d00ms wait", wait_count);
-                break;
-            }
-            qgp_platform_sleep_ms(100);  // 100ms
-            wait_count++;
-        }
+        QGP_LOG_DEBUG(LOG_TAG, "dht_singleton_get: DHT not ready, waiting...");
 
-        // Still not ready after timeout
-        if (!g_dht_context || !dht_context_is_running(g_dht_context)) {
-            QGP_LOG_WARN(LOG_TAG, "DHT not available after 5s wait (ctx=%p)", (void*)g_dht_context);
+        if (!dht_context_wait_for_ready(g_dht_context, DHT_READY_TIMEOUT_MS)) {
+            QGP_LOG_WARN(LOG_TAG, "DHT not available after %dms wait", DHT_READY_TIMEOUT_MS);
             return NULL;
         }
     }
@@ -142,10 +188,7 @@ bool dht_singleton_is_initialized(void)
 
 bool dht_singleton_is_ready(void)
 {
-    if (!g_dht_context) {
-        return false;
-    }
-    return dht_context_is_ready(g_dht_context);
+    return g_dht_context && dht_context_is_ready(g_dht_context);
 }
 
 int dht_singleton_init_with_identity(dht_identity_t *user_identity)
@@ -157,64 +200,25 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 
     if (g_dht_context != NULL) {
         QGP_LOG_WARN(LOG_TAG, "Already initialized");
-        return 0;  // Already initialized, not an error
+        return 0;
     }
-
-    // Load config
-    ensure_config();
 
     QGP_LOG_INFO(LOG_TAG, "Initializing global DHT with user identity...");
 
-    // Store identity for reinit after network change
-    // Export BEFORE starting DHT (which takes ownership of identity)
-    if (g_identity_buffer) {
-        free(g_identity_buffer);
-        g_identity_buffer = NULL;
-        g_identity_buffer_size = 0;
-    }
-    if (dht_identity_export_to_buffer(user_identity, &g_identity_buffer, &g_identity_buffer_size) != 0) {
-        QGP_LOG_WARN(LOG_TAG, "Failed to store identity for reinit (will need app restart on network change)");
-        // Continue anyway - just means reinit won't work
-    } else {
-        QGP_LOG_INFO(LOG_TAG, "Stored identity for network change reinit (%zu bytes)", g_identity_buffer_size);
+    /* Store identity for reinit after network change (before DHT takes ownership) */
+    store_identity_for_reinit(user_identity);
+
+    dht_config_t config;
+    if (create_client_dht_config(&config, "dna-user") != 0) {
+        return -1;
     }
 
-    // Configure DHT
-    dht_config_t dht_config = {0};
-    dht_config.port = 0;  // Let OS assign random port (clients don't need fixed port)
-    dht_config.is_bootstrap = false;
-    strncpy(dht_config.identity, "dna-user", sizeof(dht_config.identity) - 1);
-
-    // STEP 1: Try cached bootstrap nodes first (decentralization)
-    int cached_count = dht_bootstrap_from_cache(&dht_config, 3);
-    if (cached_count > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Using %d cached bootstrap nodes (reliability-first)", cached_count);
-    } else {
-        // Fall back to hardcoded nodes (first run or cache empty)
-        if (g_config.bootstrap_count > 0) {
-            QGP_LOG_INFO(LOG_TAG, "No cached nodes, using hardcoded: %s", g_config.bootstrap_nodes[0]);
-            strncpy(dht_config.bootstrap_nodes[0], g_config.bootstrap_nodes[0],
-                    sizeof(dht_config.bootstrap_nodes[0]) - 1);
-            dht_config.bootstrap_count = 1;
-        } else {
-            QGP_LOG_ERROR(LOG_TAG, "No bootstrap nodes configured");
-            return -1;
-        }
-    }
-
-    // NO PERSISTENCE for client DHT
-    dht_config.persistence_path[0] = '\0';
-
-    QGP_LOG_INFO(LOG_TAG, "Client DHT mode (no persistence)");
-
-    // Create DHT context
-    g_dht_context = dht_context_new(&dht_config);
+    g_dht_context = dht_context_new(&config);
     if (!g_dht_context) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to create DHT context");
         return -1;
     }
 
-    // Start DHT with user-provided identity
     if (dht_context_start_with_identity(g_dht_context, user_identity) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT with identity");
         dht_context_free(g_dht_context);
@@ -222,40 +226,23 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
         return -1;
     }
 
-    // Re-register stored status callback on new context
-    if (g_status_callback) {
-        dht_context_set_status_callback(g_dht_context, g_status_callback, g_status_callback_user_data);
-        QGP_LOG_WARN(LOG_TAG, "Re-registered status callback on new context");
-    } else {
-        QGP_LOG_WARN(LOG_TAG, "No status callback to re-register");
-    }
+    /* Register stored status callback */
+    register_status_callback(g_dht_context);
 
-    // Wait for DHT to connect (max 5 seconds)
-    // This prevents "Broken promise" errors from operations starting before DHT is ready
-    QGP_LOG_WARN(LOG_TAG, "Waiting for DHT connection...");
-    int wait_count = 0;
-    while (!dht_context_is_ready(g_dht_context) && wait_count < 50) {
-        qgp_platform_sleep_ms(100);  // 100ms
-        wait_count++;
-    }
+    /* Wait for DHT to connect */
+    QGP_LOG_INFO(LOG_TAG, "Waiting for DHT connection...");
+    if (dht_context_wait_for_ready(g_dht_context, DHT_READY_TIMEOUT_MS)) {
+        QGP_LOG_INFO(LOG_TAG, "DHT connected");
 
-    if (dht_context_is_ready(g_dht_context)) {
-        QGP_LOG_WARN(LOG_TAG, "DHT connected after %d00ms", wait_count);
+        /* Start background discovery of additional bootstrap nodes */
+        dht_bootstrap_discovery_start(g_dht_context);
 
-        // Start background discovery of additional bootstrap nodes (non-blocking)
-        // This discovers community-run Nodus nodes and saves them to cache
-        if (dht_bootstrap_discovery_start(g_dht_context) == 0) {
-            QGP_LOG_INFO(LOG_TAG, "Background bootstrap discovery started");
-        }
-
-        // Fire connected callback manually - OpenDHT's setOnStatusChanged doesn't
-        // reliably fire for disconnected->connected transitions
+        /* Fire connected callback */
         if (g_status_callback) {
-            QGP_LOG_WARN(LOG_TAG, "Firing connected callback");
             g_status_callback(true, g_status_callback_user_data);
         }
     } else {
-        QGP_LOG_WARN(LOG_TAG, "DHT not connected after 5s (will retry in background)");
+        QGP_LOG_WARN(LOG_TAG, "DHT not connected after %dms (will retry in background)", DHT_READY_TIMEOUT_MS);
     }
 
     return 0;
@@ -263,258 +250,156 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 
 void dht_singleton_cleanup(void)
 {
-    // Stop discovery thread first
+    /* Stop discovery thread first */
     dht_bootstrap_discovery_stop();
 
     if (g_dht_context) {
-        QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP START (ctx=%p, borrowed=%d) <<<",
-                     (void*)g_dht_context, g_context_borrowed);
+        QGP_LOG_INFO(LOG_TAG, "Cleaning up DHT context (borrowed=%d)", g_context_borrowed);
 
         if (g_context_borrowed) {
-            // v0.6.0+: Context is borrowed from engine - DON'T free it
-            // Engine will free it in dna_engine_destroy()
-            QGP_LOG_INFO(LOG_TAG, "Context is borrowed - not freeing (engine owns it)");
+            /* Context is borrowed from engine - don't free it */
             g_dht_context = NULL;
             g_context_borrowed = false;
         } else {
-            // Original behavior: singleton owns context, free it
             dht_context_free(g_dht_context);
             g_dht_context = NULL;
         }
-        QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP DONE <<<");
-    } else {
-        QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP: no context to clean <<<");
     }
 
-    // Free stored identity buffer
+    /* Free stored identity buffer */
     if (g_identity_buffer) {
         free(g_identity_buffer);
         g_identity_buffer = NULL;
         g_identity_buffer_size = 0;
     }
 
-    // Cleanup bootstrap cache
+    /* Cleanup bootstrap cache */
     bootstrap_cache_cleanup();
 }
 
 int dht_singleton_reinit(void)
 {
-    QGP_LOG_WARN(LOG_TAG, ">>> REINIT: Network change detected, restarting DHT <<<");
+    QGP_LOG_INFO(LOG_TAG, "Network change detected, restarting DHT...");
 
-    // Check if we have a stored identity
     if (!g_identity_buffer || g_identity_buffer_size == 0) {
         QGP_LOG_ERROR(LOG_TAG, "No stored identity for reinit - cannot restart DHT");
         return -1;
     }
 
-    // Suspend all DHT listeners before stopping (preserves for resubscription)
-    // Use suspend instead of cancel to keep listener contexts in memory
+    /* Suspend all DHT listeners before stopping */
     dht_suspend_all_listeners(g_dht_context);
 
-    // Stop and free current DHT context (but keep identity buffer)
+    /* Stop and free current DHT context */
     if (g_dht_context) {
-        QGP_LOG_INFO(LOG_TAG, "Stopping current DHT context...");
         dht_context_free(g_dht_context);
         g_dht_context = NULL;
     }
 
-    // Small delay to allow network to stabilize
-    qgp_platform_sleep_ms(500);
-
-    // Import identity from stored buffer
+    /* Import identity from stored buffer */
     dht_identity_t *identity = NULL;
     if (dht_identity_import_from_buffer(g_identity_buffer, g_identity_buffer_size, &identity) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to restore identity from buffer");
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Identity restored, creating new DHT context...");
+    QGP_LOG_DEBUG(LOG_TAG, "Identity restored, creating new DHT context...");
 
-    // Configure new DHT
-    dht_config_t dht_config = {0};
-    dht_config.port = 0;
-    dht_config.is_bootstrap = false;
-    strncpy(dht_config.identity, "dna-user", sizeof(dht_config.identity) - 1);
-
-    // Try cached bootstrap nodes first (decentralization)
-    int cached_count = dht_bootstrap_from_cache(&dht_config, 3);
-    if (cached_count > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Reinit: using %d cached bootstrap nodes", cached_count);
-    } else if (g_config.bootstrap_count > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Reinit: using hardcoded bootstrap node");
-        strncpy(dht_config.bootstrap_nodes[0], g_config.bootstrap_nodes[0],
-                sizeof(dht_config.bootstrap_nodes[0]) - 1);
-        dht_config.bootstrap_count = 1;
-    } else {
-        QGP_LOG_ERROR(LOG_TAG, "No bootstrap nodes configured");
+    dht_config_t config;
+    if (create_client_dht_config(&config, "dna-user") != 0) {
         dht_identity_free(identity);
         return -1;
     }
 
-    dht_config.persistence_path[0] = '\0';
-
-    // Create new DHT context
-    g_dht_context = dht_context_new(&dht_config);
+    g_dht_context = dht_context_new(&config);
     if (!g_dht_context) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to create new DHT context");
         dht_identity_free(identity);
         return -1;
     }
 
-    // Start DHT with restored identity
     if (dht_context_start_with_identity(g_dht_context, identity) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT with restored identity");
         dht_context_free(g_dht_context);
         g_dht_context = NULL;
-        // Note: identity is freed by dht_context_free on failure
         return -1;
     }
 
-    // Re-register status callback
-    if (g_status_callback) {
-        dht_context_set_status_callback(g_dht_context, g_status_callback, g_status_callback_user_data);
-        QGP_LOG_INFO(LOG_TAG, "Re-registered status callback");
-    }
+    /* Re-register status callback */
+    register_status_callback(g_dht_context);
 
-    // Wait for DHT to connect
+    /* Wait for DHT to connect */
     QGP_LOG_INFO(LOG_TAG, "Waiting for DHT reconnection...");
-    int wait_count = 0;
-    while (!dht_context_is_ready(g_dht_context) && wait_count < 50) {
-        qgp_platform_sleep_ms(100);
-        wait_count++;
-    }
+    if (dht_context_wait_for_ready(g_dht_context, DHT_READY_TIMEOUT_MS)) {
+        QGP_LOG_INFO(LOG_TAG, "DHT reconnected after network change");
 
-    if (dht_context_is_ready(g_dht_context)) {
-        QGP_LOG_WARN(LOG_TAG, ">>> REINIT SUCCESS: DHT reconnected after %d00ms <<<", wait_count);
-
-        // Clear suspended listeners - engine callback will recreate them
-        // (Engine has the contact list and creates fresh listener contexts)
+        /* Clear suspended listeners - engine callback will recreate them */
         dht_cancel_all_listeners(g_dht_context);
 
-        // Start background discovery to find new/updated bootstrap nodes
+        /* Start background discovery */
         dht_bootstrap_discovery_start(g_dht_context);
 
-        // Fire connected callback
+        /* Fire connected callback */
         if (g_status_callback) {
             g_status_callback(true, g_status_callback_user_data);
         }
-        return 0;
     } else {
-        QGP_LOG_WARN(LOG_TAG, "DHT not connected after 5s (will retry in background)");
-        return 0;  // Still return success - connection may happen later
+        QGP_LOG_WARN(LOG_TAG, "DHT not connected after %dms (will retry in background)", DHT_READY_TIMEOUT_MS);
     }
+
+    return 0;
 }
 
 void dht_singleton_set_status_callback(dht_status_callback_t callback, void *user_data)
 {
-    // Store callback for re-registration after reinit
     g_status_callback = callback;
     g_status_callback_user_data = user_data;
 
-    // Register on current context if available
     if (g_dht_context) {
-        dht_context_set_status_callback(g_dht_context, callback, user_data);
-
-        // Check if already connected and fire callback
-        // Don't block - if not ready, callback will fire later via OpenDHT
-        if (callback && dht_context_is_ready(g_dht_context)) {
-            QGP_LOG_INFO(LOG_TAG, "DHT already connected, firing callback");
-            callback(true, user_data);
-        }
+        register_status_callback(g_dht_context);
     } else {
-        QGP_LOG_INFO(LOG_TAG, "Status callback stored (will register when DHT starts)");
+        QGP_LOG_DEBUG(LOG_TAG, "Status callback stored (will register when DHT starts)");
     }
 }
 
-/**
- * Create a new DHT context with identity (v0.6.0+ engine-owned model)
- *
- * Creates a DHT context owned by the caller, not stored in global singleton.
- * Used by dna_engine to create per-engine DHT contexts.
- */
 dht_context_t* dht_create_context_with_identity(dht_identity_t *user_identity) {
     if (!user_identity) {
         QGP_LOG_ERROR(LOG_TAG, "dht_create_context_with_identity: NULL identity");
         return NULL;
     }
 
-    // Load config (shared with singleton)
-    ensure_config();
-
     QGP_LOG_INFO(LOG_TAG, "Creating engine-owned DHT context with identity...");
 
-    // Configure DHT
-    dht_config_t dht_config = {0};
-    dht_config.port = 0;  // Let OS assign random port
-    dht_config.is_bootstrap = false;
-    strncpy(dht_config.identity, "dna-user", sizeof(dht_config.identity) - 1);
-
-    // Try cached bootstrap nodes first
-    int cached_count = dht_bootstrap_from_cache(&dht_config, 3);
-    if (cached_count > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Using %d cached bootstrap nodes", cached_count);
-    } else {
-        // Fall back to hardcoded nodes
-        if (g_config.bootstrap_count > 0) {
-            QGP_LOG_INFO(LOG_TAG, "No cached nodes, using hardcoded: %s", g_config.bootstrap_nodes[0]);
-            strncpy(dht_config.bootstrap_nodes[0], g_config.bootstrap_nodes[0],
-                    sizeof(dht_config.bootstrap_nodes[0]) - 1);
-            dht_config.bootstrap_count = 1;
-        } else {
-            QGP_LOG_ERROR(LOG_TAG, "No bootstrap nodes configured");
-            return NULL;
-        }
+    dht_config_t config;
+    if (create_client_dht_config(&config, "dna-user") != 0) {
+        return NULL;
     }
 
-    // No persistence for client DHT
-    dht_config.persistence_path[0] = '\0';
-
-    // Create DHT context
-    dht_context_t *ctx = dht_context_new(&dht_config);
+    dht_context_t *ctx = dht_context_new(&config);
     if (!ctx) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to create DHT context");
         return NULL;
     }
 
-    // Start DHT with provided identity
     if (dht_context_start_with_identity(ctx, user_identity) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT with identity");
         dht_context_free(ctx);
         return NULL;
     }
 
-    // Wait for DHT to connect (max 5 seconds)
+    /* Wait for DHT to connect */
     QGP_LOG_INFO(LOG_TAG, "Waiting for engine DHT connection...");
-    int wait_count = 0;
-    while (!dht_context_is_ready(ctx) && wait_count < 50) {
-        qgp_platform_sleep_ms(100);
-        wait_count++;
-    }
-
-    if (dht_context_is_ready(ctx)) {
-        QGP_LOG_INFO(LOG_TAG, "Engine DHT connected after %d00ms", wait_count);
-
-        // Start background discovery (non-blocking)
-        if (dht_bootstrap_discovery_start(ctx) == 0) {
-            QGP_LOG_INFO(LOG_TAG, "Background bootstrap discovery started");
-        }
+    if (dht_context_wait_for_ready(ctx, DHT_READY_TIMEOUT_MS)) {
+        QGP_LOG_INFO(LOG_TAG, "Engine DHT connected");
+        dht_bootstrap_discovery_start(ctx);
     } else {
-        QGP_LOG_WARN(LOG_TAG, "Engine DHT not connected after 5s (will retry in background)");
+        QGP_LOG_WARN(LOG_TAG, "Engine DHT not connected after %dms (will retry in background)", DHT_READY_TIMEOUT_MS);
     }
 
     return ctx;
 }
 
-/**
- * Set the global singleton context (v0.6.0+ engine bridging)
- *
- * Allows engine-owned contexts to be accessible via dht_singleton_get().
- * When engine creates its own DHT context, it can "lend" it to the singleton
- * so that code still using dht_singleton_get() gets the engine's context.
- */
 void dht_singleton_set_borrowed_context(dht_context_t *ctx) {
     if (g_dht_context && !g_context_borrowed) {
-        // There's an existing non-borrowed context - clean it up first
         QGP_LOG_WARN(LOG_TAG, "Replacing owned context with borrowed one");
         dht_context_free(g_dht_context);
     }
@@ -523,14 +408,9 @@ void dht_singleton_set_borrowed_context(dht_context_t *ctx) {
     g_context_borrowed = (ctx != NULL);
 
     if (ctx) {
-        QGP_LOG_INFO(LOG_TAG, "Singleton now uses borrowed context (ctx=%p)", (void*)ctx);
-
-        // Re-register stored status callback on new context
-        if (g_status_callback) {
-            dht_context_set_status_callback(ctx, g_status_callback, g_status_callback_user_data);
-            QGP_LOG_INFO(LOG_TAG, "Re-registered status callback on borrowed context");
-        }
+        QGP_LOG_DEBUG(LOG_TAG, "Singleton now uses borrowed context");
+        register_status_callback(ctx);
     } else {
-        QGP_LOG_INFO(LOG_TAG, "Singleton context cleared");
+        QGP_LOG_DEBUG(LOG_TAG, "Singleton context cleared");
     }
 }
