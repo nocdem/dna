@@ -1850,9 +1850,9 @@ void dna_engine_destroy(dna_engine_t *engine) {
     pthread_mutex_destroy(&engine->name_cache_mutex);
     pthread_cond_destroy(&engine->task_cond);
 
-    /* Cleanup global caches */
-    profile_manager_close();
-    keyserver_cache_cleanup();
+    /* Global caches (profile_manager, keyserver_cache) intentionally NOT closed.
+     * They persist for app lifetime to survive engine destroy/recreate cycles
+     * (Android pause/resume). Init functions are idempotent. OS cleans up on exit. */
 
     /* v0.6.0+: Cleanup engine-owned DHT context */
     if (engine->dht_ctx) {
