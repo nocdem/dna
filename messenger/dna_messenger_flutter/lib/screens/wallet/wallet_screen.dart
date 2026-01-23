@@ -905,13 +905,24 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
         return;
       }
 
+      // Get display name if we don't have one (v0.6.24: displayName removed from profile)
+      String resolvedName;
+      if (displayName != null && displayName.isNotEmpty) {
+        resolvedName = displayName;
+      } else {
+        try {
+          resolvedName = await engine.getDisplayName(fingerprint);
+        } catch (_) {
+          resolvedName = '${fingerprint.substring(0, 8)}...';
+        }
+      }
+
+      if (!mounted || thisRequestId != _resolveRequestId) return;
+
       setState(() {
         _isResolving = false;
         _resolvedAddress = walletAddress;
-        _resolvedContactName = displayName ??
-            (profile.displayName.isNotEmpty
-                ? profile.displayName
-                : '${fingerprint.substring(0, 8)}...');
+        _resolvedContactName = resolvedName;
       });
     } catch (e) {
       if (!mounted || thisRequestId != _resolveRequestId) return;

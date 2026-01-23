@@ -96,7 +96,6 @@ int dht_keyserver_publish(
     // Set name registration
     identity->has_registered_name = true;
     strncpy(identity->registered_name, name, sizeof(identity->registered_name) - 1);
-    strncpy(identity->display_name, name, sizeof(identity->display_name) - 1);
     identity->name_registered_at = time(NULL);
     identity->name_expires_at = identity->name_registered_at + (365 * 24 * 60 * 60);  // +365 days
     identity->name_version = 1;

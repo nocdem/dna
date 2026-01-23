@@ -76,7 +76,6 @@ typedef struct {
     uint32_t name_version;               /**< Version (increment on renewal) */
 
     // ===== PROFILE DATA =====
-    char display_name[128];              /**< Display name (optional, defaults to name or fingerprint) */
     char bio[512];                       /**< User bio */
     char avatar_hash[128];               /**< SHA3-512 hash of avatar (for quick comparisons) */
     char avatar_base64[20484];           /**< Base64-encoded avatar (64x64 PNG/JPEG, ~20KB max + padding) */

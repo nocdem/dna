@@ -989,14 +989,11 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
         const char *display_name = NULL;
         char name_buf[256] = {0};
 
-        /* Try to get display name from profile cache */
+        /* Try to get registered name from profile cache */
         dna_unified_identity_t *cached = NULL;
         uint64_t cached_at = 0;
         if (profile_cache_get(contact_fp, &cached, &cached_at) == 0 && cached) {
-            if (cached->display_name[0]) {
-                strncpy(name_buf, cached->display_name, sizeof(name_buf) - 1);
-                display_name = name_buf;
-            } else if (cached->registered_name[0]) {
+            if (cached->registered_name[0]) {
                 strncpy(name_buf, cached->registered_name, sizeof(name_buf) - 1);
                 display_name = name_buf;
             }
@@ -1019,14 +1016,11 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
             const char *display_name = NULL;
             char name_buf[256] = {0};
 
-            /* Try to get display name from profile cache */
+            /* Try to get registered name from profile cache */
             dna_unified_identity_t *cached = NULL;
             uint64_t cached_at = 0;
             if (profile_cache_get(fp, &cached, &cached_at) == 0 && cached) {
-                if (cached->display_name[0]) {
-                    strncpy(name_buf, cached->display_name, sizeof(name_buf) - 1);
-                    display_name = name_buf;
-                } else if (cached->registered_name[0]) {
+                if (cached->registered_name[0]) {
                     strncpy(name_buf, cached->registered_name, sizeof(name_buf) - 1);
                     display_name = name_buf;
                 }
@@ -1850,9 +1844,9 @@ void dna_engine_destroy(dna_engine_t *engine) {
     pthread_mutex_destroy(&engine->name_cache_mutex);
     pthread_cond_destroy(&engine->task_cond);
 
-    /* Cleanup global caches */
-    profile_manager_close();
-    keyserver_cache_cleanup();
+    /* Global caches (profile_manager, keyserver_cache) intentionally NOT closed.
+     * They persist for app lifetime to survive engine destroy/recreate cycles
+     * (Android pause/resume). Init functions are idempotent. OS cleans up on exit. */
 
     /* v0.6.0+: Cleanup engine-owned DHT context */
     if (engine->dht_ctx) {
@@ -2265,10 +2259,10 @@ void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
     int rc = profile_manager_get_profile(fingerprint, &identity);
 
     if (rc == 0 && identity) {
-        if (identity->display_name[0] != '\0') {
-            strncpy(display_name_buf, identity->display_name, sizeof(display_name_buf) - 1);
+        if (identity->registered_name[0] != '\0') {
+            strncpy(display_name_buf, identity->registered_name, sizeof(display_name_buf) - 1);
         } else {
-            /* No display name - use shortened fingerprint */
+            /* No registered name - use shortened fingerprint */
             snprintf(display_name_buf, sizeof(display_name_buf), "%.16s...", fingerprint);
         }
         dna_identity_free(identity);
@@ -2393,12 +2387,7 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
     strncpy(profile->bio, identity->bio, sizeof(profile->bio) - 1);
     strncpy(profile->avatar_base64, identity->avatar_base64, sizeof(profile->avatar_base64) - 1);
 
-    /* Display name - fallback to registered_name if display_name is empty */
-    if (identity->display_name[0] != '\0') {
-        strncpy(profile->display_name, identity->display_name, sizeof(profile->display_name) - 1);
-    } else if (identity->registered_name[0] != '\0') {
-        strncpy(profile->display_name, identity->registered_name, sizeof(profile->display_name) - 1);
-    }
+    /* NOTE: display_name field removed in v0.6.24 - use registered_name only */
 
     /* Location and website */
     strncpy(profile->location, identity->location, sizeof(profile->location) - 1);
@@ -2585,12 +2574,7 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
                      src_len, dst_len, dst_len > 0 ? profile->avatar_base64 : "(empty)");
     }
 
-    /* Display name - fallback to registered_name if display_name is empty */
-    if (identity->display_name[0] != '\0') {
-        strncpy(profile->display_name, identity->display_name, sizeof(profile->display_name) - 1);
-    } else if (identity->registered_name[0] != '\0') {
-        strncpy(profile->display_name, identity->registered_name, sizeof(profile->display_name) - 1);
-    }
+    /* NOTE: display_name field removed in v0.6.24 - use registered_name only */
 
     dna_identity_free(identity);
 
@@ -2664,12 +2648,7 @@ void dna_handle_refresh_contact_profile(dna_engine_t *engine, dna_task_t *task) 
     QGP_LOG_INFO(LOG_TAG, "Refreshed profile avatar: %zu bytes\n",
                  identity->avatar_base64[0] ? strlen(identity->avatar_base64) : 0);
 
-    /* Display name */
-    if (identity->display_name[0] != '\0') {
-        strncpy(profile->display_name, identity->display_name, sizeof(profile->display_name) - 1);
-    } else if (identity->registered_name[0] != '\0') {
-        strncpy(profile->display_name, identity->registered_name, sizeof(profile->display_name) - 1);
-    }
+    /* NOTE: display_name field removed in v0.6.24 - use registered_name only */
 
     dna_identity_free(identity);
 
@@ -2754,7 +2733,7 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
             strncpy(cached->socials.linkedin, p->linkedin, sizeof(cached->socials.linkedin) - 1);
             strncpy(cached->socials.google, p->google, sizeof(cached->socials.google) - 1);
 
-            strncpy(cached->display_name, p->display_name, sizeof(cached->display_name) - 1);
+            /* NOTE: display_name field removed in v0.6.24 */
             strncpy(cached->bio, p->bio, sizeof(cached->bio) - 1);
             strncpy(cached->location, p->location, sizeof(cached->location) - 1);
             strncpy(cached->website, p->website, sizeof(cached->website) - 1);
@@ -2832,14 +2811,11 @@ void dna_handle_get_contacts(dna_engine_t *engine, dna_task_t *task) {
                 name_found = true;
             }
 
-            /* Try 1: DHT profile (display_name first, then registered_name) */
+            /* Try 1: DHT profile (registered_name) */
             if (!name_found) {
                 dna_unified_identity_t *identity = NULL;
                 if (profile_manager_get_profile(list->contacts[i].identity, &identity) == 0 && identity) {
-                    if (identity->display_name[0] != '\0') {
-                        strncpy(contacts[i].display_name, identity->display_name, sizeof(contacts[i].display_name) - 1);
-                        name_found = true;
-                    } else if (identity->registered_name[0] != '\0') {
+                    if (identity->registered_name[0] != '\0') {
                         strncpy(contacts[i].display_name, identity->registered_name, sizeof(contacts[i].display_name) - 1);
                         name_found = true;
                     }

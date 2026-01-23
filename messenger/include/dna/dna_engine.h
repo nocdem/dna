@@ -297,7 +297,6 @@ typedef struct {
     char google[128];
 
     /* Profile info */
-    char display_name[128];
     char bio[512];
     char location[128];
     char website[256];

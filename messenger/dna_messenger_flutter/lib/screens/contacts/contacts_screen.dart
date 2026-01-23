@@ -193,12 +193,11 @@ class _ContactTile extends ConsumerWidget {
     );
     final avatarBytes = cachedProfile?.decodeAvatar();
 
-    // Use cached display name if contact.displayName is empty (fallback chain)
+    // Use contact.displayName (resolved by C library from registered name)
+    // v0.6.24: UserProfile.displayName removed - Contact.displayName is the source of truth
     final displayName = contact.displayName.isNotEmpty
         ? contact.displayName
-        : (cachedProfile?.displayName.isNotEmpty == true
-            ? cachedProfile!.displayName
-            : _shortenFingerprint(contact.fingerprint));
+        : _shortenFingerprint(contact.fingerprint);
 
     // Trigger fetch if not cached (fire and forget)
     if (cachedProfile == null) {
@@ -466,15 +465,12 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
       }
 
       // Success - found valid contact, now fetch their profile for avatar
+      // NOTE: displayName comes from getDisplayName() above, not profile (v0.6.24)
       Uint8List? avatarBytes;
       try {
         final profile = await engine.lookupProfile(fingerprint);
         if (profile != null) {
           avatarBytes = profile.decodeAvatar();
-          // Use profile name if we don't have one yet
-          if (displayName == null && profile.displayName.isNotEmpty) {
-            displayName = profile.displayName;
-          }
         }
       } catch (_) {
         // Profile lookup failed, continue without avatar

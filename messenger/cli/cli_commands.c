@@ -856,8 +856,7 @@ int cmd_profile(dna_engine_t *engine, const char *field, const char *value) {
 
     if (wait.profile) {
         printf("\nProfile:\n");
-        if (strlen(wait.profile->display_name) > 0)
-            printf("  Name:     %s\n", wait.profile->display_name);
+        /* NOTE: display_name removed in v0.6.24 - name comes from registered_name */
         if (strlen(wait.profile->bio) > 0)
             printf("  Bio:      %s\n", wait.profile->bio);
         if (strlen(wait.profile->location) > 0)
@@ -3356,9 +3355,7 @@ static void on_profile_refresh(dna_request_id_t request_id, int error,
 
     if (error == 0 && profile) {
         printf("Profile refreshed successfully!\n");
-        if (profile->display_name[0]) {
-            printf("  Name: %s\n", profile->display_name);
-        }
+        /* NOTE: display_name removed in v0.6.24 - name comes from registered_name */
         if (profile->bio[0]) {
             printf("  Bio: %s\n", profile->bio);
         }

@@ -39,6 +39,10 @@
 /* Track last request time for rate limiting (shared across all TRON modules) */
 static uint64_t g_trx_last_request_ms = 0;
 
+/* RPC endpoints with fallbacks (defined in trx_wallet_create.c) */
+extern const char *g_trx_rpc_endpoints[];
+extern int g_trx_rpc_current_idx;
+
 static uint64_t trx_get_current_ms(void) {
 #ifdef _WIN32
     return GetTickCount64();
@@ -124,6 +128,102 @@ static int sun_to_trx_string(uint64_t sun, char *trx_out, size_t trx_size) {
  * PUBLIC API
  * ============================================================================ */
 
+/**
+ * Internal: Try balance request to a specific endpoint
+ * Returns 0 on success, -1 on network error, -2 on API error
+ */
+static int trx_rpc_get_balance_single(
+    const char *endpoint,
+    const char *address,
+    uint64_t *sun_out
+) {
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        return -1;
+    }
+
+    /* Build TronGrid API URL */
+    char url[256];
+    snprintf(url, sizeof(url), "%s/v1/accounts/%s", endpoint, address);
+
+    struct response_buffer resp_buf = {0};
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "DNA-Messenger/1.0");
+
+    const char *ca_bundle = qgp_platform_ca_bundle_path();
+    if (ca_bundle) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    }
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        if (resp_buf.data) free(resp_buf.data);
+        return -1;  /* Network error - try next endpoint */
+    }
+
+    if (!resp_buf.data) {
+        return -1;
+    }
+
+    json_object *jresp = json_tokener_parse(resp_buf.data);
+    free(resp_buf.data);
+
+    if (!jresp) {
+        return -1;
+    }
+
+    /* Check for success field */
+    json_object *jsuccess = NULL;
+    if (json_object_object_get_ex(jresp, "success", &jsuccess)) {
+        if (!json_object_get_boolean(jsuccess)) {
+            json_object_put(jresp);
+            return -2;  /* API error - don't retry */
+        }
+    }
+
+    /* Get data array */
+    json_object *jdata = NULL;
+    if (!json_object_object_get_ex(jresp, "data", &jdata) ||
+        !json_object_is_type(jdata, json_type_array)) {
+        /* No data means account doesn't exist (0 balance) */
+        json_object_put(jresp);
+        *sun_out = 0;
+        return 0;
+    }
+
+    if (json_object_array_length(jdata) == 0) {
+        json_object_put(jresp);
+        *sun_out = 0;
+        return 0;
+    }
+
+    json_object *jaccount = json_object_array_get_idx(jdata, 0);
+    if (!jaccount) {
+        json_object_put(jresp);
+        *sun_out = 0;
+        return 0;
+    }
+
+    json_object *jbalance = NULL;
+    if (!json_object_object_get_ex(jaccount, "balance", &jbalance)) {
+        json_object_put(jresp);
+        *sun_out = 0;
+        return 0;
+    }
+
+    *sun_out = (uint64_t)json_object_get_int64(jbalance);
+    json_object_put(jresp);
+
+    return 0;
+}
+
 int trx_rpc_get_balance_sun(
     const char *address,
     uint64_t *sun_out
@@ -144,117 +244,38 @@ int trx_rpc_get_balance_sun(
     /* Rate limit to avoid 429 errors (TronGrid: 1 req/sec) */
     trx_rate_limit_delay();
 
-    /* Initialize curl */
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize CURL");
-        return -1;
-    }
+    /* Try endpoints starting from last successful one */
+    int start_idx = g_trx_rpc_current_idx;
+    for (int attempt = 0; attempt < TRX_RPC_ENDPOINT_COUNT; attempt++) {
+        int idx = (start_idx + attempt) % TRX_RPC_ENDPOINT_COUNT;
+        const char *endpoint = g_trx_rpc_endpoints[idx];
 
-    /* Build TronGrid API URL */
-    char url[256];
-    snprintf(url, sizeof(url), "%s/v1/accounts/%s", trx_rpc_get_endpoint(), address);
+        QGP_LOG_INFO(LOG_TAG, "GET balance: %s -> %s", address, endpoint);
 
-    QGP_LOG_DEBUG(LOG_TAG, "TronGrid request: %s", url);
+        int result = trx_rpc_get_balance_single(endpoint, address, sun_out);
 
-    /* Setup response buffer */
-    struct response_buffer resp_buf = {0};
+        if (result == 0) {
+            /* Success - remember this endpoint */
+            if (idx != g_trx_rpc_current_idx) {
+                g_trx_rpc_current_idx = idx;
+                QGP_LOG_INFO(LOG_TAG, "Switched to RPC endpoint: %s", endpoint);
+            }
+            QGP_LOG_DEBUG(LOG_TAG, "Balance for %s: %llu SUN", address, (unsigned long long)*sun_out);
+            return 0;
+        }
 
-    /* Configure curl */
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "DNA-Messenger/1.0");
-
-    /* Configure SSL CA bundle (required for Android, system certs used on Linux/Windows) */
-    const char *ca_bundle = qgp_platform_ca_bundle_path();
-    if (ca_bundle) {
-        QGP_LOG_DEBUG(LOG_TAG, "Using CA bundle: %s", ca_bundle);
-        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
-    }
-    /* On Linux/Windows: NULL is normal, curl uses system certificate store */
-
-    QGP_LOG_INFO(LOG_TAG, "GET balance: %s -> %s", address, trx_rpc_get_endpoint());
-
-    /* Perform request */
-    CURLcode res = curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "CURL error %d: %s (endpoint=%s)",
-                      res, curl_easy_strerror(res), trx_rpc_get_endpoint());
-        if (resp_buf.data) free(resp_buf.data);
-        return -1;
-    }
-
-    if (!resp_buf.data) {
-        QGP_LOG_ERROR(LOG_TAG, "Empty response from TronGrid");
-        return -1;
-    }
-
-    QGP_LOG_DEBUG(LOG_TAG, "TronGrid response: %.200s...", resp_buf.data);
-
-    /* Parse JSON response */
-    json_object *jresp = json_tokener_parse(resp_buf.data);
-    free(resp_buf.data);
-
-    if (!jresp) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to parse TronGrid response");
-        return -1;
-    }
-
-    /* Check for success field */
-    json_object *jsuccess = NULL;
-    if (json_object_object_get_ex(jresp, "success", &jsuccess)) {
-        if (!json_object_get_boolean(jsuccess)) {
-            QGP_LOG_ERROR(LOG_TAG, "TronGrid API returned success=false");
-            json_object_put(jresp);
+        if (result == -2) {
+            /* API error - don't retry other endpoints */
+            QGP_LOG_ERROR(LOG_TAG, "API error from %s", endpoint);
             return -1;
         }
+
+        /* Network error - try next endpoint */
+        QGP_LOG_WARN(LOG_TAG, "RPC endpoint failed: %s, trying next...", endpoint);
     }
 
-    /* Get data array */
-    json_object *jdata = NULL;
-    if (!json_object_object_get_ex(jresp, "data", &jdata) ||
-        !json_object_is_type(jdata, json_type_array)) {
-        /* No data means account doesn't exist (0 balance) */
-        QGP_LOG_DEBUG(LOG_TAG, "Account not found, balance is 0");
-        json_object_put(jresp);
-        *sun_out = 0;
-        return 0;
-    }
-
-    /* Get first account in array */
-    if (json_object_array_length(jdata) == 0) {
-        json_object_put(jresp);
-        *sun_out = 0;
-        return 0;
-    }
-
-    json_object *jaccount = json_object_array_get_idx(jdata, 0);
-    if (!jaccount) {
-        json_object_put(jresp);
-        *sun_out = 0;
-        return 0;
-    }
-
-    /* Get balance field */
-    json_object *jbalance = NULL;
-    if (!json_object_object_get_ex(jaccount, "balance", &jbalance)) {
-        /* No balance field means 0 */
-        json_object_put(jresp);
-        *sun_out = 0;
-        return 0;
-    }
-
-    *sun_out = (uint64_t)json_object_get_int64(jbalance);
-
-    json_object_put(jresp);
-
-    QGP_LOG_DEBUG(LOG_TAG, "Balance for %s: %llu SUN", address, (unsigned long long)*sun_out);
-    return 0;
+    QGP_LOG_ERROR(LOG_TAG, "All TRX RPC endpoints failed");
+    return -1;
 }
 
 int trx_rpc_get_balance(

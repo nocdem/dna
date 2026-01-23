@@ -159,10 +159,7 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
       case 'google':
         newProfile = p.copyWith(google: value);
         break;
-      // Profile info
-      case 'displayName':
-        newProfile = p.copyWith(displayName: value);
-        break;
+      // Profile info (NOTE: displayName removed in v0.6.24 - use registered name only)
       case 'bio':
         newProfile = p.copyWith(bio: value);
         break;
@@ -210,11 +207,12 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
       _ref.read(fullProfileProvider.notifier).updateState(state.profile);
 
       // Update identity profile cache (SQLite + in-memory)
+      // NOTE: displayName removed in v0.6.24 - name comes from registered name via DHT
       final fingerprint = _ref.read(currentFingerprintProvider);
       if (fingerprint != null) {
         _ref.read(identityProfileCacheProvider.notifier).updateIdentity(
           fingerprint,
-          state.profile.displayName,
+          '', // displayName removed - use registered name from DHT
           state.profile.avatarBase64,
         );
 

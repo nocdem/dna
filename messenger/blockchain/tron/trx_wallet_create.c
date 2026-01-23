@@ -28,8 +28,18 @@
 /* Global secp256k1 context */
 static secp256k1_context *g_trx_secp256k1_ctx = NULL;
 
-/* Current RPC endpoint */
+/* RPC endpoints with fallbacks */
+const char *g_trx_rpc_endpoints[] = {
+    TRX_RPC_ENDPOINT_DEFAULT,
+    TRX_RPC_ENDPOINT_FALLBACK1,
+    TRX_RPC_ENDPOINT_FALLBACK2
+};
+
+/* Current RPC endpoint (can be overridden) */
 static char g_trx_rpc_endpoint[256] = TRX_RPC_ENDPOINT_DEFAULT;
+
+/* Index of current/last working endpoint */
+int g_trx_rpc_current_idx = 0;
 
 /**
  * Get/create secp256k1 context

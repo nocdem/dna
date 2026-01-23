@@ -69,7 +69,7 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
             (void)avatar_len;  // Used only in debug builds
             QGP_LOG_DEBUG(LOG_TAG, "Cache hit (fresh): %.16s...\n", user_fingerprint);
             QGP_LOG_DEBUG(LOG_TAG, "  name='%s' bio='%s' location='%s' website='%s'",
-                        cached_identity->display_name, cached_identity->bio,
+                        cached_identity->registered_name, cached_identity->bio,
                         cached_identity->location, cached_identity->website);
             QGP_LOG_DEBUG(LOG_TAG, "  avatar=%zu bytes, backbone='%s' telegram='%s'\n",
                         avatar_len, cached_identity->wallets.backbone, cached_identity->socials.telegram);
@@ -146,7 +146,7 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
         (void)avatar_len;  // Used only in debug builds
         QGP_LOG_DEBUG(LOG_TAG, "Fetched from DHT: %.16s...\n", user_fingerprint);
         QGP_LOG_DEBUG(LOG_TAG, "  name='%s' bio='%s' location='%s' website='%s'",
-                    fresh_identity->display_name, fresh_identity->bio,
+                    fresh_identity->registered_name, fresh_identity->bio,
                     fresh_identity->location, fresh_identity->website);
         QGP_LOG_DEBUG(LOG_TAG, "  avatar=%zu bytes, backbone='%s' telegram='%s'\n",
                     avatar_len, fresh_identity->wallets.backbone, fresh_identity->socials.telegram);
@@ -393,7 +393,7 @@ int profile_manager_prefetch_local_identities(const char *data_dir) {
             int result = profile_manager_get_profile(fingerprint, &identity);
             if (result == 0 && identity) {
                 QGP_LOG_DEBUG(LOG_TAG, "Prefetched: %.16s... name='%s'\n",
-                            fingerprint, identity->display_name);
+                            fingerprint, identity->registered_name);
                 dna_identity_free(identity);
                 prefetch_count++;
             } else if (result == -2) {

@@ -490,10 +490,7 @@ final class dna_profile_t extends Struct {
   @Array(128)
   external Array<Char> google;
 
-  // Profile info
-  @Array(128)
-  external Array<Char> display_name;
-
+  // Profile info (NOTE: display_name removed in v0.6.24 - only registered name is used)
   @Array(512)
   external Array<Char> bio;
 

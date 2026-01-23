@@ -23,8 +23,19 @@
 
 #define LOG_TAG "ETH_RPC"
 
-/* Current RPC endpoint */
+/* RPC endpoints with fallbacks */
+static const char *g_eth_rpc_endpoints[] = {
+    ETH_RPC_ENDPOINT_DEFAULT,
+    ETH_RPC_ENDPOINT_FALLBACK1,
+    ETH_RPC_ENDPOINT_FALLBACK2,
+    ETH_RPC_ENDPOINT_FALLBACK3
+};
+
+/* Current RPC endpoint (can be overridden or auto-selected) */
 static char g_eth_rpc_endpoint[256] = ETH_RPC_ENDPOINT_DEFAULT;
+
+/* Index of last working endpoint for sticky selection */
+static int g_eth_rpc_current_idx = 0;
 
 /* Response buffer for curl */
 struct response_buffer {
@@ -205,6 +216,100 @@ const char* eth_rpc_get_endpoint(void) {
     return g_eth_rpc_endpoint;
 }
 
+/**
+ * Internal: Try RPC call to a specific endpoint
+ * Returns 0 on success, -1 on network/connection error, -2 on RPC error
+ */
+static int eth_rpc_get_balance_single(
+    const char *endpoint,
+    const char *address,
+    char *balance_out,
+    size_t balance_size
+) {
+    /* Initialize curl */
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        return -1;
+    }
+
+    /* Build JSON-RPC request */
+    json_object *jreq = json_object_new_object();
+    json_object_object_add(jreq, "jsonrpc", json_object_new_string("2.0"));
+    json_object_object_add(jreq, "method", json_object_new_string("eth_getBalance"));
+
+    json_object *params = json_object_new_array();
+    json_object_array_add(params, json_object_new_string(address));
+    json_object_array_add(params, json_object_new_string("latest"));
+    json_object_object_add(jreq, "params", params);
+    json_object_object_add(jreq, "id", json_object_new_int(1));
+
+    const char *json_str = json_object_to_json_string(jreq);
+    struct response_buffer resp_buf = {0};
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, endpoint);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_str);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);  /* Shorter timeout for fallback */
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+
+    const char *ca_bundle = qgp_platform_ca_bundle_path();
+    if (ca_bundle) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    }
+
+    CURLcode res = curl_easy_perform(curl);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    json_object_put(jreq);
+
+    if (res != CURLE_OK) {
+        if (resp_buf.data) free(resp_buf.data);
+        return -1;  /* Network error - try next endpoint */
+    }
+
+    if (!resp_buf.data) {
+        return -1;
+    }
+
+    json_object *jresp = json_tokener_parse(resp_buf.data);
+    free(resp_buf.data);
+
+    if (!jresp) {
+        return -1;
+    }
+
+    /* Check for RPC error */
+    json_object *jerror = NULL;
+    if (json_object_object_get_ex(jresp, "error", &jerror) && jerror) {
+        json_object_put(jresp);
+        return -2;  /* RPC error - don't retry */
+    }
+
+    /* Extract result */
+    json_object *jresult = NULL;
+    if (!json_object_object_get_ex(jresp, "result", &jresult) || !jresult) {
+        json_object_put(jresp);
+        return -1;
+    }
+
+    const char *balance_hex = json_object_get_string(jresult);
+    if (!balance_hex) {
+        json_object_put(jresp);
+        return -1;
+    }
+
+    int ret = wei_to_eth_string(balance_hex, balance_out, balance_size);
+    json_object_put(jresp);
+
+    return ret;
+}
+
 int eth_rpc_get_balance(
     const char *address,
     char *balance_out,
@@ -221,133 +326,37 @@ int eth_rpc_get_balance(
         return -1;
     }
 
-    /* Initialize curl */
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize CURL");
-        return -1;
-    }
+    /* Try endpoints starting from last successful one */
+    int start_idx = g_eth_rpc_current_idx;
+    for (int attempt = 0; attempt < ETH_RPC_ENDPOINT_COUNT; attempt++) {
+        int idx = (start_idx + attempt) % ETH_RPC_ENDPOINT_COUNT;
+        const char *endpoint = g_eth_rpc_endpoints[idx];
 
-    /* Build JSON-RPC request
-     * {
-     *   "jsonrpc": "2.0",
-     *   "method": "eth_getBalance",
-     *   "params": ["0x...", "latest"],
-     *   "id": 1
-     * }
-     */
-    json_object *jreq = json_object_new_object();
-    json_object_object_add(jreq, "jsonrpc", json_object_new_string("2.0"));
-    json_object_object_add(jreq, "method", json_object_new_string("eth_getBalance"));
+        QGP_LOG_INFO(LOG_TAG, "GET balance: %s -> %s", address, endpoint);
 
-    json_object *params = json_object_new_array();
-    json_object_array_add(params, json_object_new_string(address));
-    json_object_array_add(params, json_object_new_string("latest"));
-    json_object_object_add(jreq, "params", params);
+        int result = eth_rpc_get_balance_single(endpoint, address, balance_out, balance_size);
 
-    json_object_object_add(jreq, "id", json_object_new_int(1));
-
-    const char *json_str = json_object_to_json_string(jreq);
-
-    QGP_LOG_DEBUG(LOG_TAG, "RPC request: %s", json_str);
-
-    /* Setup response buffer */
-    struct response_buffer resp_buf = {0};
-
-    /* Setup curl headers */
-    struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-
-    /* Configure curl */
-    curl_easy_setopt(curl, CURLOPT_URL, g_eth_rpc_endpoint);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_str);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
-
-    /* Configure SSL CA bundle (required for Android, system certs used on Linux/Windows) */
-    const char *ca_bundle = qgp_platform_ca_bundle_path();
-    if (ca_bundle) {
-        QGP_LOG_DEBUG(LOG_TAG, "Using CA bundle: %s", ca_bundle);
-        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
-    }
-    /* On Linux/Windows: NULL is normal, curl uses system certificate store */
-
-    QGP_LOG_INFO(LOG_TAG, "GET balance: %s -> %s", address, g_eth_rpc_endpoint);
-
-    /* Perform request */
-    CURLcode res = curl_easy_perform(curl);
-
-    /* Cleanup curl */
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    json_object_put(jreq);
-
-    if (res != CURLE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "CURL error %d: %s (endpoint=%s)",
-                      res, curl_easy_strerror(res), g_eth_rpc_endpoint);
-        if (resp_buf.data) {
-            free(resp_buf.data);
+        if (result == 0) {
+            /* Success - remember this endpoint */
+            if (idx != g_eth_rpc_current_idx) {
+                g_eth_rpc_current_idx = idx;
+                QGP_LOG_INFO(LOG_TAG, "Switched to RPC endpoint: %s", endpoint);
+            }
+            return 0;
         }
-        return -1;
-    }
 
-    if (!resp_buf.data) {
-        QGP_LOG_ERROR(LOG_TAG, "Empty response from RPC");
-        return -1;
-    }
-
-    QGP_LOG_DEBUG(LOG_TAG, "RPC response: %s", resp_buf.data);
-
-    /* Parse JSON response */
-    json_object *jresp = json_tokener_parse(resp_buf.data);
-    free(resp_buf.data);
-
-    if (!jresp) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to parse RPC response");
-        return -1;
-    }
-
-    /* Check for error */
-    json_object *jerror = NULL;
-    if (json_object_object_get_ex(jresp, "error", &jerror) && jerror) {
-        json_object *jmsg = NULL;
-        const char *err_msg = "Unknown error";
-        if (json_object_object_get_ex(jerror, "message", &jmsg)) {
-            err_msg = json_object_get_string(jmsg);
+        if (result == -2) {
+            /* RPC error (e.g., invalid address) - don't retry other endpoints */
+            QGP_LOG_ERROR(LOG_TAG, "RPC error from %s", endpoint);
+            return -1;
         }
-        QGP_LOG_ERROR(LOG_TAG, "RPC error: %s", err_msg);
-        json_object_put(jresp);
-        return -1;
+
+        /* Network error - try next endpoint */
+        QGP_LOG_WARN(LOG_TAG, "RPC endpoint failed: %s, trying next...", endpoint);
     }
 
-    /* Extract result (balance in hex wei) */
-    json_object *jresult = NULL;
-    if (!json_object_object_get_ex(jresp, "result", &jresult) || !jresult) {
-        QGP_LOG_ERROR(LOG_TAG, "No result in RPC response");
-        json_object_put(jresp);
-        return -1;
-    }
-
-    const char *balance_hex = json_object_get_string(jresult);
-    if (!balance_hex) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid balance result");
-        json_object_put(jresp);
-        return -1;
-    }
-
-    /* Convert wei (hex) to ETH string */
-    int ret = wei_to_eth_string(balance_hex, balance_out, balance_size);
-
-    json_object_put(jresp);
-
-    if (ret == 0) {
-        QGP_LOG_DEBUG(LOG_TAG, "Balance for %s: %s", address, balance_out);
-    }
-
-    return ret;
+    QGP_LOG_ERROR(LOG_TAG, "All ETH RPC endpoints failed");
+    return -1;
 }
 
 /* Blockscout API endpoint (free, no API key required) */

@@ -27,8 +27,18 @@
 /* SLIP-10 Ed25519 derivation constant */
 #define SLIP10_ED25519_SEED "ed25519 seed"
 
-/* RPC endpoint (configurable) */
+/* RPC endpoints with fallbacks (accessed from sol_rpc.c) */
+const char *g_sol_rpc_endpoints[] = {
+    SOL_RPC_MAINNET,
+    SOL_RPC_MAINNET_FALLBACK1,
+    SOL_RPC_MAINNET_FALLBACK2
+};
+
+/* RPC endpoint (configurable) - can be overridden or auto-selected */
 static char g_sol_rpc_endpoint[256] = SOL_RPC_MAINNET;
+
+/* Index of current/last working endpoint (accessed from sol_rpc.c) */
+int g_sol_rpc_current_idx = 0;
 
 /* ============================================================================
  * SLIP-10 ED25519 DERIVATION

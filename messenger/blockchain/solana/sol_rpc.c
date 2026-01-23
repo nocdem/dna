@@ -35,6 +35,10 @@
 /* Track last request time for rate limiting */
 static uint64_t g_last_request_ms = 0;
 
+/* RPC endpoints with fallbacks (defined in sol_wallet.c) */
+extern const char *g_sol_rpc_endpoints[];
+extern int g_sol_rpc_current_idx;
+
 static uint64_t get_current_ms(void) {
 #ifdef _WIN32
     return GetTickCount64();
@@ -77,19 +81,17 @@ static size_t write_callback(void *contents, size_t size, size_t nmemb, void *us
 }
 
 /**
- * Make JSON-RPC call to Solana
+ * Internal: Try RPC call to a specific endpoint
+ * Returns 0 on success, -1 on network error, -2 on RPC error
  */
-static int sol_rpc_call(
+static int sol_rpc_call_single(
+    const char *endpoint,
     const char *method,
     json_object *params,
     json_object **result_out
 ) {
-    /* Rate limit to avoid 429 errors */
-    sol_rpc_rate_limit_delay();
-
     CURL *curl = curl_easy_init();
     if (!curl) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize CURL");
         return -1;
     }
 
@@ -100,35 +102,30 @@ static int sol_rpc_call(
     json_object_object_add(req, "method", json_object_new_string(method));
 
     if (params) {
-        json_object_object_add(req, "params", params);
+        /* Increment ref count since we're adding to request object */
+        json_object_object_add(req, "params", json_object_get(params));
     } else {
         json_object_object_add(req, "params", json_object_new_array());
     }
 
     const char *json_str = json_object_to_json_string(req);
 
-    QGP_LOG_DEBUG(LOG_TAG, "RPC request: %s", json_str);
-
     struct response_buffer resp_buf = {0};
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    curl_easy_setopt(curl, CURLOPT_URL, sol_rpc_get_endpoint());
+    curl_easy_setopt(curl, CURLOPT_URL, endpoint);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_str);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
 
-    /* Configure SSL CA bundle (required for Android, system certs used on Linux/Windows) */
     const char *ca_bundle = qgp_platform_ca_bundle_path();
     if (ca_bundle) {
-        QGP_LOG_DEBUG(LOG_TAG, "Using CA bundle: %s", ca_bundle);
         curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
     }
-    /* On Linux/Windows: NULL is normal, curl uses system certificate store */
-
-    QGP_LOG_INFO(LOG_TAG, "RPC call: %s -> %s", method, sol_rpc_get_endpoint());
 
     CURLcode res = curl_easy_perform(curl);
 
@@ -137,54 +134,83 @@ static int sol_rpc_call(
     json_object_put(req);
 
     if (res != CURLE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "CURL error %d: %s (endpoint=%s)",
-                      res, curl_easy_strerror(res), sol_rpc_get_endpoint());
         if (resp_buf.data) free(resp_buf.data);
-        return -1;
+        return -1;  /* Network error - try next endpoint */
     }
 
     if (!resp_buf.data) {
-        QGP_LOG_ERROR(LOG_TAG, "Empty response");
         return -1;
     }
 
-    QGP_LOG_DEBUG(LOG_TAG, "RPC response: %s", resp_buf.data);
-
-    /* Parse response */
     json_object *resp = json_tokener_parse(resp_buf.data);
     free(resp_buf.data);
 
     if (!resp) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to parse JSON response");
         return -1;
     }
 
-    /* Check for error */
+    /* Check for RPC error */
     json_object *error_obj;
     if (json_object_object_get_ex(resp, "error", &error_obj) && error_obj) {
-        json_object *msg_obj;
-        const char *err_msg = "Unknown error";
-        if (json_object_object_get_ex(error_obj, "message", &msg_obj)) {
-            err_msg = json_object_get_string(msg_obj);
-        }
-        QGP_LOG_ERROR(LOG_TAG, "RPC error: %s", err_msg);
         json_object_put(resp);
-        return -1;
+        return -2;  /* RPC error - don't retry */
     }
 
     /* Extract result */
     json_object *result;
     if (!json_object_object_get_ex(resp, "result", &result)) {
-        QGP_LOG_ERROR(LOG_TAG, "No result in response");
         json_object_put(resp);
         return -1;
     }
 
-    /* Return result (caller must handle reference counting) */
     *result_out = json_object_get(result);
     json_object_put(resp);
 
     return 0;
+}
+
+/**
+ * Make JSON-RPC call to Solana with fallback endpoints
+ */
+static int sol_rpc_call(
+    const char *method,
+    json_object *params,
+    json_object **result_out
+) {
+    /* Rate limit to avoid 429 errors */
+    sol_rpc_rate_limit_delay();
+
+    /* Try endpoints starting from last successful one */
+    int start_idx = g_sol_rpc_current_idx;
+    for (int attempt = 0; attempt < SOL_RPC_MAINNET_COUNT; attempt++) {
+        int idx = (start_idx + attempt) % SOL_RPC_MAINNET_COUNT;
+        const char *endpoint = g_sol_rpc_endpoints[idx];
+
+        QGP_LOG_INFO(LOG_TAG, "RPC call: %s -> %s", method, endpoint);
+
+        int result = sol_rpc_call_single(endpoint, method, params, result_out);
+
+        if (result == 0) {
+            /* Success - remember this endpoint */
+            if (idx != g_sol_rpc_current_idx) {
+                g_sol_rpc_current_idx = idx;
+                QGP_LOG_INFO(LOG_TAG, "Switched to RPC endpoint: %s", endpoint);
+            }
+            return 0;
+        }
+
+        if (result == -2) {
+            /* RPC error - don't retry other endpoints */
+            QGP_LOG_ERROR(LOG_TAG, "RPC error from %s", endpoint);
+            return -1;
+        }
+
+        /* Network error - try next endpoint */
+        QGP_LOG_WARN(LOG_TAG, "RPC endpoint failed: %s, trying next...", endpoint);
+    }
+
+    QGP_LOG_ERROR(LOG_TAG, "All SOL RPC endpoints failed");
+    return -1;
 }
 
 /**
