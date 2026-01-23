@@ -372,6 +372,9 @@ static int bft_complete_forward_callback(const uint8_t *tx_hash,
 
 /**
  * Handle client spend request
+ *
+ * v0.4.0: Now deserializes full TX to extract ALL nullifiers,
+ * preventing multi-input double-spend attacks.
  */
 static void handle_client_spend_request(int client_fd, const uint8_t *data, size_t len) {
     fprintf(stderr, "[WITNESS] handle_client_spend_request: fd=%d len=%zu\n", client_fd, len);
@@ -389,8 +392,46 @@ static void handle_client_spend_request(int client_fd, const uint8_t *data, size
                                  "Invalid request format");
         return;
     }
-    fprintf(stderr, "[WITNESS] Deserialized request OK\n");
+    fprintf(stderr, "[WITNESS] Deserialized request OK, tx_len=%u\n", request.tx_len);
     fflush(stderr);
+
+    /* v0.4.0: Deserialize full transaction to extract all nullifiers */
+    dnac_transaction_t *tx = NULL;
+    rc = dnac_tx_deserialize(request.tx_data, request.tx_len, &tx);
+    if (rc != DNAC_SUCCESS || !tx) {
+        fprintf(stderr, "[WITNESS] Failed to deserialize TX: rc=%d\n", rc);
+        fflush(stderr);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to deserialize transaction from request");
+        bft_send_client_response(client_fd, DNAC_NODUS_STATUS_ERROR,
+                                 "Invalid transaction data");
+        return;
+    }
+
+    /* Verify tx_hash matches */
+    uint8_t computed_hash[DNAC_TX_HASH_SIZE];
+    rc = dnac_tx_compute_hash(tx, computed_hash);
+    if (rc != DNAC_SUCCESS || memcmp(computed_hash, request.tx_hash, DNAC_TX_HASH_SIZE) != 0) {
+        fprintf(stderr, "[WITNESS] TX hash mismatch!\n");
+        fflush(stderr);
+        QGP_LOG_ERROR(LOG_TAG, "Transaction hash mismatch");
+        dnac_free_transaction(tx);
+        bft_send_client_response(client_fd, DNAC_NODUS_STATUS_ERROR,
+                                 "Transaction hash mismatch");
+        return;
+    }
+
+    /* Extract ALL nullifiers from inputs */
+    uint8_t nullifiers[DNAC_TX_MAX_INPUTS][DNAC_NULLIFIER_SIZE];
+    uint8_t nullifier_count = (uint8_t)tx->input_count;
+    for (int i = 0; i < tx->input_count; i++) {
+        memcpy(nullifiers[i], tx->inputs[i].nullifier, DNAC_NULLIFIER_SIZE);
+    }
+
+    fprintf(stderr, "[WITNESS] Extracted %d nullifiers from TX\n", nullifier_count);
+    fflush(stderr);
+    QGP_LOG_INFO(LOG_TAG, "Extracted %d nullifiers from transaction", nullifier_count);
+
+    dnac_free_transaction(tx);
 
     /* Check if we are leader */
     int is_leader = dnac_bft_is_leader(g_bft_ctx);
@@ -408,10 +449,11 @@ static void handle_client_spend_request(int client_fd, const uint8_t *data, size
         g_bft_ctx->round_state.is_forwarded = false;
         pthread_mutex_unlock(&g_bft_ctx->mutex);
 
-        /* Start consensus round */
+        /* Start consensus round with ALL nullifiers */
         rc = dnac_bft_start_round(g_bft_ctx,
                                   request.tx_hash,
-                                  request.nullifier,
+                                  nullifiers,
+                                  nullifier_count,
                                   request.sender_pubkey,
                                   request.signature,
                                   request.fee_amount);
@@ -521,13 +563,35 @@ static void on_tcp_message(int peer_index, uint8_t msg_type,
                     fprintf(stderr, "[WITNESS] Leader processing forwarded request\n");
                     fflush(stderr);
 
-                    /* Start consensus round */
-                    int rc = dnac_bft_start_round(g_bft_ctx,
-                                                  req.tx_hash,
-                                                  req.nullifier,
-                                                  req.sender_pubkey,
-                                                  req.client_signature,
-                                                  req.fee_amount);
+                    /* v0.4.0: Deserialize full TX to extract all nullifiers */
+                    dnac_transaction_t *tx = NULL;
+                    int rc = dnac_tx_deserialize(req.tx_data, req.tx_len, &tx);
+                    if (rc != DNAC_SUCCESS || !tx) {
+                        fprintf(stderr, "[WITNESS] Failed to deserialize forwarded TX: rc=%d\n", rc);
+                        fflush(stderr);
+                        QGP_LOG_ERROR(LOG_TAG, "Failed to deserialize forwarded transaction");
+                        break;
+                    }
+
+                    /* Extract ALL nullifiers from inputs */
+                    uint8_t nullifiers[DNAC_TX_MAX_INPUTS][DNAC_NULLIFIER_SIZE];
+                    uint8_t nullifier_count = (uint8_t)tx->input_count;
+                    for (int i = 0; i < tx->input_count; i++) {
+                        memcpy(nullifiers[i], tx->inputs[i].nullifier, DNAC_NULLIFIER_SIZE);
+                    }
+                    dnac_free_transaction(tx);
+
+                    fprintf(stderr, "[WITNESS] Forwarded TX has %d nullifiers\n", nullifier_count);
+                    fflush(stderr);
+
+                    /* Start consensus round with ALL nullifiers */
+                    rc = dnac_bft_start_round(g_bft_ctx,
+                                              req.tx_hash,
+                                              nullifiers,
+                                              nullifier_count,
+                                              req.sender_pubkey,
+                                              req.client_signature,
+                                              req.fee_amount);
 
                     fprintf(stderr, "[WITNESS] Forward req: start_round returned %d\n", rc);
                     fflush(stderr);

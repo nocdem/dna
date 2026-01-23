@@ -13,9 +13,11 @@ int dnac_spend_request_serialize(const dnac_spend_request_t *request,
                                  size_t *written_out) {
     if (!request || !buffer || !written_out) return -1;
 
-    /* Calculate required size */
+    /* v0.4.0 format: tx_hash + tx_len + tx_data + sender_pubkey + signature + timestamp + fee
+     * tx_len is variable, so we calculate size based on actual tx_len */
     size_t required = DNAC_TX_HASH_SIZE +      /* tx_hash */
-                      DNAC_NULLIFIER_SIZE +     /* nullifier */
+                      4 +                       /* tx_len (uint32) */
+                      request->tx_len +         /* tx_data (variable) */
                       DNAC_PUBKEY_SIZE +        /* sender_pubkey */
                       DNAC_SIGNATURE_SIZE +     /* signature */
                       8 +                       /* timestamp */
@@ -25,7 +27,17 @@ int dnac_spend_request_serialize(const dnac_spend_request_t *request,
 
     uint8_t *p = buffer;
     memcpy(p, request->tx_hash, DNAC_TX_HASH_SIZE); p += DNAC_TX_HASH_SIZE;
-    memcpy(p, request->nullifier, DNAC_NULLIFIER_SIZE); p += DNAC_NULLIFIER_SIZE;
+
+    /* tx_len as 4-byte little-endian */
+    p[0] = (request->tx_len >> 0) & 0xFF;
+    p[1] = (request->tx_len >> 8) & 0xFF;
+    p[2] = (request->tx_len >> 16) & 0xFF;
+    p[3] = (request->tx_len >> 24) & 0xFF;
+    p += 4;
+
+    /* tx_data (variable length) */
+    memcpy(p, request->tx_data, request->tx_len); p += request->tx_len;
+
     memcpy(p, request->sender_pubkey, DNAC_PUBKEY_SIZE); p += DNAC_PUBKEY_SIZE;
     memcpy(p, request->signature, DNAC_SIGNATURE_SIZE); p += DNAC_SIGNATURE_SIZE;
 
@@ -50,14 +62,31 @@ int dnac_spend_request_deserialize(const uint8_t *buffer,
                                    dnac_spend_request_t *request_out) {
     if (!buffer || !request_out) return -1;
 
-    size_t required = DNAC_TX_HASH_SIZE + DNAC_NULLIFIER_SIZE +
-                      DNAC_PUBKEY_SIZE + DNAC_SIGNATURE_SIZE + 16;
-
-    if (buffer_len < required) return -1;
+    /* v0.4.0: Minimum header size before tx_data */
+    size_t min_header = DNAC_TX_HASH_SIZE + 4;  /* tx_hash + tx_len */
+    if (buffer_len < min_header) return -1;
 
     const uint8_t *p = buffer;
     memcpy(request_out->tx_hash, p, DNAC_TX_HASH_SIZE); p += DNAC_TX_HASH_SIZE;
-    memcpy(request_out->nullifier, p, DNAC_NULLIFIER_SIZE); p += DNAC_NULLIFIER_SIZE;
+
+    /* tx_len as 4-byte little-endian */
+    request_out->tx_len = (uint32_t)p[0] |
+                          ((uint32_t)p[1] << 8) |
+                          ((uint32_t)p[2] << 16) |
+                          ((uint32_t)p[3] << 24);
+    p += 4;
+
+    /* Validate tx_len doesn't exceed max */
+    if (request_out->tx_len > DNAC_MAX_TX_SIZE) return -1;
+
+    /* Calculate total required size */
+    size_t required = DNAC_TX_HASH_SIZE + 4 + request_out->tx_len +
+                      DNAC_PUBKEY_SIZE + DNAC_SIGNATURE_SIZE + 16;
+    if (buffer_len < required) return -1;
+
+    /* tx_data (variable length) */
+    memcpy(request_out->tx_data, p, request_out->tx_len); p += request_out->tx_len;
+
     memcpy(request_out->sender_pubkey, p, DNAC_PUBKEY_SIZE); p += DNAC_PUBKEY_SIZE;
     memcpy(request_out->signature, p, DNAC_SIGNATURE_SIZE); p += DNAC_SIGNATURE_SIZE;
 

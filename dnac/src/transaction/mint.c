@@ -133,15 +133,25 @@ int dnac_tx_authorize_mint(dnac_context_t *ctx, dnac_transaction_t *tx) {
     dna_engine_t *engine = dnac_get_engine(ctx);
     if (!engine) return DNAC_ERROR_NOT_INITIALIZED;
 
-    /* Build mint request - zeroed nullifier indicates MINT */
+    /* Build mint request - serialize the MINT transaction
+     * v0.4.0: MINT TXs have 0 inputs so tx_data will have 0 nullifiers
+     */
     dnac_spend_request_t request = {0};
     memcpy(request.tx_hash, tx->tx_hash, DNAC_TX_HASH_SIZE);
-    memset(request.nullifier, 0, DNAC_NULLIFIER_SIZE);  /* Zero = MINT */
+
+    /* Serialize the MINT transaction into tx_data */
+    size_t tx_serialized_len = 0;
+    int rc = dnac_tx_serialize(tx, request.tx_data, sizeof(request.tx_data), &tx_serialized_len);
+    if (rc != DNAC_SUCCESS) {
+        return rc;
+    }
+    request.tx_len = (uint32_t)tx_serialized_len;
+
     request.timestamp = (uint64_t)time(NULL);
     request.fee_amount = 0;
 
-    int rc = dna_engine_get_signing_public_key(engine, request.sender_pubkey,
-                                                DNAC_PUBKEY_SIZE);
+    rc = dna_engine_get_signing_public_key(engine, request.sender_pubkey,
+                                           DNAC_PUBKEY_SIZE);
     if (rc < 0) return DNAC_ERROR_CRYPTO;
 
     size_t sig_len = DNAC_SIGNATURE_SIZE;

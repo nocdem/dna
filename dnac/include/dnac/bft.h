@@ -34,6 +34,9 @@ extern "C" {
 /** Maximum witnesses in roster */
 #define DNAC_BFT_MAX_WITNESSES          16
 
+/** Maximum serialized transaction size (64KB) - must match DNAC_MAX_TX_SIZE in nodus.h */
+#define DNAC_BFT_MAX_TX_SIZE            65536
+
 /** Default round timeout (milliseconds) */
 #define DNAC_BFT_ROUND_TIMEOUT_MS       5000
 
@@ -186,11 +189,14 @@ typedef struct {
 
 /**
  * @brief Proposal message (from leader)
+ *
+ * v0.4.0: Now carries multiple nullifiers to prevent multi-input double-spend.
  */
 typedef struct {
     dnac_bft_msg_header_t header;
     uint8_t tx_hash[DNAC_TX_HASH_SIZE];             /**< Transaction hash */
-    uint8_t nullifier[DNAC_NULLIFIER_SIZE];         /**< Nullifier being spent */
+    uint8_t nullifiers[DNAC_TX_MAX_INPUTS][DNAC_NULLIFIER_SIZE]; /**< All nullifiers being spent */
+    uint8_t nullifier_count;                        /**< Number of nullifiers */
     uint8_t sender_pubkey[DNAC_PUBKEY_SIZE];        /**< Client's public key */
     uint8_t client_signature[DNAC_SIGNATURE_SIZE];  /**< Client's signature on tx */
     uint64_t fee_amount;                            /**< Fee amount */
@@ -210,11 +216,14 @@ typedef struct {
 
 /**
  * @brief Commit message
+ *
+ * v0.4.0: Now carries multiple nullifiers to commit all inputs atomically.
  */
 typedef struct {
     dnac_bft_msg_header_t header;
     uint8_t tx_hash[DNAC_TX_HASH_SIZE];             /**< Transaction hash */
-    uint8_t nullifier[DNAC_NULLIFIER_SIZE];         /**< Nullifier to commit */
+    uint8_t nullifiers[DNAC_TX_MAX_INPUTS][DNAC_NULLIFIER_SIZE]; /**< All nullifiers to commit */
+    uint8_t nullifier_count;                        /**< Number of nullifiers */
     uint32_t n_precommits;                          /**< Number of precommit proofs */
     uint8_t signature[DNAC_SIGNATURE_SIZE];         /**< Sender's signature */
 } dnac_bft_commit_t;
@@ -241,11 +250,14 @@ typedef struct {
 
 /**
  * @brief Forward request (non-leader to leader)
+ *
+ * v0.4.0: Now carries full serialized TX instead of single nullifier.
  */
 typedef struct {
     dnac_bft_msg_header_t header;
     uint8_t tx_hash[DNAC_TX_HASH_SIZE];
-    uint8_t nullifier[DNAC_NULLIFIER_SIZE];
+    uint8_t tx_data[DNAC_BFT_MAX_TX_SIZE];          /**< Full serialized transaction */
+    uint32_t tx_len;                                /**< TX data length */
     uint8_t sender_pubkey[DNAC_PUBKEY_SIZE];
     uint8_t client_signature[DNAC_SIGNATURE_SIZE];
     uint64_t fee_amount;
@@ -280,13 +292,16 @@ typedef struct {
 
 /**
  * @brief Consensus round state
+ *
+ * v0.4.0: Now tracks multiple nullifiers for multi-input transactions.
  */
 typedef struct {
     uint64_t round;                                 /**< Round number */
     uint32_t view;                                  /**< Current view */
     dnac_bft_phase_t phase;                         /**< Current phase */
     uint8_t tx_hash[DNAC_TX_HASH_SIZE];             /**< Transaction being processed */
-    uint8_t nullifier[DNAC_NULLIFIER_SIZE];         /**< Nullifier being spent */
+    uint8_t nullifiers[DNAC_TX_MAX_INPUTS][DNAC_NULLIFIER_SIZE]; /**< All nullifiers being spent */
+    uint8_t nullifier_count;                        /**< Number of nullifiers */
 
     /* Votes collected */
     dnac_bft_vote_record_t prevotes[DNAC_BFT_MAX_WITNESSES];
@@ -455,9 +470,12 @@ int dnac_bft_get_quorum(int n_witnesses);
 /**
  * @brief Start a new consensus round (leader only)
  *
+ * v0.4.0: Now accepts array of nullifiers to prevent multi-input double-spend.
+ *
  * @param ctx BFT context
  * @param tx_hash Transaction hash
- * @param nullifier Nullifier being spent
+ * @param nullifiers Array of nullifiers being spent [count][DNAC_NULLIFIER_SIZE]
+ * @param nullifier_count Number of nullifiers in array
  * @param client_pubkey Client's public key
  * @param client_sig Client's signature
  * @param fee_amount Fee amount
@@ -465,7 +483,8 @@ int dnac_bft_get_quorum(int n_witnesses);
  */
 int dnac_bft_start_round(dnac_bft_context_t *ctx,
                          const uint8_t *tx_hash,
-                         const uint8_t *nullifier,
+                         const uint8_t nullifiers[][DNAC_NULLIFIER_SIZE],
+                         uint8_t nullifier_count,
                          const uint8_t *client_pubkey,
                          const uint8_t *client_sig,
                          uint64_t fee_amount);

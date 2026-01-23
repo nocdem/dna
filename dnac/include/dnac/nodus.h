@@ -42,6 +42,9 @@ extern "C" {
 /** Maximum number of witness servers to contact */
 #define DNAC_MAX_WITNESS_SERVERS        5
 
+/** Maximum serialized transaction size (64KB) */
+#define DNAC_MAX_TX_SIZE                65536
+
 /** Timeout for Nodus requests (milliseconds) */
 #define DNAC_NODUS_TIMEOUT_MS           10000
 
@@ -78,10 +81,15 @@ typedef enum {
 
 /**
  * @brief Spend request sent to witness servers
+ *
+ * v0.4.0: Now carries full serialized transaction instead of single nullifier.
+ * This enables witnesses to extract and verify ALL input nullifiers,
+ * preventing multi-input double-spend attacks.
  */
 typedef struct {
     uint8_t tx_hash[DNAC_TX_HASH_SIZE];         /**< Transaction hash */
-    uint8_t nullifier[DNAC_NULLIFIER_SIZE];      /**< Nullifier being spent */
+    uint8_t tx_data[DNAC_MAX_TX_SIZE];          /**< Full serialized transaction */
+    uint32_t tx_len;                             /**< Serialized TX length */
     uint8_t sender_pubkey[DNAC_PUBKEY_SIZE];     /**< Sender's public key */
     uint8_t signature[DNAC_SIGNATURE_SIZE];      /**< Sender's signature on tx_hash */
     uint64_t timestamp;                          /**< Request timestamp */

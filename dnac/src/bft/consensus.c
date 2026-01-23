@@ -215,11 +215,17 @@ int dnac_bft_get_quorum(int n_witnesses) {
 
 int dnac_bft_start_round(dnac_bft_context_t *ctx,
                          const uint8_t *tx_hash,
-                         const uint8_t *nullifier,
+                         const uint8_t nullifiers[][DNAC_NULLIFIER_SIZE],
+                         uint8_t nullifier_count,
                          const uint8_t *client_pubkey,
                          const uint8_t *client_sig,
                          uint64_t fee_amount) {
-    if (!ctx || !tx_hash || !nullifier) {
+    if (!ctx || !tx_hash || !nullifiers || nullifier_count == 0) {
+        return DNAC_BFT_ERROR_INVALID_PARAM;
+    }
+
+    if (nullifier_count > DNAC_TX_MAX_INPUTS) {
+        QGP_LOG_ERROR(LOG_TAG, "Too many nullifiers: %d", nullifier_count);
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
@@ -239,11 +245,13 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
-    /* Check nullifier locally first */
-    if (nullifier_exists(ctx,nullifier)) {
-        QGP_LOG_WARN(LOG_TAG, "Nullifier already spent (local check)");
-        pthread_mutex_unlock(&ctx->mutex);
-        return DNAC_BFT_ERROR_DOUBLE_SPEND;
+    /* v0.4.0: Check ALL nullifiers locally first for double-spend */
+    for (int i = 0; i < nullifier_count; i++) {
+        if (nullifier_exists(ctx, nullifiers[i])) {
+            QGP_LOG_WARN(LOG_TAG, "Nullifier %d already spent (local check)", i);
+            pthread_mutex_unlock(&ctx->mutex);
+            return DNAC_BFT_ERROR_DOUBLE_SPEND;
+        }
     }
 
     /* Initialize round state - preserve client connection info set by caller */
@@ -266,7 +274,13 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
     ctx->round_state.view = ctx->current_view;
     ctx->round_state.phase = BFT_PHASE_PREVOTE;
     memcpy(ctx->round_state.tx_hash, tx_hash, DNAC_TX_HASH_SIZE);
-    memcpy(ctx->round_state.nullifier, nullifier, DNAC_NULLIFIER_SIZE);
+
+    /* v0.4.0: Store ALL nullifiers in round state */
+    ctx->round_state.nullifier_count = nullifier_count;
+    for (int i = 0; i < nullifier_count; i++) {
+        memcpy(ctx->round_state.nullifiers[i], nullifiers[i], DNAC_NULLIFIER_SIZE);
+    }
+
     ctx->round_state.phase_start_time = dnac_tcp_get_time_ms();
 
     if (client_pubkey) {
@@ -277,7 +291,7 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
     }
     ctx->round_state.fee_amount = fee_amount;
 
-    /* Create proposal message */
+    /* Create proposal message with ALL nullifiers */
     dnac_bft_proposal_t proposal;
     memset(&proposal, 0, sizeof(proposal));
 
@@ -289,7 +303,10 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
     proposal.header.timestamp = time(NULL);
 
     memcpy(proposal.tx_hash, tx_hash, DNAC_TX_HASH_SIZE);
-    memcpy(proposal.nullifier, nullifier, DNAC_NULLIFIER_SIZE);
+    proposal.nullifier_count = nullifier_count;
+    for (int i = 0; i < nullifier_count; i++) {
+        memcpy(proposal.nullifiers[i], nullifiers[i], DNAC_NULLIFIER_SIZE);
+    }
     if (client_pubkey) {
         memcpy(proposal.sender_pubkey, client_pubkey, DNAC_PUBKEY_SIZE);
     }
@@ -327,8 +344,8 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
     dnac_tcp_write_frame_header(buffer, BFT_MSG_PROPOSAL, (uint32_t)written);
 
     int sent = bft_peer_broadcast(buffer, DNAC_TCP_FRAME_HEADER_SIZE + written, -1);
-    QGP_LOG_INFO(LOG_TAG, "Proposal broadcast to %d peers (round %lu)",
-                sent, (unsigned long)ctx->current_round);
+    QGP_LOG_INFO(LOG_TAG, "Proposal broadcast to %d peers (round %lu, %d nullifiers)",
+                sent, (unsigned long)ctx->current_round, nullifier_count);
 
     return DNAC_BFT_SUCCESS;
 }
@@ -356,8 +373,15 @@ int dnac_bft_handle_proposal(dnac_bft_context_t *ctx,
 
     /* TODO: Verify signature */
 
-    /* Check nullifier locally */
-    bool double_spend = nullifier_exists(ctx,proposal->nullifier);
+    /* v0.4.0: Check ALL nullifiers locally for double-spend */
+    bool double_spend = false;
+    for (int i = 0; i < proposal->nullifier_count; i++) {
+        if (nullifier_exists(ctx, proposal->nullifiers[i])) {
+            QGP_LOG_WARN(LOG_TAG, "Nullifier %d already spent", i);
+            double_spend = true;
+            break;
+        }
+    }
 
     /* Initialize round state */
     ctx->current_round = proposal->header.round;
@@ -369,7 +393,13 @@ int dnac_bft_handle_proposal(dnac_bft_context_t *ctx,
     ctx->round_state.view = proposal->header.view;
     ctx->round_state.phase = BFT_PHASE_PREVOTE;
     memcpy(ctx->round_state.tx_hash, proposal->tx_hash, DNAC_TX_HASH_SIZE);
-    memcpy(ctx->round_state.nullifier, proposal->nullifier, DNAC_NULLIFIER_SIZE);
+
+    /* v0.4.0: Store ALL nullifiers from proposal */
+    ctx->round_state.nullifier_count = proposal->nullifier_count;
+    for (int i = 0; i < proposal->nullifier_count; i++) {
+        memcpy(ctx->round_state.nullifiers[i], proposal->nullifiers[i], DNAC_NULLIFIER_SIZE);
+    }
+
     memcpy(ctx->round_state.client_pubkey, proposal->sender_pubkey, DNAC_PUBKEY_SIZE);
     memcpy(ctx->round_state.client_signature, proposal->client_signature, DNAC_SIGNATURE_SIZE);
     ctx->round_state.fee_amount = proposal->fee_amount;
@@ -421,9 +451,10 @@ int dnac_bft_handle_proposal(dnac_bft_context_t *ctx,
 
     bft_peer_broadcast(buffer, DNAC_TCP_FRAME_HEADER_SIZE + written, -1);
 
-    QGP_LOG_INFO(LOG_TAG, "Sent PREVOTE %s for round %lu",
+    QGP_LOG_INFO(LOG_TAG, "Sent PREVOTE %s for round %lu (%d nullifiers)",
                 vote.vote == BFT_VOTE_APPROVE ? "APPROVE" : "REJECT",
-                (unsigned long)proposal->header.round);
+                (unsigned long)proposal->header.round,
+                proposal->nullifier_count);
 
     return DNAC_BFT_SUCCESS;
 }
@@ -593,22 +624,30 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
             return DNAC_BFT_SUCCESS;
 
         } else if (next_msg_type == BFT_MSG_COMMIT) {
-            /* COMMIT phase - add nullifier */
-            QGP_LOG_INFO(LOG_TAG, "COMMIT: Adding nullifier to database");
+            /* v0.4.0: COMMIT phase - add ALL nullifiers to database */
+            QGP_LOG_INFO(LOG_TAG, "COMMIT: Adding %d nullifiers to database",
+                        ctx->round_state.nullifier_count);
 
-            int rc = nullifier_add(ctx,ctx->round_state.nullifier,
-                                           ctx->round_state.tx_hash);
-            if (rc != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "Failed to add nullifier");
+            for (int i = 0; i < ctx->round_state.nullifier_count; i++) {
+                int rc = nullifier_add(ctx, ctx->round_state.nullifiers[i],
+                                       ctx->round_state.tx_hash);
+                if (rc != 0 && rc != -2) {  /* -2 = already exists, which is ok */
+                    QGP_LOG_ERROR(LOG_TAG, "Failed to add nullifier %d", i);
+                }
             }
 
             ctx->last_committed_round = ctx->round_state.round;
 
-            /* Save client connection info before reset */
+            /* Save client connection info and nullifier data before reset */
             int client_fd = ctx->round_state.client_fd;
             bool is_forwarded = ctx->round_state.is_forwarded;
+            uint8_t saved_nullifier_count = ctx->round_state.nullifier_count;
+            uint8_t saved_nullifiers[DNAC_TX_MAX_INPUTS][DNAC_NULLIFIER_SIZE];
+            for (int i = 0; i < saved_nullifier_count; i++) {
+                memcpy(saved_nullifiers[i], ctx->round_state.nullifiers[i], DNAC_NULLIFIER_SIZE);
+            }
 
-            /* Send COMMIT message */
+            /* Send COMMIT message with ALL nullifiers */
             dnac_bft_commit_t commit;
             memset(&commit, 0, sizeof(commit));
 
@@ -619,7 +658,10 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
             memcpy(commit.header.sender_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
             commit.header.timestamp = time(NULL);
             memcpy(commit.tx_hash, ctx->round_state.tx_hash, DNAC_TX_HASH_SIZE);
-            memcpy(commit.nullifier, ctx->round_state.nullifier, DNAC_NULLIFIER_SIZE);
+            commit.nullifier_count = saved_nullifier_count;
+            for (int i = 0; i < saved_nullifier_count; i++) {
+                memcpy(commit.nullifiers[i], saved_nullifiers[i], DNAC_NULLIFIER_SIZE);
+            }
             commit.n_precommits = ctx->round_state.precommit_count;
 
             /* Reset round state */
@@ -628,7 +670,7 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
 
             pthread_mutex_unlock(&ctx->mutex);
 
-            uint8_t buffer[8192];
+            uint8_t buffer[16384];
             size_t written;
 
             if (dnac_bft_commit_serialize(&commit, buffer + DNAC_TCP_FRAME_HEADER_SIZE,
@@ -667,13 +709,15 @@ int dnac_bft_handle_commit(dnac_bft_context_t *ctx,
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
-    /* Add nullifier to our database */
-    QGP_LOG_INFO(LOG_TAG, "Received COMMIT for round %lu",
-                (unsigned long)commit->header.round);
+    /* v0.4.0: Add ALL nullifiers to our database */
+    QGP_LOG_INFO(LOG_TAG, "Received COMMIT for round %lu (%d nullifiers)",
+                (unsigned long)commit->header.round, commit->nullifier_count);
 
-    int rc = nullifier_add(ctx,commit->nullifier, commit->tx_hash);
-    if (rc != 0 && rc != -2) {  /* -2 = already exists, which is ok */
-        QGP_LOG_ERROR(LOG_TAG, "Failed to add nullifier from COMMIT");
+    for (int i = 0; i < commit->nullifier_count; i++) {
+        int rc = nullifier_add(ctx, commit->nullifiers[i], commit->tx_hash);
+        if (rc != 0 && rc != -2) {  /* -2 = already exists, which is ok */
+            QGP_LOG_ERROR(LOG_TAG, "Failed to add nullifier %d from COMMIT", i);
+        }
     }
 
     pthread_mutex_lock(&ctx->mutex);

@@ -72,7 +72,9 @@ int bft_forward_request(dnac_bft_context_t *ctx,
     fwd.header.timestamp = time(NULL);
 
     memcpy(fwd.tx_hash, request->tx_hash, DNAC_TX_HASH_SIZE);
-    memcpy(fwd.nullifier, request->nullifier, DNAC_NULLIFIER_SIZE);
+    /* v0.4.0: Forward full tx_data instead of single nullifier */
+    fwd.tx_len = request->tx_len;
+    memcpy(fwd.tx_data, request->tx_data, request->tx_len);
     memcpy(fwd.sender_pubkey, request->sender_pubkey, DNAC_PUBKEY_SIZE);
     memcpy(fwd.client_signature, request->signature, DNAC_SIGNATURE_SIZE);
     fwd.fee_amount = request->fee_amount;
@@ -80,8 +82,8 @@ int bft_forward_request(dnac_bft_context_t *ctx,
 
     /* TODO: Sign forward request */
 
-    /* Serialize */
-    uint8_t buffer[16384];
+    /* Serialize - buffer must fit tx_data (up to 64KB) */
+    uint8_t buffer[DNAC_BFT_MAX_TX_SIZE + 16384];
     size_t written;
 
     int rc = dnac_bft_forward_req_serialize(&fwd, buffer + DNAC_TCP_FRAME_HEADER_SIZE,

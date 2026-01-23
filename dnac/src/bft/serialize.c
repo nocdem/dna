@@ -132,15 +132,20 @@ int dnac_bft_header_deserialize(const uint8_t *buffer, size_t buffer_len,
  * Proposal Serialization
  * ========================================================================== */
 
-/* Proposal size: header(54) + tx_hash(64) + nullifier(64) + pubkey(2592) +
- *                client_sig(4627) + fee(8) + sig(4627) = 12036 bytes */
-#define BFT_PROPOSAL_SIZE (BFT_HEADER_SIZE + 64 + 64 + DNAC_PUBKEY_SIZE + \
-                           DNAC_SIGNATURE_SIZE + 8 + DNAC_SIGNATURE_SIZE)
+/* v0.4.0 Proposal format:
+ * header(54) + tx_hash(64) + nullifier_count(1) + nullifiers(count*64) +
+ * pubkey(2592) + client_sig(4627) + fee(8) + sig(4627)
+ * Variable size based on nullifier_count */
+#define BFT_PROPOSAL_BASE_SIZE (BFT_HEADER_SIZE + 64 + 1 + DNAC_PUBKEY_SIZE + \
+                                DNAC_SIGNATURE_SIZE + 8 + DNAC_SIGNATURE_SIZE)
+#define BFT_PROPOSAL_MAX_SIZE (BFT_PROPOSAL_BASE_SIZE + DNAC_TX_MAX_INPUTS * 64)
 
 int dnac_bft_proposal_serialize(const dnac_bft_proposal_t *proposal,
                                 uint8_t *buffer, size_t buffer_len,
                                 size_t *written) {
-    if (!proposal || !buffer || buffer_len < BFT_PROPOSAL_SIZE) {
+    size_t required = BFT_PROPOSAL_BASE_SIZE + (proposal->nullifier_count * DNAC_NULLIFIER_SIZE);
+
+    if (!proposal || !buffer || buffer_len < required) {
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
@@ -154,19 +159,26 @@ int dnac_bft_proposal_serialize(const dnac_bft_proposal_t *proposal,
 
     /* Serialize payload */
     write_bytes(&p, proposal->tx_hash, DNAC_TX_HASH_SIZE);
-    write_bytes(&p, proposal->nullifier, DNAC_NULLIFIER_SIZE);
+
+    /* v0.4.0: nullifier count and array */
+    write_u8(&p, proposal->nullifier_count);
+    for (int i = 0; i < proposal->nullifier_count; i++) {
+        write_bytes(&p, proposal->nullifiers[i], DNAC_NULLIFIER_SIZE);
+    }
+
     write_bytes(&p, proposal->sender_pubkey, DNAC_PUBKEY_SIZE);
     write_bytes(&p, proposal->client_signature, DNAC_SIGNATURE_SIZE);
     write_u64(&p, proposal->fee_amount);
     write_bytes(&p, proposal->signature, DNAC_SIGNATURE_SIZE);
 
-    if (written) *written = BFT_PROPOSAL_SIZE;
+    if (written) *written = required;
     return DNAC_BFT_SUCCESS;
 }
 
 int dnac_bft_proposal_deserialize(const uint8_t *buffer, size_t buffer_len,
                                   dnac_bft_proposal_t *proposal) {
-    if (!buffer || !proposal || buffer_len < BFT_PROPOSAL_SIZE) {
+    /* Minimum size check (with 0 nullifiers) */
+    if (!buffer || !proposal || buffer_len < BFT_PROPOSAL_BASE_SIZE) {
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
@@ -179,7 +191,24 @@ int dnac_bft_proposal_deserialize(const uint8_t *buffer, size_t buffer_len,
 
     /* Deserialize payload */
     read_bytes(&p, proposal->tx_hash, DNAC_TX_HASH_SIZE);
-    read_bytes(&p, proposal->nullifier, DNAC_NULLIFIER_SIZE);
+
+    /* v0.4.0: nullifier count and array */
+    proposal->nullifier_count = read_u8(&p);
+    if (proposal->nullifier_count > DNAC_TX_MAX_INPUTS) {
+        QGP_LOG_ERROR(LOG_TAG, "Proposal has too many nullifiers: %d", proposal->nullifier_count);
+        return DNAC_BFT_ERROR_INVALID_MESSAGE;
+    }
+
+    /* Verify buffer has enough data for all nullifiers */
+    size_t required = BFT_PROPOSAL_BASE_SIZE + (proposal->nullifier_count * DNAC_NULLIFIER_SIZE);
+    if (buffer_len < required) {
+        return DNAC_BFT_ERROR_INVALID_PARAM;
+    }
+
+    for (int i = 0; i < proposal->nullifier_count; i++) {
+        read_bytes(&p, proposal->nullifiers[i], DNAC_NULLIFIER_SIZE);
+    }
+
     read_bytes(&p, proposal->sender_pubkey, DNAC_PUBKEY_SIZE);
     read_bytes(&p, proposal->client_signature, DNAC_SIGNATURE_SIZE);
     proposal->fee_amount = read_u64(&p);
@@ -242,13 +271,18 @@ int dnac_bft_vote_deserialize(const uint8_t *buffer, size_t buffer_len,
  * Commit Serialization
  * ========================================================================== */
 
-/* Commit size: header(54) + tx_hash(64) + nullifier(64) + n_precommits(4) + sig(4627) = 4813 bytes */
-#define BFT_COMMIT_SIZE (BFT_HEADER_SIZE + 64 + 64 + 4 + DNAC_SIGNATURE_SIZE)
+/* v0.4.0 Commit format:
+ * header(54) + tx_hash(64) + nullifier_count(1) + nullifiers(count*64) +
+ * n_precommits(4) + sig(4627)
+ * Variable size based on nullifier_count */
+#define BFT_COMMIT_BASE_SIZE (BFT_HEADER_SIZE + 64 + 1 + 4 + DNAC_SIGNATURE_SIZE)
 
 int dnac_bft_commit_serialize(const dnac_bft_commit_t *commit,
                               uint8_t *buffer, size_t buffer_len,
                               size_t *written) {
-    if (!commit || !buffer || buffer_len < BFT_COMMIT_SIZE) {
+    size_t required = BFT_COMMIT_BASE_SIZE + (commit->nullifier_count * DNAC_NULLIFIER_SIZE);
+
+    if (!commit || !buffer || buffer_len < required) {
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
@@ -260,17 +294,23 @@ int dnac_bft_commit_serialize(const dnac_bft_commit_t *commit,
     p += header_written;
 
     write_bytes(&p, commit->tx_hash, DNAC_TX_HASH_SIZE);
-    write_bytes(&p, commit->nullifier, DNAC_NULLIFIER_SIZE);
+
+    /* v0.4.0: nullifier count and array */
+    write_u8(&p, commit->nullifier_count);
+    for (int i = 0; i < commit->nullifier_count; i++) {
+        write_bytes(&p, commit->nullifiers[i], DNAC_NULLIFIER_SIZE);
+    }
+
     write_u32(&p, commit->n_precommits);
     write_bytes(&p, commit->signature, DNAC_SIGNATURE_SIZE);
 
-    if (written) *written = BFT_COMMIT_SIZE;
+    if (written) *written = required;
     return DNAC_BFT_SUCCESS;
 }
 
 int dnac_bft_commit_deserialize(const uint8_t *buffer, size_t buffer_len,
                                 dnac_bft_commit_t *commit) {
-    if (!buffer || !commit || buffer_len < BFT_COMMIT_SIZE) {
+    if (!buffer || !commit || buffer_len < BFT_COMMIT_BASE_SIZE) {
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
@@ -281,7 +321,24 @@ int dnac_bft_commit_deserialize(const uint8_t *buffer, size_t buffer_len,
     p += BFT_HEADER_SIZE;
 
     read_bytes(&p, commit->tx_hash, DNAC_TX_HASH_SIZE);
-    read_bytes(&p, commit->nullifier, DNAC_NULLIFIER_SIZE);
+
+    /* v0.4.0: nullifier count and array */
+    commit->nullifier_count = read_u8(&p);
+    if (commit->nullifier_count > DNAC_TX_MAX_INPUTS) {
+        QGP_LOG_ERROR(LOG_TAG, "Commit has too many nullifiers: %d", commit->nullifier_count);
+        return DNAC_BFT_ERROR_INVALID_MESSAGE;
+    }
+
+    /* Verify buffer has enough data */
+    size_t required = BFT_COMMIT_BASE_SIZE + (commit->nullifier_count * DNAC_NULLIFIER_SIZE);
+    if (buffer_len < required) {
+        return DNAC_BFT_ERROR_INVALID_PARAM;
+    }
+
+    for (int i = 0; i < commit->nullifier_count; i++) {
+        read_bytes(&p, commit->nullifiers[i], DNAC_NULLIFIER_SIZE);
+    }
+
     commit->n_precommits = read_u32(&p);
     read_bytes(&p, commit->signature, DNAC_SIGNATURE_SIZE);
 
@@ -428,15 +485,19 @@ int dnac_bft_roster_deserialize(const uint8_t *buffer, size_t buffer_len,
  * Forward Request Serialization
  * ========================================================================== */
 
-/* Forward req: header(54) + tx_hash(64) + nullifier(64) + pubkey(2592) +
- *              client_sig(4627) + fee(8) + forwarder_id(32) + sig(4627) = 12068 bytes */
-#define BFT_FORWARD_REQ_SIZE (BFT_HEADER_SIZE + 64 + 64 + DNAC_PUBKEY_SIZE + \
-                              DNAC_SIGNATURE_SIZE + 8 + 32 + DNAC_SIGNATURE_SIZE)
+/* v0.4.0 Forward req format:
+ * header(54) + tx_hash(64) + tx_len(4) + tx_data(variable) + pubkey(2592) +
+ * client_sig(4627) + fee(8) + forwarder_id(32) + sig(4627)
+ * Variable size based on tx_len */
+#define BFT_FORWARD_REQ_BASE_SIZE (BFT_HEADER_SIZE + 64 + 4 + DNAC_PUBKEY_SIZE + \
+                                   DNAC_SIGNATURE_SIZE + 8 + 32 + DNAC_SIGNATURE_SIZE)
 
 int dnac_bft_forward_req_serialize(const dnac_bft_forward_req_t *req,
                                    uint8_t *buffer, size_t buffer_len,
                                    size_t *written) {
-    if (!req || !buffer || buffer_len < BFT_FORWARD_REQ_SIZE) {
+    size_t required = BFT_FORWARD_REQ_BASE_SIZE + req->tx_len;
+
+    if (!req || !buffer || buffer_len < required) {
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
@@ -448,20 +509,24 @@ int dnac_bft_forward_req_serialize(const dnac_bft_forward_req_t *req,
     p += header_written;
 
     write_bytes(&p, req->tx_hash, DNAC_TX_HASH_SIZE);
-    write_bytes(&p, req->nullifier, DNAC_NULLIFIER_SIZE);
+
+    /* v0.4.0: tx_len and tx_data instead of nullifier */
+    write_u32(&p, req->tx_len);
+    write_bytes(&p, req->tx_data, req->tx_len);
+
     write_bytes(&p, req->sender_pubkey, DNAC_PUBKEY_SIZE);
     write_bytes(&p, req->client_signature, DNAC_SIGNATURE_SIZE);
     write_u64(&p, req->fee_amount);
     write_bytes(&p, req->forwarder_id, DNAC_BFT_WITNESS_ID_SIZE);
     write_bytes(&p, req->signature, DNAC_SIGNATURE_SIZE);
 
-    if (written) *written = BFT_FORWARD_REQ_SIZE;
+    if (written) *written = required;
     return DNAC_BFT_SUCCESS;
 }
 
 int dnac_bft_forward_req_deserialize(const uint8_t *buffer, size_t buffer_len,
                                      dnac_bft_forward_req_t *req) {
-    if (!buffer || !req || buffer_len < BFT_FORWARD_REQ_SIZE) {
+    if (!buffer || !req || buffer_len < BFT_FORWARD_REQ_BASE_SIZE) {
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
@@ -472,7 +537,22 @@ int dnac_bft_forward_req_deserialize(const uint8_t *buffer, size_t buffer_len,
     p += BFT_HEADER_SIZE;
 
     read_bytes(&p, req->tx_hash, DNAC_TX_HASH_SIZE);
-    read_bytes(&p, req->nullifier, DNAC_NULLIFIER_SIZE);
+
+    /* v0.4.0: tx_len and tx_data instead of nullifier */
+    req->tx_len = read_u32(&p);
+    if (req->tx_len > DNAC_BFT_MAX_TX_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Forward req tx_len too large: %u", req->tx_len);
+        return DNAC_BFT_ERROR_INVALID_MESSAGE;
+    }
+
+    /* Verify buffer has enough data */
+    size_t required = BFT_FORWARD_REQ_BASE_SIZE + req->tx_len;
+    if (buffer_len < required) {
+        return DNAC_BFT_ERROR_INVALID_PARAM;
+    }
+
+    read_bytes(&p, req->tx_data, req->tx_len);
+
     read_bytes(&p, req->sender_pubkey, DNAC_PUBKEY_SIZE);
     read_bytes(&p, req->client_signature, DNAC_SIGNATURE_SIZE);
     req->fee_amount = read_u64(&p);
@@ -588,16 +668,19 @@ dnac_bft_msg_type_t dnac_bft_get_msg_type(const uint8_t *buffer, size_t buffer_l
 size_t dnac_bft_msg_size(dnac_bft_msg_type_t type) {
     switch (type) {
         case BFT_MSG_PROPOSAL:
-            return BFT_PROPOSAL_SIZE;
+            /* v0.4.0: Variable size - return base (0 nullifiers) */
+            return BFT_PROPOSAL_BASE_SIZE;
         case BFT_MSG_PREVOTE:
         case BFT_MSG_PRECOMMIT:
             return BFT_VOTE_SIZE;
         case BFT_MSG_COMMIT:
-            return BFT_COMMIT_SIZE;
+            /* v0.4.0: Variable size - return base (0 nullifiers) */
+            return BFT_COMMIT_BASE_SIZE;
         case BFT_MSG_VIEW_CHANGE:
             return BFT_VIEW_CHANGE_SIZE;
         case BFT_MSG_FORWARD_REQ:
-            return BFT_FORWARD_REQ_SIZE;
+            /* v0.4.0: Variable size - return base (0 tx_data) */
+            return BFT_FORWARD_REQ_BASE_SIZE;
         case BFT_MSG_FORWARD_RSP:
             /* Variable size - return base */
             return BFT_FORWARD_RSP_BASE_SIZE;

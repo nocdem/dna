@@ -410,17 +410,39 @@ static int step_double_spend(void) {
     dnac_spend_request_t request;
     memset(&request, 0, sizeof(request));
 
-    /* Create a NEW tx_hash (different transaction) */
-    for (int i = 0; i < DNAC_TX_HASH_SIZE; i++) {
-        request.tx_hash[i] = rand() & 0xFF;
+    /* Create a fake SPEND transaction with a nullifier derived from minted UTXO */
+    dnac_transaction_t *test_tx = dnac_tx_create(DNAC_TX_SPEND);
+    if (!test_tx) {
+        fprintf(stderr, "  FAIL: Could not create test transaction\n");
+        return -1;
     }
 
-    /* Use a nullifier derived from the minted UTXO */
-    /* In real code, the nullifier is SHA3-512(secret || utxo_data) */
-    /* For this test, we derive something based on the original output */
-    memset(request.nullifier, 0, DNAC_NULLIFIER_SIZE);
-    memcpy(request.nullifier, nullifier_seed, 32);
-    memcpy(request.nullifier + 32, g_minted_tx->tx_hash, 32);
+    /* Add a fake input with derived nullifier */
+    dnac_tx_input_t fake_input = {0};
+    memcpy(fake_input.nullifier, nullifier_seed, 32);
+    memcpy(fake_input.nullifier + 32, g_minted_tx->tx_hash, 32);
+    fake_input.amount = 1000;
+    test_tx->inputs[0] = fake_input;
+    test_tx->input_count = 1;
+
+    /* Add a fake output */
+    test_tx->outputs[0].amount = 990;
+    strncpy(test_tx->outputs[0].owner_fingerprint, "test_recipient", DNAC_FINGERPRINT_SIZE - 1);
+    test_tx->output_count = 1;
+
+    /* Compute hash */
+    dnac_tx_compute_hash(test_tx, request.tx_hash);
+    memcpy(test_tx->tx_hash, request.tx_hash, DNAC_TX_HASH_SIZE);
+
+    /* Serialize transaction into request */
+    size_t tx_ser_len = 0;
+    int ser_rc = dnac_tx_serialize(test_tx, request.tx_data, sizeof(request.tx_data), &tx_ser_len);
+    if (ser_rc != DNAC_SUCCESS) {
+        fprintf(stderr, "  FAIL: Could not serialize test transaction\n");
+        dnac_free_transaction(test_tx);
+        return -1;
+    }
+    request.tx_len = (uint32_t)tx_ser_len;
 
     request.timestamp = (uint64_t)time(NULL);
     request.fee_amount = 10;
@@ -457,10 +479,37 @@ static int step_double_spend(void) {
     }
 
     /* Second request with SAME nullifier - should be REJECTED */
-    /* Change the tx_hash to simulate a different transaction */
-    for (int i = 0; i < DNAC_TX_HASH_SIZE; i++) {
-        request.tx_hash[i] = rand() & 0xFF;
+    /* Create a different transaction but with the same nullifier */
+    dnac_transaction_t *test_tx2 = dnac_tx_create(DNAC_TX_SPEND);
+    if (!test_tx2) {
+        fprintf(stderr, "  FAIL: Could not create second test transaction\n");
+        dnac_free_transaction(test_tx);
+        return -1;
     }
+
+    /* Same nullifier (double-spend attempt) */
+    test_tx2->inputs[0] = fake_input;
+    test_tx2->input_count = 1;
+
+    /* Different output amount to make different tx_hash */
+    test_tx2->outputs[0].amount = 980;
+    strncpy(test_tx2->outputs[0].owner_fingerprint, "different_recipient", DNAC_FINGERPRINT_SIZE - 1);
+    test_tx2->output_count = 1;
+
+    /* Compute different hash */
+    dnac_tx_compute_hash(test_tx2, request.tx_hash);
+    memcpy(test_tx2->tx_hash, request.tx_hash, DNAC_TX_HASH_SIZE);
+
+    /* Serialize the second transaction */
+    tx_ser_len = 0;
+    ser_rc = dnac_tx_serialize(test_tx2, request.tx_data, sizeof(request.tx_data), &tx_ser_len);
+    if (ser_rc != DNAC_SUCCESS) {
+        fprintf(stderr, "  FAIL: Could not serialize second test transaction\n");
+        dnac_free_transaction(test_tx);
+        dnac_free_transaction(test_tx2);
+        return -1;
+    }
+    request.tx_len = (uint32_t)tx_ser_len;
     request.timestamp = (uint64_t)time(NULL);
 
     /* Re-sign with new tx_hash */
@@ -469,12 +518,17 @@ static int step_double_spend(void) {
                                request.signature, &sig_len);
     if (rc < 0) {
         fprintf(stderr, "  FAIL: Could not sign second request\n");
+        dnac_free_transaction(test_tx);
+        dnac_free_transaction(test_tx2);
         return -1;
     }
 
     dnac_witness_sig_t witnesses2[DNAC_MAX_WITNESS_SERVERS];
     int count2 = 0;
     rc = dnac_witness_request(g_ctx, &request, witnesses2, &count2);
+
+    dnac_free_transaction(test_tx);
+    dnac_free_transaction(test_tx2);
 
     if (rc == DNAC_ERROR_DOUBLE_SPEND || count2 < DNAC_WITNESSES_REQUIRED) {
         printf("  Second request: REJECTED (rc=%d, count=%d)\n", rc, count2);

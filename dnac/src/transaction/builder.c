@@ -275,17 +275,23 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
     dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
     if (!dht) return DNAC_ERROR_NETWORK;
 
-    /* Step 1: Create SpendRequest for witness collection */
+    /* Step 1: Create SpendRequest with full serialized transaction
+     * v0.4.0: Send full TX instead of single nullifier to enable
+     * witnesses to extract and verify ALL input nullifiers.
+     */
     dnac_spend_request_t request = {0};
     memcpy(request.tx_hash, tx->tx_hash, DNAC_TX_HASH_SIZE);
     memcpy(request.sender_pubkey, tx->sender_pubkey, DNAC_PUBKEY_SIZE);
     memcpy(request.signature, tx->sender_signature, DNAC_SIGNATURE_SIZE);
     request.timestamp = (uint64_t)time(NULL);
 
-    /* Use first input's nullifier for spend request */
-    if (tx->input_count > 0) {
-        memcpy(request.nullifier, tx->inputs[0].nullifier, DNAC_NULLIFIER_SIZE);
+    /* Serialize full transaction into request */
+    size_t tx_serialized_len = 0;
+    rc = dnac_tx_serialize(tx, request.tx_data, sizeof(request.tx_data), &tx_serialized_len);
+    if (rc != DNAC_SUCCESS) {
+        return rc;
     }
+    request.tx_len = (uint32_t)tx_serialized_len;
 
     /* Calculate fee */
     uint64_t total_output = dnac_tx_total_output(tx);
