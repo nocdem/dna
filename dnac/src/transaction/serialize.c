@@ -6,7 +6,7 @@
  * - Header: version(1) + type(1) + timestamp(8) + tx_hash(64)
  * - Inputs: count(1) + [nullifier(64) + amount(8)]...
  * - Outputs: count(1) + [version(1) + fingerprint(129) + amount(8) + seed(32)]...
- * - Witnesses: count(1) + [witness_id(32) + signature(4627) + timestamp(8)]...
+ * - Witnesses: count(1) + [witness_id(32) + signature(4627) + timestamp(8) + server_pubkey(2592)]...
  * - Sender: pubkey(2592) + signature(4627)
  */
 
@@ -57,7 +57,7 @@ static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
 
     /* Witnesses */
     size += 1;  /* witness_count */
-    size += tx->witness_count * (32 + DNAC_SIGNATURE_SIZE + 8);  /* witness_id(32) + sig(4627) + timestamp(8) */
+    size += tx->witness_count * (32 + DNAC_SIGNATURE_SIZE + 8 + DNAC_PUBKEY_SIZE);  /* witness_id(32) + sig(4627) + timestamp(8) + pubkey(2592) */
 
     /* Sender */
     size += DNAC_PUBKEY_SIZE;  /* pubkey (2592) */
@@ -108,6 +108,7 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
         WRITE_BLOB(ptr, tx->witnesses[i].witness_id, 32);
         WRITE_BLOB(ptr, tx->witnesses[i].signature, DNAC_SIGNATURE_SIZE);
         WRITE_U64(ptr, tx->witnesses[i].timestamp);
+        WRITE_BLOB(ptr, tx->witnesses[i].server_pubkey, DNAC_PUBKEY_SIZE);
     }
 
     /* Sender */
@@ -186,7 +187,7 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     tx->witness_count = witness_count;
 
     for (int i = 0; i < witness_count; i++) {
-        size_t witness_size = 32 + DNAC_SIGNATURE_SIZE + 8;
+        size_t witness_size = 32 + DNAC_SIGNATURE_SIZE + 8 + DNAC_PUBKEY_SIZE;
         if (ptr + witness_size > end) {
             free(tx);
             return DNAC_ERROR_INVALID_PARAM;
@@ -194,6 +195,7 @@ int dnac_tx_deserialize(const uint8_t *buffer,
         READ_BLOB(ptr, tx->witnesses[i].witness_id, 32);
         READ_BLOB(ptr, tx->witnesses[i].signature, DNAC_SIGNATURE_SIZE);
         READ_U64(ptr, tx->witnesses[i].timestamp);
+        READ_BLOB(ptr, tx->witnesses[i].server_pubkey, DNAC_PUBKEY_SIZE);
     }
 
     /* Sender */
