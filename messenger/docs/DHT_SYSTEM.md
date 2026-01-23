@@ -1,8 +1,8 @@
 # DHT System Documentation
 
-**Last Updated:** 2026-01-16
+**Last Updated:** 2026-01-23
 **Phase:** 14 (DHT-Only Messaging)
-**Version:** 0.5.0
+**Version:** 0.6.27
 
 Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) system, covering both client operations and the dna-nodus bootstrap server.
 
@@ -1070,7 +1070,15 @@ Verify: DHT → JSON → parse → struct → JSON(no sig) → Dilithium5_verify
 - Adding new social platforms doesn't break old profiles
 - Field order changes are handled by JSON serialization
 
-**Source:** `keyserver_profiles.c` (dna_update_profile, dna_load_identity)
+**Auto-Republish (v0.6.27):** When profile schema changes (e.g., field removal like `display_name` in v0.6.24), old profiles in DHT may fail signature verification because the signed JSON no longer matches. When this happens for the user's own profile, the engine automatically:
+1. Detects signature verification failure for own fingerprint
+2. Loads cached profile data locally
+3. Re-signs and publishes with current schema
+4. Logs: `[AUTO-REPUBLISH] Profile republished successfully`
+
+This ensures users don't need to manually re-publish after updates.
+
+**Source:** `keyserver_profiles.c` (dna_update_profile, dna_load_identity), `dna_engine.c` (dna_auto_republish_own_profile)
 
 ### Operations
 

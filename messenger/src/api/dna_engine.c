@@ -2489,6 +2489,85 @@ done:
     task->callback.profile(task->request_id, error, profile, task->user_data);
 }
 
+/**
+ * Auto-republish own profile when signature verification fails
+ * This happens when profile format changes (e.g., displayName removal in v0.6.24)
+ * The old profile in DHT has a signature over different JSON, so we need to re-sign.
+ */
+static void dna_auto_republish_own_profile(dna_engine_t *engine) {
+    if (!engine || !engine->identity_loaded) return;
+
+    QGP_LOG_WARN(LOG_TAG, "[AUTO-REPUBLISH] Own profile signature invalid, republishing...");
+
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        QGP_LOG_ERROR(LOG_TAG, "[AUTO-REPUBLISH] No DHT context");
+        return;
+    }
+
+    /* Load profile from local cache */
+    dna_unified_identity_t *cached = NULL;
+    uint64_t cached_at = 0;
+    int cache_rc = profile_cache_get(engine->fingerprint, &cached, &cached_at);
+
+    if (cache_rc != 0 || !cached) {
+        /* No cached profile - create minimal one */
+        QGP_LOG_WARN(LOG_TAG, "[AUTO-REPUBLISH] No cached profile, creating minimal");
+        cached = (dna_unified_identity_t*)calloc(1, sizeof(dna_unified_identity_t));
+        if (!cached) return;
+        strncpy(cached->fingerprint, engine->fingerprint, sizeof(cached->fingerprint) - 1);
+    }
+
+    /* Build dna_profile_t from cached identity */
+    dna_profile_t profile = {0};
+    strncpy(profile.backbone, cached->wallets.backbone, sizeof(profile.backbone) - 1);
+    strncpy(profile.alvin, cached->wallets.alvin, sizeof(profile.alvin) - 1);
+    strncpy(profile.eth, cached->wallets.eth, sizeof(profile.eth) - 1);
+    strncpy(profile.sol, cached->wallets.sol, sizeof(profile.sol) - 1);
+    strncpy(profile.trx, cached->wallets.trx, sizeof(profile.trx) - 1);
+    strncpy(profile.telegram, cached->socials.telegram, sizeof(profile.telegram) - 1);
+    strncpy(profile.twitter, cached->socials.x, sizeof(profile.twitter) - 1);
+    strncpy(profile.github, cached->socials.github, sizeof(profile.github) - 1);
+    strncpy(profile.facebook, cached->socials.facebook, sizeof(profile.facebook) - 1);
+    strncpy(profile.instagram, cached->socials.instagram, sizeof(profile.instagram) - 1);
+    strncpy(profile.linkedin, cached->socials.linkedin, sizeof(profile.linkedin) - 1);
+    strncpy(profile.google, cached->socials.google, sizeof(profile.google) - 1);
+    strncpy(profile.bio, cached->bio, sizeof(profile.bio) - 1);
+    strncpy(profile.location, cached->location, sizeof(profile.location) - 1);
+    strncpy(profile.website, cached->website, sizeof(profile.website) - 1);
+    strncpy(profile.avatar_base64, cached->avatar_base64, sizeof(profile.avatar_base64) - 1);
+
+    dna_identity_free(cached);
+
+    /* Load keys for signing */
+    qgp_key_t *sign_key = dna_load_private_key(engine);
+    if (!sign_key) {
+        QGP_LOG_ERROR(LOG_TAG, "[AUTO-REPUBLISH] Failed to load signing key");
+        return;
+    }
+
+    qgp_key_t *enc_key = dna_load_encryption_key(engine);
+    if (!enc_key) {
+        QGP_LOG_ERROR(LOG_TAG, "[AUTO-REPUBLISH] Failed to load encryption key");
+        qgp_key_free(sign_key);
+        return;
+    }
+
+    /* Republish with fresh signature */
+    int rc = dna_update_profile(dht, engine->fingerprint, &profile,
+                                sign_key->private_key, sign_key->public_key,
+                                enc_key->public_key);
+
+    qgp_key_free(sign_key);
+    qgp_key_free(enc_key);
+
+    if (rc == 0) {
+        QGP_LOG_INFO(LOG_TAG, "[AUTO-REPUBLISH] Profile republished successfully");
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "[AUTO-REPUBLISH] Failed to republish: %d", rc);
+    }
+}
+
 void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     dna_profile_t *profile = NULL;
@@ -2517,11 +2596,20 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
             /* Profile not found */
             error = DNA_ENGINE_ERROR_NOT_FOUND;
         } else if (rc == -3) {
-            /* Signature verification failed - corrupted or stale DHT data
-             * Auto-remove this contact since their profile is invalid */
-            QGP_LOG_WARN(LOG_TAG, "Invalid signature for %.16s... - auto-removing from contacts", fingerprint);
-            contacts_db_remove(fingerprint);
-            error = DNA_ENGINE_ERROR_INVALID_SIGNATURE;
+            /* Signature verification failed - corrupted or stale DHT data */
+            /* Check if this is our own profile - if so, auto-republish */
+            if (engine->identity_loaded && engine->fingerprint[0] &&
+                strcmp(fingerprint, engine->fingerprint) == 0) {
+                QGP_LOG_WARN(LOG_TAG, "Own profile signature invalid - triggering auto-republish");
+                dna_auto_republish_own_profile(engine);
+                /* Return network error to trigger retry on next lookup */
+                error = DNA_ENGINE_ERROR_NETWORK;
+            } else {
+                /* Not our profile - auto-remove this contact */
+                QGP_LOG_WARN(LOG_TAG, "Invalid signature for %.16s... - auto-removing from contacts", fingerprint);
+                contacts_db_remove(fingerprint);
+                error = DNA_ENGINE_ERROR_INVALID_SIGNATURE;
+            }
         } else {
             error = DNA_ENGINE_ERROR_NETWORK;
         }
@@ -2621,9 +2709,16 @@ void dna_handle_refresh_contact_profile(dna_engine_t *engine, dna_task_t *task) 
         if (rc == -2) {
             error = DNA_ENGINE_ERROR_NOT_FOUND;
         } else if (rc == -3) {
-            QGP_LOG_WARN(LOG_TAG, "Invalid signature for %.16s... - auto-removing from contacts", fingerprint);
-            contacts_db_remove(fingerprint);
-            error = DNA_ENGINE_ERROR_INVALID_SIGNATURE;
+            /* Signature verification failed - check if it's our own profile */
+            if (engine->fingerprint[0] && strcmp(fingerprint, engine->fingerprint) == 0) {
+                QGP_LOG_WARN(LOG_TAG, "Own profile signature invalid - triggering auto-republish");
+                dna_auto_republish_own_profile(engine);
+                error = DNA_ENGINE_ERROR_NETWORK;
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "Invalid signature for %.16s... - auto-removing from contacts", fingerprint);
+                contacts_db_remove(fingerprint);
+                error = DNA_ENGINE_ERROR_INVALID_SIGNATURE;
+            }
         } else {
             error = DNA_ENGINE_ERROR_NETWORK;
         }
