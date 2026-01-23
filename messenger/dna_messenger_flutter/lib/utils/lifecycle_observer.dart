@@ -11,7 +11,6 @@ import '../providers/event_handler.dart';
 import '../providers/identity_provider.dart';
 import '../providers/contacts_provider.dart';
 import '../providers/contact_profile_cache_provider.dart';
-import '../providers/messages_provider.dart';
 
 /// Provider that tracks whether the app is currently in foreground (resumed)
 /// Used by event_handler to determine whether to show notifications
@@ -88,16 +87,9 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Resume Dart-side polling timers (handles presence refresh + contact requests)
       ref.read(eventHandlerProvider).resumePolling();
 
-      // Force refresh contact profiles from DHT (fixes stale display names)
-      // This ensures users see up-to-date names when they open the app
-      await _refreshContactProfiles(engine);
-
-      // Force refresh contacts and messages (simple invalidation pattern)
-      ref.invalidate(contactsProvider);
-      final selectedContact = ref.read(selectedContactProvider);
-      if (selectedContact != null) {
-        ref.invalidate(conversationProvider(selectedContact.fingerprint));
-      }
+      // Refresh contact profiles from DHT in background
+      // Don't await - let UI show cached data immediately, updates come async
+      _refreshContactProfiles(engine);
     } catch (_) {
       // Error during resume - silently continue
     }
