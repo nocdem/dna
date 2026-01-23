@@ -78,20 +78,23 @@ class IdentityProfileCacheNotifier extends StateNotifier<Map<String, CachedIdent
   }
 
   /// Fetch identity from DHT and save to cache
-  /// Uses lookupProfile to get both displayName and avatar in ONE DHT call
+  /// Uses lookupProfile to get avatar, getDisplayName for name (v0.6.24: displayName removed)
   Future<CachedIdentity?> _fetchFromDht(String fingerprint) async {
     try {
       final engine = await _ref.read(engineProvider.future);
 
-      // Single DHT call to get full profile (name + avatar)
+      // Get profile for avatar, name separately (displayName removed in v0.6.24)
       final profile = await engine.lookupProfile(fingerprint);
       if (profile == null) {
         return null;
       }
 
+      // Get display name (registered name from DHT, or fingerprint if not registered)
+      final displayName = await engine.getDisplayName(fingerprint);
+
       final identity = CachedIdentity(
         fingerprint: fingerprint,
-        displayName: profile.displayName,
+        displayName: displayName,
         avatarBase64: profile.avatarBase64,
         cachedAt: DateTime.now(),
       );
@@ -101,7 +104,7 @@ class IdentityProfileCacheNotifier extends StateNotifier<Map<String, CachedIdent
         state = {...state, fingerprint: identity};
       }
       // Persist to SQLite (fire and forget)
-      _db.saveIdentity(fingerprint, profile.displayName, profile.avatarBase64);
+      _db.saveIdentity(fingerprint, displayName, profile.avatarBase64);
 
       return identity;
     } catch (e) {

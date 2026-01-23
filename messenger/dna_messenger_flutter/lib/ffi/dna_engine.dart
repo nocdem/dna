@@ -747,8 +747,7 @@ class UserProfile {
   String linkedin;
   String google;
 
-  // Profile info
-  String displayName;
+  // Profile info (NOTE: displayName removed in v0.6.24 - use registered name only)
   String bio;
   String location;
   String website;
@@ -771,7 +770,6 @@ class UserProfile {
     this.instagram = '',
     this.linkedin = '',
     this.google = '',
-    this.displayName = '',
     this.bio = '',
     this.location = '',
     this.website = '',
@@ -794,7 +792,6 @@ class UserProfile {
       instagram: native.instagram.toDartString(128),
       linkedin: native.linkedin.toDartString(128),
       google: native.google.toDartString(128),
-      displayName: native.display_name.toDartString(128),
       bio: native.bio.toDartString(512),
       location: native.location.toDartString(128),
       website: native.website.toDartString(256),
@@ -816,7 +813,7 @@ class UserProfile {
     _copyStringToArray(instagram, native.ref.instagram, 128);
     _copyStringToArray(linkedin, native.ref.linkedin, 128);
     _copyStringToArray(google, native.ref.google, 128);
-    _copyStringToArray(displayName, native.ref.display_name, 128);
+    // NOTE: display_name removed in v0.6.24 - only registered name is used
     _copyStringToArray(bio, native.ref.bio, 512);
     _copyStringToArray(location, native.ref.location, 128);
     _copyStringToArray(website, native.ref.website, 256);
@@ -846,7 +843,6 @@ class UserProfile {
       instagram.isEmpty &&
       linkedin.isEmpty &&
       google.isEmpty &&
-      displayName.isEmpty &&
       bio.isEmpty &&
       location.isEmpty &&
       website.isEmpty &&
@@ -866,7 +862,6 @@ class UserProfile {
     String? instagram,
     String? linkedin,
     String? google,
-    String? displayName,
     String? bio,
     String? location,
     String? website,
@@ -885,7 +880,6 @@ class UserProfile {
       instagram: instagram ?? this.instagram,
       linkedin: linkedin ?? this.linkedin,
       google: google ?? this.google,
-      displayName: displayName ?? this.displayName,
       bio: bio ?? this.bio,
       location: location ?? this.location,
       website: website ?? this.website,

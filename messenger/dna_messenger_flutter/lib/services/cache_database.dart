@@ -193,6 +193,7 @@ class CacheDatabase {
   }
 
   /// Save profile to cache
+  /// NOTE: displayName removed from UserProfile in v0.6.24 - use registered name from DHT
   Future<void> saveProfile(String fingerprint, UserProfile profile) async {
     final db = await database;
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -201,7 +202,7 @@ class CacheDatabase {
       'contact_profiles',
       {
         'fingerprint': fingerprint,
-        'display_name': profile.displayName,
+        'display_name': '', // displayName removed - use registered name from DHT
         'bio': profile.bio,
         'location': profile.location,
         'website': profile.website,

@@ -66,8 +66,7 @@ int dna_update_profile(
     strncpy(identity->socials.linkedin, profile->linkedin, sizeof(identity->socials.linkedin) - 1);
     strncpy(identity->socials.google, profile->google, sizeof(identity->socials.google) - 1);
 
-    // Profile info (previously missing: display_name, location, website)
-    strncpy(identity->display_name, profile->display_name, sizeof(identity->display_name) - 1);
+    // Profile info (v0.6.24: display_name removed - only registered_name is used)
     strncpy(identity->bio, profile->bio, sizeof(identity->bio) - 1);
     strncpy(identity->location, profile->location, sizeof(identity->location) - 1);
     strncpy(identity->website, profile->website, sizeof(identity->website) - 1);

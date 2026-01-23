@@ -28,8 +28,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
   final _formKey = GlobalKey<FormState>();
 
   // Controllers for text fields
-  // Profile info
-  late TextEditingController _displayNameController;
+  // Profile info (NOTE: displayName removed in v0.6.24 - use registered name only)
   late TextEditingController _bioController;
   late TextEditingController _locationController;
   late TextEditingController _websiteController;
@@ -57,8 +56,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
   @override
   void initState() {
     super.initState();
-    // Profile info
-    _displayNameController = TextEditingController();
+    // Profile info (NOTE: displayName removed in v0.6.24 - use registered name only)
     _bioController = TextEditingController();
     _locationController = TextEditingController();
     _websiteController = TextEditingController();
@@ -79,8 +77,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
 
   @override
   void dispose() {
-    // Profile info
-    _displayNameController.dispose();
+    // Profile info (NOTE: displayName removed in v0.6.24 - use registered name only)
     _bioController.dispose();
     _locationController.dispose();
     _websiteController.dispose();
@@ -102,10 +99,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
 
   void _syncControllersFromState(ProfileEditorState state) {
     final profile = state.profile;
-    // Profile info
-    if (_displayNameController.text != profile.displayName) {
-      _displayNameController.text = profile.displayName;
-    }
+    // Profile info (NOTE: displayName removed in v0.6.24 - use registered name only)
     if (_bioController.text != profile.bio) {
       _bioController.text = profile.bio;
     }
@@ -235,12 +229,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                       setState(() => _profileExpanded = expanded);
                     },
                     children: [
-                      _buildTextField(
-                        label: 'Display Name',
-                        controller: _displayNameController,
-                        hint: 'Your display name',
-                        onChanged: (v) => notifier.updateField('displayName', v),
-                      ),
+                      // NOTE: displayName removed in v0.6.24 - use registered name only
                       _buildBioField(notifier),
                       _buildTextField(
                         label: 'Location',
