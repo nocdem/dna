@@ -126,27 +126,37 @@ int dnac_tx_verify(const dnac_transaction_t *tx) {
     uint64_t total_in = dnac_tx_total_input(tx);
     uint64_t total_out = dnac_tx_total_output(tx);
 
+    fprintf(stderr, "[VERIFY] total_in=%llu, total_out=%llu\n",
+            (unsigned long long)total_in, (unsigned long long)total_out);
+
     if (total_in != total_out) {
+        fprintf(stderr, "[VERIFY] FAILED: inputs != outputs\n");
         return DNAC_ERROR_INVALID_PROOF;
     }
 
     /* Verify we have enough witnesses */
+    fprintf(stderr, "[VERIFY] witness_count=%d, required=%d\n",
+            tx->witness_count, DNAC_WITNESSES_REQUIRED);
     if (tx->witness_count < DNAC_WITNESSES_REQUIRED) {
+        fprintf(stderr, "[VERIFY] FAILED: not enough witnesses\n");
         return DNAC_ERROR_WITNESS_FAILED;
     }
 
     /* Verify witness signatures */
     int rc = verify_witnesses(tx);
     if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "[VERIFY] FAILED: witness sig verify rc=%d\n", rc);
         return rc;
     }
 
     /* Verify sender signature */
     rc = verify_sender_signature(tx);
     if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "[VERIFY] FAILED: sender sig verify rc=%d\n", rc);
         return rc;
     }
 
+    fprintf(stderr, "[VERIFY] OK\n");
     return DNAC_SUCCESS;
 }
 
