@@ -6897,17 +6897,7 @@ typedef struct {
     char contact_fingerprint[129];
 } outbox_listener_ctx_t;
 
-/**
- * Cleanup callback for outbox listeners - frees the context when listener cancelled
- */
-static void outbox_listener_cleanup(void *user_data) {
-    outbox_listener_ctx_t *ctx = (outbox_listener_ctx_t *)user_data;
-    if (ctx) {
-        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Cleanup: freeing outbox listener ctx for %.16s...",
-                      ctx->contact_fingerprint);
-        free(ctx);
-    }
-}
+/* Note: outbox_listener_ctx_t is freed in cancel functions (v0.6.30) */
 
 /**
  * DHT listen callback - fires DNA_EVENT_OUTBOX_UPDATED when contact's outbox changes
@@ -7091,6 +7081,11 @@ void dna_engine_cancel_outbox_listener(
 
             /* Cancel daily bucket listener (v0.4.81+) */
             if (engine->outbox_listeners[i].dm_listen_ctx) {
+                /* Free callback context before unsubscribe (v0.6.30 leak fix) */
+                if (engine->outbox_listeners[i].dm_listen_ctx->user_data) {
+                    free(engine->outbox_listeners[i].dm_listen_ctx->user_data);
+                    engine->outbox_listeners[i].dm_listen_ctx->user_data = NULL;
+                }
                 dht_dm_outbox_unsubscribe(dht_ctx, engine->outbox_listeners[i].dm_listen_ctx);
                 engine->outbox_listeners[i].dm_listen_ctx = NULL;
             } else if (dht_ctx && engine->outbox_listeners[i].dht_token != 0) {
@@ -7309,6 +7304,11 @@ void dna_engine_cancel_all_outbox_listeners(dna_engine_t *engine)
         if (engine->outbox_listeners[i].active) {
             /* Free daily bucket context (v0.5.0+) */
             if (engine->outbox_listeners[i].dm_listen_ctx) {
+                /* Free callback context before unsubscribe (v0.6.30 leak fix) */
+                if (engine->outbox_listeners[i].dm_listen_ctx->user_data) {
+                    free(engine->outbox_listeners[i].dm_listen_ctx->user_data);
+                    engine->outbox_listeners[i].dm_listen_ctx->user_data = NULL;
+                }
                 dht_dm_outbox_unsubscribe(dht_ctx, engine->outbox_listeners[i].dm_listen_ctx);
                 engine->outbox_listeners[i].dm_listen_ctx = NULL;
             } else if (dht_ctx && engine->outbox_listeners[i].dht_token != 0) {
