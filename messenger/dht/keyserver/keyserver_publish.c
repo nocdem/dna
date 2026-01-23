@@ -17,8 +17,8 @@
 
 #define LOG_TAG "KEYSERVER"
 
-// Maximum time to wait for DHT to be ready (in seconds)
-#define DHT_READY_TIMEOUT_SECONDS 10
+// Maximum time to wait for DHT to be ready (in milliseconds)
+#define DHT_READY_TIMEOUT_MS 10000
 
 // Publish identity to DHT (NAME-FIRST architecture)
 // Creates dna_unified_identity_t and stores at fingerprint:profile
@@ -35,7 +35,7 @@ int dht_keyserver_publish(
     const char *sol_address,     // Optional - Solana wallet address
     const char *trx_address      // Optional - TRON wallet address
 ) {
-    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] dht_keyserver_publish called: name=%s, fp=%.16s...\n",
+    QGP_LOG_INFO(LOG_TAG, "[PROFILE_PUBLISH] dht_keyserver_publish: name=%s, fp=%.16s...\n",
            name, fingerprint);
 
     // Validate required arguments
@@ -45,19 +45,9 @@ int dht_keyserver_publish(
     }
 
     // Wait for DHT to be ready (connected to network)
-    // This prevents publishing to a DHT that hasn't bootstrapped yet
-    if (!dht_context_is_ready(dht_ctx)) {
-        QGP_LOG_INFO(LOG_TAG, "Waiting for DHT to connect (max %d seconds)...\n", DHT_READY_TIMEOUT_SECONDS);
-        int wait_seconds = 0;
-        while (!dht_context_is_ready(dht_ctx) && wait_seconds < DHT_READY_TIMEOUT_SECONDS) {
-            qgp_platform_sleep_ms(1000);  // Sleep 1 second
-            wait_seconds++;
-        }
-        if (!dht_context_is_ready(dht_ctx)) {
-            QGP_LOG_ERROR(LOG_TAG, "DHT not ready after %d seconds - cannot publish identity\n", DHT_READY_TIMEOUT_SECONDS);
-            return -3;  // DHT not ready
-        }
-        QGP_LOG_INFO(LOG_TAG, "DHT connected after %d seconds\n", wait_seconds);
+    if (!dht_context_wait_for_ready(dht_ctx, DHT_READY_TIMEOUT_MS)) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not ready - cannot publish identity\n");
+        return -3;
     }
 
     // Validate fingerprint format

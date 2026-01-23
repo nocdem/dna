@@ -7106,16 +7106,8 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
     if (dht_ctx && !dht_context_is_ready(dht_ctx)) {
         QGP_LOG_INFO(LOG_TAG, "[LISTEN] Waiting for DHT to become ready...");
-        int wait_seconds = 0;
-        while (!dht_context_is_ready(dht_ctx) && wait_seconds < 30) {
-            qgp_platform_sleep_ms(1000);
-            wait_seconds++;
-            if (wait_seconds % 5 == 0) {
-                QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Still waiting for DHT... (%d/30s)", wait_seconds);
-            }
-        }
-        if (dht_context_is_ready(dht_ctx)) {
-            QGP_LOG_INFO(LOG_TAG, "[LISTEN] DHT ready after %d seconds", wait_seconds);
+        if (dht_context_wait_for_ready(dht_ctx, 30000)) {
+            QGP_LOG_INFO(LOG_TAG, "[LISTEN] DHT ready");
         } else {
             QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT not ready after 30s, proceeding anyway");
         }

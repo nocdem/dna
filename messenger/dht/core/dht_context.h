@@ -119,6 +119,16 @@ bool dht_context_is_running(dht_context_t *ctx);
 size_t dht_context_get_node_count(dht_context_t *ctx);
 
 /**
+ * Wait for DHT context to become ready (have at least one good node).
+ * Polls in 100ms intervals until ready or timeout.
+ *
+ * @param ctx DHT context
+ * @param timeout_ms Maximum time to wait in milliseconds
+ * @return true if ready, false if timeout or NULL context
+ */
+bool dht_context_wait_for_ready(dht_context_t *ctx, int timeout_ms);
+
+/**
  * Status change callback type
  *
  * @param is_connected true if DHT is now connected, false if disconnected

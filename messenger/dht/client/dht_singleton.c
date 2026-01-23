@@ -22,7 +22,6 @@
 
 /* Default timeout for waiting for DHT to become ready (milliseconds) */
 #define DHT_READY_TIMEOUT_MS 5000
-#define DHT_READY_POLL_INTERVAL_MS 100
 
 /* Global DHT context (singleton) */
 static dht_context_t *g_dht_context = NULL;
@@ -96,22 +95,6 @@ static int create_client_dht_config(dht_config_t *config, const char *identity_n
 
     QGP_LOG_ERROR(LOG_TAG, "No bootstrap nodes configured");
     return -1;
-}
-
-/**
- * Wait for DHT context to become ready.
- * Returns true if ready, false if timeout.
- */
-static bool wait_for_dht_ready(dht_context_t *ctx, int timeout_ms) {
-    if (!ctx) return false;
-
-    int elapsed = 0;
-    while (!dht_context_is_ready(ctx) && elapsed < timeout_ms) {
-        qgp_platform_sleep_ms(DHT_READY_POLL_INTERVAL_MS);
-        elapsed += DHT_READY_POLL_INTERVAL_MS;
-    }
-
-    return dht_context_is_ready(ctx);
 }
 
 /**
@@ -190,7 +173,7 @@ dht_context_t* dht_singleton_get(void)
     if (!g_dht_context || !dht_context_is_running(g_dht_context)) {
         QGP_LOG_DEBUG(LOG_TAG, "dht_singleton_get: DHT not ready, waiting...");
 
-        if (!wait_for_dht_ready(g_dht_context, DHT_READY_TIMEOUT_MS)) {
+        if (!dht_context_wait_for_ready(g_dht_context, DHT_READY_TIMEOUT_MS)) {
             QGP_LOG_WARN(LOG_TAG, "DHT not available after %dms wait", DHT_READY_TIMEOUT_MS);
             return NULL;
         }
@@ -248,7 +231,7 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 
     /* Wait for DHT to connect */
     QGP_LOG_INFO(LOG_TAG, "Waiting for DHT connection...");
-    if (wait_for_dht_ready(g_dht_context, DHT_READY_TIMEOUT_MS)) {
+    if (dht_context_wait_for_ready(g_dht_context, DHT_READY_TIMEOUT_MS)) {
         QGP_LOG_INFO(LOG_TAG, "DHT connected");
 
         /* Start background discovery of additional bootstrap nodes */
@@ -346,7 +329,7 @@ int dht_singleton_reinit(void)
 
     /* Wait for DHT to connect */
     QGP_LOG_INFO(LOG_TAG, "Waiting for DHT reconnection...");
-    if (wait_for_dht_ready(g_dht_context, DHT_READY_TIMEOUT_MS)) {
+    if (dht_context_wait_for_ready(g_dht_context, DHT_READY_TIMEOUT_MS)) {
         QGP_LOG_INFO(LOG_TAG, "DHT reconnected after network change");
 
         /* Clear suspended listeners - engine callback will recreate them */
@@ -405,7 +388,7 @@ dht_context_t* dht_create_context_with_identity(dht_identity_t *user_identity) {
 
     /* Wait for DHT to connect */
     QGP_LOG_INFO(LOG_TAG, "Waiting for engine DHT connection...");
-    if (wait_for_dht_ready(ctx, DHT_READY_TIMEOUT_MS)) {
+    if (dht_context_wait_for_ready(ctx, DHT_READY_TIMEOUT_MS)) {
         QGP_LOG_INFO(LOG_TAG, "Engine DHT connected");
         dht_bootstrap_discovery_start(ctx);
     } else {

@@ -173,18 +173,12 @@ int dht_bootstrap_discovery_run_sync(dht_context_t *dht_ctx) {
     QGP_LOG_INFO(LOG_TAG, "Starting bootstrap registry discovery...");
 
     // Wait for DHT to be ready (max 10 seconds)
-    int wait_count = 0;
-    while (!dht_context_is_ready(dht_ctx) && wait_count < 100) {
-        qgp_platform_sleep_ms(100);
-        wait_count++;
-    }
-
-    if (!dht_context_is_ready(dht_ctx)) {
+    if (!dht_context_wait_for_ready(dht_ctx, 10000)) {
         QGP_LOG_WARN(LOG_TAG, "DHT not ready after 10s, skipping discovery");
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "DHT ready after %dms, fetching registry...", wait_count * 100);
+    QGP_LOG_INFO(LOG_TAG, "DHT ready, fetching registry...");
 
     // Fetch registry from DHT with retry
     bootstrap_registry_t registry;

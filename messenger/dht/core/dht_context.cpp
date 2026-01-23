@@ -629,6 +629,23 @@ extern "C" size_t dht_context_get_node_count(dht_context_t *ctx) {
 }
 
 /**
+ * Wait for DHT context to become ready (have at least one good node).
+ */
+extern "C" bool dht_context_wait_for_ready(dht_context_t *ctx, int timeout_ms) {
+    if (!ctx) return false;
+
+    const int poll_interval_ms = 100;
+    int elapsed = 0;
+
+    while (!dht_context_is_ready(ctx) && elapsed < timeout_ms) {
+        qgp_platform_sleep_ms(poll_interval_ms);
+        elapsed += poll_interval_ms;
+    }
+
+    return dht_context_is_ready(ctx);
+}
+
+/**
  * Set callback for DHT connection status changes
  */
 extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_callback_t callback, void *user_data) {
