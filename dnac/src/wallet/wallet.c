@@ -409,21 +409,29 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
 
     /* Step 3: Process each payment */
     for (size_t i = 0; i < count; i++) {
-        if (!values[i] || values_len[i] == 0) continue;
+        fprintf(stderr, "[SYNC] Processing value %zu: %zu bytes\n", i, values_len[i]);
+        if (!values[i] || values_len[i] == 0) {
+            fprintf(stderr, "[SYNC]   Skipping empty value\n");
+            continue;
+        }
 
         /* Deserialize transaction */
         dnac_transaction_t *tx = NULL;
         rc = dnac_tx_deserialize(values[i], values_len[i], &tx);
         if (rc != DNAC_SUCCESS || !tx) {
+            fprintf(stderr, "[SYNC]   Deserialize FAILED: rc=%d\n", rc);
             continue;
         }
+        fprintf(stderr, "[SYNC]   Deserialized TX: %d inputs, %d outputs\n", tx->input_count, tx->output_count);
 
         /* Verify transaction (optional - trust witnessed transactions) */
         rc = dnac_tx_verify(tx);
         if (rc != DNAC_SUCCESS) {
+            fprintf(stderr, "[SYNC]   Verify FAILED: rc=%d\n", rc);
             dnac_free_transaction(tx);
             continue;
         }
+        fprintf(stderr, "[SYNC]   TX verified OK\n");
 
         /* Track if we stored any outputs from this transaction */
         bool stored_from_this_tx = false;
@@ -432,15 +440,20 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
 
         /* Step 4: Extract outputs addressed to us */
         for (int j = 0; j < tx->output_count; j++) {
+            fprintf(stderr, "[SYNC]   Output %d: owner=%.16s... amount=%llu\n",
+                    j, tx->outputs[j].owner_fingerprint, (unsigned long long)tx->outputs[j].amount);
             /* Check if output is for us */
             if (strcmp(tx->outputs[j].owner_fingerprint, ctx->owner_fingerprint) != 0) {
+                fprintf(stderr, "[SYNC]     Not for us, skipping\n");
                 continue;
             }
 
             /* Check if UTXO already exists */
             if (utxo_exists(ctx->db, tx->tx_hash, (uint32_t)j)) {
+                fprintf(stderr, "[SYNC]     Already exists, skipping\n");
                 continue;
             }
+            fprintf(stderr, "[SYNC]     NEW UTXO! Storing...\n");
 
             /* Create UTXO from output */
             dnac_utxo_t utxo = {0};
