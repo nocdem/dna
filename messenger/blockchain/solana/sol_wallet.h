@@ -34,9 +34,12 @@ extern "C" {
 #define SOL_BIP44_ACCOUNT       0
 #define SOL_BIP44_CHANGE        0
 
-/* RPC endpoint */
+/* RPC endpoints with fallbacks */
 /* Note: Public Solana RPC has rate limits. For production use a paid RPC provider */
 #define SOL_RPC_MAINNET         "https://api.mainnet-beta.solana.com"
+#define SOL_RPC_MAINNET_FALLBACK1 "https://solana-rpc.publicnode.com"
+#define SOL_RPC_MAINNET_FALLBACK2 "https://rpc.ankr.com/solana"
+#define SOL_RPC_MAINNET_COUNT   3
 #define SOL_RPC_DEVNET          "https://api.devnet.solana.com"
 
 /**

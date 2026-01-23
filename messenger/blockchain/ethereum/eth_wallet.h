@@ -42,8 +42,12 @@ extern "C" {
 /* JSON keystore file extension */
 #define ETH_WALLET_EXTENSION    ".eth.json"
 
-/* Default RPC endpoint (Ethereum mainnet) */
+/* RPC endpoints (Ethereum mainnet) with fallbacks */
 #define ETH_RPC_ENDPOINT_DEFAULT    "https://eth.llamarpc.com"
+#define ETH_RPC_ENDPOINT_FALLBACK1  "https://ethereum-rpc.publicnode.com"
+#define ETH_RPC_ENDPOINT_FALLBACK2  "https://rpc.ankr.com/eth"
+#define ETH_RPC_ENDPOINT_FALLBACK3  "https://1rpc.io/eth"
+#define ETH_RPC_ENDPOINT_COUNT      4
 
 /* ============================================================================
  * WALLET STRUCTURE

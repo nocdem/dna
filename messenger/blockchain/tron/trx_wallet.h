@@ -43,8 +43,11 @@ extern "C" {
 #define TRX_BIP44_CHANGE        0
 #define TRX_BIP44_INDEX         0
 
-/* Default RPC endpoint (TronGrid) */
+/* RPC endpoints (TRON mainnet) with fallbacks */
 #define TRX_RPC_ENDPOINT_DEFAULT    "https://api.trongrid.io"
+#define TRX_RPC_ENDPOINT_FALLBACK1  "https://rpc.ankr.com/tron_jsonrpc"
+#define TRX_RPC_ENDPOINT_FALLBACK2  "https://api.shasta.trongrid.io"  /* Testnet fallback */
+#define TRX_RPC_ENDPOINT_COUNT      3
 
 /**
  * TRON wallet structure
