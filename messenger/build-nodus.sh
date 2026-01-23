@@ -124,9 +124,31 @@ install_binary() {
     echo ""
 }
 
+# Stop and disable the "other" service to prevent conflicts
+disable_other_service() {
+    if [ $DEBUG_BUILD -eq 1 ]; then
+        OTHER_SERVICE="dna-nodus"
+    else
+        OTHER_SERVICE="dna-nodus-debug"
+    fi
+
+    if systemctl is-active --quiet ${OTHER_SERVICE} 2>/dev/null; then
+        echo -e "${YELLOW}Stopping conflicting service: ${OTHER_SERVICE}${NC}"
+        sudo systemctl stop ${OTHER_SERVICE}
+    fi
+
+    if systemctl is-enabled --quiet ${OTHER_SERVICE} 2>/dev/null; then
+        echo -e "${YELLOW}Disabling conflicting service: ${OTHER_SERVICE}${NC}"
+        sudo systemctl disable ${OTHER_SERVICE}
+    fi
+}
+
 # First-time installation
 first_time_install() {
     echo -e "${YELLOW}First-time installation detected...${NC}"
+
+    # Stop/disable conflicting service
+    disable_other_service
 
     # Create persistence directory
     if [ ! -d /var/lib/dna-dht ]; then
@@ -208,6 +230,9 @@ EOF
 # Update existing installation
 update_install() {
     echo -e "${YELLOW}Updating existing installation...${NC}"
+
+    # Stop/disable conflicting service
+    disable_other_service
 
     # Restart service (binary already updated by install_binary)
     echo "Restarting ${SERVICE_NAME} service..."

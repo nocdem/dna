@@ -186,6 +186,9 @@ static char* identity_to_json_internal(const dna_unified_identity_t *identity, b
     json_object_object_add(root, "socials", socials_obj);
 
     // Profile data (Phase 5: Extended fields)
+    // NOTE: display_name is legacy but kept for signature verification backward compatibility
+    if (identity->display_name[0]) json_object_object_add(root, "display_name",
+        json_object_new_string(identity->display_name));
     if (identity->bio[0]) json_object_object_add(root, "bio",
         json_object_new_string(identity->bio));
     if (identity->avatar_hash[0]) json_object_object_add(root, "avatar_hash",
@@ -296,7 +299,11 @@ int dna_identity_from_json(const char *json, dna_unified_identity_t **identity_o
     }
 
     // Profile data (Phase 5: Extended fields)
-    // NOTE: display_name field removed in v0.6.24 - only registered_name is used
+    // NOTE: display_name is legacy but kept for signature verification backward compatibility
+    if (json_object_object_get_ex(root, "display_name", &val)) {
+        const char *str = json_object_get_string(val);
+        if (str) strncpy(identity->display_name, str, sizeof(identity->display_name) - 1);
+    }
 
     if (json_object_object_get_ex(root, "bio", &val)) {
         const char *str = json_object_get_string(val);

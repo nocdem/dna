@@ -76,6 +76,7 @@ typedef struct {
     uint32_t name_version;               /**< Version (increment on renewal) */
 
     // ===== PROFILE DATA =====
+    char display_name[256];              /**< LEGACY: For signature verification backward compatibility only */
     char bio[512];                       /**< User bio */
     char avatar_hash[128];               /**< SHA3-512 hash of avatar (for quick comparisons) */
     char avatar_base64[20484];           /**< Base64-encoded avatar (64x64 PNG/JPEG, ~20KB max + padding) */
