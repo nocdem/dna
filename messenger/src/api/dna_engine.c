@@ -7910,8 +7910,7 @@ size_t dna_engine_start_watermark_listener(
 
     /* If we have a watermark, mark those messages as delivered NOW.
      * This handles the case where we missed listener callbacks (e.g., fresh install,
-     * or messages sent from another device). Without this, the pre-fetch value
-     * becomes the baseline and we ignore listener callbacks with lower seq. */
+     * or messages sent from another device). */
     if (current_watermark > 0 && engine->messenger && engine->messenger->backup_ctx) {
         int updated = message_backup_mark_delivered_up_to_seq(
             engine->messenger->backup_ctx,
@@ -7933,6 +7932,17 @@ size_t dna_engine_start_watermark_listener(
             dna_dispatch_event(engine, &event);
             QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Pre-fetch: dispatched MESSAGE_DELIVERED event");
         }
+    }
+
+    /* Get baseline from local DB - what we've actually sent this install.
+     * This fixes the issue where DHT has stale high watermark from previous install,
+     * causing new watermarks with lower seq to be ignored. */
+    uint64_t local_baseline = 0;
+    if (engine->messenger && engine->messenger->backup_ctx) {
+        local_baseline = message_backup_get_max_sent_seq(
+            engine->messenger->backup_ctx, fp_copy);
+        QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK] Local DB baseline for %.20s...: seq=%lu",
+                     fp_copy, (unsigned long)local_baseline);
     }
 
     /* Start DHT watermark listener */
@@ -7974,11 +7984,11 @@ size_t dna_engine_start_watermark_listener(
             sizeof(engine->watermark_listeners[idx].contact_fingerprint) - 1);
     engine->watermark_listeners[idx].contact_fingerprint[128] = '\0';
     engine->watermark_listeners[idx].dht_token = token;
-    engine->watermark_listeners[idx].last_known_watermark = current_watermark;
+    engine->watermark_listeners[idx].last_known_watermark = local_baseline;
     engine->watermark_listeners[idx].active = true;
 
-    QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Started listener for %.20s... (token=%zu, baseline=%lu)",
-                 fp_copy, token, (unsigned long)current_watermark);
+    QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Started listener for %.20s... (token=%zu, baseline=%lu, dht_prefetch=%lu)",
+                 fp_copy, token, (unsigned long)local_baseline, (unsigned long)current_watermark);
 
     pthread_mutex_unlock(&engine->watermark_listeners_mutex);
     return token;

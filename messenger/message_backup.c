@@ -1245,6 +1245,38 @@ uint64_t message_backup_get_next_seq(message_backup_context_t *ctx, const char *
 }
 
 /**
+ * Get the maximum offline_seq we've actually sent to a recipient
+ *
+ * Used for watermark listener baseline - reflects what we've sent this install,
+ * not stale DHT values from previous installs.
+ *
+ * @return Max offline_seq sent to recipient, or 0 if no messages sent
+ */
+uint64_t message_backup_get_max_sent_seq(message_backup_context_t *ctx, const char *recipient) {
+    if (!ctx || !ctx->db || !recipient) {
+        return 0;
+    }
+
+    uint64_t max_seq = 0;
+
+    const char *sql = "SELECT MAX(offline_seq) FROM messages "
+                      "WHERE recipient = ? AND is_outgoing = 1 AND offline_seq > 0";
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, recipient, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
+            max_seq = (uint64_t)sqlite3_column_int64(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Max sent seq for %.20s...: %lu\n",
+                  recipient, (unsigned long)max_seq);
+    return max_seq;
+}
+
+/**
  * Mark all outgoing messages as DELIVERED up to a sequence number
  *
  * Note: The current messages table doesn't store seq_num per message.

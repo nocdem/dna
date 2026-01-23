@@ -379,6 +379,18 @@ void* message_backup_get_db(message_backup_context_t *ctx);
 uint64_t message_backup_get_next_seq(message_backup_context_t *ctx, const char *recipient);
 
 /**
+ * Get the maximum offline_seq actually sent to a recipient
+ *
+ * Used for watermark listener baseline - reflects what we've sent this install,
+ * not stale DHT values from previous installs.
+ *
+ * @param ctx Backup context
+ * @param recipient Recipient fingerprint
+ * @return Max offline_seq sent, or 0 if no messages sent
+ */
+uint64_t message_backup_get_max_sent_seq(message_backup_context_t *ctx, const char *recipient);
+
+/**
  * Mark all outgoing messages as DELIVERED up to a sequence number
  *
  * Updates the status of all messages sent to a recipient where seq_num <= max_seq.

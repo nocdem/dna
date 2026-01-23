@@ -207,4 +207,5 @@ Database-level encryption (SQLCipher) planned for future.
 | Function | Description |
 |----------|-------------|
 | `uint64_t message_backup_get_next_seq(...)` | Get and increment next sequence number |
+| `uint64_t message_backup_get_max_sent_seq(...)` | Get max offline_seq sent to recipient (for watermark baseline) |
 | `int message_backup_mark_delivered_up_to_seq(...)` | Mark messages delivered up to seq_num |
