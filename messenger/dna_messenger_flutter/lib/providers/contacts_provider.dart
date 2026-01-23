@@ -18,12 +18,17 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
   // Throttle presence lookups - don't re-lookup if recent
   static DateTime? _lastPresenceLookup;
   static const _presenceLookupThrottle = Duration(minutes: 5);
+  // Track if initial presence load has been triggered
+  bool _initialLoadTriggered = false;
 
   @override
   Future<List<Contact>> build() async {
     // Only fetch if identity is loaded (for initial launch / after logout)
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
+      // Reset initial load flag when identity is unloaded
+      _initialLoadTriggered = false;
+      ref.read(appFullyReadyProvider.notifier).state = false;
       return [];
     }
 
@@ -46,7 +51,10 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     }
 
     // Start presence lookups in background (non-blocking)
-    _updatePresenceInBackground(engine, sortedContacts);
+    // Mark as initial load only on first build after identity loads
+    final isInitialLoad = !_initialLoadTriggered;
+    _initialLoadTriggered = true;
+    _updatePresenceInBackground(engine, sortedContacts, isInitialLoad: isInitialLoad);
 
     return sortedContacts;
   }
@@ -57,12 +65,19 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     DnaEngine engine,
     List<Contact> contacts, {
     bool forceRefresh = false,
+    bool isInitialLoad = false,
   }) async {
-    if (contacts.isEmpty) return;
+    if (contacts.isEmpty) {
+      // No contacts - mark app as ready immediately
+      if (isInitialLoad) {
+        ref.read(appFullyReadyProvider.notifier).state = true;
+      }
+      return;
+    }
 
-    // Throttle: skip if we did a lookup recently (unless forced)
+    // Throttle: skip if we did a lookup recently (unless forced or initial load)
     final now = DateTime.now();
-    if (!forceRefresh && _lastPresenceLookup != null) {
+    if (!forceRefresh && !isInitialLoad && _lastPresenceLookup != null) {
       final elapsed = now.difference(_lastPresenceLookup!);
       if (elapsed < _presenceLookupThrottle) {
         return; // Skip - too soon since last lookup
@@ -71,14 +86,40 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     _lastPresenceLookup = now;
 
     // Query presence for all contacts in parallel
+    final presenceFutures = <Future<void>>[];
     for (final contact in contacts) {
-      // Fire and forget - each lookup updates state independently
-      _lookupSinglePresence(engine, contact.fingerprint).then((lastSeen) {
+      final future = _lookupSinglePresence(engine, contact.fingerprint).then((lastSeen) {
         if (lastSeen != null && lastSeen.millisecondsSinceEpoch > 0) {
           _updateContactPresence(contact.fingerprint, lastSeen);
         }
       });
+      presenceFutures.add(future);
     }
+
+    // Wait for ALL initial DHT operations to complete before showing UI
+    if (isInitialLoad) {
+      _completeInitialLoad(engine, presenceFutures);
+    }
+  }
+
+  /// Complete initial load: wait for presence lookups + offline message check
+  Future<void> _completeInitialLoad(DnaEngine engine, List<Future<void>> presenceFutures) async {
+    try {
+      // Wait for presence lookups (parallel, with timeout)
+      await Future.wait(presenceFutures).timeout(const Duration(seconds: 10));
+    } catch (_) {
+      // Timeout or error - continue anyway
+    }
+
+    try {
+      // Fetch offline messages from all contact outboxes
+      await engine.checkOfflineMessages().timeout(const Duration(seconds: 15));
+    } catch (_) {
+      // Timeout or error - continue anyway
+    }
+
+    // Mark app as ready - UI can now be shown
+    ref.read(appFullyReadyProvider.notifier).state = true;
   }
 
   /// Lookup presence for a single contact with timeout
@@ -226,17 +267,8 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     final engine = await ref.read(engineProvider.future);
     await engine.addContact(identifier);
     await refresh();
-
-    // Start DHT listener for the new contact's outbox (for push notifications)
-    // If identifier is already a fingerprint (128 hex chars), use it directly
-    // Otherwise fall back to listenAllContacts() since C resolves name->fingerprint
-    final isFingerprint = identifier.length == 128 &&
-        RegExp(r'^[0-9a-fA-F]+$').hasMatch(identifier);
-    if (isFingerprint) {
-      engine.listenOutbox(identifier);
-    } else {
-      engine.listenAllContacts();
-    }
+    // v0.6.26: Outbox listener is now started in C after adding contact
+    // This avoids blocking UI with listenAllContacts() which waits for DHT
   }
 
   Future<void> removeContact(String fingerprint) async {

@@ -134,6 +134,8 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     // Watch currentFingerprintProvider to reactively update when identity is loaded
     // This is set by loadIdentity() after successful load, and by createIdentity() path
     final currentFingerprint = ref.watch(currentFingerprintProvider);
+    // Watch appFullyReadyProvider to wait for DHT operations (presence lookups) to complete
+    final appFullyReady = ref.watch(appFullyReadyProvider);
 
     // App lock state
     final appLock = ref.watch(appLockProvider);
@@ -162,6 +164,16 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
         // v0.3.0: Route based on whether identity is loaded (reactive)
         // currentFingerprint is non-null when identity is loaded
         if (currentFingerprint != null) {
+          // Trigger contacts provider to start presence lookups
+          // (must be watched for build() to run and set appFullyReadyProvider)
+          ref.watch(contactsProvider);
+
+          // Wait for DHT operations (presence lookups) to complete before showing HomeScreen
+          // This prevents showing stale "last seen never" that updates moments later
+          if (!appFullyReady) {
+            return const _LoadingScreen();
+          }
+
           // Only activate providers AFTER identity is loaded
           ref.watch(eventHandlerActiveProvider);
           ref.watch(backgroundTasksActiveProvider);

@@ -2,6 +2,7 @@
 import 'dart:io' show Platform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../ffi/crypto_isolate.dart' as crypto;
 import '../services/cache_database.dart';
 import 'engine_provider.dart';
 import 'identity_profile_cache_provider.dart';
@@ -100,16 +101,14 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     });
   }
 
-  /// Generate a 24-word BIP39 mnemonic
+  /// Generate a 24-word BIP39 mnemonic (runs in isolate to avoid UI blocking)
   Future<String> generateMnemonic() async {
-    final engine = await ref.read(engineProvider.future);
-    return engine.generateMnemonic();
+    return crypto.generateMnemonicAsync();
   }
 
-  /// Validate a BIP39 mnemonic
+  /// Validate a BIP39 mnemonic (runs in isolate to avoid UI blocking)
   Future<bool> validateMnemonic(String mnemonic) async {
-    final engine = await ref.read(engineProvider.future);
-    return engine.validateMnemonic(mnemonic);
+    return crypto.validateMnemonicAsync(mnemonic);
   }
 
   /// Check if name is available in DHT
@@ -124,8 +123,8 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
   Future<String> createIdentityFromMnemonic(String name, String mnemonic, {String passphrase = ''}) async {
     final engine = await ref.read(engineProvider.future);
 
-    // Derive seeds from mnemonic (includes masterSeed for multi-chain wallets)
-    final seeds = engine.deriveSeedsWithMaster(mnemonic, passphrase: passphrase);
+    // Derive seeds from mnemonic in isolate (PBKDF2 is CPU-intensive, 100-500ms)
+    final seeds = await crypto.deriveSeedsWithMasterAsync(mnemonic, passphrase: passphrase);
 
     // Create identity with derived seeds
     // - ETH/SOL use masterSeed via BIP-44/SLIP-10
@@ -163,8 +162,8 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
   Future<String> restoreIdentityFromMnemonic(String mnemonic, {String passphrase = ''}) async {
     final engine = await ref.read(engineProvider.future);
 
-    // Derive seeds from mnemonic (includes masterSeed for multi-chain wallets)
-    final seeds = engine.deriveSeedsWithMaster(mnemonic, passphrase: passphrase);
+    // Derive seeds from mnemonic in isolate (PBKDF2 is CPU-intensive, 100-500ms)
+    final seeds = await crypto.deriveSeedsWithMasterAsync(mnemonic, passphrase: passphrase);
 
     // Restore identity locally (no DHT registration - identity already exists)
     // - ETH/SOL use masterSeed via BIP-44/SLIP-10
@@ -257,14 +256,10 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     ref.read(identityReadyProvider.notifier).state = true;
     engine.debugLog('IDENTITY', 'loadIdentity - identityReadyProvider set to true');
 
-    // Start all listeners in background (waits for DHT to become ready)
-    // This runs asynchronously so UI isn't blocked while waiting for DHT peers.
-    // Includes: outbox listeners, presence listeners, watermark listeners, contact request listener
-    Future.microtask(() {
-      engine.debugLog('IDENTITY', 'Starting all listeners in background...');
-      final count = engine.listenAllContacts();
-      engine.debugLog('IDENTITY', 'Background listeners started for $count contacts');
-    });
+    // v0.6.26: Contact listeners are now started in C stabilization thread
+    // This was moved from Dart because listenAllContacts() blocked UI for up to 30s
+    // waiting for DHT to become ready. Now runs in background C thread.
+    engine.debugLog('IDENTITY', 'Contact listeners will start in C stabilization thread');
 
     // Invalidate profile providers to fetch fresh profile from DHT
     ref.invalidate(userProfileProvider);

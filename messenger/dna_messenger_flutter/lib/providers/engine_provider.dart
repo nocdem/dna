@@ -95,6 +95,10 @@ final currentFingerprintProvider = StateProvider<String?>((ref) => null);
 /// Data providers should watch this, not currentFingerprintProvider
 final identityReadyProvider = StateProvider<bool>((ref) => false);
 
+/// App fully ready flag - set true AFTER initial DHT operations complete (presence lookups, etc.)
+/// UI should show loading spinner until this is true to avoid showing stale data
+final appFullyReadyProvider = StateProvider<bool>((ref) => false);
+
 /// Current identity fingerprint (from engine state - may be stale after invalidation)
 final currentIdentityProvider = Provider<String?>((ref) {
   final engineAsync = ref.watch(engineProvider);
