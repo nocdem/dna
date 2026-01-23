@@ -226,17 +226,8 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     final engine = await ref.read(engineProvider.future);
     await engine.addContact(identifier);
     await refresh();
-
-    // Start DHT listener for the new contact's outbox (for push notifications)
-    // If identifier is already a fingerprint (128 hex chars), use it directly
-    // Otherwise fall back to listenAllContacts() since C resolves name->fingerprint
-    final isFingerprint = identifier.length == 128 &&
-        RegExp(r'^[0-9a-fA-F]+$').hasMatch(identifier);
-    if (isFingerprint) {
-      engine.listenOutbox(identifier);
-    } else {
-      engine.listenAllContacts();
-    }
+    // v0.6.26: Outbox listener is now started in C after adding contact
+    // This avoids blocking UI with listenAllContacts() which waits for DHT
   }
 
   Future<void> removeContact(String fingerprint) async {

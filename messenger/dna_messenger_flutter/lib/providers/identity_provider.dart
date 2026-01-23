@@ -257,14 +257,10 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     ref.read(identityReadyProvider.notifier).state = true;
     engine.debugLog('IDENTITY', 'loadIdentity - identityReadyProvider set to true');
 
-    // Start all listeners in background (waits for DHT to become ready)
-    // This runs asynchronously so UI isn't blocked while waiting for DHT peers.
-    // Includes: outbox listeners, presence listeners, watermark listeners, contact request listener
-    Future.microtask(() {
-      engine.debugLog('IDENTITY', 'Starting all listeners in background...');
-      final count = engine.listenAllContacts();
-      engine.debugLog('IDENTITY', 'Background listeners started for $count contacts');
-    });
+    // v0.6.26: Contact listeners are now started in C stabilization thread
+    // This was moved from Dart because listenAllContacts() blocked UI for up to 30s
+    // waiting for DHT to become ready. Now runs in background C thread.
+    engine.debugLog('IDENTITY', 'Contact listeners will start in C stabilization thread');
 
     // Invalidate profile providers to fetch fresh profile from DHT
     ref.invalidate(userProfileProvider);

@@ -412,6 +412,14 @@ static void *dna_engine_stabilization_retry_thread(void *arg) {
         QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: no pending messages to retry");
     }
 
+    /* 4. Start outbox listeners for all contacts
+     * This was previously called from Dart but blocked UI for up to 30s.
+     * Moving here so it runs in background thread after DHT is stable. */
+    if (engine->messenger && !atomic_load(&engine->shutdown_requested)) {
+        int listener_count = dna_engine_listen_all_contacts(engine);
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: started %d contact listeners", listener_count);
+    }
+
     QGP_LOG_WARN(LOG_TAG, "[RETRY] >>> STABILIZATION THREAD COMPLETE <<<");
 
 cleanup:
@@ -2924,6 +2932,10 @@ void dna_handle_add_contact(dna_engine_t *engine, dna_task_t *task) {
     /* Sync to DHT */
     QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] add_contact: calling sync");
     messenger_sync_contacts_to_dht(engine->messenger);
+
+    /* v0.6.26: Start outbox listener for new contact (previously done from Dart
+     * but listenAllContacts() blocked UI for up to 30s waiting for DHT) */
+    dna_engine_listen_outbox(engine, fingerprint);
 
 done:
     task->callback.completion(task->request_id, error, task->user_data);
