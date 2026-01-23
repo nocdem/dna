@@ -9,6 +9,7 @@
 #include "dnac/transaction.h"
 #include "dnac/nodus.h"
 #include <string.h>
+#include <stdio.h>
 
 /* libdna crypto utilities */
 #include "crypto/utils/qgp_dilithium.h"
@@ -55,6 +56,16 @@ int verify_witnesses(const dnac_transaction_t *tx) {
     for (int i = 0; i < tx->witness_count; i++) {
         const dnac_witness_sig_t *witness = &tx->witnesses[i];
 
+        fprintf(stderr, "[WITNESS_VERIFY] Witness %d: id=%.8s..., ts=%llu\n",
+                i, (const char*)witness->witness_id, (unsigned long long)witness->timestamp);
+
+        /* Check if server_pubkey looks valid (not all zeros) */
+        int nonzero = 0;
+        for (int k = 0; k < 64; k++) {
+            if (witness->server_pubkey[k] != 0) nonzero++;
+        }
+        fprintf(stderr, "[WITNESS_VERIFY]   server_pubkey non-zero bytes in first 64: %d\n", nonzero);
+
         /* Build signed data: tx_hash + witness_id + timestamp */
         uint8_t signed_data[DNAC_TX_HASH_SIZE + 32 + 8];
         memcpy(signed_data, tx->tx_hash, DNAC_TX_HASH_SIZE);
@@ -69,6 +80,7 @@ int verify_witnesses(const dnac_transaction_t *tx) {
         int ret = qgp_dsa87_verify(witness->signature, DNAC_SIGNATURE_SIZE,
                                    signed_data, sizeof(signed_data),
                                    witness->server_pubkey);
+        fprintf(stderr, "[WITNESS_VERIFY]   qgp_dsa87_verify returned: %d\n", ret);
         if (ret != 0) {
             return DNAC_ERROR_WITNESS_FAILED;
         }
