@@ -38,6 +38,7 @@
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_sha3.h"
+#include "crypto/utils/qgp_dilithium.h"
 
 #define LOG_TAG "BFT_MAIN"
 
@@ -46,7 +47,7 @@
  * ========================================================================== */
 
 static volatile int g_running = 1;
-static dnac_bft_context_t *g_bft_ctx = NULL;
+dnac_bft_context_t *g_bft_ctx = NULL;  /* Non-static for access from forward.c */
 static dnac_tcp_server_t *g_tcp_server = NULL;
 
 /* Identity loading state */
@@ -310,7 +311,26 @@ void bft_send_client_response(int client_fd, int status,
         strncpy(response.error_message, error_msg, sizeof(response.error_message) - 1);
     }
 
-    /* TODO: Sign the response */
+    /* Sign the response: tx_hash + witness_id + timestamp (little-endian) */
+    if (g_bft_ctx->my_privkey && g_bft_ctx->my_privkey_size > 0) {
+        uint8_t signed_data[DNAC_TX_HASH_SIZE + 32 + 8];
+        memcpy(signed_data, g_bft_ctx->round_state.tx_hash, DNAC_TX_HASH_SIZE);
+        memcpy(signed_data + DNAC_TX_HASH_SIZE, response.witness_id, 32);
+        /* Little-endian timestamp */
+        for (int j = 0; j < 8; j++) {
+            signed_data[DNAC_TX_HASH_SIZE + 32 + j] = (response.timestamp >> (j * 8)) & 0xFF;
+        }
+
+        size_t sig_len = 0;
+        int sign_rc = qgp_dsa87_sign(response.signature, &sig_len,
+                                      signed_data, sizeof(signed_data),
+                                      g_bft_ctx->my_privkey);
+        if (sign_rc != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to sign spend response: %d", sign_rc);
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "Signed spend response (sig_len=%zu)", sig_len);
+        }
+    }
 
     /* Serialize response */
     uint8_t buffer[16384];

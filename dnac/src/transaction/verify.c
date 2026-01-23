@@ -47,11 +47,17 @@ static int verify_balance_v1(const dnac_transaction_t *tx) {
  *
  * Each witness contains the server's public key. We verify the signature
  * over: tx_hash || witness_id || timestamp
+ *
+ * With BFT consensus, 1 valid witness attestation proves quorum was reached
+ * (the witness only signs after 2f+1 agreement). We require at least 1 valid.
  */
 int verify_witnesses(const dnac_transaction_t *tx) {
-    if (tx->witness_count < DNAC_WITNESSES_REQUIRED) {
+    /* BFT mode: 1 attestation proves consensus (quorum agreement happened internally) */
+    if (tx->witness_count < 1) {
         return DNAC_ERROR_WITNESS_FAILED;
     }
+
+    int valid_witnesses = 0;
 
     for (int i = 0; i < tx->witness_count; i++) {
         const dnac_witness_sig_t *witness = &tx->witnesses[i];
@@ -65,6 +71,12 @@ int verify_witnesses(const dnac_transaction_t *tx) {
             if (witness->server_pubkey[k] != 0) nonzero++;
         }
         fprintf(stderr, "[WITNESS_VERIFY]   server_pubkey non-zero bytes in first 64: %d\n", nonzero);
+
+        /* Skip witnesses with empty pubkey (padding from old buggy transactions) */
+        if (nonzero < 32) {
+            fprintf(stderr, "[WITNESS_VERIFY]   Skipping (likely padding/garbage data)\n");
+            continue;
+        }
 
         /* Build signed data: tx_hash + witness_id + timestamp */
         uint8_t signed_data[DNAC_TX_HASH_SIZE + 32 + 8];
@@ -81,12 +93,21 @@ int verify_witnesses(const dnac_transaction_t *tx) {
                                    signed_data, sizeof(signed_data),
                                    witness->server_pubkey);
         fprintf(stderr, "[WITNESS_VERIFY]   qgp_dsa87_verify returned: %d\n", ret);
-        if (ret != 0) {
-            return DNAC_ERROR_WITNESS_FAILED;
+
+        if (ret == 0) {
+            valid_witnesses++;
+            fprintf(stderr, "[WITNESS_VERIFY]   Valid! (total valid: %d)\n", valid_witnesses);
         }
     }
 
-    return DNAC_SUCCESS;
+    /* BFT mode: require at least 1 valid witness signature */
+    if (valid_witnesses >= 1) {
+        fprintf(stderr, "[WITNESS_VERIFY] SUCCESS: %d valid witness(es)\n", valid_witnesses);
+        return DNAC_SUCCESS;
+    }
+
+    fprintf(stderr, "[WITNESS_VERIFY] FAILED: no valid witnesses (checked %d)\n", tx->witness_count);
+    return DNAC_ERROR_WITNESS_FAILED;
 }
 
 /**

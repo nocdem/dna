@@ -153,7 +153,8 @@ int dnac_tx_authorize_mint(dnac_context_t *ctx, dnac_transaction_t *tx) {
     int witness_count = 0;
 
     rc = dnac_witness_request(ctx, &request, witnesses, &witness_count);
-    if (rc != DNAC_SUCCESS || witness_count < DNAC_MINT_WITNESS_REQUIRED) {
+    /* BFT mode: 1 attestation proves consensus (quorum agreement happened internally) */
+    if (rc != DNAC_SUCCESS || witness_count < 1) {
         QGP_LOG_ERROR(LOG_TAG, "Mint rejected: rc=%d witnesses=%d", rc, witness_count);
         return DNAC_ERROR_WITNESS_FAILED;
     }

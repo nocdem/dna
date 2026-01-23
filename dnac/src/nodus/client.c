@@ -429,12 +429,10 @@ int dnac_witness_request(dnac_context_t *ctx,
                      *witness_count_out);
 
         /* BFT returns 1 attestation representing consensus agreement.
-         * For spending that requires 2 witnesses, BFT consensus ensures
-         * at least 2 witnesses agreed internally.
-         * We report count=2 to satisfy the check. */
-        if (*witness_count_out < DNAC_WITNESSES_REQUIRED) {
-            *witness_count_out = DNAC_WITNESSES_REQUIRED;
-        }
+         * The BFT consensus ensures at least 2 witnesses agreed internally,
+         * so 1 signed attestation proves quorum was reached.
+         * We keep the actual count (1) instead of inflating to 2 to avoid
+         * sending garbage data for unpopulated witness slots. */
 
         return DNAC_SUCCESS;
     }

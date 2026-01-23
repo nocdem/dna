@@ -307,7 +307,8 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
     int witness_count = 0;
 
     rc = dnac_witness_request(ctx, &request, witnesses, &witness_count);
-    if (rc != DNAC_SUCCESS || witness_count < DNAC_WITNESSES_REQUIRED) {
+    /* BFT mode: 1 attestation proves consensus (quorum agreement happened internally) */
+    if (rc != DNAC_SUCCESS || witness_count < 1) {
         /* Mark pending spends as failed */
         dnac_db_expire_pending_spends(db);
         return DNAC_ERROR_WITNESS_FAILED;

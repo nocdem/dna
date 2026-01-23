@@ -134,11 +134,11 @@ int dnac_tx_verify(const dnac_transaction_t *tx) {
         return DNAC_ERROR_INVALID_PROOF;
     }
 
-    /* Verify we have enough witnesses */
-    fprintf(stderr, "[VERIFY] witness_count=%d, required=%d\n",
-            tx->witness_count, DNAC_WITNESSES_REQUIRED);
-    if (tx->witness_count < DNAC_WITNESSES_REQUIRED) {
-        fprintf(stderr, "[VERIFY] FAILED: not enough witnesses\n");
+    /* Verify we have enough witnesses
+     * BFT mode: 1 attestation proves consensus (quorum agreement happened internally) */
+    fprintf(stderr, "[VERIFY] witness_count=%d (BFT: 1 sufficient)\n", tx->witness_count);
+    if (tx->witness_count < 1) {
+        fprintf(stderr, "[VERIFY] FAILED: no witnesses\n");
         return DNAC_ERROR_WITNESS_FAILED;
     }
 

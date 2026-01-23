@@ -20,8 +20,12 @@
 #include "dnac/tcp.h"
 #include "dnac/nodus.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_dilithium.h"
 
 #define LOG_TAG "BFT_FORWARD"
+
+/* External state from bft_main.c */
+extern dnac_bft_context_t *g_bft_ctx;
 
 /* External functions */
 extern int bft_peer_send_to_leader(const uint8_t *data, size_t len);
@@ -333,6 +337,27 @@ int bft_forward_complete_for_txhash(const uint8_t *tx_hash,
         memcpy(spend_rsp.server_pubkey, pubkey, DNAC_PUBKEY_SIZE);
     }
     spend_rsp.timestamp = (uint64_t)time(NULL);
+
+    /* Sign the response: tx_hash + witness_id + timestamp (little-endian) */
+    if (g_bft_ctx && g_bft_ctx->my_privkey && g_bft_ctx->my_privkey_size > 0 && tx_hash) {
+        uint8_t signed_data[DNAC_TX_HASH_SIZE + 32 + 8];
+        memcpy(signed_data, tx_hash, DNAC_TX_HASH_SIZE);
+        memcpy(signed_data + DNAC_TX_HASH_SIZE, spend_rsp.witness_id, 32);
+        /* Little-endian timestamp */
+        for (int j = 0; j < 8; j++) {
+            signed_data[DNAC_TX_HASH_SIZE + 32 + j] = (spend_rsp.timestamp >> (j * 8)) & 0xFF;
+        }
+
+        size_t sig_len = 0;
+        int sign_rc = qgp_dsa87_sign(spend_rsp.signature, &sig_len,
+                                      signed_data, sizeof(signed_data),
+                                      g_bft_ctx->my_privkey);
+        if (sign_rc != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to sign forward response: %d", sign_rc);
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "Signed forward response (sig_len=%zu)", sig_len);
+        }
+    }
 
     /* Serialize spend response */
     uint8_t rsp_buffer[16384];
