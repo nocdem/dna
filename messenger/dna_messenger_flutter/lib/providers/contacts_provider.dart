@@ -86,22 +86,40 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     _lastPresenceLookup = now;
 
     // Query presence for all contacts in parallel
-    final futures = <Future<void>>[];
+    final presenceFutures = <Future<void>>[];
     for (final contact in contacts) {
       final future = _lookupSinglePresence(engine, contact.fingerprint).then((lastSeen) {
         if (lastSeen != null && lastSeen.millisecondsSinceEpoch > 0) {
           _updateContactPresence(contact.fingerprint, lastSeen);
         }
       });
-      futures.add(future);
+      presenceFutures.add(future);
     }
 
-    // Wait for all lookups to complete, then mark app as ready
+    // Wait for ALL initial DHT operations to complete before showing UI
     if (isInitialLoad) {
-      Future.wait(futures).then((_) {
-        ref.read(appFullyReadyProvider.notifier).state = true;
-      });
+      _completeInitialLoad(engine, presenceFutures);
     }
+  }
+
+  /// Complete initial load: wait for presence lookups + offline message check
+  Future<void> _completeInitialLoad(DnaEngine engine, List<Future<void>> presenceFutures) async {
+    try {
+      // Wait for presence lookups (parallel, with timeout)
+      await Future.wait(presenceFutures).timeout(const Duration(seconds: 10));
+    } catch (_) {
+      // Timeout or error - continue anyway
+    }
+
+    try {
+      // Fetch offline messages from all contact outboxes
+      await engine.checkOfflineMessages().timeout(const Duration(seconds: 15));
+    } catch (_) {
+      // Timeout or error - continue anyway
+    }
+
+    // Mark app as ready - UI can now be shown
+    ref.read(appFullyReadyProvider.notifier).state = true;
   }
 
   /// Lookup presence for a single contact with timeout
