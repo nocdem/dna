@@ -692,7 +692,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
                                       ),
                                     )
                                   : FaIcon(
-                                      FontAwesomeIcons.paperPlane,
+                                      FontAwesomeIcons.solidPaperPlane,
                                       size: 18,
                                       color: canSend
                                           ? theme.colorScheme.onPrimary

@@ -973,7 +973,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       height: 44,
                       child: Center(
                         child: FaIcon(
-                          FontAwesomeIcons.paperPlane,
+                          FontAwesomeIcons.solidPaperPlane,
                           size: 18,
                           color: hasText
                               ? theme.colorScheme.onPrimary
