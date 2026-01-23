@@ -960,9 +960,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               valueListenable: _messageController,
               builder: (context, value, child) {
                 final hasText = value.text.trim().isNotEmpty;
-                return IconButton.filled(
-                  icon: const FaIcon(FontAwesomeIcons.paperPlane),
-                  onPressed: hasText ? () => _sendMessage(contact) : null,
+                return Material(
+                  color: hasText
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.onSurface.withAlpha(30),
+                  shape: const CircleBorder(),
+                  child: InkWell(
+                    onTap: hasText ? () => _sendMessage(contact) : null,
+                    customBorder: const CircleBorder(),
+                    child: SizedBox(
+                      width: 44,
+                      height: 44,
+                      child: Center(
+                        child: FaIcon(
+                          FontAwesomeIcons.paperPlane,
+                          size: 18,
+                          color: hasText
+                              ? theme.colorScheme.onPrimary
+                              : theme.colorScheme.onSurface.withAlpha(100),
+                        ),
+                      ),
+                    ),
+                  ),
                 );
               },
             ),
