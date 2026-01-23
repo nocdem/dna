@@ -364,6 +364,36 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
         }
     }
 
+    /* Step 6b: Store change outputs locally (immediate, no DHT round-trip) */
+    for (int i = 0; i < tx->output_count; i++) {
+        /* Only process change outputs (to ourselves) */
+        if (strcmp(tx->outputs[i].owner_fingerprint, owner_fp) != 0) {
+            continue;
+        }
+
+        dnac_utxo_t utxo = {0};
+        utxo.version = tx->outputs[i].version;
+        memcpy(utxo.tx_hash, tx->tx_hash, DNAC_TX_HASH_SIZE);
+        utxo.output_index = (uint32_t)i;
+        utxo.amount = tx->outputs[i].amount;
+        strncpy(utxo.owner_fingerprint, owner_fp, sizeof(utxo.owner_fingerprint) - 1);
+        utxo.status = DNAC_UTXO_UNSPENT;
+        utxo.received_at = (uint64_t)time(NULL);
+
+        /* Derive nullifier from owner fingerprint and seed */
+        uint8_t nullifier_data[256];
+        size_t fp_len = strlen(owner_fp);
+        memcpy(nullifier_data, owner_fp, fp_len);
+        memcpy(nullifier_data + fp_len, tx->outputs[i].nullifier_seed, 32);
+        if (compute_sha3_512(nullifier_data, fp_len + 32, utxo.nullifier) == 0) {
+            rc = dnac_db_store_utxo(db, &utxo);
+            if (rc == DNAC_SUCCESS) {
+                fprintf(stderr, "[SEND] Stored change UTXO locally: %llu coins\n",
+                        (unsigned long long)utxo.amount);
+            }
+        }
+    }
+
     /* Step 7: Mark input UTXOs as spent */
     for (int i = 0; i < tx->input_count; i++) {
         rc = dnac_db_mark_utxo_spent(db, tx->inputs[i].nullifier, tx->tx_hash);
