@@ -611,6 +611,24 @@ extern "C" bool dht_context_is_running(dht_context_t *ctx) {
 }
 
 /**
+ * Get the number of good nodes in the DHT routing table.
+ * Used to determine if routing table is sufficiently populated for reliable operations.
+ * Returns 0 if context is NULL or not running.
+ */
+extern "C" size_t dht_context_get_node_count(dht_context_t *ctx) {
+    if (!ctx || !ctx->running) return 0;
+
+    try {
+        auto stats_v4 = ctx->runner.getNodesStats(AF_INET);
+        auto stats_v6 = ctx->runner.getNodesStats(AF_INET6);
+        return stats_v4.good_nodes + stats_v6.good_nodes;
+    } catch (const std::exception& e) {
+        QGP_LOG_ERROR("DHT", "Exception in dht_context_get_node_count: %s", e.what());
+        return 0;
+    }
+}
+
+/**
  * Set callback for DHT connection status changes
  */
 extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_callback_t callback, void *user_data) {

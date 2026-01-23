@@ -110,6 +110,15 @@ bool dht_context_is_ready(dht_context_t *ctx);
 bool dht_context_is_running(dht_context_t *ctx);
 
 /**
+ * Get the number of good nodes in the DHT routing table.
+ * Used to determine if routing table is sufficiently populated.
+ *
+ * @param ctx DHT context
+ * @return Number of good nodes (0 if context is NULL/stopped)
+ */
+size_t dht_context_get_node_count(dht_context_t *ctx);
+
+/**
  * Status change callback type
  *
  * @param is_connected true if DHT is now connected, false if disconnected

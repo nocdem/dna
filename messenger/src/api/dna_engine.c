@@ -130,8 +130,9 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 /* Use engine-specific error codes */
 #define DNA_OK 0
 
-/* DHT stabilization delay - wait for routing table to fill after bootstrap */
-#define DHT_STABILIZATION_SECONDS 15
+/* DHT stabilization - wait for routing table to fill after bootstrap */
+#define DHT_STABILIZATION_MAX_SECONDS 15  /* Maximum wait time */
+#define DHT_STABILIZATION_MIN_NODES 2     /* Minimum good nodes for reliable operations */
 
 /* Forward declarations for static helpers */
 static dht_context_t* dna_get_dht_ctx(dna_engine_t *engine);
@@ -148,6 +149,38 @@ void dna_engine_cancel_watermark_listener(dna_engine_t *engine, const char *cont
 size_t dna_engine_listen_outbox(dna_engine_t *engine, const char *contact_fingerprint);
 size_t dna_engine_start_presence_listener(dna_engine_t *engine, const char *contact_fingerprint);
 size_t dna_engine_start_watermark_listener(dna_engine_t *engine, const char *contact_fingerprint);
+
+/**
+ * Wait for DHT routing table to stabilize.
+ * Polls node count until we have enough nodes or timeout.
+ * Returns true if stabilized, false if shutdown requested.
+ */
+static bool dht_wait_for_stabilization(dna_engine_t *engine) {
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) return false;
+
+    for (int i = 0; i < DHT_STABILIZATION_MAX_SECONDS; i++) {
+        if (atomic_load(&engine->shutdown_requested)) return false;
+
+        size_t node_count = dht_context_get_node_count(dht);
+        if (node_count >= DHT_STABILIZATION_MIN_NODES) {
+            QGP_LOG_INFO(LOG_TAG, "[STABILIZE] Routing table ready: %zu nodes after %ds",
+                         node_count, i);
+            return true;
+        }
+
+        if (i > 0 && i % 5 == 0) {
+            QGP_LOG_DEBUG(LOG_TAG, "[STABILIZE] Waiting for nodes... (%zu/%d after %ds)",
+                          node_count, DHT_STABILIZATION_MIN_NODES, i);
+        }
+        qgp_platform_sleep_ms(1000);
+    }
+
+    size_t final_count = dht_context_get_node_count(dht);
+    QGP_LOG_WARN(LOG_TAG, "[STABILIZE] Timeout after %ds with %zu nodes (wanted %d)",
+                 DHT_STABILIZATION_MAX_SECONDS, final_count, DHT_STABILIZATION_MIN_NODES);
+    return true;  /* Continue anyway after timeout */
+}
 
 /* Parallel listener setup for mobile performance optimization */
 typedef struct {
@@ -286,17 +319,8 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
-    /* Wait for DHT routing table to stabilize after reconnect, then retry again.
-     * The immediate retry above may fail if routing table is still sparse.
-     * Sleep in 1-second intervals to check shutdown flag. */
-    QGP_LOG_INFO(LOG_TAG, "[RETRY] Listener thread: waiting %d seconds for stabilization...",
-                 DHT_STABILIZATION_SECONDS);
-    for (int i = 0; i < DHT_STABILIZATION_SECONDS; i++) {
-        if (atomic_load(&engine->shutdown_requested)) goto cleanup;
-        qgp_platform_sleep_ms(1000);
-    }
-
-    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+    /* Wait for DHT routing table to stabilize, then retry again */
+    if (!dht_wait_for_stabilization(engine)) goto cleanup;
 
     int retried_post_stable = dna_engine_retry_pending_messages(engine);
     if (retried_post_stable > 0) {
@@ -335,21 +359,10 @@ static void *dna_engine_stabilization_retry_thread(void *arg) {
         goto cleanup;
     }
 
-    /* Wait for DHT routing table to stabilize.
-     * Early retries fail with nodes_tried=0 because routing table only has
-     * bootstrap nodes. After 15 seconds, routing table is populated with
-     * nodes discovered through DHT crawling.
-     * Sleep in 1-second intervals to check shutdown flag. */
-    QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread: waiting %d seconds for routing table...",
-                 DHT_STABILIZATION_SECONDS);
-    for (int i = 0; i < DHT_STABILIZATION_SECONDS; i++) {
-        if (atomic_load(&engine->shutdown_requested)) goto cleanup;
-        qgp_platform_sleep_ms(1000);
-    }
+    /* Wait for DHT routing table to stabilize */
+    if (!dht_wait_for_stabilization(engine)) goto cleanup;
 
-    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
-
-    QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread: woke up, starting retries...");
+    QGP_LOG_INFO(LOG_TAG, "[RETRY] Stabilization complete, starting retries...");
 
     /* 1. Re-register presence - initial registration during identity load often fails
      * with nodes_tried=0 because routing table only has bootstrap nodes */
