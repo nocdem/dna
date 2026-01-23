@@ -46,6 +46,13 @@ final isLoadingMoreProvider = Provider.family<bool, String>((ref, fingerprint) {
 class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
   @override
   Future<List<Message>> build(String arg) async {
+    // Wait for identity to be ready (prevents "Failed to load" after app switch)
+    final identityReady = ref.watch(identityReadyProvider);
+    if (!identityReady) {
+      // Return empty list while waiting for identity to load on resume
+      return [];
+    }
+
     final engine = await ref.watch(engineProvider.future);
     // Load initial page (newest messages)
     final page = await engine.getConversationPage(arg, _pageSize, 0);
