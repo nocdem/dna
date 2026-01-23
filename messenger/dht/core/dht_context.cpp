@@ -27,6 +27,7 @@
 // Use unified QGP logging (respects config log level)
 extern "C" {
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 }
 #define DHT_LOG_TAG "DHT_CONTEXT"
 #define DHT_LOGI(...) QGP_LOG_INFO(DHT_LOG_TAG, __VA_ARGS__)
