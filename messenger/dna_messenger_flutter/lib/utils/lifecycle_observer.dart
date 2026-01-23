@@ -18,11 +18,6 @@ import '../services/cache_database.dart';
 /// Used by event_handler to determine whether to show notifications
 final appInForegroundProvider = StateProvider<bool>((ref) => true);
 
-/// Provider that tracks whether engine resume is in progress
-/// Set TRUE at start of resume (before engine access), FALSE after loadIdentity() completes
-/// Data providers watch this and return existing data while true (prevents "failed to load" errors)
-final engineResumeInProgressProvider = StateProvider<bool>((ref) => false);
-
 /// Observer for app lifecycle state changes
 ///
 /// Handles:
@@ -69,12 +64,6 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       return;
     }
 
-    // Signal that resume is in progress BEFORE any engine operations
-    // Data providers watch this and return existing data instead of making C calls
-    // This prevents "failed to load messages" errors during the gap between
-    // engine creation and identity loading
-    ref.read(engineResumeInProgressProvider.notifier).state = true;
-
     try {
       // v0.100.23+: Notify service FIRST so it releases its engine
       // Service must release the DHT lock before Flutter can create new engine
@@ -88,9 +77,6 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Reload identity into fresh engine
       // This reloads keys, initializes transport, and starts all listeners
       await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
-
-      // Resume complete - identity is now loaded, data providers can fetch
-      ref.read(engineResumeInProgressProvider.notifier).state = false;
 
       // Platform-specific resume handling
       // Android: Fetch offline messages
@@ -107,18 +93,14 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // This ensures users see up-to-date names when they open the app
       await _refreshContactProfiles(engine);
 
-      // Silently refresh contacts (keeps existing data visible, merges new data)
-      await ref.read(contactsProvider.notifier).refresh();
-
-      // Silently refresh current conversation if one is open
-      // This ensures messages received while backgrounded are visible
+      // Force refresh contacts and messages (simple invalidation pattern)
+      ref.invalidate(contactsProvider);
       final selectedContact = ref.read(selectedContactProvider);
       if (selectedContact != null) {
-        await ref.read(conversationProvider(selectedContact.fingerprint).notifier).mergeLatest();
+        ref.invalidate(conversationProvider(selectedContact.fingerprint));
       }
     } catch (_) {
-      // Error during resume - clear flag so app doesn't get stuck
-      ref.read(engineResumeInProgressProvider.notifier).state = false;
+      // Error during resume - silently continue
     }
   }
 
