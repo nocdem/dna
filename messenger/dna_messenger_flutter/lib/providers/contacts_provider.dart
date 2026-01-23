@@ -18,12 +18,17 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
   // Throttle presence lookups - don't re-lookup if recent
   static DateTime? _lastPresenceLookup;
   static const _presenceLookupThrottle = Duration(minutes: 5);
+  // Track if initial presence load has been triggered
+  bool _initialLoadTriggered = false;
 
   @override
   Future<List<Contact>> build() async {
     // Only fetch if identity is loaded (for initial launch / after logout)
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
+      // Reset initial load flag when identity is unloaded
+      _initialLoadTriggered = false;
+      ref.read(appFullyReadyProvider.notifier).state = false;
       return [];
     }
 
@@ -46,7 +51,10 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     }
 
     // Start presence lookups in background (non-blocking)
-    _updatePresenceInBackground(engine, sortedContacts);
+    // Mark as initial load only on first build after identity loads
+    final isInitialLoad = !_initialLoadTriggered;
+    _initialLoadTriggered = true;
+    _updatePresenceInBackground(engine, sortedContacts, isInitialLoad: isInitialLoad);
 
     return sortedContacts;
   }
@@ -57,12 +65,19 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     DnaEngine engine,
     List<Contact> contacts, {
     bool forceRefresh = false,
+    bool isInitialLoad = false,
   }) async {
-    if (contacts.isEmpty) return;
+    if (contacts.isEmpty) {
+      // No contacts - mark app as ready immediately
+      if (isInitialLoad) {
+        ref.read(appFullyReadyProvider.notifier).state = true;
+      }
+      return;
+    }
 
-    // Throttle: skip if we did a lookup recently (unless forced)
+    // Throttle: skip if we did a lookup recently (unless forced or initial load)
     final now = DateTime.now();
-    if (!forceRefresh && _lastPresenceLookup != null) {
+    if (!forceRefresh && !isInitialLoad && _lastPresenceLookup != null) {
       final elapsed = now.difference(_lastPresenceLookup!);
       if (elapsed < _presenceLookupThrottle) {
         return; // Skip - too soon since last lookup
@@ -71,12 +86,20 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     _lastPresenceLookup = now;
 
     // Query presence for all contacts in parallel
+    final futures = <Future<void>>[];
     for (final contact in contacts) {
-      // Fire and forget - each lookup updates state independently
-      _lookupSinglePresence(engine, contact.fingerprint).then((lastSeen) {
+      final future = _lookupSinglePresence(engine, contact.fingerprint).then((lastSeen) {
         if (lastSeen != null && lastSeen.millisecondsSinceEpoch > 0) {
           _updateContactPresence(contact.fingerprint, lastSeen);
         }
+      });
+      futures.add(future);
+    }
+
+    // Wait for all lookups to complete, then mark app as ready
+    if (isInitialLoad) {
+      Future.wait(futures).then((_) {
+        ref.read(appFullyReadyProvider.notifier).state = true;
       });
     }
   }
