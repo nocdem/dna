@@ -529,6 +529,16 @@ extern "C" int dht_context_start_with_identity(dht_context_t *ctx, dht_identity_
 
 /**
  * Stop DHT node
+ *
+ * IMPORTANT: Shutdown sequence must prevent race conditions:
+ * 1. Set running=false to signal callbacks to exit early
+ * 2. Clear status callback to prevent new invocations
+ * 3. Clear global storage pointer (under lock) before freeing
+ * 4. Call shutdown() and join() to wait for OpenDHT threads
+ * 5. Free storage after all callbacks have completed
+ *
+ * Bug fix (2026-01-23): SEGV in pthread_rwlock_rdlock during cleanup
+ * was caused by callbacks accessing ctx after it was freed.
  */
 extern "C" void dht_context_stop(dht_context_t *ctx) {
     if (!ctx) return;
@@ -536,19 +546,39 @@ extern "C" void dht_context_stop(dht_context_t *ctx) {
     try {
         QGP_LOG_INFO("DHT", "Stopping DHT context...");
         if (ctx->running) {
+            // Step 1: Signal shutdown to all callbacks
             ctx->running = false;
+
+            // Step 2: Clear status callback BEFORE shutdown to prevent races
+            // OpenDHT may invoke callbacks during shutdown - clearing first prevents
+            // the lambda from accessing ctx members after ctx is partially destroyed
+            QGP_LOG_DEBUG("DHT", "Clearing status callback...");
+            ctx->runner.setOnStatusChanged(nullptr);
+
+            // Step 3: Clear global storage pointer BEFORE shutdown
+            // ValueType store callbacks check g_global_storage - must be NULL
+            // before we free ctx->storage to prevent use-after-free
+            {
+                std::lock_guard<std::mutex> lock(g_storage_mutex);
+                if (g_global_storage == ctx->storage) {
+                    g_global_storage = nullptr;
+                    QGP_LOG_DEBUG("DHT", "Cleared global storage pointer");
+                }
+            }
+
+            // Step 4: Shutdown and wait for OpenDHT threads
+            QGP_LOG_DEBUG("DHT", "Calling runner.shutdown()...");
             ctx->runner.shutdown();
+            QGP_LOG_DEBUG("DHT", "Calling runner.join()...");
             ctx->runner.join();
             QGP_LOG_INFO("DHT", "DHT runner stopped");
 
-            // Cleanup value storage
+            // Step 5: Now safe to free storage - all callbacks have completed
             if (ctx->storage) {
                 QGP_LOG_INFO("DHT", "Cleaning up value storage...");
                 dht_value_storage_free(ctx->storage);
                 ctx->storage = nullptr;
             }
-
-            ctx->running = false;
         }
     } catch (const std::exception& e) {
         QGP_LOG_ERROR("DHT", "Exception in dht_context_stop: %s", e.what());
@@ -671,6 +701,13 @@ extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_c
     // NOTE: This callback is called from OpenDHT's internal thread - do NOT call
     // runner methods from here (like getNodesStats) as it causes deadlock!
     ctx->runner.setOnStatusChanged([ctx](dht::NodeStatus status4, dht::NodeStatus status6) {
+        // SAFETY CHECK: Early exit if context is shutting down or invalid
+        // This prevents use-after-free if callback fires during dht_context_stop()
+        // Bug fix (2026-01-23): SEGV at pthread_rwlock_rdlock during cleanup
+        if (!ctx || !ctx->running) {
+            return;
+        }
+
         // Combined status: connected if either IPv4 or IPv6 is connected
         bool is_connected = (status4 == dht::NodeStatus::Connected ||
                              status6 == dht::NodeStatus::Connected);
