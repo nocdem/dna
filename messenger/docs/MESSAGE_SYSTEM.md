@@ -786,7 +786,7 @@ GEK uses:
 
 typedef struct {
     char group_uuid[37];       // UUID v4 (36 + null terminator)
-    uint32_t gek_version;      // Rotation counter (0, 1, 2, ...)
+    uint32_t gek_version;      // Unix timestamp (v0.6.39+), was incremental counter (0,1,2...)
     uint8_t gek[GEK_KEY_SIZE]; // AES-256 key (32 bytes)
     uint64_t created_at;       // Unix timestamp (seconds)
     uint64_t expires_at;       // created_at + GEK_DEFAULT_EXPIRY
