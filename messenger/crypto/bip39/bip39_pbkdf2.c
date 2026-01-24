@@ -16,8 +16,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-
 #include <openssl/sha.h>
+#include "crypto/utils/qgp_platform.h"
 
 /**
  * HMAC-SHA512 implementation
@@ -59,14 +59,18 @@ static void hmac_sha512(
         size_t inner_len = 128 + data_len;
         uint8_t *inner_data = malloc(inner_len);
         if (!inner_data) {
-            // Fallback: hash in two steps (less efficient but works)
+            // Fallback: zero output and clean up sensitive data
             memset(output, 0, 64);
+            qgp_secure_memzero(k, sizeof(k));
+            qgp_secure_memzero(ipad, sizeof(ipad));
+            qgp_secure_memzero(opad, sizeof(opad));
             return;
         }
 
         memcpy(inner_data, ipad, 128);
         memcpy(inner_data + 128, data, data_len);
         SHA512(inner_data, inner_len, inner_hash);
+        qgp_secure_memzero(inner_data, inner_len);
         free(inner_data);
     }
 
@@ -76,7 +80,14 @@ static void hmac_sha512(
         memcpy(outer_data, opad, 128);
         memcpy(outer_data + 128, inner_hash, 64);
         SHA512(outer_data, 128 + 64, output);
+        qgp_secure_memzero(outer_data, sizeof(outer_data));
     }
+
+    // Zero all sensitive intermediate values
+    qgp_secure_memzero(k, sizeof(k));
+    qgp_secure_memzero(ipad, sizeof(ipad));
+    qgp_secure_memzero(opad, sizeof(opad));
+    qgp_secure_memzero(inner_hash, sizeof(inner_hash));
 }
 
 /**
@@ -157,6 +168,10 @@ int bip39_pbkdf2_hmac_sha512(
         size_t copy_len = (offset + hLen > output_len) ? (output_len - offset) : hLen;
         memcpy(output + offset, T, copy_len);
 
+        // Zero sensitive intermediate values before freeing
+        qgp_secure_memzero(U, sizeof(U));
+        qgp_secure_memzero(T, sizeof(T));
+        qgp_secure_memzero(salt_block, salt_len + 4);
         free(salt_block);
     }
 
@@ -205,7 +220,8 @@ int bip39_mnemonic_to_seed(
         seed, BIP39_SEED_SIZE
     );
 
-
+    // Zero salt before freeing (contains passphrase)
+    qgp_secure_memzero(salt, salt_len);
     free(salt);
     return result;
 }
