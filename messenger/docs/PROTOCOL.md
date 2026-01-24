@@ -13,7 +13,7 @@ This document specifies all wire formats and protocols used by DNA Messenger.
 | Protocol | Version | Purpose |
 |----------|---------|---------|
 | **Seal Protocol** | v0.08 | E2E encrypted message envelope |
-| **Spillway Protocol** | v2 | Offline delivery with watermark pruning |
+| **Spillway Protocol** | v2 | Offline delivery with daily buckets + TTL auto-expire |
 | **Anchor Protocol** | v1 | Unified identity in DHT |
 | **Atlas Protocol** | v1 | DHT key derivation scheme |
 | **Nexus Protocol** | v1 | Group symmetric key encryption |
@@ -178,49 +178,70 @@ Example (1 recipient, 100-byte plaintext):
 
 ## 3. Spillway Protocol
 
-*Offline message delivery with watermark-based pruning*
+*Offline message delivery with daily buckets and TTL auto-expire*
 
 ### 3.1 Overview
 
-The Spillway Protocol manages offline message delivery using a sender-based outbox model with watermark pruning. Like a dam spillway that controls water level, the watermark tells senders which messages have been received so they can prune delivered messages.
+The Spillway Protocol manages offline message delivery using a sender-based outbox model with **daily buckets**. Messages are organized by day and automatically expire after 7 days via DHT TTL - no manual pruning required.
 
-### 3.2 Architecture
+**Watermarks** are used solely for **delivery confirmation** (updating message status to DELIVERED), not for pruning.
+
+### 3.2 Architecture (v0.4.81+ Daily Buckets)
 
 ```
 +-----------------------------------------------------------------------------+
-|                         SPILLWAY PROTOCOL                                    |
+|                    SPILLWAY PROTOCOL v2 (Daily Buckets)                      |
 +-----------------------------------------------------------------------------+
 
-  SENDER OUTBOX MODEL:
-  Each sender maintains ONE outbox per recipient in DHT
+  DAILY BUCKET MODEL:
+  Each sender maintains daily outboxes per recipient in DHT
 
-  Outbox Key: SHA3-512(sender_fp + ":outbox:" + recipient_fp)
-  Value:      Serialized message array
-  TTL:        7 days
-  Put Type:   Signed (value_id=1, enables replacement)
+  Outbox Key: sender_fp:outbox:recipient_fp:DAY_BUCKET
+              where DAY_BUCKET = unix_timestamp / 86400
 
-  WATERMARK PRUNING:
+  Example (2026-01-23, day 20477):
+    alice_fp:outbox:bob_fp:20477  (today's messages)
+    alice_fp:outbox:bob_fp:20476  (yesterday's messages)
+
+  TTL:        7 days (auto-expire, no pruning needed)
+  Put Type:   Signed chunked (value_id=1)
+  Max:        500 messages per day bucket (DoS prevention)
+
+  WATERMARK (delivery confirmation only):
   Recipients publish highest seq_num received per sender
 
   Watermark Key: SHA3-512(recipient_fp + ":watermark:" + sender_fp)
   Value:         8-byte seq_num (big-endian)
   TTL:           30 days
+  Purpose:       DELIVERED status notifications (NOT for pruning)
 
-  FLOW:
+  SEND FLOW:
   +-------------------------------------------------------------------+
   | 1. Alice sends msg to Bob (seq=3)                                  |
-  |    -> Alice fetches Bob's watermark (seq=2)                        |
-  |    -> Alice prunes seq<=2 from outbox                              |
-  |    -> Alice appends seq=3, publishes to DHT                        |
+  |    -> Generate today's bucket key: alice:outbox:bob:20477          |
+  |    -> Fetch existing bucket from cache/DHT                         |
+  |    -> Append new message (seq=3)                                   |
+  |    -> Publish updated bucket to DHT                                |
+  |    -> NO watermark fetch, NO pruning                               |
+  +-------------------------------------------------------------------+
+
+  RECEIVE FLOW:
+  +-------------------------------------------------------------------+
+  | 1. Bob comes online                                                |
+  |    -> Sync last 3-8 days of Alice's buckets (parallel)             |
+  |    -> Deduplicate by message hash                                  |
+  |    -> Store new messages locally                                   |
+  |    -> Publish watermark: seq=3 (async, for delivery confirmation)  |
   |                                                                    |
-  | 2. Bob comes online                                                |
-  |    -> Bob queries Alice's outbox (finds seq=3)                     |
-  |    -> Bob publishes watermark: seq=3                               |
-  |                                                                    |
-  | 3. Alice sends next msg (seq=4)                                    |
-  |    -> Alice fetches watermark (seq=3)                              |
-  |    -> Alice prunes seq<=3 (removes seq=3)                          |
-  |    -> Outbox now contains only seq=4                               |
+  | 2. Alice's watermark listener fires                                |
+  |    -> Update message status: PENDING → DELIVERED                   |
+  |    -> Fire UI event (double checkmark)                             |
+  +-------------------------------------------------------------------+
+
+  CLEANUP:
+  +-------------------------------------------------------------------+
+  | Messages auto-expire after 7 days via DHT TTL.                     |
+  | No manual pruning needed. Bounded storage guaranteed.              |
   +-------------------------------------------------------------------+
 ```
 
@@ -278,10 +299,15 @@ typedef struct {
 
 | Version | Changes |
 |---------|---------|
-| v1 | Initial: timestamp, expiry, sender, recipient, ciphertext |
-| v2 | Added seq_num for watermark pruning (clock-skew immune) |
+| v1 | Initial: timestamp, expiry, sender, recipient, ciphertext; static outbox key |
+| v2 | Added seq_num for ordering; daily bucket keys; TTL auto-expire (no pruning) |
 
-**Source:** `dht/shared/dht_offline_queue.h`, `dht/shared/dht_offline_queue.c`
+**Architecture Change (v0.4.81):**
+- **Old (v1):** Static key `sender:outbox:recipient` + watermark pruning
+- **New (v2):** Daily bucket key `sender:outbox:recipient:DAY` + TTL auto-expire
+- Watermarks now only used for delivery confirmation (DELIVERED status)
+
+**Source:** `dht/shared/dht_dm_outbox.h`, `dht/shared/dht_dm_outbox.c`, `dht/shared/dht_offline_queue.h`
 
 ---
 

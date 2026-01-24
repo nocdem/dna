@@ -795,70 +795,69 @@ int dht_retrieve_queued_messages_from_contacts_parallel(
 
 /**
  * ============================================================================
- * WATERMARK API IMPLEMENTATION
+ * SIMPLE ACK API IMPLEMENTATION (v15: Replaced Watermarks)
  * ============================================================================
- * Watermarks allow recipients to acknowledge received messages so senders
- * can prune their outboxes. Uses monotonic sequence numbers (clock-skew immune).
+ * Simple per-contact ACK tracking. Recipients publish a timestamp when they
+ * fetch messages. Senders mark ALL messages to that contact as RECEIVED.
+ * Much simpler than watermarks: no per-message sequence number tracking!
  */
 
 /**
- * Generate base key for watermark storage
- * Key format: recipient + ":watermark:" + sender
+ * Generate base key for ACK storage
+ * Key format: recipient + ":ack:" + sender
  */
-static void make_watermark_base_key(const char *recipient, const char *sender,
-                                     char *key_out, size_t key_out_size) {
-    snprintf(key_out, key_out_size, "%s:watermark:%s", recipient, sender);
+static void make_ack_base_key(const char *recipient, const char *sender,
+                               char *key_out, size_t key_out_size) {
+    snprintf(key_out, key_out_size, "%s:ack:%s", recipient, sender);
 }
 
 /**
- * Generate DHT key for watermark storage (SHA3-512 hash of base key)
+ * Generate DHT key for ACK storage (SHA3-512 hash of base key)
  */
-void dht_generate_watermark_key(const char *recipient, const char *sender,
-                                 uint8_t *key_out) {
+void dht_generate_ack_key(const char *recipient, const char *sender,
+                           uint8_t *key_out) {
     char base_key[512];
-    make_watermark_base_key(recipient, sender, base_key, sizeof(base_key));
+    make_ack_base_key(recipient, sender, base_key, sizeof(base_key));
     qgp_sha3_512((const uint8_t*)base_key, strlen(base_key), key_out);
 }
 
 /**
- * Async watermark publish context (for pthread)
- */
-
-/**
- * Publish watermark synchronously (blocking)
+ * Publish ACK after fetching messages (blocking)
  *
- * Called from thread pool workers. Includes retry with exponential backoff.
+ * Called by recipient after fetching messages from a sender's outbox.
+ * Publishes current timestamp to notify sender of delivery.
  *
  * @param ctx DHT context
- * @param recipient Recipient fingerprint (watermark owner / "my" fingerprint)
- * @param sender Sender fingerprint (whose outbox to prune)
- * @param seq_num Sequence number to publish
+ * @param my_fp My fingerprint (ACK owner - the recipient)
+ * @param sender_fp Sender fingerprint (whose messages I fetched)
  * @return 0 on success, -1 on failure
  */
-int dht_publish_watermark_sync(dht_context_t *ctx,
-                               const char *recipient,
-                               const char *sender,
-                               uint64_t seq_num) {
-    if (!ctx || !recipient || !sender || seq_num == 0) {
+int dht_publish_ack(dht_context_t *ctx,
+                    const char *my_fp,
+                    const char *sender_fp) {
+    if (!ctx || !my_fp || !sender_fp) {
         return -1;
     }
 
-    // Generate watermark key (SHA3-512 hash to match listener key format)
+    // Generate ACK key
     uint8_t key[64];
-    dht_generate_watermark_key(recipient, sender, key);
+    dht_generate_ack_key(my_fp, sender_fp, key);
 
-    // Serialize seq_num to 8 bytes big-endian
+    // Get current timestamp
+    uint64_t timestamp = (uint64_t)time(NULL);
+
+    // Serialize timestamp to 8 bytes big-endian
     uint8_t value[8];
-    value[0] = (uint8_t)(seq_num >> 56);
-    value[1] = (uint8_t)(seq_num >> 48);
-    value[2] = (uint8_t)(seq_num >> 40);
-    value[3] = (uint8_t)(seq_num >> 32);
-    value[4] = (uint8_t)(seq_num >> 24);
-    value[5] = (uint8_t)(seq_num >> 16);
-    value[6] = (uint8_t)(seq_num >> 8);
-    value[7] = (uint8_t)(seq_num);
+    value[0] = (uint8_t)(timestamp >> 56);
+    value[1] = (uint8_t)(timestamp >> 48);
+    value[2] = (uint8_t)(timestamp >> 40);
+    value[3] = (uint8_t)(timestamp >> 32);
+    value[4] = (uint8_t)(timestamp >> 24);
+    value[5] = (uint8_t)(timestamp >> 16);
+    value[6] = (uint8_t)(timestamp >> 8);
+    value[7] = (uint8_t)(timestamp);
 
-    // Retry with exponential backoff (PUT_SIGNED can fail transiently)
+    // Retry with exponential backoff
     int max_retries = 3;
     int delay_ms = 500;
     int result = -1;
@@ -868,225 +867,164 @@ int dht_publish_watermark_sync(dht_context_t *ctx,
                                 key, 64,
                                 value, sizeof(value),
                                 1,  // value_id=1 for replacement
-                                DHT_WATERMARK_TTL,
-                                "watermark");
+                                DHT_ACK_TTL,
+                                "ack");
 
         if (result == 0) {
-            QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK-PUT] Published OK: %.20s... → %.20s... seq=%lu (attempt %d)\n",
-                   recipient, sender, (unsigned long)seq_num, attempt);
+            QGP_LOG_DEBUG(LOG_TAG, "[ACK-PUT] Published: %.20s... -> %.20s... ts=%lu (attempt %d)\n",
+                   my_fp, sender_fp, (unsigned long)timestamp, attempt);
             return 0;
         }
 
         if (attempt < max_retries) {
-            QGP_LOG_WARN(LOG_TAG, "[WATERMARK-PUT] Failed attempt %d/%d, retrying in %dms...\n",
+            QGP_LOG_WARN(LOG_TAG, "[ACK-PUT] Failed attempt %d/%d, retrying in %dms...\n",
                    attempt, max_retries, delay_ms);
             qgp_platform_sleep_ms(delay_ms);
-            delay_ms *= 2;  // Exponential backoff: 500, 1000, 2000
+            delay_ms *= 2;
         }
     }
 
-    QGP_LOG_WARN(LOG_TAG, "[WATERMARK-PUT] FAILED after %d attempts: %.20s... → %.20s... seq=%lu\n",
-           max_retries, recipient, sender, (unsigned long)seq_num);
+    QGP_LOG_WARN(LOG_TAG, "[ACK-PUT] FAILED after %d attempts: %.20s... -> %.20s...\n",
+           max_retries, my_fp, sender_fp);
     return -1;
 }
 
 /**
- * Get watermark synchronously (blocking)
- *
- * Returns the highest seq_num that recipient has acknowledged receiving from sender.
- */
-int dht_get_watermark(dht_context_t *ctx,
-                       const char *recipient,
-                       const char *sender,
-                       uint64_t *seq_num_out) {
-    if (!ctx || !recipient || !sender || !seq_num_out) {
-        return -1;
-    }
-
-    *seq_num_out = 0;  // Default: no watermark found
-
-    // Generate watermark key (SHA3-512 hash to match listener/publish key format)
-    uint8_t key[64];
-    dht_generate_watermark_key(recipient, sender, key);
-
-    // Try to fetch from DHT
-    uint8_t *value = NULL;
-    size_t value_len = 0;
-
-    int result = dht_get(ctx, key, 64, &value, &value_len);
-
-    if (result == 0 && value && value_len == 8) {
-        // Deserialize 8 bytes big-endian to uint64_t
-        *seq_num_out = ((uint64_t)value[0] << 56) |
-                       ((uint64_t)value[1] << 48) |
-                       ((uint64_t)value[2] << 40) |
-                       ((uint64_t)value[3] << 32) |
-                       ((uint64_t)value[4] << 24) |
-                       ((uint64_t)value[5] << 16) |
-                       ((uint64_t)value[6] << 8) |
-                       ((uint64_t)value[7]);
-
-        QGP_LOG_DEBUG(LOG_TAG, "Got watermark: %.20s... → %.20s... seq=%lu\n",
-               recipient, sender, (unsigned long)*seq_num_out);
-    } else if (result == -1) {
-        // No watermark found - this is normal for new conversations
-        QGP_LOG_DEBUG(LOG_TAG, "No watermark found: %.20s... → %.20s...\n", recipient, sender);
-    }
-
-    if (value) {
-        free(value);
-    }
-
-    return 0;  // Success (even if no watermark found)
-}
-
-/**
  * ============================================================================
- * WATERMARK LISTENER IMPLEMENTATION (Delivery Confirmation)
+ * ACK LISTENER IMPLEMENTATION (Delivery Confirmation)
  * ============================================================================
  */
 
 /**
- * Internal context for watermark listener callback
+ * Internal context for ACK listener callback
  */
 typedef struct {
-    char sender[129];                    // My fingerprint (I sent messages)
-    char recipient[129];                 // Contact fingerprint (they received)
-    dht_watermark_callback_t user_cb;    // User's callback
-    void *user_data;                     // User's context
-} watermark_listener_ctx_t;
+    char sender[129];                 // My fingerprint (I sent messages)
+    char recipient[129];              // Contact fingerprint (they received)
+    dht_ack_callback_t user_cb;       // User's callback
+    void *user_data;                  // User's context
+} ack_listener_ctx_t;
 
 /**
- * Internal DHT listen callback for watermark updates
- * Parses the 8-byte big-endian seq_num and invokes user callback
+ * Internal DHT listen callback for ACK updates
+ * Parses the 8-byte big-endian timestamp and invokes user callback
  */
-static bool watermark_listen_callback(
+static bool ack_listen_callback(
     const uint8_t *value,
     size_t value_len,
     bool expired,
     void *user_data
 ) {
-    watermark_listener_ctx_t *ctx = (watermark_listener_ctx_t *)user_data;
+    ack_listener_ctx_t *ctx = (ack_listener_ctx_t *)user_data;
     if (!ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK-LISTEN] NULL context received!\n");
+        QGP_LOG_ERROR(LOG_TAG, "[ACK-LISTEN] NULL context received!\n");
         return false;  // Stop listening
     }
 
-    // Debug: log pointer for correlation with allocation
-    QGP_LOG_INFO(LOG_TAG, "[WATERMARK-LISTEN] Callback with ctx=%p\n", (void*)ctx);
-
-    // Validate context integrity - check sender starts with hex char
+    // Validate context integrity
     if (ctx->sender[0] == '\0' ||
         !((ctx->sender[0] >= '0' && ctx->sender[0] <= '9') ||
           (ctx->sender[0] >= 'a' && ctx->sender[0] <= 'f') ||
           (ctx->sender[0] >= 'A' && ctx->sender[0] <= 'F'))) {
-        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK-LISTEN] CORRUPTED CONTEXT! ctx=%p sender[0]=0x%02x\n",
+        QGP_LOG_ERROR(LOG_TAG, "[ACK-LISTEN] CORRUPTED CONTEXT! ctx=%p sender[0]=0x%02x\n",
                       (void*)ctx, (unsigned char)ctx->sender[0]);
-        // Don't crash - just skip this callback
         return true;  // Keep listening but skip processing
     }
 
     // Ignore expiration notifications
     if (expired || !value) {
-        QGP_LOG_DEBUG(LOG_TAG, "Watermark expired or removed: %.20s... → %.20s...\n",
+        QGP_LOG_DEBUG(LOG_TAG, "[ACK] Expired: %.20s... -> %.20s...\n",
                ctx->recipient, ctx->sender);
         return true;  // Keep listening
     }
 
-    // Parse 8-byte big-endian seq_num
+    // Parse 8-byte big-endian timestamp
     if (value_len != 8) {
-        QGP_LOG_WARN(LOG_TAG, "Invalid watermark value size: %zu (expected 8)\n", value_len);
+        QGP_LOG_WARN(LOG_TAG, "[ACK] Invalid value size: %zu (expected 8)\n", value_len);
         return true;  // Keep listening
     }
 
-    uint64_t seq_num = ((uint64_t)value[0] << 56) |
-                       ((uint64_t)value[1] << 48) |
-                       ((uint64_t)value[2] << 40) |
-                       ((uint64_t)value[3] << 32) |
-                       ((uint64_t)value[4] << 24) |
-                       ((uint64_t)value[5] << 16) |
-                       ((uint64_t)value[6] << 8) |
-                       ((uint64_t)value[7]);
+    uint64_t ack_ts = ((uint64_t)value[0] << 56) |
+                      ((uint64_t)value[1] << 48) |
+                      ((uint64_t)value[2] << 40) |
+                      ((uint64_t)value[3] << 32) |
+                      ((uint64_t)value[4] << 24) |
+                      ((uint64_t)value[5] << 16) |
+                      ((uint64_t)value[6] << 8) |
+                      ((uint64_t)value[7]);
 
-    QGP_LOG_WARN(LOG_TAG, "[WATERMARK-LISTEN] Received: %.20s... → %.20s... seq=%lu\n",
-           ctx->recipient, ctx->sender, (unsigned long)seq_num);
+    QGP_LOG_INFO(LOG_TAG, "[ACK-LISTEN] Received: %.20s... -> %.20s... ts=%lu\n",
+           ctx->recipient, ctx->sender, (unsigned long)ack_ts);
 
-    // Invoke user callback (triggers DELIVERED status update)
+    // Invoke user callback (triggers RECEIVED status update)
     if (ctx->user_cb) {
-        QGP_LOG_WARN(LOG_TAG, "[WATERMARK-LISTEN] Invoking delivery callback...\n");
-        ctx->user_cb(ctx->sender, ctx->recipient, seq_num, ctx->user_data);
+        ctx->user_cb(ctx->sender, ctx->recipient, ack_ts, ctx->user_data);
     }
 
     return true;  // Keep listening
 }
 
 /**
- * Cleanup callback for watermark listener - frees context when listener is cancelled
+ * Cleanup callback for ACK listener
  */
-static void watermark_listener_cleanup(void *user_data) {
-    watermark_listener_ctx_t *wctx = (watermark_listener_ctx_t *)user_data;
-    if (wctx) {
-        QGP_LOG_DEBUG(LOG_TAG, "Watermark listener cleanup: freeing context for %.20s... → %.20s...\n",
-                      wctx->recipient, wctx->sender);
-        free(wctx);
+static void ack_listener_cleanup(void *user_data) {
+    ack_listener_ctx_t *actx = (ack_listener_ctx_t *)user_data;
+    if (actx) {
+        QGP_LOG_DEBUG(LOG_TAG, "[ACK] Cleanup: freeing context for %.20s... -> %.20s...\n",
+                      actx->recipient, actx->sender);
+        free(actx);
     }
 }
 
 /**
- * Listen for watermark updates from a recipient
+ * Listen for ACK updates from a recipient
  */
-size_t dht_listen_watermark(
+size_t dht_listen_ack(
     dht_context_t *ctx,
-    const char *sender,
-    const char *recipient,
-    dht_watermark_callback_t callback,
+    const char *my_fp,
+    const char *recipient_fp,
+    dht_ack_callback_t callback,
     void *user_data
 ) {
-    if (!ctx || !sender || !recipient || !callback) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for watermark listener\n");
+    if (!ctx || !my_fp || !recipient_fp || !callback) {
+        QGP_LOG_ERROR(LOG_TAG, "[ACK] Invalid parameters for listener\n");
         return 0;
     }
 
-    // Validate fingerprint lengths (should be 128 hex chars)
-    size_t sender_len = strlen(sender);
-    size_t recipient_len = strlen(recipient);
-    if (sender_len != 128 || recipient_len != 128) {
-        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Invalid fingerprint length: sender=%zu recipient=%zu (expected 128)\n",
-                      sender_len, recipient_len);
+    // Validate fingerprint lengths
+    size_t my_len = strlen(my_fp);
+    size_t recip_len = strlen(recipient_fp);
+    if (my_len != 128 || recip_len != 128) {
+        QGP_LOG_ERROR(LOG_TAG, "[ACK] Invalid fingerprint length: my=%zu recipient=%zu (expected 128)\n",
+                      my_len, recip_len);
         return 0;
     }
 
     // Allocate listener context
-    watermark_listener_ctx_t *wctx = (watermark_listener_ctx_t *)calloc(1, sizeof(watermark_listener_ctx_t));
-    if (!wctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate watermark listener context\n");
+    ack_listener_ctx_t *actx = (ack_listener_ctx_t *)calloc(1, sizeof(ack_listener_ctx_t));
+    if (!actx) {
+        QGP_LOG_ERROR(LOG_TAG, "[ACK] Failed to allocate listener context\n");
         return 0;
     }
 
-    strncpy(wctx->sender, sender, sizeof(wctx->sender) - 1);
-    wctx->sender[sizeof(wctx->sender) - 1] = '\0';
-    strncpy(wctx->recipient, recipient, sizeof(wctx->recipient) - 1);
-    wctx->recipient[sizeof(wctx->recipient) - 1] = '\0';
-    wctx->user_cb = callback;
-    wctx->user_data = user_data;
+    strncpy(actx->sender, my_fp, sizeof(actx->sender) - 1);
+    actx->sender[sizeof(actx->sender) - 1] = '\0';
+    strncpy(actx->recipient, recipient_fp, sizeof(actx->recipient) - 1);
+    actx->recipient[sizeof(actx->recipient) - 1] = '\0';
+    actx->user_cb = callback;
+    actx->user_data = user_data;
 
-    // Debug: log pointer and content for tracking corruption
-    QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Context allocated at %p: sender=%.20s... recipient=%.20s...\n",
-                 (void*)wctx, wctx->sender, wctx->recipient);
-
-    // Generate watermark key: SHA3-512(recipient + ":watermark:" + sender)
+    // Generate ACK key: SHA3-512(recipient + ":ack:" + sender)
     uint8_t key[64];
-    dht_generate_watermark_key(recipient, sender, key);
+    dht_generate_ack_key(recipient_fp, my_fp, key);
 
-    QGP_LOG_INFO(LOG_TAG, "Starting watermark listener: %.20s... → %.20s...\n",
-           recipient, sender);
+    QGP_LOG_INFO(LOG_TAG, "[ACK] Starting listener: %.20s... -> %.20s...\n",
+           recipient_fp, my_fp);
 
-    // Start DHT listen with cleanup callback for proper memory management
-    // NOTE: dht_listen_ex() calls cleanup on ALL failure paths, so don't free here
-    size_t token = dht_listen_ex(ctx, key, 64, watermark_listen_callback, wctx, watermark_listener_cleanup);
+    // Start DHT listen
+    size_t token = dht_listen_ex(ctx, key, 64, ack_listen_callback, actx, ack_listener_cleanup);
     if (token == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT listen for watermark\n");
-        // wctx already freed by cleanup callback in dht_listen_ex
+        QGP_LOG_ERROR(LOG_TAG, "[ACK] Failed to start DHT listener\n");
         return 0;
     }
 
@@ -1094,9 +1032,9 @@ size_t dht_listen_watermark(
 }
 
 /**
- * Cancel watermark listener
+ * Cancel ACK listener
  */
-void dht_cancel_watermark_listener(
+void dht_cancel_ack_listener(
     dht_context_t *ctx,
     size_t token
 ) {
@@ -1104,9 +1042,8 @@ void dht_cancel_watermark_listener(
         return;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Cancelling watermark listener (token=%zu)\n", token);
+    QGP_LOG_INFO(LOG_TAG, "[ACK] Cancelling listener (token=%zu)\n", token);
     dht_cancel_listen(ctx, token);
-    // Cleanup callback (watermark_listener_cleanup) frees the context
 }
 
 /**

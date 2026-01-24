@@ -152,15 +152,18 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 | `int dht_deserialize_messages(...)` | Deserialize messages from binary |
 | `void dht_generate_outbox_key(const char*, const char*, uint8_t*)` | Generate outbox DHT key |
 
-### 10.2 Watermark API (`dht_offline_queue.h`)
+### 10.2 ACK API (`dht_offline_queue.h`) - v15 Replaces Watermarks
+
+Simple per-contact ACK timestamps for delivery confirmation. When recipient syncs messages, they publish an ACK. Sender marks ALL sent messages as RECEIVED.
 
 | Function | Description |
 |----------|-------------|
-| `void dht_generate_watermark_key(const char*, const char*, uint8_t*)` | Generate watermark DHT key |
-| `int dht_publish_watermark_sync(dht_context_t*, const char*, const char*, uint64_t)` | Publish watermark (blocking, v0.6.15+) |
-| `int dht_get_watermark(dht_context_t*, const char*, const char*, uint64_t*)` | Get watermark (blocking) |
-| `size_t dht_listen_watermark(dht_context_t*, const char*, const char*, dht_watermark_callback_t, void*)` | Listen for watermark updates |
-| `void dht_cancel_watermark_listener(dht_context_t*, size_t)` | Cancel watermark listener |
+| `void dht_generate_ack_key(const char*, const char*, uint8_t*)` | Generate ACK DHT key: SHA3-512(recipient + ":ack:" + sender) |
+| `int dht_publish_ack(dht_context_t*, const char*, const char*)` | Publish ACK timestamp (blocking) |
+| `size_t dht_listen_ack(dht_context_t*, const char*, const char*, dht_ack_callback_t, void*)` | Listen for ACK updates |
+| `void dht_cancel_ack_listener(dht_context_t*, size_t)` | Cancel ACK listener |
+
+**v15 Changes:** Removed watermark seq_num tracking. ACK uses simple timestamp (8 bytes). Per-contact, not per-message.
 
 ### 10.3 DHT Groups (`dht_groups.h`)
 

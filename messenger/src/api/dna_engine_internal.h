@@ -478,20 +478,20 @@ typedef struct {
 } dna_contact_request_listener_t;
 
 /**
- * Persistent watermark listener entry (for delivery confirmation)
+ * Simple ACK listener entry (v15: replaced watermarks)
  *
- * Watermark listeners are persistent - one per contact, stays active for the
- * session lifetime. They receive watermark updates and update message delivery
- * status in bulk (all messages with seq <= watermark become DELIVERED).
+ * ACK listeners are persistent - one per contact, stays active for the
+ * session lifetime. When a recipient fetches messages and publishes an ACK,
+ * we mark ALL pending messages to them as RECEIVED.
  */
-#define DNA_MAX_WATERMARK_LISTENERS 128
+#define DNA_MAX_ACK_LISTENERS 128
 
 typedef struct {
-    char contact_fingerprint[129];  /* Contact we're tracking watermarks from */
-    uint64_t last_known_watermark;  /* Last watermark value received */
-    size_t dht_token;               /* Token from dht_listen_watermark() */
+    char contact_fingerprint[129];  /* Contact we're tracking ACKs from */
+    uint64_t last_known_ack;        /* Last ACK timestamp received */
+    size_t dht_token;               /* Token from dht_listen_ack() */
     bool active;                    /* True if listener is active */
-} dna_watermark_listener_t;
+} dna_ack_listener_t;
 
 /**
  * DNA Engine internal state
@@ -544,10 +544,10 @@ struct dna_engine {
     dna_contact_request_listener_t contact_request_listener;
     pthread_mutex_t contact_request_listener_mutex;
 
-    /* Persistent watermark listeners (for message delivery confirmation) */
-    dna_watermark_listener_t watermark_listeners[DNA_MAX_WATERMARK_LISTENERS];
-    int watermark_listener_count;
-    pthread_mutex_t watermark_listeners_mutex;
+    /* Simple ACK listeners (v15: for message delivery confirmation) */
+    dna_ack_listener_t ack_listeners[DNA_MAX_ACK_LISTENERS];
+    int ack_listener_count;
+    pthread_mutex_t ack_listeners_mutex;
 
     /* Group outbox listeners (for real-time group message notifications) */
     #define DNA_MAX_GROUP_LISTENERS 64

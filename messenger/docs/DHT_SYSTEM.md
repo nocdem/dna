@@ -724,7 +724,7 @@ where DAY_BUCKET = unix_timestamp / 86400
 ```
 
 #### Features
-- **TTL-based cleanup**: 7-day auto-expire, no watermark pruning needed
+- **TTL-based cleanup**: 7-day auto-expire, no pruning needed
 - **Day rotation**: Listeners rotate at midnight UTC
 - **3-day sync**: Yesterday + today + tomorrow (clock skew tolerance)
 - **8-day full sync**: Complete DHT retention window for recovery
@@ -798,48 +798,49 @@ int dht_dm_outbox_check_day_rotation(dht_context_t *ctx, dht_dm_listen_ctx_t *li
 
 ---
 
-### 5.2.1 dht_offline_queue.h/c (Legacy)
+### 5.2.1 dht_offline_queue.h/c (Legacy API)
 
-**Note:** As of v0.5.0, `dht_queue_message()` redirects to `dht_dm_queue_message()`.
-Watermark functions are kept for delivery report notifications.
+**Note:** As of v0.4.81, `dht_queue_message()` redirects to `dht_dm_queue_message()` (daily buckets).
+The legacy API is preserved for backward compatibility. ACK functions (v15) are used for delivery confirmation.
 
-Sender-based outbox for offline message delivery (Spillway Protocol) with watermark pruning.
+Sender-based outbox for offline message delivery (Spillway Protocol).
 
-#### Architecture
+#### Architecture (Current: Daily Buckets)
 
-- **Storage Key**: `SHA3-512(sender + ":outbox:" + recipient)`
-- **TTL**: 7 days default
-- **Put Type**: Signed with `value_id=1` (enables replacement)
-- **Approach**: Each sender controls their outbox to each recipient
+- **Storage Key**: `sender:outbox:recipient:DAY_BUCKET` (where DAY_BUCKET = unix_time / 86400)
+- **TTL**: 7 days (auto-expire, **no pruning needed**)
+- **Put Type**: Signed chunked with `value_id=1`
+- **Max**: 500 messages per day bucket (DoS prevention)
+- **Cleanup**: DHT TTL handles expiration automatically
 
-#### Watermark Pruning
+#### ACK System (v15: Replaces Watermarks)
 
-To prevent unbounded outbox growth, recipients publish delivery acknowledgments ("watermarks"):
+Simple per-contact ACK timestamps for delivery confirmation.
 
-- **Watermark Key**: `SHA3-512(recipient + ":watermark:" + sender)`
-- **Watermark TTL**: 30 days
-- **Value**: 8-byte big-endian seq_num (latest message received from sender)
+- **ACK Key**: `SHA3-512(recipient + ":ack:" + sender)`
+- **ACK TTL**: 30 days
+- **Value**: 8-byte big-endian Unix timestamp (when recipient last synced)
+- **Purpose**: Update message status from SENT → RECEIVED
 
 **Flow:**
-1. Alice sends messages to Bob with monotonic seq_num (1, 2, 3...)
-2. Bob receives messages, publishes watermark `seq=3` asynchronously
-3. Alice sends new message (`seq=4`), fetches Bob's watermark (`seq=3`)
-4. Alice prunes outbox: removes messages where `seq_num <= 3`
-5. Alice publishes updated outbox with only `seq=4`
+1. Alice sends messages to Bob (status: PENDING → SENT)
+2. Bob syncs messages from Alice's outbox
+3. Bob publishes ACK timestamp to DHT
+4. Alice's ACK listener fires with timestamp
+5. Alice marks ALL sent messages to Bob as RECEIVED
+6. UI shows double checkmark (✓✓)
 
-**Benefits:**
-- **Bounded storage**: Delivered messages are pruned on next send
-- **Clock-skew immune**: Uses monotonic seq_num, not timestamps
-- **Async publish**: Watermark publishing is fire-and-forget (non-blocking)
-- **Self-healing**: If watermark publish fails, retry happens on next receive
+**v15 Changes:** Replaced per-message seq_num tracking with simple per-contact timestamp. Simpler, fewer DHT operations.
 
 #### Benefits
 
-- **No accumulation**: Signed puts replace old values (not append)
+- **No accumulation**: Daily buckets with TTL auto-expire
+- **Bounded storage**: Max 500 msgs/day × 7 days = 3500 max per contact
 - **Spam prevention**: Recipients only query known contacts' outboxes
 - **Sender control**: Senders can edit/unsend within 7-day TTL
 - **Automatic retrieval**: `dna_engine_load_identity()` checks all contacts' outboxes on login
 - **DHT listen (push)**: Real-time notifications via `dht_listen()` on contacts' outbox keys
+- **No race conditions**: No read-modify-write for pruning
 
 #### Message Format (v2)
 
@@ -850,13 +851,13 @@ To prevent unbounded outbox growth, recipients publish delivery acknowledgments 
 [sender string][recipient string][ciphertext bytes]
 ```
 
-Note: `seq_num` is monotonic per sender-recipient pair (for watermark pruning).
+Note: `seq_num` is monotonic per sender-recipient pair (for ordering and delivery confirmation).
 `timestamp` is kept for display purposes only.
 
 #### API
 
 ```c
-// Queue message in sender's outbox (with watermark pruning)
+// Queue message in sender's outbox (redirects to daily bucket API)
 int dht_queue_message(
     dht_context_t *ctx,
     const char *sender,           // 128-char fingerprint
@@ -867,10 +868,12 @@ int dht_queue_message(
     uint32_t ttl_seconds          // 0 = default 7 days
 );
 
-// Watermark API
-void dht_generate_watermark_key(const char *recipient, const char *sender, uint8_t *key_out);
-void dht_publish_watermark_async(dht_context_t *ctx, const char *recipient, const char *sender, uint64_t seq_num);
-int dht_get_watermark(dht_context_t *ctx, const char *recipient, const char *sender, uint64_t *seq_num_out);
+// ACK API (v15)
+void dht_generate_ack_key(const char *recipient, const char *sender, uint8_t *key_out);
+int dht_publish_ack(dht_context_t *ctx, const char *my_fp, const char *sender_fp);
+size_t dht_listen_ack(dht_context_t *ctx, const char *my_fp, const char *recipient_fp,
+                      dht_ack_callback_t callback, void *user_data);
+void dht_cancel_ack_listener(dht_context_t *ctx, size_t token);
 
 // Retrieve messages from all contacts (sequential)
 int dht_retrieve_queued_messages_from_contacts(
@@ -1234,7 +1237,7 @@ Stats printed every 60 seconds:
 |-----------|-----|----------------|-----------|-------|
 | **Presence** | 7 days | `SHA3-512(public_key)` = fingerprint | No | IP:port:timestamp |
 | Offline Messages | 7 days | `SHA3-512(sender:outbox:recipient)` | No | Spillway outbox |
-| **Watermarks** | 30 days | `SHA3-512(recipient:watermark:sender)` | No | Delivery ack (8-byte seq_num) |
+| **ACK (v15)** | 30 days | `SHA3-512(recipient:ack:sender)` | No | Delivery ack (8-byte timestamp) |
 | Contact Lists | 7 days | `SHA3-512(identity:contactlist)` | No | Self-encrypted |
 | **Message Backup** | 7 days | `SHA3-512(fingerprint:message_backup)` | No | Self-encrypted, manual sync |
 | **Contact Requests** | 7 days | `SHA3-512(fingerprint:requests)` | No | ICQ-style contact request inbox |

@@ -1,33 +1,35 @@
 /**
  * Transport Offline Queue Module
  * Spillway Protocol: Sender outbox architecture for offline message delivery
+ *
+ * v15: Replaced watermarks with simple ACK system
  */
 
 #include "transport_core.h"
 #include "crypto/utils/qgp_log.h"
-#include "crypto/utils/threadpool.h"   /* Parallel watermark publishing */
+#include "crypto/utils/threadpool.h"   /* Parallel ACK publishing */
 #include "dht/client/dht_singleton.h"
 #include "dht/shared/dht_dm_outbox.h"  /* v0.5.0+ daily bucket API */
+#include "dht/shared/dht_offline_queue.h"  /* v15: ACK API */
 #include "database/contacts_db.h"       /* v0.5.22+ smart sync timestamps */
 #include <time.h>
 
 #define LOG_TAG "SPILLWAY"
 
-/* Context for parallel watermark publishing */
+/* Context for parallel ACK publishing (v15) */
 typedef struct {
     dht_context_t *dht;
     char my_identity[129];
     char sender[129];
-    uint64_t max_seq_num;
-} watermark_task_t;
+} ack_task_t;
 
-/* Thread pool task: publish single watermark */
-static void watermark_publish_task(void *arg) {
-    watermark_task_t *task = (watermark_task_t *)arg;
+/* Thread pool task: publish single ACK (v15) */
+static void ack_publish_task(void *arg) {
+    ack_task_t *task = (ack_task_t *)arg;
     if (!task) return;
 
-    /* Use synchronous publish since we're already in thread pool worker */
-    dht_publish_watermark_sync(task->dht, task->my_identity, task->sender, task->max_seq_num);
+    /* Publish ACK to notify sender we received their messages */
+    dht_publish_ack(task->dht, task->my_identity, task->sender);
 }
 
 /* 3 days in seconds - threshold for full sync */
@@ -253,49 +255,44 @@ int transport_check_offline_messages(
         return 0;
     }
 
-    // Track max seq_num per sender for watermark publishing
+    // v15: Track unique senders for ACK publishing (replaced watermarks)
     typedef struct {
         char sender[129];
-        uint64_t max_seq_num;
-    } sender_watermark_t;
+    } sender_ack_t;
 
-    sender_watermark_t *watermarks = NULL;
-    size_t watermark_count = 0;
-    size_t watermark_capacity = 0;
+    sender_ack_t *acks = NULL;
+    size_t ack_count = 0;
+    size_t ack_capacity = 0;
 
-    // Deliver each message via callback and track max seq_num per sender
+    // Deliver each message via callback and track unique senders
     size_t delivered_count = 0;
     for (size_t i = 0; i < count; i++) {
         dht_offline_message_t *msg = &messages[i];
 
-        // Track max seq_num for this sender
+        // Track unique senders for ACK publishing
         bool found = false;
-        for (size_t j = 0; j < watermark_count; j++) {
-            if (strcmp(watermarks[j].sender, msg->sender) == 0) {
-                if (msg->seq_num > watermarks[j].max_seq_num) {
-                    watermarks[j].max_seq_num = msg->seq_num;
-                }
+        for (size_t j = 0; j < ack_count; j++) {
+            if (strcmp(acks[j].sender, msg->sender) == 0) {
                 found = true;
                 break;
             }
         }
 
         if (!found) {
-            // Add new sender to watermarks array
-            if (watermark_count >= watermark_capacity) {
-                size_t new_capacity = (watermark_capacity == 0) ? 16 : (watermark_capacity * 2);
-                sender_watermark_t *new_array = realloc(watermarks, new_capacity * sizeof(sender_watermark_t));
+            // Add new sender to ACK array
+            if (ack_count >= ack_capacity) {
+                size_t new_capacity = (ack_capacity == 0) ? 16 : (ack_capacity * 2);
+                sender_ack_t *new_array = realloc(acks, new_capacity * sizeof(sender_ack_t));
                 if (new_array) {
-                    watermarks = new_array;
-                    watermark_capacity = new_capacity;
+                    acks = new_array;
+                    ack_capacity = new_capacity;
                 }
             }
 
-            if (watermark_count < watermark_capacity) {
-                strncpy(watermarks[watermark_count].sender, msg->sender, sizeof(watermarks[watermark_count].sender) - 1);
-                watermarks[watermark_count].sender[sizeof(watermarks[watermark_count].sender) - 1] = '\0';
-                watermarks[watermark_count].max_seq_num = msg->seq_num;
-                watermark_count++;
+            if (ack_count < ack_capacity) {
+                strncpy(acks[ack_count].sender, msg->sender, sizeof(acks[ack_count].sender) - 1);
+                acks[ack_count].sender[sizeof(acks[ack_count].sender) - 1] = '\0';
+                ack_count++;
             }
         }
 
@@ -312,37 +309,36 @@ int transport_check_offline_messages(
         }
     }
 
-    // Publish watermarks only if requested (skip for background caching)
-    if (publish_watermarks && watermark_count > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Publishing %zu watermarks via thread pool", watermark_count);
+    // v15: Publish ACKs only if requested (skip for background caching)
+    if (publish_watermarks && ack_count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Publishing %zu ACKs via thread pool", ack_count);
 
         // Build task array for thread pool
-        watermark_task_t *tasks = calloc(watermark_count, sizeof(watermark_task_t));
-        void **task_args = calloc(watermark_count, sizeof(void *));
+        ack_task_t *tasks = calloc(ack_count, sizeof(ack_task_t));
+        void **task_args = calloc(ack_count, sizeof(void *));
 
         if (tasks && task_args) {
-            for (size_t i = 0; i < watermark_count; i++) {
+            for (size_t i = 0; i < ack_count; i++) {
                 tasks[i].dht = dht;
                 strncpy(tasks[i].my_identity, ctx->config.identity, sizeof(tasks[i].my_identity) - 1);
-                strncpy(tasks[i].sender, watermarks[i].sender, sizeof(tasks[i].sender) - 1);
-                tasks[i].max_seq_num = watermarks[i].max_seq_num;
+                strncpy(tasks[i].sender, acks[i].sender, sizeof(tasks[i].sender) - 1);
                 task_args[i] = &tasks[i];
             }
 
-            // Publish all watermarks in parallel using thread pool
-            threadpool_map(watermark_publish_task, task_args, watermark_count, 0);
+            // Publish all ACKs in parallel using thread pool
+            threadpool_map(ack_publish_task, task_args, ack_count, 0);
 
             free(tasks);
             free(task_args);
         } else {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to allocate watermark task array");
+            QGP_LOG_ERROR(LOG_TAG, "Failed to allocate ACK task array");
         }
-    } else if (watermark_count > 0) {
-        QGP_LOG_DEBUG(LOG_TAG, "Skipping %zu watermarks (background caching mode)", watermark_count);
+    } else if (ack_count > 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "Skipping %zu ACKs (background caching mode)", ack_count);
     }
 
-    if (watermarks) {
-        free(watermarks);
+    if (acks) {
+        free(acks);
     }
 
     if (messages_received) {

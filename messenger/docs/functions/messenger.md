@@ -177,18 +177,19 @@ Database-level encryption (SQLCipher) planned for future.
 |----------|-------------|
 | `int message_backup_get_pending_messages(...)` | Get all PENDING/FAILED messages for retry (retry_count < max) |
 
-**Message Status Values:**
-| Status | Value | Meaning | Auto-Retry? |
-|--------|-------|---------|-------------|
-| PENDING | 0 | Queued to DHT, awaiting delivery confirmation | Yes |
-| SENT | 1 | Legacy (no longer used with async DHT PUT) | No |
-| FAILED | 2 | DHT queue failed | Yes |
-| DELIVERED | 3 | Recipient confirmed via watermark | No |
-| READ | 4 | Recipient read | No |
+**Message Status Values (v15: Simplified 4-State):**
+| Status | Value | Icon | Meaning | Auto-Retry? |
+|--------|-------|------|---------|-------------|
+| PENDING | 0 | Clock | Queued locally, not yet published to DHT | Yes |
+| SENT | 1 | Single ✓ | Successfully published to DHT | No |
+| RECEIVED | 2 | Double ✓✓ | Recipient ACK'd (fetched messages) | No |
+| FAILED | 3 | ✗ Error | Failed to publish (will auto-retry) | Yes |
 
-**Status Flow:** `PENDING(0) → DELIVERED(3)` via watermark confirmation. `SENT(1)` is legacy from synchronous DHT PUT.
+**Status Flow (v15):** `PENDING(0) → SENT(1) → RECEIVED(2)`. On failure: `PENDING(0) → FAILED(3) → auto-retry → PENDING(0)`.
 
-**Schema (v9):** `retry_count INTEGER DEFAULT 0` column tracks send attempts. Messages with `retry_count >= 10` are excluded from auto-retry. Retry functions are mutex-protected.
+**v15 ACK System:** Replaces watermarks with simple per-contact ACK timestamps. When recipient syncs, they publish an ACK. Sender marks ALL sent messages as RECEIVED.
+
+**Schema (v15):** `retry_count INTEGER DEFAULT 0` column tracks send attempts. Messages with `retry_count >= 10` are excluded from auto-retry. Retry functions are mutex-protected.
 
 ### 4.5 Conversation Retrieval
 
@@ -202,10 +203,10 @@ Database-level encryption (SQLCipher) planned for future.
 
 **Pagination:** Use `message_backup_get_conversation_page()` for efficient loading in chat UIs. Returns messages in DESC order (newest first) with `total_out` for calculating has_more. Default page size: 50 messages.
 
-### 4.6 Sequence Numbers (Watermark Pruning)
+### 4.6 ACK System (v15: Replaces Watermarks)
 
 | Function | Description |
 |----------|-------------|
-| `uint64_t message_backup_get_next_seq(...)` | Get and increment next sequence number |
-| `uint64_t message_backup_get_max_sent_seq(...)` | Get max offline_seq sent to recipient (for watermark baseline) |
-| `int message_backup_mark_delivered_up_to_seq(...)` | Mark messages delivered up to seq_num |
+| `int message_backup_mark_received_for_contact(ctx, recipient_fp)` | Mark all SENT messages to contact as RECEIVED (v15 ACK callback) |
+
+**Note:** v15 removed seq_num tracking functions (`get_next_seq`, `get_max_sent_seq`, `mark_delivered_up_to_seq`). The new ACK system uses simple per-contact timestamps instead of per-message sequence numbers.

@@ -29,13 +29,19 @@ struct message_backup_context {
 };
 
 /**
- * Database Schema (v14)
+ * Database Schema (v15)
  *
- * v13: Legacy - encrypted BLOB storage
  * v14: PLAINTEXT storage - decryption happens at receive/send time
+ * v15: Simplified 4-state status, removed offline_seq table (no watermarks)
  *
  * This database contains ONLY direct messages between users.
  * Group data (groups, members, GEKs, group messages) is in groups.db.
+ *
+ * Message Status (v15 - simplified 4-state model):
+ *   0 = PENDING: Queued locally, not yet sent to DHT
+ *   1 = SENT:    Successfully published to DHT
+ *   2 = RECEIVED: Recipient ACK'd (fetched messages)
+ *   3 = FAILED:  Failed to publish (will auto-retry)
  *
  * Message Types:
  *   0 = regular chat message (default)
@@ -57,12 +63,11 @@ static const char *SCHEMA_SQL =
     "  delivered INTEGER DEFAULT 1,"
     "  read INTEGER DEFAULT 0,"
     "  is_outgoing INTEGER DEFAULT 0,"
-    "  status INTEGER DEFAULT 1,"         // 0=PENDING, 1=SENT(legacy), 2=FAILED, 3=DELIVERED, 4=READ
+    "  status INTEGER DEFAULT 0,"         // v15: 0=PENDING, 1=SENT, 2=RECEIVED, 3=FAILED
     "  group_id INTEGER DEFAULT 0,"       // 0=direct message, >0=group ID (Phase 5.2)
     "  message_type INTEGER DEFAULT 0,"   // 0=chat, 1=group_invitation (Phase 6.2)
     "  invitation_status INTEGER DEFAULT 0,"  // 0=pending, 1=accepted, 2=declined (Phase 6.2)
-    "  retry_count INTEGER DEFAULT 0,"    // Send retry attempts
-    "  offline_seq INTEGER DEFAULT 0"     // Watermark sequence number
+    "  retry_count INTEGER DEFAULT 0"     // Send retry attempts
     ");"
     ""
     "CREATE INDEX IF NOT EXISTS idx_sender ON messages(sender);"
@@ -75,12 +80,7 @@ static const char *SCHEMA_SQL =
     "  value TEXT"
     ");"
     ""
-    "CREATE TABLE IF NOT EXISTS offline_seq ("
-    "  recipient TEXT PRIMARY KEY,"
-    "  next_seq INTEGER DEFAULT 1"
-    ");"
-    ""
-    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '14');";
+    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '15');";
 
 /**
  * Get database path
@@ -252,20 +252,9 @@ message_backup_context_t* message_backup_init(const char *identity) {
         QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v7 (added gsk_version column)\n");
     }
 
-    // Migration: Create offline_seq table if it doesn't exist (v8 - Watermark pruning)
-    // Tracks monotonic sequence numbers for offline message watermarks
-    const char *migration_sql_v8 =
-        "CREATE TABLE IF NOT EXISTS offline_seq ("
-        "  recipient TEXT PRIMARY KEY,"   // Recipient fingerprint
-        "  next_seq INTEGER DEFAULT 1"    // Next seq_num to use
-        ");";
-    rc = sqlite3_exec(ctx->db, migration_sql_v8, NULL, NULL, &err_msg);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Migration warning (v8): %s\n", err_msg);
-        sqlite3_free(err_msg);
-    } else {
-        QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v8 (added offline_seq table)\n");
-    }
+    // Migration v8: offline_seq table - DEPRECATED in v15
+    // Was for watermark pruning - now using simpler ACK system
+    // Table will be dropped by v15 migration below
 
     // Migration v13: Drop group tables - now in separate groups.db
     // Group data moved to group_database.c for clean separation
@@ -380,7 +369,55 @@ message_backup_context_t* message_backup_init(const char *identity) {
         sqlite3_finalize(check_stmt);
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Initialized successfully for identity: %s (PLAINTEXT STORAGE)\n", identity);
+    // Migration v15: Simplified 4-state status model, remove watermark tracking
+    // Old statuses: 0=PENDING, 1=SENT(legacy), 2=FAILED, 3=DELIVERED, 4=READ, 5=STALE
+    // New statuses: 0=PENDING, 1=SENT, 2=RECEIVED, 3=FAILED
+    // Migration: 3/4 (DELIVERED/READ) -> 2 (RECEIVED), 5 (STALE) -> 3 (FAILED)
+    const char *migration_sql_v15_status =
+        "UPDATE messages SET status = 2 WHERE status IN (3, 4)";
+
+    rc = sqlite3_exec(ctx->db, migration_sql_v15_status, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_DEBUG(LOG_TAG, "v15 status migration note: %s\n", err_msg);
+        sqlite3_free(err_msg);
+    } else {
+        int changes = sqlite3_changes(ctx->db);
+        if (changes > 0) {
+            QGP_LOG_INFO(LOG_TAG, "v15: Migrated %d messages DELIVERED/READ -> RECEIVED\n", changes);
+        }
+    }
+
+    const char *migration_sql_v15_stale =
+        "UPDATE messages SET status = 3 WHERE status = 5";
+
+    rc = sqlite3_exec(ctx->db, migration_sql_v15_stale, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_DEBUG(LOG_TAG, "v15 stale migration note: %s\n", err_msg);
+        sqlite3_free(err_msg);
+    } else {
+        int changes = sqlite3_changes(ctx->db);
+        if (changes > 0) {
+            QGP_LOG_INFO(LOG_TAG, "v15: Migrated %d messages STALE -> FAILED\n", changes);
+        }
+    }
+
+    // Drop obsolete offline_seq table (watermark tracking no longer used)
+    const char *migration_sql_v15_drop =
+        "DROP TABLE IF EXISTS offline_seq";
+
+    rc = sqlite3_exec(ctx->db, migration_sql_v15_drop, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_DEBUG(LOG_TAG, "v15 drop offline_seq note: %s\n", err_msg);
+        sqlite3_free(err_msg);
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "v15: Dropped offline_seq table (watermarks replaced with ACK)\n");
+    }
+
+    // Update version in metadata
+    const char *ver_update_v15 = "UPDATE metadata SET value = '15' WHERE key = 'version'";
+    sqlite3_exec(ctx->db, ver_update_v15, NULL, NULL, NULL);
+
+    QGP_LOG_INFO(LOG_TAG, "Initialized successfully for identity: %s (PLAINTEXT STORAGE, v15)\n", identity);
     return ctx;
 }
 
@@ -420,8 +457,7 @@ bool message_backup_exists(message_backup_context_t *ctx,
 }
 
 /**
- * Save plaintext message to backup
- * offline_seq: sequence number for outgoing messages (for watermark tracking), 0 for incoming
+ * Save plaintext message to backup (v15: no offline_seq - ACK-based delivery)
  */
 int message_backup_save(message_backup_context_t *ctx,
                         const char *sender,
@@ -431,21 +467,20 @@ int message_backup_save(message_backup_context_t *ctx,
                         time_t timestamp,
                         bool is_outgoing,
                         int group_id,
-                        int message_type,
-                        uint64_t offline_seq) {
+                        int message_type) {
     if (!ctx || !ctx->db) return -1;
     if (!sender || !recipient || !plaintext) return -1;
 
     // Check for duplicate (Spillway: same message may be in multiple contacts' outboxes)
     if (sender_fingerprint && message_backup_exists(ctx, sender_fingerprint, recipient, timestamp)) {
-        QGP_LOG_INFO(LOG_TAG, "Skipping duplicate message: %s → %s (already exists)\n",
+        QGP_LOG_INFO(LOG_TAG, "Skipping duplicate message: %s -> %s (already exists)\n",
                sender, recipient);
         return 1;  // Return 1 to indicate duplicate (not an error)
     }
 
     const char *sql =
-        "INSERT INTO messages (sender, recipient, plaintext, sender_fingerprint, timestamp, is_outgoing, delivered, read, status, group_id, message_type, offline_seq) "
-        "VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)";  // delivered=0 until watermark confirms
+        "INSERT INTO messages (sender, recipient, plaintext, sender_fingerprint, timestamp, is_outgoing, delivered, read, status, group_id, message_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)";  // delivered=0 until ACK confirms
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
@@ -460,10 +495,9 @@ int message_backup_save(message_backup_context_t *ctx,
     sqlite3_bind_text(stmt, 4, sender_fingerprint ? sender_fingerprint : "", -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 5, (sqlite3_int64)timestamp);
     sqlite3_bind_int(stmt, 6, is_outgoing ? 1 : 0);
-    sqlite3_bind_int(stmt, 7, 0);  // status = 0 (PENDING) - will be updated after send
+    sqlite3_bind_int(stmt, 7, 0);  // status = 0 (PENDING) - will be SENT after DHT PUT
     sqlite3_bind_int(stmt, 8, group_id);  // Phase 5.2: group ID
     sqlite3_bind_int(stmt, 9, message_type);  // Phase 6.2: message type
-    sqlite3_bind_int64(stmt, 10, (sqlite3_int64)offline_seq);  // v12: watermark seq
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -473,7 +507,7 @@ int message_backup_save(message_backup_context_t *ctx,
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Saved message: %s → %s (plaintext, status=PENDING)\n", sender, recipient);
+    QGP_LOG_INFO(LOG_TAG, "Saved message: %s -> %s (plaintext, status=PENDING)\n", sender, recipient);
     return 0;
 }
 
@@ -814,33 +848,6 @@ int message_backup_increment_retry_count(message_backup_context_t *ctx, int mess
 
     if (rc == SQLITE_DONE) {
         QGP_LOG_DEBUG(LOG_TAG, "Incremented retry_count for message %d\n", message_id);
-        return 0;
-    }
-
-    return -1;
-}
-
-/**
- * Mark message as stale (30+ days without delivery)
- */
-int message_backup_mark_stale(message_backup_context_t *ctx, int message_id) {
-    if (!ctx || !ctx->db) return -1;
-
-    const char *sql = "UPDATE messages SET status = 5 WHERE id = ?";  // 5 = STALE
-
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare mark_stale: %s\n", sqlite3_errmsg(ctx->db));
-        return -1;
-    }
-
-    sqlite3_bind_int(stmt, 1, message_id);
-    rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-
-    if (rc == SQLITE_DONE) {
-        QGP_LOG_INFO(LOG_TAG, "Message %d marked as STALE (30+ days old)\n", message_id);
         return 0;
     }
 
@@ -1199,185 +1206,55 @@ void* message_backup_get_db(message_backup_context_t *ctx) {
 }
 
 /**
- * Get and increment the next sequence number for a recipient
+ * Mark all pending/sent outgoing messages to a contact as RECEIVED (v15)
  *
- * Uses INSERT OR REPLACE to atomically get-and-increment.
+ * Called when we receive an ACK from a recipient indicating they've fetched
+ * their messages. Updates all PENDING(0) and SENT(1) messages to this
+ * recipient to RECEIVED(2).
+ *
+ * @param ctx Backup context
+ * @param recipient_fp Recipient fingerprint (who ACK'd)
+ * @return Number of messages updated, or -1 on error
  */
-uint64_t message_backup_get_next_seq(message_backup_context_t *ctx, const char *recipient) {
-    if (!ctx || !ctx->db || !recipient) {
-        return 1;  // Safe default
-    }
-
-    uint64_t seq_num = 1;
-
-    // First, try to get existing value
-    const char *select_sql = "SELECT next_seq FROM offline_seq WHERE recipient = ?";
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(ctx->db, select_sql, -1, &stmt, NULL);
-    if (rc == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, recipient, -1, SQLITE_TRANSIENT);
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            seq_num = (uint64_t)sqlite3_column_int64(stmt, 0);
-        }
-        sqlite3_finalize(stmt);
-    }
-
-    // Now increment and store the next value
-    const char *upsert_sql =
-        "INSERT INTO offline_seq (recipient, next_seq) VALUES (?, ?)"
-        "ON CONFLICT(recipient) DO UPDATE SET next_seq = ?";
-    rc = sqlite3_prepare_v2(ctx->db, upsert_sql, -1, &stmt, NULL);
-    if (rc == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, recipient, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 2, (sqlite3_int64)(seq_num + 1));
-        sqlite3_bind_int64(stmt, 3, (sqlite3_int64)(seq_num + 1));
-        rc = sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
-
-        if (rc != SQLITE_DONE) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to update offline_seq: %s\n", sqlite3_errmsg(ctx->db));
-        }
-    }
-
-    QGP_LOG_DEBUG(LOG_TAG, "Seq num for %.20s...: %lu (next: %lu)\n",
-           recipient, (unsigned long)seq_num, (unsigned long)(seq_num + 1));
-    return seq_num;
-}
-
-/**
- * Get the maximum offline_seq we've actually sent to a recipient
- *
- * Used for watermark listener baseline - reflects what we've sent this install,
- * not stale DHT values from previous installs.
- *
- * @return Max offline_seq sent to recipient, or 0 if no messages sent
- */
-uint64_t message_backup_get_max_sent_seq(message_backup_context_t *ctx, const char *recipient) {
-    if (!ctx || !ctx->db || !recipient) {
-        return 0;
-    }
-
-    uint64_t max_seq = 0;
-
-    const char *sql = "SELECT MAX(offline_seq) FROM messages "
-                      "WHERE recipient = ? AND is_outgoing = 1 AND offline_seq > 0";
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
-    if (rc == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, recipient, -1, SQLITE_TRANSIENT);
-        if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
-            max_seq = (uint64_t)sqlite3_column_int64(stmt, 0);
-        }
-        sqlite3_finalize(stmt);
-    }
-
-    QGP_LOG_DEBUG(LOG_TAG, "Max sent seq for %.20s...: %lu\n",
-                  recipient, (unsigned long)max_seq);
-    return max_seq;
-}
-
-/**
- * Mark all outgoing messages as DELIVERED up to a sequence number
- *
- * Note: The current messages table doesn't store seq_num per message.
- * Marks outgoing messages with offline_seq <= max_seq_num as DELIVERED.
- * Only affects messages with status PENDING(0) or SENT(1).
- *
- * Status flow: PENDING(0) → SENT(1) → DELIVERED(3) via watermark.
- */
-int message_backup_mark_delivered_up_to_seq(
+int message_backup_mark_received_for_contact(
     message_backup_context_t *ctx,
-    const char *sender,
-    const char *recipient,
-    uint64_t max_seq_num
+    const char *recipient_fp
 ) {
-    if (!ctx || !ctx->db || !sender || !recipient) {
+    if (!ctx || !ctx->db || !recipient_fp) {
         return -1;
     }
 
-    // Update outgoing messages where offline_seq <= max_seq_num
-    // This ensures only messages that the recipient has actually fetched are marked
+    // Update all PENDING(0) and SENT(1) outgoing messages to RECEIVED(2)
     const char *sql =
-        "UPDATE messages SET status = 3 "
-        "WHERE sender = ? AND recipient = ? AND is_outgoing = 1 "
-        "AND status IN (0, 1) AND offline_seq > 0 AND offline_seq <= ?";
+        "UPDATE messages SET status = 2 "
+        "WHERE recipient = ? AND is_outgoing = 1 AND status IN (0, 1)";
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare mark_delivered query: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare mark_received query: %s\n",
                sqlite3_errmsg(ctx->db));
         return -1;
     }
 
-    sqlite3_bind_text(stmt, 1, sender, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, recipient, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 3, (sqlite3_int64)max_seq_num);
+    sqlite3_bind_text(stmt, 1, recipient_fp, -1, SQLITE_TRANSIENT);
 
     rc = sqlite3_step(stmt);
     int changes = sqlite3_changes(ctx->db);
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to mark messages delivered: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to mark messages received: %s\n",
                sqlite3_errmsg(ctx->db));
         return -1;
     }
 
     if (changes > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Marked %d messages as DELIVERED to %.20s...\n",
-               changes, recipient);
+        QGP_LOG_INFO(LOG_TAG, "[ACK] Marked %d messages as RECEIVED for %.20s...\n",
+               changes, recipient_fp);
     }
 
     return changes;
-}
-
-/**
- * Get unique recipients with pending outgoing messages
- */
-int message_backup_get_pending_recipients(
-    message_backup_context_t *ctx,
-    char recipients_out[][129],
-    int max_recipients,
-    int *count_out
-) {
-    if (!ctx || !ctx->db || !recipients_out || !count_out) {
-        return -1;
-    }
-
-    *count_out = 0;
-
-    // Get distinct recipients of outgoing messages with PENDING status
-    const char *sql =
-        "SELECT DISTINCT recipient FROM messages "
-        "WHERE is_outgoing = 1 AND status = 0 "
-        "LIMIT ?";
-
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare pending recipients query: %s\n",
-                      sqlite3_errmsg(ctx->db));
-        return -1;
-    }
-
-    sqlite3_bind_int(stmt, 1, max_recipients);
-
-    int count = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW && count < max_recipients) {
-        const char *recipient = (const char *)sqlite3_column_text(stmt, 0);
-        if (recipient && strlen(recipient) == 128) {
-            strncpy(recipients_out[count], recipient, 128);
-            recipients_out[count][128] = '\0';
-            count++;
-        }
-    }
-
-    sqlite3_finalize(stmt);
-
-    *count_out = count;
-    QGP_LOG_INFO(LOG_TAG, "Found %d unique recipients with pending messages\n", count);
-    return 0;
 }
 
 /**

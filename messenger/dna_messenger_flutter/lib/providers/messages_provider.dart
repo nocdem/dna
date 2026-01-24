@@ -201,9 +201,9 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
     });
   }
 
-  /// Mark all sent messages as delivered
-  /// Called when MessageDeliveredEvent fires
-  void markAllDelivered() {
+  /// Mark all sent messages as received (v15: simplified status)
+  /// Called when ACK received from recipient
+  void markAllReceived() {
     state.whenData((messages) {
       bool changed = false;
       final updated = messages.map((msg) {
@@ -216,7 +216,7 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
             plaintext: msg.plaintext,
             timestamp: msg.timestamp,
             isOutgoing: msg.isOutgoing,
-            status: MessageStatus.delivered,
+            status: MessageStatus.received,
             type: msg.type,
           );
         }

@@ -205,12 +205,14 @@ class EventHandler {
         break;
 
       case MessageDeliveredEvent(contactFingerprint: final contactFp):
-        // Messages delivered to contact - update status without full reload
-        _ref.read(conversationProvider(contactFp).notifier).markAllDelivered();
+        // v15: Recipient ACK received - mark sent messages as received
+        _ref.read(conversationProvider(contactFp).notifier).markAllReceived();
         break;
 
-      case MessageReadEvent(messageId: final id):
-        _updateMessageStatus(id, MessageStatus.read);
+      case MessageReadEvent():
+        // v15: READ status removed (merged with RECEIVED)
+        // Event ignored - ACK-based delivery confirmation via MessageDeliveredEvent
+        break;
 
       case GroupInvitationReceivedEvent():
         // Refresh invitations list when new invitation received

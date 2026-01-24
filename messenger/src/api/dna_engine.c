@@ -145,10 +145,11 @@ void dna_engine_cancel_all_outbox_listeners(dna_engine_t *engine);
 void dna_engine_cancel_all_presence_listeners(dna_engine_t *engine);
 void dna_engine_cancel_contact_request_listener(dna_engine_t *engine);
 size_t dna_engine_start_contact_request_listener(dna_engine_t *engine);
-void dna_engine_cancel_watermark_listener(dna_engine_t *engine, const char *contact_fingerprint);
+void dna_engine_cancel_ack_listener(dna_engine_t *engine, const char *contact_fingerprint);
+void dna_engine_cancel_all_ack_listeners(dna_engine_t *engine);
 size_t dna_engine_listen_outbox(dna_engine_t *engine, const char *contact_fingerprint);
 size_t dna_engine_start_presence_listener(dna_engine_t *engine, const char *contact_fingerprint);
-size_t dna_engine_start_watermark_listener(dna_engine_t *engine, const char *contact_fingerprint);
+size_t dna_engine_start_ack_listener(dna_engine_t *engine, const char *contact_fingerprint);
 
 /**
  * Wait for DHT routing table to stabilize.
@@ -188,7 +189,7 @@ typedef struct {
     char fingerprint[129];
 } parallel_listener_ctx_t;
 
-/* Full listener worker - starts outbox + presence + watermark (for Flutter) */
+/* Full listener worker - starts outbox + presence + ACK (for Flutter) */
 /* Thread pool task: setup listeners for one contact */
 static void parallel_listener_worker(void *arg) {
     parallel_listener_ctx_t *ctx = (parallel_listener_ctx_t *)arg;
@@ -196,7 +197,7 @@ static void parallel_listener_worker(void *arg) {
 
     dna_engine_listen_outbox(ctx->engine, ctx->fingerprint);
     dna_engine_start_presence_listener(ctx->engine, ctx->fingerprint);
-    dna_engine_start_watermark_listener(ctx->engine, ctx->fingerprint);
+    dna_engine_start_ack_listener(ctx->engine, ctx->fingerprint);
 }
 
 /**
@@ -301,8 +302,8 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
 
     /* Check for missed incoming messages after reconnect.
      * Android: Skip auto-fetch - Flutter handles fetching when app resumes.
-     *          This prevents watermarks being published while app is backgrounded,
-     *          which would mark messages as "delivered" before user sees them.
+     *          This prevents ACKs being published while app is backgrounded,
+     *          which would mark messages as "received" before user sees them.
      * Desktop: Fetch immediately since there's no background service. */
 #ifndef __ANDROID__
     if (engine->messenger && engine->messenger->transport_ctx) {
@@ -1340,10 +1341,10 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     engine->contact_request_listener.dht_token = 0;
     engine->contact_request_listener.active = false;
 
-    /* Initialize delivery trackers */
-    pthread_mutex_init(&engine->watermark_listeners_mutex, NULL);
-    engine->watermark_listener_count = 0;
-    memset(engine->watermark_listeners, 0, sizeof(engine->watermark_listeners));
+    /* Initialize ACK listeners (v15: replaced watermarks) */
+    pthread_mutex_init(&engine->ack_listeners_mutex, NULL);
+    engine->ack_listener_count = 0;
+    memset(engine->ack_listeners, 0, sizeof(engine->ack_listeners));
 
     /* Initialize group outbox listeners */
     pthread_mutex_init(&engine->group_listen_mutex, NULL);
@@ -1827,9 +1828,9 @@ void dna_engine_destroy(dna_engine_t *engine) {
     dna_engine_cancel_contact_request_listener(engine);
     pthread_mutex_destroy(&engine->contact_request_listener_mutex);
 
-    /* Cancel all watermark listeners */
-    dna_engine_cancel_all_watermark_listeners(engine);
-    pthread_mutex_destroy(&engine->watermark_listeners_mutex);
+    /* Cancel all ACK listeners (v15) */
+    dna_engine_cancel_all_ack_listeners(engine);
+    pthread_mutex_destroy(&engine->ack_listeners_mutex);
 
     /* Unsubscribe from all groups */
     dna_engine_unsubscribe_all_groups(engine);
@@ -2169,7 +2170,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
             }
         }
 
-        /* Note: Delivery confirmation is now handled by persistent watermark listeners
+        /* Note: Delivery confirmation is now handled by persistent ACK listeners (v15)
          * started in dna_engine_listen_all_contacts() for each contact. */
     }
 
@@ -3060,8 +3061,8 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
     } else {
         QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: Successfully removed %.16s... from local DB\n", fp);
 
-        /* Cancel watermark listener for this contact */
-        dna_engine_cancel_watermark_listener(engine, fp);
+        /* Cancel ACK listener for this contact (v15) */
+        dna_engine_cancel_ack_listener(engine, fp);
     }
 
     /* Sync to DHT */
@@ -3362,10 +3363,10 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
         goto done;
     }
 
-    /* Start listeners for new contact (outbox, presence, watermark) */
+    /* Start listeners for new contact (outbox, presence, ACK) */
     dna_engine_listen_outbox(engine, task->params.contact_request.fingerprint);
     dna_engine_start_presence_listener(engine, task->params.contact_request.fingerprint);
-    dna_engine_start_watermark_listener(engine, task->params.contact_request.fingerprint);
+    dna_engine_start_ack_listener(engine, task->params.contact_request.fingerprint);
 
     /* Send a reciprocal request so they know we approved */
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
@@ -3575,7 +3576,7 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task) {
     } else {
         /* Emit MESSAGE_SENT event so UI can update (triggers refresh)
          * Status is SENT (1) - DHT PUT succeeded, single tick in UI.
-         * Will become DELIVERED (3) via watermark confirmation → double tick. */
+         * Will become RECEIVED (2) via ACK confirmation -> double tick. */
         QGP_LOG_INFO(LOG_TAG, "[SEND] Message stored on DHT (status=SENT, single tick)");
         dna_event_t event = {0};
         event.type = DNA_EVENT_MESSAGE_SENT;
@@ -3811,14 +3812,14 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Check DHT offline queue for messages from contacts.
-     * publish_watermarks=true when user is active (notifies senders we received messages).
-     * publish_watermarks=false for background caching (user hasn't read them yet). */
-    bool publish_watermarks = task->params.check_offline_messages.publish_watermarks;
+     * publish_acks=true when user is active (notifies senders we received messages).
+     * publish_acks=false for background caching (user hasn't read them yet). */
+    bool publish_acks = task->params.check_offline_messages.publish_watermarks;  /* v15: param name kept for compat */
     size_t offline_count = 0;
-    int rc = messenger_transport_check_offline_messages(engine->messenger, NULL, publish_watermarks, &offline_count);
+    int rc = messenger_transport_check_offline_messages(engine->messenger, NULL, publish_acks, &offline_count);
     if (rc == 0) {
-        QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] Direct messages check complete: %zu new (watermarks=%s)",
-                     offline_count, publish_watermarks ? "yes" : "no");
+        QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] Direct messages check complete: %zu new (acks=%s)",
+                     offline_count, publish_acks ? "yes" : "no");
     } else {
         QGP_LOG_WARN("DNA_ENGINE", "[OFFLINE] Direct messages check failed with rc=%d", rc);
     }
@@ -6266,9 +6267,9 @@ static bool is_ready_for_retry(backup_message_t *msg) {
 /**
  * Retry a single pending/failed message
  *
- * v14: Re-encrypts plaintext and queues to DHT with a new seq_num.
+ * v15: Re-encrypts plaintext and queues to DHT.
  * Uses messenger_send_message which handles encryption, DHT queueing, and duplicate detection.
- * Status stays PENDING until watermark confirms DELIVERED. Increments retry_count on failure.
+ * Status stays PENDING until ACK confirms RECEIVED. Increments retry_count on failure.
  *
  * @param engine Engine instance
  * @param msg Message to retry (from message_backup_get_pending_messages)
@@ -6381,12 +6382,12 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine) {
     for (int i = 0; i < count; i++) {
         backup_message_t *msg = &messages[i];
 
-        /* Check if message is stale (30+ days old) */
+        /* Check if message is stale (30+ days old) - mark as FAILED in v15 */
         int age_days = message_backup_get_age_days(backup_ctx, msg->id);
         if (age_days >= MESSAGE_STALE_DAYS) {
-            message_backup_mark_stale(backup_ctx, msg->id);
+            message_backup_update_status(backup_ctx, msg->id, MESSAGE_STATUS_FAILED);
             marked_stale++;
-            QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d marked STALE (age=%d days)", msg->id, age_days);
+            QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d marked FAILED (stale, age=%d days)", msg->id, age_days);
             continue;
         }
 
@@ -6407,7 +6408,7 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine) {
     QGP_LOG_INFO(LOG_TAG, "[RETRY] Completed: %d succeeded, %d failed, %d backoff, %d stale",
                  success_count, fail_count, skipped_backoff, marked_stale);
 
-    /* Note: Delivery confirmation handled by persistent watermark listeners */
+    /* Note: Delivery confirmation handled by persistent ACK listeners (v15) */
 
     /* Free messages array */
     message_backup_free_messages(messages, count);
@@ -7229,7 +7230,7 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
 
     /* PERF: Start listeners in parallel (mobile performance optimization)
      * Uses centralized thread pool for parallel listener setup.
-     * Each task sets up outbox + presence + watermark listeners for one contact. */
+     * Each task sets up outbox + presence + ACK listeners for one contact. */
     size_t count = list->count;
 
     parallel_listener_ctx_t *tasks = calloc(count, sizeof(parallel_listener_ctx_t));
@@ -7772,17 +7773,17 @@ void dna_engine_cancel_contact_request_listener(dna_engine_t *engine)
 }
 
 /* ============================================================================
- * PERSISTENT WATERMARK LISTENERS (Message delivery confirmation)
+ * SIMPLE ACK LISTENERS (v15: Message delivery confirmation)
  * ============================================================================ */
 
 /**
- * Internal callback for persistent watermark updates
+ * Internal callback for ACK updates (v15: replaced watermarks)
  * Updates message status and dispatches DNA_EVENT_MESSAGE_DELIVERED
  */
-static void watermark_listener_callback(
+static void ack_listener_callback(
     const char *sender,
     const char *recipient,
-    uint64_t seq_num,
+    uint64_t ack_timestamp,
     void *user_data
 ) {
     dna_engine_t *engine = (dna_engine_t *)user_data;
@@ -7790,42 +7791,40 @@ static void watermark_listener_callback(
         return;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Received: %.20s... → %.20s... seq=%lu",
-                 sender, recipient, (unsigned long)seq_num);
+    QGP_LOG_INFO(LOG_TAG, "[ACK] Received: %.20s... -> %.20s... ts=%lu",
+                 sender, recipient, (unsigned long)ack_timestamp);
 
-    /* Check if this is a new watermark (higher seq than we've seen) */
+    /* Check if this is a new ACK (newer than we've seen) */
     uint64_t last_known = 0;
 
-    pthread_mutex_lock(&engine->watermark_listeners_mutex);
-    for (int i = 0; i < engine->watermark_listener_count; i++) {
-        if (engine->watermark_listeners[i].active &&
-            strcmp(engine->watermark_listeners[i].contact_fingerprint, recipient) == 0) {
-            last_known = engine->watermark_listeners[i].last_known_watermark;
-            if (seq_num > last_known) {
-                engine->watermark_listeners[i].last_known_watermark = seq_num;
+    pthread_mutex_lock(&engine->ack_listeners_mutex);
+    for (int i = 0; i < engine->ack_listener_count; i++) {
+        if (engine->ack_listeners[i].active &&
+            strcmp(engine->ack_listeners[i].contact_fingerprint, recipient) == 0) {
+            last_known = engine->ack_listeners[i].last_known_ack;
+            if (ack_timestamp > last_known) {
+                engine->ack_listeners[i].last_known_ack = ack_timestamp;
             }
             break;
         }
     }
-    pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+    pthread_mutex_unlock(&engine->ack_listeners_mutex);
 
-    /* Skip if we've already processed this or a higher watermark */
-    if (seq_num <= last_known) {
-        QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK] Ignoring old/duplicate (seq=%lu <= last=%lu)",
-                     (unsigned long)seq_num, (unsigned long)last_known);
+    /* Skip if we've already processed this or a newer ACK */
+    if (ack_timestamp <= last_known) {
+        QGP_LOG_DEBUG(LOG_TAG, "[ACK] Ignoring old/duplicate (ts=%lu <= last=%lu)",
+                     (unsigned long)ack_timestamp, (unsigned long)last_known);
         return;
     }
 
-    /* Update message status in database (all messages with seq <= seq_num are delivered) */
+    /* Mark ALL pending/sent messages to this contact as RECEIVED */
     if (engine->messenger && engine->messenger->backup_ctx) {
-        int updated = message_backup_mark_delivered_up_to_seq(
+        int updated = message_backup_mark_received_for_contact(
             engine->messenger->backup_ctx,
-            sender,      /* My fingerprint - I sent the messages */
-            recipient,   /* Contact fingerprint - they received */
-            seq_num
+            recipient   /* Contact fingerprint - they received our messages */
         );
         if (updated > 0) {
-            QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Updated %d messages to DELIVERED", updated);
+            QGP_LOG_INFO(LOG_TAG, "[ACK] Updated %d messages to RECEIVED", updated);
         }
     }
 
@@ -7834,28 +7833,28 @@ static void watermark_listener_callback(
     event.type = DNA_EVENT_MESSAGE_DELIVERED;
     strncpy(event.data.message_delivered.recipient, recipient,
             sizeof(event.data.message_delivered.recipient) - 1);
-    event.data.message_delivered.seq_num = seq_num;
+    event.data.message_delivered.seq_num = ack_timestamp;  /* Use timestamp for compat */
     event.data.message_delivered.timestamp = (uint64_t)time(NULL);
 
     dna_dispatch_event(engine, &event);
 }
 
 /**
- * Start persistent watermark listener for a contact
+ * Start ACK listener for a contact (v15: replaced watermarks)
  *
  * IMPORTANT: This function releases the mutex before DHT calls to prevent
- * ABBA deadlock (watermark_listeners_mutex vs DHT listeners_mutex).
+ * ABBA deadlock (ack_listeners_mutex vs DHT listeners_mutex).
  *
  * @param engine Engine instance
- * @param contact_fingerprint Contact to listen for watermarks from
+ * @param contact_fingerprint Contact to listen for ACKs from
  * @return DHT listener token (>0 on success, 0 on failure)
  */
-size_t dna_engine_start_watermark_listener(
+size_t dna_engine_start_ack_listener(
     dna_engine_t *engine,
     const char *contact_fingerprint
 ) {
     if (!engine || !contact_fingerprint || !engine->identity_loaded) {
-        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Cannot start: invalid params or no identity");
+        QGP_LOG_ERROR(LOG_TAG, "[ACK] Cannot start: invalid params or no identity");
         return 0;
     }
 
@@ -7863,33 +7862,33 @@ size_t dna_engine_start_watermark_listener(
     size_t my_fp_len = strlen(engine->fingerprint);
     size_t contact_len = strlen(contact_fingerprint);
     if (my_fp_len != 128 || contact_len != 128) {
-        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Invalid fingerprint length: mine=%zu contact=%zu",
+        QGP_LOG_ERROR(LOG_TAG, "[ACK] Invalid fingerprint length: mine=%zu contact=%zu",
                       my_fp_len, contact_len);
         return 0;
     }
 
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
     if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] DHT not available");
+        QGP_LOG_ERROR(LOG_TAG, "[ACK] DHT not available");
         return 0;
     }
 
     /* Phase 1: Check duplicates and capacity under mutex */
-    pthread_mutex_lock(&engine->watermark_listeners_mutex);
+    pthread_mutex_lock(&engine->ack_listeners_mutex);
 
-    for (int i = 0; i < engine->watermark_listener_count; i++) {
-        if (engine->watermark_listeners[i].active &&
-            strcmp(engine->watermark_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
-            QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK] Already listening for %.20s...", contact_fingerprint);
-            size_t existing = engine->watermark_listeners[i].dht_token;
-            pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+    for (int i = 0; i < engine->ack_listener_count; i++) {
+        if (engine->ack_listeners[i].active &&
+            strcmp(engine->ack_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
+            QGP_LOG_DEBUG(LOG_TAG, "[ACK] Already listening for %.20s...", contact_fingerprint);
+            size_t existing = engine->ack_listeners[i].dht_token;
+            pthread_mutex_unlock(&engine->ack_listeners_mutex);
             return existing;
         }
     }
 
-    if (engine->watermark_listener_count >= DNA_MAX_WATERMARK_LISTENERS) {
-        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Maximum listeners reached (%d)", DNA_MAX_WATERMARK_LISTENERS);
-        pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+    if (engine->ack_listener_count >= DNA_MAX_ACK_LISTENERS) {
+        QGP_LOG_ERROR(LOG_TAG, "[ACK] Maximum listeners reached (%d)", DNA_MAX_ACK_LISTENERS);
+        pthread_mutex_unlock(&engine->ack_listeners_mutex);
         return 0;
     }
 
@@ -7898,106 +7897,63 @@ size_t dna_engine_start_watermark_listener(
     strncpy(fp_copy, contact_fingerprint, sizeof(fp_copy) - 1);
     fp_copy[128] = '\0';
 
-    pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+    pthread_mutex_unlock(&engine->ack_listeners_mutex);
 
     /* Phase 2: DHT operations WITHOUT holding mutex (prevents ABBA deadlock) */
 
-    /* Pre-fetch current watermark to filter stale cached values AND mark delivered */
-    uint64_t current_watermark = 0;
-    dht_get_watermark(dht_ctx, fp_copy, engine->fingerprint, &current_watermark);
-    QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK] Pre-fetched for %.20s...: seq=%lu",
-                 fp_copy, (unsigned long)current_watermark);
-
-    /* If we have a watermark, mark those messages as delivered NOW.
-     * This handles the case where we missed listener callbacks (e.g., fresh install,
-     * or messages sent from another device). */
-    if (current_watermark > 0 && engine->messenger && engine->messenger->backup_ctx) {
-        int updated = message_backup_mark_delivered_up_to_seq(
-            engine->messenger->backup_ctx,
-            fp_copy,                /* Contact sent us watermark */
-            engine->fingerprint,    /* We sent the messages */
-            current_watermark
-        );
-        if (updated > 0) {
-            QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Pre-fetch: marked %d messages as DELIVERED (seq<=%lu)",
-                         updated, (unsigned long)current_watermark);
-
-            /* Dispatch event to Flutter so UI updates (double checkmark) */
-            dna_event_t event = {0};
-            event.type = DNA_EVENT_MESSAGE_DELIVERED;
-            strncpy(event.data.message_delivered.recipient, fp_copy,
-                    sizeof(event.data.message_delivered.recipient) - 1);
-            event.data.message_delivered.seq_num = current_watermark;
-            event.data.message_delivered.timestamp = (uint64_t)time(NULL);
-            dna_dispatch_event(engine, &event);
-            QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Pre-fetch: dispatched MESSAGE_DELIVERED event");
-        }
-    }
-
-    /* Get baseline from local DB - what we've actually sent this install.
-     * This fixes the issue where DHT has stale high watermark from previous install,
-     * causing new watermarks with lower seq to be ignored. */
-    uint64_t local_baseline = 0;
-    if (engine->messenger && engine->messenger->backup_ctx) {
-        local_baseline = message_backup_get_max_sent_seq(
-            engine->messenger->backup_ctx, fp_copy);
-        QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK] Local DB baseline for %.20s...: seq=%lu",
-                     fp_copy, (unsigned long)local_baseline);
-    }
-
-    /* Start DHT watermark listener */
-    size_t token = dht_listen_watermark(dht_ctx,
-                                        engine->fingerprint,
-                                        fp_copy,
-                                        watermark_listener_callback,
-                                        engine);
+    /* Start DHT ACK listener */
+    size_t token = dht_listen_ack(dht_ctx,
+                                   engine->fingerprint,
+                                   fp_copy,
+                                   ack_listener_callback,
+                                   engine);
     if (token == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Failed to start listener for %.20s...", fp_copy);
+        QGP_LOG_ERROR(LOG_TAG, "[ACK] Failed to start listener for %.20s...", fp_copy);
         return 0;
     }
 
     /* Phase 3: Store listener info under mutex */
-    pthread_mutex_lock(&engine->watermark_listeners_mutex);
+    pthread_mutex_lock(&engine->ack_listeners_mutex);
 
     /* Re-check capacity (race condition) */
-    if (engine->watermark_listener_count >= DNA_MAX_WATERMARK_LISTENERS) {
-        QGP_LOG_ERROR(LOG_TAG, "[WATERMARK] Capacity reached after DHT start, cancelling");
-        pthread_mutex_unlock(&engine->watermark_listeners_mutex);
-        dht_cancel_watermark_listener(dht_ctx, token);
+    if (engine->ack_listener_count >= DNA_MAX_ACK_LISTENERS) {
+        QGP_LOG_ERROR(LOG_TAG, "[ACK] Capacity reached after DHT start, cancelling");
+        pthread_mutex_unlock(&engine->ack_listeners_mutex);
+        dht_cancel_ack_listener(dht_ctx, token);
         return 0;
     }
 
     /* Check if another thread added this listener */
-    for (int i = 0; i < engine->watermark_listener_count; i++) {
-        if (engine->watermark_listeners[i].active &&
-            strcmp(engine->watermark_listeners[i].contact_fingerprint, fp_copy) == 0) {
-            QGP_LOG_WARN(LOG_TAG, "[WATERMARK] Race: duplicate for %.20s..., cancelling", fp_copy);
-            pthread_mutex_unlock(&engine->watermark_listeners_mutex);
-            dht_cancel_watermark_listener(dht_ctx, token);
-            return engine->watermark_listeners[i].dht_token;
+    for (int i = 0; i < engine->ack_listener_count; i++) {
+        if (engine->ack_listeners[i].active &&
+            strcmp(engine->ack_listeners[i].contact_fingerprint, fp_copy) == 0) {
+            QGP_LOG_WARN(LOG_TAG, "[ACK] Race: duplicate for %.20s..., cancelling", fp_copy);
+            pthread_mutex_unlock(&engine->ack_listeners_mutex);
+            dht_cancel_ack_listener(dht_ctx, token);
+            return engine->ack_listeners[i].dht_token;
         }
     }
 
     /* Store listener */
-    int idx = engine->watermark_listener_count++;
-    strncpy(engine->watermark_listeners[idx].contact_fingerprint, fp_copy,
-            sizeof(engine->watermark_listeners[idx].contact_fingerprint) - 1);
-    engine->watermark_listeners[idx].contact_fingerprint[128] = '\0';
-    engine->watermark_listeners[idx].dht_token = token;
-    engine->watermark_listeners[idx].last_known_watermark = local_baseline;
-    engine->watermark_listeners[idx].active = true;
+    int idx = engine->ack_listener_count++;
+    strncpy(engine->ack_listeners[idx].contact_fingerprint, fp_copy,
+            sizeof(engine->ack_listeners[idx].contact_fingerprint) - 1);
+    engine->ack_listeners[idx].contact_fingerprint[128] = '\0';
+    engine->ack_listeners[idx].dht_token = token;
+    engine->ack_listeners[idx].last_known_ack = 0;
+    engine->ack_listeners[idx].active = true;
 
-    QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Started listener for %.20s... (token=%zu, baseline=%lu, dht_prefetch=%lu)",
-                 fp_copy, token, (unsigned long)local_baseline, (unsigned long)current_watermark);
+    QGP_LOG_INFO(LOG_TAG, "[ACK] Started listener for %.20s... (token=%zu)",
+                 fp_copy, token);
 
-    pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+    pthread_mutex_unlock(&engine->ack_listeners_mutex);
     return token;
 }
 
 /**
- * Cancel all watermark listeners (called on engine destroy or identity unload)
+ * Cancel all ACK listeners (v15: called on engine destroy or identity unload)
  */
-void dna_engine_cancel_all_watermark_listeners(dna_engine_t *engine)
+void dna_engine_cancel_all_ack_listeners(dna_engine_t *engine)
 {
     if (!engine) {
         return;
@@ -8005,28 +7961,28 @@ void dna_engine_cancel_all_watermark_listeners(dna_engine_t *engine)
 
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
 
-    pthread_mutex_lock(&engine->watermark_listeners_mutex);
+    pthread_mutex_lock(&engine->ack_listeners_mutex);
 
-    for (int i = 0; i < engine->watermark_listener_count; i++) {
-        if (engine->watermark_listeners[i].active && dht_ctx) {
-            dht_cancel_watermark_listener(dht_ctx, engine->watermark_listeners[i].dht_token);
-            QGP_LOG_DEBUG(LOG_TAG, "[WATERMARK] Cancelled listener for %.20s...",
-                          engine->watermark_listeners[i].contact_fingerprint);
+    for (int i = 0; i < engine->ack_listener_count; i++) {
+        if (engine->ack_listeners[i].active && dht_ctx) {
+            dht_cancel_ack_listener(dht_ctx, engine->ack_listeners[i].dht_token);
+            QGP_LOG_DEBUG(LOG_TAG, "[ACK] Cancelled listener for %.20s...",
+                          engine->ack_listeners[i].contact_fingerprint);
         }
-        engine->watermark_listeners[i].active = false;
+        engine->ack_listeners[i].active = false;
     }
 
-    engine->watermark_listener_count = 0;
-    QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Cancelled all listeners");
+    engine->ack_listener_count = 0;
+    QGP_LOG_INFO(LOG_TAG, "[ACK] Cancelled all listeners");
 
-    pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+    pthread_mutex_unlock(&engine->ack_listeners_mutex);
 }
 
 /**
- * Cancel watermark listener for a specific contact
+ * Cancel ACK listener for a specific contact (v15)
  * Called when a contact is removed.
  */
-void dna_engine_cancel_watermark_listener(dna_engine_t *engine, const char *contact_fingerprint)
+void dna_engine_cancel_ack_listener(dna_engine_t *engine, const char *contact_fingerprint)
 {
     if (!engine || !contact_fingerprint) {
         return;
@@ -8034,28 +7990,28 @@ void dna_engine_cancel_watermark_listener(dna_engine_t *engine, const char *cont
 
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
 
-    pthread_mutex_lock(&engine->watermark_listeners_mutex);
+    pthread_mutex_lock(&engine->ack_listeners_mutex);
 
-    for (int i = 0; i < engine->watermark_listener_count; i++) {
-        if (engine->watermark_listeners[i].active &&
-            strcmp(engine->watermark_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
+    for (int i = 0; i < engine->ack_listener_count; i++) {
+        if (engine->ack_listeners[i].active &&
+            strcmp(engine->ack_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
 
             if (dht_ctx) {
-                dht_cancel_watermark_listener(dht_ctx, engine->watermark_listeners[i].dht_token);
+                dht_cancel_ack_listener(dht_ctx, engine->ack_listeners[i].dht_token);
             }
 
-            QGP_LOG_INFO(LOG_TAG, "[WATERMARK] Cancelled listener for %.20s...", contact_fingerprint);
+            QGP_LOG_INFO(LOG_TAG, "[ACK] Cancelled listener for %.20s...", contact_fingerprint);
 
             /* Remove by swapping with last element */
-            if (i < engine->watermark_listener_count - 1) {
-                engine->watermark_listeners[i] = engine->watermark_listeners[engine->watermark_listener_count - 1];
+            if (i < engine->ack_listener_count - 1) {
+                engine->ack_listeners[i] = engine->ack_listeners[engine->ack_listener_count - 1];
             }
-            engine->watermark_listener_count--;
+            engine->ack_listener_count--;
             break;
         }
     }
 
-    pthread_mutex_unlock(&engine->watermark_listeners_mutex);
+    pthread_mutex_unlock(&engine->ack_listeners_mutex);
 }
 
 /* ============================================================================

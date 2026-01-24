@@ -43,8 +43,8 @@ extern "C" {
 // Default TTL: 7 days
 #define DHT_OFFLINE_QUEUE_DEFAULT_TTL 604800
 
-// Watermark TTL: 30 days (longer than message TTL)
-#define DHT_WATERMARK_TTL (30 * 24 * 3600)
+// ACK TTL: 30 days (v15: replaced watermarks)
+#define DHT_ACK_TTL (30 * 24 * 3600)
 
 /**
  * Offline message structure
@@ -241,145 +241,100 @@ void dht_generate_outbox_key(
 
 /**
  * ============================================================================
- * Watermark API (Delivery Acknowledgment for Outbox Pruning)
+ * Simple ACK API (v15: Replaced Watermarks)
  * ============================================================================
  *
- * Watermarks allow recipients to acknowledge received messages so senders
- * can prune their outboxes. Uses sequence numbers (clock-skew immune).
+ * Simplified delivery acknowledgment system. Recipients publish an ACK
+ * timestamp when they fetch messages. Senders mark ALL pending messages
+ * as received when they see an ACK update.
  *
- * Key format: SHA3-512(recipient + ":watermark:" + sender)
- * Value: 8-byte big-endian seq_num (latest received from this sender)
+ * Key format: SHA3-512(recipient + ":ack:" + sender)
+ * Value: 8-byte big-endian Unix timestamp
  *
  * Flow:
- * 1. Alice sends msg to Bob with seq_num=3
- * 2. Bob receives, publishes watermark(seq=3) asynchronously
- * 3. Alice sends new msg (seq=4), fetches Bob's watermark
- * 4. Alice prunes outbox: remove msgs where seq <= 3
+ * 1. Alice sends message to Bob (status=PENDING -> SENT)
+ * 2. Bob fetches messages, publishes ACK timestamp
+ * 3. Alice's listener fires, marks ALL messages to Bob as RECEIVED
+ *
+ * Much simpler than watermarks: no per-message seq_num tracking!
  */
 
 /**
- * Generate DHT key for watermark storage
+ * Generate DHT key for ACK storage
  *
- * Key format: SHA3-512(recipient + ":watermark:" + sender)
+ * Key format: SHA3-512(recipient + ":ack:" + sender)
  *
- * @param recipient Recipient fingerprint (watermark owner)
- * @param sender Sender fingerprint (whose messages were received)
+ * @param recipient Recipient fingerprint (ACK owner)
+ * @param sender Sender fingerprint (whose messages were fetched)
  * @param key_out Output buffer (64 bytes for SHA3-512)
  */
-void dht_generate_watermark_key(
+void dht_generate_ack_key(
     const char *recipient,
     const char *sender,
     uint8_t *key_out
 );
 
 /**
- * Publish watermark synchronously (blocking)
+ * Publish ACK after fetching messages (blocking)
  *
- * Used by recipient after receiving messages from a sender.
- * Publishes the highest seq_num received from that sender.
- * Call from thread pool for parallel publishing.
+ * Used by recipient after fetching messages from a sender's outbox.
+ * Publishes current timestamp to notify sender of delivery.
  *
  * @param ctx DHT context
- * @param recipient My fingerprint (watermark owner)
- * @param sender Contact fingerprint (whose messages I received)
- * @param seq_num Latest seq_num received from this sender
+ * @param my_fp My fingerprint (ACK owner - the recipient)
+ * @param sender_fp Sender fingerprint (whose messages I fetched)
  * @return 0 on success, -1 on failure
  */
-int dht_publish_watermark_sync(
+int dht_publish_ack(
     dht_context_t *ctx,
-    const char *recipient,
-    const char *sender,
-    uint64_t seq_num
+    const char *my_fp,
+    const char *sender_fp
 );
 
 /**
- * Get watermark synchronously (blocking)
- *
- * Used by sender before queueing a message to check what the recipient
- * has already received. Returns highest seq_num acknowledged by recipient.
- *
- * @param ctx DHT context
- * @param recipient Recipient fingerprint (watermark owner)
- * @param sender My fingerprint
- * @param seq_num_out Output: latest seq_num recipient has received (0 if none)
- * @return 0 on success (including no watermark found), -1 on error
- */
-int dht_get_watermark(
-    dht_context_t *ctx,
-    const char *recipient,
-    const char *sender,
-    uint64_t *seq_num_out
-);
-
-/**
- * NOTE: For seq_num, callers should use message_backup_get_next_seq() from message_backup.h
- * to get the next sequence number before calling dht_queue_message().
- */
-
-/**
- * ============================================================================
- * Watermark Listener API (Delivery Confirmation)
- * ============================================================================
- *
- * Listen for watermark updates from recipients. When a recipient retrieves
- * messages, they publish a watermark. Senders can listen for these updates
- * to confirm delivery and update message status to DELIVERED.
- *
- * Flow:
- * 1. Sender calls dht_listen_watermark() after sending offline message
- * 2. Recipient retrieves messages, publishes watermark asynchronously
- * 3. Sender's callback is invoked with new seq_num
- * 4. Sender updates message status to DELIVERED for all seq <= watermark
- */
-
-/**
- * Watermark update callback
+ * ACK update callback
  *
  * @param sender My fingerprint (I sent messages to recipient)
  * @param recipient Contact fingerprint (they received my messages)
- * @param seq_num Latest seq_num recipient has received from me
+ * @param ack_timestamp Unix timestamp when recipient ACK'd
  * @param user_data User-provided context pointer
  */
-typedef void (*dht_watermark_callback_t)(
+typedef void (*dht_ack_callback_t)(
     const char *sender,
     const char *recipient,
-    uint64_t seq_num,
+    uint64_t ack_timestamp,
     void *user_data
 );
 
 /**
- * Listen for watermark updates from a recipient
+ * Listen for ACK updates from a recipient
  *
- * Subscribes to real-time notifications when recipient publishes watermark
- * updates. Callback fires when recipient acknowledges receiving messages.
- *
- * Key: SHA3-512(recipient + ":watermark:" + sender)
+ * Subscribes to real-time notifications when recipient publishes ACK.
+ * Callback fires when recipient acknowledges fetching messages.
  *
  * @param ctx DHT context
- * @param sender My fingerprint (I'm the sender)
- * @param recipient Contact fingerprint (they're the recipient)
- * @param callback Function to invoke when watermark updates
+ * @param my_fp My fingerprint (I'm the sender)
+ * @param recipient_fp Contact fingerprint (they're the recipient)
+ * @param callback Function to invoke when ACK updates
  * @param user_data Context pointer passed to callback
  *
  * @return Listen token (> 0 on success, 0 on failure)
  */
-size_t dht_listen_watermark(
+size_t dht_listen_ack(
     dht_context_t *ctx,
-    const char *sender,
-    const char *recipient,
-    dht_watermark_callback_t callback,
+    const char *my_fp,
+    const char *recipient_fp,
+    dht_ack_callback_t callback,
     void *user_data
 );
 
 /**
- * Cancel watermark listener
- *
- * Stops receiving notifications for the watermark subscription.
+ * Cancel ACK listener
  *
  * @param ctx DHT context
- * @param token Listen token returned by dht_listen_watermark()
+ * @param token Listen token returned by dht_listen_ack()
  */
-void dht_cancel_watermark_listener(
+void dht_cancel_ack_listener(
     dht_context_t *ctx,
     size_t token
 );

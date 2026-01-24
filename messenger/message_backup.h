@@ -35,14 +35,23 @@ typedef struct message_backup_context message_backup_context_t;
 #define MESSAGE_TYPE_CPUNK_TRANSFER 2
 
 /**
- * Message Status Values
+ * Message Status Values (v15: Simplified 4-state model)
+ *
+ * Old 6-state model (deprecated):
+ *   0=PENDING, 1=SENT(legacy), 2=FAILED, 3=DELIVERED, 4=READ, 5=STALE
+ *
+ * New 4-state model:
+ *   0=PENDING: Queued locally, not yet sent to DHT
+ *   1=SENT:    Successfully published to DHT (single checkmark)
+ *   2=RECEIVED: Recipient ACK'd via simple timestamp (double checkmark)
+ *   3=FAILED:  Failed to publish (will auto-retry)
+ *
+ * Migration: Old status 3/4 → 2 (RECEIVED), old status 5 → 3 (FAILED)
  */
-#define MESSAGE_STATUS_PENDING   0  // Queued for sending
-#define MESSAGE_STATUS_SENT      1  // Legacy (unused)
-#define MESSAGE_STATUS_FAILED    2  // Temporary failure
-#define MESSAGE_STATUS_DELIVERED 3  // Watermark confirmed
-#define MESSAGE_STATUS_READ      4  // Read receipt received
-#define MESSAGE_STATUS_STALE     5  // 30+ days old, never delivered (v0.4.59)
+#define MESSAGE_STATUS_PENDING   0  // Queued locally, not yet sent to DHT
+#define MESSAGE_STATUS_SENT      1  // Successfully published to DHT
+#define MESSAGE_STATUS_RECEIVED  2  // Recipient ACK'd (fetched messages)
+#define MESSAGE_STATUS_FAILED    3  // Failed to publish (will auto-retry)
 
 /**
  * Invitation Status (Phase 6.2 - only for MESSAGE_TYPE_GROUP_INVITATION)
@@ -66,7 +75,7 @@ typedef struct {
     time_t timestamp;
     bool delivered;
     bool read;
-    int status;  // 0=PENDING (queued), 1=SENT (legacy), 2=FAILED, 3=DELIVERED (watermark confirmed), 4=READ, 5=STALE
+    int status;  // 0=PENDING, 1=SENT, 2=RECEIVED (ACK'd), 3=FAILED
     int group_id;  // Group ID (0 for direct messages, >0 for group messages) - Phase 5.2
     int message_type;  // 0=chat, 1=group_invitation - Phase 6.2
     int invitation_status;  // 0=pending, 1=accepted, 2=declined - Phase 6.2
@@ -126,8 +135,7 @@ int message_backup_save(message_backup_context_t *ctx,
                         time_t timestamp,
                         bool is_outgoing,
                         int group_id,
-                        int message_type,
-                        uint64_t offline_seq);
+                        int message_type);
 
 /**
  * Mark message as delivered
@@ -174,18 +182,6 @@ int message_backup_update_status(message_backup_context_t *ctx, int message_id, 
  * @return 0 on success, -1 on error
  */
 int message_backup_increment_retry_count(message_backup_context_t *ctx, int message_id);
-
-/**
- * Mark message as stale (30+ days without delivery)
- *
- * Messages marked stale are shown differently in UI but not deleted.
- * User can still manually retry or delete stale messages.
- *
- * @param ctx Backup context
- * @param message_id Message ID from database
- * @return 0 on success, -1 on error
- */
-int message_backup_mark_stale(message_backup_context_t *ctx, int message_id);
 
 /**
  * Get message age in days
@@ -359,81 +355,31 @@ void* message_backup_get_db(message_backup_context_t *ctx);
 
 /**
  * ============================================================================
- * Offline Message Sequence Numbers (Watermark Pruning)
+ * Simple ACK System (v15: Replaced Watermarks)
  * ============================================================================
  *
- * Track monotonic sequence numbers for offline message watermarks.
- * Each sender-recipient pair has independent sequence numbers.
+ * Simple per-contact ACK tracking. When a recipient fetches messages, they
+ * publish an ACK timestamp. Senders mark ALL messages to that recipient as
+ * RECEIVED when the ACK updates.
+ *
+ * This replaces the complex watermark system with per-message seq_num tracking.
+ * Much simpler: one ACK per contact pair, not per message.
  */
 
 /**
- * Get and increment the next sequence number for a recipient
+ * Mark all pending/sent outgoing messages to a contact as RECEIVED
  *
- * Atomically returns current next_seq and increments it for next call.
- * Creates new entry if recipient doesn't exist in table.
- *
- * @param ctx Backup context
- * @param recipient Recipient fingerprint
- * @return Next seq_num to use (always >= 1)
- */
-uint64_t message_backup_get_next_seq(message_backup_context_t *ctx, const char *recipient);
-
-/**
- * Get the maximum offline_seq actually sent to a recipient
- *
- * Used for watermark listener baseline - reflects what we've sent this install,
- * not stale DHT values from previous installs.
+ * Called when we receive an ACK from a recipient indicating they've
+ * fetched their messages. Updates all PENDING(0) and SENT(1) messages
+ * to this recipient to RECEIVED(2).
  *
  * @param ctx Backup context
- * @param recipient Recipient fingerprint
- * @return Max offline_seq sent, or 0 if no messages sent
- */
-uint64_t message_backup_get_max_sent_seq(message_backup_context_t *ctx, const char *recipient);
-
-/**
- * Mark all outgoing messages as DELIVERED up to a sequence number
- *
- * Updates the status of all messages sent to a recipient where seq_num <= max_seq.
- * Used for delivery confirmation when watermark is received from recipient.
- *
- * Message status values:
- * - 0 = PENDING
- * - 1 = SENT
- * - 2 = FAILED
- * - 3 = DELIVERED (set by this function)
- * - 4 = READ
- *
- * @param ctx Backup context
- * @param sender My fingerprint (the sender)
- * @param recipient Recipient fingerprint
- * @param max_seq_num Maximum seq_num that was delivered
+ * @param recipient_fp Recipient fingerprint (who ACK'd)
  * @return Number of messages updated, or -1 on error
  */
-int message_backup_mark_delivered_up_to_seq(
+int message_backup_mark_received_for_contact(
     message_backup_context_t *ctx,
-    const char *sender,
-    const char *recipient,
-    uint64_t max_seq_num
-);
-
-/**
- * Get unique recipients with pending outgoing messages
- *
- * Returns list of unique recipient fingerprints that have undelivered
- * outgoing messages (status=PENDING). Used to restore delivery trackers
- * on app startup.
- *
- * @param ctx Backup context
- * @param recipients_out Array to receive recipient fingerprints (caller allocates)
- * @param max_recipients Maximum number of recipients to return
- * @param count_out Receives actual count of recipients
- * @return 0 on success, -1 on error
- */
-int message_backup_get_pending_recipients(
-    message_backup_context_t *ctx,
-    char recipients_out[][129],
-    int max_recipients,
-    int *count_out
+    const char *recipient_fp
 );
 
 /**

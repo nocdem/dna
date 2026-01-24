@@ -734,14 +734,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     onStar: (msg) => _toggleStarMessage(msg, contact.fingerprint),
                     onDelete: _confirmDeleteMessage,
                     onRetry: message.isOutgoing &&
-                            (message.status == MessageStatus.failed || message.status == MessageStatus.pending || message.status == MessageStatus.stale)
+                            (message.status == MessageStatus.failed || message.status == MessageStatus.pending)
                         ? () => _retryMessage(message.id)
                         : null,
                     child: _MessageBubble(
                       message: message,
                       isStarred: starredIds.contains(message.id),
                       onRetry: message.isOutgoing &&
-                              (message.status == MessageStatus.failed || message.status == MessageStatus.pending || message.status == MessageStatus.stale)
+                              (message.status == MessageStatus.failed || message.status == MessageStatus.pending)
                           ? () => _retryMessage(message.id)
                           : null,
                     ),
@@ -1290,7 +1290,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Format full timestamp
     final fullTimestamp = DateFormat('MMMM d, y \'at\' HH:mm:ss').format(message.timestamp);
 
-    // Get status info
+    // Get status info (v15: simplified 4-state model)
     String statusText;
     IconData statusIcon;
     Color statusColor;
@@ -1305,25 +1305,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         statusIcon = FontAwesomeIcons.check;
         statusColor = DnaColors.textMuted;
         break;
+      case MessageStatus.received:
+        statusText = 'Received';
+        statusIcon = FontAwesomeIcons.checkDouble;
+        statusColor = DnaColors.textSuccess;
+        break;
       case MessageStatus.failed:
         statusText = 'Failed to send';
         statusIcon = FontAwesomeIcons.circleExclamation;
         statusColor = DnaColors.textError;
-        break;
-      case MessageStatus.delivered:
-        statusText = 'Delivered';
-        statusIcon = FontAwesomeIcons.checkDouble;
-        statusColor = DnaColors.textSuccess;
-        break;
-      case MessageStatus.read:
-        statusText = 'Read';
-        statusIcon = FontAwesomeIcons.checkDouble;
-        statusColor = DnaColors.primary;
-        break;
-      case MessageStatus.stale:
-        statusText = 'Stale (30+ days)';
-        statusIcon = FontAwesomeIcons.hourglassEnd;
-        statusColor = DnaColors.textMuted;
         break;
     }
 
@@ -2344,6 +2334,7 @@ class _MessageBubble extends StatelessWidget {
     );
   }
 
+  // v15: Simplified 4-state status icon
   IconData _getStatusIcon(MessageStatus status) {
     switch (status) {
       case MessageStatus.pending:
@@ -2352,16 +2343,11 @@ class _MessageBubble extends StatelessWidget {
       case MessageStatus.sent:
         // Single tick for sent (DHT PUT succeeded)
         return FontAwesomeIcons.check;
+      case MessageStatus.received:
+        // Double tick for received (recipient ACK'd)
+        return FontAwesomeIcons.checkDouble;
       case MessageStatus.failed:
         return FontAwesomeIcons.circleExclamation;
-      case MessageStatus.delivered:
-        return FontAwesomeIcons.checkDouble;
-      case MessageStatus.read:
-        // Blue double-check for read (colored in the widget)
-        return FontAwesomeIcons.checkDouble;
-      case MessageStatus.stale:
-        // Hourglass for stale (30+ days old)
-        return FontAwesomeIcons.hourglassEnd;
     }
   }
 }
@@ -3135,6 +3121,7 @@ class _TransferBubble extends StatelessWidget {
                 ),
                 if (isOutgoing) ...[
                   const SizedBox(width: 4),
+                  // v15: Simplified 4-state status icon
                   FaIcon(
                     message.status == MessageStatus.pending
                         ? FontAwesomeIcons.clock
@@ -3142,15 +3129,11 @@ class _TransferBubble extends StatelessWidget {
                             ? FontAwesomeIcons.check
                             : (message.status == MessageStatus.failed
                                 ? FontAwesomeIcons.circleExclamation
-                                : (message.status == MessageStatus.stale
-                                    ? FontAwesomeIcons.hourglassEnd
-                                    : FontAwesomeIcons.checkDouble))),
+                                : FontAwesomeIcons.checkDouble)),
                     size: 14,
                     color: message.status == MessageStatus.failed
                         ? DnaColors.textWarning
-                        : (message.status == MessageStatus.stale
-                            ? theme.colorScheme.onPrimary.withAlpha(128)
-                            : theme.colorScheme.onPrimary.withAlpha(179)),
+                        : theme.colorScheme.onPrimary.withAlpha(179),
                   ),
                 ],
               ],

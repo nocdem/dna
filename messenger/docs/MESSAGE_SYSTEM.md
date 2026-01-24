@@ -219,26 +219,33 @@ TRANSPORT                         STORAGE                        DECRYPTION     
 
 **Source:** `messenger/messages.c:592-747`, `transport/internal/transport_offline.c:64-170`
 
-### 2.3 Message Status States
+### 2.3 Message Status States (v15: Simplified 4-State Model)
 
 | Status | Value | Icon | Description |
 |--------|-------|------|-------------|
-| `STATUS_PENDING` | 0 | Clock | Queued to DHT, awaiting delivery confirmation |
-| `STATUS_SENT` | 1 | — | Legacy (no longer used with async DHT PUT) |
-| `STATUS_FAILED` | 2 | Error | Send failed (will auto-retry, tap to retry manually) |
-| `STATUS_DELIVERED` | 3 | Double-check | Recipient confirmed via watermark |
-| `STATUS_READ` | 4 | Blue double-check | Recipient read the message |
+| `STATUS_PENDING` | 0 | Clock | Queued locally, not yet published to DHT |
+| `STATUS_SENT` | 1 | Single ✓ | Successfully published to DHT |
+| `STATUS_RECEIVED` | 2 | Double ✓✓ | Recipient ACK'd (fetched messages) |
+| `STATUS_FAILED` | 3 | ✗ Error | Failed to publish (will auto-retry) |
 
-**Status Flow (v0.3.168+):**
+**Status Flow (v15+):**
 ```
-PENDING (0) ──────────────────────────────────────► DELIVERED (3)
-    │                                                  ▲
-    │ (DHT queue failed)                               │
-    ▼                                                  │
-FAILED (2) ──► auto-retry on reconnect ──► PENDING ───┘
+User sends → PENDING(0) → DHT PUT
+                          ├── success → SENT(1) → [recipient fetches] → RECEIVED(2)
+                          └── failure → FAILED(3) → auto-retry → PENDING(0)
 ```
 
-**Note:** With async DHT PUT, messages stay PENDING until recipient sends watermark confirmation. The SENT status is legacy from when DHT PUT was synchronous.
+**v15 Changes (Simple ACK System):**
+- Replaced complex watermark seq_num tracking with simple ACK timestamps
+- Reduced from 6 states to 4 states (removed DELIVERED, READ, STALE)
+- ACK = simple timestamp per sender-recipient pair
+- When recipient syncs messages, they publish an ACK timestamp
+- Sender marks ALL sent messages as RECEIVED when ACK updates
+
+**ACK System:**
+- Key format: `SHA3-512(recipient + ":ack:" + sender)`
+- Value: 8-byte Unix timestamp
+- TTL: 30 days
 
 **Source:** `message_backup.h` (backup_message_t), `dna_messenger_flutter/lib/ffi/dna_engine.dart`
 
@@ -719,11 +726,12 @@ execution restrictions make P2P connections unreliable.
 │  │ 4. Sync yesterday one more time (catch late messages)      │             │
 │  └────────────────────────────────────────────────────────────┘             │
 │                                                                             │
-│  WATERMARK (for delivery reports only):                                     │
+│  ACK SYSTEM (v15: replaces watermarks):                                     │
 │  ───────────────────────────────────────                                    │
-│  - Watermark Key: SHA3-512(recipient + ":watermark:" + sender)              │
-│  - Watermark TTL: 30 days                                                   │
-│  - Used for: DELIVERED status notifications (not for pruning)               │
+│  - ACK Key: SHA3-512(recipient + ":ack:" + sender)                          │
+│  - ACK TTL: 30 days                                                         │
+│  - Used for: RECEIVED status notifications (per-contact, not per-message)   │
+│  - Simplified: single timestamp instead of per-message seq_num tracking     │
 │                                                                             │
 │  BENEFITS vs v1:                                                            │
 │  ───────────────                                                            │
@@ -750,7 +758,7 @@ Message Format v2 (Spillway Protocol):
 Header size: 37 bytes (was 29 bytes in v1)
 
 Fields:
-- seq_num:   Monotonic per sender-recipient pair (for watermark pruning)
+- seq_num:   Monotonic per sender-recipient pair (for ordering and delivery confirmation)
 - timestamp: Unix timestamp when queued (for display only)
 - expiry:    Unix timestamp when message expires
 ```

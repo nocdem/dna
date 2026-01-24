@@ -266,7 +266,7 @@ static int deserialize_and_import_messages(
             continue;
         }
 
-        // Import message to SQLite (v3 format: plaintext)
+        // Import message to SQLite (v3 format: plaintext, v15: no offline_seq)
         int result = message_backup_save(
             msg_ctx,
             sender,
@@ -276,8 +276,7 @@ static int deserialize_and_import_messages(
             timestamp,
             is_outgoing,
             group_id,
-            message_type,
-            0  // offline_seq = 0 (backup doesn't preserve this)
+            message_type
         );
 
         if (result == 0) {

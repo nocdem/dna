@@ -447,22 +447,12 @@ int messenger_send_message(
     // Store in SQLite local database - one row per actual recipient (not sender)
     // Track message IDs and sequence numbers for status updates
     time_t now = (timestamp > 0) ? timestamp : time(NULL);
+    // v15: Removed seq_num tracking - ACK-based delivery instead of watermarks
     int *message_ids = malloc(recipient_count * sizeof(int));
-    uint64_t *seq_nums = malloc(recipient_count * sizeof(uint64_t));
-    if (!message_ids || !seq_nums) {
+    if (!message_ids) {
         free(ciphertext);
         free(recipient_fps);
-        free(message_ids);
-        free(seq_nums);
         return -1;
-    }
-
-    // Get seq numbers BEFORE saving - ensures message.offline_seq matches DHT Spillway seq
-    for (size_t i = 0; i < recipient_count; i++) {
-        // Use fingerprint from key loading to get seq for this recipient
-        seq_nums[i] = message_backup_get_next_seq(ctx->backup_ctx, recipient_fps[i]);
-        QGP_LOG_DEBUG(LOG_TAG, "[SEND] Got seq=%llu for recipient %.20s...",
-                      (unsigned long long)seq_nums[i], recipient_fps[i]);
     }
 
     for (size_t i = 0; i < recipient_count; i++) {
@@ -475,15 +465,13 @@ int messenger_send_message(
             now,                // timestamp
             true,               // is_outgoing = true (we're sending)
             group_id,           // group_id (0 for direct, >0 for group) - Phase 6.2
-            message_type,       // message_type (chat or invitation) - Phase 6.2
-            seq_nums[i]         // offline_seq for watermark delivery tracking
+            message_type        // message_type (chat or invitation) - Phase 6.2
         );
 
         if (result == -1) {
             QGP_LOG_ERROR(LOG_TAG, "Store message failed for recipient '%s' in SQLite", recipients[i]);
             free(ciphertext);
             free(message_ids);
-            free(seq_nums);
             free(recipient_fps);
             return -1;
         }
@@ -496,8 +484,8 @@ int messenger_send_message(
         } else {
             // New message inserted - get its ID for status update
             message_ids[i] = message_backup_get_last_id(ctx->backup_ctx);
-            QGP_LOG_WARN(LOG_TAG, "[SEND] Saved message id=%d seq=%llu for recipient %.20s...",
-                         message_ids[i], (unsigned long long)seq_nums[i], recipients[i]);
+            QGP_LOG_DEBUG(LOG_TAG, "[SEND] Saved message id=%d for recipient %.20s...",
+                         message_ids[i], recipients[i]);
         }
     }
 
@@ -521,11 +509,11 @@ int messenger_send_message(
         }
 
         // Queue directly to DHT - no P2P attempt for messaging
-        // Pass seq_num that was already saved with the message
-        if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len, seq_nums[i]) == 0) {
+        // v15: seq_num=0 (ACK-based delivery, not watermark-based)
+        if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len, 0) == 0) {
             dht_success++;
             // Update status to SENT (1) - DHT PUT succeeded, single tick in UI
-            // Will become DELIVERED (3) via watermark confirmation → double tick
+            // Will become RECEIVED (2) via ACK confirmation -> double tick
             if (message_ids[i] > 0) {
                 int update_rc = message_backup_update_status(ctx->backup_ctx, message_ids[i], 1);
                 QGP_LOG_WARN(LOG_TAG, "[SEND] DHT PUT OK, updated msg %d to SENT(1), rc=%d",
@@ -535,15 +523,14 @@ int messenger_send_message(
                              message_ids[i]);
             }
         } else {
-            // Update status to FAILED (2) - DHT queue failed (key unavailable, etc.)
+            // Update status to FAILED (3) - DHT queue failed (key unavailable, etc.)
             if (message_ids[i] > 0) {
-                message_backup_update_status(ctx->backup_ctx, message_ids[i], 2);
+                message_backup_update_status(ctx->backup_ctx, message_ids[i], 3);
             }
         }
     }
 
     free(message_ids);
-    free(seq_nums);
     free(recipient_fps);
     free(ciphertext);
 

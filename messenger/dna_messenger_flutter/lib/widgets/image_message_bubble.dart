@@ -163,6 +163,7 @@ class ImageMessageBubble extends StatelessWidget {
       );
     }
 
+    // v15: Simplified 4-state status model
     IconData icon;
     switch (status) {
       case MessageStatus.pending:
@@ -171,18 +172,11 @@ class ImageMessageBubble extends StatelessWidget {
       case MessageStatus.sent:
         // Single tick for sent (DHT PUT succeeded)
         icon = FontAwesomeIcons.check;
+      case MessageStatus.received:
+        // Double tick for received (recipient ACK'd)
+        icon = FontAwesomeIcons.checkDouble;
       case MessageStatus.failed:
         icon = FontAwesomeIcons.circleExclamation;
-      case MessageStatus.delivered:
-      case MessageStatus.read:
-        icon = FontAwesomeIcons.checkDouble;
-      case MessageStatus.stale:
-        // Hourglass for stale (30+ days old, never delivered)
-        return FaIcon(
-          FontAwesomeIcons.hourglassEnd,
-          size: size,
-          color: color.withAlpha(128),  // Dimmed to show it's old
-        );
     }
 
     return FaIcon(icon, size: size, color: color);

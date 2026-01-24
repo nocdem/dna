@@ -283,7 +283,9 @@ class Message {
           : native.plaintext.toDartString(),
       timestamp: DateTime.fromMillisecondsSinceEpoch(native.timestamp * 1000),
       isOutgoing: native.is_outgoing,
-      status: MessageStatus.values[native.status.clamp(0, 5)],
+      // v15: Map native status to new 4-state enum (0-3)
+      // Legacy migration: old DELIVERED(3)/READ(4) → RECEIVED(2), old STALE(5) → FAILED(3)
+      status: _mapNativeStatus(native.status),
       type: native.message_type == 2
           ? MessageType.cpunkTransfer
           : (native.message_type == 1
@@ -326,7 +328,27 @@ class Message {
   }
 }
 
-enum MessageStatus { pending, sent, failed, delivered, read, stale }
+/// Message status (v15: simplified 4-state model)
+/// - pending: Queued locally, not yet sent to DHT
+/// - sent: Successfully published to DHT (single checkmark)
+/// - received: Recipient ACK'd (double checkmark)
+/// - failed: Failed to publish (will auto-retry)
+enum MessageStatus { pending, sent, received, failed }
+
+/// Map native status value to MessageStatus enum
+/// Handles legacy values from old 6-state model
+MessageStatus _mapNativeStatus(int status) {
+  switch (status) {
+    case 0: return MessageStatus.pending;
+    case 1: return MessageStatus.sent;
+    case 2: return MessageStatus.received;
+    case 3: return MessageStatus.failed;
+    // Legacy migration:
+    case 4: return MessageStatus.received;  // Old READ → RECEIVED
+    case 5: return MessageStatus.failed;    // Old STALE → FAILED
+    default: return MessageStatus.pending;
+  }
+}
 enum MessageType { chat, groupInvitation, cpunkTransfer }
 
 /// Result of paginated conversation query
@@ -1270,7 +1292,7 @@ class DnaEngine {
           plaintext: '',  // Not available in event, fetched from DB
           timestamp: DateTime.now(),
           isOutgoing: isOutgoing,
-          status: MessageStatus.delivered,
+          status: MessageStatus.received,
           type: msgType,
         ));
         break;

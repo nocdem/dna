@@ -543,9 +543,9 @@ int messenger_queue_to_dht(
     );
 
     if (queue_result == 0) {
-        QGP_LOG_INFO(LOG_TAG, "Message queued in DHT for %s (fp: %.20s..., seq=%lu)\n",
-               recipient, recipient_fingerprint, (unsigned long)seq_num);
-        /* Watermark listener is already running persistently for this contact */
+        QGP_LOG_INFO(LOG_TAG, "Message queued in DHT for %s (fp: %.20s...)\n",
+               recipient, recipient_fingerprint);
+        /* ACK listener is already running persistently for this contact (v15) */
         return 0;
     }
 
@@ -697,8 +697,7 @@ static void transport_message_received_internal(
             msg_timestamp,
             false,                  // is_outgoing = false (incoming message)
             0,                      // group_id (0 for direct messages)
-            message_type,
-            0                       // offline_seq (0 for incoming)
+            message_type
         );
         free(plaintext);
     } else {

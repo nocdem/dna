@@ -154,8 +154,7 @@ class _MessageBubbleWrapperState extends State<MessageBubbleWrapper>
       onDelete: () => widget.onDelete(widget.message),
       onRetry: widget.onRetry != null && widget.message.isOutgoing &&
               (widget.message.status == MessageStatus.failed ||
-                  widget.message.status == MessageStatus.pending ||
-                  widget.message.status == MessageStatus.stale)
+                  widget.message.status == MessageStatus.pending)
           ? widget.onRetry
           : null,
     );
