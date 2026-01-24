@@ -10,12 +10,14 @@
  */
 
 #include "dnac/commitment.h"
+#include "dnac/ledger.h"
 #include <sqlite3.h>
 #include <string.h>
 #include <time.h>
 #include <openssl/evp.h>
 
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_dilithium.h"
 
 #define LOG_TAG "WITNESS_UTXO"
 
@@ -548,6 +550,59 @@ bool dnac_smt_verify_proof(const dnac_smt_proof_t *proof) {
         QGP_LOG_WARN(LOG_TAG, "SMT proof verification failed");
     }
     return valid;
+}
+
+/* ============================================================================
+ * v0.7.1: Epoch Root Signing for BFT Trust Anchoring
+ * ========================================================================== */
+
+int witness_epoch_root_sign(uint64_t epoch,
+                             const uint8_t *ledger_root,
+                             const uint8_t *witness_id,
+                             const uint8_t *privkey,
+                             size_t privkey_size) {
+    if (!ledger_root || !witness_id || !privkey) return -1;
+
+    /* Compute signing data: H(epoch || ledger_root) */
+    uint8_t signing_input[8 + 64];
+    size_t offset = 0;
+
+    /* Epoch (little-endian) */
+    for (int i = 0; i < 8; i++) {
+        signing_input[offset++] = (epoch >> (i * 8)) & 0xFF;
+    }
+
+    /* Ledger root */
+    memcpy(signing_input + offset, ledger_root, 64);
+    offset += 64;
+
+    /* Hash the signing data */
+    uint8_t signing_hash[64];
+    compute_sha3_512(signing_input, offset, signing_hash);
+
+    /* Sign with Dilithium5 */
+    uint8_t signature[DNAC_SIGNATURE_SIZE];
+    size_t sig_len = 0;
+
+    int rc = qgp_dsa87_sign(signature, &sig_len,
+                            signing_hash, sizeof(signing_hash),
+                            privkey);
+
+    if (rc != 0 || sig_len != DNAC_SIGNATURE_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign epoch root: rc=%d, sig_len=%zu",
+                      rc, sig_len);
+        return -1;
+    }
+
+    /* Store the signature */
+    rc = witness_epoch_signature_add(epoch, witness_id, signature);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store epoch signature");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Signed epoch %llu root", (unsigned long long)epoch);
+    return 0;
 }
 
 /* Client query functions (dnac_wallet_recover_from_witnesses, dnac_utxo_get_proof)

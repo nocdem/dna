@@ -10,12 +10,15 @@
  */
 
 #include "dnac/ledger.h"
+#include "dnac/bft.h"
 #include <sqlite3.h>
 #include <string.h>
 #include <time.h>
 #include <openssl/evp.h>
 
+/* libdna crypto utilities */
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_dilithium.h"
 
 #define LOG_TAG "WITNESS_LEDGER"
 
@@ -744,6 +747,138 @@ bool dnac_merkle_verify_proof(const dnac_merkle_proof_t *proof) {
     compute_parent_hash(current, proof->leaf_hash, final_root);
 
     return memcmp(final_root, proof->root, DNAC_MERKLE_ROOT_SIZE) == 0;
+}
+
+/* ============================================================================
+ * v0.7.1: BFT-Anchored Proof Functions
+ * ========================================================================== */
+
+int witness_ledger_get_proof_anchored(uint64_t seq, dnac_merkle_proof_t *proof_out) {
+    if (!proof_out || seq < 1) return -1;
+
+    /* First, get the basic proof */
+    if (witness_ledger_get_proof(seq, proof_out) != 0) {
+        return -1;
+    }
+
+    /* Get the entry to find its epoch */
+    dnac_ledger_entry_t entry;
+    if (witness_ledger_get_entry(seq, &entry) != 0) {
+        return -1;
+    }
+
+    proof_out->epoch = entry.epoch;
+
+    /* Get BFT signatures for this epoch */
+    proof_out->epoch_sig_count = witness_epoch_signatures_get(
+        entry.epoch,
+        proof_out->epoch_sigs,
+        DNAC_PROOF_MAX_SIGNATURES
+    );
+
+    if (proof_out->epoch_sig_count < 0) {
+        proof_out->epoch_sig_count = 0;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Generated anchored proof: seq=%llu, epoch=%llu, sigs=%d",
+                  (unsigned long long)seq,
+                  (unsigned long long)entry.epoch,
+                  proof_out->epoch_sig_count);
+
+    return 0;
+}
+
+/**
+ * Compute the epoch root signing data
+ * This is what witnesses sign: H(epoch || ledger_root || utxo_root || timestamp)
+ */
+static int compute_epoch_signing_data(uint64_t epoch,
+                                       const uint8_t *ledger_root,
+                                       uint8_t *signing_data_out) {
+    uint8_t data[8 + 64 + 8];  /* epoch + ledger_root + padding */
+    size_t offset = 0;
+
+    /* Epoch (little-endian) */
+    for (int i = 0; i < 8; i++) {
+        data[offset++] = (epoch >> (i * 8)) & 0xFF;
+    }
+
+    /* Ledger root */
+    memcpy(data + offset, ledger_root, 64);
+    offset += 64;
+
+    return compute_hash(data, offset, signing_data_out);
+}
+
+bool dnac_merkle_verify_proof_anchored(const dnac_merkle_proof_t *proof,
+                                        const void *roster_ptr,
+                                        int quorum_required) {
+    if (!proof || !roster_ptr || quorum_required < 1) return false;
+
+    /* First verify the hash computation */
+    if (!dnac_merkle_verify_proof(proof)) {
+        QGP_LOG_WARN(LOG_TAG, "Proof hash verification failed");
+        return false;
+    }
+
+    /* Check we have enough signatures */
+    if (proof->epoch_sig_count < quorum_required) {
+        QGP_LOG_WARN(LOG_TAG, "Insufficient signatures: have %d, need %d",
+                     proof->epoch_sig_count, quorum_required);
+        return false;
+    }
+
+    /* Compute what should have been signed */
+    uint8_t signing_data[64];
+    if (compute_epoch_signing_data(proof->epoch, proof->root, signing_data) != 0) {
+        return false;
+    }
+
+    /* Cast roster for access */
+    const dnac_roster_t *roster = (const dnac_roster_t *)roster_ptr;
+
+    /* Verify each signature */
+    int valid_sigs = 0;
+    for (int i = 0; i < proof->epoch_sig_count; i++) {
+        /* Find signer in roster */
+        int signer_idx = -1;
+        for (uint32_t j = 0; j < roster->n_witnesses; j++) {
+            if (memcmp(roster->witnesses[j].witness_id,
+                       proof->epoch_sigs[i].signer_id, 32) == 0) {
+                signer_idx = (int)j;
+                break;
+            }
+        }
+
+        if (signer_idx < 0) {
+            QGP_LOG_WARN(LOG_TAG, "Signer not in roster: %.8s...",
+                         proof->epoch_sigs[i].signer_id);
+            continue;
+        }
+
+        /* Verify Dilithium5 signature using libdna */
+        int verify_result = qgp_dsa87_verify(
+            proof->epoch_sigs[i].signature, DNAC_SIGNATURE_SIZE,
+            signing_data, sizeof(signing_data),
+            roster->witnesses[signer_idx].pubkey
+        );
+
+        if (verify_result == 0) {
+            valid_sigs++;
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Invalid signature from witness %d", signer_idx);
+        }
+    }
+
+    if (valid_sigs >= quorum_required) {
+        QGP_LOG_DEBUG(LOG_TAG, "Proof BFT-verified: %d/%d valid signatures",
+                      valid_sigs, quorum_required);
+        return true;
+    }
+
+    QGP_LOG_WARN(LOG_TAG, "Insufficient valid signatures: %d/%d",
+                 valid_sigs, quorum_required);
+    return false;
 }
 
 /* Client query functions (dnac_ledger_query_tx, dnac_ledger_get_supply) are

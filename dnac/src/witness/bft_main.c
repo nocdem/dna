@@ -391,6 +391,8 @@ static int bft_complete_forward_callback(const uint8_t *tx_hash,
 /**
  * v0.5.0: Callback wrapper for adding ledger entries on COMMIT.
  * This creates a permanent audit trail of all committed transactions.
+ *
+ * v0.7.1: Also signs the epoch root for BFT trust anchoring.
  */
 static int bft_ledger_add_callback(const uint8_t *tx_hash, uint8_t tx_type,
                                     const uint8_t nullifiers[][DNAC_NULLIFIER_SIZE],
@@ -408,7 +410,24 @@ static int bft_ledger_add_callback(const uint8_t *tx_hash, uint8_t tx_type,
     entry.timestamp = (uint64_t)time(NULL);
     entry.epoch = (uint64_t)(time(NULL) / 3600);
 
-    return witness_ledger_add_entry(&entry);
+    int rc = witness_ledger_add_entry(&entry);
+    if (rc != 0) {
+        return rc;
+    }
+
+    /* v0.7.1: Sign the epoch root after adding entry
+     * This creates BFT trust anchor for Merkle proofs */
+    if (g_bft_ctx && g_bft_ctx->my_privkey && g_bft_ctx->my_privkey_size > 0) {
+        uint8_t ledger_root[64];
+        if (witness_ledger_get_root(ledger_root) == 0) {
+            witness_epoch_root_sign(entry.epoch, ledger_root,
+                                     g_bft_ctx->my_id,
+                                     g_bft_ctx->my_privkey,
+                                     g_bft_ctx->my_privkey_size);
+        }
+    }
+
+    return 0;
 }
 
 /**

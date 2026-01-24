@@ -178,6 +178,25 @@ int witness_epoch_root_save(const dnac_epoch_root_t *epoch_root);
  */
 int witness_epoch_root_get(uint64_t epoch, dnac_epoch_root_t *root_out);
 
+/**
+ * @brief v0.7.1: Sign epoch root with witness private key
+ *
+ * Creates a BFT signature on the epoch root data and stores it.
+ * Called by each witness to contribute to BFT trust anchoring.
+ *
+ * @param epoch Epoch number to sign
+ * @param ledger_root Ledger Merkle root for this epoch
+ * @param witness_id This witness's ID
+ * @param privkey Witness private key (Dilithium5)
+ * @param privkey_size Private key size
+ * @return 0 on success, -1 on error
+ */
+int witness_epoch_root_sign(uint64_t epoch,
+                             const uint8_t *ledger_root,
+                             const uint8_t *witness_id,
+                             const uint8_t *privkey,
+                             size_t privkey_size);
+
 /* ============================================================================
  * Client Functions
  * ========================================================================== */

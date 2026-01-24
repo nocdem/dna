@@ -38,6 +38,9 @@ extern "C" {
 /** Output commitment size */
 #define DNAC_OUTPUT_COMMITMENT_SIZE 64
 
+/** Maximum BFT signatures in a proof (v0.7.1) */
+#define DNAC_PROOF_MAX_SIGNATURES   16
+
 /* ============================================================================
  * Data Types
  * ========================================================================== */
@@ -69,7 +72,20 @@ typedef struct {
 } dnac_supply_state_t;
 
 /**
+ * @brief BFT signature on epoch root (v0.7.1)
+ *
+ * Used to anchor Merkle proofs to BFT-signed state.
+ */
+typedef struct {
+    uint8_t signer_id[32];                          /**< Witness ID who signed */
+    uint8_t signature[DNAC_SIGNATURE_SIZE];         /**< Dilithium5 signature */
+} dnac_epoch_signature_t;
+
+/**
  * @brief Merkle proof for transaction existence
+ *
+ * v0.7.1: Added epoch and BFT signatures for trust anchoring.
+ * The proof's root must match a BFT-signed epoch root to be trusted.
  */
 typedef struct {
     uint8_t leaf_hash[DNAC_MERKLE_ROOT_SIZE];      /**< Hash of the leaf (tx data) */
@@ -78,6 +94,11 @@ typedef struct {
     uint8_t directions[DNAC_MERKLE_MAX_DEPTH];     /**< 0=left, 1=right */
     int proof_length;                               /**< Number of siblings */
     uint8_t root[DNAC_MERKLE_ROOT_SIZE];           /**< Expected root */
+
+    /* v0.7.1: BFT trust anchor */
+    uint64_t epoch;                                 /**< Epoch this root belongs to */
+    dnac_epoch_signature_t epoch_sigs[DNAC_PROOF_MAX_SIGNATURES]; /**< BFT signatures */
+    int epoch_sig_count;                            /**< Number of signatures (need quorum) */
 } dnac_merkle_proof_t;
 
 /* ============================================================================
@@ -177,6 +198,43 @@ int witness_ledger_get_range(uint64_t from_seq,
  */
 uint64_t witness_ledger_get_total_entries(void);
 
+/**
+ * @brief v0.7.1: Store BFT signature for epoch root
+ *
+ * Called when witness signs an epoch root during consensus.
+ *
+ * @param epoch Epoch number
+ * @param signer_id Witness ID who signed
+ * @param signature Dilithium5 signature over epoch root data
+ * @return 0 on success, -1 on error
+ */
+int witness_epoch_signature_add(uint64_t epoch,
+                                 const uint8_t *signer_id,
+                                 const uint8_t *signature);
+
+/**
+ * @brief v0.7.1: Get BFT signatures for epoch root
+ *
+ * @param epoch Epoch number
+ * @param sigs_out Output array for signatures
+ * @param max_sigs Maximum signatures to return
+ * @return Number of signatures retrieved, or -1 on error
+ */
+int witness_epoch_signatures_get(uint64_t epoch,
+                                  dnac_epoch_signature_t *sigs_out,
+                                  int max_sigs);
+
+/**
+ * @brief v0.7.1: Get Merkle proof with BFT signatures
+ *
+ * Extended version that includes epoch signatures for trust anchoring.
+ *
+ * @param seq Sequence number of transaction
+ * @param proof_out Output proof with BFT signatures
+ * @return 0 on success, -1 on error
+ */
+int witness_ledger_get_proof_anchored(uint64_t seq, dnac_merkle_proof_t *proof_out);
+
 /* ============================================================================
  * Supply Tracking Functions
  * ========================================================================== */
@@ -244,12 +302,32 @@ int dnac_ledger_get_supply(dnac_context_t *ctx,
                            uint64_t *current_out);
 
 /**
- * @brief Verify Merkle proof locally
+ * @brief Verify Merkle proof locally (hash computation only)
+ *
+ * WARNING: This only verifies the hash computation leads to proof->root.
+ * It does NOT verify that the root is BFT-signed. For full security,
+ * use dnac_merkle_verify_proof_anchored() instead.
  *
  * @param proof Proof to verify
  * @return true if proof is valid
  */
 bool dnac_merkle_verify_proof(const dnac_merkle_proof_t *proof);
+
+/**
+ * @brief Verify Merkle proof with BFT trust anchor (v0.7.1)
+ *
+ * Verifies both:
+ * 1. The hash computation leads to proof->root
+ * 2. The root is signed by a BFT quorum of witnesses
+ *
+ * @param proof Proof to verify (must include epoch_sigs)
+ * @param roster Witness roster for signature verification
+ * @param quorum_required Minimum signatures needed (typically 2f+1)
+ * @return true if proof is valid AND BFT-anchored
+ */
+bool dnac_merkle_verify_proof_anchored(const dnac_merkle_proof_t *proof,
+                                        const void *roster,
+                                        int quorum_required);
 
 /**
  * @brief P0-2 (v0.7.0): Sync ledger entries in range from witnesses

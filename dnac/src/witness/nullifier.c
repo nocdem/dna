@@ -11,6 +11,7 @@
 
 #include "dnac/witness.h"
 #include "dnac/genesis.h"
+#include "dnac/ledger.h"
 #include <sqlite3.h>
 #include <string.h>
 #include <time.h>
@@ -109,7 +110,17 @@ int witness_nullifier_init(const char *db_path) {
         "CREATE TABLE IF NOT EXISTS ledger_checkpoints ("
         "  checkpoint_seq INTEGER PRIMARY KEY,"
         "  merkle_root BLOB NOT NULL"
-        ");";
+        ");"
+
+        /* v0.7.1: BFT signatures on epoch roots for trust anchoring */
+        "CREATE TABLE IF NOT EXISTS epoch_signatures ("
+        "  epoch INTEGER NOT NULL,"
+        "  signer_id BLOB NOT NULL,"
+        "  signature BLOB NOT NULL,"
+        "  timestamp INTEGER NOT NULL,"
+        "  PRIMARY KEY (epoch, signer_id)"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_epoch_sigs_epoch ON epoch_signatures(epoch);";
 
     char *err_msg = NULL;
     rc = sqlite3_exec(nullifier_db, schema, NULL, NULL, &err_msg);
@@ -379,4 +390,85 @@ int witness_genesis_get(dnac_genesis_state_t *state_out) {
 
     sqlite3_finalize(stmt);
     return 0;
+}
+
+/* ============================================================================
+ * Epoch Signature Functions (v0.7.1)
+ * BFT trust anchoring for Merkle proofs
+ * ========================================================================== */
+
+int witness_epoch_signature_add(uint64_t epoch,
+                                 const uint8_t *signer_id,
+                                 const uint8_t *signature) {
+    if (!nullifier_db || !signer_id || !signature) return -1;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(nullifier_db,
+        "INSERT OR REPLACE INTO epoch_signatures "
+        "(epoch, signer_id, signature, timestamp) VALUES (?, ?, ?, ?)",
+        -1, &stmt, NULL);
+
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare epoch sig insert: %s",
+                      sqlite3_errmsg(nullifier_db));
+        return -1;
+    }
+
+    sqlite3_bind_int64(stmt, 1, (int64_t)epoch);
+    sqlite3_bind_blob(stmt, 2, signer_id, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(stmt, 3, signature, DNAC_SIGNATURE_SIZE, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 4, (int64_t)time(NULL));
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to insert epoch signature: %s",
+                      sqlite3_errmsg(nullifier_db));
+        return -1;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Stored epoch %llu signature from %.8s...",
+                  (unsigned long long)epoch, signer_id);
+    return 0;
+}
+
+int witness_epoch_signatures_get(uint64_t epoch,
+                                  dnac_epoch_signature_t *sigs_out,
+                                  int max_sigs) {
+    if (!nullifier_db || !sigs_out || max_sigs <= 0) return -1;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(nullifier_db,
+        "SELECT signer_id, signature FROM epoch_signatures "
+        "WHERE epoch = ? LIMIT ?",
+        -1, &stmt, NULL);
+
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare epoch sig query: %s",
+                      sqlite3_errmsg(nullifier_db));
+        return -1;
+    }
+
+    sqlite3_bind_int64(stmt, 1, (int64_t)epoch);
+    sqlite3_bind_int(stmt, 2, max_sigs);
+
+    int count = 0;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW && count < max_sigs) {
+        const void *id_blob = sqlite3_column_blob(stmt, 0);
+        int id_size = sqlite3_column_bytes(stmt, 0);
+        const void *sig_blob = sqlite3_column_blob(stmt, 1);
+        int sig_size = sqlite3_column_bytes(stmt, 1);
+
+        if (id_blob && id_size == 32 && sig_blob && sig_size == DNAC_SIGNATURE_SIZE) {
+            memcpy(sigs_out[count].signer_id, id_blob, 32);
+            memcpy(sigs_out[count].signature, sig_blob, DNAC_SIGNATURE_SIZE);
+            count++;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+    QGP_LOG_DEBUG(LOG_TAG, "Retrieved %d signatures for epoch %llu",
+                  count, (unsigned long long)epoch);
+    return count;
 }
