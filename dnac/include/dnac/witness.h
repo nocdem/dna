@@ -102,6 +102,28 @@ int witness_nullifier_mark_replicated(const uint8_t *nullifier);
  */
 int witness_nullifier_get_unreplicated(uint8_t (*nullifiers)[64], int max_count);
 
+/**
+ * @brief Begin database transaction (Gap 11: v0.6.0)
+ *
+ * Provides atomicity for multi-nullifier operations.
+ * @return 0 on success, -1 on failure
+ */
+int witness_db_begin_transaction(void);
+
+/**
+ * @brief Commit database transaction (Gap 11: v0.6.0)
+ *
+ * @return 0 on success, -1 on failure
+ */
+int witness_db_commit(void);
+
+/**
+ * @brief Rollback database transaction (Gap 11: v0.6.0)
+ *
+ * @return 0 on success, -1 on failure
+ */
+int witness_db_rollback(void);
+
 /* ============================================================================
  * Announcement Serialization (for DHT roster)
  * ========================================================================== */

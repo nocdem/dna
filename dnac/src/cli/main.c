@@ -242,9 +242,10 @@ int main(int argc, char **argv) {
     else if (strcmp(command, "recover") == 0) {
         result = dnac_cli_recover(ctx);
     }
-    else if (strcmp(command, "mint") == 0) {
+    else if (strcmp(command, "genesis") == 0 || strcmp(command, "mint") == 0) {
+        /* v0.5.0: "genesis" is the new command, "mint" kept for backward compat */
         if (cmd_start + 2 >= argc) {
-            fprintf(stderr, "Usage: dnac-cli mint <fingerprint> <amount>\n");
+            fprintf(stderr, "Usage: dnac-cli genesis <fingerprint> <amount>\n");
             result = 1;
         } else {
             const char *recipient = argv[cmd_start + 1];

@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-01-23 | **Status:** DESIGN | **Version:** v0.4.0
+**Last Updated:** 2026-01-24 | **Status:** DESIGN | **Version:** v0.7.0
 
 ---
 
@@ -340,6 +340,9 @@ git push origin main
 - 192.168.0.195:4200
 - 192.168.0.196:4200
 - 192.168.0.199:4200
+
+**Test Machine:**
+- root@192.168.0.5 (for remote send/receive testing)
 
 ### Version Tracking
 - **Response includes:** `software_version[3]` - [major, minor, patch]

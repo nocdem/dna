@@ -31,6 +31,7 @@
 #include "dnac/dnac.h"
 #include "dnac/wallet.h"
 #include "dnac/transaction.h"
+#include "dnac/genesis.h"
 #include "dnac/nodus.h"
 
 #include <dna/dna_engine.h>
@@ -240,40 +241,53 @@ static int step_mint(uint64_t amount) {
     printf("  Found %d witness servers\n", server_count);
     dnac_free_witness_list(servers, server_count);
 
-    /* Create MINT transaction */
+    /* Create GENESIS transaction (v0.5.0: replaces MINT) */
     const char *our_fp = dnac_get_owner_fingerprint(g_ctx);
     if (!our_fp) {
         fprintf(stderr, "  FAIL: Could not get owner fingerprint\n");
         return -1;
     }
 
-    rc = dnac_tx_create_mint(our_fp, amount, &g_minted_tx);
+    /* Create single-recipient genesis */
+    dnac_genesis_recipient_t recipients[1];
+    strncpy(recipients[0].fingerprint, our_fp, sizeof(recipients[0].fingerprint) - 1);
+    recipients[0].fingerprint[sizeof(recipients[0].fingerprint) - 1] = '\0';
+    recipients[0].amount = amount;
+
+    rc = dnac_tx_create_genesis(recipients, 1, &g_minted_tx);
     if (rc != DNAC_SUCCESS) {
-        fprintf(stderr, "  FAIL: dnac_tx_create_mint returned %d (%s)\n",
+        fprintf(stderr, "  FAIL: dnac_tx_create_genesis returned %d (%s)\n",
                 rc, dnac_error_string(rc));
         return -1;
     }
-    printf("  MINT transaction created\n");
+    printf("  GENESIS transaction created\n");
 
-    /* Authorize mint via witness consensus (2-of-3) */
-    rc = dnac_tx_authorize_mint(g_ctx, g_minted_tx);
+    /* Authorize genesis via witness consensus (3-of-3 unanimous) */
+    rc = dnac_tx_authorize_genesis(g_ctx, g_minted_tx);
+    if (rc == DNAC_ERROR_GENESIS_EXISTS) {
+        fprintf(stderr, "  NOTE: Genesis already exists - cannot create more tokens\n");
+        /* This is expected if test is run multiple times */
+        dnac_free_transaction(g_minted_tx);
+        g_minted_tx = NULL;
+        return 0;  /* Not a failure, just skip */
+    }
     if (rc != DNAC_SUCCESS) {
-        fprintf(stderr, "  FAIL: dnac_tx_authorize_mint returned %d (%s)\n",
+        fprintf(stderr, "  FAIL: dnac_tx_authorize_genesis returned %d (%s)\n",
                 rc, dnac_error_string(rc));
         return -1;
     }
-    printf("  MINT authorized by %d witnesses\n", g_minted_tx->witness_count);
+    printf("  GENESIS authorized by %d witnesses (unanimous)\n", g_minted_tx->witness_count);
 
-    /* Broadcast mint to deliver coins via DHT */
-    rc = dnac_tx_broadcast_mint(g_ctx, g_minted_tx);
+    /* Broadcast genesis to deliver coins via DHT */
+    rc = dnac_tx_broadcast_genesis(g_ctx, g_minted_tx);
     if (rc != DNAC_SUCCESS) {
-        fprintf(stderr, "  FAIL: dnac_tx_broadcast_mint returned %d (%s)\n",
+        fprintf(stderr, "  FAIL: dnac_tx_broadcast_genesis returned %d (%s)\n",
                 rc, dnac_error_string(rc));
         return -1;
     }
-    printf("  MINT broadcast complete\n");
+    printf("  GENESIS broadcast complete\n");
 
-    printf("  PASS: Minted %lu coins\n", (unsigned long)amount);
+    printf("  PASS: Created genesis with %lu coins\n", (unsigned long)amount);
     return 0;
 }
 

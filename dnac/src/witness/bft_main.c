@@ -32,6 +32,9 @@
 #include "dnac/tcp.h"
 #include "dnac/nodus.h"
 #include "dnac/witness.h"
+#include "dnac/genesis.h"
+#include "dnac/ledger.h"
+#include "dnac/commitment.h"
 #include "dnac/version.h"
 
 #include "crypto/utils/qgp_log.h"
@@ -48,7 +51,7 @@
 
 static volatile int g_running = 1;
 dnac_bft_context_t *g_bft_ctx = NULL;  /* Non-static for access from forward.c */
-static dnac_tcp_server_t *g_tcp_server = NULL;
+dnac_tcp_server_t *g_tcp_server = NULL;  /* Non-static for access from forward.c */
 
 /* Identity loading state */
 static volatile int g_identity_loaded = 0;
@@ -66,6 +69,17 @@ extern int witness_nullifier_init(const char *db_path);
 extern void witness_nullifier_shutdown(void);
 extern bool witness_nullifier_exists(const uint8_t *nullifier);
 extern int witness_nullifier_add(const uint8_t *nullifier, const uint8_t *tx_hash);
+
+/* External ledger functions (from witness/ledger.c) */
+extern int witness_ledger_init(void);
+extern void witness_ledger_shutdown(void);
+extern uint64_t witness_ledger_get_next_seq(void);
+extern int witness_ledger_add_entry(const dnac_ledger_entry_t *entry);
+
+/* External UTXO functions (from witness/utxo_tree.c) */
+extern int witness_utxo_init(void);
+extern void witness_utxo_shutdown(void);
+extern int witness_utxo_mark_spent(const uint8_t *commitment_hash, uint64_t spent_epoch);
 
 /* ============================================================================
  * Signal Handler
@@ -284,10 +298,14 @@ static void handle_identify(int peer_index, const uint8_t *data, size_t len) {
  * Client Request Handling
  * ========================================================================== */
 
-/* External forward function */
+/* External forward functions */
 extern int bft_forward_request(dnac_bft_context_t *ctx,
                                const dnac_spend_request_t *request,
                                int client_fd);
+
+extern int bft_handle_forward_response(dnac_bft_context_t *ctx,
+                                        const dnac_bft_forward_rsp_t *response,
+                                        dnac_tcp_server_t *server);
 
 /**
  * Send spend response to client
@@ -371,6 +389,38 @@ static int bft_complete_forward_callback(const uint8_t *tx_hash,
 }
 
 /**
+ * v0.5.0: Callback wrapper for adding ledger entries on COMMIT.
+ * This creates a permanent audit trail of all committed transactions.
+ */
+static int bft_ledger_add_callback(const uint8_t *tx_hash, uint8_t tx_type,
+                                    const uint8_t nullifiers[][DNAC_NULLIFIER_SIZE],
+                                    uint8_t nullifier_count) {
+    dnac_ledger_entry_t entry;
+    memset(&entry, 0, sizeof(entry));
+
+    entry.sequence_number = witness_ledger_get_next_seq();
+    memcpy(entry.tx_hash, tx_hash, DNAC_TX_HASH_SIZE);
+    entry.tx_type = tx_type;
+    entry.nullifier_count = nullifier_count;
+    for (int i = 0; i < nullifier_count && i < DNAC_TX_MAX_INPUTS; i++) {
+        memcpy(entry.nullifiers[i], nullifiers[i], DNAC_NULLIFIER_SIZE);
+    }
+    entry.timestamp = (uint64_t)time(NULL);
+    entry.epoch = (uint64_t)(time(NULL) / 3600);
+
+    return witness_ledger_add_entry(&entry);
+}
+
+/**
+ * v0.5.0: Callback wrapper for marking UTXOs as spent on COMMIT.
+ * Note: This is currently a placeholder - full UTXO tracking requires
+ * the commitment hash from the transaction outputs, not nullifiers.
+ */
+static int bft_utxo_mark_spent_callback(const uint8_t *commitment_hash, uint64_t spent_epoch) {
+    return witness_utxo_mark_spent(commitment_hash, spent_epoch);
+}
+
+/**
  * Handle client spend request
  *
  * v0.4.0: Now deserializes full TX to extract ALL nullifiers,
@@ -420,16 +470,48 @@ static void handle_client_spend_request(int client_fd, const uint8_t *data, size
         return;
     }
 
-    /* Extract ALL nullifiers from inputs */
+    /* v0.5.0: Genesis pre-authorization check
+     * - Before genesis: Only GENESIS transactions allowed
+     * - After genesis: GENESIS rejected, only SPEND/BURN allowed
+     */
+    bool genesis_exists = witness_genesis_exists();
+    fprintf(stderr, "[WITNESS] Genesis check: exists=%d, tx_type=%d\n",
+            genesis_exists, tx->type);
+    fflush(stderr);
+
+    if (!genesis_exists) {
+        /* System not initialized - only GENESIS allowed */
+        if (tx->type != DNAC_TX_GENESIS) {
+            QGP_LOG_WARN(LOG_TAG, "Rejecting %s - no genesis yet",
+                        tx->type == DNAC_TX_SPEND ? "SPEND" : "BURN");
+            dnac_free_transaction(tx);
+            bft_send_client_response(client_fd, DNAC_NODUS_STATUS_REJECTED,
+                                     "System not initialized - no genesis");
+            return;
+        }
+        QGP_LOG_INFO(LOG_TAG, "Processing GENESIS transaction (first token creation)");
+    } else {
+        /* Genesis exists - GENESIS no longer allowed */
+        if (tx->type == DNAC_TX_GENESIS) {
+            QGP_LOG_WARN(LOG_TAG, "Rejecting GENESIS - genesis already exists");
+            dnac_free_transaction(tx);
+            bft_send_client_response(client_fd, DNAC_NODUS_STATUS_REJECTED,
+                                     "Genesis already exists");
+            return;
+        }
+    }
+
+    /* Extract ALL nullifiers from inputs and tx_type */
     uint8_t nullifiers[DNAC_TX_MAX_INPUTS][DNAC_NULLIFIER_SIZE];
     uint8_t nullifier_count = (uint8_t)tx->input_count;
+    uint8_t tx_type = (uint8_t)tx->type;  /* v0.5.0: for genesis handling */
     for (int i = 0; i < tx->input_count; i++) {
         memcpy(nullifiers[i], tx->inputs[i].nullifier, DNAC_NULLIFIER_SIZE);
     }
 
-    fprintf(stderr, "[WITNESS] Extracted %d nullifiers from TX\n", nullifier_count);
+    fprintf(stderr, "[WITNESS] Extracted %d nullifiers from TX, type=%d\n", nullifier_count, tx_type);
     fflush(stderr);
-    QGP_LOG_INFO(LOG_TAG, "Extracted %d nullifiers from transaction", nullifier_count);
+    QGP_LOG_INFO(LOG_TAG, "Extracted %d nullifiers from transaction (type=%d)", nullifier_count, tx_type);
 
     dnac_free_transaction(tx);
 
@@ -449,11 +531,12 @@ static void handle_client_spend_request(int client_fd, const uint8_t *data, size
         g_bft_ctx->round_state.is_forwarded = false;
         pthread_mutex_unlock(&g_bft_ctx->mutex);
 
-        /* Start consensus round with ALL nullifiers */
+        /* Start consensus round with ALL nullifiers and tx_type (v0.5.0) */
         rc = dnac_bft_start_round(g_bft_ctx,
                                   request.tx_hash,
                                   nullifiers,
                                   nullifier_count,
+                                  tx_type,
                                   request.sender_pubkey,
                                   request.signature,
                                   request.fee_amount);
@@ -490,6 +573,325 @@ static void handle_client_spend_request(int client_fd, const uint8_t *data, size
         }
         /* Response will be sent when forward response arrives */
     }
+}
+
+/* ============================================================================
+ * v0.5.0: Query Message Handlers
+ * ========================================================================== */
+
+/* External ledger functions */
+extern int witness_ledger_get_entry_by_hash(const uint8_t *tx_hash,
+                                             dnac_ledger_entry_t *entry_out);
+extern int witness_ledger_get_proof(uint64_t seq, dnac_merkle_proof_t *proof_out);
+extern int witness_supply_get_state(dnac_supply_state_t *state_out);
+
+/* External UTXO functions */
+extern int witness_utxo_get_by_owner(const uint8_t *owner_commitment,
+                                      dnac_utxo_commitment_t *commitments_out,
+                                      int max_count);
+extern int witness_utxo_get_proof(const uint8_t *commitment_hash,
+                                   dnac_smt_proof_t *proof_out);
+
+/**
+ * Handle LEDGER_QUERY message - returns ledger entry by tx_hash
+ */
+static void handle_ledger_query(int client_fd, const uint8_t *data, size_t len) {
+    QGP_LOG_DEBUG(LOG_TAG, "Received LEDGER_QUERY (fd=%d)", client_fd);
+
+    dnac_ledger_query_t query;
+    if (dnac_ledger_query_deserialize(data, len, &query) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to deserialize ledger query");
+        return;
+    }
+
+    dnac_ledger_response_t response;
+    memset(&response, 0, sizeof(response));
+
+    /* Get ledger entry */
+    dnac_ledger_entry_t entry;
+    if (witness_ledger_get_entry_by_hash(query.tx_hash, &entry) != 0) {
+        response.status = DNAC_NODUS_STATUS_ERROR;
+    } else {
+        response.status = DNAC_NODUS_STATUS_APPROVED;
+        response.sequence_number = entry.sequence_number;
+        memcpy(response.tx_hash, entry.tx_hash, DNAC_TX_HASH_SIZE);
+        response.tx_type = entry.tx_type;
+        memcpy(response.merkle_root, entry.merkle_root, 64);
+        response.timestamp = entry.timestamp;
+        response.epoch = entry.epoch;
+
+        /* Include proof if requested */
+        if (query.include_proof) {
+            dnac_merkle_proof_t proof;
+            if (witness_ledger_get_proof(entry.sequence_number, &proof) == 0) {
+                response.has_proof = true;
+                memcpy(response.leaf_hash, proof.leaf_hash, 64);
+                response.proof_length = proof.proof_length;
+                memcpy(response.proof_root, proof.root, 64);
+            }
+        }
+    }
+
+    /* Serialize and send response */
+    uint8_t buffer[512];
+    size_t written;
+    if (dnac_ledger_response_serialize(&response, buffer + DNAC_TCP_FRAME_HEADER_SIZE,
+                                        sizeof(buffer) - DNAC_TCP_FRAME_HEADER_SIZE,
+                                        &written) == 0) {
+        dnac_tcp_write_frame_header(buffer, DNAC_NODUS_MSG_LEDGER_RESPONSE, (uint32_t)written);
+        dnac_tcp_server_send(g_tcp_server, client_fd, buffer,
+                             DNAC_TCP_FRAME_HEADER_SIZE + written);
+        QGP_LOG_DEBUG(LOG_TAG, "Sent LEDGER_RESPONSE (status=%d)", response.status);
+    }
+}
+
+/**
+ * Handle SUPPLY_QUERY message - returns supply state
+ */
+static void handle_supply_query(int client_fd, const uint8_t *data, size_t len) {
+    QGP_LOG_DEBUG(LOG_TAG, "Received SUPPLY_QUERY (fd=%d)", client_fd);
+
+    dnac_supply_query_t query;
+    if (dnac_supply_query_deserialize(data, len, &query) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to deserialize supply query");
+        return;
+    }
+
+    dnac_supply_response_t response;
+    memset(&response, 0, sizeof(response));
+
+    /* Get supply state */
+    dnac_supply_state_t state;
+    if (witness_supply_get_state(&state) != 0) {
+        response.status = DNAC_NODUS_STATUS_ERROR;
+    } else {
+        response.status = DNAC_NODUS_STATUS_APPROVED;
+        response.genesis_supply = state.genesis_supply;
+        response.total_burned = state.total_burned;
+        response.current_supply = state.current_supply;
+        memcpy(response.last_tx_hash, state.last_tx_hash, DNAC_TX_HASH_SIZE);
+        response.last_sequence = state.last_sequence;
+    }
+
+    /* Serialize and send response */
+    uint8_t buffer[256];
+    size_t written;
+    if (dnac_supply_response_serialize(&response, buffer + DNAC_TCP_FRAME_HEADER_SIZE,
+                                        sizeof(buffer) - DNAC_TCP_FRAME_HEADER_SIZE,
+                                        &written) == 0) {
+        dnac_tcp_write_frame_header(buffer, DNAC_NODUS_MSG_SUPPLY_RESPONSE, (uint32_t)written);
+        dnac_tcp_server_send(g_tcp_server, client_fd, buffer,
+                             DNAC_TCP_FRAME_HEADER_SIZE + written);
+        QGP_LOG_DEBUG(LOG_TAG, "Sent SUPPLY_RESPONSE (genesis=%llu, current=%llu)",
+                     (unsigned long long)response.genesis_supply,
+                     (unsigned long long)response.current_supply);
+    }
+}
+
+/**
+ * Handle UTXO_QUERY message - returns UTXOs by owner commitment
+ */
+static void handle_utxo_query(int client_fd, const uint8_t *data, size_t len) {
+    QGP_LOG_DEBUG(LOG_TAG, "Received UTXO_QUERY (fd=%d)", client_fd);
+
+    dnac_utxo_query_t query;
+    if (dnac_utxo_query_deserialize(data, len, &query) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to deserialize UTXO query");
+        return;
+    }
+
+    dnac_utxo_response_t response;
+    memset(&response, 0, sizeof(response));
+
+    /* Limit max_results */
+    int max = query.max_results;
+    if (max <= 0 || max > DNAC_MAX_UTXO_QUERY_RESULTS) {
+        max = DNAC_MAX_UTXO_QUERY_RESULTS;
+    }
+
+    /* Get UTXOs by owner */
+    dnac_utxo_commitment_t commitments[DNAC_MAX_UTXO_QUERY_RESULTS];
+    int count = witness_utxo_get_by_owner(query.owner_commitment, commitments, max);
+
+    if (count < 0) {
+        response.status = DNAC_NODUS_STATUS_ERROR;
+        response.count = 0;
+    } else {
+        response.status = DNAC_NODUS_STATUS_APPROVED;
+        response.count = count;
+
+        for (int i = 0; i < count && i < DNAC_MAX_UTXO_QUERY_RESULTS; i++) {
+            memcpy(response.utxos[i].commitment, commitments[i].commitment, 64);
+            memcpy(response.utxos[i].tx_hash, commitments[i].tx_hash, DNAC_TX_HASH_SIZE);
+            response.utxos[i].output_index = commitments[i].output_index;
+            response.utxos[i].amount = commitments[i].amount;
+            response.utxos[i].created_epoch = commitments[i].created_epoch;
+        }
+    }
+
+    /* Serialize and send response */
+    size_t buffer_size = DNAC_TCP_FRAME_HEADER_SIZE + 5 + (response.count * 148);
+    uint8_t *buffer = malloc(buffer_size);
+    if (!buffer) return;
+
+    size_t written;
+    if (dnac_utxo_response_serialize(&response, buffer + DNAC_TCP_FRAME_HEADER_SIZE,
+                                      buffer_size - DNAC_TCP_FRAME_HEADER_SIZE,
+                                      &written) == 0) {
+        dnac_tcp_write_frame_header(buffer, DNAC_NODUS_MSG_UTXO_RESPONSE, (uint32_t)written);
+        dnac_tcp_server_send(g_tcp_server, client_fd, buffer,
+                             DNAC_TCP_FRAME_HEADER_SIZE + written);
+        QGP_LOG_DEBUG(LOG_TAG, "Sent UTXO_RESPONSE (count=%d)", response.count);
+    }
+    free(buffer);
+}
+
+/**
+ * Handle UTXO_PROOF_QUERY message - returns UTXO existence proof
+ */
+static void handle_utxo_proof_query(int client_fd, const uint8_t *data, size_t len) {
+    QGP_LOG_DEBUG(LOG_TAG, "Received UTXO_PROOF_QUERY (fd=%d)", client_fd);
+
+    dnac_utxo_proof_query_t query;
+    if (dnac_utxo_proof_query_deserialize(data, len, &query) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to deserialize UTXO proof query");
+        return;
+    }
+
+    dnac_utxo_proof_response_t response;
+    memset(&response, 0, sizeof(response));
+
+    /* Get UTXO proof */
+    dnac_smt_proof_t proof;
+    if (witness_utxo_get_proof(query.commitment, &proof) != 0) {
+        response.status = DNAC_NODUS_STATUS_ERROR;
+    } else {
+        response.status = DNAC_NODUS_STATUS_APPROVED;
+        response.exists = proof.exists;
+        memcpy(response.commitment, query.commitment, 64);
+        memcpy(response.root, proof.root, 64);
+        response.epoch = proof.epoch;
+    }
+
+    /* Serialize and send response */
+    uint8_t buffer[256];
+    size_t written;
+    if (dnac_utxo_proof_response_serialize(&response, buffer + DNAC_TCP_FRAME_HEADER_SIZE,
+                                            sizeof(buffer) - DNAC_TCP_FRAME_HEADER_SIZE,
+                                            &written) == 0) {
+        dnac_tcp_write_frame_header(buffer, DNAC_NODUS_MSG_UTXO_PROOF_RSP, (uint32_t)written);
+        dnac_tcp_server_send(g_tcp_server, client_fd, buffer,
+                             DNAC_TCP_FRAME_HEADER_SIZE + written);
+        QGP_LOG_DEBUG(LOG_TAG, "Sent UTXO_PROOF_RSP (exists=%d)", response.exists);
+    }
+}
+
+/**
+ * Handle CHECK_NULLIFIER message - returns nullifier spend status
+ */
+static void handle_nullifier_query(int client_fd, const uint8_t *data, size_t len) {
+    QGP_LOG_DEBUG(LOG_TAG, "Received CHECK_NULLIFIER (fd=%d)", client_fd);
+
+    dnac_nullifier_query_t query;
+    if (dnac_nullifier_query_deserialize(data, len, &query) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to deserialize nullifier query");
+        return;
+    }
+
+    dnac_nullifier_response_t response;
+    memset(&response, 0, sizeof(response));
+
+    /* Check if nullifier exists (is spent) */
+    bool is_spent = witness_nullifier_exists(query.nullifier);
+
+    response.status = DNAC_NODUS_STATUS_APPROVED;
+    response.is_spent = is_spent;
+    memcpy(response.nullifier, query.nullifier, DNAC_NULLIFIER_SIZE);
+    response.spent_epoch = 0;  /* Could look up actual epoch if tracked */
+
+    /* Serialize and send response */
+    uint8_t buffer[128];
+    size_t written;
+    if (dnac_nullifier_response_serialize(&response, buffer + DNAC_TCP_FRAME_HEADER_SIZE,
+                                           sizeof(buffer) - DNAC_TCP_FRAME_HEADER_SIZE,
+                                           &written) == 0) {
+        dnac_tcp_write_frame_header(buffer, DNAC_NODUS_MSG_NULLIFIER_STATUS, (uint32_t)written);
+        dnac_tcp_server_send(g_tcp_server, client_fd, buffer,
+                             DNAC_TCP_FRAME_HEADER_SIZE + written);
+        QGP_LOG_DEBUG(LOG_TAG, "Sent NULLIFIER_STATUS (is_spent=%d)", response.is_spent);
+    }
+}
+
+/**
+ * P0-2 (v0.7.0): Handle LEDGER_RANGE_QUERY message - returns range of ledger entries
+ */
+static void handle_ledger_range_query(int client_fd, const uint8_t *data, size_t len) {
+    QGP_LOG_DEBUG(LOG_TAG, "Received LEDGER_RANGE_QUERY (fd=%d)", client_fd);
+
+    dnac_ledger_range_query_t query;
+    if (dnac_ledger_range_query_deserialize(data, len, &query) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to deserialize ledger range query");
+        return;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Range query: from=%llu to=%llu",
+                  (unsigned long long)query.from_sequence,
+                  (unsigned long long)query.to_sequence);
+
+    dnac_ledger_range_response_t response;
+    memset(&response, 0, sizeof(response));
+
+    /* Get total entries count */
+    response.total_entries = witness_ledger_get_total_entries();
+
+    /* Get entries in range */
+    dnac_ledger_entry_t entries[DNAC_MAX_RANGE_RESULTS];
+    int count = 0;
+
+    int rc = witness_ledger_get_range(query.from_sequence, query.to_sequence,
+                                       entries, DNAC_MAX_RANGE_RESULTS, &count);
+
+    if (rc == 0 && count > 0) {
+        response.status = DNAC_NODUS_STATUS_APPROVED;
+        response.count = count;
+        response.first_sequence = entries[0].sequence_number;
+        response.last_sequence = entries[count - 1].sequence_number;
+
+        /* Copy entries to compact format */
+        for (int i = 0; i < count; i++) {
+            response.entries[i].sequence_number = entries[i].sequence_number;
+            memcpy(response.entries[i].tx_hash, entries[i].tx_hash, DNAC_TX_HASH_SIZE);
+            response.entries[i].tx_type = entries[i].tx_type;
+            memcpy(response.entries[i].merkle_root, entries[i].merkle_root, 64);
+            response.entries[i].timestamp = entries[i].timestamp;
+            response.entries[i].epoch = entries[i].epoch;
+        }
+    } else {
+        response.status = DNAC_NODUS_STATUS_APPROVED;
+        response.count = 0;
+        response.first_sequence = 0;
+        response.last_sequence = 0;
+    }
+
+    /* Serialize and send response */
+    size_t buffer_size = DNAC_TCP_FRAME_HEADER_SIZE + 29 + (count * 153);
+    uint8_t *buffer = malloc(buffer_size);
+    if (!buffer) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate range response buffer");
+        return;
+    }
+
+    size_t written;
+    if (dnac_ledger_range_response_serialize(&response, buffer + DNAC_TCP_FRAME_HEADER_SIZE,
+                                              buffer_size - DNAC_TCP_FRAME_HEADER_SIZE,
+                                              &written) == 0) {
+        dnac_tcp_write_frame_header(buffer, DNAC_NODUS_MSG_LEDGER_RANGE_RESPONSE, (uint32_t)written);
+        dnac_tcp_server_send(g_tcp_server, client_fd, buffer,
+                             DNAC_TCP_FRAME_HEADER_SIZE + written);
+        QGP_LOG_DEBUG(LOG_TAG, "Sent LEDGER_RANGE_RESPONSE (count=%d)", response.count);
+    }
+
+    free(buffer);
 }
 
 /* ============================================================================
@@ -573,22 +975,39 @@ static void on_tcp_message(int peer_index, uint8_t msg_type,
                         break;
                     }
 
-                    /* Extract ALL nullifiers from inputs */
+                    /* v0.5.0: Genesis pre-authorization check for forwarded requests */
+                    bool genesis_exists = witness_genesis_exists();
+                    if (!genesis_exists && tx->type != DNAC_TX_GENESIS) {
+                        QGP_LOG_WARN(LOG_TAG, "Rejecting forwarded %s - no genesis yet",
+                                    tx->type == DNAC_TX_SPEND ? "SPEND" : "BURN");
+                        dnac_free_transaction(tx);
+                        break;
+                    }
+                    if (genesis_exists && tx->type == DNAC_TX_GENESIS) {
+                        QGP_LOG_WARN(LOG_TAG, "Rejecting forwarded GENESIS - already exists");
+                        dnac_free_transaction(tx);
+                        break;
+                    }
+
+                    /* Extract ALL nullifiers from inputs and tx_type */
                     uint8_t nullifiers[DNAC_TX_MAX_INPUTS][DNAC_NULLIFIER_SIZE];
                     uint8_t nullifier_count = (uint8_t)tx->input_count;
+                    uint8_t fwd_tx_type = (uint8_t)tx->type;  /* v0.5.0: for genesis handling */
                     for (int i = 0; i < tx->input_count; i++) {
                         memcpy(nullifiers[i], tx->inputs[i].nullifier, DNAC_NULLIFIER_SIZE);
                     }
                     dnac_free_transaction(tx);
 
-                    fprintf(stderr, "[WITNESS] Forwarded TX has %d nullifiers\n", nullifier_count);
+                    fprintf(stderr, "[WITNESS] Forwarded TX has %d nullifiers, type=%d\n",
+                            nullifier_count, fwd_tx_type);
                     fflush(stderr);
 
-                    /* Start consensus round with ALL nullifiers */
+                    /* Start consensus round with ALL nullifiers and tx_type (v0.5.0) */
                     rc = dnac_bft_start_round(g_bft_ctx,
                                               req.tx_hash,
                                               nullifiers,
                                               nullifier_count,
+                                              fwd_tx_type,
                                               req.sender_pubkey,
                                               req.client_signature,
                                               req.fee_amount);
@@ -623,7 +1042,18 @@ static void on_tcp_message(int peer_index, uint8_t msg_type,
         }
 
         case BFT_MSG_FORWARD_RSP: {
-            /* TODO: Handle response from leader (for forwarding witnesses) */
+            /* Handle forward response from leader (Gap 7: v0.6.0) */
+            dnac_bft_forward_rsp_t rsp;
+            if (dnac_bft_forward_rsp_deserialize(data, len, &rsp) == DNAC_BFT_SUCCESS) {
+                QGP_LOG_INFO(LOG_TAG, "Received FORWARD_RSP for tx %.8s...",
+                            (const char *)rsp.tx_hash);
+                int rc = bft_handle_forward_response(g_bft_ctx, &rsp, g_tcp_server);
+                if (rc != DNAC_BFT_SUCCESS) {
+                    QGP_LOG_WARN(LOG_TAG, "Failed to handle forward response: %d", rc);
+                }
+            } else {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to deserialize FORWARD_RSP");
+            }
             break;
         }
 
@@ -649,7 +1079,28 @@ static void on_tcp_message(int peer_index, uint8_t msg_type,
                 dnac_tcp_write_frame_header(pong_buf, DNAC_NODUS_MSG_PONG, 0);
                 dnac_tcp_server_send(g_tcp_server, peer_index, pong_buf,
                                      DNAC_TCP_FRAME_HEADER_SIZE);
-            } else {
+            }
+            /* v0.5.0: Ledger and UTXO query messages */
+            else if (msg_type == DNAC_NODUS_MSG_LEDGER_QUERY) {
+                handle_ledger_query(peer_index, data, len);
+            }
+            else if (msg_type == DNAC_NODUS_MSG_SUPPLY_QUERY) {
+                handle_supply_query(peer_index, data, len);
+            }
+            else if (msg_type == DNAC_NODUS_MSG_UTXO_QUERY) {
+                handle_utxo_query(peer_index, data, len);
+            }
+            else if (msg_type == DNAC_NODUS_MSG_UTXO_PROOF_QUERY) {
+                handle_utxo_proof_query(peer_index, data, len);
+            }
+            else if (msg_type == DNAC_NODUS_MSG_CHECK_NULLIFIER) {
+                handle_nullifier_query(peer_index, data, len);
+            }
+            /* P0-2 (v0.7.0): Ledger range query for chain sync */
+            else if (msg_type == DNAC_NODUS_MSG_LEDGER_RANGE_QUERY) {
+                handle_ledger_range_query(peer_index, data, len);
+            }
+            else {
                 fprintf(stderr, "[WITNESS] Unknown message type: %d\n", msg_type);
                 fflush(stderr);
                 QGP_LOG_WARN(LOG_TAG, "Unknown message type: %d", msg_type);
@@ -829,6 +1280,31 @@ int bft_witness_main(int argc, char *argv[]) {
         return 1;
     }
 
+    /* v0.5.0: Initialize ledger system (uses nullifier DB) */
+    if (witness_ledger_init() != 0) {
+        fprintf(stderr, "Failed to initialize ledger system\n");
+        witness_nullifier_shutdown();
+        dna_engine_destroy(engine);
+        free(privkey);
+        free(data_dir);
+        free(my_address);
+        free(roster_file);
+        return 1;
+    }
+
+    /* v0.5.0: Initialize UTXO commitment system (uses nullifier DB) */
+    if (witness_utxo_init() != 0) {
+        fprintf(stderr, "Failed to initialize UTXO system\n");
+        witness_ledger_shutdown();
+        witness_nullifier_shutdown();
+        dna_engine_destroy(engine);
+        free(privkey);
+        free(data_dir);
+        free(my_address);
+        free(roster_file);
+        return 1;
+    }
+
     /* Create BFT context */
     dnac_bft_config_t config;
     dnac_bft_config_init(&config, 3);  /* Start with 3 witnesses */
@@ -837,6 +1313,8 @@ int bft_witness_main(int argc, char *argv[]) {
     g_bft_ctx = dnac_bft_create(&config, engine);
     if (!g_bft_ctx) {
         fprintf(stderr, "Failed to create BFT context\n");
+        witness_utxo_shutdown();
+        witness_ledger_shutdown();
         witness_nullifier_shutdown();
         dna_engine_destroy(engine);
         free(privkey);
@@ -850,6 +1328,8 @@ int bft_witness_main(int argc, char *argv[]) {
     if (dnac_bft_set_identity(g_bft_ctx, witness_id, pubkey, privkey, privkey_size) != 0) {
         fprintf(stderr, "Failed to set BFT identity\n");
         dnac_bft_destroy(g_bft_ctx);
+        witness_utxo_shutdown();
+        witness_ledger_shutdown();
         witness_nullifier_shutdown();
         dna_engine_destroy(engine);
         free(privkey);
@@ -859,13 +1339,22 @@ int bft_witness_main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Set callbacks for consensus operations */
+    /* Set callbacks for consensus operations (v0.5.0: added genesis, ledger, UTXO callbacks) */
     dnac_bft_set_callbacks(g_bft_ctx,
                            witness_nullifier_exists,
                            witness_nullifier_add,
                            bft_send_client_response,
                            bft_complete_forward_callback,
+                           witness_genesis_set,
+                           bft_ledger_add_callback,
+                           bft_utxo_mark_spent_callback,
                            NULL);
+
+    /* Set database transaction callbacks for atomicity (Gap 11: v0.6.0) */
+    dnac_bft_set_db_callbacks(g_bft_ctx,
+                              witness_db_begin_transaction,
+                              witness_db_commit,
+                              witness_db_rollback);
 
     /* Create default address if not provided */
     if (!my_address) {
@@ -946,6 +1435,8 @@ int bft_witness_main(int argc, char *argv[]) {
     if (!g_tcp_server) {
         fprintf(stderr, "Failed to create TCP server\n");
         dnac_bft_destroy(g_bft_ctx);
+        witness_utxo_shutdown();
+        witness_ledger_shutdown();
         witness_nullifier_shutdown();
         dna_engine_destroy(engine);
         free(privkey);
@@ -967,6 +1458,8 @@ int bft_witness_main(int argc, char *argv[]) {
         fprintf(stderr, "Failed to start TCP server\n");
         dnac_tcp_server_destroy(g_tcp_server);
         dnac_bft_destroy(g_bft_ctx);
+        witness_utxo_shutdown();
+        witness_ledger_shutdown();
         witness_nullifier_shutdown();
         dna_engine_destroy(engine);
         free(privkey);
@@ -984,6 +1477,8 @@ int bft_witness_main(int argc, char *argv[]) {
         dnac_tcp_server_stop(g_tcp_server);
         dnac_tcp_server_destroy(g_tcp_server);
         dnac_bft_destroy(g_bft_ctx);
+        witness_utxo_shutdown();
+        witness_ledger_shutdown();
         witness_nullifier_shutdown();
         dna_engine_destroy(engine);
         free(privkey);
@@ -1047,6 +1542,8 @@ int bft_witness_main(int argc, char *argv[]) {
     dnac_tcp_server_stop(g_tcp_server);
     dnac_tcp_server_destroy(g_tcp_server);
     dnac_bft_destroy(g_bft_ctx);
+    witness_utxo_shutdown();
+    witness_ledger_shutdown();
     witness_nullifier_shutdown();
     dna_engine_destroy(engine);
 

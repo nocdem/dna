@@ -10,6 +10,7 @@
 #include "dnac/nodus.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdbool.h>
 
 /* libdna crypto utilities */
 #include "crypto/utils/qgp_dilithium.h"
@@ -17,19 +18,16 @@
 /**
  * @brief Verify balance (v1: plaintext sum check)
  *
- * MINT: no inputs, outputs create coins from nothing (witness authorized)
+ * GENESIS: no inputs, outputs create coins from nothing (3-of-3 witness authorized)
  * SPEND: sum(inputs) == sum(outputs)
  */
 static int verify_balance_v1(const dnac_transaction_t *tx) {
-    /* MINT: no inputs, outputs create coins from nothing */
-    if (tx->type == DNAC_TX_MINT) {
+    /* GENESIS: no inputs, outputs create coins from nothing (v0.5.0) */
+    if (tx->type == DNAC_TX_GENESIS) {
         if (tx->input_count != 0) {
             return DNAC_ERROR_INVALID_PROOF;
         }
-        uint64_t total_out = dnac_tx_total_output(tx);
-        if (DNAC_MAX_MINT_AMOUNT > 0 && total_out > DNAC_MAX_MINT_AMOUNT) {
-            return DNAC_ERROR_SUPPLY_EXCEEDED;
-        }
+        /* Genesis supply is validated by witnesses - no local cap check */
         return DNAC_SUCCESS;
     }
 
@@ -65,16 +63,15 @@ int verify_witnesses(const dnac_transaction_t *tx) {
         fprintf(stderr, "[WITNESS_VERIFY] Witness %d: id=%.8s..., ts=%llu\n",
                 i, (const char*)witness->witness_id, (unsigned long long)witness->timestamp);
 
-        /* Check if server_pubkey looks valid (not all zeros) */
-        int nonzero = 0;
-        for (int k = 0; k < 64; k++) {
-            if (witness->server_pubkey[k] != 0) nonzero++;
+        /* Gap 12 Fix (v0.6.0): Check if entire pubkey is all zeros (placeholder/invalid)
+         * If not zero, always attempt verification - let Dilithium5 validate the key format.
+         * The previous heuristic only checked first 64 of 2592 bytes, allowing bypass. */
+        bool is_all_zeros = true;
+        for (int k = 0; k < DNAC_PUBKEY_SIZE && is_all_zeros; k++) {
+            if (witness->server_pubkey[k] != 0) is_all_zeros = false;
         }
-        fprintf(stderr, "[WITNESS_VERIFY]   server_pubkey non-zero bytes in first 64: %d\n", nonzero);
-
-        /* Skip witnesses with empty pubkey (padding from old buggy transactions) */
-        if (nonzero < 32) {
-            fprintf(stderr, "[WITNESS_VERIFY]   Skipping (likely padding/garbage data)\n");
+        if (is_all_zeros) {
+            fprintf(stderr, "[WITNESS_VERIFY]   Skipping witness with zero pubkey (placeholder)\n");
             continue;
         }
 
@@ -134,12 +131,12 @@ int dnac_tx_verify_full(const dnac_transaction_t *tx) {
     rc = verify_balance_v1(tx);
     if (rc != DNAC_SUCCESS) return rc;
 
-    /* 2. Verify witnesses (2+ required for both SPEND and MINT) */
+    /* 2. Verify witnesses (required for both SPEND and GENESIS) */
     rc = verify_witnesses(tx);
     if (rc != DNAC_SUCCESS) return rc;
 
-    /* 3. Sender signature (skip for MINT - witnesses authorize) */
-    if (tx->type != DNAC_TX_MINT) {
+    /* 3. Sender signature (skip for GENESIS - witnesses authorize) */
+    if (tx->type != DNAC_TX_GENESIS) {
         rc = verify_sender_signature(tx);
         if (rc != DNAC_SUCCESS) return rc;
     }

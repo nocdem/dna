@@ -177,6 +177,9 @@ typedef struct {
 
 /**
  * @brief BFT message header (common to all messages)
+ *
+ * Gap 23-24 Fix (v0.6.0): Added nonce for replay prevention.
+ * Messages with same (sender_id, nonce) within time window are rejected.
  */
 typedef struct {
     uint8_t version;                                /**< Protocol version */
@@ -185,18 +188,21 @@ typedef struct {
     uint32_t view;                                  /**< Current view */
     uint8_t sender_id[DNAC_BFT_WITNESS_ID_SIZE];    /**< Sender witness ID */
     uint64_t timestamp;                             /**< Message timestamp */
+    uint64_t nonce;                                 /**< Random nonce for replay prevention */
 } dnac_bft_msg_header_t;
 
 /**
  * @brief Proposal message (from leader)
  *
  * v0.4.0: Now carries multiple nullifiers to prevent multi-input double-spend.
+ * v0.5.0: Added tx_type for genesis (requires unanimous 3-of-3 quorum).
  */
 typedef struct {
     dnac_bft_msg_header_t header;
     uint8_t tx_hash[DNAC_TX_HASH_SIZE];             /**< Transaction hash */
     uint8_t nullifiers[DNAC_TX_MAX_INPUTS][DNAC_NULLIFIER_SIZE]; /**< All nullifiers being spent */
     uint8_t nullifier_count;                        /**< Number of nullifiers */
+    uint8_t tx_type;                                /**< Transaction type (0=GENESIS, 1=SPEND, 2=BURN) */
     uint8_t sender_pubkey[DNAC_PUBKEY_SIZE];        /**< Client's public key */
     uint8_t client_signature[DNAC_SIGNATURE_SIZE];  /**< Client's signature on tx */
     uint64_t fee_amount;                            /**< Fee amount */
@@ -294,6 +300,7 @@ typedef struct {
  * @brief Consensus round state
  *
  * v0.4.0: Now tracks multiple nullifiers for multi-input transactions.
+ * v0.5.0: Added tx_type for genesis handling (requires unanimous quorum).
  */
 typedef struct {
     uint64_t round;                                 /**< Round number */
@@ -302,6 +309,7 @@ typedef struct {
     uint8_t tx_hash[DNAC_TX_HASH_SIZE];             /**< Transaction being processed */
     uint8_t nullifiers[DNAC_TX_MAX_INPUTS][DNAC_NULLIFIER_SIZE]; /**< All nullifiers being spent */
     uint8_t nullifier_count;                        /**< Number of nullifiers */
+    uint8_t tx_type;                                /**< Transaction type (v0.5.0: for genesis 3-of-3) */
 
     /* Votes collected */
     dnac_bft_vote_record_t prevotes[DNAC_BFT_MAX_WITNESSES];
@@ -349,6 +357,51 @@ typedef int (*dnac_bft_complete_forward_fn)(const uint8_t *tx_hash, const uint8_
                                             const uint8_t *pubkey);
 
 /**
+ * @brief v0.5.0: Genesis state callback for recording genesis on commit
+ *
+ * Called when a GENESIS transaction is committed by consensus.
+ * @param tx_hash Genesis transaction hash
+ * @param total_supply Total tokens created
+ * @param commitment Genesis commitment hash
+ * @return 0 on success, -1 on error, -2 if genesis already exists
+ */
+typedef int (*dnac_bft_genesis_record_fn)(const uint8_t *tx_hash, uint64_t total_supply,
+                                          const uint8_t *commitment);
+
+/**
+ * @brief v0.5.0: Ledger entry callback for adding entries on commit
+ *
+ * Called when any transaction is committed by consensus.
+ * @param tx_hash Transaction hash
+ * @param tx_type Transaction type (GENESIS, SPEND, BURN)
+ * @param nullifiers Array of nullifiers
+ * @param nullifier_count Number of nullifiers
+ * @return 0 on success, -1 on error
+ */
+typedef int (*dnac_bft_ledger_add_fn)(const uint8_t *tx_hash, uint8_t tx_type,
+                                       const uint8_t nullifiers[][DNAC_NULLIFIER_SIZE],
+                                       uint8_t nullifier_count);
+
+/**
+ * @brief v0.5.0: UTXO mark spent callback for updating UTXO tree on commit
+ *
+ * Called when inputs are consumed by a committed transaction.
+ * @param commitment_hash The UTXO commitment being spent
+ * @param spent_epoch Epoch when spent
+ * @return 0 on success, -1 if not found
+ */
+typedef int (*dnac_bft_utxo_mark_spent_fn)(const uint8_t *commitment_hash, uint64_t spent_epoch);
+
+/**
+ * @brief v0.6.0: Database transaction callbacks (Gap 11)
+ *
+ * Provides atomicity for multi-nullifier commits.
+ */
+typedef int (*dnac_bft_db_begin_fn)(void);
+typedef int (*dnac_bft_db_commit_fn)(void);
+typedef int (*dnac_bft_db_rollback_fn)(void);
+
+/**
  * @brief Main BFT consensus context
  */
 typedef struct dnac_bft_context {
@@ -390,18 +443,39 @@ typedef struct dnac_bft_context {
     dnac_bft_nullifier_add_fn nullifier_add_cb;         /**< Add nullifier */
     dnac_bft_send_response_fn send_response_cb;         /**< Send client response */
     dnac_bft_complete_forward_fn complete_forward_cb;   /**< Complete pending forward */
+    dnac_bft_genesis_record_fn genesis_record_cb;       /**< v0.5.0: Record genesis state */
+    dnac_bft_ledger_add_fn ledger_add_cb;               /**< v0.5.0: Add ledger entry */
+    dnac_bft_utxo_mark_spent_fn utxo_mark_spent_cb;     /**< v0.5.0: Mark UTXO spent */
+    dnac_bft_db_begin_fn db_begin_cb;                   /**< v0.6.0: Begin transaction (Gap 11) */
+    dnac_bft_db_commit_fn db_commit_cb;                 /**< v0.6.0: Commit transaction (Gap 11) */
+    dnac_bft_db_rollback_fn db_rollback_cb;             /**< v0.6.0: Rollback transaction (Gap 11) */
     void *callback_user_data;                           /**< User data for callbacks */
 } dnac_bft_context_t;
 
 /**
  * @brief Set callbacks for BFT consensus
+ *
+ * v0.5.0: Added genesis_cb, ledger_cb, utxo_mark_spent_cb for full state tracking.
  */
 void dnac_bft_set_callbacks(dnac_bft_context_t *ctx,
                             dnac_bft_nullifier_exists_fn exists_cb,
                             dnac_bft_nullifier_add_fn add_cb,
                             dnac_bft_send_response_fn response_cb,
                             dnac_bft_complete_forward_fn forward_cb,
+                            dnac_bft_genesis_record_fn genesis_cb,
+                            dnac_bft_ledger_add_fn ledger_cb,
+                            dnac_bft_utxo_mark_spent_fn utxo_mark_spent_cb,
                             void *user_data);
+
+/**
+ * @brief Set database transaction callbacks (Gap 11: v0.6.0)
+ *
+ * These callbacks provide atomicity for multi-nullifier commits.
+ */
+void dnac_bft_set_db_callbacks(dnac_bft_context_t *ctx,
+                                dnac_bft_db_begin_fn begin_cb,
+                                dnac_bft_db_commit_fn commit_cb,
+                                dnac_bft_db_rollback_fn rollback_cb);
 
 /* ============================================================================
  * Core BFT Functions
@@ -471,11 +545,13 @@ int dnac_bft_get_quorum(int n_witnesses);
  * @brief Start a new consensus round (leader only)
  *
  * v0.4.0: Now accepts array of nullifiers to prevent multi-input double-spend.
+ * v0.5.0: Added tx_type for genesis handling (requires unanimous 3-of-3 quorum).
  *
  * @param ctx BFT context
  * @param tx_hash Transaction hash
  * @param nullifiers Array of nullifiers being spent [count][DNAC_NULLIFIER_SIZE]
  * @param nullifier_count Number of nullifiers in array
+ * @param tx_type Transaction type (DNAC_TX_GENESIS, DNAC_TX_SPEND, DNAC_TX_BURN)
  * @param client_pubkey Client's public key
  * @param client_sig Client's signature
  * @param fee_amount Fee amount
@@ -485,6 +561,7 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
                          const uint8_t *tx_hash,
                          const uint8_t nullifiers[][DNAC_NULLIFIER_SIZE],
                          uint8_t nullifier_count,
+                         uint8_t tx_type,
                          const uint8_t *client_pubkey,
                          const uint8_t *client_sig,
                          uint64_t fee_amount);
@@ -709,6 +786,19 @@ int dnac_bft_view_change_serialize(const dnac_bft_view_change_t *vc,
  */
 int dnac_bft_view_change_deserialize(const uint8_t *buffer, size_t buffer_len,
                                      dnac_bft_view_change_t *vc);
+
+/**
+ * @brief Serialize NEW-VIEW message (Gap 6: v0.6.0)
+ */
+int dnac_bft_new_view_serialize(const dnac_bft_new_view_t *nv,
+                                 uint8_t *buffer, size_t buffer_len,
+                                 size_t *written);
+
+/**
+ * @brief Deserialize NEW-VIEW message (Gap 6: v0.6.0)
+ */
+int dnac_bft_new_view_deserialize(const uint8_t *buffer, size_t buffer_len,
+                                   dnac_bft_new_view_t *nv);
 
 /**
  * @brief Serialize roster

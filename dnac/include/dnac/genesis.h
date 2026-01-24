@@ -1,0 +1,192 @@
+/**
+ * @file genesis.h
+ * @brief DNAC Genesis Event API
+ *
+ * Genesis is a one-time event that creates all tokens in the system.
+ * After genesis, no new tokens can be created (only transferred or burned).
+ *
+ * Key properties:
+ * - Requires 3-of-3 (unanimous) witness approval
+ * - Can only happen once - attempts after genesis are rejected
+ * - Before genesis, only GENESIS transactions are valid
+ * - After genesis, only SPEND/BURN transactions are valid
+ *
+ * Copyright (c) 2026 nocdem
+ * SPDX-License-Identifier: MIT
+ */
+
+#ifndef DNAC_GENESIS_H
+#define DNAC_GENESIS_H
+
+#include "dnac.h"
+#include "dnac/transaction.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ============================================================================
+ * Constants
+ * ========================================================================== */
+
+/** Maximum recipients in a genesis transaction */
+#define DNAC_GENESIS_MAX_RECIPIENTS     16
+
+/** Witnesses required for genesis (unanimous approval) */
+#define DNAC_GENESIS_WITNESSES_REQUIRED 3
+
+/** Genesis commitment size (SHA3-512 hash of genesis data) */
+#define DNAC_GENESIS_COMMITMENT_SIZE    64
+
+/* ============================================================================
+ * Data Types
+ * ========================================================================== */
+
+/**
+ * @brief Genesis recipient specification
+ */
+typedef struct {
+    char fingerprint[DNAC_FINGERPRINT_SIZE];  /**< Recipient's identity fingerprint */
+    uint64_t amount;                           /**< Amount to allocate */
+} dnac_genesis_recipient_t;
+
+/**
+ * @brief Genesis state (stored by witnesses)
+ */
+typedef struct {
+    uint8_t genesis_hash[DNAC_TX_HASH_SIZE];   /**< Genesis transaction hash */
+    uint64_t total_supply;                      /**< Total tokens created */
+    uint64_t genesis_timestamp;                 /**< Unix timestamp of genesis */
+    uint8_t genesis_commitment[DNAC_GENESIS_COMMITMENT_SIZE]; /**< Commitment hash */
+} dnac_genesis_state_t;
+
+/* ============================================================================
+ * Genesis Transaction Functions
+ * ========================================================================== */
+
+/**
+ * @brief Create a GENESIS transaction
+ *
+ * Creates a transaction that establishes the total token supply.
+ * Tokens are distributed to specified recipients.
+ * Requires 3-of-3 witness authorization before broadcast.
+ *
+ * @param recipients Array of recipients with amounts
+ * @param recipient_count Number of recipients (1 to DNAC_GENESIS_MAX_RECIPIENTS)
+ * @param tx_out Output transaction (caller must free with dnac_free_transaction)
+ * @return DNAC_SUCCESS or error code:
+ *         - DNAC_ERROR_INVALID_PARAM: Invalid parameters
+ *         - DNAC_ERROR_OUT_OF_MEMORY: Memory allocation failed
+ */
+int dnac_tx_create_genesis(const dnac_genesis_recipient_t *recipients,
+                           int recipient_count,
+                           dnac_transaction_t **tx_out);
+
+/**
+ * @brief Authorize GENESIS transaction via witness consensus
+ *
+ * Requests 3-of-3 (unanimous) witness signatures to authorize genesis.
+ * This is a higher bar than normal transactions (which need 2-of-3).
+ *
+ * @param ctx DNAC context
+ * @param tx GENESIS transaction to authorize
+ * @return DNAC_SUCCESS or error code:
+ *         - DNAC_ERROR_GENESIS_EXISTS: Genesis already occurred
+ *         - DNAC_ERROR_WITNESS_FAILED: Failed to get unanimous approval
+ *         - DNAC_ERROR_TIMEOUT: Witness request timed out
+ */
+int dnac_tx_authorize_genesis(dnac_context_t *ctx, dnac_transaction_t *tx);
+
+/**
+ * @brief Broadcast authorized GENESIS transaction
+ *
+ * Sends the genesis tokens to recipients via DHT.
+ * After this, the system is initialized and normal transactions work.
+ *
+ * @param ctx DNAC context
+ * @param tx Authorized GENESIS transaction (must have 3 witness signatures)
+ * @return DNAC_SUCCESS or error code:
+ *         - DNAC_ERROR_INVALID_PARAM: Transaction not properly authorized
+ *         - DNAC_ERROR_NETWORK: DHT broadcast failed
+ */
+int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx);
+
+/* ============================================================================
+ * Genesis State Query Functions
+ * ========================================================================== */
+
+/**
+ * @brief Check if genesis has occurred
+ *
+ * Queries witnesses to determine if the system has been initialized.
+ *
+ * @param ctx DNAC context
+ * @param exists_out Output: true if genesis exists
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_genesis_check_exists(dnac_context_t *ctx, bool *exists_out);
+
+/**
+ * @brief Get genesis state information
+ *
+ * Retrieves the genesis state from witnesses if genesis has occurred.
+ *
+ * @param ctx DNAC context
+ * @param state_out Output genesis state
+ * @return DNAC_SUCCESS or error code:
+ *         - DNAC_ERROR_NO_GENESIS: Genesis has not occurred
+ */
+int dnac_genesis_get_state(dnac_context_t *ctx, dnac_genesis_state_t *state_out);
+
+/**
+ * @brief Get total supply from genesis
+ *
+ * Returns the total token supply established at genesis.
+ *
+ * @param ctx DNAC context
+ * @param supply_out Output total supply
+ * @return DNAC_SUCCESS or error code:
+ *         - DNAC_ERROR_NO_GENESIS: Genesis has not occurred
+ */
+int dnac_genesis_get_total_supply(dnac_context_t *ctx, uint64_t *supply_out);
+
+/* ============================================================================
+ * Witness-Side Genesis Functions (Internal)
+ * ========================================================================== */
+
+/**
+ * @brief Check if genesis exists in witness database
+ *
+ * Used by witness servers to check pre-authorization.
+ *
+ * @return true if genesis has occurred
+ */
+bool witness_genesis_exists(void);
+
+/**
+ * @brief Record genesis in witness database
+ *
+ * Called when GENESIS transaction is committed.
+ *
+ * @param tx_hash Genesis transaction hash
+ * @param total_supply Total tokens created
+ * @param commitment Genesis commitment hash
+ * @return 0 on success, -1 on error
+ */
+int witness_genesis_set(const uint8_t *tx_hash,
+                        uint64_t total_supply,
+                        const uint8_t *commitment);
+
+/**
+ * @brief Get genesis state from witness database
+ *
+ * @param state_out Output genesis state
+ * @return 0 on success, -1 if no genesis
+ */
+int witness_genesis_get(dnac_genesis_state_t *state_out);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* DNAC_GENESIS_H */

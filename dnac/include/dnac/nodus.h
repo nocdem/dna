@@ -65,7 +65,19 @@ typedef enum {
     DNAC_NODUS_MSG_CHECK_NULLIFIER  = 130,
     DNAC_NODUS_MSG_NULLIFIER_STATUS = 131,
     DNAC_NODUS_MSG_PING             = 132,
-    DNAC_NODUS_MSG_PONG             = 133
+    DNAC_NODUS_MSG_PONG             = 133,
+    /* v0.5.0: Query messages for ledger and UTXO */
+    DNAC_NODUS_MSG_LEDGER_QUERY     = 134,  /**< Query ledger entry by tx_hash */
+    DNAC_NODUS_MSG_LEDGER_RESPONSE  = 135,  /**< Ledger entry + Merkle proof */
+    DNAC_NODUS_MSG_SUPPLY_QUERY     = 136,  /**< Query supply state */
+    DNAC_NODUS_MSG_SUPPLY_RESPONSE  = 137,  /**< Supply state response */
+    DNAC_NODUS_MSG_UTXO_QUERY       = 138,  /**< Query UTXOs by owner commitment */
+    DNAC_NODUS_MSG_UTXO_RESPONSE    = 139,  /**< UTXO list response */
+    DNAC_NODUS_MSG_UTXO_PROOF_QUERY = 140,  /**< Query UTXO existence proof */
+    DNAC_NODUS_MSG_UTXO_PROOF_RSP   = 141,  /**< UTXO proof response */
+    /* P0-2 (v0.7.0): Chain sync range queries */
+    DNAC_NODUS_MSG_LEDGER_RANGE_QUERY    = 142, /**< Query ledger entry range */
+    DNAC_NODUS_MSG_LEDGER_RANGE_RESPONSE = 143  /**< Ledger range response */
 } dnac_nodus_msg_type_t;
 
 typedef enum {
@@ -108,6 +120,164 @@ typedef struct {
     uint8_t software_version[3];                 /**< Witness software version [major, minor, patch] */
     char error_message[256];                     /**< Error message if rejected */
 } dnac_spend_response_t;
+
+/* ============================================================================
+ * v0.5.0: Ledger and UTXO Query Structures
+ * ========================================================================== */
+
+/** Maximum UTXOs returned in single query */
+#define DNAC_MAX_UTXO_QUERY_RESULTS     100
+
+/** P0-2 (v0.7.0): Maximum ledger entries in range query response */
+#define DNAC_MAX_RANGE_RESULTS          100
+
+/**
+ * @brief Ledger query request
+ */
+typedef struct {
+    uint8_t tx_hash[DNAC_TX_HASH_SIZE];          /**< Transaction hash to query */
+    bool include_proof;                           /**< Include Merkle proof */
+} dnac_ledger_query_t;
+
+/**
+ * @brief Ledger query response (forward declaration - full struct in ledger.h)
+ */
+typedef struct {
+    dnac_nodus_status_t status;
+    uint64_t sequence_number;
+    uint8_t tx_hash[DNAC_TX_HASH_SIZE];
+    uint8_t tx_type;
+    uint8_t merkle_root[64];
+    uint64_t timestamp;
+    uint64_t epoch;
+    /* Proof data if requested */
+    bool has_proof;
+    uint8_t leaf_hash[64];
+    int proof_length;
+    uint8_t proof_root[64];
+} dnac_ledger_response_t;
+
+/**
+ * @brief Supply query request (no parameters needed)
+ */
+typedef struct {
+    uint8_t padding;  /**< Reserved */
+} dnac_supply_query_t;
+
+/**
+ * @brief Supply query response
+ */
+typedef struct {
+    dnac_nodus_status_t status;
+    uint64_t genesis_supply;                     /**< Total supply at genesis */
+    uint64_t total_burned;                       /**< Total burned */
+    uint64_t current_supply;                     /**< genesis - burned */
+    uint8_t last_tx_hash[DNAC_TX_HASH_SIZE];    /**< Last transaction */
+    uint64_t last_sequence;                      /**< Last sequence number */
+} dnac_supply_response_t;
+
+/**
+ * @brief UTXO query by owner request
+ */
+typedef struct {
+    uint8_t owner_commitment[64];                /**< Owner commitment hash */
+    int max_results;                             /**< Max UTXOs to return */
+} dnac_utxo_query_t;
+
+/**
+ * @brief Single UTXO entry in response
+ */
+typedef struct {
+    uint8_t commitment[64];
+    uint8_t tx_hash[DNAC_TX_HASH_SIZE];
+    uint32_t output_index;
+    uint64_t amount;
+    uint64_t created_epoch;
+} dnac_utxo_entry_t;
+
+/**
+ * @brief UTXO query response
+ */
+typedef struct {
+    dnac_nodus_status_t status;
+    int count;                                   /**< Number of UTXOs returned */
+    dnac_utxo_entry_t utxos[DNAC_MAX_UTXO_QUERY_RESULTS];
+} dnac_utxo_response_t;
+
+/**
+ * @brief UTXO proof query request
+ */
+typedef struct {
+    uint8_t commitment[64];                      /**< UTXO commitment to prove */
+} dnac_utxo_proof_query_t;
+
+/**
+ * @brief UTXO proof response
+ */
+typedef struct {
+    dnac_nodus_status_t status;
+    bool exists;                                 /**< UTXO exists and unspent */
+    uint8_t commitment[64];                      /**< Commitment queried */
+    uint8_t root[64];                            /**< Current UTXO root */
+    uint64_t epoch;                              /**< Root epoch */
+} dnac_utxo_proof_response_t;
+
+/**
+ * @brief Nullifier check request
+ */
+typedef struct {
+    uint8_t nullifier[DNAC_NULLIFIER_SIZE];      /**< Nullifier to check */
+} dnac_nullifier_query_t;
+
+/**
+ * @brief Nullifier check response
+ */
+typedef struct {
+    dnac_nodus_status_t status;
+    bool is_spent;                               /**< True if nullifier is spent */
+    uint8_t nullifier[DNAC_NULLIFIER_SIZE];      /**< Nullifier queried */
+    uint64_t spent_epoch;                        /**< Epoch when spent (if applicable) */
+} dnac_nullifier_response_t;
+
+/* ============================================================================
+ * P0-2 (v0.7.0): Chain Sync Range Query Structures
+ * ========================================================================== */
+
+/**
+ * @brief Ledger range query request
+ *
+ * Enables clients to synchronize ledger state by requesting a range
+ * of ledger entries. Used for chain sync protocol.
+ */
+typedef struct {
+    uint64_t from_sequence;                      /**< Start sequence (inclusive) */
+    uint64_t to_sequence;                        /**< End sequence (inclusive), 0 = latest */
+    bool include_proofs;                         /**< Include Merkle proofs for each entry */
+} dnac_ledger_range_query_t;
+
+/**
+ * @brief Single ledger entry in range response (compact form)
+ */
+typedef struct {
+    uint64_t sequence_number;
+    uint8_t tx_hash[DNAC_TX_HASH_SIZE];
+    uint8_t tx_type;
+    uint8_t merkle_root[64];
+    uint64_t timestamp;
+    uint64_t epoch;
+} dnac_ledger_range_entry_t;
+
+/**
+ * @brief Ledger range query response
+ */
+typedef struct {
+    dnac_nodus_status_t status;
+    uint64_t first_sequence;                     /**< Actual first returned */
+    uint64_t last_sequence;                      /**< Actual last returned */
+    uint64_t total_entries;                      /**< Total entries in ledger */
+    int count;                                   /**< Number of entries returned */
+    dnac_ledger_range_entry_t entries[DNAC_MAX_RANGE_RESULTS];
+} dnac_ledger_range_response_t;
 
 /* ============================================================================
  * Client Functions
@@ -232,6 +402,194 @@ int dnac_spend_response_serialize(const dnac_spend_response_t *response,
 int dnac_spend_response_deserialize(const uint8_t *buffer,
                                     size_t buffer_len,
                                     dnac_spend_response_t *response_out);
+
+/* ============================================================================
+ * v0.5.0: Ledger/UTXO Query Serialization
+ * ========================================================================== */
+
+/**
+ * @brief Serialize ledger query
+ */
+int dnac_ledger_query_serialize(const dnac_ledger_query_t *query,
+                                uint8_t *buffer,
+                                size_t buffer_len,
+                                size_t *written_out);
+
+/**
+ * @brief Deserialize ledger query
+ */
+int dnac_ledger_query_deserialize(const uint8_t *buffer,
+                                  size_t buffer_len,
+                                  dnac_ledger_query_t *query_out);
+
+/**
+ * @brief Serialize ledger response
+ */
+int dnac_ledger_response_serialize(const dnac_ledger_response_t *response,
+                                   uint8_t *buffer,
+                                   size_t buffer_len,
+                                   size_t *written_out);
+
+/**
+ * @brief Deserialize ledger response
+ */
+int dnac_ledger_response_deserialize(const uint8_t *buffer,
+                                     size_t buffer_len,
+                                     dnac_ledger_response_t *response_out);
+
+/**
+ * @brief Serialize supply query
+ */
+int dnac_supply_query_serialize(const dnac_supply_query_t *query,
+                                uint8_t *buffer,
+                                size_t buffer_len,
+                                size_t *written_out);
+
+/**
+ * @brief Deserialize supply query
+ */
+int dnac_supply_query_deserialize(const uint8_t *buffer,
+                                  size_t buffer_len,
+                                  dnac_supply_query_t *query_out);
+
+/**
+ * @brief Serialize supply response
+ */
+int dnac_supply_response_serialize(const dnac_supply_response_t *response,
+                                   uint8_t *buffer,
+                                   size_t buffer_len,
+                                   size_t *written_out);
+
+/**
+ * @brief Deserialize supply response
+ */
+int dnac_supply_response_deserialize(const uint8_t *buffer,
+                                     size_t buffer_len,
+                                     dnac_supply_response_t *response_out);
+
+/**
+ * @brief Serialize UTXO query
+ */
+int dnac_utxo_query_serialize(const dnac_utxo_query_t *query,
+                              uint8_t *buffer,
+                              size_t buffer_len,
+                              size_t *written_out);
+
+/**
+ * @brief Deserialize UTXO query
+ */
+int dnac_utxo_query_deserialize(const uint8_t *buffer,
+                                size_t buffer_len,
+                                dnac_utxo_query_t *query_out);
+
+/**
+ * @brief Serialize UTXO response
+ */
+int dnac_utxo_response_serialize(const dnac_utxo_response_t *response,
+                                 uint8_t *buffer,
+                                 size_t buffer_len,
+                                 size_t *written_out);
+
+/**
+ * @brief Deserialize UTXO response
+ */
+int dnac_utxo_response_deserialize(const uint8_t *buffer,
+                                   size_t buffer_len,
+                                   dnac_utxo_response_t *response_out);
+
+/**
+ * @brief Serialize UTXO proof query
+ */
+int dnac_utxo_proof_query_serialize(const dnac_utxo_proof_query_t *query,
+                                    uint8_t *buffer,
+                                    size_t buffer_len,
+                                    size_t *written_out);
+
+/**
+ * @brief Deserialize UTXO proof query
+ */
+int dnac_utxo_proof_query_deserialize(const uint8_t *buffer,
+                                      size_t buffer_len,
+                                      dnac_utxo_proof_query_t *query_out);
+
+/**
+ * @brief Serialize UTXO proof response
+ */
+int dnac_utxo_proof_response_serialize(const dnac_utxo_proof_response_t *response,
+                                       uint8_t *buffer,
+                                       size_t buffer_len,
+                                       size_t *written_out);
+
+/**
+ * @brief Deserialize UTXO proof response
+ */
+int dnac_utxo_proof_response_deserialize(const uint8_t *buffer,
+                                         size_t buffer_len,
+                                         dnac_utxo_proof_response_t *response_out);
+
+/**
+ * @brief Serialize nullifier check query
+ */
+int dnac_nullifier_query_serialize(const dnac_nullifier_query_t *query,
+                                    uint8_t *buffer,
+                                    size_t buffer_len,
+                                    size_t *written_out);
+
+/**
+ * @brief Deserialize nullifier check query
+ */
+int dnac_nullifier_query_deserialize(const uint8_t *buffer,
+                                      size_t buffer_len,
+                                      dnac_nullifier_query_t *query_out);
+
+/**
+ * @brief Serialize nullifier check response
+ */
+int dnac_nullifier_response_serialize(const dnac_nullifier_response_t *response,
+                                       uint8_t *buffer,
+                                       size_t buffer_len,
+                                       size_t *written_out);
+
+/**
+ * @brief Deserialize nullifier check response
+ */
+int dnac_nullifier_response_deserialize(const uint8_t *buffer,
+                                         size_t buffer_len,
+                                         dnac_nullifier_response_t *response_out);
+
+/* ============================================================================
+ * P0-2 (v0.7.0): Range Query Serialization
+ * ========================================================================== */
+
+/**
+ * @brief Serialize ledger range query
+ */
+int dnac_ledger_range_query_serialize(const dnac_ledger_range_query_t *query,
+                                       uint8_t *buffer,
+                                       size_t buffer_len,
+                                       size_t *written_out);
+
+/**
+ * @brief Deserialize ledger range query
+ */
+int dnac_ledger_range_query_deserialize(const uint8_t *buffer,
+                                         size_t buffer_len,
+                                         dnac_ledger_range_query_t *query_out);
+
+/**
+ * @brief Serialize ledger range response
+ */
+int dnac_ledger_range_response_serialize(const dnac_ledger_range_response_t *response,
+                                          uint8_t *buffer,
+                                          size_t buffer_len,
+                                          size_t *written_out);
+
+/**
+ * @brief Deserialize ledger range response
+ */
+int dnac_ledger_range_response_deserialize(const uint8_t *buffer,
+                                            size_t buffer_len,
+                                            dnac_ledger_range_response_t *response_out);
 
 #ifdef __cplusplus
 }

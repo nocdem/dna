@@ -53,10 +53,21 @@ int dnac_tx_add_output(dnac_transaction_t *tx,
                        const char *recipient_fingerprint,
                        uint64_t amount,
                        uint8_t *nullifier_seed_out) {
+    return dnac_tx_add_output_with_memo(tx, recipient_fingerprint, amount,
+                                         nullifier_seed_out, NULL, 0);
+}
+
+int dnac_tx_add_output_with_memo(dnac_transaction_t *tx,
+                                  const char *recipient_fingerprint,
+                                  uint64_t amount,
+                                  uint8_t *nullifier_seed_out,
+                                  const char *memo,
+                                  uint8_t memo_len) {
     if (!tx || !recipient_fingerprint || amount == 0) {
         return DNAC_ERROR_INVALID_PARAM;
     }
     if (tx->output_count >= DNAC_TX_MAX_OUTPUTS) return DNAC_ERROR_INVALID_PARAM;
+    if (memo_len > DNAC_MEMO_MAX_SIZE) return DNAC_ERROR_INVALID_PARAM;
 
     dnac_tx_output_internal_t *output = &tx->outputs[tx->output_count];
     output->version = tx->version;
@@ -70,6 +81,14 @@ int dnac_tx_add_output(dnac_transaction_t *tx,
             return DNAC_ERROR_RANDOM_FAILED;
         }
         memcpy(output->nullifier_seed, nullifier_seed_out, 32);
+    }
+
+    /* Gap 25: v0.6.0 - Set memo if provided */
+    output->memo_len = 0;
+    memset(output->memo, 0, DNAC_MEMO_MAX_SIZE);
+    if (memo && memo_len > 0) {
+        memcpy(output->memo, memo, memo_len);
+        output->memo_len = memo_len;
     }
 
     tx->output_count++;
@@ -182,12 +201,16 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
         EVP_DigestUpdate(ctx, &tx->inputs[i].amount, sizeof(uint64_t));
     }
 
-    /* Hash outputs */
+    /* Hash outputs (Gap 25: v0.6.0 - includes memo) */
     for (int i = 0; i < tx->output_count; i++) {
         EVP_DigestUpdate(ctx, &tx->outputs[i].version, sizeof(uint8_t));
         EVP_DigestUpdate(ctx, tx->outputs[i].owner_fingerprint, DNAC_FINGERPRINT_SIZE);
         EVP_DigestUpdate(ctx, &tx->outputs[i].amount, sizeof(uint64_t));
         EVP_DigestUpdate(ctx, tx->outputs[i].nullifier_seed, 32);
+        EVP_DigestUpdate(ctx, &tx->outputs[i].memo_len, sizeof(uint8_t));
+        if (tx->outputs[i].memo_len > 0) {
+            EVP_DigestUpdate(ctx, tx->outputs[i].memo, tx->outputs[i].memo_len);
+        }
     }
 
     unsigned int hash_len;

@@ -53,10 +53,14 @@ extern "C" {
 #define DNAC_ERROR_RANDOM_FAILED       -16
 #define DNAC_ERROR_UNAUTHORIZED_MINT   -17
 #define DNAC_ERROR_SUPPLY_EXCEEDED     -18
+#define DNAC_ERROR_GENESIS_EXISTS      -19  /* Genesis already occurred */
+#define DNAC_ERROR_NO_GENESIS          -20  /* System not initialized - no genesis */
+#define DNAC_ERROR_INVALID_TX_TYPE     -21  /* Invalid transaction type for current state */
+#define DNAC_ERROR_NOT_IMPLEMENTED     -22  /* Feature not yet implemented */
 
-/* Mint configuration */
-#define DNAC_MINT_WITNESS_REQUIRED     2              /* 2-of-3 for mint */
-#define DNAC_MAX_MINT_AMOUNT           1000000000000ULL  /* Max per mint (0=unlimited) */
+/* Genesis configuration */
+#define DNAC_GENESIS_WITNESS_REQUIRED  3              /* 3-of-3 (unanimous) for genesis */
+#define DNAC_DEFAULT_TOTAL_SUPPLY      100000000000000ULL  /* 100 trillion default supply */
 
 /* ============================================================================
  * Protocol Versions
@@ -121,9 +125,11 @@ typedef enum {
 
 /**
  * @brief Transaction type
+ *
+ * v0.5.0: DNAC_TX_MINT removed. All tokens created via one-time genesis.
  */
 typedef enum {
-    DNAC_TX_MINT    = 0,        /**< Initial coin creation (genesis) */
+    DNAC_TX_GENESIS = 0,        /**< One-time token creation (replaces MINT) */
     DNAC_TX_SPEND   = 1,        /**< Standard spend transaction */
     DNAC_TX_BURN    = 2         /**< Destroy coins (optional) */
 } dnac_tx_type_t;
@@ -189,6 +195,23 @@ typedef struct {
     uint64_t timestamp;                  /**< Unix timestamp */
     char memo[DNAC_MEMO_MAX_SIZE];       /**< Memo (if any) */
 } dnac_tx_history_t;
+
+/**
+ * @brief Transaction confirmation depth (v0.7.0)
+ *
+ * Tracks how deeply a transaction is embedded in the ledger.
+ * Deeper transactions are more final and harder to reverse.
+ */
+typedef struct {
+    uint64_t ledger_sequence;            /**< TX sequence number in ledger */
+    uint64_t ledger_epoch;               /**< Epoch when TX was committed */
+    uint64_t current_sequence;           /**< Current latest sequence */
+    uint64_t current_epoch;              /**< Current epoch */
+    uint64_t sequence_depth;             /**< current_seq - tx_seq */
+    uint64_t epoch_depth;                /**< current_epoch - tx_epoch */
+    bool is_confirmed;                   /**< Has ledger confirmation */
+    bool is_final;                       /**< epoch_depth >= 2 (considered final) */
+} dnac_confirmation_t;
 
 /* ============================================================================
  * Callbacks
@@ -423,6 +446,21 @@ int dnac_get_history(dnac_context_t *ctx, dnac_tx_history_t **history, int *coun
  * @brief Free history array
  */
 void dnac_free_history(dnac_tx_history_t *history, int count);
+
+/**
+ * @brief Get confirmation depth for a transaction (v0.7.0)
+ *
+ * Returns how deeply embedded a transaction is in the ledger.
+ * A transaction is considered "final" when epoch_depth >= 2.
+ *
+ * @param ctx DNAC context
+ * @param tx_hash Transaction hash to check
+ * @param confirmation_out Output confirmation info
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_get_confirmation(dnac_context_t *ctx,
+                          const uint8_t *tx_hash,
+                          dnac_confirmation_t *confirmation_out);
 
 /* ============================================================================
  * Witness Functions

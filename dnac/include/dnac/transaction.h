@@ -51,6 +51,8 @@ typedef struct {
     char owner_fingerprint[DNAC_FINGERPRINT_SIZE]; /**< Recipient's fingerprint */
     uint64_t amount;                             /**< Amount in smallest units */
     uint8_t nullifier_seed[32];                  /**< Seed for recipient to derive nullifier */
+    char memo[DNAC_MEMO_MAX_SIZE];               /**< Optional memo (Gap 25: v0.6.0) */
+    uint8_t memo_len;                            /**< Memo length */
 } dnac_tx_output_internal_t;
 
 /**
@@ -129,6 +131,24 @@ int dnac_tx_add_output(dnac_transaction_t *tx,
                        const char *recipient_fingerprint,
                        uint64_t amount,
                        uint8_t *nullifier_seed_out);
+
+/**
+ * @brief Add output to transaction with memo (Gap 25: v0.6.0)
+ *
+ * @param tx Transaction
+ * @param recipient_fingerprint Recipient's fingerprint
+ * @param amount Amount to send
+ * @param nullifier_seed_out Output nullifier seed for recipient (32 bytes)
+ * @param memo Optional memo (can be NULL)
+ * @param memo_len Memo length (0 if no memo)
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_tx_add_output_with_memo(dnac_transaction_t *tx,
+                                  const char *recipient_fingerprint,
+                                  uint64_t amount,
+                                  uint8_t *nullifier_seed_out,
+                                  const char *memo,
+                                  uint8_t memo_len);
 
 /**
  * @brief Finalize transaction
@@ -216,46 +236,15 @@ uint64_t dnac_tx_total_input(const dnac_transaction_t *tx);
 uint64_t dnac_tx_total_output(const dnac_transaction_t *tx);
 
 /* ============================================================================
- * Mint (Genesis) Transactions
+ * Genesis Transactions (v0.5.0)
+ *
+ * MINT transactions have been removed. All token creation happens via
+ * a one-time GENESIS event. See include/dnac/genesis.h for the Genesis API.
+ *
+ * - dnac_tx_create_genesis()    - Create genesis with multiple recipients
+ * - dnac_tx_authorize_genesis() - Get 3-of-3 witness approval (unanimous)
+ * - dnac_tx_broadcast_genesis() - Send genesis tokens via DHT
  * ========================================================================== */
-
-/**
- * @brief Create a MINT transaction
- *
- * Creates a transaction that mints new coins from nothing.
- * Requires witness authorization before broadcast.
- *
- * @param recipient_fingerprint Recipient's identity fingerprint
- * @param amount Amount to mint
- * @param tx_out Output transaction (caller must free with dnac_free_transaction)
- * @return DNAC_SUCCESS or error code
- */
-int dnac_tx_create_mint(const char *recipient_fingerprint,
-                        uint64_t amount,
-                        dnac_transaction_t **tx_out);
-
-/**
- * @brief Authorize MINT transaction via witness consensus
- *
- * Requests 2-of-3 witness signatures to authorize the mint.
- * Uses zero nullifier to distinguish from SPEND requests.
- *
- * @param ctx DNAC context
- * @param tx MINT transaction to authorize
- * @return DNAC_SUCCESS or error code
- */
-int dnac_tx_authorize_mint(dnac_context_t *ctx, dnac_transaction_t *tx);
-
-/**
- * @brief Broadcast authorized MINT transaction
- *
- * Sends the minted coins to recipient via DHT.
- *
- * @param ctx DNAC context
- * @param tx Authorized MINT transaction
- * @return DNAC_SUCCESS or error code
- */
-int dnac_tx_broadcast_mint(dnac_context_t *ctx, dnac_transaction_t *tx);
 
 #ifdef __cplusplus
 }

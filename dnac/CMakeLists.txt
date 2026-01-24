@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(dnac VERSION 0.2.0 LANGUAGES C)
+project(dnac VERSION 0.6.0 LANGUAGES C)
 
 # ============================================================================
 # DNAC - Post-Quantum Digital Cash over DHT
@@ -92,7 +92,7 @@ set(DNAC_SOURCES
     src/transaction/builder.c
     src/transaction/serialize.c
     src/transaction/verify.c
-    src/transaction/mint.c
+    src/transaction/genesis.c
 
     # Nodus
     src/nodus/client.c
@@ -192,6 +192,8 @@ if(DNAC_BUILD_WITNESS)
     set(DNAC_WITNESS_SOURCES
         src/witness/main.c
         src/witness/nullifier.c
+        src/witness/ledger.c
+        src/witness/utxo_tree.c
         src/witness/bft_main.c
         src/witness/forward.c
     )
@@ -231,7 +233,7 @@ endif()
 if(DNAC_BUILD_TESTS)
     enable_testing()
 
-    # Real end-to-end test (uses real mint, real witnesses, real DHT)
+    # Real end-to-end test (uses real genesis, real witnesses, real DHT)
     add_executable(test_real tests/test_real.c)
 
     target_link_libraries(test_real dnac)
@@ -252,6 +254,48 @@ if(DNAC_BUILD_TESTS)
     )
 
     add_test(NAME real COMMAND test_real)
+
+    # Remote send test (sends to different machine)
+    add_executable(test_remote tests/test_remote.c)
+
+    target_link_libraries(test_remote dnac)
+
+    # Link libdna directly for dna_engine functions
+    if(EXISTS "${DNA_BUILD_DIR}/libdna_lib.so")
+        target_link_libraries(test_remote ${DNA_BUILD_DIR}/libdna_lib.so)
+    else()
+        target_link_libraries(test_remote ${DNA_BUILD_DIR}/libdna_lib.a)
+    endif()
+
+    target_link_libraries(test_remote
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        ${SQLITE3_LIBRARIES}
+        pthread
+        m
+    )
+
+    # v0.6.0 Gap fixes test
+    add_executable(test_gaps tests/test_gaps.c)
+
+    target_link_libraries(test_gaps dnac)
+
+    # Link libdna directly for dna_engine functions
+    if(EXISTS "${DNA_BUILD_DIR}/libdna_lib.so")
+        target_link_libraries(test_gaps ${DNA_BUILD_DIR}/libdna_lib.so)
+    else()
+        target_link_libraries(test_gaps ${DNA_BUILD_DIR}/libdna_lib.a)
+    endif()
+
+    target_link_libraries(test_gaps
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        ${SQLITE3_LIBRARIES}
+        pthread
+        m
+    )
+
+    add_test(NAME gaps COMMAND test_gaps)
 endif()
 
 # ============================================================================

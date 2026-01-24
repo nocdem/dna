@@ -7,6 +7,7 @@
 #include "dnac/dnac.h"
 #include "dnac/wallet.h"
 #include "dnac/transaction.h"
+#include "dnac/genesis.h"
 #include "dnac/version.h"
 #include <dna/dna_engine.h>
 #include <stdio.h>
@@ -227,7 +228,7 @@ int dnac_cli_history(dnac_context_t *ctx, int limit) {
 
         const char *type_str;
         switch (history[i].type) {
-            case DNAC_TX_MINT:  type_str = "mint";  break;
+            case DNAC_TX_GENESIS:  type_str = "genesis";  break;
             case DNAC_TX_SPEND: type_str = "spend"; break;
             case DNAC_TX_BURN:  type_str = "burn";  break;
             default:            type_str = "?";     break;
@@ -300,7 +301,7 @@ int dnac_cli_tx_details(dnac_context_t *ctx, const char *tx_hash_hex) {
 
     const char *type_str;
     switch (found->type) {
-        case DNAC_TX_MINT:  type_str = "MINT";  break;
+        case DNAC_TX_GENESIS:  type_str = "GENESIS";  break;
         case DNAC_TX_SPEND: type_str = "SPEND"; break;
         case DNAC_TX_BURN:  type_str = "BURN";  break;
         default:            type_str = "UNKNOWN"; break;
@@ -387,34 +388,49 @@ int dnac_cli_recover(dnac_context_t *ctx) {
 }
 
 int dnac_cli_mint(dnac_context_t *ctx, const char *recipient, uint64_t amount) {
+    /* v0.5.0: mint command replaced by genesis.
+     * This function now creates a single-recipient genesis for compatibility.
+     */
     char amount_str[64];
     format_amount(amount, amount_str, sizeof(amount_str));
-    printf("Minting %s to %s...\n", amount_str, recipient);
+    printf("Creating GENESIS with %s to %s...\n", amount_str, recipient);
+    printf("NOTE: Genesis can only happen once. Subsequent calls will fail.\n");
+
+    /* Create single-recipient genesis */
+    dnac_genesis_recipient_t recipients[1];
+    strncpy(recipients[0].fingerprint, recipient, sizeof(recipients[0].fingerprint) - 1);
+    recipients[0].fingerprint[sizeof(recipients[0].fingerprint) - 1] = '\0';
+    recipients[0].amount = amount;
 
     dnac_transaction_t *tx = NULL;
-    int rc = dnac_tx_create_mint(recipient, amount, &tx);
+    int rc = dnac_tx_create_genesis(recipients, 1, &tx);
     if (rc != DNAC_SUCCESS) {
-        fprintf(stderr, "Error creating mint transaction: %s\n", dnac_error_string(rc));
+        fprintf(stderr, "Error creating genesis transaction: %s\n", dnac_error_string(rc));
         return 1;
     }
 
-    printf("Requesting witness authorization...\n");
-    rc = dnac_tx_authorize_mint(ctx, tx);
+    printf("Requesting witness authorization (3-of-3 required)...\n");
+    rc = dnac_tx_authorize_genesis(ctx, tx);
+    if (rc == DNAC_ERROR_GENESIS_EXISTS) {
+        fprintf(stderr, "Error: Genesis already exists. Cannot create tokens after genesis.\n");
+        dnac_free_transaction(tx);
+        return 1;
+    }
     if (rc != DNAC_SUCCESS) {
-        fprintf(stderr, "Witnesses rejected mint: %s\n", dnac_error_string(rc));
+        fprintf(stderr, "Witnesses rejected genesis: %s\n", dnac_error_string(rc));
         dnac_free_transaction(tx);
         return 1;
     }
 
     printf("Broadcasting...\n");
-    rc = dnac_tx_broadcast_mint(ctx, tx);
+    rc = dnac_tx_broadcast_genesis(ctx, tx);
     if (rc != DNAC_SUCCESS) {
         fprintf(stderr, "Broadcast failed: %s\n", dnac_error_string(rc));
         dnac_free_transaction(tx);
         return 1;
     }
 
-    printf("SUCCESS! TX: ");
+    printf("SUCCESS! Genesis TX: ");
     for (int i = 0; i < 32; i++) printf("%02x", tx->tx_hash[i]);
     printf("...\n");
 
@@ -587,7 +603,7 @@ void dnac_cli_print_help(void) {
     printf("  balance          Show wallet balance\n");
     printf("  utxos            List unspent transaction outputs\n");
     printf("  send <fp> <amt>  Send payment to fingerprint\n");
-    printf("  mint <fp> <amt>  Mint new coins to fingerprint (requires witness auth)\n");
+    printf("  genesis <fp> <amt> Create genesis (one-time, requires 3/3 witness auth)\n");
     printf("  sync             Sync wallet from DHT network\n");
     printf("  recover          Recover wallet from seed (re-scan DHT)\n");
     printf("  history [n]      Show transaction history (last n entries)\n");
@@ -596,7 +612,7 @@ void dnac_cli_print_help(void) {
     printf("Examples:\n");
     printf("  dnac-cli balance\n");
     printf("  dnac-cli send abc123...def 1000000\n");
-    printf("  dnac-cli mint abc123...def 100000000\n");
+    printf("  dnac-cli genesis abc123...def 100000000000000  # 100T total supply\n");
     printf("  dnac-cli recover\n");
     printf("  dnac-cli history 10\n");
 }

@@ -18,6 +18,34 @@
 #define LOG_TAG "BFT_SERIALIZE"
 
 /* ============================================================================
+ * Safe Arithmetic (Gap 8: v0.6.0)
+ * ========================================================================== */
+
+/**
+ * @brief Safe multiplication to prevent overflow
+ * @return 0 on success, -1 on overflow
+ */
+static inline int safe_mul(size_t a, size_t b, size_t *result) {
+    if (b != 0 && a > SIZE_MAX / b) {
+        return -1;  /* Overflow */
+    }
+    *result = a * b;
+    return 0;
+}
+
+/**
+ * @brief Safe addition to prevent overflow
+ * @return 0 on success, -1 on overflow
+ */
+static inline int safe_add(size_t a, size_t b, size_t *result) {
+    if (a > SIZE_MAX - b) {
+        return -1;  /* Overflow */
+    }
+    *result = a + b;
+    return 0;
+}
+
+/* ============================================================================
  * Helper Functions
  * ========================================================================== */
 
@@ -89,8 +117,9 @@ static void read_string(const uint8_t **buf, char *out, size_t max_len) {
  * Header Serialization
  * ========================================================================== */
 
-/* Header size: 1 + 1 + 8 + 4 + 32 + 8 = 54 bytes */
-#define BFT_HEADER_SIZE 54
+/* Gap 23-24 Fix (v0.6.0): Added nonce to header for replay prevention */
+/* Header size: 1 + 1 + 8 + 4 + 32 + 8 + 8 = 62 bytes */
+#define BFT_HEADER_SIZE 62
 
 int dnac_bft_header_serialize(const dnac_bft_msg_header_t *header,
                               uint8_t *buffer, size_t buffer_len,
@@ -106,6 +135,7 @@ int dnac_bft_header_serialize(const dnac_bft_msg_header_t *header,
     write_u32(&p, header->view);
     write_bytes(&p, header->sender_id, DNAC_BFT_WITNESS_ID_SIZE);
     write_u64(&p, header->timestamp);
+    write_u64(&p, header->nonce);  /* Gap 23-24: nonce for replay prevention */
 
     if (written) *written = BFT_HEADER_SIZE;
     return DNAC_BFT_SUCCESS;
@@ -124,6 +154,7 @@ int dnac_bft_header_deserialize(const uint8_t *buffer, size_t buffer_len,
     header->view = read_u32(&p);
     read_bytes(&p, header->sender_id, DNAC_BFT_WITNESS_ID_SIZE);
     header->timestamp = read_u64(&p);
+    header->nonce = read_u64(&p);  /* Gap 23-24: nonce for replay prevention */
 
     return DNAC_BFT_SUCCESS;
 }
@@ -132,20 +163,35 @@ int dnac_bft_header_deserialize(const uint8_t *buffer, size_t buffer_len,
  * Proposal Serialization
  * ========================================================================== */
 
-/* v0.4.0 Proposal format:
+/* v0.5.0 Proposal format:
  * header(54) + tx_hash(64) + nullifier_count(1) + nullifiers(count*64) +
- * pubkey(2592) + client_sig(4627) + fee(8) + sig(4627)
+ * tx_type(1) + pubkey(2592) + client_sig(4627) + fee(8) + sig(4627)
  * Variable size based on nullifier_count */
-#define BFT_PROPOSAL_BASE_SIZE (BFT_HEADER_SIZE + 64 + 1 + DNAC_PUBKEY_SIZE + \
+#define BFT_PROPOSAL_BASE_SIZE (BFT_HEADER_SIZE + 64 + 1 + 1 + DNAC_PUBKEY_SIZE + \
                                 DNAC_SIGNATURE_SIZE + 8 + DNAC_SIGNATURE_SIZE)
 #define BFT_PROPOSAL_MAX_SIZE (BFT_PROPOSAL_BASE_SIZE + DNAC_TX_MAX_INPUTS * 64)
 
 int dnac_bft_proposal_serialize(const dnac_bft_proposal_t *proposal,
                                 uint8_t *buffer, size_t buffer_len,
                                 size_t *written) {
-    size_t required = BFT_PROPOSAL_BASE_SIZE + (proposal->nullifier_count * DNAC_NULLIFIER_SIZE);
+    if (!proposal || !buffer) {
+        return DNAC_BFT_ERROR_INVALID_PARAM;
+    }
 
-    if (!proposal || !buffer || buffer_len < required) {
+    /* Safe size calculation (Gap 8: v0.6.0) */
+    if (proposal->nullifier_count > DNAC_TX_MAX_INPUTS) {
+        QGP_LOG_ERROR(LOG_TAG, "Proposal nullifier_count exceeds max: %d", proposal->nullifier_count);
+        return DNAC_BFT_ERROR_INVALID_MESSAGE;
+    }
+
+    size_t nullifier_bytes, required;
+    if (safe_mul(proposal->nullifier_count, DNAC_NULLIFIER_SIZE, &nullifier_bytes) != 0 ||
+        safe_add(BFT_PROPOSAL_BASE_SIZE, nullifier_bytes, &required) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Integer overflow in proposal size calculation");
+        return DNAC_BFT_ERROR_INVALID_MESSAGE;
+    }
+
+    if (buffer_len < required) {
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
@@ -165,6 +211,9 @@ int dnac_bft_proposal_serialize(const dnac_bft_proposal_t *proposal,
     for (int i = 0; i < proposal->nullifier_count; i++) {
         write_bytes(&p, proposal->nullifiers[i], DNAC_NULLIFIER_SIZE);
     }
+
+    /* v0.5.0: transaction type for genesis handling */
+    write_u8(&p, proposal->tx_type);
 
     write_bytes(&p, proposal->sender_pubkey, DNAC_PUBKEY_SIZE);
     write_bytes(&p, proposal->client_signature, DNAC_SIGNATURE_SIZE);
@@ -199,8 +248,13 @@ int dnac_bft_proposal_deserialize(const uint8_t *buffer, size_t buffer_len,
         return DNAC_BFT_ERROR_INVALID_MESSAGE;
     }
 
-    /* Verify buffer has enough data for all nullifiers */
-    size_t required = BFT_PROPOSAL_BASE_SIZE + (proposal->nullifier_count * DNAC_NULLIFIER_SIZE);
+    /* Verify buffer has enough data for all nullifiers (Gap 8: v0.6.0) */
+    size_t nullifier_bytes, required;
+    if (safe_mul(proposal->nullifier_count, DNAC_NULLIFIER_SIZE, &nullifier_bytes) != 0 ||
+        safe_add(BFT_PROPOSAL_BASE_SIZE, nullifier_bytes, &required) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Integer overflow in proposal size calculation");
+        return DNAC_BFT_ERROR_INVALID_MESSAGE;
+    }
     if (buffer_len < required) {
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
@@ -208,6 +262,9 @@ int dnac_bft_proposal_deserialize(const uint8_t *buffer, size_t buffer_len,
     for (int i = 0; i < proposal->nullifier_count; i++) {
         read_bytes(&p, proposal->nullifiers[i], DNAC_NULLIFIER_SIZE);
     }
+
+    /* v0.5.0: transaction type for genesis handling */
+    proposal->tx_type = read_u8(&p);
 
     read_bytes(&p, proposal->sender_pubkey, DNAC_PUBKEY_SIZE);
     read_bytes(&p, proposal->client_signature, DNAC_SIGNATURE_SIZE);
@@ -280,9 +337,24 @@ int dnac_bft_vote_deserialize(const uint8_t *buffer, size_t buffer_len,
 int dnac_bft_commit_serialize(const dnac_bft_commit_t *commit,
                               uint8_t *buffer, size_t buffer_len,
                               size_t *written) {
-    size_t required = BFT_COMMIT_BASE_SIZE + (commit->nullifier_count * DNAC_NULLIFIER_SIZE);
+    if (!commit || !buffer) {
+        return DNAC_BFT_ERROR_INVALID_PARAM;
+    }
 
-    if (!commit || !buffer || buffer_len < required) {
+    /* Safe size calculation (Gap 8: v0.6.0) */
+    if (commit->nullifier_count > DNAC_TX_MAX_INPUTS) {
+        QGP_LOG_ERROR(LOG_TAG, "Commit nullifier_count exceeds max: %d", commit->nullifier_count);
+        return DNAC_BFT_ERROR_INVALID_MESSAGE;
+    }
+
+    size_t nullifier_bytes, required;
+    if (safe_mul(commit->nullifier_count, DNAC_NULLIFIER_SIZE, &nullifier_bytes) != 0 ||
+        safe_add(BFT_COMMIT_BASE_SIZE, nullifier_bytes, &required) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Integer overflow in commit size calculation");
+        return DNAC_BFT_ERROR_INVALID_MESSAGE;
+    }
+
+    if (buffer_len < required) {
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
@@ -329,8 +401,13 @@ int dnac_bft_commit_deserialize(const uint8_t *buffer, size_t buffer_len,
         return DNAC_BFT_ERROR_INVALID_MESSAGE;
     }
 
-    /* Verify buffer has enough data */
-    size_t required = BFT_COMMIT_BASE_SIZE + (commit->nullifier_count * DNAC_NULLIFIER_SIZE);
+    /* Verify buffer has enough data (Gap 8: v0.6.0) */
+    size_t nullifier_bytes, required;
+    if (safe_mul(commit->nullifier_count, DNAC_NULLIFIER_SIZE, &nullifier_bytes) != 0 ||
+        safe_add(BFT_COMMIT_BASE_SIZE, nullifier_bytes, &required) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Integer overflow in commit size calculation");
+        return DNAC_BFT_ERROR_INVALID_MESSAGE;
+    }
     if (buffer_len < required) {
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
@@ -389,6 +466,54 @@ int dnac_bft_view_change_deserialize(const uint8_t *buffer, size_t buffer_len,
     vc->new_view = read_u32(&p);
     vc->last_committed_round = read_u64(&p);
     read_bytes(&p, vc->signature, DNAC_SIGNATURE_SIZE);
+
+    return DNAC_BFT_SUCCESS;
+}
+
+/* ============================================================================
+ * NEW-VIEW Serialization (Gap 6: v0.6.0)
+ * ========================================================================== */
+
+/* NEW-VIEW size: header + new_view(4) + n_proofs(4) + signature */
+#define BFT_NEW_VIEW_SIZE (BFT_HEADER_SIZE + 4 + 4 + DNAC_SIGNATURE_SIZE)
+
+int dnac_bft_new_view_serialize(const dnac_bft_new_view_t *nv,
+                                 uint8_t *buffer, size_t buffer_len,
+                                 size_t *written) {
+    if (!nv || !buffer || buffer_len < BFT_NEW_VIEW_SIZE) {
+        return DNAC_BFT_ERROR_INVALID_PARAM;
+    }
+
+    uint8_t *p = buffer;
+    size_t header_written;
+
+    int rc = dnac_bft_header_serialize(&nv->header, p, buffer_len, &header_written);
+    if (rc != DNAC_BFT_SUCCESS) return rc;
+    p += header_written;
+
+    write_u32(&p, nv->new_view);
+    write_u32(&p, nv->n_view_change_proofs);
+    write_bytes(&p, nv->signature, DNAC_SIGNATURE_SIZE);
+
+    if (written) *written = BFT_NEW_VIEW_SIZE;
+    return DNAC_BFT_SUCCESS;
+}
+
+int dnac_bft_new_view_deserialize(const uint8_t *buffer, size_t buffer_len,
+                                   dnac_bft_new_view_t *nv) {
+    if (!buffer || !nv || buffer_len < BFT_NEW_VIEW_SIZE) {
+        return DNAC_BFT_ERROR_INVALID_PARAM;
+    }
+
+    const uint8_t *p = buffer;
+
+    int rc = dnac_bft_header_deserialize(p, buffer_len, &nv->header);
+    if (rc != DNAC_BFT_SUCCESS) return rc;
+    p += BFT_HEADER_SIZE;
+
+    nv->new_view = read_u32(&p);
+    nv->n_view_change_proofs = read_u32(&p);
+    read_bytes(&p, nv->signature, DNAC_SIGNATURE_SIZE);
 
     return DNAC_BFT_SUCCESS;
 }

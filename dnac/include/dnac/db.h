@@ -217,6 +217,70 @@ int dnac_db_complete_pending_spend(sqlite3 *db, const uint8_t *tx_hash);
  */
 int dnac_db_expire_pending_spends(sqlite3 *db);
 
+/* ============================================================================
+ * P0-4 (v0.7.0): Confirmation Tracking Functions
+ * ========================================================================== */
+
+/**
+ * @brief Update transaction confirmation data from ledger
+ *
+ * @param db SQLite database handle
+ * @param tx_hash Transaction hash
+ * @param ledger_seq Ledger sequence number
+ * @param ledger_epoch Epoch when committed
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_db_update_tx_confirmation(sqlite3 *db, const uint8_t *tx_hash,
+                                    uint64_t ledger_seq, uint64_t ledger_epoch);
+
+/**
+ * @brief Get transaction confirmation data
+ *
+ * @param db SQLite database handle
+ * @param tx_hash Transaction hash
+ * @param ledger_seq_out Output sequence number (can be NULL)
+ * @param ledger_epoch_out Output epoch (can be NULL)
+ * @return DNAC_SUCCESS, DNAC_ERROR_NOT_FOUND if not confirmed, or error code
+ */
+int dnac_db_get_tx_confirmation(sqlite3 *db, const uint8_t *tx_hash,
+                                 uint64_t *ledger_seq_out, uint64_t *ledger_epoch_out);
+
+/**
+ * @brief Update UTXO confirmation data from ledger
+ *
+ * @param db SQLite database handle
+ * @param tx_hash Transaction hash that created the UTXO
+ * @param output_index Output index within the transaction
+ * @param ledger_seq Ledger sequence number
+ * @param ledger_epoch Epoch when committed
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_db_update_utxo_confirmation(sqlite3 *db, const uint8_t *tx_hash,
+                                      uint32_t output_index,
+                                      uint64_t ledger_seq, uint64_t ledger_epoch);
+
+/* ============================================================================
+ * Wallet Config Functions (Gap 22: v0.6.0)
+ * ========================================================================== */
+
+/**
+ * @brief Get owner salt from wallet config
+ *
+ * @param db SQLite database handle
+ * @param salt_out Output salt buffer (32 bytes)
+ * @return DNAC_SUCCESS, DNAC_ERROR_NOT_FOUND if not set, or error code
+ */
+int dnac_db_get_owner_salt(sqlite3 *db, uint8_t *salt_out);
+
+/**
+ * @brief Set owner salt in wallet config
+ *
+ * @param db SQLite database handle
+ * @param salt Salt to store (32 bytes)
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_db_set_owner_salt(sqlite3 *db, const uint8_t *salt);
+
 #ifdef __cplusplus
 }
 #endif

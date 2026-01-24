@@ -22,29 +22,92 @@
 #define LOG_TAG "BFT_ROSTER"
 
 /* ============================================================================
- * DHT Stub Functions (TODO: Implement with actual DHT API)
+ * DHT Functions for Roster Persistence (Gap 27-28: v0.6.0)
  *
- * The DNA Messenger DHT API uses async callbacks. For now, these stubs
- * return NOT_FOUND, requiring manual roster setup via config files.
+ * Uses libdna's synchronous DHT API:
+ * - dht_get: Synchronous get, returns first value
+ * - dht_put_signed_sync: Synchronous signed put with timeout
  * ========================================================================== */
+
+/* Forward declare DHT context type */
+typedef struct dht_context dht_context_t;
+
+/* DHT functions from libdna */
+extern void* dna_engine_get_dht_context(dna_engine_t *engine);
+extern int dht_get(dht_context_t *ctx, const uint8_t *key, size_t key_len,
+                   uint8_t **value_out, size_t *value_len_out);
+extern int dht_put_signed_sync(dht_context_t *ctx,
+                               const uint8_t *key, size_t key_len,
+                               const uint8_t *value, size_t value_len,
+                               uint64_t value_id,
+                               unsigned int ttl_seconds,
+                               const char *caller,
+                               int timeout_ms);
+
+/* Roster DHT value_id (fixed for replacement behavior) */
+#define ROSTER_DHT_VALUE_ID 1
+#define ROSTER_DHT_TTL_SECS (7 * 24 * 3600)  /* 1 week */
+#define ROSTER_DHT_TIMEOUT_MS 5000           /* 5 seconds */
 
 static int dna_dht_get_sync(dna_engine_t *engine, const uint8_t *key, size_t key_len,
                             uint8_t *buffer, size_t buffer_len, size_t *data_len_out) {
-    (void)engine; (void)key; (void)key_len;
-    (void)buffer; (void)buffer_len;
-    *data_len_out = 0;
+    if (!engine || !key || !buffer || !data_len_out) {
+        return -1;
+    }
 
-    QGP_LOG_WARN(LOG_TAG, "DHT get not implemented - roster must be configured manually");
-    return -1;  /* Not found */
+    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
+    if (!dht) {
+        QGP_LOG_WARN(LOG_TAG, "DHT context not available");
+        return -1;
+    }
+
+    uint8_t *value = NULL;
+    size_t value_len = 0;
+
+    int rc = dht_get(dht, key, key_len, &value, &value_len);
+    if (rc != 0 || value == NULL || value_len == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "DHT get returned no data");
+        *data_len_out = 0;
+        return -1;
+    }
+
+    /* Copy to caller's buffer */
+    if (value_len > buffer_len) {
+        QGP_LOG_WARN(LOG_TAG, "DHT data too large: %zu > %zu", value_len, buffer_len);
+        free(value);
+        return -1;
+    }
+
+    memcpy(buffer, value, value_len);
+    *data_len_out = value_len;
+    free(value);
+
+    QGP_LOG_DEBUG(LOG_TAG, "DHT get success: %zu bytes", value_len);
+    return 0;
 }
 
 static int dna_dht_put_signed_sync(dna_engine_t *engine, const uint8_t *key, size_t key_len,
                                    const uint8_t *data, size_t data_len) {
-    (void)engine; (void)key; (void)key_len;
-    (void)data; (void)data_len;
+    if (!engine || !key || !data) {
+        return -1;
+    }
 
-    QGP_LOG_WARN(LOG_TAG, "DHT put not implemented - roster changes not persisted to DHT");
-    return 0;  /* Pretend success */
+    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
+    if (!dht) {
+        QGP_LOG_WARN(LOG_TAG, "DHT context not available");
+        return -1;
+    }
+
+    int rc = dht_put_signed_sync(dht, key, key_len, data, data_len,
+                                  ROSTER_DHT_VALUE_ID, ROSTER_DHT_TTL_SECS,
+                                  "bft_roster", ROSTER_DHT_TIMEOUT_MS);
+    if (rc != 0) {
+        QGP_LOG_WARN(LOG_TAG, "DHT put failed: %d", rc);
+        return -1;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "DHT put success: %zu bytes", data_len);
+    return 0;
 }
 
 /* ============================================================================

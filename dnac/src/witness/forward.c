@@ -26,6 +26,7 @@
 
 /* External state from bft_main.c */
 extern dnac_bft_context_t *g_bft_ctx;
+extern dnac_tcp_server_t *g_tcp_server;
 
 /* External functions */
 extern int bft_peer_send_to_leader(const uint8_t *data, size_t len);
@@ -80,7 +81,31 @@ int bft_forward_request(dnac_bft_context_t *ctx,
     fwd.fee_amount = request->fee_amount;
     memcpy(fwd.forwarder_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
 
-    /* TODO: Sign forward request */
+    /* Gap 18 Fix (v0.6.0): Sign forward request for authentication */
+    if (ctx->my_privkey && ctx->my_privkey_size > 0) {
+        /* Sign: tx_hash || forwarder_id || timestamp */
+        uint8_t sign_data[DNAC_TX_HASH_SIZE + DNAC_BFT_WITNESS_ID_SIZE + 8];
+        memcpy(sign_data, fwd.tx_hash, DNAC_TX_HASH_SIZE);
+        memcpy(sign_data + DNAC_TX_HASH_SIZE, fwd.forwarder_id, DNAC_BFT_WITNESS_ID_SIZE);
+        /* Little-endian timestamp */
+        uint64_t ts = fwd.header.timestamp;
+        for (int j = 0; j < 8; j++) {
+            sign_data[DNAC_TX_HASH_SIZE + DNAC_BFT_WITNESS_ID_SIZE + j] =
+                (ts >> (j * 8)) & 0xFF;
+        }
+
+        size_t sig_len = 0;
+        int sign_rc = qgp_dsa87_sign(fwd.signature, &sig_len,
+                                      sign_data, sizeof(sign_data),
+                                      ctx->my_privkey);
+        if (sign_rc != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to sign forward request: %d", sign_rc);
+            return DNAC_BFT_ERROR_INVALID_SIGNATURE;
+        }
+        QGP_LOG_DEBUG(LOG_TAG, "Signed forward request (sig_len=%zu)", sig_len);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "No private key available, forward request unsigned");
+    }
 
     /* Serialize - buffer must fit tx_data (up to 64KB) */
     uint8_t buffer[DNAC_BFT_MAX_TX_SIZE + 16384];
@@ -231,10 +256,36 @@ int bft_forward_check_timeouts(void) {
             uint64_t elapsed = now - g_pending_forwards[i].timestamp;
             if (elapsed > g_pending_forwards[i].timeout_ms) {
                 QGP_LOG_WARN(LOG_TAG, "Forward request slot %d timed out", i);
+
+                int client_fd = g_pending_forwards[i].client_fd;
                 g_pending_forwards[i].active = false;
                 expired++;
 
-                /* TODO: Send timeout response to client */
+                /* Send timeout response to client (Gap 16: v0.6.0) */
+                if (g_tcp_server && client_fd >= 0 && g_bft_ctx) {
+                    dnac_spend_response_t timeout_rsp;
+                    memset(&timeout_rsp, 0, sizeof(timeout_rsp));
+
+                    timeout_rsp.status = DNAC_NODUS_STATUS_TIMEOUT;
+                    memcpy(timeout_rsp.witness_id, g_bft_ctx->my_id, 32);
+                    memcpy(timeout_rsp.server_pubkey, g_bft_ctx->my_pubkey, DNAC_PUBKEY_SIZE);
+                    timeout_rsp.timestamp = (uint64_t)time(NULL);
+                    strncpy(timeout_rsp.error_message, "Forward request timed out",
+                            sizeof(timeout_rsp.error_message) - 1);
+
+                    uint8_t rsp_buffer[16384];
+                    size_t rsp_written;
+                    if (dnac_spend_response_serialize(&timeout_rsp,
+                            rsp_buffer + DNAC_TCP_FRAME_HEADER_SIZE,
+                            sizeof(rsp_buffer) - DNAC_TCP_FRAME_HEADER_SIZE,
+                            &rsp_written) == 0) {
+                        dnac_tcp_write_frame_header(rsp_buffer,
+                            DNAC_NODUS_MSG_SPEND_RESPONSE, (uint32_t)rsp_written);
+                        dnac_tcp_server_send(g_tcp_server, client_fd, rsp_buffer,
+                            DNAC_TCP_FRAME_HEADER_SIZE + rsp_written);
+                        QGP_LOG_INFO(LOG_TAG, "Sent timeout response to client %d", client_fd);
+                    }
+                }
             }
         }
     }

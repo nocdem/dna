@@ -108,13 +108,16 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
         }
     }
 
-    /* Add outputs */
+    /* Add outputs (Gap 25: v0.6.0 - includes memo) */
     for (int i = 0; i < builder->output_count; i++) {
         uint8_t nullifier_seed[32];
-        rc = dnac_tx_add_output(builder->tx,
-                                 builder->outputs[i].recipient_fingerprint,
-                                 builder->outputs[i].amount,
-                                 nullifier_seed);
+        uint8_t memo_len = (uint8_t)strnlen(builder->outputs[i].memo, DNAC_MEMO_MAX_SIZE);
+        rc = dnac_tx_add_output_with_memo(builder->tx,
+                                           builder->outputs[i].recipient_fingerprint,
+                                           builder->outputs[i].amount,
+                                           nullifier_seed,
+                                           memo_len > 0 ? builder->outputs[i].memo : NULL,
+                                           memo_len);
         if (rc != DNAC_SUCCESS) {
             free(selected);
             return rc;
