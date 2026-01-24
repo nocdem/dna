@@ -64,6 +64,8 @@ class SettingsScreen extends ConsumerWidget {
             const _NotificationsSection(),
             // Security
             _SecuritySection(),
+            // Wallet
+            const _WalletSection(),
             // Data (backup/restore)
             _DataSection(),
             // Logs settings
@@ -544,6 +546,36 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
           ),
         );
       },
+    );
+  }
+}
+
+class _WalletSection extends ConsumerWidget {
+  const _WalletSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final walletSettings = ref.watch(walletSettingsProvider);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader('Wallet'),
+        SwitchListTile(
+          secondary: FaIcon(
+            FontAwesomeIcons.eyeSlash,
+            color: walletSettings.hideZeroBalances
+                ? Theme.of(context).colorScheme.primary
+                : null,
+          ),
+          title: const Text('Hide 0 Balance'),
+          subtitle: const Text('Hide coins with zero balance'),
+          value: walletSettings.hideZeroBalances,
+          onChanged: (value) {
+            ref.read(walletSettingsProvider.notifier).setHideZeroBalances(value);
+          },
+        ),
+      ],
     );
   }
 }
