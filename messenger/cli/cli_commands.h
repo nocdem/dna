@@ -341,6 +341,18 @@ int cmd_group_sync(dna_engine_t *engine, const char *group_uuid);
  */
 int cmd_group_publish_gek(dna_engine_t *engine, const char *group_uuid);
 
+/**
+ * Fetch GEK (Group Encryption Key) from DHT for a group
+ *
+ * Fetches the Initial Key Packet from DHT and attempts to decrypt the GEK.
+ * Useful for debugging group message encryption issues.
+ *
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID to fetch GEK for
+ * @return 0 on success, negative on error
+ */
+int cmd_gek_fetch(dna_engine_t *engine, const char *group_uuid);
+
 /* ============================================================================
  * DHT DEBUG COMMANDS
  * ============================================================================ */
