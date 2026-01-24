@@ -353,6 +353,18 @@ int cmd_group_publish_gek(dna_engine_t *engine, const char *group_uuid);
  */
 int cmd_gek_fetch(dna_engine_t *engine, const char *group_uuid);
 
+/**
+ * Show group conversation messages
+ *
+ * Retrieves and displays all messages from a group chat.
+ * Messages are decrypted with the locally stored GEK.
+ *
+ * @param engine DNA engine instance
+ * @param name_or_uuid Group name or UUID
+ * @return 0 on success, negative on error
+ */
+int cmd_group_messages(dna_engine_t *engine, const char *name_or_uuid);
+
 /* ============================================================================
  * DHT DEBUG COMMANDS
  * ============================================================================ */

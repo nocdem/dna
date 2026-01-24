@@ -2268,6 +2268,78 @@ int cmd_gek_fetch(dna_engine_t *engine, const char *group_uuid) {
     return 0;
 }
 
+int cmd_group_messages(dna_engine_t *engine, const char *name_or_uuid) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    const char *fp = dna_engine_get_fingerprint(engine);
+    if (!fp) {
+        printf("Error: No identity loaded\n");
+        return -1;
+    }
+
+    if (!name_or_uuid || strlen(name_or_uuid) == 0) {
+        printf("Error: Group name or UUID required\n");
+        return -1;
+    }
+
+    /* Resolve name to UUID if needed */
+    char resolved_uuid[37];
+    if (resolve_group_identifier(engine, name_or_uuid, resolved_uuid) != 0) {
+        printf("Error: Group '%s' not found\n", name_or_uuid);
+        return -1;
+    }
+
+    printf("Fetching messages for group %s...\n", resolved_uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_get_group_conversation(engine, resolved_uuid, on_messages_listed, &wait);
+    int result = cli_wait_for(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get group messages: %s\n", dna_engine_error_string(result));
+        cli_wait_destroy(&wait);
+        return result;
+    }
+
+    if (wait.message_count == 0) {
+        printf("No messages in this group.\n");
+    } else {
+        printf("\nGroup conversation (%d messages):\n\n", wait.message_count);
+        for (int i = 0; i < wait.message_count; i++) {
+            time_t ts = (time_t)wait.messages[i].timestamp;
+            char time_str[32];
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+
+            const char *direction = wait.messages[i].is_outgoing ? ">>>" : "<<<";
+
+            /* For group messages, show sender fingerprint (truncated) */
+            if (wait.messages[i].is_outgoing) {
+                printf("[%s] %s %s\n", time_str, direction,
+                       wait.messages[i].plaintext ? wait.messages[i].plaintext : "(empty)");
+            } else {
+                /* Show first 16 chars of sender fingerprint */
+                printf("[%s] %s [%.16s] %s\n", time_str, direction,
+                       wait.messages[i].sender,
+                       wait.messages[i].plaintext ? wait.messages[i].plaintext : "(empty)");
+            }
+
+            if (wait.messages[i].plaintext) {
+                free(wait.messages[i].plaintext);
+            }
+        }
+        free(wait.messages);
+        printf("\n");
+    }
+
+    cli_wait_destroy(&wait);
+    return 0;
+}
+
 /* ============================================================================
  * PHASE 1: CONTACT BLOCKING & REQUESTS (6 commands)
  * ============================================================================ */

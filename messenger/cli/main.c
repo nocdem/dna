@@ -115,6 +115,7 @@ static void print_usage(const char *prog_name) {
     printf("  group-sync <uuid>           Sync group from DHT to local cache\n");
     printf("  group-publish-gek <uuid>    Publish GEK to DHT (owner only)\n");
     printf("  gek-fetch <uuid>            Fetch GEK from DHT (debug)\n");
+    printf("  group-messages <name|uuid>  Show group conversation\n");
     printf("  group-members <uuid>        List group members\n");
     printf("  invitations                 List pending group invitations\n");
     printf("  invite-accept <uuid>        Accept group invitation\n");
@@ -660,6 +661,14 @@ int main(int argc, char *argv[]) {
             result = 1;
         } else {
             result = cmd_gek_fetch(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "group-messages") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'group-messages' requires <name|uuid> argument\n");
+            result = 1;
+        } else {
+            result = cmd_group_messages(g_engine, argv[optind + 1]);
         }
     }
 
