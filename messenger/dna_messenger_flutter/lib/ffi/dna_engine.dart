@@ -1084,6 +1084,12 @@ class GroupMessageReceivedEvent extends DnaEvent {
   GroupMessageReceivedEvent(this.groupUuid, this.newCount);
 }
 
+/// Groups synced from DHT event - triggered when groups are restored on new device
+class GroupsSyncedEvent extends DnaEvent {
+  final int groupsRestored;
+  GroupsSyncedEvent(this.groupsRestored);
+}
+
 // =============================================================================
 // EXCEPTIONS
 // =============================================================================
@@ -1377,6 +1383,14 @@ class DnaEngine {
             (event.data[42] << 16) |
             (event.data[43] << 24);
         dartEvent = GroupMessageReceivedEvent(groupUuid, newCount);
+        break;
+      case DnaEventType.DNA_EVENT_GROUPS_SYNCED:
+        // Parse groups_restored (int32 at offset 0)
+        final groupsRestored = event.data[0] |
+            (event.data[1] << 8) |
+            (event.data[2] << 16) |
+            (event.data[3] << 24);
+        dartEvent = GroupsSyncedEvent(groupsRestored);
         break;
       case DnaEventType.DNA_EVENT_ERROR:
         dartEvent = ErrorEvent(0, 'Error occurred');

@@ -1632,6 +1632,7 @@ Use `dna_engine_error_string(error)` for human-readable messages.
 | `DNA_EVENT_CONTACT_OFFLINE` | `contact_status.fingerprint` | Contact went offline |
 | `DNA_EVENT_CONTACT_REQUEST_RECEIVED` | `contact_request.*` | New contact request |
 | `DNA_EVENT_GROUP_INVITATION_RECEIVED` | `group_invitation.*` | Group invitation |
+| `DNA_EVENT_GROUPS_SYNCED` | `groups_synced.groups_restored` | Groups restored from DHT |
 | `DNA_EVENT_IDENTITY_LOADED` | `identity_loaded.fingerprint` | Identity loaded |
 | `DNA_EVENT_ERROR` | `error.code`, `error.message` | Error occurred |
 

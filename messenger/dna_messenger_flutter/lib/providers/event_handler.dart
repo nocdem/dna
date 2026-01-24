@@ -276,6 +276,15 @@ class EventHandler {
         });
         break;
 
+      case GroupsSyncedEvent(groupsRestored: final count):
+        // Groups restored from DHT on new device - refresh groups UI
+        print('[DART-HANDLER] GroupsSyncedEvent: $count groups restored from DHT');
+        if (count > 0) {
+          _ref.invalidate(groupsProvider);
+          _ref.invalidate(invitationsProvider);
+        }
+        break;
+
       case ErrorEvent(message: final errorMsg):
         // Store error for UI to display
         _ref.read(lastErrorProvider.notifier).state = errorMsg;
