@@ -1,6 +1,6 @@
 # DNAC - Post-Quantum Zero-Knowledge Cash over DHT
 
-**Version:** v0.2.0 | **Protocol:** v1 (Transparent Amounts)
+**Version:** v0.7.1 | **Protocol:** v1 (Transparent Amounts)
 
 DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger](https://github.com/nocdem/dna-messenger).
 
@@ -13,6 +13,11 @@ DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger]
 - **BFT Consensus** - Byzantine Fault Tolerant witness consensus (PBFT-like)
 - **2-of-3 Witnessing** - Transactions require 2 witness attestations
 - **TCP Mesh Network** - Witnesses communicate via TCP for consensus
+- **Memo Support** - Optional transaction memos up to 255 bytes (v0.6.0)
+- **Replay Prevention** - Nonce and timestamp-based replay attack prevention (v0.6.0)
+- **Merkle Proofs** - Transaction inclusion proofs via Merkle tree (v0.7.0)
+- **BFT-Signed Epochs** - Epoch roots signed by BFT consensus (v0.7.1)
+- **Genesis System** - Unanimous 3-of-3 witness authorization for token creation (v0.5.0)
 
 ## Protocol Versions
 
@@ -88,7 +93,7 @@ dnac-cli query <name|fp>         # Lookup identity by name or fingerprint
 dnac-cli balance                 # Show wallet balance
 dnac-cli utxos                   # List UTXOs
 dnac-cli send <fp> <amount>      # Send payment
-dnac-cli mint <fp> <amount>      # Mint new coins (requires witness auth)
+dnac-cli genesis <fp> <amount>   # Create genesis TX (3-of-3 witness auth)
 dnac-cli sync                    # Sync wallet from network
 dnac-cli recover                 # Recover wallet from seed
 
@@ -179,9 +184,9 @@ All DHT data is stored permanently:
 
 ## Status
 
-**Development Phase** - v0.2.0. Not for production use.
+**Development Phase** - v0.7.1. Not for production use.
 
-### Implemented (v0.2.0)
+### Implemented (v0.7.1)
 
 - [x] Core wallet functionality (UTXO management, balance tracking)
 - [x] Send/receive transactions via DHT
@@ -191,14 +196,27 @@ All DHT data is stored permanently:
 - [x] Leader election and request forwarding
 - [x] Double-spend prevention via nullifiers
 - [x] End-to-end integration tests
+- [x] Multi-input double-spend fix (v0.4.0)
+- [x] Genesis transaction with 3-of-3 unanimous authorization (v0.5.0)
+- [x] BFT message signing with Dilithium5 (v0.6.0)
+- [x] Integer overflow protection (v0.6.0)
+- [x] Replay prevention via nonce/timestamp (v0.6.0)
+- [x] Memo support up to 255 bytes (v0.6.0)
+- [x] Merkle tree for transaction inclusion proofs (v0.7.0)
+- [x] Chain synchronization infrastructure (v0.7.0)
+- [x] Ledger confirmation tracking (v0.7.0)
+- [x] BFT-anchored epoch roots (v0.7.1)
 
 ### Tested
 
-- [x] MINT transaction flow
+- [x] GENESIS transaction flow (3-of-3 unanimous)
 - [x] SEND transaction flow
 - [x] Double-spend rejection
+- [x] Multi-input double-spend rejection
 - [x] Service auto-restart on reboot
 - [x] Witness mesh reconnection
+- [x] Security gap fixes (18 test cases in test_gaps.c)
+- [x] Cross-machine send/receive (test_remote.c)
 
 ### Deferred to v2
 

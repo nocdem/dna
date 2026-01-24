@@ -1,6 +1,6 @@
 # DNAC TODO
 
-**Current Phase:** Phase 14 - Testing & Hardening
+**Current Phase:** Phase 23 Complete - BFT-Anchored Proofs (v0.7.1)
 **Protocol Version:** v1 (Transparent amounts)
 **Updated:** 2026-01-22
 
@@ -15,24 +15,25 @@ Phase 4 (Range Proofs) is deferred until v2 implementation.
 
 ---
 
-## Next Up: Phase 14 - Testing & Hardening
+## Completed: Phase 14 - Testing & Hardening
 
-- [x] Integration tests (send/receive flow) - `test_send_receive` EXISTS (uses synthetic UTXOs)
+- [x] Integration tests (send/receive flow) - `test_send_receive` EXISTS
 - [ ] Multi-party tests (Alice → Bob → Charlie)
 - [x] Double-spend attempt tests - `test_double_spend` EXISTS
+- [x] Multi-input double-spend tests (v0.4.0)
 - [~] Nodus failure/timeout tests - PARTIAL (graceful SKIP when unavailable)
 - [ ] Fuzz testing for parsing
 - [ ] Wallet recovery tests
-- [ ] Genesis/coinbase mechanism (currently NO way to create initial funds)
+- [x] Genesis mechanism - Implemented in v0.5.0 (unanimous 3-of-3 authorization)
 
 ### ⚠️ TEST WARNING: Synthetic Funds
 
-Tests inject fake UTXOs directly via `dnac_db_store_utxo()`:
+Some unit tests inject fake UTXOs directly via `dnac_db_store_utxo()`:
 - `test_utxo_store`: 1000 coins
 - `test_utxo_select`: 1500 coins (5 UTXOs)
 - `test_db_*`: 350 coins
 
-**This is NOT production-realistic.** Real system needs genesis/mint mechanism.
+**Note:** Genesis system (v0.5.0) provides production-realistic token creation.
 
 ---
 
@@ -156,6 +157,39 @@ Tests inject fake UTXOs directly via `dnac_db_store_utxo()`:
 - [x] Witness attestations permanent
 - [x] Nullifier replication permanent
 - [x] Removed unused TTL defines from config.h
+
+### Phase 18: BFT Consensus (v0.2.0) ✅
+- [x] PBFT-like consensus protocol
+- [x] Leader election: `(epoch + view) % n_witnesses`
+- [x] TCP mesh networking between witnesses
+- [x] Systemd service deployment
+
+### Phase 19: Multi-Input Double-Spend Fix (v0.4.0) ✅
+- [x] Fixed multi-input double-spend vulnerability
+- [x] Atomic nullifier validation in single BFT round
+
+### Phase 20: Genesis System (v0.5.0) ✅
+- [x] Genesis transaction type for initial token creation
+- [x] Unanimous 3-of-3 witness authorization required
+- [x] `genesis` CLI command (with `mint` kept as alias)
+
+### Phase 21: Security Gap Fixes (v0.6.0) ✅
+- [x] Gaps 1-6: BFT message signing with real Dilithium5
+- [x] Gaps 8-9: Integer overflow protection
+- [x] Gap 12: Public key validation
+- [x] Gaps 23-24: Replay prevention (nonce/timestamp)
+- [x] Gap 25: Memo support (up to 255 bytes)
+- [x] 18 unit tests in `tests/test_gaps.c`
+
+### Phase 22: P0 Infrastructure (v0.7.0) ✅
+- [x] Chain synchronization infrastructure
+- [x] Merkle tree for transaction inclusion proofs
+- [x] Ledger confirmation tracking
+
+### Phase 23: BFT-Anchored Proofs (v0.7.1) ✅
+- [x] Epoch roots signed by BFT consensus
+- [x] Merkle proofs anchored to BFT-signed state
+- [x] Trust verification for transaction inclusion
 
 ---
 

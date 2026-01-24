@@ -1,8 +1,8 @@
 # DNAC Implementation Roadmap
 
 **Project:** DNAC - Post-Quantum Digital Cash over DHT
-**Version:** v0.1.22
-**Status:** Phase 15 Complete (Epoch-Based DHT Keys)
+**Version:** v0.7.1
+**Status:** Phase 23 Complete (BFT-Anchored Proofs)
 
 ---
 
@@ -170,16 +170,57 @@ DNAC is a post-quantum digital cash system that integrates with DNA Messenger:
 
 **Purpose:** Prevent unbounded DHT key accumulation by rotating request keys hourly.
 
-**Key Files:**
-| File | Change |
-|------|--------|
-| `include/dnac/epoch.h` | NEW - Epoch helpers |
-| `include/dnac/witness.h` | Announcement struct/functions |
-| `src/witness/config.h` | Epoch constants |
-| `src/witness/server.c` | Announcement publishing, epoch listeners |
-| `src/witness/main.c` | Epoch tracking, listener rotation |
-| `src/nodus/client.c` | Fetch announcement, epoch keys |
-| `src/nodus/attestation.c` | Announcement serialize/deserialize |
+### Phase 16: CLI Query Commands ✅ COMPLETE (v0.1.28)
+- [x] `dnac-cli info` - Show wallet info, address, DHT status, balance
+- [x] `dnac-cli address` - Output fingerprint only (for scripting)
+- [x] `dnac-cli query <name|fp>` - Lookup identity by name or fingerprint
+- [x] Auto-detect name vs fingerprint (128 hex = fingerprint)
+- [x] Documentation: `docs/CLI_COMMANDS.md`
+
+### Phase 17: Permanent DHT Storage ✅ COMPLETE (v0.1.29)
+- [x] Changed all `dht_put_signed()` → `dht_put_signed_permanent()`
+- [x] Payments now permanent (cash doesn't expire)
+- [x] Witness attestations permanent
+- [x] Nullifier replication permanent
+- [x] Removed unused TTL defines from config.h
+
+### Phase 18: BFT Consensus ✅ COMPLETE (v0.2.0)
+- [x] PBFT-like consensus protocol (PROPOSE → PREVOTE → PRECOMMIT → COMMIT)
+- [x] Leader election: `(epoch + view) % n_witnesses`
+- [x] Quorum requirement: 2 for 3 witnesses
+- [x] TCP mesh networking between witnesses
+- [x] Request forwarding (non-leader → leader)
+- [x] Systemd service deployment on 3 nodes
+
+### Phase 19: Multi-Input Double-Spend Fix ✅ COMPLETE (v0.4.0)
+- [x] Fixed vulnerability where multi-input transactions could double-spend
+- [x] All input nullifiers now validated atomically in single BFT round
+- [x] Added `test_double_spend` test case
+
+### Phase 20: Genesis System ✅ COMPLETE (v0.5.0)
+- [x] Genesis transaction type for initial token creation
+- [x] Unanimous 3-of-3 witness authorization required
+- [x] `genesis` CLI command (with `mint` kept as alias)
+- [x] One-time bootstrap mechanism for token supply
+
+### Phase 21: Security Gap Fixes ✅ COMPLETE (v0.6.0)
+- [x] Gaps 1-6: BFT message signing with real Dilithium5
+- [x] Gaps 8-9: Integer overflow protection
+- [x] Gap 12: Public key validation
+- [x] Gaps 23-24: Replay prevention (nonce/timestamp)
+- [x] Gap 25: Memo support (up to 255 bytes)
+- [x] 18 unit tests in `tests/test_gaps.c`
+
+### Phase 22: P0 Infrastructure ✅ COMPLETE (v0.7.0)
+- [x] Chain synchronization infrastructure
+- [x] Merkle tree for transaction inclusion proofs
+- [x] Ledger confirmation tracking
+- [x] `test_remote.c` for cross-machine testing
+
+### Phase 23: BFT-Anchored Proofs ✅ COMPLETE (v0.7.1)
+- [x] Epoch roots signed by BFT consensus
+- [x] Merkle proofs anchored to BFT-signed state
+- [x] Trust verification for transaction inclusion
 
 ---
 

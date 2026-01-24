@@ -1,10 +1,35 @@
 # DNAC Testing Documentation
 
-**Last Updated:** 2026-01-22 | **Version:** v0.2.0
+**Last Updated:** 2026-01-24 | **Version:** v0.7.1
 
 ---
 
 ## Test Suite Overview
+
+### Gap Fixes Test (`test_gaps.c`)
+
+Location: `/opt/dnac/tests/test_gaps.c`
+
+18 unit tests validating v0.6.0 security fixes:
+
+| Test Group | Coverage |
+|------------|----------|
+| Gaps 1-6 | BFT message signing with real Dilithium5 signatures |
+| Gaps 8-9 | Integer overflow protection in amount calculations |
+| Gap 12 | Public key validation (correct size, format) |
+| Gaps 23-24 | Replay prevention via nonce and timestamp |
+| Gap 25 | Memo support validation (up to 255 bytes) |
+
+```bash
+cd /opt/dnac/build
+ASAN_OPTIONS=detect_leaks=0 ./test_gaps
+```
+
+### Remote Test (`test_remote.c`)
+
+Location: `/opt/dnac/tests/test_remote.c`
+
+Cross-machine send/receive testing for validating real-world transaction flow.
 
 ### End-to-End Test (`test_real.c`)
 
@@ -97,7 +122,7 @@ sleep 5
 
 ---
 
-## What Has Been Implemented (v0.2.0)
+## What Has Been Implemented (v0.7.1)
 
 ### BFT Consensus
 
@@ -107,14 +132,19 @@ sleep 5
 - [x] TCP mesh networking between witnesses
 - [x] Request forwarding (non-leader → leader)
 - [x] Systemd service deployment
+- [x] BFT message signing with Dilithium5 (v0.6.0)
+- [x] BFT-signed epoch roots (v0.7.1)
 
 ### Transaction Flow
 
-- [x] MINT transaction creation and authorization
+- [x] GENESIS transaction with 3-of-3 unanimous authorization (v0.5.0)
 - [x] SPEND transaction with fee outputs
 - [x] UTXO selection and change handling
 - [x] Nullifier-based double-spend prevention
+- [x] Multi-input double-spend fix (v0.4.0)
 - [x] DHT-based payment delivery
+- [x] Memo support up to 255 bytes (v0.6.0)
+- [x] Replay prevention via nonce/timestamp (v0.6.0)
 
 ### Witness Infrastructure
 
@@ -123,12 +153,16 @@ sleep 5
 - [x] Auto-restart on crash
 - [x] Peer reconnection logic
 - [x] Nullifier database persistence
+- [x] Merkle tree for transaction proofs (v0.7.0)
+- [x] Ledger confirmation tracking (v0.7.0)
 
 ### Cryptography
 
 - [x] Dilithium5 signatures (post-quantum)
 - [x] SHA3-512 for nullifiers and tx hashes
 - [x] Fingerprint derivation from public keys
+- [x] Integer overflow protection (v0.6.0)
+- [x] Public key validation (v0.6.0)
 
 ---
 

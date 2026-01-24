@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-01-24 | **Status:** DESIGN | **Version:** v0.7.0
+**Last Updated:** 2026-01-24 | **Status:** DESIGN | **Version:** v0.7.1
 
 ---
 
@@ -149,7 +149,7 @@ OUTPUT:
 **EVERY successful build that will be pushed MUST increment the version.**
 
 **Version File:** `include/dnac/version.h`
-**Current:** v0.1.0
+**Current:** v0.7.1
 
 **Which Number to Bump:**
 - **PATCH** (0.1.X): Bug fixes, small features

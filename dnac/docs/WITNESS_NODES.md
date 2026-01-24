@@ -1,6 +1,6 @@
 # DNAC Witness Nodes - BFT Consensus Cluster
 
-**Created:** 2026-01-21 | **Updated:** 2026-01-22 | **Version:** v0.3.0
+**Created:** 2026-01-21 | **Updated:** 2026-01-24 | **Version:** v0.7.1
 
 ---
 
@@ -190,6 +190,38 @@ ssh nocdem@192.168.0.195 "journalctl -u dnac-witness -f"
 # From any witness, check TCP connections
 ss -tnp | grep 4200
 ```
+
+---
+
+## Features (v0.7.1)
+
+### Version Announcements
+
+Witnesses broadcast their software version in announcements:
+- Response includes: `software_version[3]` - [major, minor, patch]
+- Announcement includes: `software_version[3]` - [major, minor, patch]
+- Logs show: `witness %.8s... v%d.%d.%d VERIFIED`
+
+### Replay Prevention (v0.6.0)
+
+Transactions include nonce and timestamp to prevent replay attacks:
+- Nonce: Unique per-transaction random value
+- Timestamp: Must be within acceptable window
+- Combined with nullifiers for complete replay protection
+
+### Merkle Tree Ledger (v0.7.0)
+
+Transaction inclusion proofs via Merkle tree:
+- Transactions stored in Merkle tree structure
+- Inclusion proofs available for any confirmed transaction
+- Chain synchronization for new nodes
+
+### BFT-Signed Epoch Roots (v0.7.1)
+
+Epoch state anchored by BFT consensus:
+- Each epoch produces a signed state root
+- Merkle proofs anchored to BFT-signed roots
+- Trust verification for transaction inclusion
 
 ---
 

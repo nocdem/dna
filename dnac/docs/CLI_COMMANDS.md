@@ -1,6 +1,6 @@
 # DNAC CLI Commands Reference
 
-**Version:** v0.1.29 | **Last Updated:** 2026-01-22
+**Version:** v0.7.1 | **Last Updated:** 2026-01-24
 
 ---
 
@@ -158,19 +158,35 @@ INDEX   AMOUNT            STATUS      RECEIVED
 
 #### `send <fingerprint> <amount> [memo]` - Send Payment
 
+Sends a payment to the specified recipient with optional memo.
+
 ```bash
+# Send with memo
 dnac-cli send 7a145ade5e99b16fbf04f23e590928a6... 1000000 "Payment for services"
+
+# Send without memo
+dnac-cli send 7a145ade5e99b16fbf04f23e590928a6... 1000000
 ```
+
+**Parameters:**
+| Parameter | Description |
+|-----------|-------------|
+| fingerprint | Recipient's 128-character fingerprint |
+| amount | Amount to send (in smallest units) |
+| memo | Optional memo up to 255 bytes (v0.6.0+) |
 
 ---
 
-#### `mint <fingerprint> <amount>` - Mint New Coins
+#### `genesis <fingerprint> <amount>` - Create Genesis Transaction
 
-Creates new coins (requires 2-of-3 witness authorization).
+Creates the one-time genesis transaction to create initial token supply.
+Requires **unanimous 3-of-3 witness authorization** (v0.5.0+).
 
 ```bash
-dnac-cli mint 3cbba8d8bf0c36033fd441e9387af846... 100000000
+dnac-cli genesis 3cbba8d8bf0c36033fd441e9387af846... 100000000
 ```
+
+**Note:** The `mint` command is kept as an alias for backward compatibility.
 
 ---
 
@@ -371,6 +387,13 @@ dnac-cli send "$FP" "$AMOUNT"
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v0.7.1 | 2026-01-24 | BFT-anchored Merkle proofs |
+| v0.7.0 | 2026-01-24 | P0 infrastructure - chain sync, Merkle proofs, confirmations |
+| v0.6.0 | 2026-01-23 | Memo support, replay prevention, security gap fixes |
+| v0.5.0 | 2026-01-23 | Genesis system with 3-of-3 unanimous authorization |
+| v0.4.0 | 2026-01-23 | Multi-input double-spend vulnerability fix |
+| v0.3.0 | 2026-01-22 | Store change UTXOs locally after send |
+| v0.2.0 | 2026-01-22 | BFT consensus protocol |
 | v0.1.29 | 2026-01-22 | All DHT data now permanent (cash doesn't expire) |
 | v0.1.28 | 2026-01-22 | Added `info`, `address`, `query` commands |
 | v0.1.27 | 2026-01-22 | Witness infrastructure deployment |
