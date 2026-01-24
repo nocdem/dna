@@ -4803,6 +4803,40 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Sync local groups to DHT (push)
+  ///
+  /// Publishes the user's group membership list to DHT for multi-device sync.
+  /// This is the PUSH direction - local -> DHT.
+  Future<void> syncGroupsToDht() async {
+    final localId = _nextLocalId++;
+    final completer = Completer<void>();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_sync_groups_to_dht(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit sync groups to DHT request');
+    }
+
+    return completer.future;
+  }
+
   // ---------------------------------------------------------------------------
   // SIGNING (for QR Auth)
   // ---------------------------------------------------------------------------
