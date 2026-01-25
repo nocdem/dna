@@ -712,11 +712,16 @@ int dht_dm_outbox_sync_all_contacts_full(
  * Listen API
  *============================================================================*/
 
-/* Cleanup callback for listen context */
+/* Cleanup callback for listen context
+ * v0.6.48: Actually free user_data to fix use-after-free race condition.
+ * Previously this was a no-op and engine code freed user_data BEFORE cancelling,
+ * causing crash when callback fired between free() and cancel().
+ * Now dht_cancel_listen() calls this AFTER marking listener inactive,
+ * ensuring no in-flight callback can access freed memory. */
 static void dm_listen_cleanup(void *user_data) {
-    /* Note: We don't free the listen_ctx here because the caller owns it.
-     * The listen_ctx is freed in dht_dm_outbox_unsubscribe(). */
-    (void)user_data;
+    if (user_data) {
+        free(user_data);
+    }
 }
 
 /* Internal: subscribe to a specific day's bucket */
