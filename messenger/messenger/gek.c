@@ -12,6 +12,8 @@
 
 #include "gek.h"
 #include "group_database.h"
+#include "../messenger.h"
+#include "../crypto/utils/qgp_types.h"
 #include "../crypto/utils/qgp_random.h"
 #include "../crypto/utils/qgp_sha3.h"
 #include "../crypto/utils/qgp_platform.h"
@@ -28,6 +30,7 @@
 #include "../dht/core/dht_context.h"
 #include "../dht/core/dht_keyserver.h"
 #include "../dht/shared/dht_groups.h"
+#include "../dht/client/dht_singleton.h"
 #include "../dht/shared/dht_gek_storage.h"
 #include "../dht/client/dht_geks.h"
 #include <stdio.h>
@@ -1654,4 +1657,106 @@ int gek_auto_sync(
 
     QGP_LOG_INFO(LOG_TAG, "Auto-sync complete (imported=%d)\n", imported);
     return 0;
+}
+
+/* ============================================================================
+ * HIGH-LEVEL WRAPPER (loads keys from context)
+ * ============================================================================ */
+
+int messenger_gek_auto_sync(void *ctx_ptr) {
+    messenger_context_t *ctx = (messenger_context_t *)ctx_ptr;
+    if (!ctx || !ctx->fingerprint) {
+        QGP_LOG_ERROR(LOG_TAG, "messenger_gek_auto_sync: Invalid context\n");
+        return -1;
+    }
+
+    // Get DHT context from singleton
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "messenger_gek_auto_sync: DHT not available\n");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Auto-syncing GEKs for %.16s...\n", ctx->fingerprint);
+
+    // Get data directory
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "messenger_gek_auto_sync: Failed to get data dir\n");
+        return -1;
+    }
+
+    // Load Kyber key (encrypted if password available)
+    char kyber_path[1024];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", data_dir);
+
+    qgp_key_t *kyber_key = NULL;
+    if (ctx->session_password) {
+        if (qgp_key_load_encrypted(kyber_path, ctx->session_password, &kyber_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "messenger_gek_auto_sync: Failed to load encrypted Kyber key\n");
+            return -1;
+        }
+    } else {
+        if (qgp_key_load(kyber_path, &kyber_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "messenger_gek_auto_sync: Failed to load Kyber key\n");
+            return -1;
+        }
+    }
+
+    // Load Dilithium key (encrypted if password available)
+    char dilithium_path[1024];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
+
+    qgp_key_t *dilithium_key = NULL;
+    if (ctx->session_password) {
+        if (qgp_key_load_encrypted(dilithium_path, ctx->session_password, &dilithium_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "messenger_gek_auto_sync: Failed to load encrypted Dilithium key\n");
+            qgp_key_free(kyber_key);
+            return -1;
+        }
+    } else {
+        if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "messenger_gek_auto_sync: Failed to load Dilithium key\n");
+            qgp_key_free(kyber_key);
+            return -1;
+        }
+    }
+
+    // Validate key sizes
+    if (!kyber_key->public_key || kyber_key->public_key_size != 1568 ||
+        !kyber_key->private_key || kyber_key->private_key_size != 3168) {
+        QGP_LOG_ERROR(LOG_TAG, "messenger_gek_auto_sync: Invalid Kyber key sizes\n");
+        qgp_key_free(kyber_key);
+        qgp_key_free(dilithium_key);
+        return -1;
+    }
+
+    if (!dilithium_key->public_key || dilithium_key->public_key_size != 2592 ||
+        !dilithium_key->private_key || dilithium_key->private_key_size != 4896) {
+        QGP_LOG_ERROR(LOG_TAG, "messenger_gek_auto_sync: Invalid Dilithium key sizes\n");
+        qgp_key_free(kyber_key);
+        qgp_key_free(dilithium_key);
+        return -1;
+    }
+
+    // Call the low-level auto-sync
+    int result = gek_auto_sync(
+        dht_ctx,
+        ctx->fingerprint,
+        kyber_key->public_key,
+        kyber_key->private_key,
+        dilithium_key->public_key,
+        dilithium_key->private_key
+    );
+
+    qgp_key_free(kyber_key);
+    qgp_key_free(dilithium_key);
+
+    if (result == 0) {
+        QGP_LOG_INFO(LOG_TAG, "messenger_gek_auto_sync: Success\n");
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "messenger_gek_auto_sync: Failed (result=%d)\n", result);
+    }
+
+    return result;
 }

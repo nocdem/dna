@@ -2309,6 +2309,15 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         } else {
             QGP_LOG_INFO(LOG_TAG, "Warning: Failed to sync contacts from DHT");
         }
+
+        /* Sync GEKs from DHT (restore group encryption keys on new device)
+         * v0.6.49+: GEKs are synced like contacts for multi-device support */
+        int gek_sync_result = messenger_gek_auto_sync(engine->messenger);
+        if (gek_sync_result == 0) {
+            QGP_LOG_INFO(LOG_TAG, "Synced GEKs from DHT");
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "Warning: Failed to sync GEKs from DHT (non-fatal)");
+        }
     }
 
     /* Initialize P2P transport for DHT and messaging

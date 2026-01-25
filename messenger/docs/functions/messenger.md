@@ -144,6 +144,12 @@ fetch and import, eliminating the need for per-device IKP extraction.
 | `int gek_sync_to_dht(dht_ctx, identity, kyber_pub, kyber_priv, dilithium_pub, dilithium_priv)` | Export all local GEKs to DHT (self-encrypted) |
 | `int gek_sync_from_dht(dht_ctx, identity, kyber_priv, dilithium_pub, imported_out)` | Fetch GEKs from DHT and import missing entries |
 | `int gek_auto_sync(dht_ctx, identity, kyber_pub, kyber_priv, dilithium_pub, dilithium_priv)` | Auto-sync: fetch from DHT, then publish local |
+| `int messenger_gek_auto_sync(void *ctx)` | High-level wrapper: loads keys internally, calls gek_auto_sync (v0.6.53+) |
+
+**Call Sites (v0.6.53+):**
+- On identity load: Called after contacts sync in `dna_engine.c` (restores GEKs on new device)
+- On group create: Called after storing initial GEK in `messenger_create_group`
+- On group join: Called after accepting invitation in `messenger_accept_group_invitation`
 
 **DHT Key:** `SHA3-512(fingerprint + ":geks")`
 **Security:** Self-encrypted with Kyber1024, signed with Dilithium5

@@ -467,6 +467,17 @@ int gek_auto_sync(
     const uint8_t *dilithium_privkey
 );
 
+/**
+ * High-level GEK auto-sync using messenger context
+ *
+ * Loads keys from disk internally and calls gek_auto_sync().
+ * Use this from dna_engine.c or other places that have messenger context.
+ *
+ * @param ctx Opaque messenger context pointer (cast from messenger_context_t*)
+ * @return 0 on success, -1 on error
+ */
+int messenger_gek_auto_sync(void *ctx);
+
 /* ============================================================================
  * BACKUP / RESTORE (Legacy - for transition period)
  * ============================================================================ */
