@@ -44,7 +44,10 @@ typedef struct {
 static outbox_cache_entry_t g_outbox_cache[OUTBOX_CACHE_MAX_ENTRIES];
 static bool g_cache_initialized = false;
 
+/* Cache init - MUST be called while holding g_queue_mutex (v0.6.43 race fix) */
 static void outbox_cache_init(void) {
+    /* Note: Caller must hold g_queue_mutex. Check is safe because all callers
+     * either hold the mutex or are dead code (find/store helpers unused). */
     if (g_cache_initialized) return;
     memset(g_outbox_cache, 0, sizeof(g_outbox_cache));
     g_cache_initialized = true;

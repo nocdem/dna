@@ -220,8 +220,10 @@ static int is_valid_identity_name(const char *name) {
 size_t dna_engine_start_presence_listener(dna_engine_t *engine, const char *contact_fingerprint);
 
 /* Global engine pointer for DHT status callback and event dispatch from lower layers
- * Set during create, cleared during destroy. Used by messenger_transport.c to emit events. */
+ * Set during create, cleared during destroy. Used by messenger_transport.c to emit events.
+ * Protected by g_engine_global_mutex (v0.6.43 race fix). */
 static dna_engine_t *g_dht_callback_engine = NULL;
+static pthread_mutex_t g_engine_global_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Android notification callback - separate from Flutter's event callback.
  * This is called when DNA_EVENT_MESSAGE_RECEIVED fires for incoming messages,
@@ -248,13 +250,19 @@ static void *g_android_reconnect_data = NULL;
 /* Mutex to protect Android callback globals during set/invoke (v0.6.40 race fix) */
 static pthread_mutex_t g_android_callback_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-/* Global engine accessors (for messenger layer event dispatch) */
+/* Global engine accessors (for messenger layer event dispatch)
+ * Thread-safe via g_engine_global_mutex (v0.6.43 race fix). */
 void dna_engine_set_global(dna_engine_t *engine) {
+    pthread_mutex_lock(&g_engine_global_mutex);
     g_dht_callback_engine = engine;
+    pthread_mutex_unlock(&g_engine_global_mutex);
 }
 
 dna_engine_t* dna_engine_get_global(void) {
-    return g_dht_callback_engine;
+    pthread_mutex_lock(&g_engine_global_mutex);
+    dna_engine_t *engine = g_dht_callback_engine;
+    pthread_mutex_unlock(&g_engine_global_mutex);
+    return engine;
 }
 
 /**

@@ -14,6 +14,7 @@
 #include <sqlite3.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <pthread.h>
 
 #ifdef _WIN32
 #include <direct.h>
@@ -26,6 +27,13 @@
 
 static sqlite3 *g_db = NULL;
 static char g_owner_identity[256] = {0};  // Current database owner
+/* Mutex protects identity switch operations (v0.6.43 race fix).
+ * Note: SQLite FULLMUTEX protects actual queries. This mutex only
+ * protects the g_db + g_owner_identity pair during init/close. */
+static pthread_mutex_t g_db_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Forward declaration for internal close (v0.6.43) */
+static void contacts_db_close_unlocked(void);
 
 // Get database path for specific identity
 static int get_db_path(const char *owner_identity, char *path_out, size_t path_size) {
@@ -139,22 +147,25 @@ static int ensure_directory(const char *db_path) {
     return 0;
 }
 
-// Initialize database
+// Initialize database (thread-safe via g_db_mutex - v0.6.43 race fix)
 int contacts_db_init(const char *owner_identity) {
     if (!owner_identity || strlen(owner_identity) == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid owner_identity\n");
         return -1;
     }
 
+    pthread_mutex_lock(&g_db_mutex);
+
     // If already initialized for same identity, return success
     if (g_db && strcmp(g_owner_identity, owner_identity) == 0) {
+        pthread_mutex_unlock(&g_db_mutex);
         return 0;
     }
 
     // If initialized for different identity, close first
     if (g_db) {
         QGP_LOG_INFO(LOG_TAG, "Closing previous database for '%s'\n", g_owner_identity);
-        contacts_db_close();
+        contacts_db_close_unlocked();
     }
 
     // Store owner identity
@@ -164,11 +175,13 @@ int contacts_db_init(const char *owner_identity) {
     // Get database path
     char db_path[512];
     if (get_db_path(owner_identity, db_path, sizeof(db_path)) != 0) {
+        pthread_mutex_unlock(&g_db_mutex);
         return -1;
     }
 
     // Ensure directory exists
     if (ensure_directory(db_path) != 0) {
+        pthread_mutex_unlock(&g_db_mutex);
         return -1;
     }
 
@@ -180,6 +193,7 @@ int contacts_db_init(const char *owner_identity) {
         sqlite3_close(g_db);
         g_db = NULL;
         g_owner_identity[0] = '\0';
+        pthread_mutex_unlock(&g_db_mutex);
         return -1;
     }
 
@@ -214,6 +228,7 @@ int contacts_db_init(const char *owner_identity) {
         sqlite3_close(g_db);
         g_db = NULL;
         g_owner_identity[0] = '\0';
+        pthread_mutex_unlock(&g_db_mutex);
         return -1;
     }
 
@@ -286,6 +301,7 @@ int contacts_db_init(const char *owner_identity) {
     }
 
     QGP_LOG_INFO(LOG_TAG, "Initialized for identity '%s': %s\n", owner_identity, db_path);
+    pthread_mutex_unlock(&g_db_mutex);
     return 0;
 }
 
@@ -722,14 +738,21 @@ int contacts_db_set_dm_sync_timestamp(const char *identity, uint64_t timestamp) 
     return 0;
 }
 
-// Close database
-void contacts_db_close(void) {
+/* Internal close - caller must hold g_db_mutex (v0.6.43) */
+static void contacts_db_close_unlocked(void) {
     if (g_db) {
         sqlite3_close(g_db);
         g_db = NULL;
         QGP_LOG_INFO(LOG_TAG, "Closed database for identity '%s'\n", g_owner_identity);
         g_owner_identity[0] = '\0';  // Clear owner identity
     }
+}
+
+// Close database
+void contacts_db_close(void) {
+    pthread_mutex_lock(&g_db_mutex);
+    contacts_db_close_unlocked();
+    pthread_mutex_unlock(&g_db_mutex);
 }
 
 // Migrate contacts from global database to per-identity database

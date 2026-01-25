@@ -17,14 +17,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <pthread.h>
 
 #define LOG_TAG "DHT"
 
 /* Default timeout for waiting for DHT to become ready (milliseconds) */
 #define DHT_READY_TIMEOUT_MS 5000
 
-/* Global DHT context (singleton) */
+/* Global DHT context (singleton, protected by g_singleton_mutex for init - v0.6.43 race fix) */
 static dht_context_t *g_dht_context = NULL;
+static pthread_mutex_t g_singleton_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* v0.6.0+: Flag to track if context is "borrowed" from engine (don't free on cleanup) */
 static bool g_context_borrowed = false;
@@ -138,7 +140,10 @@ static void store_identity_for_reinit(dht_identity_t *identity) {
 
 int dht_singleton_init(void)
 {
+    pthread_mutex_lock(&g_singleton_mutex);
+
     if (g_dht_context != NULL) {
+        pthread_mutex_unlock(&g_singleton_mutex);
         QGP_LOG_WARN(LOG_TAG, "Already initialized");
         return 0;
     }
@@ -147,12 +152,14 @@ int dht_singleton_init(void)
 
     dht_config_t config;
     if (create_client_dht_config(&config, "dna-global") != 0) {
+        pthread_mutex_unlock(&g_singleton_mutex);
         return -1;
     }
 
     g_dht_context = dht_context_new(&config);
     if (!g_dht_context) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to create DHT context");
+        pthread_mutex_unlock(&g_singleton_mutex);
         return -1;
     }
 
@@ -160,9 +167,11 @@ int dht_singleton_init(void)
         QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT context");
         dht_context_free(g_dht_context);
         g_dht_context = NULL;
+        pthread_mutex_unlock(&g_singleton_mutex);
         return -1;
     }
 
+    pthread_mutex_unlock(&g_singleton_mutex);
     QGP_LOG_INFO(LOG_TAG, "DHT started (bootstrapping in background)");
     return 0;
 }

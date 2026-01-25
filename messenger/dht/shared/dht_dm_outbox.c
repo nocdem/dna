@@ -81,7 +81,10 @@ static dm_outbox_cache_entry_t g_dm_cache[DM_OUTBOX_CACHE_MAX_ENTRIES];
 static bool g_dm_cache_initialized = false;
 static pthread_mutex_t g_dm_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* Cache init - MUST be called while holding g_dm_cache_mutex (v0.6.43 race fix) */
 static void dm_cache_init(void) {
+    /* Note: Caller must hold g_dm_cache_mutex. All public functions that call
+     * dm_cache_find/dm_cache_store lock the mutex first. */
     if (g_dm_cache_initialized) return;
     memset(g_dm_cache, 0, sizeof(g_dm_cache));
     g_dm_cache_initialized = true;

@@ -22,9 +22,10 @@ static atomic_bool g_discovery_running = false;
 static atomic_bool g_discovery_thread_created = false;  // Track if thread needs joining
 static dht_context_t *g_discovery_dht_ctx = NULL;
 
-// Callback for discovery completion
+// Callback for discovery completion (protected by g_discovery_callback_mutex, v0.6.43 race fix)
 static dht_discovery_callback_t g_discovery_callback = NULL;
 static void *g_discovery_user_data = NULL;
+static pthread_mutex_t g_discovery_callback_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /**
  * Background discovery thread function
@@ -45,9 +46,14 @@ static void* discovery_thread_func(void *arg) {
     // Run discovery
     int result = dht_bootstrap_discovery_run_sync(g_discovery_dht_ctx);
 
-    // Fire callback if set
-    if (g_discovery_callback) {
-        g_discovery_callback(result, g_discovery_user_data);
+    // Fire callback if set (copy under lock, invoke outside lock - v0.6.43 race fix)
+    pthread_mutex_lock(&g_discovery_callback_mutex);
+    dht_discovery_callback_t callback = g_discovery_callback;
+    void *user_data = g_discovery_user_data;
+    pthread_mutex_unlock(&g_discovery_callback_mutex);
+
+    if (callback) {
+        callback(result, user_data);
     }
 
     atomic_store(&g_discovery_running, false);
@@ -160,8 +166,10 @@ bool dht_bootstrap_discovery_is_running(void) {
 }
 
 void dht_bootstrap_discovery_set_callback(dht_discovery_callback_t callback, void *user_data) {
+    pthread_mutex_lock(&g_discovery_callback_mutex);
     g_discovery_callback = callback;
     g_discovery_user_data = user_data;
+    pthread_mutex_unlock(&g_discovery_callback_mutex);
 }
 
 int dht_bootstrap_discovery_run_sync(dht_context_t *dht_ctx) {
