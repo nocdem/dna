@@ -56,6 +56,7 @@ int qgp_derive_seeds_from_mnemonic(
     uint8_t master_seed[BIP39_SEED_SIZE];
     if (bip39_mnemonic_to_seed(mnemonic, passphrase, master_seed) != 0) {
         QGP_LOG_ERROR("SEED", "Failed to derive master seed from mnemonic");
+        qgp_secure_memzero(master_seed, BIP39_SEED_SIZE);
         return -1;
     }
 
@@ -68,6 +69,7 @@ int qgp_derive_seeds_from_mnemonic(
         uint8_t *input = malloc(input_len);
         if (!input) {
             QGP_LOG_ERROR("SEED", "Memory allocation failed");
+            qgp_secure_memzero(master_seed, BIP39_SEED_SIZE);
             return -1;
         }
 
@@ -88,6 +90,7 @@ int qgp_derive_seeds_from_mnemonic(
         uint8_t *input = malloc(input_len);
         if (!input) {
             QGP_LOG_ERROR("SEED", "Memory allocation failed");
+            qgp_secure_memzero(master_seed, BIP39_SEED_SIZE);
             return -1;
         }
 
@@ -132,6 +135,7 @@ int qgp_derive_seeds_with_master(
     uint8_t master_seed[BIP39_SEED_SIZE];
     if (bip39_mnemonic_to_seed(mnemonic, passphrase, master_seed) != 0) {
         QGP_LOG_ERROR("SEED", "Failed to derive master seed from mnemonic");
+        qgp_secure_memzero(master_seed, BIP39_SEED_SIZE);
         return -1;
     }
 

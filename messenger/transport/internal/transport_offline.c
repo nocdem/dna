@@ -332,6 +332,9 @@ int transport_check_offline_messages(
             free(task_args);
         } else {
             QGP_LOG_ERROR(LOG_TAG, "Failed to allocate ACK task array");
+            // Clean up partial allocation (free(NULL) is safe)
+            free(tasks);
+            free(task_args);
         }
     } else if (ack_count > 0) {
         QGP_LOG_DEBUG(LOG_TAG, "Skipping %zu ACKs (background caching mode)", ack_count);

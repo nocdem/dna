@@ -456,7 +456,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ),
                 // Send CPUNK button
                 IconButton(
-                  icon: const FaIcon(FontAwesomeIcons.moneyBillTransfer),
+                  icon: const FaIcon(FontAwesomeIcons.dollarSign),
                   tooltip: 'Send CPUNK',
                   onPressed: () => _showSendCpunk(context, contact),
                 ),

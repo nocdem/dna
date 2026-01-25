@@ -141,13 +141,23 @@ class SyncSettingsNotifier extends StateNotifier<SyncSettingsState> {
             log('SYNC', 'Contacts sync failed (non-fatal): $e');
           }
 
-          // Step 2: Restore groups from DHT grouplist
+          // Step 2a: Restore groups from DHT grouplist (PULL)
           try {
-            log('SYNC', 'Step 2/4: Restoring groups from DHT...');
+            log('SYNC', 'Step 2a/5: Restoring groups from DHT...');
             await engine.restoreGroupsFromDht();
             log('SYNC', 'Groups restored from DHT');
           } catch (e) {
             log('SYNC', 'Groups restore failed (non-fatal): $e');
+          }
+
+          // Step 2b: Sync local groups to DHT (PUSH)
+          // This ensures any local groups that weren't published get pushed to DHT
+          try {
+            log('SYNC', 'Step 2b/5: Syncing local groups to DHT...');
+            await engine.syncGroupsToDht();
+            log('SYNC', 'Local groups synced to DHT');
+          } catch (e) {
+            log('SYNC', 'Groups push to DHT failed (non-fatal): $e');
           }
 
           // Step 3: Restore GEKs from DHT backup (v4 format: GEKs + groups only)

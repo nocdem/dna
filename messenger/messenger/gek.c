@@ -401,7 +401,14 @@ int gek_rotate(const char *group_uuid, uint32_t *new_version_out, uint8_t new_ge
         QGP_LOG_INFO(LOG_TAG, "No existing GEK found, starting at version 0\n");
     }
 
-    uint32_t new_version = current_version + 1;
+    // Use Unix timestamp for version (fits in uint32_t until year 2106)
+    // This allows distributed clients to generate versions without coordination
+    uint32_t new_version = (uint32_t)time(NULL);
+    // Ensure always increasing (handles edge case of multiple rotations in same second
+    // or if clock went backwards)
+    if (new_version <= current_version) {
+        new_version = current_version + 1;
+    }
 
     // Generate new GEK
     rc = gek_generate(group_uuid, new_version, new_gek_out);

@@ -558,6 +558,25 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
     Future.microtask(() {
       ref.read(openGroupUuidProvider.notifier).state = widget.group.uuid;
     });
+    // Async GEK sync - fire and forget (don't block UI)
+    // This ensures we have the latest GEK from DHT for decrypting new messages
+    _syncGekInBackground();
+  }
+
+  /// Sync GEK from DHT in background (non-blocking)
+  /// If a newer GEK is found, refreshes the conversation to re-decrypt messages
+  Future<void> _syncGekInBackground() async {
+    try {
+      final engine = await ref.read(engineProvider.future);
+      await engine.syncGroupByUuid(widget.group.uuid);
+      // Refresh conversation in case new messages can now be decrypted
+      if (mounted) {
+        ref.invalidate(groupConversationProvider(widget.group.uuid));
+      }
+    } catch (e) {
+      // Non-fatal - GEK sync failure shouldn't block the chat
+      // Old messages still visible with cached GEK
+    }
   }
 
   @override

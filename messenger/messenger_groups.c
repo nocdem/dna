@@ -153,6 +153,12 @@ int messenger_create_group(messenger_context_t *ctx, const char *name, const cha
         }
     }
 
+    // Sync group list to DHT so it can be restored on other devices
+    ret = messenger_sync_groups_to_dht(ctx);
+    if (ret != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to sync grouplist to DHT after create (non-fatal)\n");
+    }
+
     return 0;
 }
 
@@ -702,6 +708,12 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
 
     QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: Freeing invitation <<<\n");
     group_invitations_free(invitation, 1);
+
+    // Sync group list to DHT so it can be restored on other devices
+    ret = messenger_sync_groups_to_dht(ctx);
+    if (ret != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to sync grouplist to DHT after accept (non-fatal)\n");
+    }
 
     QGP_LOG_INFO(LOG_TAG, "Accepted group invitation: %s\n", group_uuid);
     QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: DONE <<<\n");

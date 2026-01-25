@@ -1004,10 +1004,22 @@ int groups_export_all(groups_export_entry_t **entries_out, size_t *count_out) {
                         const char *fp = (const char *)sqlite3_column_text(member_stmt, 0);
                         if (fp) {
                             entries[idx].members[m_idx] = strdup(fp);
+                            if (!entries[idx].members[m_idx]) {
+                                // strdup failed - cleanup previously allocated members
+                                for (int j = 0; j < m_idx; j++) {
+                                    free(entries[idx].members[j]);
+                                }
+                                free(entries[idx].members);
+                                entries[idx].members = NULL;
+                                entries[idx].member_count = 0;
+                                break;  // Skip remaining members for this group
+                            }
                             m_idx++;
                         }
                     }
-                    entries[idx].member_count = m_idx;
+                    if (entries[idx].members) {
+                        entries[idx].member_count = m_idx;
+                    }
                 }
             }
             sqlite3_finalize(member_stmt);

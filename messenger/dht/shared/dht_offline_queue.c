@@ -1025,6 +1025,7 @@ size_t dht_listen_ack(
     size_t token = dht_listen_ex(ctx, key, 64, ack_listen_callback, actx, ack_listener_cleanup);
     if (token == 0) {
         QGP_LOG_ERROR(LOG_TAG, "[ACK] Failed to start DHT listener\n");
+        free(actx);  // Clean up allocated context on failure
         return 0;
     }
 

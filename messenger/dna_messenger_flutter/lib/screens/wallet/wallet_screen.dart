@@ -7,6 +7,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart' show AddressBookEntry, Contact, Transaction, UserProfile, Wallet;
 import '../../providers/addressbook_provider.dart';
 import '../../providers/providers.dart' hide UserProfile;
+import '../../providers/wallet_settings_provider.dart';
 import '../../theme/dna_theme.dart';
 import 'address_book_screen.dart';
 import 'address_dialog.dart';
@@ -401,25 +402,35 @@ class _AllBalancesSection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final allBalances = ref.watch(allBalancesProvider);
+    final walletSettings = ref.watch(walletSettingsProvider);
     final theme = Theme.of(context);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         allBalances.when(
-          data: (list) => list.isEmpty
-              ? Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Text(
-                    'No balances',
-                    style: theme.textTheme.bodySmall,
-                  ),
-                )
-              : Column(
-                  children: list.map((wb) => _BalanceTile(
-                    walletBalance: wb,
-                  )).toList(),
-                ),
+          data: (list) {
+            // Filter zero balances if setting enabled
+            final filteredList = walletSettings.hideZeroBalances
+                ? list.where((wb) => _isNonZeroBalance(wb.balance.balance)).toList()
+                : list;
+
+            return filteredList.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Text(
+                      walletSettings.hideZeroBalances
+                          ? 'No non-zero balances'
+                          : 'No balances',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  )
+                : Column(
+                    children: filteredList.map((wb) => _BalanceTile(
+                      walletBalance: wb,
+                    )).toList(),
+                  );
+          },
           loading: () => const Padding(
             padding: EdgeInsets.all(16),
             child: Center(child: CircularProgressIndicator()),
@@ -434,6 +445,14 @@ class _AllBalancesSection extends ConsumerWidget {
         ),
       ],
     );
+  }
+
+  /// Check if balance string represents a non-zero value
+  bool _isNonZeroBalance(String balanceStr) {
+    if (balanceStr.isEmpty) return false;
+    final balance = double.tryParse(balanceStr);
+    if (balance == null) return true; // Show if can't parse
+    return balance > 0;
   }
 }
 

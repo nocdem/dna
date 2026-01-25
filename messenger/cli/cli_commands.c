@@ -8,11 +8,16 @@
 #include "bip39.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_sha3.h"
+#include "crypto/utils/qgp_types.h"
 #include "dht/core/dht_keyserver.h"
 #include "dht/client/dht_singleton.h"
+#include "dht/shared/dht_gek_storage.h"
+#include "dht/shared/dht_groups.h"
 #include "transport/internal/transport_core.h"
 /* ICE/TURN removed in v0.4.61 for privacy */
 #include "messenger.h"
+#include "messenger/gek.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -2126,6 +2131,212 @@ int cmd_group_publish_gek(dna_engine_t *engine, const char *group_uuid) {
     }
 
     printf("GEK published successfully to DHT!\n");
+    return 0;
+}
+
+int cmd_gek_fetch(dna_engine_t *engine, const char *group_uuid) {
+    if (!engine || !group_uuid) {
+        printf("Error: Missing group UUID\n");
+        return -1;
+    }
+
+    printf("Fetching GEK for group %s from DHT...\n", group_uuid);
+
+    /* Get DHT context */
+    void *dht_ctx = dna_engine_get_dht_context(engine);
+    if (!dht_ctx) {
+        printf("Error: DHT not initialized\n");
+        return -1;
+    }
+
+    /* Get data directory for key loading */
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        printf("Error: No data directory\n");
+        return -1;
+    }
+
+    /* Load Kyber private key for GEK decryption */
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", data_dir);
+
+    qgp_key_t *kyber_key = NULL;
+    if (qgp_key_load(kyber_path, &kyber_key) != 0 || !kyber_key) {
+        printf("Error: Failed to load Kyber key\n");
+        return -1;
+    }
+
+    if (kyber_key->private_key_size != 3168) {
+        printf("Error: Invalid Kyber key size: %zu\n", kyber_key->private_key_size);
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    /* Load Dilithium key to compute fingerprint */
+    char dilithium_path[512];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
+
+    qgp_key_t *dilithium_key = NULL;
+    if (qgp_key_load(dilithium_path, &dilithium_key) != 0 || !dilithium_key) {
+        printf("Error: Failed to load Dilithium key\n");
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    /* Compute fingerprint (SHA3-512 of Dilithium public key) */
+    uint8_t my_fingerprint[64];
+    if (qgp_sha3_512(dilithium_key->public_key, 2592, my_fingerprint) != 0) {
+        printf("Error: Failed to compute fingerprint\n");
+        qgp_key_free(kyber_key);
+        qgp_key_free(dilithium_key);
+        return -1;
+    }
+    qgp_key_free(dilithium_key);
+
+    /* Get group metadata to find current GEK version */
+    printf("Fetching group metadata...\n");
+    dht_group_metadata_t *group_meta = NULL;
+    int ret = dht_groups_get(dht_ctx, group_uuid, &group_meta);
+    if (ret != 0 || !group_meta) {
+        printf("Error: Failed to get group metadata (group may not exist in DHT)\n");
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    uint32_t gek_version = group_meta->gek_version;
+    printf("Group metadata: name='%s', GEK version=%u, members=%u\n",
+           group_meta->name, gek_version, group_meta->member_count);
+    dht_groups_free_metadata(group_meta);
+
+    /* Fetch the IKP (Initial Key Packet) from DHT */
+    printf("Fetching IKP for GEK version %u...\n", gek_version);
+    uint8_t *ikp_packet = NULL;
+    size_t ikp_size = 0;
+    ret = dht_gek_fetch(dht_ctx, group_uuid, gek_version, &ikp_packet, &ikp_size);
+
+    if (ret != 0 || !ikp_packet || ikp_size == 0) {
+        printf("Error: No GEK v%u found in DHT for group %s\n", gek_version, group_uuid);
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    printf("Found IKP: %zu bytes\n", ikp_size);
+
+    /* Get member count from IKP */
+    uint8_t member_count = 0;
+    if (ikp_get_member_count(ikp_packet, ikp_size, &member_count) == 0) {
+        printf("IKP contains entries for %u members\n", member_count);
+    }
+
+    /* Try to extract GEK from IKP using my fingerprint and Kyber private key */
+    printf("Attempting to extract GEK...\n");
+    uint8_t gek[GEK_KEY_SIZE];
+    uint32_t extracted_version = 0;
+    ret = ikp_extract(ikp_packet, ikp_size, my_fingerprint,
+                      kyber_key->private_key, gek, &extracted_version);
+    free(ikp_packet);
+    qgp_key_free(kyber_key);
+
+    if (ret != 0) {
+        printf("Error: Failed to extract GEK from IKP\n");
+        printf("  - You may not be a member of this group\n");
+        printf("  - Or the IKP may be corrupted/malformed\n");
+        return -1;
+    }
+
+    /* Store GEK locally */
+    ret = gek_store(group_uuid, extracted_version, gek);
+
+    /* Print success and GEK info (first 8 bytes for debugging) */
+    printf("\nGEK extracted successfully!\n");
+    printf("  Version: %u\n", extracted_version);
+    printf("  Key (first 8 bytes): ");
+    for (int i = 0; i < 8; i++) {
+        printf("%02x", gek[i]);
+    }
+    printf("...\n");
+
+    /* Zero sensitive data */
+    qgp_secure_memzero(gek, GEK_KEY_SIZE);
+
+    if (ret != 0) {
+        printf("Warning: Failed to store GEK locally\n");
+        return -1;
+    }
+
+    printf("  Stored locally: yes\n");
+    return 0;
+}
+
+int cmd_group_messages(dna_engine_t *engine, const char *name_or_uuid) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    const char *fp = dna_engine_get_fingerprint(engine);
+    if (!fp) {
+        printf("Error: No identity loaded\n");
+        return -1;
+    }
+
+    if (!name_or_uuid || strlen(name_or_uuid) == 0) {
+        printf("Error: Group name or UUID required\n");
+        return -1;
+    }
+
+    /* Resolve name to UUID if needed */
+    char resolved_uuid[37];
+    if (resolve_group_identifier(engine, name_or_uuid, resolved_uuid) != 0) {
+        printf("Error: Group '%s' not found\n", name_or_uuid);
+        return -1;
+    }
+
+    printf("Fetching messages for group %s...\n", resolved_uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_get_group_conversation(engine, resolved_uuid, on_messages_listed, &wait);
+    int result = cli_wait_for(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get group messages: %s\n", dna_engine_error_string(result));
+        cli_wait_destroy(&wait);
+        return result;
+    }
+
+    if (wait.message_count == 0) {
+        printf("No messages in this group.\n");
+    } else {
+        printf("\nGroup conversation (%d messages):\n\n", wait.message_count);
+        for (int i = 0; i < wait.message_count; i++) {
+            time_t ts = (time_t)wait.messages[i].timestamp;
+            char time_str[32];
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+
+            const char *direction = wait.messages[i].is_outgoing ? ">>>" : "<<<";
+
+            /* For group messages, show sender fingerprint (truncated) */
+            if (wait.messages[i].is_outgoing) {
+                printf("[%s] %s %s\n", time_str, direction,
+                       wait.messages[i].plaintext ? wait.messages[i].plaintext : "(empty)");
+            } else {
+                /* Show first 16 chars of sender fingerprint */
+                printf("[%s] %s [%.16s] %s\n", time_str, direction,
+                       wait.messages[i].sender,
+                       wait.messages[i].plaintext ? wait.messages[i].plaintext : "(empty)");
+            }
+
+            if (wait.messages[i].plaintext) {
+                free(wait.messages[i].plaintext);
+            }
+        }
+        free(wait.messages);
+        printf("\n");
+    }
+
+    cli_wait_destroy(&wait);
     return 0;
 }
 

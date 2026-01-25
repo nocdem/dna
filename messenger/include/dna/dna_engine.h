@@ -617,6 +617,7 @@ typedef enum {
     DNA_EVENT_CONTACT_REQUEST_RECEIVED,  /* New contact request from DHT */
     DNA_EVENT_OUTBOX_UPDATED,            /* Contact's outbox has new messages */
     DNA_EVENT_GROUP_MESSAGE_RECEIVED,    /* New group messages via DHT listen */
+    DNA_EVENT_GROUPS_SYNCED,             /* Groups restored from DHT to local cache */
     DNA_EVENT_ERROR
 } dna_event_type_t;
 
@@ -661,6 +662,9 @@ typedef struct {
             char group_uuid[37];            /* Group UUID */
             int new_count;                  /* Number of new messages received */
         } group_message;
+        struct {
+            int groups_restored;            /* Number of groups restored from DHT */
+        } groups_synced;
         struct {
             int code;
             char message[256];
