@@ -139,8 +139,24 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 
 **IMPORTANT:** Documentation is the source of truth. Code changes without documentation updates violate protocol mode.
 
-### CHECKPOINT 8: VERSION UPDATE (MANDATORY ON EVERY PUSH)
-**EVERY successful build that will be pushed MUST increment the appropriate version.**
+### CHECKPOINT 8: BUILD VERIFICATION & VERSION UPDATE (MANDATORY ON EVERY PUSH)
+**EVERY push MUST verify builds succeed and increment the appropriate version.**
+
+**BUILD VERIFICATION (MANDATORY BEFORE PUSH):**
+
+Before pushing ANY code changes, you MUST verify the build succeeds:
+
+| Changed Files | Required Build | Command |
+|---------------|----------------|---------|
+| C code (src/, dht/, messenger/, transport/, crypto/, include/) | C Library | `cd build && cmake .. && make -j$(nproc)` |
+| Flutter/Dart code (lib/, assets/) | Flutter Linux | `cd dna_messenger_flutter && flutter build linux` |
+| Both C and Flutter | Both builds | Run both commands above |
+
+**CRITICAL:**
+- **ALL warnings and errors MUST be fixed** before pushing
+- **DO NOT push broken builds** - verify compilation succeeds first
+- If build fails, fix the errors and rebuild before proceeding
+- Flutter build failures are often: wrong imports, missing methods, type mismatches
 
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
@@ -574,8 +590,24 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 
 **IMPORTANT:** Documentation is the source of truth. Code changes without documentation updates violate protocol mode.
 
-### CHECKPOINT 8: VERSION UPDATE (MANDATORY ON EVERY PUSH)
-**EVERY successful build that will be pushed MUST increment the appropriate version.**
+### CHECKPOINT 8: BUILD VERIFICATION & VERSION UPDATE (MANDATORY ON EVERY PUSH)
+**EVERY push MUST verify builds succeed and increment the appropriate version.**
+
+**BUILD VERIFICATION (MANDATORY BEFORE PUSH):**
+
+Before pushing ANY code changes, you MUST verify the build succeeds:
+
+| Changed Files | Required Build | Command |
+|---------------|----------------|---------|
+| C code (src/, dht/, messenger/, transport/, crypto/, include/) | C Library | `cd build && cmake .. && make -j$(nproc)` |
+| Flutter/Dart code (lib/, assets/) | Flutter Linux | `cd dna_messenger_flutter && flutter build linux` |
+| Both C and Flutter | Both builds | Run both commands above |
+
+**CRITICAL:**
+- **ALL warnings and errors MUST be fixed** before pushing
+- **DO NOT push broken builds** - verify compilation succeeds first
+- If build fails, fix the errors and rebuild before proceeding
+- Flutter build failures are often: wrong imports, missing methods, type mismatches
 
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
