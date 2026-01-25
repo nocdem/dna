@@ -1409,6 +1409,8 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
         pthread_mutex_destroy(&engine->event_mutex);
         pthread_mutex_destroy(&engine->task_mutex);
         pthread_cond_destroy(&engine->task_cond);
+        pthread_mutex_destroy(&engine->message_queue.mutex);
+        free(engine->message_queue.entries);
         free(engine->data_dir);
         free(engine);
         return NULL;

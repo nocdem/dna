@@ -365,10 +365,24 @@ int dht_groups_create(
 
     // Add creator as first member
     meta.members[0] = strdup(creator);
+    if (!meta.members[0]) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate creator member\n");
+        free(meta.members);
+        return -1;
+    }
 
     // Add provided members
     for (size_t i = 0; i < member_count; i++) {
         meta.members[i + 1] = strdup(members[i]);
+        if (!meta.members[i + 1]) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to allocate member %zu\n", i);
+            // Free previously allocated members
+            for (size_t j = 0; j <= i; j++) {
+                free(meta.members[j]);
+            }
+            free(meta.members);
+            return -1;
+        }
     }
 
     // Serialize to JSON

@@ -82,11 +82,14 @@ typedef struct {
 
 /**
  * Parallel fetch context (shared across all callbacks)
+ * MUST be heap-allocated to survive async callback lifetime
  */
 typedef struct {
     parallel_chunk_slot_t *slots;  // Array of chunk slots
     uint32_t total_chunks;         // Total chunks expected
     atomic_uint completed;         // Number completed (success or error)
+    atomic_uint pending;           // Number of pending async fetches
+    _Atomic bool cancelled;        // Set true on timeout/error - callbacks should not access slots
     pthread_mutex_t mutex;         // Mutex for condition variable
     pthread_cond_t cond;           // Condition variable for waiting
 } parallel_fetch_ctx_t;
@@ -409,6 +412,10 @@ static int deserialize_chunk(const uint8_t *data, size_t data_len,
 
 /**
  * Callback for parallel async fetch
+ *
+ * IMPORTANT: ctx is heap-allocated and may outlive the parent function.
+ * When cancelled is true, slots may be freed - do not access them.
+ * The last callback (pending reaches 0) frees the ctx itself.
  */
 static void parallel_fetch_callback(uint8_t *value, size_t value_len, void *userdata) {
     async_fetch_info_t *info = (async_fetch_info_t *)userdata;
@@ -423,7 +430,10 @@ static void parallel_fetch_callback(uint8_t *value, size_t value_len, void *user
 
     pthread_mutex_lock(&ctx->mutex);
 
-    if (index < ctx->total_chunks) {
+    // Check if context was cancelled (parent function timed out or errored)
+    bool is_cancelled = atomic_load(&ctx->cancelled);
+
+    if (!is_cancelled && index < ctx->total_chunks) {
         if (value && value_len > 0) {
             ctx->slots[index].data = value;
             ctx->slots[index].data_len = value_len;
@@ -433,14 +443,28 @@ static void parallel_fetch_callback(uint8_t *value, size_t value_len, void *user
             if (value) free(value);
         }
     } else {
+        // Cancelled or invalid index - just free value
         if (value) free(value);
     }
 
     atomic_fetch_add(&ctx->completed, 1);
     pthread_cond_signal(&ctx->cond);
+
+    // Decrement pending and check if we're the last callback
+    unsigned int remaining = atomic_fetch_sub(&ctx->pending, 1);
+    bool is_last = (remaining == 1);  // fetch_sub returns value BEFORE subtraction
+
     pthread_mutex_unlock(&ctx->mutex);
 
     free(info);
+
+    // If cancelled and we're the last pending callback, free the context
+    if (is_cancelled && is_last) {
+        // Slots already freed by parent, just free mutex/cond/ctx
+        pthread_mutex_destroy(&ctx->mutex);
+        pthread_cond_destroy(&ctx->cond);
+        free(ctx);
+    }
 }
 
 /*============================================================================
@@ -678,24 +702,32 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
         return DHT_CHUNK_OK;
     }
 
-    // Step 2: Allocate parallel fetch context
-    parallel_fetch_ctx_t pctx = {0};
-    pctx.slots = (parallel_chunk_slot_t *)calloc(total_chunks, sizeof(parallel_chunk_slot_t));
-    if (!pctx.slots) {
+    // Step 2: Allocate parallel fetch context (HEAP to survive async callbacks)
+    parallel_fetch_ctx_t *pctx = (parallel_fetch_ctx_t *)calloc(1, sizeof(parallel_fetch_ctx_t));
+    if (!pctx) {
         free(chunk0_data);
         return DHT_CHUNK_ERR_ALLOC;
     }
-    pctx.total_chunks = total_chunks;
-    atomic_init(&pctx.completed, 1);  // chunk0 already fetched
-    pthread_mutex_init(&pctx.mutex, NULL);
-    pthread_cond_init(&pctx.cond, NULL);
+    pctx->slots = (parallel_chunk_slot_t *)calloc(total_chunks, sizeof(parallel_chunk_slot_t));
+    if (!pctx->slots) {
+        free(pctx);
+        free(chunk0_data);
+        return DHT_CHUNK_ERR_ALLOC;
+    }
+    pctx->total_chunks = total_chunks;
+    atomic_init(&pctx->completed, 1);  // chunk0 already fetched
+    atomic_init(&pctx->pending, 0);    // Will increment for each async fetch
+    atomic_init(&pctx->cancelled, false);
+    pthread_mutex_init(&pctx->mutex, NULL);
+    pthread_cond_init(&pctx->cond, NULL);
 
     // Store chunk0 data
-    pctx.slots[0].data = chunk0_data;
-    pctx.slots[0].data_len = chunk0_len;
-    pctx.slots[0].received = true;
+    pctx->slots[0].data = chunk0_data;
+    pctx->slots[0].data_len = chunk0_len;
+    pctx->slots[0].received = true;
 
     // Step 3: Fire parallel fetches for remaining chunks
+    uint32_t launched = 0;
     for (uint32_t i = 1; i < total_chunks; i++) {
         uint8_t chunk_key[DHT_CHUNK_KEY_SIZE];
         if (dht_chunked_make_key(base_key, i, chunk_key) != 0) {
@@ -705,9 +737,11 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
         async_fetch_info_t *info = (async_fetch_info_t *)malloc(sizeof(async_fetch_info_t));
         if (!info) continue;
 
-        info->ctx = &pctx;
+        info->ctx = pctx;
         info->chunk_index = i;
 
+        atomic_fetch_add(&pctx->pending, 1);  // Track pending callbacks
+        launched++;
         dht_get_async(ctx, chunk_key, DHT_CHUNK_KEY_SIZE,
                      parallel_fetch_callback, info);
     }
@@ -722,17 +756,17 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
         timeout.tv_nsec -= 1000000000;
     }
 
-    pthread_mutex_lock(&pctx.mutex);
-    while (atomic_load(&pctx.completed) < total_chunks) {
-        int rc = pthread_cond_timedwait(&pctx.cond, &pctx.mutex, &timeout);
+    pthread_mutex_lock(&pctx->mutex);
+    while (atomic_load(&pctx->completed) < total_chunks) {
+        int rc = pthread_cond_timedwait(&pctx->cond, &pctx->mutex, &timeout);
         if (rc != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Timeout waiting for chunks (%u/%u)\n",
-                    atomic_load(&pctx.completed), total_chunks);
-            pthread_mutex_unlock(&pctx.mutex);
+                    atomic_load(&pctx->completed), total_chunks);
+            pthread_mutex_unlock(&pctx->mutex);
             goto cleanup_error;
         }
     }
-    pthread_mutex_unlock(&pctx.mutex);
+    pthread_mutex_unlock(&pctx->mutex);
 
     // Step 5: Verify all chunks received, retry failed ones
     // DHT is async - chunks may not be fully propagated when receiver fetches immediately
@@ -741,7 +775,7 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
         // Count failed chunks
         uint32_t failed_count = 0;
         for (uint32_t i = 0; i < total_chunks; i++) {
-            if (!pctx.slots[i].received || pctx.slots[i].error) {
+            if (!pctx->slots[i].received || pctx->slots[i].error) {
                 failed_count++;
             }
         }
@@ -763,7 +797,7 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
 
         // Retry each failed chunk synchronously
         for (uint32_t i = 0; i < total_chunks; i++) {
-            if (!pctx.slots[i].received || pctx.slots[i].error) {
+            if (!pctx->slots[i].received || pctx->slots[i].error) {
                 uint8_t chunk_key[DHT_CHUNK_KEY_SIZE];
                 if (dht_chunked_make_key(base_key, i, chunk_key) != 0) {
                     continue;
@@ -774,13 +808,13 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
                 if (dht_get(ctx, chunk_key, DHT_CHUNK_KEY_SIZE, &chunk_data, &chunk_len) == 0
                     && chunk_data && chunk_len > 0) {
                     // Success - update slot
-                    if (pctx.slots[i].data) {
-                        free(pctx.slots[i].data);
+                    if (pctx->slots[i].data) {
+                        free(pctx->slots[i].data);
                     }
-                    pctx.slots[i].data = chunk_data;
-                    pctx.slots[i].data_len = chunk_len;
-                    pctx.slots[i].received = true;
-                    pctx.slots[i].error = false;
+                    pctx->slots[i].data = chunk_data;
+                    pctx->slots[i].data_len = chunk_len;
+                    pctx->slots[i].received = true;
+                    pctx->slots[i].error = false;
                     QGP_LOG_DEBUG(LOG_TAG, "Retry succeeded for chunk %u\n", i);
                 } else {
                     if (chunk_data) free(chunk_data);
@@ -791,7 +825,7 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
 
     // Final verification after all retries
     for (uint32_t i = 0; i < total_chunks; i++) {
-        if (!pctx.slots[i].received || pctx.slots[i].error) {
+        if (!pctx->slots[i].received || pctx->slots[i].error) {
             QGP_LOG_ERROR(LOG_TAG, "Missing chunk %u after %d retries\n", i, DHT_CHUNK_MAX_RETRIES);
             goto cleanup_error;
         }
@@ -802,7 +836,7 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
     for (uint32_t i = 0; i < total_chunks; i++) {
         dht_chunk_header_t hdr;
         const uint8_t *payload;
-        if (deserialize_chunk(pctx.slots[i].data, pctx.slots[i].data_len,
+        if (deserialize_chunk(pctx->slots[i].data, pctx->slots[i].data_len,
                              &hdr, &payload) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to deserialize chunk %u\n", i);
             goto cleanup_error;
@@ -820,7 +854,7 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
     for (uint32_t i = 0; i < total_chunks; i++) {
         dht_chunk_header_t hdr;
         const uint8_t *payload;
-        if (deserialize_chunk(pctx.slots[i].data, pctx.slots[i].data_len,
+        if (deserialize_chunk(pctx->slots[i].data, pctx->slots[i].data_len,
                              &hdr, &payload) != 0) {
             free(compressed);
             goto cleanup_error;
@@ -848,15 +882,16 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
 
     free(compressed);
 
-    // Cleanup
+    // Cleanup - SUCCESS path: all callbacks completed, no pending
     for (uint32_t i = 0; i < total_chunks; i++) {
-        if (pctx.slots[i].data) {
-            free(pctx.slots[i].data);
+        if (pctx->slots[i].data) {
+            free(pctx->slots[i].data);
         }
     }
-    free(pctx.slots);
-    pthread_mutex_destroy(&pctx.mutex);
-    pthread_cond_destroy(&pctx.cond);
+    free(pctx->slots);
+    pthread_mutex_destroy(&pctx->mutex);
+    pthread_cond_destroy(&pctx->cond);
+    free(pctx);
 
     *data_out = decompressed;
     *data_len_out = decompressed_len;
@@ -864,14 +899,28 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
     return DHT_CHUNK_OK;
 
 cleanup_error:
+    // ERROR path: may have pending callbacks still running
+    // Free slot data, but let last callback free mutex/cond/pctx if pending > 0
     for (uint32_t i = 0; i < total_chunks; i++) {
-        if (pctx.slots[i].data) {
-            free(pctx.slots[i].data);
+        if (pctx->slots[i].data) {
+            free(pctx->slots[i].data);
         }
     }
-    free(pctx.slots);
-    pthread_mutex_destroy(&pctx.mutex);
-    pthread_cond_destroy(&pctx.cond);
+    free(pctx->slots);
+    pctx->slots = NULL;  // Prevent double-free if callback runs
+
+    // Check if there are pending callbacks
+    unsigned int pending_count = atomic_load(&pctx->pending);
+    if (pending_count > 0) {
+        // Mark cancelled - callbacks will see this and skip slot access
+        atomic_store(&pctx->cancelled, true);
+        // Last callback will free mutex/cond/pctx when pending reaches 0
+    } else {
+        // No pending callbacks, safe to free everything now
+        pthread_mutex_destroy(&pctx->mutex);
+        pthread_cond_destroy(&pctx->cond);
+        free(pctx);
+    }
     return DHT_CHUNK_ERR_INCOMPLETE;
 }
 
