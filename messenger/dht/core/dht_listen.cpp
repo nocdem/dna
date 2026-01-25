@@ -395,6 +395,16 @@ extern "C" void dht_suspend_all_listeners(
 
 /**
  * Resubscribe all active listeners (Phase 14)
+ *
+ * CRITICAL: This function must NOT hold listeners_mutex while calling OpenDHT.
+ * OpenDHT may fire callbacks immediately, and those callbacks need the mutex.
+ * Holding mutex during future.get() causes deadlock.
+ *
+ * Strategy:
+ * 1. Collect listener info while holding mutex (fast)
+ * 2. Release mutex
+ * 3. Resubscribe each listener (slow, may block)
+ * 4. Re-acquire mutex to update each entry
  */
 extern "C" size_t dht_resubscribe_all_listeners(
     dht_context_t *ctx)
@@ -403,24 +413,54 @@ extern "C" size_t dht_resubscribe_all_listeners(
         return 0;
     }
 
-    std::lock_guard<std::mutex> lock(listeners_mutex);
+    // Structure to hold listener info for resubscription (outside mutex)
+    struct ResubInfo {
+        size_t token;
+        std::shared_ptr<ListenerContext> listener_ctx;
+        std::vector<uint8_t> key_data;
+        size_t key_len;
+    };
 
-    size_t resubscribed = 0;
-    QGP_LOG_INFO(LOG_TAG, "Resubscribing %zu listeners after network change", active_listeners.size());
+    std::vector<ResubInfo> to_resubscribe;
 
-    for (auto& [token, listener_ctx] : active_listeners) {
-        // Skip listeners without key data (created with basic API)
-        if (listener_ctx->key_data.empty()) {
-            QGP_LOG_DEBUG(LOG_TAG, "Skipping token %zu (no key data)", token);
-            continue;
+    // Phase 1: Collect listener info while holding mutex (fast)
+    {
+        std::lock_guard<std::mutex> lock(listeners_mutex);
+        QGP_LOG_INFO(LOG_TAG, "Resubscribing %zu listeners after network change", active_listeners.size());
+
+        for (auto& [token, listener_ctx] : active_listeners) {
+            // Skip listeners without key data (created with basic API)
+            if (listener_ctx->key_data.empty()) {
+                QGP_LOG_DEBUG(LOG_TAG, "Skipping token %zu (no key data)", token);
+                continue;
+            }
+
+            // Copy info for resubscription outside mutex
+            ResubInfo info;
+            info.token = token;
+            info.listener_ctx = listener_ctx;
+            info.key_data = listener_ctx->key_data;  // Copy
+            info.key_len = listener_ctx->key_len;
+            to_resubscribe.push_back(std::move(info));
         }
+    }
+    // Mutex released here
 
+    // Phase 2: Resubscribe each listener WITHOUT holding mutex
+    // This allows OpenDHT callbacks to fire without deadlock
+    size_t resubscribed = 0;
+
+    for (auto& info : to_resubscribe) {
         try {
             // Recreate InfoHash from stored key data
             dht::InfoHash hash = dht::InfoHash::get(
-                listener_ctx->key_data.data(),
-                listener_ctx->key_len
+                info.key_data.data(),
+                info.key_len
             );
+
+            // Capture shared_ptr by value (not reference) for thread safety
+            auto listener_ctx = info.listener_ctx;
+            size_t token = info.token;
 
             // Create new callback wrapper
             auto cpp_callback = [token, listener_ctx](
@@ -450,21 +490,38 @@ extern "C" size_t dht_resubscribe_all_listeners(
                 return true;
             };
 
-            // Resubscribe
+            // Resubscribe (may block, but mutex is NOT held)
             auto future = ctx->runner.listen(hash, cpp_callback);
-            listener_ctx->opendht_token = future.get();
-            listener_ctx->active = true;  // Re-activate after successful resubscription
 
-            QGP_LOG_DEBUG(LOG_TAG, "Resubscribed token %zu (new OpenDHT: %zu)",
-                          token, listener_ctx->opendht_token);
-            resubscribed++;
+            // Wait for token with timeout to avoid infinite hang
+            auto status = future.wait_for(std::chrono::seconds(5));
+            if (status == std::future_status::timeout) {
+                QGP_LOG_ERROR(LOG_TAG, "Timeout resubscribing token %zu (5s)", token);
+                continue;
+            }
+
+            size_t new_opendht_token = future.get();
+
+            // Phase 3: Re-acquire mutex to update listener state
+            {
+                std::lock_guard<std::mutex> lock(listeners_mutex);
+                // Verify listener still exists (might have been cancelled)
+                auto it = active_listeners.find(token);
+                if (it != active_listeners.end()) {
+                    it->second->opendht_token = new_opendht_token;
+                    it->second->active = true;
+                    QGP_LOG_DEBUG(LOG_TAG, "Resubscribed token %zu (new OpenDHT: %zu)",
+                                  token, new_opendht_token);
+                    resubscribed++;
+                }
+            }
 
         } catch (const std::exception& e) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to resubscribe token %zu: %s", token, e.what());
+            QGP_LOG_ERROR(LOG_TAG, "Failed to resubscribe token %zu: %s", info.token, e.what());
         }
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Resubscribed %zu/%zu listeners", resubscribed, active_listeners.size());
+    QGP_LOG_INFO(LOG_TAG, "Resubscribed %zu/%zu listeners", resubscribed, to_resubscribe.size());
     return resubscribed;
 }
 
