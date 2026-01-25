@@ -216,6 +216,13 @@ Simple per-contact ACK timestamps for delivery confirmation. When recipient sync
 Transparent chunking for large data storage in DHT with ZSTD compression.
 Chunk format v2 (v0.5.25+) adds content hash to chunk 0 for smart sync optimization.
 
+**Constants:**
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `DHT_CHUNK_MAX_CHUNKS` | 10000 | Security limit: max chunks per fetch (~450MB). Prevents DoS via malicious total_chunks. |
+| `DHT_CHUNK_DATA_SIZE` | 44975 | Effective payload per chunk (45KB - 25B header) |
+| `DHT_CHUNK_KEY_SIZE` | 32 | DHT key size (SHA3-512 truncated) |
+
 | Function | Description |
 |----------|-------------|
 | `int dht_chunked_publish(dht_context_t*, const char*, const uint8_t*, size_t, uint32_t)` | Publish with chunking (v2: includes SHA3-256 content hash) |

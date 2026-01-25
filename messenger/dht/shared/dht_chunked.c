@@ -681,6 +681,14 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
     uint32_t total_chunks = header0.total_chunks;
     uint32_t original_size = header0.original_size;
 
+    // Security: Validate total_chunks to prevent DoS via malicious DHT data
+    if (total_chunks == 0 || total_chunks > DHT_CHUNK_MAX_CHUNKS) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid total_chunks=%u (max %u) - rejecting (key=%s)\n",
+                      total_chunks, DHT_CHUNK_MAX_CHUNKS, base_key);
+        free(chunk0_data);
+        return DHT_CHUNK_ERR_INVALID_FORMAT;
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Fetching: total_chunks=%u, original_size=%u (key=%s)\n",
            total_chunks, original_size, base_key);
 
@@ -900,23 +908,30 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
 
 cleanup_error:
     // ERROR path: may have pending callbacks still running
-    // Free slot data, but let last callback free mutex/cond/pctx if pending > 0
+    // CRITICAL: Must set cancelled=true BEFORE freeing slots to prevent race condition.
+    // Callbacks check cancelled flag after acquiring mutex - if we free slots first,
+    // a callback could access freed memory before seeing the cancelled flag.
+    pthread_mutex_lock(&pctx->mutex);
+    atomic_store(&pctx->cancelled, true);  // Set FIRST while holding mutex
+
+    // Now safe to free slot data - callbacks will see cancelled=true
     for (uint32_t i = 0; i < total_chunks; i++) {
         if (pctx->slots[i].data) {
             free(pctx->slots[i].data);
         }
     }
     free(pctx->slots);
-    pctx->slots = NULL;  // Prevent double-free if callback runs
+    pctx->slots = NULL;
 
     // Check if there are pending callbacks
     unsigned int pending_count = atomic_load(&pctx->pending);
     if (pending_count > 0) {
-        // Mark cancelled - callbacks will see this and skip slot access
-        atomic_store(&pctx->cancelled, true);
+        // Callbacks still pending - they will see cancelled=true and skip slot access
         // Last callback will free mutex/cond/pctx when pending reaches 0
+        pthread_mutex_unlock(&pctx->mutex);
     } else {
         // No pending callbacks, safe to free everything now
+        pthread_mutex_unlock(&pctx->mutex);
         pthread_mutex_destroy(&pctx->mutex);
         pthread_cond_destroy(&pctx->cond);
         free(pctx);

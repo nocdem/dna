@@ -80,19 +80,20 @@ static char* serialize_to_json(const char *identity, const dht_addressbook_entry
     json_object_object_add(root, "version", json_object_new_int(DHT_ADDRESSBOOK_VERSION));
     json_object_object_add(root, "timestamp", json_object_new_int64((int64_t)timestamp));
 
-    // Add addresses array
+    // Add addresses array - add to root IMMEDIATELY to ensure cleanup on error
     json_object *addresses_array = json_object_new_array();
     if (!addresses_array) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to create addresses array\n");
         json_object_put(root);
         return NULL;
     }
+    json_object_object_add(root, "addresses", addresses_array);  // Now freed with root
 
     for (size_t i = 0; i < entry_count; i++) {
         json_object *entry_obj = json_object_new_object();
         if (!entry_obj) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to create entry object\n");
-            json_object_put(root);
+            json_object_put(root);  // Also frees addresses_array
             return NULL;
         }
 
@@ -107,7 +108,7 @@ static char* serialize_to_json(const char *identity, const dht_addressbook_entry
         json_object_array_add(addresses_array, entry_obj);
     }
 
-    json_object_object_add(root, "addresses", addresses_array);
+    // Note: addresses_array already added to root at creation (line 90) for proper cleanup
 
     // Convert to string
     const char *json_str = json_object_to_json_string_ext(root, JSON_C_TO_STRING_PLAIN);

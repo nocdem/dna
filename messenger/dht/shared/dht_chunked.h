@@ -68,6 +68,13 @@ extern "C" {
 /** DHT key size in bytes (SHA3-512 truncated to 32 bytes) */
 #define DHT_CHUNK_KEY_SIZE      32
 
+/**
+ * Security: Maximum number of chunks allowed per fetch
+ * Prevents DoS via malicious total_chunks values from DHT.
+ * 10000 chunks × 45KB = ~450MB max allocation.
+ */
+#define DHT_CHUNK_MAX_CHUNKS    10000
+
 /*============================================================================
  * TTL Presets (seconds)
  *============================================================================*/
