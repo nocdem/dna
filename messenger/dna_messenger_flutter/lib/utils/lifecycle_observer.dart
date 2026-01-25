@@ -1,6 +1,7 @@
 // App Lifecycle Observer - handles app state changes
 // Phase 14: DHT-only messaging with reliable Android background support
 // v0.100.23+: Destroy engine on pause to cancel all listeners, reinit on resume
+// v0.100.57+: State machine with abort flag to fix race condition crash
 
 import 'dart:io' show Platform;
 import 'package:flutter/widgets.dart';
@@ -16,16 +17,39 @@ import '../providers/contact_profile_cache_provider.dart';
 /// Used by event_handler to determine whether to show notifications
 final appInForegroundProvider = StateProvider<bool>((ref) => true);
 
+/// Lifecycle state machine to prevent concurrent resume/pause operations
+enum _LifecycleState { idle, resuming, pausing }
+
 /// Observer for app lifecycle state changes
 ///
 /// Handles:
 /// - onResume: Refresh presence and poll for offline messages
 /// - onPause: Service continues running in background
 /// - onDetached: Service may continue if logged in
+///
+/// State Machine (v0.100.57+):
+/// - Prevents race condition when pause occurs during resume
+/// - Resume is interruptible via _pauseRequested flag
+/// - Pause waits for resume to abort before proceeding
 class AppLifecycleObserver extends WidgetsBindingObserver {
   final WidgetRef ref;
 
+  /// Current lifecycle operation state
+  _LifecycleState _lifecycleState = _LifecycleState.idle;
+
+  /// Abort flag: set by pause to signal resume should abort
+  bool _pauseRequested = false;
+
+  /// Operation ID to detect stale callbacks after abort
+  int _operationId = 0;
+
   AppLifecycleObserver(this.ref);
+
+  /// Check if current operation should abort
+  /// Returns true if pause was requested or operation ID changed
+  bool _shouldAbort(int myOpId) {
+    return _pauseRequested || _operationId != myOpId;
+  }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -52,7 +76,8 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
   /// Called when app comes to foreground
   void _onResume() async {
-    // Mark app as in foreground (for notification logic)
+    // IMMEDIATE: Mark app as in foreground (for notification logic)
+    // This must happen synchronously before any async work
     ref.read(appInForegroundProvider.notifier).state = true;
 
     // Check if identity was loaded before going to background
@@ -62,24 +87,50 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       return;
     }
 
+    // State machine guard: only one resume at a time
+    if (_lifecycleState != _LifecycleState.idle) {
+      return;
+    }
+
+    // Enter resuming state
+    _lifecycleState = _LifecycleState.resuming;
+    _pauseRequested = false;
+    final myOpId = ++_operationId;
+
     try {
       // v0.100.23+: Notify service FIRST so it releases its engine
       // Service must release the DHT lock before Flutter can create new engine
       if (Platform.isAndroid) {
         await PlatformHandler.instance.onResumePreEngine();
       }
+      // Abort checkpoint: check if pause was requested during service notification
+      if (_shouldAbort(myOpId)) {
+        return;
+      }
 
       // Get new engine (provider creates fresh instance after invalidation)
       final engine = await ref.read(engineProvider.future);
+      // Abort checkpoint: check if pause was requested during engine creation
+      if (_shouldAbort(myOpId)) {
+        return;
+      }
 
       // Reload identity into fresh engine
       // This reloads keys, initializes transport, and starts all listeners
       await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
+      // Abort checkpoint: check if pause was requested during identity load
+      if (_shouldAbort(myOpId)) {
+        return;
+      }
 
       // Platform-specific resume handling
       // Android: Fetch offline messages
       // Desktop: No-op
       await PlatformHandler.instance.onResume(engine);
+      // Abort checkpoint: check if pause was requested during platform resume
+      if (_shouldAbort(myOpId)) {
+        return;
+      }
 
       // Resume presence heartbeat (marks us as online)
       engine.resumePresence();
@@ -89,15 +140,23 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
       // Refresh contact profiles from DHT in background
       // Don't await - let UI show cached data immediately, updates come async
-      _refreshContactProfiles(engine);
+      // Only start if not aborting
+      if (!_shouldAbort(myOpId)) {
+        _refreshContactProfiles(engine, myOpId);
+      }
     } catch (_) {
       // Error during resume - silently continue
+    } finally {
+      // Only reset state if we're still the current operation
+      if (_operationId == myOpId) {
+        _lifecycleState = _LifecycleState.idle;
+      }
     }
   }
 
   /// Refresh all contact profiles from DHT on resume
   /// Ensures profile changes (name, avatar) are visible immediately
-  Future<void> _refreshContactProfiles(dynamic engine) async {
+  Future<void> _refreshContactProfiles(dynamic engine, int myOpId) async {
     try {
       final contacts = ref.read(contactsProvider).valueOrNull;
       if (contacts == null || contacts.isEmpty) {
@@ -107,6 +166,11 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Refresh all profiles in parallel (batched to avoid overloading DHT)
       const batchSize = 3;
       for (var i = 0; i < contacts.length; i += batchSize) {
+        // Check for abort before each batch
+        if (_shouldAbort(myOpId)) {
+          return;
+        }
+
         final batch = contacts.skip(i).take(batchSize).toList();
         await Future.wait(
           batch.map((contact) async {
@@ -129,7 +193,8 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
   /// Called when app goes to background
   void _onPause() async {
-    // Mark app as in background (for notification logic - always show notifications when backgrounded)
+    // IMMEDIATE: Mark app as in background (for notification logic)
+    // These must happen synchronously before any async work
     ref.read(appInForegroundProvider.notifier).state = false;
 
     // Mark identity as not ready (triggers spinner on next resume until identity reloaded)
@@ -138,11 +203,37 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     // Pause Dart-side polling timers FIRST (prevents timer exceptions in background)
     ref.read(eventHandlerProvider).pausePolling();
 
+    // If resume is in progress, signal it to abort and wait
+    if (_lifecycleState == _LifecycleState.resuming) {
+      _pauseRequested = true;
+
+      // Wait up to 3 seconds for resume to abort
+      final deadline = DateTime.now().add(const Duration(seconds: 3));
+      while (_lifecycleState == _LifecycleState.resuming &&
+             DateTime.now().isBefore(deadline)) {
+        await Future.delayed(const Duration(milliseconds: 50));
+      }
+
+      // If resume still hasn't aborted, force it via operation ID
+      if (_lifecycleState == _LifecycleState.resuming) {
+        _operationId++;
+        // Give it one more moment to notice the abort
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+    }
+
+    // State machine guard: don't re-enter pausing state
+    if (_lifecycleState == _LifecycleState.pausing) {
+      return;
+    }
+
     // Check if identity is loaded
     final fingerprint = ref.read(currentFingerprintProvider);
     if (fingerprint == null || fingerprint.isEmpty) {
       return;
     }
+
+    _lifecycleState = _LifecycleState.pausing;
 
     try {
       final engine = await ref.read(engineProvider.future);
@@ -169,6 +260,8 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       ref.invalidate(engineProvider);
     } catch (_) {
       // Error during pause - silently continue
+    } finally {
+      _lifecycleState = _LifecycleState.idle;
     }
   }
 
