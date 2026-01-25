@@ -860,36 +860,24 @@ int dht_publish_ack(dht_context_t *ctx,
     value[6] = (uint8_t)(timestamp >> 8);
     value[7] = (uint8_t)(timestamp);
 
-    // Retry with exponential backoff
-    int max_retries = 3;
-    int delay_ms = 500;
-    int result = -1;
+    // Use SYNC put to ensure ACK is actually published before returning
+    // (async put would return immediately, CLI might exit before ACK reaches DHT)
+    int result = dht_put_signed_sync(ctx,
+                                      key, 64,
+                                      value, sizeof(value),
+                                      1,  // value_id=1 for replacement
+                                      DHT_ACK_TTL,
+                                      "ack",
+                                      5000);  // 5 second timeout
 
-    for (int attempt = 1; attempt <= max_retries; attempt++) {
-        result = dht_put_signed(ctx,
-                                key, 64,
-                                value, sizeof(value),
-                                1,  // value_id=1 for replacement
-                                DHT_ACK_TTL,
-                                "ack");
-
-        if (result == 0) {
-            QGP_LOG_DEBUG(LOG_TAG, "[ACK-PUT] Published: %.20s... -> %.20s... ts=%lu (attempt %d)\n",
-                   my_fp, sender_fp, (unsigned long)timestamp, attempt);
-            return 0;
-        }
-
-        if (attempt < max_retries) {
-            QGP_LOG_WARN(LOG_TAG, "[ACK-PUT] Failed attempt %d/%d, retrying in %dms...\n",
-                   attempt, max_retries, delay_ms);
-            qgp_platform_sleep_ms(delay_ms);
-            delay_ms *= 2;
-        }
+    if (result == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "[ACK-PUT] Published: %.20s... -> %.20s... ts=%lu\n",
+               my_fp, sender_fp, (unsigned long)timestamp);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "[ACK-PUT] FAILED: %.20s... -> %.20s... (result=%d)\n",
+               my_fp, sender_fp, result);
     }
-
-    QGP_LOG_WARN(LOG_TAG, "[ACK-PUT] FAILED after %d attempts: %.20s... -> %.20s...\n",
-           max_retries, my_fp, sender_fp);
-    return -1;
+    return result;
 }
 
 /**
