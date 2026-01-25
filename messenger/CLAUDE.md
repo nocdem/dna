@@ -435,6 +435,7 @@ For **Flutter app** platform-specific behavior:
 - **NO GUI TESTING**: Do NOT attempt to run or test the GUI application locally - this machine has no monitor
 - **REMOTE TESTING**: All functional/GUI testing is performed on other machines by the user
 - **NEVER** launch `dna-messenger`, Flutter app, or any GUI executable locally
+- **FULL BUILD OUTPUT**: When building, NEVER use `tail`, `grep`, `head`, or any other command to suppress or filter build output. Show the FULL output so the user can see all warnings and errors. The only exception is when the output would exceed 30000 characters.
 
 ## CLI FOR DEBUGGING AND TESTING
 The CLI tool (`dna-messenger-cli`) is the primary tool for debugging and testing DNA Messenger features.
