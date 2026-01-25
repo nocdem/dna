@@ -238,7 +238,8 @@ int dht_dm_queue_message(
         existing_count = cache_entry->count;
         existing_messages = (dht_offline_message_t*)calloc(existing_count, sizeof(dht_offline_message_t));
         if (existing_messages) {
-            for (size_t i = 0; i < existing_count; i++) {
+            bool alloc_failed = false;
+            for (size_t i = 0; i < existing_count && !alloc_failed; i++) {
                 existing_messages[i].seq_num = cache_entry->messages[i].seq_num;
                 existing_messages[i].timestamp = cache_entry->messages[i].timestamp;
                 existing_messages[i].expiry = cache_entry->messages[i].expiry;
@@ -246,7 +247,24 @@ int dht_dm_queue_message(
                 existing_messages[i].recipient = strdup(cache_entry->messages[i].recipient);
                 existing_messages[i].ciphertext_len = cache_entry->messages[i].ciphertext_len;
                 existing_messages[i].ciphertext = (uint8_t*)malloc(cache_entry->messages[i].ciphertext_len);
-                if (existing_messages[i].ciphertext) {
+
+                /* v0.6.40: Check allocations and cleanup on failure */
+                if (!existing_messages[i].sender || !existing_messages[i].recipient ||
+                    !existing_messages[i].ciphertext) {
+                    QGP_LOG_ERROR(LOG_TAG, "Allocation failed in message copy loop");
+                    /* Free this partial entry */
+                    free(existing_messages[i].sender);
+                    free(existing_messages[i].recipient);
+                    free(existing_messages[i].ciphertext);
+                    /* Free all previously allocated entries */
+                    for (size_t j = 0; j < i; j++) {
+                        dht_offline_message_free(&existing_messages[j]);
+                    }
+                    free(existing_messages);
+                    existing_messages = NULL;
+                    existing_count = 0;
+                    alloc_failed = true;
+                } else {
                     memcpy(existing_messages[i].ciphertext, cache_entry->messages[i].ciphertext,
                            cache_entry->messages[i].ciphertext_len);
                 }

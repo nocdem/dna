@@ -33,6 +33,9 @@
 static JavaVM *g_jvm = NULL;
 static dna_engine_t *g_engine = NULL;
 
+/* Mutex to protect g_engine during JNI unload (v0.6.40 race fix) */
+static pthread_mutex_t g_engine_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 /* ============================================================================
  * JNI LIFECYCLE
  * ============================================================================ */
@@ -45,9 +48,14 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
 
 JNIEXPORT void JNI_OnUnload(JavaVM *vm, void *reserved) {
     LOGI("DNA JNI unloading");
+    pthread_mutex_lock(&g_engine_mutex);
     if (g_engine) {
-        dna_engine_destroy(g_engine);
-        g_engine = NULL;
+        dna_engine_t *engine = g_engine;
+        g_engine = NULL;  /* Clear first to prevent use during destroy */
+        pthread_mutex_unlock(&g_engine_mutex);
+        dna_engine_destroy(engine);
+    } else {
+        pthread_mutex_unlock(&g_engine_mutex);
     }
     g_jvm = NULL;
 }
@@ -815,7 +823,9 @@ JNIEXPORT jboolean JNICALL
 Java_io_cpunk_dna_DNAEngine_nativeCreate(JNIEnv *env, jobject thiz, jstring data_dir) {
     /* v0.6.0+: Each component (Flutter/Service) owns its own engine.
      * No global sharing - coordination via identity lock instead. */
+    pthread_mutex_lock(&g_engine_mutex);
     if (g_engine) {
+        pthread_mutex_unlock(&g_engine_mutex);
         LOGI("Engine already created (JNI)");
         return JNI_TRUE;
     }
@@ -825,9 +835,11 @@ Java_io_cpunk_dna_DNAEngine_nativeCreate(JNIEnv *env, jobject thiz, jstring data
     if (dir) (*env)->ReleaseStringUTFChars(env, data_dir, dir);
 
     if (!g_engine) {
+        pthread_mutex_unlock(&g_engine_mutex);
         LOGE("Failed to create engine");
         return JNI_FALSE;
     }
+    pthread_mutex_unlock(&g_engine_mutex);
 
     /* Set DEBUG log level by default on Android for easier debugging */
     dna_engine_set_log_level("DEBUG");
@@ -838,10 +850,15 @@ Java_io_cpunk_dna_DNAEngine_nativeCreate(JNIEnv *env, jobject thiz, jstring data
 
 JNIEXPORT void JNICALL
 Java_io_cpunk_dna_DNAEngine_nativeDestroy(JNIEnv *env, jobject thiz) {
+    pthread_mutex_lock(&g_engine_mutex);
     if (g_engine) {
-        dna_engine_destroy(g_engine);
-        g_engine = NULL;
+        dna_engine_t *engine = g_engine;
+        g_engine = NULL;  /* Clear first to prevent use during destroy (v0.6.40) */
+        pthread_mutex_unlock(&g_engine_mutex);
+        dna_engine_destroy(engine);
         LOGI("Engine destroyed");
+    } else {
+        pthread_mutex_unlock(&g_engine_mutex);
     }
     if (g_event_listener) {
         (*env)->DeleteGlobalRef(env, g_event_listener);
@@ -1332,8 +1349,10 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeIsDhtHealthy(JNIEnv *env,
  */
 JNIEXPORT jboolean JNICALL
 Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeEnsureEngine(JNIEnv *env, jobject thiz, jstring data_dir) {
-    /* Check if engine already exists */
+    /* Check if engine already exists (v0.6.40: mutex-protected) */
+    pthread_mutex_lock(&g_engine_mutex);
     if (g_engine) {
+        pthread_mutex_unlock(&g_engine_mutex);
         LOGI("nativeEnsureEngine: Engine already exists");
         return JNI_TRUE;
     }
@@ -1344,9 +1363,11 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeEnsureEngine(JNIEnv *env,
     if (dir) (*env)->ReleaseStringUTFChars(env, data_dir, dir);
 
     if (!g_engine) {
+        pthread_mutex_unlock(&g_engine_mutex);
         LOGE("nativeEnsureEngine: Failed to create engine");
         return JNI_FALSE;
     }
+    pthread_mutex_unlock(&g_engine_mutex);
 
     LOGI("nativeEnsureEngine: Engine created (Service-owned)");
     return JNI_TRUE;
@@ -1472,12 +1493,17 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeIsIdentityLocked(JNIEnv *
  */
 JNIEXPORT void JNICALL
 Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReleaseEngine(JNIEnv *env, jobject thiz) {
+    /* v0.6.40: mutex-protected g_engine access */
+    pthread_mutex_lock(&g_engine_mutex);
     if (g_engine) {
+        dna_engine_t *engine = g_engine;
+        g_engine = NULL;  /* Clear first to prevent use during destroy */
+        pthread_mutex_unlock(&g_engine_mutex);
         LOGI("nativeReleaseEngine: Releasing service engine for Flutter takeover");
-        dna_engine_destroy(g_engine);
-        g_engine = NULL;
+        dna_engine_destroy(engine);
         LOGI("nativeReleaseEngine: Engine released, identity lock freed");
     } else {
+        pthread_mutex_unlock(&g_engine_mutex);
         LOGI("nativeReleaseEngine: No engine to release");
     }
 }
