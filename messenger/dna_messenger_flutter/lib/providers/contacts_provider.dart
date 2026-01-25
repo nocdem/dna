@@ -28,7 +28,10 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     if (!identityLoaded) {
       // Reset initial load flag when identity is unloaded
       _initialLoadTriggered = false;
-      ref.read(appFullyReadyProvider.notifier).state = false;
+      // Defer state modification to avoid "modifying provider during build" error
+      Future.microtask(() {
+        ref.read(appFullyReadyProvider.notifier).state = false;
+      });
       return [];
     }
 
@@ -69,8 +72,11 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
   }) async {
     if (contacts.isEmpty) {
       // No contacts - mark app as ready immediately
+      // Defer state modification to avoid "modifying provider during build" error
       if (isInitialLoad) {
-        ref.read(appFullyReadyProvider.notifier).state = true;
+        Future.microtask(() {
+          ref.read(appFullyReadyProvider.notifier).state = true;
+        });
       }
       return;
     }
@@ -119,7 +125,10 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     }
 
     // Mark app as ready - UI can now be shown
-    ref.read(appFullyReadyProvider.notifier).state = true;
+    // Use microtask to ensure we're not in a build phase
+    Future.microtask(() {
+      ref.read(appFullyReadyProvider.notifier).state = true;
+    });
   }
 
   /// Lookup presence for a single contact with timeout
