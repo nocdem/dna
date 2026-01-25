@@ -4149,12 +4149,12 @@ class DnaEngine {
   Future<bool> resume() async {
     if (_isDisposed) return false;
     final result = _bindings.dna_engine_resume(_engine);
-    if (result == 0) {
-      // Trigger immediate offline message check after resume
-      await checkOfflineMessages();
-      return true;
-    }
-    return false;
+    // Note: Don't call checkOfflineMessages() here!
+    // C-side resume() spawns a background thread to resubscribe DHT listeners.
+    // checkOfflineMessages() requires DHT to be ready, but background thread
+    // hasn't finished yet. Awaiting would block forever.
+    // contacts_provider._completeInitialLoad() handles this with proper timeout.
+    return result == 0;
   }
 
   /// Check if engine is currently paused
