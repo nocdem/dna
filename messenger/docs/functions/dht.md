@@ -347,6 +347,27 @@ Per-identity encrypted group membership list storage in DHT.
 **Magic:** `GLST` (0x474C5354)
 **Security:** Self-encrypted with Kyber1024, signed with Dilithium5
 
+### 11.4b GEK Sync (`dht_geks.h`) - v0.6.49+
+
+Per-identity encrypted GEK (Group Encryption Key) storage in DHT for multi-device sync.
+GEKs are self-encrypted and synced across devices, eliminating the need for per-device IKP fetches.
+
+| Function | Description |
+|----------|-------------|
+| `int dht_geks_init(void)` | Initialize GEK sync subsystem |
+| `void dht_geks_cleanup(void)` | Cleanup GEK sync subsystem |
+| `int dht_geks_publish(dht_context_t*, const char*, const dht_gek_entry_t*, size_t, ...)` | Publish encrypted GEK cache (Kyber1024 + Dilithium5) |
+| `int dht_geks_fetch(dht_context_t*, const char*, dht_gek_entry_t**, size_t*, ...)` | Fetch and decrypt GEK cache |
+| `void dht_geks_free_entries(dht_gek_entry_t*, size_t)` | Free entries array |
+| `void dht_geks_free_cache(dht_geks_cache_t*)` | Free cache structure |
+| `bool dht_geks_exists(dht_context_t*, const char*)` | Check if GEKs exist in DHT |
+| `int dht_geks_get_timestamp(dht_context_t*, const char*, uint64_t*)` | Get GEK cache timestamp |
+
+**DHT Key:** `SHA3-512(fingerprint + ":geks")`
+**Magic:** `GEKS` (0x47454B53)
+**Security:** Self-encrypted with Kyber1024, signed with Dilithium5
+**Format:** JSON with base64-encoded GEKs, organized by group UUID
+
 ### 11.5 DNA Profile (`dna_profile.h`)
 
 | Function | Description |

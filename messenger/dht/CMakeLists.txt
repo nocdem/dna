@@ -35,6 +35,7 @@ set(DHT_COMMON_SOURCES
     client/bootstrap_cache.c          # Bootstrap node SQLite cache
     client/dht_contactlist.c
     client/dht_grouplist.c        # Group list DHT sync (v0.5.26+)
+    client/dht_geks.c             # GEK DHT sync (v0.6.49+)
     client/dht_addressbook.c      # Wallet address book DHT sync
     client/dht_message_backup.c
     client/dna_profile.c

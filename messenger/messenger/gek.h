@@ -393,7 +393,82 @@ int ikp_get_version(const uint8_t *packet, size_t packet_size, uint32_t *version
 int ikp_get_member_count(const uint8_t *packet, size_t packet_size, uint8_t *count_out);
 
 /* ============================================================================
- * BACKUP / RESTORE (Multi-Device Sync)
+ * DHT SYNC (Multi-Device Sync via DHT)
+ * ============================================================================ */
+
+/**
+ * Sync all local GEKs to DHT
+ *
+ * Exports all non-expired GEKs from local database and publishes to DHT.
+ * Uses self-encryption (Kyber1024 + Dilithium5) for security.
+ * Other devices can sync from DHT to get the same GEKs.
+ *
+ * @param dht_ctx DHT context
+ * @param identity Owner's identity fingerprint (128-char hex)
+ * @param kyber_pubkey Owner's Kyber1024 public key (1568 bytes)
+ * @param kyber_privkey Owner's Kyber1024 private key (3168 bytes)
+ * @param dilithium_pubkey Owner's Dilithium5 public key (2592 bytes)
+ * @param dilithium_privkey Owner's Dilithium5 private key (4896 bytes)
+ * @return 0 on success, -1 on error
+ */
+int gek_sync_to_dht(
+    void *dht_ctx,
+    const char *identity,
+    const uint8_t *kyber_pubkey,
+    const uint8_t *kyber_privkey,
+    const uint8_t *dilithium_pubkey,
+    const uint8_t *dilithium_privkey
+);
+
+/**
+ * Sync GEKs from DHT to local database
+ *
+ * Fetches GEKs from DHT and imports missing entries to local database.
+ * Only imports GEKs that don't already exist locally.
+ *
+ * @param dht_ctx DHT context
+ * @param identity Owner's identity fingerprint (128-char hex)
+ * @param kyber_privkey Owner's Kyber1024 private key (3168 bytes)
+ * @param dilithium_pubkey Owner's Dilithium5 public key (2592 bytes)
+ * @param imported_out Output for number of imported entries (optional, can be NULL)
+ * @return 0 on success, -1 on error, -2 if not found in DHT
+ */
+int gek_sync_from_dht(
+    void *dht_ctx,
+    const char *identity,
+    const uint8_t *kyber_privkey,
+    const uint8_t *dilithium_pubkey,
+    int *imported_out
+);
+
+/**
+ * Auto-sync GEKs (sync from DHT, then sync to DHT if newer locally)
+ *
+ * Convenience function that:
+ * 1. Checks DHT timestamp
+ * 2. If DHT is newer, syncs from DHT
+ * 3. If local is newer, syncs to DHT
+ * 4. If neither exists, does nothing
+ *
+ * @param dht_ctx DHT context
+ * @param identity Owner's identity fingerprint
+ * @param kyber_pubkey Owner's Kyber1024 public key
+ * @param kyber_privkey Owner's Kyber1024 private key
+ * @param dilithium_pubkey Owner's Dilithium5 public key
+ * @param dilithium_privkey Owner's Dilithium5 private key
+ * @return 0 on success, -1 on error
+ */
+int gek_auto_sync(
+    void *dht_ctx,
+    const char *identity,
+    const uint8_t *kyber_pubkey,
+    const uint8_t *kyber_privkey,
+    const uint8_t *dilithium_pubkey,
+    const uint8_t *dilithium_privkey
+);
+
+/* ============================================================================
+ * BACKUP / RESTORE (Legacy - for transition period)
  * ============================================================================ */
 
 /**

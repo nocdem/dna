@@ -131,6 +131,24 @@ IKP functions for distributing GEK to group members via Kyber1024 encryption.
 | `int ikp_get_version(...)` | Get GEK version from IKP header |
 | `int ikp_get_member_count(...)` | Get member count from IKP header |
 
+### 3.10 GEK DHT Sync (Multi-Device) - v0.6.49+
+
+**File:** `messenger/gek.h`, `messenger/gek.c`
+
+GEK sync functions for multi-device synchronization via DHT. GEKs are exported (decrypted),
+self-encrypted with the user's own Kyber1024 key, and published to DHT. Other devices can
+fetch and import, eliminating the need for per-device IKP extraction.
+
+| Function | Description |
+|----------|-------------|
+| `int gek_sync_to_dht(dht_ctx, identity, kyber_pub, kyber_priv, dilithium_pub, dilithium_priv)` | Export all local GEKs to DHT (self-encrypted) |
+| `int gek_sync_from_dht(dht_ctx, identity, kyber_priv, dilithium_pub, imported_out)` | Fetch GEKs from DHT and import missing entries |
+| `int gek_auto_sync(dht_ctx, identity, kyber_pub, kyber_priv, dilithium_pub, dilithium_priv)` | Auto-sync: fetch from DHT, then publish local |
+
+**DHT Key:** `SHA3-512(fingerprint + ":geks")`
+**Security:** Self-encrypted with Kyber1024, signed with Dilithium5
+**Format:** JSON with base64-encoded GEKs, organized by group UUID
+
 ---
 
 ## 4. Message Backup

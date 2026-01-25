@@ -29,6 +29,7 @@
 #include "../dht/core/dht_keyserver.h"
 #include "../dht/shared/dht_groups.h"
 #include "../dht/shared/dht_gek_storage.h"
+#include "../dht/client/dht_geks.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1280,4 +1281,377 @@ void gek_free_export_entries(gek_export_entry_t *entries, size_t count) {
     if (entries) {
         free(entries);
     }
+}
+
+/* ============================================================================
+ * DHT SYNC (Multi-Device Sync via DHT)
+ * ============================================================================ */
+
+/**
+ * Helper: Export all non-expired GEKs as plain entries for DHT sync
+ * Note: This decrypts the locally encrypted GEKs and exports them plain
+ */
+static int gek_export_plain_entries(dht_gek_entry_t **entries_out, size_t *count_out) {
+    if (!entries_out || !count_out) {
+        return -1;
+    }
+
+    *entries_out = NULL;
+    *count_out = 0;
+
+    if (!msg_db) {
+        QGP_LOG_DEBUG(LOG_TAG, "gek_export_plain_entries: No database\n");
+        return 0;
+    }
+
+    if (!gek_kem_privkey) {
+        QGP_LOG_ERROR(LOG_TAG, "KEM keys not set - cannot decrypt GEKs for export\n");
+        return -1;
+    }
+
+    uint64_t now = (uint64_t)time(NULL);
+
+    // Count non-expired entries
+    const char *count_sql = "SELECT COUNT(*) FROM group_geks WHERE expires_at > ?";
+    sqlite3_stmt *count_stmt;
+    if (sqlite3_prepare_v2(msg_db, count_sql, -1, &count_stmt, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare count statement\n");
+        return -1;
+    }
+    sqlite3_bind_int64(count_stmt, 1, (sqlite3_int64)now);
+
+    size_t total_count = 0;
+    if (sqlite3_step(count_stmt) == SQLITE_ROW) {
+        total_count = (size_t)sqlite3_column_int(count_stmt, 0);
+    }
+    sqlite3_finalize(count_stmt);
+
+    if (total_count == 0) {
+        QGP_LOG_INFO(LOG_TAG, "No non-expired GEKs to export\n");
+        return 0;
+    }
+
+    // Allocate output array
+    dht_gek_entry_t *entries = calloc(total_count, sizeof(dht_gek_entry_t));
+    if (!entries) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate entries\n");
+        return -1;
+    }
+
+    // Query all non-expired entries
+    const char *select_sql =
+        "SELECT group_uuid, version, encrypted_key, created_at, expires_at "
+        "FROM group_geks WHERE expires_at > ?";
+    sqlite3_stmt *select_stmt;
+
+    if (sqlite3_prepare_v2(msg_db, select_sql, -1, &select_stmt, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare select statement\n");
+        free(entries);
+        return -1;
+    }
+    sqlite3_bind_int64(select_stmt, 1, (sqlite3_int64)now);
+
+    size_t idx = 0;
+    while (sqlite3_step(select_stmt) == SQLITE_ROW && idx < total_count) {
+        const char *uuid = (const char *)sqlite3_column_text(select_stmt, 0);
+        uint32_t version = (uint32_t)sqlite3_column_int(select_stmt, 1);
+        const void *enc_gek = sqlite3_column_blob(select_stmt, 2);
+        int enc_gek_len = sqlite3_column_bytes(select_stmt, 2);
+        uint64_t created_at = (uint64_t)sqlite3_column_int64(select_stmt, 3);
+        uint64_t expires_at = (uint64_t)sqlite3_column_int64(select_stmt, 4);
+
+        if (!uuid || !enc_gek || enc_gek_len != GEK_ENC_TOTAL_SIZE) {
+            continue;
+        }
+
+        // Decrypt the GEK
+        uint8_t plain_gek[GEK_KEY_SIZE];
+        if (gek_decrypt((const uint8_t *)enc_gek, (size_t)enc_gek_len,
+                        gek_kem_privkey, plain_gek) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "Failed to decrypt GEK for %s v%u\n", uuid, version);
+            continue;
+        }
+
+        // Populate entry
+        strncpy(entries[idx].group_uuid, uuid, 36);
+        entries[idx].group_uuid[36] = '\0';
+        entries[idx].gek_version = version;
+        memcpy(entries[idx].gek, plain_gek, GEK_KEY_SIZE);
+        entries[idx].created_at = created_at;
+        entries[idx].expires_at = expires_at;
+
+        // Wipe plain GEK
+        qgp_secure_memzero(plain_gek, sizeof(plain_gek));
+
+        idx++;
+    }
+
+    sqlite3_finalize(select_stmt);
+
+    *entries_out = entries;
+    *count_out = idx;
+
+    QGP_LOG_INFO(LOG_TAG, "Exported %zu GEK entries for DHT sync\n", idx);
+    return 0;
+}
+
+/**
+ * Helper: Import GEK entries from DHT sync to local database
+ * Re-encrypts GEKs with local Kyber key before storing
+ */
+static int gek_import_plain_entries(const dht_gek_entry_t *entries, size_t count, int *imported_out) {
+    if (!entries && count > 0) {
+        return -1;
+    }
+
+    if (imported_out) {
+        *imported_out = 0;
+    }
+
+    if (count == 0) {
+        return 0;
+    }
+
+    if (!msg_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    if (!gek_kem_pubkey) {
+        QGP_LOG_ERROR(LOG_TAG, "KEM keys not set - cannot encrypt GEKs for import\n");
+        return -1;
+    }
+
+    int imported = 0;
+
+    for (size_t i = 0; i < count; i++) {
+        const dht_gek_entry_t *entry = &entries[i];
+
+        // Check if this entry already exists locally
+        const char *check_sql = "SELECT 1 FROM group_geks WHERE group_uuid = ? AND version = ?";
+        sqlite3_stmt *check_stmt;
+        if (sqlite3_prepare_v2(msg_db, check_sql, -1, &check_stmt, NULL) != SQLITE_OK) {
+            continue;
+        }
+        sqlite3_bind_text(check_stmt, 1, entry->group_uuid, -1, SQLITE_STATIC);
+        sqlite3_bind_int(check_stmt, 2, (int)entry->gek_version);
+
+        int exists = (sqlite3_step(check_stmt) == SQLITE_ROW);
+        sqlite3_finalize(check_stmt);
+
+        if (exists) {
+            QGP_LOG_DEBUG(LOG_TAG, "GEK %s v%u already exists locally\n",
+                          entry->group_uuid, entry->gek_version);
+            continue;
+        }
+
+        // Encrypt the GEK with local Kyber key
+        uint8_t encrypted_gek[GEK_ENC_TOTAL_SIZE];
+        if (gek_encrypt(entry->gek, gek_kem_pubkey, encrypted_gek) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "Failed to encrypt GEK for %s v%u\n",
+                         entry->group_uuid, entry->gek_version);
+            continue;
+        }
+
+        // Insert into database
+        const char *insert_sql =
+            "INSERT INTO group_geks (group_uuid, version, encrypted_key, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?)";
+        sqlite3_stmt *insert_stmt;
+
+        if (sqlite3_prepare_v2(msg_db, insert_sql, -1, &insert_stmt, NULL) != SQLITE_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to prepare insert: %s\n", sqlite3_errmsg(msg_db));
+            continue;
+        }
+
+        sqlite3_bind_text(insert_stmt, 1, entry->group_uuid, -1, SQLITE_STATIC);
+        sqlite3_bind_int(insert_stmt, 2, (int)entry->gek_version);
+        sqlite3_bind_blob(insert_stmt, 3, encrypted_gek, GEK_ENC_TOTAL_SIZE, SQLITE_STATIC);
+        sqlite3_bind_int64(insert_stmt, 4, (sqlite3_int64)entry->created_at);
+        sqlite3_bind_int64(insert_stmt, 5, (sqlite3_int64)entry->expires_at);
+
+        if (sqlite3_step(insert_stmt) == SQLITE_DONE) {
+            imported++;
+            QGP_LOG_INFO(LOG_TAG, "Imported GEK %s v%u from DHT\n",
+                         entry->group_uuid, entry->gek_version);
+        }
+
+        sqlite3_finalize(insert_stmt);
+    }
+
+    if (imported_out) {
+        *imported_out = imported;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Imported %d/%zu GEK entries from DHT sync\n", imported, count);
+    return 0;
+}
+
+int gek_sync_to_dht(
+    void *dht_ctx,
+    const char *identity,
+    const uint8_t *kyber_pubkey,
+    const uint8_t *kyber_privkey,
+    const uint8_t *dilithium_pubkey,
+    const uint8_t *dilithium_privkey)
+{
+    if (!dht_ctx || !identity || !kyber_pubkey || !kyber_privkey ||
+        !dilithium_pubkey || !dilithium_privkey) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_sync_to_dht: NULL parameter\n");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Syncing GEKs to DHT for %.16s...\n", identity);
+
+    // Export all local GEKs (decrypted)
+    dht_gek_entry_t *entries = NULL;
+    size_t count = 0;
+
+    if (gek_export_plain_entries(&entries, &count) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to export GEKs for sync\n");
+        return -1;
+    }
+
+    if (count == 0) {
+        QGP_LOG_INFO(LOG_TAG, "No GEKs to sync to DHT\n");
+        return 0;
+    }
+
+    // Publish to DHT
+    int result = dht_geks_publish(
+        (dht_context_t *)dht_ctx,
+        identity,
+        entries,
+        count,
+        kyber_pubkey,
+        kyber_privkey,
+        dilithium_pubkey,
+        dilithium_privkey,
+        0  // Use default TTL
+    );
+
+    // Secure wipe and free entries
+    for (size_t i = 0; i < count; i++) {
+        qgp_secure_memzero(entries[i].gek, GEK_KEY_SIZE);
+    }
+    free(entries);
+
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish GEKs to DHT\n");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Successfully synced %zu GEKs to DHT\n", count);
+    return 0;
+}
+
+int gek_sync_from_dht(
+    void *dht_ctx,
+    const char *identity,
+    const uint8_t *kyber_privkey,
+    const uint8_t *dilithium_pubkey,
+    int *imported_out)
+{
+    if (!dht_ctx || !identity || !kyber_privkey || !dilithium_pubkey) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_sync_from_dht: NULL parameter\n");
+        return -1;
+    }
+
+    if (imported_out) {
+        *imported_out = 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Syncing GEKs from DHT for %.16s...\n", identity);
+
+    // Fetch from DHT
+    dht_gek_entry_t *entries = NULL;
+    size_t count = 0;
+
+    int result = dht_geks_fetch(
+        (dht_context_t *)dht_ctx,
+        identity,
+        &entries,
+        &count,
+        kyber_privkey,
+        dilithium_pubkey
+    );
+
+    if (result == -2) {
+        QGP_LOG_INFO(LOG_TAG, "No GEKs found in DHT for this identity\n");
+        return -2;
+    }
+
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to fetch GEKs from DHT\n");
+        return -1;
+    }
+
+    if (count == 0) {
+        QGP_LOG_INFO(LOG_TAG, "No GEKs to import from DHT\n");
+        return 0;
+    }
+
+    // Import to local database
+    int imported = 0;
+    result = gek_import_plain_entries(entries, count, &imported);
+
+    // Secure wipe and free entries
+    for (size_t i = 0; i < count; i++) {
+        qgp_secure_memzero(entries[i].gek, GEK_KEY_SIZE);
+    }
+    dht_geks_free_entries(entries, count);
+
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to import GEKs from DHT\n");
+        return -1;
+    }
+
+    if (imported_out) {
+        *imported_out = imported;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Successfully synced %d GEKs from DHT\n", imported);
+    return 0;
+}
+
+int gek_auto_sync(
+    void *dht_ctx,
+    const char *identity,
+    const uint8_t *kyber_pubkey,
+    const uint8_t *kyber_privkey,
+    const uint8_t *dilithium_pubkey,
+    const uint8_t *dilithium_privkey)
+{
+    if (!dht_ctx || !identity || !kyber_pubkey || !kyber_privkey ||
+        !dilithium_pubkey || !dilithium_privkey) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_auto_sync: NULL parameter\n");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Auto-syncing GEKs for %.16s...\n", identity);
+
+    // First, try to sync from DHT (get any new GEKs from other devices)
+    int imported = 0;
+    int from_result = gek_sync_from_dht(dht_ctx, identity, kyber_privkey,
+                                         dilithium_pubkey, &imported);
+
+    if (from_result == -2) {
+        QGP_LOG_INFO(LOG_TAG, "No GEKs in DHT, will publish local GEKs\n");
+    } else if (from_result != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to sync from DHT, continuing with local sync\n");
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "Imported %d GEKs from DHT\n", imported);
+    }
+
+    // Then, sync to DHT (share local GEKs with other devices)
+    int to_result = gek_sync_to_dht(dht_ctx, identity, kyber_pubkey, kyber_privkey,
+                                     dilithium_pubkey, dilithium_privkey);
+
+    if (to_result != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to sync to DHT\n");
+        // Non-fatal - we may have gotten GEKs from DHT
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Auto-sync complete (imported=%d)\n", imported);
+    return 0;
 }
