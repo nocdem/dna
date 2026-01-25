@@ -882,6 +882,105 @@ void dna_engine_resume_presence(dna_engine_t *engine) {
     }
 }
 
+/* ============================================================================
+ * ENGINE PAUSE/RESUME (v0.6.50+)
+ *
+ * Allows keeping engine alive when app goes to background, avoiding expensive
+ * full reinitialization on resume. Listeners are suspended (not destroyed)
+ * so they can be quickly resubscribed on resume.
+ * ============================================================================ */
+
+int dna_engine_pause(dna_engine_t *engine) {
+    if (!engine) {
+        QGP_LOG_ERROR(LOG_TAG, "pause: NULL engine");
+        return DNA_ENGINE_ERROR_NOT_INITIALIZED;
+    }
+
+    if (!engine->identity_loaded) {
+        QGP_LOG_WARN(LOG_TAG, "pause: No identity loaded");
+        return DNA_ENGINE_ERROR_NO_IDENTITY;
+    }
+
+    if (engine->state == DNA_ENGINE_STATE_PAUSED) {
+        QGP_LOG_DEBUG(LOG_TAG, "pause: Already paused");
+        return DNA_OK;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[PAUSE] Pausing engine (suspending listeners, keeping DHT alive)");
+
+    /* 1. Pause presence heartbeat (stops marking us as online) */
+    dna_engine_pause_presence(engine);
+
+    /* 2. Suspend all DHT listeners (preserves them for resubscription)
+     * This uses the existing infrastructure from dht_listen.cpp that stores
+     * key_data for each listener, allowing fast resubscription. */
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (dht_ctx) {
+        dht_suspend_all_listeners(dht_ctx);
+        QGP_LOG_INFO(LOG_TAG, "[PAUSE] DHT listeners suspended");
+    }
+
+    /* 3. Unsubscribe from all groups (group listeners are managed separately) */
+    dna_engine_unsubscribe_all_groups(engine);
+    QGP_LOG_INFO(LOG_TAG, "[PAUSE] Group listeners cancelled");
+
+    /* 4. Update state */
+    engine->state = DNA_ENGINE_STATE_PAUSED;
+
+    QGP_LOG_INFO(LOG_TAG, "[PAUSE] Engine paused successfully - DHT connection and databases remain open");
+    return DNA_OK;
+}
+
+int dna_engine_resume(dna_engine_t *engine) {
+    if (!engine) {
+        QGP_LOG_ERROR(LOG_TAG, "resume: NULL engine");
+        return DNA_ENGINE_ERROR_NOT_INITIALIZED;
+    }
+
+    if (!engine->identity_loaded) {
+        QGP_LOG_WARN(LOG_TAG, "resume: No identity loaded");
+        return DNA_ENGINE_ERROR_NO_IDENTITY;
+    }
+
+    if (engine->state != DNA_ENGINE_STATE_PAUSED) {
+        QGP_LOG_DEBUG(LOG_TAG, "resume: Not paused (state=%d)", engine->state);
+        return DNA_OK;  /* Not an error, just nothing to do */
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[RESUME] Resuming engine (resubscribing listeners)");
+
+    /* 1. Update state first to allow listeners to work */
+    engine->state = DNA_ENGINE_STATE_ACTIVE;
+
+    /* 2. Resubscribe all DHT listeners */
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (dht_ctx) {
+        size_t resubscribed = dht_resubscribe_all_listeners(dht_ctx);
+        QGP_LOG_INFO(LOG_TAG, "[RESUME] Resubscribed %zu DHT listeners", resubscribed);
+    }
+
+    /* 3. Resubscribe to all groups */
+    int group_count = dna_engine_subscribe_all_groups(engine);
+    QGP_LOG_INFO(LOG_TAG, "[RESUME] Subscribed to %d groups", group_count);
+
+    /* 4. Resume presence heartbeat (marks us as online again) */
+    dna_engine_resume_presence(engine);
+
+    /* 5. Retry any pending messages that may have failed while paused */
+    int retried = dna_engine_retry_pending_messages(engine);
+    if (retried > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[RESUME] Retried %d pending messages", retried);
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[RESUME] Engine resumed successfully");
+    return DNA_OK;
+}
+
+bool dna_engine_is_paused(dna_engine_t *engine) {
+    if (!engine) return false;
+    return engine->state == DNA_ENGINE_STATE_PAUSED;
+}
+
 int dna_engine_network_changed(dna_engine_t *engine) {
     if (!engine) {
         QGP_LOG_ERROR(LOG_TAG, "network_changed: NULL engine");
@@ -2039,6 +2138,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         messenger_free(engine->messenger);
         engine->messenger = NULL;
         engine->identity_loaded = false;
+        engine->state = DNA_ENGINE_STATE_UNLOADED;
     }
 
     /* Check if keys are encrypted and validate password */
@@ -2178,9 +2278,11 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         }
     }
 
-    /* Mark identity as loaded BEFORE starting listeners (they check this flag) */
+    /* Mark identity as loaded and set state to ACTIVE
+     * BEFORE starting listeners (they check this flag) */
     engine->identity_loaded = true;
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity loaded, identity_loaded flag set to true");
+    engine->state = DNA_ENGINE_STATE_ACTIVE;
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity loaded, state=ACTIVE");
 
     /* v0.6.13+: Minimal mode skips ALL listeners (battery-optimized polling).
      * Full mode: start contact request listener and group subscriptions. */
@@ -5408,6 +5510,7 @@ int dna_engine_delete_identity_sync(
 
         /* Clear identity state */
         engine->identity_loaded = false;
+        engine->state = DNA_ENGINE_STATE_UNLOADED;
         memset(engine->fingerprint, 0, sizeof(engine->fingerprint));
     }
 

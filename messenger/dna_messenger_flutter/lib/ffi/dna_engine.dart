@@ -1138,6 +1138,9 @@ class DnaEngine {
   /// Check if engine is initialized
   bool get isInitialized => !_isDisposed;
 
+  /// Check if engine has been disposed
+  bool get isDisposed => _isDisposed;
+
   DnaEngine._();
 
   /// Create and initialize the DNA engine
@@ -4107,6 +4110,59 @@ class DnaEngine {
   /// Should be called when Android app comes back to foreground.
   void resumePresence() {
     _bindings.dna_engine_resume_presence(_engine);
+  }
+
+  // ---------------------------------------------------------------------------
+  // ENGINE PAUSE/RESUME (v0.6.50+)
+  // ---------------------------------------------------------------------------
+
+  /// Pause engine for background mode
+  ///
+  /// Suspends DHT listeners and presence heartbeat while keeping the engine
+  /// alive. This allows fast resume (<500ms) when the app returns to foreground,
+  /// avoiding the expensive full reinitialization (2-40 seconds).
+  ///
+  /// What stays alive during pause:
+  /// - DHT connection
+  /// - Identity lock
+  /// - Databases
+  /// - Worker threads (idle)
+  ///
+  /// What gets suspended:
+  /// - DHT listeners (can be resubscribed quickly)
+  /// - Presence heartbeat (stops marking us as online)
+  ///
+  /// Returns true on success, false on failure (e.g., no identity loaded).
+  bool pause() {
+    if (_isDisposed) return false;
+    final result = _bindings.dna_engine_pause(_engine);
+    return result == 0;
+  }
+
+  /// Resume engine from background mode
+  ///
+  /// Reactivates a paused engine by resubscribing DHT listeners and
+  /// resuming presence heartbeat. This is much faster than destroying
+  /// and recreating the engine.
+  ///
+  /// Returns true on success, false on failure.
+  Future<bool> resume() async {
+    if (_isDisposed) return false;
+    final result = _bindings.dna_engine_resume(_engine);
+    if (result == 0) {
+      // Trigger immediate offline message check after resume
+      await checkOfflineMessages();
+      return true;
+    }
+    return false;
+  }
+
+  /// Check if engine is currently paused
+  ///
+  /// Returns true if engine is in paused state, false otherwise.
+  bool get isPaused {
+    if (_isDisposed) return false;
+    return _bindings.dna_engine_is_paused(_engine);
   }
 
   /// Handle network connectivity change

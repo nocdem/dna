@@ -439,6 +439,19 @@ class EventHandler {
     }
   }
 
+  /// Re-attach the event callback to a resumed engine
+  ///
+  /// Called when engine is resumed from paused state (v0.100.58+).
+  /// This re-subscribes to the Dart event stream and re-attaches the C callback.
+  void attachCallback(DnaEngine engine) {
+    // Re-subscribe to Dart event stream
+    _subscription?.cancel();
+    _subscription = engine.events.listen(_handleEvent);
+
+    // Re-attach C-side callback
+    engine.attachEventCallback();
+  }
+
   /// Refresh identity profiles from DHT
   /// Called when DHT connects to fetch display names/avatars that may have
   /// failed during startup (race condition: prefetch before DHT ready)

@@ -1,8 +1,8 @@
 // App Lifecycle Observer - handles app state changes
 // Phase 14: DHT-only messaging with reliable Android background support
-// v0.100.23+: Destroy engine on pause to cancel all listeners, reinit on resume
-// v0.100.57+: State machine with abort flag to fix race condition crash
+// v0.100.58+: Pause/Resume optimization - keep engine alive for fast resume
 
+import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -12,6 +12,8 @@ import '../providers/event_handler.dart';
 import '../providers/identity_provider.dart';
 import '../providers/contacts_provider.dart';
 import '../providers/contact_profile_cache_provider.dart';
+import '../ffi/dna_engine.dart';
+import 'logger.dart';
 
 /// Provider that tracks whether the app is currently in foreground (resumed)
 /// Used by event_handler to determine whether to show notifications
@@ -20,17 +22,17 @@ final appInForegroundProvider = StateProvider<bool>((ref) => true);
 /// Lifecycle state machine to prevent concurrent resume/pause operations
 enum _LifecycleState { idle, resuming, pausing }
 
+/// Background timeout before destroying engine (saves battery on long background)
+const _backgroundTimeout = Duration(minutes: 5);
+
 /// Observer for app lifecycle state changes
 ///
-/// Handles:
-/// - onResume: Refresh presence and poll for offline messages
-/// - onPause: Service continues running in background
-/// - onDetached: Service may continue if logged in
+/// v0.100.58+ Architecture:
+/// - On pause: PAUSE engine (suspend listeners, keep DHT alive)
+/// - On resume: RESUME engine (resubscribe listeners) - <500ms
+/// - After 5 min background: DESTROY engine (service takes over)
 ///
-/// State Machine (v0.100.57+):
-/// - Prevents race condition when pause occurs during resume
-/// - Resume is interruptible via _pauseRequested flag
-/// - Pause waits for resume to abort before proceeding
+/// This eliminates the 2-40 second lag when returning from background.
 class AppLifecycleObserver extends WidgetsBindingObserver {
   final WidgetRef ref;
 
@@ -42,6 +44,9 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
   /// Operation ID to detect stale callbacks after abort
   int _operationId = 0;
+
+  /// Timer to destroy engine after extended background time
+  Timer? _backgroundTimer;
 
   AppLifecycleObserver(this.ref);
 
@@ -76,6 +81,10 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
   /// Called when app comes to foreground
   void _onResume() async {
+    // Cancel background timeout timer
+    _backgroundTimer?.cancel();
+    _backgroundTimer = null;
+
     // IMMEDIATE: Mark app as in foreground (for notification logic)
     // This must happen synchronously before any async work
     ref.read(appInForegroundProvider.notifier).state = true;
@@ -98,54 +107,87 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     final myOpId = ++_operationId;
 
     try {
-      // v0.100.23+: Notify service FIRST so it releases its engine
-      // Service must release the DHT lock before Flutter can create new engine
-      if (Platform.isAndroid) {
-        await PlatformHandler.instance.onResumePreEngine();
-      }
-      // Abort checkpoint: check if pause was requested during service notification
-      if (_shouldAbort(myOpId)) {
-        return;
-      }
-
-      // Get new engine (provider creates fresh instance after invalidation)
+      // Get engine - may be paused or may need fresh creation
       final engine = await ref.read(engineProvider.future);
-      // Abort checkpoint: check if pause was requested during engine creation
+
+      // Abort checkpoint
       if (_shouldAbort(myOpId)) {
         return;
       }
 
-      // Reload identity into fresh engine
-      // This reloads keys, initializes transport, and starts all listeners
-      await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
-      // Abort checkpoint: check if pause was requested during identity load
-      if (_shouldAbort(myOpId)) {
-        return;
+      // Check if engine is paused (fast path) or needs full reload (slow path)
+      if (engine.isPaused) {
+        // FAST PATH: Resume paused engine (<500ms)
+        DnaLogger.log('LIFECYCLE', '[RESUME] Fast path: resuming paused engine');
+
+        // Resume the engine (resubscribes listeners, resumes presence)
+        final success = await engine.resume();
+        if (!success) {
+          DnaLogger.error('LIFECYCLE', '[RESUME] Engine resume failed');
+        }
+
+        // Abort checkpoint
+        if (_shouldAbort(myOpId)) {
+          return;
+        }
+
+        // Reattach event callback
+        ref.read(eventHandlerProvider).attachCallback(engine);
+
+        // Resume Dart-side polling timers
+        ref.read(eventHandlerProvider).resumePolling();
+
+        // Mark identity as ready (hides spinner)
+        ref.read(identityReadyProvider.notifier).state = true;
+
+        DnaLogger.log('LIFECYCLE', '[RESUME] Fast resume complete');
+      } else if (!engine.isIdentityLoaded) {
+        // SLOW PATH: Engine was destroyed (background timeout), need full reload
+        DnaLogger.log('LIFECYCLE', '[RESUME] Slow path: full identity reload');
+
+        // Notify service FIRST so it releases its engine (Android only)
+        if (Platform.isAndroid) {
+          await PlatformHandler.instance.onResumePreEngine();
+        }
+
+        // Abort checkpoint
+        if (_shouldAbort(myOpId)) {
+          return;
+        }
+
+        // Reload identity (keys, transport, listeners)
+        await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
+
+        // Abort checkpoint
+        if (_shouldAbort(myOpId)) {
+          return;
+        }
+
+        // Platform-specific resume handling
+        await PlatformHandler.instance.onResume(engine);
+
+        // Abort checkpoint
+        if (_shouldAbort(myOpId)) {
+          return;
+        }
+
+        // Resume Dart-side polling timers
+        ref.read(eventHandlerProvider).resumePolling();
+
+        DnaLogger.log('LIFECYCLE', '[RESUME] Full reload complete');
+      } else {
+        // Engine is active and identity loaded - just resume polling
+        DnaLogger.log('LIFECYCLE', '[RESUME] Engine already active');
+        ref.read(eventHandlerProvider).resumePolling();
+        ref.read(identityReadyProvider.notifier).state = true;
       }
 
-      // Platform-specific resume handling
-      // Android: Fetch offline messages
-      // Desktop: No-op
-      await PlatformHandler.instance.onResume(engine);
-      // Abort checkpoint: check if pause was requested during platform resume
-      if (_shouldAbort(myOpId)) {
-        return;
-      }
-
-      // Resume presence heartbeat (marks us as online)
-      engine.resumePresence();
-
-      // Resume Dart-side polling timers (handles presence refresh + contact requests)
-      ref.read(eventHandlerProvider).resumePolling();
-
-      // Refresh contact profiles from DHT in background
-      // Don't await - let UI show cached data immediately, updates come async
-      // Only start if not aborting
+      // Refresh contact profiles in background (non-blocking)
       if (!_shouldAbort(myOpId)) {
         _refreshContactProfiles(engine, myOpId);
       }
-    } catch (_) {
-      // Error during resume - silently continue
+    } catch (e) {
+      DnaLogger.error('LIFECYCLE', '[RESUME] Error: $e');
     } finally {
       // Only reset state if we're still the current operation
       if (_operationId == myOpId) {
@@ -156,7 +198,7 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
   /// Refresh all contact profiles from DHT on resume
   /// Ensures profile changes (name, avatar) are visible immediately
-  Future<void> _refreshContactProfiles(dynamic engine, int myOpId) async {
+  Future<void> _refreshContactProfiles(DnaEngine engine, int myOpId) async {
     try {
       final contacts = ref.read(contactsProvider).valueOrNull;
       if (contacts == null || contacts.isEmpty) {
@@ -197,9 +239,6 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     // These must happen synchronously before any async work
     ref.read(appInForegroundProvider.notifier).state = false;
 
-    // Mark identity as not ready (triggers spinner on next resume until identity reloaded)
-    ref.read(identityReadyProvider.notifier).state = false;
-
     // Pause Dart-side polling timers FIRST (prevents timer exceptions in background)
     ref.read(eventHandlerProvider).pausePolling();
 
@@ -238,35 +277,69 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     try {
       final engine = await ref.read(engineProvider.future);
 
-      // Pause C-side presence heartbeat (stops marking us as online)
-      engine.pausePresence();
+      // v0.100.58+: PAUSE engine instead of destroying it
+      // This suspends listeners but keeps DHT connection alive
+      DnaLogger.log('LIFECYCLE', '[PAUSE] Pausing engine (keeping DHT alive)');
 
-      // Detach event callback before destroying engine
+      // Detach event callback (events will be ignored while paused)
       engine.detachEventCallback();
 
+      // Pause the engine (suspends listeners, pauses presence)
+      final success = engine.pause();
+      if (success) {
+        DnaLogger.log('LIFECYCLE', '[PAUSE] Engine paused successfully');
+      } else {
+        DnaLogger.error('LIFECYCLE', '[PAUSE] Engine pause failed');
+      }
+
       // Platform-specific pause handling
-      // Android: Notify service that Flutter is pausing (service takes over)
-      // Desktop: No-op
+      // Android: Notify service that Flutter is paused (service monitors for notifications)
       PlatformHandler.instance.onPause(engine);
 
-      // v0.100.24+: Explicitly dispose engine SYNCHRONOUSLY before invalidating
-      // This ensures all DHT listeners are cancelled and lock is released
-      // BEFORE the service tries to take over. ref.invalidate() is async and
-      // won't wait for dispose to complete.
-      engine.dispose();
+      // Mark identity as not ready (triggers spinner on next resume until fully resumed)
+      ref.read(identityReadyProvider.notifier).state = false;
 
-      // Invalidate provider so next access creates fresh engine
-      // NOTE: Do NOT clear currentFingerprintProvider - we need it to reload on resume
-      ref.invalidate(engineProvider);
-    } catch (_) {
-      // Error during pause - silently continue
+      // Start 5-minute timer - if we're still in background when it fires,
+      // destroy the engine to save battery (service takes over)
+      _backgroundTimer?.cancel();
+      _backgroundTimer = Timer(_backgroundTimeout, _onBackgroundTimeout);
+
+      // NOTE: Do NOT dispose engine or invalidate provider here!
+      // Engine stays alive for fast resume.
+
+    } catch (e) {
+      DnaLogger.error('LIFECYCLE', '[PAUSE] Error: $e');
     } finally {
       _lifecycleState = _LifecycleState.idle;
     }
   }
 
+  /// Called when background timeout fires (app in background for 5+ minutes)
+  void _onBackgroundTimeout() async {
+    DnaLogger.log('LIFECYCLE', '[TIMEOUT] Background timeout - destroying engine');
+
+    try {
+      final engine = ref.read(engineProvider).valueOrNull;
+      if (engine != null && !engine.isDisposed) {
+        // Destroy engine to save battery
+        engine.dispose();
+
+        // Invalidate provider so next access creates fresh engine
+        ref.invalidate(engineProvider);
+
+        DnaLogger.log('LIFECYCLE', '[TIMEOUT] Engine destroyed - service takes over');
+      }
+    } catch (e) {
+      DnaLogger.error('LIFECYCLE', '[TIMEOUT] Error destroying engine: $e');
+    }
+  }
+
   /// Called when app is being killed
   void _onDetached() {
+    // Cancel background timer
+    _backgroundTimer?.cancel();
+    _backgroundTimer = null;
+
     // ForegroundService may continue running if logged in
     // System will eventually kill it if needed
   }

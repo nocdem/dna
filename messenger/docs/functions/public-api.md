@@ -125,6 +125,9 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_get_registered_name(...)` | Get registered name for current identity |
 | `void dna_engine_pause_presence(dna_engine_t*)` | Pause presence updates (app backgrounded) |
 | `void dna_engine_resume_presence(dna_engine_t*)` | Resume presence updates (app foregrounded) |
+| `int dna_engine_pause(dna_engine_t*)` | Pause engine for background mode - suspends listeners, keeps DHT alive (v0.6.50+) |
+| `int dna_engine_resume(dna_engine_t*)` | Resume engine from background - resubscribes listeners (v0.6.50+) |
+| `bool dna_engine_is_paused(dna_engine_t*)` | Check if engine is in paused state (v0.6.50+) |
 | `int dna_engine_network_changed(dna_engine_t*)` | Reinitialize DHT after network change (WiFi↔Cellular) |
 
 ## 1.9 Outbox Listeners

@@ -2203,6 +2203,35 @@ class DnaBindings {
     _dna_engine_resume_presence(engine);
   }
 
+  /// Pause engine for background mode (v0.6.50+)
+  /// Suspends DHT listeners while keeping engine alive for fast resume
+  late final _dna_engine_pause = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>),
+      int Function(Pointer<dna_engine_t>)>('dna_engine_pause');
+
+  int dna_engine_pause(Pointer<dna_engine_t> engine) {
+    return _dna_engine_pause(engine);
+  }
+
+  /// Resume engine from background mode (v0.6.50+)
+  /// Resubscribes DHT listeners for fast return to foreground
+  late final _dna_engine_resume = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>),
+      int Function(Pointer<dna_engine_t>)>('dna_engine_resume');
+
+  int dna_engine_resume(Pointer<dna_engine_t> engine) {
+    return _dna_engine_resume(engine);
+  }
+
+  /// Check if engine is paused (v0.6.50+)
+  late final _dna_engine_is_paused = _lib.lookupFunction<
+      Bool Function(Pointer<dna_engine_t>),
+      bool Function(Pointer<dna_engine_t>)>('dna_engine_is_paused');
+
+  bool dna_engine_is_paused(Pointer<dna_engine_t> engine) {
+    return _dna_engine_is_paused(engine);
+  }
+
   /// Handle network connectivity change (reinitialize DHT)
   late final _dna_engine_network_changed = _lib.lookupFunction<
       Int32 Function(Pointer<dna_engine_t>),

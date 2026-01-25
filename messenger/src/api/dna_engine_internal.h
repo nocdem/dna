@@ -42,6 +42,20 @@ extern "C" {
 #define DNA_MESSAGE_QUEUE_MAX_CAPACITY 100
 
 /* ============================================================================
+ * ENGINE STATE (v0.6.50+: Pause/Resume lifecycle)
+ * ============================================================================ */
+
+/**
+ * Engine lifecycle state for Android pause/resume optimization.
+ * Allows keeping engine alive in background to avoid expensive reinitialization.
+ */
+typedef enum {
+    DNA_ENGINE_STATE_UNLOADED,  /* No identity loaded */
+    DNA_ENGINE_STATE_ACTIVE,    /* Full mode, all listeners active */
+    DNA_ENGINE_STATE_PAUSED     /* Background mode, listeners suspended */
+} dna_engine_state_t;
+
+/* ============================================================================
  * TASK TYPES
  * ============================================================================ */
 
@@ -499,6 +513,9 @@ typedef struct {
 struct dna_engine {
     /* Configuration */
     char *data_dir;              /* Data directory path (owned) */
+
+    /* Engine state (v0.6.50+: pause/resume lifecycle for Android) */
+    dna_engine_state_t state;    /* Current lifecycle state */
 
     /* DHT context (v0.6.0+: engine owns its own DHT, no global singleton) */
     dht_context_t *dht_ctx;      /* DHT context owned by this engine */

@@ -884,6 +884,53 @@ DNA_API void dna_engine_set_android_reconnect_callback(
 DNA_API void dna_engine_destroy(dna_engine_t *engine);
 
 /**
+ * Pause engine for background mode (v0.6.50+)
+ *
+ * Suspends DHT listeners and presence heartbeat while keeping the engine
+ * alive. This allows fast resume (<500ms) when the app returns to foreground,
+ * avoiding the expensive full reinitialization (2-40 seconds).
+ *
+ * What happens during pause:
+ * - DHT listeners are suspended (not destroyed)
+ * - Presence heartbeat is paused (stops marking us as online)
+ * - DHT connection stays alive
+ * - Identity lock is kept
+ * - Databases remain open
+ * - Worker threads keep running (but idle)
+ *
+ * Use dna_engine_resume() to reactivate the engine.
+ *
+ * @param engine    Engine instance
+ * @return          0 on success, negative error code on failure
+ */
+DNA_API int dna_engine_pause(dna_engine_t *engine);
+
+/**
+ * Resume engine from background mode (v0.6.50+)
+ *
+ * Reactivates a paused engine by resubscribing DHT listeners and
+ * resuming presence heartbeat. This is much faster than destroying
+ * and recreating the engine.
+ *
+ * What happens during resume:
+ * - DHT listeners are resubscribed
+ * - Presence heartbeat is resumed (marks us as online again)
+ * - Immediate presence refresh
+ *
+ * @param engine    Engine instance
+ * @return          0 on success, negative error code on failure
+ */
+DNA_API int dna_engine_resume(dna_engine_t *engine);
+
+/**
+ * Check if engine is in paused state (v0.6.50+)
+ *
+ * @param engine    Engine instance
+ * @return          true if engine is paused, false otherwise
+ */
+DNA_API bool dna_engine_is_paused(dna_engine_t *engine);
+
+/**
  * Get current identity fingerprint
  *
  * @param engine    Engine instance
