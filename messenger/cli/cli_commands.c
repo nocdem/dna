@@ -29,6 +29,24 @@
 
 #define LOG_TAG "CLI"
 
+/* v0.6.47: Thread-safe localtime wrapper (security fix) */
+static inline struct tm *safe_localtime(const time_t *timer, struct tm *result) {
+#ifdef _WIN32
+    return (localtime_s(result, timer) == 0) ? result : NULL;
+#else
+    return localtime_r(timer, result);
+#endif
+}
+
+/* v0.6.47: Thread-safe gmtime wrapper (security fix) */
+static inline struct tm *safe_gmtime(const time_t *timer, struct tm *result) {
+#ifdef _WIN32
+    return (gmtime_s(result, timer) == 0) ? result : NULL;
+#else
+    return gmtime_r(timer, result);
+#endif
+}
+
 /* ============================================================================
  * SYNCHRONIZATION HELPERS
  * ============================================================================ */
@@ -1282,7 +1300,12 @@ int cmd_messages(dna_engine_t *engine, const char *identifier) {
         for (int i = 0; i < wait.message_count; i++) {
             time_t ts = (time_t)wait.messages[i].timestamp;
             char time_str[32];
-            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+            struct tm tm_buf;
+            if (safe_localtime(&ts, &tm_buf)) {
+                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &tm_buf);
+            } else {
+                strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
+            }
 
             const char *direction = wait.messages[i].is_outgoing ? ">>>" : "<<<";
             printf("[%s] %s %s\n", time_str, direction,
@@ -1583,7 +1606,12 @@ int cmd_check_version(dna_engine_t *engine) {
     if (result.info.published_at > 0) {
         time_t ts = (time_t)result.info.published_at;
         char time_str[32];
-        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M UTC", gmtime(&ts));
+        struct tm tm_buf;
+        if (safe_gmtime(&ts, &tm_buf)) {
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M UTC", &tm_buf);
+        } else {
+            strncpy(time_str, "0000-00-00 00:00 UTC", sizeof(time_str));
+        }
         printf("  Published: %s\n", time_str);
     }
 
@@ -1998,7 +2026,12 @@ int cmd_group_info(dna_engine_t *engine, const char *group_uuid) {
     if (found->created_at > 0) {
         time_t ts = (time_t)found->created_at;
         char time_str[32];
-        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+        struct tm tm_buf;
+        if (safe_localtime(&ts, &tm_buf)) {
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &tm_buf);
+        } else {
+            strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
+        }
         printf("Created: %s\n", time_str);
     }
     printf("========================================\n");
@@ -2320,7 +2353,12 @@ int cmd_group_messages(dna_engine_t *engine, const char *name_or_uuid) {
         for (int i = 0; i < wait.message_count; i++) {
             time_t ts = (time_t)wait.messages[i].timestamp;
             char time_str[32];
-            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+            struct tm tm_buf;
+            if (safe_localtime(&ts, &tm_buf)) {
+                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &tm_buf);
+            } else {
+                strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
+            }
 
             const char *direction = wait.messages[i].is_outgoing ? ">>>" : "<<<";
 
@@ -2371,7 +2409,12 @@ static void on_blocked_users(dna_request_id_t request_id, int error,
             if (users[i].blocked_at > 0) {
                 time_t ts = (time_t)users[i].blocked_at;
                 char time_str[32];
-                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+                struct tm tm_buf;
+                if (safe_localtime(&ts, &tm_buf)) {
+                    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &tm_buf);
+                } else {
+                    strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
+                }
                 printf("     Blocked: %s\n", time_str);
             }
         }
@@ -2885,7 +2928,12 @@ int cmd_messages_page(dna_engine_t *engine, const char *identifier, int limit, i
         for (int i = 0; i < wait.message_count; i++) {
             time_t ts = (time_t)wait.messages[i].timestamp;
             char time_str[32];
-            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+            struct tm tm_buf;
+            if (safe_localtime(&ts, &tm_buf)) {
+                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &tm_buf);
+            } else {
+                strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
+            }
 
             const char *direction = wait.messages[i].is_outgoing ? ">>>" : "<<<";
             printf("[%s] %s %s\n", time_str, direction,
@@ -3040,7 +3088,12 @@ static void on_presence_lookup(dna_request_id_t request_id, int error,
         if (last_seen > 0) {
             time_t ts = (time_t)last_seen;
             char time_str[32];
-            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+            struct tm tm_buf;
+            if (safe_localtime(&ts, &tm_buf)) {
+                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &tm_buf);
+            } else {
+                strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
+            }
             /* If last_seen is recent (within 5 min), consider online */
             time_t now = time(NULL);
             if (now - ts < 300) {
@@ -3192,7 +3245,12 @@ int cmd_debug_entries(dna_engine_t *engine, int max_entries) {
         for (int i = 0; i < count; i++) {
             time_t ts = (time_t)(entries[i].timestamp_ms / 1000);
             char time_str[32];
-            strftime(time_str, sizeof(time_str), "%H:%M:%S", localtime(&ts));
+            struct tm tm_buf;
+            if (safe_localtime(&ts, &tm_buf)) {
+                strftime(time_str, sizeof(time_str), "%H:%M:%S", &tm_buf);
+            } else {
+                strncpy(time_str, "00:00:00", sizeof(time_str));
+            }
 
             const char *level_str = "???";
             switch (entries[i].level) {
@@ -3267,7 +3325,12 @@ static void on_group_members(dna_request_id_t request_id, int error,
             if (members[i].added_at > 0) {
                 time_t ts = (time_t)members[i].added_at;
                 char time_str[32];
-                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+                struct tm tm_buf;
+                if (safe_localtime(&ts, &tm_buf)) {
+                    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &tm_buf);
+                } else {
+                    strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
+                }
                 printf("     Added: %s\n", time_str);
             }
         }
@@ -3326,7 +3389,12 @@ static void on_invitations(dna_request_id_t request_id, int error,
             if (invitations[i].invited_at > 0) {
                 time_t ts = (time_t)invitations[i].invited_at;
                 char time_str[32];
-                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+                struct tm tm_buf;
+                if (safe_localtime(&ts, &tm_buf)) {
+                    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &tm_buf);
+                } else {
+                    strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
+                }
                 printf("     Invited: %s\n", time_str);
             }
         }
@@ -3912,7 +3980,12 @@ static void on_feed_posts(dna_request_id_t request_id, int error,
         for (int i = 0; i < count; i++) {
             time_t ts = (time_t)(posts[i].timestamp / 1000);  /* Convert ms to seconds */
             char time_str[32];
-            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+            struct tm tm_buf;
+            if (safe_localtime(&ts, &tm_buf)) {
+                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &tm_buf);
+            } else {
+                strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
+            }
 
             printf("\n  --- Post %d ---\n", i + 1);
             printf("  ID: %s\n", posts[i].post_id);
@@ -4105,7 +4178,12 @@ static void on_feed_comments(dna_request_id_t request_id, int error,
         for (int i = 0; i < count; i++) {
             time_t ts = (time_t)(comments[i].timestamp / 1000);  /* Convert ms to seconds */
             char time_str[32];
-            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", localtime(&ts));
+            struct tm tm_buf;
+            if (safe_localtime(&ts, &tm_buf)) {
+                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &tm_buf);
+            } else {
+                strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
+            }
 
             printf("  %d. [%s] %.16s...: %s\n", i + 1, time_str,
                    comments[i].author_fingerprint,

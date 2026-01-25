@@ -159,12 +159,19 @@ static int deserialize_from_json(const char *json_str, char ***groups_out, size_
         return -1;
     }
 
+    /* v0.6.47: Add NULL check - json_object_get_string() returns NULL on type mismatch (security fix) */
     // Extract group strings
     for (size_t i = 0; i < count; i++) {
         json_object *group_obj = json_object_array_get_idx(groups_array, i);
         const char *group_str = json_object_get_string(group_obj);
         QGP_LOG_DEBUG(LOG_TAG, "JSON group[%zu]: '%s'\n", i, group_str ? group_str : "(null)");
-        groups[i] = strdup(group_str);
+        if (!group_str) {
+            // NULL string in array - skip or fail gracefully
+            QGP_LOG_WARN(LOG_TAG, "Skipping NULL group string at index %zu\n", i);
+            groups[i] = strdup("");  // Use empty string as placeholder
+        } else {
+            groups[i] = strdup(group_str);
+        }
         if (!groups[i]) {
             // Cleanup on failure
             for (size_t j = 0; j < i; j++) {

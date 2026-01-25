@@ -42,6 +42,15 @@
 
 #define LOG_TAG "MSG"
 
+/* v0.6.47: Thread-safe localtime wrapper (security fix) */
+static inline struct tm *safe_localtime(const time_t *timer, struct tm *result) {
+#ifdef _WIN32
+    return (localtime_s(result, timer) == 0) ? result : NULL;
+#else
+    return localtime_r(timer, result);
+#endif
+}
+
 // ============================================================================
 // MESSAGE OPERATIONS
 // ============================================================================
@@ -578,9 +587,14 @@ int messenger_list_messages(messenger_context_t *ctx) {
         // Print incoming messages in reverse chronological order
         for (int i = all_count - 1; i >= 0; i--) {
             if (strcmp(all_messages[i].recipient, ctx->identity) == 0) {
-                struct tm *tm_info = localtime(&all_messages[i].timestamp);
+                struct tm tm_buf;
+                struct tm *tm_info = safe_localtime(&all_messages[i].timestamp, &tm_buf);
                 char timestamp_str[32];
-                strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+                if (tm_info) {
+                    strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+                } else {
+                    strncpy(timestamp_str, "0000-00-00 00:00:00", sizeof(timestamp_str));
+                }
 
                 printf("  [%d] From: %s (%s)\n", all_messages[i].id, all_messages[i].sender, timestamp_str);
             }
@@ -623,9 +637,14 @@ int messenger_list_sent_messages(messenger_context_t *ctx) {
         // Print sent messages in reverse chronological order
         for (int i = all_count - 1; i >= 0; i--) {
             if (strcmp(all_messages[i].sender, ctx->identity) == 0) {
-                struct tm *tm_info = localtime(&all_messages[i].timestamp);
+                struct tm tm_buf;
+                struct tm *tm_info = safe_localtime(&all_messages[i].timestamp, &tm_buf);
                 char timestamp_str[32];
-                strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+                if (tm_info) {
+                    strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+                } else {
+                    strncpy(timestamp_str, "0000-00-00 00:00:00", sizeof(timestamp_str));
+                }
 
                 printf("  [%d] To: %s (%s)\n", all_messages[i].id, all_messages[i].recipient, timestamp_str);
             }
@@ -687,10 +706,15 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     printf("%s\n", plaintext);
     printf("----------------------------------------\n");
 
-    // Display timestamp
-    struct tm *tm_info = localtime(&target_msg->timestamp);
+    // Display timestamp - v0.6.47: Use thread-safe localtime
+    struct tm tm_buf;
+    struct tm *tm_info = safe_localtime(&target_msg->timestamp, &tm_buf);
     char time_str[64];
-    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
+    if (tm_info) {
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
+    } else {
+        strncpy(time_str, "0000-00-00 00:00:00", sizeof(time_str));
+    }
     printf("Sent: %s\n", time_str);
 
     // Display sender fingerprint if available
@@ -814,9 +838,14 @@ int messenger_search_by_sender(messenger_context_t *ctx, const char *sender) {
         for (int i = all_count - 1; i >= 0; i--) {
             if (strcmp(all_messages[i].sender, sender) == 0 &&
                 strcmp(all_messages[i].recipient, ctx->identity) == 0) {
-                struct tm *tm_info = localtime(&all_messages[i].timestamp);
+                struct tm tm_buf;
+                struct tm *tm_info = safe_localtime(&all_messages[i].timestamp, &tm_buf);
                 char timestamp_str[32];
-                strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+                if (tm_info) {
+                    strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+                } else {
+                    strncpy(timestamp_str, "0000-00-00 00:00:00", sizeof(timestamp_str));
+                }
                 printf("  [%d] %s\n", all_messages[i].id, timestamp_str);
             }
         }
@@ -849,9 +878,14 @@ int messenger_show_conversation(messenger_context_t *ctx, const char *other_iden
     printf("========================================\n\n");
 
     for (int i = 0; i < count; i++) {
-        struct tm *tm_info = localtime(&messages[i].timestamp);
+        struct tm tm_buf;
+        struct tm *tm_info = safe_localtime(&messages[i].timestamp, &tm_buf);
         char timestamp_str[32];
-        strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+        if (tm_info) {
+            strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+        } else {
+            strncpy(timestamp_str, "0000-00-00 00:00:00", sizeof(timestamp_str));
+        }
 
         // Format: [ID] timestamp sender -> recipient
         if (strcmp(messages[i].sender, ctx->identity) == 0) {
@@ -912,11 +946,16 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
         messages[i].sender = strdup(backup_messages[i].sender);
         messages[i].recipient = strdup(backup_messages[i].recipient);
 
-        // Convert time_t to string (format: YYYY-MM-DD HH:MM:SS)
-        struct tm *tm_info = localtime(&backup_messages[i].timestamp);
+        // Convert time_t to string - v0.6.47: Use thread-safe localtime
+        struct tm tm_buf;
+        struct tm *tm_info = safe_localtime(&backup_messages[i].timestamp, &tm_buf);
         messages[i].timestamp = (char*)malloc(32);
         if (messages[i].timestamp) {
-            strftime(messages[i].timestamp, 32, "%Y-%m-%d %H:%M:%S", tm_info);
+            if (tm_info) {
+                strftime(messages[i].timestamp, 32, "%Y-%m-%d %H:%M:%S", tm_info);
+            } else {
+                strncpy(messages[i].timestamp, "0000-00-00 00:00:00", 32);
+            }
         }
 
         // Convert status int to string: 0=pending, 1=sent, 2=failed, 3=delivered, 4=read
@@ -1017,11 +1056,16 @@ int messenger_get_conversation_page(messenger_context_t *ctx, const char *other_
         messages[i].sender = strdup(backup_messages[i].sender);
         messages[i].recipient = strdup(backup_messages[i].recipient);
 
-        // Convert time_t to string (format: YYYY-MM-DD HH:MM:SS)
-        struct tm *tm_info = localtime(&backup_messages[i].timestamp);
+        // Convert time_t to string - v0.6.47: Use thread-safe localtime
+        struct tm tm_buf;
+        struct tm *tm_info = safe_localtime(&backup_messages[i].timestamp, &tm_buf);
         messages[i].timestamp = (char*)malloc(32);
         if (messages[i].timestamp) {
-            strftime(messages[i].timestamp, 32, "%Y-%m-%d %H:%M:%S", tm_info);
+            if (tm_info) {
+                strftime(messages[i].timestamp, 32, "%Y-%m-%d %H:%M:%S", tm_info);
+            } else {
+                strncpy(messages[i].timestamp, "0000-00-00 00:00:00", 32);
+            }
         }
 
         // Convert status int to string
@@ -1189,9 +1233,14 @@ int messenger_search_by_date(messenger_context_t *ctx, const char *start_date,
         if (start_date && all_messages[i].timestamp < start_time) continue;
         if (end_date && all_messages[i].timestamp >= end_time) continue;
 
-        struct tm *tm_info = localtime(&all_messages[i].timestamp);
+        struct tm tm_buf;
+        struct tm *tm_info = safe_localtime(&all_messages[i].timestamp, &tm_buf);
         char timestamp_str[32];
-        strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+        if (tm_info) {
+            strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+        } else {
+            strncpy(timestamp_str, "0000-00-00 00:00:00", sizeof(timestamp_str));
+        }
 
         if (strcmp(all_messages[i].sender, ctx->identity) == 0) {
             printf("  [%d] %s  To: %s\n", all_messages[i].id, timestamp_str, all_messages[i].recipient);

@@ -19,6 +19,15 @@
 
 #define LOG_TAG "DNA_CHANNELS"
 
+/* v0.6.47: Thread-safe gmtime wrapper (security fix) */
+static inline struct tm *safe_gmtime(const time_t *timer, struct tm *result) {
+#ifdef _WIN32
+    return (gmtime_s(result, timer) == 0) ? result : NULL;
+#else
+    return gmtime_r(timer, result);
+#endif
+}
+
 /* Dilithium5 functions */
 extern int pqcrystals_dilithium5_ref_signature(uint8_t *sig, size_t *siglen,
                                                 const uint8_t *m, size_t mlen,
@@ -84,8 +93,12 @@ int dna_feed_get_votes_key(const char *post_id, char *key_out) {
 
 void dna_feed_get_today_date(char *date_out) {
     time_t now = time(NULL);
-    struct tm *tm_info = gmtime(&now);
-    strftime(date_out, 12, "%Y%m%d", tm_info);
+    struct tm tm_buf;
+    if (safe_gmtime(&now, &tm_buf)) {
+        strftime(date_out, 12, "%Y%m%d", &tm_buf);
+    } else {
+        strncpy(date_out, "00000000", 12);
+    }
 }
 
 int dna_feed_make_channel_id(const char *name, char *channel_id_out) {
@@ -137,15 +150,25 @@ static int channel_from_json(const char *json_str, dna_feed_channel_t **channel_
         return -1;
     }
 
+    /* v0.6.47: Add NULL checks - json_object_get_string() returns NULL on type mismatch (security fix) */
     json_object *j_val;
-    if (json_object_object_get_ex(root, "channel_id", &j_val))
-        strncpy(channel->channel_id, json_object_get_string(j_val), sizeof(channel->channel_id) - 1);
-    if (json_object_object_get_ex(root, "name", &j_val))
-        strncpy(channel->name, json_object_get_string(j_val), sizeof(channel->name) - 1);
-    if (json_object_object_get_ex(root, "description", &j_val))
-        strncpy(channel->description, json_object_get_string(j_val), sizeof(channel->description) - 1);
-    if (json_object_object_get_ex(root, "creator", &j_val))
-        strncpy(channel->creator_fingerprint, json_object_get_string(j_val), sizeof(channel->creator_fingerprint) - 1);
+    const char *str_val;
+    if (json_object_object_get_ex(root, "channel_id", &j_val)) {
+        str_val = json_object_get_string(j_val);
+        if (str_val) strncpy(channel->channel_id, str_val, sizeof(channel->channel_id) - 1);
+    }
+    if (json_object_object_get_ex(root, "name", &j_val)) {
+        str_val = json_object_get_string(j_val);
+        if (str_val) strncpy(channel->name, str_val, sizeof(channel->name) - 1);
+    }
+    if (json_object_object_get_ex(root, "description", &j_val)) {
+        str_val = json_object_get_string(j_val);
+        if (str_val) strncpy(channel->description, str_val, sizeof(channel->description) - 1);
+    }
+    if (json_object_object_get_ex(root, "creator", &j_val)) {
+        str_val = json_object_get_string(j_val);
+        if (str_val) strncpy(channel->creator_fingerprint, str_val, sizeof(channel->creator_fingerprint) - 1);
+    }
     if (json_object_object_get_ex(root, "created_at", &j_val))
         channel->created_at = json_object_get_int64(j_val);
     if (json_object_object_get_ex(root, "post_count", &j_val))

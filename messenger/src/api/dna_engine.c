@@ -127,6 +127,16 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dna_config.h"
 
 #define LOG_TAG "DNA_ENGINE"
+
+/* v0.6.47: Thread-safe gmtime wrapper (security fix) */
+static inline struct tm *safe_gmtime(const time_t *timer, struct tm *result) {
+#ifdef _WIN32
+    return (gmtime_s(result, timer) == 0) ? result : NULL;
+#else
+    return gmtime_r(timer, result);
+#endif
+}
+
 /* Use engine-specific error codes */
 #define DNA_OK 0
 
@@ -479,9 +489,15 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
             /* v0.6.8+: If Android reconnect callback is registered, let the service
              * handle listener recreation. This allows the foreground service to
              * create MINIMAL listeners instead of FULL listeners. */
-            if (g_android_reconnect_cb) {
+            /* v0.6.47: Copy callback under mutex to avoid race with setter (security fix) */
+            pthread_mutex_lock(&g_android_callback_mutex);
+            dna_android_reconnect_cb reconnect_cb = g_android_reconnect_cb;
+            void *reconnect_data = g_android_reconnect_data;
+            pthread_mutex_unlock(&g_android_callback_mutex);
+
+            if (reconnect_cb) {
                 QGP_LOG_INFO(LOG_TAG, "[LISTEN] Calling Android reconnect callback (service mode)");
-                g_android_reconnect_cb(g_android_reconnect_data);
+                reconnect_cb(reconnect_data);
             } else {
                 /* Default: spawn listener setup thread for FULL listeners */
                 /* v0.6.0+: Track thread for clean shutdown (no detach) */
@@ -8340,9 +8356,18 @@ const char* dna_engine_get_version(void) {
 /* Static buffers for current log config (loaded from <data_dir>/config) */
 static char g_log_level[16] = "WARN";
 static char g_log_tags[512] = "";
+/* v0.6.47: Mutex to protect concurrent access to log config buffers (security fix) */
+static pthread_mutex_t g_log_config_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 const char* dna_engine_get_log_level(void) {
-    return g_log_level;
+    /* v0.6.47: Use thread-local buffer to avoid race condition with setter.
+     * Returns stable pointer - safe for caller to use until next call from same thread. */
+    static _Thread_local char level_copy[16];
+    pthread_mutex_lock(&g_log_config_mutex);
+    strncpy(level_copy, g_log_level, sizeof(level_copy) - 1);
+    level_copy[sizeof(level_copy) - 1] = '\0';
+    pthread_mutex_unlock(&g_log_config_mutex);
+    return level_copy;
 }
 
 int dna_engine_set_log_level(const char *level) {
@@ -8355,9 +8380,11 @@ int dna_engine_set_log_level(const char *level) {
         return -1;
     }
 
-    /* Update in-memory config */
+    /* v0.6.47: Update in-memory config under mutex (security fix) */
+    pthread_mutex_lock(&g_log_config_mutex);
     strncpy(g_log_level, level, sizeof(g_log_level) - 1);
     g_log_level[sizeof(g_log_level) - 1] = '\0';
+    pthread_mutex_unlock(&g_log_config_mutex);
 
     /* Apply to log system */
     qgp_log_level_t log_level = QGP_LOG_LEVEL_WARN;
@@ -8378,15 +8405,24 @@ int dna_engine_set_log_level(const char *level) {
 }
 
 const char* dna_engine_get_log_tags(void) {
-    return g_log_tags;
+    /* v0.6.47: Use thread-local buffer to avoid race condition with setter.
+     * Returns stable pointer - safe for caller to use until next call from same thread. */
+    static _Thread_local char tags_copy[512];
+    pthread_mutex_lock(&g_log_config_mutex);
+    strncpy(tags_copy, g_log_tags, sizeof(tags_copy) - 1);
+    tags_copy[sizeof(tags_copy) - 1] = '\0';
+    pthread_mutex_unlock(&g_log_config_mutex);
+    return tags_copy;
 }
 
 int dna_engine_set_log_tags(const char *tags) {
     if (!tags) tags = "";
 
-    /* Update in-memory config */
+    /* v0.6.47: Update in-memory config under mutex (security fix) */
+    pthread_mutex_lock(&g_log_config_mutex);
     strncpy(g_log_tags, tags, sizeof(g_log_tags) - 1);
     g_log_tags[sizeof(g_log_tags) - 1] = '\0';
+    pthread_mutex_unlock(&g_log_config_mutex);
 
     /* Apply to log system */
     if (tags[0] == '\0') {
@@ -8626,15 +8662,20 @@ void dna_handle_get_feed_channels(dna_engine_t *engine, dna_task_t *task) {
                 channels[i].subscriber_count = registry->channels[i].subscriber_count;
                 channels[i].last_activity = registry->channels[i].last_activity;
 
-                /* Count posts from last 7 days */
+                /* Count posts from last 7 days - v0.6.47: Use thread-safe gmtime */
                 int post_count = 0;
                 time_t now = time(NULL);
                 for (int day = 0; day < 7; day++) {
                     time_t t = now - (day * 86400);
-                    struct tm *tm = gmtime(&t);
+                    struct tm tm_buf;
+                    struct tm *tm = safe_gmtime(&t, &tm_buf);
                     char date[12];
-                    snprintf(date, sizeof(date), "%04d%02d%02d",
-                             tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday);
+                    if (tm) {
+                        snprintf(date, sizeof(date), "%04d%02d%02d",
+                                 tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday);
+                    } else {
+                        strncpy(date, "00000000", sizeof(date));
+                    }
 
                     dna_feed_post_t *posts = NULL;
                     size_t count = 0;

@@ -185,46 +185,63 @@ static int message_from_json(json_object *root, dna_group_message_t *msg) {
 
     memset(msg, 0, sizeof(dna_group_message_t));
 
+    /* v0.6.47: Add NULL checks - json_object_get_string() returns NULL on type mismatch (security fix) */
     json_object *j_val;
-    if (json_object_object_get_ex(root, "message_id", &j_val))
-        strncpy(msg->message_id, json_object_get_string(j_val), sizeof(msg->message_id) - 1);
-    if (json_object_object_get_ex(root, "sender", &j_val))
-        strncpy(msg->sender_fingerprint, json_object_get_string(j_val), sizeof(msg->sender_fingerprint) - 1);
-    if (json_object_object_get_ex(root, "group", &j_val))
-        strncpy(msg->group_uuid, json_object_get_string(j_val), sizeof(msg->group_uuid) - 1);
+    const char *str_val;
+    if (json_object_object_get_ex(root, "message_id", &j_val)) {
+        str_val = json_object_get_string(j_val);
+        if (str_val) strncpy(msg->message_id, str_val, sizeof(msg->message_id) - 1);
+    }
+    if (json_object_object_get_ex(root, "sender", &j_val)) {
+        str_val = json_object_get_string(j_val);
+        if (str_val) strncpy(msg->sender_fingerprint, str_val, sizeof(msg->sender_fingerprint) - 1);
+    }
+    if (json_object_object_get_ex(root, "group", &j_val)) {
+        str_val = json_object_get_string(j_val);
+        if (str_val) strncpy(msg->group_uuid, str_val, sizeof(msg->group_uuid) - 1);
+    }
     if (json_object_object_get_ex(root, "timestamp_ms", &j_val))
         msg->timestamp_ms = json_object_get_int64(j_val);
     if (json_object_object_get_ex(root, "gsk_version", &j_val))
         msg->gek_version = (uint32_t)json_object_get_int(j_val);
 
-    /* Nonce (base64) */
+    /* Nonce (base64) - v0.6.47: Add NULL check (security fix) */
     if (json_object_object_get_ex(root, "nonce", &j_val)) {
-        size_t nonce_len = 0;
-        uint8_t *nonce = qgp_base64_decode(json_object_get_string(j_val), &nonce_len);
-        if (nonce && nonce_len == DNA_GROUP_OUTBOX_NONCE_SIZE) {
-            memcpy(msg->nonce, nonce, DNA_GROUP_OUTBOX_NONCE_SIZE);
+        str_val = json_object_get_string(j_val);
+        if (str_val) {
+            size_t nonce_len = 0;
+            uint8_t *nonce = qgp_base64_decode(str_val, &nonce_len);
+            if (nonce && nonce_len == DNA_GROUP_OUTBOX_NONCE_SIZE) {
+                memcpy(msg->nonce, nonce, DNA_GROUP_OUTBOX_NONCE_SIZE);
+            }
+            free(nonce);
         }
-        free(nonce);
     }
 
-    /* Ciphertext (base64) */
+    /* Ciphertext (base64) - v0.6.47: Add NULL check (security fix) */
     if (json_object_object_get_ex(root, "ciphertext", &j_val)) {
-        size_t ct_len = 0;
-        uint8_t *ct = qgp_base64_decode(json_object_get_string(j_val), &ct_len);
-        if (ct && ct_len > 0) {
-            msg->ciphertext = ct;
-            msg->ciphertext_len = ct_len;
+        str_val = json_object_get_string(j_val);
+        if (str_val) {
+            size_t ct_len = 0;
+            uint8_t *ct = qgp_base64_decode(str_val, &ct_len);
+            if (ct && ct_len > 0) {
+                msg->ciphertext = ct;
+                msg->ciphertext_len = ct_len;
+            }
         }
     }
 
-    /* Tag (base64) */
+    /* Tag (base64) - v0.6.47: Add NULL check (security fix) */
     if (json_object_object_get_ex(root, "tag", &j_val)) {
-        size_t tag_len = 0;
-        uint8_t *tag = qgp_base64_decode(json_object_get_string(j_val), &tag_len);
-        if (tag && tag_len == DNA_GROUP_OUTBOX_TAG_SIZE) {
-            memcpy(msg->tag, tag, DNA_GROUP_OUTBOX_TAG_SIZE);
+        str_val = json_object_get_string(j_val);
+        if (str_val) {
+            size_t tag_len = 0;
+            uint8_t *tag = qgp_base64_decode(str_val, &tag_len);
+            if (tag && tag_len == DNA_GROUP_OUTBOX_TAG_SIZE) {
+                memcpy(msg->tag, tag, DNA_GROUP_OUTBOX_TAG_SIZE);
+            }
+            free(tag);
         }
-        free(tag);
     }
 
     /* Signature (base64) */

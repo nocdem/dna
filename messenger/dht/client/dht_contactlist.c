@@ -162,13 +162,20 @@ static int deserialize_from_json(const char *json_str, char ***contacts_out, siz
     }
 
     // Extract contact strings
+    /* v0.6.47: Add NULL check - json_object_get_string() returns NULL on type mismatch (security fix) */
     for (size_t i = 0; i < count; i++) {
         json_object *contact_obj = json_object_array_get_idx(contacts_array, i);
         const char *contact_str = json_object_get_string(contact_obj);
         QGP_LOG_DEBUG(LOG_TAG, "JSON contact[%zu]: '%s' (len=%zu)\n",
                       i, contact_str ? contact_str : "(null)",
                       contact_str ? strlen(contact_str) : 0);
-        contacts[i] = strdup(contact_str);
+        if (!contact_str) {
+            // NULL string in array - skip or fail gracefully
+            QGP_LOG_WARN(LOG_TAG, "Skipping NULL contact string at index %zu\n", i);
+            contacts[i] = strdup("");  // Use empty string as placeholder
+        } else {
+            contacts[i] = strdup(contact_str);
+        }
         if (!contacts[i]) {
             // Cleanup on failure
             for (size_t j = 0; j < i; j++) {

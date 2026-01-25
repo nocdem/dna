@@ -29,14 +29,27 @@
 
 #define LOG_TAG "MSG_GROUPS"
 
+/* v0.6.47: Thread-safe localtime wrapper (security fix) */
+static inline struct tm *safe_localtime(const time_t *timer, struct tm *result) {
+#ifdef _WIN32
+    return (localtime_s(result, timer) == 0) ? result : NULL;
+#else
+    return localtime_r(timer, result);
+#endif
+}
+
 // Helper: Convert timestamp to string
 static char* timestamp_to_string(uint64_t timestamp) {
     char *str = malloc(32);
     if (!str) return NULL;
 
     time_t t = (time_t)timestamp;
-    struct tm *tm_info = localtime(&t);
-    strftime(str, 32, "%Y-%m-%d %H:%M:%S", tm_info);
+    struct tm tm_buf;
+    if (safe_localtime(&t, &tm_buf)) {
+        strftime(str, 32, "%Y-%m-%d %H:%M:%S", &tm_buf);
+    } else {
+        strncpy(str, "0000-00-00 00:00:00", 32);
+    }
     return str;
 }
 

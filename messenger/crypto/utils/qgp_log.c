@@ -29,6 +29,15 @@
 #include <dirent.h>
 #endif
 
+/* v0.6.47: Thread-safe localtime wrapper (security fix) */
+static inline struct tm *safe_localtime(const time_t *timer, struct tm *result) {
+#ifdef _WIN32
+    return (localtime_s(result, timer) == 0) ? result : NULL;
+#else
+    return localtime_r(timer, result);
+#endif
+}
+
 /* Maximum number of tags in filter list */
 #define QGP_LOG_MAX_TAGS 64
 #define QGP_LOG_MAX_TAG_LEN 32
@@ -386,13 +395,18 @@ int qgp_log_export_to_file(const char *filepath) {
             int idx = (start + i) % QGP_LOG_RING_SIZE;
             qgp_log_entry_t *entry = &g_ring_buffer[idx];
 
-            /* Format timestamp */
+            /* Format timestamp - v0.6.47: Use thread-safe localtime (security fix) */
             time_t secs = entry->timestamp_ms / 1000;
             int ms = entry->timestamp_ms % 1000;
-            struct tm *tm_info = localtime(&secs);
+            struct tm tm_buf;
+            struct tm *tm_info = safe_localtime(&secs, &tm_buf);
 
             char time_buf[32];
-            strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+            if (tm_info) {
+                strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+            } else {
+                strncpy(time_buf, "0000-00-00 00:00:00", sizeof(time_buf));
+            }
 
             /* Level string */
             const char *level_str;
@@ -449,11 +463,16 @@ static void build_log_paths(void) {
         return;
     }
 
-    /* Get current timestamp for filename */
+    /* Get current timestamp for filename - v0.6.47: Use thread-safe localtime */
     time_t now = time(NULL);
-    struct tm *tm_info = localtime(&now);
+    struct tm tm_buf;
+    struct tm *tm_info = safe_localtime(&now, &tm_buf);
     char timestamp[32];
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H-%M-%S", tm_info);
+    if (tm_info) {
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H-%M-%S", tm_info);
+    } else {
+        strncpy(timestamp, "unknown", sizeof(timestamp));
+    }
 
     /* Build logs directory path */
 #ifdef _WIN32
@@ -540,11 +559,16 @@ static void rotate_log_files(void) {
         g_log_file = NULL;
     }
 
-    /* Create new file with fresh timestamp */
+    /* Create new file with fresh timestamp - v0.6.47: Use thread-safe localtime */
     time_t now = time(NULL);
-    struct tm *tm_info = localtime(&now);
+    struct tm tm_buf;
+    struct tm *tm_info = safe_localtime(&now, &tm_buf);
     char timestamp[32];
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H-%M-%S", tm_info);
+    if (tm_info) {
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H-%M-%S", tm_info);
+    } else {
+        strncpy(timestamp, "unknown", sizeof(timestamp));
+    }
 
 #ifdef _WIN32
     snprintf(g_log_file_path, sizeof(g_log_file_path), "%s\\dna_%s.log", g_log_dir_path, timestamp);
@@ -603,11 +627,16 @@ static bool init_file_logging(void) {
 
     qgp_log_ring_add(QGP_LOG_LEVEL_INFO, "LOG", "File logging started: %s", g_log_file_path);
 
-    /* Write startup marker */
+    /* Write startup marker - v0.6.47: Use thread-safe localtime */
     time_t now = time(NULL);
-    struct tm *tm_info = localtime(&now);
+    struct tm tm_buf;
+    struct tm *tm_info = safe_localtime(&now, &tm_buf);
     char time_buf[32];
-    strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+    if (tm_info) {
+        strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+    } else {
+        strncpy(time_buf, "0000-00-00 00:00:00", sizeof(time_buf));
+    }
     fprintf(g_log_file, "\n=== DNA Messenger Log Started: %s ===\n", time_buf);
     fflush(g_log_file);
 
@@ -648,11 +677,16 @@ void qgp_log_file_set_options(int max_size_kb, int max_files) {
 void qgp_log_file_close(void) {
     pthread_mutex_lock(&g_file_mutex);
     if (g_log_file) {
-        /* Write shutdown marker */
+        /* Write shutdown marker - v0.6.47: Use thread-safe localtime */
         time_t now = time(NULL);
-        struct tm *tm_info = localtime(&now);
+        struct tm tm_buf;
+        struct tm *tm_info = safe_localtime(&now, &tm_buf);
         char time_buf[32];
-        strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+        if (tm_info) {
+            strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+        } else {
+            strncpy(time_buf, "0000-00-00 00:00:00", sizeof(time_buf));
+        }
         fprintf(g_log_file, "=== DNA Messenger Log Closed: %s ===\n\n", time_buf);
 
         fflush(g_log_file);
@@ -706,12 +740,17 @@ void qgp_log_file_write(qgp_log_level_t level, const char *tag, const char *fmt,
     timestamp_ms = (uint64_t)tv.tv_sec * 1000 + (uint64_t)tv.tv_usec / 1000;
 #endif
 
-    /* Format timestamp */
+    /* Format timestamp - v0.6.47: Use thread-safe localtime */
     time_t secs = (time_t)(timestamp_ms / 1000);
     int ms = (int)(timestamp_ms % 1000);
-    struct tm *tm_info = localtime(&secs);
+    struct tm tm_buf;
+    struct tm *tm_info = safe_localtime(&secs, &tm_buf);
     char time_buf[32];
-    strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+    if (tm_info) {
+        strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+    } else {
+        strncpy(time_buf, "0000-00-00 00:00:00", sizeof(time_buf));
+    }
 
     /* Level string */
     const char *level_str;

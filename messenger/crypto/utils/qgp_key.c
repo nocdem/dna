@@ -18,6 +18,15 @@
 
 #define LOG_TAG "KEY"
 
+/* v0.6.47: Thread-safe gmtime wrapper (security fix) */
+static inline struct tm *safe_gmtime(const time_t *timer, struct tm *result) {
+#ifdef _WIN32
+    return (gmtime_s(result, timer) == 0) ? result : NULL;
+#else
+    return gmtime_r(timer, result);
+#endif
+}
+
 // ============================================================================
 // KEY MEMORY MANAGEMENT
 // ============================================================================
@@ -700,9 +709,13 @@ int qgp_key_export_pubkey(const char *name, const char *key_dir, const char *out
     armor_headers[header_count++] = header_buf[3];
 
     time_t now = time(NULL);
-    struct tm *tm_info = gmtime(&now);
+    struct tm tm_buf;
     char time_str[64];
-    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S UTC", tm_info);
+    if (safe_gmtime(&now, &tm_buf)) {
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S UTC", &tm_buf);
+    } else {
+        strncpy(time_str, "0000-00-00 00:00:00 UTC", sizeof(time_str));
+    }
     snprintf(header_buf[4], sizeof(header_buf[4]), "Created: %s", time_str);
     armor_headers[header_count++] = header_buf[4];
 
