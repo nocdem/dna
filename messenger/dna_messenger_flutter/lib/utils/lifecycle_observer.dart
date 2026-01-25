@@ -118,12 +118,12 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Check if engine is paused (fast path) or needs full reload (slow path)
       if (engine.isPaused) {
         // FAST PATH: Resume paused engine (<500ms)
-        DnaLogger.log('LIFECYCLE', '[RESUME] Fast path: resuming paused engine');
+        log('LIFECYCLE', '[RESUME] Fast path: resuming paused engine');
 
         // Resume the engine (resubscribes listeners, resumes presence)
         final success = await engine.resume();
         if (!success) {
-          DnaLogger.error('LIFECYCLE', '[RESUME] Engine resume failed');
+          logError('LIFECYCLE', '[RESUME] Engine resume failed');
         }
 
         // Abort checkpoint
@@ -140,10 +140,10 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
         // Mark identity as ready (hides spinner)
         ref.read(identityReadyProvider.notifier).state = true;
 
-        DnaLogger.log('LIFECYCLE', '[RESUME] Fast resume complete');
-      } else if (!engine.isIdentityLoaded) {
+        log('LIFECYCLE', '[RESUME] Fast resume complete');
+      } else if (!engine.isIdentityLoaded()) {
         // SLOW PATH: Engine was destroyed (background timeout), need full reload
-        DnaLogger.log('LIFECYCLE', '[RESUME] Slow path: full identity reload');
+        log('LIFECYCLE', '[RESUME] Slow path: full identity reload');
 
         // Notify service FIRST so it releases its engine (Android only)
         if (Platform.isAndroid) {
@@ -174,10 +174,10 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
         // Resume Dart-side polling timers
         ref.read(eventHandlerProvider).resumePolling();
 
-        DnaLogger.log('LIFECYCLE', '[RESUME] Full reload complete');
+        log('LIFECYCLE', '[RESUME] Full reload complete');
       } else {
         // Engine is active and identity loaded - just resume polling
-        DnaLogger.log('LIFECYCLE', '[RESUME] Engine already active');
+        log('LIFECYCLE', '[RESUME] Engine already active');
         ref.read(eventHandlerProvider).resumePolling();
         ref.read(identityReadyProvider.notifier).state = true;
       }
@@ -187,7 +187,7 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
         _refreshContactProfiles(engine, myOpId);
       }
     } catch (e) {
-      DnaLogger.error('LIFECYCLE', '[RESUME] Error: $e');
+      logError('LIFECYCLE', '[RESUME] Error: $e');
     } finally {
       // Only reset state if we're still the current operation
       if (_operationId == myOpId) {
@@ -279,7 +279,7 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
       // v0.100.58+: PAUSE engine instead of destroying it
       // This suspends listeners but keeps DHT connection alive
-      DnaLogger.log('LIFECYCLE', '[PAUSE] Pausing engine (keeping DHT alive)');
+      log('LIFECYCLE', '[PAUSE] Pausing engine (keeping DHT alive)');
 
       // Detach event callback (events will be ignored while paused)
       engine.detachEventCallback();
@@ -287,9 +287,9 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Pause the engine (suspends listeners, pauses presence)
       final success = engine.pause();
       if (success) {
-        DnaLogger.log('LIFECYCLE', '[PAUSE] Engine paused successfully');
+        log('LIFECYCLE', '[PAUSE] Engine paused successfully');
       } else {
-        DnaLogger.error('LIFECYCLE', '[PAUSE] Engine pause failed');
+        logError('LIFECYCLE', '[PAUSE] Engine pause failed');
       }
 
       // Platform-specific pause handling
@@ -308,7 +308,7 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Engine stays alive for fast resume.
 
     } catch (e) {
-      DnaLogger.error('LIFECYCLE', '[PAUSE] Error: $e');
+      logError('LIFECYCLE', '[PAUSE] Error: $e');
     } finally {
       _lifecycleState = _LifecycleState.idle;
     }
@@ -316,7 +316,7 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
   /// Called when background timeout fires (app in background for 5+ minutes)
   void _onBackgroundTimeout() async {
-    DnaLogger.log('LIFECYCLE', '[TIMEOUT] Background timeout - destroying engine');
+    log('LIFECYCLE', '[TIMEOUT] Background timeout - destroying engine');
 
     try {
       final engine = ref.read(engineProvider).valueOrNull;
@@ -327,10 +327,10 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
         // Invalidate provider so next access creates fresh engine
         ref.invalidate(engineProvider);
 
-        DnaLogger.log('LIFECYCLE', '[TIMEOUT] Engine destroyed - service takes over');
+        log('LIFECYCLE', '[TIMEOUT] Engine destroyed - service takes over');
       }
     } catch (e) {
-      DnaLogger.error('LIFECYCLE', '[TIMEOUT] Error destroying engine: $e');
+      logError('LIFECYCLE', '[TIMEOUT] Error destroying engine: $e');
     }
   }
 
