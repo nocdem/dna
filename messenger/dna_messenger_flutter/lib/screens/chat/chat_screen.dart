@@ -60,9 +60,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     // Mark messages as read when chat opens
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _markMessagesAsRead();
-      _syncMessagesOnOpen(); // v0.6.6: Sync messages when opening chat
-      _startPresencePolling(); // v0.100.26: Poll presence for real-time updates
+      _markMessagesAsRead(); // DB only - fast, keep immediate
+
+      // Defer DHT operations to reduce lag on chat open
+      // Lets UI render first, then starts network calls
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (mounted) {
+          _checkOfflineMessagesSilent(); // With cooldown
+          _startPresencePolling(); // First poll will use cooldown
+        }
+      });
     });
   }
 
@@ -70,20 +77,31 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void _startPresencePolling() {
     _presenceTimer?.cancel();
     _presenceTimer = Timer.periodic(const Duration(minutes: 1), (_) {
-      _pollSelectedContactPresence();
+      // Timer-based polls bypass cooldown (timer IS the rate limiter)
+      _pollSelectedContactPresence(bypassCooldown: true);
     });
-    // Also poll immediately
+    // Also poll immediately (with cooldown to prevent duplicate lookups on rapid chat opens)
     _pollSelectedContactPresence();
   }
 
   /// Poll the selected contact's presence and update UI if changed
-  Future<void> _pollSelectedContactPresence() async {
+  /// Uses cooldown to prevent excessive DHT calls on rapid chat opens
+  Future<void> _pollSelectedContactPresence({bool bypassCooldown = false}) async {
     final contact = ref.read(selectedContactProvider);
     if (contact == null) return;
+
+    // Skip if looked up recently (unless bypassed by timer)
+    if (!bypassCooldown && !shouldLookupPresence(ref, contact.fingerprint)) {
+      log('CHAT', 'Skipping presence lookup (cooldown) for ${contact.fingerprint.substring(0, 16)}...');
+      return;
+    }
 
     try {
       final engine = await ref.read(engineProvider.future);
       final lastSeen = await engine.lookupPresence(contact.fingerprint);
+
+      // Record lookup time for cooldown
+      recordPresenceLookup(ref, contact.fingerprint);
 
       // Consider online if seen within the last 2 minutes
       final isOnline = DateTime.now().difference(lastSeen).inMinutes < 2;
@@ -109,25 +127,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
     } catch (e) {
       // Silently ignore - presence lookup can fail during network issues
-    }
-  }
-
-  /// v0.6.6: Sync old messages when opening a chat
-  /// Note: Listeners are now started on identity load (not lazy anymore)
-  Future<void> _syncMessagesOnOpen() async {
-    final contact = ref.read(selectedContactProvider);
-    if (contact == null) return;
-
-    final fingerprint = contact.fingerprint;
-
-    // Sync old messages for this contact (lazy sync on chat open)
-    try {
-      final engine = await ref.read(engineProvider.future);
-      log('CHAT', 'Syncing messages for ${fingerprint.substring(0, 16)}...');
-      await engine.checkOfflineMessagesFrom(fingerprint);
-      log('CHAT', 'Sync complete for ${fingerprint.substring(0, 16)}...');
-    } catch (e) {
-      logError('CHAT', 'Failed to sync messages: $e');
     }
   }
 

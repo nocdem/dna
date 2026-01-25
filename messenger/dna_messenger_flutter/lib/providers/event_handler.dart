@@ -30,6 +30,14 @@ final _lastOfflineFetchProvider = StateProvider<Map<String, DateTime>>(
 /// Cooldown duration for offline message checks
 const _offlineFetchCooldownSeconds = 30;
 
+/// Last presence lookup time per contact (fingerprint -> DateTime)
+final _lastPresenceLookupProvider = StateProvider<Map<String, DateTime>>(
+  (ref) => {},
+);
+
+/// Cooldown duration for presence lookups (per contact)
+const _presenceLookupCooldownSeconds = 60;
+
 /// Check if we should fetch offline messages for a contact
 /// Returns false if checked recently and DHT has been stable
 bool shouldFetchOfflineMessages(dynamic ref, String contactFingerprint) {
@@ -58,6 +66,33 @@ bool shouldFetchOfflineMessages(dynamic ref, String contactFingerprint) {
 /// Record that we fetched offline messages for a contact
 void recordOfflineFetch(dynamic ref, String contactFingerprint) {
   final notifier = ref.read(_lastOfflineFetchProvider.notifier);
+  notifier.state = <String, DateTime>{
+    ...notifier.state,
+    contactFingerprint: DateTime.now(),
+  };
+}
+
+/// Check if we should lookup presence for a contact
+/// Returns false if looked up recently (reduces DHT calls on chat open)
+bool shouldLookupPresence(dynamic ref, String contactFingerprint) {
+  final lastLookupTimes = ref.read(_lastPresenceLookupProvider);
+  final lastLookup = lastLookupTimes[contactFingerprint];
+
+  // Never looked up for this contact - always lookup
+  if (lastLookup == null) return true;
+
+  // Cooldown not passed - skip lookup
+  if (DateTime.now().difference(lastLookup).inSeconds <
+      _presenceLookupCooldownSeconds) {
+    return false;
+  }
+
+  return true;
+}
+
+/// Record that we looked up presence for a contact
+void recordPresenceLookup(dynamic ref, String contactFingerprint) {
+  final notifier = ref.read(_lastPresenceLookupProvider.notifier);
   notifier.state = <String, DateTime>{
     ...notifier.state,
     contactFingerprint: DateTime.now(),
