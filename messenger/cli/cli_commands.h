@@ -336,10 +336,10 @@ int cmd_group_sync(dna_engine_t *engine, const char *group_uuid);
  * the GEK and publishes it to DHT so members can fetch it.
  *
  * @param engine DNA engine instance
- * @param group_uuid Group UUID to publish GEK for
+ * @param name_or_uuid Group name or UUID to publish GEK for
  * @return 0 on success, negative on error
  */
-int cmd_group_publish_gek(dna_engine_t *engine, const char *group_uuid);
+int cmd_group_publish_gek(dna_engine_t *engine, const char *name_or_uuid);
 
 /**
  * Fetch GEK (Group Encryption Key) from DHT for a group

@@ -312,7 +312,7 @@ void cmd_help(void) {
     printf("  group-info <uuid>           Show group info and members\n");
     printf("  group-invite <uuid> <name|fp>  Invite member to group\n");
     printf("  group-sync <uuid>           Sync group from DHT to local cache\n");
-    printf("  group-publish-gek <uuid>    Publish GEK to DHT (owner only)\n");
+    printf("  group-publish-gek <name|uuid>  Publish GEK to DHT (owner only)\n");
     printf("\n");
 
     printf("WALLET:\n");
@@ -2095,13 +2095,20 @@ int cmd_group_sync(dna_engine_t *engine, const char *group_uuid) {
     return 0;
 }
 
-int cmd_group_publish_gek(dna_engine_t *engine, const char *group_uuid) {
-    if (!engine || !group_uuid) {
-        printf("Error: Missing group UUID\n");
+int cmd_group_publish_gek(dna_engine_t *engine, const char *name_or_uuid) {
+    if (!engine || !name_or_uuid) {
+        printf("Error: Missing group name or UUID\n");
         return -1;
     }
 
-    printf("Publishing GEK for group %s to DHT...\n", group_uuid);
+    /* Resolve name to UUID if needed */
+    char resolved_uuid[37];
+    if (resolve_group_identifier(engine, name_or_uuid, resolved_uuid) != 0) {
+        printf("Error: Group '%s' not found\n", name_or_uuid);
+        return -1;
+    }
+
+    printf("Publishing GEK for group %s to DHT...\n", resolved_uuid);
 
     /* Get the fingerprint from engine */
     const char *fingerprint = dna_engine_get_fingerprint(engine);
@@ -2124,7 +2131,7 @@ int cmd_group_publish_gek(dna_engine_t *engine, const char *group_uuid) {
         return -1;
     }
 
-    int ret = gek_rotate_on_member_add(dht_ctx, group_uuid, fingerprint);
+    int ret = gek_rotate_on_member_add(dht_ctx, resolved_uuid, fingerprint);
     if (ret != 0) {
         printf("Error: Failed to publish GEK\n");
         return -1;

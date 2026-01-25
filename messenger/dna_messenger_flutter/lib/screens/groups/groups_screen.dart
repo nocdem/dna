@@ -964,6 +964,15 @@ class _GroupInfoDialogState extends ConsumerState<_GroupInfoDialog> {
     final createdStr =
         '${info.createdAt.year}-${info.createdAt.month.toString().padLeft(2, '0')}-${info.createdAt.day.toString().padLeft(2, '0')}';
 
+    // Format GEK version as date (gekVersion is Unix timestamp in seconds)
+    String gekUpdateStr = 'Never';
+    if (info.gekVersion > 0) {
+      final gekDate = DateTime.fromMillisecondsSinceEpoch(info.gekVersion * 1000);
+      gekUpdateStr =
+          '${gekDate.year}-${gekDate.month.toString().padLeft(2, '0')}-${gekDate.day.toString().padLeft(2, '0')} '
+          '${gekDate.hour.toString().padLeft(2, '0')}:${gekDate.minute.toString().padLeft(2, '0')}';
+    }
+
     return SingleChildScrollView(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -986,11 +995,11 @@ class _GroupInfoDialogState extends ConsumerState<_GroupInfoDialog> {
           ),
           const Divider(height: 24),
 
-          // GEK Version
+          // Last Key Update (GEK version is timestamp-based)
           _InfoRow(
             icon: FontAwesomeIcons.key,
-            label: 'GEK Version',
-            value: 'v${info.gekVersion}',
+            label: 'Last Key Update',
+            value: gekUpdateStr,
           ),
           const Divider(height: 24),
 
