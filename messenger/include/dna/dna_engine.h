@@ -618,6 +618,8 @@ typedef enum {
     DNA_EVENT_OUTBOX_UPDATED,            /* Contact's outbox has new messages */
     DNA_EVENT_GROUP_MESSAGE_RECEIVED,    /* New group messages via DHT listen */
     DNA_EVENT_GROUPS_SYNCED,             /* Groups restored from DHT to local cache */
+    DNA_EVENT_CONTACTS_SYNCED,           /* Contacts restored from DHT to local cache */
+    DNA_EVENT_GEKS_SYNCED,               /* GEKs restored from DHT to local cache */
     DNA_EVENT_ERROR
 } dna_event_type_t;
 
@@ -665,6 +667,12 @@ typedef struct {
         struct {
             int groups_restored;            /* Number of groups restored from DHT */
         } groups_synced;
+        struct {
+            int contacts_synced;            /* Number of contacts synced from DHT */
+        } contacts_synced;
+        struct {
+            int geks_synced;                /* Number of GEKs synced from DHT (0=none, 1=success) */
+        } geks_synced;
         struct {
             int code;
             char message[256];

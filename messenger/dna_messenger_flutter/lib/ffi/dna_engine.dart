@@ -1090,6 +1090,18 @@ class GroupsSyncedEvent extends DnaEvent {
   GroupsSyncedEvent(this.groupsRestored);
 }
 
+/// Contacts synced from DHT event - triggered when contacts are restored on new device
+class ContactsSyncedEvent extends DnaEvent {
+  final int contactsSynced;
+  ContactsSyncedEvent(this.contactsSynced);
+}
+
+/// GEKs synced from DHT event - triggered when group encryption keys are restored
+class GeksSyncedEvent extends DnaEvent {
+  final int geksSynced;
+  GeksSyncedEvent(this.geksSynced);
+}
+
 // =============================================================================
 // EXCEPTIONS
 // =============================================================================
@@ -1394,6 +1406,22 @@ class DnaEngine {
             (event.data[2] << 16) |
             (event.data[3] << 24);
         dartEvent = GroupsSyncedEvent(groupsRestored);
+        break;
+      case DnaEventType.DNA_EVENT_CONTACTS_SYNCED:
+        // Parse contacts_synced (int32 at offset 0)
+        final contactsSynced = event.data[0] |
+            (event.data[1] << 8) |
+            (event.data[2] << 16) |
+            (event.data[3] << 24);
+        dartEvent = ContactsSyncedEvent(contactsSynced);
+        break;
+      case DnaEventType.DNA_EVENT_GEKS_SYNCED:
+        // Parse geks_synced (int32 at offset 0)
+        final geksSynced = event.data[0] |
+            (event.data[1] << 8) |
+            (event.data[2] << 16) |
+            (event.data[3] << 24);
+        dartEvent = GeksSyncedEvent(geksSynced);
         break;
       case DnaEventType.DNA_EVENT_ERROR:
         dartEvent = ErrorEvent(0, 'Error occurred');

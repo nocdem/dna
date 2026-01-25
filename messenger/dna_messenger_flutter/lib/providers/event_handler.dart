@@ -320,6 +320,21 @@ class EventHandler {
         }
         break;
 
+      case ContactsSyncedEvent(contactsSynced: final count):
+        // Contacts synced from DHT on new device - refresh contacts UI
+        print('[DART-HANDLER] ContactsSyncedEvent: $count contacts synced from DHT');
+        if (count > 0) {
+          _ref.read(contactsProvider.notifier).refresh();
+          _ref.invalidate(contactRequestsProvider);
+        }
+        break;
+
+      case GeksSyncedEvent(geksSynced: final count):
+        // GEKs synced from DHT - group messages can now be decrypted
+        // No UI refresh needed, just log for debugging
+        print('[DART-HANDLER] GeksSyncedEvent: GEKs synced from DHT (count=$count)');
+        break;
+
       case ErrorEvent(message: final errorMsg):
         // Store error for UI to display
         _ref.read(lastErrorProvider.notifier).state = errorMsg;

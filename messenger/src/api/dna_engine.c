@@ -399,7 +399,49 @@ static void *dna_engine_stabilization_retry_thread(void *arg) {
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
-    /* 1b. Restore groups from DHT to local cache (Android startup fix)
+    /* 1b. Sync contacts from DHT (restore on new device)
+     * v0.6.54+: Moved from blocking identity load to background thread.
+     * Local SQLite cache is shown immediately, DHT sync updates in background. */
+    if (engine->messenger) {
+        int sync_result = messenger_sync_contacts_from_dht(engine->messenger);
+        if (sync_result == 0) {
+            int contacts_count = contacts_db_count();
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: synced %d contacts from DHT", contacts_count);
+
+            /* Notify Flutter to refresh contacts UI */
+            dna_event_t event = {0};
+            event.type = DNA_EVENT_CONTACTS_SYNCED;
+            event.data.contacts_synced.contacts_synced = contacts_count;
+            dna_dispatch_event(engine, &event);
+        } else if (sync_result == -2) {
+            QGP_LOG_INFO(LOG_TAG, "[RETRY] Post-stabilization: no contact list in DHT (new identity or first device)");
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: contacts sync failed: %d", sync_result);
+        }
+    }
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+
+    /* 1c. Sync GEKs from DHT (restore group encryption keys on new device)
+     * v0.6.54+: Moved from blocking identity load to background thread. */
+    if (engine->messenger) {
+        int gek_sync_result = messenger_gek_auto_sync(engine->messenger);
+        if (gek_sync_result == 0) {
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: synced GEKs from DHT");
+
+            /* Notify Flutter that GEKs are ready */
+            dna_event_t event = {0};
+            event.type = DNA_EVENT_GEKS_SYNCED;
+            event.data.geks_synced.geks_synced = 1;
+            dna_dispatch_event(engine, &event);
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: GEK sync failed: %d (non-fatal)", gek_sync_result);
+        }
+    }
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+
+    /* 1d. Restore groups from DHT to local cache (Android startup fix)
      * On fresh startup, local SQLite cache is empty. Fetch group list from DHT
      * and sync each group to local cache so they appear in the UI. */
     if (engine->messenger) {
@@ -2297,28 +2339,9 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         QGP_LOG_INFO(LOG_TAG, "Minimal mode: skipping transport, presence, wallet init");
     }
 
-    /* Full mode only: Sync contacts from DHT (restore on new device)
-     * This must happen BEFORE subscribing to contacts for push notifications.
-     * If DHT has a newer contact list, it will be merged into local SQLite. */
-    if (!minimal_mode && engine->messenger) {
-        int sync_result = messenger_sync_contacts_from_dht(engine->messenger);
-        if (sync_result == 0) {
-            QGP_LOG_INFO(LOG_TAG, "Synced contacts from DHT");
-        } else if (sync_result == -2) {
-            QGP_LOG_INFO(LOG_TAG, "No contact list in DHT (new identity or first device)");
-        } else {
-            QGP_LOG_INFO(LOG_TAG, "Warning: Failed to sync contacts from DHT");
-        }
-
-        /* Sync GEKs from DHT (restore group encryption keys on new device)
-         * v0.6.49+: GEKs are synced like contacts for multi-device support */
-        int gek_sync_result = messenger_gek_auto_sync(engine->messenger);
-        if (gek_sync_result == 0) {
-            QGP_LOG_INFO(LOG_TAG, "Synced GEKs from DHT");
-        } else {
-            QGP_LOG_INFO(LOG_TAG, "Warning: Failed to sync GEKs from DHT (non-fatal)");
-        }
-    }
+    /* v0.6.54+: Contacts and GEKs are now synced in background after DHT stabilizes
+     * (in dna_engine_stabilization_retry_thread). This makes identity load non-blocking.
+     * Local SQLite cache is shown immediately, DHT sync happens in background. */
 
     /* Initialize P2P transport for DHT and messaging
      * - Full mode: includes presence registration + heartbeat
