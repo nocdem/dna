@@ -509,8 +509,11 @@ int messenger_send_message(
         }
 
         // Queue directly to DHT - no P2P attempt for messaging
-        // v15: seq_num=0 (ACK-based delivery, not watermark-based)
-        if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len, 0) == 0) {
+        // v0.6.45: Use message_id as seq_num for deduplication (fixes v0.6.33 bug)
+        // v15 (v0.6.33) incorrectly used seq_num=0 causing ALL subsequent messages to be
+        // detected as duplicates and silently skipped. Using unique message_id fixes this.
+        uint64_t seq_num = (uint64_t)message_ids[i];
+        if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len, seq_num) == 0) {
             dht_success++;
             // Update status to SENT (1) - DHT PUT succeeded, single tick in UI
             // Will become RECEIVED (2) via ACK confirmation -> double tick
