@@ -195,3 +195,6 @@ CLAUDE.md
 # Claude Code local files
 .claude/
 *.apk
+
+# Git worktrees
+.worktrees/
