@@ -194,7 +194,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 ```bash
 cd /opt/dna-messenger/build
 ./cli/dna-messenger-cli publish-version \
-    --lib 0.4.52 --app 0.99.117 --nodus 0.4.5 \
+    --lib 0.6.48 --app 0.100.57 --nodus 0.4.5 \
     --lib-min 0.3.50 --app-min 0.99.0 --nodus-min 0.4.0
 ```
 
@@ -627,7 +627,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 ```bash
 cd /opt/dna-messenger/build
 ./cli/dna-messenger-cli publish-version \
-    --lib 0.3.146 --app 0.99.96 --nodus 0.4.3 \
+    --lib 0.6.48 --app 0.100.57 --nodus 0.4.5 \
     --lib-min 0.3.50 --app-min 0.99.0 --nodus-min 0.4.0
 ```
 
