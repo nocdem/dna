@@ -294,7 +294,12 @@ class EventHandler {
         final openGroupUuid = _ref.read(openGroupUuidProvider);
         final isGroupChatOpen = openGroupUuid == uuid;
 
+        // Debug logging for group badge issue investigation
+        final engineForLog = _ref.read(engineProvider).valueOrNull;
+        engineForLog?.debugLog('EVENT', 'GROUP_MESSAGE_RECEIVED: uuid=${uuid.length > 8 ? uuid.substring(0, 8) : uuid}..., count=$count, openGroupUuid=${openGroupUuid ?? "null"}, isGroupChatOpen=$isGroupChatOpen');
+
         _ref.read(engineProvider).whenData((engine) async {
+          engine.debugLog('EVENT', 'GROUP_MESSAGE_RECEIVED: whenData callback started for ${uuid.length > 8 ? uuid.substring(0, 8) : uuid}');
           // Sync messages from DHT to local DB (runs on worker thread, not DHT callback thread)
           await engine.syncGroupByUuid(uuid);
           // Now refresh the conversation from local DB
@@ -307,6 +312,9 @@ class EventHandler {
           // Increment unread count if chat is not open
           if (!isGroupChatOpen && count > 0) {
             _ref.read(groupUnreadCountsProvider.notifier).incrementCount(uuid, count);
+            engine.debugLog('EVENT', 'GROUP_MESSAGE_RECEIVED: Incremented unread count for ${uuid.length > 8 ? uuid.substring(0, 8) : uuid} by $count');
+          } else {
+            engine.debugLog('EVENT', 'GROUP_MESSAGE_RECEIVED: Skipped unread increment (isGroupChatOpen=$isGroupChatOpen, count=$count)');
           }
         });
         break;
