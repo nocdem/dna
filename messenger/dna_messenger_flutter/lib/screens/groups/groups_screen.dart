@@ -555,12 +555,10 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
   void initState() {
     super.initState();
     // Mark this group chat as open (prevents unread count increment while viewing)
+    // IMPORTANT: Check mounted to avoid race condition with dispose()
     Future.microtask(() {
+      if (!mounted) return;  // Widget disposed before microtask ran
       ref.read(openGroupUuidProvider.notifier).state = widget.group.uuid;
-      // Debug logging
-      ref.read(engineProvider).whenData((engine) {
-        engine.debugLog('GROUP_CHAT', 'OPENED: uuid=${widget.group.uuid.substring(0, 8)}...');
-      });
     });
     // Async GEK sync - fire and forget (don't block UI)
     // This ensures we have the latest GEK from DHT for decrypting new messages
@@ -585,18 +583,11 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
 
   @override
   void dispose() {
-    // Mark group chat as closed - wrapped in try-catch because ref may be
-    // invalid if widget was disposed during rapid navigation
-    final uuid = widget.group.uuid;
+    // Mark group chat as closed
     try {
-      // Debug logging BEFORE clearing
-      ref.read(engineProvider).whenData((engine) {
-        engine.debugLog('GROUP_CHAT', 'CLOSING: uuid=${uuid.substring(0, 8)}..., clearing openGroupUuidProvider');
-      });
       ref.read(openGroupUuidProvider.notifier).state = null;
-    } catch (e) {
-      // Log the error instead of silently swallowing
-      print('[GROUP_CHAT] dispose() failed to clear openGroupUuidProvider: $e');
+    } catch (_) {
+      // Widget already fully disposed, state cleanup not needed
     }
     _messageController.dispose();
     _scrollController.dispose();
