@@ -174,6 +174,8 @@ if(BUILD_SHARED_LIB)
         dna_api.c
         # Unified Engine API (Core/GUI separation)
         src/api/dna_engine.c
+        # Modular engine components
+        src/api/engine/dna_engine_feed.c
         # Modular messenger components
         messenger/identity.c
         messenger/init.c
@@ -233,6 +235,8 @@ else()
         dna_api.c
         # Unified Engine API (Core/GUI separation)
         src/api/dna_engine.c
+        # Modular engine components
+        src/api/engine/dna_engine_feed.c
         # Modular messenger components
         messenger/identity.c
         messenger/init.c
