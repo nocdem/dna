@@ -247,3 +247,148 @@ void dna_handle_get_registered_name(dna_engine_t *engine, dna_task_t *task) {
         task->callback.display_name(task->request_id, error, name, task->user_data);
     }
 }
+
+/* ============================================================================
+ * P2P & PRESENCE PUBLIC API WRAPPERS
+ * ============================================================================ */
+
+dna_request_id_t dna_engine_refresh_presence(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_REFRESH_PRESENCE, NULL, cb, user_data);
+}
+
+bool dna_engine_is_peer_online(dna_engine_t *engine, const char *fingerprint) {
+    if (!engine || !fingerprint || !engine->messenger) {
+        return false;
+    }
+
+    return messenger_transport_peer_online(engine->messenger, fingerprint);
+}
+
+dna_request_id_t dna_engine_lookup_presence(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_presence_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params;
+    memset(&params, 0, sizeof(params));
+    snprintf(params.lookup_presence.fingerprint, sizeof(params.lookup_presence.fingerprint),
+             "%s", fingerprint);
+
+    dna_task_callback_t cb = { .presence = callback };
+    return dna_submit_task(engine, TASK_LOOKUP_PRESENCE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_sync_contacts_to_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SYNC_CONTACTS_TO_DHT, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_sync_contacts_from_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SYNC_CONTACTS_FROM_DHT, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_sync_groups(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SYNC_GROUPS, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_sync_groups_to_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SYNC_GROUPS_TO_DHT, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_restore_groups_from_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_RESTORE_GROUPS_FROM_DHT, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_sync_group_by_uuid(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+    if (strlen(group_uuid) != 36) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params;
+    memset(&params, 0, sizeof(params));
+    snprintf(params.sync_group_by_uuid.group_uuid,
+             sizeof(params.sync_group_by_uuid.group_uuid),
+             "%s", group_uuid);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SYNC_GROUP_BY_UUID, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_registered_name(
+    dna_engine_t *engine,
+    dna_display_name_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .display_name = callback };
+    return dna_submit_task(engine, TASK_GET_REGISTERED_NAME, NULL, cb, user_data);
+}

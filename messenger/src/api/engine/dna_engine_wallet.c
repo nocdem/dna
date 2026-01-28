@@ -890,3 +890,103 @@ done:
     if (resp) cellframe_rpc_response_free(resp);
     task->callback.transactions(task->request_id, error, transactions, count, task->user_data);
 }
+
+/* ============================================================================
+ * WALLET PUBLIC API WRAPPERS
+ * ============================================================================ */
+
+dna_request_id_t dna_engine_list_wallets(
+    dna_engine_t *engine,
+    dna_wallets_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = { .wallets = callback };
+    return dna_submit_task(engine, TASK_LIST_WALLETS, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_balances(
+    dna_engine_t *engine,
+    int wallet_index,
+    dna_balances_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback || wallet_index < 0) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    params.get_balances.wallet_index = wallet_index;
+
+    dna_task_callback_t cb = { .balances = callback };
+    return dna_submit_task(engine, TASK_GET_BALANCES, &params, cb, user_data);
+}
+
+int dna_engine_estimate_eth_gas(int gas_speed, dna_gas_estimate_t *estimate_out) {
+    if (!estimate_out) return -1;
+    if (gas_speed < 0 || gas_speed > 2) gas_speed = 1;
+
+    blockchain_gas_estimate_t bc_estimate;
+    if (blockchain_estimate_eth_gas(gas_speed, &bc_estimate) != 0) {
+        return -1;
+    }
+
+    /* Copy to public struct */
+    strncpy(estimate_out->fee_eth, bc_estimate.fee_eth, sizeof(estimate_out->fee_eth) - 1);
+    estimate_out->gas_price = bc_estimate.gas_price;
+    estimate_out->gas_limit = bc_estimate.gas_limit;
+
+    return 0;
+}
+
+dna_request_id_t dna_engine_send_tokens(
+    dna_engine_t *engine,
+    int wallet_index,
+    const char *recipient_address,
+    const char *amount,
+    const char *token,
+    const char *network,
+    int gas_speed,
+    dna_send_tokens_cb callback,
+    void *user_data
+) {
+    QGP_LOG_INFO(LOG_TAG, "send_tokens: wallet=%d to=%s amount=%s token=%s network=%s gas=%d",
+            wallet_index, recipient_address ? recipient_address : "NULL",
+            amount ? amount : "NULL", token ? token : "NULL",
+            network ? network : "NULL", gas_speed);
+
+    if (!engine || !recipient_address || !amount || !token || !network || !callback) {
+        QGP_LOG_ERROR(LOG_TAG, "send_tokens: invalid params");
+        return DNA_REQUEST_ID_INVALID;
+    }
+    if (wallet_index < 0) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    params.send_tokens.wallet_index = wallet_index;
+    strncpy(params.send_tokens.recipient, recipient_address, sizeof(params.send_tokens.recipient) - 1);
+    strncpy(params.send_tokens.amount, amount, sizeof(params.send_tokens.amount) - 1);
+    strncpy(params.send_tokens.token, token, sizeof(params.send_tokens.token) - 1);
+    strncpy(params.send_tokens.network, network, sizeof(params.send_tokens.network) - 1);
+    params.send_tokens.gas_speed = gas_speed;
+
+    dna_task_callback_t cb = { .send_tokens = callback };
+    return dna_submit_task(engine, TASK_SEND_TOKENS, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_transactions(
+    dna_engine_t *engine,
+    int wallet_index,
+    const char *network,
+    dna_transactions_cb callback,
+    void *user_data
+) {
+    if (!engine || !network || !callback || wallet_index < 0) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    params.get_transactions.wallet_index = wallet_index;
+    strncpy(params.get_transactions.network, network, sizeof(params.get_transactions.network) - 1);
+
+    dna_task_callback_t cb = { .transactions = callback };
+    return dna_submit_task(engine, TASK_GET_TRANSACTIONS, &params, cb, user_data);
+}
