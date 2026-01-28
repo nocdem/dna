@@ -184,6 +184,17 @@ void dna_handle_get_feed_posts(dna_engine_t *engine, dna_task_t *task) {
                 strncpy(out_posts[i].channel_id, posts[i].channel_id, 64);
                 strncpy(out_posts[i].author_fingerprint, posts[i].author_fingerprint, 128);
                 out_posts[i].text = strdup(posts[i].text);
+                if (!out_posts[i].text) {
+                    /* strdup failed - free already allocated and return error */
+                    for (size_t j = 0; j < i; j++) {
+                        free(out_posts[j].text);
+                    }
+                    free(out_posts);
+                    free(posts);
+                    task->callback.feed_posts(task->request_id, DNA_ERROR_INTERNAL,
+                                              NULL, 0, task->user_data);
+                    return;
+                }
                 out_posts[i].timestamp = posts[i].timestamp;
                 out_posts[i].updated = posts[i].updated;
 
@@ -246,16 +257,25 @@ void dna_handle_create_feed_post(dna_engine_t *engine, dna_task_t *task) {
             strncpy(post->channel_id, new_post->channel_id, 64);
             strncpy(post->author_fingerprint, new_post->author_fingerprint, 128);
             post->text = strdup(new_post->text);
-            post->timestamp = new_post->timestamp;
-            post->updated = new_post->updated;
-            post->comment_count = new_post->comment_count;
-            post->upvotes = 0;
-            post->downvotes = 0;
-            post->user_vote = 0;
-            post->verified = true;
+            if (!post->text) {
+                free(post);
+                post = NULL;
+            } else {
+                post->timestamp = new_post->timestamp;
+                post->updated = new_post->updated;
+                post->comment_count = new_post->comment_count;
+                post->upvotes = 0;
+                post->downvotes = 0;
+                post->user_vote = 0;
+                post->verified = true;
+            }
         }
         dna_feed_post_free(new_post);
-        task->callback.feed_post(task->request_id, DNA_OK, post, task->user_data);
+        if (post) {
+            task->callback.feed_post(task->request_id, DNA_OK, post, task->user_data);
+        } else {
+            task->callback.feed_post(task->request_id, DNA_ERROR_INTERNAL, NULL, task->user_data);
+        }
     } else {
         task->callback.feed_post(task->request_id, DNA_ERROR_INTERNAL,
                                  NULL, task->user_data);
@@ -289,14 +309,23 @@ void dna_handle_add_feed_comment(dna_engine_t *engine, dna_task_t *task) {
             strncpy(comment->post_id, new_comment->post_id, 199);
             strncpy(comment->author_fingerprint, new_comment->author_fingerprint, 128);
             comment->text = strdup(new_comment->text);
-            comment->timestamp = new_comment->timestamp;
-            comment->upvotes = 0;
-            comment->downvotes = 0;
-            comment->user_vote = 0;
-            comment->verified = true;
+            if (!comment->text) {
+                free(comment);
+                comment = NULL;
+            } else {
+                comment->timestamp = new_comment->timestamp;
+                comment->upvotes = 0;
+                comment->downvotes = 0;
+                comment->user_vote = 0;
+                comment->verified = true;
+            }
         }
         dna_feed_comment_free(new_comment);
-        task->callback.feed_comment(task->request_id, DNA_OK, comment, task->user_data);
+        if (comment) {
+            task->callback.feed_comment(task->request_id, DNA_OK, comment, task->user_data);
+        } else {
+            task->callback.feed_comment(task->request_id, DNA_ERROR_INTERNAL, NULL, task->user_data);
+        }
     } else {
         task->callback.feed_comment(task->request_id, DNA_ERROR_INTERNAL,
                                     NULL, task->user_data);
@@ -324,6 +353,17 @@ void dna_handle_get_feed_comments(dna_engine_t *engine, dna_task_t *task) {
                 strncpy(out_comments[i].post_id, comments[i].post_id, 199);
                 strncpy(out_comments[i].author_fingerprint, comments[i].author_fingerprint, 128);
                 out_comments[i].text = strdup(comments[i].text);
+                if (!out_comments[i].text) {
+                    /* strdup failed - free already allocated and return error */
+                    for (size_t j = 0; j < i; j++) {
+                        free(out_comments[j].text);
+                    }
+                    free(out_comments);
+                    dna_feed_comments_free(comments, count);
+                    task->callback.feed_comments(task->request_id, DNA_ERROR_INTERNAL,
+                                                 NULL, 0, task->user_data);
+                    return;
+                }
                 out_comments[i].timestamp = comments[i].timestamp;
                 out_comments[i].upvotes = comments[i].upvotes;
                 out_comments[i].downvotes = comments[i].downvotes;
