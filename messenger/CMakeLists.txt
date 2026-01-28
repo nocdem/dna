@@ -180,6 +180,7 @@ if(BUILD_SHARED_LIB)
         src/api/engine/dna_engine_wallet.c
         src/api/engine/dna_engine_groups.c
         src/api/engine/dna_engine_messaging.c
+        src/api/engine/dna_engine_contacts.c
         # Modular messenger components
         messenger/identity.c
         messenger/init.c
@@ -245,6 +246,7 @@ else()
         src/api/engine/dna_engine_wallet.c
         src/api/engine/dna_engine_groups.c
         src/api/engine/dna_engine_messaging.c
+        src/api/engine/dna_engine_contacts.c
         # Modular messenger components
         messenger/identity.c
         messenger/init.c
