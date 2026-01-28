@@ -177,6 +177,7 @@ if(BUILD_SHARED_LIB)
         # Modular engine components
         src/api/engine/dna_engine_feed.c
         src/api/engine/dna_engine_p2p.c
+        src/api/engine/dna_engine_wallet.c
         # Modular messenger components
         messenger/identity.c
         messenger/init.c
@@ -239,6 +240,7 @@ else()
         # Modular engine components
         src/api/engine/dna_engine_feed.c
         src/api/engine/dna_engine_p2p.c
+        src/api/engine/dna_engine_wallet.c
         # Modular messenger components
         messenger/identity.c
         messenger/init.c
