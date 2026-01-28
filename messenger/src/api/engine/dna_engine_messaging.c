@@ -141,7 +141,7 @@ void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
             if (msg_infos[i].timestamp) {
                 struct tm tm = {0};
                 if (strptime(msg_infos[i].timestamp, "%Y-%m-%d %H:%M:%S", &tm) != NULL) {
-                    messages[i].timestamp = (uint64_t)mktime(&tm);
+                    messages[i].timestamp = (uint64_t)safe_timegm(&tm);
                 } else {
                     messages[i].timestamp = (uint64_t)time(NULL);
                 }
@@ -235,7 +235,7 @@ void dna_handle_get_conversation_page(dna_engine_t *engine, dna_task_t *task) {
             if (msg_infos[i].timestamp) {
                 struct tm tm = {0};
                 if (strptime(msg_infos[i].timestamp, "%Y-%m-%d %H:%M:%S", &tm) != NULL) {
-                    messages[i].timestamp = (uint64_t)mktime(&tm);
+                    messages[i].timestamp = (uint64_t)safe_timegm(&tm);
                 } else {
                     messages[i].timestamp = (uint64_t)time(NULL);
                 }

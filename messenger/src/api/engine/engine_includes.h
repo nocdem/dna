@@ -9,6 +9,7 @@
 #define DNA_ENGINE_INCLUDES_H
 
 #define _XOPEN_SOURCE 700  /* For strptime */
+#define _DEFAULT_SOURCE    /* For timegm (BSD extension) */
 
 /* Standard library includes (all platforms) */
 #include <stdlib.h>
@@ -157,6 +158,17 @@ static inline struct tm *safe_gmtime(const time_t *timer, struct tm *result) {
     return (gmtime_s(result, timer) == 0) ? result : NULL;
 #else
     return gmtime_r(timer, result);
+#endif
+}
+
+/* v0.6.62: Cross-platform timegm wrapper for UTC timestamp parsing
+ * timegm() interprets struct tm as UTC, unlike mktime() which uses local time.
+ * Windows equivalent is _mkgmtime(). */
+static inline time_t safe_timegm(struct tm *tm) {
+#ifdef _WIN32
+    return _mkgmtime(tm);
+#else
+    return timegm(tm);
 #endif
 }
 
