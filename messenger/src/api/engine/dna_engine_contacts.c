@@ -21,6 +21,9 @@
 #define DNA_ENGINE_CONTACTS_IMPL
 #include "engine_includes.h"
 
+/* Message used for reciprocal contact request auto-approval */
+#define CONTACT_ACCEPTED_MSG "Contact request accepted"
+
 /* ============================================================================
  * CONTACTS TASK HANDLERS
  * ============================================================================ */
@@ -404,7 +407,7 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
 
                 /* Auto-approve reciprocal requests (they accepted our request) */
                 if (dht_requests[i].message[0] &&
-                    strcmp(dht_requests[i].message, "Contact request accepted") == 0) {
+                    strcmp(dht_requests[i].message, CONTACT_ACCEPTED_MSG) == 0) {
                     QGP_LOG_INFO(LOG_TAG, "Auto-approving reciprocal request from %.20s...",
                                  dht_requests[i].sender_fingerprint);
                     /* Add directly as contact (notes = display name) */
@@ -554,7 +557,7 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
                 privkey->public_key,
                 privkey->private_key,
                 task->params.contact_request.fingerprint,
-                "Contact request accepted"
+                CONTACT_ACCEPTED_MSG
             );
             qgp_key_free(privkey);
         }
