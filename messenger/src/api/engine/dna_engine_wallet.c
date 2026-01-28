@@ -632,7 +632,13 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
                             *end-- = '\0';
                         }
                         if (end == dot) {
-                            strcpy(dot, ".0");
+                            /* Bounds-checked: ensure space for ".0\0" (3 bytes) */
+                            size_t remaining = sizeof(transactions[i].amount) - (size_t)(dot - transactions[i].amount);
+                            if (remaining >= 3) {
+                                dot[0] = '.';
+                                dot[1] = '0';
+                                dot[2] = '\0';
+                            }
                         }
                     }
                 } else {
