@@ -71,9 +71,9 @@ void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task) {
         }
 
         for (int i = 0; i < entry_count; i++) {
-            strncpy(groups[i].uuid, entries[i].group_uuid, 36);
+            strncpy(groups[i].uuid, entries[i].group_uuid, sizeof(groups[i].uuid) - 1);
             strncpy(groups[i].name, entries[i].name, sizeof(groups[i].name) - 1);
-            strncpy(groups[i].creator, entries[i].creator, 128);
+            strncpy(groups[i].creator, entries[i].creator, sizeof(groups[i].creator) - 1);
             groups[i].created_at = entries[i].created_at;
 
             /* Get member count from dht_group_members table */
@@ -124,9 +124,9 @@ void dna_handle_get_group_info(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    strncpy(info->uuid, cache_entry->group_uuid, 36);
+    strncpy(info->uuid, cache_entry->group_uuid, sizeof(info->uuid) - 1);
     strncpy(info->name, cache_entry->name, sizeof(info->name) - 1);
-    strncpy(info->creator, cache_entry->creator, 128);
+    strncpy(info->creator, cache_entry->creator, sizeof(info->creator) - 1);
     info->created_at = cache_entry->created_at;
 
     /* Check if current user is the owner */
@@ -434,32 +434,29 @@ done:
 void dna_handle_accept_invitation(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
 
-    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: START group=%s <<<", task->params.invitation.group_uuid);
+    QGP_LOG_DEBUG(LOG_TAG, "Accept invitation: group=%s", task->params.invitation.group_uuid);
 
     if (!engine->identity_loaded || !engine->messenger) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
         goto done;
     }
 
-    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: Calling messenger <<<");
     int rc = messenger_accept_group_invitation(
         engine->messenger,
         task->params.invitation.group_uuid
     );
-    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: messenger returned %d <<<", rc);
 
     if (rc != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Accept invitation failed: group=%s, rc=%d",
+                     task->params.invitation.group_uuid, rc);
         error = DNA_ENGINE_ERROR_NETWORK;
     } else {
         /* Subscribe to the newly accepted group for real-time messages */
-        QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: Subscribing to groups <<<");
         dna_engine_subscribe_all_groups(engine);
     }
 
 done:
-    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: callback error=%d <<<", error);
     task->callback.completion(task->request_id, error, task->user_data);
-    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT: DONE <<<");
 }
 
 void dna_handle_reject_invitation(dna_engine_t *engine, dna_task_t *task) {
