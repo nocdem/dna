@@ -974,6 +974,21 @@ The content hash enables **smart sync optimization**:
 - Same data = same hash, regardless of compression timing
 - 32 bytes is compact yet collision-resistant
 
+#### DHT Version Consistency (v0.6.76+)
+
+**Problem**: When publishing multi-chunk data, chunks are written sequentially (1, 2, ..., N-1, 0). Different DHT nodes may cache different versions of chunks. A fetch may retrieve chunk 0 from version 2 but chunk 1 from version 1, mixing ZSTD compressed streams and causing decompression failures.
+
+**Solution**: Content hash verification after successful ZSTD decompression:
+1. Decompress reassembled chunks
+2. Compute SHA3-256 of decompressed data
+3. Compare with content hash from chunk 0 header
+4. If mismatch → return `DHT_CHUNK_ERR_HASH_MISMATCH`
+
+**Caller handling**:
+- On `DHT_CHUNK_ERR_HASH_MISMATCH`, retry the fetch after a brief delay (e.g., 1 second)
+- DHT nodes eventually sync to consistent versions
+- Up to 2 retries is typically sufficient
+
 #### Backward Compatibility
 
 | Client | Reading v1 | Reading v2 | Writing |
@@ -1014,6 +1029,24 @@ int dht_chunked_fetch_batch(dht_context_t *ctx, const char **base_keys,
 | `DHT_CHUNK_HEADER_SIZE_V2` | 57 | v2 chunk 0 header size |
 | `DHT_CHUNK_HASH_SIZE` | 32 | SHA3-256 output size |
 | `DHT_CHUNK_DATA_SIZE` | 44975 | Payload per chunk |
+
+#### Error Codes (`dht_chunk_error_t`)
+
+| Code | Value | Description |
+|------|-------|-------------|
+| `DHT_CHUNK_OK` | 0 | Success |
+| `DHT_CHUNK_ERR_NULL_PARAM` | -1 | NULL parameter |
+| `DHT_CHUNK_ERR_COMPRESS` | -2 | Compression failed |
+| `DHT_CHUNK_ERR_DECOMPRESS` | -3 | Decompression failed |
+| `DHT_CHUNK_ERR_DHT_PUT` | -4 | DHT put failed |
+| `DHT_CHUNK_ERR_DHT_GET` | -5 | DHT get failed |
+| `DHT_CHUNK_ERR_INVALID_FORMAT` | -6 | Invalid chunk format |
+| `DHT_CHUNK_ERR_CHECKSUM` | -7 | CRC32 checksum mismatch |
+| `DHT_CHUNK_ERR_INCOMPLETE` | -8 | Missing chunks |
+| `DHT_CHUNK_ERR_TIMEOUT` | -9 | Fetch timeout |
+| `DHT_CHUNK_ERR_ALLOC` | -10 | Memory allocation failed |
+| `DHT_CHUNK_ERR_NOT_CONNECTED` | -11 | DHT not connected |
+| `DHT_CHUNK_ERR_HASH_MISMATCH` | -12 | Content hash mismatch (DHT version inconsistency - caller should retry) |
 
 ---
 

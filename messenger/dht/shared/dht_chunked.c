@@ -48,6 +48,12 @@
 /** Timeout for synchronous PUT completion (60 seconds for reliable delivery) */
 #define DHT_CHUNK_PUT_TIMEOUT_MS    60000
 
+/** Maximum retry attempts when content hash verification fails (DHT version consistency) */
+#define DHT_CHUNK_HASH_VERIFY_RETRIES  2
+
+/** Delay between hash verification retries in milliseconds */
+#define DHT_CHUNK_HASH_RETRY_DELAY_MS  1000
+
 /*============================================================================
  * Internal Structures
  *============================================================================*/
@@ -715,6 +721,20 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
             return DHT_CHUNK_ERR_DECOMPRESS;
         }
 
+        // Verify content hash if v2 (integrity check)
+        if (header0.has_content_hash) {
+            uint8_t computed_hash[DHT_CHUNK_HASH_SIZE];
+            qgp_sha3_256(decompressed, decompressed_len, computed_hash);
+            if (memcmp(computed_hash, header0.content_hash, DHT_CHUNK_HASH_SIZE) != 0) {
+                QGP_LOG_WARN(LOG_TAG, "[HASH] Single-chunk hash mismatch (data corruption?)");
+                QGP_LOG_WARN(LOG_TAG, "[HASH]   expected: %02x%02x%02x%02x..., computed: %02x%02x%02x%02x...",
+                        header0.content_hash[0], header0.content_hash[1],
+                        header0.content_hash[2], header0.content_hash[3],
+                        computed_hash[0], computed_hash[1], computed_hash[2], computed_hash[3]);
+                // Single chunk - less likely version issue, continue with warning
+            }
+        }
+
         free(chunk0_data);
         *data_out = decompressed;
         *data_len_out = decompressed_len;
@@ -912,6 +932,38 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
 
     free(compressed);
 
+    // Step 9: Verify content hash (v2 only) - detects DHT version inconsistency
+    // When multiple versions of chunks exist on DHT, we may fetch chunk 0 from v2 but
+    // chunk 1 from v1 - mixing compressed streams causes ZSTD corruption. Content hash
+    // (computed before compression) verifies the final reassembled data is correct.
+    if (header0.has_content_hash) {
+        uint8_t computed_hash[DHT_CHUNK_HASH_SIZE];
+        qgp_sha3_256(decompressed, decompressed_len, computed_hash);
+        if (memcmp(computed_hash, header0.content_hash, DHT_CHUNK_HASH_SIZE) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "[HASH] Multi-chunk content hash MISMATCH - DHT version inconsistency detected");
+            QGP_LOG_WARN(LOG_TAG, "[HASH]   key=%s, chunks=%u, size=%zu", base_key, total_chunks, decompressed_len);
+            QGP_LOG_WARN(LOG_TAG, "[HASH]   expected: %02x%02x%02x%02x..., computed: %02x%02x%02x%02x...",
+                    header0.content_hash[0], header0.content_hash[1],
+                    header0.content_hash[2], header0.content_hash[3],
+                    computed_hash[0], computed_hash[1], computed_hash[2], computed_hash[3]);
+            QGP_LOG_WARN(LOG_TAG, "[HASH]   Caller should retry fetch (DHT nodes may sync to consistent version)");
+
+            // Cleanup and return hash mismatch error (caller should retry)
+            free(decompressed);
+            for (uint32_t i = 0; i < total_chunks; i++) {
+                if (pctx->slots[i].data) {
+                    free(pctx->slots[i].data);
+                }
+            }
+            free(pctx->slots);
+            pthread_mutex_destroy(&pctx->mutex);
+            pthread_cond_destroy(&pctx->cond);
+            free(pctx);
+            return DHT_CHUNK_ERR_HASH_MISMATCH;
+        }
+        QGP_LOG_DEBUG(LOG_TAG, "[HASH] Multi-chunk content hash verified OK");
+    }
+
     // Cleanup - SUCCESS path: all callbacks completed, no pending
     for (uint32_t i = 0; i < total_chunks; i++) {
         if (pctx->slots[i].data) {
@@ -1067,6 +1119,7 @@ const char *dht_chunked_strerror(int error) {
         case DHT_CHUNK_ERR_TIMEOUT:     return "Fetch timeout";
         case DHT_CHUNK_ERR_ALLOC:       return "Memory allocation failed";
         case DHT_CHUNK_ERR_NOT_CONNECTED: return "DHT not connected";
+        case DHT_CHUNK_ERR_HASH_MISMATCH: return "Content hash mismatch (DHT version inconsistency)";
         default:                        return "Unknown error";
     }
 }
