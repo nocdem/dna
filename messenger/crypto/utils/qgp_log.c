@@ -10,6 +10,7 @@
 #include "qgp_log.h"
 #include "qgp_platform.h"
 #include "dna_config.h"
+#include "dna/version.h"
 #include <string.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -637,7 +638,7 @@ static bool init_file_logging(void) {
     } else {
         strncpy(time_buf, "0000-00-00 00:00:00", sizeof(time_buf));
     }
-    fprintf(g_log_file, "\n=== DNA Messenger Log Started: %s ===\n", time_buf);
+    fprintf(g_log_file, "\n=== DNA Messenger Log Started: %s (Lib v%s) ===\n", time_buf, DNA_VERSION_STRING);
     fflush(g_log_file);
 
     return true;

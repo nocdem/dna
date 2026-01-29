@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import '../ffi/dna_engine.dart';
 import '../utils/logger.dart';
@@ -51,6 +52,10 @@ class EngineNotifier extends AsyncNotifier<DnaEngine> {
 
     // Initialize logger with engine for Flutter -> dna.log logging
     logSetEngine(engine);
+
+    // Log version info at startup (Lib from C library, App from pubspec.yaml)
+    final packageInfo = await PackageInfo.fromPlatform();
+    engine.debugLog('STARTUP', 'Lib v${engine.version} | App v${packageInfo.version}');
 
     ref.onDispose(() {
       engine.dispose();
