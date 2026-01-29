@@ -1,6 +1,6 @@
 // App Lifecycle Observer - handles app state changes
 // Phase 14: DHT-only messaging with reliable Android background support
-// v0.100.58+: Pause/Resume optimization - keep engine alive for fast resume
+// v0.100.64+: Pause/Resume optimization - engine stays paused indefinitely (no timeout)
 
 import 'dart:async';
 import 'dart:io' show Platform;
@@ -22,15 +22,12 @@ final appInForegroundProvider = StateProvider<bool>((ref) => true);
 /// Lifecycle state machine to prevent concurrent resume/pause operations
 enum _LifecycleState { idle, resuming, pausing }
 
-/// Background timeout before destroying engine (saves battery on long background)
-const _backgroundTimeout = Duration(minutes: 5);
-
 /// Observer for app lifecycle state changes
 ///
-/// v0.100.58+ Architecture:
-/// - On pause: PAUSE engine (suspend listeners, keep DHT alive)
+/// v0.100.64+ Architecture:
+/// - On pause: PAUSE engine (suspend listeners, keep DHT alive indefinitely)
 /// - On resume: RESUME engine (resubscribe listeners) - <500ms
-/// - After 5 min background: DESTROY engine (service takes over)
+/// - Android ForegroundService polls on paused engine via nativeCheckOfflineMessages()
 ///
 /// This eliminates the 2-40 second lag when returning from background.
 class AppLifecycleObserver extends WidgetsBindingObserver {
@@ -44,9 +41,6 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
   /// Operation ID to detect stale callbacks after abort
   int _operationId = 0;
-
-  /// Timer to destroy engine after extended background time
-  Timer? _backgroundTimer;
 
   AppLifecycleObserver(this.ref);
 
@@ -81,10 +75,6 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
   /// Called when app comes to foreground
   void _onResume() async {
-    // Cancel background timeout timer
-    _backgroundTimer?.cancel();
-    _backgroundTimer = null;
-
     // IMMEDIATE: Mark app as in foreground (for notification logic)
     // This must happen synchronously before any async work
     ref.read(appInForegroundProvider.notifier).state = true;
@@ -299,13 +289,9 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Mark identity as not ready (triggers spinner on next resume until fully resumed)
       ref.read(identityReadyProvider.notifier).state = false;
 
-      // Start 5-minute timer - if we're still in background when it fires,
-      // destroy the engine to save battery (service takes over)
-      _backgroundTimer?.cancel();
-      _backgroundTimer = Timer(_backgroundTimeout, _onBackgroundTimeout);
-
-      // NOTE: Do NOT dispose engine or invalidate provider here!
-      // Engine stays alive for fast resume.
+      // v0.100.64+: Engine stays paused indefinitely - no timeout destruction
+      // Android ForegroundService polls on the paused engine via nativeCheckOfflineMessages()
+      // which uses the global g_engine pointer (still valid when paused)
 
     } catch (e) {
       logError('LIFECYCLE', '[PAUSE] Error: $e');
@@ -314,32 +300,8 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     }
   }
 
-  /// Called when background timeout fires (app in background for 5+ minutes)
-  void _onBackgroundTimeout() async {
-    log('LIFECYCLE', '[TIMEOUT] Background timeout - destroying engine');
-
-    try {
-      final engine = ref.read(engineProvider).valueOrNull;
-      if (engine != null && !engine.isDisposed) {
-        // Destroy engine to save battery
-        engine.dispose();
-
-        // Invalidate provider so next access creates fresh engine
-        ref.invalidate(engineProvider);
-
-        log('LIFECYCLE', '[TIMEOUT] Engine destroyed - service takes over');
-      }
-    } catch (e) {
-      logError('LIFECYCLE', '[TIMEOUT] Error destroying engine: $e');
-    }
-  }
-
   /// Called when app is being killed
   void _onDetached() {
-    // Cancel background timer
-    _backgroundTimer?.cancel();
-    _backgroundTimer = null;
-
     // ForegroundService may continue running if logged in
     // System will eventually kill it if needed
   }

@@ -95,6 +95,16 @@ class ForegroundServiceManager {
     }
   }
 
+  /// Set poll interval in minutes (v0.100.64+)
+  /// Updates how often the service checks for offline messages
+  static Future<void> setPollInterval(int minutes) async {
+    try {
+      await _channel.invokeMethod<void>('setPollInterval', {'minutes': minutes});
+    } on PlatformException {
+      // Silently ignore - service might not be running
+    }
+  }
+
   /// Set up handler for service callbacks
   static void setMethodCallHandler(
       Future<dynamic> Function(MethodCall call)? handler) {

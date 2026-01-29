@@ -20,6 +20,7 @@ import io.flutter.plugin.common.MethodChannel
  * - stopService: Stop the foreground service
  * - isServiceRunning: Check if service is running
  * - pollNow: Trigger immediate offline message poll
+ * - setPollInterval: Set poll interval in minutes (v0.100.64+)
  *
  * Phase 14: Android background execution for reliable DHT-only messaging.
  */
@@ -72,6 +73,11 @@ class DnaServiceMethodChannel(
                 }
                 "requestExactAlarmPermission" -> {
                     requestExactAlarmPermission()
+                    result.success(null)
+                }
+                "setPollInterval" -> {
+                    val minutes = call.argument<Int>("minutes") ?: 5
+                    setPollInterval(minutes)
                     result.success(null)
                 }
                 else -> {
@@ -159,6 +165,14 @@ class DnaServiceMethodChannel(
     private fun setFlutterActive(active: Boolean) {
         android.util.Log.i(TAG, "Setting Flutter active: $active")
         DnaMessengerService.setFlutterActive(active)
+    }
+
+    /**
+     * Set poll interval in minutes (v0.100.64+)
+     */
+    private fun setPollInterval(minutes: Int) {
+        android.util.Log.i(TAG, "Setting poll interval: $minutes minutes")
+        DnaMessengerService.setPollInterval(minutes)
     }
 
     /**

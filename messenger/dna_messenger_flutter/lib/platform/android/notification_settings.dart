@@ -1,5 +1,6 @@
 // Android Notification Settings - Android-only notification UI
 // This file is ANDROID-ONLY. It should only be imported on Android.
+// v0.100.64+: Added configurable poll interval
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -76,9 +77,18 @@ class _AndroidNotificationSettingsState
     ref.read(notificationSettingsProvider.notifier).setEnabled(enabled);
   }
 
+  Future<void> _setPollInterval(int minutes) async {
+    // Update provider
+    await ref.read(notificationSettingsProvider.notifier).setPollInterval(minutes);
+    // Notify Android service
+    await ForegroundServiceManager.setPollInterval(minutes);
+    log('SETTINGS', 'Poll interval set to $minutes minutes');
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(notificationSettingsProvider);
+    final theme = Theme.of(context);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -93,14 +103,41 @@ class _AndroidNotificationSettingsState
           value: settings.enabled,
           onChanged: _toggleNotifications,
         ),
+        // Poll interval selection (only show when notifications enabled)
+        if (settings.enabled)
+          ListTile(
+            leading: const FaIcon(FontAwesomeIcons.clock),
+            title: const Text('Check Interval'),
+            subtitle: Text(
+              'Check for new messages every ${settings.pollIntervalMinutes} ${settings.pollIntervalMinutes == 1 ? 'minute' : 'minutes'}',
+            ),
+            trailing: DropdownButton<int>(
+              value: settings.pollIntervalMinutes,
+              underline: const SizedBox(),
+              items: pollIntervalOptions.map((minutes) {
+                return DropdownMenuItem(
+                  value: minutes,
+                  child: Text(
+                    '$minutes ${minutes == 1 ? 'min' : 'mins'}',
+                    style: theme.textTheme.bodyMedium,
+                  ),
+                );
+              }).toList(),
+              onChanged: (value) {
+                if (value != null) {
+                  _setPollInterval(value);
+                }
+              },
+            ),
+          ),
         // Exact alarm permission tile (only show when notifications enabled and permission not granted)
         if (settings.enabled && !_canScheduleExactAlarms)
           ListTile(
-            leading: const FaIcon(FontAwesomeIcons.clock),
+            leading: const FaIcon(FontAwesomeIcons.triangleExclamation),
             title: const Text('Reliable Message Checking'),
-            subtitle: const Text(
-              'Enable exact alarms for reliable 5-minute message checks. '
-              'Without this, checks may be delayed up to 10 minutes in battery saver mode.',
+            subtitle: Text(
+              'Enable exact alarms for reliable ${settings.pollIntervalMinutes}-minute checks. '
+              'Without this, checks may be delayed in battery saver mode.',
             ),
             trailing: TextButton(
               onPressed: _requestExactAlarmPermission,

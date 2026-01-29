@@ -48,7 +48,20 @@ class DnaMessengerService : Service() {
             }
         }
         private const val CHANNEL_ID = "dna_messenger_service"
-        private const val POLL_INTERVAL_MS = 5 * 60 * 1000L  // 5 minutes
+        private const val DEFAULT_pollIntervalMs = 5 * 60 * 1000L  // 5 minutes default
+
+        // Configurable poll interval (can be changed via setPollInterval)
+        @Volatile
+        private var pollIntervalMs: Long = DEFAULT_pollIntervalMs
+
+        /**
+         * Set poll interval in minutes. Called from Flutter via method channel.
+         */
+        fun setPollInterval(minutes: Int) {
+            pollIntervalMs = minutes * 60 * 1000L
+            android.util.Log.i(TAG, "Poll interval set to $minutes minutes")
+            // Service instance will pick up new interval on next alarm schedule
+        }
         private const val WAKELOCK_TIMEOUT_MS = 30 * 1000L   // 30 seconds (per check only)
         private const val NETWORK_CHANGE_DEBOUNCE_MS = 2000L  // 2 seconds debounce
 
@@ -278,7 +291,7 @@ class DnaMessengerService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val triggerTime = System.currentTimeMillis() + POLL_INTERVAL_MS
+        val triggerTime = System.currentTimeMillis() + pollIntervalMs
 
         // Android 12+ requires SCHEDULE_EXACT_ALARM permission for exact alarms
         // Fall back to inexact if not granted (may delay up to 10 min in Doze)
@@ -298,20 +311,20 @@ class DnaMessengerService : Service() {
         try {
             if (canScheduleExact && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-                android.util.Log.d(TAG, "Poll alarm scheduled (exact) for ${POLL_INTERVAL_MS / 1000}s")
+                android.util.Log.d(TAG, "Poll alarm scheduled (exact) for ${pollIntervalMs / 1000}s")
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-                android.util.Log.d(TAG, "Poll alarm scheduled (inexact) for ${POLL_INTERVAL_MS / 1000}s")
+                android.util.Log.d(TAG, "Poll alarm scheduled (inexact) for ${pollIntervalMs / 1000}s")
             } else {
                 alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-                android.util.Log.d(TAG, "Poll alarm scheduled for ${POLL_INTERVAL_MS / 1000}s")
+                android.util.Log.d(TAG, "Poll alarm scheduled for ${pollIntervalMs / 1000}s")
             }
         } catch (e: SecurityException) {
             // Fall back to inexact alarm if exact fails
             android.util.Log.w(TAG, "Exact alarm failed, falling back to inexact: ${e.message}")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-                android.util.Log.d(TAG, "Poll alarm scheduled (inexact fallback) for ${POLL_INTERVAL_MS / 1000}s")
+                android.util.Log.d(TAG, "Poll alarm scheduled (inexact fallback) for ${pollIntervalMs / 1000}s")
             } else {
                 alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
             }
@@ -341,8 +354,12 @@ class DnaMessengerService : Service() {
     }
 
     /**
-     * Main polling function - called every 5 minutes.
+     * Main polling function - called every N minutes (configurable).
      * Acquires short wakelock, checks messages, releases wakelock.
+     *
+     * v0.100.64+: When Flutter has the engine paused, we poll directly on
+     * the paused engine via nativeCheckOfflineMessages() which uses the
+     * global g_engine pointer (still valid when paused).
      */
     private fun performMessageCheck() {
         if (!libraryLoaded) {
@@ -351,7 +368,7 @@ class DnaMessengerService : Service() {
             return
         }
 
-        // Skip if Flutter is active
+        // Skip if Flutter is active (in foreground - Flutter handles messaging)
         if (flutterActive) {
             android.util.Log.d(TAG, "[POLL] Skipped - Flutter active")
             schedulePollAlarm()
@@ -365,7 +382,25 @@ class DnaMessengerService : Service() {
         acquireWakeLock()
 
         try {
-            // Ensure identity is loaded
+            val dataDir = filesDir.absolutePath + "/dna_messenger"
+
+            // Check if Flutter has the engine paused (holding the lock)
+            if (nativeIsIdentityLocked(dataDir)) {
+                // v0.100.64+: Flutter engine is paused - poll directly on it
+                // nativeCheckOfflineMessages() uses global g_engine which is still valid
+                android.util.Log.i(TAG, "[POLL] Flutter paused - polling on paused engine")
+                val result = nativeCheckOfflineMessages()
+                val elapsed = System.currentTimeMillis() - startTime
+
+                if (result >= 0) {
+                    android.util.Log.i(TAG, "[POLL] Paused engine check completed in ${elapsed}ms (result=$result)")
+                } else {
+                    android.util.Log.e(TAG, "[POLL] Paused engine check failed in ${elapsed}ms (error=$result)")
+                }
+                return
+            }
+
+            // Flutter doesn't have the lock - ensure our own identity is loaded
             if (!ensureIdentityForCheck()) {
                 android.util.Log.w(TAG, "[POLL] Cannot check - identity not available")
                 return
