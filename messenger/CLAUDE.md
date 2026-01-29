@@ -204,6 +204,12 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 
 **SKIP this checkpoint for regular commits.** State "CHECKPOINT 9 SKIPPED - Not a release"
 
+**COMMIT MESSAGE FORMAT FOR RELEASE:**
+```
+Release v<LIB_VERSION> / v<APP_VERSION> [BUILD] [RELEASE]
+```
+Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
+
 **RELEASE PROCEDURE:**
 
 1. **UPDATE README.md** - Update version badge:
@@ -211,15 +217,15 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
    <a href="#status"><img src="https://img.shields.io/badge/Status-Beta%20vX.Y.Z-blue" alt="Beta"></a>
    ```
 
-2. **COMMIT** with BOTH tags (CI needs `[BUILD]`, website deploy needs `[RELEASE]`):
+2. **COMMIT** with BOTH tags:
    ```bash
    git add README.md
-   git commit -m "Release vX.Y.Z / vA.B.C [BUILD] [RELEASE]"
+   git commit -m "Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]"
    ```
-   **IMPORTANT:** Use BOTH `[BUILD]` AND `[RELEASE]` tags!
+   **CRITICAL:** BOTH `[BUILD]` AND `[RELEASE]` tags are REQUIRED!
    - `[BUILD]` = triggers CI pipeline (builds Android/Linux/Windows)
    - `[RELEASE]` = triggers website deployment
-   - Without `[BUILD]`, CI pipeline does NOT run!
+   - **Without `[BUILD]`, CI pipeline does NOT run!**
 
 3. **PUSH** to both repos:
    ```bash
@@ -674,6 +680,12 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 
 **SKIP this checkpoint for regular commits.** State "CHECKPOINT 9 SKIPPED - Not a release"
 
+**COMMIT MESSAGE FORMAT FOR RELEASE:**
+```
+Release v<LIB_VERSION> / v<APP_VERSION> [BUILD] [RELEASE]
+```
+Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
+
 **RELEASE PROCEDURE:**
 
 1. **UPDATE README.md** - Update version badge:
@@ -681,15 +693,15 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
    <a href="#status"><img src="https://img.shields.io/badge/Status-Beta%20vX.Y.Z-blue" alt="Beta"></a>
    ```
 
-2. **COMMIT** with BOTH tags (CI needs `[BUILD]`, website deploy needs `[RELEASE]`):
+2. **COMMIT** with BOTH tags:
    ```bash
    git add README.md
-   git commit -m "Release vX.Y.Z / vA.B.C [BUILD] [RELEASE]"
+   git commit -m "Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]"
    ```
-   **IMPORTANT:** Use BOTH `[BUILD]` AND `[RELEASE]` tags!
+   **CRITICAL:** BOTH `[BUILD]` AND `[RELEASE]` tags are REQUIRED!
    - `[BUILD]` = triggers CI pipeline (builds Android/Linux/Windows)
    - `[RELEASE]` = triggers website deployment
-   - Without `[BUILD]`, CI pipeline does NOT run!
+   - **Without `[BUILD]`, CI pipeline does NOT run!**
 
 3. **PUSH** to both repos:
    ```bash
