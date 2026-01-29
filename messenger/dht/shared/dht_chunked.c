@@ -590,6 +590,13 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
             memset(header.content_hash, 0, DHT_CHUNK_HASH_SIZE);
         }
 
+        // Log first 8 bytes of payload for debugging (compare with fetch logs)
+        if (chunk_size >= 8) {
+            const uint8_t *p = compressed + offset;
+            QGP_LOG_DEBUG(LOG_TAG, "[PUBLISH] chunk[%u] payload[0:7]: %02x%02x%02x%02x %02x%02x%02x%02x (offset=%zu, size=%zu)",
+                    i, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], offset, chunk_size);
+        }
+
         // Serialize chunk
         uint8_t *serialized = NULL;
         size_t serialized_len = 0;
@@ -914,6 +921,13 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
 
         QGP_LOG_DEBUG(LOG_TAG, "[REASSEMBLE] chunk[%u]: v%u, data_size=%u, slot_len=%zu, offset=%zu",
                 i, hdr.version, hdr.chunk_data_size, pctx->slots[i].data_len, offset);
+
+        // Log first 8 bytes of each chunk's payload for debugging version mismatches
+        if (hdr.chunk_data_size >= 8) {
+            QGP_LOG_DEBUG(LOG_TAG, "[REASSEMBLE] chunk[%u] payload[0:7]: %02x%02x%02x%02x %02x%02x%02x%02x",
+                    i, payload[0], payload[1], payload[2], payload[3],
+                    payload[4], payload[5], payload[6], payload[7]);
+        }
 
         memcpy(compressed + offset, payload, hdr.chunk_data_size);
         offset += hdr.chunk_data_size;
