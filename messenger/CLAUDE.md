@@ -199,35 +199,53 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 
 **IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.
 
-### CHECKPOINT 9: VERSION PUBLISH TO DHT (RELEASE Only)
-**Only publish version to DHT when user says "release" (commit includes [RELEASE] tag).**
+### CHECKPOINT 9: RELEASE BUILD (When user says "release")
+**Only execute when user explicitly says "release" or asks for a release build.**
 
-**SKIP this checkpoint for regular commits.** Only execute when:
-- User explicitly says "release" or asks for a release build
-- Commit message contains `[RELEASE]` tag
+**SKIP this checkpoint for regular commits.** State "CHECKPOINT 9 SKIPPED - Not a release"
 
-**CLI Command:**
-```bash
-cd /opt/dna-messenger/build
-./cli/dna-messenger-cli publish-version \
-    --lib 0.6.50 --app 0.100.58 --nodus 0.4.5 \
-    --lib-min 0.3.50 --app-min 0.99.0 --nodus-min 0.4.0
-```
+**RELEASE PROCEDURE:**
 
-**Notes:**
+1. **UPDATE README.md** - Update version badge:
+   ```markdown
+   <a href="#status"><img src="https://img.shields.io/badge/Status-Beta%20vX.Y.Z-blue" alt="Beta"></a>
+   ```
+
+2. **COMMIT** with BOTH tags (CI needs `[BUILD]`, website deploy needs `[RELEASE]`):
+   ```bash
+   git add README.md
+   git commit -m "Release vX.Y.Z / vA.B.C [BUILD] [RELEASE]"
+   ```
+   **IMPORTANT:** Use BOTH `[BUILD]` AND `[RELEASE]` tags!
+   - `[BUILD]` = triggers CI pipeline (builds Android/Linux/Windows)
+   - `[RELEASE]` = triggers website deployment
+   - Without `[BUILD]`, CI pipeline does NOT run!
+
+3. **PUSH** to both repos:
+   ```bash
+   git push gitlab main && git push origin main
+   ```
+
+4. **PUBLISH** version to DHT:
+   ```bash
+   cd /opt/dna-messenger/build
+   ./cli/dna-messenger-cli publish-version \
+       --lib 0.6.76 --app 0.100.67 --nodus 0.4.5 \
+       --lib-min 0.3.50 --app-min 0.99.0 --nodus-min 0.4.0
+   ```
+
+5. **VERIFY** DHT publication:
+   ```bash
+   ./cli/dna-messenger-cli check-version
+   ```
+
+6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published"
+
+**DHT Notes:**
 - Uses Claude's identity (first publisher owns the DHT key)
-- Minimum versions define compatibility - apps below minimum may show warnings
+- Minimum versions define compatibility - apps below minimum show warnings
 - DHT key: `SHA3-512("dna:system:version")`
 - Version info is signed with Dilithium5
-- Update the version numbers in the command above to match current versions
-
-**Procedure (RELEASE only):**
-1. **PUSH** changes to both repos with `[RELEASE]` in commit message
-2. **PUBLISH** version to DHT using command above (update version numbers first!)
-3. **VERIFY**: `./cli/dna-messenger-cli check-version`
-4. **STATE**: "CHECKPOINT 9 COMPLETE - Version published to DHT: lib=X.Y.Z app=X.Y.Z nodus=X.Y.Z"
-
-**For non-release commits:** State "CHECKPOINT 9 SKIPPED - Not a release"
 
 **ENFORCEMENT**: Each checkpoint requires explicit completion statement. Missing ANY checkpoint statement indicates protocol violation and requires restart.
 
@@ -651,31 +669,53 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 
 **IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.
 
-### CHECKPOINT 9: VERSION PUBLISH TO DHT (MANDATORY After Every Push)
-**After EVERY push, publish the new version info to DHT so clients can check for updates.**
+### CHECKPOINT 9: RELEASE BUILD (When user says "release")
+**Only execute when user explicitly says "release" or asks for a release build.**
 
-**IMPORTANT:** This is MANDATORY after every push that includes a version bump. Clients check DHT for the latest version and will show update notifications based on this.
+**SKIP this checkpoint for regular commits.** State "CHECKPOINT 9 SKIPPED - Not a release"
 
-**CLI Command:**
-```bash
-cd /opt/dna-messenger/build
-./cli/dna-messenger-cli publish-version \
-    --lib 0.6.50 --app 0.100.58 --nodus 0.4.5 \
-    --lib-min 0.3.50 --app-min 0.99.0 --nodus-min 0.4.0
-```
+**RELEASE PROCEDURE:**
 
-**Notes:**
+1. **UPDATE README.md** - Update version badge:
+   ```markdown
+   <a href="#status"><img src="https://img.shields.io/badge/Status-Beta%20vX.Y.Z-blue" alt="Beta"></a>
+   ```
+
+2. **COMMIT** with BOTH tags (CI needs `[BUILD]`, website deploy needs `[RELEASE]`):
+   ```bash
+   git add README.md
+   git commit -m "Release vX.Y.Z / vA.B.C [BUILD] [RELEASE]"
+   ```
+   **IMPORTANT:** Use BOTH `[BUILD]` AND `[RELEASE]` tags!
+   - `[BUILD]` = triggers CI pipeline (builds Android/Linux/Windows)
+   - `[RELEASE]` = triggers website deployment
+   - Without `[BUILD]`, CI pipeline does NOT run!
+
+3. **PUSH** to both repos:
+   ```bash
+   git push gitlab main && git push origin main
+   ```
+
+4. **PUBLISH** version to DHT:
+   ```bash
+   cd /opt/dna-messenger/build
+   ./cli/dna-messenger-cli publish-version \
+       --lib 0.6.76 --app 0.100.67 --nodus 0.4.5 \
+       --lib-min 0.3.50 --app-min 0.99.0 --nodus-min 0.4.0
+   ```
+
+5. **VERIFY** DHT publication:
+   ```bash
+   ./cli/dna-messenger-cli check-version
+   ```
+
+6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published"
+
+**DHT Notes:**
 - Uses Claude's identity (first publisher owns the DHT key)
-- Minimum versions define compatibility - apps below minimum may show warnings
+- Minimum versions define compatibility - apps below minimum show warnings
 - DHT key: `SHA3-512("dna:system:version")`
 - Version info is signed with Dilithium5
-- Update the version numbers in the command above to match current versions
-
-**Procedure:**
-1. **PUSH** changes to both repos (gitlab + origin)
-2. **PUBLISH** version to DHT using command above (update version numbers first!)
-3. **VERIFY**: `./cli/dna-messenger-cli check-version`
-4. **STATE**: "CHECKPOINT 9 COMPLETE - Version published to DHT: lib=X.Y.Z app=X.Y.Z nodus=X.Y.Z"
 
 **ENFORCEMENT**: Each checkpoint requires explicit completion statement. Missing ANY checkpoint statement indicates protocol violation and requires restart.
 
