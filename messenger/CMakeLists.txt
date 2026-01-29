@@ -176,12 +176,21 @@ if(BUILD_SHARED_LIB)
         src/api/dna_engine.c
         # Modular engine components
         src/api/engine/dna_engine_feed.c
-        src/api/engine/dna_engine_p2p.c
+        src/api/engine/dna_engine_presence.c
         src/api/engine/dna_engine_wallet.c
         src/api/engine/dna_engine_groups.c
         src/api/engine/dna_engine_messaging.c
         src/api/engine/dna_engine_contacts.c
         src/api/engine/dna_engine_identity.c
+        src/api/engine/dna_engine_listeners.c
+        src/api/engine/dna_engine_logging.c
+        src/api/engine/dna_engine_addressbook.c
+        src/api/engine/dna_engine_backup.c
+        src/api/engine/dna_engine_lifecycle.c
+        src/api/engine/dna_engine_helpers.c
+        src/api/engine/dna_engine_workers.c
+        src/api/engine/dna_engine_version.c
+        src/api/engine/dna_engine_signing.c
         # Modular messenger components
         messenger/identity.c
         messenger/init.c
@@ -243,12 +252,21 @@ else()
         src/api/dna_engine.c
         # Modular engine components
         src/api/engine/dna_engine_feed.c
-        src/api/engine/dna_engine_p2p.c
+        src/api/engine/dna_engine_presence.c
         src/api/engine/dna_engine_wallet.c
         src/api/engine/dna_engine_groups.c
         src/api/engine/dna_engine_messaging.c
         src/api/engine/dna_engine_contacts.c
         src/api/engine/dna_engine_identity.c
+        src/api/engine/dna_engine_listeners.c
+        src/api/engine/dna_engine_logging.c
+        src/api/engine/dna_engine_addressbook.c
+        src/api/engine/dna_engine_backup.c
+        src/api/engine/dna_engine_lifecycle.c
+        src/api/engine/dna_engine_helpers.c
+        src/api/engine/dna_engine_workers.c
+        src/api/engine/dna_engine_version.c
+        src/api/engine/dna_engine_signing.c
         # Modular messenger components
         messenger/identity.c
         messenger/init.c

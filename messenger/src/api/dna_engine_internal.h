@@ -21,6 +21,7 @@
 #include "dht/shared/dht_contact_request.h"
 #include "dht/client/dna_group_outbox.h"
 #include "dht/core/dht_context.h"  /* v0.6.0+: Engine owns DHT context */
+#include "crypto/utils/qgp_types.h" /* For qgp_key_t */
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -824,6 +825,31 @@ int dna_engine_check_group_day_rotation(dna_engine_t *engine);
  * @return Number of DM outbox listeners that rotated
  */
 int dna_engine_check_outbox_day_rotation(dna_engine_t *engine);
+
+/* ============================================================================
+ * HELPER FUNCTIONS (from dna_engine_helpers.c)
+ * ============================================================================ */
+
+dht_context_t* dna_get_dht_ctx(dna_engine_t *engine);
+qgp_key_t* dna_load_private_key(dna_engine_t *engine);
+qgp_key_t* dna_load_encryption_key(dna_engine_t *engine);
+bool dht_wait_for_stabilization(dna_engine_t *engine);
+
+/* ============================================================================
+ * PRESENCE FUNCTIONS (from dna_engine_presence.c)
+ * ============================================================================ */
+
+int dna_start_presence_heartbeat(dna_engine_t *engine);
+void dna_stop_presence_heartbeat(dna_engine_t *engine);
+int dna_engine_network_changed(dna_engine_t *engine);
+
+/* ============================================================================
+ * WORKER FUNCTIONS (from dna_engine_workers.c)
+ * ============================================================================ */
+
+void* dna_worker_thread(void *arg);
+int dna_start_workers(dna_engine_t *engine);
+void dna_stop_workers(dna_engine_t *engine);
 
 #ifdef __cplusplus
 }

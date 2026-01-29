@@ -479,3 +479,185 @@ void dna_handle_reject_invitation(dna_engine_t *engine, dna_task_t *task) {
 done:
     task->callback.completion(task->request_id, error, task->user_data);
 }
+
+/* ============================================================================
+ * PUBLIC API - Groups Functions
+ * ============================================================================ */
+
+dna_request_id_t dna_engine_get_groups(
+    dna_engine_t *engine,
+    dna_groups_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = { .groups = callback };
+    return dna_submit_task(engine, TASK_GET_GROUPS, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_group_info(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_group_info_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !callback) return DNA_REQUEST_ID_INVALID;
+    if (strlen(group_uuid) != 36) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_group_info.group_uuid, group_uuid, 36);
+
+    dna_task_callback_t cb = { .group_info = callback };
+    return dna_submit_task(engine, TASK_GET_GROUP_INFO, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_group_members(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_group_members_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !callback) return DNA_REQUEST_ID_INVALID;
+    if (strlen(group_uuid) != 36) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_group_members.group_uuid, group_uuid, 36);
+
+    dna_task_callback_t cb = { .group_members = callback };
+    return dna_submit_task(engine, TASK_GET_GROUP_MEMBERS, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_create_group(
+    dna_engine_t *engine,
+    const char *name,
+    const char **member_fingerprints,
+    int member_count,
+    dna_group_created_cb callback,
+    void *user_data
+) {
+    if (!engine || !name || !callback) return DNA_REQUEST_ID_INVALID;
+    if (member_count > 0 && !member_fingerprints) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.create_group.name, name, sizeof(params.create_group.name) - 1);
+    params.create_group.member_count = member_count;
+
+    if (member_count > 0) {
+        params.create_group.members = calloc(member_count, sizeof(char*));
+        if (!params.create_group.members) {
+            return DNA_REQUEST_ID_INVALID;
+        }
+        for (int i = 0; i < member_count; i++) {
+            params.create_group.members[i] = strdup(member_fingerprints[i]);
+            if (!params.create_group.members[i]) {
+                for (int j = 0; j < i; j++) {
+                    free(params.create_group.members[j]);
+                }
+                free(params.create_group.members);
+                return DNA_REQUEST_ID_INVALID;
+            }
+        }
+    }
+
+    dna_task_callback_t cb = { .group_created = callback };
+    return dna_submit_task(engine, TASK_CREATE_GROUP, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_send_group_message(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    const char *message,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !message || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    strncpy(params.send_group_message.group_uuid, group_uuid, 36);
+    params.send_group_message.message = strdup(message);
+    if (!params.send_group_message.message) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SEND_GROUP_MESSAGE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_group_conversation(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_messages_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_group_conversation.group_uuid, group_uuid, 36);
+
+    dna_task_callback_t cb = { .messages = callback };
+    return dna_submit_task(engine, TASK_GET_GROUP_CONVERSATION, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_add_group_member(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !fingerprint || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    strncpy(params.add_group_member.group_uuid, group_uuid, 36);
+    strncpy(params.add_group_member.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_ADD_GROUP_MEMBER, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_invitations(
+    dna_engine_t *engine,
+    dna_invitations_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = { .invitations = callback };
+    return dna_submit_task(engine, TASK_GET_INVITATIONS, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_accept_invitation(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.invitation.group_uuid, group_uuid, 36);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_ACCEPT_INVITATION, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_reject_invitation(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.invitation.group_uuid, group_uuid, 36);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_REJECT_INVITATION, &params, cb, user_data);
+}

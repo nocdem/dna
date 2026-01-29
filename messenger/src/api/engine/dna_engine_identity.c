@@ -972,3 +972,610 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
 done:
     task->callback.completion(task->request_id, error, task->user_data);
 }
+
+/* ============================================================================
+ * PUBLIC API - Identity Functions
+ * ============================================================================ */
+
+/**
+ * Validate identity name - only lowercase letters, digits, underscore, hyphen allowed.
+ * Not allowed: uppercase letters, spaces, special chars
+ */
+static int is_valid_identity_name(const char *name) {
+    if (!name || !*name) return 0;
+    for (const char *p = name; *p; p++) {
+        char c = *p;
+        if (c >= 'A' && c <= 'Z') return 0;  /* Reject uppercase */
+        if (c >= 'a' && c <= 'z') continue;  /* Allow lowercase */
+        if (c >= '0' && c <= '9') continue;  /* Allow digits */
+        if (c == '_' || c == '-') continue;  /* Allow underscore/hyphen */
+        return 0;  /* Reject other chars */
+    }
+    return 1;
+}
+
+const char* dna_engine_get_fingerprint(dna_engine_t *engine) {
+    if (!engine || !engine->identity_loaded) {
+        return NULL;
+    }
+    return engine->fingerprint;
+}
+
+/* v0.3.0: dna_engine_list_identities() removed - single-user model
+ * Use dna_engine_has_identity() instead */
+
+dna_request_id_t dna_engine_create_identity(
+    dna_engine_t *engine,
+    const char *name,
+    const uint8_t signing_seed[32],
+    const uint8_t encryption_seed[32],
+    dna_identity_created_cb callback,
+    void *user_data
+) {
+    if (!engine || !name || !signing_seed || !encryption_seed || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    /* Enforce lowercase-only identity names */
+    if (!is_valid_identity_name(name)) {
+        QGP_LOG_ERROR(LOG_TAG, "Identity name must be lowercase (a-z, 0-9, underscore, hyphen only)");
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    strncpy(params.create_identity.name, name, sizeof(params.create_identity.name) - 1);
+    memcpy(params.create_identity.signing_seed, signing_seed, 32);
+    memcpy(params.create_identity.encryption_seed, encryption_seed, 32);
+
+    dna_task_callback_t cb = { .identity_created = callback };
+    return dna_submit_task(engine, TASK_CREATE_IDENTITY, &params, cb, user_data);
+}
+
+int dna_engine_create_identity_sync(
+    dna_engine_t *engine,
+    const char *name,
+    const uint8_t signing_seed[32],
+    const uint8_t encryption_seed[32],
+    const uint8_t master_seed[64],
+    const char *mnemonic,
+    char fingerprint_out[129]
+) {
+    if (!engine || !name || !signing_seed || !encryption_seed || !fingerprint_out) {
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    /* Enforce lowercase-only identity names */
+    if (!is_valid_identity_name(name)) {
+        QGP_LOG_ERROR(LOG_TAG, "Identity name must be lowercase (a-z, 0-9, underscore, hyphen only)");
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    /* Step 1: Create keys locally */
+    int rc = messenger_generate_keys_from_seeds(name, signing_seed, encryption_seed,
+                                                 master_seed, mnemonic,
+                                                 engine->data_dir, NULL, fingerprint_out);
+    if (rc != 0) {
+        return DNA_ERROR_CRYPTO;
+    }
+
+    /* Step 2: Create temporary messenger context for registration */
+    messenger_context_t *temp_ctx = messenger_init(fingerprint_out);
+    if (!temp_ctx) {
+        /* Cleanup: v0.3.0 flat structure - delete keys/, db/, wallets/, mnemonic.enc */
+        char path[512];
+        snprintf(path, sizeof(path), "%s/keys", engine->data_dir);
+        qgp_platform_rmdir_recursive(path);
+        snprintf(path, sizeof(path), "%s/db", engine->data_dir);
+        qgp_platform_rmdir_recursive(path);
+        snprintf(path, sizeof(path), "%s/wallets", engine->data_dir);
+        qgp_platform_rmdir_recursive(path);
+        snprintf(path, sizeof(path), "%s/mnemonic.enc", engine->data_dir);
+        remove(path);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create messenger context for identity registration");
+        return DNA_ERROR_INTERNAL;
+    }
+
+    /* DHT already started by prepare_dht_from_mnemonic() (both CLI and Flutter) */
+
+    /* Step 3: Register name on DHT (atomic - if this fails, cleanup) */
+    rc = messenger_register_name(temp_ctx, fingerprint_out, name);
+    messenger_free(temp_ctx);
+
+    if (rc != 0) {
+        /* Cleanup: v0.3.0 flat structure - delete keys/, db/, wallets/, mnemonic.enc */
+        char path[512];
+        snprintf(path, sizeof(path), "%s/keys", engine->data_dir);
+        qgp_platform_rmdir_recursive(path);
+        snprintf(path, sizeof(path), "%s/db", engine->data_dir);
+        qgp_platform_rmdir_recursive(path);
+        snprintf(path, sizeof(path), "%s/wallets", engine->data_dir);
+        qgp_platform_rmdir_recursive(path);
+        snprintf(path, sizeof(path), "%s/mnemonic.enc", engine->data_dir);
+        remove(path);
+        QGP_LOG_ERROR(LOG_TAG, "Name registration failed for '%s', identity rolled back", name);
+        return DNA_ENGINE_ERROR_NETWORK;
+    }
+
+    /* Step 5: Cache the registered name locally */
+    keyserver_cache_put_name(fingerprint_out, name, 0);
+    QGP_LOG_INFO(LOG_TAG, "Identity created and registered: %s -> %.16s...", name, fingerprint_out);
+
+    return DNA_OK;
+}
+
+int dna_engine_restore_identity_sync(
+    dna_engine_t *engine,
+    const uint8_t signing_seed[32],
+    const uint8_t encryption_seed[32],
+    const uint8_t master_seed[64],
+    const char *mnemonic,
+    char fingerprint_out[129]
+) {
+    if (!engine || !signing_seed || !encryption_seed || !fingerprint_out) {
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    /* Step 1: Create keys locally (uses fingerprint as directory name) */
+    int rc = messenger_generate_keys_from_seeds(NULL, signing_seed, encryption_seed,
+                                                 master_seed, mnemonic,
+                                                 engine->data_dir, NULL, fingerprint_out);
+    if (rc != 0) {
+        return DNA_ERROR_CRYPTO;
+    }
+
+    /* Step 2: v0.6.0+: Load DHT identity into engine-owned context */
+    if (messenger_load_dht_identity_for_engine(fingerprint_out, &engine->dht_ctx) == 0) {
+        QGP_LOG_INFO(LOG_TAG, "Engine-owned DHT context created for restored identity");
+        dht_singleton_set_borrowed_context(engine->dht_ctx);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "Fallback: using singleton DHT for restored identity");
+        messenger_load_dht_identity(fingerprint_out);
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Identity restored from seed: %.16s...", fingerprint_out);
+
+    return DNA_OK;
+}
+
+int dna_engine_delete_identity_sync(
+    dna_engine_t *engine,
+    const char *fingerprint
+) {
+    if (!engine || !fingerprint) {
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    /* Validate fingerprint format (128 hex chars) */
+    size_t fp_len = strlen(fingerprint);
+    if (fp_len != 128) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint length: %zu (expected 128)", fp_len);
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    /* Check that fingerprint contains only hex characters */
+    for (size_t i = 0; i < fp_len; i++) {
+        char c = fingerprint[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            QGP_LOG_ERROR(LOG_TAG, "Invalid character in fingerprint at position %zu", i);
+            return DNA_ERROR_INVALID_ARG;
+        }
+    }
+
+    /* If deleting the currently loaded identity, unload it first */
+    if (engine->identity_loaded && engine->fingerprint[0] != '\0' &&
+        strcmp(engine->fingerprint, fingerprint) == 0) {
+        QGP_LOG_INFO(LOG_TAG, "Unloading current identity before deletion");
+
+        /* Free messenger context */
+        if (engine->messenger) {
+            messenger_free(engine->messenger);
+            engine->messenger = NULL;
+        }
+
+        /* Clear identity state */
+        engine->identity_loaded = false;
+        engine->state = DNA_ENGINE_STATE_UNLOADED;
+        memset(engine->fingerprint, 0, sizeof(engine->fingerprint));
+    }
+
+    const char *data_dir = engine->data_dir;
+    int errors = 0;
+
+    QGP_LOG_INFO(LOG_TAG, "Deleting identity: %.16s...", fingerprint);
+    (void)fingerprint;  // Unused in v0.3.0 flat structure
+
+    /* v0.3.0: Flat structure - delete keys/, db/, wallets/ directories and root files */
+
+    /* 1. Delete keys directory: <data_dir>/keys/ */
+    char keys_dir[512];
+    snprintf(keys_dir, sizeof(keys_dir), "%s/keys", data_dir);
+    if (qgp_platform_file_exists(keys_dir)) {
+        if (qgp_platform_rmdir_recursive(keys_dir) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to delete keys directory: %s", keys_dir);
+            errors++;
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "Deleted keys directory: %s", keys_dir);
+        }
+    }
+
+    /* 2. Delete db directory: <data_dir>/db/ */
+    /* Close profile cache first to release file handles before deletion */
+    profile_cache_close();
+
+    char db_dir[512];
+    snprintf(db_dir, sizeof(db_dir), "%s/db", data_dir);
+    if (qgp_platform_file_exists(db_dir)) {
+        if (qgp_platform_rmdir_recursive(db_dir) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to delete db directory: %s", db_dir);
+            errors++;
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "Deleted db directory: %s", db_dir);
+        }
+    }
+
+    /* 3. Delete wallets directory: <data_dir>/wallets/ */
+    char wallets_dir[512];
+    snprintf(wallets_dir, sizeof(wallets_dir), "%s/wallets", data_dir);
+    if (qgp_platform_file_exists(wallets_dir)) {
+        if (qgp_platform_rmdir_recursive(wallets_dir) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to delete wallets directory: %s", wallets_dir);
+            errors++;
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "Deleted wallets directory: %s", wallets_dir);
+        }
+    }
+
+    /* 4. Delete mnemonic file: <data_dir>/mnemonic.enc */
+    char mnemonic_path[512];
+    snprintf(mnemonic_path, sizeof(mnemonic_path), "%s/mnemonic.enc", data_dir);
+    if (qgp_platform_file_exists(mnemonic_path)) {
+        if (remove(mnemonic_path) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to delete mnemonic: %s", mnemonic_path);
+            errors++;
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "Deleted mnemonic: %s", mnemonic_path);
+        }
+    }
+
+    /* 5. Delete DHT identity file: <data_dir>/dht_identity.bin */
+    char dht_id_path[512];
+    snprintf(dht_id_path, sizeof(dht_id_path), "%s/dht_identity.bin", data_dir);
+    if (qgp_platform_file_exists(dht_id_path)) {
+        if (remove(dht_id_path) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to delete DHT identity: %s", dht_id_path);
+            errors++;
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "Deleted DHT identity: %s", dht_id_path);
+        }
+    }
+
+    if (errors > 0) {
+        QGP_LOG_WARN(LOG_TAG, "Identity deletion completed with %d errors", errors);
+        return DNA_ERROR_INTERNAL;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Identity deleted successfully: %.16s...", fingerprint);
+    return DNA_OK;
+}
+
+/**
+ * Check if an identity exists (v0.3.0 single-user model)
+ *
+ * Checks if keys/identity.dsa exists in the data directory.
+ */
+bool dna_engine_has_identity(dna_engine_t *engine) {
+    if (!engine || !engine->data_dir) {
+        return false;
+    }
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/keys/identity.dsa", engine->data_dir);
+    return qgp_platform_file_exists(path);
+}
+
+/**
+ * Prepare DHT connection from mnemonic (before identity creation)
+ */
+int dna_engine_prepare_dht_from_mnemonic(dna_engine_t *engine, const char *mnemonic) {
+    (void)engine;  // Engine not needed for this operation
+    return messenger_prepare_dht_from_mnemonic(mnemonic);
+}
+
+dna_request_id_t dna_engine_load_identity(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *password,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.load_identity.fingerprint, fingerprint, 128);
+    params.load_identity.password = password ? strdup(password) : NULL;
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_LOAD_IDENTITY, &params, cb, user_data);
+}
+
+bool dna_engine_is_identity_loaded(dna_engine_t *engine) {
+    return engine && engine->identity_loaded;
+}
+
+bool dna_engine_is_transport_ready(dna_engine_t *engine) {
+    return engine && engine->messenger && engine->messenger->transport_ctx != NULL;
+}
+
+dna_request_id_t dna_engine_load_identity_minimal(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *password,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.load_identity.fingerprint, fingerprint, 128);
+    params.load_identity.password = password ? strdup(password) : NULL;
+    params.load_identity.minimal = true;
+
+    QGP_LOG_INFO(LOG_TAG, "Load identity (minimal): DHT + polling only, no listeners");
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_LOAD_IDENTITY, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_register_name(
+    dna_engine_t *engine,
+    const char *name,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !name || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.register_name.name, name, sizeof(params.register_name.name) - 1);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_REGISTER_NAME, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_display_name(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_display_name_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_display_name.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .display_name = callback };
+    return dna_submit_task(engine, TASK_GET_DISPLAY_NAME, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_avatar(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_display_name_cb callback,  /* Reuses display_name callback (returns string) */
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_avatar.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .display_name = callback };
+    return dna_submit_task(engine, TASK_GET_AVATAR, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_lookup_name(
+    dna_engine_t *engine,
+    const char *name,
+    dna_display_name_cb callback,
+    void *user_data
+) {
+    if (!engine || !name || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.lookup_name.name, name, sizeof(params.lookup_name.name) - 1);
+
+    dna_task_callback_t cb = { .display_name = callback };
+    return dna_submit_task(engine, TASK_LOOKUP_NAME, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_profile(
+    dna_engine_t *engine,
+    dna_profile_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+    if (!engine->identity_loaded) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = { .profile = callback };
+    return dna_submit_task(engine, TASK_GET_PROFILE, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_lookup_profile(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_profile_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+    /* lookupProfile can work without identity loaded - only needs DHT context.
+     * This is needed for restore flow to check if profile exists in DHT. */
+    if (strlen(fingerprint) != 128) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.lookup_profile.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .profile = callback };
+    return dna_submit_task(engine, TASK_LOOKUP_PROFILE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_refresh_contact_profile(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_profile_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+    if (!engine->identity_loaded) return DNA_REQUEST_ID_INVALID;
+    if (strlen(fingerprint) != 128) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.lookup_profile.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .profile = callback };
+    return dna_submit_task(engine, TASK_REFRESH_CONTACT_PROFILE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_update_profile(
+    dna_engine_t *engine,
+    const dna_profile_t *profile,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !profile || !callback) return DNA_REQUEST_ID_INVALID;
+    if (!engine->identity_loaded) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    params.update_profile.profile = *profile;
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_UPDATE_PROFILE, &params, cb, user_data);
+}
+
+int dna_engine_get_mnemonic(
+    dna_engine_t *engine,
+    char *mnemonic_out,
+    size_t mnemonic_size
+) {
+    if (!engine || !mnemonic_out || mnemonic_size < 256) {
+        return DNA_ENGINE_ERROR_INVALID_PARAM;
+    }
+    if (!engine->identity_loaded) {
+        return DNA_ENGINE_ERROR_NO_IDENTITY;
+    }
+
+    /* v0.3.0: Flat structure - keys/identity.kem, mnemonic.enc in root */
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", engine->data_dir);
+
+    /* Check if mnemonic file exists */
+    if (!mnemonic_storage_exists(engine->data_dir)) {
+        QGP_LOG_DEBUG(LOG_TAG, "Mnemonic file not found for identity %s",
+                      engine->fingerprint);
+        return DNA_ENGINE_ERROR_NOT_FOUND;
+    }
+
+    /* Load Kyber private key (use password if keys are encrypted) */
+    qgp_key_t *kem_key = NULL;
+    int load_rc;
+    if (engine->keys_encrypted && engine->session_password) {
+        load_rc = qgp_key_load_encrypted(kyber_path, engine->session_password, &kem_key);
+    } else {
+        load_rc = qgp_key_load(kyber_path, &kem_key);
+    }
+    if (load_rc != 0 || !kem_key) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber private key");
+        return DNA_ERROR_CRYPTO;
+    }
+
+    if (!kem_key->private_key || kem_key->private_key_size != 3168) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid Kyber private key size");
+        qgp_key_free(kem_key);
+        return DNA_ERROR_CRYPTO;
+    }
+
+    /* Decrypt and load mnemonic */
+    int result = mnemonic_storage_load(mnemonic_out, mnemonic_size,
+                                       kem_key->private_key, engine->data_dir);
+
+    qgp_key_free(kem_key);
+
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to decrypt mnemonic");
+        return DNA_ERROR_CRYPTO;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Mnemonic retrieved successfully");
+    return DNA_OK;
+}
+
+int dna_engine_change_password_sync(
+    dna_engine_t *engine,
+    const char *old_password,
+    const char *new_password
+) {
+    if (!engine) {
+        return DNA_ENGINE_ERROR_INVALID_PARAM;
+    }
+    if (!engine->identity_loaded) {
+        return DNA_ENGINE_ERROR_NO_IDENTITY;
+    }
+
+    /* Build paths to key files */
+    /* v0.3.0: Flat structure - keys/identity.{dsa,kem}, mnemonic.enc in root */
+    char dsa_path[512];
+    char kem_path[512];
+    char mnemonic_path[512];
+
+    snprintf(dsa_path, sizeof(dsa_path), "%s/keys/identity.dsa", engine->data_dir);
+    snprintf(kem_path, sizeof(kem_path), "%s/keys/identity.kem", engine->data_dir);
+    snprintf(mnemonic_path, sizeof(mnemonic_path), "%s/mnemonic.enc", engine->data_dir);
+
+    /* Verify old password is correct by trying to load a key */
+    if (engine->keys_encrypted || old_password) {
+        if (key_verify_password(dsa_path, old_password) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Old password is incorrect");
+            return DNA_ENGINE_ERROR_WRONG_PASSWORD;
+        }
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Changing password for identity %s", engine->fingerprint);
+
+    /* Change password on DSA key */
+    if (key_change_password(dsa_path, old_password, new_password) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to change password on DSA key");
+        return DNA_ERROR_CRYPTO;
+    }
+
+    /* Change password on KEM key */
+    if (key_change_password(kem_path, old_password, new_password) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to change password on KEM key");
+        /* Try to rollback DSA key */
+        key_change_password(dsa_path, new_password, old_password);
+        return DNA_ERROR_CRYPTO;
+    }
+
+    /* Change password on mnemonic file if it exists */
+    if (qgp_platform_file_exists(mnemonic_path)) {
+        if (key_change_password(mnemonic_path, old_password, new_password) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to change password on mnemonic file");
+            /* Try to rollback DSA and KEM keys */
+            key_change_password(dsa_path, new_password, old_password);
+            key_change_password(kem_path, new_password, old_password);
+            return DNA_ERROR_CRYPTO;
+        }
+    }
+
+    /* Update session password and encryption state */
+    if (engine->session_password) {
+        free(engine->session_password);
+        engine->session_password = NULL;
+    }
+
+    if (new_password && new_password[0] != '\0') {
+        engine->session_password = strdup(new_password);
+        engine->keys_encrypted = true;
+    } else {
+        engine->keys_encrypted = false;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Password changed successfully for identity %s", engine->fingerprint);
+    return DNA_OK;
+}

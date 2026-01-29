@@ -700,3 +700,187 @@ done:
     }
     /* NOTE: Memory is freed by caller (Dart FFI) via dna_free_blocked_users() */
 }
+
+/* ============================================================================
+ * PUBLIC API - Contacts Functions
+ * ============================================================================ */
+
+dna_request_id_t dna_engine_get_contacts(
+    dna_engine_t *engine,
+    dna_contacts_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = { .contacts = callback };
+    return dna_submit_task(engine, TASK_GET_CONTACTS, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_add_contact(
+    dna_engine_t *engine,
+    const char *identifier,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !identifier || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.add_contact.identifier, identifier, sizeof(params.add_contact.identifier) - 1);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_ADD_CONTACT, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_remove_contact(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.remove_contact.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_REMOVE_CONTACT, &params, cb, user_data);
+}
+
+/* Contact Requests (ICQ-style) */
+dna_request_id_t dna_engine_send_contact_request(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint,
+    const char *message,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    QGP_LOG_INFO("DNA_ENGINE", "dna_engine_send_contact_request called: recipient=%.20s...",
+                 recipient_fingerprint ? recipient_fingerprint : "(null)");
+
+    if (!engine || !recipient_fingerprint || !callback) {
+        QGP_LOG_ERROR("DNA_ENGINE", "Invalid params: engine=%p, recipient=%p, callback=%p",
+                      (void*)engine, (void*)recipient_fingerprint, (void*)callback);
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    strncpy(params.send_contact_request.recipient, recipient_fingerprint, 128);
+    if (message) {
+        strncpy(params.send_contact_request.message, message, 255);
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SEND_CONTACT_REQUEST, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_contact_requests(
+    dna_engine_t *engine,
+    dna_contact_requests_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = { .contact_requests = callback };
+    return dna_submit_task(engine, TASK_GET_CONTACT_REQUESTS, NULL, cb, user_data);
+}
+
+int dna_engine_get_contact_request_count(dna_engine_t *engine) {
+    if (!engine || !engine->identity_loaded) return -1;
+
+    if (contacts_db_init(engine->fingerprint) != 0) {
+        return -1;
+    }
+
+    return contacts_db_pending_request_count();
+}
+
+dna_request_id_t dna_engine_approve_contact_request(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    QGP_LOG_INFO("DNA_ENGINE", "approve_contact_request API called: fp='%.40s...' len=%zu",
+                 fingerprint ? fingerprint : "(null)",
+                 fingerprint ? strlen(fingerprint) : 0);
+
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.contact_request.fingerprint, fingerprint, 128);
+    QGP_LOG_INFO("DNA_ENGINE", "approve params.fingerprint='%.40s...'",
+                 params.contact_request.fingerprint);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_APPROVE_CONTACT_REQUEST, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_deny_contact_request(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.contact_request.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_DENY_CONTACT_REQUEST, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_block_user(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *reason,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.block_user.fingerprint, fingerprint, 128);
+    if (reason) {
+        strncpy(params.block_user.reason, reason, 255);
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_BLOCK_USER, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_unblock_user(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.unblock_user.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_UNBLOCK_USER, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_blocked_users(
+    dna_engine_t *engine,
+    dna_blocked_users_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = { .blocked_users = callback };
+    return dna_submit_task(engine, TASK_GET_BLOCKED_USERS, NULL, cb, user_data);
+}
+
+bool dna_engine_is_user_blocked(dna_engine_t *engine, const char *fingerprint) {
+    if (!engine || !fingerprint || !engine->identity_loaded) return false;
+
+    if (contacts_db_init(engine->fingerprint) != 0) {
+        return false;
+    }
+
+    return contacts_db_is_blocked(fingerprint);
+}

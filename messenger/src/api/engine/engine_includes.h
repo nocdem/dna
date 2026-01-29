@@ -178,13 +178,14 @@ static inline time_t safe_timegm(struct tm *tm) {
  * Functions that are called across engine modules need declarations here.
  * ============================================================================ */
 
-/* From dna_engine_core.c */
-dht_context_t* dna_get_dht_ctx(dna_engine_t *engine);
-qgp_key_t* dna_load_private_key(dna_engine_t *engine);
-qgp_key_t* dna_load_encryption_key(dna_engine_t *engine);
+/* Helper/Worker declarations are in dna_engine_internal.h (included above) */
+
+/* From monolith (task queue + dispatch) */
+void dna_execute_task(dna_engine_t *engine, dna_task_t *task);
+void dna_free_task_params(dna_task_t *task);
+bool dna_task_queue_empty(dna_task_queue_t *queue);
+bool dna_task_queue_pop(dna_task_queue_t *queue, dna_task_t *task_out);
 void init_log_config(void);
-bool dht_wait_for_stabilization(dna_engine_t *engine);
-int dna_start_presence_heartbeat(dna_engine_t *engine);
 void* dna_engine_stabilization_retry_thread(void *arg);
 
 /* From dna_engine_p2p.c */

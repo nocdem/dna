@@ -2,13 +2,16 @@
  * DNA Engine - Messaging Module
  *
  * Message handling extracted from dna_engine.c.
- * Contains send/receive, conversation retrieval, offline message checking.
+ * Contains send/receive, conversation retrieval, offline message checking,
+ * and bulletproof message retry with exponential backoff.
  *
  * Functions:
- *   - dna_handle_send_message()
- *   - dna_handle_get_conversation()
- *   - dna_handle_get_conversation_page()
- *   - dna_handle_check_offline_messages()
+ *   - dna_handle_send_message()           // Send message task handler
+ *   - dna_handle_get_conversation()       // Get full conversation
+ *   - dna_handle_get_conversation_page()  // Get paginated conversation
+ *   - dna_handle_check_offline_messages() // Check DHT for offline messages
+ *   - dna_engine_retry_pending_messages() // Retry all pending messages
+ *   - dna_engine_retry_message()          // Retry single message by ID
  */
 
 #define DNA_ENGINE_MESSAGING_IMPL
@@ -320,4 +323,538 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
 
 done:
     task->callback.completion(task->request_id, error, task->user_data);
+}
+
+/* ============================================================================
+ * MESSAGE RETRY (Bulletproof Message Delivery)
+ * ============================================================================
+ *
+ * v0.4.59: "Never Give Up" retry system
+ * - No max retry limit (keeps trying until delivered or stale)
+ * - Exponential backoff: 30s, 60s, 120s, ... max 1 hour
+ * - Stale marking: 30+ day old messages marked stale (shown differently in UI)
+ * - DHT check: Only retry when DHT is connected with ≥1 peer
+ */
+
+#define MESSAGE_RETRY_MAX_RETRIES 0  /* 0 = unlimited retries (never give up) */
+#define MESSAGE_STALE_DAYS 30        /* Mark as stale after 30 days */
+#define MESSAGE_BACKOFF_BASE_SECS 30 /* Base backoff: 30 seconds */
+#define MESSAGE_BACKOFF_MAX_SECS 3600 /* Max backoff: 1 hour */
+
+/* Mutex to prevent concurrent retry calls (e.g., DHT reconnect + manual retry race) */
+static pthread_mutex_t retry_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/**
+ * Calculate retry backoff interval based on retry_count
+ * Exponential: 30s, 60s, 120s, 240s, 480s, 960s, 1920s, 3600s (max)
+ */
+static int get_retry_backoff_secs(int retry_count) {
+    if (retry_count <= 0) return MESSAGE_BACKOFF_BASE_SECS;
+
+    /* Cap the exponent to prevent overflow (2^7 = 128, 30*128 = 3840 > 3600) */
+    int exp = retry_count < 7 ? retry_count : 7;
+    int interval = MESSAGE_BACKOFF_BASE_SECS * (1 << exp);
+
+    return interval > MESSAGE_BACKOFF_MAX_SECS ? MESSAGE_BACKOFF_MAX_SECS : interval;
+}
+
+/**
+ * Check if message is ready for retry based on exponential backoff
+ * Returns true if enough time has passed since message creation + backoff
+ */
+static bool is_ready_for_retry(backup_message_t *msg) {
+    if (!msg) return false;
+
+    /* First attempt (retry_count=0) always allowed */
+    if (msg->retry_count == 0) return true;
+
+    /* Calculate next retry time based on backoff */
+    int backoff_secs = get_retry_backoff_secs(msg->retry_count);
+    time_t next_retry_at = msg->timestamp + (msg->retry_count * backoff_secs);
+    time_t now = time(NULL);
+
+    return now >= next_retry_at;
+}
+
+/**
+ * Retry a single pending/failed message
+ *
+ * v15: Re-encrypts plaintext and queues to DHT.
+ * Uses messenger_send_message which handles encryption, DHT queueing, and duplicate detection.
+ * Status stays PENDING until ACK confirms RECEIVED. Increments retry_count on failure.
+ *
+ * @param engine Engine instance
+ * @param msg Message to retry (from message_backup_get_pending_messages)
+ * @return 0 on success, -1 on failure
+ */
+static int retry_single_message(dna_engine_t *engine, backup_message_t *msg) {
+    if (!engine || !msg) return -1;
+    if (!engine->messenger) return -1;
+
+    message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
+    if (!backup_ctx) return -1;
+
+    /* v14: Messages are stored as plaintext - need to re-encrypt before sending */
+    if (!msg->plaintext || strlen(msg->plaintext) == 0) {
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Message %d has no plaintext - cannot retry", msg->id);
+        return -1;
+    }
+
+    /* Call messenger_send_message to re-encrypt and send
+     * This handles:
+     * - Loading recipient's Kyber public key
+     * - Multi-recipient encryption
+     * - DHT queueing
+     * - Duplicate detection (skips DB save if message exists) */
+    const char *recipients[] = { msg->recipient };
+    int rc = messenger_send_message(
+        engine->messenger,
+        recipients,
+        1,                      /* recipient_count */
+        msg->plaintext,         /* message content */
+        msg->group_id,          /* group_id (0 for direct) */
+        msg->message_type,      /* message_type */
+        msg->timestamp          /* preserve original timestamp for ordering */
+    );
+
+    if (rc == 0 || rc == 1) {
+        /* Success - queued to DHT (rc=0) or duplicate skipped (rc=1)
+         * Update status to SENT (1) using original message ID.
+         * For duplicates, messenger_send_message() can't update status (message_id=0)
+         * so we must do it here to prevent infinite retry loops. */
+        message_backup_update_status(backup_ctx, msg->id, 1);
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d to %.20s... re-encrypted and queued, status=SENT",
+                     msg->id, msg->recipient);
+        return 0;
+    } else if (rc == -3) {
+        /* KEY_UNAVAILABLE - recipient's public key not cached and DHT unavailable
+         * Don't increment retry count - will retry when DHT reconnects */
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Message %d to %.20s... key unavailable (will retry later)",
+                     msg->id, msg->recipient);
+        return -1;
+    } else {
+        /* Failed - increment retry count */
+        message_backup_increment_retry_count(backup_ctx, msg->id);
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Message %d to %.20s... failed (retry_count=%d)",
+                     msg->id, msg->recipient, msg->retry_count + 1);
+        return -1;
+    }
+}
+
+int dna_engine_retry_pending_messages(dna_engine_t *engine) {
+    if (!engine) return -1;
+    if (!engine->messenger) return -1;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (!dht_ctx) return -1;
+
+    /* Skip retry if DHT is not connected - retries will fail and block for timeout
+     * Messages will be retried when DHT reconnects (triggers this function again) */
+    if (!dht_context_is_ready(dht_ctx)) {
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Skipping retry - DHT not connected");
+        return 0;
+    }
+
+    message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
+    if (!backup_ctx) return -1;
+
+    /* Lock to prevent concurrent retry calls */
+    pthread_mutex_lock(&retry_mutex);
+
+    /* Get all pending/failed messages (0 = unlimited, no retry_count filter) */
+    backup_message_t *messages = NULL;
+    int count = 0;
+    int rc = message_backup_get_pending_messages(
+        backup_ctx,
+        MESSAGE_RETRY_MAX_RETRIES,  /* 0 = unlimited */
+        &messages,
+        &count
+    );
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[RETRY] Failed to query pending messages");
+        pthread_mutex_unlock(&retry_mutex);
+        return -1;
+    }
+
+    if (count == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "[RETRY] No pending messages to retry");
+        pthread_mutex_unlock(&retry_mutex);
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[RETRY] Found %d pending/failed messages to process", count);
+
+    int success_count = 0;
+    int fail_count = 0;
+    int skipped_backoff = 0;
+    int marked_stale = 0;
+
+    /* Process each message */
+    for (int i = 0; i < count; i++) {
+        backup_message_t *msg = &messages[i];
+
+        /* Check if message is stale (30+ days old) - mark as FAILED in v15 */
+        int age_days = message_backup_get_age_days(backup_ctx, msg->id);
+        if (age_days >= MESSAGE_STALE_DAYS) {
+            message_backup_update_status(backup_ctx, msg->id, MESSAGE_STATUS_FAILED);
+            marked_stale++;
+            QGP_LOG_INFO(LOG_TAG, "[RETRY] Message %d marked FAILED (stale, age=%d days)", msg->id, age_days);
+            continue;
+        }
+
+        /* Check exponential backoff - skip if not ready for retry yet */
+        if (!is_ready_for_retry(msg)) {
+            skipped_backoff++;
+            continue;
+        }
+
+        /* Retry the message */
+        if (retry_single_message(engine, msg) == 0) {
+            success_count++;
+        } else {
+            fail_count++;
+        }
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[RETRY] Completed: %d succeeded, %d failed, %d backoff, %d stale",
+                 success_count, fail_count, skipped_backoff, marked_stale);
+
+    /* Note: Delivery confirmation handled by persistent ACK listeners (v15) */
+
+    /* Free messages array */
+    message_backup_free_messages(messages, count);
+
+    pthread_mutex_unlock(&retry_mutex);
+    return success_count;
+}
+
+int dna_engine_retry_message(dna_engine_t *engine, int message_id) {
+    if (!engine || message_id <= 0) return -1;
+    if (!engine->messenger) return -1;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (!dht_ctx) return -1;
+    (void)dht_ctx;  /* Used by retry_single_message via dna_get_dht_ctx */
+
+    message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
+    if (!backup_ctx) return -1;
+
+    /* Lock to prevent concurrent retry calls */
+    pthread_mutex_lock(&retry_mutex);
+
+    /* Get all pending/failed messages (we'll filter by ID) */
+    backup_message_t *messages = NULL;
+    int count = 0;
+    int rc = message_backup_get_pending_messages(
+        backup_ctx,
+        0,  /* 0 = unlimited - allow manual retry regardless of retry_count */
+        &messages,
+        &count
+    );
+
+    if (rc != 0 || count == 0) {
+        pthread_mutex_unlock(&retry_mutex);
+        return -1;
+    }
+
+    /* Find the specific message */
+    int result = -1;
+    for (int i = 0; i < count; i++) {
+        if (messages[i].id == message_id) {
+            result = retry_single_message(engine, &messages[i]);
+            break;
+        }
+    }
+
+    message_backup_free_messages(messages, count);
+
+    if (result == -1) {
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] Message %d not found or not retryable", message_id);
+    }
+
+    pthread_mutex_unlock(&retry_mutex);
+    return result;
+}
+
+/* ============================================================================
+ * PUBLIC API - Messaging Functions
+ * ============================================================================ */
+
+dna_request_id_t dna_engine_send_message(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint,
+    const char *message,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !recipient_fingerprint || !message || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    strncpy(params.send_message.recipient, recipient_fingerprint, 128);
+    params.send_message.message = strdup(message);
+    params.send_message.queued_at = time(NULL);  /* Capture send time */
+    if (!params.send_message.message) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SEND_MESSAGE, &params, cb, user_data);
+}
+
+int dna_engine_queue_message(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint,
+    const char *message
+) {
+    if (!engine || !recipient_fingerprint || !message) {
+        return -2; /* Invalid args */
+    }
+    if (!engine->identity_loaded) {
+        return -2; /* No identity loaded */
+    }
+
+    /* Capture timestamp NOW - this is when user clicked send */
+    time_t queued_at = time(NULL);
+
+    pthread_mutex_lock(&engine->message_queue.mutex);
+
+    /* Check if queue is full */
+    if (engine->message_queue.size >= engine->message_queue.capacity) {
+        pthread_mutex_unlock(&engine->message_queue.mutex);
+        return -1; /* Queue full */
+    }
+
+    /* Find empty slot */
+    int slot_index = -1;
+    for (int i = 0; i < engine->message_queue.capacity; i++) {
+        if (!engine->message_queue.entries[i].in_use) {
+            slot_index = i;
+            break;
+        }
+    }
+
+    if (slot_index < 0) {
+        pthread_mutex_unlock(&engine->message_queue.mutex);
+        return -1; /* No slot available */
+    }
+
+    /* Fill the slot */
+    dna_message_queue_entry_t *entry = &engine->message_queue.entries[slot_index];
+    strncpy(entry->recipient, recipient_fingerprint, 128);
+    entry->recipient[128] = '\0';
+    entry->message = strdup(message);
+    if (!entry->message) {
+        pthread_mutex_unlock(&engine->message_queue.mutex);
+        return -2; /* Memory error */
+    }
+    entry->slot_id = engine->message_queue.next_slot_id++;
+    entry->in_use = true;
+    entry->queued_at = queued_at;
+    engine->message_queue.size++;
+
+    int slot_id = entry->slot_id;
+    pthread_mutex_unlock(&engine->message_queue.mutex);
+
+    /* Submit task to worker queue (fire-and-forget, no callback) */
+    dna_task_params_t params = {0};
+    strncpy(params.send_message.recipient, recipient_fingerprint, 128);
+    params.send_message.message = strdup(message);
+    params.send_message.queued_at = queued_at;
+    if (params.send_message.message) {
+        dna_task_callback_t cb = { .completion = NULL };
+        dna_submit_task(engine, TASK_SEND_MESSAGE, &params, cb, (void*)(intptr_t)slot_id);
+    }
+
+    return slot_id;
+}
+
+int dna_engine_get_message_queue_capacity(dna_engine_t *engine) {
+    if (!engine) return 0;
+    return engine->message_queue.capacity;
+}
+
+int dna_engine_get_message_queue_size(dna_engine_t *engine) {
+    if (!engine) return 0;
+
+    pthread_mutex_lock(&engine->message_queue.mutex);
+    int size = engine->message_queue.size;
+    pthread_mutex_unlock(&engine->message_queue.mutex);
+
+    return size;
+}
+
+int dna_engine_set_message_queue_capacity(dna_engine_t *engine, int capacity) {
+    if (!engine || capacity < 1 || capacity > DNA_MESSAGE_QUEUE_MAX_CAPACITY) {
+        return -1;
+    }
+
+    pthread_mutex_lock(&engine->message_queue.mutex);
+
+    /* Can't shrink below current size */
+    if (capacity < engine->message_queue.size) {
+        pthread_mutex_unlock(&engine->message_queue.mutex);
+        return -1;
+    }
+
+    /* Reallocate if needed */
+    if (capacity != engine->message_queue.capacity) {
+        dna_message_queue_entry_t *new_entries = realloc(
+            engine->message_queue.entries,
+            capacity * sizeof(dna_message_queue_entry_t)
+        );
+        if (!new_entries) {
+            pthread_mutex_unlock(&engine->message_queue.mutex);
+            return -1;
+        }
+        /* Initialize new slots */
+        for (int i = engine->message_queue.capacity; i < capacity; i++) {
+            memset(&new_entries[i], 0, sizeof(dna_message_queue_entry_t));
+        }
+        engine->message_queue.entries = new_entries;
+        engine->message_queue.capacity = capacity;
+    }
+
+    pthread_mutex_unlock(&engine->message_queue.mutex);
+    return 0;
+}
+
+dna_request_id_t dna_engine_get_conversation(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
+    dna_messages_cb callback,
+    void *user_data
+) {
+    if (!engine || !contact_fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_conversation.contact, contact_fingerprint, 128);
+
+    dna_task_callback_t cb = { .messages = callback };
+    return dna_submit_task(engine, TASK_GET_CONVERSATION, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_conversation_page(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
+    int limit,
+    int offset,
+    dna_messages_page_cb callback,
+    void *user_data
+) {
+    if (!engine || !contact_fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_conversation_page.contact, contact_fingerprint, 128);
+    params.get_conversation_page.limit = limit > 0 ? limit : 50;
+    params.get_conversation_page.offset = offset >= 0 ? offset : 0;
+
+    dna_task_callback_t cb = { .messages_page = callback };
+    return dna_submit_task(engine, TASK_GET_CONVERSATION_PAGE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_check_offline_messages(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    params.check_offline_messages.publish_watermarks = true;  /* User is active */
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_CHECK_OFFLINE_MESSAGES, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_check_offline_messages_cached(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    params.check_offline_messages.publish_watermarks = false;  /* Background caching only */
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_CHECK_OFFLINE_MESSAGES, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_check_offline_messages_from(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !contact_fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+    if (!engine->identity_loaded || !engine->messenger) {
+        callback(1, DNA_ENGINE_ERROR_NO_IDENTITY, user_data);
+        return 1;
+    }
+
+    size_t fp_len = strlen(contact_fingerprint);
+    if (fp_len < 64) {
+        QGP_LOG_ERROR(LOG_TAG, "[OFFLINE] Invalid fingerprint length: %zu", fp_len);
+        callback(1, DNA_ENGINE_ERROR_INVALID_PARAM, user_data);
+        return 1;
+    }
+
+    /* Check offline messages from specific contact's outbox.
+     * This is faster than checking all contacts and provides
+     * immediate updates when entering a specific chat. */
+    QGP_LOG_INFO(LOG_TAG, "[OFFLINE] Checking messages from %.20s...", contact_fingerprint);
+
+    size_t offline_count = 0;
+    int rc = messenger_transport_check_offline_messages(engine->messenger, contact_fingerprint, true, &offline_count);
+    if (rc == 0) {
+        QGP_LOG_INFO(LOG_TAG, "[OFFLINE] From %.20s...: %zu new messages", contact_fingerprint, offline_count);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "[OFFLINE] Check from %.20s... failed: %d", contact_fingerprint, rc);
+    }
+
+    /* Call completion callback (0 = success for any result including 0 messages) */
+    callback(1, rc == 0 ? DNA_OK : DNA_ENGINE_ERROR_NETWORK, user_data);
+    return 1;
+}
+
+int dna_engine_get_unread_count(
+    dna_engine_t *engine,
+    const char *contact_fingerprint
+) {
+    if (!engine || !contact_fingerprint) return -1;
+    if (!engine->messenger) return -1;
+
+    return messenger_get_unread_count(engine->messenger, contact_fingerprint);
+}
+
+dna_request_id_t dna_engine_mark_conversation_read(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !contact_fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    /* Mark as read synchronously since it's a fast local DB operation */
+    int result = -1;
+    if (engine->messenger) {
+        result = messenger_mark_conversation_read(engine->messenger, contact_fingerprint);
+    }
+
+    /* Call callback immediately with result (0=success, negative=error) */
+    callback(1, result == 0 ? 0 : -1, user_data);
+    return 1; /* Return valid request ID */
+}
+
+int dna_engine_delete_message_sync(
+    dna_engine_t *engine,
+    int message_id
+) {
+    if (!engine || message_id <= 0) return -1;
+    if (!engine->messenger) return -1;
+
+    return messenger_delete_message(engine->messenger, message_id);
 }
