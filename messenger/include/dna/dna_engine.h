@@ -1950,6 +1950,27 @@ DNA_API dna_request_id_t dna_engine_add_group_member(
 );
 
 /**
+ * Remove member from group
+ *
+ * Removes member from group in DHT and rotates GEK for forward secrecy.
+ * Only group owner can remove members.
+ *
+ * @param engine      Engine instance
+ * @param group_uuid  Group UUID
+ * @param fingerprint Member fingerprint to remove
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_remove_group_member(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
  * Get pending group invitations
  *
  * @param engine    Engine instance

@@ -2014,6 +2014,40 @@ class DnaBindings {
     return _dna_engine_get_group_conversation(engine, group_uuid, callback, user_data);
   }
 
+  late final _dna_engine_add_group_member = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_add_group_member');
+
+  int dna_engine_add_group_member(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> group_uuid,
+    Pointer<Utf8> fingerprint,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_add_group_member(
+        engine, group_uuid, fingerprint, callback, user_data);
+  }
+
+  late final _dna_engine_remove_group_member = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_remove_group_member');
+
+  int dna_engine_remove_group_member(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> group_uuid,
+    Pointer<Utf8> fingerprint,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_remove_group_member(
+        engine, group_uuid, fingerprint, callback, user_data);
+  }
+
   late final _dna_engine_get_invitations = _lib.lookupFunction<
       Uint64 Function(
           Pointer<dna_engine_t>, Pointer<DnaInvitationsCb>, Pointer<Void>),

@@ -259,6 +259,11 @@ Future<List<Contact>> _updateContactsPresence(DnaEngine engine, List<Contact> co
    - Accept/reject invitations
    - Group chat screen with message sending
    - Group list with member counts
+   - **Group Info Dialog** - View group details, members, GEK version
+   - **Member Management (v0.6.73+)** - Owner can add/remove members via UI buttons
+     - "+" button next to Members header (owner only)
+     - "x" button next to each non-owner member (owner only)
+     - GEK automatically rotated on add/remove for forward secrecy
 
 3. **Wallet:**
    - Send tokens with recipient, amount selection
@@ -300,6 +305,8 @@ sendGroupMessage(uuid, msg)  // Send to group
 acceptInvitation(uuid)       // Accept invite
 rejectInvitation(uuid)       // Decline invite
 syncGroup(uuid)              // Sync group metadata + GEK from DHT
+addGroupMember(uuid, fp)     // Add member (owner only, rotates GEK)
+removeGroupMember(uuid, fp)  // Remove member (owner only, rotates GEK)
 
 // Wallet
 sendTokens(...)              // Send tokens

@@ -1031,11 +1031,26 @@ class _GroupInfoDialogState extends ConsumerState<_GroupInfoDialog> {
           // Members section
           if (members.isNotEmpty) ...[
             const SizedBox(height: 24),
-            Text(
-              'Members',
-              style: theme.textTheme.titleSmall?.copyWith(
-                color: theme.colorScheme.primary,
-              ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Members',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+                // Add member button (owner only)
+                if (info.isOwner)
+                  IconButton(
+                    icon: const FaIcon(FontAwesomeIcons.plus, size: 14),
+                    tooltip: 'Add Member',
+                    onPressed: () => _showAddMemberDialog(context, contacts, members),
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                  ),
+              ],
             ),
             const SizedBox(height: 8),
             ...members.map((member) {
@@ -1085,6 +1100,20 @@ class _GroupInfoDialogState extends ConsumerState<_GroupInfoDialog> {
                           ),
                         ),
                       ),
+                    // Remove button (owner can remove non-owners)
+                    if (info.isOwner && !member.isOwner)
+                      IconButton(
+                        icon: FaIcon(
+                          FontAwesomeIcons.xmark,
+                          size: 12,
+                          color: theme.colorScheme.error,
+                        ),
+                        tooltip: 'Remove Member',
+                        onPressed: () => _showRemoveMemberDialog(context, member, displayName),
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                      ),
                   ],
                 ),
               );
@@ -1098,6 +1127,311 @@ class _GroupInfoDialogState extends ConsumerState<_GroupInfoDialog> {
   String _shortenFingerprint(String fingerprint) {
     if (fingerprint.length <= 16) return fingerprint;
     return '${fingerprint.substring(0, 8)}...${fingerprint.substring(fingerprint.length - 8)}';
+  }
+
+  /// Show dialog to add a member from contacts
+  void _showAddMemberDialog(
+    BuildContext context,
+    List<Contact> contacts,
+    List<GroupMember> currentMembers,
+  ) {
+    // Filter to contacts not already in the group
+    final memberFingerprints = currentMembers.map((m) => m.fingerprint).toSet();
+    final availableContacts = contacts
+        .where((c) => !memberFingerprints.contains(c.fingerprint))
+        .toList();
+
+    if (availableContacts.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('All your contacts are already members of this group'),
+        ),
+      );
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder: (ctx) => _AddMemberDialog(
+        groupUuid: widget.groupUuid,
+        availableContacts: availableContacts,
+        onMemberAdded: () {
+          _loadGroupInfo();  // Refresh member list
+        },
+      ),
+    );
+  }
+
+  /// Show confirmation dialog to remove a member
+  void _showRemoveMemberDialog(
+    BuildContext context,
+    GroupMember member,
+    String displayName,
+  ) {
+    showDialog(
+      context: context,
+      builder: (ctx) => _RemoveMemberDialog(
+        groupUuid: widget.groupUuid,
+        memberFingerprint: member.fingerprint,
+        memberDisplayName: displayName,
+        onMemberRemoved: () {
+          _loadGroupInfo();  // Refresh member list
+        },
+      ),
+    );
+  }
+}
+
+/// Dialog to add a member to the group
+class _AddMemberDialog extends ConsumerStatefulWidget {
+  final String groupUuid;
+  final List<Contact> availableContacts;
+  final VoidCallback onMemberAdded;
+
+  const _AddMemberDialog({
+    required this.groupUuid,
+    required this.availableContacts,
+    required this.onMemberAdded,
+  });
+
+  @override
+  ConsumerState<_AddMemberDialog> createState() => _AddMemberDialogState();
+}
+
+class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
+  String? _selectedFingerprint;
+  bool _isLoading = false;
+  String? _error;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return AlertDialog(
+      title: Row(
+        children: [
+          FaIcon(
+            FontAwesomeIcons.userPlus,
+            size: 20,
+            color: theme.colorScheme.primary,
+          ),
+          const SizedBox(width: 12),
+          const Text('Add Member'),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Select a contact to add to the group:',
+            style: theme.textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 16),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 200),
+            child: SingleChildScrollView(
+              child: Column(
+                children: widget.availableContacts.map((contact) {
+                  final isSelected = _selectedFingerprint == contact.fingerprint;
+                  return ListTile(
+                    dense: true,
+                    leading: FaIcon(
+                      FontAwesomeIcons.user,
+                      size: 16,
+                      color: isSelected
+                          ? theme.colorScheme.primary
+                          : theme.colorScheme.onSurface.withAlpha(179),
+                    ),
+                    title: Text(
+                      contact.displayName.isNotEmpty
+                          ? contact.displayName
+                          : contact.fingerprint.substring(0, 16),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    selected: isSelected,
+                    onTap: () {
+                      setState(() {
+                        _selectedFingerprint = contact.fingerprint;
+                        _error = null;
+                      });
+                    },
+                  );
+                }).toList(),
+              ),
+            ),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 12),
+            Text(
+              _error!,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.error,
+              ),
+            ),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isLoading ? null : () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: _isLoading || _selectedFingerprint == null
+              ? null
+              : _addMember,
+          child: _isLoading
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Add'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _addMember() async {
+    if (_selectedFingerprint == null) return;
+
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      await ref.read(groupsProvider.notifier).addGroupMember(
+            widget.groupUuid,
+            _selectedFingerprint!,
+          );
+
+      if (mounted) {
+        Navigator.of(context).pop();
+        widget.onMemberAdded();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _error = e.toString();
+        });
+      }
+    }
+  }
+}
+
+/// Dialog to confirm removing a member from the group
+class _RemoveMemberDialog extends ConsumerStatefulWidget {
+  final String groupUuid;
+  final String memberFingerprint;
+  final String memberDisplayName;
+  final VoidCallback onMemberRemoved;
+
+  const _RemoveMemberDialog({
+    required this.groupUuid,
+    required this.memberFingerprint,
+    required this.memberDisplayName,
+    required this.onMemberRemoved,
+  });
+
+  @override
+  ConsumerState<_RemoveMemberDialog> createState() => _RemoveMemberDialogState();
+}
+
+class _RemoveMemberDialogState extends ConsumerState<_RemoveMemberDialog> {
+  bool _isLoading = false;
+  String? _error;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return AlertDialog(
+      title: Row(
+        children: [
+          FaIcon(
+            FontAwesomeIcons.userMinus,
+            size: 20,
+            color: theme.colorScheme.error,
+          ),
+          const SizedBox(width: 12),
+          const Text('Remove Member'),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Are you sure you want to remove ${widget.memberDisplayName} from this group?',
+            style: theme.textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'The group encryption key will be rotated for forward secrecy.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurface.withAlpha(153),
+            ),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 12),
+            Text(
+              _error!,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.error,
+              ),
+            ),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isLoading ? null : () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: _isLoading ? null : _removeMember,
+          style: TextButton.styleFrom(
+            foregroundColor: theme.colorScheme.error,
+          ),
+          child: _isLoading
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Remove'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _removeMember() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      await ref.read(groupsProvider.notifier).removeGroupMember(
+            widget.groupUuid,
+            widget.memberFingerprint,
+          );
+
+      if (mounted) {
+        Navigator.of(context).pop();
+        widget.onMemberRemoved();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _error = e.toString();
+        });
+      }
+    }
   }
 }
 

@@ -96,6 +96,8 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_reject_invitation(...)` | Reject group invitation |
 | `dna_request_id_t dna_engine_get_group_info(...)` | Get extended group info (name, GEK version, etc.) |
 | `dna_request_id_t dna_engine_get_group_members(...)` | Get list of group members |
+| `dna_request_id_t dna_engine_add_group_member(engine, group_uuid, fingerprint, cb, user_data)` | Add member to group (owner only, rotates GEK) |
+| `dna_request_id_t dna_engine_remove_group_member(engine, group_uuid, fingerprint, cb, user_data)` | Remove member from group (owner only, rotates GEK) |
 | `void dna_free_group_info(dna_group_info_t*)` | Free group info struct |
 | `void dna_free_group_members(dna_group_member_t*, int)` | Free group members array |
 

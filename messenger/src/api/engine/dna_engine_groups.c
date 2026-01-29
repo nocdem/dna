@@ -384,6 +384,64 @@ done:
     task->callback.completion(task->request_id, error, task->user_data);
 }
 
+void dna_handle_remove_group_member(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    /* Look up group_id from UUID using local cache */
+    dht_group_cache_entry_t *entries = NULL;
+    int entry_count = 0;
+    if (dht_groups_list_for_user(engine->fingerprint, &entries, &entry_count) != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    int group_id = -1;
+    const char *group_creator = NULL;
+    for (int i = 0; i < entry_count; i++) {
+        if (strcmp(entries[i].group_uuid, task->params.add_group_member.group_uuid) == 0) {
+            group_id = entries[i].local_id;
+            group_creator = entries[i].creator;
+            break;
+        }
+    }
+
+    if (group_id < 0) {
+        dht_groups_free_cache_entries(entries, entry_count);
+        error = DNA_ENGINE_ERROR_NOT_FOUND;
+        goto done;
+    }
+
+    /* Only owner can remove members */
+    if (strcmp(engine->fingerprint, group_creator) != 0) {
+        dht_groups_free_cache_entries(entries, entry_count);
+        error = DNA_ENGINE_ERROR_PERMISSION;
+        goto done;
+    }
+
+    dht_groups_free_cache_entries(entries, entry_count);
+
+    /* Remove member using messenger API (handles GEK rotation) */
+    int rc = messenger_remove_group_member(
+        engine->messenger,
+        group_id,
+        task->params.add_group_member.fingerprint
+    );
+
+    if (rc == -2) {
+        error = DNA_ENGINE_ERROR_NOT_FOUND;  /* Not a member */
+    } else if (rc != 0) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+    }
+
+done:
+    task->callback.completion(task->request_id, error, task->user_data);
+}
+
 void dna_handle_get_invitations(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     dna_invitation_t *invitations = NULL;
@@ -619,6 +677,25 @@ dna_request_id_t dna_engine_add_group_member(
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_ADD_GROUP_MEMBER, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_remove_group_member(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !group_uuid || !fingerprint || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    strncpy(params.add_group_member.group_uuid, group_uuid, 36);
+    strncpy(params.add_group_member.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_REMOVE_GROUP_MEMBER, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_get_invitations(

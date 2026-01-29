@@ -3532,6 +3532,90 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Add a member to a group (owner only)
+  /// Automatically rotates GEK for forward secrecy
+  Future<void> addGroupMember(String groupUuid, String fingerprint) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final groupPtr = groupUuid.toNativeUtf8();
+    final fpPtr = fingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(groupPtr);
+      calloc.free(fpPtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_add_group_member(
+      _engine,
+      groupPtr.cast(),
+      fpPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(groupPtr);
+      calloc.free(fpPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Remove a member from a group (owner only)
+  /// Automatically rotates GEK for forward secrecy
+  Future<void> removeGroupMember(String groupUuid, String fingerprint) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final groupPtr = groupUuid.toNativeUtf8();
+    final fpPtr = fingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(groupPtr);
+      calloc.free(fpPtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_remove_group_member(
+      _engine,
+      groupPtr.cast(),
+      fpPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(groupPtr);
+      calloc.free(fpPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
   // ---------------------------------------------------------------------------
   // FEED - CHANNELS
   // ---------------------------------------------------------------------------

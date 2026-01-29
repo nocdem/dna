@@ -50,6 +50,22 @@ class GroupsNotifier extends AsyncNotifier<List<Group>> {
     await engine.syncGroupByUuid(groupUuid);
     await refresh();
   }
+
+  /// Add a member to a group (owner only)
+  /// Automatically rotates GEK for forward secrecy
+  Future<void> addGroupMember(String groupUuid, String fingerprint) async {
+    final engine = await ref.read(engineProvider.future);
+    await engine.addGroupMember(groupUuid, fingerprint);
+    await refresh();
+  }
+
+  /// Remove a member from a group (owner only)
+  /// Automatically rotates GEK for forward secrecy
+  Future<void> removeGroupMember(String groupUuid, String fingerprint) async {
+    final engine = await ref.read(engineProvider.future);
+    await engine.removeGroupMember(groupUuid, fingerprint);
+    await refresh();
+  }
 }
 
 /// Invitations list provider

@@ -101,6 +101,7 @@ typedef enum {
     TASK_SEND_GROUP_MESSAGE,
     TASK_GET_GROUP_CONVERSATION,
     TASK_ADD_GROUP_MEMBER,
+    TASK_REMOVE_GROUP_MEMBER,
     TASK_GET_INVITATIONS,
     TASK_ACCEPT_INVITATION,
     TASK_REJECT_INVITATION,
@@ -724,6 +725,8 @@ void dna_handle_get_group_members(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_create_group(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_send_group_message(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_group_conversation(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_add_group_member(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_remove_group_member(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_invitations(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_accept_invitation(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_reject_invitation(dna_engine_t *engine, dna_task_t *task);

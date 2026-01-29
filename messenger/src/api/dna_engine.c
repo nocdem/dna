@@ -977,6 +977,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_ADD_GROUP_MEMBER:
             dna_handle_add_group_member(engine, task);
             break;
+        case TASK_REMOVE_GROUP_MEMBER:
+            dna_handle_remove_group_member(engine, task);
+            break;
         case TASK_GET_INVITATIONS:
             dna_handle_get_invitations(engine, task);
             break;
