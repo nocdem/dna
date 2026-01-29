@@ -48,11 +48,11 @@ class DnaMessengerService : Service() {
             }
         }
         private const val CHANNEL_ID = "dna_messenger_service"
-        private const val DEFAULT_pollIntervalMs = 5 * 60 * 1000L  // 5 minutes default
+        private const val DEFAULT_POLL_INTERVAL_MS = 1 * 60 * 1000L  // 1 minute default
 
         // Configurable poll interval (can be changed via setPollInterval)
         @Volatile
-        private var pollIntervalMs: Long = DEFAULT_pollIntervalMs
+        private var pollIntervalMs: Long = DEFAULT_POLL_INTERVAL_MS
 
         /**
          * Set poll interval in minutes. Called from Flutter via method channel.

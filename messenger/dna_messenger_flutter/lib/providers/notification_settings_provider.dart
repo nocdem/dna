@@ -17,7 +17,7 @@ class NotificationSettingsState {
 
   const NotificationSettingsState({
     this.enabled = true, // Enabled by default
-    this.pollIntervalMinutes = 5, // 5 minutes default
+    this.pollIntervalMinutes = 1, // 1 minute default
   });
 
   NotificationSettingsState copyWith({
@@ -40,7 +40,7 @@ class NotificationSettingsNotifier extends StateNotifier<NotificationSettingsSta
     final prefs = await SharedPreferences.getInstance();
     state = NotificationSettingsState(
       enabled: prefs.getBool(_kNotificationsEnabled) ?? true,
-      pollIntervalMinutes: prefs.getInt(_kPollIntervalMinutes) ?? 5,
+      pollIntervalMinutes: prefs.getInt(_kPollIntervalMinutes) ?? 1,
     );
   }
 
