@@ -191,8 +191,18 @@ static int decompress_data(const uint8_t *in, size_t in_len,
     size_t decompressed_size = ZSTD_decompress(buf, buffer_size, in, in_len);
 
     if (ZSTD_isError(decompressed_size)) {
-        QGP_LOG_WARN(LOG_TAG, "ZSTD decompression failed: %s",
-                ZSTD_getErrorName(decompressed_size));
+        QGP_LOG_WARN(LOG_TAG, "ZSTD decompression failed: %s (code=%zu)",
+                ZSTD_getErrorName(decompressed_size), decompressed_size);
+        QGP_LOG_WARN(LOG_TAG, "  compressed_len=%zu, expected_size=%zu, buffer_size=%zu",
+                in_len, expected_size, buffer_size);
+        // Hex dump first 32 bytes of compressed data for diagnosis
+        if (in_len >= 32) {
+            QGP_LOG_WARN(LOG_TAG, "  compressed[0:31]: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
+                in[0], in[1], in[2], in[3], in[4], in[5], in[6], in[7],
+                in[8], in[9], in[10], in[11], in[12], in[13], in[14], in[15],
+                in[16], in[17], in[18], in[19], in[20], in[21], in[22], in[23],
+                in[24], in[25], in[26], in[27], in[28], in[29], in[30], in[31]);
+        }
         free(buf);
         return -1;
     }
@@ -691,6 +701,8 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
 
     QGP_LOG_INFO(LOG_TAG, "Fetching: total_chunks=%u, original_size=%u (key=%s)\n",
            total_chunks, original_size, base_key);
+    QGP_LOG_DEBUG(LOG_TAG, "[CHUNK0] v%u, chunk_data_size=%u, raw_len=%zu, has_hash=%d",
+           header0.version, header0.chunk_data_size, chunk0_len, header0.has_content_hash);
 
     // If only 1 chunk, handle directly
     if (total_chunks == 1) {
@@ -858,12 +870,17 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
         goto cleanup_error;
     }
 
+    QGP_LOG_DEBUG(LOG_TAG, "[REASSEMBLE] total_chunks=%u, total_compressed=%zu, original_size=%u",
+            total_chunks, total_compressed, original_size);
+
     size_t offset = 0;
     for (uint32_t i = 0; i < total_chunks; i++) {
         dht_chunk_header_t hdr;
         const uint8_t *payload;
         if (deserialize_chunk(pctx->slots[i].data, pctx->slots[i].data_len,
                              &hdr, &payload) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "[REASSEMBLE] chunk[%u] deserialize failed, slot_len=%zu",
+                    i, pctx->slots[i].data_len);
             free(compressed);
             goto cleanup_error;
         }
@@ -875,9 +892,14 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
             goto cleanup_error;
         }
 
+        QGP_LOG_DEBUG(LOG_TAG, "[REASSEMBLE] chunk[%u]: v%u, data_size=%u, slot_len=%zu, offset=%zu",
+                i, hdr.version, hdr.chunk_data_size, pctx->slots[i].data_len, offset);
+
         memcpy(compressed + offset, payload, hdr.chunk_data_size);
         offset += hdr.chunk_data_size;
     }
+
+    QGP_LOG_DEBUG(LOG_TAG, "[REASSEMBLE] complete: assembled %zu bytes, calling ZSTD decompress", offset);
 
     // Step 8: Decompress
     uint8_t *decompressed = NULL;
