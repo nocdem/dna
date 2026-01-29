@@ -1,6 +1,7 @@
 // Profile Provider - Full user profile management
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
+import '../utils/logger.dart' show logError;
 import 'engine_provider.dart' show engineProvider, currentFingerprintProvider;
 import 'identity_provider.dart' show identityAvatarCacheProvider;
 import 'identity_profile_cache_provider.dart';
@@ -21,8 +22,10 @@ class ProfileNotifier extends AsyncNotifier<UserProfile?> {
     final engine = await ref.watch(engineProvider.future);
     try {
       return await engine.getProfile();
-    } catch (_) {
-      return UserProfile();
+    } catch (e) {
+      // Return null on error - never return empty profile to prevent data loss
+      logError('PROFILE', 'Failed to load profile: $e');
+      return null;
     }
   }
 

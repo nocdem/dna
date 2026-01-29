@@ -6,6 +6,7 @@
 #include "keyserver_core.h"
 #include "../core/dht_keyserver.h"
 #include "crypto/utils/qgp_log.h"
+#include "database/profile_cache.h"
 
 #define LOG_TAG "KEYSERVER"
 
@@ -23,30 +24,45 @@ int dna_update_profile(
         return -1;
     }
 
-    // Load existing identity
+    // Load existing identity from DHT
     dna_unified_identity_t *identity = NULL;
     int ret = dna_load_identity(dht_ctx, fingerprint, &identity);
 
     if (ret != 0) {
-        // Create new identity if doesn't exist yet
-        identity = dna_identity_create();
-        if (!identity) {
+        // DHT failed - try cache fallback to preserve existing data
+        dna_unified_identity_t *cached = NULL;
+        uint64_t cached_at = 0;
+        int cache_ret = profile_cache_get(fingerprint, &cached, &cached_at);
+
+        if (cache_ret == 0 && cached) {
+            // Use cached profile - preserves registered_name, name_version, etc.
+            QGP_LOG_WARN(LOG_TAG, "Using cached profile (DHT unavailable, ret=%d)\n", ret);
+            identity = cached;
+        } else if (ret == -2) {
+            // Not found in DHT AND not in cache - first-time profile, create new
+            identity = dna_identity_create();
+            if (!identity) {
+                return -1;
+            }
+
+            // Set fingerprint and public keys
+            strncpy(identity->fingerprint, fingerprint, sizeof(identity->fingerprint) - 1);
+            memcpy(identity->dilithium_pubkey, dilithium_pubkey, sizeof(identity->dilithium_pubkey));
+            memcpy(identity->kyber_pubkey, kyber_pubkey, sizeof(identity->kyber_pubkey));
+
+            // Initialize name registration fields
+            identity->has_registered_name = false;
+            memset(identity->registered_name, 0, sizeof(identity->registered_name));
+            identity->name_registered_at = 0;
+            identity->name_expires_at = 0;
+            identity->name_version = 0;
+
+            QGP_LOG_INFO(LOG_TAG, "Created new identity (first-time profile)\n");
+        } else {
+            // Network error (-1 or -3) with no cache - abort to prevent data loss
+            QGP_LOG_ERROR(LOG_TAG, "Network error (ret=%d) and no cached profile - aborting update to prevent data loss\n", ret);
             return -1;
         }
-
-        // Set fingerprint and public keys
-        strncpy(identity->fingerprint, fingerprint, sizeof(identity->fingerprint) - 1);
-        memcpy(identity->dilithium_pubkey, dilithium_pubkey, sizeof(identity->dilithium_pubkey));
-        memcpy(identity->kyber_pubkey, kyber_pubkey, sizeof(identity->kyber_pubkey));
-
-        // Initialize name registration fields
-        identity->has_registered_name = false;
-        memset(identity->registered_name, 0, sizeof(identity->registered_name));
-        identity->name_registered_at = 0;
-        identity->name_expires_at = 0;
-        identity->name_version = 0;
-
-        QGP_LOG_INFO(LOG_TAG, "Created new identity (old profile signature verification failed)\n");
     }
 
     // Update profile data from flat dna_profile_t

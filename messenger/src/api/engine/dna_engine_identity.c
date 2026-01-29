@@ -919,6 +919,12 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
                                  sign_key->private_key, sign_key->public_key,
                                  enc_key->public_key);
 
+    /* Save public keys before freeing (needed for cache entry creation) */
+    uint8_t dilithium_pubkey_copy[2592];
+    uint8_t kyber_pubkey_copy[1568];
+    memcpy(dilithium_pubkey_copy, sign_key->public_key, sizeof(dilithium_pubkey_copy));
+    memcpy(kyber_pubkey_copy, enc_key->public_key, sizeof(kyber_pubkey_copy));
+
     qgp_key_free(sign_key);
     qgp_key_free(enc_key);
 
@@ -931,11 +937,16 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
         int cache_rc = profile_cache_get(engine->fingerprint, &cached, &cached_at);
 
         if (cache_rc != 0 || !cached) {
-            /* No cached profile - create one */
+            /* No cached profile - create complete identity with public keys
+             * This prevents data loss if DHT load fails on next update */
             cached = (dna_unified_identity_t*)calloc(1, sizeof(dna_unified_identity_t));
             if (cached) {
                 strncpy(cached->fingerprint, engine->fingerprint, sizeof(cached->fingerprint) - 1);
+                memcpy(cached->dilithium_pubkey, dilithium_pubkey_copy, sizeof(cached->dilithium_pubkey));
+                memcpy(cached->kyber_pubkey, kyber_pubkey_copy, sizeof(cached->kyber_pubkey));
                 cached->created_at = (uint64_t)time(NULL);
+                QGP_LOG_INFO(LOG_TAG, "Created complete cache entry with public keys for %.16s...\n",
+                            engine->fingerprint);
             }
         }
 
