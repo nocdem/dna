@@ -14,7 +14,7 @@
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_types.h"
 #include "../../messenger/gek.h"
-#include "../../messenger/groups.h"
+#include "../../messenger/groups.h"  // For groups_import_all() backward compat
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -134,47 +134,16 @@ static char* serialize_messages_to_json(
         json_object_object_add(root, "gek_count", json_object_new_int(0));
     }
 
-    // === Add group data (v2) ===
-    groups_export_entry_t *group_entries = NULL;
-    size_t group_count = 0;
-    if (groups_export_all(&group_entries, &group_count) == 0 && group_count > 0) {
-        json_object *groups_array = json_object_new_array();
-        for (size_t i = 0; i < group_count; i++) {
-            json_object *group_obj = json_object_new_object();
-            json_object_object_add(group_obj, "uuid",
-                json_object_new_string(group_entries[i].uuid));
-            json_object_object_add(group_obj, "name",
-                json_object_new_string(group_entries[i].name));
-            json_object_object_add(group_obj, "owner_fingerprint",
-                json_object_new_string(group_entries[i].owner_fp));
-            json_object_object_add(group_obj, "is_owner",
-                json_object_new_boolean(group_entries[i].is_owner));
-            json_object_object_add(group_obj, "created_at",
-                json_object_new_int64((int64_t)group_entries[i].created_at));
-
-            // Add members array
-            json_object *members_array = json_object_new_array();
-            for (int m = 0; m < group_entries[i].member_count; m++) {
-                if (group_entries[i].members && group_entries[i].members[m]) {
-                    json_object_array_add(members_array,
-                        json_object_new_string(group_entries[i].members[m]));
-                }
-            }
-            json_object_object_add(group_obj, "members", members_array);
-            json_object_array_add(groups_array, group_obj);
-        }
-        json_object_object_add(root, "group_count", json_object_new_int((int)group_count));
-        json_object_object_add(root, "groups", groups_array);
-        groups_free_export_entries(group_entries, group_count);
-        QGP_LOG_INFO(LOG_TAG, "Added %zu groups to backup", group_count);
-    } else {
-        json_object_object_add(root, "group_count", json_object_new_int(0));
-    }
+    // === Group data removed (v0.6.83) ===
+    // Groups are now synced via dht_grouplist (separate sync system).
+    // The old groups_export_all() read from the 'groups' table which was never populated.
+    // Setting group_count=0 for backward compatibility with old backup format.
+    json_object_object_add(root, "group_count", json_object_new_int(0));
 
     // Convert to string
     const char *json_str = json_object_to_json_string_ext(root, JSON_C_TO_STRING_PLAIN);
-    QGP_LOG_INFO(LOG_TAG, "Serialized backup v4: %zu GEKs, %zu groups to JSON (%zu bytes)",
-                 gek_count, group_count, strlen(json_str));
+    QGP_LOG_INFO(LOG_TAG, "Serialized backup v4: %zu GEKs, 0 groups (via dht_grouplist) to JSON (%zu bytes)",
+                 gek_count, strlen(json_str));
     char *result = strdup(json_str);
 
     json_object_put(root);  // This frees the entire object tree

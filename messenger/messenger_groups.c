@@ -13,7 +13,7 @@
 #include "dht/client/dht_singleton.h"  // For dht_singleton_get
 #include "dht/client/dna_group_outbox.h"  // Group outbox (feed pattern)
 #include "dht/client/dht_grouplist.h"  // Group list DHT sync (v0.5.26+)
-#include "messenger/groups.h"  // For groups_export_all
+#include "messenger/groups.h"  // For groups_leave() cleanup (v0.6.83: removed groups_export_all)
 #include "message_backup.h"  // Phase 5.2
 #include "database/group_invitations.h"  // Group invitation management
 #include "dna_api.h"  // For dna_decrypt_message_raw
@@ -1115,13 +1115,15 @@ int messenger_sync_groups_to_dht(messenger_context_t *ctx) {
         }
     }
 
-    // Get group list from local database using groups_export_all()
-    groups_export_entry_t *entries = NULL;
-    size_t entry_count = 0;
+    // Get group list from DHT cache (where messenger_create_group stores them)
+    // NOTE: groups_export_all() reads from 'groups' table which is NEVER populated.
+    // dht_groups_list_for_user() reads from 'dht_group_cache' which IS populated.
+    dht_group_cache_entry_t *cache_entries = NULL;
+    int cache_count = 0;
 
-    int ret = groups_export_all(&entries, &entry_count);
+    int ret = dht_groups_list_for_user(ctx->identity, &cache_entries, &cache_count);
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to export groups from local database\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get groups from DHT cache\n");
         qgp_key_free(kyber_key);
         qgp_key_free(dilithium_key);
         return -1;
@@ -1129,19 +1131,20 @@ int messenger_sync_groups_to_dht(messenger_context_t *ctx) {
 
     // Extract UUIDs into string array
     const char **group_uuids = NULL;
+    size_t entry_count = (size_t)cache_count;
     if (entry_count > 0) {
         group_uuids = malloc(entry_count * sizeof(char*));
         if (!group_uuids) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to allocate group UUIDs array\n");
-            groups_free_export_entries(entries, entry_count);
+            dht_groups_free_cache_entries(cache_entries, cache_count);
             qgp_key_free(kyber_key);
             qgp_key_free(dilithium_key);
             return -1;
         }
 
         for (size_t i = 0; i < entry_count; i++) {
-            group_uuids[i] = entries[i].uuid;
-            QGP_LOG_DEBUG(LOG_TAG, "Group[%zu]: %s (%s)\n", i, entries[i].uuid, entries[i].name);
+            group_uuids[i] = cache_entries[i].group_uuid;
+            QGP_LOG_DEBUG(LOG_TAG, "Group[%zu]: %s (%s)\n", i, cache_entries[i].group_uuid, cache_entries[i].name);
         }
     }
 
@@ -1160,7 +1163,7 @@ int messenger_sync_groups_to_dht(messenger_context_t *ctx) {
 
     // Cleanup
     if (group_uuids) free(group_uuids);
-    groups_free_export_entries(entries, entry_count);
+    dht_groups_free_cache_entries(cache_entries, cache_count);
     qgp_key_free(kyber_key);
     qgp_key_free(dilithium_key);
 

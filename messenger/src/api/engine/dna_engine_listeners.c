@@ -1208,11 +1208,13 @@ static void on_group_new_message(const char *group_uuid, size_t new_count, void 
     (void)user_data;
     QGP_LOG_INFO(LOG_TAG, "[GROUP] New messages: group=%s count=%zu", group_uuid, new_count);
 
-    /* Get group name from local database for notification */
+    /* Get group name from DHT cache for notification
+     * Note: groups_get_info() reads from empty 'groups' table, use DHT cache instead */
     char group_name[256] = "";
-    groups_info_t group_info;
-    if (groups_get_info(group_uuid, &group_info) == 0) {
-        strncpy(group_name, group_info.name, sizeof(group_name) - 1);
+    dht_group_cache_entry_t *cache_entry = NULL;
+    if (dht_groups_get_cache_entry(group_uuid, &cache_entry) == 0 && cache_entry) {
+        strncpy(group_name, cache_entry->name, sizeof(group_name) - 1);
+        free(cache_entry);
     }
 
     /* Fire Android callback */

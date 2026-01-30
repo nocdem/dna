@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-01-30 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.6.82 | Flutter v0.100.70 | Nodus v0.4.5
+**Versions:** Library v0.6.83 | Flutter v0.100.70 | Nodus v0.4.5
 
 ---
 
@@ -59,6 +59,41 @@ These actions are NEVER permitted without explicit request:
 
 ---
 
+## TASK LIST REQUIREMENT
+
+**MANDATORY for multi-step tasks:** Claude MUST use TaskCreate/TaskUpdate/TaskList tools to track work.
+
+**When to create tasks:**
+- ANY task with 2+ distinct actions
+- Bug fixes (investigate → fix → test)
+- Feature implementations
+- Code modifications
+- Documentation updates
+
+**When NOT to create tasks:**
+- Single trivial action (e.g., "read this file")
+- Pure information queries
+- Single-line fixes
+
+**Task workflow:**
+1. **CHECKPOINT 3:** Create tasks with TaskCreate (subject, description, activeForm)
+2. **CHECKPOINT 4:** Display tasks with TaskList for user review
+3. **CHECKPOINT 5:** Update task status as you work:
+   - `status: "in_progress"` when starting a task
+   - `status: "completed"` when task is done
+
+**Task format:**
+```
+TaskCreate:
+  subject: "Fix null pointer in message_send()" (imperative)
+  description: "Check for null msg parameter at line 42 of messenger.c"
+  activeForm: "Fixing null pointer" (present continuous - shown during execution)
+```
+
+**IMPORTANT:** Tasks make work visible to the user. They can see what you're doing at each step.
+
+---
+
 ## MANDATORY CHECKPOINT
 
 **VIOLATION = IMMEDIATE HALT**
@@ -81,27 +116,38 @@ DO NOT: Investigate code. Do not look for solutions. Do not form plans.
 OUTPUT: List what documentation says. If docs allow multiple interpretations, list options with Confidence.
 ```
 
-### CHECKPOINT 3: STATE PLAN
+### CHECKPOINT 3: STATE PLAN + CREATE TASKS
 ```
-STATE: "CHECKPOINT 3 - PLAN"
-DO: State exactly what actions you would take.
-DO NOT: Execute anything. Do not use tools. Do not investigate further.
-OUTPUT: Numbered list of specific actions.
+STATE: "CHECKPOINT 3 - PLAN + TASKS"
+DO:
+1. State exactly what actions you would take
+2. Use TaskCreate tool to create a formal task for EACH action
+3. Each task must have: subject (imperative), description, activeForm (present continuous)
+DO NOT: Execute anything. Do not investigate further. Only TaskCreate is permitted.
+OUTPUT:
+- Numbered list of specific actions (text)
+- TaskList showing all created tasks with IDs
 ```
 
 ### CHECKPOINT 4: WAIT
 ```
 STATE: "CHECKPOINT 4 - AWAITING APPROVAL"
-DO: Nothing.
+DO: Display task list using TaskList tool so user can review
 WAIT: For exact word "APPROVED" or "PROCEED"
 ACCEPT: No substitutes. "OK" = not approved. "Yes" = not approved. "Do it" = not approved.
+NOTE: User may request task modifications before approval
 ```
 
 ### CHECKPOINT 5: EXECUTE
 ```
 STATE: "CHECKPOINT 5 - EXECUTING"
-DO: Only approved actions. Nothing additional.
+DO:
+1. Mark current task as in_progress using TaskUpdate before starting
+2. Execute the task
+3. Mark task as completed using TaskUpdate when done
+4. Proceed to next task
 DO NOT: Add improvements. Fix other things. Suggest alternatives.
+NOTE: User can see real-time progress via task status updates
 ```
 
 ### CHECKPOINT 6: REPORT
@@ -161,7 +207,7 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.6.82 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
+| C Library | `include/dna/version.h` | v0.6.83 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
 | Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.100.69+10169 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.5 | Nodus server changes (vendor/opendht-pq/tools/) |
 
@@ -557,18 +603,22 @@ I MUST search and read relevant documentation:
 2. **READ** check for relevant functions in 'docs/FUNCTIONS.MD'
 3. **STATE**: "CHECKPOINT 2 COMPLETE - Documentation reviewed: [list files read]"
 
-### CHECKPOINT 3: PLAN CONFIRMATION
-I MUST explicitly state my plan:
+### CHECKPOINT 3: PLAN CONFIRMATION + CREATE TASKS
+I MUST explicitly state my plan AND create formal tasks:
 1. **CONFIRM** what I found in documentation
 2. **CONFIRM** exactly what actions I plan to take
 3. **CONFIRM** why these actions are necessary
-4. **STATE**: "CHECKPOINT 3 COMPLETE - Plan confirmed and stated"
+4. **CREATE TASKS** using TaskCreate for EACH action:
+   - subject (imperative), description, activeForm (present continuous)
+5. **STATE**: "CHECKPOINT 3 COMPLETE - Plan confirmed and tasks created"
 
 ### CHECKPOINT 4: EXPLICIT APPROVAL GATE
-I MUST wait for explicit user permission:
-1. **WAIT** for user to type "APPROVED" or "PROCEED"
-2. **NO ASSUMPTIONS** - only explicit approval words count
-3. **STATE**: "CHECKPOINT 4 COMPLETE - Awaiting explicit approval"
+I MUST display tasks and wait for explicit user permission:
+1. **DISPLAY** task list using TaskList tool so user can review
+2. **WAIT** for user to type "APPROVED" or "PROCEED"
+3. **NO ASSUMPTIONS** - only explicit approval words count
+4. **STATE**: "CHECKPOINT 4 COMPLETE - Awaiting explicit approval"
+**NOTE:** User may request task modifications before approval
 
 **IMPORTANT:** "Dangerously skip permissions" mode in settings.json does NOT skip this checkpoint.
 - Settings.json controls TOOL permissions (Read, Edit, Bash, etc.)
@@ -577,9 +627,12 @@ I MUST wait for explicit user permission:
 
 ### CHECKPOINT 5: ACTION EXECUTION
 Only after ALL previous checkpoints:
-1. **EXECUTE** approved actions only
-2. **REPORT** exactly what was done
-3. **STATE**: "CHECKPOINT 5 COMPLETE - Actions executed as approved"
+1. **MARK** current task as in_progress using TaskUpdate before starting
+2. **EXECUTE** the task
+3. **MARK** task as completed using TaskUpdate when done
+4. **PROCEED** to next task (repeat steps 1-3)
+5. **STATE**: "CHECKPOINT 5 COMPLETE - Actions executed as approved"
+**NOTE:** User can see real-time progress via task status updates
 
 ### CHECKPOINT 6: MANDATORY REPORT
 After ALL actions are complete, I MUST provide a final report:
@@ -637,7 +690,7 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.6.82 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
+| C Library | `include/dna/version.h` | v0.6.83 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
 | Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.100.69+10169 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.5 | Nodus server changes (vendor/opendht-pq/tools/) |
 
@@ -809,6 +862,64 @@ DNA Messenger is developed by a **collaborative team**. When working on this pro
 4. **Cross-Platform** - Test Linux and Windows
 5. **Documentation** - Update docs with changes
 6. **Team Workflow** - Use merge commits, communicate changes
+7. **Modular Architecture** - Follow the established modular pattern (see below)
+8. **No Dead Code** - When deprecating APIs or data layers, remove the old code entirely. Dead code that compiles successfully is dangerous.
+
+---
+
+## MODULAR ARCHITECTURE (MANDATORY)
+
+The DNA library uses a **modular architecture**. The DNA Engine was refactored from a 10,843-line monolith to 3,093 lines (71% reduction) with 16 domain-specific modules.
+
+**NEVER add monolithic code.** All new features MUST follow the modular pattern.
+
+**Module Location:** `src/api/engine/`
+
+**Current Modules:**
+| Module | Purpose |
+|--------|---------|
+| `dna_engine_messaging.c` | Send/receive, conversations, retry |
+| `dna_engine_contacts.c` | Contact requests, blocking |
+| `dna_engine_groups.c` | Group CRUD, invitations |
+| `dna_engine_identity.c` | Identity create/load, profiles |
+| `dna_engine_presence.c` | Heartbeat, presence lookup |
+| `dna_engine_wallet.c` | Multi-chain wallet, balances |
+| `dna_engine_feed.c` | Posts, comments, voting |
+| `dna_engine_listeners.c` | DHT listeners (outbox, presence, ACK) |
+| `dna_engine_backup.c` | DHT sync for all data types |
+| `dna_engine_lifecycle.c` | Engine pause/resume (mobile) |
+
+**Module Pattern:**
+```c
+// 1. Define implementation flag
+#define DNA_ENGINE_XXX_IMPL
+#include "engine_includes.h"
+
+// 2. Task handlers (internal)
+void dna_handle_xxx(dna_engine_t *engine, dna_task_t *task) { }
+
+// 3. Public API wrappers
+dna_request_id_t dna_engine_xxx(dna_engine_t *engine, ...) {
+    return dna_submit_task(engine, TASK_XXX, &params, cb, user_data);
+}
+```
+
+**Adding New Features:**
+1. Identify the appropriate module (or create new one if domain doesn't exist)
+2. Add task type to `dna_engine_internal.h`
+3. Implement handler in module file
+4. Add dispatch case in `dna_engine.c`
+5. Declare public API in `include/dna/dna_engine.h`
+
+**Detailed Guide:** See `src/api/engine/README.md` for complete instructions.
+
+**Domain Directories:**
+- `crypto/` - Post-quantum cryptography (Kyber, Dilithium, BIP39)
+- `dht/` - DHT operations (core, client, shared, keyserver)
+- `transport/` - P2P transport layer
+- `messenger/` - Messaging core (identity, keys, contacts)
+- `database/` - SQLite persistence and caching
+- `blockchain/` - Multi-chain wallet (Cellframe, Ethereum, TRON, Solana)
 
 ---
 

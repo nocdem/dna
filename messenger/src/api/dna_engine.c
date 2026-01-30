@@ -382,6 +382,11 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
         int restored = messenger_restore_groups_from_dht(engine->messenger);
         if (restored > 0) {
             QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: restored %d groups from DHT", restored);
+
+            /* Subscribe to the newly restored groups for real-time notifications */
+            int subscribed = dna_engine_subscribe_all_groups(engine);
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: subscribed to %d restored groups", subscribed);
+
             /* Notify Flutter to refresh groups UI - use stack allocation to avoid leak */
             dna_event_t event = {0};
             event.type = DNA_EVENT_GROUPS_SYNCED;
