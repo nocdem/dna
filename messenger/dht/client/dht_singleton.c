@@ -22,7 +22,7 @@
 #define LOG_TAG "DHT"
 
 /* Default timeout for waiting for DHT to become ready (milliseconds) */
-#define DHT_READY_TIMEOUT_MS 5000
+#define DHT_READY_TIMEOUT_MS 1000
 
 /* Global DHT context (singleton, protected by g_singleton_mutex for init - v0.6.43 race fix) */
 static dht_context_t *g_dht_context = NULL;
