@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="#status"><img src="https://img.shields.io/badge/Status-Beta%20v0.6.76-blue" alt="Beta"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/Status-Beta%20v0.6.89-blue" alt="Beta"></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-GPLv3-green" alt="GPL v3"></a>
   <a href="#platforms"><img src="https://img.shields.io/badge/Platforms-Android%20|%20Linux%20|%20Windows-orange" alt="Platforms"></a>
   <a href="#security"><img src="https://img.shields.io/badge/Security-NIST%20Category%205-red" alt="NIST Cat 5"></a>
@@ -168,8 +168,8 @@ Public bootstrap nodes are operated by cpunk.io — see [docs/DNA_NODUS.md](docs
 
 | Component | Version |
 |-----------|---------|
-| C Library | v0.6.31 |
-| Flutter App | v0.100.50 |
+| C Library | v0.6.89 |
+| Flutter App | v0.100.71 |
 | DNA Nodus | v0.4.5 |
 
 ---
