@@ -95,27 +95,28 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     }
   }
 
-  /// Complete initial load: wait for presence lookups + offline message check
+  /// Complete initial load: mark app ready immediately, DHT ops continue in background
+  /// v0.100.71: Non-blocking for faster startup (<2s instead of 5-15s)
   Future<void> _completeInitialLoad(DnaEngine engine, List<Future<void>> presenceFutures) async {
-    try {
-      // Wait for presence lookups (parallel, with timeout)
-      await Future.wait(presenceFutures).timeout(const Duration(seconds: 10));
-    } catch (_) {
-      // Timeout or error - continue anyway
-    }
-
-    try {
-      // Fetch offline messages from all contact outboxes
-      await engine.checkOfflineMessages().timeout(const Duration(seconds: 15));
-    } catch (_) {
-      // Timeout or error - continue anyway
-    }
-
-    // Mark app as ready - UI can now be shown
-    // Use microtask to ensure we're not in a build phase
+    // Mark app as ready IMMEDIATELY - don't wait for DHT operations
+    // UI will show "Syncing..." for contacts until presence data arrives
     Future.microtask(() {
       ref.read(appFullyReadyProvider.notifier).state = true;
     });
+
+    // Continue presence lookups in background (non-blocking, reduced timeout)
+    try {
+      await Future.wait(presenceFutures).timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // Timeout or error - presence will update on next poll
+    }
+
+    // Offline message check in background (non-blocking, reduced timeout)
+    try {
+      await engine.checkOfflineMessages().timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // Timeout or error - messages will arrive on next poll
+    }
   }
 
   /// Lookup presence for a single contact with timeout

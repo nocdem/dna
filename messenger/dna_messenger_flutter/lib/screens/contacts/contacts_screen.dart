@@ -300,8 +300,9 @@ class _ContactTile extends ConsumerWidget {
   }
 
   String _formatLastSeen(DateTime lastSeen) {
-    // Epoch (0) means never seen
-    if (lastSeen.millisecondsSinceEpoch == 0) return 'never';
+    // Epoch (0) means presence data not yet fetched
+    // v0.100.71: Show "Syncing..." instead of "never" for better UX during startup
+    if (lastSeen.millisecondsSinceEpoch == 0) return 'Syncing...';
 
     final now = DateTime.now();
     final diff = now.difference(lastSeen);

@@ -271,10 +271,11 @@ extern "C" size_t dht_listen_ex(
         listener_ctx->future_token = ctx->runner.listen(hash, cpp_callback);
 
         // Wait for the OpenDHT token with timeout (avoid ANR on bad DHT state)
+        // v0.6.86: Reduced from 5s to 2s for faster startup
         try {
-            auto status = listener_ctx->future_token.wait_for(std::chrono::seconds(5));
+            auto status = listener_ctx->future_token.wait_for(std::chrono::seconds(2));
             if (status == std::future_status::timeout) {
-                QGP_LOG_ERROR(LOG_TAG, "Timeout waiting for OpenDHT token (5s) - DHT may be in bad state");
+                QGP_LOG_ERROR(LOG_TAG, "Timeout waiting for OpenDHT token (2s) - DHT may be in bad state");
                 // CRITICAL: Mark listener as inactive BEFORE freeing user_data
                 // The OpenDHT listener was already started at ctx->runner.listen() above.
                 // Without this, the callback could fire with freed user_data → use-after-free!
@@ -494,9 +495,10 @@ extern "C" size_t dht_resubscribe_all_listeners(
             auto future = ctx->runner.listen(hash, cpp_callback);
 
             // Wait for token with timeout to avoid infinite hang
-            auto status = future.wait_for(std::chrono::seconds(5));
+            // v0.6.86: Reduced from 5s to 2s for faster recovery
+            auto status = future.wait_for(std::chrono::seconds(2));
             if (status == std::future_status::timeout) {
-                QGP_LOG_ERROR(LOG_TAG, "Timeout resubscribing token %zu (5s)", token);
+                QGP_LOG_ERROR(LOG_TAG, "Timeout resubscribing token %zu (2s)", token);
                 continue;
             }
 
