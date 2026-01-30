@@ -104,21 +104,17 @@ Internal DNA engine implementation with async task queue.
 | `void dna_handle_sync_groups(dna_engine_t*, dna_task_t*)` | Handle sync groups |
 | `void dna_handle_get_registered_name(dna_engine_t*, dna_task_t*)` | Handle get name |
 
-### Task Handlers - Feed
+### Task Handlers - Feed v2
 
 | Function | Description |
 |----------|-------------|
-| `void dna_handle_get_feed_channels(dna_engine_t*, dna_task_t*)` | Handle get channels |
-| `void dna_handle_create_feed_channel(dna_engine_t*, dna_task_t*)` | Handle create channel |
-| `void dna_handle_init_default_channels(dna_engine_t*, dna_task_t*)` | Handle init defaults |
-| `void dna_handle_get_feed_posts(dna_engine_t*, dna_task_t*)` | Handle get posts |
-| `void dna_handle_create_feed_post(dna_engine_t*, dna_task_t*)` | Handle create post |
-| `void dna_handle_add_feed_comment(dna_engine_t*, dna_task_t*)` | Handle add comment |
-| `void dna_handle_get_feed_comments(dna_engine_t*, dna_task_t*)` | Handle get comments |
-| `void dna_handle_cast_feed_vote(dna_engine_t*, dna_task_t*)` | Handle cast vote |
-| `void dna_handle_get_feed_votes(dna_engine_t*, dna_task_t*)` | Handle get votes |
-| `void dna_handle_cast_comment_vote(dna_engine_t*, dna_task_t*)` | Handle comment vote |
-| `void dna_handle_get_comment_votes(dna_engine_t*, dna_task_t*)` | Handle get comment votes |
+| `void dna_handle_feed_create_topic(dna_engine_t*, dna_task_t*)` | Handle create topic |
+| `void dna_handle_feed_get_topic(dna_engine_t*, dna_task_t*)` | Handle get topic |
+| `void dna_handle_feed_delete_topic(dna_engine_t*, dna_task_t*)` | Handle delete topic |
+| `void dna_handle_feed_add_comment(dna_engine_t*, dna_task_t*)` | Handle add comment |
+| `void dna_handle_feed_get_comments(dna_engine_t*, dna_task_t*)` | Handle get comments |
+| `void dna_handle_feed_get_category(dna_engine_t*, dna_task_t*)` | Handle get by category |
+| `void dna_handle_feed_get_all(dna_engine_t*, dna_task_t*)` | Handle get all topics |
 
 ### Helpers
 

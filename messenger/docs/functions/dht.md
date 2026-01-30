@@ -418,69 +418,52 @@ GEKs are self-encrypted and synced across devices, eliminating the need for per-
 | `const char* dna_identity_get_wallet(const dna_unified_identity_t*, const char*)` | Get wallet for network |
 | `int dna_identity_set_wallet(dna_unified_identity_t*, const char*, const char*)` | Set wallet for network |
 
-### 11.6 DNA Feed (`dna_feed.h`)
+### 11.6 DNA Feed v2 (`dna_feed.h`)
 
-#### Channel Operations
+Topic-based public feeds with categories and tags. Replaces v1 channel/post/vote system.
+Uses `dna:feeds:` DHT namespace. No voting (deferred).
 
-| Function | Description |
-|----------|-------------|
-| `int dna_feed_channel_create(dht_context_t*, const char*, const char*, const char*, const uint8_t*, dna_feed_channel_t**)` | Create new feed channel |
-| `int dna_feed_channel_get(dht_context_t*, const char*, dna_feed_channel_t**)` | Get channel metadata |
-| `int dna_feed_registry_get(dht_context_t*, dna_feed_registry_t**)` | Get all channels from registry |
-| `int dna_feed_init_default_channels(dht_context_t*, const char*, const uint8_t*)` | Initialize default channels |
-| `int dna_feed_make_channel_id(const char*, char*)` | Generate channel_id from name |
-| `void dna_feed_channel_free(dna_feed_channel_t*)` | Free channel structure |
-| `void dna_feed_registry_free(dna_feed_registry_t*)` | Free registry structure |
-
-#### Post Operations
+#### Topic Operations (`dna_feed_topic.c`)
 
 | Function | Description |
 |----------|-------------|
-| `int dna_feed_post_create(dht_context_t*, const char*, const char*, const char*, const uint8_t*, dna_feed_post_t**)` | Create new post |
-| `int dna_feed_post_get(dht_context_t*, const char*, dna_feed_post_t**)` | Get single post by ID |
-| `int dna_feed_posts_get_by_channel(dht_context_t*, const char*, const char*, dna_feed_post_t**, size_t*)` | Get posts for channel |
-| `int dna_feed_post_get_full(dht_context_t*, const char*, dna_feed_post_with_comments_t**)` | Get post with comments |
-| `int dna_feed_make_post_id(const char*, char*)` | Generate post_id |
-| `int dna_feed_verify_post_signature(const dna_feed_post_t*, const uint8_t*)` | Verify post signature |
-| `void dna_feed_post_free(dna_feed_post_t*)` | Free post structure |
-| `void dna_feed_bucket_free(dna_feed_bucket_t*)` | Free bucket structure |
-| `void dna_feed_post_with_comments_free(dna_feed_post_with_comments_t*)` | Free post with comments |
+| `int dna_feed_topic_create(dht_context_t*, const char*, const char*, const char*, const char**, int, const char*, const uint8_t*, char*)` | Create topic with title, body, category, tags |
+| `int dna_feed_topic_get(dht_context_t*, const char*, dna_feed_topic_t**)` | Get topic by UUID |
+| `int dna_feed_topic_delete(dht_context_t*, const char*, const char*, const uint8_t*)` | Soft delete topic (author only) |
+| `int dna_feed_topic_verify(const dna_feed_topic_t*, const uint8_t*)` | Verify topic signature |
+| `void dna_feed_topic_free(dna_feed_topic_t*)` | Free topic structure |
+| `void dna_feed_topics_free(dna_feed_topic_t*, size_t)` | Free topics array |
 
-#### Comment Operations
+#### Comment Operations (`dna_feed_comments.c`)
 
 | Function | Description |
 |----------|-------------|
-| `int dna_feed_comment_add(dht_context_t*, const char*, const char*, const char*, const uint8_t*, dna_feed_comment_t**)` | Add comment to post |
-| `int dna_feed_comments_get(dht_context_t*, const char*, dna_feed_comment_t**, size_t*)` | Get all comments for post |
-| `int dna_feed_make_comment_id(const char*, char*)` | Generate comment_id |
-| `int dna_feed_verify_comment_signature(const dna_feed_comment_t*, const uint8_t*)` | Verify comment signature |
+| `int dna_feed_comment_add(dht_context_t*, const char*, const char*, const char**, int, const char*, const uint8_t*, char*)` | Add comment with mentions |
+| `int dna_feed_comments_get(dht_context_t*, const char*, dna_feed_comment_t**, size_t*)` | Get comments for topic |
+| `int dna_feed_comment_verify(const dna_feed_comment_t*, const uint8_t*)` | Verify comment signature |
 | `void dna_feed_comment_free(dna_feed_comment_t*)` | Free comment structure |
 | `void dna_feed_comments_free(dna_feed_comment_t*, size_t)` | Free comments array |
 
-#### Vote Operations
+#### Index Operations (`dna_feed_index.c`)
 
 | Function | Description |
 |----------|-------------|
-| `int dna_feed_vote_cast(dht_context_t*, const char*, const char*, int8_t, const uint8_t*)` | Cast vote on post |
-| `int dna_feed_votes_get(dht_context_t*, const char*, dna_feed_votes_t**)` | Get votes for post |
-| `int8_t dna_feed_get_user_vote(const dna_feed_votes_t*, const char*)` | Get user's vote on post |
-| `int dna_feed_verify_vote_signature(const dna_feed_vote_t*, const char*, const uint8_t*)` | Verify vote signature |
-| `void dna_feed_votes_free(dna_feed_votes_t*)` | Free votes structure |
-| `int dna_feed_comment_vote_cast(dht_context_t*, const char*, const char*, int8_t, const uint8_t*)` | Cast vote on comment |
-| `int dna_feed_comment_votes_get(dht_context_t*, const char*, dna_feed_votes_t**)` | Get votes for comment |
+| `int dna_feed_index_add(dht_context_t*, const dna_feed_index_entry_t*)` | Add entry to category/global index |
+| `int dna_feed_index_get_category(dht_context_t*, const char*, int, dna_feed_index_entry_t**, size_t*)` | Get topics by category |
+| `int dna_feed_index_get_all(dht_context_t*, int, dna_feed_index_entry_t**, size_t*)` | Get all topics (global) |
+| `void dna_feed_index_entries_free(dna_feed_index_entry_t*, size_t)` | Free index entries |
 
-#### DHT Key Generation
+#### Utility Functions
 
 | Function | Description |
 |----------|-------------|
-| `int dna_feed_get_registry_key(char*)` | Get DHT key for channel registry |
-| `int dna_feed_get_channel_key(const char*, char*)` | Get DHT key for channel metadata |
-| `int dna_feed_get_bucket_key(const char*, const char*, char*)` | Get DHT key for daily post bucket |
-| `int dna_feed_get_post_key(const char*, char*)` | Get DHT key for individual post |
-| `int dna_feed_get_votes_key(const char*, char*)` | Get DHT key for post votes |
-| `int dna_feed_get_comments_key(const char*, char*)` | Get DHT key for post comments |
-| `int dna_feed_get_comment_votes_key(const char*, char*)` | Get DHT key for comment votes |
-| `void dna_feed_get_today_date(char*)` | Get today's date string |
+| `int dna_feed_make_category_id(const char*, char*)` | Generate category_id from name |
+| `void dna_feed_generate_uuid(char*)` | Generate UUID v4 for topic/comment |
+| `void dna_feed_get_today_date(char*)` | Get YYYYMMDD date string |
+| `void dna_feed_get_topic_key(const char*, char*)` | Get DHT key for topic |
+| `void dna_feed_get_comments_key(const char*, char*)` | Get DHT key for topic comments |
+| `void dna_feed_get_category_index_key(const char*, const char*, char*)` | Get DHT key for category day index |
+| `void dna_feed_get_global_index_key(const char*, char*)` | Get DHT key for global day index |
 
 ### 11.7 Message Wall (`dna_message_wall.h`)
 

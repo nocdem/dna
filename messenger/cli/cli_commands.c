@@ -3857,103 +3857,62 @@ int cmd_estimate_gas(dna_engine_t *engine, int network_id) {
 }
 
 /* ============================================================================
- * PHASE 10: FEED/DNA BOARD (11 commands)
+ * PHASE 10: FEED v2 (7 commands) - Topic-based public feeds
+ *
+ * Commands:
+ *   feeds create "Title" "Body" [--category CAT] [--tags "tag1,tag2"]
+ *   feeds get <uuid>
+ *   feeds delete <uuid>
+ *   feeds list [--category CAT] [--days N]
+ *   feeds list-all [--days N]
+ *   feeds comment <topic-uuid> "Comment text" [--mentions "fp1,fp2"]
+ *   feeds comments <topic-uuid>
  * ============================================================================ */
 
-/* Callback for feed channels */
-static void on_feed_channels(dna_request_id_t request_id, int error,
-                              dna_channel_info_t *channels, int count, void *user_data) {
+/* Callback for single topic */
+static void on_feed_topic(dna_request_id_t request_id, int error,
+                          dna_feed_topic_info_t *topic, void *user_data) {
     (void)request_id;
     cli_wait_t *wait = (cli_wait_t *)user_data;
 
     pthread_mutex_lock(&wait->mutex);
     wait->result = error;
 
-    if (error == 0 && channels && count > 0) {
-        printf("\nFeed channels (%d):\n", count);
-        for (int i = 0; i < count; i++) {
-            printf("  %d. %s\n", i + 1, channels[i].name);
-            printf("     ID: %s\n", channels[i].channel_id);
-            if (channels[i].description[0]) {
-                printf("     Description: %s\n", channels[i].description);
+    if (error == 0 && topic) {
+        time_t ts = (time_t)topic->created_at;
+        char time_str[32];
+        struct tm tm_buf;
+        if (safe_localtime(&ts, &tm_buf)) {
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &tm_buf);
+        } else {
+            strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
+        }
+
+        printf("\nTopic: %s\n", topic->title ? topic->title : "(no title)");
+        printf("  UUID: %s\n", topic->topic_uuid);
+        printf("  Author: %.16s...\n", topic->author_fingerprint);
+        printf("  Category: %s\n", topic->category_id);
+        printf("  Created: %s\n", time_str);
+
+        if (topic->tag_count > 0) {
+            printf("  Tags: ");
+            for (int i = 0; i < topic->tag_count; i++) {
+                printf("%s%s", i > 0 ? ", " : "", topic->tags[i]);
             }
-            printf("     Posts: %d\n", channels[i].post_count);
+            printf("\n");
+        }
+
+        if (topic->body) {
+            printf("  Body:\n    %s\n", topic->body);
+        }
+
+        printf("  Verified: %s\n", topic->verified ? "yes" : "no");
+        if (topic->deleted) {
+            printf("  Status: DELETED\n");
         }
         printf("\n");
-    } else if (error == 0) {
-        printf("No feed channels found.\n");
-    }
 
-    wait->done = true;
-    pthread_cond_signal(&wait->cond);
-    pthread_mutex_unlock(&wait->mutex);
-
-    if (channels) {
-        dna_free_feed_channels(channels, count);
-    }
-}
-
-int cmd_feed_channels(dna_engine_t *engine) {
-    if (!engine) {
-        printf("Error: Engine not initialized\n");
-        return -1;
-    }
-
-    cli_wait_t wait;
-    cli_wait_init(&wait);
-
-    dna_engine_get_feed_channels(engine, on_feed_channels, &wait);
-    int result = cli_wait_for(&wait);
-    cli_wait_destroy(&wait);
-
-    if (result != 0) {
-        printf("Error: Failed to get feed channels: %s\n", dna_engine_error_string(result));
-        return result;
-    }
-
-    return 0;
-}
-
-int cmd_feed_init(dna_engine_t *engine) {
-    if (!engine) {
-        printf("Error: Engine not initialized\n");
-        return -1;
-    }
-
-    printf("Initializing default feed channels...\n");
-
-    cli_wait_t wait;
-    cli_wait_init(&wait);
-
-    dna_engine_init_default_channels(engine, on_completion, &wait);
-    int result = cli_wait_for(&wait);
-    cli_wait_destroy(&wait);
-
-    if (result != 0) {
-        printf("Error: Failed to initialize channels: %s\n", dna_engine_error_string(result));
-        return result;
-    }
-
-    printf("Default channels initialized.\n");
-    return 0;
-}
-
-/* Callback for channel creation */
-static void on_channel_created(dna_request_id_t request_id, int error,
-                                dna_channel_info_t *channel, void *user_data) {
-    (void)request_id;
-    cli_wait_t *wait = (cli_wait_t *)user_data;
-
-    pthread_mutex_lock(&wait->mutex);
-    wait->result = error;
-
-    if (error == 0 && channel) {
-        printf("Channel created:\n");
-        printf("  Name: %s\n", channel->name);
-        printf("  ID: %s\n", channel->channel_id);
-        if (channel->description[0]) {
-            printf("  Description: %s\n", channel->description);
-        }
+        dna_free_feed_topic(topic);
     }
 
     wait->done = true;
@@ -3961,48 +3920,19 @@ static void on_channel_created(dna_request_id_t request_id, int error,
     pthread_mutex_unlock(&wait->mutex);
 }
 
-int cmd_feed_create_channel(dna_engine_t *engine, const char *name, const char *description) {
-    if (!engine) {
-        printf("Error: Engine not initialized\n");
-        return -1;
-    }
-
-    if (!name || strlen(name) == 0) {
-        printf("Error: Channel name required\n");
-        return -1;
-    }
-
-    printf("Creating feed channel '%s'...\n", name);
-
-    cli_wait_t wait;
-    cli_wait_init(&wait);
-
-    dna_engine_create_feed_channel(engine, name, description ? description : "", on_channel_created, &wait);
-    int result = cli_wait_for(&wait);
-    cli_wait_destroy(&wait);
-
-    if (result != 0) {
-        printf("Error: Failed to create channel: %s\n", dna_engine_error_string(result));
-        return result;
-    }
-
-    printf("Channel '%s' created successfully!\n", name);
-    return 0;
-}
-
-/* Callback for feed posts */
-static void on_feed_posts(dna_request_id_t request_id, int error,
-                          dna_post_info_t *posts, int count, void *user_data) {
+/* Callback for topics list */
+static void on_feed_topics(dna_request_id_t request_id, int error,
+                           dna_feed_topic_info_t *topics, int count, void *user_data) {
     (void)request_id;
     cli_wait_t *wait = (cli_wait_t *)user_data;
 
     pthread_mutex_lock(&wait->mutex);
     wait->result = error;
 
-    if (error == 0 && posts && count > 0) {
-        printf("\nFeed posts (%d):\n", count);
+    if (error == 0 && topics && count > 0) {
+        printf("\nTopics (%d):\n", count);
         for (int i = 0; i < count; i++) {
-            time_t ts = (time_t)(posts[i].timestamp / 1000);  /* Convert ms to seconds */
+            time_t ts = (time_t)topics[i].created_at;
             char time_str[32];
             struct tm tm_buf;
             if (safe_localtime(&ts, &tm_buf)) {
@@ -4011,186 +3941,28 @@ static void on_feed_posts(dna_request_id_t request_id, int error,
                 strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
             }
 
-            printf("\n  --- Post %d ---\n", i + 1);
-            printf("  ID: %s\n", posts[i].post_id);
-            printf("  Author: %.16s...\n", posts[i].author_fingerprint);
-            printf("  Time: %s\n", time_str);
-            printf("  Content: %s\n", posts[i].text ? posts[i].text : "(empty)");
-            printf("  Votes: +%d / -%d\n", posts[i].upvotes, posts[i].downvotes);
-            printf("  Comments: %d\n", posts[i].comment_count);
+            printf("\n  %d. %s%s\n", i + 1,
+                   topics[i].title ? topics[i].title : "(no title)",
+                   topics[i].deleted ? " [DELETED]" : "");
+            printf("     UUID: %s\n", topics[i].topic_uuid);
+            printf("     Author: %.16s...\n", topics[i].author_fingerprint);
+            printf("     Category: %s  |  Created: %s\n", topics[i].category_id, time_str);
         }
         printf("\n");
+
+        dna_free_feed_topics(topics, count);
     } else if (error == 0) {
-        printf("No posts in this channel.\n");
+        printf("No topics found.\n");
     }
 
     wait->done = true;
     pthread_cond_signal(&wait->cond);
     pthread_mutex_unlock(&wait->mutex);
-
-    if (posts) {
-        dna_free_feed_posts(posts, count);
-    }
-}
-
-int cmd_feed_posts(dna_engine_t *engine, const char *channel_id) {
-    if (!engine) {
-        printf("Error: Engine not initialized\n");
-        return -1;
-    }
-
-    if (!channel_id || strlen(channel_id) == 0) {
-        printf("Error: Channel ID required\n");
-        return -1;
-    }
-
-    printf("Getting posts for channel %s...\n", channel_id);
-
-    cli_wait_t wait;
-    cli_wait_init(&wait);
-
-    dna_engine_get_feed_posts(engine, channel_id, NULL, on_feed_posts, &wait);
-    int result = cli_wait_for(&wait);
-    cli_wait_destroy(&wait);
-
-    if (result != 0) {
-        printf("Error: Failed to get posts: %s\n", dna_engine_error_string(result));
-        return result;
-    }
-
-    return 0;
-}
-
-/* Callback for post creation */
-static void on_post_created(dna_request_id_t request_id, int error,
-                             dna_post_info_t *post, void *user_data) {
-    (void)request_id;
-    cli_wait_t *wait = (cli_wait_t *)user_data;
-
-    pthread_mutex_lock(&wait->mutex);
-    wait->result = error;
-
-    if (error == 0 && post) {
-        printf("Post created:\n");
-        printf("  ID: %s\n", post->post_id);
-        printf("  Content: %s\n", post->text ? post->text : "(empty)");
-        dna_free_feed_post(post);
-    }
-
-    wait->done = true;
-    pthread_cond_signal(&wait->cond);
-    pthread_mutex_unlock(&wait->mutex);
-}
-
-int cmd_feed_post(dna_engine_t *engine, const char *channel_id, const char *content) {
-    if (!engine) {
-        printf("Error: Engine not initialized\n");
-        return -1;
-    }
-
-    if (!channel_id || !content) {
-        printf("Error: Channel ID and content required\n");
-        return -1;
-    }
-
-    printf("Creating post in channel %s...\n", channel_id);
-
-    cli_wait_t wait;
-    cli_wait_init(&wait);
-
-    dna_engine_create_feed_post(engine, channel_id, content, on_post_created, &wait);
-    int result = cli_wait_for(&wait);
-    cli_wait_destroy(&wait);
-
-    if (result != 0) {
-        printf("Error: Failed to create post: %s\n", dna_engine_error_string(result));
-        return result;
-    }
-
-    printf("Post created successfully!\n");
-    return 0;
-}
-
-int cmd_feed_vote(dna_engine_t *engine, const char *post_id, bool upvote) {
-    if (!engine) {
-        printf("Error: Engine not initialized\n");
-        return -1;
-    }
-
-    if (!post_id) {
-        printf("Error: Post ID required\n");
-        return -1;
-    }
-
-    printf("Voting %s on post %s...\n", upvote ? "UP" : "DOWN", post_id);
-
-    cli_wait_t wait;
-    cli_wait_init(&wait);
-
-    dna_engine_cast_feed_vote(engine, post_id, upvote ? 1 : -1, on_completion, &wait);
-    int result = cli_wait_for(&wait);
-    cli_wait_destroy(&wait);
-
-    if (result != 0) {
-        printf("Error: Failed to vote: %s\n", dna_engine_error_string(result));
-        return result;
-    }
-
-    printf("Vote cast successfully!\n");
-    return 0;
-}
-
-/* Callback for post vote counts (returns post with vote data) */
-static void on_post_votes(dna_request_id_t request_id, int error,
-                          dna_post_info_t *post, void *user_data) {
-    (void)request_id;
-    cli_wait_t *wait = (cli_wait_t *)user_data;
-
-    pthread_mutex_lock(&wait->mutex);
-    wait->result = error;
-
-    if (error == 0 && post) {
-        printf("Post votes: +%d / -%d (score: %d)\n",
-               post->upvotes, post->downvotes, post->upvotes - post->downvotes);
-        printf("Your vote: %s\n", post->user_vote > 0 ? "UP" :
-                                   post->user_vote < 0 ? "DOWN" : "none");
-        dna_free_feed_post(post);
-    }
-
-    wait->done = true;
-    pthread_cond_signal(&wait->cond);
-    pthread_mutex_unlock(&wait->mutex);
-}
-
-int cmd_feed_votes(dna_engine_t *engine, const char *post_id) {
-    if (!engine) {
-        printf("Error: Engine not initialized\n");
-        return -1;
-    }
-
-    if (!post_id) {
-        printf("Error: Post ID required\n");
-        return -1;
-    }
-
-    cli_wait_t wait;
-    cli_wait_init(&wait);
-
-    dna_engine_get_feed_votes(engine, post_id, on_post_votes, &wait);
-    int result = cli_wait_for(&wait);
-    cli_wait_destroy(&wait);
-
-    if (result != 0) {
-        printf("Error: Failed to get votes: %s\n", dna_engine_error_string(result));
-        return result;
-    }
-
-    return 0;
 }
 
 /* Callback for feed comments */
 static void on_feed_comments(dna_request_id_t request_id, int error,
-                              dna_comment_info_t *comments, int count, void *user_data) {
+                              dna_feed_comment_info_t *comments, int count, void *user_data) {
     (void)request_id;
     cli_wait_t *wait = (cli_wait_t *)user_data;
 
@@ -4200,7 +3972,7 @@ static void on_feed_comments(dna_request_id_t request_id, int error,
     if (error == 0 && comments && count > 0) {
         printf("\nComments (%d):\n", count);
         for (int i = 0; i < count; i++) {
-            time_t ts = (time_t)(comments[i].timestamp / 1000);  /* Convert ms to seconds */
+            time_t ts = (time_t)comments[i].created_at;
             char time_str[32];
             struct tm tm_buf;
             if (safe_localtime(&ts, &tm_buf)) {
@@ -4209,55 +3981,37 @@ static void on_feed_comments(dna_request_id_t request_id, int error,
                 strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
             }
 
-            printf("  %d. [%s] %.16s...: %s\n", i + 1, time_str,
-                   comments[i].author_fingerprint,
-                   comments[i].text ? comments[i].text : "(empty)");
-            printf("     ID: %s  Votes: +%d/-%d\n",
-                   comments[i].comment_id, comments[i].upvotes, comments[i].downvotes);
+            printf("\n  %d. [%s] %.16s...:\n", i + 1, time_str,
+                   comments[i].author_fingerprint);
+            printf("     %s\n", comments[i].body ? comments[i].body : "(empty)");
+            printf("     UUID: %s\n", comments[i].comment_uuid);
+
+            if (comments[i].mention_count > 0) {
+                printf("     Mentions: ");
+                for (int j = 0; j < comments[i].mention_count; j++) {
+                    printf("%.8s...%s", comments[i].mentions[j],
+                           j < comments[i].mention_count - 1 ? ", " : "");
+                }
+                printf("\n");
+            }
+
+            printf("     Verified: %s\n", comments[i].verified ? "yes" : "no");
         }
         printf("\n");
+
+        dna_free_feed_comments(comments, count);
     } else if (error == 0) {
-        printf("No comments on this post.\n");
+        printf("No comments on this topic.\n");
     }
 
     wait->done = true;
     pthread_cond_signal(&wait->cond);
     pthread_mutex_unlock(&wait->mutex);
-
-    if (comments) {
-        dna_free_feed_comments(comments, count);
-    }
-}
-
-int cmd_feed_comments(dna_engine_t *engine, const char *post_id) {
-    if (!engine) {
-        printf("Error: Engine not initialized\n");
-        return -1;
-    }
-
-    if (!post_id) {
-        printf("Error: Post ID required\n");
-        return -1;
-    }
-
-    cli_wait_t wait;
-    cli_wait_init(&wait);
-
-    dna_engine_get_feed_comments(engine, post_id, on_feed_comments, &wait);
-    int result = cli_wait_for(&wait);
-    cli_wait_destroy(&wait);
-
-    if (result != 0) {
-        printf("Error: Failed to get comments: %s\n", dna_engine_error_string(result));
-        return result;
-    }
-
-    return 0;
 }
 
 /* Callback for comment creation */
 static void on_comment_created(dna_request_id_t request_id, int error,
-                                dna_comment_info_t *comment, void *user_data) {
+                                dna_feed_comment_info_t *comment, void *user_data) {
     (void)request_id;
     cli_wait_t *wait = (cli_wait_t *)user_data;
 
@@ -4265,9 +4019,9 @@ static void on_comment_created(dna_request_id_t request_id, int error,
     wait->result = error;
 
     if (error == 0 && comment) {
-        printf("Comment created:\n");
-        printf("  ID: %s\n", comment->comment_id);
-        printf("  Content: %s\n", comment->text ? comment->text : "(empty)");
+        printf("Comment added:\n");
+        printf("  Topic: %s\n", comment->topic_uuid);
+        printf("  Content: %s\n", comment->body ? comment->body : "(empty)");
         dna_free_feed_comment(comment);
     }
 
@@ -4276,25 +4030,272 @@ static void on_comment_created(dna_request_id_t request_id, int error,
     pthread_mutex_unlock(&wait->mutex);
 }
 
-int cmd_feed_comment(dna_engine_t *engine, const char *post_id, const char *content) {
+int cmd_feeds_create(dna_engine_t *engine, const char *title, const char *body,
+                     const char *category, const char *tags) {
     if (!engine) {
         printf("Error: Engine not initialized\n");
         return -1;
     }
 
-    if (!post_id || !content) {
-        printf("Error: Post ID and content required\n");
+    if (!title || strlen(title) == 0) {
+        printf("Error: Title required\n");
         return -1;
     }
 
-    printf("Adding comment to post %s...\n", post_id);
+    if (!body || strlen(body) == 0) {
+        printf("Error: Body required\n");
+        return -1;
+    }
+
+    /* Convert comma-separated tags to JSON array */
+    char *tags_json = NULL;
+    if (tags && strlen(tags) > 0) {
+        /* Count tags */
+        int tag_count = 1;
+        for (const char *p = tags; *p; p++) {
+            if (*p == ',') tag_count++;
+        }
+
+        /* Build JSON array */
+        size_t json_len = strlen(tags) + tag_count * 4 + 3;  /* quotes, commas, brackets */
+        tags_json = malloc(json_len);
+        if (tags_json) {
+            char *dst = tags_json;
+            *dst++ = '[';
+
+            char tags_copy[1024];
+            strncpy(tags_copy, tags, sizeof(tags_copy) - 1);
+            tags_copy[sizeof(tags_copy) - 1] = '\0';
+
+            char *saveptr;
+            char *tag = strtok_r(tags_copy, ",", &saveptr);
+            int first = 1;
+            while (tag) {
+                /* Trim whitespace */
+                while (*tag == ' ') tag++;
+                char *end = tag + strlen(tag) - 1;
+                while (end > tag && *end == ' ') *end-- = '\0';
+
+                if (strlen(tag) > 0) {
+                    if (!first) *dst++ = ',';
+                    *dst++ = '"';
+                    strcpy(dst, tag);
+                    dst += strlen(tag);
+                    *dst++ = '"';
+                    first = 0;
+                }
+                tag = strtok_r(NULL, ",", &saveptr);
+            }
+            *dst++ = ']';
+            *dst = '\0';
+        }
+    }
+
+    printf("Creating topic '%s' in category '%s'...\n", title, category ? category : "general");
 
     cli_wait_t wait;
     cli_wait_init(&wait);
 
-    dna_engine_add_feed_comment(engine, post_id, content, on_comment_created, &wait);
+    dna_engine_feed_create_topic(engine, title, body, category, tags_json, on_feed_topic, &wait);
     int result = cli_wait_for(&wait);
     cli_wait_destroy(&wait);
+
+    free(tags_json);
+
+    if (result != 0) {
+        printf("Error: Failed to create topic: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Topic created successfully!\n");
+    return 0;
+}
+
+int cmd_feeds_get(dna_engine_t *engine, const char *uuid) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!uuid || strlen(uuid) == 0) {
+        printf("Error: Topic UUID required\n");
+        return -1;
+    }
+
+    printf("Getting topic %s...\n", uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_feed_get_topic(engine, uuid, on_feed_topic, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get topic: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+int cmd_feeds_delete(dna_engine_t *engine, const char *uuid) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!uuid || strlen(uuid) == 0) {
+        printf("Error: Topic UUID required\n");
+        return -1;
+    }
+
+    printf("Deleting topic %s...\n", uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_feed_delete_topic(engine, uuid, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to delete topic: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Topic deleted successfully!\n");
+    return 0;
+}
+
+int cmd_feeds_list(dna_engine_t *engine, const char *category, int days) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!category || strlen(category) == 0) {
+        printf("Error: Category required (use 'feeds list-all' for all categories)\n");
+        return -1;
+    }
+
+    if (days < 1) days = 7;
+    if (days > 30) days = 30;
+
+    printf("Getting topics in category '%s' (last %d days)...\n", category, days);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_feed_get_category(engine, category, days, on_feed_topics, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get topics: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+int cmd_feeds_list_all(dna_engine_t *engine, int days) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (days < 1) days = 7;
+    if (days > 30) days = 30;
+
+    printf("Getting all topics (last %d days)...\n", days);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_feed_get_all(engine, days, on_feed_topics, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get topics: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+int cmd_feeds_comment(dna_engine_t *engine, const char *topic_uuid, const char *body,
+                      const char *mentions) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!topic_uuid || strlen(topic_uuid) == 0) {
+        printf("Error: Topic UUID required\n");
+        return -1;
+    }
+
+    if (!body || strlen(body) == 0) {
+        printf("Error: Comment body required\n");
+        return -1;
+    }
+
+    /* Convert comma-separated mentions to JSON array */
+    char *mentions_json = NULL;
+    if (mentions && strlen(mentions) > 0) {
+        /* Count mentions */
+        int mention_count = 1;
+        for (const char *p = mentions; *p; p++) {
+            if (*p == ',') mention_count++;
+        }
+
+        /* Build JSON array */
+        size_t json_len = strlen(mentions) + mention_count * 4 + 3;
+        mentions_json = malloc(json_len);
+        if (mentions_json) {
+            char *dst = mentions_json;
+            *dst++ = '[';
+
+            char mentions_copy[2048];
+            strncpy(mentions_copy, mentions, sizeof(mentions_copy) - 1);
+            mentions_copy[sizeof(mentions_copy) - 1] = '\0';
+
+            char *saveptr;
+            char *fp = strtok_r(mentions_copy, ",", &saveptr);
+            int first = 1;
+            while (fp) {
+                /* Trim whitespace */
+                while (*fp == ' ') fp++;
+                char *end = fp + strlen(fp) - 1;
+                while (end > fp && *end == ' ') *end-- = '\0';
+
+                if (strlen(fp) > 0) {
+                    if (!first) *dst++ = ',';
+                    *dst++ = '"';
+                    strcpy(dst, fp);
+                    dst += strlen(fp);
+                    *dst++ = '"';
+                    first = 0;
+                }
+                fp = strtok_r(NULL, ",", &saveptr);
+            }
+            *dst++ = ']';
+            *dst = '\0';
+        }
+    }
+
+    printf("Adding comment to topic %s...\n", topic_uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_feed_add_comment(engine, topic_uuid, body, mentions_json, on_comment_created, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    free(mentions_json);
 
     if (result != 0) {
         printf("Error: Failed to add comment: %s\n", dna_engine_error_string(result));
@@ -4305,77 +4306,28 @@ int cmd_feed_comment(dna_engine_t *engine, const char *post_id, const char *cont
     return 0;
 }
 
-int cmd_feed_comment_vote(dna_engine_t *engine, const char *comment_id, bool upvote) {
+int cmd_feeds_comments(dna_engine_t *engine, const char *topic_uuid) {
     if (!engine) {
         printf("Error: Engine not initialized\n");
         return -1;
     }
 
-    if (!comment_id) {
-        printf("Error: Comment ID required\n");
+    if (!topic_uuid || strlen(topic_uuid) == 0) {
+        printf("Error: Topic UUID required\n");
         return -1;
     }
 
-    printf("Voting %s on comment %s...\n", upvote ? "UP" : "DOWN", comment_id);
+    printf("Getting comments for topic %s...\n", topic_uuid);
 
     cli_wait_t wait;
     cli_wait_init(&wait);
 
-    dna_engine_cast_comment_vote(engine, comment_id, upvote ? 1 : -1, on_completion, &wait);
+    dna_engine_feed_get_comments(engine, topic_uuid, on_feed_comments, &wait);
     int result = cli_wait_for(&wait);
     cli_wait_destroy(&wait);
 
     if (result != 0) {
-        printf("Error: Failed to vote: %s\n", dna_engine_error_string(result));
-        return result;
-    }
-
-    printf("Vote cast successfully!\n");
-    return 0;
-}
-
-/* Callback for comment vote counts (returns comment with vote data) */
-static void on_comment_votes(dna_request_id_t request_id, int error,
-                              dna_comment_info_t *comment, void *user_data) {
-    (void)request_id;
-    cli_wait_t *wait = (cli_wait_t *)user_data;
-
-    pthread_mutex_lock(&wait->mutex);
-    wait->result = error;
-
-    if (error == 0 && comment) {
-        printf("Comment votes: +%d / -%d (score: %d)\n",
-               comment->upvotes, comment->downvotes, comment->upvotes - comment->downvotes);
-        printf("Your vote: %s\n", comment->user_vote > 0 ? "UP" :
-                                   comment->user_vote < 0 ? "DOWN" : "none");
-        dna_free_feed_comment(comment);
-    }
-
-    wait->done = true;
-    pthread_cond_signal(&wait->cond);
-    pthread_mutex_unlock(&wait->mutex);
-}
-
-int cmd_feed_comment_votes(dna_engine_t *engine, const char *comment_id) {
-    if (!engine) {
-        printf("Error: Engine not initialized\n");
-        return -1;
-    }
-
-    if (!comment_id) {
-        printf("Error: Comment ID required\n");
-        return -1;
-    }
-
-    cli_wait_t wait;
-    cli_wait_init(&wait);
-
-    dna_engine_get_comment_votes(engine, comment_id, on_comment_votes, &wait);
-    int result = cli_wait_for(&wait);
-    cli_wait_destroy(&wait);
-
-    if (result != 0) {
-        printf("Error: Failed to get votes: %s\n", dna_engine_error_string(result));
+        printf("Error: Failed to get comments: %s\n", dna_engine_error_string(result));
         return result;
     }
 

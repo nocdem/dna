@@ -42,10 +42,9 @@ set(DHT_COMMON_SOURCES
     client/dna_profile.c
     client/dna_message_wall.c
     client/dna_wall_votes.c
-    client/dna_feed_channels.c
-    client/dna_feed_posts.c
-    client/dna_feed_votes.c
-    client/dna_feed_comments.c  # Flat comment system for posts
+    client/dna_feed_topic.c     # Feed v2: Topic operations
+    client/dna_feed_comments.c  # Feed v2: Comment system with mentions
+    client/dna_feed_index.c     # Feed v2: Day-bucket indexing
     client/dna_group_outbox.c   # Group message outbox (feed pattern)
     # Keyserver modules
     keyserver/keyserver_helpers.c

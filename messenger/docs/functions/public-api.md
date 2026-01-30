@@ -12,10 +12,12 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 |----------|-------------|
 | `const char* dna_engine_get_version(void)` | Get DNA Messenger version string |
 | `const char* dna_engine_error_string(int error)` | Get human-readable error message |
-| `dna_engine_t* dna_engine_create(const char *data_dir)` | Create engine instance and spawn worker threads |
+| `dna_engine_t* dna_engine_create(const char *data_dir)` | Create engine instance and spawn worker threads (blocking) |
+| `void dna_engine_create_async(const char *data_dir, dna_engine_created_cb cb, void *user_data, _Atomic bool *cancelled)` | Create engine asynchronously (non-blocking) |
 | `void dna_engine_set_event_callback(dna_engine_t*, dna_event_cb, void*)` | Set event callback for pushed events |
 | `void dna_engine_destroy(dna_engine_t *engine)` | Destroy engine and release all resources |
 | `const char* dna_engine_get_fingerprint(dna_engine_t *engine)` | Get current identity fingerprint |
+| `void dna_free_event(dna_event_t *event)` | Free event structure from async callbacks |
 
 ## 1.2 Identity Management
 
@@ -41,6 +43,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_update_profile(...)` | Update current identity's profile in DHT |
 | `int dna_engine_get_mnemonic(...)` | Get encrypted mnemonic (recovery phrase) |
 | `int dna_engine_change_password_sync(...)` | Change password for identity keys |
+| `int dna_engine_prepare_dht_from_mnemonic(dna_engine_t*, const char *mnemonic)` | Prepare DHT keys from mnemonic before identity load |
 
 ## 1.3 Contacts
 
@@ -78,6 +81,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_get_conversation_page(...)` | Get conversation page (paginated, newest first) |
 | `dna_request_id_t dna_engine_check_offline_messages(...)` | Force check for offline messages (publishes watermarks) |
 | `dna_request_id_t dna_engine_check_offline_messages_cached(...)` | Check offline messages without publishing watermarks (v0.6.15+, for background service) |
+| `dna_request_id_t dna_engine_check_offline_messages_from(...)` | Check offline messages from specific contact |
 | `int dna_engine_delete_message_sync(...)` | Delete message from local database |
 | `int dna_engine_retry_pending_messages(...)` | Retry all pending/failed messages |
 | `int dna_engine_retry_message(...)` | Retry single failed message by ID |
@@ -98,6 +102,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_get_group_members(...)` | Get list of group members |
 | `dna_request_id_t dna_engine_add_group_member(engine, group_uuid, fingerprint, cb, user_data)` | Add member to group (owner only, rotates GEK) |
 | `dna_request_id_t dna_engine_remove_group_member(engine, group_uuid, fingerprint, cb, user_data)` | Remove member from group (owner only, rotates GEK) |
+| `dna_request_id_t dna_engine_get_group_conversation(...)` | Get group conversation history |
 | `void dna_free_group_info(dna_group_info_t*)` | Free group info struct |
 | `void dna_free_group_members(dna_group_member_t*, int)` | Free group members array |
 
@@ -123,7 +128,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_sync_groups(...)` | Sync groups from DHT |
 | `dna_request_id_t dna_engine_sync_groups_to_dht(...)` | Sync groups to DHT (v0.5.26+) |
 | `dna_request_id_t dna_engine_sync_group_by_uuid(...)` | Sync specific group by UUID from DHT |
-| `int dna_engine_request_turn_credentials(dna_engine_t*, int)` | **DEPRECATED v0.4.61** - Always returns -1 |
+| `dna_request_id_t dna_engine_restore_groups_from_dht(...)` | Restore groups from DHT backup |
 | `dna_request_id_t dna_engine_get_registered_name(...)` | Get registered name for current identity |
 | `void dna_engine_pause_presence(dna_engine_t*)` | Pause presence updates (app backgrounded) |
 | `void dna_engine_resume_presence(dna_engine_t*)` | Resume presence updates (app foregrounded) |
@@ -140,40 +145,30 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `void dna_engine_cancel_outbox_listener(dna_engine_t*, const char*)` | Cancel outbox listener |
 | `int dna_engine_listen_all_contacts(dna_engine_t*)` | Start all listeners (outbox + presence + watermark), waits for DHT ready |
 | `void dna_engine_cancel_all_outbox_listeners(dna_engine_t*)` | Cancel all outbox listeners |
+| `int dna_engine_refresh_listeners(dna_engine_t*)` | Refresh all DHT listeners |
 
-## 1.10 Presence Listeners
-
-| Function | Description |
-|----------|-------------|
-| `size_t dna_engine_start_presence_listener(dna_engine_t*, const char*)` | Start listening for contact's presence updates |
-| `void dna_engine_cancel_presence_listener(dna_engine_t*, const char*)` | Cancel presence listener for contact |
-| `void dna_engine_cancel_all_presence_listeners(dna_engine_t*)` | Cancel all presence listeners |
-
-## 1.11 Watermark Listeners
+## 1.10 Watermark Listeners
 
 | Function | Description |
 |----------|-------------|
 | `size_t dna_engine_start_watermark_listener(dna_engine_t*, const char*)` | Start persistent watermark listener for contact |
-| `void dna_engine_cancel_watermark_listener(dna_engine_t*, const char*)` | Cancel watermark listener for contact |
 | `void dna_engine_cancel_all_watermark_listeners(dna_engine_t*)` | Cancel all watermark listeners |
 
-## 1.12 Feed (DNA Board)
+## 1.11 Feed v2 (Topic-based Public Feeds)
+
+Topic-based feeds with categories and tags. No voting (deferred).
 
 | Function | Description |
 |----------|-------------|
-| `dna_request_id_t dna_engine_get_feed_channels(...)` | Get all feed channels from DHT |
-| `dna_request_id_t dna_engine_create_feed_channel(...)` | Create a new feed channel |
-| `dna_request_id_t dna_engine_init_default_channels(...)` | Initialize default channels |
-| `dna_request_id_t dna_engine_get_feed_posts(...)` | Get posts for a channel |
-| `dna_request_id_t dna_engine_create_feed_post(...)` | Create a new post |
-| `dna_request_id_t dna_engine_add_feed_comment(...)` | Add comment to post |
-| `dna_request_id_t dna_engine_get_feed_comments(...)` | Get comments for post |
-| `dna_request_id_t dna_engine_cast_feed_vote(...)` | Vote on a post |
-| `dna_request_id_t dna_engine_get_feed_votes(...)` | Get vote counts for post |
-| `dna_request_id_t dna_engine_cast_comment_vote(...)` | Vote on a comment |
-| `dna_request_id_t dna_engine_get_comment_votes(...)` | Get vote counts for comment |
+| `dna_request_id_t dna_engine_feed_create_topic(engine, title, body, category, tags_json, cb, ud)` | Create topic with category/tags |
+| `dna_request_id_t dna_engine_feed_get_topic(engine, uuid, cb, ud)` | Get topic by UUID |
+| `dna_request_id_t dna_engine_feed_delete_topic(engine, uuid, cb, ud)` | Soft delete topic (author only) |
+| `dna_request_id_t dna_engine_feed_add_comment(engine, topic_uuid, body, mentions_json, cb, ud)` | Add comment with @mentions |
+| `dna_request_id_t dna_engine_feed_get_comments(engine, topic_uuid, cb, ud)` | Get comments for topic |
+| `dna_request_id_t dna_engine_feed_get_category(engine, category, days_back, cb, ud)` | Get topics by category |
+| `dna_request_id_t dna_engine_feed_get_all(engine, days_back, cb, ud)` | Get all topics (global feed) |
 
-## 1.13 Backward Compatibility
+## 1.12 Backward Compatibility
 
 | Function | Description |
 |----------|-------------|
@@ -181,7 +176,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `void* dna_engine_get_dht_context(dna_engine_t*)` | Get DHT context |
 | `int dna_engine_is_dht_connected(dna_engine_t*)` | Check if DHT is connected |
 
-## 1.14 Log Configuration
+## 1.13 Log Configuration
 
 | Function | Description |
 |----------|-------------|
@@ -190,7 +185,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `const char* dna_engine_get_log_tags(void)` | Get log tags filter |
 | `int dna_engine_set_log_tags(const char *tags)` | Set log tags filter |
 
-## 1.15 Memory Management
+## 1.14 Memory Management
 
 | Function | Description |
 |----------|-------------|
@@ -204,14 +199,14 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `void dna_free_wallets(dna_wallet_t*, int)` | Free wallets array |
 | `void dna_free_balances(dna_balance_t*, int)` | Free balances array |
 | `void dna_free_transactions(dna_transaction_t*, int)` | Free transactions array |
-| `void dna_free_feed_channels(dna_channel_info_t*, int)` | Free feed channels array |
-| `void dna_free_feed_posts(dna_post_info_t*, int)` | Free feed posts array |
-| `void dna_free_feed_post(dna_post_info_t*)` | Free single feed post |
-| `void dna_free_feed_comments(dna_comment_info_t*, int)` | Free feed comments array |
-| `void dna_free_feed_comment(dna_comment_info_t*)` | Free single feed comment |
+| `void dna_free_feed_topic(dna_feed_topic_info_t*)` | Free single feed topic |
+| `void dna_free_feed_topics(dna_feed_topic_info_t*, int)` | Free feed topics array |
+| `void dna_free_feed_comment(dna_feed_comment_info_t*)` | Free single feed comment |
+| `void dna_free_feed_comments(dna_feed_comment_info_t*, int)` | Free feed comments array |
 | `void dna_free_profile(dna_profile_t*)` | Free profile |
+| `void dna_free_addressbook_entries(dna_addressbook_entry_t*, int)` | Free address book entries array |
 
-## 1.16 Global Engine Access
+## 1.15 Global Engine Access
 
 **v0.6.0+:** Global engine functions are deprecated. Each caller (Flutter/Service) owns its own engine.
 
@@ -226,7 +221,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 |------|----------|-------------|
 | -117 | `DNA_ENGINE_ERROR_IDENTITY_LOCKED` | Identity lock held by another process |
 
-## 1.17 Debug Log API
+## 1.16 Debug Log API
 
 | Function | Description |
 |----------|-------------|
@@ -239,14 +234,15 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `void dna_engine_debug_log_message_level(const char*, const char*, int)` | Add log message with level (0=DEBUG,1=INFO,2=WARN,3=ERROR) |
 | `int dna_engine_debug_log_export(const char *filepath)` | Export debug logs to file |
 
-## 1.18 Message Backup/Restore
+## 1.17 Message Backup/Restore
 
 | Function | Description |
 |----------|-------------|
 | `dna_request_id_t dna_engine_backup_messages(...)` | Backup all messages to DHT |
 | `dna_request_id_t dna_engine_restore_messages(...)` | Restore messages from DHT |
+| `dna_request_id_t dna_engine_check_backup_exists(...)` | Check if backup exists for identity |
 
-## 1.19 Version Check API
+## 1.18 Version Check API
 
 | Function | Description |
 |----------|-------------|
@@ -257,7 +253,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 - `dna_version_info_t` - Version info from DHT (library/app/nodus current+minimum, publisher, timestamp)
 - `dna_version_check_result_t` - Check result with update_available flags
 
-## 1.20 Signing API (for QR Auth)
+## 1.19 Signing API (for QR Auth)
 
 | Function | Description |
 |----------|-------------|
@@ -273,7 +269,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 
 **Protocol Documentation:** See [QR_AUTH.md](../QR_AUTH.md) for full QR authentication protocol specification (v1/v2/v3), payload formats, RP binding, and canonical signing.
 
-## 1.21 Android Callbacks (v0.6.0+)
+## 1.20 Android Callbacks (v0.6.0+)
 
 | Function | Description |
 |----------|-------------|
@@ -292,3 +288,24 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 - These callbacks are used by the Android foreground service for background notifications
 - The reconnect callback (v0.6.8+) allows the service to recreate MINIMAL listeners after network changes
 - When reconnect callback is set, the engine does NOT spawn its automatic FULL listener setup thread
+
+## 1.21 Address Book (Wallet Addresses)
+
+| Function | Description |
+|----------|-------------|
+| `dna_request_id_t dna_engine_get_addressbook(...)` | Get all address book entries |
+| `dna_request_id_t dna_engine_get_addressbook_by_network(...)` | Get entries filtered by network |
+| `int dna_engine_add_address(engine, address, label, network, notes)` | Add address (returns -2 if exists) |
+| `int dna_engine_update_address(engine, id, label, notes)` | Update address notes |
+| `int dna_engine_remove_address(engine, id)` | Remove address by ID |
+| `bool dna_engine_address_exists(engine, address, network)` | Check if address exists |
+| `int dna_engine_lookup_address(engine, address, network, entry_out)` | Lookup address (returns 1 if not found) |
+| `int dna_engine_increment_address_usage(engine, id)` | Increment usage counter |
+| `dna_request_id_t dna_engine_get_recent_addresses(...)` | Get recently used addresses |
+| `dna_request_id_t dna_engine_sync_addressbook_to_dht(...)` | Sync address book to DHT |
+| `dna_request_id_t dna_engine_sync_addressbook_from_dht(...)` | Sync address book from DHT |
+
+**Notes:**
+- Address book stores wallet addresses for all supported networks (backbone, ethereum, solana, tron)
+- Entries track usage count for "recently used" sorting
+- DHT sync allows address book recovery across devices

@@ -1,22 +1,24 @@
 /*
- * DNA Feed - Topic-Based Public Feed System via DHT
+ * DNA Feeds v2 - Topic-Based Public Feed System via DHT
  *
- * Distributed public feed with topic-based channels:
- * - Channel Registry: SHA256("dna:feed:registry") -> list of all channels
- * - Channel Metadata: SHA256("dna:feed:" + channel_id + ":meta") -> channel info
- * - Channel Index: SHA256("dna:feed:channel:" + channel_id + ":posts:" + YYYYMMDD) -> daily post IDs
- * - Posts: SHA256("dna:feed:post:" + post_id) -> individual post content
- * - Comments: SHA256("dna:feed:post:" + post_id + ":comments") -> multi-owner comments
- * - Post Votes: SHA256("dna:feed:post:" + post_id + ":votes") -> vote records
- * - Comment Votes: SHA256("dna:feed:comment:" + comment_id + ":votes") -> vote records
+ * Topic-based public feeds with categories and tags:
+ * - Topic: SHA256("dna:feeds:topic:" + uuid) -> full topic content
+ * - Comments: SHA256("dna:feeds:topic:" + uuid + ":comments") -> multi-owner comments
+ * - Category Index: SHA256("dna:feeds:idx:cat:" + cat_id + ":" + YYYYMMDD) -> day bucket
+ * - Global Index: SHA256("dna:feeds:idx:all:" + YYYYMMDD) -> day bucket
  *
  * Features:
- * - Anyone can create channels
+ * - User-created topics with categories and tags
  * - Identity-required posts (Dilithium5 signed)
- * - Flat comments (no nesting, use @mentions)
- * - Permanent voting (one vote per user per post/comment)
+ * - Flat comments with @mentions (no nesting)
+ * - Soft delete (author only)
  * - 30-day TTL for all data
- * - Engagement-TTL: comments refresh parent post TTL
+ * - NO VOTING (deferred until identity unification)
+ *
+ * v2 Changes from v1:
+ * - Topics replace channels (user-created categories vs fixed channels)
+ * - No voting system
+ * - Namespace: "dna:feeds:" (v1 was "dna:feed:")
  */
 
 #ifndef DNA_FEED_H
@@ -24,380 +26,240 @@
 
 #include "../core/dht_context.h"
 #include <stdint.h>
+#include <stdbool.h>
 #include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Constants */
-#define DNA_FEED_MAX_CHANNEL_NAME 64
-#define DNA_FEED_MAX_CHANNEL_DESC 512
-#define DNA_FEED_MAX_POST_TEXT 2048
-#define DNA_FEED_MAX_POSTS_PER_BUCKET 500
-#define DNA_FEED_TTL_SECONDS (30 * 24 * 60 * 60)  /* 30 days */
-#define DNA_FEED_MAX_COMMENT_TEXT 2048            /* Max comment text length */
-#define DNA_FEED_POST_VERSION 2                   /* Current post format version */
+/* ============================================================================
+ * Constants
+ * ========================================================================== */
 
-/* Default channel IDs (SHA256 of lowercase name) */
-#define DNA_FEED_CHANNEL_GENERAL "general"
-#define DNA_FEED_CHANNEL_ANNOUNCEMENTS "announcements"
-#define DNA_FEED_CHANNEL_HELP "help"
-#define DNA_FEED_CHANNEL_RANDOM "random"
+#define DNA_FEED_VERSION 2                        /* Feed system version */
+#define DNA_FEED_TTL_SECONDS (30 * 24 * 60 * 60)  /* 30 days */
+
+/* Topic limits */
+#define DNA_FEED_MAX_TITLE_LEN 200                /* Max title length */
+#define DNA_FEED_MAX_BODY_LEN 4000                /* Max body length */
+#define DNA_FEED_MAX_TAG_LEN 32                   /* Max tag length */
+#define DNA_FEED_MAX_TAGS 5                       /* Max tags per topic */
+#define DNA_FEED_UUID_LEN 37                      /* UUID v4 + null */
+#define DNA_FEED_CATEGORY_ID_LEN 65               /* SHA256 hex + null */
+#define DNA_FEED_FINGERPRINT_LEN 129              /* SHA3-512 hex + null */
+
+/* Comment limits */
+#define DNA_FEED_MAX_COMMENT_LEN 2000             /* Max comment length */
+#define DNA_FEED_MAX_MENTIONS 10                  /* Max @mentions per comment */
+
+/* Index limits */
+#define DNA_FEED_MAX_INDEX_ENTRIES 1000           /* Max entries per day bucket */
+#define DNA_FEED_INDEX_DAYS_DEFAULT 7             /* Default days to fetch */
+#define DNA_FEED_INDEX_DAYS_MAX 30                /* Max days to fetch */
+
+/* Default categories (lowercase, SHA256 computed at runtime) */
+#define DNA_FEED_CATEGORY_GENERAL "general"
+#define DNA_FEED_CATEGORY_TECHNOLOGY "technology"
+#define DNA_FEED_CATEGORY_HELP "help"
+#define DNA_FEED_CATEGORY_ANNOUNCEMENTS "announcements"
+#define DNA_FEED_CATEGORY_TRADING "trading"
+#define DNA_FEED_CATEGORY_OFFTOPIC "offtopic"
 
 /* ============================================================================
  * Data Structures
  * ========================================================================== */
 
 /**
- * @brief Channel metadata
+ * @brief Topic (stored at: SHA256("dna:feeds:topic:" + uuid))
  *
- * Stored at: SHA256("dna:feed:" + channel_id + ":meta")
+ * Represents a single topic/post in the feed system.
+ * Topics are owned by their author and signed with Dilithium5.
  */
 typedef struct {
-    char channel_id[65];                      /* SHA256 hex of channel name (64 + null) */
-    char name[DNA_FEED_MAX_CHANNEL_NAME];     /* Display name */
-    char description[DNA_FEED_MAX_CHANNEL_DESC]; /* Channel description */
-    char creator_fingerprint[129];            /* Creator's SHA3-512 fingerprint */
-    uint64_t created_at;                      /* Unix timestamp */
-    int post_count;                           /* Approximate post count */
-    int subscriber_count;                     /* Approximate subscriber count */
-    uint64_t last_activity;                   /* Timestamp of last post */
-} dna_feed_channel_t;
+    char topic_uuid[DNA_FEED_UUID_LEN];           /* UUID v4 identifier */
+    char author_fingerprint[DNA_FEED_FINGERPRINT_LEN]; /* Creator's fingerprint */
+    char title[DNA_FEED_MAX_TITLE_LEN + 1];       /* Topic title */
+    char body[DNA_FEED_MAX_BODY_LEN + 1];         /* Topic body/content */
+    char category_id[DNA_FEED_CATEGORY_ID_LEN];   /* SHA256 of lowercase category */
+    char tags[DNA_FEED_MAX_TAGS][DNA_FEED_MAX_TAG_LEN + 1]; /* Up to 5 tags */
+    uint8_t tag_count;                            /* Number of tags (0-5) */
+    uint64_t created_at;                          /* Creation timestamp (Unix) */
+    bool deleted;                                 /* Soft delete flag */
+    uint64_t deleted_at;                          /* Deletion timestamp (0 if not deleted) */
+    uint32_t version;                             /* Format version (DNA_FEED_VERSION) */
 
-/**
- * @brief Channel registry (list of all channels)
- *
- * Stored at: SHA256("dna:feed:registry")
- */
-typedef struct {
-    dna_feed_channel_t *channels;
-    size_t channel_count;
-    size_t allocated_count;
-    uint64_t updated_at;
-} dna_feed_registry_t;
-
-/**
- * @brief Single post
- *
- * Stored at: SHA256("dna:feed:post:" + post_id)
- */
-typedef struct {
-    char post_id[200];                        /* <fingerprint>_<timestamp_ms>_<random> */
-    char channel_id[65];                      /* Channel this post belongs to */
-    char author_fingerprint[129];             /* Author's SHA3-512 fingerprint */
-    char text[DNA_FEED_MAX_POST_TEXT];        /* Post content */
-    uint64_t timestamp;                       /* Unix timestamp (milliseconds) */
-    uint64_t updated;                         /* Last activity timestamp (comment added) */
-    int comment_count;                        /* Cached comment count */
-
-    /* Signature */
-    uint8_t signature[4627];                  /* Dilithium5 signature (NIST Cat 5) */
+    /* Dilithium5 signature over serialized topic (excludes signature itself) */
+    uint8_t signature[4627];
     size_t signature_len;
-
-    /* Voting (populated separately) */
-    int upvotes;
-    int downvotes;
-    int user_vote;                            /* Current user's vote: +1, -1, or 0 */
-} dna_feed_post_t;
+} dna_feed_topic_t;
 
 /**
- * @brief Single comment on a post
+ * @brief Comment (stored multi-owner at: SHA256("dna:feeds:topic:" + uuid + ":comments"))
  *
- * Stored at: SHA256("dna:feed:post:" + post_id + ":comments") as multi-owner value
+ * Comments use multi-owner DHT pattern - multiple users can add values
+ * to the same DHT key, each signed by their own identity.
  */
 typedef struct {
-    char comment_id[200];                     /* <fingerprint>_<timestamp_ms>_<random> */
-    char post_id[200];                        /* Parent post ID */
-    char author_fingerprint[129];             /* Author's SHA3-512 fingerprint */
-    char text[DNA_FEED_MAX_COMMENT_TEXT];     /* Comment content */
-    uint64_t timestamp;                       /* Unix timestamp (milliseconds) */
+    char comment_uuid[DNA_FEED_UUID_LEN];         /* UUID v4 identifier */
+    char topic_uuid[DNA_FEED_UUID_LEN];           /* Parent topic UUID */
+    char author_fingerprint[DNA_FEED_FINGERPRINT_LEN]; /* Commenter's fingerprint */
+    char body[DNA_FEED_MAX_COMMENT_LEN + 1];      /* Comment text */
+    char mentions[DNA_FEED_MAX_MENTIONS][DNA_FEED_FINGERPRINT_LEN]; /* @mentioned fingerprints */
+    uint8_t mention_count;                        /* Number of mentions (0-10) */
+    uint64_t created_at;                          /* Creation timestamp (Unix) */
+    uint32_t version;                             /* Format version (DNA_FEED_VERSION) */
 
-    /* Signature */
-    uint8_t signature[4627];                  /* Dilithium5 signature (NIST Cat 5) */
+    /* Dilithium5 signature over serialized comment (excludes signature itself) */
+    uint8_t signature[4627];
     size_t signature_len;
-
-    /* Voting (populated separately) */
-    int upvotes;
-    int downvotes;
-    int user_vote;                            /* Current user's vote: +1, -1, or 0 */
 } dna_feed_comment_t;
 
 /**
- * @brief Post with all its comments
+ * @brief Index Entry (stored in day buckets for listing)
  *
- * Used for fetching a complete post thread
+ * Lightweight entry for category and global indexes.
+ * Contains enough info for list view without fetching full topic.
  */
 typedef struct {
-    dna_feed_post_t post;                     /* The main post */
-    dna_feed_comment_t *comments;             /* Array of comments */
-    size_t comment_count;                     /* Number of comments */
-    size_t allocated_count;                   /* Allocated array size */
-} dna_feed_post_with_comments_t;
+    char topic_uuid[DNA_FEED_UUID_LEN];           /* Topic UUID */
+    char author_fingerprint[DNA_FEED_FINGERPRINT_LEN]; /* Author fingerprint */
+    char title[DNA_FEED_MAX_TITLE_LEN + 1];       /* Title preview */
+    char category_id[DNA_FEED_CATEGORY_ID_LEN];   /* Category ID */
+    uint64_t created_at;                          /* Creation timestamp */
+    bool deleted;                                 /* Soft delete flag */
+} dna_feed_index_entry_t;
 
 /**
- * @brief Daily post index bucket
- *
- * Stored at: SHA256("dna:feed:" + channel_id + ":posts:" + YYYYMMDD)
+ * @brief Category info for listing available categories
  */
 typedef struct {
-    char channel_id[65];
-    char bucket_date[12];                     /* YYYYMMDD */
-    char **post_ids;                          /* Array of post IDs */
-    size_t post_count;
-    size_t allocated_count;
-} dna_feed_bucket_t;
-
-/**
- * @brief Single vote record
- */
-typedef struct {
-    char voter_fingerprint[129];              /* Voter's SHA3-512 fingerprint */
-    int8_t vote_value;                        /* +1 for upvote, -1 for downvote */
-    uint64_t timestamp;                       /* When vote was cast */
-    uint8_t signature[4627];                  /* Dilithium5 signature */
-    size_t signature_len;
-} dna_feed_vote_t;
-
-/**
- * @brief Aggregated votes for a post
- *
- * Stored at: SHA256("dna:feed:post:" + post_id + ":votes")
- */
-typedef struct {
-    char post_id[200];
-    int upvote_count;
-    int downvote_count;
-    dna_feed_vote_t *votes;
-    size_t vote_count;
-    size_t allocated_count;
-} dna_feed_votes_t;
+    char category_id[DNA_FEED_CATEGORY_ID_LEN];   /* SHA256 of lowercase name */
+    char name[64];                                /* Display name */
+    int topic_count;                              /* Approximate topic count */
+} dna_feed_category_t;
 
 /* ============================================================================
- * Channel Operations (dna_feed_channels.c)
+ * Topic Operations (dna_feed_topic.c)
  * ========================================================================== */
 
 /**
- * @brief Create a new channel
+ * @brief Create a new topic
  *
- * Creates channel metadata and adds to global registry.
- *
- * @param dht_ctx DHT context
- * @param name Channel name (max 64 chars)
- * @param description Channel description (max 512 chars)
- * @param creator_fingerprint Creator's SHA3-512 fingerprint
- * @param private_key Creator's Dilithium5 private key for signing
- * @param channel_out Output: Created channel (caller frees)
- * @return 0 on success, -1 on error, -2 if channel already exists
- */
-int dna_feed_channel_create(dht_context_t *dht_ctx,
-                            const char *name,
-                            const char *description,
-                            const char *creator_fingerprint,
-                            const uint8_t *private_key,
-                            dna_feed_channel_t **channel_out);
-
-/**
- * @brief Get channel metadata
+ * Creates topic at DHT key and adds to category + global indexes.
  *
  * @param dht_ctx DHT context
- * @param channel_id Channel ID (SHA256 of name)
- * @param channel_out Output: Channel metadata (caller frees)
- * @return 0 on success, -1 on error, -2 if not found
- */
-int dna_feed_channel_get(dht_context_t *dht_ctx,
-                         const char *channel_id,
-                         dna_feed_channel_t **channel_out);
-
-/**
- * @brief Get all channels from registry
- *
- * @param dht_ctx DHT context
- * @param registry_out Output: Channel registry (caller frees)
- * @return 0 on success, -1 on error, -2 if registry empty
- */
-int dna_feed_registry_get(dht_context_t *dht_ctx,
-                          dna_feed_registry_t **registry_out);
-
-/**
- * @brief Initialize default channels
- *
- * Creates #general, #announcements, #help, #random if they don't exist.
- *
- * @param dht_ctx DHT context
- * @param creator_fingerprint Creator fingerprint for defaults
- * @param private_key Creator's private key
- * @return Number of channels created, -1 on error
- */
-int dna_feed_init_default_channels(dht_context_t *dht_ctx,
-                                   const char *creator_fingerprint,
-                                   const uint8_t *private_key);
-
-/**
- * @brief Generate channel_id from name
- *
- * @param name Channel name
- * @param channel_id_out Output buffer (65 bytes)
- * @return 0 on success, -1 on error
- */
-int dna_feed_make_channel_id(const char *name, char *channel_id_out);
-
-/**
- * @brief Free channel structure
- */
-void dna_feed_channel_free(dna_feed_channel_t *channel);
-
-/**
- * @brief Free registry structure
- */
-void dna_feed_registry_free(dna_feed_registry_t *registry);
-
-/* ============================================================================
- * Post Operations (dna_feed_posts.c)
- * ========================================================================== */
-
-/**
- * @brief Create a new post in a channel
- *
- * @param dht_ctx DHT context
- * @param channel_id Channel to post in
+ * @param title Topic title (max 200 chars)
+ * @param body Topic body (max 4000 chars)
+ * @param category Category name (lowercase, will compute SHA256)
+ * @param tags Array of tags (NULL-terminated or tag_count entries)
+ * @param tag_count Number of tags (0-5)
  * @param author_fingerprint Author's SHA3-512 fingerprint
- * @param text Post content (max 2048 chars)
+ * @param private_key Author's Dilithium5 private key for signing
+ * @param uuid_out Output: Generated UUID (37 bytes)
+ * @return 0 on success, negative on error
+ */
+int dna_feed_topic_create(dht_context_t *dht_ctx,
+                          const char *title,
+                          const char *body,
+                          const char *category,
+                          const char **tags,
+                          int tag_count,
+                          const char *author_fingerprint,
+                          const uint8_t *private_key,
+                          char *uuid_out);
+
+/**
+ * @brief Get a topic by UUID
+ *
+ * @param dht_ctx DHT context
+ * @param uuid Topic UUID
+ * @param topic_out Output: Topic structure (caller frees with dna_feed_topic_free)
+ * @return 0 on success, -1 on error, -2 if not found
+ */
+int dna_feed_topic_get(dht_context_t *dht_ctx,
+                       const char *uuid,
+                       dna_feed_topic_t **topic_out);
+
+/**
+ * @brief Soft delete a topic (author only)
+ *
+ * Sets deleted flag and updates DHT. Topic remains in DHT until TTL expires.
+ *
+ * @param dht_ctx DHT context
+ * @param uuid Topic UUID
+ * @param author_fingerprint Author's fingerprint (for ownership verification)
  * @param private_key Author's Dilithium5 private key
- * @param post_out Output: Created post (caller frees)
- * @return 0 on success, -1 on error
+ * @return 0 on success, -1 on error, -2 if not found, -3 if not owner
  */
-int dna_feed_post_create(dht_context_t *dht_ctx,
-                         const char *channel_id,
-                         const char *author_fingerprint,
-                         const char *text,
-                         const uint8_t *private_key,
-                         dna_feed_post_t **post_out);
+int dna_feed_topic_delete(dht_context_t *dht_ctx,
+                          const char *uuid,
+                          const char *author_fingerprint,
+                          const uint8_t *private_key);
 
 /**
- * @brief Get a single post by ID
+ * @brief Verify topic signature
  *
- * @param dht_ctx DHT context
- * @param post_id Post ID
- * @param post_out Output: Post (caller frees)
- * @return 0 on success, -1 on error, -2 if not found
- */
-int dna_feed_post_get(dht_context_t *dht_ctx,
-                      const char *post_id,
-                      dna_feed_post_t **post_out);
-
-/**
- * @brief Get posts for a channel (paginated by date)
- *
- * @param dht_ctx DHT context
- * @param channel_id Channel ID
- * @param date Date string (YYYYMMDD) or NULL for today
- * @param posts_out Output: Array of posts (caller frees)
- * @param count_out Output: Number of posts
- * @return 0 on success, -1 on error, -2 if no posts
- */
-int dna_feed_posts_get_by_channel(dht_context_t *dht_ctx,
-                                  const char *channel_id,
-                                  const char *date,
-                                  dna_feed_post_t **posts_out,
-                                  size_t *count_out);
-
-/**
- * @brief Get post with all its comments
- *
- * @param dht_ctx DHT context
- * @param post_id Post ID
- * @param result_out Output: Post with comments (caller frees)
- * @return 0 on success, -1 on error, -2 if not found
- */
-int dna_feed_post_get_full(dht_context_t *dht_ctx,
-                           const char *post_id,
-                           dna_feed_post_with_comments_t **result_out);
-
-/**
- * @brief Generate post_id
- *
- * Format: <fingerprint>_<timestamp_ms>_<random_hex>
- *
- * @param fingerprint Author fingerprint
- * @param post_id_out Output buffer (200 bytes)
- * @return 0 on success, -1 on error
- */
-int dna_feed_make_post_id(const char *fingerprint, char *post_id_out);
-
-/**
- * @brief Verify post signature
- *
- * @param post Post to verify
+ * @param topic Topic to verify
  * @param public_key Author's Dilithium5 public key (2592 bytes)
  * @return 0 if valid, -1 if invalid
  */
-int dna_feed_verify_post_signature(const dna_feed_post_t *post,
-                                   const uint8_t *public_key);
+int dna_feed_topic_verify(const dna_feed_topic_t *topic,
+                          const uint8_t *public_key);
 
 /**
- * @brief Free post structure
+ * @brief Free topic structure
  */
-void dna_feed_post_free(dna_feed_post_t *post);
+void dna_feed_topic_free(dna_feed_topic_t *topic);
 
 /**
- * @brief Free bucket structure
+ * @brief Free array of topics
  */
-void dna_feed_bucket_free(dna_feed_bucket_t *bucket);
-
-/**
- * @brief Free post with comments structure
- */
-void dna_feed_post_with_comments_free(dna_feed_post_with_comments_t *post_with_comments);
+void dna_feed_topics_free(dna_feed_topic_t *topics, size_t count);
 
 /* ============================================================================
  * Comment Operations (dna_feed_comments.c)
  * ========================================================================== */
 
 /**
- * @brief Add a comment to a post
+ * @brief Add a comment to a topic
  *
- * Also refreshes the parent post TTL (engagement-TTL).
+ * Uses multi-owner DHT pattern - each user's comment is a separate value.
  *
  * @param dht_ctx DHT context
- * @param post_id Post ID to comment on
+ * @param topic_uuid Topic UUID to comment on
+ * @param body Comment text (max 2000 chars)
+ * @param mentions Array of mentioned fingerprints (NULL-terminated or mention_count entries)
+ * @param mention_count Number of mentions (0-10)
  * @param author_fingerprint Author's SHA3-512 fingerprint
- * @param text Comment content (max 2048 chars)
  * @param private_key Author's Dilithium5 private key
- * @param comment_out Output: Created comment (caller frees)
- * @return 0 on success, -1 on error, -2 if post not found
+ * @param uuid_out Output: Generated comment UUID (37 bytes)
+ * @return 0 on success, -1 on error
  */
 int dna_feed_comment_add(dht_context_t *dht_ctx,
-                         const char *post_id,
+                         const char *topic_uuid,
+                         const char *body,
+                         const char **mentions,
+                         int mention_count,
                          const char *author_fingerprint,
-                         const char *text,
                          const uint8_t *private_key,
-                         dna_feed_comment_t **comment_out);
+                         char *uuid_out);
 
 /**
- * @brief Get all comments for a post
+ * @brief Get all comments for a topic
+ *
+ * Fetches all values from multi-owner DHT key, sorted by timestamp.
  *
  * @param dht_ctx DHT context
- * @param post_id Post ID
- * @param comments_out Output: Array of comments (caller frees)
+ * @param topic_uuid Topic UUID
+ * @param comments_out Output: Array of comments (caller frees with dna_feed_comments_free)
  * @param count_out Output: Number of comments
  * @return 0 on success, -1 on error, -2 if no comments
  */
 int dna_feed_comments_get(dht_context_t *dht_ctx,
-                          const char *post_id,
+                          const char *topic_uuid,
                           dna_feed_comment_t **comments_out,
                           size_t *count_out);
-
-/**
- * @brief Generate comment_id
- *
- * Format: <fingerprint>_<timestamp_ms>_<random_hex>
- *
- * @param fingerprint Author fingerprint
- * @param comment_id_out Output buffer (200 bytes)
- * @return 0 on success, -1 on error
- */
-int dna_feed_make_comment_id(const char *fingerprint, char *comment_id_out);
 
 /**
  * @brief Verify comment signature
@@ -406,8 +268,8 @@ int dna_feed_make_comment_id(const char *fingerprint, char *comment_id_out);
  * @param public_key Author's Dilithium5 public key (2592 bytes)
  * @return 0 if valid, -1 if invalid
  */
-int dna_feed_verify_comment_signature(const dna_feed_comment_t *comment,
-                                      const uint8_t *public_key);
+int dna_feed_comment_verify(const dna_feed_comment_t *comment,
+                            const uint8_t *public_key);
 
 /**
  * @brief Free comment structure
@@ -420,169 +282,93 @@ void dna_feed_comment_free(dna_feed_comment_t *comment);
 void dna_feed_comments_free(dna_feed_comment_t *comments, size_t count);
 
 /* ============================================================================
- * Vote Operations (dna_feed_votes.c)
+ * Index Operations (dna_feed_index.c)
  * ========================================================================== */
 
 /**
- * @brief Cast a vote on a post
+ * @brief Add entry to category and global indexes
  *
- * Votes are permanent - cannot be changed once cast.
- *
- * @param dht_ctx DHT context
- * @param post_id Post ID to vote on
- * @param voter_fingerprint Voter's SHA3-512 fingerprint
- * @param vote_value +1 for upvote, -1 for downvote
- * @param private_key Voter's Dilithium5 private key
- * @return 0 on success, -1 on error, -2 if already voted
- */
-int dna_feed_vote_cast(dht_context_t *dht_ctx,
-                       const char *post_id,
-                       const char *voter_fingerprint,
-                       int8_t vote_value,
-                       const uint8_t *private_key);
-
-/**
- * @brief Get votes for a post
+ * Called internally by dna_feed_topic_create(). Adds entry to:
+ * - Category index: SHA256("dna:feeds:idx:cat:" + cat_id + ":" + YYYYMMDD)
+ * - Global index: SHA256("dna:feeds:idx:all:" + YYYYMMDD)
  *
  * @param dht_ctx DHT context
- * @param post_id Post ID
- * @param votes_out Output: Votes structure (caller frees)
- * @return 0 on success, -1 on error, -2 if no votes
+ * @param entry Index entry to add
+ * @return 0 on success, negative on error
  */
-int dna_feed_votes_get(dht_context_t *dht_ctx,
-                       const char *post_id,
-                       dna_feed_votes_t **votes_out);
+int dna_feed_index_add(dht_context_t *dht_ctx,
+                       const dna_feed_index_entry_t *entry);
 
 /**
- * @brief Check if user has voted on a post
+ * @brief Get topics for a category
  *
- * @param votes Votes structure
- * @param voter_fingerprint Voter fingerprint
- * @return +1 if upvoted, -1 if downvoted, 0 if not voted
- */
-int8_t dna_feed_get_user_vote(const dna_feed_votes_t *votes,
-                              const char *voter_fingerprint);
-
-/**
- * @brief Verify vote signature
- *
- * @param vote Vote to verify
- * @param post_id Post ID the vote is for
- * @param public_key Voter's Dilithium5 public key
- * @return 0 if valid, -1 if invalid
- */
-int dna_feed_verify_vote_signature(const dna_feed_vote_t *vote,
-                                   const char *post_id,
-                                   const uint8_t *public_key);
-
-/**
- * @brief Free votes structure
- */
-void dna_feed_votes_free(dna_feed_votes_t *votes);
-
-/**
- * @brief Cast a vote on a comment
- *
- * Votes are permanent - cannot be changed once cast.
+ * Fetches from category day buckets, merges and sorts by timestamp desc.
  *
  * @param dht_ctx DHT context
- * @param comment_id Comment ID to vote on
- * @param voter_fingerprint Voter's SHA3-512 fingerprint
- * @param vote_value +1 for upvote, -1 for downvote
- * @param private_key Voter's Dilithium5 private key
- * @return 0 on success, -1 on error, -2 if already voted
+ * @param category Category name (will compute SHA256)
+ * @param days_back Number of days to fetch (1-30, default 7)
+ * @param entries_out Output: Array of index entries (caller frees)
+ * @param count_out Output: Number of entries
+ * @return 0 on success, -1 on error, -2 if no entries
  */
-int dna_feed_comment_vote_cast(dht_context_t *dht_ctx,
-                               const char *comment_id,
-                               const char *voter_fingerprint,
-                               int8_t vote_value,
-                               const uint8_t *private_key);
+int dna_feed_index_get_category(dht_context_t *dht_ctx,
+                                const char *category,
+                                int days_back,
+                                dna_feed_index_entry_t **entries_out,
+                                size_t *count_out);
 
 /**
- * @brief Get votes for a comment
+ * @brief Get all topics (global index)
+ *
+ * Fetches from global day buckets, merges and sorts by timestamp desc.
  *
  * @param dht_ctx DHT context
- * @param comment_id Comment ID
- * @param votes_out Output: Votes structure (caller frees)
- * @return 0 on success, -1 on error, -2 if no votes
+ * @param days_back Number of days to fetch (1-30, default 7)
+ * @param entries_out Output: Array of index entries (caller frees)
+ * @param count_out Output: Number of entries
+ * @return 0 on success, -1 on error, -2 if no entries
  */
-int dna_feed_comment_votes_get(dht_context_t *dht_ctx,
-                               const char *comment_id,
-                               dna_feed_votes_t **votes_out);
+int dna_feed_index_get_all(dht_context_t *dht_ctx,
+                           int days_back,
+                           dna_feed_index_entry_t **entries_out,
+                           size_t *count_out);
+
+/**
+ * @brief Free array of index entries
+ */
+void dna_feed_index_entries_free(dna_feed_index_entry_t *entries, size_t count);
 
 /* ============================================================================
- * DHT Key Generation
+ * Utility Functions
  * ========================================================================== */
 
 /**
- * @brief Get DHT key for channel registry
+ * @brief Generate category_id from name
  *
- * Key: SHA256("dna:feed:registry")
+ * Computes SHA256(lowercase(name)) and returns as 64-char hex string.
  *
- * @param key_out Output buffer (65 bytes)
+ * @param name Category name
+ * @param category_id_out Output buffer (65 bytes)
+ * @return 0 on success, -1 on error
  */
-int dna_feed_get_registry_key(char *key_out);
+int dna_feed_make_category_id(const char *name, char *category_id_out);
 
 /**
- * @brief Get DHT key for channel metadata
+ * @brief Get list of default categories
  *
- * Key: SHA256("dna:feed:" + channel_id + ":meta")
- *
- * @param channel_id Channel ID
- * @param key_out Output buffer (65 bytes)
+ * @param categories_out Output: Array of category info (caller frees)
+ * @param count_out Output: Number of categories
+ * @return 0 on success
  */
-int dna_feed_get_channel_key(const char *channel_id, char *key_out);
+int dna_feed_get_default_categories(dna_feed_category_t **categories_out,
+                                    size_t *count_out);
 
 /**
- * @brief Get DHT key for daily post bucket
+ * @brief Generate UUID v4
  *
- * Key: SHA256("dna:feed:" + channel_id + ":posts:" + date)
- *
- * @param channel_id Channel ID
- * @param date Date string (YYYYMMDD)
- * @param key_out Output buffer (65 bytes)
+ * @param uuid_out Output buffer (37 bytes: 36 chars + null)
  */
-int dna_feed_get_bucket_key(const char *channel_id, const char *date, char *key_out);
-
-/**
- * @brief Get DHT key for individual post
- *
- * Key: SHA256("dna:feed:post:" + post_id)
- *
- * @param post_id Post ID
- * @param key_out Output buffer (65 bytes)
- */
-int dna_feed_get_post_key(const char *post_id, char *key_out);
-
-/**
- * @brief Get DHT key for post votes
- *
- * Key: SHA256("dna:feed:post:" + post_id + ":votes")
- *
- * @param post_id Post ID
- * @param key_out Output buffer (65 bytes)
- */
-int dna_feed_get_votes_key(const char *post_id, char *key_out);
-
-/**
- * @brief Get DHT key for post comments
- *
- * Key: SHA256("dna:feed:post:" + post_id + ":comments")
- *
- * @param post_id Post ID
- * @param key_out Output buffer (65 bytes)
- */
-int dna_feed_get_comments_key(const char *post_id, char *key_out);
-
-/**
- * @brief Get DHT key for comment votes
- *
- * Key: SHA256("dna:feed:comment:" + comment_id + ":votes")
- *
- * @param comment_id Comment ID
- * @param key_out Output buffer (65 bytes)
- */
-int dna_feed_get_comment_votes_key(const char *comment_id, char *key_out);
+void dna_feed_generate_uuid(char *uuid_out);
 
 /**
  * @brief Get today's date string
@@ -590,6 +376,65 @@ int dna_feed_get_comment_votes_key(const char *comment_id, char *key_out);
  * @param date_out Output buffer (12 bytes for YYYYMMDD + null)
  */
 void dna_feed_get_today_date(char *date_out);
+
+/**
+ * @brief Get date string for N days ago
+ *
+ * @param days_ago Number of days in the past (0 = today)
+ * @param date_out Output buffer (12 bytes for YYYYMMDD + null)
+ */
+void dna_feed_get_date_offset(int days_ago, char *date_out);
+
+/* ============================================================================
+ * DHT Key Generation
+ * ========================================================================== */
+
+/**
+ * @brief Get DHT key for topic
+ *
+ * Key: SHA256("dna:feeds:topic:" + uuid)
+ *
+ * @param uuid Topic UUID
+ * @param key_out Output buffer (65 bytes)
+ * @return 0 on success, -1 on error
+ */
+int dna_feed_get_topic_key(const char *uuid, char *key_out);
+
+/**
+ * @brief Get DHT key for topic comments
+ *
+ * Key: SHA256("dna:feeds:topic:" + uuid + ":comments")
+ *
+ * @param uuid Topic UUID
+ * @param key_out Output buffer (65 bytes)
+ * @return 0 on success, -1 on error
+ */
+int dna_feed_get_comments_key(const char *uuid, char *key_out);
+
+/**
+ * @brief Get DHT key for category day bucket
+ *
+ * Key: SHA256("dna:feeds:idx:cat:" + cat_id + ":" + date)
+ *
+ * @param category_id Category ID (SHA256 hex)
+ * @param date Date string (YYYYMMDD)
+ * @param key_out Output buffer (65 bytes)
+ * @return 0 on success, -1 on error
+ */
+int dna_feed_get_category_index_key(const char *category_id,
+                                    const char *date,
+                                    char *key_out);
+
+/**
+ * @brief Get DHT key for global day bucket
+ *
+ * Key: SHA256("dna:feeds:idx:all:" + date)
+ *
+ * @param date Date string (YYYYMMDD)
+ * @param key_out Output buffer (65 bytes)
+ * @return 0 on success, -1 on error
+ */
+int dna_feed_get_global_index_key(const char *date, char *key_out);
 
 #ifdef __cplusplus
 }

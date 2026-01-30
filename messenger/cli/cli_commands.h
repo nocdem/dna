@@ -468,20 +468,18 @@ int cmd_transactions(dna_engine_t *engine, int wallet_idx);
 int cmd_estimate_gas(dna_engine_t *engine, int network_id);
 
 /* ============================================================================
- * PHASE 10: FEED/DNA BOARD (11 commands)
+ * PHASE 10: FEED v2 (7 commands) - Topic-based public feeds
  * ============================================================================ */
 
-int cmd_feed_channels(dna_engine_t *engine);
-int cmd_feed_init(dna_engine_t *engine);
-int cmd_feed_create_channel(dna_engine_t *engine, const char *name, const char *description);
-int cmd_feed_posts(dna_engine_t *engine, const char *channel_id);
-int cmd_feed_post(dna_engine_t *engine, const char *channel_id, const char *content);
-int cmd_feed_vote(dna_engine_t *engine, const char *post_id, bool upvote);
-int cmd_feed_votes(dna_engine_t *engine, const char *post_id);
-int cmd_feed_comments(dna_engine_t *engine, const char *post_id);
-int cmd_feed_comment(dna_engine_t *engine, const char *post_id, const char *content);
-int cmd_feed_comment_vote(dna_engine_t *engine, const char *comment_id, bool upvote);
-int cmd_feed_comment_votes(dna_engine_t *engine, const char *comment_id);
+int cmd_feeds_create(dna_engine_t *engine, const char *title, const char *body,
+                     const char *category, const char *tags);
+int cmd_feeds_get(dna_engine_t *engine, const char *uuid);
+int cmd_feeds_delete(dna_engine_t *engine, const char *uuid);
+int cmd_feeds_list(dna_engine_t *engine, const char *category, int days);
+int cmd_feeds_list_all(dna_engine_t *engine, int days);
+int cmd_feeds_comment(dna_engine_t *engine, const char *topic_uuid, const char *body,
+                      const char *mentions);
+int cmd_feeds_comments(dna_engine_t *engine, const char *topic_uuid);
 
 /* ============================================================================
  * PHASE 11: MESSAGE BACKUP (2 commands)

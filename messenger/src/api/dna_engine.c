@@ -717,11 +717,13 @@ void dna_free_task_params(dna_task_t *task) {
         case TASK_SEND_GROUP_MESSAGE:
             free(task->params.send_group_message.message);
             break;
-        case TASK_CREATE_FEED_POST:
-            free(task->params.create_feed_post.text);
+        case TASK_FEED_CREATE_TOPIC:
+            free(task->params.feed_create_topic.body);
+            free(task->params.feed_create_topic.tags_json);
             break;
-        case TASK_ADD_FEED_COMMENT:
-            free(task->params.add_feed_comment.text);
+        case TASK_FEED_ADD_COMMENT:
+            free(task->params.feed_add_comment.body);
+            free(task->params.feed_add_comment.mentions_json);
             break;
         default:
             break;
@@ -1087,39 +1089,27 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             dna_handle_get_registered_name(engine, task);
             break;
 
-        /* Feed */
-        case TASK_GET_FEED_CHANNELS:
-            dna_handle_get_feed_channels(engine, task);
+        /* Feed v2 (topic-based, no voting) */
+        case TASK_FEED_CREATE_TOPIC:
+            dna_handle_feed_create_topic(engine, task);
             break;
-        case TASK_CREATE_FEED_CHANNEL:
-            dna_handle_create_feed_channel(engine, task);
+        case TASK_FEED_GET_TOPIC:
+            dna_handle_feed_get_topic(engine, task);
             break;
-        case TASK_INIT_DEFAULT_CHANNELS:
-            dna_handle_init_default_channels(engine, task);
+        case TASK_FEED_DELETE_TOPIC:
+            dna_handle_feed_delete_topic(engine, task);
             break;
-        case TASK_GET_FEED_POSTS:
-            dna_handle_get_feed_posts(engine, task);
+        case TASK_FEED_ADD_COMMENT:
+            dna_handle_feed_add_comment(engine, task);
             break;
-        case TASK_CREATE_FEED_POST:
-            dna_handle_create_feed_post(engine, task);
+        case TASK_FEED_GET_COMMENTS:
+            dna_handle_feed_get_comments(engine, task);
             break;
-        case TASK_ADD_FEED_COMMENT:
-            dna_handle_add_feed_comment(engine, task);
+        case TASK_FEED_GET_CATEGORY:
+            dna_handle_feed_get_category(engine, task);
             break;
-        case TASK_GET_FEED_COMMENTS:
-            dna_handle_get_feed_comments(engine, task);
-            break;
-        case TASK_CAST_FEED_VOTE:
-            dna_handle_cast_feed_vote(engine, task);
-            break;
-        case TASK_GET_FEED_VOTES:
-            dna_handle_get_feed_votes(engine, task);
-            break;
-        case TASK_CAST_COMMENT_VOTE:
-            dna_handle_cast_comment_vote(engine, task);
-            break;
-        case TASK_GET_COMMENT_VOTES:
-            dna_handle_get_comment_votes(engine, task);
+        case TASK_FEED_GET_ALL:
+            dna_handle_feed_get_all(engine, task);
             break;
     }
 }
@@ -1697,38 +1687,7 @@ void dna_free_transactions(dna_transaction_t *transactions, int count) {
     free(transactions);
 }
 
-void dna_free_feed_channels(dna_channel_info_t *channels, int count) {
-    (void)count;
-    free(channels);
-}
-
-void dna_free_feed_posts(dna_post_info_t *posts, int count) {
-    if (!posts) return;
-    for (int i = 0; i < count; i++) {
-        free(posts[i].text);
-    }
-    free(posts);
-}
-
-void dna_free_feed_post(dna_post_info_t *post) {
-    if (!post) return;
-    free(post->text);
-    free(post);
-}
-
-void dna_free_feed_comments(dna_comment_info_t *comments, int count) {
-    if (!comments) return;
-    for (int i = 0; i < count; i++) {
-        free(comments[i].text);
-    }
-    free(comments);
-}
-
-void dna_free_feed_comment(dna_comment_info_t *comment) {
-    if (!comment) return;
-    free(comment->text);
-    free(comment);
-}
+/* Feed v2 free functions moved to src/api/engine/dna_engine_feed.c */
 
 void dna_free_profile(dna_profile_t *profile) {
     if (!profile) return;

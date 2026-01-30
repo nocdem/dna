@@ -948,86 +948,124 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* ====== PHASE 10: FEED/DNA BOARD ====== */
-    else if (strcmp(command, "feed-channels") == 0) {
-        result = cmd_feed_channels(g_engine);
-    }
-    else if (strcmp(command, "feed-init") == 0) {
-        result = cmd_feed_init(g_engine);
-    }
-    else if (strcmp(command, "feed-create-channel") == 0) {
+    /* ====== PHASE 10: FEED v2 (Topic-based public feeds) ====== */
+    else if (strcmp(command, "feeds") == 0) {
         if (optind + 1 >= argc) {
-            fprintf(stderr, "Error: 'feed-create-channel' requires <name> [description] arguments\n");
+            fprintf(stderr, "Error: 'feeds' requires a subcommand\n");
+            fprintf(stderr, "Usage:\n");
+            fprintf(stderr, "  feeds create <title> <body> [--category CAT] [--tags \"tag1,tag2\"]\n");
+            fprintf(stderr, "  feeds get <uuid>\n");
+            fprintf(stderr, "  feeds delete <uuid>\n");
+            fprintf(stderr, "  feeds list --category <category> [--days N]\n");
+            fprintf(stderr, "  feeds list-all [--days N]\n");
+            fprintf(stderr, "  feeds comment <topic-uuid> <body> [--mentions \"fp1,fp2\"]\n");
+            fprintf(stderr, "  feeds comments <topic-uuid>\n");
             result = 1;
         } else {
-            const char *desc = (optind + 2 < argc) ? argv[optind + 2] : NULL;
-            result = cmd_feed_create_channel(g_engine, argv[optind + 1], desc);
-        }
-    }
-    else if (strcmp(command, "feed-posts") == 0) {
-        if (optind + 1 >= argc) {
-            fprintf(stderr, "Error: 'feed-posts' requires <channel_id> argument\n");
-            result = 1;
-        } else {
-            result = cmd_feed_posts(g_engine, argv[optind + 1]);
-        }
-    }
-    else if (strcmp(command, "feed-post") == 0) {
-        if (optind + 2 >= argc) {
-            fprintf(stderr, "Error: 'feed-post' requires <channel_id> <content> arguments\n");
-            result = 1;
-        } else {
-            result = cmd_feed_post(g_engine, argv[optind + 1], argv[optind + 2]);
-        }
-    }
-    else if (strcmp(command, "feed-vote") == 0) {
-        if (optind + 2 >= argc) {
-            fprintf(stderr, "Error: 'feed-vote' requires <post_id> <up|down> arguments\n");
-            result = 1;
-        } else {
-            bool upvote = (strcmp(argv[optind + 2], "up") == 0);
-            result = cmd_feed_vote(g_engine, argv[optind + 1], upvote);
-        }
-    }
-    else if (strcmp(command, "feed-votes") == 0) {
-        if (optind + 1 >= argc) {
-            fprintf(stderr, "Error: 'feed-votes' requires <post_id> argument\n");
-            result = 1;
-        } else {
-            result = cmd_feed_votes(g_engine, argv[optind + 1]);
-        }
-    }
-    else if (strcmp(command, "feed-comments") == 0) {
-        if (optind + 1 >= argc) {
-            fprintf(stderr, "Error: 'feed-comments' requires <post_id> argument\n");
-            result = 1;
-        } else {
-            result = cmd_feed_comments(g_engine, argv[optind + 1]);
-        }
-    }
-    else if (strcmp(command, "feed-comment") == 0) {
-        if (optind + 2 >= argc) {
-            fprintf(stderr, "Error: 'feed-comment' requires <post_id> <content> arguments\n");
-            result = 1;
-        } else {
-            result = cmd_feed_comment(g_engine, argv[optind + 1], argv[optind + 2]);
-        }
-    }
-    else if (strcmp(command, "feed-comment-vote") == 0) {
-        if (optind + 2 >= argc) {
-            fprintf(stderr, "Error: 'feed-comment-vote' requires <comment_id> <up|down> arguments\n");
-            result = 1;
-        } else {
-            bool upvote = (strcmp(argv[optind + 2], "up") == 0);
-            result = cmd_feed_comment_vote(g_engine, argv[optind + 1], upvote);
-        }
-    }
-    else if (strcmp(command, "feed-comment-votes") == 0) {
-        if (optind + 1 >= argc) {
-            fprintf(stderr, "Error: 'feed-comment-votes' requires <comment_id> argument\n");
-            result = 1;
-        } else {
-            result = cmd_feed_comment_votes(g_engine, argv[optind + 1]);
+            const char *subcmd = argv[optind + 1];
+
+            if (strcmp(subcmd, "create") == 0) {
+                if (optind + 3 >= argc) {
+                    fprintf(stderr, "Error: 'feeds create' requires <title> <body>\n");
+                    result = 1;
+                } else {
+                    const char *title = argv[optind + 2];
+                    const char *body = argv[optind + 3];
+                    const char *category = NULL;
+                    const char *tags = NULL;
+
+                    /* Parse optional args */
+                    for (int i = optind + 4; i < argc; i++) {
+                        if (strcmp(argv[i], "--category") == 0 && i + 1 < argc) {
+                            category = argv[++i];
+                        } else if (strcmp(argv[i], "--tags") == 0 && i + 1 < argc) {
+                            tags = argv[++i];
+                        }
+                    }
+
+                    result = cmd_feeds_create(g_engine, title, body, category, tags);
+                }
+            }
+            else if (strcmp(subcmd, "get") == 0) {
+                if (optind + 2 >= argc) {
+                    fprintf(stderr, "Error: 'feeds get' requires <uuid>\n");
+                    result = 1;
+                } else {
+                    result = cmd_feeds_get(g_engine, argv[optind + 2]);
+                }
+            }
+            else if (strcmp(subcmd, "delete") == 0) {
+                if (optind + 2 >= argc) {
+                    fprintf(stderr, "Error: 'feeds delete' requires <uuid>\n");
+                    result = 1;
+                } else {
+                    result = cmd_feeds_delete(g_engine, argv[optind + 2]);
+                }
+            }
+            else if (strcmp(subcmd, "list") == 0) {
+                const char *category = NULL;
+                int days = 7;
+
+                /* Parse required --category and optional --days */
+                for (int i = optind + 2; i < argc; i++) {
+                    if (strcmp(argv[i], "--category") == 0 && i + 1 < argc) {
+                        category = argv[++i];
+                    } else if (strcmp(argv[i], "--days") == 0 && i + 1 < argc) {
+                        days = atoi(argv[++i]);
+                    }
+                }
+
+                if (!category) {
+                    fprintf(stderr, "Error: 'feeds list' requires --category <category>\n");
+                    fprintf(stderr, "Use 'feeds list-all' to list all categories\n");
+                    result = 1;
+                } else {
+                    result = cmd_feeds_list(g_engine, category, days);
+                }
+            }
+            else if (strcmp(subcmd, "list-all") == 0) {
+                int days = 7;
+
+                /* Parse optional --days */
+                for (int i = optind + 2; i < argc; i++) {
+                    if (strcmp(argv[i], "--days") == 0 && i + 1 < argc) {
+                        days = atoi(argv[++i]);
+                    }
+                }
+
+                result = cmd_feeds_list_all(g_engine, days);
+            }
+            else if (strcmp(subcmd, "comment") == 0) {
+                if (optind + 3 >= argc) {
+                    fprintf(stderr, "Error: 'feeds comment' requires <topic-uuid> <body>\n");
+                    result = 1;
+                } else {
+                    const char *topic_uuid = argv[optind + 2];
+                    const char *body = argv[optind + 3];
+                    const char *mentions = NULL;
+
+                    /* Parse optional --mentions */
+                    for (int i = optind + 4; i < argc; i++) {
+                        if (strcmp(argv[i], "--mentions") == 0 && i + 1 < argc) {
+                            mentions = argv[++i];
+                        }
+                    }
+
+                    result = cmd_feeds_comment(g_engine, topic_uuid, body, mentions);
+                }
+            }
+            else if (strcmp(subcmd, "comments") == 0) {
+                if (optind + 2 >= argc) {
+                    fprintf(stderr, "Error: 'feeds comments' requires <topic-uuid>\n");
+                    result = 1;
+                } else {
+                    result = cmd_feeds_comments(g_engine, argv[optind + 2]);
+                }
+            }
+            else {
+                fprintf(stderr, "Error: Unknown feeds subcommand '%s'\n", subcmd);
+                result = 1;
+            }
         }
     }
 

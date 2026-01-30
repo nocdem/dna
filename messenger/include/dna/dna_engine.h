@@ -228,50 +228,39 @@ typedef struct {
 } dna_addressbook_entry_t;
 
 /**
- * Feed channel information (simplified for async API)
+ * Feed v2: Topic information (simplified for async API)
+ * Topics are the primary content unit with categories and tags.
  */
+#define DNA_FEED_MAX_TAGS 5
+#define DNA_FEED_MAX_MENTIONS 10
+
 typedef struct {
-    char channel_id[65];        /* SHA256 hex of channel name (64 + null) */
-    char name[64];              /* Display name */
-    char description[512];      /* Channel description */
-    char creator_fingerprint[129]; /* Creator's SHA3-512 fingerprint */
-    uint64_t created_at;        /* Unix timestamp */
-    int post_count;             /* Approximate post count */
-    int subscriber_count;       /* Approximate subscriber count */
-    uint64_t last_activity;     /* Timestamp of last post */
-} dna_channel_info_t;
+    char topic_uuid[37];            /* UUID v4 */
+    char author_fingerprint[129];   /* Author's SHA3-512 fingerprint */
+    char *title;                    /* Topic title (caller frees) */
+    char *body;                     /* Topic body (caller frees, NULL for list views) */
+    char category_id[65];           /* SHA256 hex of lowercase category name */
+    char tags[DNA_FEED_MAX_TAGS][33]; /* Up to 5 tags, 32 chars each */
+    int tag_count;                  /* Number of tags */
+    uint64_t created_at;            /* Unix timestamp */
+    bool deleted;                   /* Soft delete flag */
+    uint64_t deleted_at;            /* When deleted (0 if not deleted) */
+    bool verified;                  /* Signature verified */
+} dna_feed_topic_info_t;
 
 /**
- * Feed post information (simplified for async API)
+ * Feed v2: Comment information (flat comments with mentions)
  */
 typedef struct {
-    char post_id[200];          /* <fingerprint>_<timestamp_ms>_<random> */
-    char channel_id[65];        /* Channel this post belongs to */
-    char author_fingerprint[129]; /* Author's SHA3-512 fingerprint */
-    char *text;                 /* Post content (caller frees via dna_free_feed_posts) */
-    uint64_t timestamp;         /* Unix timestamp (milliseconds) */
-    uint64_t updated;           /* Last activity timestamp (comment added) */
-    int comment_count;          /* Cached comment count */
-    int upvotes;                /* Upvote count */
-    int downvotes;              /* Downvote count */
-    int user_vote;              /* Current user's vote: +1, -1, or 0 */
-    bool verified;              /* Signature verified */
-} dna_post_info_t;
-
-/**
- * Feed comment info (flat comments, no nesting)
- */
-typedef struct {
-    char comment_id[200];       /* <fingerprint>_<timestamp_ms>_<random> */
-    char post_id[200];          /* Parent post ID */
-    char author_fingerprint[129]; /* Author's SHA3-512 fingerprint */
-    char *text;                 /* Comment content (caller frees via dna_free_feed_comments) */
-    uint64_t timestamp;         /* Unix timestamp (milliseconds) */
-    int upvotes;                /* Upvote count */
-    int downvotes;              /* Downvote count */
-    int user_vote;              /* Current user's vote: +1, -1, or 0 */
-    bool verified;              /* Signature verified */
-} dna_comment_info_t;
+    char comment_uuid[37];          /* UUID v4 */
+    char topic_uuid[37];            /* Parent topic UUID */
+    char author_fingerprint[129];   /* Author's SHA3-512 fingerprint */
+    char *body;                     /* Comment content (caller frees) */
+    char mentions[DNA_FEED_MAX_MENTIONS][129]; /* @mentioned fingerprints */
+    int mention_count;              /* Number of mentions */
+    uint64_t created_at;            /* Unix timestamp */
+    bool verified;                  /* Signature verified */
+} dna_feed_comment_info_t;
 
 /**
  * User profile information (wallet addresses, socials, bio, avatar)
@@ -525,65 +514,44 @@ typedef void (*dna_presence_cb)(
 );
 
 /**
- * Feed channels callback
+ * Feed v2: Single topic callback
  */
-typedef void (*dna_feed_channels_cb)(
+typedef void (*dna_feed_topic_cb)(
     dna_request_id_t request_id,
     int error,
-    dna_channel_info_t *channels,
+    dna_feed_topic_info_t *topic,
+    void *user_data
+);
+
+/**
+ * Feed v2: Topics list callback
+ */
+typedef void (*dna_feed_topics_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_feed_topic_info_t *topics,
     int count,
     void *user_data
 );
 
 /**
- * Feed channel created callback
- */
-typedef void (*dna_feed_channel_cb)(
-    dna_request_id_t request_id,
-    int error,
-    dna_channel_info_t *channel,
-    void *user_data
-);
-
-/**
- * Feed posts callback
- */
-typedef void (*dna_feed_posts_cb)(
-    dna_request_id_t request_id,
-    int error,
-    dna_post_info_t *posts,
-    int count,
-    void *user_data
-);
-
-/**
- * Feed post created callback
- */
-typedef void (*dna_feed_post_cb)(
-    dna_request_id_t request_id,
-    int error,
-    dna_post_info_t *post,
-    void *user_data
-);
-
-/**
- * Feed comments callback
+ * Feed v2: Comments list callback
  */
 typedef void (*dna_feed_comments_cb)(
     dna_request_id_t request_id,
     int error,
-    dna_comment_info_t *comments,
+    dna_feed_comment_info_t *comments,
     int count,
     void *user_data
 );
 
 /**
- * Feed comment created callback
+ * Feed v2: Single comment callback
  */
 typedef void (*dna_feed_comment_cb)(
     dna_request_id_t request_id,
     int error,
-    dna_comment_info_t *comment,
+    dna_feed_comment_info_t *comment,
     void *user_data
 );
 
@@ -2442,213 +2410,152 @@ DNA_API void dna_engine_cancel_all_watermark_listeners(
 );
 
 /* ============================================================================
- * 8. FEED (8 async functions) - Public social feed via DHT
+ * 8. FEED v2 (7 async functions) - Topic-based public feeds via DHT
+ *
+ * v2 replaces the channel/post/vote system with topic-based feeds.
+ * Topics have categories and tags for organization.
+ * No voting system (deferred to future version).
+ * Uses "dna:feeds:" DHT namespace.
  * ============================================================================ */
 
 /**
- * Get all feed channels from DHT registry
+ * Create a new feed topic
+ *
+ * Topics are signed with Dilithium5 and stored in DHT.
+ * Automatically adds to category and global indexes.
+ *
+ * @param engine     Engine instance
+ * @param title      Topic title (max 200 chars)
+ * @param body       Topic body (max 4000 chars)
+ * @param category   Category name (e.g., "general", "technology") or NULL for "general"
+ * @param tags_json  JSON array of tags, e.g., "[\"tag1\", \"tag2\"]" or NULL
+ * @param callback   Called with created topic
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_feed_create_topic(
+    dna_engine_t *engine,
+    const char *title,
+    const char *body,
+    const char *category,
+    const char *tags_json,
+    dna_feed_topic_cb callback,
+    void *user_data
+);
+
+/**
+ * Get a single topic by UUID
+ *
+ * Returns full topic with body, tags, and signature verification.
  *
  * @param engine    Engine instance
- * @param callback  Called with channels array
+ * @param uuid      Topic UUID (36 chars)
+ * @param callback  Called with topic
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-DNA_API dna_request_id_t dna_engine_get_feed_channels(
+DNA_API dna_request_id_t dna_engine_feed_get_topic(
     dna_engine_t *engine,
-    dna_feed_channels_cb callback,
+    const char *uuid,
+    dna_feed_topic_cb callback,
     void *user_data
 );
 
 /**
- * Create a new feed channel
+ * Soft delete a topic (author only)
  *
- * Creates channel metadata and adds to global registry.
- * Requires active identity for signing.
- *
- * @param engine      Engine instance
- * @param name        Channel name (max 64 chars)
- * @param description Channel description (max 512 chars)
- * @param callback    Called with created channel
- * @param user_data   User data for callback
- * @return            Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_create_feed_channel(
-    dna_engine_t *engine,
-    const char *name,
-    const char *description,
-    dna_feed_channel_cb callback,
-    void *user_data
-);
-
-/**
- * Initialize default feed channels
- *
- * Creates #general, #announcements, #help, #random if they don't exist.
+ * Sets deleted=true and deleted_at. Topic remains retrievable but
+ * filtered from index listings. Only the original author can delete.
  *
  * @param engine    Engine instance
+ * @param uuid      Topic UUID to delete
  * @param callback  Called on completion
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-DNA_API dna_request_id_t dna_engine_init_default_channels(
+DNA_API dna_request_id_t dna_engine_feed_delete_topic(
     dna_engine_t *engine,
+    const char *uuid,
     dna_completion_cb callback,
     void *user_data
 );
 
 /**
- * Get posts for a feed channel
- *
- * Returns posts for specified date (or today if NULL).
- *
- * @param engine     Engine instance
- * @param channel_id Channel ID (SHA256 of channel name)
- * @param date       Date string (YYYYMMDD) or NULL for today
- * @param callback   Called with posts array
- * @param user_data  User data for callback
- * @return           Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_get_feed_posts(
-    dna_engine_t *engine,
-    const char *channel_id,
-    const char *date,
-    dna_feed_posts_cb callback,
-    void *user_data
-);
-
-/**
- * Create a new feed post
- *
- * Posts are signed with Dilithium5.
- * Use dna_engine_add_feed_comment() for comments.
- *
- * @param engine     Engine instance
- * @param channel_id Channel ID
- * @param text       Post content (max 2048 chars)
- * @param callback   Called with created post
- * @param user_data  User data for callback
- * @return           Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_create_feed_post(
-    dna_engine_t *engine,
-    const char *channel_id,
-    const char *text,
-    dna_feed_post_cb callback,
-    void *user_data
-);
-
-/**
- * Add a comment to a post
+ * Add a comment to a topic
  *
  * Comments are flat (no nesting). Signed with Dilithium5.
- * Also refreshes parent post TTL (engagement-TTL).
+ * Stored using multi-owner DHT pattern.
  *
- * @param engine    Engine instance
- * @param post_id   Post ID to comment on
- * @param text      Comment content (max 2048 chars)
- * @param callback  Called with created comment
- * @param user_data User data for callback
- * @return          Request ID (0 on immediate error)
+ * @param engine        Engine instance
+ * @param topic_uuid    Topic UUID to comment on
+ * @param body          Comment content (max 2000 chars)
+ * @param mentions_json JSON array of fingerprints to mention, or NULL
+ * @param callback      Called with created comment
+ * @param user_data     User data for callback
+ * @return              Request ID (0 on immediate error)
  */
-DNA_API dna_request_id_t dna_engine_add_feed_comment(
+DNA_API dna_request_id_t dna_engine_feed_add_comment(
     dna_engine_t *engine,
-    const char *post_id,
-    const char *text,
+    const char *topic_uuid,
+    const char *body,
+    const char *mentions_json,
     dna_feed_comment_cb callback,
     void *user_data
 );
 
 /**
- * Get all comments for a post
+ * Get all comments for a topic
  *
- * @param engine    Engine instance
- * @param post_id   Post ID
- * @param callback  Called with comments array
- * @param user_data User data for callback
- * @return          Request ID (0 on immediate error)
+ * @param engine      Engine instance
+ * @param topic_uuid  Topic UUID
+ * @param callback    Called with comments array
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
  */
-DNA_API dna_request_id_t dna_engine_get_feed_comments(
+DNA_API dna_request_id_t dna_engine_feed_get_comments(
     dna_engine_t *engine,
-    const char *post_id,
+    const char *topic_uuid,
     dna_feed_comments_cb callback,
     void *user_data
 );
 
 /**
- * Cast a vote on a feed post
+ * Get topics by category
  *
- * Votes are permanent (cannot be changed once cast).
- * Signed with Dilithium5.
+ * Returns topics from category index, sorted by created_at descending.
+ * Index entries include title but not body (preview only).
  *
  * @param engine     Engine instance
- * @param post_id    Post ID to vote on
- * @param vote_value +1 for upvote, -1 for downvote
- * @param callback   Called on completion
+ * @param category   Category name (e.g., "general", "technology")
+ * @param days_back  How many days to look back (1-30, default 7)
+ * @param callback   Called with topics array
  * @param user_data  User data for callback
  * @return           Request ID (0 on immediate error)
  */
-DNA_API dna_request_id_t dna_engine_cast_feed_vote(
+DNA_API dna_request_id_t dna_engine_feed_get_category(
     dna_engine_t *engine,
-    const char *post_id,
-    int8_t vote_value,
-    dna_completion_cb callback,
+    const char *category,
+    int days_back,
+    dna_feed_topics_cb callback,
     void *user_data
 );
 
 /**
- * Get vote counts and user's vote for a post
+ * Get all topics (global feed)
  *
- * Returns updated upvotes/downvotes/user_vote in the post struct.
+ * Returns topics from all categories, sorted by created_at descending.
+ * Index entries include title but not body (preview only).
  *
- * @param engine    Engine instance
- * @param post_id   Post ID
- * @param callback  Called with post containing vote data
- * @param user_data User data for callback
- * @return          Request ID (0 on immediate error)
+ * @param engine     Engine instance
+ * @param days_back  How many days to look back (1-30, default 7)
+ * @param callback   Called with topics array
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
  */
-DNA_API dna_request_id_t dna_engine_get_feed_votes(
+DNA_API dna_request_id_t dna_engine_feed_get_all(
     dna_engine_t *engine,
-    const char *post_id,
-    dna_feed_post_cb callback,
-    void *user_data
-);
-
-/**
- * Cast a vote on a feed comment
- *
- * Votes are permanent (cannot be changed once cast).
- * Signed with Dilithium5.
- *
- * @param engine      Engine instance
- * @param comment_id  Comment ID to vote on
- * @param vote_value  +1 for upvote, -1 for downvote
- * @param callback    Called on completion
- * @param user_data   User data for callback
- * @return            Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_cast_comment_vote(
-    dna_engine_t *engine,
-    const char *comment_id,
-    int8_t vote_value,
-    dna_completion_cb callback,
-    void *user_data
-);
-
-/**
- * Get vote counts and user's vote for a comment
- *
- * Returns updated upvotes/downvotes/user_vote in the comment struct.
- *
- * @param engine      Engine instance
- * @param comment_id  Comment ID
- * @param callback    Called with comment containing vote data
- * @param user_data   User data for callback
- * @return            Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_get_comment_votes(
-    dna_engine_t *engine,
-    const char *comment_id,
-    dna_feed_comment_cb callback,
+    int days_back,
+    dna_feed_topics_cb callback,
     void *user_data
 );
 
@@ -2792,29 +2699,24 @@ DNA_API void dna_free_balances(dna_balance_t *balances, int count);
 DNA_API void dna_free_transactions(dna_transaction_t *transactions, int count);
 
 /**
- * Free feed channels array returned by callbacks
+ * Free single feed topic returned by callbacks
  */
-DNA_API void dna_free_feed_channels(dna_channel_info_t *channels, int count);
+DNA_API void dna_free_feed_topic(dna_feed_topic_info_t *topic);
 
 /**
- * Free feed posts array returned by callbacks
+ * Free feed topics array returned by callbacks
  */
-DNA_API void dna_free_feed_posts(dna_post_info_t *posts, int count);
-
-/**
- * Free single feed post returned by callbacks
- */
-DNA_API void dna_free_feed_post(dna_post_info_t *post);
-
-/**
- * Free feed comments array returned by callbacks
- */
-DNA_API void dna_free_feed_comments(dna_comment_info_t *comments, int count);
+DNA_API void dna_free_feed_topics(dna_feed_topic_info_t *topics, int count);
 
 /**
  * Free single feed comment returned by callbacks
  */
-DNA_API void dna_free_feed_comment(dna_comment_info_t *comment);
+DNA_API void dna_free_feed_comment(dna_feed_comment_info_t *comment);
+
+/**
+ * Free feed comments array returned by callbacks
+ */
+DNA_API void dna_free_feed_comments(dna_feed_comment_info_t *comments, int count);
 
 /**
  * Free profile returned by callbacks

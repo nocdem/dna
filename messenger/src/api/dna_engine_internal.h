@@ -124,18 +124,14 @@ typedef enum {
     TASK_SYNC_GROUP_BY_UUID,
     TASK_GET_REGISTERED_NAME,
 
-    /* Feed */
-    TASK_GET_FEED_CHANNELS,
-    TASK_CREATE_FEED_CHANNEL,
-    TASK_INIT_DEFAULT_CHANNELS,
-    TASK_GET_FEED_POSTS,
-    TASK_CREATE_FEED_POST,
-    TASK_ADD_FEED_COMMENT,
-    TASK_GET_FEED_COMMENTS,
-    TASK_CAST_FEED_VOTE,
-    TASK_GET_FEED_VOTES,
-    TASK_CAST_COMMENT_VOTE,
-    TASK_GET_COMMENT_VOTES
+    /* Feed v2 (topic-based, no voting) */
+    TASK_FEED_CREATE_TOPIC,
+    TASK_FEED_GET_TOPIC,
+    TASK_FEED_DELETE_TOPIC,
+    TASK_FEED_ADD_COMMENT,
+    TASK_FEED_GET_COMMENTS,
+    TASK_FEED_GET_CATEGORY,
+    TASK_FEED_GET_ALL
 } dna_task_type_t;
 
 /* ============================================================================
@@ -309,56 +305,46 @@ typedef union {
         char network[64];
     } get_transactions;
 
-    /* Create feed channel */
+    /* Feed v2: Create topic */
     struct {
-        char name[64];
-        char description[512];
-    } create_feed_channel;
+        char title[201];          /* Max 200 chars */
+        char *body;               /* Heap allocated, task owns (max 4000 chars) */
+        char category[65];        /* Category name or ID */
+        char *tags_json;          /* JSON array of tags, heap allocated, task owns */
+    } feed_create_topic;
 
-    /* Get feed posts */
+    /* Feed v2: Get topic */
     struct {
-        char channel_id[65];
-        char date[12];  /* YYYYMMDD or empty for today */
-    } get_feed_posts;
+        char uuid[37];            /* Topic UUID */
+    } feed_get_topic;
 
-    /* Create feed post */
+    /* Feed v2: Delete topic */
     struct {
-        char channel_id[65];
-        char *text;  /* Heap allocated, task owns */
-    } create_feed_post;
+        char uuid[37];            /* Topic UUID */
+    } feed_delete_topic;
 
-    /* Add feed comment */
+    /* Feed v2: Add comment */
     struct {
-        char post_id[200];
-        char *text;  /* Heap allocated, task owns */
-    } add_feed_comment;
+        char topic_uuid[37];      /* Topic UUID */
+        char *body;               /* Heap allocated, task owns (max 2000 chars) */
+        char *mentions_json;      /* JSON array of fingerprints, heap allocated, task owns */
+    } feed_add_comment;
 
-    /* Get feed comments */
+    /* Feed v2: Get comments */
     struct {
-        char post_id[200];
-    } get_feed_comments;
+        char topic_uuid[37];      /* Topic UUID */
+    } feed_get_comments;
 
-    /* Cast feed vote */
+    /* Feed v2: Get topics by category */
     struct {
-        char post_id[200];
-        int8_t vote_value;
-    } cast_feed_vote;
+        char category[65];        /* Category name or ID */
+        int days_back;            /* How many days to look back (1-30) */
+    } feed_get_category;
 
-    /* Get feed votes */
+    /* Feed v2: Get all topics */
     struct {
-        char post_id[200];
-    } get_feed_votes;
-
-    /* Cast comment vote */
-    struct {
-        char comment_id[200];
-        int8_t vote_value;
-    } cast_comment_vote;
-
-    /* Get comment votes */
-    struct {
-        char comment_id[200];
-    } get_comment_votes;
+        int days_back;            /* How many days to look back (1-30) */
+    } feed_get_all;
 
     /* Update profile */
     struct {
@@ -399,10 +385,8 @@ typedef union {
     dna_wallets_cb wallets;
     dna_balances_cb balances;
     dna_transactions_cb transactions;
-    dna_feed_channels_cb feed_channels;
-    dna_feed_channel_cb feed_channel;
-    dna_feed_posts_cb feed_posts;
-    dna_feed_post_cb feed_post;
+    dna_feed_topic_cb feed_topic;
+    dna_feed_topics_cb feed_topics;
     dna_feed_comments_cb feed_comments;
     dna_feed_comment_cb feed_comment;
     dna_profile_cb profile;
@@ -755,18 +739,14 @@ void dna_handle_sync_group_by_uuid(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_subscribe_to_contacts(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_registered_name(dna_engine_t *engine, dna_task_t *task);
 
-/* Feed */
-void dna_handle_get_feed_channels(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_create_feed_channel(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_init_default_channels(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_get_feed_posts(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_create_feed_post(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_add_feed_comment(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_get_feed_comments(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_cast_feed_vote(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_get_feed_votes(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_cast_comment_vote(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_get_comment_votes(dna_engine_t *engine, dna_task_t *task);
+/* Feed v2 (topic-based, no voting) */
+void dna_handle_feed_create_topic(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_feed_get_topic(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_feed_delete_topic(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_feed_add_comment(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_feed_get_comments(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_feed_get_category(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_feed_get_all(dna_engine_t *engine, dna_task_t *task);
 
 /* ============================================================================
  * INTERNAL FUNCTIONS - Helpers
