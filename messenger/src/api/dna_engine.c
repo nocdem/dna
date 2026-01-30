@@ -394,6 +394,12 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
             dna_dispatch_event(engine, &event);
         } else if (restored == 0) {
             QGP_LOG_INFO(LOG_TAG, "[RETRY] Post-stabilization: no groups to restore from DHT");
+            /* v0.6.88: Still subscribe to groups already in local cache
+             * (e.g., groups created locally before DHT sync) */
+            int subscribed = dna_engine_subscribe_all_groups(engine);
+            if (subscribed > 0) {
+                QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: subscribed to %d local cache groups", subscribed);
+            }
         } else {
             QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: group restore failed: %d", restored);
         }
@@ -426,6 +432,46 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
     if (engine->messenger && !atomic_load(&engine->shutdown_requested)) {
         int listener_count = dna_engine_listen_all_contacts(engine);
         QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: started %d contact listeners", listener_count);
+    }
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+
+    /* 5. Create missing wallets (v0.6.88+: moved from identity load for instant startup)
+     * Loads the Kyber1024 private key to decrypt the master seed, then creates
+     * wallets for any newly supported blockchains. */
+    if (engine->messenger && engine->messenger->fingerprint) {
+        const char *data_dir = qgp_platform_app_data_dir();
+        char kem_path[512];
+
+        if (data_dir && messenger_find_key_path(data_dir, engine->messenger->fingerprint, ".kem", kem_path) == 0) {
+            qgp_key_t *kem_key = NULL;
+            int load_rc = qgp_key_load_encrypted(kem_path, engine->messenger->session_password, &kem_key);
+
+            if (load_rc == 0 && kem_key && kem_key->private_key && kem_key->private_key_size == 3168) {
+                int wallets_created = 0;
+                int wallet_rc = blockchain_create_missing_wallets(
+                    engine->messenger->fingerprint,
+                    kem_key->private_key,
+                    &wallets_created
+                );
+
+                if (wallet_rc == 0 && wallets_created > 0) {
+                    QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: created %d missing wallets", wallets_created);
+                } else if (wallet_rc == 0) {
+                    QGP_LOG_INFO(LOG_TAG, "[RETRY] Post-stabilization: no missing wallets to create");
+                } else {
+                    QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: wallet creation failed: %d", wallet_rc);
+                }
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: could not load KEM key for wallet creation (rc=%d)", load_rc);
+            }
+
+            if (kem_key) {
+                qgp_key_free(kem_key);
+            }
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "[RETRY] Post-stabilization: no KEM key file found, skipping wallet creation");
+        }
     }
 
     QGP_LOG_WARN(LOG_TAG, "[RETRY] >>> STABILIZATION THREAD COMPLETE <<<");

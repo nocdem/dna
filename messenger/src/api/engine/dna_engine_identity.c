@@ -240,86 +240,44 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     engine->state = DNA_ENGINE_STATE_ACTIVE;
     QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity loaded, state=ACTIVE");
 
-    /* v0.6.13+: Minimal mode skips ALL listeners (battery-optimized polling).
-     * Full mode: start contact request listener and group subscriptions. */
+    /* v0.6.88+: All DHT operations moved to background stabilization thread
+     * for instant startup. Identity load now only does local operations.
+     * Listeners, subscriptions, and wallets are set up after DHT stabilizes. */
     if (engine->messenger && !minimal_mode) {
-        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Full mode: starting listeners");
-        dna_engine_start_contact_request_listener(engine);
+        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Full mode: spawning background thread for DHT operations");
 
-        int group_count = dna_engine_subscribe_all_groups(engine);
-        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Subscribed to %d groups", group_count);
-
-        /* Full mode only: Retry pending messages and spawn stabilization thread */
-        {
-            /* 3. Retry any pending/failed messages from previous sessions
-             * Messages may have been queued while offline or failed to send.
-             * Now that DHT is connected, retry them. */
-            int retried = dna_engine_retry_pending_messages(engine);
-            if (retried > 0) {
-                QGP_LOG_INFO(LOG_TAG, "[RETRY] Identity load: retried %d pending messages", retried);
-            }
-
-            /* Spawn post-stabilization retry thread.
-             * DHT callback's listener thread only spawns if identity_loaded was true
-             * when callback fired. In the common case (DHT connects before identity
-             * loads), we need this dedicated thread to retry after routing table fills.
-             * v0.6.0+: Track thread for clean shutdown (no detach) */
-            QGP_LOG_WARN(LOG_TAG, "[RETRY] About to spawn stabilization thread (engine=%p, messenger=%p)",
-                         (void*)engine, (void*)engine->messenger);
-            pthread_mutex_lock(&engine->background_threads_mutex);
-            if (engine->stabilization_retry_running) {
-                /* Previous thread still running - skip */
-                pthread_mutex_unlock(&engine->background_threads_mutex);
-                QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread already running, skipping");
-            } else {
-                engine->stabilization_retry_running = true;
-                pthread_mutex_unlock(&engine->background_threads_mutex);
-                int spawn_rc = pthread_create(&engine->stabilization_retry_thread, NULL,
-                                              dna_engine_stabilization_retry_thread, engine);
-                QGP_LOG_WARN(LOG_TAG, "[RETRY] pthread_create returned %d", spawn_rc);
-                if (spawn_rc == 0) {
-                    QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread spawned successfully");
-                } else {
-                    pthread_mutex_lock(&engine->background_threads_mutex);
-                    engine->stabilization_retry_running = false;
-                    pthread_mutex_unlock(&engine->background_threads_mutex);
-                    QGP_LOG_ERROR(LOG_TAG, "[RETRY] FAILED to spawn stabilization thread: rc=%d", spawn_rc);
-                }
-            }
-        }
-
-        /* Note: Delivery confirmation is now handled by persistent ACK listeners (v15)
-         * started in dna_engine_listen_all_contacts() for each contact. */
-    }
-
-    /* Full mode only: Create any missing blockchain wallets
-     * This uses the encrypted seed stored during identity creation.
-     * Non-fatal if seed doesn't exist or wallet creation fails.
-     * v0.3.0: Flat structure - keys/identity.kem */
-    if (!minimal_mode) {
-        char kyber_path[512];
-        snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", engine->data_dir);
-
-        qgp_key_t *kem_key = NULL;
-        int load_rc;
-        if (engine->keys_encrypted && engine->session_password) {
-            load_rc = qgp_key_load_encrypted(kyber_path, engine->session_password, &kem_key);
+        /* Spawn post-stabilization thread for ALL DHT operations.
+         * v0.6.88: Moved contact listeners, group subscriptions, pending
+         * message retry, and wallet creation to background thread.
+         * DHT callback's listener thread only spawns if identity_loaded was true
+         * when callback fired. In the common case (DHT connects before identity
+         * loads), we need this dedicated thread to retry after routing table fills.
+         * v0.6.0+: Track thread for clean shutdown (no detach) */
+        QGP_LOG_WARN(LOG_TAG, "[RETRY] About to spawn stabilization thread (engine=%p, messenger=%p)",
+                     (void*)engine, (void*)engine->messenger);
+        pthread_mutex_lock(&engine->background_threads_mutex);
+        if (engine->stabilization_retry_running) {
+            /* Previous thread still running - skip */
+            pthread_mutex_unlock(&engine->background_threads_mutex);
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread already running, skipping");
         } else {
-            load_rc = qgp_key_load(kyber_path, &kem_key);
-        }
-
-        if (load_rc == 0 && kem_key &&
-            kem_key->private_key && kem_key->private_key_size == 3168) {
-
-            int wallets_created = 0;
-            if (blockchain_create_missing_wallets(fingerprint, kem_key->private_key, &wallets_created) == 0) {
-                if (wallets_created > 0) {
-                    QGP_LOG_INFO(LOG_TAG, "Auto-created %d missing blockchain wallets", wallets_created);
-                }
+            engine->stabilization_retry_running = true;
+            pthread_mutex_unlock(&engine->background_threads_mutex);
+            int spawn_rc = pthread_create(&engine->stabilization_retry_thread, NULL,
+                                          dna_engine_stabilization_retry_thread, engine);
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] pthread_create returned %d", spawn_rc);
+            if (spawn_rc == 0) {
+                QGP_LOG_WARN(LOG_TAG, "[RETRY] Stabilization thread spawned successfully");
+            } else {
+                pthread_mutex_lock(&engine->background_threads_mutex);
+                engine->stabilization_retry_running = false;
+                pthread_mutex_unlock(&engine->background_threads_mutex);
+                QGP_LOG_ERROR(LOG_TAG, "[RETRY] FAILED to spawn stabilization thread: rc=%d", spawn_rc);
             }
-            qgp_key_free(kem_key);
         }
     }
+
+    /* v0.6.88: Wallet creation moved to stabilization thread for instant startup */
 
     /* NOTE: Removed blocking DHT profile verification (v0.3.141)
      *
