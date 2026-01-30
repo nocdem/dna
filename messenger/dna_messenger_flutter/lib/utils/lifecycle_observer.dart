@@ -54,10 +54,16 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     switch (state) {
       case AppLifecycleState.resumed:
-        _onResume();
+        // Desktop doesn't pause, so skip resume logic
+        if (Platform.isAndroid || Platform.isIOS) {
+          _onResume();
+        }
         break;
       case AppLifecycleState.paused:
-        _onPause();
+        // Only pause on mobile - desktop keeps running when minimized
+        if (Platform.isAndroid || Platform.isIOS) {
+          _onPause();
+        }
         break;
       case AppLifecycleState.detached:
         _onDetached();
@@ -67,8 +73,10 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
         // Don't pause here - might just be a brief interruption
         break;
       case AppLifecycleState.hidden:
-        // App is hidden (Android 14+) - treat same as paused
-        _onPause();
+        // Only pause on mobile - desktop keeps running when minimized
+        if (Platform.isAndroid || Platform.isIOS) {
+          _onPause();
+        }
         break;
     }
   }

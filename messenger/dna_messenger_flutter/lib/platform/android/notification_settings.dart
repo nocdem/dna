@@ -108,26 +108,23 @@ class _AndroidNotificationSettingsState
           ListTile(
             leading: const FaIcon(FontAwesomeIcons.clock),
             title: const Text('Check Interval'),
-            subtitle: Text(
-              'Check for new messages every ${settings.pollIntervalMinutes} ${settings.pollIntervalMinutes == 1 ? 'minute' : 'minutes'}',
-            ),
-            trailing: DropdownButton<int>(
-              value: settings.pollIntervalMinutes,
-              underline: const SizedBox(),
-              items: pollIntervalOptions.map((minutes) {
-                return DropdownMenuItem(
-                  value: minutes,
-                  child: Text(
-                    '$minutes ${minutes == 1 ? 'min' : 'mins'}',
-                    style: theme.textTheme.bodyMedium,
-                  ),
-                );
-              }).toList(),
-              onChanged: (value) {
-                if (value != null) {
-                  _setPollInterval(value);
-                }
-              },
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Check for new messages every ${settings.pollIntervalMinutes} ${settings.pollIntervalMinutes == 1 ? 'minute' : 'minutes'}',
+                ),
+                Slider(
+                  value: settings.pollIntervalMinutes.toDouble(),
+                  min: 1,
+                  max: 15,
+                  divisions: 14,
+                  label: '${settings.pollIntervalMinutes} min',
+                  onChanged: (value) {
+                    _setPollInterval(value.round());
+                  },
+                ),
+              ],
             ),
           ),
         // Exact alarm permission tile (only show when notifications enabled and permission not granted)

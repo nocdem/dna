@@ -7,9 +7,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 const _kNotificationsEnabled = 'notifications_enabled';
 const _kPollIntervalMinutes = 'poll_interval_minutes';
 
-/// Available poll interval options (in minutes)
-const pollIntervalOptions = [1, 2, 5, 10, 15];
-
 /// Notification settings state
 class NotificationSettingsState {
   final bool enabled;
