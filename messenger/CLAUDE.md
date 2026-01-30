@@ -235,11 +235,10 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 3. **UPDATE** the "Current" column in this section
 4. **UPDATE** the version in CLAUDE.md header line
 5. **COMMIT** with version in commit message (e.g., "fix: Something (v0.3.39)")
-6. **TEST MESSAGE** (C Library changes only): After push, send test messages:
+6. **POST TO DNA UPDATES FEED** (after push): Post the commit message to the feed:
    ```bash
    cd /opt/dna-messenger/build
-   ./cli/dna-messenger-cli send nocdem "C lib update (vX.Y.Z): <commit message>"
-   ./cli/dna-messenger-cli group-send dna-dev "C lib update (vX.Y.Z): <commit message>"
+   ./cli/dna-messenger-cli feeds comment 765ed03d-0c28-4d17-91bd-683a713a63e8 "<commit message>"
    ```
 7. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
 
@@ -572,10 +571,12 @@ Official announcements feed - all new identities are auto-subscribed.
 
 **Topic UUID:** `765ed03d-0c28-4d17-91bd-683a713a63e8`
 
-**Post an update:**
+**Post an update (use commit message):**
 ```bash
-dna-messenger-cli feeds comment <UUID> "v0.100.72: Flutter Feeds v2 with subscriptions"
+dna-messenger-cli feeds comment 765ed03d-0c28-4d17-91bd-683a713a63e8 "<commit message>"
 ```
+
+**IMPORTANT:** When pushing C library or Flutter changes, post the commit message to the DNA Updates Feed so users see the changelog.
 
 **View updates:**
 ```bash
