@@ -169,7 +169,7 @@ int message_backup_get_unread_count(message_backup_context_t *ctx, const char *c
  *
  * @param ctx Backup context
  * @param message_id Message ID from database
- * @param status New status (0=PENDING, 2=FAILED, 3=DELIVERED)
+ * @param status New status (v15: 0=PENDING, 1=SENT, 2=RECEIVED, 3=FAILED)
  * @return 0 on success, -1 on error
  */
 int message_backup_update_status(message_backup_context_t *ctx, int message_id, int status);
@@ -197,7 +197,7 @@ int message_backup_get_age_days(message_backup_context_t *ctx, int message_id);
 /**
  * Get all pending/failed messages for retry
  *
- * Returns outgoing messages with status PENDING(0) or FAILED(2) that haven't
+ * Returns outgoing messages with status PENDING(0) or FAILED(3) that haven't
  * exceeded MAX_RETRIES. Used for automatic retry on identity load and DHT reconnect.
  *
  * @param ctx Backup context
@@ -220,7 +220,7 @@ int message_backup_get_pending_messages(message_backup_context_t *ctx,
  * @param sender Sender fingerprint
  * @param recipient Recipient fingerprint
  * @param timestamp Message timestamp
- * @param status New status (0=PENDING, 2=FAILED, 3=DELIVERED)
+ * @param status New status (v15: 0=PENDING, 1=SENT, 2=RECEIVED, 3=FAILED)
  * @return 0 on success, -1 on error
  */
 int message_backup_update_status_by_key(

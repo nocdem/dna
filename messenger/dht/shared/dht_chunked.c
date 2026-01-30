@@ -54,6 +54,94 @@
 /** Delay between hash verification retries in milliseconds */
 #define DHT_CHUNK_HASH_RETRY_DELAY_MS  1000
 
+/** Maximum number of concurrent per-key publish locks */
+#define DHT_CHUNK_KEY_LOCK_SLOTS  32
+
+/*============================================================================
+ * Per-Key Publish Mutex (prevents chunk interleaving from concurrent publishes)
+ *============================================================================*/
+
+/**
+ * Per-key lock slot for serializing chunked publishes to the same base_key.
+ * Without this, concurrent publishes can interleave chunks causing corruption.
+ */
+typedef struct {
+    char key[256];              // Base key being published
+    pthread_mutex_t mutex;      // Lock for this key
+    int ref_count;              // Number of waiters (0 = slot available)
+    bool initialized;           // True if mutex is initialized
+} key_lock_slot_t;
+
+static key_lock_slot_t g_key_locks[DHT_CHUNK_KEY_LOCK_SLOTS];
+static pthread_mutex_t g_key_locks_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/**
+ * Acquire per-key lock for publishing.
+ * If another thread is publishing to the same key, this blocks until it's done.
+ */
+static void acquire_key_lock(const char *base_key) {
+    pthread_mutex_lock(&g_key_locks_mutex);
+
+    // Find existing slot for this key or an empty slot
+    int target_slot = -1;
+    for (int i = 0; i < DHT_CHUNK_KEY_LOCK_SLOTS; i++) {
+        if (g_key_locks[i].ref_count > 0 &&
+            strncmp(g_key_locks[i].key, base_key, sizeof(g_key_locks[i].key) - 1) == 0) {
+            // Found existing lock for this key
+            target_slot = i;
+            break;
+        }
+        if (target_slot < 0 && g_key_locks[i].ref_count == 0) {
+            // Remember first empty slot
+            target_slot = i;
+        }
+    }
+
+    if (target_slot < 0) {
+        // No slots available - use slot 0 as fallback (global serialization)
+        QGP_LOG_WARN(LOG_TAG, "Key lock slots exhausted, using global lock");
+        target_slot = 0;
+    }
+
+    // Initialize mutex if needed
+    if (!g_key_locks[target_slot].initialized) {
+        pthread_mutex_init(&g_key_locks[target_slot].mutex, NULL);
+        g_key_locks[target_slot].initialized = true;
+    }
+
+    // Setup slot
+    strncpy(g_key_locks[target_slot].key, base_key, sizeof(g_key_locks[target_slot].key) - 1);
+    g_key_locks[target_slot].key[sizeof(g_key_locks[target_slot].key) - 1] = '\0';
+    g_key_locks[target_slot].ref_count++;
+
+    pthread_mutex_t *key_mutex = &g_key_locks[target_slot].mutex;
+
+    // Release global lock BEFORE waiting on key lock (avoid deadlock)
+    pthread_mutex_unlock(&g_key_locks_mutex);
+
+    // Now acquire the per-key lock (may block if another publish is in progress)
+    pthread_mutex_lock(key_mutex);
+}
+
+/**
+ * Release per-key lock after publishing completes (success or failure).
+ */
+static void release_key_lock(const char *base_key) {
+    pthread_mutex_lock(&g_key_locks_mutex);
+
+    for (int i = 0; i < DHT_CHUNK_KEY_LOCK_SLOTS; i++) {
+        if (g_key_locks[i].ref_count > 0 &&
+            strncmp(g_key_locks[i].key, base_key, sizeof(g_key_locks[i].key) - 1) == 0) {
+            // Found the slot - release the key lock first
+            pthread_mutex_unlock(&g_key_locks[i].mutex);
+            g_key_locks[i].ref_count--;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&g_key_locks_mutex);
+}
+
 /*============================================================================
  * Internal Structures
  *============================================================================*/
@@ -524,11 +612,16 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
         return DHT_CHUNK_ERR_NULL_PARAM;
     }
 
+    // Acquire per-key lock to prevent concurrent publishes from interleaving chunks
+    // This serializes all publishes to the same base_key
+    acquire_key_lock(base_key);
+
     // Step 0: Compute content hash of original data (BEFORE compression)
     // This ensures same data = same hash regardless of compression timing/order
     uint8_t content_hash[DHT_CHUNK_HASH_SIZE];
     if (qgp_sha3_256(data, data_len, content_hash) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to compute content hash\n");
+        release_key_lock(base_key);
         return DHT_CHUNK_ERR_ALLOC;
     }
 
@@ -536,6 +629,7 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
     uint8_t *compressed = NULL;
     size_t compressed_len = 0;
     if (compress_data(data, data_len, &compressed, &compressed_len) != 0) {
+        release_key_lock(base_key);
         return DHT_CHUNK_ERR_COMPRESS;
     }
 
@@ -604,6 +698,7 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
                            &serialized, &serialized_len) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to serialize chunk %u\n", i);
             free(compressed);
+            release_key_lock(base_key);
             return DHT_CHUNK_ERR_ALLOC;
         }
 
@@ -613,6 +708,7 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
             QGP_LOG_ERROR(LOG_TAG, "Failed to generate key for chunk %u\n", i);
             free(serialized);
             free(compressed);
+            release_key_lock(base_key);
             return DHT_CHUNK_ERR_ALLOC;
         }
 
@@ -656,6 +752,7 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
             }
             free(serialized);
             free(compressed);
+            release_key_lock(base_key);
             return DHT_CHUNK_ERR_DHT_PUT;
         }
 
@@ -668,6 +765,7 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
     }
 
     free(compressed);
+    release_key_lock(base_key);
     QGP_LOG_INFO(LOG_TAG, "Published %u chunks successfully\n", total_chunks);
     return DHT_CHUNK_OK;
 }

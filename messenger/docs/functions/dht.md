@@ -235,6 +235,34 @@ Chunk format v2 (v0.5.25+) adds content hash to chunk 0 for smart sync optimizat
 | `int dht_chunked_fetch_batch(dht_context_t*, const char**, size_t, dht_chunked_batch_result_t**)` | Batch fetch |
 | `void dht_chunked_batch_results_free(dht_chunked_batch_result_t*, size_t)` | Free batch results |
 
+### 10.6a Publish Queue (`dht_publish_queue.h`) - v0.6.80+
+
+Non-blocking async publish queue with automatic retry and per-key serialization.
+
+**Constants:**
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `DHT_PUBLISH_QUEUE_MAX_ITEMS` | 256 | Maximum queue size |
+| `DHT_PUBLISH_QUEUE_MAX_RETRIES` | 3 | Retry attempts per item |
+| `DHT_PUBLISH_QUEUE_RETRY_DELAY_MS` | 1000 | Initial retry delay |
+
+**Status Codes:**
+| Code | Value | Description |
+|------|-------|-------------|
+| `DHT_PUBLISH_STATUS_OK` | 0 | Success |
+| `DHT_PUBLISH_STATUS_FAILED` | -1 | Failed after retries |
+| `DHT_PUBLISH_STATUS_CANCELLED` | -2 | Cancelled |
+| `DHT_PUBLISH_STATUS_QUEUE_FULL` | -3 | Queue at capacity |
+
+| Function | Description |
+|----------|-------------|
+| `dht_publish_queue_t* dht_publish_queue_create(void)` | Create queue and start worker thread |
+| `void dht_publish_queue_destroy(dht_publish_queue_t*)` | Stop worker and destroy queue |
+| `dht_publish_request_id_t dht_chunked_publish_async(dht_publish_queue_t*, dht_context_t*, const char*, const uint8_t*, size_t, uint32_t, dht_publish_callback_t, void*)` | Submit async publish (non-blocking) |
+| `int dht_publish_queue_cancel(dht_publish_queue_t*, dht_publish_request_id_t)` | Cancel pending request |
+| `size_t dht_publish_queue_pending_count(dht_publish_queue_t*)` | Get queue size |
+| `bool dht_publish_queue_is_running(dht_publish_queue_t*)` | Check if worker is active |
+
 ### 10.7 Value Storage (`dht_value_storage.h`)
 
 | Function | Description |

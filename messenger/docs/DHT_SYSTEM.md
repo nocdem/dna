@@ -1000,6 +1000,10 @@ After 7-day TTL, all DHT data becomes v2 as old clients update.
 
 #### Key Functions
 
+**Thread Safety (v0.6.79+):** `dht_chunked_publish()` uses per-key locking to prevent
+concurrent publishes to the same `base_key` from interleaving chunks. Concurrent
+publishes to different keys run in parallel normally.
+
 ```c
 // Publish data with chunking + compression + content hash
 int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
@@ -1047,6 +1051,105 @@ int dht_chunked_fetch_batch(dht_context_t *ctx, const char **base_keys,
 | `DHT_CHUNK_ERR_ALLOC` | -10 | Memory allocation failed |
 | `DHT_CHUNK_ERR_NOT_CONNECTED` | -11 | DHT not connected |
 | `DHT_CHUNK_ERR_HASH_MISMATCH` | -12 | Content hash mismatch (DHT version inconsistency - caller should retry) |
+
+---
+
+### 5.7 dht_publish_queue.h/c (Async Publish Queue - v0.6.80+)
+
+Non-blocking publish queue for DHT chunked storage operations. Prevents UI freezes
+during profile, contact list, and group list publishes (which can block 30-60s).
+
+#### Problem Solved
+
+`dht_chunked_publish()` blocks for 30-60 seconds per operation. This freezes UI
+when updating profile, syncing contacts, or publishing group changes. The publish
+queue provides a non-blocking alternative.
+
+#### Architecture
+
+```
+Callers (Profile, Contacts, Groups, etc.)
+         │
+         ▼ dht_chunked_publish_async()
+┌─────────────────────────────────────────┐
+│         DHT Publish Queue               │
+│                                         │
+│  FIFO Queue (linked list)               │
+│  ┌─────┐ → ┌─────┐ → ┌─────┐ → ...     │
+│  │item1│   │item2│   │item3│           │
+│  └─────┘   └─────┘   └─────┘           │
+│                                         │
+│  Single Worker Thread                   │
+│  1. Dequeue item                        │
+│  2. dht_chunked_publish() (sync)        │
+│  3. If fail → retry (max 3x, backoff)   │
+│  4. Invoke callback                     │
+│  5. Next item                           │
+└─────────────────────────────────────────┘
+         │
+         ▼ dht_chunked_publish() (sync)
+      DHT Network
+```
+
+#### Key Features
+
+- **Non-blocking**: Callers return immediately
+- **Automatic retry**: 3 retries with exponential backoff (1s, 2s, 4s)
+- **Per-key serialization**: Relies on existing per-key mutex in `dht_chunked_publish()`
+- **Callback notification**: Optional callback when complete (success/fail/cancelled)
+- **Queue limit**: 256 items max to prevent unbounded memory growth
+- **Fire-and-forget**: Callback can be NULL if caller doesn't need notification
+
+#### API
+
+```c
+// Lifecycle
+dht_publish_queue_t* dht_publish_queue_create(void);
+void dht_publish_queue_destroy(dht_publish_queue_t *queue);
+
+// Submit (non-blocking, data copied internally)
+dht_publish_request_id_t dht_chunked_publish_async(
+    dht_publish_queue_t *queue,
+    dht_context_t *ctx,
+    const char *base_key,
+    const uint8_t *data,
+    size_t data_len,
+    uint32_t ttl_seconds,
+    dht_publish_callback_t callback,  // NULL = fire-and-forget
+    void *user_data
+);
+
+// Control
+int dht_publish_queue_cancel(dht_publish_queue_t *queue, dht_publish_request_id_t id);
+size_t dht_publish_queue_pending_count(dht_publish_queue_t *queue);
+bool dht_publish_queue_is_running(dht_publish_queue_t *queue);
+```
+
+#### Callback
+
+```c
+typedef void (*dht_publish_callback_t)(
+    dht_publish_request_id_t request_id,
+    const char *base_key,
+    int status,      // DHT_PUBLISH_STATUS_OK / _FAILED / _CANCELLED
+    int error_code,  // DHT_CHUNK_* error (only if status != OK)
+    void *user_data
+);
+```
+
+#### Status Codes
+
+| Code | Value | Description |
+|------|-------|-------------|
+| `DHT_PUBLISH_STATUS_OK` | 0 | Publish completed successfully |
+| `DHT_PUBLISH_STATUS_FAILED` | -1 | Failed after all retries |
+| `DHT_PUBLISH_STATUS_CANCELLED` | -2 | Cancelled before completion |
+| `DHT_PUBLISH_STATUS_QUEUE_FULL` | -3 | Queue at capacity (256 items) |
+
+#### Engine Events
+
+- `DNA_EVENT_DHT_PUBLISH_COMPLETE` - Fired when async publish succeeds
+- `DNA_EVENT_DHT_PUBLISH_FAILED` - Fired when async publish fails after retries
 
 ---
 

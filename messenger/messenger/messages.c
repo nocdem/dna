@@ -502,10 +502,10 @@ int messenger_send_message(
     // P2P transport is NOT required - messenger_queue_to_dht uses DHT singleton
     // This is more reliable on mobile platforms with background execution restrictions
     //
-    // Message status flow:
+    // Message status flow (v15):
     // 1. PENDING (0) - message saved, clock icon
     // 2. SENT (1) - DHT PUT succeeded, single tick
-    // 3. DELIVERED (3) - watermark received from recipient, double tick
+    // 3. RECEIVED (2) - ACK from recipient, double tick
     size_t dht_success = 0;
     for (size_t i = 0; i < recipient_count; i++) {
         // v0.5.33: Skip DHT queue for duplicates - already queued previously
@@ -958,23 +958,19 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
             }
         }
 
-        // Convert status int to string: 0=pending, 1=sent, 2=failed, 3=delivered, 4=read
-        if (backup_messages[i].status == 4) {
-            messages[i].status = strdup("read");
-        } else if (backup_messages[i].status == 3) {
-            messages[i].status = strdup("delivered");
-        } else if (backup_messages[i].status == 2) {
+        // Convert status int to string (v15): 0=pending, 1=sent, 2=received, 3=failed
+        if (backup_messages[i].status == 3) {
             messages[i].status = strdup("failed");
+        } else if (backup_messages[i].status == 2) {
+            messages[i].status = strdup("received");
         } else if (backup_messages[i].status == 1) {
             messages[i].status = strdup("sent");
         } else if (backup_messages[i].status == 0) {
             messages[i].status = strdup("pending");
         } else {
             // Old messages without status field - fall back to boolean flags
-            if (backup_messages[i].read) {
-                messages[i].status = strdup("read");
-            } else if (backup_messages[i].delivered) {
-                messages[i].status = strdup("delivered");
+            if (backup_messages[i].read || backup_messages[i].delivered) {
+                messages[i].status = strdup("received");  // v15: read/delivered → received
             } else {
                 messages[i].status = strdup("sent");  // Default for old messages
             }
@@ -1068,23 +1064,19 @@ int messenger_get_conversation_page(messenger_context_t *ctx, const char *other_
             }
         }
 
-        // Convert status int to string
-        if (backup_messages[i].status == 4) {
-            messages[i].status = strdup("read");
-        } else if (backup_messages[i].status == 3) {
-            messages[i].status = strdup("delivered");
-        } else if (backup_messages[i].status == 2) {
+        // Convert status int to string (v15): 0=pending, 1=sent, 2=received, 3=failed
+        if (backup_messages[i].status == 3) {
             messages[i].status = strdup("failed");
+        } else if (backup_messages[i].status == 2) {
+            messages[i].status = strdup("received");
         } else if (backup_messages[i].status == 1) {
             messages[i].status = strdup("sent");
         } else if (backup_messages[i].status == 0) {
             messages[i].status = strdup("pending");
         } else {
             // Old messages without status field
-            if (backup_messages[i].read) {
-                messages[i].status = strdup("read");
-            } else if (backup_messages[i].delivered) {
-                messages[i].status = strdup("delivered");
+            if (backup_messages[i].read || backup_messages[i].delivered) {
+                messages[i].status = strdup("received");  // v15: read/delivered → received
             } else {
                 messages[i].status = strdup("sent");
             }

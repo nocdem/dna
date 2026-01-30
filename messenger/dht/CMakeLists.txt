@@ -27,6 +27,7 @@ set(DHT_COMMON_SOURCES
     shared/dht_profile.c
     shared/dht_gek_storage.c  # GEK chunked storage
     shared/dht_chunked.c      # Generic chunked storage layer
+    shared/dht_publish_queue.c  # Non-blocking publish queue (v0.6.80+)
     shared/dht_contact_request.c  # ICQ-style contact request system
     # Client modules (Phase 3/4)
     client/dht_identity.cpp

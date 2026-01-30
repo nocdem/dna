@@ -56,7 +56,7 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task) {
         dna_event_t event = {0};
         event.type = DNA_EVENT_MESSAGE_SENT;
         event.data.message_status.message_id = 0;  /* ID not available here */
-        event.data.message_status.new_status = 2;  /* FAILED */
+        event.data.message_status.new_status = 3;  /* FAILED (v15: 0=pending, 1=sent, 2=received, 3=failed) */
         dna_dispatch_event(engine, &event);
     } else {
         /* Emit MESSAGE_SENT event so UI can update (triggers refresh)
@@ -156,13 +156,11 @@ void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
             messages[i].is_outgoing = (msg_infos[i].sender &&
                 strcmp(msg_infos[i].sender, engine->fingerprint) == 0);
 
-            /* Map status string to int: 0=pending, 1=sent, 2=failed, 3=delivered, 4=read */
+            /* Map status string to int (v15): 0=pending, 1=sent, 2=received, 3=failed */
             if (msg_infos[i].status) {
-                if (strcmp(msg_infos[i].status, "read") == 0) {
-                    messages[i].status = 4;
-                } else if (strcmp(msg_infos[i].status, "delivered") == 0) {
+                if (strcmp(msg_infos[i].status, "failed") == 0) {
                     messages[i].status = 3;
-                } else if (strcmp(msg_infos[i].status, "failed") == 0) {
+                } else if (strcmp(msg_infos[i].status, "received") == 0) {
                     messages[i].status = 2;
                 } else if (strcmp(msg_infos[i].status, "sent") == 0) {
                     messages[i].status = 1;
@@ -249,13 +247,11 @@ void dna_handle_get_conversation_page(dna_engine_t *engine, dna_task_t *task) {
             messages[i].is_outgoing = (msg_infos[i].sender &&
                 strcmp(msg_infos[i].sender, engine->fingerprint) == 0);
 
-            /* Map status string to int */
+            /* Map status string to int (v15): 0=pending, 1=sent, 2=received, 3=failed */
             if (msg_infos[i].status) {
-                if (strcmp(msg_infos[i].status, "read") == 0) {
-                    messages[i].status = 4;
-                } else if (strcmp(msg_infos[i].status, "delivered") == 0) {
+                if (strcmp(msg_infos[i].status, "failed") == 0) {
                     messages[i].status = 3;
-                } else if (strcmp(msg_infos[i].status, "failed") == 0) {
+                } else if (strcmp(msg_infos[i].status, "received") == 0) {
                     messages[i].status = 2;
                 } else if (strcmp(msg_infos[i].status, "sent") == 0) {
                     messages[i].status = 1;

@@ -295,8 +295,8 @@ message_backup_context_t* message_backup_init(const char *identity) {
     }
 
     // Migration: Fix old messages with delivered=1 but status=0 or status=1 (v11)
-    // These should be status=3 (DELIVERED) since delivered flag was already set.
-    // This fixes messages from before we prioritized the status field over boolean flags.
+    // Sets status=3 (old DELIVERED in v11 model). The v15 migration below then
+    // converts status=3 to status=2 (RECEIVED in v15 model). Migration chain is correct.
     const char *migration_sql_v11 =
         "UPDATE messages SET status = 3 WHERE delivered = 1 AND status IN (0, 1);";
     rc = sqlite3_exec(ctx->db, migration_sql_v11, NULL, NULL, &err_msg);
@@ -895,18 +895,18 @@ int message_backup_get_pending_messages(message_backup_context_t *ctx,
     *messages_out = NULL;
     *count_out = 0;
 
-    // Query outgoing messages with status PENDING(0) or FAILED(2)
+    // Query outgoing messages with status PENDING(0) or FAILED(3)
     // max_retries=0 means unlimited (no retry_count filter)
     const char *sql_unlimited =
         "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, message_type, retry_count "
         "FROM messages "
-        "WHERE is_outgoing = 1 AND (status = 0 OR status = 2) "
+        "WHERE is_outgoing = 1 AND (status = 0 OR status = 3) "
         "ORDER BY timestamp ASC";
 
     const char *sql_limited =
         "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, message_type, retry_count "
         "FROM messages "
-        "WHERE is_outgoing = 1 AND (status = 0 OR status = 2) AND retry_count < ? "
+        "WHERE is_outgoing = 1 AND (status = 0 OR status = 3) AND retry_count < ? "
         "ORDER BY timestamp ASC";
 
     const char *sql = (max_retries == 0) ? sql_unlimited : sql_limited;

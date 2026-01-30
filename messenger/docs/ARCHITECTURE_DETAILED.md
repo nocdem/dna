@@ -944,7 +944,7 @@ typedef struct {
     time_t timestamp;
     bool delivered;
     bool read;
-    int status;                    // 0=PENDING, 1=SENT, 2=FAILED
+    int status;                    // 0=PENDING, 1=SENT, 2=RECEIVED, 3=FAILED
     int group_id;                  // 0 for direct, >0 for group
     int message_type;              // 0=chat, 1=group_invitation
     int invitation_status;         // 0=pending, 1=accepted, 2=declined
@@ -1225,7 +1225,7 @@ typedef struct {
     char *plaintext;
     uint64_t timestamp;
     bool is_outgoing;
-    int status;        // 0=pending, 1=sent, 2=delivered, 3=read
+    int status;        // 0=pending, 1=sent, 2=received, 3=failed
     int message_type;  // 0=chat, 1=group_invitation
 } dna_message_t;
 

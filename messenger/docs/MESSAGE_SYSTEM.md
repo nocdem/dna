@@ -299,13 +299,13 @@ SEND ATTEMPT                     FAILURE                          RETRY TRIGGERS
     status = PENDING (until watermark confirms DELIVERED)
 ```
 
-**Retry Logic:**
-- **Max retries:** 10 attempts (`retry_count` column in messages table)
+**Retry Logic (v15):**
+- **Max retries:** Unlimited (never give up, exponential backoff)
 - **Retry triggers:** Identity load, DHT reconnect, network state change
 - **Thread safety:** Mutex-protected to prevent concurrent retry calls
-- **Query:** `SELECT * FROM messages WHERE is_outgoing=1 AND (status=0 OR status=2) AND retry_count < 10`
-- **On success:** Status stays PENDING (0), awaiting watermark confirmation → DELIVERED (3)
-- **On failure:** `retry_count` incremented, status remains FAILED (2)
+- **Query:** `SELECT * FROM messages WHERE is_outgoing=1 AND (status=0 OR status=3)`
+- **On success:** Status becomes SENT (1), awaiting ACK → RECEIVED (2)
+- **On failure:** Status becomes FAILED (3), `retry_count` incremented
 
 **Database Schema (v10):**
 ```sql
@@ -1135,7 +1135,7 @@ CREATE TABLE IF NOT EXISTS messages (
   delivered INTEGER DEFAULT 1,
   read INTEGER DEFAULT 0,
   is_outgoing INTEGER DEFAULT 0,
-  status INTEGER DEFAULT 1,         -- 0=PENDING, 1=SENT(legacy), 2=FAILED, 3=DELIVERED, 4=READ, 5=STALE
+  status INTEGER DEFAULT 1,         -- v15: 0=PENDING, 1=SENT, 2=RECEIVED, 3=FAILED
   group_id INTEGER DEFAULT 0,       -- 0=direct message, >0=group ID
   message_type INTEGER DEFAULT 0,   -- 0=chat, 1=group_invitation
   invitation_status INTEGER DEFAULT 0,  -- 0=pending, 1=accepted, 2=declined

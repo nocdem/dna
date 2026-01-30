@@ -132,7 +132,7 @@ typedef struct {
     char *plaintext;            /* Decrypted message text (caller must free via dna_free_messages) */
     uint64_t timestamp;         /* Unix timestamp */
     bool is_outgoing;           /* true if sent by current identity */
-    int status;                 /* 0=pending, 1=sent(legacy), 2=failed, 3=delivered, 4=read */
+    int status;                 /* 0=pending, 1=sent, 2=received, 3=failed */
     int message_type;           /* 0=chat, 1=group_invitation */
 } dna_message_t;
 
@@ -620,6 +620,8 @@ typedef enum {
     DNA_EVENT_GROUPS_SYNCED,             /* Groups restored from DHT to local cache */
     DNA_EVENT_CONTACTS_SYNCED,           /* Contacts restored from DHT to local cache */
     DNA_EVENT_GEKS_SYNCED,               /* GEKs restored from DHT to local cache */
+    DNA_EVENT_DHT_PUBLISH_COMPLETE,      /* Async DHT publish completed successfully (v0.6.80+) */
+    DNA_EVENT_DHT_PUBLISH_FAILED,        /* Async DHT publish failed after retries (v0.6.80+) */
     DNA_EVENT_ERROR
 } dna_event_type_t;
 
@@ -673,6 +675,11 @@ typedef struct {
         struct {
             int geks_synced;                /* Number of GEKs synced from DHT (0=none, 1=success) */
         } geks_synced;
+        struct {
+            uint64_t request_id;            /* Request ID from dht_chunked_publish_async() */
+            char base_key[256];             /* DHT key that was published */
+            int error_code;                 /* DHT_CHUNK_* error code (0 on success) */
+        } dht_publish;
         struct {
             int code;
             char message[256];
@@ -1793,7 +1800,7 @@ DNA_API int dna_engine_delete_message_sync(
 /**
  * Retry all pending/failed messages
  *
- * Queries local database for messages with status PENDING(0) or FAILED(2)
+ * Queries local database for messages with status PENDING(0) or FAILED(3)
  * and attempts to re-queue them to DHT. Called automatically on:
  * - Identity load (app startup)
  * - DHT reconnect (network change)

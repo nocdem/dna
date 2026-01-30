@@ -1207,7 +1207,7 @@ typedef struct {
     char *plaintext;            // Decrypted message text
     uint64_t timestamp;         // Unix timestamp
     bool is_outgoing;           // true if sent by current identity
-    int status;                 // 0=pending, 1=sent, 2=delivered, 3=read
+    int status;                 // 0=pending, 1=sent, 2=received, 3=failed
     int message_type;           // 0=chat, 1=group_invitation
 } dna_message_t;
 ```
@@ -1269,7 +1269,7 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine);
 
 Retry all pending/failed messages (bulletproof delivery).
 
-Queries the message database for all outgoing messages with status PENDING (0) or FAILED (2) and `retry_count < 10`, then attempts to re-queue each to DHT.
+Queries the message database for all outgoing messages with status PENDING (0) or FAILED (3) and unlimited retries, then attempts to re-queue each to DHT.
 
 **Automatic Triggers:**
 - Identity load (app startup)

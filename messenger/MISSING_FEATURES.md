@@ -126,11 +126,11 @@ Native system notifications on all platforms when messages arrive, even when app
 **Priority:** Medium
 **Status:** Not Started
 
-### Current State
-- Message status values exist: PENDING(0), SENT(1), FAILED(2), DELIVERED(3), READ(4)
-- Functions exist to update local status: `message_backup_mark_delivered()`, `message_backup_mark_read()`
-- **No mechanism to notify sender** when recipient receives/reads message
-- DELIVERED and READ statuses are never actually set in practice
+### Current State (v15)
+- Message status values: PENDING(0), SENT(1), RECEIVED(2), FAILED(3)
+- Functions exist to update local status: `message_backup_update_status()`
+- ACK system marks messages as RECEIVED when recipient fetches from DHT
+- **Missing:** Explicit READ receipts (separate from delivery confirmation)
 
 ### What's Missing
 1. Receipt message type (e.g., `MESSAGE_TYPE_RECEIPT = 2`)
@@ -182,7 +182,7 @@ Receive receipt from contact's outbox
     │
     ├─ Find matching message by (sender, timestamp)
     │
-    └─ Update status: DELIVERED(3) or READ(4)
+    └─ Update status: RECEIVED(2) or add READ tracking (future)
 ```
 
 ### Files to Modify

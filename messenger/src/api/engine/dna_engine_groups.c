@@ -324,8 +324,8 @@ void dna_handle_get_group_conversation(dna_engine_t *engine, dna_task_t *task) {
             /* Determine if outgoing */
             messages[i].is_outgoing = (strcmp(src->sender_fingerprint, engine->fingerprint) == 0);
 
-            /* Group messages are always delivered */
-            messages[i].status = 3;  /* delivered */
+            /* Group messages are always received (v15: 0=pending, 1=sent, 2=received, 3=failed) */
+            messages[i].status = 2;  /* received */
             messages[i].message_type = 0;  /* text */
         }
         count = (int)msg_count;
