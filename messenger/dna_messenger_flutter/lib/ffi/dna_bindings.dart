@@ -480,12 +480,14 @@ final class dna_feed_comment_info_t extends Struct {
   @Array(1290)
   external Array<Char> mentions_flat; // mentions[10][129] flattened
 
+  // Padding for int alignment (1506 -> 1508)
+  @Array(2)
+  external Array<Uint8> _padding2;
+
   @Int32()
   external int mention_count;
 
-  // Padding for uint64_t alignment
-  @Array(4)
-  external Array<Uint8> _padding2;
+  // No padding needed: 1508 + 4 = 1512, already 8-byte aligned
 
   @Uint64()
   external int created_at;
