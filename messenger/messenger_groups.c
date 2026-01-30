@@ -1122,8 +1122,10 @@ int messenger_sync_groups_to_dht(messenger_context_t *ctx) {
     int cache_count = 0;
 
     int ret = dht_groups_list_for_user(ctx->identity, &cache_entries, &cache_count);
+    QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_PUBLISH] dht_groups_list_for_user returned %d, count=%d\n", ret, cache_count);
+
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to get groups from DHT cache\n");
+        QGP_LOG_ERROR(LOG_TAG, "[GROUPLIST_PUBLISH] Failed to get groups from DHT cache (ret=%d)\n", ret);
         qgp_key_free(kyber_key);
         qgp_key_free(dilithium_key);
         return -1;
@@ -1132,6 +1134,9 @@ int messenger_sync_groups_to_dht(messenger_context_t *ctx) {
     // Extract UUIDs into string array
     const char **group_uuids = NULL;
     size_t entry_count = (size_t)cache_count;
+
+    QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_PUBLISH] Found %zu groups to publish for identity %.32s...\n", entry_count, ctx->identity);
+
     if (entry_count > 0) {
         group_uuids = malloc(entry_count * sizeof(char*));
         if (!group_uuids) {
@@ -1144,8 +1149,10 @@ int messenger_sync_groups_to_dht(messenger_context_t *ctx) {
 
         for (size_t i = 0; i < entry_count; i++) {
             group_uuids[i] = cache_entries[i].group_uuid;
-            QGP_LOG_DEBUG(LOG_TAG, "Group[%zu]: %s (%s)\n", i, cache_entries[i].group_uuid, cache_entries[i].name);
+            QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_PUBLISH] Group[%zu]: uuid=%s name='%s'\n", i, cache_entries[i].group_uuid, cache_entries[i].name);
         }
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_PUBLISH] WARNING: No groups found in DHT cache - nothing to publish!\n");
     }
 
     // Publish to DHT
@@ -1168,9 +1175,9 @@ int messenger_sync_groups_to_dht(messenger_context_t *ctx) {
     qgp_key_free(dilithium_key);
 
     if (result == 0) {
-        QGP_LOG_INFO(LOG_TAG, "Successfully synced %zu groups to DHT\n", entry_count);
+        QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_PUBLISH] SUCCESS - published %zu groups to DHT for %.32s...\n", entry_count, ctx->identity);
     } else {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to sync groups to DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "[GROUPLIST_PUBLISH] FAILED - dht_grouplist_publish returned %d\n", result);
     }
 
     return result;
@@ -1282,7 +1289,7 @@ int messenger_restore_groups_from_dht(messenger_context_t *ctx) {
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "[RESTORE] Restoring groups from DHT for %.16s...\n", ctx->identity);
+    QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] Restoring groups from DHT for identity: %.32s...\n", ctx->identity);
 
     // Get DHT context
     dht_context_t *dht_ctx = dht_singleton_get();
@@ -1338,6 +1345,8 @@ int messenger_restore_groups_from_dht(messenger_context_t *ctx) {
     char **group_uuids = NULL;
     size_t group_count = 0;
 
+    QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] Calling dht_grouplist_fetch for %.32s...\n", ctx->identity);
+
     int ret = dht_grouplist_fetch(
         dht_ctx,
         ctx->identity,
@@ -1347,26 +1356,28 @@ int messenger_restore_groups_from_dht(messenger_context_t *ctx) {
         dilithium_key->public_key
     );
 
+    QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] dht_grouplist_fetch returned %d, count=%zu\n", ret, group_count);
+
     qgp_key_free(kyber_key);
     qgp_key_free(dilithium_key);
 
     if (ret == -2) {
         // Not found in DHT - user has no groups yet
-        QGP_LOG_INFO(LOG_TAG, "[RESTORE] No group list found in DHT (new user or no groups)\n");
+        QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] NOT FOUND in DHT (ret=-2) - is group list published?\n");
         return 0;
     }
 
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "[RESTORE] Failed to fetch group list from DHT: %d\n", ret);
+        QGP_LOG_ERROR(LOG_TAG, "[GROUPLIST_FETCH] FAILED - dht_grouplist_fetch returned %d\n", ret);
         return -1;
     }
 
     if (group_count == 0) {
-        QGP_LOG_INFO(LOG_TAG, "[RESTORE] Group list is empty in DHT\n");
+        QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] Group list exists but is EMPTY in DHT\n");
         return 0;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "[RESTORE] Found %zu groups in DHT, syncing to local cache...\n", group_count);
+    QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] SUCCESS - found %zu groups in DHT, syncing...\n", group_count);
 
     // Sync each group to local cache
     int restored = 0;

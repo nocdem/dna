@@ -147,6 +147,7 @@ static void print_usage(const char *prog_name) {
     printf("  sync-contacts-down          Pull contacts from DHT\n");
     printf("  sync-groups                 Sync all groups from DHT\n");
     printf("  sync-groups-up              Push groups to DHT\n");
+    printf("  sync-groups-down            Pull groups from DHT (restore)\n");
     printf("  refresh-presence            Refresh presence in DHT\n");
     printf("  presence <name|fp>          Lookup peer presence\n");
     printf("  dht-status                  Check DHT connection status\n");
@@ -792,6 +793,9 @@ int main(int argc, char *argv[]) {
     }
     else if (strcmp(command, "sync-groups-up") == 0) {
         result = cmd_sync_groups_up(g_engine);
+    }
+    else if (strcmp(command, "sync-groups-down") == 0) {
+        result = cmd_sync_groups_down(g_engine);
     }
     else if (strcmp(command, "refresh-presence") == 0) {
         result = cmd_refresh_presence(g_engine);

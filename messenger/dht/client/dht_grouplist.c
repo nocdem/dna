@@ -363,7 +363,7 @@ int dht_grouplist_publish(
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Successfully published group list to DHT\n");
+    QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_PUBLISH] Successfully published to DHT (blob=%zu bytes)\n", blob_size);
     return 0;
 }
 
@@ -383,7 +383,7 @@ int dht_grouplist_fetch(
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Fetching group list for '%.16s...'\n", identity);
+    QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] Fetching for identity='%.32s...'\n", identity);
 
     // Step 1: Generate base key for chunked storage
     char base_key[512];
@@ -398,11 +398,11 @@ int dht_grouplist_fetch(
 
     int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
     if (result != DHT_CHUNK_OK || !blob) {
-        QGP_LOG_INFO(LOG_TAG, "Group list not found in DHT: %s\n", dht_chunked_strerror(result));
+        QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] NOT FOUND in DHT: %s\n", dht_chunked_strerror(result));
         return -2;  // Not found
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Retrieved blob: %zu bytes\n", blob_size);
+    QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] Retrieved %zu bytes from DHT\n", blob_size);
 
     // Step 3: Parse blob header
     if (blob_size < 4 + 1 + 8 + 8 + 4 + 4) {
