@@ -276,8 +276,10 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
                             if (json_object_object_get_ex(first, "author", &author_obj)) {
                                 const char *arr_author = json_object_get_string(author_obj);
                                 if (arr_author && strcmp(arr_author, author_fingerprint) == 0) {
-                                    /* These are my comments */
+                                    /* These are my comments - free any previous and reset count */
+                                    free(my_comments);
                                     my_comments = calloc(arr_len, sizeof(dna_feed_comment_t));
+                                    my_count = 0;  /* Reset count for new array */
                                     if (my_comments) {
                                         for (int j = 0; j < arr_len; j++) {
                                             json_object *c = json_object_array_get_idx(arr, j);
@@ -298,7 +300,10 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
                         dna_feed_comment_t tmp;
                         if (comment_from_json(json_str, &tmp) == 0) {
                             if (strcmp(tmp.author_fingerprint, author_fingerprint) == 0) {
+                                /* Free any previous and reset */
+                                free(my_comments);
                                 my_comments = calloc(1, sizeof(dna_feed_comment_t));
+                                my_count = 0;  /* Reset before setting */
                                 if (my_comments) {
                                     my_comments[0] = tmp;
                                     my_count = 1;
