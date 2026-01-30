@@ -19,6 +19,7 @@
 #define DNA_ENGINE_IDENTITY_IMPL
 
 #include "engine_includes.h"
+#include "database/feed_subscriptions_db.h"
 
 /* ============================================================================
  * IDENTITY TASK HANDLERS
@@ -207,6 +208,12 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     if (group_invitations_init(fingerprint) != 0) {
         QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize group invitations database\n");
         /* Non-fatal - continue, invitations will be initialized on first access */
+    }
+
+    /* Initialize feed subscriptions database for topic notifications */
+    if (feed_subscriptions_db_init() != 0) {
+        QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize feed subscriptions database");
+        /* Non-fatal - continue, subscriptions will be initialized on first access */
     }
 
     /* Profile cache is now global - initialized in dna_engine_create() */
@@ -1068,6 +1075,14 @@ int dna_engine_create_identity_sync(
     /* Step 5: Cache the registered name locally */
     keyserver_cache_put_name(fingerprint_out, name, 0);
     QGP_LOG_INFO(LOG_TAG, "Identity created and registered: %s -> %.16s...", name, fingerprint_out);
+
+    /* Step 6: Auto-subscribe new identity to official updates feed */
+    if (feed_subscriptions_db_init() == 0) {
+        if (feed_subscriptions_db_subscribe(DNA_UPDATES_TOPIC_UUID) == 0) {
+            QGP_LOG_INFO(LOG_TAG, "Auto-subscribed to DNA Updates feed");
+        }
+        /* -1 = already subscribed, which is fine */
+    }
 
     return DNA_OK;
 }

@@ -50,6 +50,17 @@ extern "C" {
 DNA_API const char* dna_engine_get_version(void);
 
 /* ============================================================================
+ * WELL-KNOWN CONSTANTS
+ * ============================================================================ */
+
+/**
+ * Official DNA Messenger Updates feed topic UUID
+ * Created by Claude's identity - all new users auto-subscribe to this feed.
+ * Use: dna-messenger-cli feeds comment <UUID> "message"
+ */
+#define DNA_UPDATES_TOPIC_UUID "765ed03d-0c28-4d17-91bd-683a713a63e8"
+
+/* ============================================================================
  * OPAQUE TYPES
  * ============================================================================ */
 
