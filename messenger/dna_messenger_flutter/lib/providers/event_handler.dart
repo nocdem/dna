@@ -343,6 +343,18 @@ class EventHandler {
         print('[DART-HANDLER] GeksSyncedEvent: GEKs synced from DHT (count=$count)');
         break;
 
+      case FeedTopicCommentEvent(topicUuid: final uuid, commentUuid: final cUuid, authorFingerprint: final author):
+        // New comment on a subscribed topic - could trigger notification/refresh
+        print('[DART-HANDLER] FeedTopicCommentEvent: topic=$uuid, comment=$cUuid, author=${author.substring(0, 16)}...');
+        // TODO: Refresh feed topic comments when feed_provider is implemented
+        break;
+
+      case FeedSubscriptionsSyncedEvent(subscriptionsSynced: final count):
+        // Feed subscriptions synced from DHT
+        print('[DART-HANDLER] FeedSubscriptionsSyncedEvent: subscriptions synced from DHT (count=$count)');
+        // TODO: Refresh feed subscriptions when feed_provider is implemented
+        break;
+
       case ErrorEvent(message: final errorMsg):
         // Store error for UI to display
         _ref.read(lastErrorProvider.notifier).state = errorMsg;

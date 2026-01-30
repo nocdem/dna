@@ -1111,6 +1111,17 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_FEED_GET_ALL:
             dna_handle_feed_get_all(engine, task);
             break;
+
+        /* Feed v2 subscriptions (v0.6.91+) */
+        case TASK_FEED_GET_SUBSCRIPTIONS:
+            dna_handle_feed_get_subscriptions(engine, task);
+            break;
+        case TASK_FEED_SYNC_SUBSCRIPTIONS_TO_DHT:
+            dna_handle_feed_sync_subscriptions_to_dht(engine, task);
+            break;
+        case TASK_FEED_SYNC_SUBSCRIPTIONS_FROM_DHT:
+            dna_handle_feed_sync_subscriptions_from_dht(engine, task);
+            break;
     }
 }
 

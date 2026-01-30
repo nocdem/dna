@@ -131,7 +131,12 @@ typedef enum {
     TASK_FEED_ADD_COMMENT,
     TASK_FEED_GET_COMMENTS,
     TASK_FEED_GET_CATEGORY,
-    TASK_FEED_GET_ALL
+    TASK_FEED_GET_ALL,
+
+    /* Feed v2 subscriptions (v0.6.91+) */
+    TASK_FEED_GET_SUBSCRIPTIONS,
+    TASK_FEED_SYNC_SUBSCRIPTIONS_TO_DHT,
+    TASK_FEED_SYNC_SUBSCRIPTIONS_FROM_DHT
 } dna_task_type_t;
 
 /* ============================================================================
@@ -389,6 +394,7 @@ typedef union {
     dna_feed_topics_cb feed_topics;
     dna_feed_comments_cb feed_comments;
     dna_feed_comment_cb feed_comment;
+    dna_feed_subscriptions_cb feed_subscriptions;
     dna_profile_cb profile;
     dna_presence_cb presence;
 } dna_task_callback_t;
@@ -747,6 +753,11 @@ void dna_handle_feed_add_comment(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_feed_get_comments(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_feed_get_category(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_feed_get_all(dna_engine_t *engine, dna_task_t *task);
+
+/* Feed v2 subscriptions (v0.6.91+) */
+void dna_handle_feed_get_subscriptions(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_feed_sync_subscriptions_to_dht(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_feed_sync_subscriptions_from_dht(dna_engine_t *engine, dna_task_t *task);
 
 /* ============================================================================
  * INTERNAL FUNCTIONS - Helpers

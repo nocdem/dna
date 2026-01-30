@@ -511,179 +511,6 @@ class Transaction {
   }
 }
 
-/// Feed channel information
-class FeedChannel {
-  final String channelId;
-  final String name;
-  final String description;
-  final String creatorFingerprint;
-  final DateTime createdAt;
-  final int postCount;
-  final int subscriberCount;
-  final DateTime lastActivity;
-
-  FeedChannel({
-    required this.channelId,
-    required this.name,
-    required this.description,
-    required this.creatorFingerprint,
-    required this.createdAt,
-    required this.postCount,
-    required this.subscriberCount,
-    required this.lastActivity,
-  });
-
-  factory FeedChannel.fromNative(dna_channel_info_t native) {
-    return FeedChannel(
-      channelId: native.channel_id.toDartString(65),
-      name: native.name.toDartString(64),
-      description: native.description.toDartString(512),
-      creatorFingerprint: native.creator_fingerprint.toDartString(129),
-      createdAt: DateTime.fromMillisecondsSinceEpoch(native.created_at * 1000),
-      postCount: native.post_count,
-      subscriberCount: native.subscriber_count,
-      lastActivity: DateTime.fromMillisecondsSinceEpoch(native.last_activity * 1000),
-    );
-  }
-}
-
-/// Feed post information
-class FeedPost {
-  final String postId;
-  final String channelId;
-  final String authorFingerprint;
-  final String text;
-  final DateTime timestamp;
-  final DateTime updated;
-  final int commentCount;
-  final int upvotes;
-  final int downvotes;
-  final int userVote;
-  final bool verified;
-
-  FeedPost({
-    required this.postId,
-    required this.channelId,
-    required this.authorFingerprint,
-    required this.text,
-    required this.timestamp,
-    required this.updated,
-    required this.commentCount,
-    required this.upvotes,
-    required this.downvotes,
-    required this.userVote,
-    required this.verified,
-  });
-
-  factory FeedPost.fromNative(dna_post_info_t native) {
-    return FeedPost(
-      postId: native.post_id.toDartString(200),
-      channelId: native.channel_id.toDartString(65),
-      authorFingerprint: native.author_fingerprint.toDartString(129),
-      text: native.text == nullptr ? '' : native.text.toDartString(),
-      timestamp: DateTime.fromMillisecondsSinceEpoch(native.timestamp),
-      updated: DateTime.fromMillisecondsSinceEpoch(native.updated),
-      commentCount: native.comment_count,
-      upvotes: native.upvotes,
-      downvotes: native.downvotes,
-      userVote: native.user_vote,
-      verified: native.verified,
-    );
-  }
-
-  /// Net score (upvotes - downvotes)
-  int get score => upvotes - downvotes;
-
-  /// Check if current user has voted
-  bool get hasVoted => userVote != 0;
-
-  /// Create a copy with updated vote data
-  FeedPost copyWith({
-    int? commentCount,
-    int? upvotes,
-    int? downvotes,
-    int? userVote,
-  }) {
-    return FeedPost(
-      postId: postId,
-      channelId: channelId,
-      authorFingerprint: authorFingerprint,
-      text: text,
-      timestamp: timestamp,
-      updated: updated,
-      commentCount: commentCount ?? this.commentCount,
-      upvotes: upvotes ?? this.upvotes,
-      downvotes: downvotes ?? this.downvotes,
-      userVote: userVote ?? this.userVote,
-      verified: verified,
-    );
-  }
-}
-
-/// Feed comment information (flat comments, no nesting)
-class FeedComment {
-  final String commentId;
-  final String postId;
-  final String authorFingerprint;
-  final String text;
-  final DateTime timestamp;
-  final int upvotes;
-  final int downvotes;
-  final int userVote;
-  final bool verified;
-
-  FeedComment({
-    required this.commentId,
-    required this.postId,
-    required this.authorFingerprint,
-    required this.text,
-    required this.timestamp,
-    required this.upvotes,
-    required this.downvotes,
-    required this.userVote,
-    required this.verified,
-  });
-
-  factory FeedComment.fromNative(dna_comment_info_t native) {
-    return FeedComment(
-      commentId: native.comment_id.toDartString(200),
-      postId: native.post_id.toDartString(200),
-      authorFingerprint: native.author_fingerprint.toDartString(129),
-      text: native.text == nullptr ? '' : native.text.toDartString(),
-      timestamp: DateTime.fromMillisecondsSinceEpoch(native.timestamp),
-      upvotes: native.upvotes,
-      downvotes: native.downvotes,
-      userVote: native.user_vote,
-      verified: native.verified,
-    );
-  }
-
-  /// Net score (upvotes - downvotes)
-  int get score => upvotes - downvotes;
-
-  /// Check if current user has voted
-  bool get hasVoted => userVote != 0;
-
-  /// Create a copy with updated vote data
-  FeedComment copyWith({
-    int? upvotes,
-    int? downvotes,
-    int? userVote,
-  }) {
-    return FeedComment(
-      commentId: commentId,
-      postId: postId,
-      authorFingerprint: authorFingerprint,
-      text: text,
-      timestamp: timestamp,
-      upvotes: upvotes ?? this.upvotes,
-      downvotes: downvotes ?? this.downvotes,
-      userVote: userVote ?? this.userVote,
-      verified: verified,
-    );
-  }
-}
-
 /// Debug log level
 enum DebugLogLevel { debug, info, warn, error }
 
@@ -983,6 +810,167 @@ class VersionCheckResult {
   bool get hasUpdate => libraryUpdateAvailable || appUpdateAvailable || nodusUpdateAvailable;
 }
 
+// =============================================================================
+// FEED v2 MODELS (Topics, Comments, Subscriptions)
+// =============================================================================
+
+/// Feed topic information (v0.6.91+)
+class FeedTopic {
+  final String uuid;
+  final String authorFingerprint;
+  final String title;
+  final String body;
+  final String categoryId;
+  final List<String> tags;
+  final DateTime createdAt;
+  final bool deleted;
+  final DateTime? deletedAt;
+
+  FeedTopic({
+    required this.uuid,
+    required this.authorFingerprint,
+    required this.title,
+    required this.body,
+    required this.categoryId,
+    required this.tags,
+    required this.createdAt,
+    required this.deleted,
+    this.deletedAt,
+  });
+
+  factory FeedTopic.fromNative(dna_feed_topic_info_t native) {
+    // Parse tags from flattened array - up to 5 tags, 33 chars each (32 + null)
+    final tags = <String>[];
+    for (int i = 0; i < native.tag_count && i < 5; i++) {
+      final bytes = <int>[];
+      for (int j = 0; j < 33; j++) {
+        final char = native.tags_flat[i * 33 + j];
+        if (char == 0) break;
+        bytes.add(char & 0xFF);
+      }
+      if (bytes.isNotEmpty) {
+        tags.add(utf8.decode(bytes, allowMalformed: true));
+      }
+    }
+
+    return FeedTopic(
+      uuid: native.topic_uuid.toDartString(37),
+      authorFingerprint: native.author_fingerprint.toDartString(129),
+      title: native.title != nullptr ? native.title.toDartString() : '',
+      body: native.body != nullptr ? native.body.toDartString() : '',
+      categoryId: native.category_id.toDartString(65),
+      tags: tags,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(native.created_at * 1000),
+      deleted: native.deleted,
+      deletedAt: native.deleted_at > 0
+          ? DateTime.fromMillisecondsSinceEpoch(native.deleted_at * 1000)
+          : null,
+    );
+  }
+
+  /// Returns the category name (lowercased from category_id)
+  String get categoryName => categoryId.toLowerCase();
+}
+
+/// Feed comment information (v0.6.91+)
+class FeedComment {
+  final String uuid;
+  final String topicUuid;
+  final String authorFingerprint;
+  final String body;
+  final List<String> mentions;
+  final DateTime createdAt;
+
+  FeedComment({
+    required this.uuid,
+    required this.topicUuid,
+    required this.authorFingerprint,
+    required this.body,
+    required this.mentions,
+    required this.createdAt,
+  });
+
+  factory FeedComment.fromNative(dna_feed_comment_info_t native) {
+    // Parse mentions from flattened array - up to 10 mentions, 129 chars each
+    final mentions = <String>[];
+    for (int i = 0; i < native.mention_count && i < 10; i++) {
+      final bytes = <int>[];
+      for (int j = 0; j < 129; j++) {
+        final char = native.mentions_flat[i * 129 + j];
+        if (char == 0) break;
+        bytes.add(char & 0xFF);
+      }
+      if (bytes.isNotEmpty) {
+        mentions.add(utf8.decode(bytes, allowMalformed: true));
+      }
+    }
+
+    return FeedComment(
+      uuid: native.comment_uuid.toDartString(37),
+      topicUuid: native.topic_uuid.toDartString(37),
+      authorFingerprint: native.author_fingerprint.toDartString(129),
+      body: native.body != nullptr ? native.body.toDartString() : '',
+      mentions: mentions,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(native.created_at * 1000),
+    );
+  }
+}
+
+/// Feed subscription information (v0.6.91+)
+class FeedSubscription {
+  final String topicUuid;
+  final DateTime subscribedAt;
+  final DateTime? lastSynced;
+
+  FeedSubscription({
+    required this.topicUuid,
+    required this.subscribedAt,
+    this.lastSynced,
+  });
+
+  factory FeedSubscription.fromNative(dna_feed_subscription_info_t native) {
+    return FeedSubscription(
+      topicUuid: native.topic_uuid.toDartString(37),
+      subscribedAt: DateTime.fromMillisecondsSinceEpoch(native.subscribed_at * 1000),
+      lastSynced: native.last_synced > 0
+          ? DateTime.fromMillisecondsSinceEpoch(native.last_synced * 1000)
+          : null,
+    );
+  }
+}
+
+/// Default feed categories
+class FeedCategories {
+  static const general = 'general';
+  static const technology = 'technology';
+  static const help = 'help';
+  static const announcements = 'announcements';
+  static const trading = 'trading';
+  static const offtopic = 'offtopic';
+
+  static const all = [general, technology, help, announcements, trading, offtopic];
+
+  /// Get display name for a category
+  static String displayName(String category) {
+    switch (category.toLowerCase()) {
+      case general:
+        return 'General';
+      case technology:
+        return 'Technology';
+      case help:
+        return 'Help';
+      case announcements:
+        return 'Announcements';
+      case trading:
+        return 'Trading';
+      case offtopic:
+        return 'Off-Topic';
+      default:
+        return category;
+    }
+  }
+}
+
 /// Decode base64 string with padding fix for truncated avatar data
 /// C buffer limit is 20484 bytes, strncpy copies max 20483, which may truncate padding
 Uint8List? decodeBase64WithPadding(String base64Str) {
@@ -1100,6 +1088,20 @@ class ContactsSyncedEvent extends DnaEvent {
 class GeksSyncedEvent extends DnaEvent {
   final int geksSynced;
   GeksSyncedEvent(this.geksSynced);
+}
+
+/// Feed topic comment event - new comment on a subscribed topic (v0.6.91+)
+class FeedTopicCommentEvent extends DnaEvent {
+  final String topicUuid;
+  final String commentUuid;
+  final String authorFingerprint;
+  FeedTopicCommentEvent(this.topicUuid, this.commentUuid, this.authorFingerprint);
+}
+
+/// Feed subscriptions synced from DHT event (v0.6.91+)
+class FeedSubscriptionsSyncedEvent extends DnaEvent {
+  final int subscriptionsSynced;
+  FeedSubscriptionsSyncedEvent(this.subscriptionsSynced);
 }
 
 // =============================================================================
@@ -1422,6 +1424,45 @@ class DnaEngine {
             (event.data[2] << 16) |
             (event.data[3] << 24);
         dartEvent = GeksSyncedEvent(geksSynced);
+        break;
+      case DnaEventType.DNA_EVENT_FEED_TOPIC_COMMENT:
+        // Parse feed_topic_comment event data:
+        // - topic_uuid: 37 bytes at offset 0
+        // - comment_uuid: 37 bytes at offset 40 (aligned)
+        // - author_fingerprint: 129 bytes at offset 80
+        final topicUuidBytes = <int>[];
+        for (var i = 0; i < 37; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          topicUuidBytes.add(byte);
+        }
+        final topicUuid = String.fromCharCodes(topicUuidBytes);
+
+        final commentUuidBytes = <int>[];
+        for (var i = 40; i < 77; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          commentUuidBytes.add(byte);
+        }
+        final commentUuid = String.fromCharCodes(commentUuidBytes);
+
+        final authorFpBytes = <int>[];
+        for (var i = 80; i < 209; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          authorFpBytes.add(byte);
+        }
+        final authorFp = String.fromCharCodes(authorFpBytes);
+
+        dartEvent = FeedTopicCommentEvent(topicUuid, commentUuid, authorFp);
+        break;
+      case DnaEventType.DNA_EVENT_FEED_SUBSCRIPTIONS_SYNCED:
+        // Parse subscriptions_synced (int32 at offset 0)
+        final subscriptionsSynced = event.data[0] |
+            (event.data[1] << 8) |
+            (event.data[2] << 16) |
+            (event.data[3] << 24);
+        dartEvent = FeedSubscriptionsSyncedEvent(subscriptionsSynced);
         break;
       case DnaEventType.DNA_EVENT_ERROR:
         dartEvent = ErrorEvent(0, 'Error occurred');
@@ -3617,486 +3658,6 @@ class DnaEngine {
   }
 
   // ---------------------------------------------------------------------------
-  // FEED - CHANNELS
-  // ---------------------------------------------------------------------------
-
-  /// Get all feed channels from DHT registry
-  Future<List<FeedChannel>> getFeedChannels() async {
-    final completer = Completer<List<FeedChannel>>();
-    final localId = _nextLocalId++;
-
-    void onComplete(int requestId, int error, Pointer<dna_channel_info_t> channels,
-                    int count, Pointer<Void> userData) {
-      if (error == 0) {
-        final result = <FeedChannel>[];
-        for (var i = 0; i < count; i++) {
-          result.add(FeedChannel.fromNative((channels + i).ref));
-        }
-        if (count > 0) {
-          _bindings.dna_free_feed_channels(channels, count);
-        }
-        completer.complete(result);
-      } else {
-        completer.completeError(DnaEngineException.fromCode(error, _bindings));
-      }
-      _cleanupRequest(localId);
-    }
-
-    final callback = NativeCallable<DnaFeedChannelsCbNative>.listener(onComplete);
-    _pendingRequests[localId] = _PendingRequest(callback: callback);
-
-    final requestId = _bindings.dna_engine_get_feed_channels(
-      _engine,
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
-
-    if (requestId == 0) {
-      _cleanupRequest(localId);
-      throw DnaEngineException(-1, 'Failed to submit request');
-    }
-
-    return completer.future;
-  }
-
-  /// Create a new feed channel
-  Future<FeedChannel> createFeedChannel(String name, String description) async {
-    final completer = Completer<FeedChannel>();
-    final localId = _nextLocalId++;
-
-    final namePtr = name.toNativeUtf8();
-    final descPtr = description.toNativeUtf8();
-
-    void onComplete(int requestId, int error, Pointer<dna_channel_info_t> channel,
-                    Pointer<Void> userData) {
-      calloc.free(namePtr);
-      calloc.free(descPtr);
-
-      if (error == 0 && channel != nullptr) {
-        final result = FeedChannel.fromNative(channel.ref);
-        _bindings.dna_free_feed_channels(channel, 1);
-        completer.complete(result);
-      } else {
-        completer.completeError(DnaEngineException.fromCode(error, _bindings));
-      }
-      _cleanupRequest(localId);
-    }
-
-    final callback = NativeCallable<DnaFeedChannelCbNative>.listener(onComplete);
-    _pendingRequests[localId] = _PendingRequest(callback: callback);
-
-    final requestId = _bindings.dna_engine_create_feed_channel(
-      _engine,
-      namePtr.cast(),
-      descPtr.cast(),
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
-
-    if (requestId == 0) {
-      calloc.free(namePtr);
-      calloc.free(descPtr);
-      _cleanupRequest(localId);
-      throw DnaEngineException(-1, 'Failed to submit request');
-    }
-
-    return completer.future;
-  }
-
-  /// Initialize default feed channels (#general, #announcements, etc.)
-  Future<void> initDefaultChannels() async {
-    final completer = Completer<void>();
-    final localId = _nextLocalId++;
-
-    void onComplete(int requestId, int error, Pointer<Void> userData) {
-      if (error == 0) {
-        completer.complete();
-      } else {
-        completer.completeError(DnaEngineException.fromCode(error, _bindings));
-      }
-      _cleanupRequest(localId);
-    }
-
-    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
-    _pendingRequests[localId] = _PendingRequest(callback: callback);
-
-    final requestId = _bindings.dna_engine_init_default_channels(
-      _engine,
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
-
-    if (requestId == 0) {
-      _cleanupRequest(localId);
-      throw DnaEngineException(-1, 'Failed to submit request');
-    }
-
-    return completer.future;
-  }
-
-  // ---------------------------------------------------------------------------
-  // FEED - POSTS
-  // ---------------------------------------------------------------------------
-
-  /// Get posts for a feed channel
-  Future<List<FeedPost>> getFeedPosts(String channelId, {String? date}) async {
-    final completer = Completer<List<FeedPost>>();
-    final localId = _nextLocalId++;
-
-    final channelPtr = channelId.toNativeUtf8();
-    final datePtr = date?.toNativeUtf8() ?? nullptr;
-
-    void onComplete(int requestId, int error, Pointer<dna_post_info_t> posts,
-                    int count, Pointer<Void> userData) {
-      calloc.free(channelPtr);
-      if (date != null) calloc.free(datePtr);
-
-      if (error == 0) {
-        final result = <FeedPost>[];
-        for (var i = 0; i < count; i++) {
-          result.add(FeedPost.fromNative((posts + i).ref));
-        }
-        if (count > 0) {
-          _bindings.dna_free_feed_posts(posts, count);
-        }
-        completer.complete(result);
-      } else {
-        completer.completeError(DnaEngineException.fromCode(error, _bindings));
-      }
-      _cleanupRequest(localId);
-    }
-
-    final callback = NativeCallable<DnaFeedPostsCbNative>.listener(onComplete);
-    _pendingRequests[localId] = _PendingRequest(callback: callback);
-
-    final requestId = _bindings.dna_engine_get_feed_posts(
-      _engine,
-      channelPtr.cast(),
-      datePtr.cast(),
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
-
-    if (requestId == 0) {
-      calloc.free(channelPtr);
-      if (date != null) calloc.free(datePtr);
-      _cleanupRequest(localId);
-      throw DnaEngineException(-1, 'Failed to submit request');
-    }
-
-    return completer.future;
-  }
-
-  /// Create a new feed post
-  Future<FeedPost> createFeedPost(String channelId, String text) async {
-    final completer = Completer<FeedPost>();
-    final localId = _nextLocalId++;
-
-    final channelPtr = channelId.toNativeUtf8();
-    final textPtr = text.toNativeUtf8();
-
-    void onComplete(int requestId, int error, Pointer<dna_post_info_t> post,
-                    Pointer<Void> userData) {
-      calloc.free(channelPtr);
-      calloc.free(textPtr);
-
-      if (error == 0 && post != nullptr) {
-        final result = FeedPost.fromNative(post.ref);
-        _bindings.dna_free_feed_post(post);
-        completer.complete(result);
-      } else {
-        completer.completeError(DnaEngineException.fromCode(error, _bindings));
-      }
-      _cleanupRequest(localId);
-    }
-
-    final callback = NativeCallable<DnaFeedPostCbNative>.listener(onComplete);
-    _pendingRequests[localId] = _PendingRequest(callback: callback);
-
-    final requestId = _bindings.dna_engine_create_feed_post(
-      _engine,
-      channelPtr.cast(),
-      textPtr.cast(),
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
-
-    if (requestId == 0) {
-      calloc.free(channelPtr);
-      calloc.free(textPtr);
-      _cleanupRequest(localId);
-      throw DnaEngineException(-1, 'Failed to submit request');
-    }
-
-    return completer.future;
-  }
-
-  // ---------------------------------------------------------------------------
-  // FEED - COMMENTS
-  // ---------------------------------------------------------------------------
-
-  /// Add a comment to a post
-  Future<FeedComment> addFeedComment(String postId, String text) async {
-    final completer = Completer<FeedComment>();
-    final localId = _nextLocalId++;
-
-    final postIdPtr = postId.toNativeUtf8();
-    final textPtr = text.toNativeUtf8();
-
-    void onComplete(int requestId, int error, Pointer<dna_comment_info_t> comment,
-                    Pointer<Void> userData) {
-      calloc.free(postIdPtr);
-      calloc.free(textPtr);
-
-      if (error == 0 && comment != nullptr) {
-        final result = FeedComment.fromNative(comment.ref);
-        _bindings.dna_free_feed_comment(comment);
-        completer.complete(result);
-      } else {
-        completer.completeError(DnaEngineException.fromCode(error, _bindings));
-      }
-      _cleanupRequest(localId);
-    }
-
-    final callback = NativeCallable<DnaFeedCommentCbNative>.listener(onComplete);
-    _pendingRequests[localId] = _PendingRequest(callback: callback);
-
-    final requestId = _bindings.dna_engine_add_feed_comment(
-      _engine,
-      postIdPtr.cast(),
-      textPtr.cast(),
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
-
-    if (requestId == 0) {
-      calloc.free(postIdPtr);
-      calloc.free(textPtr);
-      _cleanupRequest(localId);
-      throw DnaEngineException(-1, 'Failed to submit request');
-    }
-
-    return completer.future;
-  }
-
-  /// Get all comments for a post
-  Future<List<FeedComment>> getFeedComments(String postId) async {
-    final completer = Completer<List<FeedComment>>();
-    final localId = _nextLocalId++;
-
-    final postIdPtr = postId.toNativeUtf8();
-
-    void onComplete(int requestId, int error, Pointer<dna_comment_info_t> comments,
-                    int count, Pointer<Void> userData) {
-      calloc.free(postIdPtr);
-
-      if (error == 0) {
-        final result = <FeedComment>[];
-        for (var i = 0; i < count; i++) {
-          result.add(FeedComment.fromNative((comments + i).ref));
-        }
-        if (count > 0) {
-          _bindings.dna_free_feed_comments(comments, count);
-        }
-        completer.complete(result);
-      } else {
-        completer.completeError(DnaEngineException.fromCode(error, _bindings));
-      }
-      _cleanupRequest(localId);
-    }
-
-    final callback = NativeCallable<DnaFeedCommentsCbNative>.listener(onComplete);
-    _pendingRequests[localId] = _PendingRequest(callback: callback);
-
-    final requestId = _bindings.dna_engine_get_feed_comments(
-      _engine,
-      postIdPtr.cast(),
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
-
-    if (requestId == 0) {
-      calloc.free(postIdPtr);
-      _cleanupRequest(localId);
-      throw DnaEngineException(-1, 'Failed to submit request');
-    }
-
-    return completer.future;
-  }
-
-  // ---------------------------------------------------------------------------
-  // FEED - VOTES
-  // ---------------------------------------------------------------------------
-
-  /// Cast a vote on a feed post (+1 for upvote, -1 for downvote)
-  Future<void> castFeedVote(String postId, int voteValue) async {
-    if (voteValue != 1 && voteValue != -1) {
-      throw DnaEngineException(-1, 'Vote value must be +1 or -1');
-    }
-
-    final completer = Completer<void>();
-    final localId = _nextLocalId++;
-
-    final postIdPtr = postId.toNativeUtf8();
-
-    void onComplete(int requestId, int error, Pointer<Void> userData) {
-      calloc.free(postIdPtr);
-
-      if (error == 0) {
-        completer.complete();
-      } else {
-        completer.completeError(DnaEngineException.fromCode(error, _bindings));
-      }
-      _cleanupRequest(localId);
-    }
-
-    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
-    _pendingRequests[localId] = _PendingRequest(callback: callback);
-
-    final requestId = _bindings.dna_engine_cast_feed_vote(
-      _engine,
-      postIdPtr.cast(),
-      voteValue,
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
-
-    if (requestId == 0) {
-      calloc.free(postIdPtr);
-      _cleanupRequest(localId);
-      throw DnaEngineException(-1, 'Failed to submit request');
-    }
-
-    return completer.future;
-  }
-
-  /// Get vote counts for a post
-  Future<FeedPost> getFeedVotes(String postId) async {
-    final completer = Completer<FeedPost>();
-    final localId = _nextLocalId++;
-
-    final postIdPtr = postId.toNativeUtf8();
-
-    void onComplete(int requestId, int error, Pointer<dna_post_info_t> post,
-                    Pointer<Void> userData) {
-      calloc.free(postIdPtr);
-
-      if (error == 0 && post != nullptr) {
-        final result = FeedPost.fromNative(post.ref);
-        _bindings.dna_free_feed_post(post);
-        completer.complete(result);
-      } else {
-        completer.completeError(DnaEngineException.fromCode(error, _bindings));
-      }
-      _cleanupRequest(localId);
-    }
-
-    final callback = NativeCallable<DnaFeedPostCbNative>.listener(onComplete);
-    _pendingRequests[localId] = _PendingRequest(callback: callback);
-
-    final requestId = _bindings.dna_engine_get_feed_votes(
-      _engine,
-      postIdPtr.cast(),
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
-
-    if (requestId == 0) {
-      calloc.free(postIdPtr);
-      _cleanupRequest(localId);
-      throw DnaEngineException(-1, 'Failed to submit request');
-    }
-
-    return completer.future;
-  }
-
-  // ---------------------------------------------------------------------------
-  // FEED - COMMENT VOTES
-  // ---------------------------------------------------------------------------
-
-  /// Cast a vote on a comment (+1 for upvote, -1 for downvote)
-  Future<void> castCommentVote(String commentId, int voteValue) async {
-    if (voteValue != 1 && voteValue != -1) {
-      throw DnaEngineException(-1, 'Vote value must be +1 or -1');
-    }
-
-    final completer = Completer<void>();
-    final localId = _nextLocalId++;
-
-    final commentIdPtr = commentId.toNativeUtf8();
-
-    void onComplete(int requestId, int error, Pointer<Void> userData) {
-      calloc.free(commentIdPtr);
-
-      if (error == 0) {
-        completer.complete();
-      } else {
-        completer.completeError(DnaEngineException.fromCode(error, _bindings));
-      }
-      _cleanupRequest(localId);
-    }
-
-    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
-    _pendingRequests[localId] = _PendingRequest(callback: callback);
-
-    final requestId = _bindings.dna_engine_cast_comment_vote(
-      _engine,
-      commentIdPtr.cast(),
-      voteValue,
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
-
-    if (requestId == 0) {
-      calloc.free(commentIdPtr);
-      _cleanupRequest(localId);
-      throw DnaEngineException(-1, 'Failed to submit request');
-    }
-
-    return completer.future;
-  }
-
-  /// Get vote counts for a comment
-  Future<FeedComment> getCommentVotes(String commentId) async {
-    final completer = Completer<FeedComment>();
-    final localId = _nextLocalId++;
-
-    final commentIdPtr = commentId.toNativeUtf8();
-
-    void onComplete(int requestId, int error, Pointer<dna_comment_info_t> comment,
-                    Pointer<Void> userData) {
-      calloc.free(commentIdPtr);
-
-      if (error == 0 && comment != nullptr) {
-        final result = FeedComment.fromNative(comment.ref);
-        _bindings.dna_free_feed_comment(comment);
-        completer.complete(result);
-      } else {
-        completer.completeError(DnaEngineException.fromCode(error, _bindings));
-      }
-      _cleanupRequest(localId);
-    }
-
-    final callback = NativeCallable<DnaFeedCommentCbNative>.listener(onComplete);
-    _pendingRequests[localId] = _PendingRequest(callback: callback);
-
-    final requestId = _bindings.dna_engine_get_comment_votes(
-      _engine,
-      commentIdPtr.cast(),
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
-
-    if (requestId == 0) {
-      calloc.free(commentIdPtr);
-      _cleanupRequest(localId);
-      throw DnaEngineException(-1, 'Failed to submit request');
-    }
-
-    return completer.future;
-  }
-
-  // ---------------------------------------------------------------------------
   // OFFLINE MESSAGE POLLING
   // ---------------------------------------------------------------------------
 
@@ -5174,6 +4735,514 @@ class DnaEngine {
 
     if (requestId == 0) {
       calloc.free(uuidPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
+  // FEED v2 - Topics, Comments, Subscriptions (v0.6.91+)
+  // ---------------------------------------------------------------------------
+
+  /// Create a new feed topic
+  ///
+  /// [title] - Topic title (max 200 chars)
+  /// [body] - Topic body (max 4000 chars)
+  /// [category] - Category name (e.g., "general", "technology")
+  /// [tags] - Optional list of tags (max 5 tags, 32 chars each)
+  ///
+  /// Returns the created topic on success.
+  Future<FeedTopic> feedCreateTopic(
+    String title,
+    String body,
+    String category, {
+    List<String> tags = const [],
+  }) async {
+    final completer = Completer<FeedTopic>();
+    final localId = _nextLocalId++;
+
+    final titlePtr = title.toNativeUtf8();
+    final bodyPtr = body.toNativeUtf8();
+    final categoryPtr = category.toNativeUtf8();
+
+    // Convert tags to JSON array
+    final tagsJson = tags.isEmpty ? '[]' : '["${tags.join('","')}"]';
+    final tagsPtr = tagsJson.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<dna_feed_topic_info_t> topic,
+                    Pointer<Void> userData) {
+      calloc.free(titlePtr);
+      calloc.free(bodyPtr);
+      calloc.free(categoryPtr);
+      calloc.free(tagsPtr);
+
+      if (error == 0 && topic != nullptr) {
+        final result = FeedTopic.fromNative(topic.ref);
+        _bindings.dna_free_feed_topic(topic);
+        completer.complete(result);
+      } else {
+        if (topic != nullptr) {
+          _bindings.dna_free_feed_topic(topic);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaFeedTopicCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_feed_create_topic(
+      _engine,
+      titlePtr.cast(),
+      bodyPtr.cast(),
+      categoryPtr.cast(),
+      tagsPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(titlePtr);
+      calloc.free(bodyPtr);
+      calloc.free(categoryPtr);
+      calloc.free(tagsPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get a specific feed topic by UUID
+  Future<FeedTopic> feedGetTopic(String uuid) async {
+    final completer = Completer<FeedTopic>();
+    final localId = _nextLocalId++;
+
+    final uuidPtr = uuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<dna_feed_topic_info_t> topic,
+                    Pointer<Void> userData) {
+      calloc.free(uuidPtr);
+
+      if (error == 0 && topic != nullptr) {
+        final result = FeedTopic.fromNative(topic.ref);
+        _bindings.dna_free_feed_topic(topic);
+        completer.complete(result);
+      } else {
+        if (topic != nullptr) {
+          _bindings.dna_free_feed_topic(topic);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaFeedTopicCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_feed_get_topic(
+      _engine,
+      uuidPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(uuidPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Delete a feed topic (soft delete - author only)
+  Future<void> feedDeleteTopic(String uuid) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final uuidPtr = uuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(uuidPtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_feed_delete_topic(
+      _engine,
+      uuidPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(uuidPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Add a comment to a feed topic
+  ///
+  /// [topicUuid] - UUID of the topic to comment on
+  /// [body] - Comment text (max 2000 chars)
+  /// [mentions] - Optional list of fingerprints to @mention
+  ///
+  /// Returns the created comment on success.
+  Future<FeedComment> feedAddComment(
+    String topicUuid,
+    String body, {
+    List<String> mentions = const [],
+  }) async {
+    final completer = Completer<FeedComment>();
+    final localId = _nextLocalId++;
+
+    final topicPtr = topicUuid.toNativeUtf8();
+    final bodyPtr = body.toNativeUtf8();
+
+    // Convert mentions to JSON array
+    final mentionsJson = mentions.isEmpty ? '[]' : '["${mentions.join('","')}"]';
+    final mentionsPtr = mentionsJson.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<dna_feed_comment_info_t> comment,
+                    Pointer<Void> userData) {
+      calloc.free(topicPtr);
+      calloc.free(bodyPtr);
+      calloc.free(mentionsPtr);
+
+      if (error == 0 && comment != nullptr) {
+        final result = FeedComment.fromNative(comment.ref);
+        _bindings.dna_free_feed_comment(comment);
+        completer.complete(result);
+      } else {
+        if (comment != nullptr) {
+          _bindings.dna_free_feed_comment(comment);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaFeedCommentCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_feed_add_comment(
+      _engine,
+      topicPtr.cast(),
+      bodyPtr.cast(),
+      mentionsPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(topicPtr);
+      calloc.free(bodyPtr);
+      calloc.free(mentionsPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get all comments for a feed topic
+  Future<List<FeedComment>> feedGetComments(String topicUuid) async {
+    final completer = Completer<List<FeedComment>>();
+    final localId = _nextLocalId++;
+
+    final topicPtr = topicUuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<dna_feed_comment_info_t> comments,
+                    int count, Pointer<Void> userData) {
+      calloc.free(topicPtr);
+
+      if (error == 0) {
+        final result = <FeedComment>[];
+        for (var i = 0; i < count; i++) {
+          result.add(FeedComment.fromNative(comments[i]));
+        }
+        if (comments != nullptr && count > 0) {
+          _bindings.dna_free_feed_comments(comments, count);
+        }
+        completer.complete(result);
+      } else {
+        if (comments != nullptr && count > 0) {
+          _bindings.dna_free_feed_comments(comments, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaFeedCommentsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_feed_get_comments(
+      _engine,
+      topicPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(topicPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get feed topics by category
+  ///
+  /// [category] - Category name (e.g., "general", "technology")
+  /// [daysBack] - Number of days to look back (default 7)
+  Future<List<FeedTopic>> feedGetCategory(String category, {int daysBack = 7}) async {
+    final completer = Completer<List<FeedTopic>>();
+    final localId = _nextLocalId++;
+
+    final categoryPtr = category.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<dna_feed_topic_info_t> topics,
+                    int count, Pointer<Void> userData) {
+      calloc.free(categoryPtr);
+
+      if (error == 0) {
+        final result = <FeedTopic>[];
+        for (var i = 0; i < count; i++) {
+          result.add(FeedTopic.fromNative(topics[i]));
+        }
+        if (topics != nullptr && count > 0) {
+          _bindings.dna_free_feed_topics(topics, count);
+        }
+        completer.complete(result);
+      } else {
+        if (topics != nullptr && count > 0) {
+          _bindings.dna_free_feed_topics(topics, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaFeedTopicsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_feed_get_category(
+      _engine,
+      categoryPtr.cast(),
+      daysBack,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(categoryPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get all recent feed topics across all categories
+  ///
+  /// [daysBack] - Number of days to look back (default 7)
+  Future<List<FeedTopic>> feedGetAll({int daysBack = 7}) async {
+    final completer = Completer<List<FeedTopic>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<dna_feed_topic_info_t> topics,
+                    int count, Pointer<Void> userData) {
+      if (error == 0) {
+        final result = <FeedTopic>[];
+        for (var i = 0; i < count; i++) {
+          result.add(FeedTopic.fromNative(topics[i]));
+        }
+        if (topics != nullptr && count > 0) {
+          _bindings.dna_free_feed_topics(topics, count);
+        }
+        completer.complete(result);
+      } else {
+        if (topics != nullptr && count > 0) {
+          _bindings.dna_free_feed_topics(topics, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaFeedTopicsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_feed_get_all(
+      _engine,
+      daysBack,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
+  // FEED v2 - Subscriptions (v0.6.91+)
+  // ---------------------------------------------------------------------------
+
+  /// Subscribe to a feed topic (receive notifications for new comments)
+  ///
+  /// Returns true on success, false if already subscribed.
+  bool feedSubscribe(String topicUuid) {
+    final uuidPtr = topicUuid.toNativeUtf8();
+    try {
+      final result = _bindings.dna_engine_feed_subscribe(_engine, uuidPtr.cast());
+      return result == 0;
+    } finally {
+      calloc.free(uuidPtr);
+    }
+  }
+
+  /// Unsubscribe from a feed topic
+  ///
+  /// Returns true on success, false if not subscribed.
+  bool feedUnsubscribe(String topicUuid) {
+    final uuidPtr = topicUuid.toNativeUtf8();
+    try {
+      final result = _bindings.dna_engine_feed_unsubscribe(_engine, uuidPtr.cast());
+      return result == 0;
+    } finally {
+      calloc.free(uuidPtr);
+    }
+  }
+
+  /// Check if subscribed to a feed topic
+  bool feedIsSubscribed(String topicUuid) {
+    final uuidPtr = topicUuid.toNativeUtf8();
+    try {
+      final result = _bindings.dna_engine_feed_is_subscribed(_engine, uuidPtr.cast());
+      return result != 0;
+    } finally {
+      calloc.free(uuidPtr);
+    }
+  }
+
+  /// Get all feed subscriptions
+  Future<List<FeedSubscription>> feedGetSubscriptions() async {
+    final completer = Completer<List<FeedSubscription>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<dna_feed_subscription_info_t> subs,
+                    int count, Pointer<Void> userData) {
+      if (error == 0) {
+        final result = <FeedSubscription>[];
+        for (var i = 0; i < count; i++) {
+          result.add(FeedSubscription.fromNative(subs[i]));
+        }
+        if (subs != nullptr && count > 0) {
+          _bindings.dna_free_feed_subscriptions(subs, count);
+        }
+        completer.complete(result);
+      } else {
+        if (subs != nullptr && count > 0) {
+          _bindings.dna_free_feed_subscriptions(subs, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaFeedSubscriptionsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_feed_get_subscriptions(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Sync feed subscriptions to DHT (for multi-device)
+  Future<void> feedSyncSubscriptionsToDht() async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_feed_sync_subscriptions_to_dht(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Sync feed subscriptions from DHT (for multi-device)
+  Future<void> feedSyncSubscriptionsFromDht() async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_feed_sync_subscriptions_from_dht(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit request');
     }

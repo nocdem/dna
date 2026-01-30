@@ -769,3 +769,358 @@ void dna_free_feed_comments(dna_feed_comment_info_t *comments, int count) {
     }
     free(comments);
 }
+
+/* ============================================================================
+ * FEED v2 SUBSCRIPTIONS - v0.6.91+
+ *
+ * Local SQLite storage + DHT sync for multi-device support.
+ * ============================================================================ */
+
+#include "database/feed_subscriptions_db.h"
+#include "dht/shared/dht_feed_subscriptions.h"
+#include "dht/core/dht_listen.h"
+
+/* ============================================================================
+ * SUBSCRIPTION TASK HANDLERS
+ * ============================================================================ */
+
+void dna_handle_feed_get_subscriptions(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
+
+    feed_subscription_t *subs = NULL;
+    int count = 0;
+
+    int ret = feed_subscriptions_db_get_all(&subs, &count);
+    if (ret != 0) {
+        task->callback.feed_subscriptions(task->request_id, DNA_ERROR_INTERNAL,
+                                          NULL, 0, task->user_data);
+        return;
+    }
+
+    if (count == 0) {
+        task->callback.feed_subscriptions(task->request_id, DNA_OK,
+                                          NULL, 0, task->user_data);
+        return;
+    }
+
+    /* Convert to public API format */
+    dna_feed_subscription_info_t *info = calloc(count, sizeof(dna_feed_subscription_info_t));
+    if (!info) {
+        feed_subscriptions_db_free(subs, count);
+        task->callback.feed_subscriptions(task->request_id, DNA_ERROR_INTERNAL,
+                                          NULL, 0, task->user_data);
+        return;
+    }
+
+    for (int i = 0; i < count; i++) {
+        strncpy(info[i].topic_uuid, subs[i].topic_uuid, 36);
+        info[i].subscribed_at = subs[i].subscribed_at;
+        info[i].last_synced = subs[i].last_synced;
+    }
+
+    feed_subscriptions_db_free(subs, count);
+    task->callback.feed_subscriptions(task->request_id, DNA_OK, info, count, task->user_data);
+}
+
+void dna_handle_feed_sync_subscriptions_to_dht(dna_engine_t *engine, dna_task_t *task) {
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NETWORK, task->user_data);
+        return;
+    }
+
+    if (!engine->fingerprint[0]) {
+        task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY, task->user_data);
+        return;
+    }
+
+    /* Get local subscriptions */
+    feed_subscription_t *subs = NULL;
+    int count = 0;
+    int ret = feed_subscriptions_db_get_all(&subs, &count);
+    if (ret != 0) {
+        task->callback.completion(task->request_id, DNA_ERROR_INTERNAL, task->user_data);
+        return;
+    }
+
+    /* Convert to DHT format */
+    dht_feed_subscription_entry_t *entries = NULL;
+    if (count > 0) {
+        entries = calloc(count, sizeof(dht_feed_subscription_entry_t));
+        if (!entries) {
+            feed_subscriptions_db_free(subs, count);
+            task->callback.completion(task->request_id, DNA_ERROR_INTERNAL, task->user_data);
+            return;
+        }
+        for (int i = 0; i < count; i++) {
+            strncpy(entries[i].topic_uuid, subs[i].topic_uuid, 36);
+            entries[i].subscribed_at = subs[i].subscribed_at;
+            entries[i].last_synced = subs[i].last_synced;
+        }
+    }
+    feed_subscriptions_db_free(subs, count);
+
+    /* Sync to DHT */
+    ret = dht_feed_subscriptions_sync_to_dht(dht, engine->fingerprint, entries, (size_t)count);
+    if (entries) free(entries);
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sync subscriptions to DHT: %d", ret);
+        task->callback.completion(task->request_id, DNA_ERROR_INTERNAL, task->user_data);
+        return;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Synced %d subscriptions to DHT", count);
+    task->callback.completion(task->request_id, DNA_OK, task->user_data);
+}
+
+void dna_handle_feed_sync_subscriptions_from_dht(dna_engine_t *engine, dna_task_t *task) {
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NETWORK, task->user_data);
+        return;
+    }
+
+    if (!engine->fingerprint[0]) {
+        task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY, task->user_data);
+        return;
+    }
+
+    /* Fetch from DHT */
+    dht_feed_subscription_entry_t *entries = NULL;
+    size_t count = 0;
+    int ret = dht_feed_subscriptions_sync_from_dht(dht, engine->fingerprint, &entries, &count);
+
+    if (ret == -2) {
+        /* Not found - no subscriptions in DHT yet */
+        QGP_LOG_INFO(LOG_TAG, "No subscriptions in DHT");
+        task->callback.completion(task->request_id, DNA_OK, task->user_data);
+        return;
+    }
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sync subscriptions from DHT: %d", ret);
+        task->callback.completion(task->request_id, DNA_ERROR_INTERNAL, task->user_data);
+        return;
+    }
+
+    /* Merge with local (add any missing) */
+    int added = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (!feed_subscriptions_db_is_subscribed(entries[i].topic_uuid)) {
+            /* Add to local DB with original timestamp */
+            /* Note: feed_subscriptions_db_subscribe sets current time, so we may want
+               a different internal function. For now, just subscribe. */
+            int add_ret = feed_subscriptions_db_subscribe(entries[i].topic_uuid);
+            if (add_ret == 0) {
+                added++;
+            }
+        }
+    }
+
+    dht_feed_subscriptions_free(entries, count);
+
+    QGP_LOG_INFO(LOG_TAG, "Synced from DHT: %zu total, %d new", count, added);
+
+    /* Fire sync event */
+    dna_event_t event = {0};
+    event.type = DNA_EVENT_FEED_SUBSCRIPTIONS_SYNCED;
+    event.data.feed_subscriptions_synced.subscriptions_synced = added;
+    dna_dispatch_event(engine, &event);
+
+    task->callback.completion(task->request_id, DNA_OK, task->user_data);
+}
+
+/* ============================================================================
+ * SUBSCRIPTION PUBLIC API
+ * ============================================================================ */
+
+int dna_engine_feed_subscribe(dna_engine_t *engine, const char *topic_uuid) {
+    if (!engine || !topic_uuid) return -1;
+    if (strlen(topic_uuid) < 36) return -1;
+
+    return feed_subscriptions_db_subscribe(topic_uuid);
+}
+
+int dna_engine_feed_unsubscribe(dna_engine_t *engine, const char *topic_uuid) {
+    if (!engine || !topic_uuid) return -1;
+    if (strlen(topic_uuid) < 36) return -1;
+
+    return feed_subscriptions_db_unsubscribe(topic_uuid);
+}
+
+int dna_engine_feed_is_subscribed(dna_engine_t *engine, const char *topic_uuid) {
+    if (!engine || !topic_uuid) return 0;
+    if (strlen(topic_uuid) < 36) return 0;
+
+    return feed_subscriptions_db_is_subscribed(topic_uuid) ? 1 : 0;
+}
+
+dna_request_id_t dna_engine_feed_get_subscriptions(
+    dna_engine_t *engine,
+    dna_feed_subscriptions_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    dna_task_callback_t cb = {0};
+    cb.feed_subscriptions = callback;
+    return dna_submit_task(engine, TASK_FEED_GET_SUBSCRIPTIONS, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_feed_sync_subscriptions_to_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    dna_task_callback_t cb = {0};
+    cb.completion = callback;
+    return dna_submit_task(engine, TASK_FEED_SYNC_SUBSCRIPTIONS_TO_DHT, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_feed_sync_subscriptions_from_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    dna_task_callback_t cb = {0};
+    cb.completion = callback;
+    return dna_submit_task(engine, TASK_FEED_SYNC_SUBSCRIPTIONS_FROM_DHT, &params, cb, user_data);
+}
+
+/* ============================================================================
+ * SUBSCRIPTION LISTENERS (Real-time comment updates)
+ * ============================================================================ */
+
+/* Listener context for topic comments */
+typedef struct {
+    dna_engine_t *engine;
+    char topic_uuid[37];
+} feed_topic_listener_ctx_t;
+
+/**
+ * DHT listen callback - fires DNA_EVENT_FEED_TOPIC_COMMENT when new comments
+ */
+static bool feed_topic_listen_callback(
+    const uint8_t *value,
+    size_t value_len,
+    bool expired,
+    void *user_data)
+{
+    feed_topic_listener_ctx_t *ctx = (feed_topic_listener_ctx_t *)user_data;
+    if (!ctx || !ctx->engine) {
+        return false;  /* Stop listening */
+    }
+
+    /* Only fire event for new values, not expirations */
+    if (!expired && value && value_len > 0) {
+        QGP_LOG_INFO(LOG_TAG, "New comment on topic %.8s...", ctx->topic_uuid);
+
+        /* Fire event - we don't parse the comment here, just notify UI to refresh */
+        dna_event_t event = {0};
+        event.type = DNA_EVENT_FEED_TOPIC_COMMENT;
+        strncpy(event.data.feed_topic_comment.topic_uuid, ctx->topic_uuid, 36);
+        /* comment_uuid and author_fingerprint would require parsing - leave empty for now */
+
+        dna_dispatch_event(ctx->engine, &event);
+    }
+
+    return true;  /* Continue listening */
+}
+
+size_t dna_engine_feed_listen_topic_comments(dna_engine_t *engine, const char *topic_uuid) {
+    if (!engine || !topic_uuid || strlen(topic_uuid) < 36) {
+        return 0;
+    }
+
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        return 0;
+    }
+
+    /* Generate comments key */
+    char comments_key[256];
+    snprintf(comments_key, sizeof(comments_key), "dna:feeds:topic:%s:comments", topic_uuid);
+
+    /* Allocate listener context */
+    feed_topic_listener_ctx_t *ctx = calloc(1, sizeof(feed_topic_listener_ctx_t));
+    if (!ctx) {
+        return 0;
+    }
+    ctx->engine = engine;
+    strncpy(ctx->topic_uuid, topic_uuid, 36);
+
+    /* Start DHT listener */
+    size_t token = dht_listen(dht, (const uint8_t *)comments_key, strlen(comments_key),
+                              feed_topic_listen_callback, ctx);
+
+    if (token == 0) {
+        free(ctx);
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Started comment listener for topic %.8s... (token=%zu)",
+                 topic_uuid, token);
+    return token;
+}
+
+void dna_engine_feed_cancel_topic_listener(dna_engine_t *engine, const char *topic_uuid) {
+    if (!engine || !topic_uuid) return;
+
+    /* Note: We don't track listener tokens by topic_uuid currently.
+       For a full implementation, we'd need a hash map of topic_uuid -> token.
+       For now, this is a placeholder. */
+    QGP_LOG_WARN(LOG_TAG, "feed_cancel_topic_listener not fully implemented yet");
+    (void)topic_uuid;
+}
+
+int dna_engine_feed_listen_all_subscriptions(dna_engine_t *engine) {
+    if (!engine) return -1;
+
+    feed_subscription_t *subs = NULL;
+    int count = 0;
+
+    int ret = feed_subscriptions_db_get_all(&subs, &count);
+    if (ret != 0 || count == 0) {
+        return 0;
+    }
+
+    int started = 0;
+    for (int i = 0; i < count; i++) {
+        size_t token = dna_engine_feed_listen_topic_comments(engine, subs[i].topic_uuid);
+        if (token > 0) {
+            started++;
+        }
+    }
+
+    feed_subscriptions_db_free(subs, count);
+
+    QGP_LOG_INFO(LOG_TAG, "Started %d topic comment listeners", started);
+    return started;
+}
+
+void dna_engine_feed_cancel_all_topic_listeners(dna_engine_t *engine) {
+    if (!engine) return;
+
+    /* Note: We'd need to track all active listener tokens to cancel them.
+       For a full implementation, we'd iterate through stored tokens and cancel.
+       For now, this is a placeholder. */
+    QGP_LOG_WARN(LOG_TAG, "feed_cancel_all_topic_listeners not fully implemented yet");
+}
+
+/* ============================================================================
+ * SUBSCRIPTION MEMORY CLEANUP
+ * ============================================================================ */
+
+void dna_free_feed_subscriptions(dna_feed_subscription_info_t *subscriptions, int count) {
+    (void)count;  /* No dynamically allocated members */
+    if (subscriptions) {
+        free(subscriptions);
+    }
+}

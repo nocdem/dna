@@ -1,274 +1,294 @@
-// Feed Provider - Feed state management
+// Feed Provider v2 - Topic-based feeds with categories and subscriptions
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
 import '../ffi/dna_engine.dart';
 import 'engine_provider.dart';
 
-/// Number of days of posts to fetch
-const int _feedDaysToFetch = 7;
+// =============================================================================
+// FEED TOPICS
+// =============================================================================
 
-/// Generate date strings for the last N days (YYYYMMDD format - no dashes)
-List<String> _getRecentDates(int days) {
-  final formatter = DateFormat('yyyyMMdd');
-  final now = DateTime.now();
-  return List.generate(days, (i) => formatter.format(now.subtract(Duration(days: i))));
+/// Selected category for feed listing (null = all categories)
+final feedCategoryProvider = StateProvider<String?>((ref) => null);
+
+/// Days back to look for topics (default 7)
+final feedDaysBackProvider = StateProvider<int>((ref) => 7);
+
+/// Feed topics provider - lists topics by category or all
+final feedTopicsProvider = AsyncNotifierProvider<FeedTopicsNotifier, List<FeedTopic>>(
+  FeedTopicsNotifier.new,
+);
+
+class FeedTopicsNotifier extends AsyncNotifier<List<FeedTopic>> {
+  @override
+  Future<List<FeedTopic>> build() async {
+    final identityLoaded = ref.watch(identityLoadedProvider);
+    if (!identityLoaded) {
+      return [];
+    }
+
+    final category = ref.watch(feedCategoryProvider);
+    final daysBack = ref.watch(feedDaysBackProvider);
+
+    final engine = await ref.watch(engineProvider.future);
+
+    if (category == null) {
+      return engine.feedGetAll(daysBack: daysBack);
+    } else {
+      return engine.feedGetCategory(category, daysBack: daysBack);
+    }
+  }
+
+  Future<void> refresh() async {
+    state = const AsyncValue.loading();
+    state = await AsyncValue.guard(() async {
+      final category = ref.read(feedCategoryProvider);
+      final daysBack = ref.read(feedDaysBackProvider);
+      final engine = await ref.read(engineProvider.future);
+
+      if (category == null) {
+        return engine.feedGetAll(daysBack: daysBack);
+      } else {
+        return engine.feedGetCategory(category, daysBack: daysBack);
+      }
+    });
+  }
+
+  /// Create a new topic
+  Future<FeedTopic> createTopic(
+    String title,
+    String body,
+    String category, {
+    List<String> tags = const [],
+  }) async {
+    final engine = await ref.read(engineProvider.future);
+    final topic = await engine.feedCreateTopic(title, body, category, tags: tags);
+    await refresh();
+    return topic;
+  }
+
+  /// Delete a topic (soft delete - author only)
+  Future<void> deleteTopic(String uuid) async {
+    final engine = await ref.read(engineProvider.future);
+    await engine.feedDeleteTopic(uuid);
+    await refresh();
+  }
 }
 
 // =============================================================================
-// CHANNEL PROVIDERS
+// TOPIC DETAIL (single topic with comments)
 // =============================================================================
 
-/// Feed channels list provider
-final feedChannelsProvider = AsyncNotifierProvider<FeedChannelsNotifier, List<FeedChannel>>(
-  FeedChannelsNotifier.new,
+/// Selected topic UUID for detail view
+final selectedTopicUuidProvider = StateProvider<String?>((ref) => null);
+
+/// Selected topic detail provider
+final selectedTopicProvider = AsyncNotifierProvider<SelectedTopicNotifier, FeedTopic?>(
+  SelectedTopicNotifier.new,
 );
 
-class FeedChannelsNotifier extends AsyncNotifier<List<FeedChannel>> {
+class SelectedTopicNotifier extends AsyncNotifier<FeedTopic?> {
   @override
-  Future<List<FeedChannel>> build() async {
+  Future<FeedTopic?> build() async {
+    final uuid = ref.watch(selectedTopicUuidProvider);
+    if (uuid == null) {
+      return null;
+    }
+
+    final identityLoaded = ref.watch(identityLoadedProvider);
+    if (!identityLoaded) {
+      return null;
+    }
+
+    final engine = await ref.watch(engineProvider.future);
+    try {
+      return await engine.feedGetTopic(uuid);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  Future<void> refresh() async {
+    final uuid = ref.read(selectedTopicUuidProvider);
+    if (uuid == null) return;
+
+    state = const AsyncValue.loading();
+    state = await AsyncValue.guard(() async {
+      final engine = await ref.read(engineProvider.future);
+      return engine.feedGetTopic(uuid);
+    });
+  }
+}
+
+/// Topic comments provider - keyed by topic UUID
+final topicCommentsProvider = AsyncNotifierProviderFamily<TopicCommentsNotifier, List<FeedComment>, String>(
+  TopicCommentsNotifier.new,
+);
+
+class TopicCommentsNotifier extends FamilyAsyncNotifier<List<FeedComment>, String> {
+  @override
+  Future<List<FeedComment>> build(String arg) async {
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
       return [];
     }
 
     final engine = await ref.watch(engineProvider.future);
-    final channels = await engine.getFeedChannels();
-
-    // Sort by last activity (most recent first)
-    channels.sort((a, b) => b.lastActivity.compareTo(a.lastActivity));
-    return channels;
+    return engine.feedGetComments(arg);
   }
 
   Future<void> refresh() async {
     state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
-      final channels = await engine.getFeedChannels();
-      channels.sort((a, b) => b.lastActivity.compareTo(a.lastActivity));
-      return channels;
+      return engine.feedGetComments(arg);
     });
   }
 
-  Future<FeedChannel> createChannel(String name, String description) async {
+  /// Add a comment to this topic
+  Future<FeedComment> addComment(String body, {List<String> mentions = const []}) async {
     final engine = await ref.read(engineProvider.future);
-    final channel = await engine.createFeedChannel(name, description);
-
-    // Optimistically add to local state (DHT propagation may take time)
-    final currentChannels = state.valueOrNull ?? [];
-    final updatedChannels = [channel, ...currentChannels];
-    updatedChannels.sort((a, b) => b.lastActivity.compareTo(a.lastActivity));
-    state = AsyncValue.data(updatedChannels);
-
-    return channel;
-  }
-
-  Future<void> initDefaultChannels() async {
-    final engine = await ref.read(engineProvider.future);
-    await engine.initDefaultChannels();
-    await refresh();
-  }
-}
-
-/// Currently selected channel
-final selectedChannelProvider = StateProvider<FeedChannel?>((ref) => null);
-
-// =============================================================================
-// POSTS PROVIDERS
-// =============================================================================
-
-/// Posts for selected channel
-final channelPostsProvider = AsyncNotifierProviderFamily<ChannelPostsNotifier, List<FeedPost>, String>(
-  ChannelPostsNotifier.new,
-);
-
-class ChannelPostsNotifier extends FamilyAsyncNotifier<List<FeedPost>, String> {
-  @override
-  Future<List<FeedPost>> build(String channelId) async {
-    if (channelId.isEmpty) {
-      return [];
-    }
-
-    final engine = await ref.watch(engineProvider.future);
-    final posts = await _fetchPostsFromMultipleDays(engine, channelId);
-
-    // Load votes for each post (like ImGui does)
-    final postsWithVotes = await _loadVotesForPosts(engine, posts);
-
-    // Sort by updated timestamp (most recent activity first)
-    postsWithVotes.sort((a, b) => b.updated.compareTo(a.updated));
-    return postsWithVotes;
-  }
-
-  /// Fetch posts from the last N days and merge/deduplicate
-  Future<List<FeedPost>> _fetchPostsFromMultipleDays(DnaEngine engine, String channelId) async {
-    final dates = _getRecentDates(_feedDaysToFetch);
-    final allPosts = <FeedPost>[];
-    final seenIds = <String>{};
-
-    for (final date in dates) {
-      try {
-        final posts = await engine.getFeedPosts(channelId, date: date);
-        for (final post in posts) {
-          if (!seenIds.contains(post.postId)) {
-            seenIds.add(post.postId);
-            allPosts.add(post);
-          }
-        }
-      } catch (e) {
-        // Skip days with no posts
-      }
-    }
-
-    return allPosts;
-  }
-
-  /// Load vote counts for each post from DHT
-  Future<List<FeedPost>> _loadVotesForPosts(DnaEngine engine, List<FeedPost> posts) async {
-    final result = <FeedPost>[];
-    for (final post in posts) {
-      try {
-        final voteData = await engine.getFeedVotes(post.postId);
-        result.add(post.copyWith(
-          upvotes: voteData.upvotes,
-          downvotes: voteData.downvotes,
-          userVote: voteData.userVote,
-        ));
-      } catch (e) {
-        // Keep original if vote fetch fails
-        result.add(post);
-      }
-    }
-    return result;
-  }
-
-  Future<void> refresh() async {
-    state = const AsyncValue.loading();
-    state = await AsyncValue.guard(() async {
-      final engine = await ref.read(engineProvider.future);
-      final posts = await _fetchPostsFromMultipleDays(engine, arg);
-      final postsWithVotes = await _loadVotesForPosts(engine, posts);
-      postsWithVotes.sort((a, b) => b.updated.compareTo(a.updated));
-      return postsWithVotes;
-    });
-  }
-
-  Future<FeedPost> createPost(String text) async {
-    final engine = await ref.read(engineProvider.future);
-    final post = await engine.createFeedPost(arg, text);
-    await refresh();
-    return post;
-  }
-}
-
-// =============================================================================
-// COMMENTS PROVIDERS
-// =============================================================================
-
-/// Comments for a specific post
-final postCommentsProvider = AsyncNotifierProviderFamily<PostCommentsNotifier, List<FeedComment>, String>(
-  PostCommentsNotifier.new,
-);
-
-class PostCommentsNotifier extends FamilyAsyncNotifier<List<FeedComment>, String> {
-  @override
-  Future<List<FeedComment>> build(String postId) async {
-    if (postId.isEmpty) {
-      return [];
-    }
-
-    final engine = await ref.watch(engineProvider.future);
-    final comments = await engine.getFeedComments(postId);
-
-    // Load votes for each comment
-    final commentsWithVotes = await _loadVotesForComments(engine, comments);
-
-    // Sort by timestamp (oldest first for chronological view)
-    commentsWithVotes.sort((a, b) => a.timestamp.compareTo(b.timestamp));
-    return commentsWithVotes;
-  }
-
-  /// Load vote counts for each comment from DHT
-  Future<List<FeedComment>> _loadVotesForComments(DnaEngine engine, List<FeedComment> comments) async {
-    final result = <FeedComment>[];
-    for (final comment in comments) {
-      try {
-        final voteData = await engine.getCommentVotes(comment.commentId);
-        result.add(comment.copyWith(
-          upvotes: voteData.upvotes,
-          downvotes: voteData.downvotes,
-          userVote: voteData.userVote,
-        ));
-      } catch (e) {
-        // Keep original if vote fetch fails
-        result.add(comment);
-      }
-    }
-    return result;
-  }
-
-  Future<void> refresh() async {
-    state = const AsyncValue.loading();
-    state = await AsyncValue.guard(() async {
-      final engine = await ref.read(engineProvider.future);
-      final comments = await engine.getFeedComments(arg);
-      final commentsWithVotes = await _loadVotesForComments(engine, comments);
-      commentsWithVotes.sort((a, b) => a.timestamp.compareTo(b.timestamp));
-      return commentsWithVotes;
-    });
-  }
-
-  Future<FeedComment> addComment(String text) async {
-    final engine = await ref.read(engineProvider.future);
-    final comment = await engine.addFeedComment(arg, text);
+    final comment = await engine.feedAddComment(arg, body, mentions: mentions);
     await refresh();
     return comment;
   }
 }
 
-/// Post ID currently being commented on (null = not commenting)
-final commentingOnPostProvider = StateProvider<String?>((ref) => null);
-
-/// Comment text input state
-final commentTextProvider = StateProvider<String>((ref) => '');
-
-// =============================================================================
-// VOTING PROVIDERS
-// =============================================================================
-
-/// Post currently being voted on (null = not voting)
-final votingPostProvider = StateProvider<String?>((ref) => null);
-
-/// Comment currently being voted on (null = not voting)
-final votingCommentProvider = StateProvider<String?>((ref) => null);
-
-/// Cast a vote on a post
-final castPostVoteProvider = FutureProvider.family<void, ({String postId, int value})>((ref, params) async {
-  final engine = await ref.read(engineProvider.future);
-  await engine.castFeedVote(params.postId, params.value);
+/// Selected topic comments provider (convenience wrapper)
+final selectedTopicCommentsProvider = Provider<AsyncValue<List<FeedComment>>>((ref) {
+  final uuid = ref.watch(selectedTopicUuidProvider);
+  if (uuid == null) {
+    return const AsyncValue.data([]);
+  }
+  return ref.watch(topicCommentsProvider(uuid));
 });
 
-/// Cast a vote on a comment
-final castCommentVoteProvider = FutureProvider.family<void, ({String commentId, int value})>((ref, params) async {
-  final engine = await ref.read(engineProvider.future);
-  await engine.castCommentVote(params.commentId, params.value);
+// =============================================================================
+// FEED SUBSCRIPTIONS
+// =============================================================================
+
+/// Feed subscriptions provider
+final feedSubscriptionsProvider = AsyncNotifierProvider<FeedSubscriptionsNotifier, List<FeedSubscription>>(
+  FeedSubscriptionsNotifier.new,
+);
+
+class FeedSubscriptionsNotifier extends AsyncNotifier<List<FeedSubscription>> {
+  @override
+  Future<List<FeedSubscription>> build() async {
+    final identityLoaded = ref.watch(identityLoadedProvider);
+    if (!identityLoaded) {
+      return [];
+    }
+
+    final engine = await ref.watch(engineProvider.future);
+    return engine.feedGetSubscriptions();
+  }
+
+  Future<void> refresh() async {
+    state = const AsyncValue.loading();
+    state = await AsyncValue.guard(() async {
+      final engine = await ref.read(engineProvider.future);
+      return engine.feedGetSubscriptions();
+    });
+  }
+
+  /// Subscribe to a topic
+  Future<bool> subscribe(String topicUuid) async {
+    final engine = await ref.read(engineProvider.future);
+    final result = engine.feedSubscribe(topicUuid);
+    if (result) {
+      await refresh();
+    }
+    return result;
+  }
+
+  /// Unsubscribe from a topic
+  Future<bool> unsubscribe(String topicUuid) async {
+    final engine = await ref.read(engineProvider.future);
+    final result = engine.feedUnsubscribe(topicUuid);
+    if (result) {
+      await refresh();
+    }
+    return result;
+  }
+
+  /// Toggle subscription state
+  Future<bool> toggleSubscription(String topicUuid) async {
+    final engine = await ref.read(engineProvider.future);
+    final isSubscribed = engine.feedIsSubscribed(topicUuid);
+    if (isSubscribed) {
+      return unsubscribe(topicUuid);
+    } else {
+      return subscribe(topicUuid);
+    }
+  }
+
+  /// Sync subscriptions to DHT (for multi-device)
+  Future<void> syncToDht() async {
+    final engine = await ref.read(engineProvider.future);
+    await engine.feedSyncSubscriptionsToDht();
+  }
+
+  /// Sync subscriptions from DHT (for multi-device)
+  Future<void> syncFromDht() async {
+    final engine = await ref.read(engineProvider.future);
+    await engine.feedSyncSubscriptionsFromDht();
+    await refresh();
+  }
+}
+
+/// Check if subscribed to a specific topic (sync, returns immediately)
+final isSubscribedProvider = Provider.family<bool, String>((ref, topicUuid) {
+  final subscriptions = ref.watch(feedSubscriptionsProvider);
+  return subscriptions.when(
+    data: (subs) => subs.any((s) => s.topicUuid == topicUuid),
+    loading: () => false,
+    error: (_, __) => false,
+  );
 });
 
-/// Post vote state (for optimistic updates)
-final postVoteProvider = StateProvider.family<int, String>((ref, postId) => 0);
-
-/// Comment vote state (for optimistic updates)
-final commentVoteProvider = StateProvider.family<int, String>((ref, commentId) => 0);
-
 // =============================================================================
-// EXPANSION STATE
+// SUBSCRIBED TOPICS (topics user is subscribed to)
 // =============================================================================
 
-/// Set of expanded post IDs (to show comments section)
-final expandedPostsProvider = StateProvider<Set<String>>((ref) => {});
+/// Subscribed topics provider - fetches full topic info for subscribed UUIDs
+final subscribedTopicsProvider = AsyncNotifierProvider<SubscribedTopicsNotifier, List<FeedTopic>>(
+  SubscribedTopicsNotifier.new,
+);
 
-// =============================================================================
-// COMPOSE STATE
-// =============================================================================
+class SubscribedTopicsNotifier extends AsyncNotifier<List<FeedTopic>> {
+  @override
+  Future<List<FeedTopic>> build() async {
+    // Watch subscriptions to rebuild when they change
+    final subscriptionsAsync = ref.watch(feedSubscriptionsProvider);
 
-/// Compose text controller state for new posts
-final composeTextProvider = StateProvider<String>((ref) => '');
+    return subscriptionsAsync.when(
+      data: (subscriptions) async {
+        if (subscriptions.isEmpty) {
+          return [];
+        }
+
+        final engine = await ref.read(engineProvider.future);
+        final topics = <FeedTopic>[];
+
+        for (final sub in subscriptions) {
+          try {
+            final topic = await engine.feedGetTopic(sub.topicUuid);
+            topics.add(topic);
+          } catch (e) {
+            // Topic may have expired or been deleted - skip it
+          }
+        }
+
+        return topics;
+      },
+      loading: () async => [],
+      error: (_, __) async => [],
+    );
+  }
+
+  Future<void> refresh() async {
+    state = const AsyncValue.loading();
+    ref.invalidate(feedSubscriptionsProvider);
+    state = await AsyncValue.guard(() => build());
+  }
+}
