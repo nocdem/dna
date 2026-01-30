@@ -508,7 +508,7 @@ class _TopicDetailScreen extends ConsumerWidget {
   }
 }
 
-class _TopicDetailContent extends StatelessWidget {
+class _TopicDetailContent extends ConsumerWidget {
   final FeedTopic topic;
   final AsyncValue<List<FeedComment>> comments;
 
@@ -518,8 +518,23 @@ class _TopicDetailContent extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final nameResolver = ref.watch(nameResolverProvider.notifier);
+
+    // Trigger batch name resolution when comments load
+    comments.whenData((commentList) {
+      if (commentList.isNotEmpty) {
+        final fingerprints = commentList.map((c) => c.authorFingerprint).toSet().toList();
+        // Also resolve topic author
+        fingerprints.add(topic.authorFingerprint);
+        nameResolver.resolveNames(fingerprints);
+      }
+    });
+
+    // Get resolved topic author name
+    final topicAuthorName = ref.watch(nameResolverProvider)[topic.authorFingerprint]
+        ?? '${topic.authorFingerprint.substring(0, 16)}...';
 
     return CustomScrollView(
       slivers: [
@@ -573,7 +588,7 @@ class _TopicDetailContent extends StatelessWidget {
                   Row(
                     children: [
                       Text(
-                        'Author: ${topic.authorFingerprint.substring(0, 16)}...',
+                        'Author: $topicAuthorName',
                         style: theme.textTheme.bodySmall,
                       ),
                       const Spacer(),
@@ -639,14 +654,18 @@ class _TopicDetailContent extends StatelessWidget {
   }
 }
 
-class _CommentTile extends StatelessWidget {
+class _CommentTile extends ConsumerWidget {
   final FeedComment comment;
 
   const _CommentTile({required this.comment});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+
+    // Get resolved author name or fall back to fingerprint prefix
+    final authorName = ref.watch(nameResolverProvider)[comment.authorFingerprint]
+        ?? '${comment.authorFingerprint.substring(0, 16)}...';
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -658,7 +677,7 @@ class _CommentTile extends StatelessWidget {
             Row(
               children: [
                 Text(
-                  comment.authorFingerprint.substring(0, 16) + '...',
+                  authorName,
                   style: theme.textTheme.bodySmall?.copyWith(
                     fontWeight: FontWeight.bold,
                   ),
