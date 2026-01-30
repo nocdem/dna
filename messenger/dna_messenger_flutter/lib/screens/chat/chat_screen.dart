@@ -47,9 +47,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _searchController = TextEditingController();
   final _searchFocusNode = FocusNode();
 
-  // Presence polling timer for real-time status updates
-  Timer? _presenceTimer;
-
   @override
   void initState() {
     super.initState();
@@ -67,67 +64,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       Future.delayed(const Duration(milliseconds: 300), () {
         if (mounted) {
           _checkOfflineMessagesSilent(); // With cooldown
-          _startPresencePolling(); // First poll will use cooldown
+          // Presence polling handled by EventHandler background timer
         }
       });
     });
-  }
-
-  /// Start polling the selected contact's presence for real-time status updates
-  void _startPresencePolling() {
-    _presenceTimer?.cancel();
-    _presenceTimer = Timer.periodic(const Duration(minutes: 1), (_) {
-      // Timer-based polls bypass cooldown (timer IS the rate limiter)
-      _pollSelectedContactPresence(bypassCooldown: true);
-    });
-    // Also poll immediately (with cooldown to prevent duplicate lookups on rapid chat opens)
-    _pollSelectedContactPresence();
-  }
-
-  /// Poll the selected contact's presence and update UI if changed
-  /// Uses cooldown to prevent excessive DHT calls on rapid chat opens
-  Future<void> _pollSelectedContactPresence({bool bypassCooldown = false}) async {
-    final contact = ref.read(selectedContactProvider);
-    if (contact == null) return;
-
-    // Skip if looked up recently (unless bypassed by timer)
-    if (!bypassCooldown && !shouldLookupPresence(ref, contact.fingerprint)) {
-      log('CHAT', 'Skipping presence lookup (cooldown) for ${contact.fingerprint.substring(0, 16)}...');
-      return;
-    }
-
-    try {
-      final engine = await ref.read(engineProvider.future);
-      final lastSeen = await engine.lookupPresence(contact.fingerprint);
-
-      // Record lookup time for cooldown
-      recordPresenceLookup(ref, contact.fingerprint);
-
-      // Consider online if seen within the last 2 minutes
-      final isOnline = DateTime.now().difference(lastSeen).inMinutes < 2;
-
-      // Only update if status changed
-      if (contact.isOnline != isOnline) {
-        ref.read(selectedContactProvider.notifier).state = Contact(
-          fingerprint: contact.fingerprint,
-          displayName: contact.displayName,
-          nickname: contact.nickname,
-          isOnline: isOnline,
-          lastSeen: lastSeen,
-        );
-      } else if (lastSeen.millisecondsSinceEpoch > contact.lastSeen.millisecondsSinceEpoch) {
-        // Update lastSeen even if online status didn't change
-        ref.read(selectedContactProvider.notifier).state = Contact(
-          fingerprint: contact.fingerprint,
-          displayName: contact.displayName,
-          nickname: contact.nickname,
-          isOnline: contact.isOnline,
-          lastSeen: lastSeen,
-        );
-      }
-    } catch (e) {
-      // Silently ignore - presence lookup can fail during network issues
-    }
   }
 
   void _onScroll() {
@@ -208,7 +148,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   void dispose() {
-    _presenceTimer?.cancel();
     _messageController.removeListener(_onTextChanged);
     _scrollController.removeListener(_onScroll);
     _messageController.dispose();

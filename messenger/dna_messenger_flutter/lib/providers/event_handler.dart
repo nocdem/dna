@@ -424,21 +424,39 @@ class EventHandler {
     });
   }
 
-  /// Start periodic presence refresh (every 30 seconds)
-  /// Announces our presence to DHT
+  /// Poll ALL contacts' presence in background (every 1 minute)
+  /// C heartbeat handles announcing OUR presence, this polls contacts' presence
   void _startPresencePolling() {
     _presenceTimer?.cancel();
-    _presenceTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      _ref.read(engineProvider).whenData((engine) async {
-        // Announce our presence to DHT
-        // Phase 14: Works in DHT-only mode (no P2P transport required)
-        await engine.refreshPresence();
-        // NOTE: We do NOT invalidate(contactsProvider) here.
-        // Contact presence updates come through via ContactOnline/ContactOffline events
-        // which are handled by updateContactStatus() in ContactsNotifier.
-        // Full invalidation causes unnecessary rebuilds and visual bouncing.
-      });
+    _presenceTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      _pollAllContactsPresence();
     });
+    // Also poll immediately on start
+    _pollAllContactsPresence();
+  }
+
+  /// Poll presence for all contacts and update UI
+  Future<void> _pollAllContactsPresence() async {
+    final engine = _ref.read(engineProvider).valueOrNull;
+    if (engine == null) return;
+
+    final contacts = _ref.read(contactsProvider).valueOrNull;
+    if (contacts == null || contacts.isEmpty) return;
+
+    for (final contact in contacts) {
+      try {
+        final lastSeen = await engine.lookupPresence(contact.fingerprint);
+        final isOnline = DateTime.now().difference(lastSeen).inMinutes < 2;
+
+        // Update contact status if changed
+        if (contact.isOnline != isOnline) {
+          _ref.read(contactsProvider.notifier).updateContactStatus(
+            contact.fingerprint, isOnline);
+        }
+      } catch (_) {
+        // Silently ignore individual failures
+      }
+    }
   }
 
   /// Pause all polling timers (call when app goes to background)

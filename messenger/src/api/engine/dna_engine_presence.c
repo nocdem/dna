@@ -23,7 +23,7 @@
  * PRESENCE HEARTBEAT (announces our presence every 4 minutes)
  * ============================================================================ */
 
-#define PRESENCE_HEARTBEAT_INTERVAL_SECONDS 240  /* 4 minutes */
+#define PRESENCE_HEARTBEAT_INTERVAL_SECONDS 60  /* 1 minute */
 
 static void* presence_heartbeat_thread(void *arg) {
     dna_engine_t *engine = (dna_engine_t*)arg;
@@ -49,7 +49,7 @@ static void* presence_heartbeat_thread(void *arg) {
             messenger_transport_refresh_presence(engine->messenger);
         }
 
-        /* Check for day rotation on group listeners (runs every 4 min, actual
+        /* Check for day rotation on group listeners (runs every 1 min, actual
          * rotation only happens at midnight UTC when day bucket changes) */
         dna_engine_check_group_day_rotation(engine);
 

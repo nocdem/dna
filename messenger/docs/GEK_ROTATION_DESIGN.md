@@ -398,7 +398,7 @@ Group owners automatically rotate GEK every 24 hours when online, limiting crypt
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Presence Heartbeat Thread (runs every 4 minutes)        │
+│ Presence Heartbeat Thread (runs every 1 minute)         │
 │   src/api/dna_engine.c:presence_heartbeat_thread()      │
 └─────────────────────────────────────────────────────────┘
      │

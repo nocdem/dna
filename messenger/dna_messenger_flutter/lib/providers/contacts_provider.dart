@@ -15,9 +15,6 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
   Timer? _presenceDebounceTimer;
   // Pending presence updates to apply
   final Map<String, DateTime> _pendingPresenceUpdates = {};
-  // Throttle presence lookups - don't re-lookup if recent
-  static DateTime? _lastPresenceLookup;
-  static const _presenceLookupThrottle = Duration(minutes: 5);
   // Track if initial presence load has been triggered
   bool _initialLoadTriggered = false;
 
@@ -63,7 +60,7 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
   }
 
   /// Update presence for contacts in background, updating state as data arrives
-  /// Throttled to avoid excessive DHT lookups on frequent provider rebuilds
+  /// Called on initial load and manual refresh only (background polling handled by EventHandler)
   Future<void> _updatePresenceInBackground(
     DnaEngine engine,
     List<Contact> contacts, {
@@ -80,16 +77,6 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
       }
       return;
     }
-
-    // Throttle: skip if we did a lookup recently (unless forced or initial load)
-    final now = DateTime.now();
-    if (!forceRefresh && !isInitialLoad && _lastPresenceLookup != null) {
-      final elapsed = now.difference(_lastPresenceLookup!);
-      if (elapsed < _presenceLookupThrottle) {
-        return; // Skip - too soon since last lookup
-      }
-    }
-    _lastPresenceLookup = now;
 
     // Query presence for all contacts in parallel
     final presenceFutures = <Future<void>>[];
