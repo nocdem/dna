@@ -7,6 +7,7 @@ import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:ffi/ffi.dart';
 
 import 'dna_bindings.dart';
@@ -950,8 +951,32 @@ class FeedCategories {
 
   static const all = [general, technology, help, announcements, trading, offtopic];
 
-  /// Get display name for a category
+  /// SHA256 hash → display name lookup
+  /// C library stores category_id as SHA256(lowercase(name)), Flutter needs to reverse-map
+  static final Map<String, String> _hashToName = {
+    _computeCategoryHash(general): 'General',
+    _computeCategoryHash(technology): 'Technology',
+    _computeCategoryHash(help): 'Help',
+    _computeCategoryHash(announcements): 'Announcements',
+    _computeCategoryHash(trading): 'Trading',
+    _computeCategoryHash(offtopic): 'Off-Topic',
+  };
+
+  /// Compute SHA256 hash of category name (matches C library's dna_feed_make_category_id)
+  static String _computeCategoryHash(String name) {
+    final bytes = utf8.encode(name.toLowerCase());
+    final digest = sha256.convert(bytes);
+    return digest.toString();
+  }
+
+  /// Get display name for a category (handles both name and SHA256 hash)
   static String displayName(String category) {
+    // Check hash map first (C stores 64-char SHA256 hashes)
+    if (category.length == 64 && _hashToName.containsKey(category)) {
+      return _hashToName[category]!;
+    }
+
+    // Fall back to name matching
     switch (category.toLowerCase()) {
       case general:
         return 'General';
