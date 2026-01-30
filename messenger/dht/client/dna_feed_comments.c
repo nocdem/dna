@@ -394,7 +394,13 @@ int dna_feed_comments_get(dht_context_t *dht_ctx,
     if (ret != 0 || value_count == 0) {
         *comments_out = NULL;
         *count_out = 0;
-        return (ret == 0) ? -2 : -1;
+        /* dht_get_all returns:
+         *   0  = success (but we have count=0 here, so no values)
+         *  -1 = no values found (empty DHT key)
+         *  -2 = timeout (real error)
+         * Treat -2 as error (-1), everything else as "not found" (-2)
+         */
+        return (ret == -2) ? -1 : -2;
     }
 
     QGP_LOG_INFO(LOG_TAG, "Found %zu comment values\n", value_count);
