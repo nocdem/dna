@@ -282,9 +282,14 @@ Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
    ```bash
    cd /opt/dna-messenger/build
    ./cli/dna-messenger-cli publish-version \
-       --lib 0.6.76 --app 0.100.67 --nodus 0.4.5 \
-       --lib-min 0.3.50 --app-min 0.99.0 --nodus-min 0.4.0
+       --lib 0.6.89 --app 0.100.71 --nodus 0.4.5 \
+       --lib-min 0.6.0 --app-min 0.100.0 --nodus-min 0.4.0
    ```
+
+   **MINIMUM VERSION RULE:** Minimums MUST match major.minor of current versions:
+   - Library 0.6.89 → `--lib-min 0.6.0`
+   - App 0.100.71 → `--app-min 0.100.0`
+   - Nodus 0.4.5 → `--nodus-min 0.4.0`
 
 5. **VERIFY** DHT publication:
    ```bash
@@ -296,6 +301,7 @@ Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
 **DHT Notes:**
 - Uses Claude's identity (first publisher owns the DHT key)
 - Minimum versions define compatibility - apps below minimum show warnings
+- Minimum versions use major.minor.0 format (e.g., 0.6.0 for 0.6.x releases)
 - DHT key: `SHA3-512("dna:system:version")`
 - Version info is signed with Dilithium5
 
