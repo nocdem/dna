@@ -256,12 +256,28 @@ class _TopicsList extends ConsumerWidget {
       );
     }
 
+    // Filter out deleted topics
+    final visibleTopics = topics.where((t) => !t.deleted).toList();
+
+    if (visibleTopics.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            FaIcon(FontAwesomeIcons.newspaper, size: 64, color: theme.colorScheme.outline),
+            const SizedBox(height: 16),
+            Text('No topics yet', style: theme.textTheme.titleMedium),
+          ],
+        ),
+      );
+    }
+
     return RefreshIndicator(
       onRefresh: () => ref.read(feedTopicsProvider.notifier).refresh(),
       child: ListView.builder(
-        itemCount: topics.length,
+        itemCount: visibleTopics.length,
         itemBuilder: (context, index) {
-          final topic = topics[index];
+          final topic = visibleTopics[index];
           return _TopicTile(
             topic: topic,
             onTap: () => _openTopic(context, ref, topic),
@@ -291,6 +307,13 @@ class _TopicTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final isSubscribed = ref.watch(isSubscribedProvider(topic.uuid));
+
+    // Resolve author name
+    final authorName = ref.watch(nameResolverProvider)[topic.authorFingerprint]
+        ?? '${topic.authorFingerprint.substring(0, 16)}...';
+
+    // Trigger resolution if not cached
+    ref.read(nameResolverProvider.notifier).resolveName(topic.authorFingerprint);
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -338,7 +361,7 @@ class _TopicTile extends ConsumerWidget {
                 children: [
                   _CategoryBadge(category: topic.categoryId),
                   const SizedBox(width: 8),
-                  ...topic.tags.take(3).map((tag) => Padding(
+                  ...topic.tags.take(2).map((tag) => Padding(
                     padding: const EdgeInsets.only(right: 4),
                     child: Chip(
                       label: Text(tag, style: const TextStyle(fontSize: 10)),
@@ -348,6 +371,13 @@ class _TopicTile extends ConsumerWidget {
                     ),
                   )),
                   const Spacer(),
+                  Text(
+                    authorName,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
                   Text(
                     _formatTime(topic.createdAt),
                     style: theme.textTheme.bodySmall?.copyWith(
