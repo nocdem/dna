@@ -283,6 +283,24 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
+    /* Get contact list and track unread counts BEFORE fetch.
+     * This allows us to detect which contacts have new messages and emit
+     * OUTBOX_UPDATED events for Android notifications. */
+    contact_list_t *contacts = NULL;
+    int *counts_before = NULL;
+    size_t contact_count = 0;
+
+    if (contacts_db_list(&contacts) == 0 && contacts && contacts->count > 0) {
+        contact_count = contacts->count;
+        counts_before = calloc(contact_count, sizeof(int));
+        if (counts_before) {
+            for (size_t i = 0; i < contact_count; i++) {
+                counts_before[i] = messenger_get_unread_count(
+                    engine->messenger, contacts->contacts[i].identity);
+            }
+        }
+    }
+
     /* First, sync any pending outboxes (our messages that failed to publish earlier) */
     dht_context_t *dht_ctx = dht_singleton_get();
     if (dht_ctx) {
@@ -304,6 +322,32 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
     } else {
         QGP_LOG_WARN("DNA_ENGINE", "[OFFLINE] Direct messages check failed with rc=%d", rc);
     }
+
+    /* Emit OUTBOX_UPDATED events for contacts with new messages.
+     * This triggers Android notifications when Flutter is not attached. */
+    if (counts_before && contacts && offline_count > 0) {
+        for (size_t i = 0; i < contact_count; i++) {
+            int count_after = messenger_get_unread_count(
+                engine->messenger, contacts->contacts[i].identity);
+
+            if (count_after > counts_before[i]) {
+                /* This contact has new messages - emit event */
+                QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] New messages from %.16s... (%d -> %d)",
+                             contacts->contacts[i].identity, counts_before[i], count_after);
+
+                dna_event_t event = {0};
+                event.type = DNA_EVENT_OUTBOX_UPDATED;
+                strncpy(event.data.outbox_updated.contact_fingerprint,
+                        contacts->contacts[i].identity,
+                        sizeof(event.data.outbox_updated.contact_fingerprint) - 1);
+                dna_dispatch_event(engine, &event);
+            }
+        }
+    }
+
+    /* Cleanup contact tracking */
+    if (counts_before) free(counts_before);
+    if (contacts) contacts_db_free_list(contacts);
 
     /* Also sync group messages from DHT */
     if (dht_ctx) {
@@ -760,6 +804,20 @@ dna_request_id_t dna_engine_check_offline_messages(
 
     dna_task_params_t params = {0};
     params.check_offline_messages.publish_watermarks = true;  /* User is active */
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_CHECK_OFFLINE_MESSAGES, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_check_offline_messages_cached(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    params.check_offline_messages.publish_watermarks = false;  /* Background caching - don't notify senders */
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_CHECK_OFFLINE_MESSAGES, &params, cb, user_data);

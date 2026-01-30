@@ -1682,6 +1682,27 @@ DNA_API dna_request_id_t dna_engine_check_offline_messages(
 );
 
 /**
+ * Check for offline messages without publishing watermarks (background caching)
+ *
+ * Same as dna_engine_check_offline_messages() but does NOT notify senders
+ * that messages were received. Use for background polling where user hasn't
+ * actually read the messages yet.
+ *
+ * This function emits DNA_EVENT_OUTBOX_UPDATED for each contact with new
+ * messages, triggering Android notifications when Flutter is not attached.
+ *
+ * @param engine    Engine instance
+ * @param callback  Called on completion
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_check_offline_messages_cached(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
  * Force check for offline messages from a specific contact
  *
  * Queries only the specified contact's outbox instead of all contacts.
