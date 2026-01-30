@@ -74,7 +74,6 @@ persistent_bootstrap
 **/test_identity_backup
 **/test_dna_profile
 **/test_simple
-imgui_gui/bootstrap/
 *.ini
 !dna_messenger.ini
 # CMake dependency files

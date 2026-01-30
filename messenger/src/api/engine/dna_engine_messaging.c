@@ -765,20 +765,6 @@ dna_request_id_t dna_engine_check_offline_messages(
     return dna_submit_task(engine, TASK_CHECK_OFFLINE_MESSAGES, &params, cb, user_data);
 }
 
-dna_request_id_t dna_engine_check_offline_messages_cached(
-    dna_engine_t *engine,
-    dna_completion_cb callback,
-    void *user_data
-) {
-    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
-
-    dna_task_params_t params = {0};
-    params.check_offline_messages.publish_watermarks = false;  /* Background caching only */
-
-    dna_task_callback_t cb = { .completion = callback };
-    return dna_submit_task(engine, TASK_CHECK_OFFLINE_MESSAGES, &params, cb, user_data);
-}
-
 dna_request_id_t dna_engine_check_offline_messages_from(
     dna_engine_t *engine,
     const char *contact_fingerprint,

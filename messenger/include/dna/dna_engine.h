@@ -1126,37 +1126,6 @@ DNA_API bool dna_engine_is_identity_loaded(dna_engine_t *engine);
 DNA_API bool dna_engine_is_transport_ready(dna_engine_t *engine);
 
 /**
- * Load identity with minimal initialization (v0.5.24+)
- *
- * Lightweight version for background services. Only initializes:
- * - DHT connection
- * - DHT listeners for message notifications
- *
- * Skips (to save resources when app is closed):
- * - P2P transport layer
- * - Presence heartbeat
- * - Contact sync from DHT
- * - Pending message retry
- * - Wallet creation
- *
- * Use dna_engine_load_identity() for full initialization when app is open.
- *
- * @param engine      Engine instance
- * @param fingerprint Identity fingerprint to load
- * @param password    Password for encrypted keys (NULL if unencrypted)
- * @param callback    Called on completion
- * @param user_data   User data for callback
- * @return            Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_load_identity_minimal(
-    dna_engine_t *engine,
-    const char *fingerprint,
-    const char *password,
-    dna_completion_cb callback,
-    void *user_data
-);
-
-/**
  * Register human-readable name in DHT
  *
  * Associates a name with current identity's fingerprint.
@@ -1707,25 +1676,6 @@ DNA_API dna_request_id_t dna_engine_get_conversation_page(
  * @return          Request ID (0 on immediate error)
  */
 DNA_API dna_request_id_t dna_engine_check_offline_messages(
-    dna_engine_t *engine,
-    dna_completion_cb callback,
-    void *user_data
-);
-
-/**
- * Check for offline messages (background caching mode)
- *
- * Like dna_engine_check_offline_messages but does NOT publish watermarks.
- * Use this for background service polling where messages are cached but
- * not yet read by the user. Watermarks should only be published when
- * the user actually views the messages.
- *
- * @param engine    Engine instance (must have identity loaded)
- * @param callback  Called on completion
- * @param user_data User data for callback
- * @return          Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_check_offline_messages_cached(
     dna_engine_t *engine,
     dna_completion_cb callback,
     void *user_data
@@ -2383,7 +2333,7 @@ DNA_API int dna_engine_listen_all_contacts(
 );
 
 /* NOTE: dna_engine_listen_all_contacts_minimal() removed in v0.6.15
- * Android service now uses polling (dna_engine_check_offline_messages_cached)
+ * Android service now uses polling (dna_engine_check_offline_messages)
  * instead of listeners for better battery efficiency. */
 
 /**

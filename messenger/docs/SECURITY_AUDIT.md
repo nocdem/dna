@@ -290,7 +290,7 @@ Comprehensive audit of all 8 SQLite database files confirmed all queries use par
 **dna_group_outbox.c:** Refactored LIMIT/OFFSET from snprintf to sqlite3_bind_int64() for consistency, even though integers are not vulnerable to SQL injection.
 
 ### M9. Path Traversal in File Operations - **FIXED**
-**Files:** `/opt/dna-messenger/imgui_gui/core/*.cpp`
+**Files:** Wallet and file operations in C library
 **Category:** File System Security
 **Issue:** Verify file path inputs sanitized for `../` traversal
 **Risk:** Malicious paths could access unintended files
@@ -314,7 +314,7 @@ Implemented cross-platform filename sanitization to prevent path traversal attac
    - `eth_wallet_save()`: Validates wallet name before file path construction
    - `trx_wallet_save()`: Validates wallet name before file path construction
 
-Original imgui_gui finding is moot as ImGui is deprecated - Flutter UI does not have this issue.
+Note: Original finding was for deprecated ImGui UI (removed in v0.6.84). Flutter UI uses platform file picker.
 
 ### M10. Error Message Information Leakage - **MITIGATED**
 **Files:** Multiple with `fprintf(stderr, ...)`
@@ -585,7 +585,7 @@ Priority order for fixes:
 
 ## METHODOLOGY
 
-**Files Examined:** 50+ source files across crypto/, messenger/, transport/, dht/, imgui_gui/
+**Files Examined:** 50+ source files across crypto/, messenger/, transport/, dht/, src/api/
 
 **Tools Used:** Static analysis via code review, pattern matching for vulnerable functions
 

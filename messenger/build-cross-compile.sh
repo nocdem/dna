@@ -86,7 +86,6 @@ build_linux_x64() {
         -DCMAKE_BUILD_TYPE=Release
         -DCMAKE_C_FLAGS="-O3 -march=x86-64 -mtune=generic"
         -DCMAKE_CXX_FLAGS="-O3 -march=x86-64 -mtune=generic"
-        -DBUILD_GUI=ON
     )
 
     if [ -n "${CMAKE_PREFIX_PATH}" ]; then
@@ -99,13 +98,6 @@ build_linux_x64() {
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-x64"
-    # Package ImGui GUI executable
-    if [ -f imgui_gui/dna-messenger ]; then
-        cp imgui_gui/dna-messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-x64/"
-    else
-        echo -e "${RED}Error: GUI executable not found${NC}"
-        return 1
-    fi
 
     cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ Linux x86_64 build complete${NC}"
@@ -126,7 +118,6 @@ build_linux_x64_debug() {
     CMAKE_ARGS=(
         "${PROJECT_ROOT}"
         -DCMAKE_BUILD_TYPE=Debug
-        -DBUILD_GUI=ON
     )
 
     if [ -n "${CMAKE_PREFIX_PATH}" ]; then
@@ -139,13 +130,6 @@ build_linux_x64_debug() {
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-x64-debug"
-    # Package ImGui GUI executable
-    if [ -f imgui_gui/dna-messenger ]; then
-        cp imgui_gui/dna-messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-x64-debug/"
-    else
-        echo -e "${RED}Error: GUI executable not found${NC}"
-        return 1
-    fi
 
     cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ Linux x86_64 Debug build complete${NC}"
@@ -188,7 +172,6 @@ EOF
         "${PROJECT_ROOT}"
         -DCMAKE_TOOLCHAIN_FILE=toolchain-arm64.cmake
         -DCMAKE_BUILD_TYPE=Release
-        -DBUILD_GUI=ON
     )
 
     if [ -n "${CMAKE_PREFIX_PATH}" ]; then
@@ -201,14 +184,6 @@ EOF
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64"
-    # Package GUI executable
-    if [ -f imgui_gui/dna-messenger ]; then
-        cp imgui_gui/dna-messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64/"
-        echo -e "${GREEN}✓${NC} Packaged GUI executable"
-    else
-        echo -e "${RED}Error: GUI executable not found${NC}"
-        return 1
-    fi
 
     cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ Linux ARM64 build complete${NC}"
@@ -323,21 +298,13 @@ EOF
     cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-mingw64.cmake \
         -DCMAKE_PREFIX_PATH="${MINGW_TARGET_PREFIX};${MINGW_TARGET_PREFIX}/lib64" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_GUI=ON
+        -DCMAKE_BUILD_TYPE=Release
 
     echo -e "${BLUE}Building...${NC}"
     make -j$(nproc)
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/windows-x64"
-    # ImGui GUI executable
-    if [ -f imgui_gui/dna-messenger.exe ]; then
-        cp imgui_gui/dna-messenger.exe "${PROJECT_ROOT}/${DIST_DIR}/windows-x64/"
-    else
-        echo -e "${RED}Error: GUI executable not found${NC}"
-        return 1
-    fi
 
     cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ Windows x86_64 build complete${NC}"
@@ -452,21 +419,13 @@ EOF
     cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-mingw64.cmake \
         -DCMAKE_PREFIX_PATH="${MINGW_TARGET_PREFIX};${MINGW_TARGET_PREFIX}/lib64" \
-        -DCMAKE_BUILD_TYPE=Debug \
-        -DBUILD_GUI=ON
+        -DCMAKE_BUILD_TYPE=Debug
 
     echo -e "${BLUE}Building...${NC}"
     make -j$(nproc)
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/windows-x64-debug"
-    # ImGui GUI executable
-    if [ -f imgui_gui/dna-messenger.exe ]; then
-        cp imgui_gui/dna-messenger.exe "${PROJECT_ROOT}/${DIST_DIR}/windows-x64-debug/"
-    else
-        echo -e "${RED}Error: GUI executable not found${NC}"
-        return 1
-    fi
 
     cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ Windows x86_64 Debug build complete${NC}"
@@ -516,8 +475,7 @@ EOF
 
     cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-macos.cmake \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_GUI=OFF
+        -DCMAKE_BUILD_TYPE=Release
 
     make -j$(nproc)
 
@@ -573,8 +531,7 @@ EOF
 
     cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-macos-arm64.cmake \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_GUI=OFF
+        -DCMAKE_BUILD_TYPE=Release
 
     make -j$(nproc)
 

@@ -11,7 +11,6 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
-import '../../providers/listener_state_provider.dart';
 import '../../utils/logger.dart';
 import '../../theme/dna_theme.dart';
 import '../../widgets/emoji_shortcode_field.dart';

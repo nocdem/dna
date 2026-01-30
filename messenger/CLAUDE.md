@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-01-30 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.6.83 | Flutter v0.100.70 | Nodus v0.4.5
+**Versions:** Library v0.6.84 | Flutter v0.100.70 | Nodus v0.4.5
 
 ---
 
@@ -207,7 +207,7 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.6.83 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
+| C Library | `include/dna/version.h` | v0.6.84 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
 | Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.100.69+10169 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.5 | Nodus server changes (vendor/opendht-pq/tools/) |
 
@@ -304,12 +304,25 @@ Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
 ---
 
 ## PROTOCOL MODE
-NO STUBS
-NO ASSUMPTIONS
-NO DUMMY DATA
-Source of truth is the sourcecode and documentation
-Always ask user what to do if unsure
-Anything against protocol mode breaks the blockchain / encryption.
+
+**Core Principles:**
+- NO STUBS
+- NO ASSUMPTIONS
+- NO DUMMY DATA
+- Source of truth is the sourcecode and documentation
+- Always ask user what to do if unsure
+- Anything against protocol mode breaks the blockchain / encryption
+
+**When Protocol Mode is active:**
+1. Begin EVERY response with "PROTOCOL MODE ACTIVE. -- Model: [current model name]"
+2. Only follow explicit instructions
+3. Confirm understanding before taking action
+4. Never add features not explicitly requested
+5. Ask for clarification rather than making assumptions
+6. Report exactly what was done without elaboration
+7. Do not suggest improvements unless requested
+8. Keep all responses minimal and direct
+9. Keep it simple
 
 ## NO ASSUMPTIONS - INVESTIGATE FIRST
 **NEVER assume external libraries or dependencies are buggy without proof.**
@@ -572,220 +585,6 @@ CC=clang CXX=clang++ cmake -DENABLE_FUZZING=ON -DCMAKE_BUILD_TYPE=Debug ..
 make && ./fuzz_<target> ../fuzz/corpus/<target>/ -max_total_time=60
 ```
 
-## Protocol Mode
-
-PROTOCOL MODE: ACTIVE                                  NO ASSUMPTIONS
-
-  When this mode is active:
-  1. Begin EVERY response with "PROTOCOL MODE ACTIVE. -- Model: [current model name]"
-  2. Only follow explicit instructions
-  3. Confirm understanding before taking action
-  4. Never add features not explicitly requested
-  5. Ask for clarification rather than making assumptions
-  6. Report exactly what was done without elaboration
-  7. Do not suggest improvements unless requested
-  8. Keep all responses minimal and direct
-  9. Keep it simple
-
-
-## MANDATORY CHECKPOINT
-
-**ABSOLUTE REQUIREMENT**: I CANNOT execute ANY action without completing ALL checkpoints. Skipping ANY checkpoint constitutes protocol violation.
-
-### CHECKPOINT 1: STOP BARRIER
-Before ANY action, I MUST:
-1. **STOP** immediately - NO commands, NO tools, NO actions
-2. **STATE**: "CHECKPOINT 1 COMPLETE - All actions halted for documentation review"
-
-### CHECKPOINT 2: DOCUMENTATION RESEARCH
-I MUST search and read relevant documentation:
-1. **READ** relevant files in `docs/` directory
-2. **READ** check for relevant functions in 'docs/FUNCTIONS.MD'
-3. **STATE**: "CHECKPOINT 2 COMPLETE - Documentation reviewed: [list files read]"
-
-### CHECKPOINT 3: PLAN CONFIRMATION + CREATE TASKS
-I MUST explicitly state my plan AND create formal tasks:
-1. **CONFIRM** what I found in documentation
-2. **CONFIRM** exactly what actions I plan to take
-3. **CONFIRM** why these actions are necessary
-4. **CREATE TASKS** using TaskCreate for EACH action:
-   - subject (imperative), description, activeForm (present continuous)
-5. **STATE**: "CHECKPOINT 3 COMPLETE - Plan confirmed and tasks created"
-
-### CHECKPOINT 4: EXPLICIT APPROVAL GATE
-I MUST display tasks and wait for explicit user permission:
-1. **DISPLAY** task list using TaskList tool so user can review
-2. **WAIT** for user to type "APPROVED" or "PROCEED"
-3. **NO ASSUMPTIONS** - only explicit approval words count
-4. **STATE**: "CHECKPOINT 4 COMPLETE - Awaiting explicit approval"
-**NOTE:** User may request task modifications before approval
-
-**IMPORTANT:** "Dangerously skip permissions" mode in settings.json does NOT skip this checkpoint.
-- Settings.json controls TOOL permissions (Read, Edit, Bash, etc.)
-- CHECKPOINT 4 controls PLAN approval - ALWAYS requires user approval
-- These are separate systems. Never conflate them.
-
-### CHECKPOINT 5: ACTION EXECUTION
-Only after ALL previous checkpoints:
-1. **MARK** current task as in_progress using TaskUpdate before starting
-2. **EXECUTE** the task
-3. **MARK** task as completed using TaskUpdate when done
-4. **PROCEED** to next task (repeat steps 1-3)
-5. **STATE**: "CHECKPOINT 5 COMPLETE - Actions executed as approved"
-**NOTE:** User can see real-time progress via task status updates
-
-### CHECKPOINT 6: MANDATORY REPORT
-After ALL actions are complete, I MUST provide a final report:
-1. **SUMMARY** - What was done (brief description)
-2. **FILES CHANGED** - List all files modified/created/deleted
-3. **ISSUES** - Any problems encountered (or "None")
-4. **STATUS** - Final outcome (SUCCESS/PARTIAL/FAILED)
-5. **STATE**: "CHECKPOINT 6 COMPLETE - Final report delivered"
-
-### CHECKPOINT 7: DOCUMENTATION UPDATE
-When changes are made to ANY of the following topics, I MUST update the relevant documentation:
-
-**Documentation Files & Topics:**
-| Topic | Documentation File | Update When... |
-|-------|-------------------|----------------|
-| Architecture | `docs/ARCHITECTURE_DETAILED.md` | Directory structure, components, build system, data flow changes |
-| DHT System | `docs/DHT_SYSTEM.md` | DHT operations, bootstrap nodes, offline queue, key derivation changes |
-| DNA Engine API | `docs/DNA_ENGINE_API.md` | Public API functions, data types, callbacks, error codes changes |
-| DNA Nodus | `docs/DNA_NODUS.md` | Bootstrap server, STUN/TURN, config, deployment changes |
-| Flutter UI | `docs/FLUTTER_UI.md` | Screens, FFI bindings, providers, widgets changes |
-| Function Reference | `docs/functions/` | Adding, modifying, or removing any function signatures |
-| Git Workflow | `docs/GIT_WORKFLOW.md` | Commit guidelines, branch strategy, repo procedures changes |
-| Message System | `docs/MESSAGE_SYSTEM.md` | Message format, encryption, GEK, database schema changes |
-| Mobile Porting | `docs/MOBILE_PORTING.md` | Android SDK, JNI, iOS, platform abstraction changes |
-| P2P Architecture | `docs/P2P_ARCHITECTURE.md` | Transport tiers, ICE/NAT, TCP, peer discovery changes |
-| Security | `docs/SECURITY_AUDIT.md` | Crypto primitives, vulnerabilities, security fixes |
-
-**Procedure:**
-1. **IDENTIFY** which documentation files are affected by the changes
-2. **UPDATE** each affected documentation file with accurate information
-3. **VERIFY** the documentation matches the actual code changes
-4. **STATE**: "CHECKPOINT 7 COMPLETE - Documentation updated: [list files updated]" OR "CHECKPOINT 7 COMPLETE - No documentation updates required (reason: [reason])"
-
-**IMPORTANT:** Documentation is the source of truth. Code changes without documentation updates violate protocol mode.
-
-### CHECKPOINT 8: BUILD VERIFICATION & VERSION UPDATE (MANDATORY ON EVERY PUSH)
-**EVERY push MUST verify builds succeed and increment the appropriate version.**
-
-**BUILD VERIFICATION (MANDATORY BEFORE PUSH):**
-
-Before pushing ANY code changes, you MUST verify the build succeeds:
-
-| Changed Files | Required Build | Command |
-|---------------|----------------|---------|
-| C code (src/, dht/, messenger/, transport/, crypto/, include/) | C Library | `cd build && cmake .. && make -j$(nproc)` |
-| Flutter/Dart code (lib/, assets/) | Flutter Linux | `cd dna_messenger_flutter && flutter build linux` |
-| Both C and Flutter | Both builds | Run both commands above |
-
-**CRITICAL:**
-- **ALL warnings and errors MUST be fixed** before pushing
-- **DO NOT push broken builds** - verify compilation succeeds first
-- If build fails, fix the errors and rebuild before proceeding
-- Flutter build failures are often: wrong imports, missing methods, type mismatches
-
-**Version Files (INDEPENDENT - do NOT keep in sync):**
-| Component | Version File | Current | Bump When |
-|-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.6.83 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.100.69+10169 | Flutter/Dart code changes (lib/, assets/) |
-| Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.5 | Nodus server changes (vendor/opendht-pq/tools/) |
-
-**IMPORTANT: Versions are INDEPENDENT**
-- Each component has its **own version number** - they do NOT need to match
-- **C Library changes** → bump `version.h` only
-- **Flutter/Dart changes** → bump `pubspec.yaml` only
-- **Nodus server changes** → bump `nodus_version.h` only
-- **Build scripts, CI, docs** → no version bump needed
-- Flutter app displays **both versions** in Settings:
-  - App version: from `pubspec.yaml`
-  - Library version: via `dna_engine_get_version()` FFI call
-
-**pubspec.yaml format:** `X.Y.Z+NNN` where NNN = versionCode for Android Play Store
-- versionCode = MAJOR×10000 + MINOR×100 + PATCH (e.g., 0.99.12 → 9912)
-
-**Which Number to Bump:**
-- **PATCH** (0.3.X → 0.3.23): Bug fixes, small features, improvements
-- **MINOR** (0.X.0 → 0.4.0): Major new features, significant API changes
-- **MAJOR** (X.0.0 → 1.0.0): Breaking changes, production release
-
-**Procedure:**
-1. **IDENTIFY** which component(s) changed (C library, Flutter, or Nodus)
-2. **BUMP** only the affected version file(s) - do NOT bump unrelated versions
-3. **UPDATE** the "Current" column in this section
-4. **UPDATE** the version in CLAUDE.md header line
-5. **COMMIT** with version in commit message (e.g., "fix: Something (v0.3.39)")
-6. **TEST MESSAGE** (C Library changes only): After push, send test messages:
-   ```bash
-   cd /opt/dna-messenger/build
-   ./cli/dna-messenger-cli send nocdem "C lib update (vX.Y.Z): <commit message>"
-   ./cli/dna-messenger-cli group-send dna-dev "C lib update (vX.Y.Z): <commit message>"
-   ```
-7. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
-
-**IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.
-
-### CHECKPOINT 9: RELEASE BUILD (When user says "release")
-**Only execute when user explicitly says "release" or asks for a release build.**
-
-**SKIP this checkpoint for regular commits.** State "CHECKPOINT 9 SKIPPED - Not a release"
-
-**COMMIT MESSAGE FORMAT FOR RELEASE:**
-```
-Release v<LIB_VERSION> / v<APP_VERSION> [BUILD] [RELEASE]
-```
-Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
-
-**RELEASE PROCEDURE:**
-
-1. **UPDATE README.md** - Update version badge:
-   ```markdown
-   <a href="#status"><img src="https://img.shields.io/badge/Status-Beta%20vX.Y.Z-blue" alt="Beta"></a>
-   ```
-
-2. **COMMIT** with BOTH tags:
-   ```bash
-   git add README.md
-   git commit -m "Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]"
-   ```
-   **CRITICAL:** BOTH `[BUILD]` AND `[RELEASE]` tags are REQUIRED!
-   - `[BUILD]` = triggers CI pipeline (builds Android/Linux/Windows)
-   - `[RELEASE]` = triggers website deployment
-   - **Without `[BUILD]`, CI pipeline does NOT run!**
-
-3. **PUSH** to both repos:
-   ```bash
-   git push gitlab main && git push origin main
-   ```
-
-4. **PUBLISH** version to DHT:
-   ```bash
-   cd /opt/dna-messenger/build
-   ./cli/dna-messenger-cli publish-version \
-       --lib 0.6.76 --app 0.100.67 --nodus 0.4.5 \
-       --lib-min 0.3.50 --app-min 0.99.0 --nodus-min 0.4.0
-   ```
-
-5. **VERIFY** DHT publication:
-   ```bash
-   ./cli/dna-messenger-cli check-version
-   ```
-
-6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published"
-
-**DHT Notes:**
-- Uses Claude's identity (first publisher owns the DHT key)
-- Minimum versions define compatibility - apps below minimum show warnings
-- DHT key: `SHA3-512("dna:system:version")`
-- Version info is signed with Dilithium5
-
-**ENFORCEMENT**: Each checkpoint requires explicit completion statement. Missing ANY checkpoint statement indicates protocol violation and requires restart.
-
-
-
 ## Quick Links
 
 ### 📚 Core Documentation
@@ -802,7 +601,7 @@ Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
 - **[Protocol Specs](docs/PROTOCOL.md)** - Wire formats (Seal, Spillway, Anchor, Atlas, Nexus)
 - **[CLI Testing](docs/CLI_TESTING.md)** - CLI tool for debugging and testing
 - **[Flutter UI](docs/FLUTTER_UI.md)** - Flutter migration (Phase 7)
-- **[DNA Nodus](docs/DNA_NODUS.md)** - Bootstrap + STUN/TURN server (v0.4)
+- **[DNA Nodus](docs/DNA_NODUS.md)** - Bootstrap server (v0.4)
 - **[DHT System](docs/DHT_SYSTEM.md)** - DHT architecture and operations
 - **[Message System](docs/MESSAGE_SYSTEM.md)** - Message handling and encryption
 - **[P2P Architecture](docs/P2P_ARCHITECTURE.md)** - Peer-to-peer transport layer
@@ -842,26 +641,16 @@ cd dna_messenger_flutter && flutter run
 
 ---
 
-## Team Development Approach
+## Development Guidelines
 
 DNA Messenger is developed by a **collaborative team**. When working on this project:
 
 1. **Security First** - Never modify crypto primitives without team review
-2. **Team Communication** - Document changes, discuss architecture decisions
-3. **Merge over Rebase** - Preserve commit history for team visibility
-4. **Cross-Platform** - Test Linux and Windows before committing
-5. **Documentation** - Update docs with all changes
-
----
-
-## Development Priorities
-
-1. **Security First** - Never modify crypto primitives without review
 2. **Simplicity** - Keep code simple and focused
 3. **Clean Code** - ALWAYS prefer modifying existing functions over adding new ones. Reuse existing code paths. Don't bloat the codebase with redundant methods.
-4. **Cross-Platform** - Test Linux and Windows
-5. **Documentation** - Update docs with changes
-6. **Team Workflow** - Use merge commits, communicate changes
+4. **Cross-Platform** - Test Linux and Windows before committing
+5. **Documentation** - Update docs with all changes
+6. **Team Workflow** - Use merge commits, communicate changes, document architecture decisions
 7. **Modular Architecture** - Follow the established modular pattern (see below)
 8. **No Dead Code** - When deprecating APIs or data layers, remove the old code entirely. Dead code that compiles successfully is dangerous.
 
@@ -958,11 +747,11 @@ Details: what/why/breaking
 ## DNA Nodus Deployment
 
 **Bootstrap Servers (dna-nodus v0.4):**
-| Server | IP | DHT Port | TURN Port |
-|--------|-----|----------|-----------|
-| US-1 | 154.38.182.161 | 4000 | 3478 |
-| EU-1 | 164.68.105.227 | 4000 | 3478 |
-| EU-2 | 164.68.116.180 | 4000 | 3478 |
+| Server | IP | DHT Port |
+|--------|-----|----------|
+| US-1 | 154.38.182.161 | 4000 |
+| EU-1 | 164.68.105.227 | 4000 |
+| EU-2 | 164.68.116.180 | 4000 |
 
 **Deployment Process (v0.4+):**
 ```bash
@@ -986,7 +775,6 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 {
     "dht_port": 4000,
     "seed_nodes": ["154.38.182.161", "164.68.105.227"],
-    "turn_port": 3478,
     "public_ip": "auto",
     "persistence_path": "/var/lib/dna-dht/bootstrap.state"
 }
@@ -994,8 +782,6 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 
 **Services:**
 - DHT: UDP port 4000
-- STUN/TURN: UDP port 3478 (libjuice)
-- Credential TTL: 7 days
 
 **Persistence:**
 - Default path: `/var/lib/dna-dht/bootstrap.state`
@@ -1010,12 +796,11 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 
 ### ✅ Complete
 - **Phase 4:** Desktop GUI (ImGui) + Wallet Integration
-- **Phase 5.1-5.9:** P2P Architecture (DHT, ICE, GEK, Message Format v0.08)
+- **Phase 5.1-5.9:** P2P Architecture (DHT, GEK, Message Format v0.08)
 - **Phase 6:** Android SDK (JNI bindings, Java classes, Gradle project)
 - **Phase 8:** DNA Wallet Integration
 - **Phase 9.1-9.6:** P2P Transport, Offline Queue, DHT Migrations
 - **Phase 10.1-10.4:** User Profiles, DNA Board, Avatars, Voting
-- **Phase 11:** ICE NAT Traversal
 - **Phase 12:** Message Format v0.08 - Fingerprint Privacy
 - **Phase 13:** GEK Group Encryption
 - **Phase 14:** DHT-Only Messaging (Android ForegroundService, DHT listen reliability) 

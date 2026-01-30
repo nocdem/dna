@@ -65,7 +65,6 @@ cmake \
     -DANDROID_ABI="$ABI" \
     -DANDROID_PLATFORM="android-$API_LEVEL" \
     -DANDROID_STL=c++_static \
-    -DBUILD_GUI=OFF \
     -DBUILD_SHARED_LIB=ON \
     -DCMAKE_BUILD_TYPE=Release \
     ..
