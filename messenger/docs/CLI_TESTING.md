@@ -1,6 +1,6 @@
 # DNA Messenger CLI Testing Guide
 
-**Version:** 2.5.0
+**Version:** 2.6.0
 **Purpose:** Command-line tool for automated testing and debugging of DNA Messenger without GUI
 **Location:** `build/cli/dna-messenger-cli`
 
@@ -87,6 +87,15 @@ $CLI group-send <uuid> "message"      # Send message to group
 $CLI group-info <uuid>                # Show group info and members
 $CLI group-invite <uuid> <fp>         # Invite member to group
 $CLI group-sync <uuid>                # Sync group from DHT to local cache
+
+# Feeds v2 (Topic-based public feeds)
+$CLI feeds create "Title" "Body" --category general --tags "tag1,tag2"
+$CLI feeds get <uuid>                 # Get topic by UUID
+$CLI feeds delete <uuid>              # Soft delete topic (author only)
+$CLI feeds list --category tech --days 7   # List by category
+$CLI feeds list-all --days 7          # List all topics
+$CLI feeds comment <uuid> "Comment"   # Add comment to topic
+$CLI feeds comments <uuid>            # Get comments for topic
 ```
 
 ---
@@ -711,6 +720,128 @@ Group synced successfully from DHT!
 
 ---
 
+## Feeds v2 Commands
+
+Topic-based public feeds with categories and tags. All feeds data is signed with Dilithium5 and stored in DHT with 30-day TTL.
+
+### `feeds create <title> <body> [options]` - Create Topic
+
+Creates a new public topic in the feed system.
+
+```bash
+dna-messenger-cli feeds create "My Topic" "This is the body text" --category technology --tags "rust,webdev"
+```
+
+**Options:**
+- `--category <name>` - Category (default: "general"). Valid: general, technology, help, announcements, trading, offtopic
+- `--tags <list>` - Comma-separated tags, max 5 tags, 32 chars each
+
+**Sample Output:**
+```
+Topic: My Topic
+  UUID: 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
+  Author: 3cbba8d8bf0c3603...
+  Category: e91fadf24f78c081972a2015146e9b7ad4636bb5a208f5733b54ee4407682078
+  Created: 2026-01-30 21:11
+  Tags: rust, webdev
+  Body:
+    This is the body text
+  Verified: yes
+```
+
+---
+
+### `feeds get <uuid>` - Get Topic
+
+Retrieves a topic by its UUID.
+
+```bash
+dna-messenger-cli feeds get 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
+```
+
+---
+
+### `feeds delete <uuid>` - Delete Topic
+
+Soft-deletes a topic (author only). Topic remains in DHT with `deleted=true` until TTL expires.
+
+```bash
+dna-messenger-cli feeds delete 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
+```
+
+---
+
+### `feeds list --category <name> --days <n>` - List by Category
+
+Lists topics in a category from the last N days.
+
+```bash
+dna-messenger-cli feeds list --category technology --days 7
+```
+
+**Sample Output:**
+```
+Topics (2):
+
+  1. My Topic
+     UUID: 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
+     Author: 3cbba8d8bf0c3603...
+     Category: e91fadf24...  |  Created: 2026-01-30 21:11
+
+  2. Another Topic
+     UUID: 7a8b9c0d-1234-5678-90ab-cdef12345678
+     Author: 5a8f2c3d4e6b7a9c...
+     Category: e91fadf24...  |  Created: 2026-01-29 15:30
+```
+
+---
+
+### `feeds list-all --days <n>` - List All Topics
+
+Lists all topics from the last N days across all categories.
+
+```bash
+dna-messenger-cli feeds list-all --days 7
+```
+
+---
+
+### `feeds comment <uuid> <body> [--mentions <fps>]` - Add Comment
+
+Adds a comment to a topic. Uses multi-owner DHT pattern.
+
+```bash
+dna-messenger-cli feeds comment 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e "Great topic!"
+dna-messenger-cli feeds comment 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e "Check this @user" --mentions "5a8f2c3d..."
+```
+
+---
+
+### `feeds comments <uuid>` - Get Comments
+
+Retrieves all comments for a topic.
+
+```bash
+dna-messenger-cli feeds comments 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
+```
+
+**Sample Output:**
+```
+Comments (2):
+
+  1. [2026-01-30 21:12] 3cbba8d8bf0c3603...:
+     Great topic!
+     UUID: c13718b4-49ed-4a1d-bc95-a3baf559f269
+     Verified: yes
+
+  2. [2026-01-30 21:15] 5a8f2c3d4e6b7a9c...:
+     I agree!
+     UUID: d24829c5-5afe-5b2e-cd06-c4cbg660g370
+     Verified: yes
+```
+
+---
+
 ## DHT Propagation
 
 **Important:** DHT operations are asynchronous and require time to propagate across the network.
@@ -861,6 +992,16 @@ These warnings appear during normal operation and don't indicate errors:
 ---
 
 ## Changelog
+
+### v2.6.0
+- Added Feeds v2 commands (topic-based public feeds):
+  - `feeds create` - Create topic with category and tags
+  - `feeds get` - Get topic by UUID
+  - `feeds delete` - Soft delete topic (author only)
+  - `feeds list` - List by category
+  - `feeds list-all` - List all topics
+  - `feeds comment` - Add comment with optional mentions
+  - `feeds comments` - Get comments for topic
 
 ### v2.5.0
 - Added Group commands (GEK encrypted group messaging):

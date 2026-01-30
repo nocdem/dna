@@ -1,10 +1,11 @@
 # DNA Engine API Reference
 
-**Version:** 1.11.0
-**Date:** 2026-01-22
+**Version:** 1.12.0
+**Date:** 2026-01-30
 **Location:** `include/dna/dna_engine.h`
 
 **Changelog:**
+- v1.12.0 (2026-01-30): Added Feeds v2 API - topic-based public feeds with categories, tags, comments (replaces v1 channel/post system). 7 new functions: `dna_engine_feed_create_topic`, `dna_engine_feed_get_topic`, `dna_engine_feed_delete_topic`, `dna_engine_feed_add_comment`, `dna_engine_feed_get_comments`, `dna_engine_feed_get_category`, `dna_engine_feed_get_all`
 - v1.11.0 (2026-01-22): Added centralized thread pool for parallel I/O, `dna_engine_check_offline_messages_cached()` for background polling without watermarks, removed `dna_engine_listen_all_contacts_minimal()` (replaced by polling)
 - v1.10.0 (2026-01-09): Made DHT PUT synchronous for accurate status, added DNA_ENGINE_ERROR_KEY_UNAVAILABLE (-116) for offline key lookup failures
 - v1.9.0 (2026-01-09): Added Bulletproof Message Delivery - `dna_engine_retry_pending_messages()` for auto-retry of failed messages on network reconnect/identity load
@@ -193,6 +194,7 @@ void syncExample() {
 | [Contact Requests](#3a-contact-requests) | 9 | ICQ-style contact requests, block/unblock |
 | [Messaging](#4-messaging) | 3 | Send messages, get conversations |
 | [Groups](#5-groups) | 6 | Create groups, send group messages, invitations |
+| [Feeds v2](#5a-feeds-v2) | 7 | Topic-based public feeds with categories |
 | [Wallet](#6-wallet) | 4 | Cellframe wallet operations |
 | [P2P & Presence](#7-p2p--presence) | 7 | Online status, DHT sync |
 | [Backward Compat](#8-backward-compatibility) | 2 | Access raw contexts |
@@ -1347,6 +1349,241 @@ dna_request_id_t dna_engine_reject_invitation(engine, group_uuid, callback, user
 ```
 
 Manage pending group invitations.
+
+---
+
+## 5a. Feeds v2
+
+Topic-based public feeds with categories and tags. All data is signed with Dilithium5 and stored in DHT with 30-day TTL. No voting (deferred to future version).
+
+### Data Structures
+
+```c
+// Topic information returned by callbacks
+typedef struct {
+    char topic_uuid[37];              // UUID v4
+    char author_fingerprint[129];     // Creator's fingerprint
+    char *title;                      // Topic title (max 200 chars)
+    char *body;                       // Topic body (max 4000 chars)
+    char category_id[65];             // SHA256 of lowercase category
+    char tags[5][33];                 // Up to 5 tags, 32 chars each
+    int tag_count;
+    uint64_t created_at;              // Unix timestamp
+    bool deleted;                     // Soft delete flag
+    uint64_t deleted_at;              // When deleted (0 if not)
+    bool verified;                    // Signature verified
+} dna_feed_topic_info_t;
+
+// Comment information
+typedef struct {
+    char comment_uuid[37];
+    char topic_uuid[37];
+    char author_fingerprint[129];
+    char *body;                       // Comment body (max 2000 chars)
+    uint64_t created_at;
+    bool verified;
+} dna_feed_comment_info_t;
+```
+
+### Callbacks
+
+```c
+// Single topic callback
+typedef void (*dna_feed_topic_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_feed_topic_info_t *topic,
+    void *user_data
+);
+
+// Multiple topics callback
+typedef void (*dna_feed_topics_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_feed_topic_info_t *topics,
+    int count,
+    void *user_data
+);
+
+// Single comment callback (for add)
+typedef void (*dna_feed_comment_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_feed_comment_info_t *comment,
+    void *user_data
+);
+
+// Multiple comments callback
+typedef void (*dna_feed_comments_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_feed_comment_info_t *comments,
+    int count,
+    void *user_data
+);
+```
+
+---
+
+### dna_engine_feed_create_topic
+
+```c
+dna_request_id_t dna_engine_feed_create_topic(
+    dna_engine_t *engine,
+    const char *title,
+    const char *body,
+    const char *category,
+    const char *tags_json,
+    dna_feed_topic_cb callback,
+    void *user_data
+);
+```
+
+Creates a new topic in the public feed.
+
+**Parameters:**
+- `title` - Topic title (max 200 chars)
+- `body` - Topic body (max 4000 chars)
+- `category` - Category name (default categories: general, technology, help, announcements, trading, offtopic)
+- `tags_json` - JSON array of tags, e.g., `["rust", "webdev"]` (max 5 tags, 32 chars each)
+- `callback` - Called with created topic info
+- `user_data` - User data for callback
+
+**Example:**
+```c
+dna_engine_feed_create_topic(engine,
+    "My Topic",
+    "This is the body text",
+    "technology",
+    "[\"rust\", \"webdev\"]",
+    on_topic_created, NULL);
+```
+
+---
+
+### dna_engine_feed_get_topic
+
+```c
+dna_request_id_t dna_engine_feed_get_topic(
+    dna_engine_t *engine,
+    const char *uuid,
+    dna_feed_topic_cb callback,
+    void *user_data
+);
+```
+
+Gets a topic by UUID.
+
+---
+
+### dna_engine_feed_delete_topic
+
+```c
+dna_request_id_t dna_engine_feed_delete_topic(
+    dna_engine_t *engine,
+    const char *uuid,
+    dna_completion_cb callback,
+    void *user_data
+);
+```
+
+Soft-deletes a topic (author only). Topic remains in DHT with `deleted=true` until TTL expires.
+
+**Errors:**
+- `DNA_ENGINE_ERROR_PERMISSION` - Not the topic author
+
+---
+
+### dna_engine_feed_add_comment
+
+```c
+dna_request_id_t dna_engine_feed_add_comment(
+    dna_engine_t *engine,
+    const char *topic_uuid,
+    const char *body,
+    const char *mentions_json,
+    dna_feed_comment_cb callback,
+    void *user_data
+);
+```
+
+Adds a comment to a topic using multi-owner DHT pattern.
+
+**Parameters:**
+- `topic_uuid` - UUID of topic to comment on
+- `body` - Comment body (max 2000 chars)
+- `mentions_json` - JSON array of mentioned fingerprints, e.g., `["5a8f2c3d..."]` (max 10)
+- `callback` - Called with created comment info
+- `user_data` - User data for callback
+
+---
+
+### dna_engine_feed_get_comments
+
+```c
+dna_request_id_t dna_engine_feed_get_comments(
+    dna_engine_t *engine,
+    const char *topic_uuid,
+    dna_feed_comments_cb callback,
+    void *user_data
+);
+```
+
+Gets all comments for a topic.
+
+**Memory:** Free with `dna_free_feed_comments(comments, count)`
+
+---
+
+### dna_engine_feed_get_category
+
+```c
+dna_request_id_t dna_engine_feed_get_category(
+    dna_engine_t *engine,
+    const char *category,
+    int days_back,
+    dna_feed_topics_cb callback,
+    void *user_data
+);
+```
+
+Gets topics in a category from the last N days using day-bucket indexing.
+
+**Parameters:**
+- `category` - Category name
+- `days_back` - Number of days to look back (1-30)
+- `callback` - Called with topic list
+- `user_data` - User data for callback
+
+**Memory:** Free with `dna_free_feed_topics(topics, count)`
+
+---
+
+### dna_engine_feed_get_all
+
+```c
+dna_request_id_t dna_engine_feed_get_all(
+    dna_engine_t *engine,
+    int days_back,
+    dna_feed_topics_cb callback,
+    void *user_data
+);
+```
+
+Gets all topics from the last N days across all categories.
+
+**Memory:** Free with `dna_free_feed_topics(topics, count)`
+
+---
+
+### Memory Management
+
+```c
+void dna_free_feed_topic(dna_feed_topic_info_t *topic);
+void dna_free_feed_topics(dna_feed_topic_info_t *topics, int count);
+void dna_free_feed_comment(dna_feed_comment_info_t *comment);
+void dna_free_feed_comments(dna_feed_comment_info_t *comments, int count);
+```
 
 ---
 
