@@ -48,9 +48,11 @@ class NameResolverNotifier extends StateNotifier<Map<String, String>> {
       final engine = await _ref.read(engineProvider.future);
       final displayName = await engine.getDisplayName(fingerprint);
 
-      // Cache result
+      // Cache result (use spread + new map to use variable as key)
       if (mounted && displayName.isNotEmpty) {
-        state = {...state, fingerprint: displayName};
+        final newState = Map<String, String>.from(state);
+        newState[fingerprint] = displayName;
+        state = newState;
       }
 
       return displayName;
