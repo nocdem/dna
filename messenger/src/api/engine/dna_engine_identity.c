@@ -1275,6 +1275,26 @@ bool dna_engine_is_transport_ready(dna_engine_t *engine) {
     return engine && engine->messenger && engine->messenger->transport_ctx != NULL;
 }
 
+dna_request_id_t dna_engine_load_identity_minimal(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *password,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.load_identity.fingerprint, fingerprint, 128);
+    params.load_identity.password = password ? strdup(password) : NULL;
+    params.load_identity.minimal = true;
+
+    QGP_LOG_INFO(LOG_TAG, "Load identity (minimal): DHT + polling only, no listeners");
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_LOAD_IDENTITY, &params, cb, user_data);
+}
+
 dna_request_id_t dna_engine_register_name(
     dna_engine_t *engine,
     const char *name,

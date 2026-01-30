@@ -1107,6 +1107,32 @@ DNA_API dna_request_id_t dna_engine_load_identity(
 );
 
 /**
+ * Load identity with minimal initialization (v0.5.24+, v0.6.15+)
+ *
+ * Used by Android background service (DnaMessengerService) when starting
+ * without Flutter UI. Performs minimal initialization to save resources:
+ * - Initializes DHT connection
+ * - Starts offline message polling
+ * - Does NOT start transport layer
+ * - Does NOT start presence heartbeat
+ * - Does NOT retry pending messages
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Identity fingerprint (128 hex chars)
+ * @param password    Password for encrypted keys (NULL if unencrypted)
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_load_identity_minimal(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *password,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
  * Check if identity is loaded
  *
  * @param engine    Engine instance
