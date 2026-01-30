@@ -830,34 +830,48 @@ dna_request_id_t dna_engine_check_offline_messages_from(
     void *user_data
 ) {
     if (!engine || !contact_fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
-    if (!engine->identity_loaded || !engine->messenger) {
-        callback(1, DNA_ENGINE_ERROR_NO_IDENTITY, user_data);
-        return 1;
-    }
 
     size_t fp_len = strlen(contact_fingerprint);
     if (fp_len < 64) {
         QGP_LOG_ERROR(LOG_TAG, "[OFFLINE] Invalid fingerprint length: %zu", fp_len);
-        callback(1, DNA_ENGINE_ERROR_INVALID_PARAM, user_data);
-        return 1;
+        return DNA_REQUEST_ID_INVALID;
     }
+
+    /* Submit task to worker thread - avoids blocking Flutter main thread */
+    dna_task_params_t params = {0};
+    strncpy(params.check_offline_messages_from.contact_fingerprint, contact_fingerprint, 128);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_CHECK_OFFLINE_MESSAGES_FROM, &params, cb, user_data);
+}
+
+/* Handler for TASK_CHECK_OFFLINE_MESSAGES_FROM - runs on worker thread */
+void dna_handle_check_offline_messages_from(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    const char *contact_fp = task->params.check_offline_messages_from.contact_fingerprint;
 
     /* Check offline messages from specific contact's outbox.
      * This is faster than checking all contacts and provides
      * immediate updates when entering a specific chat. */
-    QGP_LOG_INFO(LOG_TAG, "[OFFLINE] Checking messages from %.20s...", contact_fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "[OFFLINE] Checking messages from %.20s... (async)", contact_fp);
 
     size_t offline_count = 0;
-    int rc = messenger_transport_check_offline_messages(engine->messenger, contact_fingerprint, true, &offline_count);
+    int rc = messenger_transport_check_offline_messages(engine->messenger, contact_fp, true, &offline_count);
     if (rc == 0) {
-        QGP_LOG_INFO(LOG_TAG, "[OFFLINE] From %.20s...: %zu new messages", contact_fingerprint, offline_count);
+        QGP_LOG_INFO(LOG_TAG, "[OFFLINE] From %.20s...: %zu new messages", contact_fp, offline_count);
     } else {
-        QGP_LOG_WARN(LOG_TAG, "[OFFLINE] Check from %.20s... failed: %d", contact_fingerprint, rc);
+        QGP_LOG_WARN(LOG_TAG, "[OFFLINE] Check from %.20s... failed: %d", contact_fp, rc);
+        error = DNA_ENGINE_ERROR_NETWORK;
     }
 
-    /* Call completion callback (0 = success for any result including 0 messages) */
-    callback(1, rc == 0 ? DNA_OK : DNA_ENGINE_ERROR_NETWORK, user_data);
-    return 1;
+done:
+    task->callback.completion(task->request_id, error, task->user_data);
 }
 
 int dna_engine_get_unread_count(

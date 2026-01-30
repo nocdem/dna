@@ -92,6 +92,7 @@ typedef enum {
     TASK_GET_CONVERSATION,
     TASK_GET_CONVERSATION_PAGE,
     TASK_CHECK_OFFLINE_MESSAGES,
+    TASK_CHECK_OFFLINE_MESSAGES_FROM,
 
     /* Groups */
     TASK_GET_GROUPS,
@@ -242,6 +243,11 @@ typedef union {
     struct {
         bool publish_watermarks;  /* false for background caching */
     } check_offline_messages;
+
+    /* Check offline messages from specific contact (async) */
+    struct {
+        char contact_fingerprint[129];
+    } check_offline_messages_from;
 
     /* Create group */
     struct {
@@ -717,6 +723,7 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_conversation_page(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_check_offline_messages_from(dna_engine_t *engine, dna_task_t *task);
 
 /* Groups */
 void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task);

@@ -1005,6 +1005,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_CHECK_OFFLINE_MESSAGES:
             dna_handle_check_offline_messages(engine, task);
             break;
+        case TASK_CHECK_OFFLINE_MESSAGES_FROM:
+            dna_handle_check_offline_messages_from(engine, task);
+            break;
 
         /* Groups */
         case TASK_GET_GROUPS:
