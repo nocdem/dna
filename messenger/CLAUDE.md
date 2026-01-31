@@ -235,12 +235,9 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 3. **UPDATE** the "Current" column in this section
 4. **UPDATE** the version in CLAUDE.md header line
 5. **COMMIT** with version in commit message (e.g., "fix: Something (v0.3.39)")
-6. **POST TO DNA UPDATES FEED** (after push): Post the commit message to the feed:
-   ```bash
-   cd /opt/dna-messenger/build
-   ./cli/dna-messenger-cli feeds comment 765ed03d-0c28-4d17-91bd-683a713a63e8 "<commit message>"
-   ```
-7. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
+6. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
+
+**NOTE:** Feed announcements are posted in CHECKPOINT 9 (release only), not on every commit.
 
 **IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.
 
@@ -295,7 +292,17 @@ Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
    ./cli/dna-messenger-cli check-version
    ```
 
-6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published"
+6. **POST TO DNA UPDATES FEED** - Announce release to users:
+   ```bash
+   ./cli/dna-messenger-cli feeds comment 765ed03d-0c28-4d17-91bd-683a713a63e8 \
+       "🚀 New release available! Please update to Lib v0.6.98 / App v0.100.76"
+   ```
+
+   **Format:** `🚀 New release available! Please update to Lib vX.Y.Z / App vX.Y.Z`
+   - Always use both version numbers (library AND app)
+   - Users subscribed to DNA Updates will see this in their Feeds
+
+7. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published"
 
 **DHT Notes:**
 - Uses Claude's identity (first publisher owns the DHT key)
