@@ -549,7 +549,6 @@ class GroupChatScreen extends ConsumerStatefulWidget {
 class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
   final _messageController = TextEditingController();
   final _scrollController = ScrollController();
-  bool _isSending = false;
 
   @override
   void initState() {
@@ -689,35 +688,25 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
                   Builder(
                     builder: (context) {
                       final hasText = _messageController.text.trim().isNotEmpty;
-                      final canSend = hasText && !_isSending;
                       return Material(
-                        color: canSend
+                        color: hasText
                             ? theme.colorScheme.primary
                             : theme.colorScheme.onSurface.withAlpha(30),
                         shape: const CircleBorder(),
                         child: InkWell(
-                          onTap: canSend ? _sendMessage : null,
+                          onTap: hasText ? _sendMessage : null,
                           customBorder: const CircleBorder(),
                           child: SizedBox(
                             width: 44,
                             height: 44,
                             child: Center(
-                              child: _isSending
-                                  ? SizedBox(
-                                      width: 18,
-                                      height: 18,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: theme.colorScheme.onSurface.withAlpha(100),
-                                      ),
-                                    )
-                                  : FaIcon(
-                                      FontAwesomeIcons.solidPaperPlane,
-                                      size: 18,
-                                      color: canSend
-                                          ? theme.colorScheme.onPrimary
-                                          : theme.colorScheme.onSurface.withAlpha(100),
-                                    ),
+                              child: FaIcon(
+                                FontAwesomeIcons.solidPaperPlane,
+                                size: 18,
+                                color: hasText
+                                    ? theme.colorScheme.onPrimary
+                                    : theme.colorScheme.onSurface.withAlpha(100),
+                              ),
                             ),
                           ),
                         ),
@@ -812,33 +801,43 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
     );
   }
 
-  Future<void> _sendMessage() async {
+  void _sendMessage() {
     final message = _messageController.text.trim();
     if (message.isEmpty) return;
 
-    setState(() => _isSending = true);
     _messageController.clear();
 
-    try {
-      await ref.read(groupsProvider.notifier).sendGroupMessage(
-        widget.group.uuid,
-        message,
-      );
-      // Refresh conversation to show the sent message
-      ref.invalidate(groupConversationProvider(widget.group.uuid));
-    } catch (e) {
+    // Queue message for async sending (returns immediately)
+    final result = ref.read(groupsProvider.notifier).queueGroupMessage(
+      widget.group.uuid,
+      message,
+    );
+
+    if (result == -1) {
+      // Queue full - show error and restore text
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to send message: $e'),
+            content: const Text('Message queue full. Please wait and try again.'),
             backgroundColor: DnaColors.snackbarError,
           ),
         );
+        _messageController.text = message;
       }
-    } finally {
+    } else if (result < 0) {
+      // Other error
       if (mounted) {
-        setState(() => _isSending = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Failed to send message'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+        _messageController.text = message;
       }
+    } else {
+      // Success - refresh conversation to show the sent message
+      ref.invalidate(groupConversationProvider(widget.group.uuid));
     }
   }
 

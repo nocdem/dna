@@ -682,10 +682,11 @@ int dna_engine_queue_message(
         return -1; /* No slot available */
     }
 
-    /* Fill the slot */
+    /* Fill the slot (DM message: recipient set, group_uuid empty) */
     dna_message_queue_entry_t *entry = &engine->message_queue.entries[slot_index];
     strncpy(entry->recipient, recipient_fingerprint, 128);
     entry->recipient[128] = '\0';
+    entry->group_uuid[0] = '\0';  /* Empty for DM messages */
     entry->message = strdup(message);
     if (!entry->message) {
         pthread_mutex_unlock(&engine->message_queue.mutex);

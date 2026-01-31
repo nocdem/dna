@@ -37,10 +37,23 @@ class GroupsNotifier extends AsyncNotifier<List<Group>> {
     return uuid;
   }
 
-  /// Send message to a group
+  /// Send message to a group (async, awaits completion)
   Future<void> sendGroupMessage(String groupUuid, String message) async {
     final engine = await ref.read(engineProvider.future);
     await engine.sendGroupMessage(groupUuid, message);
+  }
+
+  /// Queue group message for async sending (fire-and-forget)
+  ///
+  /// Returns immediately with queue slot ID. Use for optimistic UI.
+  /// Returns:
+  /// - >= 0: queue slot ID (success)
+  /// - -1: queue full
+  /// - -2: invalid args or not initialized
+  int queueGroupMessage(String groupUuid, String message) {
+    final engine = ref.read(engineProvider).valueOrNull;
+    if (engine == null) return -2;
+    return engine.queueGroupMessage(groupUuid, message);
   }
 
   /// Sync group metadata and GEK from DHT

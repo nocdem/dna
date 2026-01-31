@@ -1764,6 +1764,20 @@ class DnaBindings {
     return _dna_engine_queue_message(engine, recipient_fingerprint, message);
   }
 
+  // Queue group message for async sending (returns immediately)
+  late final _dna_engine_queue_group_message = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<Utf8>)>('dna_engine_queue_group_message');
+
+  int dna_engine_queue_group_message(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> group_uuid,
+    Pointer<Utf8> message,
+  ) {
+    return _dna_engine_queue_group_message(engine, group_uuid, message);
+  }
+
   // Get message queue capacity
   late final _dna_engine_get_message_queue_capacity = _lib.lookupFunction<
       Int32 Function(Pointer<dna_engine_t>),

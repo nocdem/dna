@@ -437,10 +437,11 @@ typedef struct {
 } dna_name_cache_entry_t;
 
 /**
- * Message queue entry for async sending
+ * Message queue entry for async sending (DM and Group messages)
  */
 typedef struct {
-    char recipient[129];
+    char recipient[129];     /* DM recipient fingerprint (empty if group message) */
+    char group_uuid[37];     /* Group UUID (empty if DM message) */
     char *message;           /* Heap allocated, queue owns */
     int slot_id;             /* Unique slot ID for tracking */
     bool in_use;             /* True if slot contains valid message */

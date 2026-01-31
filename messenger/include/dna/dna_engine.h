@@ -1924,6 +1924,25 @@ DNA_API dna_request_id_t dna_engine_send_group_message(
 );
 
 /**
+ * Queue group message for async sending (fire-and-forget)
+ *
+ * Same as dna_engine_send_group_message but returns immediately.
+ * Message is queued and sent in background. Use for optimistic UI.
+ *
+ * @param engine     Engine instance
+ * @param group_uuid Group UUID
+ * @param message    Message text
+ * @return           >= 0: queue slot ID (success)
+ *                   -1: queue full
+ *                   -2: invalid args or not initialized
+ */
+DNA_API int dna_engine_queue_group_message(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    const char *message
+);
+
+/**
  * Get group conversation messages
  *
  * Retrieves all messages from a group, decrypted with GEK.

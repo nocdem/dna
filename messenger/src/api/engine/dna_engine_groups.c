@@ -264,8 +264,28 @@ void dna_handle_send_group_message(dna_engine_t *engine, dna_task_t *task) {
         error = DNA_ENGINE_ERROR_NETWORK;
     }
 
+    /* Clear message queue slot if this was a queued message */
+    intptr_t slot_id = (intptr_t)task->user_data;
+    if (slot_id > 0) {
+        pthread_mutex_lock(&engine->message_queue.mutex);
+        for (int i = 0; i < engine->message_queue.capacity; i++) {
+            if (engine->message_queue.entries[i].in_use &&
+                engine->message_queue.entries[i].slot_id == slot_id) {
+                free(engine->message_queue.entries[i].message);
+                engine->message_queue.entries[i].message = NULL;
+                engine->message_queue.entries[i].in_use = false;
+                engine->message_queue.size--;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&engine->message_queue.mutex);
+    }
+
 done:
-    task->callback.completion(task->request_id, error, task->user_data);
+    /* Only call callback if one was provided (not for queued messages) */
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
 }
 
 void dna_handle_get_group_conversation(dna_engine_t *engine, dna_task_t *task) {
@@ -641,6 +661,73 @@ dna_request_id_t dna_engine_send_group_message(
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_SEND_GROUP_MESSAGE, &params, cb, user_data);
+}
+
+int dna_engine_queue_group_message(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    const char *message
+) {
+    if (!engine || !group_uuid || !message) {
+        return -2; /* Invalid args */
+    }
+    if (!engine->identity_loaded) {
+        return -2; /* No identity loaded */
+    }
+
+    /* Capture timestamp NOW - this is when user clicked send */
+    time_t queued_at = time(NULL);
+
+    pthread_mutex_lock(&engine->message_queue.mutex);
+
+    /* Check if queue is full */
+    if (engine->message_queue.size >= engine->message_queue.capacity) {
+        pthread_mutex_unlock(&engine->message_queue.mutex);
+        return -1; /* Queue full */
+    }
+
+    /* Find empty slot */
+    int slot_index = -1;
+    for (int i = 0; i < engine->message_queue.capacity; i++) {
+        if (!engine->message_queue.entries[i].in_use) {
+            slot_index = i;
+            break;
+        }
+    }
+
+    if (slot_index < 0) {
+        pthread_mutex_unlock(&engine->message_queue.mutex);
+        return -1; /* No slot available */
+    }
+
+    /* Fill the slot (group message: recipient empty, group_uuid set) */
+    dna_message_queue_entry_t *entry = &engine->message_queue.entries[slot_index];
+    entry->recipient[0] = '\0';  /* Empty for group messages */
+    strncpy(entry->group_uuid, group_uuid, 36);
+    entry->group_uuid[36] = '\0';
+    entry->message = strdup(message);
+    if (!entry->message) {
+        pthread_mutex_unlock(&engine->message_queue.mutex);
+        return -2; /* Memory error */
+    }
+    entry->slot_id = engine->message_queue.next_slot_id++;
+    entry->in_use = true;
+    entry->queued_at = queued_at;
+    engine->message_queue.size++;
+
+    int slot_id = entry->slot_id;
+    pthread_mutex_unlock(&engine->message_queue.mutex);
+
+    /* Submit task to worker queue (fire-and-forget, no callback) */
+    dna_task_params_t params = {0};
+    strncpy(params.send_group_message.group_uuid, group_uuid, 36);
+    params.send_group_message.message = strdup(message);
+    if (params.send_group_message.message) {
+        dna_task_callback_t cb = { .completion = NULL };
+        dna_submit_task(engine, TASK_SEND_GROUP_MESSAGE, &params, cb, (void*)(intptr_t)slot_id);
+    }
+
+    return slot_id;
 }
 
 dna_request_id_t dna_engine_get_group_conversation(

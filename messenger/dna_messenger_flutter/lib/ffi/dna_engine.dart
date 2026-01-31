@@ -2390,6 +2390,29 @@ class DnaEngine {
     }
   }
 
+  /// Queue group message for async sending (returns immediately)
+  ///
+  /// Returns:
+  /// - >= 0: queue slot ID (success)
+  /// - -1: queue full
+  /// - -2: invalid args or not initialized
+  int queueGroupMessage(String groupUuid, String message) {
+    final groupPtr = groupUuid.toNativeUtf8();
+    final messagePtr = message.toNativeUtf8();
+
+    try {
+      final result = _bindings.dna_engine_queue_group_message(
+        _engine,
+        groupPtr.cast(),
+        messagePtr.cast(),
+      );
+      return result;
+    } finally {
+      calloc.free(groupPtr);
+      calloc.free(messagePtr);
+    }
+  }
+
   /// Get message queue capacity
   int get messageQueueCapacity => _bindings.dna_engine_get_message_queue_capacity(_engine);
 
