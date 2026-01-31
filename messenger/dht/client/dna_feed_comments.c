@@ -52,6 +52,20 @@ extern int pqcrystals_dilithium5_ref_signature(uint8_t *sig, size_t *siglen,
                                                 const uint8_t *sk);
 
 /* ============================================================================
+ * Comparison Functions for qsort
+ * ========================================================================== */
+
+/* Compare comments by created_at descending (newest first) */
+static int compare_comment_by_time_desc(const void *a, const void *b) {
+    const dna_feed_comment_t *ca = (const dna_feed_comment_t *)a;
+    const dna_feed_comment_t *cb = (const dna_feed_comment_t *)b;
+    /* Descending: b - a */
+    if (cb->created_at > ca->created_at) return 1;
+    if (cb->created_at < ca->created_at) return -1;
+    return 0;
+}
+
+/* ============================================================================
  * JSON Serialization
  * ========================================================================== */
 
@@ -267,10 +281,11 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
 
     uint8_t **values = NULL;
     size_t *lens = NULL;
+    uint64_t *value_ids = NULL;
     size_t value_count = 0;
 
-    ret = dht_get_all(dht_ctx, (const uint8_t *)comments_key, strlen(comments_key),
-                      &values, &lens, &value_count);
+    ret = dht_get_all_with_ids(dht_ctx, (const uint8_t *)comments_key, strlen(comments_key),
+                                &values, &lens, &value_ids, &value_count);
 
     if (ret == 0 && value_count > 0) {
         /* Find my existing comments by author fingerprint */
@@ -334,6 +349,7 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
         }
         free(values);
         free(lens);
+        free(value_ids);
     }
 
     QGP_LOG_INFO(LOG_TAG, "Found %zu existing comments from this author\n", my_count);
@@ -403,13 +419,14 @@ int dna_feed_comments_get(dht_context_t *dht_ctx,
 
     QGP_LOG_INFO(LOG_TAG, "Fetching comments for topic %s...\n", topic_uuid);
 
-    /* Fetch all multi-owner values */
+    /* Fetch all multi-owner values with value_ids for deduplication */
     uint8_t **values = NULL;
     size_t *value_lens = NULL;
+    uint64_t *value_ids = NULL;
     size_t value_count = 0;
 
-    int ret = dht_get_all(dht_ctx, (const uint8_t *)comments_key, strlen(comments_key),
-                          &values, &value_lens, &value_count);
+    int ret = dht_get_all_with_ids(dht_ctx, (const uint8_t *)comments_key, strlen(comments_key),
+                                    &values, &value_lens, &value_ids, &value_count);
 
     if (ret != 0 || value_count == 0) {
         *comments_out = NULL;
@@ -484,6 +501,7 @@ int dna_feed_comments_get(dht_context_t *dht_ctx,
     }
     free(values);
     free(value_lens);
+    free(value_ids);
 
     if (parsed == 0) {
         free(comments);
@@ -492,18 +510,10 @@ int dna_feed_comments_get(dht_context_t *dht_ctx,
         return -2;
     }
 
-    /* Sort comments by created_at (descending - newest first) */
-    for (size_t i = 0; i < parsed - 1; i++) {
-        for (size_t j = i + 1; j < parsed; j++) {
-            if (comments[i].created_at < comments[j].created_at) {
-                dna_feed_comment_t tmp = comments[i];
-                comments[i] = comments[j];
-                comments[j] = tmp;
-            }
-        }
-    }
+    /* Sort by created_at descending (newest first) */
+    qsort(comments, parsed, sizeof(dna_feed_comment_t), compare_comment_by_time_desc);
 
-    QGP_LOG_INFO(LOG_TAG, "Parsed %zu comments\n", parsed);
+    QGP_LOG_INFO(LOG_TAG, "Fetched %zu comments\n", parsed);
 
     *comments_out = comments;
     *count_out = parsed;
