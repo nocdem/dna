@@ -754,19 +754,14 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
           );
         }
 
-        // Scroll to bottom when new messages arrive
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_scrollController.hasClients) {
-            _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-          }
-        });
-
         return ListView.builder(
           controller: _scrollController,
+          reverse: true,
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
           itemCount: messages.length,
           itemBuilder: (context, index) {
-            final message = messages[index];
+            // Reverse index since list is reversed (newest at bottom)
+            final message = messages[messages.length - 1 - index];
             return _GroupMessageBubble(
               message: message,
               theme: theme,
