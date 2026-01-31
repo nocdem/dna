@@ -492,10 +492,10 @@ int dna_feed_comments_get(dht_context_t *dht_ctx,
         return -2;
     }
 
-    /* Sort comments by created_at (ascending) */
+    /* Sort comments by created_at (descending - newest first) */
     for (size_t i = 0; i < parsed - 1; i++) {
         for (size_t j = i + 1; j < parsed; j++) {
-            if (comments[i].created_at > comments[j].created_at) {
+            if (comments[i].created_at < comments[j].created_at) {
                 dna_feed_comment_t tmp = comments[i];
                 comments[i] = comments[j];
                 comments[j] = tmp;

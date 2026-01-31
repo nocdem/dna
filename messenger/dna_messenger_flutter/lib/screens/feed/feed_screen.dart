@@ -678,9 +678,9 @@ class _TopicDetailContent extends ConsumerWidget {
               replyMap[parent]!.add(reply);
             }
 
-            // Sort replies by time within each group
+            // Sort replies by time within each group (newest first)
             for (final list in replyMap.values) {
-              list.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+              list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
             }
 
             // Build flat list with threading
