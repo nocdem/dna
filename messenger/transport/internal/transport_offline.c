@@ -103,6 +103,8 @@ int transport_queue_offline_message(
  * @param sender_fp If non-NULL, fetch only from this contact. If NULL, fetch from all contacts.
  * @param publish_watermarks If true, publish watermarks to tell senders we received their messages.
  *                           Set false for background service caching (user hasn't read them yet).
+ * @param force_full_sync If true, always do full 8-day sync (bypass smart sync).
+ *                        Use at startup to catch messages received by other devices.
  * @param messages_received Output number of messages delivered (optional)
  * @return 0 on success, -1 on error
  */
@@ -110,6 +112,7 @@ int transport_check_offline_messages(
     transport_t *ctx,
     const char *sender_fp,
     bool publish_watermarks,
+    bool force_full_sync,
     size_t *messages_received)
 {
     QGP_LOG_DEBUG(LOG_TAG, "Checking offline messages (sender=%s)\n",
@@ -180,11 +183,12 @@ int transport_check_offline_messages(
     dht_offline_message_t *messages = NULL;
     size_t count = 0;
 
-    /* Smart sync: check oldest last_sync timestamp to decide full vs recent sync */
+    /* Smart sync: check oldest last_sync timestamp to decide full vs recent sync.
+     * If force_full_sync is true, bypass smart sync logic entirely (startup case). */
     uint64_t now = (uint64_t)time(NULL);
-    bool need_full_sync = false;
+    bool need_full_sync = force_full_sync;  /* Start with force flag */
 
-    if (!sender_fp) {  /* All contacts mode - check timestamps */
+    if (!need_full_sync && !sender_fp) {  /* All contacts mode - check timestamps */
         uint64_t oldest_sync = now;
 
         for (size_t i = 0; i < sender_count; i++) {

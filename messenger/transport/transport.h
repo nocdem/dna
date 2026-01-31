@@ -156,6 +156,8 @@ int transport_register_presence(transport_t *ctx);
  * @param sender_fp If non-NULL, fetch only from this contact's outbox. If NULL, fetch from all contacts.
  * @param publish_watermarks If true, publish watermarks to tell senders we received messages.
  *                           Set false for background caching (user hasn't read them yet).
+ * @param force_full_sync If true, always do full 8-day sync (bypass smart sync).
+ *                        Use at startup to catch messages received by other devices.
  * @param messages_received Output - number of messages retrieved (can be NULL)
  * @return 0 on success, -1 on failure
  */
@@ -163,6 +165,7 @@ int transport_check_offline_messages(
     transport_t *ctx,
     const char *sender_fp,
     bool publish_watermarks,
+    bool force_full_sync,
     size_t *messages_received
 );
 

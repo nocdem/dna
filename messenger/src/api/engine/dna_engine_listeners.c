@@ -411,6 +411,26 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
 
     QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Found %zu contacts in database", list->count);
 
+    /* Sync DM messages from all contacts BEFORE setting up listeners.
+     * Use FULL sync (8 days) to catch all messages received by other devices.
+     * This matches group behavior (dna_engine_subscribe_all_groups does sync first). */
+    if (engine->messenger) {
+        size_t dm_sync_count = 0;
+        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Full DM sync before listener setup...");
+        int sync_result = messenger_transport_check_offline_messages(
+            engine->messenger,
+            NULL,           /* All contacts */
+            false,          /* Don't publish ACKs yet - user hasn't read */
+            true,           /* Force FULL sync (8 days) */
+            &dm_sync_count
+        );
+        if (sync_result == 0) {
+            QGP_LOG_INFO(LOG_TAG, "[LISTEN] DM sync complete: %zu messages", dm_sync_count);
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN] DM sync failed (non-fatal): %d", sync_result);
+        }
+    }
+
     /* PERF: Start listeners in parallel (mobile performance optimization)
      * Uses centralized thread pool for parallel listener setup.
      * Each task sets up outbox + presence + ACK listeners for one contact. */

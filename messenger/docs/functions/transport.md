@@ -32,7 +32,7 @@ Transport layer providing DHT-based presence system and offline message queue.
 
 | Function | Description |
 |----------|-------------|
-| `int transport_check_offline_messages(transport_t*, const char* sender_fp, size_t*)` | Check for offline messages in DHT (sender_fp=NULL for all contacts) |
+| `int transport_check_offline_messages(transport_t*, const char* sender_fp, bool publish_watermarks, bool force_full_sync, size_t*)` | Check for offline messages in DHT (sender_fp=NULL for all contacts, force_full_sync=true bypasses smart sync for startup) |
 | `int transport_queue_offline_message(transport_t*, const char*, const char*, const uint8_t*, size_t, uint64_t)` | Queue message for offline recipient |
 
 ---
@@ -66,7 +66,7 @@ Transport layer providing DHT-based presence system and offline message queue.
 
 | Function | Description |
 |----------|-------------|
-| `int messenger_transport_check_offline_messages(messenger_context_t*, const char*, size_t*)` | Poll DHT for offline messages (2-minute interval) |
+| `int messenger_transport_check_offline_messages(messenger_context_t*, const char*, bool publish_watermarks, bool force_full_sync, size_t*)` | Poll DHT for offline messages (force_full_sync=true for startup sync, false for periodic polling) |
 
 ---
 

@@ -721,7 +721,9 @@ void transport_free(transport_t *ctx);
 int transport_register_presence(transport_t *ctx);  // Periodic (5 min)
 
 // Offline messaging (DHT Spillway)
-int transport_check_offline_messages(transport_t *ctx, const char *sender_fp, size_t *count);
+int transport_check_offline_messages(transport_t *ctx, const char *sender_fp,
+                                     bool publish_watermarks, bool force_full_sync,
+                                     size_t *count);
 int transport_queue_offline_message(transport_t *ctx, const char *sender,
                                     const char *recipient, const uint8_t *message,
                                     size_t len, uint64_t seq_num);

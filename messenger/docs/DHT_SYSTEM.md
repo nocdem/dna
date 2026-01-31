@@ -745,9 +745,11 @@ Both DMs and Groups use the same smart sync strategy for efficient message retri
 
 **DM Implementation:**
 - `contacts.last_dm_sync` column tracks per-contact sync timestamps
-- `transport_check_offline_messages()` checks oldest timestamp
+- `transport_check_offline_messages(..., force_full_sync)` checks oldest timestamp
+- If `force_full_sync=true` (startup) → always full 8-day sync
 - If any contact > 3 days since sync OR never synced → full 8-day sync
 - Timestamps updated on successful sync
+- **Startup sync (v0.6.97):** `dna_engine_listen_all_contacts()` calls with `force_full_sync=true` to catch messages received by other devices
 
 **Group Implementation:**
 - `group_sync_state.last_sync_timestamp` column tracks per-group sync timestamps

@@ -264,7 +264,7 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
     if (engine->messenger && engine->messenger->transport_ctx) {
         QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: checking for missed messages");
         size_t received = 0;
-        transport_check_offline_messages(engine->messenger->transport_ctx, NULL, true, &received);
+        transport_check_offline_messages(engine->messenger->transport_ctx, NULL, true, false, &received);
         if (received > 0) {
             QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: received %zu missed messages", received);
         }
@@ -769,7 +769,7 @@ static void *background_fetch_thread(void *arg) {
         QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetching from %s... (attempt %d/%d)",
                      sender_fp ? sender_fp : "ALL contacts", attempt + 1, max_retries);
 
-        messenger_transport_check_offline_messages(engine->messenger, sender_fp, true, &offline_count);
+        messenger_transport_check_offline_messages(engine->messenger, sender_fp, true, false, &offline_count);
 
         if (offline_count > 0) {
             QGP_LOG_INFO(LOG_TAG, "[BACKGROUND-THREAD] Fetch complete: %zu messages", offline_count);

@@ -312,10 +312,11 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
 
     /* Check DHT offline queue for messages from contacts.
      * publish_acks=true when user is active (notifies senders we received messages).
-     * publish_acks=false for background caching (user hasn't read them yet). */
+     * publish_acks=false for background caching (user hasn't read them yet).
+     * force_full_sync=false: use smart sync (not startup, so incremental is fine). */
     bool publish_acks = task->params.check_offline_messages.publish_watermarks;  /* v15: param name kept for compat */
     size_t offline_count = 0;
-    int rc = messenger_transport_check_offline_messages(engine->messenger, NULL, publish_acks, &offline_count);
+    int rc = messenger_transport_check_offline_messages(engine->messenger, NULL, publish_acks, false, &offline_count);
     if (rc == 0) {
         QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] Direct messages check complete: %zu new (acks=%s)",
                      offline_count, publish_acks ? "yes" : "no");
@@ -858,11 +859,12 @@ void dna_handle_check_offline_messages_from(dna_engine_t *engine, dna_task_t *ta
 
     /* Check offline messages from specific contact's outbox.
      * This is faster than checking all contacts and provides
-     * immediate updates when entering a specific chat. */
+     * immediate updates when entering a specific chat.
+     * force_full_sync=false: use smart sync for single contact check. */
     QGP_LOG_INFO(LOG_TAG, "[OFFLINE] Checking messages from %.20s... (async)", contact_fp);
 
     size_t offline_count = 0;
-    int rc = messenger_transport_check_offline_messages(engine->messenger, contact_fp, true, &offline_count);
+    int rc = messenger_transport_check_offline_messages(engine->messenger, contact_fp, true, false, &offline_count);
     if (rc == 0) {
         QGP_LOG_INFO(LOG_TAG, "[OFFLINE] From %.20s...: %zu new messages", contact_fp, offline_count);
     } else {

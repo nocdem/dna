@@ -872,6 +872,7 @@ int messenger_transport_check_offline_messages(
     messenger_context_t *ctx,
     const char *sender_fp,
     bool publish_watermarks,
+    bool force_full_sync,
     size_t *messages_received)
 {
     if (!ctx || !ctx->transport_enabled || !ctx->transport_ctx) {
@@ -882,11 +883,11 @@ int messenger_transport_check_offline_messages(
         return 0;
     }
 
-    QGP_LOG_DEBUG(LOG_TAG, "Checking for offline messages in DHT (sender=%s, watermarks=%d)...",
-                  sender_fp ? sender_fp : "ALL", publish_watermarks);
+    QGP_LOG_DEBUG(LOG_TAG, "Checking for offline messages in DHT (sender=%s, watermarks=%d, force_full=%d)...",
+                  sender_fp ? sender_fp : "ALL", publish_watermarks, force_full_sync);
 
     size_t count = 0;
-    int result = transport_check_offline_messages(ctx->transport_ctx, sender_fp, publish_watermarks, &count);
+    int result = transport_check_offline_messages(ctx->transport_ctx, sender_fp, publish_watermarks, force_full_sync, &count);
 
     if (result == 0 && count > 0) {
         QGP_LOG_INFO(LOG_TAG, "Retrieved %zu offline messages from DHT\n", count);
