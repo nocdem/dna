@@ -9,8 +9,17 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 
 import 'dna_bindings.dart';
+
+// Debug logging helper - only prints in debug mode
+void _debugLog(String message) {
+  if (kDebugMode) {
+    // ignore: avoid_print
+    print(message);
+  }
+}
 
 // =============================================================================
 // DART MODELS
@@ -873,10 +882,11 @@ class FeedTopic {
   String get categoryName => categoryId.toLowerCase();
 }
 
-/// Feed comment information (v0.6.91+)
+/// Feed comment information (v0.6.91+, with reply support v0.6.96+)
 class FeedComment {
   final String uuid;
   final String topicUuid;
+  final String? parentCommentUuid; // Reply-to comment UUID (null = top-level)
   final String authorFingerprint;
   final String body;
   final List<String> mentions;
@@ -885,11 +895,15 @@ class FeedComment {
   FeedComment({
     required this.uuid,
     required this.topicUuid,
+    this.parentCommentUuid,
     required this.authorFingerprint,
     required this.body,
     required this.mentions,
     required this.createdAt,
   });
+
+  /// True if this is a reply to another comment
+  bool get isReply => parentCommentUuid != null && parentCommentUuid!.isNotEmpty;
 
   factory FeedComment.fromNative(dna_feed_comment_info_t native) {
     // Parse mentions from flattened array - up to 10 mentions, 129 chars each
@@ -906,9 +920,13 @@ class FeedComment {
       }
     }
 
+    // Parse parent_comment_uuid (empty = top-level)
+    final parentUuid = native.parent_comment_uuid.toDartString(37);
+
     return FeedComment(
       uuid: native.comment_uuid.toDartString(37),
       topicUuid: native.topic_uuid.toDartString(37),
+      parentCommentUuid: parentUuid.isNotEmpty ? parentUuid : null,
       authorFingerprint: native.author_fingerprint.toDartString(129),
       body: native.body != nullptr ? native.body.toDartString() : '',
       mentions: mentions,
@@ -1166,6 +1184,8 @@ class DnaEngine {
   NativeCallable<DnaEventCbNative>? _eventCallback;
 
   // Async creation tracking (for cancellation on early dispose)
+  // Stored to prevent GC of NativeCallable during async creation
+  // ignore: unused_field
   NativeCallable<DnaEngineCreatedCbNative>? _createCallback;
   Pointer<Bool>? _createCancelledPtr;
 
@@ -1289,13 +1309,13 @@ class DnaEngine {
     // CRITICAL: Check _isDisposed BEFORE dereferencing any pointers!
     // After dispose, C memory may be freed - dereferencing would crash.
     if (_isDisposed) {
-      print('[DART-EVENT] Callback invoked after dispose, ignoring');
+      _debugLog('[DART-EVENT] Callback invoked after dispose, ignoring');
       return;
     }
 
     final event = eventPtr.ref;
     final type = event.type;
-    print('[DART-EVENT] _onEventReceived called, type=$type');
+    _debugLog('[DART-EVENT] _onEventReceived called, type=$type');
 
     DnaEvent? dartEvent;
 
@@ -1351,7 +1371,7 @@ class DnaEngine {
                           (event.data[2] << 16) | (event.data[3] << 24);
         final status = event.data[4] | (event.data[5] << 8) |
                        (event.data[6] << 16) | (event.data[7] << 24);
-        print('[DART-EVENT] MESSAGE_SENT: messageId=$messageId, status=$status');
+        _debugLog('[DART-EVENT] MESSAGE_SENT: messageId=$messageId, status=$status');
         dartEvent = MessageSentEvent(messageId);
         break;
       case DnaEventType.DNA_EVENT_MESSAGE_DELIVERED:
@@ -1498,7 +1518,7 @@ class DnaEngine {
     }
 
     if (dartEvent != null) {
-      print('[DART-EVENT] Adding to stream: ${dartEvent.runtimeType}');
+      _debugLog('[DART-EVENT] Adding to stream: ${dartEvent.runtimeType}');
       _eventController.add(dartEvent);
     }
 
@@ -4642,9 +4662,6 @@ class DnaEngine {
     }
   }
 
-  /// Dilithium5 public key size is 2592 bytes
-  static const int _dilithium5PubKeyLen = 2592;
-
   /// Get the loaded identity's Dilithium5 signing public key
   ///
   /// Returns the raw public key bytes (2592 bytes for Dilithium5).
@@ -4921,22 +4938,25 @@ class DnaEngine {
     return completer.future;
   }
 
-  /// Add a comment to a feed topic
+  /// Add a comment to a feed topic (optionally as a reply)
   ///
   /// [topicUuid] - UUID of the topic to comment on
   /// [body] - Comment text (max 2000 chars)
+  /// [parentCommentUuid] - UUID of parent comment for replies (null = top-level)
   /// [mentions] - Optional list of fingerprints to @mention
   ///
   /// Returns the created comment on success.
   Future<FeedComment> feedAddComment(
     String topicUuid,
     String body, {
+    String? parentCommentUuid,
     List<String> mentions = const [],
   }) async {
     final completer = Completer<FeedComment>();
     final localId = _nextLocalId++;
 
     final topicPtr = topicUuid.toNativeUtf8();
+    final parentPtr = parentCommentUuid?.toNativeUtf8();
     final bodyPtr = body.toNativeUtf8();
 
     // Convert mentions to JSON array
@@ -4946,6 +4966,7 @@ class DnaEngine {
     void onComplete(int requestId, int error, Pointer<dna_feed_comment_info_t> comment,
                     Pointer<Void> userData) {
       calloc.free(topicPtr);
+      if (parentPtr != null) calloc.free(parentPtr);
       calloc.free(bodyPtr);
       calloc.free(mentionsPtr);
 
@@ -4968,6 +4989,7 @@ class DnaEngine {
     final requestId = _bindings.dna_engine_feed_add_comment(
       _engine,
       topicPtr.cast(),
+      parentPtr?.cast() ?? nullptr,
       bodyPtr.cast(),
       mentionsPtr.cast(),
       callback.nativeFunction.cast(),
@@ -4976,6 +4998,7 @@ class DnaEngine {
 
     if (requestId == 0) {
       calloc.free(topicPtr);
+      if (parentPtr != null) calloc.free(parentPtr);
       calloc.free(bodyPtr);
       calloc.free(mentionsPtr);
       _cleanupRequest(localId);
@@ -5309,47 +5332,47 @@ class DnaEngine {
   /// to take over immediately. Any crash after lock release doesn't matter -
   /// the process will die anyway and OS cleans up memory.
   void dispose() {
-    print('[DART-DISPOSE] dispose() called, _isDisposed=$_isDisposed');
+    _debugLog('[DART-DISPOSE] dispose() called, _isDisposed=$_isDisposed');
     if (_isDisposed) {
-      print('[DART-DISPOSE] Already disposed, returning');
+      _debugLog('[DART-DISPOSE] Already disposed, returning');
       return;
     }
     _isDisposed = true;
-    print('[DART-DISPOSE] Set _isDisposed=true');
+    _debugLog('[DART-DISPOSE] Set _isDisposed=true');
 
     // Check if async creation is still in progress
     // If so, set cancelled flag - C thread will destroy engine and skip callback
     if (_createCancelledPtr != null) {
-      print('[DART-DISPOSE] Async creation in progress, setting cancelled flag');
+      _debugLog('[DART-DISPOSE] Async creation in progress, setting cancelled flag');
       _createCancelledPtr!.value = true;
       // Don't close callback or free pointer here - create()'s finally block will do it
       // Don't call dna_engine_destroy - we don't have an engine yet
       // The C thread will check the flag and destroy the engine itself
-      print('[DART-DISPOSE] Cancelled flag set, returning early');
+      _debugLog('[DART-DISPOSE] Cancelled flag set, returning early');
       return;
     }
 
     // Clear the C callback pointer to prevent new callbacks
-    print('[DART-DISPOSE] Clearing C event callback...');
+    _debugLog('[DART-DISPOSE] Clearing C event callback...');
     _bindings.dna_engine_set_event_callback(_engine, nullptr, nullptr);
-    print('[DART-DISPOSE] C event callback cleared');
+    _debugLog('[DART-DISPOSE] C event callback cleared');
 
     // Clear pending requests
-    print('[DART-DISPOSE] Clearing ${_pendingRequests.length} pending requests...');
+    _debugLog('[DART-DISPOSE] Clearing ${_pendingRequests.length} pending requests...');
     _pendingRequests.clear();
-    print('[DART-DISPOSE] Pending requests cleared');
+    _debugLog('[DART-DISPOSE] Pending requests cleared');
 
     // Close the event controller
-    print('[DART-DISPOSE] Closing event controller...');
+    _debugLog('[DART-DISPOSE] Closing event controller...');
     _eventController.close();
-    print('[DART-DISPOSE] Event controller closed');
+    _debugLog('[DART-DISPOSE] Event controller closed');
 
     // Call destroy - on Android, the C code releases the identity lock FIRST
     // before any cleanup that might crash. Even if a crash occurs later,
     // the lock is already free and ForegroundService can take over.
-    print('[DART-DISPOSE] Calling dna_engine_destroy()...');
+    _debugLog('[DART-DISPOSE] Calling dna_engine_destroy()...');
     _bindings.dna_engine_destroy(_engine);
-    print('[DART-DISPOSE] dna_engine_destroy() returned');
+    _debugLog('[DART-DISPOSE] dna_engine_destroy() returned');
 
     // On Android, skip NativeCallable cleanup - process will die anyway
     // and closing these while callbacks might be in flight causes crashes.
@@ -5358,7 +5381,7 @@ class DnaEngine {
       _eventCallback = null;
     }
     _engine = nullptr;
-    print('[DART-DISPOSE] dispose() complete');
+    _debugLog('[DART-DISPOSE] dispose() complete');
   }
 }
 

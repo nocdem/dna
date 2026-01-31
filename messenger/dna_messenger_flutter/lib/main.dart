@@ -135,7 +135,8 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     // This is set by loadIdentity() after successful load, and by createIdentity() path
     final currentFingerprint = ref.watch(currentFingerprintProvider);
     // Watch appFullyReadyProvider to wait for DHT operations (presence lookups) to complete
-    final appFullyReady = ref.watch(appFullyReadyProvider);
+    // ignore: unused_local_variable
+    final _ = ref.watch(appFullyReadyProvider);
 
     // App lock state
     final appLock = ref.watch(appLockProvider);

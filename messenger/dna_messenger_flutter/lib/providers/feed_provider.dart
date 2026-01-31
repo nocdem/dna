@@ -144,10 +144,23 @@ class TopicCommentsNotifier extends FamilyAsyncNotifier<List<FeedComment>, Strin
     });
   }
 
-  /// Add a comment to this topic
-  Future<FeedComment> addComment(String body, {List<String> mentions = const []}) async {
+  /// Add a comment to this topic (optionally as a reply)
+  ///
+  /// [body] - Comment text
+  /// [parentCommentUuid] - Parent comment UUID for replies (null = top-level)
+  /// [mentions] - List of fingerprints to @mention
+  Future<FeedComment> addComment(
+    String body, {
+    String? parentCommentUuid,
+    List<String> mentions = const [],
+  }) async {
     final engine = await ref.read(engineProvider.future);
-    final comment = await engine.feedAddComment(arg, body, mentions: mentions);
+    final comment = await engine.feedAddComment(
+      arg,
+      body,
+      parentCommentUuid: parentCommentUuid,
+      mentions: mentions,
+    );
     await refresh();
     return comment;
   }
@@ -242,7 +255,7 @@ final isSubscribedProvider = Provider.family<bool, String>((ref, topicUuid) {
   return subscriptions.when(
     data: (subs) => subs.any((s) => s.topicUuid == topicUuid),
     loading: () => false,
-    error: (_, __) => false,
+    error: (e, s) => false,
   );
 });
 
@@ -282,7 +295,7 @@ class SubscribedTopicsNotifier extends AsyncNotifier<List<FeedTopic>> {
         return topics;
       },
       loading: () async => [],
-      error: (_, __) async => [],
+      error: (e, s) async => [],
     );
   }
 

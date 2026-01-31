@@ -1,7 +1,8 @@
 /*
  * DNA Feeds v2 - Comment Operations
  *
- * Implements flat comment system for topics (no nesting, use @mentions).
+ * Implements single-level threaded comment system for topics.
+ * Comments can optionally reply to other comments via parent_comment_uuid.
  * Comments are stored as multi-owner values under topic key.
  *
  * Storage Model:
@@ -11,6 +12,7 @@
  * - Uses topic_uuid instead of post_id
  * - Supports @mentions (up to 10 fingerprints per comment)
  * - Uses UUID for comment identifiers
+ * - Single-level threading via parent_comment_uuid (v0.6.96+)
  * - No voting system (deferred)
  */
 
@@ -60,6 +62,13 @@ static int comment_to_json(const dna_feed_comment_t *comment, bool include_signa
     json_object_object_add(root, "version", json_object_new_int(comment->version));
     json_object_object_add(root, "comment_uuid", json_object_new_string(comment->comment_uuid));
     json_object_object_add(root, "topic_uuid", json_object_new_string(comment->topic_uuid));
+
+    /* Parent comment UUID for replies (omit if empty for backward compat) */
+    if (comment->parent_comment_uuid[0] != '\0') {
+        json_object_object_add(root, "parent_comment_uuid",
+                               json_object_new_string(comment->parent_comment_uuid));
+    }
+
     json_object_object_add(root, "author", json_object_new_string(comment->author_fingerprint));
     json_object_object_add(root, "body", json_object_new_string(comment->body));
     json_object_object_add(root, "created_at", json_object_new_int64(comment->created_at));
@@ -101,6 +110,8 @@ static int comment_from_json(const char *json_str, dna_feed_comment_t *comment_o
         strncpy(comment_out->comment_uuid, json_object_get_string(j_val), DNA_FEED_UUID_LEN - 1);
     if (json_object_object_get_ex(root, "topic_uuid", &j_val))
         strncpy(comment_out->topic_uuid, json_object_get_string(j_val), DNA_FEED_UUID_LEN - 1);
+    if (json_object_object_get_ex(root, "parent_comment_uuid", &j_val))
+        strncpy(comment_out->parent_comment_uuid, json_object_get_string(j_val), DNA_FEED_UUID_LEN - 1);
     if (json_object_object_get_ex(root, "author", &j_val))
         strncpy(comment_out->author_fingerprint, json_object_get_string(j_val), DNA_FEED_FINGERPRINT_LEN - 1);
     if (json_object_object_get_ex(root, "body", &j_val))
@@ -177,6 +188,7 @@ int dna_feed_comment_verify(const dna_feed_comment_t *comment, const uint8_t *pu
 
 int dna_feed_comment_add(dht_context_t *dht_ctx,
                          const char *topic_uuid,
+                         const char *parent_comment_uuid,
                          const char *body,
                          const char **mentions,
                          int mention_count,
@@ -208,6 +220,9 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
 
     /* Copy fields */
     strncpy(comment.topic_uuid, topic_uuid, DNA_FEED_UUID_LEN - 1);
+    if (parent_comment_uuid && parent_comment_uuid[0] != '\0') {
+        strncpy(comment.parent_comment_uuid, parent_comment_uuid, DNA_FEED_UUID_LEN - 1);
+    }
     strncpy(comment.author_fingerprint, author_fingerprint, DNA_FEED_FINGERPRINT_LEN - 1);
     strncpy(comment.body, body, DNA_FEED_MAX_COMMENT_LEN);
     comment.created_at = (uint64_t)time(NULL);

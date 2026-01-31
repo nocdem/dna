@@ -1,10 +1,8 @@
 // Home Screen - Main navigation with drawer
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../providers/providers.dart';
-import '../providers/event_handler.dart';
 import '../theme/dna_theme.dart';
 import '../platform/platform_handler.dart';
 // v0.3.0: IdentitySelectionScreen import removed - single-user model
@@ -373,7 +371,7 @@ class _DrawerHeader extends ConsumerWidget {
           ),
         );
       },
-      error: (_, __) => CircleAvatar(
+      error: (e, s) => CircleAvatar(
         radius: 32,
         backgroundColor: DnaColors.primarySoft,
         child: Text(

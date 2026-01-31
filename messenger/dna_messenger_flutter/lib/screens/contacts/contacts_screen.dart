@@ -7,7 +7,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
-import '../../providers/contact_requests_provider.dart';
 import '../../theme/dna_theme.dart';
 import '../chat/chat_screen.dart';
 import 'contact_requests_screen.dart';
@@ -283,6 +282,7 @@ class _ContactTile extends ConsumerWidget {
     );
   }
 
+  // ignore: unused_element
   String _getInitials(String name) {
     if (name.isEmpty) return '?';
     // Filter out empty strings from split (handles multiple spaces)
@@ -294,6 +294,7 @@ class _ContactTile extends ConsumerWidget {
     return words[0].substring(0, words[0].length.clamp(0, 2)).toUpperCase();
   }
 
+  // ignore: unused_element
   String _shortenFingerprint(String fingerprint) {
     if (fingerprint.length <= 16) return fingerprint;
     return '${fingerprint.substring(0, 8)}...${fingerprint.substring(fingerprint.length - 8)}';
@@ -740,7 +741,8 @@ class _ContactAvatar extends StatelessWidget {
     required this.avatarBytes,
     required this.displayName,
     required this.theme,
-    this.radius = 20,
+    // ignore: unused_element_parameter
+    this.radius = 20, // Default radius, kept for potential custom sizes
   });
 
   @override

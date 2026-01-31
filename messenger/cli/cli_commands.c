@@ -4291,7 +4291,8 @@ int cmd_feeds_comment(dna_engine_t *engine, const char *topic_uuid, const char *
     cli_wait_t wait;
     cli_wait_init(&wait);
 
-    dna_engine_feed_add_comment(engine, topic_uuid, body, mentions_json, on_comment_created, &wait);
+    /* NULL for parent_comment_uuid = top-level comment */
+    dna_engine_feed_add_comment(engine, topic_uuid, NULL, body, mentions_json, on_comment_created, &wait);
     int result = cli_wait_for(&wait);
     cli_wait_destroy(&wait);
 

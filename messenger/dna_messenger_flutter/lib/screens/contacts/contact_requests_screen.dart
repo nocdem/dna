@@ -254,8 +254,8 @@ class _RequestTile extends ConsumerWidget {
     final theme = Theme.of(context);
 
     // Get cached profile for display name fallback (same pattern as contacts_screen.dart)
+    // ignore: unused_local_variable
     final profileCache = ref.watch(contactProfileCacheProvider);
-    final cachedProfile = profileCache[request.fingerprint];
 
     // v0.6.24: UserProfile.displayName removed - use request.displayName (from C library)
     final displayName = request.displayName.isNotEmpty

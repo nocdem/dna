@@ -79,7 +79,7 @@ final pendingRequestCountProvider = Provider<int>((ref) {
   return requests.when(
     data: (list) => list.where((r) => r.status == ContactRequestStatus.pending).length,
     loading: () => 0,
-    error: (_, __) => 0,
+    error: (e, s) => 0,
   );
 });
 
@@ -137,6 +137,6 @@ final isUserBlockedProvider = Provider.family<bool, String>((ref, fingerprint) {
   return blocked.when(
     data: (list) => list.any((b) => b.fingerprint == fingerprint),
     loading: () => false,
-    error: (_, __) => false,
+    error: (e, s) => false,
   );
 });

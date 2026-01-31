@@ -88,7 +88,6 @@ class _AndroidNotificationSettingsState
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(notificationSettingsProvider);
-    final theme = Theme.of(context);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

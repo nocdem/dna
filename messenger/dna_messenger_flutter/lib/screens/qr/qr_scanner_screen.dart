@@ -1,5 +1,5 @@
-/// QR Scanner Screen - Camera-based QR code scanning
-/// Handles lifecycle properly: stops camera when not visible (tab switch, route push, app pause)
+// QR Scanner Screen - Camera-based QR code scanning
+// Handles lifecycle properly: stops camera when not visible (tab switch, route push, app pause)
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

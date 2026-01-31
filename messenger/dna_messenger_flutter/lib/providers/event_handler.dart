@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
 import '../platform/platform_handler.dart';
 import '../utils/lifecycle_observer.dart';
+import '../utils/logger.dart';
 import 'engine_provider.dart';
 import 'contacts_provider.dart';
 import 'messages_provider.dart';
@@ -231,7 +232,7 @@ class EventHandler {
       case MessageSentEvent(messageId: final msgId):
         // Update the pending message status to sent (no full reload needed)
         // The message is already shown via optimistic UI
-        print('[DART-HANDLER] MessageSentEvent received, msgId=$msgId');
+        logPrint('[DART-HANDLER] MessageSentEvent received, msgId=$msgId');
         final selectedContact = _ref.read(selectedContactProvider);
         if (selectedContact != null) {
           _ref.read(conversationProvider(selectedContact.fingerprint).notifier)
@@ -321,7 +322,7 @@ class EventHandler {
 
       case GroupsSyncedEvent(groupsRestored: final count):
         // Groups restored from DHT on new device - refresh groups UI
-        print('[DART-HANDLER] GroupsSyncedEvent: $count groups restored from DHT');
+        logPrint('[DART-HANDLER] GroupsSyncedEvent: $count groups restored from DHT');
         if (count > 0) {
           _ref.invalidate(groupsProvider);
           _ref.invalidate(invitationsProvider);
@@ -330,7 +331,7 @@ class EventHandler {
 
       case ContactsSyncedEvent(contactsSynced: final count):
         // Contacts synced from DHT on new device - refresh contacts UI
-        print('[DART-HANDLER] ContactsSyncedEvent: $count contacts synced from DHT');
+        logPrint('[DART-HANDLER] ContactsSyncedEvent: $count contacts synced from DHT');
         if (count > 0) {
           _ref.read(contactsProvider.notifier).refresh();
           _ref.invalidate(contactRequestsProvider);
@@ -340,18 +341,18 @@ class EventHandler {
       case GeksSyncedEvent(geksSynced: final count):
         // GEKs synced from DHT - group messages can now be decrypted
         // No UI refresh needed, just log for debugging
-        print('[DART-HANDLER] GeksSyncedEvent: GEKs synced from DHT (count=$count)');
+        logPrint('[DART-HANDLER] GeksSyncedEvent: GEKs synced from DHT (count=$count)');
         break;
 
       case FeedTopicCommentEvent(topicUuid: final uuid, commentUuid: final cUuid, authorFingerprint: final author):
         // New comment on a subscribed topic - could trigger notification/refresh
-        print('[DART-HANDLER] FeedTopicCommentEvent: topic=$uuid, comment=$cUuid, author=${author.substring(0, 16)}...');
+        logPrint('[DART-HANDLER] FeedTopicCommentEvent: topic=$uuid, comment=$cUuid, author=${author.substring(0, 16)}...');
         // TODO: Refresh feed topic comments when feed_provider is implemented
         break;
 
       case FeedSubscriptionsSyncedEvent(subscriptionsSynced: final count):
         // Feed subscriptions synced from DHT
-        print('[DART-HANDLER] FeedSubscriptionsSyncedEvent: subscriptions synced from DHT (count=$count)');
+        logPrint('[DART-HANDLER] FeedSubscriptionsSyncedEvent: subscriptions synced from DHT (count=$count)');
         // TODO: Refresh feed subscriptions when feed_provider is implemented
         break;
 
@@ -362,6 +363,7 @@ class EventHandler {
     }
   }
 
+  // ignore: unused_element
   void _updateMessageStatus(int messageId, MessageStatus status) {
     // Update the message status in the current conversation
     final selectedContact = _ref.read(selectedContactProvider);
@@ -373,14 +375,15 @@ class EventHandler {
 
   /// Schedule a debounced conversation refresh
   /// Coalesces rapid MessageSentEvents into a single refresh
+  // ignore: unused_element
   void _scheduleConversationRefresh() {
-    print('[DART-HANDLER] _scheduleConversationRefresh called');
+    logPrint('[DART-HANDLER] _scheduleConversationRefresh called');
     _refreshTimer?.cancel();
     _refreshTimer = Timer(const Duration(milliseconds: 300), () {
       final selectedContact = _ref.read(selectedContactProvider);
-      print('[DART-HANDLER] Timer fired, selectedContact=${selectedContact?.fingerprint?.substring(0, 16) ?? "null"}');
+      logPrint('[DART-HANDLER] Timer fired, selectedContact=${selectedContact?.fingerprint.substring(0, 16) ?? "null"}');
       if (selectedContact != null) {
-        print('[DART-HANDLER] Calling refresh() on conversation');
+        logPrint('[DART-HANDLER] Calling refresh() on conversation');
         // Use refresh() instead of invalidate() to force immediate rebuild
         // invalidate() only marks stale, doesn't trigger rebuild until next read
         _ref.read(conversationProvider(selectedContact.fingerprint).notifier).refresh();

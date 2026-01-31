@@ -3,9 +3,7 @@
 // (messenger_transport_subscribe_to_contacts + messenger_transport_check_offline_messages)
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../ffi/dna_engine.dart';
 import 'engine_provider.dart';
-import 'identity_provider.dart';
 import 'contacts_provider.dart';
 import 'messages_provider.dart';
 
@@ -42,7 +40,8 @@ final backgroundTasksProvider = StateNotifierProvider<BackgroundTasksNotifier, B
 
 class BackgroundTasksNotifier extends StateNotifier<BackgroundTasksState> {
   final Ref _ref;
-  bool _disposed = false;
+  // ignore: unused_field
+  bool _disposed = false; // Kept for potential future use in async guards
 
   BackgroundTasksNotifier(this._ref) : super(const BackgroundTasksState());
 

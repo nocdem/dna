@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
+import '../utils/logger.dart';
 import 'engine_provider.dart';
 import 'contacts_provider.dart';
 
@@ -66,16 +67,16 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
   }
 
   Future<void> refresh() async {
-    print('[DART-REFRESH] refresh() called for $arg');
+    logPrint('[DART-REFRESH] refresh() called for $arg');
     state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
       final page = await engine.getConversationPage(arg, _pageSize, 0);
-      print('[DART-REFRESH] Got ${page.messages.length} messages');
+      logPrint('[DART-REFRESH] Got ${page.messages.length} messages');
       // Log last 3 messages with status
       for (var i = 0; i < page.messages.length && i < 3; i++) {
         final m = page.messages[i];
-        print('[DART-REFRESH] msg[$i] id=${m.id} status=${m.status} outgoing=${m.isOutgoing}');
+        logPrint('[DART-REFRESH] msg[$i] id=${m.id} status=${m.status} outgoing=${m.isOutgoing}');
       }
       ref.read(_paginationStateProvider(arg).notifier).state = _PaginationState(
         total: page.total,

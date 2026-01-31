@@ -328,11 +328,12 @@ typedef union {
         char uuid[37];            /* Topic UUID */
     } feed_delete_topic;
 
-    /* Feed v2: Add comment */
+    /* Feed v2: Add comment (with optional reply support) */
     struct {
-        char topic_uuid[37];      /* Topic UUID */
-        char *body;               /* Heap allocated, task owns (max 2000 chars) */
-        char *mentions_json;      /* JSON array of fingerprints, heap allocated, task owns */
+        char topic_uuid[37];         /* Topic UUID */
+        char parent_comment_uuid[37]; /* Parent comment UUID for replies (empty = top-level) */
+        char *body;                  /* Heap allocated, task owns (max 2000 chars) */
+        char *mentions_json;         /* JSON array of fingerprints, heap allocated, task owns */
     } feed_add_comment;
 
     /* Feed v2: Get comments */

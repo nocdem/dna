@@ -338,11 +338,14 @@ void dna_handle_feed_add_comment(dna_engine_t *engine, dna_task_t *task) {
         }
     }
 
-    /* Add comment */
+    /* Add comment (optionally as reply) */
     char uuid_out[37] = {0};
+    const char *parent_uuid = task->params.feed_add_comment.parent_comment_uuid[0]
+        ? task->params.feed_add_comment.parent_comment_uuid : NULL;
     int ret = dna_feed_comment_add(
         dht,
         task->params.feed_add_comment.topic_uuid,
+        parent_uuid,
         task->params.feed_add_comment.body,
         (const char **)mentions,
         mention_count,
@@ -371,6 +374,10 @@ void dna_handle_feed_add_comment(dna_engine_t *engine, dna_task_t *task) {
 
     strncpy(info->comment_uuid, uuid_out, 36);
     strncpy(info->topic_uuid, task->params.feed_add_comment.topic_uuid, 36);
+    if (task->params.feed_add_comment.parent_comment_uuid[0]) {
+        strncpy(info->parent_comment_uuid,
+                task->params.feed_add_comment.parent_comment_uuid, 36);
+    }
     strncpy(info->author_fingerprint, engine->fingerprint, 128);
     info->body = strdup(task->params.feed_add_comment.body);
     info->created_at = (uint64_t)time(NULL);
@@ -427,6 +434,9 @@ void dna_handle_feed_get_comments(dna_engine_t *engine, dna_task_t *task) {
     for (size_t i = 0; i < count; i++) {
         strncpy(info[i].comment_uuid, comments[i].comment_uuid, 36);
         strncpy(info[i].topic_uuid, comments[i].topic_uuid, 36);
+        if (comments[i].parent_comment_uuid[0]) {
+            strncpy(info[i].parent_comment_uuid, comments[i].parent_comment_uuid, 36);
+        }
         strncpy(info[i].author_fingerprint, comments[i].author_fingerprint, 128);
         info[i].body = strdup(comments[i].body);
         info[i].mention_count = comments[i].mention_count;
@@ -661,6 +671,7 @@ dna_request_id_t dna_engine_feed_delete_topic(
 dna_request_id_t dna_engine_feed_add_comment(
     dna_engine_t *engine,
     const char *topic_uuid,
+    const char *parent_comment_uuid,
     const char *body,
     const char *mentions_json,
     dna_feed_comment_cb callback,
@@ -670,6 +681,9 @@ dna_request_id_t dna_engine_feed_add_comment(
 
     dna_task_params_t params = {0};
     strncpy(params.feed_add_comment.topic_uuid, topic_uuid, 36);
+    if (parent_comment_uuid && parent_comment_uuid[0]) {
+        strncpy(params.feed_add_comment.parent_comment_uuid, parent_comment_uuid, 36);
+    }
     params.feed_add_comment.body = strdup(body);
     if (!params.feed_add_comment.body) return DNA_REQUEST_ID_INVALID;
 

@@ -40,9 +40,7 @@ class AppLockNotifier extends StateNotifier<AppLockState> {
   final LocalAuthentication _localAuth;
 
   AppLockNotifier()
-      : _secureStorage = const FlutterSecureStorage(
-          aOptions: AndroidOptions(encryptedSharedPreferences: true),
-        ),
+      : _secureStorage = const FlutterSecureStorage(),
         _localAuth = LocalAuthentication(),
         super(const AppLockState()) {
     _load();

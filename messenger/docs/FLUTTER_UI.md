@@ -96,7 +96,7 @@ dna_messenger_flutter/
 │   │   ├── theme_provider.dart
 │   │   ├── event_handler.dart      # ✅ Real-time event handling
 │   │   ├── background_tasks_provider.dart  # ✅ DHT offline message polling
-│   │   └── feed_provider.dart      # 🔒 Disabled (placeholder)
+│   │   └── feed_provider.dart      # ✅ Feed topics, comments, subscriptions
 │   ├── screens/                # ✅ UI screens
 │   │   ├── identity/identity_selection_screen.dart  # ✅ BIP39 integrated
 │   │   ├── contacts/contacts_screen.dart
@@ -105,7 +105,7 @@ dna_messenger_flutter/
 │   │   ├── groups/groups_screen.dart   # ✅ + GroupChatScreen
 │   │   ├── wallet/wallet_screen.dart   # ✅ Send dialog
 │   │   ├── settings/settings_screen.dart  # ✅ Name registration
-│   │   ├── feed/feed_screen.dart   # 🔒 Disabled (placeholder)
+│   │   ├── feed/feed_screen.dart   # ✅ Topic-based feeds with threaded comments
 │   │   └── home_screen.dart
 │   ├── widgets/                # ✅ Reusable widgets
 │   │   ├── emoji_shortcode_field.dart  # ✅ Enter to send, :shortcode:
@@ -372,10 +372,12 @@ dna_messenger_flutter/
 
 ## Recent UI Changes (2025-12-06)
 
-**Feed Disabled (PLACEHOLDER):**
-- Feed feature temporarily disabled pending reimplementation
-- Files preserved: `feed_screen.dart`, `feed_provider.dart`
-- Will be reimplemented in future update
+**Feed v2 (Topic-based):**
+- Topic-based public feeds with categories and subscriptions
+- Categories: General, Technology, Help, Announcements, Trading, Off-topic
+- Threaded comments with single-level replies (reply to comment, not reply-to-reply)
+- Reply button on top-level comments, replies shown indented below parent
+- Files: `feed_screen.dart`, `feed_provider.dart`
 
 **Navigation:**
 - Hamburger drawer navigation

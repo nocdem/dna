@@ -458,7 +458,7 @@ final class dna_feed_topic_info_t extends Struct {
   external bool verified;
 }
 
-/// Feed v2: Comment information
+/// Feed v2: Comment information (with reply support v0.6.96+)
 /// Matches dna_feed_comment_info_t from dna_engine.h
 final class dna_feed_comment_info_t extends Struct {
   @Array(37)
@@ -467,13 +467,13 @@ final class dna_feed_comment_info_t extends Struct {
   @Array(37)
   external Array<Char> topic_uuid;
 
+  @Array(37)
+  external Array<Char> parent_comment_uuid; // Reply-to comment UUID (empty = top-level)
+
   @Array(129)
   external Array<Char> author_fingerprint;
 
-  // Padding for pointer alignment
-  @Array(5)
-  external Array<Uint8> _padding1;
-
+  // Padding for pointer alignment (37+37+37+129=240, need 8-byte alignment)
   external Pointer<Utf8> body;
 
   // 10 mentions x 129 chars each = 1290 bytes
@@ -3104,21 +3104,22 @@ class DnaBindings {
 
   late final _dna_engine_feed_add_comment = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
-          Pointer<Utf8>, Pointer<DnaFeedCommentCb>, Pointer<Void>),
+          Pointer<Utf8>, Pointer<Utf8>, Pointer<DnaFeedCommentCb>, Pointer<Void>),
       int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
-          Pointer<Utf8>, Pointer<DnaFeedCommentCb>, Pointer<Void>)>(
+          Pointer<Utf8>, Pointer<Utf8>, Pointer<DnaFeedCommentCb>, Pointer<Void>)>(
       'dna_engine_feed_add_comment');
 
   int dna_engine_feed_add_comment(
     Pointer<dna_engine_t> engine,
     Pointer<Utf8> topicUuid,
+    Pointer<Utf8> parentCommentUuid, // NULL = top-level comment
     Pointer<Utf8> body,
     Pointer<Utf8> mentionsJson,
     Pointer<DnaFeedCommentCb> callback,
     Pointer<Void> userData,
   ) {
     return _dna_engine_feed_add_comment(
-        engine, topicUuid, body, mentionsJson, callback, userData);
+        engine, topicUuid, parentCommentUuid, body, mentionsJson, callback, userData);
   }
 
   late final _dna_engine_feed_get_comments = _lib.lookupFunction<

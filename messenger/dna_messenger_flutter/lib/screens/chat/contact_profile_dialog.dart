@@ -385,6 +385,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
           ElevatedButton(
             onPressed: () async {
               final nickname = controller.text.trim();
+              final messenger = ScaffoldMessenger.of(context);
               Navigator.pop(context);
 
               try {
@@ -396,7 +397,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
                   setState(() {
                     _currentNickname = nickname.isEmpty ? null : nickname;
                   });
-                  ScaffoldMessenger.of(context).showSnackBar(
+                  messenger.showSnackBar(
                     SnackBar(
                       content: Text(nickname.isEmpty
                           ? 'Nickname cleared'
@@ -406,7 +407,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
                 }
               } catch (e) {
                 if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
+                  messenger.showSnackBar(
                     SnackBar(content: Text('Failed to set nickname: $e')),
                   );
                 }

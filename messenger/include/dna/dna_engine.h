@@ -260,11 +260,12 @@ typedef struct {
 } dna_feed_topic_info_t;
 
 /**
- * Feed v2: Comment information (flat comments with mentions)
+ * Feed v2: Comment information (single-level threaded with mentions)
  */
 typedef struct {
     char comment_uuid[37];          /* UUID v4 */
     char topic_uuid[37];            /* Parent topic UUID */
+    char parent_comment_uuid[37];   /* Reply-to comment UUID (empty = top-level) */
     char author_fingerprint[129];   /* Author's SHA3-512 fingerprint */
     char *body;                     /* Comment content (caller frees) */
     char mentions[DNA_FEED_MAX_MENTIONS][129]; /* @mentioned fingerprints */
@@ -2522,22 +2523,24 @@ DNA_API dna_request_id_t dna_engine_feed_delete_topic(
 );
 
 /**
- * Add a comment to a topic
+ * Add a comment to a topic (optionally as a reply)
  *
- * Comments are flat (no nesting). Signed with Dilithium5.
- * Stored using multi-owner DHT pattern.
+ * Supports single-level threading via parent_comment_uuid.
+ * Signed with Dilithium5. Stored using multi-owner DHT pattern.
  *
- * @param engine        Engine instance
- * @param topic_uuid    Topic UUID to comment on
- * @param body          Comment content (max 2000 chars)
- * @param mentions_json JSON array of fingerprints to mention, or NULL
- * @param callback      Called with created comment
- * @param user_data     User data for callback
- * @return              Request ID (0 on immediate error)
+ * @param engine              Engine instance
+ * @param topic_uuid          Topic UUID to comment on
+ * @param parent_comment_uuid Parent comment UUID for replies, or NULL for top-level
+ * @param body                Comment content (max 2000 chars)
+ * @param mentions_json       JSON array of fingerprints to mention, or NULL
+ * @param callback            Called with created comment
+ * @param user_data           User data for callback
+ * @return                    Request ID (0 on immediate error)
  */
 DNA_API dna_request_id_t dna_engine_feed_add_comment(
     dna_engine_t *engine,
     const char *topic_uuid,
+    const char *parent_comment_uuid,
     const char *body,
     const char *mentions_json,
     dna_feed_comment_cb callback,

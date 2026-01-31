@@ -287,8 +287,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
 
     // Get cached profile for display name fallback
+    // ignore: unused_local_variable
     final profileCache = ref.watch(contactProfileCacheProvider);
-    final cachedProfile = profileCache[contact.fingerprint];
 
     // Use contact.displayName (resolved by C library from registered name)
     // v0.6.24: UserProfile.displayName removed - Contact.displayName is the source of truth

@@ -10,7 +10,7 @@
  * Features:
  * - User-created topics with categories and tags
  * - Identity-required posts (Dilithium5 signed)
- * - Flat comments with @mentions (no nesting)
+ * - Single-level threaded comments with @mentions (v0.6.96+)
  * - Soft delete (author only)
  * - 30-day TTL for all data
  * - NO VOTING (deferred until identity unification)
@@ -99,10 +99,14 @@ typedef struct {
  *
  * Comments use multi-owner DHT pattern - multiple users can add values
  * to the same DHT key, each signed by their own identity.
+ *
+ * Supports single-level threading: comments can reply to other comments
+ * via parent_comment_uuid. Empty parent = top-level comment.
  */
 typedef struct {
     char comment_uuid[DNA_FEED_UUID_LEN];         /* UUID v4 identifier */
     char topic_uuid[DNA_FEED_UUID_LEN];           /* Parent topic UUID */
+    char parent_comment_uuid[DNA_FEED_UUID_LEN];  /* Parent comment UUID (empty = top-level) */
     char author_fingerprint[DNA_FEED_FINGERPRINT_LEN]; /* Commenter's fingerprint */
     char body[DNA_FEED_MAX_COMMENT_LEN + 1];      /* Comment text */
     char mentions[DNA_FEED_MAX_MENTIONS][DNA_FEED_FINGERPRINT_LEN]; /* @mentioned fingerprints */
@@ -222,12 +226,14 @@ void dna_feed_topics_free(dna_feed_topic_t *topics, size_t count);
  * ========================================================================== */
 
 /**
- * @brief Add a comment to a topic
+ * @brief Add a comment to a topic (optionally as a reply)
  *
  * Uses multi-owner DHT pattern - each user's comment is a separate value.
+ * Supports single-level threading via parent_comment_uuid.
  *
  * @param dht_ctx DHT context
  * @param topic_uuid Topic UUID to comment on
+ * @param parent_comment_uuid Parent comment UUID for replies (NULL = top-level comment)
  * @param body Comment text (max 2000 chars)
  * @param mentions Array of mentioned fingerprints (NULL-terminated or mention_count entries)
  * @param mention_count Number of mentions (0-10)
@@ -238,6 +244,7 @@ void dna_feed_topics_free(dna_feed_topic_t *topics, size_t count);
  */
 int dna_feed_comment_add(dht_context_t *dht_ctx,
                          const char *topic_uuid,
+                         const char *parent_comment_uuid,
                          const char *body,
                          const char **mentions,
                          int mention_count,

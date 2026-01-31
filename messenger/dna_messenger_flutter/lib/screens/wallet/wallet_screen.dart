@@ -4,10 +4,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import '../../ffi/dna_engine.dart' show AddressBookEntry, Contact, Transaction, UserProfile, Wallet;
+import '../../ffi/dna_engine.dart' show Contact, Transaction, UserProfile, Wallet;
 import '../../providers/addressbook_provider.dart';
 import '../../providers/providers.dart' hide UserProfile;
-import '../../providers/wallet_settings_provider.dart';
 import '../../theme/dna_theme.dart';
 import 'address_book_screen.dart';
 import 'address_dialog.dart';
@@ -178,6 +177,7 @@ class WalletScreen extends ConsumerWidget {
   }
 }
 
+// ignore: unused_element
 class _WalletSelector extends StatelessWidget {
   final List<Wallet> wallets;
   final int selectedIndex;
@@ -284,6 +284,7 @@ class _WalletSelector extends StatelessWidget {
   }
 }
 
+// ignore: unused_element
 class _WalletCard extends StatelessWidget {
   final Wallet wallet;
 
@@ -556,6 +557,7 @@ class _BalanceTile extends ConsumerWidget {
   }
 }
 
+// ignore: unused_element
 class _ActionButtons extends ConsumerWidget {
   final Wallet wallet;
   final int walletIndex;
@@ -1191,7 +1193,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                 children: [
                   Expanded(
                     child: DropdownButtonFormField<String>(
-                      value: _selectedToken,
+                      initialValue: _selectedToken,
                       decoration: const InputDecoration(labelText: 'Token'),
                       items: _getTokenItems(),
                       onChanged: (v) => setState(() => _selectedToken = v ?? 'CPUNK'),
@@ -1200,7 +1202,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                   const SizedBox(width: 12),
                   Expanded(
                     child: DropdownButtonFormField<String>(
-                      value: _selectedNetwork,
+                      initialValue: _selectedNetwork,
                       decoration: const InputDecoration(labelText: 'Network'),
                       items: _getNetworkItems(),
                       onChanged: (v) {
@@ -1708,7 +1710,7 @@ class _TokenDetailSheet extends ConsumerWidget {
                     return ListView.separated(
                       controller: scrollController,
                       itemCount: filtered.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      separatorBuilder: (_, i) => const Divider(height: 1),
                       itemBuilder: (context, index) {
                         final tx = filtered[index];
                         return _TransactionTile(transaction: tx);
@@ -1761,13 +1763,15 @@ class _TokenDetailSheet extends ConsumerWidget {
   }
 }
 
+// ignore: unused_element
 class _TransactionHistorySheet extends ConsumerWidget {
   final int walletIndex;
+  // ignore: unused_element
   final String? tokenFilter;
 
   const _TransactionHistorySheet({
     required this.walletIndex,
-    this.tokenFilter,
+    this.tokenFilter, // ignore: unused_element_parameter - kept for potential filtering
   });
 
   @override
@@ -1851,7 +1855,7 @@ class _TransactionHistorySheet extends ConsumerWidget {
                     return ListView.separated(
                       controller: scrollController,
                       itemCount: filtered.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      separatorBuilder: (_, i) => const Divider(height: 1),
                       itemBuilder: (context, index) {
                         final tx = filtered[index];
                         return _TransactionTile(transaction: tx);

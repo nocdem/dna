@@ -3,7 +3,6 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:crop_your_image/crop_your_image.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import '../../theme/dna_theme.dart';
 
 /// Screen for cropping avatar images with circular mask
 /// Returns cropped Uint8List on success, null on cancel

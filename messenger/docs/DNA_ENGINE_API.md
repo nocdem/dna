@@ -1,10 +1,11 @@
 # DNA Engine API Reference
 
-**Version:** 1.12.0
-**Date:** 2026-01-30
+**Version:** 1.13.0
+**Date:** 2026-01-31
 **Location:** `include/dna/dna_engine.h`
 
 **Changelog:**
+- v1.13.0 (2026-01-31): Added threaded comment replies - `dna_engine_feed_add_comment` now accepts `parent_comment_uuid` parameter for single-level threading. Comments can reply to other comments (not reply-to-reply). Added `parent_comment_uuid` field to `dna_feed_comment_info_t` struct.
 - v1.12.0 (2026-01-30): Added Feeds v2 API - topic-based public feeds with categories, tags, comments (replaces v1 channel/post system). 7 new functions: `dna_engine_feed_create_topic`, `dna_engine_feed_get_topic`, `dna_engine_feed_delete_topic`, `dna_engine_feed_add_comment`, `dna_engine_feed_get_comments`, `dna_engine_feed_get_category`, `dna_engine_feed_get_all`
 - v1.11.0 (2026-01-22): Added centralized thread pool for parallel I/O, `dna_engine_check_offline_messages_cached()` for background polling without watermarks, removed `dna_engine_listen_all_contacts_minimal()` (replaced by polling)
 - v1.10.0 (2026-01-09): Made DHT PUT synchronous for accurate status, added DNA_ENGINE_ERROR_KEY_UNAVAILABLE (-116) for offline key lookup failures
@@ -1500,6 +1501,7 @@ Soft-deletes a topic (author only). Topic remains in DHT with `deleted=true` unt
 dna_request_id_t dna_engine_feed_add_comment(
     dna_engine_t *engine,
     const char *topic_uuid,
+    const char *parent_comment_uuid,
     const char *body,
     const char *mentions_json,
     dna_feed_comment_cb callback,
@@ -1507,14 +1509,21 @@ dna_request_id_t dna_engine_feed_add_comment(
 );
 ```
 
-Adds a comment to a topic using multi-owner DHT pattern.
+Adds a comment to a topic using multi-owner DHT pattern. Supports single-level threading (replies to comments).
 
 **Parameters:**
 - `topic_uuid` - UUID of topic to comment on
+- `parent_comment_uuid` - UUID of parent comment for replies, or NULL for top-level comment
 - `body` - Comment body (max 2000 chars)
 - `mentions_json` - JSON array of mentioned fingerprints, e.g., `["5a8f2c3d..."]` (max 10)
 - `callback` - Called with created comment info
 - `user_data` - User data for callback
+
+**Threading Model:**
+- Comments can reply to other comments (single level only - no reply-to-reply)
+- Top-level comments: `parent_comment_uuid = NULL`
+- Replies: `parent_comment_uuid = "<uuid of parent comment>"`
+- `dna_feed_comment_info_t.parent_comment_uuid` contains the parent UUID (empty string for top-level)
 
 ---
 

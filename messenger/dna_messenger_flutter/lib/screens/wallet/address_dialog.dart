@@ -89,7 +89,7 @@ class _AddressDialogState extends State<AddressDialog> {
             children: [
               // Network dropdown
               DropdownButtonFormField<String>(
-                value: _selectedNetwork,
+                initialValue: _selectedNetwork,
                 decoration: const InputDecoration(
                   labelText: 'Network',
                   prefixIcon: Icon(Icons.layers),

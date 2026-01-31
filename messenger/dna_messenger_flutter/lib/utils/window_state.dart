@@ -1,7 +1,6 @@
 // Window State Manager - Persist window position and size on desktop
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -23,7 +22,6 @@ class WindowStateManager with WindowListener, WidgetsBindingObserver {
   SharedPreferences? _prefs;
   bool _isInitialized = false;
   Timer? _saveDebounce;
-  Size? _lastSize;
 
   /// Check if running on a desktop platform
   static bool get isDesktop {
@@ -111,7 +109,8 @@ class WindowStateManager with WindowListener, WidgetsBindingObserver {
     if (prefs == null) return;
 
     final isMaximized = await windowManager.isMaximized();
-    final isFullScreen = await windowManager.isFullScreen();
+    // ignore: unused_local_variable
+    final _ = await windowManager.isFullScreen(); // May be used for fullscreen persistence
     final position = await windowManager.getPosition();
     final size = await windowManager.getSize();
 

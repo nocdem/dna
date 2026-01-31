@@ -511,7 +511,7 @@ class _TopicDetailScreen extends ConsumerWidget {
 
   Future<void> _toggleSubscription(BuildContext context, WidgetRef ref) async {
     try {
-      final result = await ref.read(feedSubscriptionsProvider.notifier).toggleSubscription(topicUuid);
+      await ref.read(feedSubscriptionsProvider.notifier).toggleSubscription(topicUuid);
       final isNowSubscribed = ref.read(isSubscribedProvider(topicUuid));
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -645,28 +645,71 @@ class _TopicDetailContent extends ConsumerWidget {
             ),
           ),
         ),
-        // Comments list
+        // Comments list (threaded view)
         comments.when(
-          data: (commentList) => commentList.isEmpty
-              ? SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.all(32),
-                    child: Center(
-                      child: Text(
-                        'No comments yet',
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
+          data: (commentList) {
+            if (commentList.isEmpty) {
+              return SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: Center(
+                    child: Text(
+                      'No comments yet',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ),
-                )
-              : SliverList(
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) => _CommentTile(comment: commentList[index]),
-                    childCount: commentList.length,
-                  ),
                 ),
+              );
+            }
+
+            // Build threaded comment list:
+            // 1. Separate into top-level and replies
+            // 2. Group replies under their parent
+            final topLevel = commentList.where((c) => !c.isReply).toList();
+            final replies = commentList.where((c) => c.isReply).toList();
+
+            // Create map of parent -> replies
+            final replyMap = <String, List<FeedComment>>{};
+            for (final reply in replies) {
+              final parent = reply.parentCommentUuid!;
+              replyMap.putIfAbsent(parent, () => []);
+              replyMap[parent]!.add(reply);
+            }
+
+            // Sort replies by time within each group
+            for (final list in replyMap.values) {
+              list.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+            }
+
+            // Build flat list with threading
+            final threadedList = <_ThreadedComment>[];
+            for (final comment in topLevel) {
+              threadedList.add(_ThreadedComment(comment: comment, isReply: false));
+              // Add any replies
+              final commentReplies = replyMap[comment.uuid] ?? [];
+              for (final reply in commentReplies) {
+                threadedList.add(_ThreadedComment(comment: reply, isReply: true));
+              }
+            }
+
+            return SliverList(
+              delegate: SliverChildBuilderDelegate(
+                (context, index) {
+                  final item = threadedList[index];
+                  return _CommentTile(
+                    comment: item.comment,
+                    isReply: item.isReply,
+                    onReply: item.isReply ? null : () {
+                      _showReplyDialog(context, ref, topic.uuid, item.comment);
+                    },
+                  );
+                },
+                childCount: threadedList.length,
+              ),
+            );
+          },
           loading: () => const SliverToBoxAdapter(
             child: Center(child: Padding(
               padding: EdgeInsets.all(32),
@@ -684,10 +727,36 @@ class _TopicDetailContent extends ConsumerWidget {
   }
 }
 
+/// Helper class for threaded comment display
+class _ThreadedComment {
+  final FeedComment comment;
+  final bool isReply;
+
+  const _ThreadedComment({required this.comment, required this.isReply});
+}
+
+/// Show reply dialog for a specific comment
+void _showReplyDialog(BuildContext context, WidgetRef ref, String topicUuid, FeedComment parentComment) {
+  showDialog(
+    context: context,
+    builder: (context) => _ReplyCommentDialog(
+      topicUuid: topicUuid,
+      parentComment: parentComment,
+      ref: ref,
+    ),
+  );
+}
+
 class _CommentTile extends ConsumerWidget {
   final FeedComment comment;
+  final VoidCallback? onReply;
+  final bool isReply; // True if this is a reply (indented)
 
-  const _CommentTile({required this.comment});
+  const _CommentTile({
+    required this.comment,
+    this.onReply,
+    this.isReply = false,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -697,45 +766,74 @@ class _CommentTile extends ConsumerWidget {
     final authorName = ref.watch(nameResolverProvider)[comment.authorFingerprint]
         ?? '${comment.authorFingerprint.substring(0, 16)}...';
 
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Text(
-                  authorName,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    fontWeight: FontWeight.bold,
+    return Padding(
+      padding: EdgeInsets.only(left: isReply ? 24 : 0), // Indent replies
+      child: Card(
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        color: isReply ? theme.colorScheme.surfaceContainerHighest : null,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  if (isReply) ...[
+                    FaIcon(
+                      FontAwesomeIcons.reply,
+                      size: 10,
+                      color: theme.colorScheme.primary,
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  Text(
+                    authorName,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
+                  const Spacer(),
+                  Text(
+                    _formatTime(comment.createdAt),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(comment.body),
+              if (comment.mentions.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 4,
+                  children: comment.mentions.map((m) => Chip(
+                    label: Text('@${m.substring(0, 8)}...', style: const TextStyle(fontSize: 10)),
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    padding: EdgeInsets.zero,
+                    visualDensity: VisualDensity.compact,
+                  )).toList(),
                 ),
-                const Spacer(),
-                Text(
-                  _formatTime(comment.createdAt),
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
+              ],
+              // Reply button (only for top-level comments to enforce single-level threading)
+              if (!isReply && onReply != null) ...[
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    onPressed: onReply,
+                    icon: const FaIcon(FontAwesomeIcons.reply, size: 12),
+                    label: const Text('Reply'),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
                   ),
                 ),
               ],
-            ),
-            const SizedBox(height: 8),
-            Text(comment.body),
-            if (comment.mentions.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 4,
-                children: comment.mentions.map((m) => Chip(
-                  label: Text('@${m.substring(0, 8)}...', style: const TextStyle(fontSize: 10)),
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  padding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                )).toList(),
-              ),
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -811,7 +909,7 @@ class _CreateTopicDialogState extends ConsumerState<_CreateTopicDialog> {
             ),
             const SizedBox(height: 8),
             DropdownButtonFormField<String>(
-              value: _selectedCategory,
+              initialValue: _selectedCategory,
               decoration: const InputDecoration(labelText: 'Category'),
               items: FeedCategories.all.map((cat) => DropdownMenuItem(
                 value: cat,
@@ -976,6 +1074,161 @@ class _AddCommentDialogState extends ConsumerState<_AddCommentDialog> {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Comment posted')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+}
+
+// =============================================================================
+// REPLY COMMENT DIALOG
+// =============================================================================
+
+class _ReplyCommentDialog extends ConsumerStatefulWidget {
+  final String topicUuid;
+  final FeedComment parentComment;
+  final WidgetRef ref;
+
+  const _ReplyCommentDialog({
+    required this.topicUuid,
+    required this.parentComment,
+    required this.ref,
+  });
+
+  @override
+  ConsumerState<_ReplyCommentDialog> createState() => _ReplyCommentDialogState();
+}
+
+class _ReplyCommentDialogState extends ConsumerState<_ReplyCommentDialog> {
+  final _bodyController = TextEditingController();
+  bool _isLoading = false;
+
+  @override
+  void dispose() {
+    _bodyController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    // Get parent comment author name
+    final parentAuthorName = ref.watch(nameResolverProvider)[widget.parentComment.authorFingerprint]
+        ?? '${widget.parentComment.authorFingerprint.substring(0, 16)}...';
+
+    return AlertDialog(
+      title: Row(
+        children: [
+          const FaIcon(FontAwesomeIcons.reply, size: 16),
+          const SizedBox(width: 8),
+          const Text('Reply'),
+        ],
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Show parent comment preview
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+                border: Border(
+                  left: BorderSide(
+                    color: theme.colorScheme.primary,
+                    width: 3,
+                  ),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    parentAuthorName,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    widget.parentComment.body.length > 100
+                        ? '${widget.parentComment.body.substring(0, 100)}...'
+                        : widget.parentComment.body,
+                    style: theme.textTheme.bodySmall,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _bodyController,
+              decoration: const InputDecoration(
+                labelText: 'Your reply',
+                hintText: 'Enter your reply',
+              ),
+              maxLines: 4,
+              maxLength: 2000,
+              autofocus: true,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isLoading ? null : () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: _isLoading ? null : _addReply,
+          child: _isLoading
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Reply'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _addReply() async {
+    final body = _bodyController.text.trim();
+
+    if (body.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Reply cannot be empty')),
+      );
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      await widget.ref.read(topicCommentsProvider(widget.topicUuid).notifier).addComment(
+        body,
+        parentCommentUuid: widget.parentComment.uuid,
+      );
+
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Reply posted')),
         );
       }
     } catch (e) {

@@ -1,4 +1,4 @@
-/// QR Result Screen - Display scanned QR content and actions
+// QR Result Screen - Display scanned QR content and actions
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,7 +6,6 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../providers/providers.dart';
-import '../../providers/contact_requests_provider.dart';
 import '../../theme/dna_theme.dart';
 import '../../utils/qr_payload_parser.dart';
 import 'qr_auth_screen.dart';

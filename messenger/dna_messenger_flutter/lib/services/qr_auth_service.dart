@@ -5,7 +5,6 @@ library;
 
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -168,14 +167,14 @@ class QrAuthService {
     final hasRpHash = rpIdHashB64 != null && rpIdHashB64.trim().isNotEmpty;
 
     if (hasRp && hasRpHash) {
-      final normRpId = rpId!.trim().toLowerCase();
-      final normRpHash = rpIdHashB64!.trim();
+      final normRpId = rpId.trim().toLowerCase();
+      final normRpHash = rpIdHashB64.trim();
       // alphabetical: expires_at, issued_at, nonce, origin, rp_id, rp_id_hash, session_id
       return '{"expires_at":$expiresAt,"issued_at":$issuedAt,"nonce":"$nonce","origin":"$normOrigin","rp_id":"$normRpId","rp_id_hash":"$normRpHash","session_id":"$sessionId"}';
     }
 
     if (hasRp) {
-      final normRpId = rpId!.trim().toLowerCase();
+      final normRpId = rpId.trim().toLowerCase();
       // alphabetical: expires_at, issued_at, nonce, origin, rp_id, session_id
       return '{"expires_at":$expiresAt,"issued_at":$issuedAt,"nonce":"$nonce","origin":"$normOrigin","rp_id":"$normRpId","session_id":"$sessionId"}';
     }
@@ -376,7 +375,7 @@ class QrAuthService {
     }
   }
 
-  /// Decode st token: "v4.<b64url(payload_json)>.<b64url(sig)>"
+  /// Decode st token: "v4.{b64url(payload_json)}.{b64url(sig)}"
   Map<String, dynamic>? _decodeStPayload(String st) {
     try {
       final parts = st.split('.');

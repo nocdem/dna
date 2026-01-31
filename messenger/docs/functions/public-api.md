@@ -163,7 +163,7 @@ Topic-based feeds with categories and tags. No voting (deferred).
 | `dna_request_id_t dna_engine_feed_create_topic(engine, title, body, category, tags_json, cb, ud)` | Create topic with category/tags |
 | `dna_request_id_t dna_engine_feed_get_topic(engine, uuid, cb, ud)` | Get topic by UUID |
 | `dna_request_id_t dna_engine_feed_delete_topic(engine, uuid, cb, ud)` | Soft delete topic (author only) |
-| `dna_request_id_t dna_engine_feed_add_comment(engine, topic_uuid, body, mentions_json, cb, ud)` | Add comment with @mentions |
+| `dna_request_id_t dna_engine_feed_add_comment(engine, topic_uuid, parent_comment_uuid, body, mentions_json, cb, ud)` | Add comment with @mentions (parent_comment_uuid = NULL for top-level, UUID for reply) |
 | `dna_request_id_t dna_engine_feed_get_comments(engine, topic_uuid, cb, ud)` | Get comments for topic |
 | `dna_request_id_t dna_engine_feed_get_category(engine, category, days_back, cb, ud)` | Get topics by category |
 | `dna_request_id_t dna_engine_feed_get_all(engine, days_back, cb, ud)` | Get all topics (global feed) |
