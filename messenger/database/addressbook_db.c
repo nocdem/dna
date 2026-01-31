@@ -192,6 +192,10 @@ int addressbook_db_init(const char *owner_identity) {
         return -1;
     }
 
+    // Android force-close recovery: Set busy timeout and force WAL checkpoint
+    sqlite3_busy_timeout(g_db, 5000);
+    sqlite3_wal_checkpoint(g_db, NULL);
+
     // Set performance pragmas
     const char *pragmas =
         "PRAGMA synchronous = NORMAL;"

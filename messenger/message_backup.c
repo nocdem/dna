@@ -147,6 +147,10 @@ message_backup_context_t* message_backup_init(const char *identity) {
         return NULL;
     }
 
+    // Android force-close recovery: Set busy timeout and force WAL checkpoint
+    sqlite3_busy_timeout(ctx->db, 5000);
+    sqlite3_wal_checkpoint(ctx->db, NULL);
+
     // Create schema if needed
     char *err_msg = NULL;
     rc = sqlite3_exec(ctx->db, SCHEMA_SQL, NULL, NULL, &err_msg);

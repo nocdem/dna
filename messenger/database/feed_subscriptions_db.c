@@ -119,6 +119,10 @@ int feed_subscriptions_db_init(void) {
         return -1;
     }
 
+    // Android force-close recovery: Set busy timeout and force WAL checkpoint
+    sqlite3_busy_timeout(g_db, 5000);
+    sqlite3_wal_checkpoint(g_db, NULL);
+
     /* Create subscriptions table */
     const char *create_sql =
         "CREATE TABLE IF NOT EXISTS feed_subscriptions ("

@@ -72,6 +72,10 @@ int bootstrap_cache_init(const char *db_path) {
         return -1;
     }
 
+    // Android force-close recovery: Set busy timeout and force WAL checkpoint
+    sqlite3_busy_timeout(g_bootstrap_db, 5000);
+    sqlite3_wal_checkpoint(g_bootstrap_db, NULL);
+
     // Enable WAL mode for better concurrency
     sqlite3_exec(g_bootstrap_db, "PRAGMA journal_mode = WAL;", NULL, NULL, NULL);
 

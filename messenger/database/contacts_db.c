@@ -197,6 +197,11 @@ int contacts_db_init(const char *owner_identity) {
         return -1;
     }
 
+    // Android force-close recovery: Set busy timeout and force WAL checkpoint
+    // This prevents crashes when WAL file is left in inconsistent state
+    sqlite3_busy_timeout(g_db, 5000);  // 5 second timeout
+    sqlite3_wal_checkpoint(g_db, NULL); // Force WAL recovery
+
     // Set performance pragmas to avoid UI blocking
     const char *pragmas = 
         "PRAGMA synchronous = NORMAL;"     // Faster than FULL, still safe

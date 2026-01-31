@@ -293,6 +293,10 @@ int dht_groups_init(const char *db_path) {
         return -1;
     }
 
+    // Android force-close recovery: Set busy timeout and force WAL checkpoint
+    sqlite3_busy_timeout(g_db, 5000);
+    sqlite3_wal_checkpoint(g_db, NULL);
+
     // Enable foreign keys
     sqlite3_exec(g_db, "PRAGMA foreign_keys = ON;", NULL, NULL, NULL);
 

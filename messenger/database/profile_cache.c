@@ -83,6 +83,10 @@ int profile_cache_init(void) {
         return -1;
     }
 
+    // Android force-close recovery: Set busy timeout and force WAL checkpoint
+    sqlite3_busy_timeout(g_db, 5000);
+    sqlite3_wal_checkpoint(g_db, NULL);
+
     // MIGRATION: Check if old schema exists (without fingerprint column)
     // Query to check if fingerprint column exists
     const char *check_sql = "SELECT fingerprint FROM profiles LIMIT 1;";

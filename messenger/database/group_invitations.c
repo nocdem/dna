@@ -70,6 +70,10 @@ int group_invitations_init(const char *identity) {
         return -1;
     }
 
+    // Android force-close recovery: Set busy timeout and force WAL checkpoint
+    sqlite3_busy_timeout(g_invitations_db, 5000);
+    sqlite3_wal_checkpoint(g_invitations_db, NULL);
+
     // Create table
     char *err_msg = NULL;
     rc = sqlite3_exec(g_invitations_db, INVITATIONS_SCHEMA, NULL, NULL, &err_msg);
