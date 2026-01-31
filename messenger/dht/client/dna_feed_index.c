@@ -367,6 +367,57 @@ int dna_feed_index_add(dht_context_t *dht_ctx, const dna_feed_index_entry_t *ent
     return 0;
 }
 
+int dna_feed_index_update_deleted(dht_context_t *dht_ctx,
+                                   const char *topic_uuid,
+                                   const char *author_fingerprint,
+                                   const char *title,
+                                   const char *category_id,
+                                   uint64_t created_at) {
+    if (!dht_ctx || !topic_uuid || !category_id) return -1;
+
+    /* Get the date string from the original creation timestamp */
+    char date_str[12];
+    dna_feed_get_date_from_timestamp(created_at, date_str);
+
+    /* Build index entry with deleted=true */
+    dna_feed_index_entry_t entry = {0};
+    strncpy(entry.topic_uuid, topic_uuid, DNA_FEED_UUID_LEN - 1);
+    if (author_fingerprint) {
+        strncpy(entry.author_fingerprint, author_fingerprint, DNA_FEED_FINGERPRINT_LEN - 1);
+    }
+    if (title) {
+        strncpy(entry.title, title, DNA_FEED_MAX_TITLE_LEN);
+    }
+    strncpy(entry.category_id, category_id, DNA_FEED_CATEGORY_ID_LEN - 1);
+    entry.created_at = created_at;
+    entry.deleted = true;
+
+    /* 1. Update category index */
+    char cat_key[256];
+    snprintf(cat_key, sizeof(cat_key), "dna:feeds:idx:cat:%s:%s",
+             category_id, date_str);
+
+    int ret = publish_index_entries(dht_ctx, cat_key, &entry, 1);
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update category index for deleted topic\n");
+        /* Continue to try global index */
+    }
+
+    /* 2. Update global index */
+    char global_key[256];
+    snprintf(global_key, sizeof(global_key), "dna:feeds:idx:all:%s", date_str);
+
+    ret = publish_index_entries(dht_ctx, global_key, &entry, 1);
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update global index for deleted topic\n");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Updated indexes for deleted topic %s (date=%s)\n",
+                 topic_uuid, date_str);
+    return 0;
+}
+
 int dna_feed_index_get_category(dht_context_t *dht_ctx,
                                 const char *category,
                                 int days_back,

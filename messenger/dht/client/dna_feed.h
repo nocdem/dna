@@ -300,6 +300,27 @@ int dna_feed_index_add(dht_context_t *dht_ctx,
                        const dna_feed_index_entry_t *entry);
 
 /**
+ * @brief Update index entries to mark topic as deleted
+ *
+ * Republishes index entries with deleted=true to the correct day buckets
+ * based on the topic's original creation timestamp.
+ *
+ * @param dht_ctx DHT context
+ * @param topic_uuid Topic UUID
+ * @param author_fingerprint Author's fingerprint
+ * @param title Topic title
+ * @param category_id Category ID (SHA256 hex)
+ * @param created_at Original creation timestamp (for bucket lookup)
+ * @return 0 on success, negative on error
+ */
+int dna_feed_index_update_deleted(dht_context_t *dht_ctx,
+                                   const char *topic_uuid,
+                                   const char *author_fingerprint,
+                                   const char *title,
+                                   const char *category_id,
+                                   uint64_t created_at);
+
+/**
  * @brief Get topics for a category
  *
  * Fetches from category day buckets, merges and sorts by timestamp desc.
@@ -384,6 +405,14 @@ void dna_feed_get_today_date(char *date_out);
  * @param date_out Output buffer (12 bytes for YYYYMMDD + null)
  */
 void dna_feed_get_date_offset(int days_ago, char *date_out);
+
+/**
+ * @brief Get date string from Unix timestamp
+ *
+ * @param timestamp Unix timestamp (seconds since epoch)
+ * @param date_out Output buffer (12 bytes for YYYYMMDD + null)
+ */
+void dna_feed_get_date_from_timestamp(uint64_t timestamp, char *date_out);
 
 /* ============================================================================
  * DHT Key Generation

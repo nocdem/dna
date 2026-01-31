@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="#status"><img src="https://img.shields.io/badge/Status-Beta%20v0.6.90-blue" alt="Beta"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/Status-Beta%20v0.6.95-blue" alt="Beta"></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-GPLv3-green" alt="GPL v3"></a>
   <a href="#platforms"><img src="https://img.shields.io/badge/Platforms-Android%20|%20Linux%20|%20Windows-orange" alt="Platforms"></a>
   <a href="#security"><img src="https://img.shields.io/badge/Security-NIST%20Category%205-red" alt="NIST Cat 5"></a>
@@ -36,7 +36,21 @@ DNA Messenger is a **fully decentralized** messenger and **multi-chain crypto wa
 - **1:1 and group chats** with delivery/read receipts
 - **Offline message queue** — Messages wait up to 7 days if you're offline
 - **Group encryption (GEK)** — 200x faster than encrypting per-recipient
-- **User profiles** with avatars, bio, and social wall
+- **Cross-device sync** — Messages and groups sync across all your devices
+- **Background notifications** — Push alerts even when app is closed (Android)
+
+### Public Feeds
+- **Topic-based feeds** — Create and subscribe to public discussion topics
+- **Categories** — Browse by: General, Technology, Help, Announcements, Trading
+- **Comments & voting** — Engage with topics through comments and votes
+- **Author verification** — All posts cryptographically signed with Dilithium5
+- **Community feeds** — Bug reports, feature requests, official announcements
+
+### User Profiles
+- **Customizable profiles** — Avatar, bio, location, website
+- **Social links** — Telegram, Twitter/X, GitHub, and more
+- **Social wall** — Public posts visible to anyone who views your profile
+- **Name registration** — Reserve your unique username on the DHT
 
 ### Integrated Multi-Chain Wallet
 - **4 Networks:** Cellframe (CF20), Ethereum (ERC20), TRON (TRC20), Solana (SPL)
@@ -51,6 +65,7 @@ DNA Messenger is a **fully decentralized** messenger and **multi-chain crypto wa
 - **Spillway Protocol v2** — Efficient offline message retrieval
 - **Dilithium5 signatures** — All DHT data cryptographically signed
 - **BIP39 recovery** — 24-word seed phrase backup
+- **Instant startup** — Progressive loading with async DHT operations
 
 ---
 
@@ -168,8 +183,8 @@ Public bootstrap nodes are operated by cpunk.io — see [docs/DNA_NODUS.md](docs
 
 | Component | Version |
 |-----------|---------|
-| C Library | v0.6.89 |
-| Flutter App | v0.100.71 |
+| C Library | v0.6.95 |
+| Flutter App | v0.100.75 |
 | DNA Nodus | v0.4.5 |
 
 ---
@@ -196,6 +211,20 @@ Public bootstrap nodes are operated by cpunk.io — see [docs/DNA_NODUS.md](docs
 - **Website:** https://cpunk.io
 - **Community:** https://cpunk.club
 - **Telegram:** [@chippunk_official](https://t.me/chippunk_official)
+
+---
+
+## Community Feeds
+
+Built-in DHT feeds for community interaction:
+
+| Feed | UUID | Purpose |
+|------|------|---------|
+| DNA Updates | `765ed03d-0c28-4d17-91bd-683a713a63e8` | Official announcements |
+| Bug Reports | `6d42f8ac-959a-48cc-bcac-37b0f3eb2ba0` | Report bugs and issues |
+| Feature Requests | `089b850f-4eb9-4c27-a50c-b51230b3173c` | Suggest new features |
+
+Subscribe to these feeds in the app to stay updated and contribute feedback.
 
 ---
 

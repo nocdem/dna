@@ -449,6 +449,7 @@ Uses `dna:feeds:` DHT namespace. No voting (deferred).
 | Function | Description |
 |----------|-------------|
 | `int dna_feed_index_add(dht_context_t*, const dna_feed_index_entry_t*)` | Add entry to category/global index |
+| `int dna_feed_index_update_deleted(dht_context_t*, const char*, const char*, const char*, const char*, uint64_t)` | Update index entries to mark topic as deleted |
 | `int dna_feed_index_get_category(dht_context_t*, const char*, int, dna_feed_index_entry_t**, size_t*)` | Get topics by category |
 | `int dna_feed_index_get_all(dht_context_t*, int, dna_feed_index_entry_t**, size_t*)` | Get all topics (global) |
 | `void dna_feed_index_entries_free(dna_feed_index_entry_t*, size_t)` | Free index entries |
@@ -460,6 +461,7 @@ Uses `dna:feeds:` DHT namespace. No voting (deferred).
 | `int dna_feed_make_category_id(const char*, char*)` | Generate category_id from name |
 | `void dna_feed_generate_uuid(char*)` | Generate UUID v4 for topic/comment |
 | `void dna_feed_get_today_date(char*)` | Get YYYYMMDD date string |
+| `void dna_feed_get_date_from_timestamp(uint64_t, char*)` | Convert Unix timestamp to YYYYMMDD |
 | `void dna_feed_get_topic_key(const char*, char*)` | Get DHT key for topic |
 | `void dna_feed_get_comments_key(const char*, char*)` | Get DHT key for topic comments |
 | `void dna_feed_get_category_index_key(const char*, const char*, char*)` | Get DHT key for category day index |

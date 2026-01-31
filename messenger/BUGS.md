@@ -13,6 +13,25 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
+- [ ] **[MIXED] P2 - Feed categories display as SHA256 hashes instead of names** - Feed screen shows 64-character hex strings (e.g., `ac3b4e3b232f9dd207067c8e7dad449e...`) instead of readable category names like "Announcements".
+
+  **Root cause:** C library stores `category_id = SHA256(lowercase(category_name))` for deduplication/consistency, but never stores the original name in a discoverable way. Flutter only receives the hash.
+
+  **Why simple fixes don't work:**
+  1. **Hash→name map in Flutter:** Only works for hardcoded categories. Custom categories created by users would still show as hashes. Not scalable.
+  2. **Store category_name in topic struct:** Doesn't solve discovery - how do users browse available categories? How do they filter/query by category? Each topic would redundantly store the name.
+  3. **DHT category metadata with TTL:** Standard 30-day TTL means categories expire. On day 31, all topics referencing that category become orphaned with no way to resolve the name. Categories need permanent storage or a renewal mechanism.
+
+  **Requirements for proper solution:**
+  - Category metadata stored in DHT at derived key: `SHA256("dna:feeds:category:" + category_id)`
+  - First publisher owns the category name (single-owner pattern like usernames)
+  - No TTL expiration, or automatic renewal by any user of that category
+  - Support discovery: list all known categories
+  - Support query/filter: find topics by category
+  - Backward compatible: fallback to hardcoded defaults if DHT lookup fails
+
+  **Proposed plan:** See `/home/nocdem/.claude/plans/cosmic-frolicking-whistle.md` for detailed implementation plan covering C library, Engine API, and Flutter integration.
+
 - [x] **[FLUTTER] P4 - Group chat send icon doesn't match normal chat** - The send button icon in group chat screen is different from the one used in 1:1 chat screens. **Fix:** Changed ChatScreen send button from `IconButton()` to `IconButton.filled()` to match GroupChatScreen's styling. Both now use the same filled button style. (v0.100.27)
 
 - [ ] **[FLUTTER] P3 - Background notification toggle doesn't re-request permissions** - When user disables then re-enables "Background Notifications" in settings, it doesn't prompt for notification permissions again. Should call `requestNotificationPermission()` when toggling ON.
@@ -42,6 +61,8 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 ## Feature Requests
 
 - [ ] **[CLI] P2 - DHT key derivation leaks communication metadata** - Current outbox/watermark keys are deterministic: `SHA3-512(sender:outbox:recipient)`. A third party who knows both fingerprints can calculate these keys and monitor DHT to detect if/when two parties communicate (timing, frequency, direction). Message content remains encrypted, but existence of communication is leaked. **Proposed fix:** Add per-contact random 32-byte salt exchanged during contact establishment. New key format: `SHA3-512(salt:sender:outbox:recipient)`. Third parties cannot calculate keys without the salt. **See:** [docs/PRIVACY_DHT_KEY_DERIVATION.md](docs/PRIVACY_DHT_KEY_DERIVATION.md) for full analysis and implementation plan.
+
+- [ ] **[FLUTTER] P3 - Feed comments don't update in real-time** - The C library has DHT listeners for feed topics (`dna_engine_feed_listen_topic_comments()`) that fire `DNA_EVENT_FEED_TOPIC_COMMENT` events, but Flutter UI doesn't respond to these events. Users must manually pull-to-refresh to see new comments. **Proposed fix:** Add event handler in Flutter's `EventHandler` class to listen for `DNA_EVENT_FEED_TOPIC_COMMENT` and invalidate the relevant `topicCommentsProvider` to trigger automatic refresh.
 
 ## Fixed Bugs
 

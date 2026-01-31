@@ -134,6 +134,12 @@ void dna_feed_get_date_offset(int days_ago, char *date_out) {
     strftime(date_out, 12, "%Y%m%d", tm_info);
 }
 
+void dna_feed_get_date_from_timestamp(uint64_t timestamp, char *date_out) {
+    time_t ts = (time_t)timestamp;
+    struct tm *tm_info = gmtime(&ts);
+    strftime(date_out, 12, "%Y%m%d", tm_info);
+}
+
 /* ============================================================================
  * DHT Key Generation
  * ========================================================================== */
@@ -599,6 +605,15 @@ int dna_feed_topic_delete(dht_context_t *dht_ctx,
         return -1;
     }
 
+    /* Save fields needed for index update before freeing topic */
+    char saved_category_id[DNA_FEED_CATEGORY_ID_LEN];
+    char saved_title[DNA_FEED_MAX_TITLE_LEN + 1];
+    uint64_t saved_created_at = topic->created_at;
+    strncpy(saved_category_id, topic->category_id, DNA_FEED_CATEGORY_ID_LEN - 1);
+    saved_category_id[DNA_FEED_CATEGORY_ID_LEN - 1] = '\0';
+    strncpy(saved_title, topic->title, DNA_FEED_MAX_TITLE_LEN);
+    saved_title[DNA_FEED_MAX_TITLE_LEN] = '\0';
+
     char base_key[128];
     snprintf(base_key, sizeof(base_key), "dna:feeds:topic:%s", uuid);
 
@@ -612,6 +627,14 @@ int dna_feed_topic_delete(dht_context_t *dht_ctx,
     if (ret != DHT_CHUNK_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to publish deleted topic: %s\n", dht_chunked_strerror(ret));
         return -1;
+    }
+
+    /* Update index entries to mark topic as deleted */
+    ret = dna_feed_index_update_deleted(dht_ctx, uuid, author_fingerprint,
+                                         saved_title, saved_category_id, saved_created_at);
+    if (ret != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to update indexes for deleted topic %s\n", uuid);
+        /* Continue - topic itself was marked deleted successfully */
     }
 
     QGP_LOG_INFO(LOG_TAG, "Successfully deleted topic %s\n", uuid);
