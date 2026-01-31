@@ -341,11 +341,18 @@ void dna_handle_get_group_conversation(dna_engine_t *engine, dna_task_t *task) {
             /* Convert timestamp_ms to seconds */
             messages[i].timestamp = src->timestamp_ms / 1000;
 
-            /* Determine if outgoing */
-            messages[i].is_outgoing = (strcmp(src->sender_fingerprint, engine->fingerprint) == 0);
+            /* Determine if outgoing - prefer DB value, fallback to fingerprint comparison */
+            messages[i].is_outgoing = src->is_outgoing ? src->is_outgoing :
+                (strcmp(src->sender_fingerprint, engine->fingerprint) == 0);
 
-            /* Group messages are always received (v15: 0=pending, 1=sent, 2=received, 3=failed) */
-            messages[i].status = 2;  /* received */
+            /* Use actual status from database (v2 schema)
+             * For outgoing messages: 0=pending, 1=sent, 3=failed
+             * For received messages: always 1 (sent = delivered to us) */
+            if (messages[i].is_outgoing) {
+                messages[i].status = src->status;  /* Use actual status */
+            } else {
+                messages[i].status = 1;  /* Received messages are "sent" from sender's perspective */
+            }
             messages[i].message_type = 0;  /* text */
         }
         count = (int)msg_count;

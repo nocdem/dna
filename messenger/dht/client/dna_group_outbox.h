@@ -126,6 +126,10 @@ typedef struct {
 
     /* Decrypted content (populated by fetch, not stored in DHT) */
     char *plaintext;                            /* Decrypted message text (NULL until decrypted) */
+
+    /* Status tracking (v2 schema) */
+    int status;                                 /* 0=pending, 1=sent, 3=failed */
+    int is_outgoing;                            /* 1=sent by us, 0=received */
 } dna_group_message_t;
 
 /**
@@ -369,12 +373,36 @@ const char *dna_group_outbox_strerror(int error);
 int dna_group_outbox_db_init(void);
 
 /**
- * @brief Store a message in group_messages table
+ * @brief Store a message in group_messages table (backward compatible)
+ *
+ * Stores with status=1 (SENT) and is_outgoing=0 (received message).
+ * For outgoing messages, use dna_group_outbox_db_store_message_ex().
  *
  * @param msg Message to store
  * @return 0 on success, -1 on error, DNA_GROUP_OUTBOX_ERR_DUPLICATE if already exists
  */
 int dna_group_outbox_db_store_message(const dna_group_message_t *msg);
+
+/**
+ * @brief Store a message with explicit status and is_outgoing flag
+ *
+ * Status values: 0=PENDING, 1=SENT, 3=FAILED
+ *
+ * @param msg Message to store
+ * @param status Message status (0=pending, 1=sent, 3=failed)
+ * @param is_outgoing 1 if sent by current user, 0 if received
+ * @return 0 on success, -1 on error, DNA_GROUP_OUTBOX_ERR_DUPLICATE if already exists
+ */
+int dna_group_outbox_db_store_message_ex(const dna_group_message_t *msg, int status, int is_outgoing);
+
+/**
+ * @brief Update message status by message_id
+ *
+ * @param message_id Message ID (string format)
+ * @param status New status (0=pending, 1=sent, 3=failed)
+ * @return 0 on success, -1 on error
+ */
+int dna_group_outbox_db_update_status(const char *message_id, int status);
 
 /**
  * @brief Check if message exists by message_id

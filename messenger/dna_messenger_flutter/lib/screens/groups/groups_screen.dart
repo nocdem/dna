@@ -1551,17 +1551,46 @@ class _GroupMessageBubble extends ConsumerWidget {
               message.plaintext,
               style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
             ),
-            // Timestamp
+            // Timestamp and status
             const SizedBox(height: 4),
-            Text(
-              timeStr,
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: textColor.withAlpha(179),
-              ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  timeStr,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: textColor.withAlpha(179),
+                  ),
+                ),
+                // Status icon for outgoing messages
+                if (isOutgoing) ...[
+                  const SizedBox(width: 4),
+                  FaIcon(
+                    _getStatusIcon(message.status),
+                    size: 12,
+                    color: message.status == MessageStatus.failed
+                        ? DnaColors.textWarning
+                        : textColor.withAlpha(179),
+                  ),
+                ],
+              ],
             ),
           ],
         ),
       ),
     );
+  }
+
+  IconData _getStatusIcon(MessageStatus status) {
+    switch (status) {
+      case MessageStatus.pending:
+        return FontAwesomeIcons.clock;
+      case MessageStatus.sent:
+        return FontAwesomeIcons.check;
+      case MessageStatus.received:
+        return FontAwesomeIcons.checkDouble;
+      case MessageStatus.failed:
+        return FontAwesomeIcons.circleExclamation;
+    }
   }
 }

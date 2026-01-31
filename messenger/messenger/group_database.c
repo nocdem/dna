@@ -48,9 +48,10 @@ static group_database_context_t *g_instance = NULL;
  * ============================================================================ */
 
 /**
- * Database Schema v1
+ * Database Schema v2
  *
- * Clean schema for group data - migrated from message_backup.c v9
+ * v1: Initial schema - migrated from message_backup.c v9
+ * v2: Added status and is_outgoing columns to group_messages for send tracking
  */
 static const char *SCHEMA_SQL =
     /* Groups table - core group metadata */
@@ -88,7 +89,8 @@ static const char *SCHEMA_SQL =
     "  received_at INTEGER NOT NULL"
     ");"
 
-    /* Group messages table - decrypted message cache */
+    /* Group messages table - decrypted message cache
+     * v2: Added status (0=pending, 1=sent, 3=failed) and is_outgoing columns */
     "CREATE TABLE IF NOT EXISTS group_messages ("
     "  id INTEGER PRIMARY KEY,"
     "  group_uuid TEXT NOT NULL,"
@@ -98,6 +100,8 @@ static const char *SCHEMA_SQL =
     "  gek_version INTEGER NOT NULL,"
     "  plaintext TEXT NOT NULL,"
     "  received_at INTEGER NOT NULL,"
+    "  status INTEGER DEFAULT 1,"
+    "  is_outgoing INTEGER DEFAULT 0,"
     "  UNIQUE (group_uuid, sender_fp, message_id)"
     ");"
 
@@ -114,7 +118,16 @@ static const char *SCHEMA_SQL =
     "CREATE INDEX IF NOT EXISTS idx_group_messages_timestamp ON group_messages(timestamp_ms);"
 
     /* Set schema version */
-    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '1');";
+    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '2');";
+
+/**
+ * Migration SQL for v1 -> v2
+ * Adds status and is_outgoing columns to group_messages
+ */
+static const char *MIGRATION_V1_TO_V2 =
+    "ALTER TABLE group_messages ADD COLUMN status INTEGER DEFAULT 1;"
+    "ALTER TABLE group_messages ADD COLUMN is_outgoing INTEGER DEFAULT 0;"
+    "UPDATE metadata SET value = '2' WHERE key = 'version';";
 
 /* ============================================================================
  * HELPER FUNCTIONS
@@ -197,10 +210,34 @@ group_database_context_t* group_database_init(void) {
         return NULL;
     }
 
+    /* Check schema version and run migrations if needed */
+    sqlite3_stmt *stmt = NULL;
+    int schema_version = 0;
+    rc = sqlite3_prepare_v2(ctx->db, "SELECT value FROM metadata WHERE key = 'version'", -1, &stmt, NULL);
+    if (rc == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *ver_str = (const char *)sqlite3_column_text(stmt, 0);
+        if (ver_str) schema_version = atoi(ver_str);
+    }
+    sqlite3_finalize(stmt);
+
+    /* Run v1 -> v2 migration if needed */
+    if (schema_version == 1) {
+        QGP_LOG_INFO(LOG_TAG, "Migrating group database from v1 to v2...\n");
+        rc = sqlite3_exec(ctx->db, MIGRATION_V1_TO_V2, NULL, NULL, &err_msg);
+        if (rc != SQLITE_OK) {
+            QGP_LOG_WARN(LOG_TAG, "Migration v1->v2 partial: %s (columns may already exist)\n", err_msg);
+            sqlite3_free(err_msg);
+            /* Try updating version even if ALTER fails (column may already exist) */
+            sqlite3_exec(ctx->db, "UPDATE metadata SET value = '2' WHERE key = 'version'", NULL, NULL, NULL);
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "Migration v1->v2 completed successfully\n");
+        }
+    }
+
     /* Store as global singleton */
     g_instance = ctx;
 
-    QGP_LOG_INFO(LOG_TAG, "Group database initialized successfully\n");
+    QGP_LOG_INFO(LOG_TAG, "Group database initialized successfully (schema v2)\n");
     return ctx;
 }
 

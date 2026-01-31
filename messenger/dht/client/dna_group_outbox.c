@@ -499,10 +499,19 @@ int dna_group_outbox_send(
     }
     free(ciphertext);
 
-    /* Step 11: Serialize and publish to DHT using chunked storage */
+    /* Step 11: Store locally with PENDING status BEFORE DHT publish
+     * This ensures message is never lost even if DHT fails */
+    new_msg.ciphertext = NULL; /* Will be freed in all_msgs */
+    new_msg.plaintext = strdup(plaintext);
+    dna_group_outbox_db_store_message_ex(&new_msg, 0, 1);  /* status=0 (PENDING), is_outgoing=1 */
+
+    /* Step 12: Serialize and publish to DHT using chunked storage */
     char *bucket_json = NULL;
     if (bucket_to_json(sender_fingerprint, all_msgs, new_count, &bucket_json) != 0) {
         dna_group_outbox_free_messages(all_msgs, new_count);
+        free(new_msg.plaintext);
+        /* Update status to FAILED */
+        dna_group_outbox_db_update_status(message_id, 3);
         return DNA_GROUP_OUTBOX_ERR_SERIALIZE;
     }
 
@@ -518,16 +527,17 @@ int dna_group_outbox_send(
 
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "DHT chunked publish failed: %s\n", dht_chunked_strerror(ret));
+        free(new_msg.plaintext);
+        /* Update status to FAILED */
+        dna_group_outbox_db_update_status(message_id, 3);
         return DNA_GROUP_OUTBOX_ERR_DHT_PUT;
     }
 
-    /* Step 12: Store locally */
-    new_msg.ciphertext = NULL; /* Already freed in all_msgs */
-    new_msg.plaintext = strdup(plaintext);
-    dna_group_outbox_db_store_message(&new_msg);
+    /* Step 13: Update status to SENT on success */
+    dna_group_outbox_db_update_status(message_id, 1);
     free(new_msg.plaintext);
 
-    QGP_LOG_INFO(LOG_TAG, "Message sent: %s\n", message_id);
+    QGP_LOG_INFO(LOG_TAG, "Message sent: %s (status=SENT)\n", message_id);
     return DNA_GROUP_OUTBOX_OK;
 }
 
@@ -1053,16 +1063,16 @@ void dna_group_outbox_set_db(void *db) {
     group_outbox_db = (sqlite3 *)db;
 }
 
-int dna_group_outbox_db_store_message(const dna_group_message_t *msg) {
+int dna_group_outbox_db_store_message_ex(const dna_group_message_t *msg, int status, int is_outgoing) {
     if (!msg || !group_outbox_db) {
         return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
     }
 
-    /* Schema 1: group_uuid, message_id (INTEGER), sender_fp, timestamp_ms, gek_version, plaintext, received_at */
+    /* Schema 2: Added status and is_outgoing columns */
     const char *sql =
         "INSERT OR IGNORE INTO group_messages "
-        "(group_uuid, message_id, sender_fp, timestamp_ms, gek_version, plaintext, received_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)";
+        "(group_uuid, message_id, sender_fp, timestamp_ms, gek_version, plaintext, received_at, status, is_outgoing) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(group_outbox_db, sql, -1, &stmt, NULL);
@@ -1090,6 +1100,8 @@ int dna_group_outbox_db_store_message(const dna_group_message_t *msg) {
         sqlite3_bind_text(stmt, 6, "", -1, SQLITE_STATIC);
     }
     sqlite3_bind_int64(stmt, 7, (sqlite3_int64)time(NULL));
+    sqlite3_bind_int(stmt, 8, status);
+    sqlite3_bind_int(stmt, 9, is_outgoing);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -1103,6 +1115,46 @@ int dna_group_outbox_db_store_message(const dna_group_message_t *msg) {
     }
 
     return sqlite3_changes(group_outbox_db) > 0 ? DNA_GROUP_OUTBOX_OK : DNA_GROUP_OUTBOX_ERR_DUPLICATE;
+}
+
+/* Wrapper for backward compatibility - received messages default to status=1 (SENT), is_outgoing=0 */
+int dna_group_outbox_db_store_message(const dna_group_message_t *msg) {
+    return dna_group_outbox_db_store_message_ex(msg, 1, 0);
+}
+
+/* Update message status by message_id hash */
+int dna_group_outbox_db_update_status(const char *message_id, int status) {
+    if (!message_id || !group_outbox_db) {
+        return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
+    }
+
+    /* Convert message_id string to integer hash */
+    int64_t msg_id_int = 0;
+    for (size_t i = 0; message_id[i]; i++) {
+        msg_id_int = (msg_id_int * 31) + (unsigned char)message_id[i];
+    }
+
+    const char *sql = "UPDATE group_messages SET status = ? WHERE message_id = ?";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(group_outbox_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare update status SQL: %s\n", sqlite3_errmsg(group_outbox_db));
+        return DNA_GROUP_OUTBOX_ERR_DB;
+    }
+
+    sqlite3_bind_int(stmt, 1, status);
+    sqlite3_bind_int64(stmt, 2, msg_id_int);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update message status: %s\n", sqlite3_errmsg(group_outbox_db));
+        return DNA_GROUP_OUTBOX_ERR_DB;
+    }
+
+    return DNA_GROUP_OUTBOX_OK;
 }
 
 int dna_group_outbox_db_message_exists(const char *message_id) {
@@ -1145,13 +1197,13 @@ int dna_group_outbox_db_get_messages(
         return -1;
     }
 
-    /* Schema 1: group_uuid, message_id, sender_fp, timestamp_ms, gek_version, plaintext, received_at */
+    /* Schema 2: Added status and is_outgoing columns */
     const char *sql_with_limit =
-        "SELECT group_uuid, message_id, sender_fp, timestamp_ms, gek_version, plaintext "
+        "SELECT group_uuid, message_id, sender_fp, timestamp_ms, gek_version, plaintext, status, is_outgoing "
         "FROM group_messages WHERE group_uuid = ? ORDER BY timestamp_ms DESC LIMIT ? OFFSET ?";
 
     const char *sql_no_limit =
-        "SELECT group_uuid, message_id, sender_fp, timestamp_ms, gek_version, plaintext "
+        "SELECT group_uuid, message_id, sender_fp, timestamp_ms, gek_version, plaintext, status, is_outgoing "
         "FROM group_messages WHERE group_uuid = ? ORDER BY timestamp_ms DESC";
 
     const char *sql = (limit > 0) ? sql_with_limit : sql_no_limit;
@@ -1206,6 +1258,12 @@ int dna_group_outbox_db_get_messages(
         /* Column 5: plaintext */
         const char *text = (const char *)sqlite3_column_text(stmt, 5);
         if (text) msg->plaintext = strdup(text);
+
+        /* Column 6: status (v2 schema, default 1 for migrated rows) */
+        msg->status = sqlite3_column_int(stmt, 6);
+
+        /* Column 7: is_outgoing (v2 schema, default 0 for migrated rows) */
+        msg->is_outgoing = sqlite3_column_int(stmt, 7);
 
         count++;
     }

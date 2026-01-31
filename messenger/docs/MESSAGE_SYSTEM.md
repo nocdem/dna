@@ -1,7 +1,7 @@
 # DNA Messenger - Message System Documentation
 
-**Version:** v0.09 (Phase 14 - DHT-Only Messaging, Spillway v2)
-**Last Updated:** 2026-01-16
+**Version:** v0.10 (Phase 14 - DHT-Only Messaging, Spillway v2, Group Status v2)
+**Last Updated:** 2026-01-31
 **Security Level:** NIST Category 5 (256-bit quantum)
 
 This document describes how the DNA Messenger message system works, with all facts verified directly from source code.
@@ -1055,6 +1055,83 @@ For Writer A (multi-chunk):
 ```
 
 **Source:** `dht/client/dna_group_outbox.c`, `src/api/dna_engine.c`
+
+### 7.6 Group Message Status Tracking (v0.6.99+)
+
+Group messages use a **simplified 3-state model** without ACK (acknowledgement) system.
+
+#### Status States
+
+| Status | Value | Icon | Description |
+|--------|-------|------|-------------|
+| `STATUS_PENDING` | 0 | ⏳ Clock | Message queued, not yet published to DHT |
+| `STATUS_SENT` | 1 | ✓ Check | Successfully published to DHT |
+| `STATUS_FAILED` | 3 | ✗ Error | DHT publish failed (encryption or network error) |
+
+**Note:** Unlike DM messages, group messages have **no RECEIVED (2) state**. Groups use a
+multi-writer single-key architecture where all members write to the same DHT key, making
+per-message ACK tracking impractical.
+
+#### Status Flow
+
+```
+User sends group message
+        │
+        ▼
+┌─────────────────────────────────────┐
+│ 1. Encrypt with GEK (AES-256-GCM)   │
+│ 2. Sign with Dilithium5             │
+│ 3. Store locally with PENDING (0)   │  ← Optimistic UI shows ⏳
+└─────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────┐
+│ 4. DHT chunked publish              │
+│    dht_chunked_publish(group_key)   │
+└─────────────────────────────────────┘
+        │
+        ├── Success ──► Update status to SENT (1) ──► UI shows ✓
+        │
+        └── Failure ──► Update status to FAILED (3) ──► UI shows ✗
+                        (auto-retry on next sync)
+```
+
+#### Database Schema (groups.db v2)
+
+```sql
+-- Source: messenger/group_database.c - Schema v2
+-- v2 adds status and is_outgoing columns for send tracking
+
+CREATE TABLE IF NOT EXISTS group_messages (
+  id INTEGER PRIMARY KEY,
+  group_uuid TEXT NOT NULL,
+  message_id INTEGER NOT NULL,
+  sender_fp TEXT NOT NULL,
+  timestamp_ms INTEGER NOT NULL,
+  gek_version INTEGER NOT NULL,
+  plaintext TEXT NOT NULL,
+  received_at INTEGER NOT NULL,
+  status INTEGER DEFAULT 1,       -- v2: 0=pending, 1=sent, 3=failed
+  is_outgoing INTEGER DEFAULT 0,  -- v2: 1=sent by us, 0=received
+  UNIQUE (group_uuid, sender_fp, message_id)
+);
+```
+
+**Migration (v1 → v2):**
+- Existing messages default to `status=1` (SENT) - assumed successful
+- Existing messages default to `is_outgoing=0` (received)
+- New outgoing messages store with proper status tracking
+
+#### Key Differences from DM Status
+
+| Aspect | DM Messages | Group Messages |
+|--------|-------------|----------------|
+| Status states | 4 (PENDING, SENT, RECEIVED, FAILED) | 3 (PENDING, SENT, FAILED) |
+| ACK system | Yes (per-contact timestamp) | No |
+| Double checkmark | ✓✓ on RECEIVED | N/A |
+| Retry trigger | Identity load, DHT reconnect | Next group sync |
+
+**Source:** `dht/client/dna_group_outbox.c`, `messenger/group_database.c`
 
 ---
 
