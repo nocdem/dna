@@ -1,6 +1,6 @@
 // Android Platform Handler - Android-specific behavior
 // Phase 14: DHT-only messaging with ForegroundService
-// v0.100.23+: Destroy engine on pause, reinit on resume for clean listener state
+// v0.100.82+: Engine destroyed on pause, fresh engine created on resume (mobile only)
 
 import '../../ffi/dna_engine.dart';
 import '../platform_handler.dart';
@@ -9,9 +9,10 @@ import 'foreground_service.dart';
 /// Android-specific platform handler
 ///
 /// Android differences from Desktop:
-/// - ForegroundService keeps DHT alive when app backgrounded
+/// - ForegroundService takes over when Flutter is backgrounded (has its own minimal engine)
 /// - JNI notification helper handles background notifications
-/// - Engine destroyed on pause (listeners canceled), recreated on resume
+/// - v0.100.82+: Engine destroyed on pause, fresh engine created on resume
+///   (lifecycle_observer handles destroy/create, this handler does service coordination)
 class AndroidPlatformHandler implements PlatformHandler {
   @override
   Future<void> onResumePreEngine() async {
