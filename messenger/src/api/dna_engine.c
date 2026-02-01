@@ -1479,28 +1479,40 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* v0.6.107+: Wait for resume thread with timeout (prevents ANR on Android) */
     pthread_mutex_lock(&engine->state_mutex);
     bool join_resume = engine->resume_thread_running;
+    pthread_t resume_tid = engine->resume_thread;
     pthread_mutex_unlock(&engine->state_mutex);
 
     if (join_resume) {
         QGP_LOG_INFO(LOG_TAG, "Waiting for resume thread to exit...");
 
-#ifdef __ANDROID__
-        /* Android: Use timed join to prevent ANR (5s watchdog) */
-        struct timespec timeout;
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 3;  /* 3 second timeout */
+        /* Portable timed wait: poll the running flag with short sleeps
+         * This avoids pthread_timedjoin_np which is a glibc extension */
+        int wait_ms = 0;
+        const int max_wait_ms = 3000;  /* 3 second timeout */
+        const int poll_interval_ms = 50;
 
-        if (pthread_timedjoin_np(engine->resume_thread, NULL, &timeout) != 0) {
-            QGP_LOG_WARN(LOG_TAG, "Resume thread join timeout, detaching");
-            pthread_detach(engine->resume_thread);
-        } else {
-            QGP_LOG_INFO(LOG_TAG, "Resume thread exited");
+        while (wait_ms < max_wait_ms) {
+            pthread_mutex_lock(&engine->state_mutex);
+            bool still_running = engine->resume_thread_running;
+            pthread_mutex_unlock(&engine->state_mutex);
+
+            if (!still_running) {
+                /* Thread finished, safe to join */
+                pthread_join(resume_tid, NULL);
+                QGP_LOG_INFO(LOG_TAG, "Resume thread exited");
+                break;
+            }
+
+            /* Sleep and retry (nanosleep is POSIX, usleep is deprecated) */
+            struct timespec sleep_ts = { 0, poll_interval_ms * 1000000L };
+            nanosleep(&sleep_ts, NULL);
+            wait_ms += poll_interval_ms;
         }
-#else
-        /* Desktop: Can wait longer */
-        pthread_join(engine->resume_thread, NULL);
-        QGP_LOG_INFO(LOG_TAG, "Resume thread exited");
-#endif
+
+        if (wait_ms >= max_wait_ms) {
+            QGP_LOG_WARN(LOG_TAG, "Resume thread join timeout, detaching");
+            pthread_detach(resume_tid);
+        }
 
         pthread_mutex_lock(&engine->state_mutex);
         engine->resume_thread_running = false;
