@@ -1218,6 +1218,10 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     engine->setup_listeners_running = false;
     engine->stabilization_retry_running = false;
 
+    /* v0.6.107+: Initialize state synchronization */
+    pthread_mutex_init(&engine->state_mutex, NULL);
+    engine->resume_thread_running = false;
+
     /* Initialize task queue */
     dna_task_queue_init(&engine->task_queue);
 
@@ -1472,23 +1476,44 @@ void dna_engine_destroy(dna_engine_t *engine) {
     }
     pthread_mutex_destroy(&engine->background_threads_mutex);
 
+    /* v0.6.107+: Wait for resume thread with timeout (prevents ANR on Android) */
+    pthread_mutex_lock(&engine->state_mutex);
+    bool join_resume = engine->resume_thread_running;
+    pthread_mutex_unlock(&engine->state_mutex);
+
+    if (join_resume) {
+        QGP_LOG_INFO(LOG_TAG, "Waiting for resume thread to exit...");
+
+#ifdef __ANDROID__
+        /* Android: Use timed join to prevent ANR (5s watchdog) */
+        struct timespec timeout;
+        clock_gettime(CLOCK_REALTIME, &timeout);
+        timeout.tv_sec += 3;  /* 3 second timeout */
+
+        if (pthread_timedjoin_np(engine->resume_thread, NULL, &timeout) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "Resume thread join timeout, detaching");
+            pthread_detach(engine->resume_thread);
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "Resume thread exited");
+        }
+#else
+        /* Desktop: Can wait longer */
+        pthread_join(engine->resume_thread, NULL);
+        QGP_LOG_INFO(LOG_TAG, "Resume thread exited");
+#endif
+
+        pthread_mutex_lock(&engine->state_mutex);
+        engine->resume_thread_running = false;
+        pthread_mutex_unlock(&engine->state_mutex);
+    }
+
     /* Stop presence heartbeat thread */
     dna_stop_presence_heartbeat(engine);
 
     /* Clear GEK KEM keys (H3 security fix) */
     gek_clear_kem_keys();
 
-    /* Free messenger context */
-    if (engine->messenger) {
-        messenger_free(engine->messenger);
-    }
-
-    /* Free wallet list */
-    // NOTE: engine->wallet_list removed in v0.3.150 - was never assigned (dead code)
-    if (engine->blockchain_wallets) {
-        blockchain_wallet_list_free(engine->blockchain_wallets);
-    }
-
+    /* v0.6.107+: Cancel listeners BEFORE freeing messenger (prevents use-after-free) */
     /* Cancel all outbox listeners */
     dna_engine_cancel_all_outbox_listeners(engine);
     pthread_mutex_destroy(&engine->outbox_listeners_mutex);
@@ -1509,6 +1534,17 @@ void dna_engine_destroy(dna_engine_t *engine) {
     dna_engine_unsubscribe_all_groups(engine);
     pthread_mutex_destroy(&engine->group_listen_mutex);
 
+    /* Free messenger context (now safe after all listeners cancelled) */
+    if (engine->messenger) {
+        messenger_free(engine->messenger);
+    }
+
+    /* Free wallet list */
+    // NOTE: engine->wallet_list removed in v0.3.150 - was never assigned (dead code)
+    if (engine->blockchain_wallets) {
+        blockchain_wallet_list_free(engine->blockchain_wallets);
+    }
+
     /* Free message queue */
     pthread_mutex_lock(&engine->message_queue.mutex);
     for (int i = 0; i < engine->message_queue.capacity; i++) {
@@ -1525,6 +1561,9 @@ void dna_engine_destroy(dna_engine_t *engine) {
     pthread_mutex_destroy(&engine->task_mutex);
     pthread_mutex_destroy(&engine->name_cache_mutex);
     pthread_cond_destroy(&engine->task_cond);
+
+    /* v0.6.107+: Cleanup state mutex */
+    pthread_mutex_destroy(&engine->state_mutex);
 
     /* Global caches (profile_manager, keyserver_cache) intentionally NOT closed.
      * They persist for app lifetime to survive engine destroy/recreate cycles

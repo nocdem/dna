@@ -31,9 +31,8 @@ class AndroidPlatformHandler implements PlatformHandler {
   }
 
   @override
-  void onPause(DnaEngine engine) {
-    // Callback already detached by lifecycle_observer before calling this
-
+  void onPauseComplete() {
+    // v0.100.83+: Called AFTER engine dispose (DHT lock released)
     // Tell service to take over (handles notifications while Flutter is paused)
     // Service loads identity in minimal mode (polling only, no listeners)
     ForegroundServiceManager.setFlutterActive(false);

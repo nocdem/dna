@@ -35,11 +35,14 @@ abstract class PlatformHandler {
   /// Desktop: No-op (callback stays attached)
   Future<void> onResume(DnaEngine engine);
 
-  /// Called when app goes to background (paused)
+  /// Called AFTER engine is disposed when app goes to background (paused)
   ///
-  /// Android: Detach Flutter event callback (JNI handles background notifications)
-  /// Desktop: No-op (callback stays attached)
-  void onPause(DnaEngine engine);
+  /// Android: Notify service that Flutter is paused (service takes over)
+  /// Desktop: No-op
+  ///
+  /// v0.100.83+: Changed from onPause(engine) to onPauseComplete() - called
+  /// AFTER engine dispose to ensure DHT lock is released before service starts.
+  void onPauseComplete();
 
   /// Called when outbox has new messages from specific contacts
   ///

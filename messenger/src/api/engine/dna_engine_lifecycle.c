@@ -58,10 +58,14 @@ int dna_engine_pause(dna_engine_t *engine) {
         return DNA_ENGINE_ERROR_NO_IDENTITY;
     }
 
+    /* v0.6.107+: Protect state check and write with mutex */
+    pthread_mutex_lock(&engine->state_mutex);
     if (engine->state == DNA_ENGINE_STATE_PAUSED) {
+        pthread_mutex_unlock(&engine->state_mutex);
         QGP_LOG_DEBUG(LOG_TAG, "pause: Already paused");
         return DNA_OK;
     }
+    pthread_mutex_unlock(&engine->state_mutex);
 
     QGP_LOG_INFO(LOG_TAG, "[PAUSE] Pausing engine (suspending listeners, keeping DHT alive)");
 
@@ -81,8 +85,10 @@ int dna_engine_pause(dna_engine_t *engine) {
     dna_engine_unsubscribe_all_groups(engine);
     QGP_LOG_INFO(LOG_TAG, "[PAUSE] Group listeners cancelled");
 
-    /* 4. Update state */
+    /* 4. Update state (protected by mutex) */
+    pthread_mutex_lock(&engine->state_mutex);
     engine->state = DNA_ENGINE_STATE_PAUSED;
+    pthread_mutex_unlock(&engine->state_mutex);
 
     QGP_LOG_INFO(LOG_TAG, "[PAUSE] Engine paused successfully - DHT connection and databases remain open");
     return DNA_OK;
@@ -100,9 +106,21 @@ static void *resume_thread(void *arg) {
 
     QGP_LOG_INFO(LOG_TAG, "[RESUME-THREAD] Starting background resubscription");
 
-    /* Check engine is still valid and in resuming state */
-    if (!engine || engine->state != DNA_ENGINE_STATE_ACTIVE) {
-        QGP_LOG_WARN(LOG_TAG, "[RESUME-THREAD] Engine invalid or state changed, aborting");
+    /* v0.6.107+: Check engine is still valid and in active state (protected by mutex) */
+    if (!engine) {
+        QGP_LOG_WARN(LOG_TAG, "[RESUME-THREAD] Engine NULL, aborting");
+        return NULL;
+    }
+
+    pthread_mutex_lock(&engine->state_mutex);
+    bool is_active = (engine->state == DNA_ENGINE_STATE_ACTIVE);
+    pthread_mutex_unlock(&engine->state_mutex);
+
+    if (!is_active) {
+        QGP_LOG_WARN(LOG_TAG, "[RESUME-THREAD] Engine state changed, aborting");
+        pthread_mutex_lock(&engine->state_mutex);
+        engine->resume_thread_running = false;
+        pthread_mutex_unlock(&engine->state_mutex);
         return NULL;
     }
 
@@ -113,9 +131,16 @@ static void *resume_thread(void *arg) {
         QGP_LOG_INFO(LOG_TAG, "[RESUME-THREAD] Resubscribed %zu DHT listeners", resubscribed);
     }
 
-    /* Check for abort (engine might have been paused again) */
-    if (engine->state != DNA_ENGINE_STATE_ACTIVE) {
+    /* v0.6.107+: Check for abort (engine might have been paused again) */
+    pthread_mutex_lock(&engine->state_mutex);
+    is_active = (engine->state == DNA_ENGINE_STATE_ACTIVE);
+    pthread_mutex_unlock(&engine->state_mutex);
+
+    if (!is_active) {
         QGP_LOG_WARN(LOG_TAG, "[RESUME-THREAD] Engine state changed during resume, stopping");
+        pthread_mutex_lock(&engine->state_mutex);
+        engine->resume_thread_running = false;
+        pthread_mutex_unlock(&engine->state_mutex);
         return NULL;
     }
 
@@ -130,6 +155,12 @@ static void *resume_thread(void *arg) {
     }
 
     QGP_LOG_INFO(LOG_TAG, "[RESUME-THREAD] Background resubscription complete");
+
+    /* v0.6.107+: Mark thread as no longer running */
+    pthread_mutex_lock(&engine->state_mutex);
+    engine->resume_thread_running = false;
+    pthread_mutex_unlock(&engine->state_mutex);
+
     return NULL;
 }
 
@@ -144,8 +175,12 @@ int dna_engine_resume(dna_engine_t *engine) {
         return DNA_ENGINE_ERROR_NO_IDENTITY;
     }
 
+    /* v0.6.107+: Protect state check and write with mutex */
+    pthread_mutex_lock(&engine->state_mutex);
     if (engine->state != DNA_ENGINE_STATE_PAUSED) {
-        QGP_LOG_DEBUG(LOG_TAG, "resume: Not paused (state=%d)", engine->state);
+        int current_state = engine->state;
+        pthread_mutex_unlock(&engine->state_mutex);
+        QGP_LOG_DEBUG(LOG_TAG, "resume: Not paused (state=%d)", current_state);
         return DNA_OK;  /* Not an error, just nothing to do */
     }
 
@@ -153,6 +188,7 @@ int dna_engine_resume(dna_engine_t *engine) {
 
     /* 1. Update state first to allow listeners to work */
     engine->state = DNA_ENGINE_STATE_ACTIVE;
+    pthread_mutex_unlock(&engine->state_mutex);
 
     /* 2. Resume presence heartbeat IMMEDIATELY (marks us as online) */
     dna_engine_resume_presence(engine);
@@ -171,8 +207,11 @@ int dna_engine_resume(dna_engine_t *engine) {
         dna_engine_subscribe_all_groups(engine);
         dna_engine_retry_pending_messages(engine);
     } else {
-        /* Detach thread - we don't need to join it */
-        pthread_detach(resume_tid);
+        /* v0.6.107+: Track thread for clean shutdown (don't detach) */
+        pthread_mutex_lock(&engine->state_mutex);
+        engine->resume_thread = resume_tid;
+        engine->resume_thread_running = true;
+        pthread_mutex_unlock(&engine->state_mutex);
         QGP_LOG_INFO(LOG_TAG, "[RESUME] Background thread spawned, returning immediately");
     }
 
@@ -181,5 +220,9 @@ int dna_engine_resume(dna_engine_t *engine) {
 
 bool dna_engine_is_paused(dna_engine_t *engine) {
     if (!engine) return false;
-    return engine->state == DNA_ENGINE_STATE_PAUSED;
+    /* v0.6.107+: Protect state read with mutex */
+    pthread_mutex_lock(&engine->state_mutex);
+    bool is_paused = (engine->state == DNA_ENGINE_STATE_PAUSED);
+    pthread_mutex_unlock(&engine->state_mutex);
+    return is_paused;
 }

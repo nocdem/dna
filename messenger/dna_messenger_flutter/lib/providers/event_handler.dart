@@ -482,6 +482,11 @@ class EventHandler {
   void pausePolling() {
     _presenceTimer?.cancel();
     _presenceTimer = null;
+    _refreshTimer?.cancel();
+    _refreshTimer = null;
+    _outboxDebounceTimer?.cancel();
+    _outboxDebounceTimer = null;
+    _pendingOutboxFingerprints.clear();
   }
 
   /// Resume all polling timers (call when app comes to foreground)

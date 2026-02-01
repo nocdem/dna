@@ -226,44 +226,51 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     // Mark identity as NOT ready while loading (shows spinner in UI)
     ref.read(identityReadyProvider.notifier).state = false;
 
-    final engine = await ref.read(engineProvider.future);
+    try {
+      final engine = await ref.read(engineProvider.future);
 
-    if (fingerprint != null) {
-      engine.debugLog('IDENTITY', 'loadIdentity START fp=${fingerprint.substring(0, 16)}...');
-    } else {
-      engine.debugLog('IDENTITY', 'loadIdentity START (auto-detect fingerprint)');
+      if (fingerprint != null) {
+        engine.debugLog('IDENTITY', 'loadIdentity START fp=${fingerprint.substring(0, 16)}...');
+      } else {
+        engine.debugLog('IDENTITY', 'loadIdentity START (auto-detect fingerprint)');
+      }
+
+      await engine.loadIdentity(fingerprint: fingerprint);
+
+      // Get actual fingerprint after loading (important when auto-detected)
+      final loadedFp = engine.fingerprint;
+      engine.debugLog('IDENTITY', 'loadIdentity DONE - loaded fp=${loadedFp?.substring(0, 16) ?? "null"}');
+
+      // Android v0.5.5+: Store fingerprint for background service
+      // Service reads this when it starts fresh after process killed
+      if (Platform.isAndroid && loadedFp != null) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('identity_fingerprint', loadedFp);
+        engine.debugLog('IDENTITY', 'loadIdentity - fingerprint stored for service');
+      }
+
+      // Set fingerprint for reference (not used for identity loaded check anymore)
+      ref.read(currentFingerprintProvider.notifier).state = loadedFp;
+      engine.debugLog('IDENTITY', 'loadIdentity - currentFingerprintProvider set');
+
+      // Mark identity as READY - this triggers data providers to fetch
+      ref.read(identityReadyProvider.notifier).state = true;
+      engine.debugLog('IDENTITY', 'loadIdentity - identityReadyProvider set to true');
+
+      // v0.6.26: Contact listeners are now started in C stabilization thread
+      // This was moved from Dart because listenAllContacts() blocked UI for up to 30s
+      // waiting for DHT to become ready. Now runs in background C thread.
+      engine.debugLog('IDENTITY', 'Contact listeners will start in C stabilization thread');
+
+      // Invalidate profile providers to fetch fresh profile from DHT
+      ref.invalidate(userProfileProvider);
+      ref.invalidate(fullProfileProvider);
+    } catch (e) {
+      // v0.100.83+: Reset state on error to allow retry
+      ref.read(identityReadyProvider.notifier).state = false;
+      ref.read(currentFingerprintProvider.notifier).state = null;
+      rethrow;
     }
-
-    await engine.loadIdentity(fingerprint: fingerprint);
-
-    // Get actual fingerprint after loading (important when auto-detected)
-    final loadedFp = engine.fingerprint;
-    engine.debugLog('IDENTITY', 'loadIdentity DONE - loaded fp=${loadedFp?.substring(0, 16) ?? "null"}');
-
-    // Android v0.5.5+: Store fingerprint for background service
-    // Service reads this when it starts fresh after process killed
-    if (Platform.isAndroid && loadedFp != null) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('identity_fingerprint', loadedFp);
-      engine.debugLog('IDENTITY', 'loadIdentity - fingerprint stored for service');
-    }
-
-    // Set fingerprint for reference (not used for identity loaded check anymore)
-    ref.read(currentFingerprintProvider.notifier).state = loadedFp;
-    engine.debugLog('IDENTITY', 'loadIdentity - currentFingerprintProvider set');
-
-    // Mark identity as READY - this triggers data providers to fetch
-    ref.read(identityReadyProvider.notifier).state = true;
-    engine.debugLog('IDENTITY', 'loadIdentity - identityReadyProvider set to true');
-
-    // v0.6.26: Contact listeners are now started in C stabilization thread
-    // This was moved from Dart because listenAllContacts() blocked UI for up to 30s
-    // waiting for DHT to become ready. Now runs in background C thread.
-    engine.debugLog('IDENTITY', 'Contact listeners will start in C stabilization thread');
-
-    // Invalidate profile providers to fetch fresh profile from DHT
-    ref.invalidate(userProfileProvider);
-    ref.invalidate(fullProfileProvider);
   }
 
   /// Register a nickname for the current identity

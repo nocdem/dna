@@ -22,8 +22,8 @@ class DesktopPlatformHandler implements PlatformHandler {
   }
 
   @override
-  void onPause(DnaEngine engine) {
-    // Desktop: callback stays attached, nothing to do
+  void onPauseComplete() {
+    // Desktop doesn't pause - no-op
   }
 
   @override

@@ -73,10 +73,8 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
         // Don't pause here - might just be a brief interruption
         break;
       case AppLifecycleState.hidden:
-        // Only pause on mobile - desktop keeps running when minimized
-        if (Platform.isAndroid || Platform.isIOS) {
-          _onPause();
-        }
+        // v0.100.83+: Ignore hidden event
+        // Android/iOS both fire hidden BEFORE paused - only handle paused
         break;
     }
   }
@@ -114,6 +112,8 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Service must release DHT lock before Flutter can create new engine
       if (Platform.isAndroid) {
         await PlatformHandler.instance.onResumePreEngine();
+        // v0.100.83+: Safety delay to ensure service fully released DHT (150ms for slow devices)
+        await Future.delayed(const Duration(milliseconds: 150));
       }
 
       // Abort checkpoint
@@ -142,6 +142,7 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Abort checkpoint
       if (_shouldAbort(myOpId)) {
         log('LIFECYCLE', '[RESUME] Aborted after loadIdentity');
+        ref.read(identityReadyProvider.notifier).state = false;
         return;
       }
 
@@ -165,6 +166,18 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       }
     } catch (e) {
       logError('LIFECYCLE', '[RESUME] Error: $e');
+      ref.read(identityReadyProvider.notifier).state = false;
+
+      // v0.100.83+: Cleanup engine on resume error
+      try {
+        final engine = ref.read(engineProvider).valueOrNull;
+        if (engine != null && !engine.isDisposed) {
+          engine.dispose();
+          ref.invalidate(engineProvider);
+        }
+      } catch (_) {
+        // Ignore cleanup errors
+      }
     } finally {
       // Only reset state if we're still the current operation
       if (_operationId == myOpId) {
@@ -269,10 +282,6 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Detach event callback before destroying
       engine.detachEventCallback();
 
-      // Platform-specific pause handling BEFORE dispose
-      // Android: Notify service that Flutter is paused (service takes over with its own engine)
-      PlatformHandler.instance.onPause(engine);
-
       // Destroy the C engine
       engine.dispose();
       log('LIFECYCLE', '[PAUSE] Engine destroyed');
@@ -283,12 +292,23 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Mark identity as not ready (triggers spinner on next resume)
       ref.read(identityReadyProvider.notifier).state = false;
 
+      // v0.100.83+: Notify service AFTER dispose (DHT lock released)
+      // Service can now safely create its own engine
+      PlatformHandler.instance.onPauseComplete();
+
       // NOTE: currentFingerprintProvider is preserved - needed to reload identity on resume
 
     } catch (e) {
       logError('LIFECYCLE', '[PAUSE] Error: $e');
     } finally {
       _lifecycleState = _LifecycleState.idle;
+
+      // v0.100.83+: Handle rapid switch - if already foreground, trigger resume
+      final currentState = WidgetsBinding.instance.lifecycleState;
+      if (currentState == AppLifecycleState.resumed) {
+        log('LIFECYCLE', '[PAUSE] Already resumed during pause, triggering immediate resume');
+        Future.microtask(() => _onResume());
+      }
     }
   }
 
