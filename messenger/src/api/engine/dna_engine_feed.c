@@ -597,6 +597,57 @@ void dna_handle_feed_get_all(dna_engine_t *engine, dna_task_t *task) {
     task->callback.feed_topics(task->request_id, DNA_OK, info, (int)count, task->user_data);
 }
 
+void dna_handle_feed_reindex_topic(dna_engine_t *engine, dna_task_t *task) {
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NETWORK,
+                                  task->user_data);
+        return;
+    }
+
+    const char *uuid = task->params.feed_reindex_topic.uuid;
+    QGP_LOG_INFO(LOG_TAG, "Reindexing topic: %s", uuid);
+
+    /* Fetch the topic */
+    dna_feed_topic_t *topic = NULL;
+    int ret = dna_feed_topic_get(dht, uuid, &topic);
+
+    if (ret == -2 || !topic) {
+        task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NOT_FOUND,
+                                  task->user_data);
+        return;
+    }
+
+    if (ret != 0) {
+        task->callback.completion(task->request_id, DNA_ERROR_INTERNAL,
+                                  task->user_data);
+        return;
+    }
+
+    /* Create index entry from topic */
+    dna_feed_index_entry_t entry = {0};
+    strncpy(entry.topic_uuid, topic->topic_uuid, DNA_FEED_UUID_LEN - 1);
+    strncpy(entry.author_fingerprint, topic->author_fingerprint, DNA_FEED_FINGERPRINT_LEN - 1);
+    strncpy(entry.title, topic->title, DNA_FEED_MAX_TITLE_LEN);
+    strncpy(entry.category_id, topic->category_id, DNA_FEED_CATEGORY_ID_LEN - 1);
+    entry.created_at = topic->created_at;
+    entry.deleted = topic->deleted;
+
+    dna_feed_topic_free(topic);
+
+    /* Add to index */
+    ret = dna_feed_index_add(dht, &entry);
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add topic to index: %d", ret);
+        task->callback.completion(task->request_id, DNA_ERROR_INTERNAL,
+                                  task->user_data);
+        return;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Topic reindexed: %s", uuid);
+    task->callback.completion(task->request_id, DNA_OK, task->user_data);
+}
+
 /* ============================================================================
  * FEED v2 PUBLIC API
  * ============================================================================ */
@@ -666,6 +717,22 @@ dna_request_id_t dna_engine_feed_delete_topic(
     dna_task_callback_t cb = {0};
     cb.completion = callback;
     return dna_submit_task(engine, TASK_FEED_DELETE_TOPIC, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_feed_reindex_topic(
+    dna_engine_t *engine,
+    const char *uuid,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !uuid || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.feed_reindex_topic.uuid, uuid, 36);
+
+    dna_task_callback_t cb = {0};
+    cb.completion = callback;
+    return dna_submit_task(engine, TASK_FEED_REINDEX_TOPIC, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_feed_add_comment(

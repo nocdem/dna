@@ -1062,6 +1062,14 @@ int main(int argc, char *argv[]) {
                     result = cmd_feeds_comments(g_engine, argv[optind + 2]);
                 }
             }
+            else if (strcmp(subcmd, "reindex") == 0) {
+                if (optind + 2 >= argc) {
+                    fprintf(stderr, "Error: 'feeds reindex' requires <uuid>\n");
+                    result = 1;
+                } else {
+                    result = cmd_feeds_reindex(g_engine, argv[optind + 2]);
+                }
+            }
             else {
                 fprintf(stderr, "Error: Unknown feeds subcommand '%s'\n", subcmd);
                 result = 1;

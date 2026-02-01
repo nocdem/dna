@@ -4335,6 +4335,35 @@ int cmd_feeds_comments(dna_engine_t *engine, const char *topic_uuid) {
     return 0;
 }
 
+int cmd_feeds_reindex(dna_engine_t *engine, const char *uuid) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!uuid || strlen(uuid) == 0) {
+        printf("Error: Topic UUID required\n");
+        return -1;
+    }
+
+    printf("Reindexing topic %s...\n", uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_feed_reindex_topic(engine, uuid, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to reindex topic: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Topic reindexed successfully!\n");
+    return 0;
+}
+
 /* ============================================================================
  * PHASE 11: MESSAGE BACKUP (2 commands)
  * ============================================================================ */

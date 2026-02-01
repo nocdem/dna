@@ -2542,6 +2542,25 @@ DNA_API dna_request_id_t dna_engine_feed_delete_topic(
 );
 
 /**
+ * Re-index an existing topic
+ *
+ * Fetches the topic from DHT and adds it to the day-bucket index.
+ * Use this to migrate existing topics to a new index format.
+ *
+ * @param engine    Engine instance
+ * @param uuid      Topic UUID to reindex
+ * @param callback  Called on completion
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_feed_reindex_topic(
+    dna_engine_t *engine,
+    const char *uuid,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
  * Add a comment to a topic (optionally as a reply)
  *
  * Supports single-level threading via parent_comment_uuid.

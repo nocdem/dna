@@ -480,6 +480,7 @@ int cmd_feeds_list_all(dna_engine_t *engine, int days);
 int cmd_feeds_comment(dna_engine_t *engine, const char *topic_uuid, const char *body,
                       const char *mentions);
 int cmd_feeds_comments(dna_engine_t *engine, const char *topic_uuid);
+int cmd_feeds_reindex(dna_engine_t *engine, const char *uuid);
 
 /* ============================================================================
  * PHASE 11: MESSAGE BACKUP (2 commands)

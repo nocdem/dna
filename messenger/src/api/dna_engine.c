@@ -1111,6 +1111,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_FEED_GET_ALL:
             dna_handle_feed_get_all(engine, task);
             break;
+        case TASK_FEED_REINDEX_TOPIC:
+            dna_handle_feed_reindex_topic(engine, task);
+            break;
 
         /* Feed v2 subscriptions (v0.6.91+) */
         case TASK_FEED_GET_SUBSCRIPTIONS:

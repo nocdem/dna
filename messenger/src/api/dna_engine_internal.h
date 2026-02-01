@@ -136,7 +136,10 @@ typedef enum {
     /* Feed v2 subscriptions (v0.6.91+) */
     TASK_FEED_GET_SUBSCRIPTIONS,
     TASK_FEED_SYNC_SUBSCRIPTIONS_TO_DHT,
-    TASK_FEED_SYNC_SUBSCRIPTIONS_FROM_DHT
+    TASK_FEED_SYNC_SUBSCRIPTIONS_FROM_DHT,
+
+    /* Feed v2 reindex (v0.6.104+) */
+    TASK_FEED_REINDEX_TOPIC
 } dna_task_type_t;
 
 /* ============================================================================
@@ -327,6 +330,11 @@ typedef union {
     struct {
         char uuid[37];            /* Topic UUID */
     } feed_delete_topic;
+
+    /* Feed v2: Reindex topic (add existing topic to index) */
+    struct {
+        char uuid[37];            /* Topic UUID */
+    } feed_reindex_topic;
 
     /* Feed v2: Add comment (with optional reply support) */
     struct {
@@ -755,6 +763,7 @@ void dna_handle_feed_add_comment(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_feed_get_comments(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_feed_get_category(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_feed_get_all(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_feed_reindex_topic(dna_engine_t *engine, dna_task_t *task);
 
 /* Feed v2 subscriptions (v0.6.91+) */
 void dna_handle_feed_get_subscriptions(dna_engine_t *engine, dna_task_t *task);
