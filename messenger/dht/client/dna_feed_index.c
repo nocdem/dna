@@ -9,6 +9,11 @@
  *
  * Each user's entries are stored under their unique value_id, enabling
  * multiple users to contribute to the same index bucket.
+ *
+ * Uses chunked DHT storage pattern (same as groups):
+ * - dht_chunked_fetch_mine() for reading MY entries
+ * - dht_chunked_publish() for writing MY entries
+ * - dht_chunked_fetch_all() for reading ALL entries from all senders
  */
 
 #include "dna_feed.h"
@@ -81,7 +86,82 @@ static int index_entry_from_json(const char *json_str, dna_feed_index_entry_t *e
 }
 
 /* ============================================================================
+ * JSON Bucket Serialization (array of entries)
+ * Same pattern as dna_group_outbox.c bucket_to_json/bucket_from_json
+ * ========================================================================== */
+
+static int index_bucket_to_json(const dna_feed_index_entry_t *entries, size_t count, char **json_out) {
+    if (!entries || count == 0 || !json_out) return -1;
+
+    json_object *arr = json_object_new_array();
+    if (!arr) return -1;
+
+    for (size_t i = 0; i < count; i++) {
+        char *entry_json = NULL;
+        if (index_entry_to_json(&entries[i], &entry_json) == 0 && entry_json) {
+            json_object *entry_obj = json_tokener_parse(entry_json);
+            if (entry_obj) {
+                json_object_array_add(arr, entry_obj);
+            }
+            free(entry_json);
+        }
+    }
+
+    const char *json_str = json_object_to_json_string_ext(arr, JSON_C_TO_STRING_PLAIN);
+    *json_out = json_str ? strdup(json_str) : NULL;
+    json_object_put(arr);
+
+    return *json_out ? 0 : -1;
+}
+
+static int index_bucket_from_json(const char *json_str, dna_feed_index_entry_t **entries_out, size_t *count_out) {
+    if (!json_str || !entries_out || !count_out) return -1;
+
+    *entries_out = NULL;
+    *count_out = 0;
+
+    json_object *arr = json_tokener_parse(json_str);
+    if (!arr || !json_object_is_type(arr, json_type_array)) {
+        if (arr) json_object_put(arr);
+        return -1;
+    }
+
+    int len = json_object_array_length(arr);
+    if (len == 0) {
+        json_object_put(arr);
+        return 0;
+    }
+
+    dna_feed_index_entry_t *entries = calloc(len, sizeof(dna_feed_index_entry_t));
+    if (!entries) {
+        json_object_put(arr);
+        return -1;
+    }
+
+    size_t count = 0;
+    for (int i = 0; i < len; i++) {
+        json_object *entry_obj = json_object_array_get_idx(arr, i);
+        const char *entry_str = json_object_to_json_string(entry_obj);
+        if (entry_str && index_entry_from_json(entry_str, &entries[count]) == 0) {
+            count++;
+        }
+    }
+
+    json_object_put(arr);
+
+    if (count == 0) {
+        free(entries);
+        return 0;
+    }
+
+    *entries_out = entries;
+    *count_out = count;
+    return 0;
+}
+
+/* ============================================================================
  * Helper: Publish entries to a multi-owner index bucket
+ * Uses dht_chunked_fetch_mine() and dht_chunked_publish() like groups
  * ========================================================================== */
 
 static int publish_index_entries(dht_context_t *dht_ctx,
@@ -90,82 +170,43 @@ static int publish_index_entries(dht_context_t *dht_ctx,
                                   size_t count) {
     if (!dht_ctx || !index_key || !entries || count == 0) return -1;
 
-    /* Get my value_id (unique per DHT identity) */
-    uint64_t my_value_id = 1;
-    dht_get_owner_value_id(dht_ctx, &my_value_id);
+    int ret;
 
-    /* First, fetch my existing entries for this bucket */
+    /* Step 1: Fetch MY existing entries using dht_chunked_fetch_mine() */
     dna_feed_index_entry_t *my_entries = NULL;
     size_t my_count = 0;
 
-    uint8_t **values = NULL;
-    size_t *lens = NULL;
-    size_t value_count = 0;
+    uint8_t *existing_data = NULL;
+    size_t existing_len = 0;
 
-    int ret = dht_get_all(dht_ctx, (const uint8_t *)index_key, strlen(index_key),
-                          &values, &lens, &value_count);
+    ret = dht_chunked_fetch_mine(dht_ctx, index_key, &existing_data, &existing_len);
 
-    if (ret == 0 && value_count > 0) {
-        /* Collect my entries - look for arrays that contain entries I authored */
-        size_t capacity = 0;
-
-        for (size_t i = 0; i < value_count; i++) {
-            if (values[i] && lens[i] > 0) {
-                char *json_str = malloc(lens[i] + 1);
-                if (json_str) {
-                    memcpy(json_str, values[i], lens[i]);
-                    json_str[lens[i]] = '\0';
-
-                    json_object *arr = json_tokener_parse(json_str);
-                    if (arr && json_object_is_type(arr, json_type_array)) {
-                        int arr_len = json_object_array_length(arr);
-                        if (arr_len > 0) {
-                            json_object *first = json_object_array_get_idx(arr, 0);
-                            json_object *author_obj;
-                            if (json_object_object_get_ex(first, "author", &author_obj)) {
-                                const char *arr_author = json_object_get_string(author_obj);
-                                /* Check if this array's entries match the new entry author */
-                                if (arr_author && count > 0 &&
-                                    strcmp(arr_author, entries[0].author_fingerprint) == 0) {
-                                    /* These are my entries - parse them */
-                                    for (int j = 0; j < arr_len; j++) {
-                                        json_object *e = json_object_array_get_idx(arr, j);
-                                        const char *e_str = json_object_to_json_string(e);
-
-                                        if (my_count >= capacity) {
-                                            capacity = capacity ? capacity * 2 : 16;
-                                            dna_feed_index_entry_t *tmp = realloc(
-                                                my_entries, capacity * sizeof(dna_feed_index_entry_t));
-                                            if (!tmp) break;
-                                            my_entries = tmp;
-                                        }
-
-                                        if (index_entry_from_json(e_str, &my_entries[my_count]) == 0) {
-                                            my_count++;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        json_object_put(arr);
-                    } else if (arr) {
-                        json_object_put(arr);
-                    }
-                    free(json_str);
-                }
-            }
-            free(values[i]);
+    if (ret == 0 && existing_data && existing_len > 0) {
+        char *json_str = malloc(existing_len + 1);
+        if (json_str) {
+            memcpy(json_str, existing_data, existing_len);
+            json_str[existing_len] = '\0';
+            index_bucket_from_json(json_str, &my_entries, &my_count);
+            free(json_str);
         }
-        free(values);
-        free(lens);
+        free(existing_data);
     }
 
-    /* Build new array: existing entries + new entries (deduped) */
-    json_object *arr = json_object_new_array();
+    QGP_LOG_DEBUG(LOG_TAG, "Found %zu existing entries in my bucket at %s\n",
+                  my_count, index_key);
 
-    /* Add existing entries */
+    /* Step 2: Build merged array (existing + new, deduped by topic_uuid) */
+    size_t new_capacity = my_count + count;
+    dna_feed_index_entry_t *merged = calloc(new_capacity, sizeof(dna_feed_index_entry_t));
+    if (!merged) {
+        free(my_entries);
+        return -1;
+    }
+
+    size_t merged_count = 0;
+
+    /* Add existing entries (skip if topic_uuid is in new entries) */
     for (size_t i = 0; i < my_count; i++) {
-        /* Skip if this UUID is in the new entries (will be re-added) */
         bool skip = false;
         for (size_t j = 0; j < count; j++) {
             if (strcmp(my_entries[i].topic_uuid, entries[j].topic_uuid) == 0) {
@@ -173,48 +214,45 @@ static int publish_index_entries(dht_context_t *dht_ctx,
                 break;
             }
         }
-        if (skip) continue;
-
-        char *e_json = NULL;
-        if (index_entry_to_json(&my_entries[i], &e_json) == 0) {
-            json_object *e_obj = json_tokener_parse(e_json);
-            if (e_obj) {
-                json_object_array_add(arr, e_obj);
-            }
-            free(e_json);
+        if (!skip) {
+            merged[merged_count++] = my_entries[i];
         }
     }
     free(my_entries);
 
     /* Add new entries */
     for (size_t i = 0; i < count; i++) {
-        char *e_json = NULL;
-        if (index_entry_to_json(&entries[i], &e_json) == 0) {
-            json_object *e_obj = json_tokener_parse(e_json);
-            if (e_obj) {
-                json_object_array_add(arr, e_obj);
-            }
-            free(e_json);
-        }
+        merged[merged_count++] = entries[i];
     }
 
-    /* Publish */
-    const char *json_data = json_object_to_json_string(arr);
-    size_t arr_count = json_object_array_length(arr);
+    /* Step 3: Serialize and publish using dht_chunked_publish() */
+    char *bucket_json = NULL;
+    if (index_bucket_to_json(merged, merged_count, &bucket_json) != 0) {
+        free(merged);
+        return -1;
+    }
 
-    QGP_LOG_INFO(LOG_TAG, "Publishing %zu index entries to DHT (value_id=%llu)...\n",
-                 arr_count, (unsigned long long)my_value_id);
+    QGP_LOG_INFO(LOG_TAG, "Publishing %zu index entries to DHT key %s\n",
+                 merged_count, index_key);
 
-    ret = dht_put_signed(dht_ctx, (const uint8_t *)index_key, strlen(index_key),
-                         (const uint8_t *)json_data, strlen(json_data),
-                         my_value_id, DNA_FEED_TTL_SECONDS, "feed_index");
-    json_object_put(arr);
+    ret = dht_chunked_publish(dht_ctx, index_key,
+                               (const uint8_t *)bucket_json, strlen(bucket_json),
+                               DNA_FEED_TTL_SECONDS);
 
-    return ret;
+    free(bucket_json);
+    free(merged);
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT chunked publish failed: %s\n", dht_chunked_strerror(ret));
+        return -1;
+    }
+
+    return 0;
 }
 
 /* ============================================================================
- * Helper: Fetch entries from a day bucket
+ * Helper: Fetch entries from a day bucket (all senders)
+ * Uses dht_chunked_fetch_all() like groups
  * ========================================================================== */
 
 static int fetch_day_bucket(dht_context_t *dht_ctx,
@@ -226,103 +264,79 @@ static int fetch_day_bucket(dht_context_t *dht_ctx,
     *entries_out = NULL;
     *count_out = 0;
 
+    /* Fetch all senders' buckets using dht_chunked_fetch_all() */
     uint8_t **values = NULL;
     size_t *lens = NULL;
     size_t value_count = 0;
 
-    int ret = dht_get_all(dht_ctx, (const uint8_t *)index_key, strlen(index_key),
-                          &values, &lens, &value_count);
+    int ret = dht_chunked_fetch_all(dht_ctx, index_key, &values, &lens, &value_count);
 
     if (ret != 0 || value_count == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "No buckets found at key %s\n", index_key);
         return (ret == 0) ? -2 : -1;
     }
 
-    /* Parse all entries from all owners */
-    dna_feed_index_entry_t *entries = NULL;
-    size_t capacity = 0;
-    size_t parsed = 0;
+    QGP_LOG_DEBUG(LOG_TAG, "Got %zu sender buckets from key %s\n", value_count, index_key);
+
+    /* Merge all entries from all senders */
+    dna_feed_index_entry_t *all_entries = NULL;
+    size_t total_count = 0;
+    size_t allocated = 0;
 
     for (size_t i = 0; i < value_count; i++) {
-        if (values[i] && lens[i] > 0) {
-            char *json_str = malloc(lens[i] + 1);
-            if (json_str) {
-                memcpy(json_str, values[i], lens[i]);
-                json_str[lens[i]] = '\0';
+        if (!values[i] || lens[i] == 0) continue;
 
-                json_object *obj = json_tokener_parse(json_str);
-                if (obj) {
-                    if (json_object_is_type(obj, json_type_array)) {
-                        int arr_len = json_object_array_length(obj);
-                        for (int j = 0; j < arr_len; j++) {
-                            json_object *e = json_object_array_get_idx(obj, j);
-                            const char *e_str = json_object_to_json_string(e);
-
-                            if (parsed >= capacity) {
-                                capacity = capacity ? capacity * 2 : 32;
-                                dna_feed_index_entry_t *tmp = realloc(
-                                    entries, capacity * sizeof(dna_feed_index_entry_t));
-                                if (!tmp) break;
-                                entries = tmp;
-                            }
-
-                            if (index_entry_from_json(e_str, &entries[parsed]) == 0) {
-                                /* Dedup by topic_uuid */
-                                bool duplicate = false;
-                                for (size_t k = 0; k < parsed; k++) {
-                                    if (strcmp(entries[k].topic_uuid, entries[parsed].topic_uuid) == 0) {
-                                        duplicate = true;
-                                        break;
-                                    }
-                                }
-                                if (!duplicate) {
-                                    parsed++;
-                                }
-                            }
-                        }
-                    } else {
-                        /* Single entry */
-                        if (parsed >= capacity) {
-                            capacity = capacity ? capacity * 2 : 32;
-                            dna_feed_index_entry_t *tmp = realloc(
-                                entries, capacity * sizeof(dna_feed_index_entry_t));
-                            if (!tmp) {
-                                json_object_put(obj);
-                                free(json_str);
-                                continue;
-                            }
-                            entries = tmp;
-                        }
-
-                        if (index_entry_from_json(json_str, &entries[parsed]) == 0) {
-                            bool duplicate = false;
-                            for (size_t k = 0; k < parsed; k++) {
-                                if (strcmp(entries[k].topic_uuid, entries[parsed].topic_uuid) == 0) {
-                                    duplicate = true;
-                                    break;
-                                }
-                            }
-                            if (!duplicate) {
-                                parsed++;
-                            }
-                        }
-                    }
-                    json_object_put(obj);
-                }
-                free(json_str);
-            }
+        char *json_str = malloc(lens[i] + 1);
+        if (!json_str) {
+            free(values[i]);
+            continue;
         }
+
+        memcpy(json_str, values[i], lens[i]);
+        json_str[lens[i]] = '\0';
         free(values[i]);
+
+        /* Parse this sender's bucket */
+        dna_feed_index_entry_t *sender_entries = NULL;
+        size_t sender_count = 0;
+
+        if (index_bucket_from_json(json_str, &sender_entries, &sender_count) == 0 && sender_count > 0) {
+            /* Merge entries, deduping by topic_uuid */
+            for (size_t j = 0; j < sender_count; j++) {
+                bool duplicate = false;
+                for (size_t k = 0; k < total_count; k++) {
+                    if (strcmp(all_entries[k].topic_uuid, sender_entries[j].topic_uuid) == 0) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+
+                if (!duplicate) {
+                    if (total_count >= allocated) {
+                        allocated = allocated ? allocated * 2 : 64;
+                        dna_feed_index_entry_t *tmp = realloc(
+                            all_entries, allocated * sizeof(dna_feed_index_entry_t));
+                        if (!tmp) break;
+                        all_entries = tmp;
+                    }
+                    all_entries[total_count++] = sender_entries[j];
+                }
+            }
+            free(sender_entries);
+        }
+        free(json_str);
     }
+
     free(values);
     free(lens);
 
-    if (parsed == 0) {
-        free(entries);
+    if (total_count == 0) {
+        free(all_entries);
         return -2;
     }
 
-    *entries_out = entries;
-    *count_out = parsed;
+    *entries_out = all_entries;
+    *count_out = total_count;
     return 0;
 }
 
