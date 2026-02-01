@@ -36,28 +36,97 @@ static dna_engine_t *g_engine = NULL;
 /* Mutex to protect g_engine during JNI unload (v0.6.40 race fix) */
 static pthread_mutex_t g_engine_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* Global refs for callbacks - declared here for JNI_OnLoad/OnUnload access.
+ * These are set later by nativeSetEventListener, nativeSetNotificationHelper, etc. */
+static jobject g_event_listener = NULL;
+static jobject g_notification_helper = NULL;
+static jobject g_reconnect_helper = NULL;
+
 /* ============================================================================
  * JNI LIFECYCLE
  * ============================================================================ */
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
+    LOGI("DNA JNI loading...");
+
+    /* v0.6.105: Detect stale state from previous process after force-close.
+     * When Android caches the .so between rapid app restarts, static variables
+     * can retain their old values pointing to freed memory. This causes crashes
+     * on the SECOND launch after force-close.
+     *
+     * Solution: Always clear ALL global state at JNI_OnLoad. This is safe because:
+     * - If .so was freshly loaded: globals are already NULL (init values)
+     * - If .so was cached: globals point to freed memory and MUST be cleared
+     *
+     * The g_engine pointer especially can cause use-after-free during DHT init.
+     * Global refs (g_event_listener, etc.) point to Java objects from the OLD
+     * JVM process and will crash if used.
+     */
+    if (g_engine != NULL || g_event_listener != NULL ||
+        g_notification_helper != NULL || g_reconnect_helper != NULL) {
+        LOGW("JNI_OnLoad: Detected stale state from previous process - clearing");
+
+        /* DO NOT call dna_engine_destroy() - the memory is already freed.
+         * Just NULL the pointer to prevent use-after-free. */
+        g_engine = NULL;
+
+        /* Global refs are invalid - the old JVM is gone. Just NULL them.
+         * DO NOT call DeleteGlobalRef - that would crash on invalid refs. */
+        g_event_listener = NULL;
+        g_notification_helper = NULL;
+        g_reconnect_helper = NULL;
+
+        LOGI("JNI_OnLoad: Stale state cleared - clean start");
+    }
+
     g_jvm = vm;
-    LOGI("DNA JNI loaded");
+    LOGI("DNA JNI loaded (fresh state)");
     return JNI_VERSION_1_6;
 }
 
 JNIEXPORT void JNI_OnUnload(JavaVM *vm, void *reserved) {
-    LOGI("DNA JNI unloading");
+    LOGI("DNA JNI unloading - cleaning up all state");
+
+    /* Clear engine first */
     pthread_mutex_lock(&g_engine_mutex);
     if (g_engine) {
         dna_engine_t *engine = g_engine;
         g_engine = NULL;  /* Clear first to prevent use during destroy */
         pthread_mutex_unlock(&g_engine_mutex);
         dna_engine_destroy(engine);
+        LOGI("Engine destroyed in JNI_OnUnload");
     } else {
         pthread_mutex_unlock(&g_engine_mutex);
     }
+
+    /* v0.6.105: Clear global refs in JNI_OnUnload (if JVM still valid).
+     * This ensures clean state if the library is unloaded normally.
+     * NOTE: We need JNIEnv to delete global refs, get it from the VM. */
+    JNIEnv *env = NULL;
+    if (vm && (*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) == JNI_OK && env) {
+        if (g_event_listener) {
+            (*env)->DeleteGlobalRef(env, g_event_listener);
+            g_event_listener = NULL;
+        }
+        if (g_notification_helper) {
+            (*env)->DeleteGlobalRef(env, g_notification_helper);
+            g_notification_helper = NULL;
+        }
+        if (g_reconnect_helper) {
+            (*env)->DeleteGlobalRef(env, g_reconnect_helper);
+            g_reconnect_helper = NULL;
+        }
+        LOGI("Global refs cleaned in JNI_OnUnload");
+    } else {
+        /* Can't get env - just NULL the pointers (memory leak is acceptable on unload) */
+        g_event_listener = NULL;
+        g_notification_helper = NULL;
+        g_reconnect_helper = NULL;
+        LOGW("JNI_OnUnload: Couldn't get JNIEnv, refs nulled without delete");
+    }
+
     g_jvm = NULL;
+    LOGI("DNA JNI unloaded - all state cleared");
 }
 
 /* Get JNIEnv for current thread
@@ -565,7 +634,7 @@ static void jni_transactions_callback(dna_request_id_t request_id, int error,
  * EVENT CALLBACK
  * ============================================================================ */
 
-static jobject g_event_listener = NULL;
+/* g_event_listener declared in GLOBAL STATE section at top of file */
 
 static void jni_event_callback(const dna_event_t *event, void *user_data) {
     /* CRITICAL: Check g_jvm first - if NULL, JVM is shutting down */
@@ -625,7 +694,7 @@ static void jni_event_callback(const dna_event_t *event, void *user_data) {
  * Called when contact's outbox has new messages (for background notifications)
  * ============================================================================ */
 
-static jobject g_notification_helper = NULL;
+/* g_notification_helper declared in GLOBAL STATE section at top of file */
 
 /**
  * Native callback invoked by dna_engine when DNA_EVENT_OUTBOX_UPDATED fires.
@@ -759,7 +828,7 @@ static void jni_contact_request_callback(const char *user_fingerprint, const cha
  * Called when DHT reconnects after network change (for foreground service)
  * ============================================================================ */
 
-static jobject g_reconnect_helper = NULL;
+/* g_reconnect_helper declared in GLOBAL STATE section at top of file */
 
 /**
  * Native callback invoked by dna_engine when DHT reconnects after network change.

@@ -89,11 +89,18 @@ class DnaMessengerService : Service() {
 
             if (active && !wasActive) {
                 // Flutter taking over - release service's engine
-                android.util.Log.i(TAG, "Flutter taking over - releasing service engine")
+                // v0.6.105: Acquire lock to wait for any ongoing message check to complete
+                android.util.Log.i(TAG, "Flutter taking over - waiting for engine lock...")
                 try {
-                    if (libraryLoaded) {
-                        nativeReleaseEngine()
-                        android.util.Log.i(TAG, "Service engine released for Flutter")
+                    engineLock.lock()
+                    try {
+                        if (libraryLoaded) {
+                            android.util.Log.i(TAG, "Releasing service engine for Flutter")
+                            nativeReleaseEngine()
+                            android.util.Log.i(TAG, "Service engine released for Flutter")
+                        }
+                    } finally {
+                        engineLock.unlock()
                     }
                 } catch (e: Exception) {
                     android.util.Log.e(TAG, "Failed to release engine: ${e.message}")
@@ -155,6 +162,18 @@ class DnaMessengerService : Service() {
 
         // Error code for identity lock held by another process
         private const val ERROR_IDENTITY_LOCKED = -117
+
+        /**
+         * v0.6.105: Lock to prevent race between engine release and engine use.
+         *
+         * Problem: nativeReleaseEngine() can be called from main thread (in setFlutterActive)
+         * while performMessageCheck() is running on background thread. This causes
+         * use-after-free crash when engine is destroyed mid-operation.
+         *
+         * Solution: Use a lock to serialize access. nativeReleaseEngine() waits for
+         * any ongoing nativeCheckOfflineMessages() to complete before destroying engine.
+         */
+        private val engineLock = java.util.concurrent.locks.ReentrantLock()
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -360,6 +379,9 @@ class DnaMessengerService : Service() {
      * v0.100.64+: When Flutter has the engine paused, we poll directly on
      * the paused engine via nativeCheckOfflineMessages() which uses the
      * global g_engine pointer (still valid when paused).
+     *
+     * v0.6.105: Acquires engineLock to prevent race with setFlutterActive().
+     * This ensures nativeReleaseEngine() waits for this check to complete.
      */
     private fun performMessageCheck() {
         if (!libraryLoaded) {
@@ -381,7 +403,23 @@ class DnaMessengerService : Service() {
         // Acquire short wakelock for the check
         acquireWakeLock()
 
+        // v0.6.105: Acquire engine lock to prevent race with setFlutterActive()
+        // Use tryLock to avoid blocking forever if Flutter is releasing engine
+        val gotLock = engineLock.tryLock(5, java.util.concurrent.TimeUnit.SECONDS)
+        if (!gotLock) {
+            android.util.Log.w(TAG, "[POLL] Couldn't acquire engine lock - Flutter may be taking over")
+            releaseWakeLock()
+            schedulePollAlarm()
+            return
+        }
+
         try {
+            // Double-check Flutter didn't become active while we waited for lock
+            if (flutterActive) {
+                android.util.Log.d(TAG, "[POLL] Aborted - Flutter became active")
+                return
+            }
+
             val dataDir = filesDir.absolutePath + "/dna_messenger"
 
             // Check if Flutter has the engine paused (holding the lock)
@@ -419,6 +457,7 @@ class DnaMessengerService : Service() {
         } catch (e: Exception) {
             android.util.Log.e(TAG, "[POLL] Error: ${e.message}")
         } finally {
+            engineLock.unlock()
             releaseWakeLock()
             schedulePollAlarm()
         }
