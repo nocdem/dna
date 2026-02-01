@@ -96,6 +96,7 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
     // State machine guard: only one resume at a time
     if (_lifecycleState != _LifecycleState.idle) {
+      log('LIFECYCLE', '[RESUME] Already in state $_lifecycleState, ignoring');
       return;
     }
 
@@ -117,6 +118,7 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
       // Abort checkpoint
       if (_shouldAbort(myOpId)) {
+        log('LIFECYCLE', '[RESUME] Aborted after onResumePreEngine');
         return;
       }
 
@@ -125,14 +127,21 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
       // Abort checkpoint
       if (_shouldAbort(myOpId)) {
+        log('LIFECYCLE', '[RESUME] Aborted after engine creation');
         return;
       }
 
-      // Load identity (keys, transport, listeners) - full load for Flutter
-      await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
+      // Check if identity is already loaded (might happen if pause didn't complete)
+      if (!engine.isIdentityLoaded()) {
+        // Load identity (keys, transport, listeners) - full load for Flutter
+        await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
+      } else {
+        log('LIFECYCLE', '[RESUME] Identity already loaded, skipping loadIdentity');
+      }
 
       // Abort checkpoint
       if (_shouldAbort(myOpId)) {
+        log('LIFECYCLE', '[RESUME] Aborted after loadIdentity');
         return;
       }
 
@@ -141,6 +150,7 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
       // Abort checkpoint
       if (_shouldAbort(myOpId)) {
+        log('LIFECYCLE', '[RESUME] Aborted after onResume');
         return;
       }
 
@@ -209,8 +219,24 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
     // Pause Dart-side polling timers FIRST (prevents timer exceptions in background)
     ref.read(eventHandlerProvider).pausePolling();
 
+    // State machine guard FIRST - before any async work
+    // Android fires both 'hidden' and 'paused' events - must block second one immediately
+    if (_lifecycleState == _LifecycleState.pausing) {
+      log('LIFECYCLE', '[PAUSE] Already pausing, ignoring duplicate event');
+      return;
+    }
+
+    // Check if identity is loaded (no need to destroy if nothing loaded)
+    final fingerprint = ref.read(currentFingerprintProvider);
+    if (fingerprint == null || fingerprint.isEmpty) {
+      return;
+    }
+
+    // Set pausing state IMMEDIATELY to block concurrent pause attempts
+    _lifecycleState = _LifecycleState.pausing;
+
     // If resume is in progress, signal it to abort and wait
-    if (_lifecycleState == _LifecycleState.resuming) {
+    if (_pauseRequested == false) {
       _pauseRequested = true;
 
       // Wait up to 3 seconds for resume to abort
@@ -221,28 +247,20 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       }
 
       // If resume still hasn't aborted, force it via operation ID
-      if (_lifecycleState == _LifecycleState.resuming) {
-        _operationId++;
-        // Give it one more moment to notice the abort
-        await Future.delayed(const Duration(milliseconds: 100));
-      }
+      _operationId++;
+      await Future.delayed(const Duration(milliseconds: 100));
     }
-
-    // State machine guard: don't re-enter pausing state
-    if (_lifecycleState == _LifecycleState.pausing) {
-      return;
-    }
-
-    // Check if identity is loaded
-    final fingerprint = ref.read(currentFingerprintProvider);
-    if (fingerprint == null || fingerprint.isEmpty) {
-      return;
-    }
-
-    _lifecycleState = _LifecycleState.pausing;
 
     try {
-      final engine = await ref.read(engineProvider.future);
+      // Get current engine state - don't create new one if already disposed
+      final engineAsync = ref.read(engineProvider);
+      final engine = engineAsync.valueOrNull;
+
+      if (engine == null || engine.isDisposed) {
+        log('LIFECYCLE', '[PAUSE] Engine already disposed or null, skipping');
+        ref.read(identityReadyProvider.notifier).state = false;
+        return;
+      }
 
       // v0.100.82+: DESTROY engine on background (mobile only)
       // Fresh engine will be created on resume for clean state
