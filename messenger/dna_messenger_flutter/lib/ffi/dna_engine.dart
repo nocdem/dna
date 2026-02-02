@@ -4634,6 +4634,41 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Sync groups FROM DHT (pull latest metadata)
+  ///
+  /// Fetches the latest group metadata from DHT and updates local cache.
+  /// This is the PULL direction - DHT -> local.
+  /// Use this for background sync after loading local cache.
+  Future<void> syncGroups() async {
+    final localId = _nextLocalId++;
+    final completer = Completer<void>();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_sync_groups(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit sync groups request');
+    }
+
+    return completer.future;
+  }
+
   // ---------------------------------------------------------------------------
   // SIGNING (for QR Auth)
   // ---------------------------------------------------------------------------

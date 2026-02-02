@@ -3016,6 +3016,21 @@ class DnaBindings {
     return _dna_engine_sync_groups_to_dht(engine, callback, user_data);
   }
 
+  /// Sync groups FROM DHT (pull latest metadata)
+  late final _dna_engine_sync_groups = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaCompletionCb>,
+          Pointer<Void>)>('dna_engine_sync_groups');
+
+  int dna_engine_sync_groups(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_sync_groups(engine, callback, user_data);
+  }
+
   late final _dna_free_addressbook_entries = _lib.lookupFunction<
       Void Function(Pointer<dna_addressbook_entry_t>, Int32),
       void Function(

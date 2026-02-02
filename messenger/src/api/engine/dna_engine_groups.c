@@ -37,7 +37,9 @@ void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Get groups from local cache via DHT groups API */
+    /* Get groups from local cache via DHT groups API
+     * LOCAL-FIRST: Return cached data immediately for instant UI display.
+     * DHT sync happens separately via dna_engine_sync_groups_from_dht(). */
     dht_group_cache_entry_t *entries = NULL;
     int entry_count = 0;
     if (dht_groups_list_for_user(engine->fingerprint, &entries, &entry_count) != 0) {
@@ -46,23 +48,6 @@ void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task) {
     }
 
     if (entry_count > 0) {
-        /* Sync all groups from DHT first to get latest data */
-        dht_context_t *dht_ctx = dht_singleton_get();
-        if (dht_ctx) {
-            for (int i = 0; i < entry_count; i++) {
-                dht_groups_sync_from_dht(dht_ctx, entries[i].group_uuid);
-            }
-        }
-
-        /* Re-fetch after sync to get updated data */
-        dht_groups_free_cache_entries(entries, entry_count);
-        entries = NULL;
-        entry_count = 0;
-        if (dht_groups_list_for_user(engine->fingerprint, &entries, &entry_count) != 0) {
-            error = DNA_ENGINE_ERROR_DATABASE;
-            goto done;
-        }
-
         groups = calloc(entry_count, sizeof(dna_group_t));
         if (!groups) {
             dht_groups_free_cache_entries(entries, entry_count);

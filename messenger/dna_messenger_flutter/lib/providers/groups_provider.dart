@@ -20,13 +20,35 @@ class GroupsNotifier extends AsyncNotifier<List<Group>> {
     }
 
     final engine = await ref.watch(engineProvider.future);
-    return engine.getGroups();
+
+    // v0.100.86: LOCAL-FIRST - Return cached data immediately, then sync in background
+    // getGroups() now returns local SQLite cache instantly without waiting for DHT
+    final localGroups = await engine.getGroups();
+
+    // Trigger background DHT sync (fire-and-forget)
+    // When sync completes, user can pull-to-refresh to see updates
+    _syncInBackground(engine);
+
+    return localGroups;
+  }
+
+  /// Sync groups from DHT in background (non-blocking)
+  void _syncInBackground(DnaEngine engine) {
+    // Fire-and-forget: don't await, don't block UI
+    engine.syncGroups().then((_) {
+      // Sync complete - data now updated in local cache
+      // Don't auto-refresh to avoid UI churn; user can pull-to-refresh
+    }).catchError((e) {
+      // Ignore sync errors - local data is still valid
+    });
   }
 
   Future<void> refresh() async {
     state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
+      // Sync from DHT first to get latest data
+      await engine.syncGroups();
       return engine.getGroups();
     });
   }
