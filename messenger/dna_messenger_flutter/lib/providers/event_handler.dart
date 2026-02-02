@@ -480,6 +480,10 @@ class EventHandler {
   /// - Unnecessary battery/data usage
   /// - Exceptions from timer firing when app state is invalid
   void pausePolling() {
+    // v0.100.84+: Cancel event subscription FIRST to prevent events firing on disposed engine
+    _subscription?.cancel();
+    _subscription = null;
+
     _presenceTimer?.cancel();
     _presenceTimer = null;
     _refreshTimer?.cancel();

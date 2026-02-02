@@ -491,8 +491,20 @@ cleanup:
 static void dna_dht_status_callback(bool is_connected, void *user_data) {
     (void)user_data;  /* Using global engine pointer instead */
 
+    /* v0.6.108: Protect engine pointer read with mutex (race condition fix)
+     * This prevents use-after-free when callback fires during engine destroy */
+    pthread_mutex_lock(&g_engine_global_mutex);
     dna_engine_t *engine = g_dht_callback_engine;
-    if (!engine) return;
+    if (!engine) {
+        pthread_mutex_unlock(&g_engine_global_mutex);
+        return;
+    }
+    /* Check shutdown flag before doing any work */
+    if (engine->shutdown_requested) {
+        pthread_mutex_unlock(&g_engine_global_mutex);
+        return;
+    }
+    pthread_mutex_unlock(&g_engine_global_mutex);
 
     dna_event_t event = {0};
     if (is_connected) {
@@ -1221,6 +1233,7 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     /* v0.6.107+: Initialize state synchronization */
     pthread_mutex_init(&engine->state_mutex, NULL);
     engine->resume_thread_running = false;
+    memset(&engine->resume_thread, 0, sizeof(engine->resume_thread));  /* v0.6.108: Init to zero */
 
     /* Initialize task queue */
     dna_task_queue_init(&engine->task_queue);
@@ -1449,11 +1462,14 @@ void dna_engine_destroy(dna_engine_t *engine) {
     }
 #endif
 
-    /* Clear DHT status callback before stopping anything */
+    /* Clear DHT status callback before stopping anything
+     * v0.6.108: Use mutex to synchronize with dna_dht_status_callback() */
+    pthread_mutex_lock(&g_engine_global_mutex);
     if (g_dht_callback_engine == engine) {
         dht_singleton_set_status_callback(NULL, NULL);
         g_dht_callback_engine = NULL;
     }
+    pthread_mutex_unlock(&g_engine_global_mutex);
 
     /* Stop worker threads (also sets shutdown_requested = true) */
     dna_stop_workers(engine);
@@ -1466,13 +1482,61 @@ void dna_engine_destroy(dna_engine_t *engine) {
 
     if (join_setup) {
         QGP_LOG_INFO(LOG_TAG, "Waiting for setup_listeners thread to exit...");
-        pthread_join(engine->setup_listeners_thread, NULL);
-        QGP_LOG_INFO(LOG_TAG, "setup_listeners thread exited");
+
+        /* v0.6.108: Timed wait to prevent ANR on Android (same pattern as resume thread) */
+        int wait_ms = 0;
+        const int max_wait_ms = 3000;  /* 3 second timeout */
+        const int poll_interval_ms = 50;
+
+        while (wait_ms < max_wait_ms) {
+            pthread_mutex_lock(&engine->background_threads_mutex);
+            bool still_running = engine->setup_listeners_running;
+            pthread_mutex_unlock(&engine->background_threads_mutex);
+
+            if (!still_running) {
+                pthread_join(engine->setup_listeners_thread, NULL);
+                QGP_LOG_INFO(LOG_TAG, "setup_listeners thread exited");
+                break;
+            }
+
+            struct timespec sleep_ts = { 0, poll_interval_ms * 1000000L };
+            nanosleep(&sleep_ts, NULL);
+            wait_ms += poll_interval_ms;
+        }
+
+        if (wait_ms >= max_wait_ms) {
+            QGP_LOG_WARN(LOG_TAG, "setup_listeners thread join timeout, detaching");
+            pthread_detach(engine->setup_listeners_thread);
+        }
     }
     if (join_stab) {
         QGP_LOG_INFO(LOG_TAG, "Waiting for stabilization_retry thread to exit...");
-        pthread_join(engine->stabilization_retry_thread, NULL);
-        QGP_LOG_INFO(LOG_TAG, "stabilization_retry thread exited");
+
+        /* v0.6.108: Timed wait to prevent ANR on Android */
+        int wait_ms = 0;
+        const int max_wait_ms = 3000;  /* 3 second timeout */
+        const int poll_interval_ms = 50;
+
+        while (wait_ms < max_wait_ms) {
+            pthread_mutex_lock(&engine->background_threads_mutex);
+            bool still_running = engine->stabilization_retry_running;
+            pthread_mutex_unlock(&engine->background_threads_mutex);
+
+            if (!still_running) {
+                pthread_join(engine->stabilization_retry_thread, NULL);
+                QGP_LOG_INFO(LOG_TAG, "stabilization_retry thread exited");
+                break;
+            }
+
+            struct timespec sleep_ts = { 0, poll_interval_ms * 1000000L };
+            nanosleep(&sleep_ts, NULL);
+            wait_ms += poll_interval_ms;
+        }
+
+        if (wait_ms >= max_wait_ms) {
+            QGP_LOG_WARN(LOG_TAG, "stabilization_retry thread join timeout, detaching");
+            pthread_detach(engine->stabilization_retry_thread);
+        }
     }
     pthread_mutex_destroy(&engine->background_threads_mutex);
 

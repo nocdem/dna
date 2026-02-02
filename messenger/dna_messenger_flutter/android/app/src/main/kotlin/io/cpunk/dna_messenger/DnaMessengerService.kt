@@ -213,6 +213,24 @@ class DnaMessengerService : Service() {
         cancelPollAlarm()
         releaseWakeLock()
         unregisterNetworkCallback()
+
+        // v0.6.108: Release engine if service owns it (Flutter not active)
+        // This ensures identity lock is released even if service is killed by Android
+        if (libraryLoaded && !flutterActive) {
+            try {
+                engineLock.lock()
+                try {
+                    android.util.Log.i(TAG, "Releasing service engine on destroy")
+                    nativeReleaseEngine()
+                    android.util.Log.i(TAG, "Service engine released on destroy")
+                } finally {
+                    engineLock.unlock()
+                }
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "Failed to release engine on destroy: ${e.message}")
+            }
+        }
+
         super.onDestroy()
     }
 
