@@ -535,19 +535,35 @@ int qgp_platform_acquire_identity_lock(const char *data_dir) {
         return -1;
     }
 
-    /* Try to acquire exclusive lock (non-blocking) */
-    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-        if (errno == EWOULDBLOCK) {
-            QGP_LOG_WARN(LOG_TAG, "acquire_identity_lock: lock already held by another process");
-        } else {
-            QGP_LOG_ERROR(LOG_TAG, "acquire_identity_lock: flock failed: %s", strerror(errno));
+    /* v0.6.109: Try to acquire exclusive lock with retry
+     * On Android, ForegroundService may still hold lock briefly after app reopens.
+     * Retry up to 10 times with 100ms delay (1 second total) to handle handoff. */
+    const int max_retries = 10;
+    const int retry_delay_ms = 100;
+
+    for (int attempt = 0; attempt < max_retries; attempt++) {
+        if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+            /* Lock acquired successfully */
+            QGP_LOG_INFO(LOG_TAG, "acquire_identity_lock: lock acquired (fd=%d, attempt=%d)",
+                         fd, attempt + 1);
+            return fd;
         }
-        close(fd);
-        return -1;
+
+        /* Lock failed - check if we should retry */
+        if (errno == EWOULDBLOCK && attempt < max_retries - 1) {
+            QGP_LOG_INFO(LOG_TAG, "acquire_identity_lock: lock held, retry %d/%d in %dms",
+                         attempt + 1, max_retries, retry_delay_ms);
+            usleep(retry_delay_ms * 1000);  /* Convert ms to microseconds */
+        } else if (errno != EWOULDBLOCK) {
+            QGP_LOG_ERROR(LOG_TAG, "acquire_identity_lock: flock failed: %s", strerror(errno));
+            break;
+        }
     }
 
-    QGP_LOG_INFO(LOG_TAG, "acquire_identity_lock: lock acquired (fd=%d)", fd);
-    return fd;
+    /* All retries exhausted */
+    QGP_LOG_WARN(LOG_TAG, "acquire_identity_lock: lock still held after %d retries", max_retries);
+    close(fd);
+    return -1;
 }
 
 void qgp_platform_release_identity_lock(int lock_fd) {

@@ -537,34 +537,46 @@ int qgp_platform_acquire_identity_lock(const char *data_dir) {
         return -1;
     }
 
-    /* Try to acquire exclusive lock (non-blocking) */
-    OVERLAPPED overlapped = {0};
-    BOOL locked = LockFileEx(
-        h,
-        LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
-        0,
-        1,  /* Lock 1 byte (minimum) */
-        0,
-        &overlapped
-    );
+    /* v0.6.109: Try to acquire exclusive lock with retry
+     * Retry up to 10 times with 100ms delay (1 second total) for consistency
+     * with Android/Linux behavior. */
+    const int max_retries = 10;
+    const int retry_delay_ms = 100;
 
-    if (!locked) {
-        DWORD err = GetLastError();
-        if (err == ERROR_LOCK_VIOLATION || err == ERROR_IO_PENDING) {
-            QGP_LOG_WARN(LOG_TAG, "acquire_identity_lock: lock already held by another process");
-        } else {
-            QGP_LOG_ERROR(LOG_TAG, "acquire_identity_lock: LockFileEx failed: error %lu", err);
+    for (int attempt = 0; attempt < max_retries; attempt++) {
+        OVERLAPPED overlapped = {0};
+        BOOL locked = LockFileEx(
+            h,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            1,  /* Lock 1 byte (minimum) */
+            0,
+            &overlapped
+        );
+
+        if (locked) {
+            /* Lock acquired successfully */
+            QGP_LOG_INFO(LOG_TAG, "acquire_identity_lock: lock acquired (handle=%p, attempt=%d)",
+                         (void*)h, attempt + 1);
+            return (int)(intptr_t)h;
         }
-        CloseHandle(h);
-        return -1;
+
+        /* Lock failed - check if we should retry */
+        DWORD err = GetLastError();
+        if ((err == ERROR_LOCK_VIOLATION || err == ERROR_IO_PENDING) && attempt < max_retries - 1) {
+            QGP_LOG_INFO(LOG_TAG, "acquire_identity_lock: lock held, retry %d/%d in %dms",
+                         attempt + 1, max_retries, retry_delay_ms);
+            Sleep(retry_delay_ms);
+        } else if (err != ERROR_LOCK_VIOLATION && err != ERROR_IO_PENDING) {
+            QGP_LOG_ERROR(LOG_TAG, "acquire_identity_lock: LockFileEx failed: error %lu", err);
+            break;
+        }
     }
 
-    QGP_LOG_INFO(LOG_TAG, "acquire_identity_lock: lock acquired (handle=%p)", (void*)h);
-
-    /* Return handle as int (safe on Windows where sizeof(HANDLE) fits in int for small values,
-     * but actually we should use intptr_t. For compatibility, store in static and return index) */
-    /* Actually, let's just return the handle value - it's typically a small integer on Windows */
-    return (int)(intptr_t)h;
+    /* All retries exhausted */
+    QGP_LOG_WARN(LOG_TAG, "acquire_identity_lock: lock still held after %d retries", max_retries);
+    CloseHandle(h);
+    return -1;
 }
 
 void qgp_platform_release_identity_lock(int lock_fd) {
