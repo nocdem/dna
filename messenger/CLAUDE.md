@@ -106,6 +106,8 @@ Breaking sequence = restart from CHECKPOINT 1.
 STATE: "CHECKPOINT 1 - HALTED"
 DO: Nothing. No tools. No investigation. No thoughts about solving.
 WAIT: For checkpoint 2 conditions to be met.
+EXCEPTION: Subagents spawned via Task tool skip this checkpoint.
+           The task prompt IS the explicit command.
 ```
 
 ### WORKFLOW ORCHESTRATION (Active During All Checkpoints)
