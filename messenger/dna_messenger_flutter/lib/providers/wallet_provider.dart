@@ -13,7 +13,8 @@ class WalletsNotifier extends AsyncNotifier<List<Wallet>> {
   Future<List<Wallet>> build() async {
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
-      return [];
+      // v0.100.82: Preserve previous data during engine lifecycle transitions
+      return state.valueOrNull ?? [];
     }
 
     final engine = await ref.watch(engineProvider.future);

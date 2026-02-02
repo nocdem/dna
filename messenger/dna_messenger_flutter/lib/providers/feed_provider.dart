@@ -23,7 +23,8 @@ class FeedTopicsNotifier extends AsyncNotifier<List<FeedTopic>> {
   Future<List<FeedTopic>> build() async {
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
-      return [];
+      // v0.100.82: Preserve previous data during engine lifecycle transitions
+      return state.valueOrNull ?? [];
     }
 
     final category = ref.watch(feedCategoryProvider);
@@ -96,7 +97,8 @@ class SelectedTopicNotifier extends AsyncNotifier<FeedTopic?> {
 
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
-      return null;
+      // v0.100.82: Preserve previous data during engine lifecycle transitions
+      return state.valueOrNull;
     }
 
     final engine = await ref.watch(engineProvider.future);
@@ -129,7 +131,8 @@ class TopicCommentsNotifier extends FamilyAsyncNotifier<List<FeedComment>, Strin
   Future<List<FeedComment>> build(String arg) async {
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
-      return [];
+      // v0.100.82: Preserve previous data during engine lifecycle transitions
+      return state.valueOrNull ?? [];
     }
 
     final engine = await ref.watch(engineProvider.future);
@@ -189,7 +192,8 @@ class FeedSubscriptionsNotifier extends AsyncNotifier<List<FeedSubscription>> {
   Future<List<FeedSubscription>> build() async {
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
-      return [];
+      // v0.100.82: Preserve previous data during engine lifecycle transitions
+      return state.valueOrNull ?? [];
     }
 
     final engine = await ref.watch(engineProvider.future);

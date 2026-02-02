@@ -14,7 +14,9 @@ class GroupsNotifier extends AsyncNotifier<List<Group>> {
   Future<List<Group>> build() async {
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
-      return [];
+      // v0.100.82: Preserve previous data during engine lifecycle transitions
+      // This prevents "flash of empty" when engine is destroyed/recreated
+      return state.valueOrNull ?? [];
     }
 
     final engine = await ref.watch(engineProvider.future);
@@ -91,7 +93,8 @@ class InvitationsNotifier extends AsyncNotifier<List<Invitation>> {
   Future<List<Invitation>> build() async {
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
-      return [];
+      // v0.100.82: Preserve previous data during engine lifecycle transitions
+      return state.valueOrNull ?? [];
     }
 
     final engine = await ref.watch(engineProvider.future);
@@ -152,7 +155,8 @@ class GroupConversationNotifier extends FamilyAsyncNotifier<List<Message>, Strin
   Future<List<Message>> build(String arg) async {
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
-      return [];
+      // v0.100.82: Preserve previous data during engine lifecycle transitions
+      return state.valueOrNull ?? [];
     }
 
     final engine = await ref.watch(engineProvider.future);

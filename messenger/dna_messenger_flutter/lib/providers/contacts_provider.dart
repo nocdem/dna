@@ -29,7 +29,9 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
       Future.microtask(() {
         ref.read(appFullyReadyProvider.notifier).state = false;
       });
-      return [];
+      // v0.100.82: Preserve previous data during engine lifecycle transitions
+      // This prevents "flash of empty" when engine is destroyed/recreated
+      return state.valueOrNull ?? [];
     }
 
     final engine = await ref.watch(engineProvider.future);
@@ -332,7 +334,8 @@ class UnreadCountsNotifier extends AsyncNotifier<Map<String, int>> {
     // Only fetch if identity is loaded
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
-      return {};
+      // v0.100.82: Preserve previous data during engine lifecycle transitions
+      return state.valueOrNull ?? {};
     }
 
     final engine = await ref.watch(engineProvider.future);

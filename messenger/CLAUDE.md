@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-02-02 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.6.108 | Flutter v0.100.84 | Nodus v0.4.5
+**Versions:** Library v0.6.108 | Flutter v0.100.85 | Nodus v0.4.5
 
 ---
 
@@ -108,6 +108,52 @@ DO: Nothing. No tools. No investigation. No thoughts about solving.
 WAIT: For checkpoint 2 conditions to be met.
 ```
 
+### WORKFLOW ORCHESTRATION (Active During All Checkpoints)
+
+**1. Plan Mode Default**
+- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
+- If something goes sideways, STOP and re-plan immediately — don't keep pushing
+- Use plan mode for verification steps, not just building
+- Write detailed specs upfront to reduce ambiguity
+
+**2. Subagent Strategy**
+- Use subagents liberally to keep main context window clean
+- Offload research, exploration, and parallel analysis to subagents
+- For complex problems, throw more compute at it via subagents
+- One task per subagent for focused execution
+
+**3. Self-Improvement Loop**
+- After ANY correction from the user: update `tasks/lessons.md` with the pattern
+- Write rules for yourself that prevent the same mistake
+- Ruthlessly iterate on these lessons until mistake rate drops
+- Review lessons at session start for relevant project
+
+**4. Verification Before Done**
+- Never mark a task complete without proving it works
+- Diff behavior between main and your changes when relevant
+- Ask yourself: "Would a staff engineer approve this?"
+- Run tests, check logs, demonstrate correctness
+
+**5. Demand Elegance (Balanced)**
+- For non-trivial changes: pause and ask "is there a more elegant way?"
+- If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
+- Skip this for simple, obvious fixes — don't over-engineer
+- Challenge your own work before presenting it
+
+**6. Autonomous Bug Fixing**
+- When given a bug report: just fix it. Don't ask for hand-holding
+- Point at logs, errors, failing tests — then resolve them
+- Zero context switching required from the user
+- Go fix failing CI tests without being told how
+
+**Task Tracking Files:**
+- `tasks/todo.md` - Current session plan with checkable items
+- `tasks/lessons.md` - Accumulated patterns and self-corrections
+
+**Core Execution Principles:**
+- **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
+- **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
+
 ### CHECKPOINT 2: READ
 ```
 STATE: "CHECKPOINT 2 - READING [file list]"
@@ -136,6 +182,8 @@ DO: Display task list using TaskList tool so user can review
 WAIT: For exact word "APPROVED" or "PROCEED"
 ACCEPT: No substitutes. "OK" = not approved. "Yes" = not approved. "Do it" = not approved.
 NOTE: User may request task modifications before approval
+EXCEPTION: Subagents spawned via Task tool skip this checkpoint.
+           Approval is implicit — the parent agent approved by spawning.
 ```
 
 ### CHECKPOINT 5: EXECUTE
@@ -208,7 +256,7 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
 | C Library | `include/dna/version.h` | v0.6.107 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.100.83+10183 | Flutter/Dart code changes (lib/, assets/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.100.85+10185 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.5 | Nodus server changes (vendor/opendht-pq/tools/) |
 
 **IMPORTANT: Versions are INDEPENDENT**

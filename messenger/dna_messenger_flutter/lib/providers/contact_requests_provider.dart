@@ -16,7 +16,8 @@ class ContactRequestsNotifier extends AsyncNotifier<List<ContactRequest>> {
   Future<List<ContactRequest>> build() async {
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
-      return [];
+      // v0.100.82: Preserve previous data during engine lifecycle transitions
+      return state.valueOrNull ?? [];
     }
 
     final engine = await ref.watch(engineProvider.future);
@@ -94,7 +95,8 @@ class BlockedUsersNotifier extends AsyncNotifier<List<BlockedUser>> {
   Future<List<BlockedUser>> build() async {
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
-      return [];
+      // v0.100.82: Preserve previous data during engine lifecycle transitions
+      return state.valueOrNull ?? [];
     }
 
     final engine = await ref.watch(engineProvider.future);

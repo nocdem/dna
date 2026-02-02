@@ -14,7 +14,8 @@ class AddressBookNotifier extends AsyncNotifier<List<AddressBookEntry>> {
   Future<List<AddressBookEntry>> build() async {
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
-      return [];
+      // v0.100.82: Preserve previous data during engine lifecycle transitions
+      return state.valueOrNull ?? [];
     }
 
     final engine = await ref.watch(engineProvider.future);
