@@ -82,29 +82,45 @@ class DnaMessengerService : Service() {
          * When Flutter is active, service pauses polling (Flutter handles messaging).
          * When Flutter becomes inactive, service resumes polling.
          */
+        /**
+         * Set whether Flutter is active (in foreground).
+         * When Flutter is active, service pauses polling (Flutter handles messaging).
+         * When Flutter becomes inactive, service resumes polling.
+         *
+         * v0.100.89: Engine release moved to background thread to prevent UI freeze.
+         * Previously, engineLock.lock() blocked the UI thread while waiting for
+         * performMessageCheck() to complete (could take 2-5+ seconds), causing ANR.
+         */
         fun setFlutterActive(active: Boolean) {
             val wasActive = flutterActive
             flutterActive = active
             android.util.Log.i(TAG, "Flutter active: $active (was: $wasActive)")
 
             if (active && !wasActive) {
-                // Flutter taking over - release service's engine
-                // v0.6.105: Acquire lock to wait for any ongoing message check to complete
-                android.util.Log.i(TAG, "Flutter taking over - waiting for engine lock...")
-                try {
-                    engineLock.lock()
+                // Flutter taking over - release service's engine on BACKGROUND thread
+                // v0.100.89: Moved to background thread to prevent UI freeze/ANR
+                // The UI thread returns immediately; file-based identity lock ensures
+                // Flutter waits for engine release before creating its own engine.
+                Thread {
+                    android.util.Log.i(TAG, "Flutter taking over - waiting for engine lock (background)...")
                     try {
-                        if (libraryLoaded) {
-                            android.util.Log.i(TAG, "Releasing service engine for Flutter")
-                            nativeReleaseEngine()
-                            android.util.Log.i(TAG, "Service engine released for Flutter")
+                        engineLock.lock()
+                        try {
+                            // Double-check Flutter is still active (might have gone away during wait)
+                            if (libraryLoaded && flutterActive) {
+                                android.util.Log.i(TAG, "Releasing service engine for Flutter")
+                                nativeReleaseEngine()
+                                android.util.Log.i(TAG, "Service engine released for Flutter")
+                            } else {
+                                android.util.Log.i(TAG, "Skipping engine release - Flutter no longer active")
+                            }
+                        } finally {
+                            engineLock.unlock()
                         }
-                    } finally {
-                        engineLock.unlock()
+                    } catch (e: Exception) {
+                        android.util.Log.e(TAG, "Failed to release engine: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    android.util.Log.e(TAG, "Failed to release engine: ${e.message}")
-                }
+                }.start()
             } else if (!active && wasActive) {
                 // Flutter going away - service should take over
                 android.util.Log.i(TAG, "Flutter inactive - service taking over")

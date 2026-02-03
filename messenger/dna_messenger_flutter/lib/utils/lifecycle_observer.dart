@@ -112,8 +112,10 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Service must release DHT lock before Flutter can create new engine
       if (Platform.isAndroid) {
         await PlatformHandler.instance.onResumePreEngine();
-        // v0.100.88+: Reduced from 150ms to 50ms (v0.6.110+ early lock release makes this faster)
-        await Future.delayed(const Duration(milliseconds: 50));
+        // v0.100.89: Increased back to 150ms because engine release now runs on
+        // background thread (to prevent UI freeze). Give time for lock acquisition.
+        // File-based identity lock provides ultimate synchronization if this isn't enough.
+        await Future.delayed(const Duration(milliseconds: 150));
       }
 
       // Abort checkpoint
