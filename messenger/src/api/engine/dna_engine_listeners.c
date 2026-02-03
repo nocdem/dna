@@ -359,14 +359,15 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     pthread_mutex_unlock(&engine->background_threads_mutex);
 
     /* Wait for DHT to become ready (have peers in routing table)
-     * This ensures listeners actually work instead of silently failing. */
+     * This ensures listeners actually work instead of silently failing.
+     * v0.6.113: Reduced from 30s to 10s - listeners retry anyway. */
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
     if (dht_ctx && !dht_context_is_ready(dht_ctx)) {
         QGP_LOG_INFO(LOG_TAG, "[LISTEN] Waiting for DHT to become ready...");
-        if (dht_context_wait_for_ready(dht_ctx, 30000)) {
+        if (dht_context_wait_for_ready(dht_ctx, 10000)) {
             QGP_LOG_INFO(LOG_TAG, "[LISTEN] DHT ready");
         } else {
-            QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT not ready after 30s, proceeding anyway");
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT not ready after 10s, proceeding anyway");
         }
     }
 

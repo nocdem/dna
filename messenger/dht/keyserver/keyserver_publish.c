@@ -18,7 +18,8 @@
 #define LOG_TAG "KEYSERVER"
 
 // Maximum time to wait for DHT to be ready (in milliseconds)
-#define DHT_READY_TIMEOUT_MS 10000
+// v0.6.113: Reduced from 10s to 5s for faster identity creation
+#define DHT_READY_TIMEOUT_MS 5000
 
 // Publish identity to DHT (NAME-FIRST architecture)
 // Creates dna_unified_identity_t and stores at fingerprint:profile
