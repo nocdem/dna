@@ -909,6 +909,22 @@ DNA_API void dna_engine_set_android_reconnect_callback(
 DNA_API void dna_engine_destroy(dna_engine_t *engine);
 
 /**
+ * Request engine shutdown without destroying (v0.6.115+)
+ *
+ * Sets the shutdown_requested flag which causes all ongoing operations
+ * to abort early. Unlike dna_engine_destroy(), this does NOT free resources
+ * or wait for threads - it just signals them to stop.
+ *
+ * Use case: Android service calling this BEFORE acquiring engine lock,
+ * so that ongoing DHT operations abort quickly and release locks.
+ *
+ * After calling this, the engine should be destroyed with dna_engine_destroy().
+ *
+ * @param engine    Engine instance (can be NULL, does nothing)
+ */
+DNA_API void dna_engine_request_shutdown(dna_engine_t *engine);
+
+/**
  * Pause engine for background mode (v0.6.50+)
  *
  * Suspends DHT listeners and presence heartbeat while keeping the engine

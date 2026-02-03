@@ -99,8 +99,16 @@ class DnaMessengerService : Service() {
             if (active && !wasActive) {
                 // Flutter taking over - release service's engine on BACKGROUND thread
                 // v0.100.89: Moved to background thread to prevent UI freeze/ANR
-                // The UI thread returns immediately; file-based identity lock ensures
-                // Flutter waits for engine release before creating its own engine.
+                // v0.100.90: CORE FIX - signal shutdown BEFORE acquiring lock!
+                // This makes ongoing C operations abort early, releasing the lock quickly.
+                // Previously, we waited for ongoing DHT operations (2-5+ seconds).
+                // Now they abort immediately when they see shutdown_requested=true.
+                if (libraryLoaded) {
+                    android.util.Log.i(TAG, "Signaling service engine to abort operations...")
+                    nativeRequestShutdown()  // Sets shutdown_requested=true in C
+                }
+
+                // Now acquire lock on background thread - should be fast since ops are aborting
                 Thread {
                     android.util.Log.i(TAG, "Flutter taking over - waiting for engine lock (background)...")
                     try {
@@ -167,6 +175,16 @@ class DnaMessengerService : Service() {
          */
         @JvmStatic
         external fun nativeReleaseEngine()
+
+        /**
+         * Request engine shutdown without destroying (v0.6.115+)
+         *
+         * Sets shutdown_requested flag so ongoing operations abort early.
+         * Call this BEFORE acquiring engineLock so that nativeCheckOfflineMessages()
+         * aborts quickly and releases the lock.
+         */
+        @JvmStatic
+        external fun nativeRequestShutdown()
 
         /**
          * Check all contacts' outboxes for offline messages (v0.100.20+)

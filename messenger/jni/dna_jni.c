@@ -1578,6 +1578,29 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReleaseEngine(JNIEnv *env
 }
 
 /**
+ * Request engine shutdown without destroying (v0.6.115+)
+ *
+ * Sets the shutdown_requested flag to make ongoing operations abort early.
+ * Call this BEFORE acquiring engineLock so that nativeCheckOfflineMessages()
+ * aborts quickly and releases the lock.
+ *
+ * This is the CORE fix for the freeze/crash on app resume issue.
+ * Previously, setFlutterActive(true) would wait for ongoing DHT operations
+ * to complete (2-5+ seconds). Now they abort immediately.
+ */
+JNIEXPORT void JNICALL
+Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeRequestShutdown(JNIEnv *env, jobject thiz) {
+    pthread_mutex_lock(&g_engine_mutex);
+    if (g_engine) {
+        LOGI("nativeRequestShutdown: Signaling ongoing operations to abort");
+        dna_engine_request_shutdown(g_engine);
+    } else {
+        LOGI("nativeRequestShutdown: No engine to signal");
+    }
+    pthread_mutex_unlock(&g_engine_mutex);
+}
+
+/**
  * Set the DHT reconnect helper (v0.6.8+)
  *
  * The helper object must implement onDhtReconnected().

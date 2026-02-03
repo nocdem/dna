@@ -1477,6 +1477,23 @@ void dna_engine_fire_group_message_callback(
 
 /* Group listeners and day rotation moved to src/api/engine/dna_engine_listeners.c */
 
+/* v0.6.115: Request shutdown without destroying engine.
+ * Sets shutdown_requested flag so ongoing operations abort early.
+ * Use case: Android Service calls this BEFORE acquiring engine lock,
+ * allowing ongoing DHT operations to abort quickly. */
+void dna_engine_request_shutdown(dna_engine_t *engine) {
+    if (!engine) return;
+
+    QGP_LOG_INFO(LOG_TAG, "Shutdown requested (operations will abort early)");
+    atomic_store(&engine->shutdown_requested, true);
+
+    /* Wake up any threads waiting on condition variables so they can check
+     * shutdown_requested and exit quickly */
+    pthread_mutex_lock(&engine->task_mutex);
+    pthread_cond_broadcast(&engine->task_cond);
+    pthread_mutex_unlock(&engine->task_mutex);
+}
+
 void dna_engine_destroy(dna_engine_t *engine) {
     if (!engine) return;
 
