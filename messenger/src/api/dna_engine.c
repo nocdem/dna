@@ -1449,18 +1449,19 @@ void dna_engine_fire_group_message_callback(
 void dna_engine_destroy(dna_engine_t *engine) {
     if (!engine) return;
 
-#ifdef __ANDROID__
-    /* ANDROID: Release identity lock FIRST before any cleanup.
-     * This allows ForegroundService to take over DHT immediately.
-     * If destroy crashes later due to callback races, lock is already released.
-     * The OS will clean up leaked memory when process dies. */
+    /* v0.6.110: Release identity lock FIRST before any cleanup (all platforms).
+     * This allows rapid app switching without waiting for thread cleanup:
+     * - Android: ForegroundService can take over DHT immediately
+     * - All platforms: New engine can acquire lock while old threads finish
+     * Thread cleanup can take up to 9+ seconds (3s timeout × 3 threads).
+     * Early release is safe: old threads only access existing memory,
+     * new engine creates fresh memory space - no conflict. */
     if (engine->identity_lock_fd >= 0) {
-        QGP_LOG_INFO(LOG_TAG, "Android: Releasing identity lock early (fd=%d)",
+        QGP_LOG_INFO(LOG_TAG, "Releasing identity lock early (fd=%d)",
                      engine->identity_lock_fd);
         qgp_platform_release_identity_lock(engine->identity_lock_fd);
         engine->identity_lock_fd = -1;
     }
-#endif
 
     /* Clear DHT status callback before stopping anything
      * v0.6.108: Use mutex to synchronize with dna_dht_status_callback() */
