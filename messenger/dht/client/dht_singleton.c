@@ -395,14 +395,10 @@ dht_context_t* dht_create_context_with_identity(dht_identity_t *user_identity) {
         return NULL;
     }
 
-    /* Wait for DHT to connect */
-    QGP_LOG_INFO(LOG_TAG, "Waiting for engine DHT connection...");
-    if (dht_context_wait_for_ready(ctx, DHT_READY_TIMEOUT_MS)) {
-        QGP_LOG_INFO(LOG_TAG, "Engine DHT connected");
-        dht_bootstrap_discovery_start(ctx);
-    } else {
-        QGP_LOG_WARN(LOG_TAG, "Engine DHT not connected after %dms (will retry in background)", DHT_READY_TIMEOUT_MS);
-    }
+    /* v0.6.112: Non-blocking DHT start for faster engine creation.
+     * Stabilization thread handles waiting for DHT readiness before critical ops. */
+    QGP_LOG_INFO(LOG_TAG, "Engine DHT started (connecting in background)");
+    dht_bootstrap_discovery_start(ctx);
 
     return ctx;
 }
