@@ -112,8 +112,8 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Service must release DHT lock before Flutter can create new engine
       if (Platform.isAndroid) {
         await PlatformHandler.instance.onResumePreEngine();
-        // v0.100.83+: Safety delay to ensure service fully released DHT (150ms for slow devices)
-        await Future.delayed(const Duration(milliseconds: 150));
+        // v0.100.88+: Reduced from 150ms to 50ms (v0.6.110+ early lock release makes this faster)
+        await Future.delayed(const Duration(milliseconds: 50));
       }
 
       // Abort checkpoint

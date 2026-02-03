@@ -26,6 +26,24 @@
 #include <windows.h>
 #define platform_mkdir(path, mode) _mkdir(path)
 
+/* Windows: clock_gettime compatibility for pthread_cond_timedwait (v0.6.113) */
+#ifndef CLOCK_REALTIME
+#define CLOCK_REALTIME 0
+static inline int clock_gettime(int clk_id, struct timespec *tp) {
+    (void)clk_id;
+    FILETIME ft;
+    ULARGE_INTEGER uli;
+    GetSystemTimeAsFileTime(&ft);
+    uli.LowPart = ft.dwLowDateTime;
+    uli.HighPart = ft.dwHighDateTime;
+    /* Convert from 100-nanosecond intervals since 1601 to Unix epoch */
+    uli.QuadPart -= 116444736000000000ULL;
+    tp->tv_sec = (time_t)(uli.QuadPart / 10000000);
+    tp->tv_nsec = (long)((uli.QuadPart % 10000000) * 100);
+    return 0;
+}
+#endif
+
 /* Windows doesn't have strndup */
 static inline char* win_strndup(const char* s, size_t n) {
     size_t len = strlen(s);

@@ -278,6 +278,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
             } else {
                 pthread_mutex_lock(&engine->background_threads_mutex);
                 engine->stabilization_retry_running = false;
+                pthread_cond_broadcast(&engine->background_thread_exit_cond);  /* v0.6.113: Signal waiters */
                 pthread_mutex_unlock(&engine->background_threads_mutex);
                 QGP_LOG_ERROR(LOG_TAG, "[RETRY] FAILED to spawn stabilization thread: rc=%d", spawn_rc);
             }

@@ -17,6 +17,24 @@
 #include <windows.h>
 #define platform_mkdir(path, mode) _mkdir(path)
 
+/* Windows: clock_gettime compatibility for pthread_cond_timedwait */
+#ifndef CLOCK_REALTIME
+#define CLOCK_REALTIME 0
+static int clock_gettime(int clk_id, struct timespec *tp) {
+    (void)clk_id;
+    FILETIME ft;
+    ULARGE_INTEGER uli;
+    GetSystemTimeAsFileTime(&ft);
+    uli.LowPart = ft.dwLowDateTime;
+    uli.HighPart = ft.dwHighDateTime;
+    /* Convert from 100-nanosecond intervals since 1601 to Unix epoch */
+    uli.QuadPart -= 116444736000000000ULL;
+    tp->tv_sec = (time_t)(uli.QuadPart / 10000000);
+    tp->tv_nsec = (long)((uli.QuadPart % 10000000) * 100);
+    return 0;
+}
+#endif
+
 /* Windows doesn't have strndup */
 static char* win_strndup(const char* s, size_t n) {
     size_t len = strlen(s);
@@ -287,6 +305,7 @@ cleanup:
     /* v0.6.0+: Mark thread as not running before exit */
     pthread_mutex_lock(&engine->background_threads_mutex);
     engine->setup_listeners_running = false;
+    pthread_cond_broadcast(&engine->background_thread_exit_cond);  /* v0.6.113: Signal waiters */
     pthread_mutex_unlock(&engine->background_threads_mutex);
     QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: exiting");
     return NULL;
@@ -480,6 +499,7 @@ cleanup:
     /* v0.6.0+: Mark thread as not running before exit */
     pthread_mutex_lock(&engine->background_threads_mutex);
     engine->stabilization_retry_running = false;
+    pthread_cond_broadcast(&engine->background_thread_exit_cond);  /* v0.6.113: Signal waiters */
     pthread_mutex_unlock(&engine->background_threads_mutex);
     return NULL;
 }
@@ -1227,11 +1247,13 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
 
     /* v0.6.0+: Initialize background thread tracking */
     pthread_mutex_init(&engine->background_threads_mutex, NULL);
+    pthread_cond_init(&engine->background_thread_exit_cond, NULL);  /* v0.6.113: For efficient thread join */
     engine->setup_listeners_running = false;
     engine->stabilization_retry_running = false;
 
     /* v0.6.107+: Initialize state synchronization */
     pthread_mutex_init(&engine->state_mutex, NULL);
+    pthread_cond_init(&engine->resume_thread_exit_cond, NULL);  /* v0.6.113: For efficient thread join */
     engine->resume_thread_running = false;
     memset(&engine->resume_thread, 0, sizeof(engine->resume_thread));  /* v0.6.108: Init to zero */
 
@@ -1491,107 +1513,92 @@ void dna_engine_destroy(dna_engine_t *engine) {
     bool join_stab = engine->stabilization_retry_running;
     pthread_mutex_unlock(&engine->background_threads_mutex);
 
-    if (join_setup) {
-        QGP_LOG_INFO(LOG_TAG, "Waiting for setup_listeners thread to exit...");
+    /* v0.6.113: Use condition variable wait instead of polling (more efficient) */
+    if (join_setup || join_stab) {
+        QGP_LOG_INFO(LOG_TAG, "Waiting for background threads to exit (setup=%d, stab=%d)...",
+                     join_setup, join_stab);
 
-        /* v0.6.108: Timed wait to prevent ANR on Android (same pattern as resume thread) */
-        int wait_ms = 0;
-        const int max_wait_ms = 3000;  /* 3 second timeout */
-        const int poll_interval_ms = 50;
+        /* Calculate absolute timeout (3 seconds from now) */
+        struct timespec timeout;
+        clock_gettime(CLOCK_REALTIME, &timeout);
+        timeout.tv_sec += 3;
 
-        while (wait_ms < max_wait_ms) {
-            pthread_mutex_lock(&engine->background_threads_mutex);
-            bool still_running = engine->setup_listeners_running;
-            pthread_mutex_unlock(&engine->background_threads_mutex);
+        pthread_mutex_lock(&engine->background_threads_mutex);
 
-            if (!still_running) {
-                pthread_join(engine->setup_listeners_thread, NULL);
-                QGP_LOG_INFO(LOG_TAG, "setup_listeners thread exited");
-                break;
+        /* Wait for setup_listeners thread */
+        if (join_setup) {
+            while (engine->setup_listeners_running) {
+                int rc = pthread_cond_timedwait(&engine->background_thread_exit_cond,
+                                                &engine->background_threads_mutex, &timeout);
+                if (rc == ETIMEDOUT) {
+                    QGP_LOG_WARN(LOG_TAG, "setup_listeners thread join timeout, detaching");
+                    pthread_detach(engine->setup_listeners_thread);
+                    join_setup = false;  /* Skip pthread_join below */
+                    break;
+                }
             }
-
-            struct timespec sleep_ts = { 0, poll_interval_ms * 1000000L };
-            nanosleep(&sleep_ts, NULL);
-            wait_ms += poll_interval_ms;
         }
 
-        if (wait_ms >= max_wait_ms) {
-            QGP_LOG_WARN(LOG_TAG, "setup_listeners thread join timeout, detaching");
-            pthread_detach(engine->setup_listeners_thread);
+        /* Wait for stabilization_retry thread (reuse remaining timeout) */
+        if (join_stab) {
+            while (engine->stabilization_retry_running) {
+                int rc = pthread_cond_timedwait(&engine->background_thread_exit_cond,
+                                                &engine->background_threads_mutex, &timeout);
+                if (rc == ETIMEDOUT) {
+                    QGP_LOG_WARN(LOG_TAG, "stabilization_retry thread join timeout, detaching");
+                    pthread_detach(engine->stabilization_retry_thread);
+                    join_stab = false;  /* Skip pthread_join below */
+                    break;
+                }
+            }
+        }
+
+        pthread_mutex_unlock(&engine->background_threads_mutex);
+
+        /* Join threads outside mutex (pthread_join can block) */
+        if (join_setup) {
+            pthread_join(engine->setup_listeners_thread, NULL);
+            QGP_LOG_INFO(LOG_TAG, "setup_listeners thread exited");
+        }
+        if (join_stab) {
+            pthread_join(engine->stabilization_retry_thread, NULL);
+            QGP_LOG_INFO(LOG_TAG, "stabilization_retry thread exited");
         }
     }
-    if (join_stab) {
-        QGP_LOG_INFO(LOG_TAG, "Waiting for stabilization_retry thread to exit...");
-
-        /* v0.6.108: Timed wait to prevent ANR on Android */
-        int wait_ms = 0;
-        const int max_wait_ms = 3000;  /* 3 second timeout */
-        const int poll_interval_ms = 50;
-
-        while (wait_ms < max_wait_ms) {
-            pthread_mutex_lock(&engine->background_threads_mutex);
-            bool still_running = engine->stabilization_retry_running;
-            pthread_mutex_unlock(&engine->background_threads_mutex);
-
-            if (!still_running) {
-                pthread_join(engine->stabilization_retry_thread, NULL);
-                QGP_LOG_INFO(LOG_TAG, "stabilization_retry thread exited");
-                break;
-            }
-
-            struct timespec sleep_ts = { 0, poll_interval_ms * 1000000L };
-            nanosleep(&sleep_ts, NULL);
-            wait_ms += poll_interval_ms;
-        }
-
-        if (wait_ms >= max_wait_ms) {
-            QGP_LOG_WARN(LOG_TAG, "stabilization_retry thread join timeout, detaching");
-            pthread_detach(engine->stabilization_retry_thread);
-        }
-    }
+    pthread_cond_destroy(&engine->background_thread_exit_cond);
     pthread_mutex_destroy(&engine->background_threads_mutex);
 
-    /* v0.6.107+: Wait for resume thread with timeout (prevents ANR on Android) */
+    /* v0.6.113: Wait for resume thread with condition variable (replaces polling) */
     pthread_mutex_lock(&engine->state_mutex);
     bool join_resume = engine->resume_thread_running;
     pthread_t resume_tid = engine->resume_thread;
-    pthread_mutex_unlock(&engine->state_mutex);
 
     if (join_resume) {
         QGP_LOG_INFO(LOG_TAG, "Waiting for resume thread to exit...");
 
-        /* Portable timed wait: poll the running flag with short sleeps
-         * This avoids pthread_timedjoin_np which is a glibc extension */
-        int wait_ms = 0;
-        const int max_wait_ms = 3000;  /* 3 second timeout */
-        const int poll_interval_ms = 50;
+        /* Calculate absolute timeout (3 seconds from now) */
+        struct timespec timeout;
+        clock_gettime(CLOCK_REALTIME, &timeout);
+        timeout.tv_sec += 3;
 
-        while (wait_ms < max_wait_ms) {
-            pthread_mutex_lock(&engine->state_mutex);
-            bool still_running = engine->resume_thread_running;
-            pthread_mutex_unlock(&engine->state_mutex);
-
-            if (!still_running) {
-                /* Thread finished, safe to join */
-                pthread_join(resume_tid, NULL);
-                QGP_LOG_INFO(LOG_TAG, "Resume thread exited");
+        while (engine->resume_thread_running) {
+            int rc = pthread_cond_timedwait(&engine->resume_thread_exit_cond,
+                                            &engine->state_mutex, &timeout);
+            if (rc == ETIMEDOUT) {
+                QGP_LOG_WARN(LOG_TAG, "Resume thread join timeout, detaching");
+                pthread_detach(resume_tid);
+                join_resume = false;  /* Skip pthread_join below */
                 break;
             }
-
-            /* Sleep and retry (nanosleep is POSIX, usleep is deprecated) */
-            struct timespec sleep_ts = { 0, poll_interval_ms * 1000000L };
-            nanosleep(&sleep_ts, NULL);
-            wait_ms += poll_interval_ms;
         }
-
-        if (wait_ms >= max_wait_ms) {
-            QGP_LOG_WARN(LOG_TAG, "Resume thread join timeout, detaching");
-            pthread_detach(resume_tid);
-        }
-
-        pthread_mutex_lock(&engine->state_mutex);
         engine->resume_thread_running = false;
-        pthread_mutex_unlock(&engine->state_mutex);
+    }
+    pthread_mutex_unlock(&engine->state_mutex);
+
+    /* Join thread outside mutex (pthread_join can block) */
+    if (join_resume) {
+        pthread_join(resume_tid, NULL);
+        QGP_LOG_INFO(LOG_TAG, "Resume thread exited");
     }
 
     /* Stop presence heartbeat thread */
@@ -1649,7 +1656,8 @@ void dna_engine_destroy(dna_engine_t *engine) {
     pthread_mutex_destroy(&engine->name_cache_mutex);
     pthread_cond_destroy(&engine->task_cond);
 
-    /* v0.6.107+: Cleanup state mutex */
+    /* v0.6.107+: Cleanup state mutex and condition variable */
+    pthread_cond_destroy(&engine->resume_thread_exit_cond);
     pthread_mutex_destroy(&engine->state_mutex);
 
     /* Global caches (profile_manager, keyserver_cache) intentionally NOT closed.

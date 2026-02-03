@@ -605,6 +605,7 @@ struct dna_engine {
     bool setup_listeners_running;          /* True while thread is active */
     bool stabilization_retry_running;      /* True while thread is active */
     pthread_mutex_t background_threads_mutex;  /* Protects running flags */
+    pthread_cond_t background_thread_exit_cond;  /* v0.6.113: Signaled when background thread exits */
 
     /* v0.6.107+: Resume thread tracking (for clean shutdown) */
     pthread_t resume_thread;               /* Resume thread handle */
@@ -612,6 +613,7 @@ struct dna_engine {
 
     /* v0.6.107+: State synchronization */
     pthread_mutex_t state_mutex;           /* Protects engine state transitions */
+    pthread_cond_t resume_thread_exit_cond;  /* v0.6.113: Signaled when resume thread exits */
 
     /* Request ID generation */
     atomic_uint_fast64_t next_request_id;

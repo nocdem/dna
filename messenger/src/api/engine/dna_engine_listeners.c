@@ -320,25 +320,28 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     /* Race condition prevention: only one listener setup at a time
      * If another thread is setting up listeners, wait for it to complete.
      * This prevents silent failures where the second caller gets 0 listeners.
-     * v0.6.40: Use mutex to protect listeners_starting check/set (TOCTOU fix) */
+     * v0.6.40: Use mutex to protect listeners_starting check/set (TOCTOU fix)
+     * v0.6.113: Use condition variable instead of polling for efficiency */
     pthread_mutex_lock(&engine->background_threads_mutex);
     if (engine->listeners_starting) {
-        pthread_mutex_unlock(&engine->background_threads_mutex);
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Listener setup already in progress, waiting...");
-        /* Wait up to 5 seconds for the other thread to finish */
-        for (int wait_count = 0; wait_count < 50; wait_count++) {
-            pthread_mutex_lock(&engine->background_threads_mutex);
-            bool still_starting = engine->listeners_starting;
-            pthread_mutex_unlock(&engine->background_threads_mutex);
-            if (!still_starting) break;
-            qgp_platform_sleep_ms(100);
+
+        /* v0.6.113: Wait up to 5 seconds using condition variable (replaces polling) */
+        struct timespec timeout;
+        clock_gettime(CLOCK_REALTIME, &timeout);
+        timeout.tv_sec += 5;
+
+        while (engine->listeners_starting) {
+            int rc = pthread_cond_timedwait(&engine->background_thread_exit_cond,
+                                            &engine->background_threads_mutex, &timeout);
+            if (rc == ETIMEDOUT) {
+                /* Other thread took too long - something is wrong, but don't block forever */
+                QGP_LOG_WARN(LOG_TAG, "[LISTEN] Timed out waiting for listener setup, proceeding anyway");
+                break;
+            }
         }
-        pthread_mutex_lock(&engine->background_threads_mutex);
-        if (engine->listeners_starting) {
-            pthread_mutex_unlock(&engine->background_threads_mutex);
-            /* Other thread took too long - something is wrong, but don't block forever */
-            QGP_LOG_WARN(LOG_TAG, "[LISTEN] Timed out waiting for listener setup, proceeding anyway");
-        } else {
+
+        if (!engine->listeners_starting) {
             pthread_mutex_unlock(&engine->background_threads_mutex);
             /* Other thread finished - return its listener count (already set up) */
             QGP_LOG_INFO(LOG_TAG, "[LISTEN] Other thread finished listener setup, returning existing count");
@@ -351,8 +354,6 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
             pthread_mutex_unlock(&engine->outbox_listeners_mutex);
             return existing_count;
         }
-        /* Re-acquire mutex to set the flag */
-        pthread_mutex_lock(&engine->background_threads_mutex);
     }
     engine->listeners_starting = true;
     pthread_mutex_unlock(&engine->background_threads_mutex);
@@ -376,6 +377,7 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
         QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to initialize contacts database");
         pthread_mutex_lock(&engine->background_threads_mutex);
         engine->listeners_starting = false;
+        pthread_cond_broadcast(&engine->background_thread_exit_cond);  /* v0.6.113: Signal waiters */
         pthread_mutex_unlock(&engine->background_threads_mutex);
         return 0;
     }
@@ -388,6 +390,7 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
         if (list) contacts_db_free_list(list);
         pthread_mutex_lock(&engine->background_threads_mutex);
         engine->listeners_starting = false;
+        pthread_cond_broadcast(&engine->background_thread_exit_cond);  /* v0.6.113: Signal waiters */
         pthread_mutex_unlock(&engine->background_threads_mutex);
         return 0;
     }
@@ -404,6 +407,7 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
         }
         pthread_mutex_lock(&engine->background_threads_mutex);
         engine->listeners_starting = false;
+        pthread_cond_broadcast(&engine->background_thread_exit_cond);  /* v0.6.113: Signal waiters */
         pthread_mutex_unlock(&engine->background_threads_mutex);
         QGP_LOG_INFO(LOG_TAG, "[LISTEN] Started 0 outbox + 0 presence + contact_req listeners");
         return 0;
@@ -445,6 +449,7 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
         contacts_db_free_list(list);
         pthread_mutex_lock(&engine->background_threads_mutex);
         engine->listeners_starting = false;
+        pthread_cond_broadcast(&engine->background_thread_exit_cond);  /* v0.6.113: Signal waiters */
         pthread_mutex_unlock(&engine->background_threads_mutex);
         return 0;
     }
@@ -485,6 +490,7 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
 
     pthread_mutex_lock(&engine->background_threads_mutex);
     engine->listeners_starting = false;
+    pthread_cond_broadcast(&engine->background_thread_exit_cond);  /* v0.6.113: Signal waiters */
     pthread_mutex_unlock(&engine->background_threads_mutex);
     QGP_LOG_INFO(LOG_TAG, "[LISTEN] Parallel setup complete: %zu contacts processed", valid_count);
 

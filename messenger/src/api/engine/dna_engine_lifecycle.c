@@ -120,6 +120,7 @@ static void *resume_thread(void *arg) {
         QGP_LOG_WARN(LOG_TAG, "[RESUME-THREAD] Engine state changed, aborting");
         pthread_mutex_lock(&engine->state_mutex);
         engine->resume_thread_running = false;
+        pthread_cond_broadcast(&engine->resume_thread_exit_cond);  /* v0.6.113: Signal waiters */
         pthread_mutex_unlock(&engine->state_mutex);
         return NULL;
     }
@@ -140,6 +141,7 @@ static void *resume_thread(void *arg) {
         QGP_LOG_WARN(LOG_TAG, "[RESUME-THREAD] Engine state changed during resume, stopping");
         pthread_mutex_lock(&engine->state_mutex);
         engine->resume_thread_running = false;
+        pthread_cond_broadcast(&engine->resume_thread_exit_cond);  /* v0.6.113: Signal waiters */
         pthread_mutex_unlock(&engine->state_mutex);
         return NULL;
     }
@@ -159,6 +161,7 @@ static void *resume_thread(void *arg) {
     /* v0.6.107+: Mark thread as no longer running */
     pthread_mutex_lock(&engine->state_mutex);
     engine->resume_thread_running = false;
+    pthread_cond_broadcast(&engine->resume_thread_exit_cond);  /* v0.6.113: Signal waiters */
     pthread_mutex_unlock(&engine->state_mutex);
 
     return NULL;
