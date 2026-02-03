@@ -823,6 +823,15 @@ static void *background_fetch_thread(void *arg) {
 }
 
 void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
+    /* v0.6.114: Check shutdown BEFORE accessing any engine fields.
+     * This prevents use-after-free when called from detached background threads
+     * after engine destroy has freed the memory. The shutdown_requested field
+     * is at a fixed offset and checked atomically - safe even if engine is
+     * partially freed (though we shouldn't rely on this - it's defense in depth). */
+    if (!engine || atomic_load(&engine->shutdown_requested)) {
+        return;
+    }
+
     pthread_mutex_lock(&engine->event_mutex);
     dna_event_cb callback = engine->event_callback;
     void *user_data = engine->event_user_data;
@@ -1513,15 +1522,17 @@ void dna_engine_destroy(dna_engine_t *engine) {
     bool join_stab = engine->stabilization_retry_running;
     pthread_mutex_unlock(&engine->background_threads_mutex);
 
-    /* v0.6.113: Use condition variable wait instead of polling (more efficient) */
+    /* v0.6.113: Use condition variable wait instead of polling (more efficient)
+     * v0.6.114: Increased timeout from 3s to 10s to allow DHT operations
+     * (sync contacts, GEKs, groups) time to check shutdown_requested and exit. */
     if (join_setup || join_stab) {
         QGP_LOG_INFO(LOG_TAG, "Waiting for background threads to exit (setup=%d, stab=%d)...",
                      join_setup, join_stab);
 
-        /* Calculate absolute timeout (3 seconds from now) */
+        /* Calculate absolute timeout (10 seconds from now) */
         struct timespec timeout;
         clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 3;
+        timeout.tv_sec += 10;
 
         pthread_mutex_lock(&engine->background_threads_mutex);
 
@@ -1576,10 +1587,10 @@ void dna_engine_destroy(dna_engine_t *engine) {
     if (join_resume) {
         QGP_LOG_INFO(LOG_TAG, "Waiting for resume thread to exit...");
 
-        /* Calculate absolute timeout (3 seconds from now) */
+        /* Calculate absolute timeout (10 seconds from now) - v0.6.114 */
         struct timespec timeout;
         clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 3;
+        timeout.tv_sec += 10;
 
         while (engine->resume_thread_running) {
             int rc = pthread_cond_timedwait(&engine->resume_thread_exit_cond,
