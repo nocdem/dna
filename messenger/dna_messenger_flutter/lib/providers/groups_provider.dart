@@ -19,6 +19,15 @@ class GroupsNotifier extends AsyncNotifier<List<Group>> {
       return state.valueOrNull ?? [];
     }
 
+    // v0.100.87: STALE-WHILE-REVALIDATE - check engine state without blocking
+    final engineAsync = ref.watch(engineProvider);
+    final cachedGroups = state.valueOrNull;
+
+    // If engine is loading but we have cached data, return cached (no spinner)
+    if (engineAsync is AsyncLoading && cachedGroups != null && cachedGroups.isNotEmpty) {
+      return cachedGroups;
+    }
+
     final engine = await ref.watch(engineProvider.future);
 
     // v0.100.86: LOCAL-FIRST - Return cached data immediately, then sync in background
@@ -44,13 +53,23 @@ class GroupsNotifier extends AsyncNotifier<List<Group>> {
   }
 
   Future<void> refresh() async {
-    state = const AsyncValue.loading();
-    state = await AsyncValue.guard(() async {
+    // v0.100.87: STALE-WHILE-REVALIDATE - keep showing current data while refreshing
+    final previousGroups = state.valueOrNull;
+
+    try {
       final engine = await ref.read(engineProvider.future);
       // Sync from DHT first to get latest data
       await engine.syncGroups();
-      return engine.getGroups();
-    });
+      final groups = await engine.getGroups();
+      state = AsyncValue.data(groups);
+    } catch (e, st) {
+      // On error, keep previous data if available
+      if (previousGroups != null && previousGroups.isNotEmpty) {
+        state = AsyncValue.data(previousGroups);
+      } else {
+        state = AsyncValue.error(e, st);
+      }
+    }
   }
 
   /// Create a new group
@@ -119,16 +138,35 @@ class InvitationsNotifier extends AsyncNotifier<List<Invitation>> {
       return state.valueOrNull ?? [];
     }
 
+    // v0.100.87: STALE-WHILE-REVALIDATE - check engine state without blocking
+    final engineAsync = ref.watch(engineProvider);
+    final cachedInvitations = state.valueOrNull;
+
+    // If engine is loading but we have cached data, return cached (no spinner)
+    if (engineAsync is AsyncLoading && cachedInvitations != null && cachedInvitations.isNotEmpty) {
+      return cachedInvitations;
+    }
+
     final engine = await ref.watch(engineProvider.future);
     return engine.getInvitations();
   }
 
   Future<void> refresh() async {
-    state = const AsyncValue.loading();
-    state = await AsyncValue.guard(() async {
+    // v0.100.87: STALE-WHILE-REVALIDATE - keep showing current data while refreshing
+    final previousInvitations = state.valueOrNull;
+
+    try {
       final engine = await ref.read(engineProvider.future);
-      return engine.getInvitations();
-    });
+      final invitations = await engine.getInvitations();
+      state = AsyncValue.data(invitations);
+    } catch (e, st) {
+      // On error, keep previous data if available
+      if (previousInvitations != null && previousInvitations.isNotEmpty) {
+        state = AsyncValue.data(previousInvitations);
+      } else {
+        state = AsyncValue.error(e, st);
+      }
+    }
   }
 
   /// Accept a group invitation
@@ -181,6 +219,15 @@ class GroupConversationNotifier extends FamilyAsyncNotifier<List<Message>, Strin
       return state.valueOrNull ?? [];
     }
 
+    // v0.100.87: STALE-WHILE-REVALIDATE - check engine state without blocking
+    final engineAsync = ref.watch(engineProvider);
+    final cachedMessages = state.valueOrNull;
+
+    // If engine is loading but we have cached data, return cached (no spinner)
+    if (engineAsync is AsyncLoading && cachedMessages != null && cachedMessages.isNotEmpty) {
+      return cachedMessages;
+    }
+
     final engine = await ref.watch(engineProvider.future);
     final messages = await engine.getGroupConversation(arg);
     // Messages already in ASC order from C layer
@@ -188,11 +235,21 @@ class GroupConversationNotifier extends FamilyAsyncNotifier<List<Message>, Strin
   }
 
   Future<void> refresh() async {
-    state = const AsyncValue.loading();
-    state = await AsyncValue.guard(() async {
+    // v0.100.87: STALE-WHILE-REVALIDATE - keep showing current data while refreshing
+    final previousMessages = state.valueOrNull;
+
+    try {
       final engine = await ref.read(engineProvider.future);
-      return engine.getGroupConversation(arg);
-    });
+      final messages = await engine.getGroupConversation(arg);
+      state = AsyncValue.data(messages);
+    } catch (e, st) {
+      // On error, keep previous data if available
+      if (previousMessages != null && previousMessages.isNotEmpty) {
+        state = AsyncValue.data(previousMessages);
+      } else {
+        state = AsyncValue.error(e, st);
+      }
+    }
   }
 
   /// Add a message to the conversation (for optimistic UI)

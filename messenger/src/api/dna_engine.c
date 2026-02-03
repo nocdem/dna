@@ -1449,22 +1449,17 @@ void dna_engine_fire_group_message_callback(
 void dna_engine_destroy(dna_engine_t *engine) {
     if (!engine) return;
 
-    /* v0.6.110: Release identity lock FIRST before any cleanup (all platforms).
-     * This allows rapid app switching without waiting for thread cleanup:
-     * - Android: ForegroundService can take over DHT immediately
-     * - All platforms: New engine can acquire lock while old threads finish
-     * Thread cleanup can take up to 9+ seconds (3s timeout × 3 threads).
-     * Early release is safe: old threads only access existing memory,
-     * new engine creates fresh memory space - no conflict. */
-    if (engine->identity_lock_fd >= 0) {
-        QGP_LOG_INFO(LOG_TAG, "Releasing identity lock early (fd=%d)",
-                     engine->identity_lock_fd);
-        qgp_platform_release_identity_lock(engine->identity_lock_fd);
-        engine->identity_lock_fd = -1;
-    }
+    /* v0.6.111: Set shutdown flag FIRST - callbacks check this before accessing engine.
+     * This must happen before clearing g_dht_callback_engine so that any in-flight
+     * DHT callbacks see shutdown_requested=true and exit safely. */
+    atomic_store(&engine->shutdown_requested, true);
 
-    /* Clear DHT status callback before stopping anything
-     * v0.6.108: Use mutex to synchronize with dna_dht_status_callback() */
+    /* v0.6.111: Clear DHT status callback BEFORE releasing lock.
+     * Order matters for race prevention:
+     * 1. Set shutdown_requested (callbacks will see this and exit)
+     * 2. Clear callback pointer (no new callbacks will get engine)
+     * 3. Brief sleep (let in-flight callbacks complete)
+     * 4. Release identity lock (new engine can start) */
     pthread_mutex_lock(&g_engine_global_mutex);
     if (g_dht_callback_engine == engine) {
         dht_singleton_set_status_callback(NULL, NULL);
@@ -1472,7 +1467,22 @@ void dna_engine_destroy(dna_engine_t *engine) {
     }
     pthread_mutex_unlock(&g_engine_global_mutex);
 
-    /* Stop worker threads (also sets shutdown_requested = true) */
+    /* v0.6.111: Memory barrier - allow in-flight DHT callbacks to complete.
+     * DHT callbacks run on OpenDHT's internal thread and check shutdown_requested.
+     * 20ms is enough for callbacks to see the flag and exit cleanly. */
+    struct timespec barrier_sleep = { 0, 20 * 1000000L };  /* 20ms */
+    nanosleep(&barrier_sleep, NULL);
+
+    /* v0.6.110: Release identity lock (all platforms).
+     * Now safe: shutdown flag set, callbacks cleared, barrier waited. */
+    if (engine->identity_lock_fd >= 0) {
+        QGP_LOG_INFO(LOG_TAG, "Releasing identity lock (fd=%d)",
+                     engine->identity_lock_fd);
+        qgp_platform_release_identity_lock(engine->identity_lock_fd);
+        engine->identity_lock_fd = -1;
+    }
+
+    /* Stop worker threads (shutdown_requested already set above) */
     dna_stop_workers(engine);
 
     /* v0.6.0+: Wait for background threads to exit (they check shutdown_requested) */

@@ -50,11 +50,23 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
     // Wait for identity to be ready (prevents "Failed to load" after app switch)
     final identityReady = ref.watch(identityReadyProvider);
     if (!identityReady) {
-      // Return empty list while waiting for identity to load on resume
-      return [];
+      // v0.100.87: STALE-WHILE-REVALIDATE - keep showing cached data during engine reload
+      // Return previous data if available, empty list only on first load
+      return state.valueOrNull ?? [];
     }
 
+    // v0.100.87: Get engine without blocking UI if we already have cached data
+    final engineAsync = ref.watch(engineProvider);
+    final cachedMessages = state.valueOrNull;
+
+    // If engine is loading but we have cached data, return cached (no spinner)
+    if (engineAsync is AsyncLoading && cachedMessages != null && cachedMessages.isNotEmpty) {
+      return cachedMessages;
+    }
+
+    // Wait for engine (shows spinner only on first load when no cache)
     final engine = await ref.watch(engineProvider.future);
+
     // Load initial page (newest messages)
     final page = await engine.getConversationPage(arg, _pageSize, 0);
     // Update pagination state
@@ -68,8 +80,11 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
 
   Future<void> refresh() async {
     logPrint('[DART-REFRESH] refresh() called for $arg');
-    state = const AsyncValue.loading();
-    state = await AsyncValue.guard(() async {
+    // v0.100.87: STALE-WHILE-REVALIDATE - don't show loading spinner
+    // Keep showing current messages while fetching new ones
+    final previousMessages = state.valueOrNull;
+
+    try {
       final engine = await ref.read(engineProvider.future);
       final page = await engine.getConversationPage(arg, _pageSize, 0);
       logPrint('[DART-REFRESH] Got ${page.messages.length} messages');
@@ -82,8 +97,16 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
         total: page.total,
         loadedCount: page.messages.length,
       );
-      return page.messages.reversed.toList();
-    });
+      state = AsyncValue.data(page.messages.reversed.toList());
+    } catch (e, st) {
+      // On error, keep previous data if available
+      if (previousMessages != null && previousMessages.isNotEmpty) {
+        logPrint('[DART-REFRESH] Error but keeping cached data: $e');
+        state = AsyncValue.data(previousMessages);
+      } else {
+        state = AsyncValue.error(e, st);
+      }
+    }
   }
 
   /// Load more (older) messages

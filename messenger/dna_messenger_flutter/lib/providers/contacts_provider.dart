@@ -34,6 +34,15 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
       return state.valueOrNull ?? [];
     }
 
+    // v0.100.87: STALE-WHILE-REVALIDATE - check engine state without blocking
+    final engineAsync = ref.watch(engineProvider);
+    final cachedContacts = state.valueOrNull;
+
+    // If engine is loading but we have cached data, return cached (no spinner)
+    if (engineAsync is AsyncLoading && cachedContacts != null && cachedContacts.isNotEmpty) {
+      return cachedContacts;
+    }
+
     final engine = await ref.watch(engineProvider.future);
     final contacts = await engine.getContacts();
 
