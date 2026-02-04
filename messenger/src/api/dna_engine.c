@@ -1494,6 +1494,12 @@ void dna_engine_request_shutdown(dna_engine_t *engine) {
     pthread_mutex_unlock(&engine->task_mutex);
 }
 
+/* v0.6.116: Check if shutdown was requested */
+bool dna_engine_is_shutdown_requested(dna_engine_t *engine) {
+    if (!engine) return false;
+    return atomic_load(&engine->shutdown_requested);
+}
+
 void dna_engine_destroy(dna_engine_t *engine) {
     if (!engine) return;
 

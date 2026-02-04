@@ -1502,11 +1502,28 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeLoadIdentityMinimalSync(J
         return -3;
     }
 
-    /* Wait for completion (with timeout) */
+    /* Wait for completion (with timeout)
+     * v0.6.116: Also check shutdown_requested so we abort quickly when Flutter resumes */
     int wait_count = 0;
+    int shutdown = 0;
     while (!ctx.done && wait_count < 300) {  /* 30 second timeout */
         usleep(100000);  /* 100ms */
         wait_count++;
+
+        /* Check if shutdown was requested (Flutter taking over) */
+        pthread_mutex_lock(&g_engine_mutex);
+        if (g_engine && dna_engine_is_shutdown_requested(g_engine)) {
+            shutdown = 1;
+        }
+        pthread_mutex_unlock(&g_engine_mutex);
+        if (shutdown) {
+            LOGI("nativeLoadIdentityMinimalSync: Aborting - shutdown requested");
+            break;
+        }
+    }
+
+    if (shutdown) {
+        return -5;  /* Aborted due to shutdown */
     }
 
     if (!ctx.done) {
@@ -1665,11 +1682,28 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeCheckOfflineMessages(JNIE
         return -3;
     }
 
-    /* Wait for completion (with timeout) */
+    /* Wait for completion (with timeout)
+     * v0.6.116: Also check shutdown_requested so we abort quickly when Flutter resumes */
     int wait_count = 0;
+    int shutdown = 0;
     while (!ctx.done && wait_count < 300) {  /* 30 second timeout */
         usleep(100000);  /* 100ms */
         wait_count++;
+
+        /* Check if shutdown was requested (Flutter taking over) */
+        pthread_mutex_lock(&g_engine_mutex);
+        if (g_engine && dna_engine_is_shutdown_requested(g_engine)) {
+            shutdown = 1;
+        }
+        pthread_mutex_unlock(&g_engine_mutex);
+        if (shutdown) {
+            LOGI("nativeCheckOfflineMessages: Aborting - shutdown requested");
+            break;
+        }
+    }
+
+    if (shutdown) {
+        return -5;  /* Aborted due to shutdown */
     }
 
     if (!ctx.done) {

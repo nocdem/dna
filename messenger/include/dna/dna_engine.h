@@ -925,6 +925,14 @@ DNA_API void dna_engine_destroy(dna_engine_t *engine);
 DNA_API void dna_engine_request_shutdown(dna_engine_t *engine);
 
 /**
+ * Check if shutdown was requested (v0.6.116+)
+ *
+ * @param engine    Engine instance (can be NULL)
+ * @return          true if shutdown was requested, false otherwise
+ */
+DNA_API bool dna_engine_is_shutdown_requested(dna_engine_t *engine);
+
+/**
  * Pause engine for background mode (v0.6.50+)
  *
  * Suspends DHT listeners and presence heartbeat while keeping the engine
