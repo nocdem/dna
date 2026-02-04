@@ -252,21 +252,21 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     QGP_LOG_INFO(LOG_TAG, "Fetched %zu contacts from DHT\n", count);
 
     // REPLACE mode: DHT is source of truth (deletions propagate)
-    // With safety checks to prevent data loss from DHT failures
+    // With invariant guard to prevent data loss from empty DHT responses
 
-    // SAFETY CHECK 1: Verify DHT is actually connected
-    if (!dht_context_is_ready(dht_ctx)) {
-        QGP_LOG_ERROR(LOG_TAG, "SAFETY: DHT not ready, keeping local contacts\n");
-        dht_contactlist_free_contacts(contacts, count);
-        return -1;
-    }
-
-    // SAFETY CHECK 2: Get local contact count for comparison
     int local_count = contacts_db_count();
     if (local_count < 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to get local contact count\n");
         dht_contactlist_free_contacts(contacts, count);
         return -1;
+    }
+
+    // INVARIANT GUARD: A user with local contacts should never have them wiped
+    // by an empty DHT response. count==0 with local data indicates DHT unavailability.
+    if (count == 0 && local_count > 0) {
+        QGP_LOG_WARN(LOG_TAG, "[SYNC] DHT returned 0 contacts but local has %d — publishing local to DHT\n", local_count);
+        dht_contactlist_free_contacts(contacts, count);
+        return messenger_sync_contacts_to_dht(ctx);
     }
 
     // DHT-AUTHORITATIVE: Always REPLACE local with DHT (deletions propagate)

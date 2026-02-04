@@ -1107,6 +1107,14 @@ int dht_groups_sync_from_dht(
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
 
+    // INVARIANT GUARD: A valid group ALWAYS has at least 1 member (the creator).
+    // member_count==0 is impossible for a valid group and indicates DHT unavailability.
+    if (meta->member_count == 0) {
+        QGP_LOG_WARN(LOG_TAG, "[SYNC] DHT returned 0 members for group %s — keeping local members\n", group_uuid);
+        dht_groups_free_metadata(meta);
+        return 0;
+    }
+
     // Update members atomically (transaction prevents race conditions)
     sqlite3_exec(g_db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
 

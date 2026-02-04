@@ -108,5 +108,5 @@ bool dht_wait_for_stabilization(dna_engine_t *engine) {
     size_t final_count = dht_context_get_node_count(dht);
     QGP_LOG_WARN(LOG_TAG, "[STABILIZE] Timeout after %ds with %zu nodes (wanted %d)",
                  DHT_STABILIZATION_MAX_SECONDS, final_count, DHT_STABILIZATION_MIN_NODES);
-    return true;  /* Continue anyway after timeout */
+    return true;  /* Continue anyway — sync functions have invariant guards against empty DHT */
 }
