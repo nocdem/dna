@@ -44,6 +44,15 @@ extern "C" {
  */
 int groups_init(void *backup_ctx);
 
+/**
+ * Cleanup groups subsystem
+ *
+ * Nulls the borrowed database pointer. Does NOT close the database
+ * (that's handled by group_database_close).
+ * Must be called during messenger_free() to prevent stale pointer on reinit.
+ */
+void groups_cleanup(void);
+
 /* ============================================================================
  * GROUP CLEANUP
  * ============================================================================ */

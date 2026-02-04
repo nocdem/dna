@@ -607,6 +607,14 @@ void dna_group_outbox_free_bucket(dna_group_outbox_bucket_t *bucket);
  */
 void dna_group_outbox_set_db(void *db);
 
+/**
+ * @brief Cleanup group outbox subsystem
+ *
+ * Nulls the borrowed database pointer. Does NOT close the database.
+ * Must be called during messenger_free() to prevent stale pointer on reinit.
+ */
+void dna_group_outbox_cleanup(void);
+
 #ifdef __cplusplus
 }
 #endif

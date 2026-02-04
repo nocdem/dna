@@ -1063,6 +1063,11 @@ void dna_group_outbox_set_db(void *db) {
     group_outbox_db = (sqlite3 *)db;
 }
 
+void dna_group_outbox_cleanup(void) {
+    group_outbox_db = NULL;  /* Borrowed pointer - don't close */
+    QGP_LOG_DEBUG(LOG_TAG, "Cleanup complete\n");
+}
+
 int dna_group_outbox_db_store_message_ex(const dna_group_message_t *msg, int status, int is_outgoing) {
     if (!msg || !group_outbox_db) {
         return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;

@@ -62,6 +62,15 @@ int groups_init(void *unused_ctx) {
 }
 
 /* ============================================================================
+ * SUBSYSTEM CLEANUP
+ * ============================================================================ */
+
+void groups_cleanup(void) {
+    groups_db = NULL;  /* Borrowed pointer from group_database - don't close */
+    QGP_LOG_DEBUG(LOG_TAG, "Cleanup complete\n");
+}
+
+/* ============================================================================
  * GROUP CLEANUP (Leave Group)
  * ============================================================================ */
 

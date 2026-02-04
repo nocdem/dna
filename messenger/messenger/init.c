@@ -26,6 +26,9 @@
 #include "../crypto/bip39/bip39.h"
 #include "../dht/client/dna_group_outbox.h"
 #include "../dht/shared/dht_groups.h"
+#include "../database/group_invitations.h"
+#include "../database/addressbook_db.h"
+#include "../database/feed_subscriptions_db.h"
 #include "../messenger_transport.h"
 
 /**
@@ -315,8 +318,22 @@ void messenger_free(messenger_context_t *ctx) {
         message_backup_close(ctx->backup_ctx);
     }
 
-    // Close group database (v0.4.63 - separate from messages.db)
+    // v0.6.117: Clean up all global singletons to prevent stale pointers on Android
+    // (engine destroy/create cycles leave globals pointing to closed connections)
+
+    // 1. NULL borrowed DB pointers BEFORE closing group_database
+    gek_cleanup();
+    groups_cleanup();
+    dna_group_outbox_cleanup();
+
+    // 2. Close group database (v0.4.63 - separate from messages.db)
     group_database_close(group_database_get_instance());
+
+    // 3. Close singletons that own their own DB connections
+    dht_groups_cleanup();
+    group_invitations_cleanup();
+    addressbook_db_close();
+    feed_subscriptions_db_close();
 
     // Free fingerprint (Phase 4)
     if (ctx->fingerprint) {

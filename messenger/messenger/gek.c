@@ -575,6 +575,11 @@ int gek_set_kem_keys(const uint8_t *kem_pubkey, const uint8_t *kem_privkey) {
     return 0;
 }
 
+void gek_cleanup(void) {
+    msg_db = NULL;  /* Borrowed pointer from group_database - don't close */
+    QGP_LOG_DEBUG(LOG_TAG, "Cleanup complete\n");
+}
+
 void gek_clear_kem_keys(void) {
     if (gek_kem_pubkey) {
         qgp_secure_memzero(gek_kem_pubkey, 1568);

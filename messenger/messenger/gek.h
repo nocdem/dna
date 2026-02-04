@@ -118,6 +118,15 @@ typedef struct {
 int gek_init(void *backup_ctx);
 
 /**
+ * Cleanup GEK subsystem
+ *
+ * Nulls the borrowed database pointer. Does NOT close the database
+ * (that's handled by group_database_close).
+ * Must be called during messenger_free() to prevent stale pointer on reinit.
+ */
+void gek_cleanup(void);
+
+/**
  * Set KEM keys for GEK encryption/decryption
  *
  * Must be called after identity is loaded and before any GEK store/load operations.
