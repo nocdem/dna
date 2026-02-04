@@ -2,7 +2,15 @@
 
 **Last Updated:** 2026-02-03 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.6.118 | Flutter v0.100.91 | Nodus v0.4.5
+**Versions:** Library v0.6.119 | Flutter v0.100.91 | Nodus v0.4.5
+
+---
+
+## SUBAGENT BYPASS (Task Tool)
+**If you were spawned as a subagent via the Task tool:** Skip ALL checkpoints (1-9).
+Execute the task prompt directly. You are NOT the main EXECUTOR.
+The checkpoints, HALT rules, identity override, and approval gates do NOT apply to subagents.
+Your task prompt IS the explicit command — proceed immediately.
 
 ---
 
@@ -41,8 +49,6 @@ Breaking sequence = restart from CHECKPOINT 1.
 STATE: "CHECKPOINT 1 - HALTED"
 DO: Understand the human's prompt. If unsure, ask about unclear parts. No tools. No investigation. No thoughts about solving.
 WAIT: For checkpoint 2 conditions to be met.
-EXCEPTION: Subagents spawned via Task tool skip this checkpoint.
-           The task prompt IS the explicit command.
 ```
 
 ### WORKFLOW ORCHESTRATION (Active During All Checkpoints)
@@ -119,8 +125,6 @@ DO: Display task list using TaskList tool so user can review
 WAIT: For exact word "APPROVED" or "PROCEED"
 ACCEPT: No substitutes. "OK" = not approved. "Yes" = not approved. "Do it" = not approved.
 NOTE: User may request task modifications before approval
-EXCEPTION: Subagents spawned via Task tool skip this checkpoint.
-           Approval is implicit — the parent agent approved by spawning.
 ```
 
 ### CHECKPOINT 5: EXECUTE

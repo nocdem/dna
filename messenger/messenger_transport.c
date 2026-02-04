@@ -467,11 +467,10 @@ int messenger_transport_init(messenger_context_t *ctx, bool minimal)
     /* Minimal mode: skip presence registration (for background polling) */
     if (!minimal) {
         if (transport_register_presence(ctx->transport_ctx) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to register presence in DHT");
-            transport_free(ctx->transport_ctx);
-            ctx->transport_ctx = NULL;
-            ctx->transport_enabled = false;
-            return -1;
+            /* v0.6.119: Non-fatal - presence is cosmetic ("online" status).
+             * DHT may not have peers yet during async startup (v0.6.88+).
+             * Transport MUST stay alive for offline message retrieval. */
+            QGP_LOG_WARN(LOG_TAG, "Presence registration failed (DHT not ready?) - transport stays active");
         }
 
         if (presence_cache_init() != 0) {
