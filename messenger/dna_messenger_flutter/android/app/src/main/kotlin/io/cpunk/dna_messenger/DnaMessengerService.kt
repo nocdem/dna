@@ -100,12 +100,16 @@ class DnaMessengerService : Service() {
                 // Flutter taking over - release service's engine on BACKGROUND thread
                 // v0.100.89: Moved to background thread to prevent UI freeze/ANR
                 // v0.100.90: CORE FIX - signal shutdown BEFORE acquiring lock!
-                // This makes ongoing C operations abort early, releasing the lock quickly.
-                // Previously, we waited for ongoing DHT operations (2-5+ seconds).
-                // Now they abort immediately when they see shutdown_requested=true.
+                // v0.100.91: Guard against rapid switching - only one release at a time
                 if (libraryLoaded) {
                     android.util.Log.i(TAG, "Signaling service engine to abort operations...")
                     nativeRequestShutdown()  // Sets shutdown_requested=true in C
+                }
+
+                // v0.100.91: Skip if release already in progress (rapid switching)
+                if (!releaseInProgress.compareAndSet(false, true)) {
+                    android.util.Log.i(TAG, "Engine release already in progress, skipping duplicate")
+                    return
                 }
 
                 // Now acquire lock on background thread - should be fast since ops are aborting
@@ -127,6 +131,8 @@ class DnaMessengerService : Service() {
                         }
                     } catch (e: Exception) {
                         android.util.Log.e(TAG, "Failed to release engine: ${e.message}")
+                    } finally {
+                        releaseInProgress.set(false)  // Allow next release
                     }
                 }.start()
             } else if (!active && wasActive) {
@@ -208,6 +214,12 @@ class DnaMessengerService : Service() {
          * any ongoing nativeCheckOfflineMessages() to complete before destroying engine.
          */
         private val engineLock = java.util.concurrent.locks.ReentrantLock()
+
+        /**
+         * v0.100.91: Guard against rapid switching spawning multiple release threads.
+         * Only one release operation should be pending at a time.
+         */
+        private val releaseInProgress = java.util.concurrent.atomic.AtomicBoolean(false)
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
