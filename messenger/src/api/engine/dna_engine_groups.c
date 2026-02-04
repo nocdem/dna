@@ -486,13 +486,24 @@ void dna_handle_get_invitations(dna_engine_t *engine, dna_task_t *task) {
         }
 
         for (int i = 0; i < entry_count; i++) {
-            strncpy(invitations[i].group_uuid, entries[i].group_uuid, 36);
-            strncpy(invitations[i].group_name, entries[i].group_name, sizeof(invitations[i].group_name) - 1);
-            strncpy(invitations[i].inviter, entries[i].inviter, 128);
-            invitations[i].member_count = entries[i].member_count;
-            invitations[i].invited_at = (uint64_t)entries[i].invited_at;
+            /* v0.6.118: Skip invitations for groups we're already in (cross-device sync) */
+            dht_group_cache_entry_t *existing = NULL;
+            if (dht_groups_get_cache_entry(entries[i].group_uuid, &existing) == 0) {
+                /* Group exists in local cache — user is already a member */
+                free(existing);
+                group_invitations_update_status(entries[i].group_uuid, INVITATION_STATUS_ACCEPTED);
+                QGP_LOG_INFO(LOG_TAG, "Auto-accepted stale invitation for group %s (already a member)",
+                             entries[i].group_uuid);
+                continue;
+            }
+
+            strncpy(invitations[count].group_uuid, entries[i].group_uuid, 36);
+            strncpy(invitations[count].group_name, entries[i].group_name, sizeof(invitations[count].group_name) - 1);
+            strncpy(invitations[count].inviter, entries[i].inviter, 128);
+            invitations[count].member_count = entries[i].member_count;
+            invitations[count].invited_at = (uint64_t)entries[i].invited_at;
+            count++;
         }
-        count = entry_count;
 
         group_invitations_free(entries, entry_count);
     }

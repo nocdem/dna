@@ -458,9 +458,20 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
             goto done;
         }
 
+        int out_idx = 0;
         for (int i = 0; i < db_count; i++) {
-            strncpy(requests[i].fingerprint, db_requests[i].fingerprint, 128);
-            requests[i].fingerprint[128] = '\0';
+            /* v0.6.118: Skip requests from senders who are already contacts
+             * (handles cross-device sync: accepted on another device, contacts
+             *  synced from DHT, but stale pending request remains in local DB) */
+            if (contacts_db_exists(db_requests[i].fingerprint)) {
+                contacts_db_remove_request(db_requests[i].fingerprint);
+                QGP_LOG_INFO(LOG_TAG, "Auto-removed stale contact request from %.20s... (already a contact)",
+                             db_requests[i].fingerprint);
+                continue;
+            }
+
+            strncpy(requests[out_idx].fingerprint, db_requests[i].fingerprint, 128);
+            requests[out_idx].fingerprint[128] = '\0';
 
             /* If display_name is empty, try reverse lookup from DHT */
             if (db_requests[i].display_name[0] == '\0' && dht_ctx) {
@@ -468,8 +479,8 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                 QGP_LOG_INFO("DNA_ENGINE", "DB request[%d] has empty name, doing reverse lookup", i);
                 if (dht_keyserver_reverse_lookup(dht_ctx, db_requests[i].fingerprint,
                                                  &looked_up_name) == 0 && looked_up_name) {
-                    strncpy(requests[i].display_name, looked_up_name, 63);
-                    requests[i].display_name[63] = '\0';
+                    strncpy(requests[out_idx].display_name, looked_up_name, 63);
+                    requests[out_idx].display_name[63] = '\0';
                     /* Update the database for future retrievals */
                     contacts_db_update_request_name(db_requests[i].fingerprint, looked_up_name);
                     /* Cache for future use */
@@ -477,21 +488,22 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                     QGP_LOG_INFO("DNA_ENGINE", "Reverse lookup found: %s", looked_up_name);
                     free(looked_up_name);
                 } else {
-                    requests[i].display_name[0] = '\0';
+                    requests[out_idx].display_name[0] = '\0';
                 }
             } else {
-                strncpy(requests[i].display_name, db_requests[i].display_name, 63);
-                requests[i].display_name[63] = '\0';
+                strncpy(requests[out_idx].display_name, db_requests[i].display_name, 63);
+                requests[out_idx].display_name[63] = '\0';
             }
 
-            strncpy(requests[i].message, db_requests[i].message, 255);
-            requests[i].message[255] = '\0';
-            requests[i].requested_at = db_requests[i].requested_at;
-            requests[i].status = db_requests[i].status;
+            strncpy(requests[out_idx].message, db_requests[i].message, 255);
+            requests[out_idx].message[255] = '\0';
+            requests[out_idx].requested_at = db_requests[i].requested_at;
+            requests[out_idx].status = db_requests[i].status;
             QGP_LOG_INFO("DNA_ENGINE", "get_requests[%d]: fp='%.40s...' len=%zu name='%s'",
-                         i, requests[i].fingerprint, strlen(requests[i].fingerprint), requests[i].display_name);
+                         out_idx, requests[out_idx].fingerprint, strlen(requests[out_idx].fingerprint), requests[out_idx].display_name);
+            out_idx++;
         }
-        count = db_count;
+        count = out_idx;
     }
 
     contacts_db_free_requests(db_requests, db_count);
