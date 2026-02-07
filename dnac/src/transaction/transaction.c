@@ -100,12 +100,12 @@ int dnac_tx_finalize(dnac_transaction_t *tx,
                      const uint8_t *sender_pubkey) {
     if (!tx || !sender_privkey || !sender_pubkey) return DNAC_ERROR_INVALID_PARAM;
 
-    /* v1: Verify balance equation (sum inputs == sum outputs) */
+    /* v0.8.0: sum(inputs) >= sum(outputs), difference is burned fee */
     uint64_t total_in = dnac_tx_total_input(tx);
     uint64_t total_out = dnac_tx_total_output(tx);
 
-    if (total_in != total_out) {
-        return DNAC_ERROR_INVALID_PROOF;  /* Balance mismatch */
+    if (total_in < total_out) {
+        return DNAC_ERROR_INVALID_PROOF;  /* Outputs exceed inputs */
     }
 
     /* Store sender's public key */
@@ -141,16 +141,24 @@ int dnac_tx_add_witness(dnac_transaction_t *tx, const dnac_witness_sig_t *witnes
 int dnac_tx_verify(const dnac_transaction_t *tx) {
     if (!tx) return DNAC_ERROR_INVALID_PARAM;
 
-    /* v1: Verify sum(inputs) == sum(outputs) */
-    uint64_t total_in = dnac_tx_total_input(tx);
-    uint64_t total_out = dnac_tx_total_output(tx);
+    /* Genesis: 0 inputs, outputs create coins (witness-authorized) */
+    if (tx->type == DNAC_TX_GENESIS) {
+        if (tx->input_count != 0) {
+            fprintf(stderr, "[VERIFY] FAILED: genesis must have 0 inputs\n");
+            return DNAC_ERROR_INVALID_PROOF;
+        }
+    } else {
+        /* v0.8.0: sum(inputs) >= sum(outputs), difference is burned fee */
+        uint64_t total_in = dnac_tx_total_input(tx);
+        uint64_t total_out = dnac_tx_total_output(tx);
 
-    fprintf(stderr, "[VERIFY] total_in=%llu, total_out=%llu\n",
-            (unsigned long long)total_in, (unsigned long long)total_out);
+        fprintf(stderr, "[VERIFY] total_in=%llu, total_out=%llu\n",
+                (unsigned long long)total_in, (unsigned long long)total_out);
 
-    if (total_in != total_out) {
-        fprintf(stderr, "[VERIFY] FAILED: inputs != outputs\n");
-        return DNAC_ERROR_INVALID_PROOF;
+        if (total_in < total_out) {
+            fprintf(stderr, "[VERIFY] FAILED: outputs exceed inputs\n");
+            return DNAC_ERROR_INVALID_PROOF;
+        }
     }
 
     /* Verify we have enough witnesses
@@ -168,11 +176,13 @@ int dnac_tx_verify(const dnac_transaction_t *tx) {
         return rc;
     }
 
-    /* Verify sender signature */
-    rc = verify_sender_signature(tx);
-    if (rc != DNAC_SUCCESS) {
-        fprintf(stderr, "[VERIFY] FAILED: sender sig verify rc=%d\n", rc);
-        return rc;
+    /* Sender signature (skip for genesis - witnesses authorize) */
+    if (tx->type != DNAC_TX_GENESIS) {
+        rc = verify_sender_signature(tx);
+        if (rc != DNAC_SUCCESS) {
+            fprintf(stderr, "[VERIFY] FAILED: sender sig verify rc=%d\n", rc);
+            return rc;
+        }
     }
 
     fprintf(stderr, "[VERIFY] OK\n");

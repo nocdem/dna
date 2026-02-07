@@ -140,32 +140,9 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
         }
     }
 
-    /* Add fee output to witness server */
-    if (fee > 0) {
-        /* Discover witness servers to find fee recipient */
-        dnac_witness_info_t *witness_servers = NULL;
-        int witness_count = 0;
-        rc = dnac_witness_discover(builder->ctx, &witness_servers, &witness_count);
-
-        if (rc == DNAC_SUCCESS && witness_count > 0 && witness_servers[0].fingerprint[0] != '\0') {
-            /* Add fee output to first available witness server */
-            uint8_t fee_seed[32];
-            rc = dnac_tx_add_output(builder->tx, witness_servers[0].fingerprint, fee, fee_seed);
-            if (rc != DNAC_SUCCESS) {
-                dnac_free_witness_list(witness_servers, witness_count);
-                free(selected);
-                return rc;
-            }
-            dnac_free_witness_list(witness_servers, witness_count);
-        } else {
-            /* No witness server available - cannot add fee output */
-            if (witness_servers) {
-                dnac_free_witness_list(witness_servers, witness_count);
-            }
-            free(selected);
-            return DNAC_ERROR_NETWORK;
-        }
-    }
+    /* v0.8.0: Fees are burned (removed from circulation).
+     * sum(inputs) > sum(outputs), the difference is the fee.
+     * Fee pool + staking distribution planned for future version. */
 
     free(selected);
 
@@ -414,22 +391,8 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
     /* Step 8: Store transaction in history */
     uint64_t total_input = dnac_tx_total_input(tx);
 
-    /* Calculate fee: Sum outputs to non-self recipients, then derive fee.
-     * Fee = 0.1% of amount sent to recipients (excluding change and fee itself).
-     * With fee as explicit output: total_in == total_out, so we calculate
-     * the fee from the non-change output amounts. */
-    uint64_t amount_sent = 0;
-    for (int i = 0; i < tx->output_count; i++) {
-        /* Skip change outputs (to ourselves) */
-        if (strcmp(tx->outputs[i].owner_fingerprint, owner_fp) == 0) {
-            continue;
-        }
-        amount_sent += tx->outputs[i].amount;
-    }
-    /* amount_sent includes the fee output, so: amount_sent = original_amount + fee
-     * where fee = original_amount * 0.001, so original_amount = amount_sent / 1.001
-     * and fee = amount_sent - original_amount = amount_sent * 0.001 / 1.001 */
-    uint64_t fee = (amount_sent * DNAC_FEE_RATE_BPS) / (10000 + DNAC_FEE_RATE_BPS);
+    /* v0.8.0: Fees are burned. Fee = sum(inputs) - sum(outputs). */
+    uint64_t fee = total_input - total_output;
 
     /* Find first non-change recipient for counterparty field */
     const char *counterparty = NULL;

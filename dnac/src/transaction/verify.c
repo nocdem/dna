@@ -31,10 +31,10 @@ static int verify_balance_v1(const dnac_transaction_t *tx) {
         return DNAC_SUCCESS;
     }
 
-    /* SPEND: sum(inputs) == sum(outputs) */
+    /* SPEND: sum(inputs) >= sum(outputs), difference is burned fee */
     uint64_t total_in = dnac_tx_total_input(tx);
     uint64_t total_out = dnac_tx_total_output(tx);
-    if (total_in != total_out) {
+    if (total_in < total_out) {
         return DNAC_ERROR_INVALID_PROOF;
     }
     return DNAC_SUCCESS;
