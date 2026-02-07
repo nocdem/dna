@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <inttypes.h>
 #include <time.h>
 #include <pthread.h>
@@ -172,6 +173,11 @@ int dnac_cli_send(dnac_context_t *ctx, const char *recipient,
     }
 
     printf("Payment sent successfully!\n");
+
+    /* Allow DHT time to replicate the published TX data */
+    printf("Waiting for DHT propagation...\n");
+    sleep(5);
+
     return 0;
 }
 

@@ -19,7 +19,9 @@
 #include "dnac/bft.h"
 #include "dnac/tcp.h"
 #include "dnac/genesis.h"
+#include "dnac/transaction.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_dilithium.h"
 #include "crypto/utils/qgp_random.h"
 
@@ -482,6 +484,18 @@ void dnac_bft_set_db_callbacks(dnac_bft_context_t *ctx,
     ctx->db_rollback_cb = rollback_cb;
 }
 
+void dnac_bft_set_utxo_callbacks(dnac_bft_context_t *ctx,
+                                   dnac_bft_utxo_lookup_fn lookup_cb,
+                                   dnac_bft_utxo_add_fn add_cb,
+                                   dnac_bft_utxo_remove_fn remove_cb,
+                                   dnac_bft_utxo_genesis_fn genesis_cb) {
+    if (!ctx) return;
+    ctx->utxo_lookup_cb = lookup_cb;
+    ctx->utxo_add_cb = add_cb;
+    ctx->utxo_remove_cb = remove_cb;
+    ctx->utxo_genesis_cb = genesis_cb;
+}
+
 /* ============================================================================
  * Configuration
  * ========================================================================== */
@@ -626,6 +640,224 @@ int dnac_bft_get_quorum(int n_witnesses) {
 }
 
 /* ============================================================================
+ * v0.8.0: UTXO Validation
+ * ========================================================================== */
+
+/**
+ * @brief Validate transaction inputs against the UTXO set
+ *
+ * For SPEND/BURN transactions:
+ * 1. Each input nullifier must exist in the UTXO set
+ * 2. Each input amount must match the UTXO set amount
+ * 3. Each UTXO must be owned by the sender (fingerprint match)
+ * 4. sum(inputs) >= sum(outputs) (difference is fee)
+ *
+ * For GENESIS transactions: no UTXO validation needed (creates value from nothing).
+ *
+ * @param ctx BFT context (for utxo_lookup_cb)
+ * @param tx_data Serialized transaction data
+ * @param tx_len Length of serialized transaction
+ * @param tx_type Transaction type
+ * @param reason_out Output: rejection reason (256 bytes buffer)
+ * @return 0 if valid, -1 if invalid (reason_out filled)
+ */
+static int bft_validate_utxo(dnac_bft_context_t *ctx,
+                              const uint8_t *tx_data, uint32_t tx_len,
+                              uint8_t tx_type, char *reason_out) {
+    /* GENESIS creates value from nothing — no UTXO inputs to validate */
+    if (tx_type == DNAC_TX_GENESIS) {
+        return 0;
+    }
+
+    /* UTXO lookup callback is required for SPEND/BURN validation */
+    if (!ctx->utxo_lookup_cb) {
+        QGP_LOG_WARN(LOG_TAG, "UTXO lookup callback not set — skipping UTXO validation");
+        return 0;  /* Fail open during transition (before callback is wired up) */
+    }
+
+    /* Deserialize the transaction */
+    dnac_transaction_t *tx = NULL;
+    int rc = dnac_tx_deserialize(tx_data, tx_len, &tx);
+    if (rc != DNAC_SUCCESS || !tx) {
+        if (reason_out) strncpy(reason_out, "Failed to deserialize transaction", 255);
+        return -1;
+    }
+
+    /* Derive sender fingerprint from sender's public key */
+    char sender_fp[DNAC_FINGERPRINT_SIZE];
+    memset(sender_fp, 0, sizeof(sender_fp));
+    if (qgp_sha3_512_fingerprint(tx->sender_pubkey, DNAC_PUBKEY_SIZE, sender_fp) != 0) {
+        dnac_free_transaction(tx);
+        if (reason_out) strncpy(reason_out, "Failed to derive sender fingerprint", 255);
+        return -1;
+    }
+
+    /* Validate each input against the UTXO set */
+    uint64_t total_input = 0;
+    uint64_t total_output = 0;
+
+    for (int i = 0; i < tx->input_count; i++) {
+        uint64_t utxo_amount = 0;
+        char utxo_owner[DNAC_FINGERPRINT_SIZE];
+        memset(utxo_owner, 0, sizeof(utxo_owner));
+
+        rc = ctx->utxo_lookup_cb(tx->inputs[i].nullifier, &utxo_amount, utxo_owner);
+        if (rc != 0) {
+            QGP_LOG_WARN(LOG_TAG, "UTXO not found for input %d — REJECT", i);
+            dnac_free_transaction(tx);
+            if (reason_out) snprintf(reason_out, 255, "UTXO not found for input %d", i);
+            return -1;
+        }
+
+        /* Verify amount matches */
+        if (utxo_amount != tx->inputs[i].amount) {
+            QGP_LOG_WARN(LOG_TAG, "Amount mismatch for input %d: UTXO=%llu, TX=%llu",
+                         i, (unsigned long long)utxo_amount,
+                         (unsigned long long)tx->inputs[i].amount);
+            dnac_free_transaction(tx);
+            if (reason_out) snprintf(reason_out, 255,
+                                      "Amount mismatch for input %d", i);
+            return -1;
+        }
+
+        /* Verify sender owns this UTXO */
+        if (strcmp(utxo_owner, sender_fp) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "Owner mismatch for input %d: UTXO=%.16s..., sender=%.16s...",
+                         i, utxo_owner, sender_fp);
+            dnac_free_transaction(tx);
+            if (reason_out) snprintf(reason_out, 255,
+                                      "Sender does not own input %d", i);
+            return -1;
+        }
+
+        total_input += tx->inputs[i].amount;
+    }
+
+    /* Sum outputs */
+    for (int i = 0; i < tx->output_count; i++) {
+        total_output += tx->outputs[i].amount;
+    }
+
+    /* Verify: sum(inputs) >= sum(outputs) */
+    if (total_input < total_output) {
+        QGP_LOG_WARN(LOG_TAG, "Input/output mismatch: inputs=%llu < outputs=%llu",
+                     (unsigned long long)total_input, (unsigned long long)total_output);
+        dnac_free_transaction(tx);
+        if (reason_out) strncpy(reason_out, "Inputs less than outputs", 255);
+        return -1;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "UTXO validation passed: %d inputs verified, total_in=%llu total_out=%llu fee=%llu",
+                  tx->input_count, (unsigned long long)total_input,
+                  (unsigned long long)total_output,
+                  (unsigned long long)(total_input - total_output));
+
+    dnac_free_transaction(tx);
+    return 0;
+}
+
+/**
+ * @brief Update UTXO set on transaction commit
+ *
+ * For GENESIS: delegate to utxo_genesis_cb (populates all outputs).
+ * For SPEND/BURN:
+ *   1. Remove spent UTXOs (inputs)
+ *   2. Add new UTXOs (outputs) with derived nullifiers
+ *
+ * Uses extern dnac_derive_nullifier() to compute nullifiers for new outputs.
+ *
+ * @param ctx BFT context
+ * @param tx_data Serialized transaction
+ * @param tx_len Length of serialized transaction
+ * @param tx_hash Transaction hash
+ * @param tx_type Transaction type
+ * @return 0 on success, -1 on error
+ */
+static int bft_update_utxo_set(dnac_bft_context_t *ctx,
+                                const uint8_t *tx_data, uint32_t tx_len,
+                                const uint8_t *tx_hash, uint8_t tx_type) {
+    if (!tx_data || tx_len == 0) {
+        QGP_LOG_WARN(LOG_TAG, "No TX data for UTXO set update");
+        return 0;  /* Not an error during transition */
+    }
+
+    /* Deserialize the transaction */
+    dnac_transaction_t *tx = NULL;
+    int rc = dnac_tx_deserialize(tx_data, tx_len, &tx);
+    if (rc != DNAC_SUCCESS || !tx) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to deserialize TX for UTXO update");
+        return -1;
+    }
+
+    /* GENESIS: delegate to utxo_genesis_cb */
+    if (tx_type == DNAC_TX_GENESIS) {
+        if (ctx->utxo_genesis_cb) {
+            rc = ctx->utxo_genesis_cb(tx, tx_hash);
+            if (rc != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to populate UTXO set from genesis: %d", rc);
+                dnac_free_transaction(tx);
+                return -1;
+            }
+            QGP_LOG_INFO(LOG_TAG, "Genesis UTXO set populated (%d outputs)", tx->output_count);
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "No utxo_genesis_cb set — genesis UTXOs not created");
+        }
+        dnac_free_transaction(tx);
+        return 0;
+    }
+
+    /* SPEND/BURN: Remove spent UTXOs (inputs) */
+    if (ctx->utxo_remove_cb) {
+        for (int i = 0; i < tx->input_count; i++) {
+            rc = ctx->utxo_remove_cb(tx->inputs[i].nullifier);
+            if (rc != 0) {
+                QGP_LOG_WARN(LOG_TAG, "Failed to remove spent UTXO %d (may already be removed)", i);
+                /* Continue — idempotent removal */
+            }
+        }
+    }
+
+    /* SPEND: Add new output UTXOs */
+    if (ctx->utxo_add_cb && tx_type == DNAC_TX_SPEND) {
+        extern int dnac_derive_nullifier(const char *owner_fp,
+                                          const uint8_t *seed,
+                                          uint8_t *nullifier_out);
+
+        for (int i = 0; i < tx->output_count; i++) {
+            const dnac_tx_output_internal_t *out = &tx->outputs[i];
+
+            /* Derive nullifier for the new output */
+            uint8_t derived_nullifier[DNAC_NULLIFIER_SIZE];
+            rc = dnac_derive_nullifier(out->owner_fingerprint,
+                                        out->nullifier_seed,
+                                        derived_nullifier);
+            if (rc != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to derive nullifier for output %d", i);
+                dnac_free_transaction(tx);
+                return -1;
+            }
+
+            rc = ctx->utxo_add_cb(derived_nullifier,
+                                    out->owner_fingerprint,
+                                    out->amount,
+                                    tx_hash,
+                                    (uint32_t)i,
+                                    0 /* block_height: will be set properly in Phase 2 */);
+            if (rc != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to add output UTXO %d", i);
+                dnac_free_transaction(tx);
+                return -1;
+            }
+        }
+        QGP_LOG_DEBUG(LOG_TAG, "UTXO set updated: -%d inputs, +%d outputs",
+                      tx->input_count, tx->output_count);
+    }
+
+    dnac_free_transaction(tx);
+    return 0;
+}
+
+/* ============================================================================
  * Consensus Protocol
  * ========================================================================== */
 
@@ -634,10 +866,18 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
                          const uint8_t nullifiers[][DNAC_NULLIFIER_SIZE],
                          uint8_t nullifier_count,
                          uint8_t tx_type,
+                         const uint8_t *tx_data,
+                         uint32_t tx_len,
                          const uint8_t *client_pubkey,
                          const uint8_t *client_sig,
                          uint64_t fee_amount) {
     if (!ctx || !tx_hash) {
+        return DNAC_BFT_ERROR_INVALID_PARAM;
+    }
+
+    /* v0.8.0: Full TX data is required for UTXO validation */
+    if (!tx_data || tx_len == 0 || tx_len > DNAC_BFT_MAX_TX_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid tx_data: ptr=%p len=%u", (void*)tx_data, tx_len);
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
@@ -676,6 +916,16 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
         }
     }
 
+    /* v0.8.0: Validate transaction inputs against UTXO set */
+    {
+        char reason[256] = {0};
+        if (bft_validate_utxo(ctx, tx_data, tx_len, tx_type, reason) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "UTXO validation failed (leader): %s", reason);
+            pthread_mutex_unlock(&ctx->mutex);
+            return DNAC_BFT_ERROR_DOUBLE_SPEND;
+        }
+    }
+
     /* Initialize round state - preserve client connection info set by caller */
     int saved_client_fd = ctx->round_state.client_fd;
     bool saved_is_forwarded = ctx->round_state.is_forwarded;
@@ -706,6 +956,10 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
         memcpy(ctx->round_state.nullifiers[i], nullifiers[i], DNAC_NULLIFIER_SIZE);
     }
 
+    /* v0.8.0: Store full TX data in round state */
+    memcpy(ctx->round_state.tx_data, tx_data, tx_len);
+    ctx->round_state.tx_len = tx_len;
+
     ctx->round_state.phase_start_time = dnac_tcp_get_time_ms();
 
     if (client_pubkey) {
@@ -716,41 +970,52 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
     }
     ctx->round_state.fee_amount = fee_amount;
 
-    /* Create proposal message with ALL nullifiers */
-    dnac_bft_proposal_t proposal;
-    memset(&proposal, 0, sizeof(proposal));
-
-    proposal.header.version = DNAC_BFT_PROTOCOL_VERSION;
-    proposal.header.type = BFT_MSG_PROPOSAL;
-    proposal.header.round = ctx->current_round;
-    proposal.header.view = ctx->current_view;
-    memcpy(proposal.header.sender_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
-    proposal.header.timestamp = time(NULL);
-    proposal.header.nonce = generate_nonce();  /* Gap 23-24: replay prevention */
-
-    memcpy(proposal.tx_hash, tx_hash, DNAC_TX_HASH_SIZE);
-    proposal.nullifier_count = nullifier_count;
-    proposal.tx_type = tx_type;  /* v0.5.0: for genesis 3-of-3 */
-    for (int i = 0; i < nullifier_count; i++) {
-        memcpy(proposal.nullifiers[i], nullifiers[i], DNAC_NULLIFIER_SIZE);
+    /* Create proposal message with ALL nullifiers and TX data */
+    dnac_bft_proposal_t *proposal = calloc(1, sizeof(dnac_bft_proposal_t));
+    if (!proposal) {
+        pthread_mutex_unlock(&ctx->mutex);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate proposal");
+        return DNAC_BFT_ERROR_OUT_OF_MEMORY;
     }
+
+    proposal->header.version = DNAC_BFT_PROTOCOL_VERSION;
+    proposal->header.type = BFT_MSG_PROPOSAL;
+    proposal->header.round = ctx->current_round;
+    proposal->header.view = ctx->current_view;
+    memcpy(proposal->header.sender_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
+    proposal->header.timestamp = time(NULL);
+    proposal->header.nonce = generate_nonce();  /* Gap 23-24: replay prevention */
+
+    memcpy(proposal->tx_hash, tx_hash, DNAC_TX_HASH_SIZE);
+    proposal->nullifier_count = nullifier_count;
+    proposal->tx_type = tx_type;  /* v0.5.0: for genesis 3-of-3 */
+    for (int i = 0; i < nullifier_count; i++) {
+        memcpy(proposal->nullifiers[i], nullifiers[i], DNAC_NULLIFIER_SIZE);
+    }
+
+    /* v0.8.0: Include full TX data in proposal */
+    memcpy(proposal->tx_data, tx_data, tx_len);
+    proposal->tx_len = tx_len;
+
     if (client_pubkey) {
-        memcpy(proposal.sender_pubkey, client_pubkey, DNAC_PUBKEY_SIZE);
+        memcpy(proposal->sender_pubkey, client_pubkey, DNAC_PUBKEY_SIZE);
     }
     if (client_sig) {
-        memcpy(proposal.client_signature, client_sig, DNAC_SIGNATURE_SIZE);
+        memcpy(proposal->client_signature, client_sig, DNAC_SIGNATURE_SIZE);
     }
-    proposal.fee_amount = fee_amount;
+    proposal->fee_amount = fee_amount;
 
     /* Sign proposal with Dilithium5 (Gap 1: v0.6.0) */
     uint8_t proposal_sign_data[256];
     size_t proposal_sign_len;
-    if (bft_build_proposal_sign_data(&proposal, proposal_sign_data, &proposal_sign_len) != 0) {
+    if (bft_build_proposal_sign_data(proposal, proposal_sign_data, &proposal_sign_len) != 0) {
+        free(proposal);
         pthread_mutex_unlock(&ctx->mutex);
         QGP_LOG_ERROR(LOG_TAG, "Failed to build proposal signing data");
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
-    if (bft_sign_message(ctx, proposal.signature, proposal_sign_data, proposal_sign_len) != 0) {
+    if (bft_sign_message(ctx, proposal->signature, proposal_sign_data, proposal_sign_len) != 0) {
+        free(proposal);
         pthread_mutex_unlock(&ctx->mutex);
         QGP_LOG_ERROR(LOG_TAG, "Failed to sign proposal");
         return DNAC_BFT_ERROR_INVALID_SIGNATURE;
@@ -768,14 +1033,23 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
 
     pthread_mutex_unlock(&ctx->mutex);
 
-    /* Serialize and broadcast */
-    uint8_t buffer[16384];
-    size_t written;
+    /* v0.8.0: Heap-allocate buffer for proposal with embedded TX data */
+    size_t buf_size = DNAC_BFT_MAX_TX_SIZE + 16384 + DNAC_TCP_FRAME_HEADER_SIZE;
+    uint8_t *buffer = malloc(buf_size);
+    if (!buffer) {
+        free(proposal);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate proposal buffer");
+        return DNAC_BFT_ERROR_OUT_OF_MEMORY;
+    }
 
-    int rc = dnac_bft_proposal_serialize(&proposal, buffer + DNAC_TCP_FRAME_HEADER_SIZE,
-                                         sizeof(buffer) - DNAC_TCP_FRAME_HEADER_SIZE,
+    size_t written;
+    int rc = dnac_bft_proposal_serialize(proposal, buffer + DNAC_TCP_FRAME_HEADER_SIZE,
+                                         buf_size - DNAC_TCP_FRAME_HEADER_SIZE,
                                          &written);
+    free(proposal);
+
     if (rc != DNAC_BFT_SUCCESS) {
+        free(buffer);
         QGP_LOG_ERROR(LOG_TAG, "Failed to serialize proposal");
         return rc;
     }
@@ -783,8 +1057,43 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
     dnac_tcp_write_frame_header(buffer, BFT_MSG_PROPOSAL, (uint32_t)written);
 
     int sent = bft_peer_broadcast(buffer, DNAC_TCP_FRAME_HEADER_SIZE + written, -1);
-    QGP_LOG_INFO(LOG_TAG, "Proposal broadcast to %d peers (round %lu, %d nullifiers)",
-                sent, (unsigned long)ctx->current_round, nullifier_count);
+    free(buffer);
+
+    QGP_LOG_INFO(LOG_TAG, "Proposal broadcast to %d peers (round %lu, %d nullifiers, tx_len=%u)",
+                sent, (unsigned long)ctx->current_round, nullifier_count, tx_len);
+
+    /* v0.8.0: Leader must also broadcast its PREVOTE so followers can reach
+     * unanimous quorum (e.g., genesis requires n_witnesses approvals).
+     * Without this, followers only see PREVOTEs from other followers and
+     * can never reach N/N quorum. */
+    {
+        dnac_bft_vote_msg_t leader_prevote;
+        memset(&leader_prevote, 0, sizeof(leader_prevote));
+        leader_prevote.header.version = DNAC_BFT_PROTOCOL_VERSION;
+        leader_prevote.header.type = BFT_MSG_PREVOTE;
+        leader_prevote.header.round = ctx->current_round;
+        leader_prevote.header.view = ctx->round_state.view;
+        memcpy(leader_prevote.header.sender_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
+        leader_prevote.header.timestamp = time(NULL);
+        leader_prevote.header.nonce = generate_nonce();
+        memcpy(leader_prevote.tx_hash, tx_hash, DNAC_TX_HASH_SIZE);
+        leader_prevote.vote = BFT_VOTE_APPROVE;
+
+        uint8_t vote_sign_data[256];
+        size_t vote_sign_len;
+        if (bft_build_vote_sign_data(&leader_prevote, vote_sign_data, &vote_sign_len) == 0 &&
+            bft_sign_message(ctx, leader_prevote.signature, vote_sign_data, vote_sign_len) == 0) {
+
+            uint8_t vote_buf[8192];
+            size_t vote_written;
+            if (dnac_bft_vote_serialize(&leader_prevote, vote_buf + DNAC_TCP_FRAME_HEADER_SIZE,
+                                         sizeof(vote_buf) - DNAC_TCP_FRAME_HEADER_SIZE,
+                                         &vote_written) == DNAC_BFT_SUCCESS) {
+                dnac_tcp_write_frame_header(vote_buf, BFT_MSG_PREVOTE, (uint32_t)vote_written);
+                bft_peer_broadcast(vote_buf, DNAC_TCP_FRAME_HEADER_SIZE + vote_written, -1);
+            }
+        }
+    }
 
     return DNAC_BFT_SUCCESS;
 }
@@ -826,11 +1135,22 @@ int dnac_bft_handle_proposal(dnac_bft_context_t *ctx,
 
     /* v0.4.0: Check ALL nullifiers locally for double-spend */
     bool double_spend = false;
+    char reject_reason[256] = {0};
     for (int i = 0; i < proposal->nullifier_count; i++) {
         if (nullifier_exists(ctx, proposal->nullifiers[i])) {
             QGP_LOG_WARN(LOG_TAG, "Nullifier %d already spent", i);
             double_spend = true;
+            strncpy(reject_reason, "Nullifier already spent", sizeof(reject_reason) - 1);
             break;
+        }
+    }
+
+    /* v0.8.0: Validate transaction inputs against UTXO set */
+    if (!double_spend && proposal->tx_len > 0) {
+        if (bft_validate_utxo(ctx, proposal->tx_data, proposal->tx_len,
+                               proposal->tx_type, reject_reason) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "UTXO validation failed: %s", reject_reason);
+            double_spend = true;
         }
     }
 
@@ -854,6 +1174,14 @@ int dnac_bft_handle_proposal(dnac_bft_context_t *ctx,
         memcpy(ctx->round_state.nullifiers[i], proposal->nullifiers[i], DNAC_NULLIFIER_SIZE);
     }
 
+    /* v0.8.0: Store full TX data from proposal */
+    if (proposal->tx_len > 0 && proposal->tx_len <= DNAC_BFT_MAX_TX_SIZE) {
+        memcpy(ctx->round_state.tx_data, proposal->tx_data, proposal->tx_len);
+        ctx->round_state.tx_len = proposal->tx_len;
+    } else {
+        ctx->round_state.tx_len = 0;
+    }
+
     memcpy(ctx->round_state.client_pubkey, proposal->sender_pubkey, DNAC_PUBKEY_SIZE);
     memcpy(ctx->round_state.client_signature, proposal->client_signature, DNAC_SIGNATURE_SIZE);
     ctx->round_state.fee_amount = proposal->fee_amount;
@@ -875,7 +1203,8 @@ int dnac_bft_handle_proposal(dnac_bft_context_t *ctx,
     vote.vote = double_spend ? BFT_VOTE_REJECT : BFT_VOTE_APPROVE;
 
     if (double_spend) {
-        strncpy(vote.reason, "Nullifier already spent", sizeof(vote.reason) - 1);
+        strncpy(vote.reason, reject_reason[0] ? reject_reason : "Validation failed",
+                sizeof(vote.reason) - 1);
     }
 
     /* Sign PREVOTE with Dilithium5 (Gap 3: v0.6.0) */
@@ -1089,6 +1418,14 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
 
         /* Create next phase message */
         if (next_msg_type == BFT_MSG_PRECOMMIT) {
+            /* v0.8.0: Count our own PRECOMMIT before broadcasting, same pattern as
+             * PREVOTE in start_round/handle_proposal. Without this, nodes can only
+             * count N-1 PRECOMMITs and genesis (requiring N/N) gets stuck. */
+            memcpy(ctx->round_state.precommits[0].voter_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
+            ctx->round_state.precommits[0].vote = BFT_VOTE_APPROVE;
+            ctx->round_state.precommit_count = 1;
+            ctx->round_state.precommit_approve_count = 1;
+
             /* Send PRECOMMIT */
             dnac_bft_vote_msg_t precommit;
             memset(&precommit, 0, sizeof(precommit));
@@ -1158,6 +1495,15 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
                 } else {
                     QGP_LOG_WARN(LOG_TAG, "No genesis_record_cb set - genesis not recorded");
                 }
+
+                /* v0.8.0: Populate UTXO set from genesis outputs */
+                if (bft_update_utxo_set(ctx,
+                                         ctx->round_state.tx_data,
+                                         ctx->round_state.tx_len,
+                                         ctx->round_state.tx_hash,
+                                         DNAC_TX_GENESIS) != 0) {
+                    QGP_LOG_ERROR(LOG_TAG, "Failed to populate genesis UTXO set");
+                }
             } else {
                 /* v0.4.0: COMMIT phase - add ALL nullifiers to database
                  * v0.6.0: Wrapped in transaction for atomicity (Gap 11) */
@@ -1181,6 +1527,18 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
                         QGP_LOG_ERROR(LOG_TAG, "Failed to add nullifier %d", i);
                         any_failed = true;
                         break;
+                    }
+                }
+
+                /* v0.8.0: Update UTXO set within the same atomic transaction */
+                if (!any_failed) {
+                    if (bft_update_utxo_set(ctx,
+                                             ctx->round_state.tx_data,
+                                             ctx->round_state.tx_len,
+                                             ctx->round_state.tx_hash,
+                                             ctx->round_state.tx_type) != 0) {
+                        QGP_LOG_ERROR(LOG_TAG, "Failed to update UTXO set on COMMIT");
+                        any_failed = true;
                     }
                 }
 
@@ -1221,24 +1579,39 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
             for (int i = 0; i < saved_nullifier_count; i++) {
                 memcpy(saved_nullifiers[i], ctx->round_state.nullifiers[i], DNAC_NULLIFIER_SIZE);
             }
+            /* v0.8.0: Save tx_hash for forward callback after free */
+            uint8_t saved_tx_hash[DNAC_TX_HASH_SIZE];
+            memcpy(saved_tx_hash, ctx->round_state.tx_hash, DNAC_TX_HASH_SIZE);
 
-            /* Send COMMIT message with ALL nullifiers */
-            dnac_bft_commit_t commit;
-            memset(&commit, 0, sizeof(commit));
-
-            commit.header.version = DNAC_BFT_PROTOCOL_VERSION;
-            commit.header.type = BFT_MSG_COMMIT;
-            commit.header.round = ctx->round_state.round;
-            commit.header.view = ctx->round_state.view;
-            memcpy(commit.header.sender_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
-            commit.header.timestamp = time(NULL);
-            commit.header.nonce = generate_nonce();  /* Gap 23-24: replay prevention */
-            memcpy(commit.tx_hash, ctx->round_state.tx_hash, DNAC_TX_HASH_SIZE);
-            commit.nullifier_count = saved_nullifier_count;
-            for (int i = 0; i < saved_nullifier_count; i++) {
-                memcpy(commit.nullifiers[i], saved_nullifiers[i], DNAC_NULLIFIER_SIZE);
+            /* v0.8.0: Heap-allocate commit (contains tx_data) */
+            dnac_bft_commit_t *commit = calloc(1, sizeof(dnac_bft_commit_t));
+            if (!commit) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to allocate commit message");
+                pthread_mutex_unlock(&ctx->mutex);
+                return DNAC_BFT_ERROR_OUT_OF_MEMORY;
             }
-            commit.n_precommits = ctx->round_state.precommit_count;
+
+            commit->header.version = DNAC_BFT_PROTOCOL_VERSION;
+            commit->header.type = BFT_MSG_COMMIT;
+            commit->header.round = ctx->round_state.round;
+            commit->header.view = ctx->round_state.view;
+            memcpy(commit->header.sender_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
+            commit->header.timestamp = time(NULL);
+            commit->header.nonce = generate_nonce();  /* Gap 23-24: replay prevention */
+            memcpy(commit->tx_hash, ctx->round_state.tx_hash, DNAC_TX_HASH_SIZE);
+            commit->nullifier_count = saved_nullifier_count;
+            for (int i = 0; i < saved_nullifier_count; i++) {
+                memcpy(commit->nullifiers[i], saved_nullifiers[i], DNAC_NULLIFIER_SIZE);
+            }
+
+            /* v0.8.0: Include tx_type and full TX data in commit */
+            commit->tx_type = ctx->round_state.tx_type;
+            if (ctx->round_state.tx_len > 0 && ctx->round_state.tx_len <= DNAC_BFT_MAX_TX_SIZE) {
+                memcpy(commit->tx_data, ctx->round_state.tx_data, ctx->round_state.tx_len);
+                commit->tx_len = ctx->round_state.tx_len;
+            }
+
+            commit->n_precommits = ctx->round_state.precommit_count;
 
             /* Reset round state */
             ctx->round_state.phase = BFT_PHASE_IDLE;
@@ -1246,25 +1619,30 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
 
             pthread_mutex_unlock(&ctx->mutex);
 
-            uint8_t buffer[16384];
-            size_t written;
-
-            if (dnac_bft_commit_serialize(&commit, buffer + DNAC_TCP_FRAME_HEADER_SIZE,
-                                          sizeof(buffer) - DNAC_TCP_FRAME_HEADER_SIZE,
-                                          &written) == DNAC_BFT_SUCCESS) {
-                dnac_tcp_write_frame_header(buffer, BFT_MSG_COMMIT, (uint32_t)written);
-                /* Gap 15 Fix (v0.6.0): Log broadcast failures */
-                int sent = bft_peer_broadcast(buffer, DNAC_TCP_FRAME_HEADER_SIZE + written, -1);
-                if (sent < (int)ctx->roster.n_witnesses - 1) {
-                    QGP_LOG_WARN(LOG_TAG, "COMMIT broadcast only reached %d/%u peers",
-                                 sent, ctx->roster.n_witnesses - 1);
+            /* v0.8.0: Heap-allocate buffer for commit with embedded TX data */
+            size_t commit_buf_size = DNAC_BFT_MAX_TX_SIZE + 16384 + DNAC_TCP_FRAME_HEADER_SIZE;
+            uint8_t *buffer = malloc(commit_buf_size);
+            if (buffer) {
+                size_t written;
+                if (dnac_bft_commit_serialize(commit, buffer + DNAC_TCP_FRAME_HEADER_SIZE,
+                                              commit_buf_size - DNAC_TCP_FRAME_HEADER_SIZE,
+                                              &written) == DNAC_BFT_SUCCESS) {
+                    dnac_tcp_write_frame_header(buffer, BFT_MSG_COMMIT, (uint32_t)written);
+                    /* Gap 15 Fix (v0.6.0): Log broadcast failures */
+                    int sent = bft_peer_broadcast(buffer, DNAC_TCP_FRAME_HEADER_SIZE + written, -1);
+                    if (sent < (int)ctx->roster.n_witnesses - 1) {
+                        QGP_LOG_WARN(LOG_TAG, "COMMIT broadcast only reached %d/%u peers",
+                                     sent, ctx->roster.n_witnesses - 1);
+                    }
                 }
+                free(buffer);
             }
+            free(commit);
 
             /* Send response to client (if we are leader and client connected directly) */
             if (!is_forwarded && client_fd >= 0) {
                 QGP_LOG_INFO(LOG_TAG, "Sending APPROVED response to client (fd=%d)", client_fd);
-                send_client_response(ctx,client_fd, 0 /* APPROVED */, NULL);
+                send_client_response(ctx, client_fd, 0 /* APPROVED */, NULL);
             }
 
             /* Check if we have a pending forward for this tx_hash and complete it.
@@ -1273,7 +1651,7 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
              * our waiting client.
              */
             if (ctx->complete_forward_cb) {
-                ctx->complete_forward_cb(commit.tx_hash, ctx->my_id, ctx->my_pubkey);
+                ctx->complete_forward_cb(saved_tx_hash, ctx->my_id, ctx->my_pubkey);
             }
 
             return DNAC_BFT_SUCCESS;
@@ -1317,6 +1695,18 @@ int dnac_bft_handle_commit(dnac_bft_context_t *ctx,
             QGP_LOG_ERROR(LOG_TAG, "Failed to add nullifier %d from COMMIT", i);
             any_failed = true;
             break;
+        }
+    }
+
+    /* v0.8.0: Update UTXO set within the same atomic transaction */
+    if (!any_failed) {
+        if (bft_update_utxo_set(ctx,
+                                 commit->tx_data,
+                                 commit->tx_len,
+                                 commit->tx_hash,
+                                 commit->tx_type) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to update UTXO set from remote COMMIT");
+            any_failed = true;
         }
     }
 

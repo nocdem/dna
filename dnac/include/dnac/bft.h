@@ -196,6 +196,7 @@ typedef struct {
  *
  * v0.4.0: Now carries multiple nullifiers to prevent multi-input double-spend.
  * v0.5.0: Added tx_type for genesis (requires unanimous 3-of-3 quorum).
+ * v0.8.0: Added tx_data/tx_len so validators can verify full transaction.
  */
 typedef struct {
     dnac_bft_msg_header_t header;
@@ -203,6 +204,8 @@ typedef struct {
     uint8_t nullifiers[DNAC_TX_MAX_INPUTS][DNAC_NULLIFIER_SIZE]; /**< All nullifiers being spent */
     uint8_t nullifier_count;                        /**< Number of nullifiers */
     uint8_t tx_type;                                /**< Transaction type (0=GENESIS, 1=SPEND, 2=BURN) */
+    uint8_t tx_data[DNAC_BFT_MAX_TX_SIZE];          /**< v0.8.0: Full serialized transaction */
+    uint32_t tx_len;                                /**< v0.8.0: TX data length */
     uint8_t sender_pubkey[DNAC_PUBKEY_SIZE];        /**< Client's public key */
     uint8_t client_signature[DNAC_SIGNATURE_SIZE];  /**< Client's signature on tx */
     uint64_t fee_amount;                            /**< Fee amount */
@@ -224,12 +227,16 @@ typedef struct {
  * @brief Commit message
  *
  * v0.4.0: Now carries multiple nullifiers to commit all inputs atomically.
+ * v0.8.0: Added tx_data/tx_len so remote witnesses can update UTXO set on COMMIT.
  */
 typedef struct {
     dnac_bft_msg_header_t header;
     uint8_t tx_hash[DNAC_TX_HASH_SIZE];             /**< Transaction hash */
     uint8_t nullifiers[DNAC_TX_MAX_INPUTS][DNAC_NULLIFIER_SIZE]; /**< All nullifiers to commit */
     uint8_t nullifier_count;                        /**< Number of nullifiers */
+    uint8_t tx_type;                                /**< v0.8.0: Transaction type */
+    uint8_t tx_data[DNAC_BFT_MAX_TX_SIZE];          /**< v0.8.0: Full serialized transaction */
+    uint32_t tx_len;                                /**< v0.8.0: TX data length */
     uint32_t n_precommits;                          /**< Number of precommit proofs */
     uint8_t signature[DNAC_SIGNATURE_SIZE];         /**< Sender's signature */
 } dnac_bft_commit_t;
@@ -301,6 +308,7 @@ typedef struct {
  *
  * v0.4.0: Now tracks multiple nullifiers for multi-input transactions.
  * v0.5.0: Added tx_type for genesis handling (requires unanimous quorum).
+ * v0.8.0: Added tx_data/tx_len for full TX validation on COMMIT.
  */
 typedef struct {
     uint64_t round;                                 /**< Round number */
@@ -310,6 +318,8 @@ typedef struct {
     uint8_t nullifiers[DNAC_TX_MAX_INPUTS][DNAC_NULLIFIER_SIZE]; /**< All nullifiers being spent */
     uint8_t nullifier_count;                        /**< Number of nullifiers */
     uint8_t tx_type;                                /**< Transaction type (v0.5.0: for genesis 3-of-3) */
+    uint8_t tx_data[DNAC_BFT_MAX_TX_SIZE];          /**< v0.8.0: Full serialized transaction */
+    uint32_t tx_len;                                /**< v0.8.0: TX data length */
 
     /* Votes collected */
     dnac_bft_vote_record_t prevotes[DNAC_BFT_MAX_WITNESSES];
@@ -393,6 +403,55 @@ typedef int (*dnac_bft_ledger_add_fn)(const uint8_t *tx_hash, uint8_t tx_type,
 typedef int (*dnac_bft_utxo_mark_spent_fn)(const uint8_t *commitment_hash, uint64_t spent_epoch);
 
 /**
+ * @brief v0.8.0: UTXO set lookup callback for transaction validation
+ *
+ * Called during consensus to verify each input references a legitimate UTXO.
+ * @param nullifier The nullifier to look up (DNAC_NULLIFIER_SIZE bytes)
+ * @param amount_out Output: amount stored in this UTXO (can be NULL)
+ * @param owner_out Output: owner fingerprint (DNAC_FINGERPRINT_SIZE buffer, can be NULL)
+ * @return 0 if found, -1 if not found
+ */
+typedef int (*dnac_bft_utxo_lookup_fn)(const uint8_t *nullifier,
+                                        uint64_t *amount_out,
+                                        char *owner_out);
+
+/**
+ * @brief v0.8.0: UTXO set add callback for adding new outputs on COMMIT
+ *
+ * @param nullifier Derived nullifier for the new output
+ * @param owner Owner's fingerprint
+ * @param amount Amount in smallest units
+ * @param tx_hash Creating transaction hash
+ * @param index Output index within the creating TX
+ * @param block_height Block height (0 for genesis)
+ * @return 0 on success, -1 on error
+ */
+typedef int (*dnac_bft_utxo_add_fn)(const uint8_t *nullifier,
+                                      const char *owner,
+                                      uint64_t amount,
+                                      const uint8_t *tx_hash,
+                                      uint32_t index,
+                                      uint64_t block_height);
+
+/**
+ * @brief v0.8.0: UTXO set remove callback for removing spent inputs on COMMIT
+ *
+ * @param nullifier Nullifier of the spent UTXO
+ * @return 0 on success, -1 if not found
+ */
+typedef int (*dnac_bft_utxo_remove_fn)(const uint8_t *nullifier);
+
+/**
+ * @brief v0.8.0: UTXO set genesis callback for populating initial UTXO set
+ *
+ * @param genesis_tx The genesis transaction
+ * @param tx_hash The genesis transaction hash
+ * @return 0 on success, -1 on error
+ */
+typedef int (*dnac_bft_utxo_genesis_fn)(const dnac_transaction_t *genesis_tx,
+                                         const uint8_t *tx_hash);
+
+/**
  * @brief v0.6.0: Database transaction callbacks (Gap 11)
  *
  * Provides atomicity for multi-nullifier commits.
@@ -446,6 +505,10 @@ typedef struct dnac_bft_context {
     dnac_bft_genesis_record_fn genesis_record_cb;       /**< v0.5.0: Record genesis state */
     dnac_bft_ledger_add_fn ledger_add_cb;               /**< v0.5.0: Add ledger entry */
     dnac_bft_utxo_mark_spent_fn utxo_mark_spent_cb;     /**< v0.5.0: Mark UTXO spent */
+    dnac_bft_utxo_lookup_fn utxo_lookup_cb;             /**< v0.8.0: UTXO set lookup */
+    dnac_bft_utxo_add_fn utxo_add_cb;                   /**< v0.8.0: UTXO set add */
+    dnac_bft_utxo_remove_fn utxo_remove_cb;             /**< v0.8.0: UTXO set remove */
+    dnac_bft_utxo_genesis_fn utxo_genesis_cb;           /**< v0.8.0: UTXO set genesis */
     dnac_bft_db_begin_fn db_begin_cb;                   /**< v0.6.0: Begin transaction (Gap 11) */
     dnac_bft_db_commit_fn db_commit_cb;                 /**< v0.6.0: Commit transaction (Gap 11) */
     dnac_bft_db_rollback_fn db_rollback_cb;             /**< v0.6.0: Rollback transaction (Gap 11) */
@@ -476,6 +539,21 @@ void dnac_bft_set_db_callbacks(dnac_bft_context_t *ctx,
                                 dnac_bft_db_begin_fn begin_cb,
                                 dnac_bft_db_commit_fn commit_cb,
                                 dnac_bft_db_rollback_fn rollback_cb);
+
+/**
+ * @brief Set UTXO set callbacks (v0.8.0)
+ *
+ * These callbacks allow consensus to:
+ * - Verify inputs reference legitimate UTXOs (lookup)
+ * - Add new output UTXOs on COMMIT (add)
+ * - Remove spent UTXOs on COMMIT (remove)
+ * - Populate UTXO set from genesis (genesis)
+ */
+void dnac_bft_set_utxo_callbacks(dnac_bft_context_t *ctx,
+                                   dnac_bft_utxo_lookup_fn lookup_cb,
+                                   dnac_bft_utxo_add_fn add_cb,
+                                   dnac_bft_utxo_remove_fn remove_cb,
+                                   dnac_bft_utxo_genesis_fn genesis_cb);
 
 /* ============================================================================
  * Core BFT Functions
@@ -546,12 +624,15 @@ int dnac_bft_get_quorum(int n_witnesses);
  *
  * v0.4.0: Now accepts array of nullifiers to prevent multi-input double-spend.
  * v0.5.0: Added tx_type for genesis handling (requires unanimous 3-of-3 quorum).
+ * v0.8.0: Added tx_data/tx_len so validators can verify full transaction.
  *
  * @param ctx BFT context
  * @param tx_hash Transaction hash
  * @param nullifiers Array of nullifiers being spent [count][DNAC_NULLIFIER_SIZE]
  * @param nullifier_count Number of nullifiers in array
  * @param tx_type Transaction type (DNAC_TX_GENESIS, DNAC_TX_SPEND, DNAC_TX_BURN)
+ * @param tx_data Full serialized transaction data
+ * @param tx_len Length of serialized transaction
  * @param client_pubkey Client's public key
  * @param client_sig Client's signature
  * @param fee_amount Fee amount
@@ -562,6 +643,8 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
                          const uint8_t nullifiers[][DNAC_NULLIFIER_SIZE],
                          uint8_t nullifier_count,
                          uint8_t tx_type,
+                         const uint8_t *tx_data,
+                         uint32_t tx_len,
                          const uint8_t *client_pubkey,
                          const uint8_t *client_sig,
                          uint64_t fee_amount);

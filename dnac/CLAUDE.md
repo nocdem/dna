@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-01-24 | **Status:** DESIGN | **Version:** v0.7.1
+**Last Updated:** 2026-02-07 | **Status:** DESIGN | **Version:** v0.8.0
 
 ---
 
@@ -145,7 +145,26 @@ OUTPUT:
 - STATUS: [SUCCESS/FAILED]
 ```
 
-### CHECKPOINT 7: VERSION UPDATE
+### CHECKPOINT 7: MEMORY UPDATE
+**EVERY session MUST update memory files before ending.**
+
+**Memory directory:** `/home/nocdem/.claude/projects/-opt-dnac/memory/`
+
+**Procedure:**
+1. Update `MEMORY.md` with current project state, lessons learned, mistakes made
+2. Update or create topic files (e.g., `phase1-status.md`) for detailed status
+3. Record any new infrastructure knowledge, debugging insights, or gotchas
+4. Remove outdated information
+
+**What to record:**
+- What was done (and whether it was actually tested)
+- What failed and why
+- Infrastructure details discovered (IPs, users, paths, configs)
+- Mistakes to avoid repeating
+
+---
+
+### CHECKPOINT 8: VERSION UPDATE
 **EVERY successful build that will be pushed MUST increment the version.**
 
 **Version File:** `include/dnac/version.h`
@@ -336,13 +355,31 @@ git push origin main
 
 **Consensus Phases:** PROPOSE → PREVOTE → PRECOMMIT → COMMIT
 
-**Witness Nodes:**
-- 192.168.0.195:4200
-- 192.168.0.196:4200
-- 192.168.0.199:4200
+**Witness Nodes (SSH as `nocdem`):**
+- 192.168.0.195:4200 (hostname: chat1)
+- 192.168.0.196:4200 (hostname: treasury)
+- 192.168.0.199:4200 (hostname: cpunkroot2)
 
-**Test Machine:**
-- root@192.168.0.5 (for remote send/receive testing)
+**Test Machines (SSH as `root`):**
+- 192.168.0.50 (hostname: alice)
+- 192.168.0.51 (hostname: bob)
+- 192.168.0.52 (hostname: charlie)
+
+**Build Machine:**
+- 192.168.0.198 (this machine, user: nocdem)
+
+**SSH Access:**
+```bash
+# Witnesses
+ssh nocdem@192.168.0.195   # chat1
+ssh nocdem@192.168.0.196   # treasury
+ssh nocdem@192.168.0.199   # cpunkroot2
+
+# Test machines
+ssh root@192.168.0.50      # alice
+ssh root@192.168.0.51      # bob
+ssh root@192.168.0.52      # charlie
+```
 
 ### Version Tracking
 - **Response includes:** `software_version[3]` - [major, minor, patch]

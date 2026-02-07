@@ -112,6 +112,21 @@ int witness_nullifier_init(const char *db_path) {
         "  merkle_root BLOB NOT NULL"
         ");"
 
+        /* v0.8.0: Shared UTXO set for full transaction validation
+         * This is the authoritative UTXO set maintained by all validators.
+         * Every input must reference an existing entry; every committed output
+         * creates a new entry. This prevents counterfeiting (fabricated UTXOs). */
+        "CREATE TABLE IF NOT EXISTS utxo_set ("
+        "  nullifier BLOB(64) PRIMARY KEY,"
+        "  owner_fingerprint TEXT NOT NULL,"
+        "  amount INTEGER NOT NULL,"
+        "  tx_hash BLOB(64) NOT NULL,"
+        "  output_index INTEGER NOT NULL,"
+        "  created_at INTEGER NOT NULL,"
+        "  UNIQUE(tx_hash, output_index)"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_utxo_set_owner ON utxo_set(owner_fingerprint);"
+
         /* v0.7.1: BFT signatures on epoch roots for trust anchoring */
         "CREATE TABLE IF NOT EXISTS epoch_signatures ("
         "  epoch INTEGER NOT NULL,"

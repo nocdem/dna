@@ -36,6 +36,7 @@
 #include "dnac/ledger.h"
 #include "dnac/commitment.h"
 #include "dnac/version.h"
+#include "dnac/utxo_set.h"
 
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
@@ -550,12 +551,14 @@ static void handle_client_spend_request(int client_fd, const uint8_t *data, size
         g_bft_ctx->round_state.is_forwarded = false;
         pthread_mutex_unlock(&g_bft_ctx->mutex);
 
-        /* Start consensus round with ALL nullifiers and tx_type (v0.5.0) */
+        /* Start consensus round with ALL nullifiers, tx_type, and TX data (v0.8.0) */
         rc = dnac_bft_start_round(g_bft_ctx,
                                   request.tx_hash,
                                   nullifiers,
                                   nullifier_count,
                                   tx_type,
+                                  request.tx_data,
+                                  request.tx_len,
                                   request.sender_pubkey,
                                   request.signature,
                                   request.fee_amount);
@@ -931,9 +934,13 @@ static void on_tcp_message(int peer_index, uint8_t msg_type,
 
     switch (type) {
         case BFT_MSG_PROPOSAL: {
-            dnac_bft_proposal_t proposal;
-            if (dnac_bft_proposal_deserialize(data, len, &proposal) == DNAC_BFT_SUCCESS) {
-                dnac_bft_handle_proposal(g_bft_ctx, &proposal);
+            /* v0.8.0: Heap-allocate (proposal now contains tx_data ~65KB) */
+            dnac_bft_proposal_t *proposal = calloc(1, sizeof(dnac_bft_proposal_t));
+            if (proposal) {
+                if (dnac_bft_proposal_deserialize(data, len, proposal) == DNAC_BFT_SUCCESS) {
+                    dnac_bft_handle_proposal(g_bft_ctx, proposal);
+                }
+                free(proposal);
             }
             break;
         }
@@ -948,9 +955,13 @@ static void on_tcp_message(int peer_index, uint8_t msg_type,
         }
 
         case BFT_MSG_COMMIT: {
-            dnac_bft_commit_t commit;
-            if (dnac_bft_commit_deserialize(data, len, &commit) == DNAC_BFT_SUCCESS) {
-                dnac_bft_handle_commit(g_bft_ctx, &commit);
+            /* v0.8.0: Heap-allocate (commit now contains tx_data ~65KB) */
+            dnac_bft_commit_t *commit = calloc(1, sizeof(dnac_bft_commit_t));
+            if (commit) {
+                if (dnac_bft_commit_deserialize(data, len, commit) == DNAC_BFT_SUCCESS) {
+                    dnac_bft_handle_commit(g_bft_ctx, commit);
+                }
+                free(commit);
             }
             break;
         }
@@ -1021,12 +1032,14 @@ static void on_tcp_message(int peer_index, uint8_t msg_type,
                             nullifier_count, fwd_tx_type);
                     fflush(stderr);
 
-                    /* Start consensus round with ALL nullifiers and tx_type (v0.5.0) */
+                    /* Start consensus round with ALL nullifiers, tx_type, and TX data (v0.8.0) */
                     rc = dnac_bft_start_round(g_bft_ctx,
                                               req.tx_hash,
                                               nullifiers,
                                               nullifier_count,
                                               fwd_tx_type,
+                                              req.tx_data,
+                                              req.tx_len,
                                               req.sender_pubkey,
                                               req.client_signature,
                                               req.fee_amount);
@@ -1374,6 +1387,13 @@ int bft_witness_main(int argc, char *argv[]) {
                               witness_db_begin_transaction,
                               witness_db_commit,
                               witness_db_rollback);
+
+    /* v0.8.0: Set UTXO set callbacks for transaction validation and state updates */
+    dnac_bft_set_utxo_callbacks(g_bft_ctx,
+                                 witness_utxo_set_lookup,
+                                 witness_utxo_set_add,
+                                 witness_utxo_set_remove,
+                                 witness_utxo_set_genesis);
 
     /* Create default address if not provided */
     if (!my_address) {

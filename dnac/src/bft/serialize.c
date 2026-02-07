@@ -163,13 +163,15 @@ int dnac_bft_header_deserialize(const uint8_t *buffer, size_t buffer_len,
  * Proposal Serialization
  * ========================================================================== */
 
-/* v0.5.0 Proposal format:
- * header(54) + tx_hash(64) + nullifier_count(1) + nullifiers(count*64) +
- * tx_type(1) + pubkey(2592) + client_sig(4627) + fee(8) + sig(4627)
- * Variable size based on nullifier_count */
-#define BFT_PROPOSAL_BASE_SIZE (BFT_HEADER_SIZE + 64 + 1 + 1 + DNAC_PUBKEY_SIZE + \
+/* v0.8.0 Proposal format:
+ * header(62) + tx_hash(64) + nullifier_count(1) + nullifiers(count*64) +
+ * tx_type(1) + tx_len(4) + tx_data(variable) +
+ * pubkey(2592) + client_sig(4627) + fee(8) + sig(4627)
+ * Variable size based on nullifier_count and tx_len */
+#define BFT_PROPOSAL_BASE_SIZE (BFT_HEADER_SIZE + 64 + 1 + 1 + 4 + DNAC_PUBKEY_SIZE + \
                                 DNAC_SIGNATURE_SIZE + 8 + DNAC_SIGNATURE_SIZE)
-#define BFT_PROPOSAL_MAX_SIZE (BFT_PROPOSAL_BASE_SIZE + DNAC_TX_MAX_INPUTS * 64)
+#define BFT_PROPOSAL_MAX_SIZE (BFT_PROPOSAL_BASE_SIZE + DNAC_TX_MAX_INPUTS * 64 + \
+                                DNAC_BFT_MAX_TX_SIZE)
 
 int dnac_bft_proposal_serialize(const dnac_bft_proposal_t *proposal,
                                 uint8_t *buffer, size_t buffer_len,
@@ -184,9 +186,16 @@ int dnac_bft_proposal_serialize(const dnac_bft_proposal_t *proposal,
         return DNAC_BFT_ERROR_INVALID_MESSAGE;
     }
 
-    size_t nullifier_bytes, required;
+    /* v0.8.0: Validate tx_len */
+    if (proposal->tx_len > DNAC_BFT_MAX_TX_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Proposal tx_len too large: %u", proposal->tx_len);
+        return DNAC_BFT_ERROR_INVALID_MESSAGE;
+    }
+
+    size_t nullifier_bytes, required, tmp;
     if (safe_mul(proposal->nullifier_count, DNAC_NULLIFIER_SIZE, &nullifier_bytes) != 0 ||
-        safe_add(BFT_PROPOSAL_BASE_SIZE, nullifier_bytes, &required) != 0) {
+        safe_add(BFT_PROPOSAL_BASE_SIZE, nullifier_bytes, &tmp) != 0 ||
+        safe_add(tmp, proposal->tx_len, &required) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Integer overflow in proposal size calculation");
         return DNAC_BFT_ERROR_INVALID_MESSAGE;
     }
@@ -214,6 +223,12 @@ int dnac_bft_proposal_serialize(const dnac_bft_proposal_t *proposal,
 
     /* v0.5.0: transaction type for genesis handling */
     write_u8(&p, proposal->tx_type);
+
+    /* v0.8.0: full serialized transaction */
+    write_u32(&p, proposal->tx_len);
+    if (proposal->tx_len > 0) {
+        write_bytes(&p, proposal->tx_data, proposal->tx_len);
+    }
 
     write_bytes(&p, proposal->sender_pubkey, DNAC_PUBKEY_SIZE);
     write_bytes(&p, proposal->client_signature, DNAC_SIGNATURE_SIZE);
@@ -248,14 +263,14 @@ int dnac_bft_proposal_deserialize(const uint8_t *buffer, size_t buffer_len,
         return DNAC_BFT_ERROR_INVALID_MESSAGE;
     }
 
-    /* Verify buffer has enough data for all nullifiers (Gap 8: v0.6.0) */
-    size_t nullifier_bytes, required;
+    /* Verify buffer has enough data for nullifiers (Gap 8: v0.6.0) */
+    size_t nullifier_bytes, required_min, tmp;
     if (safe_mul(proposal->nullifier_count, DNAC_NULLIFIER_SIZE, &nullifier_bytes) != 0 ||
-        safe_add(BFT_PROPOSAL_BASE_SIZE, nullifier_bytes, &required) != 0) {
+        safe_add(BFT_PROPOSAL_BASE_SIZE, nullifier_bytes, &required_min) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Integer overflow in proposal size calculation");
         return DNAC_BFT_ERROR_INVALID_MESSAGE;
     }
-    if (buffer_len < required) {
+    if (buffer_len < required_min) {
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
@@ -265,6 +280,23 @@ int dnac_bft_proposal_deserialize(const uint8_t *buffer, size_t buffer_len,
 
     /* v0.5.0: transaction type for genesis handling */
     proposal->tx_type = read_u8(&p);
+
+    /* v0.8.0: full serialized transaction */
+    proposal->tx_len = read_u32(&p);
+    if (proposal->tx_len > DNAC_BFT_MAX_TX_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Proposal tx_len too large: %u", proposal->tx_len);
+        return DNAC_BFT_ERROR_INVALID_MESSAGE;
+    }
+
+    /* Verify buffer has enough data for tx_data */
+    if (safe_add(required_min, proposal->tx_len, &tmp) != 0 || buffer_len < tmp) {
+        QGP_LOG_ERROR(LOG_TAG, "Buffer too small for proposal tx_data");
+        return DNAC_BFT_ERROR_INVALID_PARAM;
+    }
+
+    if (proposal->tx_len > 0) {
+        read_bytes(&p, proposal->tx_data, proposal->tx_len);
+    }
 
     read_bytes(&p, proposal->sender_pubkey, DNAC_PUBKEY_SIZE);
     read_bytes(&p, proposal->client_signature, DNAC_SIGNATURE_SIZE);
@@ -328,11 +360,11 @@ int dnac_bft_vote_deserialize(const uint8_t *buffer, size_t buffer_len,
  * Commit Serialization
  * ========================================================================== */
 
-/* v0.4.0 Commit format:
- * header(54) + tx_hash(64) + nullifier_count(1) + nullifiers(count*64) +
- * n_precommits(4) + sig(4627)
- * Variable size based on nullifier_count */
-#define BFT_COMMIT_BASE_SIZE (BFT_HEADER_SIZE + 64 + 1 + 4 + DNAC_SIGNATURE_SIZE)
+/* v0.8.0 Commit format:
+ * header(62) + tx_hash(64) + nullifier_count(1) + nullifiers(count*64) +
+ * tx_type(1) + tx_len(4) + tx_data(variable) + n_precommits(4) + sig(4627)
+ * Variable size based on nullifier_count and tx_len */
+#define BFT_COMMIT_BASE_SIZE (BFT_HEADER_SIZE + 64 + 1 + 1 + 4 + 4 + DNAC_SIGNATURE_SIZE)
 
 int dnac_bft_commit_serialize(const dnac_bft_commit_t *commit,
                               uint8_t *buffer, size_t buffer_len,
@@ -347,9 +379,16 @@ int dnac_bft_commit_serialize(const dnac_bft_commit_t *commit,
         return DNAC_BFT_ERROR_INVALID_MESSAGE;
     }
 
-    size_t nullifier_bytes, required;
+    /* v0.8.0: Validate tx_len */
+    if (commit->tx_len > DNAC_BFT_MAX_TX_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Commit tx_len too large: %u", commit->tx_len);
+        return DNAC_BFT_ERROR_INVALID_MESSAGE;
+    }
+
+    size_t nullifier_bytes, required, tmp;
     if (safe_mul(commit->nullifier_count, DNAC_NULLIFIER_SIZE, &nullifier_bytes) != 0 ||
-        safe_add(BFT_COMMIT_BASE_SIZE, nullifier_bytes, &required) != 0) {
+        safe_add(BFT_COMMIT_BASE_SIZE, nullifier_bytes, &tmp) != 0 ||
+        safe_add(tmp, commit->tx_len, &required) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Integer overflow in commit size calculation");
         return DNAC_BFT_ERROR_INVALID_MESSAGE;
     }
@@ -371,6 +410,13 @@ int dnac_bft_commit_serialize(const dnac_bft_commit_t *commit,
     write_u8(&p, commit->nullifier_count);
     for (int i = 0; i < commit->nullifier_count; i++) {
         write_bytes(&p, commit->nullifiers[i], DNAC_NULLIFIER_SIZE);
+    }
+
+    /* v0.8.0: tx_type and full serialized transaction */
+    write_u8(&p, commit->tx_type);
+    write_u32(&p, commit->tx_len);
+    if (commit->tx_len > 0) {
+        write_bytes(&p, commit->tx_data, commit->tx_len);
     }
 
     write_u32(&p, commit->n_precommits);
@@ -402,18 +448,36 @@ int dnac_bft_commit_deserialize(const uint8_t *buffer, size_t buffer_len,
     }
 
     /* Verify buffer has enough data (Gap 8: v0.6.0) */
-    size_t nullifier_bytes, required;
+    size_t nullifier_bytes, required_min, tmp;
     if (safe_mul(commit->nullifier_count, DNAC_NULLIFIER_SIZE, &nullifier_bytes) != 0 ||
-        safe_add(BFT_COMMIT_BASE_SIZE, nullifier_bytes, &required) != 0) {
+        safe_add(BFT_COMMIT_BASE_SIZE, nullifier_bytes, &required_min) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Integer overflow in commit size calculation");
         return DNAC_BFT_ERROR_INVALID_MESSAGE;
     }
-    if (buffer_len < required) {
+    if (buffer_len < required_min) {
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
     for (int i = 0; i < commit->nullifier_count; i++) {
         read_bytes(&p, commit->nullifiers[i], DNAC_NULLIFIER_SIZE);
+    }
+
+    /* v0.8.0: tx_type and full serialized transaction */
+    commit->tx_type = read_u8(&p);
+    commit->tx_len = read_u32(&p);
+    if (commit->tx_len > DNAC_BFT_MAX_TX_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Commit tx_len too large: %u", commit->tx_len);
+        return DNAC_BFT_ERROR_INVALID_MESSAGE;
+    }
+
+    /* Verify buffer has enough data for tx_data */
+    if (safe_add(required_min, commit->tx_len, &tmp) != 0 || buffer_len < tmp) {
+        QGP_LOG_ERROR(LOG_TAG, "Buffer too small for commit tx_data");
+        return DNAC_BFT_ERROR_INVALID_PARAM;
+    }
+
+    if (commit->tx_len > 0) {
+        read_bytes(&p, commit->tx_data, commit->tx_len);
     }
 
     commit->n_precommits = read_u32(&p);

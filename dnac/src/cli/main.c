@@ -15,6 +15,7 @@
 #include <getopt.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <unistd.h>
 
 /* Global options */
 static char g_data_dir[512] = "";
@@ -182,6 +183,13 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Error: Failed to initialize DNAC\n");
         dna_engine_destroy(engine);
         return 1;
+    }
+
+    /* Wait for DHT connection (needed for send/sync/recover) */
+    extern int dna_engine_is_dht_connected(dna_engine_t *engine);
+    for (int i = 0; i < 100; i++) {  /* up to 10 seconds */
+        if (dna_engine_is_dht_connected(engine)) break;
+        usleep(100000);  /* 100ms */
     }
 
     int result = 0;

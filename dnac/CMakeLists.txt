@@ -93,6 +93,7 @@ set(DNAC_SOURCES
     src/transaction/serialize.c
     src/transaction/verify.c
     src/transaction/genesis.c
+    src/transaction/nullifier.c
 
     # Nodus
     src/nodus/client.c
@@ -196,6 +197,7 @@ if(DNAC_BUILD_WITNESS)
         src/witness/utxo_tree.c
         src/witness/bft_main.c
         src/witness/forward.c
+        src/witness/utxo_set.c
     )
 
     add_executable(dnac-witness ${DNAC_WITNESS_SOURCES})
