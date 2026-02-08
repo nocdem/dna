@@ -1,6 +1,6 @@
 # DNAC - Post-Quantum Zero-Knowledge Cash over DHT
 
-**Version:** v0.7.1 | **Protocol:** v1 (Transparent Amounts)
+**Version:** v0.8.1 | **Protocol:** v1 (Transparent Amounts)
 
 DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger](https://github.com/nocdem/dna-messenger).
 
@@ -17,6 +17,9 @@ DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger]
 - **Replay Prevention** - Nonce and timestamp-based replay attack prevention (v0.6.0)
 - **Merkle Proofs** - Transaction inclusion proofs via Merkle tree (v0.7.0)
 - **BFT-Signed Epochs** - Epoch roots signed by BFT consensus (v0.7.1)
+- **Shared UTXO Set** - Validators maintain shared UTXO state, preventing counterfeiting (v0.8.0)
+- **Cross-Identity Sends** - Full TX data through BFT consensus for multi-party transfers (v0.8.0)
+- **Fee Burn Model** - Fees burned (removed from circulation) instead of sent to witnesses (v0.8.1)
 - **Genesis System** - Unanimous 3-of-3 witness authorization for token creation (v0.5.0)
 
 ## Protocol Versions
@@ -126,7 +129,7 @@ DNAC TRANSACTION v1:
 ├─────────────────────────────────────────────────────────────┤
 │ OUTPUTS: recipient_fingerprint[64] + amount (plaintext)     │
 ├─────────────────────────────────────────────────────────────┤
-│ BALANCE: sum(inputs) == sum(outputs)                        │
+│ BALANCE: sum(inputs) >= sum(outputs), difference = burned fee│
 ├─────────────────────────────────────────────────────────────┤
 │ WITNESS ATTESTATIONS (2+ required): Dilithium5 signatures   │
 ├─────────────────────────────────────────────────────────────┤
@@ -181,12 +184,14 @@ All DHT data is stored permanently:
 - **Nullifiers**: SHA3-512 hash prevents UTXO tracking
 - **Linkability Prevention**: Nullifiers prevent transaction graph analysis
 - **Double-Spend Prevention**: 2-of-3 witness attestation required
+- **UTXO Validation**: Witnesses verify UTXO legitimacy before voting (v0.8.0)
+- **Fee Burn**: Transaction fees are permanently removed from circulation (v0.8.1)
 
 ## Status
 
-**Development Phase** - v0.7.1. Not for production use.
+**Development Phase** - v0.8.1. Not for production use.
 
-### Implemented (v0.7.1)
+### Implemented (v0.8.1)
 
 - [x] Core wallet functionality (UTXO management, balance tracking)
 - [x] Send/receive transactions via DHT
@@ -206,6 +211,10 @@ All DHT data is stored permanently:
 - [x] Chain synchronization infrastructure (v0.7.0)
 - [x] Ledger confirmation tracking (v0.7.0)
 - [x] BFT-anchored epoch roots (v0.7.1)
+- [x] Shared UTXO set — validators verify UTXO legitimacy before consensus (v0.8.0)
+- [x] Cross-identity sends with full TX data through BFT (v0.8.0)
+- [x] Fee burn model — fees permanently removed from circulation (v0.8.1)
+- [x] Genesis TX verification fix (v0.8.1)
 
 ### Tested
 
@@ -217,6 +226,7 @@ All DHT data is stored permanently:
 - [x] Witness mesh reconnection
 - [x] Security gap fixes (18 test cases in test_gaps.c)
 - [x] Cross-machine send/receive (test_remote.c)
+- [x] Cross-identity supply invariant (4 identities, 10000 supply = 9995.5 UTXOs + 4.5 burned)
 
 ### Deferred to v2
 
