@@ -15,6 +15,7 @@
 #include "dht/core/dht_context.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_types.h"
+#include "dnac/epoch.h"
 
 /* Witness fingerprints */
 static const char *WITNESSES[] = {
@@ -134,7 +135,7 @@ int main(int argc, char *argv[]) {
     printf("Check Witness Epoch Announcements\n");
     printf("==================================\n");
     printf("Data dir: %s\n", data_dir);
-    printf("Current epoch: %lu\n", (unsigned long)(time(NULL) / 3600));
+    printf("Current epoch: %lu\n", (unsigned long)(time(NULL) / DNAC_EPOCH_DURATION_SEC));
     printf("\n");
 
     /* Create engine */

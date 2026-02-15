@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-02-07 | **Status:** DESIGN | **Version:** v0.8.0
+**Last Updated:** 2026-02-07 | **Status:** DESIGN | **Version:** v0.10.0
 
 ---
 
@@ -44,6 +44,30 @@ Awaiting new command.
 
 ---
 
+## WORKFLOW ORCHESTRATION (Active During All Checkpoints)
+
+**1. No Workarounds — EVER**
+- Find root causes. Fix the actual bug. No temporary fixes.
+- No "run it from a different machine". No hardcoding values instead of writing proper accessors.
+- This is a blockchain system — workarounds break things.
+- When fixing a bug in one file, fix ALL instances in ALL files. Don't leave copies of the same bug and call them "cosmetic".
+
+**2. Self-Improvement Loop**
+- After ANY correction from the user: update memory files with the pattern
+- Write rules for yourself that prevent the same mistake
+- Review memory at session start
+
+**3. Verification Before Done**
+- Never mark a task complete without proving it works
+- "It compiles" is NOT "it works"
+- Run tests, check logs, demonstrate correctness
+
+**4. No Laziness**
+- Senior developer standards at all times
+- Minimal impact — changes should only touch what's necessary
+
+---
+
 ## FORBIDDEN ACTIONS
 
 These actions are NEVER permitted without explicit request:
@@ -54,6 +78,7 @@ These actions are NEVER permitted without explicit request:
 - Explaining what "might" be wrong
 - Assuming anything about the environment
 - Using tools before CHECKPOINT 5
+- Using workarounds instead of fixing root causes
 
 ---
 
@@ -168,7 +193,7 @@ OUTPUT:
 **EVERY successful build that will be pushed MUST increment the version.**
 
 **Version File:** `include/dnac/version.h`
-**Current:** v0.7.1
+**Current:** v0.9.0
 
 **Which Number to Bump:**
 - **PATCH** (0.1.X): Bug fixes, small features

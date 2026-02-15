@@ -12,6 +12,7 @@
 #include "dnac/witness.h"
 #include "dnac/genesis.h"
 #include "dnac/ledger.h"
+#include "dnac/zone.h"
 #include <sqlite3.h>
 #include <string.h>
 #include <time.h>
@@ -22,6 +23,15 @@
 
 /* Shared database handle - used by ledger.c and utxo_tree.c */
 sqlite3 *nullifier_db = NULL;
+
+/* v0.10.0: Get DB handle from zone user_data, falling back to global */
+static inline sqlite3 *get_db(void *user_data) {
+    if (user_data) {
+        dnac_zone_t *zone = (dnac_zone_t *)user_data;
+        if (zone->db) return zone->db;
+    }
+    return nullifier_db;
+}
 
 int witness_nullifier_init(const char *db_path) {
     if (nullifier_db) {
@@ -135,7 +145,28 @@ int witness_nullifier_init(const char *db_path) {
         "  timestamp INTEGER NOT NULL,"
         "  PRIMARY KEY (epoch, signer_id)"
         ");"
-        "CREATE INDEX IF NOT EXISTS idx_epoch_sigs_epoch ON epoch_signatures(epoch);";
+        "CREATE INDEX IF NOT EXISTS idx_epoch_sigs_epoch ON epoch_signatures(epoch);"
+
+        /* v0.9.0: Block chain structure */
+        "CREATE TABLE IF NOT EXISTS blocks ("
+        "  block_height INTEGER PRIMARY KEY,"
+        "  prev_block_hash BLOB(64) NOT NULL,"
+        "  state_root BLOB(64) NOT NULL,"
+        "  tx_hash BLOB(64) NOT NULL,"
+        "  tx_count INTEGER NOT NULL DEFAULT 1,"
+        "  epoch INTEGER NOT NULL,"
+        "  timestamp INTEGER NOT NULL,"
+        "  proposer_id BLOB(32) NOT NULL,"
+        "  block_hash BLOB(64) NOT NULL UNIQUE"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_blocks_hash ON blocks(block_hash);"
+        "CREATE INDEX IF NOT EXISTS idx_blocks_epoch ON blocks(epoch);"
+
+        /* v0.10.0: Zone metadata (chain_id, zone name, etc.) */
+        "CREATE TABLE IF NOT EXISTS zone_metadata ("
+        "  key TEXT PRIMARY KEY,"
+        "  value BLOB NOT NULL"
+        ");";
 
     char *err_msg = NULL;
     rc = sqlite3_exec(nullifier_db, schema, NULL, NULL, &err_msg);
@@ -164,11 +195,12 @@ void witness_nullifier_shutdown(void) {
  * These provide atomicity for multi-nullifier commits
  * ========================================================================== */
 
-int witness_db_begin_transaction(void) {
-    if (!nullifier_db) return -1;
+int witness_db_begin_transaction(void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db) return -1;
 
     char *err = NULL;
-    int rc = sqlite3_exec(nullifier_db, "BEGIN TRANSACTION", NULL, NULL, &err);
+    int rc = sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, &err);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "BEGIN TRANSACTION failed: %s", err);
         sqlite3_free(err);
@@ -178,11 +210,12 @@ int witness_db_begin_transaction(void) {
     return 0;
 }
 
-int witness_db_commit(void) {
-    if (!nullifier_db) return -1;
+int witness_db_commit(void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db) return -1;
 
     char *err = NULL;
-    int rc = sqlite3_exec(nullifier_db, "COMMIT", NULL, NULL, &err);
+    int rc = sqlite3_exec(db, "COMMIT", NULL, NULL, &err);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "COMMIT failed: %s", err);
         sqlite3_free(err);
@@ -192,11 +225,12 @@ int witness_db_commit(void) {
     return 0;
 }
 
-int witness_db_rollback(void) {
-    if (!nullifier_db) return -1;
+int witness_db_rollback(void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db) return -1;
 
     char *err = NULL;
-    int rc = sqlite3_exec(nullifier_db, "ROLLBACK", NULL, NULL, &err);
+    int rc = sqlite3_exec(db, "ROLLBACK", NULL, NULL, &err);
     if (rc != SQLITE_OK) {
         QGP_LOG_WARN(LOG_TAG, "ROLLBACK failed: %s", err);
         sqlite3_free(err);
@@ -206,15 +240,16 @@ int witness_db_rollback(void) {
     return 0;
 }
 
-bool witness_nullifier_exists(const uint8_t *nullifier) {
-    if (!nullifier_db || !nullifier) return false;
+bool witness_nullifier_exists(const uint8_t *nullifier, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !nullifier) return false;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT 1 FROM nullifiers WHERE nullifier = ?", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to prepare exists query: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return false;
     }
 
@@ -226,16 +261,17 @@ bool witness_nullifier_exists(const uint8_t *nullifier) {
     return exists;
 }
 
-int witness_nullifier_add(const uint8_t *nullifier, const uint8_t *tx_hash) {
-    if (!nullifier_db || !nullifier || !tx_hash) return -1;
+int witness_nullifier_add(const uint8_t *nullifier, const uint8_t *tx_hash, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !nullifier || !tx_hash) return -1;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "INSERT OR IGNORE INTO nullifiers (nullifier, tx_hash, timestamp, replicated) "
         "VALUES (?, ?, ?, 0)", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to prepare insert: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
@@ -248,22 +284,23 @@ int witness_nullifier_add(const uint8_t *nullifier, const uint8_t *tx_hash) {
 
     if (rc != SQLITE_DONE) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to insert nullifier: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
     return 0;
 }
 
-int witness_nullifier_mark_replicated(const uint8_t *nullifier) {
-    if (!nullifier_db || !nullifier) return -1;
+int witness_nullifier_mark_replicated(const uint8_t *nullifier, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !nullifier) return -1;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "UPDATE nullifiers SET replicated = 1 WHERE nullifier = ?", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to prepare update: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
@@ -275,16 +312,17 @@ int witness_nullifier_mark_replicated(const uint8_t *nullifier) {
     return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
-int witness_nullifier_get_unreplicated(uint8_t (*nullifiers)[64], int max_count) {
-    if (!nullifier_db || !nullifiers || max_count <= 0) return -1;
+int witness_nullifier_get_unreplicated(uint8_t (*nullifiers)[64], int max_count, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !nullifiers || max_count <= 0) return -1;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT nullifier FROM nullifiers WHERE replicated = 0 LIMIT ?",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to prepare query: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
@@ -309,15 +347,16 @@ int witness_nullifier_get_unreplicated(uint8_t (*nullifiers)[64], int max_count)
  * Genesis State Functions (v0.5.0)
  * ========================================================================== */
 
-bool witness_genesis_exists(void) {
-    if (!nullifier_db) return false;
+bool witness_genesis_exists(void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db) return false;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT 1 FROM genesis_state WHERE id = 1", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to prepare genesis exists query: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return false;
     }
 
@@ -329,23 +368,24 @@ bool witness_genesis_exists(void) {
 
 int witness_genesis_set(const uint8_t *tx_hash,
                         uint64_t total_supply,
-                        const uint8_t *commitment) {
-    if (!nullifier_db || !tx_hash || !commitment) return -1;
+                        const uint8_t *commitment, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !tx_hash || !commitment) return -1;
 
     /* Check if genesis already exists */
-    if (witness_genesis_exists()) {
+    if (witness_genesis_exists(user_data)) {
         QGP_LOG_ERROR(LOG_TAG, "Genesis already exists - cannot set again");
         return -2;  /* Genesis already exists */
     }
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "INSERT INTO genesis_state (id, genesis_hash, total_supply, "
         "genesis_timestamp, genesis_commitment) VALUES (1, ?, ?, ?, ?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to prepare genesis insert: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
@@ -359,7 +399,7 @@ int witness_genesis_set(const uint8_t *tx_hash,
 
     if (rc != SQLITE_DONE) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to insert genesis state: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
@@ -368,16 +408,17 @@ int witness_genesis_set(const uint8_t *tx_hash,
     return 0;
 }
 
-int witness_genesis_get(dnac_genesis_state_t *state_out) {
-    if (!nullifier_db || !state_out) return -1;
+int witness_genesis_get(dnac_genesis_state_t *state_out, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !state_out) return -1;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT genesis_hash, total_supply, genesis_timestamp, genesis_commitment "
         "FROM genesis_state WHERE id = 1", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to prepare genesis get query: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
@@ -414,18 +455,19 @@ int witness_genesis_get(dnac_genesis_state_t *state_out) {
 
 int witness_epoch_signature_add(uint64_t epoch,
                                  const uint8_t *signer_id,
-                                 const uint8_t *signature) {
-    if (!nullifier_db || !signer_id || !signature) return -1;
+                                 const uint8_t *signature, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !signer_id || !signature) return -1;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO epoch_signatures "
         "(epoch, signer_id, signature, timestamp) VALUES (?, ?, ?, ?)",
         -1, &stmt, NULL);
 
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to prepare epoch sig insert: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
@@ -439,7 +481,7 @@ int witness_epoch_signature_add(uint64_t epoch,
 
     if (rc != SQLITE_DONE) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to insert epoch signature: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
@@ -450,18 +492,19 @@ int witness_epoch_signature_add(uint64_t epoch,
 
 int witness_epoch_signatures_get(uint64_t epoch,
                                   dnac_epoch_signature_t *sigs_out,
-                                  int max_sigs) {
-    if (!nullifier_db || !sigs_out || max_sigs <= 0) return -1;
+                                  int max_sigs, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !sigs_out || max_sigs <= 0) return -1;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT signer_id, signature FROM epoch_signatures "
         "WHERE epoch = ? LIMIT ?",
         -1, &stmt, NULL);
 
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to prepare epoch sig query: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 

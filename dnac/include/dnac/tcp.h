@@ -346,24 +346,41 @@ int dnac_tcp_client_recv(dnac_tcp_client_t *client,
  * ========================================================================== */
 
 /**
- * @brief Message frame header
+ * @brief Message frame header (v0.10.0)
  *
  * All TCP messages are prefixed with:
  * - 4 bytes: magic (0x444E4143 = "DNAC")
  * - 4 bytes: length (network byte order)
  * - 1 byte: message type
+ * - 32 bytes: chain_id (identifies which zone this message belongs to)
+ *
+ * BREAKING CHANGE in v0.10.0: header grew from 9 to 41 bytes.
  */
 #define DNAC_TCP_FRAME_MAGIC        0x444E4143
-#define DNAC_TCP_FRAME_HEADER_SIZE  9
+#define DNAC_TCP_FRAME_HEADER_SIZE  41  /* v0.10.0: was 9, now includes chain_id(32) */
 
 /**
- * @brief Write frame header
+ * @brief Write frame header with chain_id
  *
  * @param buffer Output buffer (must be at least DNAC_TCP_FRAME_HEADER_SIZE)
  * @param msg_type Message type
  * @param payload_len Payload length
+ *
+ * Note: chain_id defaults to all-zeros. Use dnac_tcp_write_frame_header_with_chain
+ * to specify a chain_id.
  */
 void dnac_tcp_write_frame_header(uint8_t *buffer, uint8_t msg_type, uint32_t payload_len);
+
+/**
+ * @brief Write frame header with explicit chain_id
+ *
+ * @param buffer Output buffer (must be at least DNAC_TCP_FRAME_HEADER_SIZE)
+ * @param msg_type Message type
+ * @param payload_len Payload length
+ * @param chain_id Chain ID (DNAC_CHAIN_ID_SIZE bytes, or NULL for all-zeros)
+ */
+void dnac_tcp_write_frame_header_with_chain(uint8_t *buffer, uint8_t msg_type,
+                                             uint32_t payload_len, const uint8_t *chain_id);
 
 /**
  * @brief Parse frame header
@@ -376,6 +393,20 @@ void dnac_tcp_write_frame_header(uint8_t *buffer, uint8_t msg_type, uint32_t pay
  */
 int dnac_tcp_parse_frame_header(const uint8_t *buffer, size_t buffer_len,
                                 uint8_t *msg_type_out, uint32_t *payload_len_out);
+
+/**
+ * @brief Parse frame header with chain_id extraction
+ *
+ * @param buffer Input buffer
+ * @param buffer_len Buffer length
+ * @param msg_type_out Output message type
+ * @param payload_len_out Output payload length
+ * @param chain_id_out Output chain_id (32 bytes, can be NULL to ignore)
+ * @return 0 on success, -1 on invalid header
+ */
+int dnac_tcp_parse_frame_header_with_chain(const uint8_t *buffer, size_t buffer_len,
+                                            uint8_t *msg_type_out, uint32_t *payload_len_out,
+                                            uint8_t *chain_id_out);
 
 /* ============================================================================
  * Utility Functions

@@ -29,6 +29,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <time.h>
+#include <limits.h>
 
 #define LOG_TAG "GENESIS"
 
@@ -37,11 +38,14 @@ typedef struct dht_context dht_context_t;
 
 /* DHT functions from libdna */
 extern void* dna_engine_get_dht_context(dna_engine_t *engine);
-extern int dht_put_signed_permanent(dht_context_t *ctx,
-                                    const uint8_t *key, size_t key_len,
-                                    const uint8_t *value, size_t value_len,
-                                    uint64_t value_id,
-                                    const char *caller);
+extern bool dht_context_wait_for_ready(dht_context_t *ctx, int timeout_ms);
+extern int dht_put_signed_sync(dht_context_t *ctx,
+                               const uint8_t *key, size_t key_len,
+                               const uint8_t *value, size_t value_len,
+                               uint64_t value_id,
+                               unsigned int ttl_seconds,
+                               const char *caller,
+                               int timeout_ms);
 
 /**
  * Compute SHA3-512 hash of data
@@ -64,13 +68,24 @@ static int compute_sha3_512(const uint8_t *data, size_t len, uint8_t *hash_out) 
 /**
  * Build DHT key for payment inbox
  */
-static int build_inbox_key(const char *recipient_fp, uint8_t *key_out) {
-    uint8_t key_data[256];
+static int build_inbox_key(const char *recipient_fp, const uint8_t *chain_id,
+                            uint8_t *key_out) {
+    uint8_t key_data[384];
     size_t offset = 0;
 
     const char *prefix = "dnac:inbox:";
     memcpy(key_data, prefix, strlen(prefix));
     offset = strlen(prefix);
+
+    /* v0.10.0: Include chain_id hex in key for zone scoping */
+    if (chain_id) {
+        static const char hex[] = "0123456789abcdef";
+        for (int i = 0; i < 32; i++) {
+            key_data[offset++] = hex[(chain_id[i] >> 4) & 0xF];
+            key_data[offset++] = hex[chain_id[i] & 0xF];
+        }
+        key_data[offset++] = ':';
+    }
 
     size_t fp_len = strlen(recipient_fp);
     memcpy(key_data + offset, recipient_fp, fp_len);
@@ -300,6 +315,11 @@ int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
     dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
     if (!dht) return DNAC_ERROR_NETWORK;
 
+    if (!dht_context_wait_for_ready(dht, 5000)) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not ready after 5s — cannot broadcast genesis");
+        return DNAC_ERROR_NETWORK;
+    }
+
     /* Get our own fingerprint for "genesis to self" detection */
     const char *our_fp = dnac_get_owner_fingerprint(ctx);
 
@@ -320,16 +340,17 @@ int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
 
         /* Build inbox DHT key for recipient */
         uint8_t inbox_key[64];
-        if (build_inbox_key(tx->outputs[i].owner_fingerprint, inbox_key) != 0) {
+        if (build_inbox_key(tx->outputs[i].owner_fingerprint, NULL, inbox_key) != 0) {
             continue;
         }
 
-        /* PUT payment to recipient's inbox (permanent) */
-        rc = dht_put_signed_permanent(dht, inbox_key, 64, tx_buffer, tx_len,
-                                      payment_value_id,
-                                      "dnac_genesis");
+        /* PUT payment to recipient's inbox (synchronous, permanent) */
+        rc = dht_put_signed_sync(dht, inbox_key, 64, tx_buffer, tx_len,
+                                 payment_value_id, UINT_MAX,
+                                 "dnac_genesis", 5000);
         if (rc != 0) {
-            QGP_LOG_WARN(LOG_TAG, "Failed to send genesis to recipient %d", i);
+            QGP_LOG_ERROR(LOG_TAG, "Failed to send genesis to recipient %d: %d", i, rc);
+            return DNAC_ERROR_NETWORK;
         }
 
         /* If output is for our own wallet, store UTXO immediately */

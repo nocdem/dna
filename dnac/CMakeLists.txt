@@ -198,6 +198,8 @@ if(DNAC_BUILD_WITNESS)
         src/witness/bft_main.c
         src/witness/forward.c
         src/witness/utxo_set.c
+        src/witness/block.c
+        src/witness/zone.c
     )
 
     add_executable(dnac-witness ${DNAC_WITNESS_SOURCES})

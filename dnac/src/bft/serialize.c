@@ -118,8 +118,9 @@ static void read_string(const uint8_t **buf, char *out, size_t max_len) {
  * ========================================================================== */
 
 /* Gap 23-24 Fix (v0.6.0): Added nonce to header for replay prevention */
-/* Header size: 1 + 1 + 8 + 4 + 32 + 8 + 8 = 62 bytes */
-#define BFT_HEADER_SIZE 62
+/* v0.10.0: Added chain_id(32) for zone isolation */
+/* Header size: 1 + 1 + 8 + 4 + 32 + 8 + 8 + 32 = 94 bytes */
+#define BFT_HEADER_SIZE 94
 
 int dnac_bft_header_serialize(const dnac_bft_msg_header_t *header,
                               uint8_t *buffer, size_t buffer_len,
@@ -136,6 +137,7 @@ int dnac_bft_header_serialize(const dnac_bft_msg_header_t *header,
     write_bytes(&p, header->sender_id, DNAC_BFT_WITNESS_ID_SIZE);
     write_u64(&p, header->timestamp);
     write_u64(&p, header->nonce);  /* Gap 23-24: nonce for replay prevention */
+    write_bytes(&p, header->chain_id, 32);  /* v0.10.0: zone chain_id */
 
     if (written) *written = BFT_HEADER_SIZE;
     return DNAC_BFT_SUCCESS;
@@ -155,6 +157,7 @@ int dnac_bft_header_deserialize(const uint8_t *buffer, size_t buffer_len,
     read_bytes(&p, header->sender_id, DNAC_BFT_WITNESS_ID_SIZE);
     header->timestamp = read_u64(&p);
     header->nonce = read_u64(&p);  /* Gap 23-24: nonce for replay prevention */
+    read_bytes(&p, header->chain_id, 32);  /* v0.10.0: zone chain_id */
 
     return DNAC_BFT_SUCCESS;
 }
@@ -360,11 +363,12 @@ int dnac_bft_vote_deserialize(const uint8_t *buffer, size_t buffer_len,
  * Commit Serialization
  * ========================================================================== */
 
-/* v0.8.0 Commit format:
+/* v0.9.0 Commit format:
  * header(62) + tx_hash(64) + nullifier_count(1) + nullifiers(count*64) +
- * tx_type(1) + tx_len(4) + tx_data(variable) + n_precommits(4) + sig(4627)
+ * tx_type(1) + tx_len(4) + tx_data(variable) +
+ * proposal_timestamp(8) + proposer_id(32) + n_precommits(4) + sig(4627)
  * Variable size based on nullifier_count and tx_len */
-#define BFT_COMMIT_BASE_SIZE (BFT_HEADER_SIZE + 64 + 1 + 1 + 4 + 4 + DNAC_SIGNATURE_SIZE)
+#define BFT_COMMIT_BASE_SIZE (BFT_HEADER_SIZE + 64 + 1 + 1 + 4 + 8 + 32 + 4 + DNAC_SIGNATURE_SIZE)
 
 int dnac_bft_commit_serialize(const dnac_bft_commit_t *commit,
                               uint8_t *buffer, size_t buffer_len,
@@ -418,6 +422,10 @@ int dnac_bft_commit_serialize(const dnac_bft_commit_t *commit,
     if (commit->tx_len > 0) {
         write_bytes(&p, commit->tx_data, commit->tx_len);
     }
+
+    /* v0.9.0: proposal timestamp and proposer ID for block production */
+    write_u64(&p, commit->proposal_timestamp);
+    write_bytes(&p, commit->proposer_id, DNAC_BFT_WITNESS_ID_SIZE);
 
     write_u32(&p, commit->n_precommits);
     write_bytes(&p, commit->signature, DNAC_SIGNATURE_SIZE);
@@ -479,6 +487,10 @@ int dnac_bft_commit_deserialize(const uint8_t *buffer, size_t buffer_len,
     if (commit->tx_len > 0) {
         read_bytes(&p, commit->tx_data, commit->tx_len);
     }
+
+    /* v0.9.0: proposal timestamp and proposer ID for block production */
+    commit->proposal_timestamp = read_u64(&p);
+    read_bytes(&p, commit->proposer_id, DNAC_BFT_WITNESS_ID_SIZE);
 
     commit->n_precommits = read_u32(&p);
     read_bytes(&p, commit->signature, DNAC_SIGNATURE_SIZE);

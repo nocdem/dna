@@ -112,7 +112,7 @@ typedef struct {
  *
  * @return 0 on success, -1 on error
  */
-int witness_ledger_init(void);
+int witness_ledger_init(void *user_data);
 
 /**
  * @brief Shutdown ledger database
@@ -128,7 +128,7 @@ void witness_ledger_shutdown(void);
  * @param entry Ledger entry to add
  * @return 0 on success, -1 on error
  */
-int witness_ledger_add_entry(const dnac_ledger_entry_t *entry);
+int witness_ledger_add_entry(const dnac_ledger_entry_t *entry, void *user_data);
 
 /**
  * @brief Get next sequence number
@@ -152,7 +152,7 @@ int witness_ledger_get_root(uint8_t *root_out);
  * @param entry_out Output entry
  * @return 0 on success, -1 if not found
  */
-int witness_ledger_get_entry(uint64_t seq, dnac_ledger_entry_t *entry_out);
+int witness_ledger_get_entry(uint64_t seq, dnac_ledger_entry_t *entry_out, void *user_data);
 
 /**
  * @brief Get ledger entry by transaction hash
@@ -162,7 +162,7 @@ int witness_ledger_get_entry(uint64_t seq, dnac_ledger_entry_t *entry_out);
  * @return 0 on success, -1 if not found
  */
 int witness_ledger_get_entry_by_hash(const uint8_t *tx_hash,
-                                      dnac_ledger_entry_t *entry_out);
+                                      dnac_ledger_entry_t *entry_out, void *user_data);
 
 /**
  * @brief Get Merkle proof for transaction
@@ -171,7 +171,7 @@ int witness_ledger_get_entry_by_hash(const uint8_t *tx_hash,
  * @param proof_out Output proof
  * @return 0 on success, -1 on error
  */
-int witness_ledger_get_proof(uint64_t seq, dnac_merkle_proof_t *proof_out);
+int witness_ledger_get_proof(uint64_t seq, dnac_merkle_proof_t *proof_out, void *user_data);
 
 /**
  * @brief P0-2 (v0.7.0): Get range of ledger entries
@@ -189,14 +189,14 @@ int witness_ledger_get_range(uint64_t from_seq,
                               uint64_t to_seq,
                               dnac_ledger_entry_t *entries,
                               int max_entries,
-                              int *count_out);
+                              int *count_out, void *user_data);
 
 /**
  * @brief P0-2 (v0.7.0): Get total ledger entry count
  *
  * @return Total number of entries, or 0 if empty/error
  */
-uint64_t witness_ledger_get_total_entries(void);
+uint64_t witness_ledger_get_total_entries(void *user_data);
 
 /**
  * @brief v0.7.1: Store BFT signature for epoch root
@@ -210,7 +210,7 @@ uint64_t witness_ledger_get_total_entries(void);
  */
 int witness_epoch_signature_add(uint64_t epoch,
                                  const uint8_t *signer_id,
-                                 const uint8_t *signature);
+                                 const uint8_t *signature, void *user_data);
 
 /**
  * @brief v0.7.1: Get BFT signatures for epoch root
@@ -222,7 +222,7 @@ int witness_epoch_signature_add(uint64_t epoch,
  */
 int witness_epoch_signatures_get(uint64_t epoch,
                                   dnac_epoch_signature_t *sigs_out,
-                                  int max_sigs);
+                                  int max_sigs, void *user_data);
 
 /**
  * @brief v0.7.1: Get Merkle proof with BFT signatures
@@ -233,7 +233,7 @@ int witness_epoch_signatures_get(uint64_t epoch,
  * @param proof_out Output proof with BFT signatures
  * @return 0 on success, -1 on error
  */
-int witness_ledger_get_proof_anchored(uint64_t seq, dnac_merkle_proof_t *proof_out);
+int witness_ledger_get_proof_anchored(uint64_t seq, dnac_merkle_proof_t *proof_out, void *user_data);
 
 /* ============================================================================
  * Supply Tracking Functions
@@ -248,7 +248,7 @@ int witness_ledger_get_proof_anchored(uint64_t seq, dnac_merkle_proof_t *proof_o
  * @param genesis_tx_hash Genesis transaction hash
  * @return 0 on success, -1 on error
  */
-int witness_supply_init(uint64_t total_supply, const uint8_t *genesis_tx_hash);
+int witness_supply_init(uint64_t total_supply, const uint8_t *genesis_tx_hash, void *user_data);
 
 /**
  * @brief Record a burn transaction
@@ -259,7 +259,7 @@ int witness_supply_init(uint64_t total_supply, const uint8_t *genesis_tx_hash);
  * @param tx_hash Burn transaction hash
  * @return 0 on success, -1 on error
  */
-int witness_supply_record_burn(uint64_t burn_amount, const uint8_t *tx_hash);
+int witness_supply_record_burn(uint64_t burn_amount, const uint8_t *tx_hash, void *user_data);
 
 /**
  * @brief Get current supply state
@@ -267,7 +267,7 @@ int witness_supply_record_burn(uint64_t burn_amount, const uint8_t *tx_hash);
  * @param state_out Output supply state
  * @return 0 on success, -1 if no genesis
  */
-int witness_supply_get_state(dnac_supply_state_t *state_out);
+int witness_supply_get_state(dnac_supply_state_t *state_out, void *user_data);
 
 /* ============================================================================
  * Client Query Functions

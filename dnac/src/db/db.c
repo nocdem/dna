@@ -5,6 +5,7 @@
 
 #include "dnac/dnac.h"
 #include "dnac/wallet.h"
+#include "dnac/epoch.h"
 #include <sqlite3.h>
 #include <string.h>
 #include <stdio.h>
@@ -874,7 +875,7 @@ int dnac_get_confirmation(dnac_context_t *ctx,
     /* Get current ledger state from witnesses
      * For now, use local estimate. Full implementation would query witnesses.
      */
-    uint64_t current_epoch = (uint64_t)(time(NULL) / 3600);
+    uint64_t current_epoch = (uint64_t)(time(NULL) / DNAC_EPOCH_DURATION_SEC);
 
     /* Query local DB for latest known TX sequence */
     const char *sql = "SELECT MAX(ledger_seq) FROM dnac_transactions WHERE ledger_seq IS NOT NULL";

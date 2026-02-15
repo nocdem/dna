@@ -161,7 +161,7 @@ int dnac_genesis_get_total_supply(dnac_context_t *ctx, uint64_t *supply_out);
  *
  * @return true if genesis has occurred
  */
-bool witness_genesis_exists(void);
+bool witness_genesis_exists(void *user_data);
 
 /**
  * @brief Record genesis in witness database
@@ -175,7 +175,7 @@ bool witness_genesis_exists(void);
  */
 int witness_genesis_set(const uint8_t *tx_hash,
                         uint64_t total_supply,
-                        const uint8_t *commitment);
+                        const uint8_t *commitment, void *user_data);
 
 /**
  * @brief Get genesis state from witness database
@@ -183,7 +183,7 @@ int witness_genesis_set(const uint8_t *tx_hash,
  * @param state_out Output genesis state
  * @return 0 on success, -1 if no genesis
  */
-int witness_genesis_get(dnac_genesis_state_t *state_out);
+int witness_genesis_get(dnac_genesis_state_t *state_out, void *user_data);
 
 #ifdef __cplusplus
 }

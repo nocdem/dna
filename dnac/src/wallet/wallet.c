@@ -8,6 +8,7 @@
 #include "dnac/transaction.h"
 #include "dnac/nodus.h"
 #include "dnac/db.h"
+#include "dnac/ledger.h"
 #include <dna/dna_engine.h>
 #include <stdlib.h>
 #include <string.h>
@@ -144,7 +145,7 @@ void dnac_set_payment_callback(dnac_context_t *ctx,
 
 /* Forward declarations for inbox listener */
 static int compute_sha3_512(const uint8_t *data, size_t len, uint8_t *hash_out);
-static int build_inbox_key(const char *owner_fp, uint8_t *key_out);
+static int build_inbox_key(const char *owner_fp, const uint8_t *chain_id, uint8_t *key_out);
 static int derive_nullifier(const char *owner_fp, const uint8_t *seed, uint8_t *nullifier_out);
 static bool utxo_exists(sqlite3 *db, const uint8_t *tx_hash, uint32_t output_index);
 
@@ -232,7 +233,7 @@ int dnac_start_listening(dnac_context_t *ctx) {
 
     /* Build inbox key */
     uint8_t inbox_key[64];
-    if (build_inbox_key(ctx->owner_fingerprint, inbox_key) != 0) {
+    if (build_inbox_key(ctx->owner_fingerprint, NULL, inbox_key) != 0) {
         return DNAC_ERROR_CRYPTO;
     }
 
@@ -316,13 +317,24 @@ static int compute_sha3_512(const uint8_t *data, size_t len, uint8_t *hash_out) 
  * Build DHT key for payment inbox
  * Key: SHA3-512("dnac:inbox:" + owner_fingerprint)
  */
-static int build_inbox_key(const char *owner_fp, uint8_t *key_out) {
-    uint8_t key_data[256];
+static int build_inbox_key(const char *owner_fp, const uint8_t *chain_id,
+                            uint8_t *key_out) {
+    uint8_t key_data[384];
     size_t offset = 0;
 
     const char *prefix = "dnac:inbox:";
     memcpy(key_data, prefix, strlen(prefix));
     offset = strlen(prefix);
+
+    /* v0.10.0: Include chain_id hex in key for zone scoping */
+    if (chain_id) {
+        static const char hex[] = "0123456789abcdef";
+        for (int i = 0; i < 32; i++) {
+            key_data[offset++] = hex[(chain_id[i] >> 4) & 0xF];
+            key_data[offset++] = hex[chain_id[i] & 0xF];
+        }
+        key_data[offset++] = ':';
+    }
 
     size_t fp_len = strlen(owner_fp);
     memcpy(key_data + offset, owner_fp, fp_len);
@@ -381,7 +393,7 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
 
     /* Step 1: Build inbox key */
     uint8_t inbox_key[64];
-    if (build_inbox_key(ctx->owner_fingerprint, inbox_key) != 0) {
+    if (build_inbox_key(ctx->owner_fingerprint, NULL, inbox_key) != 0) {
         return DNAC_ERROR_CRYPTO;
     }
 
@@ -432,6 +444,23 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
             continue;
         }
         fprintf(stderr, "[SYNC]   TX verified OK\n");
+
+        /* v0.9.0: Validate TX exists on current witness ledger.
+         * Prevents storing stale UTXOs from old DHT data (previous deployments). */
+        dnac_ledger_entry_t ledger_entry;
+        rc = dnac_ledger_query_tx(ctx, tx->tx_hash, &ledger_entry, NULL);
+        if (rc == DNAC_ERROR_NOT_FOUND) {
+            fprintf(stderr, "[SYNC]   TX not in witness ledger, skipping (stale)\n");
+            dnac_free_transaction(tx);
+            continue;
+        }
+        if (rc != DNAC_SUCCESS) {
+            fprintf(stderr, "[SYNC]   Ledger check failed (rc=%d), skipping\n", rc);
+            dnac_free_transaction(tx);
+            continue;
+        }
+        fprintf(stderr, "[SYNC]   TX confirmed in witness ledger (seq=%llu)\n",
+                (unsigned long long)ledger_entry.sequence_number);
 
         /* Track if we stored any outputs from this transaction */
         bool stored_from_this_tx = false;
@@ -542,7 +571,7 @@ int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count) {
 
     /* Step 2: Build inbox key */
     uint8_t inbox_key[64];
-    if (build_inbox_key(ctx->owner_fingerprint, inbox_key) != 0) {
+    if (build_inbox_key(ctx->owner_fingerprint, NULL, inbox_key) != 0) {
         return DNAC_ERROR_CRYPTO;
     }
 

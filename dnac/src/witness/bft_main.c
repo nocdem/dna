@@ -37,6 +37,8 @@
 #include "dnac/commitment.h"
 #include "dnac/version.h"
 #include "dnac/utxo_set.h"
+#include "dnac/block.h"
+#include "dnac/zone.h"
 
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
@@ -53,6 +55,7 @@
 static volatile int g_running = 1;
 dnac_bft_context_t *g_bft_ctx = NULL;  /* Non-static for access from forward.c */
 dnac_tcp_server_t *g_tcp_server = NULL;  /* Non-static for access from forward.c */
+static dnac_zone_manager_t *g_zone_mgr = NULL;  /* v0.10.0: Zone manager */
 
 /* Identity loading state */
 static volatile int g_identity_loaded = 0;
@@ -65,22 +68,7 @@ extern int bft_peer_connect_to_roster(void);
 extern void bft_peer_on_connect(int peer_index, const uint8_t *peer_id);
 extern void bft_peer_on_disconnect(int peer_index);
 
-/* External nullifier functions (from witness/nullifier.c) */
-extern int witness_nullifier_init(const char *db_path);
-extern void witness_nullifier_shutdown(void);
-extern bool witness_nullifier_exists(const uint8_t *nullifier);
-extern int witness_nullifier_add(const uint8_t *nullifier, const uint8_t *tx_hash);
-
-/* External ledger functions (from witness/ledger.c) */
-extern int witness_ledger_init(void);
-extern void witness_ledger_shutdown(void);
-extern uint64_t witness_ledger_get_next_seq(void);
-extern int witness_ledger_add_entry(const dnac_ledger_entry_t *entry);
-
-/* External UTXO functions (from witness/utxo_tree.c) */
-extern int witness_utxo_init(void);
-extern void witness_utxo_shutdown(void);
-extern int witness_utxo_mark_spent(const uint8_t *commitment_hash, uint64_t spent_epoch);
+/* Functions declared in included headers: witness.h, ledger.h, commitment.h, block.h */
 
 /* ============================================================================
  * Signal Handler
@@ -312,7 +300,8 @@ extern int bft_handle_forward_response(dnac_bft_context_t *ctx,
  * Send spend response to client
  */
 void bft_send_client_response(int client_fd, int status,
-                              const char *error_msg) {
+                              const char *error_msg, void *user_data) {
+    (void)user_data;
     if (client_fd < 0 || !g_tcp_server || !g_bft_ctx) return;
 
     dnac_spend_response_t response;
@@ -385,7 +374,8 @@ extern int bft_forward_complete_for_txhash(const uint8_t *tx_hash,
  */
 static int bft_complete_forward_callback(const uint8_t *tx_hash,
                                          const uint8_t *witness_id,
-                                         const uint8_t *pubkey) {
+                                         const uint8_t *pubkey, void *user_data) {
+    (void)user_data;
     return bft_forward_complete_for_txhash(tx_hash, g_tcp_server, witness_id, pubkey);
 }
 
@@ -397,7 +387,7 @@ static int bft_complete_forward_callback(const uint8_t *tx_hash,
  */
 static int bft_ledger_add_callback(const uint8_t *tx_hash, uint8_t tx_type,
                                     const uint8_t nullifiers[][DNAC_NULLIFIER_SIZE],
-                                    uint8_t nullifier_count) {
+                                    uint8_t nullifier_count, void *user_data) {
     dnac_ledger_entry_t entry;
     memset(&entry, 0, sizeof(entry));
 
@@ -409,9 +399,9 @@ static int bft_ledger_add_callback(const uint8_t *tx_hash, uint8_t tx_type,
         memcpy(entry.nullifiers[i], nullifiers[i], DNAC_NULLIFIER_SIZE);
     }
     entry.timestamp = (uint64_t)time(NULL);
-    entry.epoch = (uint64_t)(time(NULL) / 3600);
+    entry.epoch = (uint64_t)(time(NULL) / DNAC_EPOCH_DURATION_SEC);
 
-    int rc = witness_ledger_add_entry(&entry);
+    int rc = witness_ledger_add_entry(&entry, user_data);
     if (rc != 0) {
         return rc;
     }
@@ -424,7 +414,8 @@ static int bft_ledger_add_callback(const uint8_t *tx_hash, uint8_t tx_type,
             witness_epoch_root_sign(entry.epoch, ledger_root,
                                      g_bft_ctx->my_id,
                                      g_bft_ctx->my_privkey,
-                                     g_bft_ctx->my_privkey_size);
+                                     g_bft_ctx->my_privkey_size,
+                                     user_data);
         }
     }
 
@@ -436,8 +427,75 @@ static int bft_ledger_add_callback(const uint8_t *tx_hash, uint8_t tx_type,
  * Note: This is currently a placeholder - full UTXO tracking requires
  * the commitment hash from the transaction outputs, not nullifiers.
  */
-static int bft_utxo_mark_spent_callback(const uint8_t *commitment_hash, uint64_t spent_epoch) {
-    return witness_utxo_mark_spent(commitment_hash, spent_epoch);
+static int bft_utxo_mark_spent_callback(const uint8_t *commitment_hash, uint64_t spent_epoch, void *user_data) {
+    return witness_utxo_mark_spent(commitment_hash, spent_epoch, user_data);
+}
+
+/**
+ * v0.9.0: Block creation callback — called after every BFT COMMIT.
+ * Creates a block wrapping the committed transaction with chain linkage.
+ */
+static int bft_block_create_callback(const uint8_t *tx_hash, uint8_t tx_type,
+                                      uint64_t timestamp, const uint8_t *proposer_id, void *user_data) {
+    (void)tx_type;  /* Stored in TX, not needed in block directly */
+
+    dnac_block_t block;
+    memset(&block, 0, sizeof(block));
+
+    uint64_t prev_height = witness_block_get_height(user_data);
+    if (prev_height == UINT64_MAX) {
+        /* Genesis block */
+        block.block_height = 0;
+        /* prev_block_hash is already all zeros from memset */
+    } else {
+        block.block_height = prev_height + 1;
+        dnac_block_t prev;
+        if (witness_block_get(prev_height, &prev, user_data) == 0) {
+            memcpy(block.prev_block_hash, prev.block_hash, 64);
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to get previous block %llu for chain link",
+                          (unsigned long long)prev_height);
+            return -1;
+        }
+    }
+
+    /* Get current UTXO state root (reflects state after this TX's COMMIT) */
+    /* v0.10.0: Use zone-aware root if user_data available */
+    witness_utxo_set_get_root_ctx(user_data, block.state_root);
+
+    memcpy(block.tx_hash, tx_hash, DNAC_TX_HASH_SIZE);
+    block.tx_count = 1;
+    block.epoch = timestamp / DNAC_EPOCH_DURATION_SEC;
+    block.timestamp = timestamp;
+    memcpy(block.proposer_id, proposer_id, DNAC_BFT_WITNESS_ID_SIZE);
+
+    if (dnac_block_compute_hash(&block) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to compute block hash");
+        return -1;
+    }
+
+    int rc = witness_block_add(&block, user_data);
+    if (rc == 0) {
+        QGP_LOG_INFO(LOG_TAG, "Block %llu created (epoch=%llu)",
+                     (unsigned long long)block.block_height,
+                     (unsigned long long)block.epoch);
+
+        /* v0.10.0: After genesis block, derive chain_id from block hash */
+        if (block.block_height == 0 && user_data) {
+            dnac_zone_t *zone = (dnac_zone_t *)user_data;
+            uint8_t new_chain_id[DNAC_CHAIN_ID_SIZE];
+            memcpy(new_chain_id, block.block_hash, DNAC_CHAIN_ID_SIZE);
+            dnac_zone_set_chain_id(zone, new_chain_id);
+            if (zone->bft_ctx) {
+                memcpy(zone->bft_ctx->chain_id, new_chain_id, DNAC_CHAIN_ID_SIZE);
+            }
+            char hex[17];
+            dnac_chain_id_short_hex(new_chain_id, hex);
+            QGP_LOG_INFO(LOG_TAG, "Genesis chain_id derived: %s...", hex);
+            printf("Chain ID: %s...\n", hex);
+        }
+    }
+    return rc;
 }
 
 /**
@@ -459,7 +517,7 @@ static void handle_client_spend_request(int client_fd, const uint8_t *data, size
         fflush(stderr);
         QGP_LOG_ERROR(LOG_TAG, "Failed to deserialize spend request");
         bft_send_client_response(client_fd, DNAC_NODUS_STATUS_ERROR,
-                                 "Invalid request format");
+                                 "Invalid request format", NULL);
         return;
     }
     fprintf(stderr, "[WITNESS] Deserialized request OK, tx_len=%u\n", request.tx_len);
@@ -473,7 +531,7 @@ static void handle_client_spend_request(int client_fd, const uint8_t *data, size
         fflush(stderr);
         QGP_LOG_ERROR(LOG_TAG, "Failed to deserialize transaction from request");
         bft_send_client_response(client_fd, DNAC_NODUS_STATUS_ERROR,
-                                 "Invalid transaction data");
+                                 "Invalid transaction data", NULL);
         return;
     }
 
@@ -486,7 +544,7 @@ static void handle_client_spend_request(int client_fd, const uint8_t *data, size
         QGP_LOG_ERROR(LOG_TAG, "Transaction hash mismatch");
         dnac_free_transaction(tx);
         bft_send_client_response(client_fd, DNAC_NODUS_STATUS_ERROR,
-                                 "Transaction hash mismatch");
+                                 "Transaction hash mismatch", NULL);
         return;
     }
 
@@ -494,7 +552,8 @@ static void handle_client_spend_request(int client_fd, const uint8_t *data, size
      * - Before genesis: Only GENESIS transactions allowed
      * - After genesis: GENESIS rejected, only SPEND/BURN allowed
      */
-    bool genesis_exists = witness_genesis_exists();
+    dnac_zone_t *zone = dnac_zone_get_default(g_zone_mgr);
+    bool genesis_exists = witness_genesis_exists(zone);
     fprintf(stderr, "[WITNESS] Genesis check: exists=%d, tx_type=%d\n",
             genesis_exists, tx->type);
     fflush(stderr);
@@ -506,7 +565,7 @@ static void handle_client_spend_request(int client_fd, const uint8_t *data, size
                         tx->type == DNAC_TX_SPEND ? "SPEND" : "BURN");
             dnac_free_transaction(tx);
             bft_send_client_response(client_fd, DNAC_NODUS_STATUS_REJECTED,
-                                     "System not initialized - no genesis");
+                                     "System not initialized - no genesis", NULL);
             return;
         }
         QGP_LOG_INFO(LOG_TAG, "Processing GENESIS transaction (first token creation)");
@@ -516,7 +575,7 @@ static void handle_client_spend_request(int client_fd, const uint8_t *data, size
             QGP_LOG_WARN(LOG_TAG, "Rejecting GENESIS - genesis already exists");
             dnac_free_transaction(tx);
             bft_send_client_response(client_fd, DNAC_NODUS_STATUS_REJECTED,
-                                     "Genesis already exists");
+                                     "Genesis already exists", NULL);
             return;
         }
     }
@@ -570,13 +629,13 @@ static void handle_client_spend_request(int client_fd, const uint8_t *data, size
             fflush(stderr);
             QGP_LOG_WARN(LOG_TAG, "Double spend detected");
             bft_send_client_response(client_fd, DNAC_NODUS_STATUS_REJECTED,
-                                     "Nullifier already spent");
+                                     "Nullifier already spent", NULL);
         } else if (rc != DNAC_BFT_SUCCESS) {
             fprintf(stderr, "[WITNESS] Consensus failed: rc=%d\n", rc);
             fflush(stderr);
             QGP_LOG_ERROR(LOG_TAG, "Failed to start round: %d", rc);
             bft_send_client_response(client_fd, DNAC_NODUS_STATUS_ERROR,
-                                     "Consensus failed to start");
+                                     "Consensus failed to start", NULL);
         }
         /* Response will be sent when consensus completes */
     } else {
@@ -591,7 +650,7 @@ static void handle_client_spend_request(int client_fd, const uint8_t *data, size
         if (rc != DNAC_BFT_SUCCESS) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to forward request: %d", rc);
             bft_send_client_response(client_fd, DNAC_NODUS_STATUS_ERROR,
-                                     "Failed to forward to leader");
+                                     "Failed to forward to leader", NULL);
         }
         /* Response will be sent when forward response arrives */
     }
@@ -601,18 +660,7 @@ static void handle_client_spend_request(int client_fd, const uint8_t *data, size
  * v0.5.0: Query Message Handlers
  * ========================================================================== */
 
-/* External ledger functions */
-extern int witness_ledger_get_entry_by_hash(const uint8_t *tx_hash,
-                                             dnac_ledger_entry_t *entry_out);
-extern int witness_ledger_get_proof(uint64_t seq, dnac_merkle_proof_t *proof_out);
-extern int witness_supply_get_state(dnac_supply_state_t *state_out);
-
-/* External UTXO functions */
-extern int witness_utxo_get_by_owner(const uint8_t *owner_commitment,
-                                      dnac_utxo_commitment_t *commitments_out,
-                                      int max_count);
-extern int witness_utxo_get_proof(const uint8_t *commitment_hash,
-                                   dnac_smt_proof_t *proof_out);
+/* Query functions declared in included headers: ledger.h, commitment.h */
 
 /**
  * Handle LEDGER_QUERY message - returns ledger entry by tx_hash
@@ -630,8 +678,9 @@ static void handle_ledger_query(int client_fd, const uint8_t *data, size_t len) 
     memset(&response, 0, sizeof(response));
 
     /* Get ledger entry */
+    dnac_zone_t *zone = dnac_zone_get_default(g_zone_mgr);
     dnac_ledger_entry_t entry;
-    if (witness_ledger_get_entry_by_hash(query.tx_hash, &entry) != 0) {
+    if (witness_ledger_get_entry_by_hash(query.tx_hash, &entry, zone) != 0) {
         response.status = DNAC_NODUS_STATUS_ERROR;
     } else {
         response.status = DNAC_NODUS_STATUS_APPROVED;
@@ -645,7 +694,7 @@ static void handle_ledger_query(int client_fd, const uint8_t *data, size_t len) 
         /* Include proof if requested */
         if (query.include_proof) {
             dnac_merkle_proof_t proof;
-            if (witness_ledger_get_proof(entry.sequence_number, &proof) == 0) {
+            if (witness_ledger_get_proof(entry.sequence_number, &proof, zone) == 0) {
                 response.has_proof = true;
                 memcpy(response.leaf_hash, proof.leaf_hash, 64);
                 response.proof_length = proof.proof_length;
@@ -683,8 +732,9 @@ static void handle_supply_query(int client_fd, const uint8_t *data, size_t len) 
     memset(&response, 0, sizeof(response));
 
     /* Get supply state */
+    dnac_zone_t *zone = dnac_zone_get_default(g_zone_mgr);
     dnac_supply_state_t state;
-    if (witness_supply_get_state(&state) != 0) {
+    if (witness_supply_get_state(&state, zone) != 0) {
         response.status = DNAC_NODUS_STATUS_ERROR;
     } else {
         response.status = DNAC_NODUS_STATUS_APPROVED;
@@ -732,8 +782,9 @@ static void handle_utxo_query(int client_fd, const uint8_t *data, size_t len) {
     }
 
     /* Get UTXOs by owner */
+    dnac_zone_t *zone = dnac_zone_get_default(g_zone_mgr);
     dnac_utxo_commitment_t commitments[DNAC_MAX_UTXO_QUERY_RESULTS];
-    int count = witness_utxo_get_by_owner(query.owner_commitment, commitments, max);
+    int count = witness_utxo_get_by_owner(query.owner_commitment, commitments, max, zone);
 
     if (count < 0) {
         response.status = DNAC_NODUS_STATUS_ERROR;
@@ -784,8 +835,9 @@ static void handle_utxo_proof_query(int client_fd, const uint8_t *data, size_t l
     memset(&response, 0, sizeof(response));
 
     /* Get UTXO proof */
+    dnac_zone_t *zone = dnac_zone_get_default(g_zone_mgr);
     dnac_smt_proof_t proof;
-    if (witness_utxo_get_proof(query.commitment, &proof) != 0) {
+    if (witness_utxo_get_proof(query.commitment, &proof, zone) != 0) {
         response.status = DNAC_NODUS_STATUS_ERROR;
     } else {
         response.status = DNAC_NODUS_STATUS_APPROVED;
@@ -824,7 +876,8 @@ static void handle_nullifier_query(int client_fd, const uint8_t *data, size_t le
     memset(&response, 0, sizeof(response));
 
     /* Check if nullifier exists (is spent) */
-    bool is_spent = witness_nullifier_exists(query.nullifier);
+    dnac_zone_t *zone = dnac_zone_get_default(g_zone_mgr);
+    bool is_spent = witness_nullifier_exists(query.nullifier, zone);
 
     response.status = DNAC_NODUS_STATUS_APPROVED;
     response.is_spent = is_spent;
@@ -860,18 +913,19 @@ static void handle_ledger_range_query(int client_fd, const uint8_t *data, size_t
                   (unsigned long long)query.from_sequence,
                   (unsigned long long)query.to_sequence);
 
+    dnac_zone_t *zone = dnac_zone_get_default(g_zone_mgr);
     dnac_ledger_range_response_t response;
     memset(&response, 0, sizeof(response));
 
     /* Get total entries count */
-    response.total_entries = witness_ledger_get_total_entries();
+    response.total_entries = witness_ledger_get_total_entries(zone);
 
     /* Get entries in range */
     dnac_ledger_entry_t entries[DNAC_MAX_RANGE_RESULTS];
     int count = 0;
 
     int rc = witness_ledger_get_range(query.from_sequence, query.to_sequence,
-                                       entries, DNAC_MAX_RANGE_RESULTS, &count);
+                                       entries, DNAC_MAX_RANGE_RESULTS, &count, zone);
 
     if (rc == 0 && count > 0) {
         response.status = DNAC_NODUS_STATUS_APPROVED;
@@ -1006,7 +1060,8 @@ static void on_tcp_message(int peer_index, uint8_t msg_type,
                     }
 
                     /* v0.5.0: Genesis pre-authorization check for forwarded requests */
-                    bool genesis_exists = witness_genesis_exists();
+                    dnac_zone_t *fwd_zone = dnac_zone_get_default(g_zone_mgr);
+                    bool genesis_exists = witness_genesis_exists(fwd_zone);
                     if (!genesis_exists && tx->type != DNAC_TX_GENESIS) {
                         QGP_LOG_WARN(LOG_TAG, "Rejecting forwarded %s - no genesis yet",
                                     tx->type == DNAC_TX_SPEND ? "SPEND" : "BURN");
@@ -1313,7 +1368,7 @@ int bft_witness_main(int argc, char *argv[]) {
     }
 
     /* v0.5.0: Initialize ledger system (uses nullifier DB) */
-    if (witness_ledger_init() != 0) {
+    if (witness_ledger_init(NULL) != 0) {
         fprintf(stderr, "Failed to initialize ledger system\n");
         witness_nullifier_shutdown();
         dna_engine_destroy(engine);
@@ -1325,7 +1380,7 @@ int bft_witness_main(int argc, char *argv[]) {
     }
 
     /* v0.5.0: Initialize UTXO commitment system (uses nullifier DB) */
-    if (witness_utxo_init() != 0) {
+    if (witness_utxo_init(NULL) != 0) {
         fprintf(stderr, "Failed to initialize UTXO system\n");
         witness_ledger_shutdown();
         witness_nullifier_shutdown();
@@ -1335,6 +1390,104 @@ int bft_witness_main(int argc, char *argv[]) {
         free(my_address);
         free(roster_file);
         return 1;
+    }
+
+    /* v0.9.0: Initialize UTXO state root (rebuild from DB) */
+    if (witness_utxo_set_init() != 0) {
+        fprintf(stderr, "Failed to initialize UTXO state root\n");
+        witness_utxo_shutdown();
+        witness_ledger_shutdown();
+        witness_nullifier_shutdown();
+        dna_engine_destroy(engine);
+        free(privkey);
+        free(data_dir);
+        free(my_address);
+        free(roster_file);
+        return 1;
+    }
+
+    /* v0.9.0: Initialize block storage */
+    if (witness_block_init(NULL) != 0) {
+        fprintf(stderr, "Failed to initialize block storage\n");
+        witness_utxo_shutdown();
+        witness_ledger_shutdown();
+        witness_nullifier_shutdown();
+        dna_engine_destroy(engine);
+        free(privkey);
+        free(data_dir);
+        free(my_address);
+        free(roster_file);
+        return 1;
+    }
+
+    /* v0.10.0: Create zone manager with default bridge zone.
+     * The bridge zone wraps the existing nullifier_db handle and
+     * cached state (block_height, state_root, merkle) so callbacks
+     * can access per-zone state via user_data. */
+    {
+        extern sqlite3 *nullifier_db;
+
+        g_zone_mgr = dnac_zone_manager_create();
+        if (!g_zone_mgr) {
+            fprintf(stderr, "Failed to create zone manager\n");
+            witness_block_shutdown();
+            witness_utxo_shutdown();
+            witness_ledger_shutdown();
+            witness_nullifier_shutdown();
+            dna_engine_destroy(engine);
+            free(privkey);
+            free(data_dir);
+            free(my_address);
+            free(roster_file);
+            return 1;
+        }
+
+        /* Create default zone (bridge: shares the existing nullifier_db) */
+        uint8_t zero_chain_id[DNAC_CHAIN_ID_SIZE] = {0};
+        dnac_zone_t *default_zone = dnac_zone_create(g_zone_mgr, "default", zero_chain_id);
+        if (!default_zone) {
+            fprintf(stderr, "Failed to create default zone\n");
+            dnac_zone_manager_destroy(g_zone_mgr);
+            witness_block_shutdown();
+            witness_utxo_shutdown();
+            witness_ledger_shutdown();
+            witness_nullifier_shutdown();
+            dna_engine_destroy(engine);
+            free(privkey);
+            free(data_dir);
+            free(my_address);
+            free(roster_file);
+            return 1;
+        }
+
+        /* Bridge: point zone->db at the already-open nullifier_db */
+        default_zone->db = nullifier_db;
+        snprintf(default_zone->db_path, sizeof(default_zone->db_path),
+                 "%s/nullifiers.db", data_dir);
+
+        /* Copy cached state into zone struct via accessor functions
+         * (the actual globals are static in their respective modules) */
+        default_zone->block_height = witness_block_get_height(NULL);
+        if (witness_utxo_set_get_root(default_zone->utxo_state_root) == 0) {
+            default_zone->state_root_initialized = 1;
+        }
+
+        /* Load chain_id from zone_metadata table if it exists */
+        dnac_zone_load_chain_id(default_zone);
+
+        /* Store shared resources in zone manager */
+        g_zone_mgr->dna_engine = engine;
+        memcpy(g_zone_mgr->witness_id, witness_id, DNAC_BFT_WITNESS_ID_SIZE);
+        memcpy(g_zone_mgr->pubkey, pubkey, DNAC_PUBKEY_SIZE);
+        g_zone_mgr->privkey = privkey;
+        g_zone_mgr->privkey_size = privkey_size;
+        strncpy(g_zone_mgr->fingerprint, fingerprint, sizeof(g_zone_mgr->fingerprint) - 1);
+        strncpy(g_zone_mgr->data_dir, data_dir, sizeof(g_zone_mgr->data_dir) - 1);
+
+        char chain_hex[17];
+        dnac_chain_id_short_hex(default_zone->chain_id, chain_hex);
+        printf("Zone manager: default zone created (chain_id=%.16s%s)\n",
+               chain_hex, dnac_chain_id_is_zero(default_zone->chain_id) ? " [pre-genesis]" : "");
     }
 
     /* Create BFT context */
@@ -1371,7 +1524,8 @@ int bft_witness_main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Set callbacks for consensus operations (v0.5.0: added genesis, ledger, UTXO callbacks) */
+    /* Set callbacks for consensus operations (v0.5.0: added genesis, ledger, UTXO callbacks)
+     * v0.10.0: Pass default zone as user_data for zone-aware callback dispatch */
     dnac_bft_set_callbacks(g_bft_ctx,
                            witness_nullifier_exists,
                            witness_nullifier_add,
@@ -1380,7 +1534,7 @@ int bft_witness_main(int argc, char *argv[]) {
                            witness_genesis_set,
                            bft_ledger_add_callback,
                            bft_utxo_mark_spent_callback,
-                           NULL);
+                           dnac_zone_get_default(g_zone_mgr));
 
     /* Set database transaction callbacks for atomicity (Gap 11: v0.6.0) */
     dnac_bft_set_db_callbacks(g_bft_ctx,
@@ -1394,6 +1548,17 @@ int bft_witness_main(int argc, char *argv[]) {
                                  witness_utxo_set_add,
                                  witness_utxo_set_remove,
                                  witness_utxo_set_genesis);
+
+    /* v0.9.0: Set block creation callback */
+    dnac_bft_set_block_callback(g_bft_ctx, bft_block_create_callback);
+
+    /* v0.10.0: Link zone ↔ BFT context */
+    {
+        dnac_zone_t *dz = dnac_zone_get_default(g_zone_mgr);
+        dz->bft_ctx = g_bft_ctx;
+        memcpy(g_bft_ctx->chain_id, dz->chain_id, DNAC_CHAIN_ID_SIZE);
+        g_zone_mgr->tcp_server = NULL;  /* Set after tcp_server creation below */
+    }
 
     /* Create default address if not provided */
     if (!my_address) {
@@ -1485,6 +1650,9 @@ int bft_witness_main(int argc, char *argv[]) {
         return 1;
     }
 
+    /* v0.10.0: Store TCP server in zone manager */
+    g_zone_mgr->tcp_server = g_tcp_server;
+
     /* Set callbacks */
     dnac_tcp_server_set_callbacks(g_tcp_server,
                                   on_tcp_message,
@@ -1541,7 +1709,7 @@ int bft_witness_main(int argc, char *argv[]) {
     if (dnac_bft_is_leader(g_bft_ctx)) {
         printf("*** WE ARE THE CURRENT LEADER ***\n");
     } else {
-        uint64_t epoch = time(NULL) / 3600;
+        uint64_t epoch = time(NULL) / DNAC_EPOCH_DURATION_SEC;
         int leader = dnac_bft_get_leader_index(epoch, g_bft_ctx->current_view,
                                                g_bft_ctx->roster.n_witnesses);
         printf("Current leader: witness %d\n", leader);
@@ -1581,10 +1749,26 @@ int bft_witness_main(int argc, char *argv[]) {
     dnac_tcp_server_stop(g_tcp_server);
     dnac_tcp_server_destroy(g_tcp_server);
     dnac_bft_destroy(g_bft_ctx);
+    witness_block_shutdown();
     witness_utxo_shutdown();
     witness_ledger_shutdown();
     witness_nullifier_shutdown();
     dna_engine_destroy(engine);
+
+    /* v0.10.0: Clean up zone manager.
+     * NULL out shared pointers in default zone first to prevent
+     * double-free (BFT ctx and DB already destroyed above). */
+    if (g_zone_mgr) {
+        dnac_zone_t *dz = dnac_zone_get_default(g_zone_mgr);
+        if (dz) {
+            dz->bft_ctx = NULL;  /* Already destroyed above */
+            dz->db = NULL;       /* Already closed by witness_nullifier_shutdown() */
+        }
+        g_zone_mgr->tcp_server = NULL;  /* Already destroyed above */
+        g_zone_mgr->privkey = NULL;     /* Freed below */
+        dnac_zone_manager_destroy(g_zone_mgr);
+        g_zone_mgr = NULL;
+    }
 
     /* Clean up memory */
     if (privkey) {

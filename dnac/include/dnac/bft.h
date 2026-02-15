@@ -58,8 +58,11 @@ extern "C" {
 /** BFT roster DHT key */
 #define DNAC_BFT_ROSTER_KEY             "dnac:bft:roster"
 
-/** BFT protocol version */
-#define DNAC_BFT_PROTOCOL_VERSION       1
+/** BFT protocol version (v0.10.0: bumped to 2 for chain_id in header) */
+#define DNAC_BFT_PROTOCOL_VERSION       2
+
+/* Epoch duration constant - single source of truth in epoch.h */
+#include "dnac/epoch.h"
 
 /* ============================================================================
  * Error Codes
@@ -189,6 +192,7 @@ typedef struct {
     uint8_t sender_id[DNAC_BFT_WITNESS_ID_SIZE];    /**< Sender witness ID */
     uint64_t timestamp;                             /**< Message timestamp */
     uint64_t nonce;                                 /**< Random nonce for replay prevention */
+    uint8_t chain_id[32];                           /**< v0.10.0: Zone chain ID */
 } dnac_bft_msg_header_t;
 
 /**
@@ -237,6 +241,8 @@ typedef struct {
     uint8_t tx_type;                                /**< v0.8.0: Transaction type */
     uint8_t tx_data[DNAC_BFT_MAX_TX_SIZE];          /**< v0.8.0: Full serialized transaction */
     uint32_t tx_len;                                /**< v0.8.0: TX data length */
+    uint64_t proposal_timestamp;                    /**< v0.9.0: Proposal timestamp for block */
+    uint8_t proposer_id[DNAC_BFT_WITNESS_ID_SIZE];  /**< v0.9.0: Proposer ID for block */
     uint32_t n_precommits;                          /**< Number of precommit proofs */
     uint8_t signature[DNAC_SIGNATURE_SIZE];         /**< Sender's signature */
 } dnac_bft_commit_t;
@@ -333,6 +339,10 @@ typedef struct {
     /* Timing */
     uint64_t phase_start_time;                      /**< When current phase started */
 
+    /* v0.9.0: Block production data */
+    uint64_t proposal_timestamp;                    /**< Timestamp from proposal (deterministic) */
+    uint8_t  proposer_id[DNAC_BFT_WITNESS_ID_SIZE]; /**< Leader who proposed this round */
+
     /* Client request data (for response) */
     uint8_t client_pubkey[DNAC_PUBKEY_SIZE];
     uint8_t client_signature[DNAC_SIGNATURE_SIZE];
@@ -360,11 +370,11 @@ typedef struct {
 /**
  * @brief Callback function types for BFT consensus
  */
-typedef bool (*dnac_bft_nullifier_exists_fn)(const uint8_t *nullifier);
-typedef int (*dnac_bft_nullifier_add_fn)(const uint8_t *nullifier, const uint8_t *tx_hash);
-typedef void (*dnac_bft_send_response_fn)(int client_fd, int status, const char *error_msg);
+typedef bool (*dnac_bft_nullifier_exists_fn)(const uint8_t *nullifier, void *user_data);
+typedef int (*dnac_bft_nullifier_add_fn)(const uint8_t *nullifier, const uint8_t *tx_hash, void *user_data);
+typedef void (*dnac_bft_send_response_fn)(int client_fd, int status, const char *error_msg, void *user_data);
 typedef int (*dnac_bft_complete_forward_fn)(const uint8_t *tx_hash, const uint8_t *witness_id,
-                                            const uint8_t *pubkey);
+                                            const uint8_t *pubkey, void *user_data);
 
 /**
  * @brief v0.5.0: Genesis state callback for recording genesis on commit
@@ -376,7 +386,7 @@ typedef int (*dnac_bft_complete_forward_fn)(const uint8_t *tx_hash, const uint8_
  * @return 0 on success, -1 on error, -2 if genesis already exists
  */
 typedef int (*dnac_bft_genesis_record_fn)(const uint8_t *tx_hash, uint64_t total_supply,
-                                          const uint8_t *commitment);
+                                          const uint8_t *commitment, void *user_data);
 
 /**
  * @brief v0.5.0: Ledger entry callback for adding entries on commit
@@ -390,7 +400,7 @@ typedef int (*dnac_bft_genesis_record_fn)(const uint8_t *tx_hash, uint64_t total
  */
 typedef int (*dnac_bft_ledger_add_fn)(const uint8_t *tx_hash, uint8_t tx_type,
                                        const uint8_t nullifiers[][DNAC_NULLIFIER_SIZE],
-                                       uint8_t nullifier_count);
+                                       uint8_t nullifier_count, void *user_data);
 
 /**
  * @brief v0.5.0: UTXO mark spent callback for updating UTXO tree on commit
@@ -400,7 +410,7 @@ typedef int (*dnac_bft_ledger_add_fn)(const uint8_t *tx_hash, uint8_t tx_type,
  * @param spent_epoch Epoch when spent
  * @return 0 on success, -1 if not found
  */
-typedef int (*dnac_bft_utxo_mark_spent_fn)(const uint8_t *commitment_hash, uint64_t spent_epoch);
+typedef int (*dnac_bft_utxo_mark_spent_fn)(const uint8_t *commitment_hash, uint64_t spent_epoch, void *user_data);
 
 /**
  * @brief v0.8.0: UTXO set lookup callback for transaction validation
@@ -413,7 +423,7 @@ typedef int (*dnac_bft_utxo_mark_spent_fn)(const uint8_t *commitment_hash, uint6
  */
 typedef int (*dnac_bft_utxo_lookup_fn)(const uint8_t *nullifier,
                                         uint64_t *amount_out,
-                                        char *owner_out);
+                                        char *owner_out, void *user_data);
 
 /**
  * @brief v0.8.0: UTXO set add callback for adding new outputs on COMMIT
@@ -431,7 +441,7 @@ typedef int (*dnac_bft_utxo_add_fn)(const uint8_t *nullifier,
                                       uint64_t amount,
                                       const uint8_t *tx_hash,
                                       uint32_t index,
-                                      uint64_t block_height);
+                                      uint64_t block_height, void *user_data);
 
 /**
  * @brief v0.8.0: UTXO set remove callback for removing spent inputs on COMMIT
@@ -439,7 +449,7 @@ typedef int (*dnac_bft_utxo_add_fn)(const uint8_t *nullifier,
  * @param nullifier Nullifier of the spent UTXO
  * @return 0 on success, -1 if not found
  */
-typedef int (*dnac_bft_utxo_remove_fn)(const uint8_t *nullifier);
+typedef int (*dnac_bft_utxo_remove_fn)(const uint8_t *nullifier, void *user_data);
 
 /**
  * @brief v0.8.0: UTXO set genesis callback for populating initial UTXO set
@@ -449,16 +459,32 @@ typedef int (*dnac_bft_utxo_remove_fn)(const uint8_t *nullifier);
  * @return 0 on success, -1 on error
  */
 typedef int (*dnac_bft_utxo_genesis_fn)(const dnac_transaction_t *genesis_tx,
-                                         const uint8_t *tx_hash);
+                                         const uint8_t *tx_hash, void *user_data);
+
+/**
+ * @brief v0.9.0: Block creation callback
+ *
+ * Called after a transaction is committed via BFT consensus.
+ * Creates a block wrapping the committed transaction.
+ *
+ * @param tx_hash Transaction hash (DNAC_TX_HASH_SIZE bytes)
+ * @param tx_type Transaction type (GENESIS, SPEND, BURN)
+ * @param timestamp Proposal timestamp (deterministic across witnesses)
+ * @param proposer_id Leader witness ID (DNAC_BFT_WITNESS_ID_SIZE bytes)
+ * @return 0 on success, -1 on error
+ */
+typedef int (*dnac_bft_block_create_fn)(
+    const uint8_t *tx_hash, uint8_t tx_type,
+    uint64_t timestamp, const uint8_t *proposer_id, void *user_data);
 
 /**
  * @brief v0.6.0: Database transaction callbacks (Gap 11)
  *
  * Provides atomicity for multi-nullifier commits.
  */
-typedef int (*dnac_bft_db_begin_fn)(void);
-typedef int (*dnac_bft_db_commit_fn)(void);
-typedef int (*dnac_bft_db_rollback_fn)(void);
+typedef int (*dnac_bft_db_begin_fn)(void *user_data);
+typedef int (*dnac_bft_db_commit_fn)(void *user_data);
+typedef int (*dnac_bft_db_rollback_fn)(void *user_data);
 
 /**
  * @brief Main BFT consensus context
@@ -466,6 +492,9 @@ typedef int (*dnac_bft_db_rollback_fn)(void);
 typedef struct dnac_bft_context {
     /* Configuration */
     dnac_bft_config_t config;
+
+    /* v0.10.0: Zone chain ID (all-zeros = pre-genesis / default zone) */
+    uint8_t chain_id[32];
 
     /* Identity */
     uint8_t my_id[DNAC_BFT_WITNESS_ID_SIZE];
@@ -512,6 +541,7 @@ typedef struct dnac_bft_context {
     dnac_bft_db_begin_fn db_begin_cb;                   /**< v0.6.0: Begin transaction (Gap 11) */
     dnac_bft_db_commit_fn db_commit_cb;                 /**< v0.6.0: Commit transaction (Gap 11) */
     dnac_bft_db_rollback_fn db_rollback_cb;             /**< v0.6.0: Rollback transaction (Gap 11) */
+    dnac_bft_block_create_fn block_create_cb;           /**< v0.9.0: Create block on COMMIT */
     void *callback_user_data;                           /**< User data for callbacks */
 } dnac_bft_context_t;
 
@@ -554,6 +584,14 @@ void dnac_bft_set_utxo_callbacks(dnac_bft_context_t *ctx,
                                    dnac_bft_utxo_add_fn add_cb,
                                    dnac_bft_utxo_remove_fn remove_cb,
                                    dnac_bft_utxo_genesis_fn genesis_cb);
+
+/**
+ * @brief Set block creation callback (v0.9.0)
+ *
+ * Called after every successful BFT COMMIT to create a block.
+ */
+void dnac_bft_set_block_callback(dnac_bft_context_t *ctx,
+                                   dnac_bft_block_create_fn cb);
 
 /* ============================================================================
  * Core BFT Functions

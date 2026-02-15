@@ -245,7 +245,7 @@ int dnac_witness_discover(dnac_context_t *ctx,
                 strncpy(info->address, entry->address, sizeof(info->address) - 1);
                 memcpy(info->pubkey, entry->pubkey, DNAC_PUBKEY_SIZE);
                 info->is_available = entry->active;
-                info->last_seen = entry->joined_epoch * 3600;
+                info->last_seen = entry->joined_epoch * DNAC_EPOCH_DURATION_SEC;
 
                 /* Derive fingerprint from public key */
                 derive_fingerprint(entry->pubkey, info->fingerprint);

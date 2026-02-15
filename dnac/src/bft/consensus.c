@@ -124,7 +124,7 @@ static bool nullifier_exists(dnac_bft_context_t *ctx, const uint8_t *nullifier) 
         QGP_LOG_ERROR(LOG_TAG, "CRITICAL: nullifier_exists_cb not set - fail safe");
         return true;  /* Fail safe: assume exists to prevent double-spend */
     }
-    return ctx->nullifier_exists_cb(nullifier);
+    return ctx->nullifier_exists_cb(nullifier, ctx->callback_user_data);
 }
 
 static int nullifier_add(dnac_bft_context_t *ctx, const uint8_t *nullifier, const uint8_t *tx_hash) {
@@ -132,12 +132,12 @@ static int nullifier_add(dnac_bft_context_t *ctx, const uint8_t *nullifier, cons
         QGP_LOG_ERROR(LOG_TAG, "CRITICAL: nullifier_add_cb not set - fail safe");
         return -1;  /* Fail: cannot commit without storage */
     }
-    return ctx->nullifier_add_cb(nullifier, tx_hash);
+    return ctx->nullifier_add_cb(nullifier, tx_hash, ctx->callback_user_data);
 }
 
 static void send_client_response(dnac_bft_context_t *ctx, int client_fd, int status, const char *error_msg) {
     if (ctx && ctx->send_response_cb) {
-        ctx->send_response_cb(client_fd, status, error_msg);
+        ctx->send_response_cb(client_fd, status, error_msg, ctx->callback_user_data);
     }
 }
 
@@ -217,6 +217,10 @@ static int bft_build_proposal_sign_data(const dnac_bft_proposal_t *proposal,
     }
     offset += 8;
 
+    /* v0.10.0: chain_id (32 bytes) — prevents cross-zone replay */
+    memcpy(sign_data + offset, proposal->header.chain_id, 32);
+    offset += 32;
+
     *sign_data_len = offset;
     return 0;
 }
@@ -224,7 +228,7 @@ static int bft_build_proposal_sign_data(const dnac_bft_proposal_t *proposal,
 /**
  * @brief Build vote signing data
  *
- * Signs: tx_hash || sender_id || round || view || vote || timestamp
+ * Signs: tx_hash || sender_id || round || view || vote || timestamp || chain_id
  */
 static int bft_build_vote_sign_data(const dnac_bft_vote_msg_t *vote,
                                      uint8_t *sign_data, size_t *sign_data_len) {
@@ -261,6 +265,10 @@ static int bft_build_vote_sign_data(const dnac_bft_vote_msg_t *vote,
     }
     offset += 8;
 
+    /* v0.10.0: chain_id (32 bytes) — prevents cross-zone replay */
+    memcpy(sign_data + offset, vote->header.chain_id, 32);
+    offset += 32;
+
     *sign_data_len = offset;
     return 0;
 }
@@ -268,7 +276,7 @@ static int bft_build_vote_sign_data(const dnac_bft_vote_msg_t *vote,
 /**
  * @brief Build view change signing data
  *
- * Signs: sender_id || round || view || new_view || last_committed_round || timestamp
+ * Signs: sender_id || round || view || new_view || last_committed_round || timestamp || chain_id
  */
 static int bft_build_view_change_sign_data(const dnac_bft_view_change_t *vc,
                                             uint8_t *sign_data, size_t *sign_data_len) {
@@ -309,6 +317,10 @@ static int bft_build_view_change_sign_data(const dnac_bft_view_change_t *vc,
         sign_data[offset + i] = (vc->header.timestamp >> (i * 8)) & 0xFF;
     }
     offset += 8;
+
+    /* v0.10.0: chain_id (32 bytes) — prevents cross-zone replay */
+    memcpy(sign_data + offset, vc->header.chain_id, 32);
+    offset += 32;
 
     *sign_data_len = offset;
     return 0;
@@ -446,6 +458,10 @@ static int bft_build_new_view_sign_data(const dnac_bft_new_view_t *nv,
     }
     offset += 8;
 
+    /* v0.10.0: chain_id (32 bytes) — prevents cross-zone replay */
+    memcpy(sign_data + offset, nv->header.chain_id, 32);
+    offset += 32;
+
     *sign_data_len = offset;
     return 0;
 }
@@ -494,6 +510,12 @@ void dnac_bft_set_utxo_callbacks(dnac_bft_context_t *ctx,
     ctx->utxo_add_cb = add_cb;
     ctx->utxo_remove_cb = remove_cb;
     ctx->utxo_genesis_cb = genesis_cb;
+}
+
+void dnac_bft_set_block_callback(dnac_bft_context_t *ctx,
+                                   dnac_bft_block_create_fn cb) {
+    if (!ctx) return;
+    ctx->block_create_cb = cb;
 }
 
 /* ============================================================================
@@ -620,7 +642,7 @@ int dnac_bft_get_leader_index(uint64_t epoch, uint32_t view, int n_witnesses) {
 bool dnac_bft_is_leader(dnac_bft_context_t *ctx) {
     if (!ctx || ctx->my_index < 0) return false;
 
-    uint64_t epoch = time(NULL) / 3600;
+    uint64_t epoch = time(NULL) / DNAC_EPOCH_DURATION_SEC;
     int leader = dnac_bft_get_leader_index(epoch, ctx->current_view,
                                            ctx->roster.n_witnesses);
     return leader == ctx->my_index;
@@ -701,7 +723,7 @@ static int bft_validate_utxo(dnac_bft_context_t *ctx,
         char utxo_owner[DNAC_FINGERPRINT_SIZE];
         memset(utxo_owner, 0, sizeof(utxo_owner));
 
-        rc = ctx->utxo_lookup_cb(tx->inputs[i].nullifier, &utxo_amount, utxo_owner);
+        rc = ctx->utxo_lookup_cb(tx->inputs[i].nullifier, &utxo_amount, utxo_owner, ctx->callback_user_data);
         if (rc != 0) {
             QGP_LOG_WARN(LOG_TAG, "UTXO not found for input %d — REJECT", i);
             dnac_free_transaction(tx);
@@ -792,7 +814,7 @@ static int bft_update_utxo_set(dnac_bft_context_t *ctx,
     /* GENESIS: delegate to utxo_genesis_cb */
     if (tx_type == DNAC_TX_GENESIS) {
         if (ctx->utxo_genesis_cb) {
-            rc = ctx->utxo_genesis_cb(tx, tx_hash);
+            rc = ctx->utxo_genesis_cb(tx, tx_hash, ctx->callback_user_data);
             if (rc != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "Failed to populate UTXO set from genesis: %d", rc);
                 dnac_free_transaction(tx);
@@ -809,7 +831,7 @@ static int bft_update_utxo_set(dnac_bft_context_t *ctx,
     /* SPEND/BURN: Remove spent UTXOs (inputs) */
     if (ctx->utxo_remove_cb) {
         for (int i = 0; i < tx->input_count; i++) {
-            rc = ctx->utxo_remove_cb(tx->inputs[i].nullifier);
+            rc = ctx->utxo_remove_cb(tx->inputs[i].nullifier, ctx->callback_user_data);
             if (rc != 0) {
                 QGP_LOG_WARN(LOG_TAG, "Failed to remove spent UTXO %d (may already be removed)", i);
                 /* Continue — idempotent removal */
@@ -842,7 +864,8 @@ static int bft_update_utxo_set(dnac_bft_context_t *ctx,
                                     out->amount,
                                     tx_hash,
                                     (uint32_t)i,
-                                    0 /* block_height: will be set properly in Phase 2 */);
+                                    0 /* block_height: will be set properly in Phase 2 */,
+                                    ctx->callback_user_data);
             if (rc != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "Failed to add output UTXO %d", i);
                 dnac_free_transaction(tx);
@@ -960,6 +983,10 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
     memcpy(ctx->round_state.tx_data, tx_data, tx_len);
     ctx->round_state.tx_len = tx_len;
 
+    /* v0.9.0: Store proposal timestamp and proposer ID for block production */
+    ctx->round_state.proposal_timestamp = (uint64_t)time(NULL);
+    memcpy(ctx->round_state.proposer_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
+
     ctx->round_state.phase_start_time = dnac_tcp_get_time_ms();
 
     if (client_pubkey) {
@@ -985,6 +1012,7 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
     memcpy(proposal->header.sender_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
     proposal->header.timestamp = time(NULL);
     proposal->header.nonce = generate_nonce();  /* Gap 23-24: replay prevention */
+    memcpy(proposal->header.chain_id, ctx->chain_id, 32);  /* v0.10.0 */
 
     memcpy(proposal->tx_hash, tx_hash, DNAC_TX_HASH_SIZE);
     proposal->nullifier_count = nullifier_count;
@@ -1076,6 +1104,7 @@ int dnac_bft_start_round(dnac_bft_context_t *ctx,
         memcpy(leader_prevote.header.sender_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
         leader_prevote.header.timestamp = time(NULL);
         leader_prevote.header.nonce = generate_nonce();
+        memcpy(leader_prevote.header.chain_id, ctx->chain_id, 32);  /* v0.10.0 */
         memcpy(leader_prevote.tx_hash, tx_hash, DNAC_TX_HASH_SIZE);
         leader_prevote.vote = BFT_VOTE_APPROVE;
 
@@ -1114,7 +1143,7 @@ int dnac_bft_handle_proposal(dnac_bft_context_t *ctx,
     pthread_mutex_lock(&ctx->mutex);
 
     /* Verify proposal is from current leader */
-    uint64_t epoch = time(NULL) / 3600;
+    uint64_t epoch = time(NULL) / DNAC_EPOCH_DURATION_SEC;
     int leader = dnac_bft_get_leader_index(epoch, proposal->header.view,
                                            ctx->roster.n_witnesses);
 
@@ -1187,6 +1216,10 @@ int dnac_bft_handle_proposal(dnac_bft_context_t *ctx,
     ctx->round_state.fee_amount = proposal->fee_amount;
     ctx->round_state.phase_start_time = dnac_tcp_get_time_ms();
 
+    /* v0.9.0: Extract proposal timestamp and proposer from header */
+    ctx->round_state.proposal_timestamp = proposal->header.timestamp;
+    memcpy(ctx->round_state.proposer_id, proposal->header.sender_id, DNAC_BFT_WITNESS_ID_SIZE);
+
     /* Create PREVOTE message */
     dnac_bft_vote_msg_t vote;
     memset(&vote, 0, sizeof(vote));
@@ -1198,6 +1231,7 @@ int dnac_bft_handle_proposal(dnac_bft_context_t *ctx,
     memcpy(vote.header.sender_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
     vote.header.timestamp = time(NULL);
     vote.header.nonce = generate_nonce();  /* Gap 23-24: replay prevention */
+    memcpy(vote.header.chain_id, ctx->chain_id, 32);  /* v0.10.0 */
 
     memcpy(vote.tx_hash, proposal->tx_hash, DNAC_TX_HASH_SIZE);
     vote.vote = double_spend ? BFT_VOTE_REJECT : BFT_VOTE_APPROVE;
@@ -1437,6 +1471,7 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
             memcpy(precommit.header.sender_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
             precommit.header.timestamp = time(NULL);
             precommit.header.nonce = generate_nonce();  /* Gap 23-24: replay prevention */
+            memcpy(precommit.header.chain_id, ctx->chain_id, 32);  /* v0.10.0 */
             memcpy(precommit.tx_hash, ctx->round_state.tx_hash, DNAC_TX_HASH_SIZE);
             precommit.vote = BFT_VOTE_APPROVE;
 
@@ -1486,7 +1521,8 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
                 if (ctx->genesis_record_cb) {
                     int rc = ctx->genesis_record_cb(ctx->round_state.tx_hash,
                                                     ctx->round_state.fee_amount,  /* Repurpose as total_supply */
-                                                    genesis_commitment);
+                                                    genesis_commitment,
+                                                    ctx->callback_user_data);
                     if (rc == -2) {
                         QGP_LOG_ERROR(LOG_TAG, "Genesis already exists - should not happen");
                     } else if (rc != 0) {
@@ -1512,7 +1548,7 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
 
                 /* Begin transaction for atomicity */
                 if (ctx->db_begin_cb) {
-                    if (ctx->db_begin_cb() != 0) {
+                    if (ctx->db_begin_cb(ctx->callback_user_data) != 0) {
                         QGP_LOG_ERROR(LOG_TAG, "Failed to begin transaction");
                         pthread_mutex_unlock(&ctx->mutex);
                         return DNAC_BFT_ERROR_INVALID_MESSAGE;
@@ -1544,14 +1580,14 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
 
                 /* Rollback on failure, commit on success */
                 if (any_failed) {
-                    if (ctx->db_rollback_cb) ctx->db_rollback_cb();
+                    if (ctx->db_rollback_cb) ctx->db_rollback_cb(ctx->callback_user_data);
                     pthread_mutex_unlock(&ctx->mutex);
                     return DNAC_BFT_ERROR_INVALID_MESSAGE;
                 }
                 if (ctx->db_commit_cb) {
-                    if (ctx->db_commit_cb() != 0) {
+                    if (ctx->db_commit_cb(ctx->callback_user_data) != 0) {
                         QGP_LOG_ERROR(LOG_TAG, "Failed to commit transaction");
-                        if (ctx->db_rollback_cb) ctx->db_rollback_cb();
+                        if (ctx->db_rollback_cb) ctx->db_rollback_cb(ctx->callback_user_data);
                         pthread_mutex_unlock(&ctx->mutex);
                         return DNAC_BFT_ERROR_INVALID_MESSAGE;
                     }
@@ -1563,10 +1599,20 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
                 int rc = ctx->ledger_add_cb(ctx->round_state.tx_hash,
                                              ctx->round_state.tx_type,
                                              (const uint8_t (*)[DNAC_NULLIFIER_SIZE])ctx->round_state.nullifiers,
-                                             ctx->round_state.nullifier_count);
+                                             ctx->round_state.nullifier_count,
+                                             ctx->callback_user_data);
                 if (rc != 0) {
                     QGP_LOG_ERROR(LOG_TAG, "Failed to add ledger entry: %d", rc);
                 }
+            }
+
+            /* v0.9.0: Create block wrapping this committed TX */
+            if (ctx->block_create_cb) {
+                ctx->block_create_cb(ctx->round_state.tx_hash,
+                                     ctx->round_state.tx_type,
+                                     ctx->round_state.proposal_timestamp,
+                                     ctx->round_state.proposer_id,
+                                     ctx->callback_user_data);
             }
 
             ctx->last_committed_round = ctx->round_state.round;
@@ -1598,6 +1644,7 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
             memcpy(commit->header.sender_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
             commit->header.timestamp = time(NULL);
             commit->header.nonce = generate_nonce();  /* Gap 23-24: replay prevention */
+            memcpy(commit->header.chain_id, ctx->chain_id, 32);  /* v0.10.0 */
             memcpy(commit->tx_hash, ctx->round_state.tx_hash, DNAC_TX_HASH_SIZE);
             commit->nullifier_count = saved_nullifier_count;
             for (int i = 0; i < saved_nullifier_count; i++) {
@@ -1610,6 +1657,10 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
                 memcpy(commit->tx_data, ctx->round_state.tx_data, ctx->round_state.tx_len);
                 commit->tx_len = ctx->round_state.tx_len;
             }
+
+            /* v0.9.0: Include proposal timestamp and proposer for block production */
+            commit->proposal_timestamp = ctx->round_state.proposal_timestamp;
+            memcpy(commit->proposer_id, ctx->round_state.proposer_id, DNAC_BFT_WITNESS_ID_SIZE);
 
             commit->n_precommits = ctx->round_state.precommit_count;
 
@@ -1651,7 +1702,7 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
              * our waiting client.
              */
             if (ctx->complete_forward_cb) {
-                ctx->complete_forward_cb(saved_tx_hash, ctx->my_id, ctx->my_pubkey);
+                ctx->complete_forward_cb(saved_tx_hash, ctx->my_id, ctx->my_pubkey, ctx->callback_user_data);
             }
 
             return DNAC_BFT_SUCCESS;
@@ -1675,6 +1726,16 @@ int dnac_bft_handle_commit(dnac_bft_context_t *ctx,
         return DNAC_BFT_ERROR_INVALID_MESSAGE;
     }
 
+    /* v0.9.0: Skip if we already committed this round (avoids duplicate blocks) */
+    pthread_mutex_lock(&ctx->mutex);
+    bool already_committed = (commit->header.round <= ctx->last_committed_round);
+    pthread_mutex_unlock(&ctx->mutex);
+    if (already_committed) {
+        QGP_LOG_DEBUG(LOG_TAG, "Round %lu already committed, skipping remote COMMIT",
+                     (unsigned long)commit->header.round);
+        return DNAC_BFT_SUCCESS;
+    }
+
     /* v0.4.0: Add ALL nullifiers to our database
      * v0.6.0: Wrapped in transaction for atomicity (Gap 11) */
     QGP_LOG_INFO(LOG_TAG, "Received COMMIT for round %lu (%d nullifiers)",
@@ -1682,7 +1743,7 @@ int dnac_bft_handle_commit(dnac_bft_context_t *ctx,
 
     /* Begin transaction for atomicity */
     if (ctx->db_begin_cb) {
-        if (ctx->db_begin_cb() != 0) {
+        if (ctx->db_begin_cb(ctx->callback_user_data) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to begin transaction for COMMIT");
             return DNAC_BFT_ERROR_INVALID_MESSAGE;
         }
@@ -1712,15 +1773,36 @@ int dnac_bft_handle_commit(dnac_bft_context_t *ctx,
 
     /* Rollback on failure, commit on success */
     if (any_failed) {
-        if (ctx->db_rollback_cb) ctx->db_rollback_cb();
+        if (ctx->db_rollback_cb) ctx->db_rollback_cb(ctx->callback_user_data);
         return DNAC_BFT_ERROR_INVALID_MESSAGE;
     }
     if (ctx->db_commit_cb) {
-        if (ctx->db_commit_cb() != 0) {
+        if (ctx->db_commit_cb(ctx->callback_user_data) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to commit transaction for COMMIT");
-            if (ctx->db_rollback_cb) ctx->db_rollback_cb();
+            if (ctx->db_rollback_cb) ctx->db_rollback_cb(ctx->callback_user_data);
             return DNAC_BFT_ERROR_INVALID_MESSAGE;
         }
+    }
+
+    /* v0.9.0: Add ledger entry for audit trail (fixes pre-existing gap in remote COMMIT path) */
+    if (ctx->ledger_add_cb) {
+        int rc = ctx->ledger_add_cb(commit->tx_hash,
+                                     commit->tx_type,
+                                     (const uint8_t (*)[DNAC_NULLIFIER_SIZE])commit->nullifiers,
+                                     commit->nullifier_count,
+                                     ctx->callback_user_data);
+        if (rc != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to add ledger entry from remote COMMIT: %d", rc);
+        }
+    }
+
+    /* v0.9.0: Create block wrapping this committed TX */
+    if (ctx->block_create_cb) {
+        ctx->block_create_cb(commit->tx_hash,
+                             commit->tx_type,
+                             commit->proposal_timestamp,
+                             commit->proposer_id,
+                             ctx->callback_user_data);
     }
 
     pthread_mutex_lock(&ctx->mutex);
@@ -1741,7 +1823,7 @@ int dnac_bft_handle_commit(dnac_bft_context_t *ctx,
      * PRECOMMIT quorum ourselves (which can happen due to message ordering).
      */
     if (ctx->complete_forward_cb) {
-        ctx->complete_forward_cb(commit->tx_hash, ctx->my_id, ctx->my_pubkey);
+        ctx->complete_forward_cb(commit->tx_hash, ctx->my_id, ctx->my_pubkey, ctx->callback_user_data);
     }
 
     return DNAC_BFT_SUCCESS;
@@ -1803,6 +1885,7 @@ int dnac_bft_initiate_view_change(dnac_bft_context_t *ctx) {
     memcpy(vc.header.sender_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
     vc.header.timestamp = time(NULL);
     vc.header.nonce = generate_nonce();  /* Gap 23-24: replay prevention */
+    memcpy(vc.header.chain_id, ctx->chain_id, 32);  /* v0.10.0 */
     vc.new_view = ctx->view_change_target;
     vc.last_committed_round = ctx->last_committed_round;
 
@@ -1923,7 +2006,7 @@ int dnac_bft_handle_view_change(dnac_bft_context_t *ctx,
             ctx->round_state.phase = BFT_PHASE_IDLE;
 
             /* If we are new leader, send NEW-VIEW */
-            uint64_t epoch = time(NULL) / 3600;
+            uint64_t epoch = time(NULL) / DNAC_EPOCH_DURATION_SEC;
             int new_leader = dnac_bft_get_leader_index(epoch, ctx->current_view,
                                                        ctx->roster.n_witnesses);
 
@@ -1941,6 +2024,7 @@ int dnac_bft_handle_view_change(dnac_bft_context_t *ctx,
                 memcpy(nv.header.sender_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
                 nv.header.timestamp = time(NULL);
                 nv.header.nonce = generate_nonce();  /* Gap 23-24: replay prevention */
+                memcpy(nv.header.chain_id, ctx->chain_id, 32);  /* v0.10.0 */
                 nv.new_view = ctx->current_view;
                 nv.n_view_change_proofs = ctx->view_change_count;
 
@@ -1979,7 +2063,7 @@ int dnac_bft_handle_new_view(dnac_bft_context_t *ctx,
     pthread_mutex_lock(&ctx->mutex);
 
     /* Verify this is from new leader */
-    uint64_t epoch = time(NULL) / 3600;
+    uint64_t epoch = time(NULL) / DNAC_EPOCH_DURATION_SEC;
     int expected_leader = dnac_bft_get_leader_index(epoch, nv->new_view,
                                                     ctx->roster.n_witnesses);
 

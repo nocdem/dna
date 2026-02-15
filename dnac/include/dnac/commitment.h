@@ -91,7 +91,7 @@ typedef struct {
  * @brief Initialize UTXO commitment system
  * @return 0 on success
  */
-int witness_utxo_init(void);
+int witness_utxo_init(void *user_data);
 
 /**
  * @brief Shutdown UTXO commitment system
@@ -106,7 +106,7 @@ void witness_utxo_shutdown(void);
  * @param commitment UTXO commitment to add
  * @return 0 on success
  */
-int witness_utxo_add(const dnac_utxo_commitment_t *commitment);
+int witness_utxo_add(const dnac_utxo_commitment_t *commitment, void *user_data);
 
 /**
  * @brief Mark UTXO as spent
@@ -117,7 +117,7 @@ int witness_utxo_add(const dnac_utxo_commitment_t *commitment);
  * @param spent_epoch Epoch when spent
  * @return 0 on success, -1 if not found
  */
-int witness_utxo_mark_spent(const uint8_t *commitment_hash, uint64_t spent_epoch);
+int witness_utxo_mark_spent(const uint8_t *commitment_hash, uint64_t spent_epoch, void *user_data);
 
 /**
  * @brief Check if UTXO exists and is unspent
@@ -125,7 +125,7 @@ int witness_utxo_mark_spent(const uint8_t *commitment_hash, uint64_t spent_epoch
  * @param commitment_hash Commitment to check
  * @return true if exists and unspent
  */
-bool witness_utxo_exists(const uint8_t *commitment_hash);
+bool witness_utxo_exists(const uint8_t *commitment_hash, void *user_data);
 
 /**
  * @brief Get current UTXO root
@@ -133,7 +133,7 @@ bool witness_utxo_exists(const uint8_t *commitment_hash);
  * @param root_out Output buffer for root (64 bytes)
  * @return 0 on success
  */
-int witness_utxo_get_root(uint8_t *root_out);
+int witness_utxo_get_root(uint8_t *root_out, void *user_data);
 
 /**
  * @brief Get proof for UTXO
@@ -143,7 +143,7 @@ int witness_utxo_get_root(uint8_t *root_out);
  * @return 0 on success
  */
 int witness_utxo_get_proof(const uint8_t *commitment_hash,
-                            dnac_smt_proof_t *proof_out);
+                            dnac_smt_proof_t *proof_out, void *user_data);
 
 /**
  * @brief Get UTXOs for an owner
@@ -157,7 +157,7 @@ int witness_utxo_get_proof(const uint8_t *commitment_hash,
  */
 int witness_utxo_get_by_owner(const uint8_t *owner_commitment,
                                dnac_utxo_commitment_t *commitments_out,
-                               int max_count);
+                               int max_count, void *user_data);
 
 /**
  * @brief Save epoch root snapshot
@@ -167,7 +167,7 @@ int witness_utxo_get_by_owner(const uint8_t *owner_commitment,
  * @param epoch_root Epoch root to save
  * @return 0 on success
  */
-int witness_epoch_root_save(const dnac_epoch_root_t *epoch_root);
+int witness_epoch_root_save(const dnac_epoch_root_t *epoch_root, void *user_data);
 
 /**
  * @brief Get epoch root by epoch number
@@ -176,7 +176,7 @@ int witness_epoch_root_save(const dnac_epoch_root_t *epoch_root);
  * @param root_out Output epoch root
  * @return 0 on success, -1 if not found
  */
-int witness_epoch_root_get(uint64_t epoch, dnac_epoch_root_t *root_out);
+int witness_epoch_root_get(uint64_t epoch, dnac_epoch_root_t *root_out, void *user_data);
 
 /**
  * @brief v0.7.1: Sign epoch root with witness private key
@@ -195,7 +195,8 @@ int witness_epoch_root_sign(uint64_t epoch,
                              const uint8_t *ledger_root,
                              const uint8_t *witness_id,
                              const uint8_t *privkey,
-                             size_t privkey_size);
+                             size_t privkey_size,
+                             void *user_data);
 
 /* ============================================================================
  * Client Functions

@@ -105,6 +105,10 @@ int dnac_tcp_parse_address(const char *address, char *host_out, uint16_t *port_o
  * Frame Header Functions
  * ========================================================================== */
 
+/**
+ * v0.10.0: Frame header layout (41 bytes):
+ *   magic(4) + payload_len(4) + msg_type(1) + chain_id(32)
+ */
 void dnac_tcp_write_frame_header(uint8_t *buffer, uint8_t msg_type, uint32_t payload_len) {
     /* Magic */
     uint32_t magic = htonl(DNAC_TCP_FRAME_MAGIC);
@@ -116,10 +120,41 @@ void dnac_tcp_write_frame_header(uint8_t *buffer, uint8_t msg_type, uint32_t pay
 
     /* Type */
     buffer[8] = msg_type;
+
+    /* Chain ID — default to all-zeros */
+    memset(buffer + 9, 0, 32);
+}
+
+void dnac_tcp_write_frame_header_with_chain(uint8_t *buffer, uint8_t msg_type,
+                                             uint32_t payload_len, const uint8_t *chain_id) {
+    /* Magic */
+    uint32_t magic = htonl(DNAC_TCP_FRAME_MAGIC);
+    memcpy(buffer, &magic, 4);
+
+    /* Length */
+    uint32_t len = htonl(payload_len);
+    memcpy(buffer + 4, &len, 4);
+
+    /* Type */
+    buffer[8] = msg_type;
+
+    /* Chain ID */
+    if (chain_id) {
+        memcpy(buffer + 9, chain_id, 32);
+    } else {
+        memset(buffer + 9, 0, 32);
+    }
 }
 
 int dnac_tcp_parse_frame_header(const uint8_t *buffer, size_t buffer_len,
                                 uint8_t *msg_type_out, uint32_t *payload_len_out) {
+    return dnac_tcp_parse_frame_header_with_chain(buffer, buffer_len,
+                                                   msg_type_out, payload_len_out, NULL);
+}
+
+int dnac_tcp_parse_frame_header_with_chain(const uint8_t *buffer, size_t buffer_len,
+                                            uint8_t *msg_type_out, uint32_t *payload_len_out,
+                                            uint8_t *chain_id_out) {
     if (buffer_len < DNAC_TCP_FRAME_HEADER_SIZE) {
         return -1;
     }
@@ -145,6 +180,11 @@ int dnac_tcp_parse_frame_header(const uint8_t *buffer, size_t buffer_len,
 
     /* Get type */
     *msg_type_out = buffer[8];
+
+    /* Get chain_id */
+    if (chain_id_out) {
+        memcpy(chain_id_out, buffer + 9, 32);
+    }
 
     return 0;
 }

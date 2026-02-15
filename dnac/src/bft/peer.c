@@ -204,7 +204,7 @@ int bft_peer_send_to_leader(const uint8_t *data, size_t len) {
     dnac_bft_context_t *ctx = g_peer_manager->bft_ctx;
 
     /* Get leader index */
-    uint64_t epoch = time(NULL) / 3600;
+    uint64_t epoch = time(NULL) / DNAC_EPOCH_DURATION_SEC;
     int leader_index = dnac_bft_get_leader_index(epoch, ctx->current_view,
                                                   ctx->roster.n_witnesses);
 

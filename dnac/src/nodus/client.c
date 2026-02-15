@@ -172,12 +172,23 @@ static int build_response_key(const uint8_t *tx_hash, const char *requester_fp,
  * Build permanent announcement key for witness
  * Key: SHA3-512("dnac:witness:announce:" + witness_fingerprint)
  */
-static int build_announcement_key(const char *witness_fp, uint8_t *key_out) {
-    uint8_t key_data[256];
+static int build_announcement_key(const char *witness_fp, const uint8_t *chain_id,
+                                    uint8_t *key_out) {
+    uint8_t key_data[384];
     size_t offset = 0;
 
     memcpy(key_data, NODUS_ANNOUNCE_PREFIX, strlen(NODUS_ANNOUNCE_PREFIX));
     offset += strlen(NODUS_ANNOUNCE_PREFIX);
+
+    /* v0.10.0: Include chain_id hex for zone scoping */
+    if (chain_id) {
+        static const char hex[] = "0123456789abcdef";
+        for (int i = 0; i < 32; i++) {
+            key_data[offset++] = hex[(chain_id[i] >> 4) & 0xF];
+            key_data[offset++] = hex[chain_id[i] & 0xF];
+        }
+        key_data[offset++] = ':';
+    }
 
     size_t fp_len = strlen(witness_fp);
     memcpy(key_data + offset, witness_fp, fp_len);
@@ -221,7 +232,7 @@ static int fetch_witness_announcement(dht_context_t *dht,
                                       dnac_witness_announcement_t *announcement_out) {
     /* Build announcement key */
     uint8_t announce_key[64];
-    if (build_announcement_key(witness_fp, announce_key) != 0) {
+    if (build_announcement_key(witness_fp, NULL, announce_key) != 0) {
         return -1;
     }
 

@@ -71,6 +71,7 @@ int bft_forward_request(dnac_bft_context_t *ctx,
     fwd.header.view = ctx->current_view;
     memcpy(fwd.header.sender_id, ctx->my_id, DNAC_BFT_WITNESS_ID_SIZE);
     fwd.header.timestamp = time(NULL);
+    memcpy(fwd.header.chain_id, ctx->chain_id, 32);  /* v0.10.0 */
 
     memcpy(fwd.tx_hash, request->tx_hash, DNAC_TX_HASH_SIZE);
     /* v0.4.0: Forward full tx_data instead of single nullifier */

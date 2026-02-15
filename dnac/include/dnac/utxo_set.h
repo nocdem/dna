@@ -34,7 +34,7 @@ extern "C" {
  */
 int witness_utxo_set_lookup(const uint8_t *nullifier,
                              uint64_t *amount_out,
-                             char *owner_out);
+                             char *owner_out, void *user_data);
 
 /**
  * @brief Add a new UTXO to the set (from TX output on COMMIT)
@@ -52,7 +52,7 @@ int witness_utxo_set_add(const uint8_t *nullifier,
                           uint64_t amount,
                           const uint8_t *tx_hash,
                           uint32_t index,
-                          uint64_t block_height);
+                          uint64_t block_height, void *user_data);
 
 /**
  * @brief Remove a spent UTXO from the set (on COMMIT)
@@ -60,7 +60,7 @@ int witness_utxo_set_add(const uint8_t *nullifier,
  * @param nullifier Nullifier of the spent UTXO
  * @return 0 on success, -1 if not found
  */
-int witness_utxo_set_remove(const uint8_t *nullifier);
+int witness_utxo_set_remove(const uint8_t *nullifier, void *user_data);
 
 /**
  * @brief Populate the UTXO set from a genesis transaction
@@ -73,7 +73,7 @@ int witness_utxo_set_remove(const uint8_t *nullifier);
  * @return 0 on success, -1 on error
  */
 int witness_utxo_set_genesis(const dnac_transaction_t *genesis_tx,
-                              const uint8_t *tx_hash);
+                              const uint8_t *tx_hash, void *user_data);
 
 /**
  * @brief Get count of UTXOs in the set (for diagnostics)
@@ -82,6 +82,37 @@ int witness_utxo_set_genesis(const dnac_transaction_t *genesis_tx,
  * @return 0 on success
  */
 int witness_utxo_set_count(uint64_t *count_out);
+
+/**
+ * @brief Initialize UTXO state root from DB (v0.9.0)
+ *
+ * Rebuilds the rolling state root by iterating all UTXOs sorted by
+ * (tx_hash, output_index). Must be called on startup before any
+ * transactions are processed.
+ *
+ * @return 0 on success, -1 on error
+ */
+int witness_utxo_set_init(void);
+
+/**
+ * @brief Get current UTXO state root (v0.9.0)
+ *
+ * Returns the rolling SHA3-512 hash representing the current UTXO set state.
+ * All witnesses with identical UTXO sets produce identical roots.
+ *
+ * @param root_out Output buffer (64 bytes)
+ * @return 0 on success, -1 on error
+ */
+int witness_utxo_set_get_root(uint8_t *root_out);
+
+/**
+ * @brief Get UTXO state root with zone context (v0.10.0)
+ *
+ * @param user_data Zone pointer (or NULL for global)
+ * @param root_out Output buffer (64 bytes)
+ * @return 0 on success, -1 on error
+ */
+int witness_utxo_set_get_root_ctx(void *user_data, uint8_t *root_out);
 
 #ifdef __cplusplus
 }

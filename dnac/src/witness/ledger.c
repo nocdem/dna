@@ -11,6 +11,7 @@
 
 #include "dnac/ledger.h"
 #include "dnac/bft.h"
+#include "dnac/zone.h"
 #include <sqlite3.h>
 #include <string.h>
 #include <time.h>
@@ -32,6 +33,15 @@ extern sqlite3 *nullifier_db;
 static uint8_t g_current_root[DNAC_MERKLE_ROOT_SIZE];
 static uint64_t g_leaf_count = 0;
 static bool g_merkle_initialized = false;
+
+/* v0.10.0: Get DB handle from zone user_data, falling back to global */
+static inline sqlite3 *get_db(void *user_data) {
+    if (user_data) {
+        dnac_zone_t *zone = (dnac_zone_t *)user_data;
+        if (zone->db) return zone->db;
+    }
+    return nullifier_db;
+}
 
 /* ============================================================================
  * Merkle Tree Helpers
@@ -127,11 +137,12 @@ static int update_merkle_root(const uint8_t *leaf_hash) {
 /**
  * Save a Merkle checkpoint at the given sequence number
  */
-static int save_checkpoint(uint64_t seq, const uint8_t *merkle_root) {
-    if (!nullifier_db || !merkle_root) return -1;
+static int save_checkpoint(uint64_t seq, const uint8_t *merkle_root, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !merkle_root) return -1;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO ledger_checkpoints (checkpoint_seq, merkle_root) "
         "VALUES (?, ?)", -1, &stmt, NULL);
 
@@ -154,11 +165,12 @@ static int save_checkpoint(uint64_t seq, const uint8_t *merkle_root) {
  * Load the nearest checkpoint <= target sequence
  */
 static int load_checkpoint(uint64_t target_seq, uint64_t *checkpoint_seq_out,
-                            uint8_t *merkle_root_out) {
-    if (!nullifier_db || !checkpoint_seq_out || !merkle_root_out) return -1;
+                            uint8_t *merkle_root_out, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !checkpoint_seq_out || !merkle_root_out) return -1;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT checkpoint_seq, merkle_root FROM ledger_checkpoints "
         "WHERE checkpoint_seq <= ? ORDER BY checkpoint_seq DESC LIMIT 1",
         -1, &stmt, NULL);
@@ -192,15 +204,16 @@ static int load_checkpoint(uint64_t target_seq, uint64_t *checkpoint_seq_out,
  * Ledger Functions
  * ========================================================================== */
 
-int witness_ledger_init(void) {
-    if (!nullifier_db) {
+int witness_ledger_init(void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db) {
         QGP_LOG_ERROR(LOG_TAG, "Database not initialized");
         return -1;
     }
 
     /* Load current state from database */
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT sequence_number, merkle_root FROM ledger_entries "
         "ORDER BY sequence_number DESC LIMIT 1", -1, &stmt, NULL);
 
@@ -238,8 +251,9 @@ int witness_ledger_get_root(uint8_t *root_out) {
     return 0;
 }
 
-int witness_ledger_add_entry(const dnac_ledger_entry_t *entry) {
-    if (!nullifier_db || !entry) return -1;
+int witness_ledger_add_entry(const dnac_ledger_entry_t *entry, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !entry) return -1;
 
     /* Compute leaf hash */
     uint8_t leaf_hash[DNAC_MERKLE_ROOT_SIZE];
@@ -264,14 +278,14 @@ int witness_ledger_add_entry(const dnac_ledger_entry_t *entry) {
 
     /* Insert entry */
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "INSERT INTO ledger_entries (sequence_number, tx_hash, tx_type, "
         "nullifiers, output_commitment, merkle_root, timestamp, epoch) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
 
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to prepare insert: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
@@ -290,13 +304,13 @@ int witness_ledger_add_entry(const dnac_ledger_entry_t *entry) {
 
     if (rc != SQLITE_DONE) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to insert ledger entry: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
     /* P0-3 (v0.7.0): Save checkpoint every DNAC_PROOF_CHECKPOINT_INTERVAL entries */
     if (entry->sequence_number % DNAC_PROOF_CHECKPOINT_INTERVAL == 0) {
-        if (save_checkpoint(entry->sequence_number, g_current_root) == 0) {
+        if (save_checkpoint(entry->sequence_number, g_current_root, user_data) == 0) {
             QGP_LOG_INFO(LOG_TAG, "Saved Merkle checkpoint at seq %llu",
                          (unsigned long long)entry->sequence_number);
         }
@@ -307,11 +321,12 @@ int witness_ledger_add_entry(const dnac_ledger_entry_t *entry) {
     return 0;
 }
 
-int witness_ledger_get_entry(uint64_t seq, dnac_ledger_entry_t *entry_out) {
-    if (!nullifier_db || !entry_out) return -1;
+int witness_ledger_get_entry(uint64_t seq, dnac_ledger_entry_t *entry_out, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !entry_out) return -1;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT tx_hash, tx_type, nullifiers, output_commitment, merkle_root, "
         "timestamp, epoch FROM ledger_entries WHERE sequence_number = ?",
         -1, &stmt, NULL);
@@ -375,11 +390,12 @@ int witness_ledger_get_entry(uint64_t seq, dnac_ledger_entry_t *entry_out) {
 }
 
 int witness_ledger_get_entry_by_hash(const uint8_t *tx_hash,
-                                      dnac_ledger_entry_t *entry_out) {
-    if (!nullifier_db || !tx_hash || !entry_out) return -1;
+                                      dnac_ledger_entry_t *entry_out, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !tx_hash || !entry_out) return -1;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT sequence_number FROM ledger_entries WHERE tx_hash = ?",
         -1, &stmt, NULL);
 
@@ -396,10 +412,10 @@ int witness_ledger_get_entry_by_hash(const uint8_t *tx_hash,
     uint64_t seq = (uint64_t)sqlite3_column_int64(stmt, 0);
     sqlite3_finalize(stmt);
 
-    return witness_ledger_get_entry(seq, entry_out);
+    return witness_ledger_get_entry(seq, entry_out, user_data);
 }
 
-int witness_ledger_get_proof(uint64_t seq, dnac_merkle_proof_t *proof_out) {
+int witness_ledger_get_proof(uint64_t seq, dnac_merkle_proof_t *proof_out, void *user_data) {
     if (!proof_out || seq < 1) return -1;
 
     memset(proof_out, 0, sizeof(*proof_out));
@@ -412,7 +428,7 @@ int witness_ledger_get_proof(uint64_t seq, dnac_merkle_proof_t *proof_out) {
 
     /* Get target entry and compute its leaf hash */
     dnac_ledger_entry_t target_entry;
-    if (witness_ledger_get_entry(seq, &target_entry) != 0) {
+    if (witness_ledger_get_entry(seq, &target_entry, user_data) != 0) {
         return -1;
     }
     if (compute_leaf_hash(&target_entry, proof_out->leaf_hash) != 0) {
@@ -435,7 +451,7 @@ int witness_ledger_get_proof(uint64_t seq, dnac_merkle_proof_t *proof_out) {
     uint64_t checkpoint_seq = 0;
     uint8_t checkpoint_root[DNAC_MERKLE_ROOT_SIZE];
 
-    int rc = load_checkpoint(seq, &checkpoint_seq, checkpoint_root);
+    int rc = load_checkpoint(seq, &checkpoint_seq, checkpoint_root, user_data);
     if (rc != 0) {
         /* No checkpoint found - this is entry #1 or early entries before first checkpoint */
         /* For these, we can't generate a full proof, return minimal proof */
@@ -456,7 +472,7 @@ int witness_ledger_get_proof(uint64_t seq, dnac_merkle_proof_t *proof_out) {
     /* Add leaf hashes from checkpoint+1 to seq-1 (not including target) */
     for (uint64_t i = checkpoint_seq + 1; i < seq && proof_len < DNAC_MERKLE_MAX_DEPTH; i++) {
         dnac_ledger_entry_t entry;
-        if (witness_ledger_get_entry(i, &entry) != 0) {
+        if (witness_ledger_get_entry(i, &entry, user_data) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to get entry %llu for proof", (unsigned long long)i);
             return -1;
         }
@@ -482,12 +498,13 @@ int witness_ledger_get_proof(uint64_t seq, dnac_merkle_proof_t *proof_out) {
  * Supply Tracking Functions
  * ========================================================================== */
 
-int witness_supply_init(uint64_t total_supply, const uint8_t *genesis_tx_hash) {
-    if (!nullifier_db || !genesis_tx_hash) return -1;
+int witness_supply_init(uint64_t total_supply, const uint8_t *genesis_tx_hash, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !genesis_tx_hash) return -1;
 
     /* Check if already initialized */
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT 1 FROM supply_tracking WHERE id = 1", -1, &stmt, NULL);
 
     if (rc == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW) {
@@ -498,14 +515,14 @@ int witness_supply_init(uint64_t total_supply, const uint8_t *genesis_tx_hash) {
     sqlite3_finalize(stmt);
 
     /* Initialize supply */
-    rc = sqlite3_prepare_v2(nullifier_db,
+    rc = sqlite3_prepare_v2(db,
         "INSERT INTO supply_tracking (id, genesis_supply, total_burned, "
         "current_supply, last_tx_hash, last_sequence) VALUES (1, ?, 0, ?, ?, 1)",
         -1, &stmt, NULL);
 
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to prepare supply init: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
@@ -518,7 +535,7 @@ int witness_supply_init(uint64_t total_supply, const uint8_t *genesis_tx_hash) {
 
     if (rc != SQLITE_DONE) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to init supply: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
@@ -527,11 +544,12 @@ int witness_supply_init(uint64_t total_supply, const uint8_t *genesis_tx_hash) {
     return 0;
 }
 
-int witness_supply_record_burn(uint64_t burn_amount, const uint8_t *tx_hash) {
-    if (!nullifier_db || !tx_hash || burn_amount == 0) return -1;
+int witness_supply_record_burn(uint64_t burn_amount, const uint8_t *tx_hash, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !tx_hash || burn_amount == 0) return -1;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "UPDATE supply_tracking SET "
         "total_burned = total_burned + ?, "
         "current_supply = current_supply - ?, "
@@ -554,11 +572,12 @@ int witness_supply_record_burn(uint64_t burn_amount, const uint8_t *tx_hash) {
     return 0;
 }
 
-int witness_supply_get_state(dnac_supply_state_t *state_out) {
-    if (!nullifier_db || !state_out) return -1;
+int witness_supply_get_state(dnac_supply_state_t *state_out, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !state_out) return -1;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT genesis_supply, total_burned, current_supply, last_tx_hash, "
         "last_sequence FROM supply_tracking WHERE id = 1", -1, &stmt, NULL);
 
@@ -591,7 +610,8 @@ int witness_supply_get_state(dnac_supply_state_t *state_out) {
  * P0-2 (v0.7.0): Range Query Functions
  * ========================================================================== */
 
-uint64_t witness_ledger_get_total_entries(void) {
+uint64_t witness_ledger_get_total_entries(void *user_data) {
+    (void)user_data;
     return g_leaf_count;
 }
 
@@ -599,8 +619,9 @@ int witness_ledger_get_range(uint64_t from_seq,
                               uint64_t to_seq,
                               dnac_ledger_entry_t *entries,
                               int max_entries,
-                              int *count_out) {
-    if (!nullifier_db || !entries || !count_out || max_entries <= 0) {
+                              int *count_out, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !entries || !count_out || max_entries <= 0) {
         return -1;
     }
 
@@ -621,7 +642,7 @@ int witness_ledger_get_range(uint64_t from_seq,
     }
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT sequence_number, tx_hash, tx_type, nullifiers, output_commitment, "
         "merkle_root, timestamp, epoch FROM ledger_entries "
         "WHERE sequence_number >= ? AND sequence_number <= ? "
@@ -630,7 +651,7 @@ int witness_ledger_get_range(uint64_t from_seq,
 
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to prepare range query: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
@@ -753,17 +774,17 @@ bool dnac_merkle_verify_proof(const dnac_merkle_proof_t *proof) {
  * v0.7.1: BFT-Anchored Proof Functions
  * ========================================================================== */
 
-int witness_ledger_get_proof_anchored(uint64_t seq, dnac_merkle_proof_t *proof_out) {
+int witness_ledger_get_proof_anchored(uint64_t seq, dnac_merkle_proof_t *proof_out, void *user_data) {
     if (!proof_out || seq < 1) return -1;
 
     /* First, get the basic proof */
-    if (witness_ledger_get_proof(seq, proof_out) != 0) {
+    if (witness_ledger_get_proof(seq, proof_out, user_data) != 0) {
         return -1;
     }
 
     /* Get the entry to find its epoch */
     dnac_ledger_entry_t entry;
-    if (witness_ledger_get_entry(seq, &entry) != 0) {
+    if (witness_ledger_get_entry(seq, &entry, user_data) != 0) {
         return -1;
     }
 
@@ -773,7 +794,8 @@ int witness_ledger_get_proof_anchored(uint64_t seq, dnac_merkle_proof_t *proof_o
     proof_out->epoch_sig_count = witness_epoch_signatures_get(
         entry.epoch,
         proof_out->epoch_sigs,
-        DNAC_PROOF_MAX_SIGNATURES
+        DNAC_PROOF_MAX_SIGNATURES,
+        user_data
     );
 
     if (proof_out->epoch_sig_count < 0) {

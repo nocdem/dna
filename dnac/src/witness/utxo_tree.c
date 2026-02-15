@@ -11,6 +11,8 @@
 
 #include "dnac/commitment.h"
 #include "dnac/ledger.h"
+#include "dnac/epoch.h"
+#include "dnac/zone.h"
 #include <sqlite3.h>
 #include <string.h>
 #include <time.h>
@@ -23,6 +25,15 @@
 
 /* External database handle from nullifier.c */
 extern sqlite3 *nullifier_db;
+
+/* Zone-aware database accessor */
+static inline sqlite3 *get_db(void *user_data) {
+    if (user_data) {
+        dnac_zone_t *zone = (dnac_zone_t *)user_data;
+        if (zone->db) return zone->db;
+    }
+    return nullifier_db;
+}
 
 /* In-memory SMT root (simplified - full SMT would need more state) */
 static uint8_t g_utxo_root[64];
@@ -62,21 +73,22 @@ static void update_root(const uint8_t *commitment) {
  * UTXO Functions
  * ========================================================================== */
 
-int witness_utxo_init(void) {
-    if (!nullifier_db) {
+int witness_utxo_init(void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db) {
         QGP_LOG_ERROR(LOG_TAG, "Database not initialized");
         return -1;
     }
 
     /* Count existing unspent UTXOs and compute root */
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT commitment FROM utxo_commitments WHERE spent_epoch IS NULL "
         "ORDER BY created_epoch, commitment", -1, &stmt, NULL);
 
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to query UTXOs: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
@@ -107,18 +119,19 @@ void witness_utxo_shutdown(void) {
     memset(g_utxo_root, 0, sizeof(g_utxo_root));
 }
 
-int witness_utxo_add(const dnac_utxo_commitment_t *commitment) {
-    if (!nullifier_db || !commitment) return -1;
+int witness_utxo_add(const dnac_utxo_commitment_t *commitment, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !commitment) return -1;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "INSERT OR IGNORE INTO utxo_commitments "
         "(commitment, tx_hash, output_index, amount, owner_commit, created_epoch) "
         "VALUES (?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
 
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to prepare UTXO insert: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
@@ -134,7 +147,7 @@ int witness_utxo_add(const dnac_utxo_commitment_t *commitment) {
 
     if (rc != SQLITE_DONE) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to insert UTXO: %s",
-                      sqlite3_errmsg(nullifier_db));
+                      sqlite3_errmsg(db));
         return -1;
     }
 
@@ -147,11 +160,12 @@ int witness_utxo_add(const dnac_utxo_commitment_t *commitment) {
     return 0;
 }
 
-int witness_utxo_mark_spent(const uint8_t *commitment_hash, uint64_t spent_epoch) {
-    if (!nullifier_db || !commitment_hash) return -1;
+int witness_utxo_mark_spent(const uint8_t *commitment_hash, uint64_t spent_epoch, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !commitment_hash) return -1;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "UPDATE utxo_commitments SET spent_epoch = ? WHERE commitment = ? "
         "AND spent_epoch IS NULL", -1, &stmt, NULL);
 
@@ -161,7 +175,7 @@ int witness_utxo_mark_spent(const uint8_t *commitment_hash, uint64_t spent_epoch
     sqlite3_bind_blob(stmt, 2, commitment_hash, 64, SQLITE_STATIC);
 
     rc = sqlite3_step(stmt);
-    int changes = sqlite3_changes(nullifier_db);
+    int changes = sqlite3_changes(db);
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE || changes == 0) {
@@ -175,7 +189,7 @@ int witness_utxo_mark_spent(const uint8_t *commitment_hash, uint64_t spent_epoch
 
     /* Recompute root from remaining unspent UTXOs */
     sqlite3_stmt *root_stmt;
-    rc = sqlite3_prepare_v2(nullifier_db,
+    rc = sqlite3_prepare_v2(db,
         "SELECT commitment FROM utxo_commitments WHERE spent_epoch IS NULL "
         "ORDER BY created_epoch, commitment", -1, &root_stmt, NULL);
 
@@ -195,11 +209,12 @@ int witness_utxo_mark_spent(const uint8_t *commitment_hash, uint64_t spent_epoch
     return 0;
 }
 
-bool witness_utxo_exists(const uint8_t *commitment_hash) {
-    if (!nullifier_db || !commitment_hash) return false;
+bool witness_utxo_exists(const uint8_t *commitment_hash, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !commitment_hash) return false;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT 1 FROM utxo_commitments WHERE commitment = ? AND spent_epoch IS NULL",
         -1, &stmt, NULL);
 
@@ -213,14 +228,15 @@ bool witness_utxo_exists(const uint8_t *commitment_hash) {
     return exists;
 }
 
-int witness_utxo_get_root(uint8_t *root_out) {
+int witness_utxo_get_root(uint8_t *root_out, void *user_data) {
+    (void)user_data;
     if (!g_utxo_initialized || !root_out) return -1;
     memcpy(root_out, g_utxo_root, 64);
     return 0;
 }
 
 int witness_utxo_get_proof(const uint8_t *commitment_hash,
-                            dnac_smt_proof_t *proof_out) {
+                            dnac_smt_proof_t *proof_out, void *user_data) {
     if (!proof_out || !commitment_hash) return -1;
 
     /* Gap 20 Fix (v0.6.0): Implement proper proof with siblings
@@ -233,9 +249,9 @@ int witness_utxo_get_proof(const uint8_t *commitment_hash,
      */
     memset(proof_out, 0, sizeof(*proof_out));
     memcpy(proof_out->key, commitment_hash, 64);
-    proof_out->exists = witness_utxo_exists(commitment_hash);
+    proof_out->exists = witness_utxo_exists(commitment_hash, user_data);
     memcpy(proof_out->root, g_utxo_root, 64);
-    proof_out->epoch = (uint64_t)(time(NULL) / 3600);
+    proof_out->epoch = (uint64_t)(time(NULL) / DNAC_EPOCH_DURATION_SEC);
 
     if (!proof_out->exists) {
         /* Non-existence proof - just include root */
@@ -245,7 +261,8 @@ int witness_utxo_get_proof(const uint8_t *commitment_hash,
 
     /* Build proof by computing partial roots before and after target */
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    sqlite3 *db = get_db(user_data);
+    int rc = sqlite3_prepare_v2(db,
         "SELECT commitment FROM utxo_commitments WHERE spent_epoch IS NULL "
         "ORDER BY created_epoch, commitment", -1, &stmt, NULL);
 
@@ -296,13 +313,14 @@ int witness_utxo_get_proof(const uint8_t *commitment_hash,
 
 int witness_utxo_get_by_owner(const uint8_t *owner_commitment,
                                dnac_utxo_commitment_t *commitments_out,
-                               int max_count) {
-    if (!nullifier_db || !owner_commitment || !commitments_out || max_count <= 0) {
+                               int max_count, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !owner_commitment || !commitments_out || max_count <= 0) {
         return -1;
     }
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT commitment, tx_hash, output_index, amount, owner_commit, "
         "created_epoch FROM utxo_commitments "
         "WHERE owner_commit = ? AND spent_epoch IS NULL LIMIT ?",
@@ -345,15 +363,16 @@ int witness_utxo_get_by_owner(const uint8_t *owner_commitment,
     return count;
 }
 
-int witness_epoch_root_save(const dnac_epoch_root_t *epoch_root) {
-    if (!nullifier_db || !epoch_root) return -1;
+int witness_epoch_root_save(const dnac_epoch_root_t *epoch_root, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !epoch_root) return -1;
 
     /* v0.7.0: Query min/max sequence for this epoch from ledger_entries */
     uint64_t first_seq = 0;
     uint64_t last_seq = 0;
 
     sqlite3_stmt *seq_stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT MIN(sequence_number), MAX(sequence_number) FROM ledger_entries "
         "WHERE epoch = ?", -1, &seq_stmt, NULL);
 
@@ -375,7 +394,7 @@ int witness_epoch_root_save(const dnac_epoch_root_t *epoch_root) {
                   (unsigned long long)last_seq);
 
     sqlite3_stmt *stmt;
-    rc = sqlite3_prepare_v2(nullifier_db,
+    rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO epoch_roots "
         "(epoch, first_sequence, last_sequence, utxo_root, ledger_root, "
         "utxo_count, total_supply, timestamp) "
@@ -398,11 +417,12 @@ int witness_epoch_root_save(const dnac_epoch_root_t *epoch_root) {
     return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
-int witness_epoch_root_get(uint64_t epoch, dnac_epoch_root_t *root_out) {
-    if (!nullifier_db || !root_out) return -1;
+int witness_epoch_root_get(uint64_t epoch, dnac_epoch_root_t *root_out, void *user_data) {
+    sqlite3 *db = get_db(user_data);
+    if (!db || !root_out) return -1;
 
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(nullifier_db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT first_sequence, last_sequence, utxo_root, ledger_root, "
         "utxo_count, total_supply, timestamp "
         "FROM epoch_roots WHERE epoch = ?", -1, &stmt, NULL);
@@ -560,7 +580,8 @@ int witness_epoch_root_sign(uint64_t epoch,
                              const uint8_t *ledger_root,
                              const uint8_t *witness_id,
                              const uint8_t *privkey,
-                             size_t privkey_size) {
+                             size_t privkey_size,
+                             void *user_data) {
     if (!ledger_root || !witness_id || !privkey) return -1;
 
     /* Compute signing data: H(epoch || ledger_root) */
@@ -595,7 +616,7 @@ int witness_epoch_root_sign(uint64_t epoch,
     }
 
     /* Store the signature */
-    rc = witness_epoch_signature_add(epoch, witness_id, signature);
+    rc = witness_epoch_signature_add(epoch, witness_id, signature, user_data);
     if (rc != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to store epoch signature");
         return -1;

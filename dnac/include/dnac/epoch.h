@@ -3,7 +3,7 @@
  * @brief DNAC Epoch-based DHT key rotation
  *
  * Epochs provide time-based rotation of DHT keys to prevent
- * unbounded key accumulation. Each epoch is 1 hour.
+ * unbounded key accumulation. Each epoch is 60 seconds.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -19,8 +19,8 @@
 extern "C" {
 #endif
 
-/** Epoch duration in seconds (1 hour) */
-#define DNAC_EPOCH_DURATION_SEC 3600
+/** Epoch duration in seconds (60s for practical testing) */
+#define DNAC_EPOCH_DURATION_SEC 60
 
 /**
  * @brief Get current epoch number

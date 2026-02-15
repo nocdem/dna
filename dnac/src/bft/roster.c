@@ -117,11 +117,37 @@ static int dna_dht_put_signed_sync(dna_engine_t *engine, const uint8_t *key, siz
 /**
  * Generate DHT key for roster storage
  */
-static void roster_get_dht_key(uint8_t *key_out) {
-    /* Hash the roster key string */
+static void roster_get_dht_key_ctx(const uint8_t *chain_id, uint8_t *key_out) {
+    /* v0.10.0: Zone-scoped roster key: "dnac:bft:roster:" + hex(chain_id)
+     * Falls back to base key when chain_id is NULL or all-zeros */
+    if (chain_id) {
+        /* Check if non-zero */
+        int is_zero = 1;
+        for (int i = 0; i < 32 && is_zero; i++) {
+            if (chain_id[i] != 0) is_zero = 0;
+        }
+        if (!is_zero) {
+            uint8_t key_data[128];
+            size_t offset = 0;
+            memcpy(key_data, DNAC_BFT_ROSTER_KEY ":", strlen(DNAC_BFT_ROSTER_KEY) + 1);
+            offset = strlen(DNAC_BFT_ROSTER_KEY) + 1;
+            static const char hex[] = "0123456789abcdef";
+            for (int i = 0; i < 32; i++) {
+                key_data[offset++] = hex[(chain_id[i] >> 4) & 0xF];
+                key_data[offset++] = hex[chain_id[i] & 0xF];
+            }
+            qgp_sha3_256(key_data, offset, key_out);
+            return;
+        }
+    }
+    /* Pre-genesis or no chain_id: use base key */
     qgp_sha3_256((const uint8_t*)DNAC_BFT_ROSTER_KEY,
                  strlen(DNAC_BFT_ROSTER_KEY),
                  key_out);
+}
+
+static void roster_get_dht_key(uint8_t *key_out) {
+    roster_get_dht_key_ctx(NULL, key_out);
 }
 
 /* ============================================================================
@@ -152,7 +178,7 @@ int dnac_bft_roster_init_with_self(dnac_roster_t *roster,
     memcpy(entry->witness_id, witness_id, DNAC_BFT_WITNESS_ID_SIZE);
     memcpy(entry->pubkey, pubkey, DNAC_PUBKEY_SIZE);
     strncpy(entry->address, address, DNAC_BFT_MAX_ADDRESS_LEN - 1);
-    entry->joined_epoch = time(NULL) / 3600;
+    entry->joined_epoch = time(NULL) / DNAC_EPOCH_DURATION_SEC;
     entry->active = true;
 
     roster->n_witnesses = 1;
@@ -172,9 +198,9 @@ int dnac_bft_roster_load_from_dht(dnac_bft_context_t *ctx) {
 
     dna_engine_t *engine = (dna_engine_t*)ctx->dna_engine;
 
-    /* Generate DHT key */
+    /* Generate DHT key (v0.10.0: zone-scoped) */
     uint8_t key[32];
-    roster_get_dht_key(key);
+    roster_get_dht_key_ctx(ctx->chain_id, key);
 
     /* Fetch from DHT */
     uint8_t buffer[65536];
@@ -230,9 +256,9 @@ int dnac_bft_roster_save_to_dht(dnac_bft_context_t *ctx) {
         return rc;
     }
 
-    /* Generate DHT key */
+    /* Generate DHT key (v0.10.0: zone-scoped) */
     uint8_t key[32];
-    roster_get_dht_key(key);
+    roster_get_dht_key_ctx(ctx->chain_id, key);
 
     /* Store in DHT */
     QGP_LOG_DEBUG(LOG_TAG, "Saving roster to DHT (%zu bytes)...", written);
@@ -300,7 +326,7 @@ int dnac_bft_roster_add_witness(dnac_bft_context_t *ctx,
     memcpy(entry->witness_id, witness_id, DNAC_BFT_WITNESS_ID_SIZE);
     memcpy(entry->pubkey, pubkey, DNAC_PUBKEY_SIZE);
     strncpy(entry->address, address, DNAC_BFT_MAX_ADDRESS_LEN - 1);
-    entry->joined_epoch = time(NULL) / 3600;
+    entry->joined_epoch = time(NULL) / DNAC_EPOCH_DURATION_SEC;
     entry->active = true;
 
     ctx->roster.n_witnesses++;
@@ -455,7 +481,7 @@ static int load_roster_from_file_client(const char *filename, dnac_roster_t *ros
 
         strncpy(entry->address, addr, DNAC_BFT_MAX_ADDRESS_LEN - 1);
         entry->active = true;
-        entry->joined_epoch = time(NULL) / 3600;
+        entry->joined_epoch = time(NULL) / DNAC_EPOCH_DURATION_SEC;
 
         roster_out->n_witnesses++;
         QGP_LOG_DEBUG(LOG_TAG, "Loaded witness address: %s", addr);

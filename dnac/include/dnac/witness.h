@@ -74,7 +74,7 @@ void witness_nullifier_shutdown(void);
  * @param nullifier Nullifier to check (64 bytes)
  * @return true if exists (already spent), false if new
  */
-bool witness_nullifier_exists(const uint8_t *nullifier);
+bool witness_nullifier_exists(const uint8_t *nullifier, void *user_data);
 
 /**
  * @brief Add nullifier to database
@@ -83,7 +83,7 @@ bool witness_nullifier_exists(const uint8_t *nullifier);
  * @param tx_hash Transaction hash (64 bytes)
  * @return 0 on success, -1 on failure
  */
-int witness_nullifier_add(const uint8_t *nullifier, const uint8_t *tx_hash);
+int witness_nullifier_add(const uint8_t *nullifier, const uint8_t *tx_hash, void *user_data);
 
 /**
  * @brief Mark nullifier as replicated
@@ -91,7 +91,7 @@ int witness_nullifier_add(const uint8_t *nullifier, const uint8_t *tx_hash);
  * @param nullifier Nullifier to mark (64 bytes)
  * @return 0 on success, -1 on failure
  */
-int witness_nullifier_mark_replicated(const uint8_t *nullifier);
+int witness_nullifier_mark_replicated(const uint8_t *nullifier, void *user_data);
 
 /**
  * @brief Get unreplicated nullifiers
@@ -100,7 +100,7 @@ int witness_nullifier_mark_replicated(const uint8_t *nullifier);
  * @param max_count Maximum number to return
  * @return Number of nullifiers returned, -1 on error
  */
-int witness_nullifier_get_unreplicated(uint8_t (*nullifiers)[64], int max_count);
+int witness_nullifier_get_unreplicated(uint8_t (*nullifiers)[64], int max_count, void *user_data);
 
 /**
  * @brief Begin database transaction (Gap 11: v0.6.0)
@@ -108,21 +108,21 @@ int witness_nullifier_get_unreplicated(uint8_t (*nullifiers)[64], int max_count)
  * Provides atomicity for multi-nullifier operations.
  * @return 0 on success, -1 on failure
  */
-int witness_db_begin_transaction(void);
+int witness_db_begin_transaction(void *user_data);
 
 /**
  * @brief Commit database transaction (Gap 11: v0.6.0)
  *
  * @return 0 on success, -1 on failure
  */
-int witness_db_commit(void);
+int witness_db_commit(void *user_data);
 
 /**
  * @brief Rollback database transaction (Gap 11: v0.6.0)
  *
  * @return 0 on success, -1 on failure
  */
-int witness_db_rollback(void);
+int witness_db_rollback(void *user_data);
 
 /* ============================================================================
  * Announcement Serialization (for DHT roster)

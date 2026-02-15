@@ -254,7 +254,7 @@ int dnac_bft_discover_witnesses(void *dna_engine,
         strncpy(info->address, entry->address, sizeof(info->address) - 1);
         memcpy(info->pubkey, entry->pubkey, DNAC_PUBKEY_SIZE);
         info->is_available = entry->active;
-        info->last_seen = entry->joined_epoch * 3600;
+        info->last_seen = entry->joined_epoch * DNAC_EPOCH_DURATION_SEC;
 
         /* Derive fingerprint from public key */
         derive_fingerprint(entry->pubkey, info->fingerprint);
@@ -477,19 +477,34 @@ int dnac_ledger_query_tx(dnac_context_t *ctx,
         return DNAC_ERROR_NETWORK;
     }
 
-    /* Wait for response */
-    uint8_t rsp_buffer[1024];
+    /* Wait for response (witness may send IDENTIFY first, so loop to skip) */
+    uint8_t rsp_buffer[16384];
     size_t rsp_received;
-    uint8_t msg_type;
+    uint8_t msg_type = 0;
     uint32_t payload_len;
+    int max_retries = 5;
 
-    rc = dnac_tcp_client_recv(client, rsp_buffer, sizeof(rsp_buffer), &rsp_received, 10000);
+    while (max_retries-- > 0) {
+        rc = dnac_tcp_client_recv(client, rsp_buffer, sizeof(rsp_buffer), &rsp_received, 10000);
+        if (rc != 0) {
+            dnac_tcp_client_destroy(client);
+            return DNAC_ERROR_TIMEOUT;
+        }
+
+        rc = dnac_tcp_parse_frame_header(rsp_buffer, rsp_received, &msg_type, &payload_len);
+        if (rc != 0) {
+            dnac_tcp_client_destroy(client);
+            return DNAC_ERROR_NETWORK;
+        }
+
+        if (msg_type == DNAC_NODUS_MSG_LEDGER_RESPONSE) {
+            break;
+        }
+    }
+
     dnac_tcp_client_destroy(client);
 
-    if (rc != 0) return DNAC_ERROR_TIMEOUT;
-
-    rc = dnac_tcp_parse_frame_header(rsp_buffer, rsp_received, &msg_type, &payload_len);
-    if (rc != 0 || msg_type != DNAC_NODUS_MSG_LEDGER_RESPONSE) {
+    if (msg_type != DNAC_NODUS_MSG_LEDGER_RESPONSE) {
         return DNAC_ERROR_NETWORK;
     }
 
