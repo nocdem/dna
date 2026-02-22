@@ -23,7 +23,6 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 
 | Function | Description |
 |----------|-------------|
-| `dna_request_id_t dna_engine_list_identities(...)` | List available identities from ~/.dna |
 | `dna_request_id_t dna_engine_create_identity(...)` | Create new identity from BIP39 seeds |
 | `int dna_engine_create_identity_sync(...)` | Create identity synchronously (blocking) |
 | `int dna_engine_restore_identity_sync(...)` | Restore identity from BIP39 seeds without DHT name |
@@ -168,6 +167,17 @@ Topic-based feeds with categories and tags. No voting (deferred).
 | `dna_request_id_t dna_engine_feed_get_comments(engine, topic_uuid, cb, ud)` | Get comments for topic |
 | `dna_request_id_t dna_engine_feed_get_category(engine, category, days_back, cb, ud)` | Get topics by category |
 | `dna_request_id_t dna_engine_feed_get_all(engine, days_back, cb, ud)` | Get all topics (global feed) |
+| `dna_request_id_t dna_engine_feed_reindex_topic(engine, uuid, cb, ud)` | Re-index existing topic into day-bucket index |
+| `int dna_engine_feed_subscribe(engine, topic_uuid)` | Subscribe to a feed topic (local DB, sync to DHT separately) |
+| `int dna_engine_feed_unsubscribe(engine, topic_uuid)` | Unsubscribe from a feed topic |
+| `int dna_engine_feed_is_subscribed(engine, topic_uuid)` | Check if subscribed to a topic (1=yes, 0=no) |
+| `dna_request_id_t dna_engine_feed_get_subscriptions(engine, cb, ud)` | Get all subscribed topics from local DB |
+| `dna_request_id_t dna_engine_feed_sync_subscriptions_to_dht(engine, cb, ud)` | Sync subscription list to DHT (multi-device backup) |
+| `dna_request_id_t dna_engine_feed_sync_subscriptions_from_dht(engine, cb, ud)` | Sync subscriptions from DHT (restore on new device) |
+| `size_t dna_engine_feed_listen_topic_comments(engine, topic_uuid)` | Start listening for comments on a topic (returns listener token) |
+| `void dna_engine_feed_cancel_topic_listener(engine, topic_uuid)` | Cancel comment listener for a topic |
+| `int dna_engine_feed_listen_all_subscriptions(engine)` | Start comment listeners for all subscribed topics |
+| `void dna_engine_feed_cancel_all_topic_listeners(engine)` | Cancel all feed topic listeners |
 
 ## 1.12 Backward Compatibility
 

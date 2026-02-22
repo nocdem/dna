@@ -51,7 +51,7 @@ The following critical issues have been resolved:
 
 ### 1.1 GEK Module (HIGH PRIORITY)
 
-**File:** `messenger/gsk.c`
+**File:** `messenger/gek.c`
 
 | Line | Issue | Description |
 |------|-------|-------------|
@@ -209,7 +209,7 @@ if (!_disposed && mounted) {  // ERROR: 'mounted' doesn't exist on StateNotifier
 ## 5. Files Summary
 
 ### C/C++ Files Requiring Cleanup
-1. `messenger/gsk.c` - 2 TODOs (Phase 8 features)
+1. `messenger/gek.c` - 2 TODOs (Phase 8 features)
 2. `messenger/messages.c` - ✅ debug prints FIXED
 3. `transport/internal/transport_offline.c` - ✅ debug prints FIXED
 4. `blockchain/cellframe/cellframe_wallet.c` - ✅ commented debugs FIXED

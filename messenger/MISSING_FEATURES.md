@@ -126,7 +126,7 @@ Native system notifications on all platforms when messages arrive, even when app
 **Priority:** Medium
 **Status:** Not Started
 
-### Current State (v15)
+### Current State
 - Message status values: PENDING(0), SENT(1), RECEIVED(2), FAILED(3)
 - Functions exist to update local status: `message_backup_update_status()`
 - ACK system marks messages as RECEIVED when recipient fetches from DHT

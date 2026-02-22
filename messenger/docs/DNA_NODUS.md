@@ -129,21 +129,15 @@ Current DNA Nodus servers:
 
 ### Update All Servers
 
-To update all production servers at once:
+To update a server, SSH in and run the build script:
 
 ```bash
-./update-nodus-servers.sh
+ssh root@154.38.182.161 "bash /opt/dna-messenger/build-nodus.sh"  # US-1
+ssh root@164.68.105.227 "bash /opt/dna-messenger/build-nodus.sh"  # EU-1
+ssh root@164.68.116.180 "bash /opt/dna-messenger/build-nodus.sh"  # EU-2
 ```
 
-This script runs `nodus_build.sh` on each server sequentially (US-1, EU-1, EU-2).
-
-To update a single server manually:
-
-```bash
-ssh root@154.38.182.161 "cd /opt/dna-messenger && bash nodus_build.sh"  # US-1
-ssh root@164.68.105.227 "cd /opt/dna-messenger && bash nodus_build.sh"  # EU-1
-ssh root@164.68.116.180 "cd /opt/dna-messenger && bash nodus_build.sh"  # EU-2
-```
+The `build-nodus.sh` script pulls latest code, builds dna-nodus, installs to `/usr/local/bin/`, and restarts the systemd service.
 
 ## Monitoring
 

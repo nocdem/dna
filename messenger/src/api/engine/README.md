@@ -4,7 +4,7 @@ This directory contains the modular DNA Engine implementation.
 
 ## Current State
 
-**Phase: Modular Extraction Complete** (v0.6.70, 2026-01-29)
+**Phase: Modular Extraction Complete** (v0.6.121, current as of 2026-02-22; originally completed at v0.6.70, 2026-01-29)
 
 The DNA Engine has been refactored from a 10,843-line monolith into modular components.
 

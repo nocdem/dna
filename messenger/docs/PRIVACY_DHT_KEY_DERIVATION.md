@@ -1,3 +1,8 @@
+> **⚠️ DESIGN PROPOSAL — NOT IMPLEMENTED**
+> The vulnerability described in Section 2 is real and accurately documented. However, the proposed fix (per-contact DHT salt, Sections 3+) has NOT been implemented. No salt exchange, database migrations, or API changes described below exist in code. Current DHT key derivation still uses deterministic SHA3-512.
+
+---
+
 # DHT Key Derivation Privacy Analysis
 
 **Date:** 2026-01-11

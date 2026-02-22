@@ -82,7 +82,6 @@ cd build && cmake .. && make dna-messenger-cli
 # Commands:
 > help           # Show commands
 > create alice   # Create identity with BIP39 mnemonic
-> list           # List identities
 > load <fp>      # Load identity by fingerprint
 > send <fp> msg  # Send message
 > whoami         # Show current identity
@@ -103,17 +102,6 @@ void on_identity_loaded(dna_request_id_t req_id, int error, void* user_data) {
     }
 }
 
-// Callback for identities list
-void on_identities_listed(dna_request_id_t req_id, int error,
-                          char** fingerprints, int count, void* user_data) {
-    if (error == 0) {
-        for (int i = 0; i < count; i++) {
-            printf("Identity %d: %s\n", i, fingerprints[i]);
-        }
-    }
-    dna_free_strings(fingerprints, count);
-}
-
 int main() {
     // Create engine (initializes DHT, starts worker threads)
     dna_engine_t* engine = dna_engine_create(NULL);  // NULL = platform default
@@ -122,12 +110,13 @@ int main() {
         return 1;
     }
 
-    // List available identities
-    dna_engine_list_identities(engine, on_identities_listed, NULL);
-
-    // Load an identity (async)
-    const char* fingerprint = "abc123...";  // 128 hex chars
-    dna_engine_load_identity(engine, fingerprint, on_identity_loaded, NULL);
+    // Check if identity exists (v0.3.0+ single-user model)
+    if (dna_engine_has_identity(engine)) {
+        // Load identity (async)
+        dna_engine_load_identity(engine, NULL, NULL, on_identity_loaded, NULL);
+    } else {
+        printf("No identity found, show onboarding\n");
+    }
 
     // ... event loop here ...
 
@@ -150,34 +139,16 @@ void initApp() {
         return;
     }
 
-    // Async: List identities with lambda callback
-    DNA::GetEngine().listIdentities([](int error, const std::vector<std::string>& fps) {
-        if (error == 0) {
-            for (const auto& fp : fps) {
-                printf("Found identity: %s\n", fp.c_str());
+    // Check if identity exists (v0.3.0+ single-user model)
+    if (DNA::GetEngine().hasIdentity()) {
+        // Async: Load identity
+        DNA::GetEngine().loadIdentity(NULL, [](int error) {
+            if (error == 0) {
+                printf("Identity loaded!\n");
             }
-        }
-    });
-
-    // Async: Load identity
-    DNA::GetEngine().loadIdentity("abc123...", [](int error) {
-        if (error == 0) {
-            printf("Identity loaded!\n");
-        }
-    });
-}
-
-// Synchronous usage (blocks until complete)
-void syncExample() {
-    // List identities synchronously (5 second timeout)
-    auto identities = DNA::GetEngine().listIdentitiesSync(5000);
-
-    if (!identities.empty()) {
-        // Load first identity synchronously
-        int error = DNA::GetEngine().loadIdentitySync(identities[0], 10000);
-        if (error == 0) {
-            printf("Loaded: %s\n", identities[0].c_str());
-        }
+        });
+    } else {
+        printf("No identity found, show onboarding\n");
     }
 }
 ```
@@ -189,7 +160,7 @@ void syncExample() {
 | Category | Functions | Description |
 |----------|-----------|-------------|
 | [Lifecycle](#1-lifecycle) | 4 | Create/destroy engine, set callbacks |
-| [Identity](#2-identity) | 5 | List, create, load identities, register names |
+| [Identity](#2-identity) | 5 | Create, load, check identities, register names |
 | [Profile](#2a-profile) | 2 | Get/update user profile (wallets, socials, bio, avatar) |
 | [Contacts](#3-contacts) | 3 | Get, add, remove contacts |
 | [Contact Requests](#3a-contact-requests) | 9 | ICQ-style contact requests, block/unblock |
@@ -330,36 +301,6 @@ if (dna_engine_has_identity(engine)) {
     // Show onboarding screen
 }
 ```
-
----
-
-### dna_engine_list_identities (deprecated in v0.3.0)
-
-```c
-dna_request_id_t dna_engine_list_identities(
-    dna_engine_t *engine,
-    dna_identities_cb callback,
-    void *user_data
-);
-```
-
-> **v0.3.0:** In single-user model, this returns at most 1 identity.
-> Use `dna_engine_has_identity()` instead for checking identity existence.
-
-Lists available identities by scanning the engine's `data_dir` for `.dsa` key files.
-
-**Callback signature:**
-```c
-typedef void (*dna_identities_cb)(
-    dna_request_id_t request_id,
-    int error,
-    char **fingerprints,  // Array of 128-char hex strings
-    int count,
-    void *user_data
-);
-```
-
-**Memory:** Caller must free with `dna_free_strings(fingerprints, count)`
 
 ---
 
@@ -754,23 +695,27 @@ typedef void (*dna_profile_cb)(
 typedef struct {
     /* Cellframe wallet addresses */
     char backbone[120];
-    char kelvpn[120];
-    char subzero[120];
-    char cpunk_testnet[120];
+    char alvin[120];            /* Alvin (cpunk mainnet) */
 
     /* External wallet addresses */
-    char btc[128];
-    char eth[128];
+    char eth[128];              /* Also works for BSC, Polygon, etc. */
     char sol[128];
+    char trx[128];              /* TRON address (T...) */
 
     /* Social links */
     char telegram[128];
-    char twitter[128];
+    char twitter[128];          /* X (Twitter) handle */
     char github[128];
+    char facebook[128];
+    char instagram[128];
+    char linkedin[128];
+    char google[128];
 
-    /* Bio and avatar */
+    /* Profile info */
     char bio[512];
-    char avatar_base64[20484];  /* Base64-encoded 64x64 PNG/JPEG */
+    char location[128];
+    char website[256];
+    char avatar_base64[20484];  /* Base64-encoded 64x64 PNG/JPEG (~20KB max) */
 } dna_profile_t;
 ```
 
@@ -835,8 +780,13 @@ Updates current identity's profile in DHT.
 ```c
 dna_profile_t profile = {0};
 strcpy(profile.backbone, "Rj7J7MiX2bWy...");
+strcpy(profile.alvin, "AlvinAddr...");
+strcpy(profile.eth, "0x1234...");
 strcpy(profile.telegram, "@myusername");
+strcpy(profile.twitter, "@myhandle");
 strcpy(profile.bio, "Hello, I'm using DNA Messenger!");
+strcpy(profile.location, "Earth");
+strcpy(profile.website, "https://example.com");
 
 dna_engine_update_profile(engine, &profile,
     [](dna_request_id_t id, int err, void* ud) {
@@ -1858,7 +1808,17 @@ engine.debugLogClear();
 | -106 | `DNA_ENGINE_ERROR_NO_IDENTITY` | No identity loaded |
 | -107 | `DNA_ENGINE_ERROR_ALREADY_EXISTS` | Already exists |
 | -108 | `DNA_ENGINE_ERROR_PERMISSION` | Permission denied |
+| -109 | `DNA_ENGINE_ERROR_INVALID_PARAM` | Invalid parameter |
+| -110 | `DNA_ENGINE_ERROR_NOT_FOUND` | Resource not found |
+| -111 | `DNA_ENGINE_ERROR_PASSWORD_REQUIRED` | Keys are encrypted but no password provided |
+| -112 | `DNA_ENGINE_ERROR_WRONG_PASSWORD` | Password incorrect for encrypted keys |
+| -113 | `DNA_ENGINE_ERROR_INVALID_SIGNATURE` | DHT profile signature verification failed |
+| -114 | `DNA_ENGINE_ERROR_INSUFFICIENT_BALANCE` | Insufficient token balance for transaction |
+| -115 | `DNA_ENGINE_ERROR_RENT_MINIMUM` | Solana: amount below rent-exempt minimum for new account |
 | -116 | `DNA_ENGINE_ERROR_KEY_UNAVAILABLE` | Recipient public key not cached and DHT lookup failed (offline) |
+| -117 | `DNA_ENGINE_ERROR_IDENTITY_LOCKED` | Identity lock held by another process (Flutter/Service) |
+
+**Note:** Error codes -104 and -105 are not defined (gap in sequence).
 
 Use `dna_engine_error_string(error)` for human-readable messages.
 

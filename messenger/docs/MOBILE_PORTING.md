@@ -323,7 +323,7 @@ companion object {
     android:name=".DnaMessengerService"
     android:enabled="true"
     android:exported="false"
-    android:foregroundServiceType="dataSync" />
+    android:foregroundServiceType="remoteMessaging" />
 ```
 
 **Flutter Integration:**
@@ -621,7 +621,7 @@ void onPause(DnaEngine engine) {
 ### Phase 8: iOS Port (Future)
 
 **Additional work needed:**
-1. `crypto/utils/qgp_platform_ios.c` - iOS implementation
+1. `crypto/utils/qgp_platform_ios.c` - iOS implementation (**Note:** This file does not yet exist. iOS support is planned but not implemented.)
 2. Xcode project configuration
 3. Swift/Objective-C bridge to C library
 4. iOS-specific networking (background restrictions)

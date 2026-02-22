@@ -1,17 +1,28 @@
-# dna_messenger
+# DNA Messenger - Flutter App
 
-A new Flutter project.
+Cross-platform UI for DNA Messenger built with Flutter and Dart.
 
-## Getting Started
+**Current Version:** v0.100.91
 
-This project is a starting point for a Flutter application.
+## Documentation
 
-A few resources to get you started if this is your first Flutter project:
+See [docs/FLUTTER_UI.md](../docs/FLUTTER_UI.md) for comprehensive Flutter documentation including:
+- Screen architecture and navigation
+- FFI bindings to the C library
+- State management (Riverpod)
+- Platform-specific handling
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+## Quick Start
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+cd dna_messenger_flutter
+flutter run
+```
+
+## Build
+
+```bash
+flutter build linux    # Linux desktop
+flutter build apk      # Android APK
+flutter build appbundle # Android App Bundle
+```

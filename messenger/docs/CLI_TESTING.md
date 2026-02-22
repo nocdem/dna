@@ -505,13 +505,13 @@ Peer 5a8f2c3d... is OFFLINE
 
 ## NAT Traversal Commands (DEPRECATED)
 
-> **Removed in v0.4.61 for privacy.** ICE/STUN/TURN removed to prevent IP leakage to third-party servers. All messaging now uses DHT-only (Spillway protocol).
+> **Deprecated since v0.4.61 (STUN/TURN removal).** ICE/STUN/TURN were removed to prevent IP leakage to third-party servers. All messaging now uses DHT-only (Spillway protocol). The code still exists for backward compatibility but these features are non-functional.
 
 ### `stun-test` - DEPRECATED
 ### `ice-status` - DEPRECATED
 ### `turn-creds` - DEPRECATED
 
-These commands now return deprecation messages.
+These commands are non-functional and return deprecation messages. They are retained only for backward compatibility.
 
 ---
 
@@ -1016,7 +1016,7 @@ These warnings appear during normal operation and don't indicate errors:
   - `stun-test` - DEPRECATED (v0.4.61)
   - `ice-status` - DEPRECATED (v0.4.61)
   - `turn-creds` - DEPRECATED (v0.4.61)
-- Commands help debug P2P connectivity issues
+- These commands are deprecated since v0.4.61 (STUN/TURN removal). The code still exists for backward compatibility but these features are non-functional.
 
 ### v2.2.0
 - Added `lookup-profile <name|fp>` command to view any user's DHT profile

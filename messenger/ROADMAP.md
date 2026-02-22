@@ -1,6 +1,6 @@
 # DNA Messenger - Development Roadmap
 
-**Version:** 0.5.x | **Last Updated:** 2026-01-16
+**Version:** 0.6.x | **Last Updated:** 2026-02-22
 
 ---
 
@@ -31,9 +31,9 @@ Oct 2025                              Jan 2026
 
 | Component | Status | Version |
 |-----------|--------|---------|
-| C Library (libdna_engine) | Production | v0.5.2 |
-| Flutter App | Beta | v0.99.136 |
-| Android SDK (JNI) | Production | v0.5.2 |
+| C Library (libdna_engine) | Production | v0.6.121 |
+| Flutter App | Beta | v0.100.91 |
+| Android SDK (JNI) | Production | v0.6.121 |
 | DNA Nodus (Bootstrap) | Production | v0.4.5 |
 
 ---
@@ -184,6 +184,18 @@ Client → DHT (daily buckets) ←→ Client
 - Reduced DHT lookups for offline sync
 - Multi-device message consistency
 
+### v0.6.x: Stability & Cache Era (Jan-Feb 2026)
+```
+Client → DHT (cached) ←→ Client
+         ↓
+    Local Feed Cache (SQLite)
+```
+- **Android lifecycle** overhaul (destroy/create pattern)
+- Feed system rewrite with chunked DHT storage
+- **Feed cache** with stale-while-revalidate strategy
+- Group message status tracking
+- Major Android stability sprint (crash/freeze fixes)
+
 ---
 
 ## Key Milestones
@@ -207,6 +219,14 @@ Client → DHT (daily buckets) ←→ Client
 | v0.4.61 | 2026-01-10 | **ICE/STUN/TURN removal** - DHT-only |
 | v0.5.0 | 2026-01-15 | Spillway Protocol v2 |
 | v0.5.2 | 2026-01-16 | Memory leak fixes, stability |
+| v0.5.5 | 2026-01-17 | Android lightweight background mode |
+| v0.6.101 | 2026-01-28 | Group message status tracking |
+| v0.6.104 | 2026-01-30 | Feed system rewrite with chunked DHT |
+| v0.6.108 | 2026-02-03 | Android lifecycle race condition fixes |
+| v0.6.113 | 2026-02-10 | Replace busy-wait polling with condition variables |
+| v0.6.117 | 2026-02-15 | Global DB singleton cleanup |
+| v0.6.119 | 2026-02-19 | Non-fatal presence registration |
+| v0.6.121 | 2026-02-22 | **Feed cache system** (stale-while-revalidate) |
 
 ---
 
@@ -275,6 +295,10 @@ Client → DHT (daily buckets) ←→ Client
 ## In Progress
 
 ### Phase 7 Completion
+- [x] Feed cache system (stale-while-revalidate)
+- [x] Android lifecycle stability
+- [x] Group message status tracking
+- [x] Feed subscription management
 - [ ] iOS build support
 - [ ] Desktop notifications (Linux/Windows)
 - [ ] File/image sharing
@@ -285,19 +309,19 @@ Client → DHT (daily buckets) ←→ Client
 
 ## Planned
 
-### Phase 8: Web Messenger
+### Phase 15: Web Messenger
 - WebAssembly crypto module
 - Browser-based client
 - Progressive Web App (PWA)
 - IndexedDB storage
 
-### Phase 9: Voice/Video
+### Phase 16: Voice/Video
 - Post-quantum key exchange
 - Kyber1024 session keys
 - AES-256-GCM media encryption
 - DHT-based signaling
 
-### Phase 10+: Future
+### Phase 17+: Future
 - iOS native app
 - Forward secrecy
 - Tor integration
@@ -308,7 +332,7 @@ Client → DHT (daily buckets) ←→ Client
 ## Technical Debt
 
 - [ ] Forward secrecy (ephemeral keys)
-- [ ] Security audit
+- [x] ~~Security audit~~ (completed 2026-01-25)
 - [ ] Large group optimization (100+ members)
 - [ ] Desktop notification system
 - [x] ~~Multi-device sync~~ (v0.4.60)
@@ -334,4 +358,4 @@ Client → DHT (daily buckets) ←→ Client
 
 ---
 
-**Project Start:** 2025-10-14 | **Current Phase:** 7 | **Next:** iOS + Web
+**Project Start:** 2025-10-14 | **Current Phase:** 7 | **Library:** v0.6.121 | **App:** v0.100.91

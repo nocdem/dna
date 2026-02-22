@@ -197,7 +197,7 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
 | C Library | `include/dna/version.h` | v0.6.121 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.100.85+10185 | Flutter/Dart code changes (lib/, assets/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.100.91+10191 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.5 | Nodus server changes (vendor/opendht-pq/tools/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
@@ -211,7 +211,8 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
   - Library version: via `dna_engine_get_version()` FFI call
 
 **pubspec.yaml format:** `X.Y.Z+NNN` where NNN = versionCode for Android Play Store
-- versionCode = MAJOR×10000 + MINOR×100 + PATCH (e.g., 0.99.12 → 9912)
+- versionCode = MAJOR×10000 + MINOR×100 + PATCH (e.g., 0.99.12 → 9912, 0.100.91 → 10191)
+- **Note:** When MINOR >= 100, versionCode may not match the simple formula exactly. Always check the current value in pubspec.yaml before bumping.
 
 **Which Number to Bump:**
 - **PATCH** (0.3.X → 0.3.23): Bug fixes, small features, improvements
@@ -416,7 +417,7 @@ TaskCreate:
 | Messenger | [messenger.md](docs/functions/messenger.md) | Core messenger + backup |
 | Crypto | [crypto.md](docs/functions/crypto.md) | Kyber, Dilithium, BIP39 |
 | DHT | [dht.md](docs/functions/dht.md) | Core, Shared, Client |
-| P2P | [p2p.md](docs/functions/p2p.md) | Transport layer |
+| P2P/Transport | [transport.md](docs/functions/transport.md) | Transport layer |
 | Database | [database.md](docs/functions/database.md) | SQLite caches |
 | Blockchain | [blockchain.md](docs/functions/blockchain.md) | Multi-chain wallet |
 | Engine | [engine.md](docs/functions/engine.md) | Internal implementation |
@@ -770,10 +771,16 @@ The DNA library uses a **modular architecture**. The DNA Engine was refactored f
 | `dna_engine_identity.c` | Identity create/load, profiles |
 | `dna_engine_presence.c` | Heartbeat, presence lookup |
 | `dna_engine_wallet.c` | Multi-chain wallet, balances |
-| `dna_engine_feed.c` | Posts, comments, voting |
+| `dna_engine_feed.c` | Posts, comments, voting, subscriptions |
 | `dna_engine_listeners.c` | DHT listeners (outbox, presence, ACK) |
 | `dna_engine_backup.c` | DHT sync for all data types |
 | `dna_engine_lifecycle.c` | Engine pause/resume (mobile) |
+| `dna_engine_addressbook.c` | Address book management |
+| `dna_engine_helpers.c` | Shared utility functions |
+| `dna_engine_logging.c` | Debug log control |
+| `dna_engine_signing.c` | Data signing operations |
+| `dna_engine_version.c` | Version info and checking |
+| `dna_engine_workers.c` | Background worker tasks |
 
 **Module Pattern:**
 ```c
@@ -906,9 +913,9 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 - **Phase 7:** Mobile/Desktop UI (Flutter + Dart)
 
 ### 📋 Planned
-- **Phase 8:** Web Messenger (WebAssembly)
-- **Phase 9:** Voice/Video Calls (Post-Quantum)
-- **Phase 10:** iOS Application
+- **Phase 15:** Web Messenger (WebAssembly)
+- **Phase 16:** Voice/Video Calls (Post-Quantum)
+- **Phase 17:** iOS Application
 
 ---
 
@@ -931,6 +938,6 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 
 ---
 
-**When in doubt:** Check [Development Guidelines](docs/DEVELOPMENT.md), Then ask(critical).
+**When in doubt:** Check documentation in `docs/`, then ask (critical).
 
 **Priority:** Simplicity, security, cross-platform compatibility.

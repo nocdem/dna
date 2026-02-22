@@ -72,14 +72,7 @@ dna_messenger_flutter/
 ├── linux/                      # Linux platform (libs for .so)
 ├── windows/                    # Windows platform (libs for .dll)
 ├── macos/                      # macOS platform (Frameworks for .a)
-├── assets/
-│   └── fonts/                  # ✅ Bundled fonts
-│       ├── NotoSans-Regular.ttf
-│       ├── NotoSans-Bold.ttf
-│       ├── NotoSans-Italic.ttf
-│       ├── NotoSans-BoldItalic.ttf
-│       ├── NotoSansMono-Regular.ttf
-│       └── NotoSansMono-Bold.ttf
+├── assets/                    # App assets (no custom fonts bundled)
 ├── lib/
 │   ├── main.dart               # ✅ Entry point with Riverpod
 │   ├── ffi/
@@ -111,7 +104,7 @@ dna_messenger_flutter/
 │   │   ├── emoji_shortcode_field.dart  # ✅ Enter to send, :shortcode:
 │   │   └── formatted_text.dart     # ✅ Markdown + selectable
 │   └── theme/
-│       └── dna_theme.dart      # ✅ cpunk.io theme + Noto Sans font
+│       └── dna_theme.dart      # ✅ cpunk.io theme (system default fonts)
 ├── ffigen.yaml                 # FFI generator config (reference)
 └── pubspec.yaml                # Dependencies + font declarations
 ```
@@ -386,9 +379,8 @@ dna_messenger_flutter/
 - Navigation order: Chats, Groups, Wallet, Settings
 
 **Typography:**
-- Custom fonts bundled: Noto Sans (regular, bold, italic, bold-italic)
-- Monospace font: Noto Sans Mono for code blocks
-- Fonts located in `assets/fonts/`
+- The app uses system default fonts (no custom fonts are bundled)
+- Font Awesome icons are used throughout the UI (`font_awesome_flutter` package)
 
 **Chat Improvements:**
 - Selectable message text with copy support (Ctrl+C, context menu)
@@ -472,7 +464,7 @@ flutter build apk --release
 
 ## Theming
 
-Single theme based on cpunk.io color palette with Noto Sans fonts:
+Single theme based on cpunk.io color palette with system default fonts:
 
 ```dart
 class DnaColors {
@@ -487,12 +479,9 @@ class DnaColors {
 }
 
 class DnaTheme {
-  static const String _fontFamily = 'NotoSans';
-
   static ThemeData get theme => ThemeData(
     useMaterial3: true,
     brightness: Brightness.dark,
-    fontFamily: _fontFamily,
     scaffoldBackgroundColor: DnaColors.background,
     colorScheme: ColorScheme.dark(
       surface: DnaColors.surface,
@@ -508,9 +497,7 @@ class DnaTheme {
 }
 ```
 
-**Fonts (bundled in assets/fonts/):**
-- `NotoSans` - Default UI font (Regular, Bold, Italic, BoldItalic)
-- `NotoSansMono` - Code blocks and inline code (Regular, Bold)
+**Fonts:** The app uses system default fonts (no custom font files are bundled). Font Awesome icons are used for all UI icons via the `font_awesome_flutter` package.
 
 ---
 

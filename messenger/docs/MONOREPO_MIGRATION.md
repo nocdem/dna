@@ -1,3 +1,8 @@
+> **⚠️ DESIGN PROPOSAL — NOT IMPLEMENTED**
+> This document describes a planned future restructuring of the repository. The current code structure is described in [ARCHITECTURE_DETAILED.md](ARCHITECTURE_DETAILED.md). None of the directory changes, build system modifications, or migration steps described below have been executed.
+
+---
+
 # DNA Monorepo Migration Guide
 
 **Status:** PLANNED | **Target:** When ready to restructure | **Created:** 2026-01-13

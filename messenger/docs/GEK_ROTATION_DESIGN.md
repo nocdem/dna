@@ -1,3 +1,8 @@
+> **⚠️ PARTIALLY IMPLEMENTED — DESIGN DOCUMENT**
+> Feature 1 (Remove Group Member with GEK rotation) has been IMPLEMENTED as of ~v0.6.49. The function `dna_engine_remove_group_member()` exists in the codebase. Feature 2 (Daily GEK Rotation) is still NOT IMPLEMENTED.
+
+---
+
 # GEK Rotation Design Document
 
 **Status:** PLANNED
@@ -81,7 +86,7 @@ Each member's entry contains the GEK encrypted with their Kyber1024 public key, 
 | `messenger_add_group_member()` | ✅ Implemented | `messenger_groups.c:285` |
 | `messenger_remove_group_member()` | ✅ Implemented | `messenger_groups.c:356` |
 | `dna_engine_add_group_member()` | ✅ Implemented | `src/api/dna_engine.c:6253` |
-| `dna_engine_remove_group_member()` | ❌ **MISSING** | - |
+| `dna_engine_remove_group_member()` | ✅ IMPLEMENTED | `src/api/engine/dna_engine_groups.c` |
 | Daily rotation check | ❌ **MISSING** | - |
 
 ### 2.2 GEK Database Schema

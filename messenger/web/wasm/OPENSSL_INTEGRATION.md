@@ -4,6 +4,8 @@
 
 **Status:** Requires additional configuration
 
+**Note:** This document was last reviewed October 2025. WASM/Web Messenger is Phase 8 (planned, not in active development).
+
 ---
 
 ## Problem

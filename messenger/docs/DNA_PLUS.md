@@ -1,3 +1,8 @@
+> **⚠️ DESIGN PROPOSAL — NOT IMPLEMENTED**
+> This document describes a speculative premium subscription system. No implementation exists — no C library code, no Flutter UI, no bootstrap server support. All APIs, screens, and features described below are proposals only.
+
+---
+
 # DNA Plus - Premium Subscription System
 
 **Status:** Documentation Phase

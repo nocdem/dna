@@ -649,7 +649,7 @@ int dht_context_bootstrap_runtime(dht_context_t *ctx, const char *ip, uint16_t p
 
 ### 6.1 Architecture
 
-**Location:** `transport/transport.h`
+**Location:** `transport/`
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐

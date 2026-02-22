@@ -75,7 +75,7 @@ This document describes how the DNA Messenger message system works, with all fac
 │  │               │  OpenDHT-PQ    │                                 │   │
 │  │               └────────────────┘                                 │   │
 │  │                                                                  │   │
-│  │   Note: P2P infrastructure preserved for future audio/video     │   │
+│  │   Note: P2P transport was removed in v0.4.61 (DHT-only)         │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -629,7 +629,7 @@ Example for 1 recipient, 100-byte plaintext:
 is **disabled for messaging** to improve reliability on mobile platforms where background
 execution restrictions make P2P connections unreliable.
 
-**P2P infrastructure is preserved** for future audio/video calls.
+**P2P transport infrastructure was removed in v0.4.61.** All messaging is DHT-only. Future audio/video calls may require a new transport implementation.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -1432,7 +1432,7 @@ CREATE TABLE IF NOT EXISTS group_messages (
 
 | Date | Version | Changes |
 |------|---------|---------|
-| 2025-12-24 | v0.08 | Phase 14: DHT-only messaging (P2P deprecated for messages, kept for future audio/video) |
+| 2025-12-24 | v0.08 | Phase 14: DHT-only messaging (P2P transport removed in v0.4.61) |
 | 2025-11-26 | v0.08 | Initial documentation from source code audit |
 
 ---

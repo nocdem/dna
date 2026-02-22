@@ -32,10 +32,11 @@ make -j$(nproc)
 |--------|----------|-------------|
 | `fuzz_offline_queue` | `dht_deserialize_messages()` | DHT offline message queue binary format |
 | `fuzz_contact_request` | `dht_deserialize_contact_request()` | DHT contact request binary format |
-| `fuzz_gsk_packet` | `gsk_packet_extract()` | GEK Initial Key Packet extraction |
 | `fuzz_message_decrypt` | `dna_decrypt_message_raw()` | v0.08 encrypted message parsing |
 | `fuzz_profile_json` | JSON parsing functions | Profile JSON field extraction |
 | `fuzz_base58` | `base58_decode()` | Base58 string decoding |
+
+**Note:** A `fuzz_gsk_packet` target was previously documented but does not exist. The GEK (formerly GSK) packet extraction is not currently fuzz-tested.
 
 ## Running Fuzzers
 
@@ -95,7 +96,6 @@ Seed files help the fuzzer explore code faster by providing valid starting point
 tests/fuzz/corpus/
     offline_queue/      # DHT message format seeds
     contact_request/    # Contact request seeds
-    gsk_packet/         # GEK packet seeds
     message_decrypt/    # Encrypted message seeds
     profile_json/       # JSON profile seeds
     base58/             # Base58 string seeds

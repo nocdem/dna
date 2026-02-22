@@ -86,6 +86,8 @@ trx->send(from, to, "100.0", "USDT", privkey, 32,
 
 ### Step 1: Create Directory Structure
 
+> **Note:** The example below uses "bitcoin" as a hypothetical example to illustrate the integration pattern. Bitcoin is NOT currently implemented. The actual implemented chains are: `cellframe/`, `ethereum/`, `solana/`, and `tron/`.
+
 ```bash
 mkdir -p blockchain/bitcoin
 ```
