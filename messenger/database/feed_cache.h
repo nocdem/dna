@@ -3,7 +3,7 @@
  * GLOBAL SQLite cache for feed topics and comments (shared across all identities)
  *
  * Architecture:
- * - Global database: ~/.dna/db/feed_cache.db
+ * - Global database: ~/.dna/feed_cache.db
  * - 5-minute TTL: Staleness check for re-fetching from DHT
  * - 30-day eviction: Old entries removed on evict
  * - Shared across identities (feed data is public DHT data)
@@ -40,7 +40,7 @@ extern "C" {
 
 /**
  * Initialize feed cache database
- * Creates database file at <data_dir>/db/feed_cache.db if it doesn't exist
+ * Creates database file at <data_dir>/feed_cache.db if it doesn't exist
  *
  * @return 0 on success, -1 on error
  */

@@ -18,12 +18,8 @@
 #include <string.h>
 #include <time.h>
 #include <sqlite3.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-
 #ifdef _WIN32
-#include <direct.h>
-#define mkdir(path, mode) _mkdir(path)
+/* No additional includes needed */
 #else
 #include <unistd.h>
 #endif
@@ -35,7 +31,8 @@ static sqlite3 *g_db = NULL;
 /* ── Internal helpers ──────────────────────────────────────────────── */
 
 /**
- * Get database path: <data_dir>/db/feed_cache.db
+ * Get database path: <data_dir>/feed_cache.db
+ * Stored at root level (same pattern as keyserver_cache.db)
  */
 static int get_db_path(char *path_out, size_t path_size) {
     const char *data_dir = qgp_platform_app_data_dir();
@@ -44,7 +41,7 @@ static int get_db_path(char *path_out, size_t path_size) {
         return -1;
     }
 
-    snprintf(path_out, path_size, "%s/db/feed_cache.db", data_dir);
+    snprintf(path_out, path_size, "%s/feed_cache.db", data_dir);
     return 0;
 }
 
@@ -110,14 +107,6 @@ int feed_cache_init(void) {
         return -1;
     }
 
-    /* Ensure db/ directory exists */
-    const char *data_dir = qgp_platform_app_data_dir();
-    if (data_dir) {
-        char db_dir[1024];
-        snprintf(db_dir, sizeof(db_dir), "%s/db", data_dir);
-        mkdir(db_dir, 0755);
-    }
-
     QGP_LOG_INFO(LOG_TAG, "Opening database: %s\n", db_path);
 
     /* Open with FULLMUTEX for thread safety (DHT callbacks + main thread) */
@@ -133,6 +122,10 @@ int feed_cache_init(void) {
     /* Android force-close recovery: busy timeout + WAL checkpoint */
     sqlite3_busy_timeout(g_db, 5000);
     sqlite3_wal_checkpoint(g_db, NULL);
+
+    /* Enable WAL mode for better concurrency and crash resilience
+     * (matches keyserver_cache pattern - proven to work on Android) */
+    sqlite3_exec(g_db, "PRAGMA journal_mode = WAL;", NULL, NULL, NULL);
 
     /* Create schema */
     if (create_schema() != 0) {
@@ -201,7 +194,10 @@ int feed_cache_put_topic_json(const char *uuid, const char *topic_json,
                               const char *category_id, uint64_t created_at,
                               int deleted) {
     if (!g_db) {
-        if (feed_cache_init() != 0) return -3;
+        if (feed_cache_init() != 0) {
+            QGP_LOG_WARN(LOG_TAG, "put_topic_json: cache not available (init failed)\n");
+            return -3;
+        }
     }
 
     if (!uuid || !topic_json || !category_id) {
@@ -453,7 +449,10 @@ void feed_cache_free_json_list(char **jsons, int count) {
 int feed_cache_put_comments(const char *topic_uuid, const char *comments_json,
                             int comment_count) {
     if (!g_db) {
-        if (feed_cache_init() != 0) return -3;
+        if (feed_cache_init() != 0) {
+            QGP_LOG_WARN(LOG_TAG, "put_comments: cache not available (init failed)\n");
+            return -3;
+        }
     }
 
     if (!topic_uuid || !comments_json) {

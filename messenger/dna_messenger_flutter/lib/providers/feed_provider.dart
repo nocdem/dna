@@ -39,8 +39,9 @@ class FeedTopicsNotifier extends AsyncNotifier<List<FeedTopic>> {
     }
   }
 
+  /// Refresh feed topics without clearing existing data.
+  /// Old data stays visible until new data arrives (RefreshIndicator handles visual feedback).
   Future<void> refresh() async {
-    state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       final category = ref.read(feedCategoryProvider);
       final daysBack = ref.read(feedDaysBackProvider);
@@ -113,7 +114,6 @@ class SelectedTopicNotifier extends AsyncNotifier<FeedTopic?> {
     final uuid = ref.read(selectedTopicUuidProvider);
     if (uuid == null) return;
 
-    state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
       return engine.feedGetTopic(uuid);
@@ -140,7 +140,6 @@ class TopicCommentsNotifier extends FamilyAsyncNotifier<List<FeedComment>, Strin
   }
 
   Future<void> refresh() async {
-    state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
       return engine.feedGetComments(arg);
@@ -201,7 +200,6 @@ class FeedSubscriptionsNotifier extends AsyncNotifier<List<FeedSubscription>> {
   }
 
   Future<void> refresh() async {
-    state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
       return engine.feedGetSubscriptions();
@@ -304,7 +302,6 @@ class SubscribedTopicsNotifier extends AsyncNotifier<List<FeedTopic>> {
   }
 
   Future<void> refresh() async {
-    state = const AsyncValue.loading();
     ref.invalidate(feedSubscriptionsProvider);
     state = await AsyncValue.guard(() => build());
   }

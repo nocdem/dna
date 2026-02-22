@@ -100,6 +100,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 /* TURN credentials removed in v0.4.61 for privacy */
 #include "database/presence_cache.h"
 #include "database/keyserver_cache.h"
+#include "database/feed_cache.h"
 #include "database/profile_cache.h"
 #include "database/profile_manager.h"
 #include "database/contacts_db.h"
@@ -1291,6 +1292,9 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
 
     /* Initialize global keyserver cache (for display names before login) */
     keyserver_cache_init(NULL);
+
+    /* Initialize global feed cache (for instant feed rendering) */
+    feed_cache_init();
 
     /* Initialize global profile cache + manager (for profile prefetching)
      * DHT context is obtained dynamically via dht_singleton_get() to handle reinit
