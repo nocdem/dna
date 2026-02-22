@@ -11,6 +11,7 @@
 #include "profile_cache.h"
 #include "presence_cache.h"
 #include "contacts_db.h"
+#include "feed_cache.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,6 +78,11 @@ int cache_manager_init(const char *identity) {
         return -1;
     }
 
+    /* Feed cache (global - public DHT data) */
+    if (feed_cache_init() != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Feed cache init failed (non-fatal)");
+    }
+
     // 5. Run startup eviction (clean expired entries from previous run)
     QGP_LOG_INFO(LOG_TAG, "Running startup eviction...\n");
     int evicted = cache_manager_evict_expired();
@@ -105,6 +111,7 @@ void cache_manager_cleanup(void) {
     QGP_LOG_INFO(LOG_TAG, "Cleaning up cache subsystem...\n");
 
     // Reverse order from init
+    feed_cache_close();
     presence_cache_free();
 
     if (strlen(g_current_identity) > 0) {
@@ -159,6 +166,12 @@ int cache_manager_evict_expired(void) {
             }
             free(expired_fingerprints);
         }
+    }
+
+    int feed_evicted = feed_cache_evict_expired();
+    if (feed_evicted > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Feed cache: evicted %d expired entries", feed_evicted);
+        total_evicted += feed_evicted;
     }
 
     // Contacts database has no eviction (permanent data)
