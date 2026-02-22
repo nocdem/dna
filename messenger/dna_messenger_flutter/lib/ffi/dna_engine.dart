@@ -1147,6 +1147,12 @@ class FeedSubscriptionsSyncedEvent extends DnaEvent {
   FeedSubscriptionsSyncedEvent(this.subscriptionsSynced);
 }
 
+/// Feed cache updated with fresh DHT data (v0.6.121+)
+class FeedCacheUpdatedEvent extends DnaEvent {
+  final String cacheKey;
+  FeedCacheUpdatedEvent(this.cacheKey);
+}
+
 // =============================================================================
 // EXCEPTIONS
 // =============================================================================
@@ -1508,6 +1514,17 @@ class DnaEngine {
             (event.data[2] << 16) |
             (event.data[3] << 24);
         dartEvent = FeedSubscriptionsSyncedEvent(subscriptionsSynced);
+        break;
+      case DnaEventType.DNA_EVENT_FEED_CACHE_UPDATED:
+        // Parse cache_key: char[64] at offset 0
+        final keyBytes = <int>[];
+        for (int i = 0; i < 64; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          keyBytes.add(byte);
+        }
+        final cacheKey = String.fromCharCodes(keyBytes);
+        dartEvent = FeedCacheUpdatedEvent(cacheKey);
         break;
       case DnaEventType.DNA_EVENT_ERROR:
         dartEvent = ErrorEvent(0, 'Error occurred');

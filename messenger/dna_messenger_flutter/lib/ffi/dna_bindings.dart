@@ -541,7 +541,8 @@ abstract class DnaEventType {
   static const int DNA_EVENT_DHT_PUBLISH_FAILED = 19;  // Async DHT publish failed
   static const int DNA_EVENT_FEED_TOPIC_COMMENT = 20;  // New comment on subscribed topic
   static const int DNA_EVENT_FEED_SUBSCRIPTIONS_SYNCED = 21;  // Subscriptions synced from DHT
-  static const int DNA_EVENT_ERROR = 22;
+  static const int DNA_EVENT_FEED_CACHE_UPDATED = 22;  // Feed cache refreshed with new DHT data
+  static const int DNA_EVENT_ERROR = 23;
 }
 
 /// Event data union - message received
