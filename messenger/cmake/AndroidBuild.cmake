@@ -34,9 +34,6 @@ if(ANDROID)
     add_definitions(-D__ANDROID__)
     add_definitions(-DANDROID)
 
-    # Disable GUI on Android (always)
-    set(BUILD_GUI OFF CACHE BOOL "Disable GUI on Android" FORCE)
-
     # Use static STL
     set(ANDROID_STL c++_static)
 

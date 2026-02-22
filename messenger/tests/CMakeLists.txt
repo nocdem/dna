@@ -84,8 +84,6 @@ set(TEST_LIBS
     ${DNA_BUILD}/vendor/opendht-pq/libopendht.a
     ${DNA_BUILD}/crypto/kem/libkem.a
     ${DNA_BUILD}/crypto/dsa/libdsa.a
-    ${DNA_BUILD}/dht/libdht_lib.a
-    ${DNA_BUILD}/vendor/libjuice/install/lib/libjuice.a
     ${GNUTLS_LIBRARIES}
     ${JSONC_LIBRARIES}
     ${SQLite3_LIBRARIES}

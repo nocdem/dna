@@ -63,6 +63,7 @@ _deps/
 
 # CMake generated binaries
 dna-messenger
+quick_lookup
 test_*
 *_test
 migrate_storage_once
