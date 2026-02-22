@@ -17,17 +17,18 @@ import androidx.core.app.NotificationCompat
  * DNA Messenger Foreground Service (v0.100.20+)
  *
  * Battery-optimized background service for message notifications.
- * Uses periodic polling (every 5 minutes) instead of continuous DHT listeners.
+ * Uses periodic polling (default: every 1 minute, configurable) instead of
+ * continuous DHT listeners.
  *
  * Architecture:
  * - Sleep most of the time (no wakelock)
- * - Wake every 5 min via AlarmManager
+ * - Wake every N min via AlarmManager (default 1 min)
  * - Check all contacts' outboxes
- * - Show notifications for new messages
+ * - Show notifications for new messages via JNI callback
  * - Go back to sleep
  *
  * Battery: ~1% duty cycle (vs 100% with continuous listeners)
- * Message delay: Up to 5 minutes when app is backgrounded
+ * Message delay: Up to N minutes when app is backgrounded (default 1 min)
  */
 class DnaMessengerService : Service() {
     companion object {
@@ -62,7 +63,7 @@ class DnaMessengerService : Service() {
             android.util.Log.i(TAG, "Poll interval set to $minutes minutes")
             // Service instance will pick up new interval on next alarm schedule
         }
-        private const val WAKELOCK_TIMEOUT_MS = 30 * 1000L   // 30 seconds (per check only)
+        private const val WAKELOCK_TIMEOUT_MS = 60 * 1000L   // 60 seconds (per check, allows 15s DHT stabilization)
         private const val NETWORK_CHANGE_DEBOUNCE_MS = 2000L  // 2 seconds debounce
 
         @Volatile
@@ -464,6 +465,19 @@ class DnaMessengerService : Service() {
         android.util.Log.i(TAG, "[POLL] Starting message check...")
         val startTime = System.currentTimeMillis()
 
+        // v0.100.93: Ensure notification helper is registered before polling.
+        // When user swipes app away, MainActivity.onDestroy() clears the JNI
+        // notification callback (g_android_notification_cb). Without re-registering,
+        // the service polls successfully but notifications are never shown.
+        if (MainActivity.notificationHelper == null) {
+            try {
+                MainActivity.initNotificationHelper(this)
+                android.util.Log.i(TAG, "[POLL] Re-registered notification helper (was cleared by onDestroy)")
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "[POLL] Failed to re-register notification helper: ${e.message}")
+            }
+        }
+
         // Acquire short wakelock for the check
         acquireWakeLock()
 
@@ -530,6 +544,11 @@ class DnaMessengerService : Service() {
     /**
      * Ensure identity is loaded for message check.
      * Returns true if ready to check, false if cannot proceed.
+     *
+     * v0.100.93: When a fresh engine is created (identity was not loaded),
+     * waits briefly for DHT to stabilize before returning. Without this,
+     * the first poll after backgrounding often finds 0 messages because
+     * DHT routing table hasn't connected yet.
      */
     private fun ensureIdentityForCheck(): Boolean {
         // Already loaded?
@@ -566,6 +585,12 @@ class DnaMessengerService : Service() {
         return when (result) {
             0 -> {
                 android.util.Log.i(TAG, "[POLL] Identity loaded successfully")
+                // v0.100.93: Wait for DHT to stabilize after fresh identity load.
+                // DHT bootstrap connects to seed nodes during identity load, but
+                // routing table needs time to populate with enough peers for lookups.
+                // 15s is safe: this runs on a background thread and wake lock allows 30s.
+                android.util.Log.i(TAG, "[POLL] Waiting 15s for DHT stabilization...")
+                Thread.sleep(15000)
                 true
             }
             ERROR_IDENTITY_LOCKED -> {
