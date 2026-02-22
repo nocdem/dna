@@ -1882,6 +1882,9 @@ Use `dna_engine_error_string(error)` for human-readable messages.
 | `DNA_EVENT_CONTACTS_SYNCED` | `contacts_synced.contacts_synced` | Contacts synced from DHT (v0.6.54+) |
 | `DNA_EVENT_GEKS_SYNCED` | `geks_synced.geks_synced` | GEKs synced from DHT (v0.6.54+) |
 | `DNA_EVENT_IDENTITY_LOADED` | `identity_loaded.fingerprint` | Identity loaded |
+| `DNA_EVENT_FEED_TOPIC_COMMENT` | `feed_topic_comment.topic_uuid` | New comment on subscribed topic (v0.6.91+) |
+| `DNA_EVENT_FEED_SUBSCRIPTIONS_SYNCED` | `feed_subscriptions_synced.subscriptions_synced` | Subscriptions synced from DHT (v0.6.91+) |
+| `DNA_EVENT_FEED_CACHE_UPDATED` | `feed_cache_updated.cache_key` | Feed cache refreshed with new DHT data (v0.6.121+) |
 | `DNA_EVENT_ERROR` | `error.code`, `error.message` | Error occurred |
 
 ---

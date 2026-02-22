@@ -185,3 +185,50 @@ SQLite cache for discovered bootstrap nodes, enabling decentralization.
 | `int bootstrap_cache_count(void)` | Get count of cached nodes |
 | `bool bootstrap_cache_exists(const char*, uint16_t)` | Check if node exists in cache |
 | `void bootstrap_cache_free_entries(bootstrap_cache_entry_t*)` | Free entry array |
+
+---
+
+## 13.9 Feed Cache (`database/feed_cache.h`)
+
+**Added in v0.6.121** - Global SQLite cache for feed topics and comments with stale-while-revalidate semantics.
+
+**Database:** `~/.dna/db/feed_cache.db`
+
+**Tables:** feed_topics, feed_comments, feed_cache_meta
+
+**Constants:** `FEED_CACHE_TTL_SECONDS` (300), `FEED_CACHE_EVICT_SECONDS` (2592000)
+
+### Lifecycle
+
+| Function | Description |
+|----------|-------------|
+| `int feed_cache_init(void)` | Initialize feed cache database |
+| `void feed_cache_close(void)` | Close feed cache database |
+| `int feed_cache_evict_expired(void)` | Evict entries older than 30 days |
+
+### Topic Operations
+
+| Function | Description |
+|----------|-------------|
+| `int feed_cache_put_topic_json(const char*, const char*, const char*, uint64_t, int)` | Store/update topic JSON blob |
+| `int feed_cache_get_topic_json(const char*, char**)` | Get single topic JSON by UUID |
+| `int feed_cache_delete_topic(const char*)` | Delete topic from cache |
+| `int feed_cache_get_topics_all(int, char***, int*)` | Get all non-deleted topics within date window |
+| `int feed_cache_get_topics_by_category(const char*, int, char***, int*)` | Get topics filtered by category |
+| `void feed_cache_free_json_list(char**, int)` | Free array of JSON strings |
+
+### Comment Operations
+
+| Function | Description |
+|----------|-------------|
+| `int feed_cache_put_comments(const char*, const char*, int)` | Store cached comments for topic |
+| `int feed_cache_get_comments(const char*, char**, int*)` | Get cached comments for topic |
+| `int feed_cache_invalidate_comments(const char*)` | Invalidate cached comments for topic |
+
+### Meta / Staleness
+
+| Function | Description |
+|----------|-------------|
+| `int feed_cache_update_meta(const char*)` | Update last-fetched timestamp for cache key |
+| `bool feed_cache_is_stale(const char*)` | Check if cache key is stale (>5 min) |
+| `int feed_cache_stats(int*, int*, int*)` | Get cache statistics |
