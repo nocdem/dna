@@ -222,54 +222,78 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
   /// Load identity (v0.3.0 single-user model)
   ///
   /// [fingerprint] - Optional. If not provided, fingerprint is computed from flat key file.
+  /// v0.100.94: Retries on identity lock errors (transient - service releasing lock).
   Future<void> loadIdentity([String? fingerprint]) async {
     // Mark identity as NOT ready while loading (shows spinner in UI)
     ref.read(identityReadyProvider.notifier).state = false;
 
-    try {
-      final engine = await ref.read(engineProvider.future);
+    // v0.100.94: Retry on identity lock errors (code -117).
+    // The Android ForegroundService may still hold the lock briefly after
+    // shutdown is signaled. The C-side retries for 5s, but if that's not
+    // enough we retry the full loadIdentity call with a delay.
+    const maxRetries = 3;
+    const retryDelay = Duration(seconds: 2);
 
-      if (fingerprint != null) {
-        engine.debugLog('IDENTITY', 'loadIdentity START fp=${fingerprint.substring(0, 16)}...');
-      } else {
-        engine.debugLog('IDENTITY', 'loadIdentity START (auto-detect fingerprint)');
+    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        final engine = await ref.read(engineProvider.future);
+
+        if (fingerprint != null) {
+          engine.debugLog('IDENTITY', 'loadIdentity START fp=${fingerprint.substring(0, 16)}... (attempt $attempt/$maxRetries)');
+        } else {
+          engine.debugLog('IDENTITY', 'loadIdentity START (auto-detect fingerprint, attempt $attempt/$maxRetries)');
+        }
+
+        await engine.loadIdentity(fingerprint: fingerprint);
+
+        // Get actual fingerprint after loading (important when auto-detected)
+        final loadedFp = engine.fingerprint;
+        engine.debugLog('IDENTITY', 'loadIdentity DONE - loaded fp=${loadedFp?.substring(0, 16) ?? "null"}');
+
+        // Android v0.5.5+: Store fingerprint for background service
+        // Service reads this when it starts fresh after process killed
+        if (Platform.isAndroid && loadedFp != null) {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('identity_fingerprint', loadedFp);
+          engine.debugLog('IDENTITY', 'loadIdentity - fingerprint stored for service');
+        }
+
+        // Set fingerprint for reference (not used for identity loaded check anymore)
+        ref.read(currentFingerprintProvider.notifier).state = loadedFp;
+        engine.debugLog('IDENTITY', 'loadIdentity - currentFingerprintProvider set');
+
+        // Mark identity as READY - this triggers data providers to fetch
+        ref.read(identityReadyProvider.notifier).state = true;
+        engine.debugLog('IDENTITY', 'loadIdentity - identityReadyProvider set to true');
+
+        // v0.6.26: Contact listeners are now started in C stabilization thread
+        // This was moved from Dart because listenAllContacts() blocked UI for up to 30s
+        // waiting for DHT to become ready. Now runs in background C thread.
+        engine.debugLog('IDENTITY', 'Contact listeners will start in C stabilization thread');
+
+        // Invalidate profile providers to fetch fresh profile from DHT
+        ref.invalidate(userProfileProvider);
+        ref.invalidate(fullProfileProvider);
+        return; // Success - exit retry loop
+      } catch (e) {
+        // v0.100.94: Check if this is a transient identity lock error (-117)
+        final isLockError = e.toString().contains('-117') ||
+            e.toString().contains('identity_locked') ||
+            e.toString().contains('Identity lock');
+
+        if (isLockError && attempt < maxRetries) {
+          // Transient lock error - service is still releasing, retry after delay
+          final engine = ref.read(engineProvider).valueOrNull;
+          engine?.debugLog('IDENTITY', 'loadIdentity: identity locked (attempt $attempt/$maxRetries), retrying in ${retryDelay.inSeconds}s...');
+          await Future.delayed(retryDelay);
+          continue; // Retry
+        }
+
+        // Permanent error or all retries exhausted - reset state
+        ref.read(identityReadyProvider.notifier).state = false;
+        ref.read(currentFingerprintProvider.notifier).state = null;
+        rethrow;
       }
-
-      await engine.loadIdentity(fingerprint: fingerprint);
-
-      // Get actual fingerprint after loading (important when auto-detected)
-      final loadedFp = engine.fingerprint;
-      engine.debugLog('IDENTITY', 'loadIdentity DONE - loaded fp=${loadedFp?.substring(0, 16) ?? "null"}');
-
-      // Android v0.5.5+: Store fingerprint for background service
-      // Service reads this when it starts fresh after process killed
-      if (Platform.isAndroid && loadedFp != null) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('identity_fingerprint', loadedFp);
-        engine.debugLog('IDENTITY', 'loadIdentity - fingerprint stored for service');
-      }
-
-      // Set fingerprint for reference (not used for identity loaded check anymore)
-      ref.read(currentFingerprintProvider.notifier).state = loadedFp;
-      engine.debugLog('IDENTITY', 'loadIdentity - currentFingerprintProvider set');
-
-      // Mark identity as READY - this triggers data providers to fetch
-      ref.read(identityReadyProvider.notifier).state = true;
-      engine.debugLog('IDENTITY', 'loadIdentity - identityReadyProvider set to true');
-
-      // v0.6.26: Contact listeners are now started in C stabilization thread
-      // This was moved from Dart because listenAllContacts() blocked UI for up to 30s
-      // waiting for DHT to become ready. Now runs in background C thread.
-      engine.debugLog('IDENTITY', 'Contact listeners will start in C stabilization thread');
-
-      // Invalidate profile providers to fetch fresh profile from DHT
-      ref.invalidate(userProfileProvider);
-      ref.invalidate(fullProfileProvider);
-    } catch (e) {
-      // v0.100.83+: Reset state on error to allow retry
-      ref.read(identityReadyProvider.notifier).state = false;
-      ref.read(currentFingerprintProvider.notifier).state = null;
-      rethrow;
     }
   }
 

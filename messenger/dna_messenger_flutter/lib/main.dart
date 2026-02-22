@@ -96,31 +96,39 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
   }
 
   /// Try to auto-load identity if one exists on disk (runs once at startup)
+  /// v0.100.94: Added try/catch to prevent permanent loading screen on errors.
   Future<void> _tryAutoLoadIdentity(dynamic engine) async {
     if (_autoLoadStarted) return;
     if (engine == null) return;
 
     _autoLoadStarted = true;
 
-    // v0.3.0: Check if identity exists and auto-load
-    final hasIdentity = engine.hasIdentity();
-    engine.debugLog('STARTUP', 'v0.3.0: hasIdentity=$hasIdentity');
+    try {
+      // v0.3.0: Check if identity exists and auto-load
+      final hasIdentity = engine.hasIdentity();
+      engine.debugLog('STARTUP', 'v0.3.0: hasIdentity=$hasIdentity');
 
-    if (hasIdentity) {
-      // Pre-warm: Set DHT state to "connecting" immediately for UI feedback
-      // This shows "Connecting to network..." banner while DHT bootstraps
-      ref.read(dhtConnectionStateProvider.notifier).state =
-          DhtConnectionState.connecting;
-      engine.debugLog('STARTUP', 'v0.3.0: DHT pre-warm - state set to connecting');
+      if (hasIdentity) {
+        // Pre-warm: Set DHT state to "connecting" immediately for UI feedback
+        // This shows "Connecting to network..." banner while DHT bootstraps
+        ref.read(dhtConnectionStateProvider.notifier).state =
+            DhtConnectionState.connecting;
+        engine.debugLog('STARTUP', 'v0.3.0: DHT pre-warm - state set to connecting');
 
-      engine.debugLog('STARTUP', 'v0.3.0: Identity exists, auto-loading...');
-      await ref.read(identitiesProvider.notifier).loadIdentity();
-      engine.debugLog('STARTUP', 'v0.3.0: Identity auto-loaded');
-    } else {
-      engine.debugLog('STARTUP', 'v0.3.0: No identity, showing onboarding');
+        engine.debugLog('STARTUP', 'v0.3.0: Identity exists, auto-loading...');
+        await ref.read(identitiesProvider.notifier).loadIdentity();
+        engine.debugLog('STARTUP', 'v0.3.0: Identity auto-loaded');
+      } else {
+        engine.debugLog('STARTUP', 'v0.3.0: No identity, showing onboarding');
+      }
+    } catch (e) {
+      // v0.100.94: Don't get stuck on loading screen forever.
+      // loadIdentity has its own retry logic for lock errors.
+      // If we still fail here, show onboarding/error instead of infinite spinner.
+      engine.debugLog('STARTUP', 'v0.3.0: Auto-load failed: $e');
     }
 
-    // Trigger rebuild after check completes
+    // Trigger rebuild after check completes (even on error - prevents stuck loading screen)
     if (mounted) {
       setState(() {
         _autoLoadComplete = true;

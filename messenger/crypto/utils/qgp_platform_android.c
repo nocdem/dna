@@ -537,8 +537,10 @@ int qgp_platform_acquire_identity_lock(const char *data_dir) {
 
     /* v0.6.109: Try to acquire exclusive lock with retry
      * On Android, ForegroundService may still hold lock briefly after app reopens.
-     * Retry up to 10 times with 100ms delay (1 second total) to handle handoff. */
-    const int max_retries = 10;
+     * v0.6.123: Increased to 50 retries (5 seconds total) because service may need
+     * up to a few seconds to release engineLock after shutdown is signaled.
+     * The 150ms Flutter delay + previous 1s retry was too short. */
+    const int max_retries = 50;
     const int retry_delay_ms = 100;
 
     for (int attempt = 0; attempt < max_retries; attempt++) {

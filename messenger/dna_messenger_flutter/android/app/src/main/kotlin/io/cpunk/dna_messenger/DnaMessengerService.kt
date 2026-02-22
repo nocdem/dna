@@ -588,9 +588,16 @@ class DnaMessengerService : Service() {
                 // v0.100.93: Wait for DHT to stabilize after fresh identity load.
                 // DHT bootstrap connects to seed nodes during identity load, but
                 // routing table needs time to populate with enough peers for lookups.
-                // 15s is safe: this runs on a background thread and wake lock allows 30s.
-                android.util.Log.i(TAG, "[POLL] Waiting 15s for DHT stabilization...")
-                Thread.sleep(15000)
+                // v0.100.94: Sleep is now interruptible - checks flutterActive every 100ms
+                // so service releases engineLock quickly when Flutter resumes (~100ms vs 15s).
+                android.util.Log.i(TAG, "[POLL] Waiting up to 15s for DHT stabilization (interruptible)...")
+                for (i in 0 until 150) {  // 150 * 100ms = 15s
+                    if (flutterActive) {
+                        android.util.Log.i(TAG, "[POLL] DHT wait interrupted - Flutter active (after ${i * 100}ms)")
+                        break
+                    }
+                    Thread.sleep(100)
+                }
                 true
             }
             ERROR_IDENTITY_LOCKED -> {
