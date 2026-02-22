@@ -360,10 +360,10 @@ class QrAuthService {
         'signed_payload': signedPayloadObj,
       };
 
-      // POST to {origin}/api/v4/verify
+      // POST to {origin}/api/v5/verify  (phase-1: payload is still v4-shaped, server accepts it)
       final verifyUrl = origin.endsWith('/')
-          ? '${origin}api/v4/verify'
-          : '$origin/api/v4/verify';
+          ? '${origin}api/v5/verify'
+        : '$origin/api/v5/verify';
 
       debugPrint('QR_AUTH_V4: verifyUrl=$verifyUrl');
 

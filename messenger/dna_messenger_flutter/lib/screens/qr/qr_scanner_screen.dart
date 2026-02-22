@@ -13,7 +13,7 @@ import 'qr_auth_screen.dart';
 import 'qr_result_screen.dart';
 
 /// QR Scanner tab index in the home screen IndexedStack
-const _kQrScannerTabIndex = 3;
+const _kQrScannerTabIndex = 4;
 
 class QrScannerScreen extends ConsumerStatefulWidget {
   final VoidCallback? onMenuPressed;
