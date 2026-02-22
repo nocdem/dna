@@ -824,8 +824,8 @@ void dna_handle_feed_get_category(dna_engine_t *engine, dna_task_t *task) {
     if (days > 30) days = 30;
 
     /* Cache check */
-    char cache_key[64];
-    snprintf(cache_key, sizeof(cache_key), "index:%.48s:%d", category, days);
+    char cache_key[80];
+    snprintf(cache_key, sizeof(cache_key), "index:%s:%d", category, days);
 
     char **cached_jsons = NULL;
     int cached_count = 0;
@@ -1807,12 +1807,7 @@ void dna_handle_feed_revalidate_comments(dna_engine_t *engine, dna_task_t *task)
 
     if (ret != 0 && ret != -2) {
         QGP_LOG_WARN(LOG_TAG, "revalidate_comments: DHT fetch failed for %s: %d", topic_uuid, ret);
-        /* Still update meta + fire event for "no comments" */
-        feed_cache_update_meta(cache_key);
-        dna_event_t event = {0};
-        event.type = DNA_EVENT_FEED_CACHE_UPDATED;
-        strncpy(event.data.feed_cache_updated.cache_key, cache_key, 63);
-        dna_dispatch_event(engine, &event);
+        /* Don't update meta on error - keeps cache stale so next read retries */
         return;
     }
 
