@@ -57,7 +57,7 @@ void feed_cache_close(void);
  *
  * @return number of rows deleted, or -1 on error
  */
-int feed_cache_evict(void);
+int feed_cache_evict_expired(void);
 
 /* ── Topic operations ──────────────────────────────────────────────── */
 
@@ -101,7 +101,7 @@ int feed_cache_delete_topic(const char *uuid);
  * @return 0 on success, -1 on error, -3 if uninitialized
  */
 int feed_cache_get_topics_all(int days_back, char ***topic_jsons_out,
-                              size_t *count);
+                              int *count);
 
 /**
  * Get topics filtered by category within a date window
@@ -113,7 +113,7 @@ int feed_cache_get_topics_all(int days_back, char ***topic_jsons_out,
  * @return 0 on success, -1 on error, -3 if uninitialized
  */
 int feed_cache_get_topics_by_category(const char *category_id, int days_back,
-                                      char ***topic_jsons_out, size_t *count);
+                                      char ***topic_jsons_out, int *count);
 
 /**
  * Free an array of JSON strings returned by get_topics_*
@@ -121,7 +121,7 @@ int feed_cache_get_topics_by_category(const char *category_id, int days_back,
  * @param jsons Array of strings
  * @param count Number of entries
  */
-void feed_cache_free_json_list(char **jsons, size_t count);
+void feed_cache_free_json_list(char **jsons, int count);
 
 /* ── Comment operations ────────────────────────────────────────────── */
 

@@ -153,7 +153,7 @@ void feed_cache_close(void) {
     }
 }
 
-int feed_cache_evict(void) {
+int feed_cache_evict_expired(void) {
     if (feed_cache_init() != 0) {
         return -1;
     }
@@ -324,7 +324,7 @@ int feed_cache_delete_topic(const char *uuid) {
  * Builds the appropriate SQL and returns an array of strdup'd JSON strings.
  */
 static int query_topics(const char *category_id, int days_back,
-                        char ***topic_jsons_out, size_t *count) {
+                        char ***topic_jsons_out, int *count) {
     if (!g_db) {
         if (feed_cache_init() != 0) return -3;
     }
@@ -427,12 +427,12 @@ static int query_topics(const char *category_id, int days_back,
 }
 
 int feed_cache_get_topics_all(int days_back, char ***topic_jsons_out,
-                              size_t *count) {
+                              int *count) {
     return query_topics(NULL, days_back, topic_jsons_out, count);
 }
 
 int feed_cache_get_topics_by_category(const char *category_id, int days_back,
-                                      char ***topic_jsons_out, size_t *count) {
+                                      char ***topic_jsons_out, int *count) {
     if (!category_id) {
         QGP_LOG_ERROR(LOG_TAG, "get_topics_by_category: NULL category_id\n");
         return -1;
@@ -440,9 +440,9 @@ int feed_cache_get_topics_by_category(const char *category_id, int days_back,
     return query_topics(category_id, days_back, topic_jsons_out, count);
 }
 
-void feed_cache_free_json_list(char **jsons, size_t count) {
+void feed_cache_free_json_list(char **jsons, int count) {
     if (!jsons) return;
-    for (size_t i = 0; i < count; i++) {
+    for (int i = 0; i < count; i++) {
         free(jsons[i]);
     }
     free(jsons);
