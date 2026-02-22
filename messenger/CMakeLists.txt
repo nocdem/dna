@@ -213,6 +213,7 @@ if(BUILD_SHARED_LIB)
         database/contacts_db.c      # Local contacts database
         database/addressbook_db.c   # Wallet address book database
         database/feed_subscriptions_db.c # Feed topic subscriptions database
+        database/feed_cache.c       # Feed cache (topics, comments, indexes)
         database/profile_cache.c    # Profile cache database (7-day TTL)
         database/profile_manager.c  # Smart profile fetching (cache + DHT)
         database/cache_manager.c    # Unified cache lifecycle manager
@@ -290,6 +291,7 @@ else()
         database/contacts_db.c      # Local contacts database
         database/addressbook_db.c   # Wallet address book database
         database/feed_subscriptions_db.c # Feed topic subscriptions database
+        database/feed_cache.c       # Feed cache (topics, comments, indexes)
         database/profile_cache.c    # Profile cache database (7-day TTL)
         database/profile_manager.c  # Smart profile fetching (cache + DHT)
         database/cache_manager.c    # Unified cache lifecycle manager
