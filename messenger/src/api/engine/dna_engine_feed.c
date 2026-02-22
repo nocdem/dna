@@ -459,11 +459,49 @@ void dna_handle_feed_create_topic(dna_engine_t *engine, dna_task_t *task) {
 
     dna_feed_topic_free(topic);
 
+    /* Cache: store new topic */
+    {
+        char *json = NULL;
+        if (topic_info_to_json(info, &json) == 0) {
+            feed_cache_put_topic_json(info->topic_uuid, json, info->category_id,
+                                      info->created_at, info->deleted ? 1 : 0);
+            free(json);
+        }
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Created topic: %s", uuid_out);
     task->callback.feed_topic(task->request_id, DNA_OK, info, task->user_data);
 }
 
 void dna_handle_feed_get_topic(dna_engine_t *engine, dna_task_t *task) {
+    const char *uuid = task->params.feed_get_topic.uuid;
+
+    /* Cache check */
+    char cache_key[64];
+    snprintf(cache_key, sizeof(cache_key), "topic:%s", uuid);
+
+    char *cached_json = NULL;
+    int cache_ret = feed_cache_get_topic_json(uuid, &cached_json);
+    if (cache_ret == 0 && cached_json) {
+        dna_feed_topic_info_t *info = calloc(1, sizeof(dna_feed_topic_info_t));
+        if (info && topic_info_from_json(cached_json, info) == 0) {
+            free(cached_json);
+            task->callback.feed_topic(task->request_id, DNA_OK, info, task->user_data);
+
+            /* Background revalidation if stale */
+            if (feed_cache_is_stale(cache_key)) {
+                dna_task_params_t rp = {0};
+                strncpy(rp.feed_revalidate_topic.uuid, uuid, 36);
+                dna_submit_task(engine, TASK_FEED_REVALIDATE_TOPIC, &rp,
+                                (dna_task_callback_t){0}, NULL);
+            }
+            return;
+        }
+        /* Parse failed - fall through to DHT fetch */
+        free(info);
+        free(cached_json);
+    }
+
     dht_context_t *dht = dna_get_dht_ctx(engine);
     if (!dht) {
         task->callback.feed_topic(task->request_id, DNA_ENGINE_ERROR_NETWORK,
@@ -472,7 +510,7 @@ void dna_handle_feed_get_topic(dna_engine_t *engine, dna_task_t *task) {
     }
 
     dna_feed_topic_t *topic = NULL;
-    int ret = dna_feed_topic_get(dht, task->params.feed_get_topic.uuid, &topic);
+    int ret = dna_feed_topic_get(dht, uuid, &topic);
 
     if (ret == -2) {
         /* Not found */
@@ -525,6 +563,18 @@ void dna_handle_feed_get_topic(dna_engine_t *engine, dna_task_t *task) {
     }
 
     dna_feed_topic_free(topic);
+
+    /* Cache the fetched result */
+    {
+        char *json = NULL;
+        if (topic_info_to_json(info, &json) == 0) {
+            feed_cache_put_topic_json(info->topic_uuid, json, info->category_id,
+                                      info->created_at, info->deleted ? 1 : 0);
+            free(json);
+        }
+        feed_cache_update_meta(cache_key);
+    }
+
     task->callback.feed_topic(task->request_id, DNA_OK, info, task->user_data);
 }
 
@@ -566,6 +616,9 @@ void dna_handle_feed_delete_topic(dna_engine_t *engine, dna_task_t *task) {
                                   task->user_data);
         return;
     }
+
+    /* Cache: remove deleted topic */
+    feed_cache_delete_topic(task->params.feed_delete_topic.uuid);
 
     QGP_LOG_INFO(LOG_TAG, "Deleted topic: %s", task->params.feed_delete_topic.uuid);
     task->callback.completion(task->request_id, DNA_OK, task->user_data);
@@ -647,12 +700,45 @@ void dna_handle_feed_add_comment(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
+    /* Cache: invalidate comments for this topic */
+    feed_cache_invalidate_comments(task->params.feed_add_comment.topic_uuid);
+
     QGP_LOG_INFO(LOG_TAG, "Added comment to topic: %s",
                  task->params.feed_add_comment.topic_uuid);
     task->callback.feed_comment(task->request_id, DNA_OK, info, task->user_data);
 }
 
 void dna_handle_feed_get_comments(dna_engine_t *engine, dna_task_t *task) {
+    const char *topic_uuid = task->params.feed_get_comments.topic_uuid;
+
+    /* Cache check */
+    char cache_key[64];
+    snprintf(cache_key, sizeof(cache_key), "comments:%s", topic_uuid);
+
+    char *cached_json = NULL;
+    int cached_count = 0;
+    int cache_ret = feed_cache_get_comments(topic_uuid, &cached_json, &cached_count);
+    if (cache_ret == 0 && cached_json) {
+        dna_feed_comment_info_t *infos = NULL;
+        int parsed_count = 0;
+        if (comment_infos_from_json(cached_json, &infos, &parsed_count) == 0) {
+            free(cached_json);
+            task->callback.feed_comments(task->request_id, DNA_OK,
+                                         infos, parsed_count, task->user_data);
+
+            /* Background revalidation if stale */
+            if (feed_cache_is_stale(cache_key)) {
+                dna_task_params_t rp = {0};
+                strncpy(rp.feed_revalidate_comments.topic_uuid, topic_uuid, 36);
+                dna_submit_task(engine, TASK_FEED_REVALIDATE_COMMENTS, &rp,
+                                (dna_task_callback_t){0}, NULL);
+            }
+            return;
+        }
+        /* Parse failed - fall through to DHT fetch */
+        free(cached_json);
+    }
+
     dht_context_t *dht = dna_get_dht_ctx(engine);
     if (!dht) {
         task->callback.feed_comments(task->request_id, DNA_ENGINE_ERROR_NETWORK,
@@ -662,8 +748,7 @@ void dna_handle_feed_get_comments(dna_engine_t *engine, dna_task_t *task) {
 
     dna_feed_comment_t *comments = NULL;
     size_t count = 0;
-    int ret = dna_feed_comments_get(dht, task->params.feed_get_comments.topic_uuid,
-                                    &comments, &count);
+    int ret = dna_feed_comments_get(dht, topic_uuid, &comments, &count);
 
     if (ret != 0 && ret != -2) {
         task->callback.feed_comments(task->request_id, DNA_ERROR_INTERNAL,
@@ -718,10 +803,61 @@ void dna_handle_feed_get_comments(dna_engine_t *engine, dna_task_t *task) {
     }
 
     dna_feed_comments_free(comments, count);
+
+    /* Cache the fetched result */
+    {
+        char *json = NULL;
+        if (comment_infos_to_json(info, (int)count, &json) == 0) {
+            feed_cache_put_comments(topic_uuid, json, (int)count);
+            free(json);
+        }
+        feed_cache_update_meta(cache_key);
+    }
+
     task->callback.feed_comments(task->request_id, DNA_OK, info, (int)count, task->user_data);
 }
 
 void dna_handle_feed_get_category(dna_engine_t *engine, dna_task_t *task) {
+    const char *category = task->params.feed_get_category.category;
+    int days = task->params.feed_get_category.days_back;
+    if (days < 1) days = 1;
+    if (days > 30) days = 30;
+
+    /* Cache check */
+    char cache_key[64];
+    snprintf(cache_key, sizeof(cache_key), "index:%.48s:%d", category, days);
+
+    char **cached_jsons = NULL;
+    int cached_count = 0;
+    int cache_ret = feed_cache_get_topics_by_category(category, days,
+                                                       &cached_jsons, &cached_count);
+    if (cache_ret == 0 && cached_count > 0) {
+        dna_feed_topic_info_t *info = calloc(cached_count, sizeof(dna_feed_topic_info_t));
+        if (info) {
+            int valid_count = 0;
+            for (int i = 0; i < cached_count; i++) {
+                if (topic_info_from_json(cached_jsons[i], &info[valid_count]) == 0) {
+                    valid_count++;
+                }
+            }
+            feed_cache_free_json_list(cached_jsons, cached_count);
+            task->callback.feed_topics(task->request_id, DNA_OK, info,
+                                       valid_count, task->user_data);
+
+            /* Background revalidation if stale */
+            if (feed_cache_is_stale(cache_key)) {
+                dna_task_params_t rp = {0};
+                strncpy(rp.feed_revalidate_index.category, category, 64);
+                rp.feed_revalidate_index.days_back = days;
+                strncpy(rp.feed_revalidate_index.cache_key, cache_key, 63);
+                dna_submit_task(engine, TASK_FEED_REVALIDATE_INDEX, &rp,
+                                (dna_task_callback_t){0}, NULL);
+            }
+            return;
+        }
+        feed_cache_free_json_list(cached_jsons, cached_count);
+    }
+
     dht_context_t *dht = dna_get_dht_ctx(engine);
     if (!dht) {
         task->callback.feed_topics(task->request_id, DNA_ENGINE_ERROR_NETWORK,
@@ -729,14 +865,9 @@ void dna_handle_feed_get_category(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    int days = task->params.feed_get_category.days_back;
-    if (days < 1) days = 1;
-    if (days > 30) days = 30;
-
     dna_feed_index_entry_t *entries = NULL;
     size_t count = 0;
-    int ret = dna_feed_index_get_category(dht, task->params.feed_get_category.category,
-                                          days, &entries, &count);
+    int ret = dna_feed_index_get_category(dht, category, days, &entries, &count);
 
     if (ret != 0 && ret != -2) {
         task->callback.feed_topics(task->request_id, DNA_ERROR_INTERNAL,
@@ -785,20 +916,65 @@ void dna_handle_feed_get_category(dna_engine_t *engine, dna_task_t *task) {
     }
 
     dna_feed_index_entries_free(entries, count);
+
+    /* Cache the fetched results */
+    for (int i = 0; i < (int)count; i++) {
+        char *json = NULL;
+        if (topic_info_to_json(&info[i], &json) == 0) {
+            feed_cache_put_topic_json(info[i].topic_uuid, json, info[i].category_id,
+                                      info[i].created_at, info[i].deleted ? 1 : 0);
+            free(json);
+        }
+    }
+    feed_cache_update_meta(cache_key);
+
     task->callback.feed_topics(task->request_id, DNA_OK, info, (int)count, task->user_data);
 }
 
 void dna_handle_feed_get_all(dna_engine_t *engine, dna_task_t *task) {
+    int days = task->params.feed_get_all.days_back;
+    if (days < 1) days = 1;
+    if (days > 30) days = 30;
+
+    /* Cache check */
+    char cache_key[64];
+    snprintf(cache_key, sizeof(cache_key), "index:all:%d", days);
+
+    char **cached_jsons = NULL;
+    int cached_count = 0;
+    int cache_ret = feed_cache_get_topics_all(days, &cached_jsons, &cached_count);
+    if (cache_ret == 0 && cached_count > 0) {
+        dna_feed_topic_info_t *info = calloc(cached_count, sizeof(dna_feed_topic_info_t));
+        if (info) {
+            int valid_count = 0;
+            for (int i = 0; i < cached_count; i++) {
+                if (topic_info_from_json(cached_jsons[i], &info[valid_count]) == 0) {
+                    valid_count++;
+                }
+            }
+            feed_cache_free_json_list(cached_jsons, cached_count);
+            task->callback.feed_topics(task->request_id, DNA_OK, info,
+                                       valid_count, task->user_data);
+
+            /* Background revalidation if stale */
+            if (feed_cache_is_stale(cache_key)) {
+                dna_task_params_t rp = {0};
+                rp.feed_revalidate_index.days_back = days;
+                strncpy(rp.feed_revalidate_index.cache_key, cache_key, 63);
+                dna_submit_task(engine, TASK_FEED_REVALIDATE_INDEX, &rp,
+                                (dna_task_callback_t){0}, NULL);
+            }
+            return;
+        }
+        feed_cache_free_json_list(cached_jsons, cached_count);
+    }
+
     dht_context_t *dht = dna_get_dht_ctx(engine);
     if (!dht) {
         task->callback.feed_topics(task->request_id, DNA_ENGINE_ERROR_NETWORK,
                                    NULL, 0, task->user_data);
         return;
     }
-
-    int days = task->params.feed_get_all.days_back;
-    if (days < 1) days = 1;
-    if (days > 30) days = 30;
 
     dna_feed_index_entry_t *entries = NULL;
     size_t count = 0;
@@ -851,6 +1027,18 @@ void dna_handle_feed_get_all(dna_engine_t *engine, dna_task_t *task) {
     }
 
     dna_feed_index_entries_free(entries, count);
+
+    /* Cache the fetched results */
+    for (int i = 0; i < (int)count; i++) {
+        char *json = NULL;
+        if (topic_info_to_json(&info[i], &json) == 0) {
+            feed_cache_put_topic_json(info[i].topic_uuid, json, info[i].category_id,
+                                      info[i].created_at, info[i].deleted ? 1 : 0);
+            free(json);
+        }
+    }
+    feed_cache_update_meta(cache_key);
+
     task->callback.feed_topics(task->request_id, DNA_OK, info, (int)count, task->user_data);
 }
 
