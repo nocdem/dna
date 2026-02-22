@@ -624,6 +624,7 @@ typedef enum {
     DNA_EVENT_DHT_PUBLISH_FAILED,        /* Async DHT publish failed after retries (v0.6.80+) */
     DNA_EVENT_FEED_TOPIC_COMMENT,        /* New comment on subscribed topic (v0.6.91+) */
     DNA_EVENT_FEED_SUBSCRIPTIONS_SYNCED, /* Subscriptions synced from DHT (v0.6.91+) */
+    DNA_EVENT_FEED_CACHE_UPDATED,        /* Feed cache refreshed with new DHT data (v0.6.121+) */
     DNA_EVENT_ERROR
 } dna_event_type_t;
 
@@ -690,6 +691,9 @@ typedef struct {
         struct {
             int subscriptions_synced;       /* Number of subscriptions synced from DHT */
         } feed_subscriptions_synced;
+        struct {
+            char cache_key[64];
+        } feed_cache_updated;
         struct {
             int code;
             char message[256];

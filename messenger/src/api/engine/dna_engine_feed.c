@@ -1205,3 +1205,26 @@ void dna_free_feed_subscriptions(dna_feed_subscription_info_t *subscriptions, in
         free(subscriptions);
     }
 }
+
+/* ============================================================================
+ * FEED CACHE REVALIDATION STUBS (v0.6.121+)
+ * Full implementation in Task 7
+ * ============================================================================ */
+
+void dna_handle_feed_revalidate_index(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
+    (void)task;
+    QGP_LOG_WARN(LOG_TAG, "feed_revalidate_index: stub (Task 7)");
+}
+
+void dna_handle_feed_revalidate_topic(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
+    (void)task;
+    QGP_LOG_WARN(LOG_TAG, "feed_revalidate_topic: stub (Task 7)");
+}
+
+void dna_handle_feed_revalidate_comments(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
+    (void)task;
+    QGP_LOG_WARN(LOG_TAG, "feed_revalidate_comments: stub (Task 7)");
+}

@@ -139,7 +139,12 @@ typedef enum {
     TASK_FEED_SYNC_SUBSCRIPTIONS_FROM_DHT,
 
     /* Feed v2 reindex (v0.6.104+) */
-    TASK_FEED_REINDEX_TOPIC
+    TASK_FEED_REINDEX_TOPIC,
+
+    /* Feed cache revalidation (v0.6.121+) */
+    TASK_FEED_REVALIDATE_INDEX,
+    TASK_FEED_REVALIDATE_TOPIC,
+    TASK_FEED_REVALIDATE_COMMENTS
 } dna_task_type_t;
 
 /* ============================================================================
@@ -359,6 +364,21 @@ typedef union {
     struct {
         int days_back;            /* How many days to look back (1-30) */
     } feed_get_all;
+
+    /* Feed cache revalidation (v0.6.121+) */
+    struct {
+        char category[65];
+        int days_back;
+        char cache_key[64];
+    } feed_revalidate_index;
+
+    struct {
+        char uuid[37];
+    } feed_revalidate_topic;
+
+    struct {
+        char topic_uuid[37];
+    } feed_revalidate_comments;
 
     /* Update profile */
     struct {
@@ -778,6 +798,11 @@ void dna_handle_feed_reindex_topic(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_feed_get_subscriptions(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_feed_sync_subscriptions_to_dht(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_feed_sync_subscriptions_from_dht(dna_engine_t *engine, dna_task_t *task);
+
+/* Feed cache revalidation (v0.6.121+) */
+void dna_handle_feed_revalidate_index(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_feed_revalidate_topic(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_feed_revalidate_comments(dna_engine_t *engine, dna_task_t *task);
 
 /* ============================================================================
  * INTERNAL FUNCTIONS - Helpers

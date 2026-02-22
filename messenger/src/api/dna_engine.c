@@ -1166,6 +1166,17 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_FEED_SYNC_SUBSCRIPTIONS_FROM_DHT:
             dna_handle_feed_sync_subscriptions_from_dht(engine, task);
             break;
+
+        /* Feed cache revalidation */
+        case TASK_FEED_REVALIDATE_INDEX:
+            dna_handle_feed_revalidate_index(engine, task);
+            break;
+        case TASK_FEED_REVALIDATE_TOPIC:
+            dna_handle_feed_revalidate_topic(engine, task);
+            break;
+        case TASK_FEED_REVALIDATE_COMMENTS:
+            dna_handle_feed_revalidate_comments(engine, task);
+            break;
     }
 }
 
