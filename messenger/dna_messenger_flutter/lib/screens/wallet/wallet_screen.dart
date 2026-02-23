@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import '../../ffi/dna_engine.dart' show Contact, Transaction, UserProfile, Wallet;
 import '../../providers/addressbook_provider.dart';
 import '../../providers/providers.dart' hide UserProfile;
@@ -13,6 +14,9 @@ import '../../providers/name_resolver_provider.dart';
 import '../../providers/price_provider.dart';
 import 'address_book_screen.dart';
 import 'address_dialog.dart';
+
+/// Network filter for the wallet assets list (null = show all)
+final walletNetworkFilterProvider = StateProvider<String?>((ref) => null);
 
 /// Get the SVG icon path for a token
 String? getTokenIconPath(String token) {
@@ -34,6 +38,31 @@ String? getTokenIconPath(String token) {
     default:
       return null;
   }
+}
+
+/// sigType-to-network mapping for wallet address lookup
+/// Cellframe=4, ETH=100, SOL=101, TRX=102
+String? getWalletAddressByNetwork(List<Wallet> wallets, String network) {
+  final int targetSigType;
+  switch (network.toLowerCase()) {
+    case 'ethereum':
+      targetSigType = 100;
+      break;
+    case 'solana':
+      targetSigType = 101;
+      break;
+    case 'tron':
+      targetSigType = 102;
+      break;
+    default: // backbone / cellframe
+      targetSigType = 4;
+      break;
+  }
+  for (final w in wallets) {
+    if (w.sigType == targetSigType) return w.address;
+  }
+  // Fallback to first wallet if no match
+  return wallets.isNotEmpty ? wallets.first.address : null;
 }
 
 /// Convert internal network name to display label
@@ -223,63 +252,10 @@ class _ActionButtonsRow extends ConsumerWidget {
             icon: FontAwesomeIcons.arrowDown,
             label: 'Receive',
             onTap: () {
-              final wallets = walletsAsync.valueOrNull;
-              final address = (wallets != null && wallets.isNotEmpty)
-                  ? wallets[0].address
-                  : '';
+              final wallets = walletsAsync.valueOrNull ?? [];
               showModalBottomSheet(
                 context: context,
-                builder: (context) => SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          'Receive',
-                          style: theme.textTheme.titleLarge,
-                        ),
-                        const SizedBox(height: 16),
-                        Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: const FaIcon(
-                            FontAwesomeIcons.qrcode,
-                            size: 150,
-                            color: Colors.black,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          address,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            fontFamily: 'monospace',
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 16),
-                        DnaButton(
-                          label: 'Copy Address',
-                          icon: FontAwesomeIcons.copy,
-                          expand: true,
-                          onPressed: address.isNotEmpty
-                              ? () {
-                                  Clipboard.setData(ClipboardData(text: address));
-                                  final messenger = ScaffoldMessenger.of(context);
-                                  Navigator.pop(context);
-                                  messenger.showSnackBar(
-                                    const SnackBar(content: Text('Address copied')),
-                                  );
-                                }
-                              : null,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+                builder: (context) => _ReceiveSheet(wallets: wallets),
               );
             },
           ),
@@ -337,6 +313,143 @@ class _CircularAction extends StatelessWidget {
             style: theme.textTheme.labelMedium,
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Receive sheet with network selector and real QR code
+class _ReceiveSheet extends StatefulWidget {
+  final List<Wallet> wallets;
+
+  const _ReceiveSheet({required this.wallets});
+
+  @override
+  State<_ReceiveSheet> createState() => _ReceiveSheetState();
+}
+
+class _ReceiveSheetState extends State<_ReceiveSheet> {
+  String _selectedNetwork = 'backbone'; // Default to CF20
+
+  static const _networks = [
+    ('backbone', 'CF20', 'assets/icons/crypto/cell.svg'),
+    ('ethereum', 'ERC20', 'assets/icons/crypto/eth.svg'),
+    ('solana', 'SPL', 'assets/icons/crypto/sol.svg'),
+    ('tron', 'TRC20', 'assets/icons/crypto/trx.svg'),
+  ];
+
+  String get _currentAddress =>
+      getWalletAddressByNetwork(widget.wallets, _selectedNetwork) ?? '';
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final address = _currentAddress;
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Receive', style: theme.textTheme.titleLarge),
+            const SizedBox(height: 16),
+            // Network selector
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: _networks.map((entry) {
+                final (network, label, icon) = entry;
+                final isSelected = _selectedNetwork == network;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: GestureDetector(
+                    onTap: () => setState(() => _selectedNetwork = network),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? theme.colorScheme.primary.withAlpha(26)
+                                : theme.colorScheme.surface,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: isSelected
+                                  ? theme.colorScheme.primary
+                                  : theme.colorScheme.outline.withAlpha(77),
+                              width: isSelected ? 2 : 1,
+                            ),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(8),
+                            child: SvgPicture.asset(icon),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          label,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                            color: isSelected
+                                ? theme.colorScheme.primary
+                                : theme.colorScheme.onSurface.withAlpha(179),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 16),
+            // QR code
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: address.isNotEmpty
+                  ? QrImageView(
+                      data: address,
+                      version: QrVersions.auto,
+                      size: 180,
+                      backgroundColor: Colors.white,
+                    )
+                  : const SizedBox(
+                      width: 180,
+                      height: 180,
+                      child: Center(child: Text('No address')),
+                    ),
+            ),
+            const SizedBox(height: 16),
+            // Address text
+            Text(
+              address,
+              style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            DnaButton(
+              label: 'Copy Address',
+              icon: FontAwesomeIcons.copy,
+              expand: true,
+              onPressed: address.isNotEmpty
+                  ? () {
+                      Clipboard.setData(ClipboardData(text: address));
+                      final messenger = ScaffoldMessenger.of(context);
+                      Navigator.pop(context);
+                      messenger.showSnackBar(
+                        const SnackBar(content: Text('Address copied')),
+                      );
+                    }
+                  : null,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -408,17 +521,52 @@ class _WalletHeroCard extends ConsumerWidget {
             return const SizedBox.shrink();
           }),
           const SizedBox(height: 16),
-          Row(
-            children: const [
-              _ChainIcon(asset: 'assets/icons/crypto/cell.svg', label: 'CELL'),
-              SizedBox(width: 12),
-              _ChainIcon(asset: 'assets/icons/crypto/eth.svg', label: 'ETH'),
-              SizedBox(width: 12),
-              _ChainIcon(asset: 'assets/icons/crypto/sol.svg', label: 'SOL'),
-              SizedBox(width: 12),
-              _ChainIcon(asset: 'assets/icons/crypto/trx.svg', label: 'TRX'),
-            ],
-          ),
+          Builder(builder: (context) {
+            final activeFilter = ref.watch(walletNetworkFilterProvider);
+            return Row(
+              children: [
+                _ChainIcon(
+                  asset: 'assets/icons/crypto/cell.svg',
+                  label: 'CELL',
+                  isSelected: activeFilter == 'backbone',
+                  onTap: () {
+                    final notifier = ref.read(walletNetworkFilterProvider.notifier);
+                    notifier.state = activeFilter == 'backbone' ? null : 'backbone';
+                  },
+                ),
+                const SizedBox(width: 12),
+                _ChainIcon(
+                  asset: 'assets/icons/crypto/eth.svg',
+                  label: 'ETH',
+                  isSelected: activeFilter == 'ethereum',
+                  onTap: () {
+                    final notifier = ref.read(walletNetworkFilterProvider.notifier);
+                    notifier.state = activeFilter == 'ethereum' ? null : 'ethereum';
+                  },
+                ),
+                const SizedBox(width: 12),
+                _ChainIcon(
+                  asset: 'assets/icons/crypto/sol.svg',
+                  label: 'SOL',
+                  isSelected: activeFilter == 'solana',
+                  onTap: () {
+                    final notifier = ref.read(walletNetworkFilterProvider.notifier);
+                    notifier.state = activeFilter == 'solana' ? null : 'solana';
+                  },
+                ),
+                const SizedBox(width: 12),
+                _ChainIcon(
+                  asset: 'assets/icons/crypto/trx.svg',
+                  label: 'TRX',
+                  isSelected: activeFilter == 'tron',
+                  onTap: () {
+                    final notifier = ref.read(walletNetworkFilterProvider.notifier);
+                    notifier.state = activeFilter == 'tron' ? null : 'tron';
+                  },
+                ),
+              ],
+            );
+          }),
         ],
       ),
     );
@@ -428,34 +576,52 @@ class _WalletHeroCard extends ConsumerWidget {
 class _ChainIcon extends StatelessWidget {
   final String asset;
   final String label;
+  final bool isSelected;
+  final VoidCallback? onTap;
 
-  const _ChainIcon({required this.asset, required this.label});
+  const _ChainIcon({
+    required this.asset,
+    required this.label,
+    this.isSelected = false,
+    this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Container(
-          width: 32,
-          height: 32,
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.15),
-            shape: BoxShape.circle,
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        children: [
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? Colors.white.withValues(alpha: 0.4)
+                  : Colors.white.withValues(alpha: 0.15),
+              shape: BoxShape.circle,
+              border: isSelected
+                  ? Border.all(color: Colors.white, width: 2)
+                  : null,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(6),
+              child: SvgPicture.asset(asset),
+            ),
           ),
-          child: Padding(
-            padding: const EdgeInsets.all(6),
-            child: SvgPicture.asset(asset),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: TextStyle(
+              color: isSelected
+                  ? Colors.white
+                  : Colors.white.withValues(alpha: 0.7),
+              fontSize: 10,
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+            ),
           ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          style: TextStyle(
-            color: Colors.white.withValues(alpha: 0.7),
-            fontSize: 10,
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -467,6 +633,7 @@ class _AllBalancesSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final allBalances = ref.watch(allBalancesProvider);
     final walletSettings = ref.watch(walletSettingsProvider);
+    final networkFilter = ref.watch(walletNetworkFilterProvider);
     final theme = Theme.of(context);
 
     return Column(
@@ -474,10 +641,17 @@ class _AllBalancesSection extends ConsumerWidget {
       children: [
         allBalances.when(
           data: (list) {
+            // Filter by network if active
+            var filteredList = networkFilter != null
+                ? list.where((wb) =>
+                    wb.balance.network.toLowerCase() == networkFilter ||
+                    (networkFilter == 'backbone' && wb.balance.network.toLowerCase() == 'cellframe')).toList()
+                : list.toList();
+
             // Filter zero balances if setting enabled
-            final filteredList = walletSettings.hideZeroBalances
-                ? list.where((wb) => _isNonZeroBalance(wb.balance.balance)).toList()
-                : list;
+            if (walletSettings.hideZeroBalances) {
+              filteredList = filteredList.where((wb) => _isNonZeroBalance(wb.balance.balance)).toList();
+            }
 
             return filteredList.isEmpty
                 ? Padding(
@@ -628,12 +802,17 @@ class _BalanceTile extends ConsumerWidget {
     ref.invalidate(transactionsProvider((walletIndex: walletBalance.walletIndex, network: balance.network)));
     ref.invalidate(balancesProvider(walletBalance.walletIndex));
 
+    // Look up the correct address for this token's network
+    final wallets = ref.read(walletsProvider).valueOrNull ?? [];
+    final networkAddress = getWalletAddressByNetwork(wallets, balance.network)
+        ?? walletBalance.wallet.address;
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       builder: (context) => _TokenDetailSheet(
         walletIndex: walletBalance.walletIndex,
-        walletAddress: walletBalance.wallet.address,
+        walletAddress: networkAddress,
         token: balance.token,
         network: balance.network,
         initialBalance: balance.balance,
