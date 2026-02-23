@@ -12,7 +12,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../utils/logger.dart';
-import '../../theme/dna_theme.dart';
+import '../../design_system/design_system.dart';
 import '../../widgets/emoji_shortcode_field.dart';
 import '../../widgets/formatted_text.dart';
 import '../../widgets/image_message_bubble.dart';
@@ -320,7 +320,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   hintText: 'Search messages...',
                   border: InputBorder.none,
                   hintStyle: theme.textTheme.bodyMedium?.copyWith(
-                    color: DnaColors.textMuted,
+                    color: theme.textTheme.bodySmall?.color,
                   ),
                 ),
                 style: theme.textTheme.bodyMedium,
@@ -332,7 +332,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               )
             : Row(
                 children: [
-                  _ContactAvatar(contact: contact),
+                  DnaAvatar(
+                    imageBytes: ref.watch(
+                      contactProfileCacheProvider.select(
+                        (cache) => cache[contact.fingerprint]?.decodeAvatar(),
+                      ),
+                    ),
+                    name: displayName,
+                    size: DnaAvatarSize.sm,
+                    showOnlineStatus: true,
+                    isOnline: contact.isOnline,
+                  ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
@@ -348,7 +358,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               : 'Last seen ${_formatLastSeen(contact.lastSeen)}',
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: contact.isOnline
-                                ? DnaColors.textSuccess
+                                ? DnaColors.success
                                 : theme.textTheme.bodySmall?.color,
                           ),
                         ),
@@ -430,7 +440,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          FaIcon(FontAwesomeIcons.circleExclamation, color: DnaColors.textWarning),
+                          FaIcon(FontAwesomeIcons.circleExclamation, color: DnaColors.warning),
                           const SizedBox(height: 8),
                           Text('Failed to load messages'),
                           TextButton(
@@ -464,7 +474,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   height: 280,
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: DnaColors.border),
+                    border: Border.all(color: theme.dividerColor),
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(12),
@@ -484,7 +494,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           categoryViewConfig: CategoryViewConfig(
                             indicatorColor: theme.colorScheme.primary,
                             iconColorSelected: theme.colorScheme.primary,
-                            iconColor: DnaColors.textMuted,
+                            iconColor: theme.textTheme.bodySmall?.color ?? Colors.grey,
                             backgroundColor: theme.colorScheme.surface,
                           ),
                           bottomActionBarConfig: BottomActionBarConfig(
@@ -636,19 +646,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               background: Container(
                 alignment: Alignment.centerLeft,
                 padding: const EdgeInsets.only(left: 20),
-                color: DnaColors.textInfo.withAlpha(50),
-                child: const FaIcon(
+                color: DnaColors.info.withAlpha(50),
+                child: FaIcon(
                   FontAwesomeIcons.copy,
-                  color: DnaColors.textInfo,
+                  color: DnaColors.info,
                 ),
               ),
               secondaryBackground: Container(
                 alignment: Alignment.centerRight,
                 padding: const EdgeInsets.only(right: 20),
-                color: DnaColors.primary.withAlpha(50),
-                child: const FaIcon(
+                color: Theme.of(context).colorScheme.primary.withAlpha(50),
+                child: FaIcon(
                   FontAwesomeIcons.reply,
-                  color: DnaColors.primary,
+                  color: Theme.of(context).colorScheme.primary,
                 ),
               ),
               child: Builder(
@@ -738,20 +748,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: DnaColors.textError.withAlpha(30),
+            color: DnaColors.error.withAlpha(30),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 FaIcon(
                   FontAwesomeIcons.cloudBolt,
                   size: 14,
-                  color: DnaColors.textError,
+                  color: DnaColors.error,
                 ),
                 const SizedBox(width: 8),
                 Text(
                   'Disconnected - messages will queue',
                   style: TextStyle(
-                    color: DnaColors.textError,
+                    color: DnaColors.error,
                     fontSize: 13,
                     fontWeight: FontWeight.w500,
                   ),
@@ -798,7 +808,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             ? '${_replyingTo!.plaintext.substring(0, 50)}...'
                             : _replyingTo!.plaintext,
                         style: theme.textTheme.bodySmall?.copyWith(
-                          color: DnaColors.textMuted,
+                          color: theme.textTheme.bodySmall?.color,
                         ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -1198,10 +1208,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               },
             ),
             ListTile(
-              leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.textWarning),
+              leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.warning),
               title: Text(
                 'Remove Contact',
-                style: TextStyle(color: DnaColors.textWarning),
+                style: TextStyle(color: DnaColors.warning),
               ),
               onTap: () {
                 Navigator.pop(context);
@@ -1231,26 +1241,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     String statusText;
     IconData statusIcon;
     Color statusColor;
+    final mutedColor = theme.textTheme.bodySmall?.color ?? Colors.grey;
     switch (message.status) {
       case MessageStatus.pending:
         statusText = 'Sending...';
         statusIcon = FontAwesomeIcons.clock;
-        statusColor = DnaColors.textMuted;
+        statusColor = mutedColor;
         break;
       case MessageStatus.sent:
         statusText = 'Sent';
         statusIcon = FontAwesomeIcons.check;
-        statusColor = DnaColors.textMuted;
+        statusColor = mutedColor;
         break;
       case MessageStatus.received:
         statusText = 'Received';
         statusIcon = FontAwesomeIcons.checkDouble;
-        statusColor = DnaColors.textSuccess;
+        statusColor = DnaColors.success;
         break;
       case MessageStatus.failed:
         statusText = 'Failed to send';
         statusIcon = FontAwesomeIcons.circleExclamation;
-        statusColor = DnaColors.textError;
+        statusColor = DnaColors.error;
         break;
     }
 
@@ -1332,7 +1343,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           child: FaIcon(
             icon,
             size: 14,
-            color: iconColor ?? DnaColors.textMuted,
+            color: iconColor ?? theme.textTheme.bodySmall?.color,
           ),
         ),
         const SizedBox(width: 8),
@@ -1342,9 +1353,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             children: [
               Text(
                 label,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: DnaColors.textMuted,
-                ),
+                style: theme.textTheme.bodySmall,
               ),
               Text(
                 value,
@@ -1406,8 +1415,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               },
             ),
             ListTile(
-              leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.textError),
-              title: Text('Delete', style: TextStyle(color: DnaColors.textError)),
+              leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.error),
+              title: Text('Delete', style: TextStyle(color: DnaColors.error)),
               onTap: () {
                 Navigator.pop(context);
                 _confirmDeleteMessage(message);
@@ -1514,7 +1523,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               Navigator.pop(context);
               _deleteMessage(message);
             },
-            style: TextButton.styleFrom(foregroundColor: DnaColors.textError),
+            style: TextButton.styleFrom(foregroundColor: DnaColors.error),
             child: const Text('Delete'),
           ),
         ],
@@ -1534,7 +1543,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(success ? 'Message deleted' : 'Failed to delete message'),
-          backgroundColor: success ? DnaColors.snackbarSuccess : DnaColors.textError,
+          backgroundColor: success ? DnaColors.snackbarSuccess : DnaColors.error,
           duration: const Duration(seconds: 2),
         ),
       );
@@ -1635,14 +1644,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       itemBuilder: (context, index) {
                         final contact = contacts[index];
                         return ListTile(
-                          leading: CircleAvatar(
-                            backgroundColor: DnaColors.primary.withAlpha(50),
-                            child: Text(
-                              contact.displayName.isNotEmpty
-                                  ? contact.displayName[0].toUpperCase()
-                                  : '?',
-                              style: const TextStyle(color: DnaColors.primary),
-                            ),
+                          leading: DnaAvatar(
+                            name: contact.displayName.isNotEmpty
+                                ? contact.displayName
+                                : null,
+                            size: DnaAvatarSize.md,
                           ),
                           title: Text(contact.displayName.isNotEmpty
                               ? contact.displayName
@@ -1767,7 +1773,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       builder: (context) => AlertDialog(
         title: Row(
           children: [
-            FaIcon(FontAwesomeIcons.userMinus, color: DnaColors.textWarning),
+            FaIcon(FontAwesomeIcons.userMinus, color: DnaColors.warning),
             const SizedBox(width: 8),
             const Text('Remove Contact'),
           ],
@@ -1783,20 +1789,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: DnaColors.textWarning.withAlpha(26),
+                color: DnaColors.warning.withAlpha(26),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: DnaColors.textWarning.withAlpha(51)),
+                border: Border.all(color: DnaColors.warning.withAlpha(51)),
               ),
               child: Row(
                 children: [
-                  FaIcon(FontAwesomeIcons.circleInfo, size: 20, color: DnaColors.textWarning),
+                  FaIcon(FontAwesomeIcons.circleInfo, size: 20, color: DnaColors.warning),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
                       'Message history will be preserved. You can re-add this contact later.',
                       style: TextStyle(
                         fontSize: 13,
-                        color: DnaColors.textWarning,
+                        color: DnaColors.warning,
                       ),
                     ),
                   ),
@@ -1812,7 +1818,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: DnaColors.textWarning,
+              backgroundColor: DnaColors.warning,
               foregroundColor: Colors.white,
             ),
             onPressed: () => Navigator.of(context).pop(true),
@@ -1869,83 +1875,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (diff.inHours < 24) return '${diff.inHours}h ago';
     if (diff.inDays < 7) return '${diff.inDays}d ago';
     return '${lastSeen.day}/${lastSeen.month}/${lastSeen.year}';
-  }
-}
-
-/// Separate widget for contact avatar to prevent rebuilds on text input
-class _ContactAvatar extends ConsumerWidget {
-  final Contact contact;
-
-  const _ContactAvatar({required this.contact});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-
-    // Get cached avatar
-    final profileCache = ref.watch(contactProfileCacheProvider);
-    final cachedProfile = profileCache[contact.fingerprint];
-    final avatarBytes = cachedProfile?.decodeAvatar();
-
-    // Trigger fetch if not cached
-    if (cachedProfile == null) {
-      Future.microtask(() {
-        ref.read(contactProfileCacheProvider.notifier).fetchAndCache(contact.fingerprint);
-      });
-    }
-
-    Widget avatarWidget;
-    if (avatarBytes != null) {
-      avatarWidget = CircleAvatar(
-        radius: 18,
-        backgroundImage: MemoryImage(avatarBytes),
-      );
-    } else {
-      avatarWidget = CircleAvatar(
-        radius: 18,
-        backgroundColor: theme.colorScheme.primary.withAlpha(51),
-        child: Text(
-          _getInitials(contact.displayName),
-          style: TextStyle(
-            color: theme.colorScheme.primary,
-            fontWeight: FontWeight.bold,
-            fontSize: 14,
-          ),
-        ),
-      );
-    }
-
-    return Stack(
-      children: [
-        avatarWidget,
-        Positioned(
-          right: 0,
-          bottom: 0,
-          child: Container(
-            width: 10,
-            height: 10,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: contact.isOnline ? DnaColors.textSuccess : DnaColors.offline,
-              border: Border.all(
-                color: theme.scaffoldBackgroundColor,
-                width: 2,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  String _getInitials(String name) {
-    if (name.isEmpty) return '?';
-    final words = name.split(' ').where((w) => w.isNotEmpty).toList();
-    if (words.isEmpty) return '?';
-    if (words.length >= 2) {
-      return '${words[0][0]}${words[1][0]}'.toUpperCase();
-    }
-    return words[0].substring(0, words[0].length.clamp(0, 2)).toUpperCase();
   }
 }
 
@@ -2144,7 +2073,7 @@ class _MessageBubble extends StatelessWidget {
                         fontSize: 12,
                         color: isOutgoing
                             ? theme.colorScheme.onPrimary.withAlpha(153)
-                            : DnaColors.textMuted,
+                            : theme.textTheme.bodySmall?.color,
                       ),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
@@ -2164,7 +2093,7 @@ class _MessageBubble extends StatelessWidget {
                     size: 10,
                     color: isOutgoing
                         ? theme.colorScheme.onPrimary.withAlpha(179)
-                        : DnaColors.textMuted,
+                        : theme.textTheme.bodySmall?.color,
                   ),
                   const SizedBox(width: 4),
                   Text(
@@ -2174,7 +2103,7 @@ class _MessageBubble extends StatelessWidget {
                       fontStyle: FontStyle.italic,
                       color: isOutgoing
                           ? theme.colorScheme.onPrimary.withAlpha(179)
-                          : DnaColors.textMuted,
+                          : theme.textTheme.bodySmall?.color,
                     ),
                   ),
                 ],
@@ -2237,14 +2166,14 @@ class _MessageBubble extends StatelessWidget {
             FaIcon(
               FontAwesomeIcons.circleExclamation,
               size: size - 2,
-              color: DnaColors.textWarning,
+              color: DnaColors.warning,
             ),
             if (onRetry != null) ...[
               const SizedBox(width: 4),
               FaIcon(
                 FontAwesomeIcons.arrowsRotate,
                 size: size - 2,
-                color: DnaColors.textWarning,
+                color: DnaColors.warning,
               ),
             ],
           ],
@@ -2506,9 +2435,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                       ),
                       Text(
                         'to ${widget.contact.displayName.isNotEmpty ? widget.contact.displayName : "contact"}',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: DnaColors.textMuted,
-                        ),
+                        style: theme.textTheme.bodySmall,
                       ),
                     ],
                   ),
@@ -2539,17 +2466,17 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: DnaColors.textWarning.withAlpha(30),
+                  color: DnaColors.warning.withAlpha(30),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Row(
                   children: [
-                    FaIcon(FontAwesomeIcons.circleExclamation, color: DnaColors.textWarning),
+                    FaIcon(FontAwesomeIcons.circleExclamation, color: DnaColors.warning),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
                         _resolveError!,
-                        style: TextStyle(color: DnaColors.textWarning),
+                        style: TextStyle(color: DnaColors.warning),
                       ),
                     ),
                   ],
@@ -2560,13 +2487,13 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: DnaColors.textSuccess.withAlpha(20),
+                  color: DnaColors.success.withAlpha(20),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: DnaColors.textSuccess.withAlpha(50)),
+                  border: Border.all(color: DnaColors.success.withAlpha(50)),
                 ),
                 child: Row(
                   children: [
-                    FaIcon(FontAwesomeIcons.circleCheck, color: DnaColors.textSuccess, size: 20),
+                    FaIcon(FontAwesomeIcons.circleCheck, color: DnaColors.success, size: 20),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -2634,19 +2561,19 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                   padding: const EdgeInsets.all(12),
                   margin: const EdgeInsets.only(bottom: 16),
                   decoration: BoxDecoration(
-                    color: DnaColors.textError.withAlpha(20),
+                    color: DnaColors.error.withAlpha(20),
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: DnaColors.textError.withAlpha(50)),
+                    border: Border.all(color: DnaColors.error.withAlpha(50)),
                   ),
                   child: Row(
                     children: [
                       FaIcon(FontAwesomeIcons.circleExclamation,
-                             color: DnaColors.textError, size: 16),
+                             color: DnaColors.error, size: 16),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           _sendError!,
-                          style: TextStyle(color: DnaColors.textError, fontSize: 13),
+                          style: TextStyle(color: DnaColors.error, fontSize: 13),
                         ),
                       ),
                     ],
@@ -2679,10 +2606,10 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
           decoration: BoxDecoration(
-            color: selected ? DnaColors.primary.withAlpha(30) : Colors.transparent,
+            color: selected ? Theme.of(context).colorScheme.primary.withAlpha(30) : Colors.transparent,
             borderRadius: BorderRadius.circular(8),
             border: Border.all(
-              color: selected ? DnaColors.primary : DnaColors.textMuted.withAlpha(50),
+              color: selected ? Theme.of(context).colorScheme.primary : Theme.of(context).dividerColor,
             ),
           ),
           child: Column(
@@ -2691,14 +2618,13 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                 label,
                 style: TextStyle(
                   fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-                  color: selected ? DnaColors.primary : null,
+                  color: selected ? Theme.of(context).colorScheme.primary : null,
                 ),
               ),
               Text(
                 '${fee.toStringAsFixed(fee < 0.01 ? 4 : 3)} CELL',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   fontSize: 10,
-                  color: DnaColors.textMuted,
                 ),
               ),
             ],
@@ -2846,7 +2772,7 @@ class _InvitationBubbleState extends ConsumerState<_InvitationBubble> {
                         'From ${_shortenFingerprint(inviter)}',
                         style: theme.textTheme.bodySmall?.copyWith(
                           fontSize: 10,
-                          color: DnaColors.textMuted,
+                          color: theme.textTheme.bodySmall?.color,
                         ),
                       ),
                   ],
@@ -2866,7 +2792,7 @@ class _InvitationBubbleState extends ConsumerState<_InvitationBubble> {
               Text(
                 '$memberCount member${memberCount == 1 ? '' : 's'}',
                 style: theme.textTheme.bodySmall?.copyWith(
-                  color: DnaColors.textMuted,
+                  color: theme.textTheme.bodySmall?.color,
                 ),
               ),
 
@@ -2901,7 +2827,7 @@ class _InvitationBubbleState extends ConsumerState<_InvitationBubble> {
               DateFormat.jm().format(widget.message.timestamp),
               style: theme.textTheme.bodySmall?.copyWith(
                 fontSize: 10,
-                color: DnaColors.textMuted,
+                color: theme.textTheme.bodySmall?.color,
               ),
             ),
           ],
@@ -2948,7 +2874,7 @@ class _TransferBubble extends StatelessWidget {
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: isOutgoing
-                ? [DnaColors.primary.withAlpha(200), DnaColors.accent.withAlpha(150)]
+                ? [theme.colorScheme.primary.withAlpha(200), theme.colorScheme.secondary.withAlpha(150)]
                 : [theme.colorScheme.surface, theme.colorScheme.surface],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
@@ -2961,7 +2887,7 @@ class _TransferBubble extends StatelessWidget {
           ),
           border: isOutgoing
               ? null
-              : Border.all(color: DnaColors.primary.withAlpha(50)),
+              : Border.all(color: theme.colorScheme.primary.withAlpha(50)),
         ),
         child: Column(
           crossAxisAlignment:
@@ -2976,7 +2902,7 @@ class _TransferBubble extends StatelessWidget {
                   size: 16,
                   color: isOutgoing
                       ? theme.colorScheme.onPrimary
-                      : DnaColors.primary,
+                      : theme.colorScheme.primary,
                 ),
                 const SizedBox(width: 4),
                 Text(
@@ -2984,7 +2910,7 @@ class _TransferBubble extends StatelessWidget {
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: isOutgoing
                         ? theme.colorScheme.onPrimary.withAlpha(200)
-                        : DnaColors.textMuted,
+                        : theme.textTheme.bodySmall?.color,
                   ),
                 ),
               ],
@@ -2998,7 +2924,7 @@ class _TransferBubble extends StatelessWidget {
                 fontWeight: FontWeight.bold,
                 color: isOutgoing
                     ? theme.colorScheme.onPrimary
-                    : DnaColors.primary,
+                    : theme.colorScheme.primary,
               ),
             ),
 
@@ -3026,7 +2952,7 @@ class _TransferBubble extends StatelessWidget {
                         fontFamily: 'monospace',
                         color: isOutgoing
                             ? theme.colorScheme.onPrimary.withAlpha(150)
-                            : DnaColors.textMuted,
+                            : theme.textTheme.bodySmall?.color,
                       ),
                     ),
                     const SizedBox(width: 4),
@@ -3035,7 +2961,7 @@ class _TransferBubble extends StatelessWidget {
                       size: 10,
                       color: isOutgoing
                           ? theme.colorScheme.onPrimary.withAlpha(150)
-                          : DnaColors.textMuted,
+                          : theme.textTheme.bodySmall?.color,
                     ),
                   ],
                 ),
@@ -3069,7 +2995,7 @@ class _TransferBubble extends StatelessWidget {
                                 : FontAwesomeIcons.checkDouble)),
                     size: 14,
                     color: message.status == MessageStatus.failed
-                        ? DnaColors.textWarning
+                        ? DnaColors.warning
                         : theme.colorScheme.onPrimary.withAlpha(179),
                   ),
                 ],

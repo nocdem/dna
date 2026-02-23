@@ -2,7 +2,7 @@
 import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import '../../../theme/dna_theme.dart';
+import '../../../design_system/design_system.dart';
 
 /// Callback types for context menu actions
 typedef MessageAction = void Function();
@@ -60,15 +60,15 @@ class MessageContextMenu {
             icon: FontAwesomeIcons.arrowsRotate,
             label: 'Retry',
             value: 'retry',
-            iconColor: DnaColors.textWarning,
+            iconColor: DnaColors.warning,
           ),
         const PopupMenuDivider(),
         _buildMenuItem(
           icon: FontAwesomeIcons.trash,
           label: 'Delete',
           value: 'delete',
-          iconColor: DnaColors.textError,
-          textColor: DnaColors.textError,
+          iconColor: DnaColors.error,
+          textColor: DnaColors.error,
         ),
       ],
     ).then((value) {

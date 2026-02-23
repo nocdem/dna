@@ -5,9 +5,9 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import '../../design_system/design_system.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
-import '../../theme/dna_theme.dart';
 import '../chat/chat_screen.dart';
 import 'contact_requests_screen.dart';
 
@@ -19,9 +19,9 @@ class ContactsScreen extends ConsumerWidget {
     final contacts = ref.watch(contactsProvider);
 
     return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: const Text('Chats'),
+      appBar: DnaAppBar(
+        title: 'Chats',
+        leading: const SizedBox.shrink(), // No back button
         actions: [
           _ContactRequestsBadge(
             onTap: () => Navigator.of(context).push(
@@ -114,7 +114,7 @@ class ContactsScreen extends ConsumerWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
+            FaIcon(
               FontAwesomeIcons.circleExclamation,
               size: 48,
               color: DnaColors.textWarning,
@@ -201,36 +201,12 @@ class _ContactTile extends ConsumerWidget {
     // v0.6.6: Listeners are now started on identity load (not lazy anymore)
 
     return ListTile(
-      leading: SizedBox(
-        width: 40,
-        height: 40,
-        child: Stack(
-          children: [
-            _ContactAvatar(
-              avatarBytes: avatarBytes,
-              displayName: displayName,
-              theme: theme,
-            ),
-            Positioned(
-              right: 0,
-              bottom: 0,
-              child: Container(
-                width: 12,
-                height: 12,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: contact.isOnline
-                      ? DnaColors.textSuccess
-                      : DnaColors.offline,
-                  border: Border.all(
-                    color: theme.scaffoldBackgroundColor,
-                    width: 2,
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
+      leading: DnaAvatar(
+        imageBytes: avatarBytes,
+        name: displayName,
+        size: DnaAvatarSize.md,
+        showOnlineStatus: true,
+        isOnline: contact.isOnline,
       ),
       title: Text(
         displayName,
@@ -244,7 +220,7 @@ class _ContactTile extends ConsumerWidget {
             : 'Last seen ${_formatLastSeen(contact.lastSeen)}',
         style: TextStyle(
           color: contact.isOnline
-              ? DnaColors.textSuccess
+              ? DnaColors.success
               : theme.textTheme.bodySmall?.color,
         ),
       ),
@@ -252,42 +228,22 @@ class _ContactTile extends ConsumerWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (unreadCount > 0)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.primary,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(
-                unreadCount > 99 ? '99+' : unreadCount.toString(),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+            DnaBadge(
+              count: unreadCount,
+              child: const SizedBox(width: 20, height: 20),
             ),
           const SizedBox(width: 4),
-          const FaIcon(FontAwesomeIcons.chevronRight),
+          FaIcon(
+            FontAwesomeIcons.chevronRight,
+            size: 14,
+            color: theme.textTheme.bodySmall?.color,
+          ),
         ],
       ),
       onTap: onTap,
     );
   }
 
-  // ignore: unused_element
-  String _getInitials(String name) {
-    if (name.isEmpty) return '?';
-    // Filter out empty strings from split (handles multiple spaces)
-    final words = name.split(' ').where((w) => w.isNotEmpty).toList();
-    if (words.isEmpty) return '?';
-    if (words.length >= 2) {
-      return '${words[0][0]}${words[1][0]}'.toUpperCase();
-    }
-    return words[0].substring(0, words[0].length.clamp(0, 2)).toUpperCase();
-  }
-
-  // ignore: unused_element
   String _shortenFingerprint(String fingerprint) {
     if (fingerprint.length <= 16) return fingerprint;
     return '${fingerprint.substring(0, 8)}...${fingerprint.substring(fingerprint.length - 8)}';
@@ -557,7 +513,7 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
                         ),
                       )
                     : _foundFingerprint != null
-                        ? FaIcon(FontAwesomeIcons.circleCheck, color: DnaColors.textSuccess)
+                        ? FaIcon(FontAwesomeIcons.circleCheck, color: DnaColors.success)
                         : null,
               ),
               autofocus: true,
@@ -571,7 +527,7 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
               Text(
                 'Type at least 3 characters to search',
                 style: theme.textTheme.bodySmall?.copyWith(
-                  color: DnaColors.textMuted,
+                  color: theme.textTheme.bodySmall?.color,
                 ),
               ),
 
@@ -580,14 +536,14 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
               const SizedBox(height: 8),
               Row(
                 children: [
-                  Icon(FontAwesomeIcons.circleExclamation,
-                       color: DnaColors.textWarning, size: 16),
+                  FaIcon(FontAwesomeIcons.circleExclamation,
+                       color: DnaColors.warning, size: 16),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
                       _errorMessage!,
                       style: theme.textTheme.bodySmall?.copyWith(
-                        color: DnaColors.textWarning,
+                        color: DnaColors.warning,
                       ),
                     ),
                   ),
@@ -604,15 +560,15 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
                   color: theme.colorScheme.surface,
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(
-                    color: DnaColors.textSuccess.withAlpha(128),
+                    color: DnaColors.success.withAlpha(128),
                   ),
                 ),
                 child: Row(
                   children: [
-                    _ContactAvatar(
-                      avatarBytes: _foundAvatarBytes,
-                      displayName: _foundName ?? '?',
-                      theme: theme,
+                    DnaAvatar(
+                      imageBytes: _foundAvatarBytes,
+                      name: _foundName ?? '?',
+                      size: DnaAvatarSize.md,
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -621,13 +577,13 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
                         children: [
                           Row(
                             children: [
-                              Icon(Icons.check_circle,
-                                   color: DnaColors.textSuccess, size: 14),
+                              FaIcon(FontAwesomeIcons.circleCheck,
+                                   color: DnaColors.success, size: 14),
                               const SizedBox(width: 4),
                               Text(
                                 'Found on DHT',
                                 style: theme.textTheme.labelSmall?.copyWith(
-                                  color: DnaColors.textSuccess,
+                                  color: DnaColors.success,
                                 ),
                               ),
                             ],
@@ -642,7 +598,7 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
                             _shortenFingerprint(_foundFingerprint!),
                             style: theme.textTheme.bodySmall?.copyWith(
                               fontFamily: 'monospace',
-                              color: DnaColors.textMuted,
+                              color: theme.textTheme.bodySmall?.color,
                             ),
                           ),
                         ],
@@ -686,89 +642,13 @@ class _ContactRequestsBadge extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final pendingCount = ref.watch(pendingRequestCountProvider);
 
-    return Stack(
-      children: [
-        IconButton(
-          icon: const FaIcon(FontAwesomeIcons.userClock),
-          onPressed: onTap,
-          tooltip: 'Contact Requests',
-        ),
-        if (pendingCount > 0)
-          Positioned(
-            right: 4,
-            top: 4,
-            child: Container(
-              padding: const EdgeInsets.all(4),
-              decoration: BoxDecoration(
-                color: DnaColors.textWarning,
-                shape: BoxShape.circle,
-              ),
-              constraints: const BoxConstraints(
-                minWidth: 18,
-                minHeight: 18,
-              ),
-              child: Text(
-                pendingCount > 99 ? '99+' : pendingCount.toString(),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-/// Widget to display contact avatar with fallback to initials
-class _ContactAvatar extends StatelessWidget {
-  final Uint8List? avatarBytes;
-  final String displayName;
-  final ThemeData theme;
-  final double radius;
-
-  const _ContactAvatar({
-    required this.avatarBytes,
-    required this.displayName,
-    required this.theme,
-    // ignore: unused_element_parameter
-    this.radius = 20, // Default radius, kept for potential custom sizes
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    if (avatarBytes != null) {
-      return CircleAvatar(
-        radius: radius,
-        backgroundImage: MemoryImage(avatarBytes!),
-      );
-    }
-
-    return CircleAvatar(
-      radius: radius,
-      backgroundColor: theme.colorScheme.primary.withAlpha(51),
-      child: Text(
-        _getInitials(displayName),
-        style: TextStyle(
-          color: theme.colorScheme.primary,
-          fontWeight: FontWeight.bold,
-          fontSize: radius * 0.8,
-        ),
+    return DnaBadge(
+      count: pendingCount,
+      child: IconButton(
+        icon: const FaIcon(FontAwesomeIcons.userClock),
+        onPressed: onTap,
+        tooltip: 'Contact Requests',
       ),
     );
-  }
-
-  String _getInitials(String name) {
-    if (name.isEmpty) return '?';
-    // Filter out empty strings from split (handles multiple spaces)
-    final words = name.split(' ').where((w) => w.isNotEmpty).toList();
-    if (words.isEmpty) return '?';
-    if (words.length >= 2) {
-      return '${words[0][0]}${words[1][0]}'.toUpperCase();
-    }
-    return words[0].substring(0, words[0].length.clamp(0, 2)).toUpperCase();
   }
 }
