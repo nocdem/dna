@@ -17,6 +17,7 @@
 
 #include "dna/dna_engine.h"
 #include "dht/client/dht_singleton.h"
+#include "dht/core/dht_context.h"
 #include "dht/core/dht_listen.h"
 #include "crypto/utils/qgp_platform.h"  /* v0.6.0+: For identity lock check */
 
@@ -1569,6 +1570,20 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeIsIdentityLocked(JNIEnv *
 
     LOGI("nativeIsIdentityLocked: %s", is_locked ? "YES (Flutter has lock)" : "NO (available)");
     return is_locked ? JNI_TRUE : JNI_FALSE;
+}
+
+/**
+ * Check if DHT is ready (has at least 1 peer in routing table).
+ * Same check as CLI's wait_for_dht() uses.
+ * Returns: JNI_TRUE if DHT is connected and ready, JNI_FALSE otherwise.
+ */
+JNIEXPORT jboolean JNICALL
+Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeDhtIsReady(JNIEnv *env, jobject thiz) {
+    dht_context_t *dht = dht_singleton_get();
+    if (!dht) {
+        return JNI_FALSE;
+    }
+    return dht_context_is_ready(dht) ? JNI_TRUE : JNI_FALSE;
 }
 
 /**

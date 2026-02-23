@@ -178,6 +178,13 @@ class DnaMessengerService : Service() {
         external fun nativeIsIdentityLocked(dataDir: String): Boolean
 
         /**
+         * Check if DHT is ready (has at least 1 peer).
+         * Same check as CLI's wait_for_dht().
+         */
+        @JvmStatic
+        external fun nativeDhtIsReady(): Boolean
+
+        /**
          * Release service's engine for Flutter takeover.
          */
         @JvmStatic
@@ -585,18 +592,26 @@ class DnaMessengerService : Service() {
         return when (result) {
             0 -> {
                 android.util.Log.i(TAG, "[POLL] Identity loaded successfully")
-                // v0.100.93: Wait for DHT to stabilize after fresh identity load.
-                // DHT bootstrap connects to seed nodes during identity load, but
-                // routing table needs time to populate with enough peers for lookups.
-                // v0.100.94: Sleep is now interruptible - checks flutterActive every 100ms
-                // so service releases engineLock quickly when Flutter resumes (~100ms vs 15s).
-                android.util.Log.i(TAG, "[POLL] Waiting up to 15s for DHT stabilization (interruptible)...")
+                // Wait for DHT to be ready (same approach as CLI's wait_for_dht).
+                // Checks dht_context_is_ready() every 100ms instead of blind sleep.
+                // Also interruptible: checks flutterActive so service releases lock
+                // quickly when Flutter resumes.
+                android.util.Log.i(TAG, "[POLL] Waiting up to 15s for DHT ready (checking dht_context_is_ready)...")
+                var dhtReady = false
                 for (i in 0 until 150) {  // 150 * 100ms = 15s
                     if (flutterActive) {
                         android.util.Log.i(TAG, "[POLL] DHT wait interrupted - Flutter active (after ${i * 100}ms)")
                         break
                     }
+                    if (nativeDhtIsReady()) {
+                        android.util.Log.i(TAG, "[POLL] DHT ready after ${i * 100}ms")
+                        dhtReady = true
+                        break
+                    }
                     Thread.sleep(100)
+                }
+                if (!dhtReady && !flutterActive) {
+                    android.util.Log.w(TAG, "[POLL] DHT not ready after 15s - polling anyway")
                 }
                 true
             }

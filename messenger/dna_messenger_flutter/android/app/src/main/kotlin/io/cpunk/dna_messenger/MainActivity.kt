@@ -201,10 +201,15 @@ class MainActivity : FlutterFragmentActivity() {
         DnaMessengerService.setFlutterActive(false)
         android.util.Log.i(TAG, "Flutter active set to false - service can take over")
 
-        // CRITICAL: Unregister notification helper BEFORE engine is destroyed
-        // This clears g_notification_helper and g_android_notification_cb in native code,
-        // preventing crashes from DHT callbacks firing during shutdown.
-        cleanupNotificationHelper()
+        // Only clean up notification helper if the background service is NOT running.
+        // The service needs the JNI notification callback (g_android_notification_cb)
+        // to show notifications when it polls for messages in the background.
+        // If service is running, it will re-register the helper if needed.
+        if (!DnaMessengerService.isServiceRunning()) {
+            cleanupNotificationHelper()
+        } else {
+            android.util.Log.i(TAG, "Service running - keeping notification helper alive")
+        }
 
         try {
             unregisterReceiver(messageReceiver)
