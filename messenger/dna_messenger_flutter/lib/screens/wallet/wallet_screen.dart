@@ -450,9 +450,25 @@ class _AllBalancesSection extends ConsumerWidget {
                     ),
                   )
                 : Column(
-                    children: filteredList.map((wb) => _BalanceTile(
-                      walletBalance: wb,
-                    )).toList(),
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        child: Row(
+                          children: [
+                            Text(
+                              'Assets',
+                              style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(width: 8),
+                            DnaChip(label: '${filteredList.length}'),
+                          ],
+                        ),
+                      ),
+                      ...filteredList.map((wb) => _BalanceTile(
+                        walletBalance: wb,
+                      )),
+                    ],
                   );
           },
           loading: () => const Padding(
@@ -491,55 +507,60 @@ class _BalanceTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final balance = walletBalance.balance;
-
     final iconPath = getTokenIconPath(balance.token);
 
-    return ListTile(
-      leading: iconPath != null
-          ? SizedBox(
-              width: 40,
-              height: 40,
-              child: SvgPicture.asset(
-                iconPath,
-                fit: BoxFit.contain,
-              ),
-            )
-          : CircleAvatar(
-              backgroundColor: _getTokenColor(balance.token).withAlpha(51),
-              child: Text(
-                balance.token.isNotEmpty ? balance.token[0].toUpperCase() : '?',
-                style: TextStyle(
-                  color: _getTokenColor(balance.token),
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-      title: Text(balance.token),
-      subtitle: Text(getNetworkDisplayLabel(balance.network)),
-      trailing: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 150),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Flexible(
-              child: Text(
-                balance.balance,
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            const SizedBox(width: 4),
-            FaIcon(
-              FontAwesomeIcons.chevronRight,
-              color: theme.colorScheme.primary.withAlpha(128),
-              size: 20,
-            ),
-          ],
-        ),
-      ),
+    return DnaCard(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       onTap: () => _showTokenDetails(context, ref),
+      child: Row(
+        children: [
+          // Token icon
+          iconPath != null
+              ? SizedBox(
+                  width: 40,
+                  height: 40,
+                  child: SvgPicture.asset(iconPath, fit: BoxFit.contain),
+                )
+              : CircleAvatar(
+                  backgroundColor: _getTokenColor(balance.token).withValues(alpha: 0.2),
+                  radius: 20,
+                  child: Text(
+                    balance.token.isNotEmpty ? balance.token[0].toUpperCase() : '?',
+                    style: TextStyle(
+                      color: _getTokenColor(balance.token),
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+          const SizedBox(width: 12),
+          // Token name + network chip
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  balance.token,
+                  style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 4),
+                DnaChip(label: getNetworkDisplayLabel(balance.network)),
+              ],
+            ),
+          ),
+          // Balance + chevron
+          Text(
+            balance.balance,
+            style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(width: 8),
+          FaIcon(
+            FontAwesomeIcons.chevronRight,
+            size: 14,
+            color: theme.colorScheme.onSurface.withValues(alpha: 0.3),
+          ),
+        ],
+      ),
     );
   }
 
