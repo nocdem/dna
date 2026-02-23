@@ -543,23 +543,38 @@ class _WalletHeroCard extends ConsumerWidget {
               fontWeight: FontWeight.bold,
             ),
           ),
-          // Total portfolio value
+          // Total portfolio value + hide toggle
           Builder(builder: (context) {
             final totalValue = ref.watch(totalPortfolioValueProvider);
-            if (totalValue != null && totalValue > 0) {
-              return Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  '\$${_formatUsdValue(totalValue)}',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 22,
-                    fontWeight: FontWeight.w600,
+            final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
+            return Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Row(
+                children: [
+                  Text(
+                    hideBalances
+                        ? '\$*****'
+                        : (totalValue != null && totalValue > 0)
+                            ? '\$${_formatUsdValue(totalValue)}'
+                            : '\$0.00',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
-                ),
-              );
-            }
-            return const SizedBox.shrink();
+                  const SizedBox(width: 10),
+                  GestureDetector(
+                    onTap: () => ref.read(walletSettingsProvider.notifier).toggleHideBalances(),
+                    child: FaIcon(
+                      hideBalances ? FontAwesomeIcons.eyeSlash : FontAwesomeIcons.eye,
+                      size: 16,
+                      color: Colors.white.withValues(alpha: 0.6),
+                    ),
+                  ),
+                ],
+              ),
+            );
           }),
           const SizedBox(height: 16),
           Builder(builder: (context) {
@@ -773,6 +788,7 @@ class _BalanceTile extends ConsumerWidget {
     final theme = Theme.of(context);
     final balance = walletBalance.balance;
     final iconPath = getTokenIconPath(balance.token);
+    final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
 
     return DnaCard(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -818,10 +834,18 @@ class _BalanceTile extends ConsumerWidget {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
-                balance.balance,
+                hideBalances ? '*****' : balance.balance,
                 style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
               ),
               Builder(builder: (context) {
+                if (hideBalances) {
+                  return Text(
+                    '\$*****',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                    ),
+                  );
+                }
                 final usdValue = ref.watch(tokenUsdValueProvider((token: balance.token, balance: balance.balance)));
                 if (usdValue != null && usdValue > 0) {
                   return Text(
