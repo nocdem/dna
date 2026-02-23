@@ -2106,6 +2106,20 @@ DNA_API dna_request_id_t dna_engine_get_balances(
 );
 
 /**
+ * Get cached balances from SQLite (instant, no network calls)
+ * Returns previously fetched balances from local cache.
+ * Use for stale-while-revalidate: show cached data instantly,
+ * then call dna_engine_get_balances() for live update.
+ * Returns empty (count=0) if no cache exists yet.
+ */
+DNA_API dna_request_id_t dna_engine_get_cached_balances(
+    dna_engine_t *engine,
+    int wallet_index,
+    dna_balances_cb callback,
+    void *user_data
+);
+
+/**
  * Gas estimate result
  */
 typedef struct {

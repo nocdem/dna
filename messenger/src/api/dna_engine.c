@@ -1096,6 +1096,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_GET_BALANCES:
             dna_handle_get_balances(engine, task);
             break;
+        case TASK_GET_CACHED_BALANCES:
+            dna_handle_get_cached_balances(engine, task);
+            break;
         case TASK_SEND_TOKENS:
             dna_handle_send_tokens(engine, task);
             break;

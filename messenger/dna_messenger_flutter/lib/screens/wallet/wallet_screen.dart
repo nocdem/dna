@@ -373,7 +373,7 @@ class _ReceiveSheetState extends State<_ReceiveSheet> {
     final address = _currentAddress;
 
     return SafeArea(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -469,7 +469,22 @@ class _ReceiveSheetState extends State<_ReceiveSheet> {
                       final messenger = ScaffoldMessenger.of(context);
                       Navigator.pop(context);
                       messenger.showSnackBar(
-                        const SnackBar(content: Text('Address copied')),
+                        SnackBar(
+                          content: Row(
+                            children: [
+                              FaIcon(FontAwesomeIcons.circleCheck,
+                                  size: 18, color: Colors.white),
+                              const SizedBox(width: 10),
+                              const Text('Address copied to clipboard',
+                                  style: TextStyle(fontSize: 15)),
+                            ],
+                          ),
+                          duration: const Duration(seconds: 2),
+                          behavior: SnackBarBehavior.floating,
+                          margin: const EdgeInsets.all(16),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10)),
+                        ),
                       );
                     }
                   : null,
@@ -666,55 +681,18 @@ class _AllBalancesSection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         allBalances.when(
-          data: (list) {
-            // Filter by network if active
-            var filteredList = networkFilter != null
-                ? list.where((wb) =>
-                    wb.balance.network.toLowerCase() == networkFilter ||
-                    (networkFilter == 'backbone' && wb.balance.network.toLowerCase() == 'cellframe')).toList()
-                : list.toList();
-
-            // Filter zero balances if setting enabled
-            if (walletSettings.hideZeroBalances) {
-              filteredList = filteredList.where((wb) => _isNonZeroBalance(wb.balance.balance)).toList();
+          data: (list) => _buildBalanceList(list, networkFilter, walletSettings, theme),
+          loading: () {
+            // v0.100.104: Show cached data during loading (stale-while-revalidate)
+            final cached = allBalances.valueOrNull;
+            if (cached != null && cached.isNotEmpty) {
+              return _buildBalanceList(cached, networkFilter, walletSettings, theme);
             }
-
-            return filteredList.isEmpty
-                ? Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: Text(
-                      walletSettings.hideZeroBalances
-                          ? 'No non-zero balances'
-                          : 'No balances',
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  )
-                : Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        child: Row(
-                          children: [
-                            Text(
-                              'Assets',
-                              style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-                            ),
-                            const SizedBox(width: 8),
-                            DnaChip(label: '${filteredList.length}'),
-                          ],
-                        ),
-                      ),
-                      ...filteredList.map((wb) => _BalanceTile(
-                        walletBalance: wb,
-                      )),
-                    ],
-                  );
+            return const Padding(
+              padding: EdgeInsets.all(16),
+              child: Center(child: CircularProgressIndicator()),
+            );
           },
-          loading: () => const Padding(
-            padding: EdgeInsets.all(16),
-            child: Center(child: CircularProgressIndicator()),
-          ),
           error: (error, _) => Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Text(
@@ -725,6 +703,53 @@ class _AllBalancesSection extends ConsumerWidget {
         ),
       ],
     );
+  }
+
+  Widget _buildBalanceList(List<WalletBalance> list, String? networkFilter,
+      WalletSettingsState walletSettings, ThemeData theme) {
+    // Filter by network if active
+    var filteredList = networkFilter != null
+        ? list.where((wb) =>
+            wb.balance.network.toLowerCase() == networkFilter ||
+            (networkFilter == 'backbone' && wb.balance.network.toLowerCase() == 'cellframe')).toList()
+        : list.toList();
+
+    // Filter zero balances if setting enabled
+    if (walletSettings.hideZeroBalances) {
+      filteredList = filteredList.where((wb) => _isNonZeroBalance(wb.balance.balance)).toList();
+    }
+
+    return filteredList.isEmpty
+        ? Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              walletSettings.hideZeroBalances
+                  ? 'No non-zero balances'
+                  : 'No balances',
+              style: theme.textTheme.bodySmall,
+            ),
+          )
+        : Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    Text(
+                      'Assets',
+                      style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(width: 8),
+                    DnaChip(label: '${filteredList.length}'),
+                  ],
+                ),
+              ),
+              ...filteredList.map((wb) => _BalanceTile(
+                walletBalance: wb,
+              )),
+            ],
+          );
   }
 
   /// Check if balance string represents a non-zero value
@@ -1879,9 +1904,21 @@ class _TokenDetailSheet extends ConsumerWidget {
                         onPressed: () {
                           Clipboard.setData(ClipboardData(text: walletAddress));
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Address copied'),
-                              duration: Duration(seconds: 2),
+                            SnackBar(
+                              content: Row(
+                                children: [
+                                  FaIcon(FontAwesomeIcons.circleCheck,
+                                      size: 18, color: Colors.white),
+                                  const SizedBox(width: 10),
+                                  const Text('Address copied to clipboard',
+                                      style: TextStyle(fontSize: 15)),
+                                ],
+                              ),
+                              duration: const Duration(seconds: 2),
+                              behavior: SnackBarBehavior.floating,
+                              margin: const EdgeInsets.all(16),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10)),
                             ),
                           );
                         },

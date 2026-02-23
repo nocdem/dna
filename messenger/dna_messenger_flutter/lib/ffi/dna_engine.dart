@@ -2799,6 +2799,47 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Get cached balances from SQLite (instant, no network calls)
+  /// Returns empty list if no cache exists yet.
+  Future<List<Balance>> getCachedBalances(int walletIndex) async {
+    final completer = Completer<List<Balance>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<dna_balance_t> balances,
+                    int count, Pointer<Void> userData) {
+      if (error == 0) {
+        final result = <Balance>[];
+        for (var i = 0; i < count; i++) {
+          result.add(Balance.fromNative((balances + i).ref));
+        }
+        if (count > 0) {
+          _bindings.dna_free_balances(balances, count);
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaBalancesCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_cached_balances(
+      _engine,
+      walletIndex,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
   /// Get gas estimate for ETH transaction (DEPRECATED - use estimateEthGasAsync)
   /// [gasSpeed]: 0=slow (0.8x), 1=normal (1x), 2=fast (1.5x)
   /// Returns null if estimate fails (e.g., network error)

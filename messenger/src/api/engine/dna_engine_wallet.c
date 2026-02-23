@@ -322,7 +322,30 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
     }
 
 done:
+    /* Write-through: persist balances to SQLite cache on success */
+    if (error == DNA_OK && balances && count > 0) {
+        wallet_cache_save_balances(task->params.get_balances.wallet_index,
+                                   balances, count);
+    }
+
     task->callback.balances(task->request_id, error, balances, count, task->user_data);
+}
+
+/* Read balances from SQLite cache only — no network calls */
+void dna_handle_get_cached_balances(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;  /* Cache read doesn't need engine state */
+
+    dna_balance_t *balances = NULL;
+    int count = 0;
+    int rc = wallet_cache_get_balances(task->params.get_balances.wallet_index,
+                                       &balances, &count);
+
+    if (rc == 0 && balances && count > 0) {
+        task->callback.balances(task->request_id, DNA_OK, balances, count, task->user_data);
+    } else {
+        /* No cached data — return empty (not an error, just no cache yet) */
+        task->callback.balances(task->request_id, DNA_OK, NULL, 0, task->user_data);
+    }
 }
 
 void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
@@ -919,6 +942,21 @@ dna_request_id_t dna_engine_get_balances(
 
     dna_task_callback_t cb = { .balances = callback };
     return dna_submit_task(engine, TASK_GET_BALANCES, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_cached_balances(
+    dna_engine_t *engine,
+    int wallet_index,
+    dna_balances_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback || wallet_index < 0) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    params.get_balances.wallet_index = wallet_index;
+
+    dna_task_callback_t cb = { .balances = callback };
+    return dna_submit_task(engine, TASK_GET_CACHED_BALANCES, &params, cb, user_data);
 }
 
 int dna_engine_estimate_eth_gas(int gas_speed, dna_gas_estimate_t *estimate_out) {

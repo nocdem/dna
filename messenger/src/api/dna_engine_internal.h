@@ -110,6 +110,7 @@ typedef enum {
     /* Wallet */
     TASK_LIST_WALLETS,
     TASK_GET_BALANCES,
+    TASK_GET_CACHED_BALANCES,
     TASK_SEND_TOKENS,
     TASK_GET_TRANSACTIONS,
     TASK_ESTIMATE_GAS,
@@ -771,6 +772,7 @@ void dna_handle_reject_invitation(dna_engine_t *engine, dna_task_t *task);
 /* Wallet */
 void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_cached_balances(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_estimate_gas(dna_engine_t *engine, dna_task_t *task);

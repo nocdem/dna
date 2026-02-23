@@ -139,6 +139,7 @@ static inline char* win_strptime(const char* s, const char* format, struct tm* t
 #include "database/contacts_db.h"
 #include "database/addressbook_db.h"
 #include "database/group_invitations.h"
+#include "database/wallet_cache.h"
 
 /* Blockchain/Wallet */
 #include "cellframe_wallet.h"

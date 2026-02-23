@@ -1,6 +1,8 @@
 // Wallet Provider - Wallet and balance state management
+// v0.100.104: SQLite balance cache for stale-while-revalidate pattern
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
+import '../utils/logger.dart';
 import 'engine_provider.dart';
 
 /// Wallets list provider
@@ -103,6 +105,7 @@ class WalletBalance {
 }
 
 /// All balances from all wallets combined (cached, stale-while-revalidate)
+/// v0.100.104: build() loads from SQLite cache (instant), refresh() fetches live
 final allBalancesProvider = AsyncNotifierProvider<AllBalancesNotifier, List<WalletBalance>>(
   AllBalancesNotifier.new,
 );
@@ -115,20 +118,52 @@ class AllBalancesNotifier extends AsyncNotifier<List<WalletBalance>> {
 
     if (wallets.isEmpty) return state.valueOrNull ?? [];
 
-    return _fetchAllBalances(wallets);
+    // v0.100.104: Load from SQLite cache first (instant, no network calls)
+    return _fetchCachedBalances(wallets);
   }
 
-  /// Refresh balances silently in the background — old data stays visible
+  /// Refresh balances from live blockchain APIs in the background
+  /// Old data stays visible during fetch (stale-while-revalidate)
   Future<void> refresh() async {
     final walletsAsync = ref.read(walletsProvider);
     final wallets = walletsAsync.valueOrNull ?? [];
     if (wallets.isEmpty) return;
 
-    final newState = await AsyncValue.guard(() => _fetchAllBalances(wallets));
+    final newState = await AsyncValue.guard(() => _fetchLiveBalances(wallets));
     state = newState;
   }
 
-  Future<List<WalletBalance>> _fetchAllBalances(List<Wallet> wallets) async {
+  /// Read balances from SQLite cache (instant, no network calls)
+  Future<List<WalletBalance>> _fetchCachedBalances(List<Wallet> wallets) async {
+    final engine = await ref.read(engineProvider.future);
+    final allBalances = <WalletBalance>[];
+
+    for (int i = 0; i < wallets.length; i++) {
+      try {
+        final balances = await engine.getCachedBalances(i);
+        for (final balance in balances) {
+          allBalances.add(WalletBalance(
+            walletIndex: i,
+            wallet: wallets[i],
+            balance: balance,
+          ));
+        }
+      } catch (_) {
+        // No cached data for this wallet — skip
+      }
+    }
+
+    if (allBalances.isEmpty) {
+      log('WALLET', 'No cached balances, falling back to live fetch');
+      return _fetchLiveBalances(wallets);
+    }
+
+    return allBalances;
+  }
+
+  /// Fetch live balances from blockchain APIs (network calls)
+  /// Also writes to SQLite cache via C-side write-through
+  Future<List<WalletBalance>> _fetchLiveBalances(List<Wallet> wallets) async {
     final engine = await ref.read(engineProvider.future);
     final allBalances = <WalletBalance>[];
 

@@ -281,6 +281,12 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Fresh engine will be created on resume for clean state
       log('LIFECYCLE', '[PAUSE] Destroying engine (mobile destroy/create pattern)');
 
+      // v0.100.104: Mark identity as not ready BEFORE invalidating engine
+      // This ensures wallet/balance providers hit their early-return guard
+      // and preserve cached data via state.valueOrNull before the cascade
+      // invalidation from engineProvider clears their state.
+      ref.read(identityReadyProvider.notifier).state = false;
+
       // Detach event callback before destroying
       engine.detachEventCallback();
 
@@ -290,9 +296,6 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
 
       // Invalidate provider so next access creates fresh engine
       ref.invalidate(engineProvider);
-
-      // Mark identity as not ready (triggers spinner on next resume)
-      ref.read(identityReadyProvider.notifier).state = false;
 
       // v0.100.83+: Notify service AFTER dispose (DHT lock released)
       // Service can now safely create its own engine

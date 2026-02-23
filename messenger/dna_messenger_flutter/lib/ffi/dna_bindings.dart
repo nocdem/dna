@@ -2155,6 +2155,21 @@ class DnaBindings {
     return _dna_engine_get_balances(engine, wallet_index, callback, user_data);
   }
 
+  late final _dna_engine_get_cached_balances = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Int32, Pointer<DnaBalancesCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, int, Pointer<DnaBalancesCb>,
+          Pointer<Void>)>('dna_engine_get_cached_balances');
+
+  int dna_engine_get_cached_balances(
+    Pointer<dna_engine_t> engine,
+    int wallet_index,
+    Pointer<DnaBalancesCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_cached_balances(engine, wallet_index, callback, user_data);
+  }
+
   late final _dna_engine_estimate_eth_gas = _lib.lookupFunction<
       Int32 Function(Int32, Pointer<dna_gas_estimate_t>),
       int Function(int, Pointer<dna_gas_estimate_t>)>('dna_engine_estimate_eth_gas');
