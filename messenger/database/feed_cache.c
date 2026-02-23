@@ -52,17 +52,22 @@ static int create_schema(void) {
     const char *schema_sql =
         /* ── feed_topics ─────────────────────────────────────────── */
         "CREATE TABLE IF NOT EXISTS feed_topics ("
-        "    topic_uuid   TEXT PRIMARY KEY,"
-        "    topic_json   TEXT NOT NULL,"
-        "    category_id  TEXT NOT NULL,"
-        "    created_at   INTEGER NOT NULL,"
-        "    deleted      INTEGER DEFAULT 0,"
-        "    cached_at    INTEGER NOT NULL"
+        "    topic_uuid    TEXT PRIMARY KEY,"
+        "    topic_json    TEXT NOT NULL,"
+        "    category_id   TEXT NOT NULL,"
+        "    created_at    INTEGER NOT NULL,"
+        "    last_activity INTEGER NOT NULL DEFAULT 0,"
+        "    deleted       INTEGER DEFAULT 0,"
+        "    cached_at     INTEGER NOT NULL"
         ");"
         "CREATE INDEX IF NOT EXISTS idx_feed_topics_category "
         "    ON feed_topics(category_id, created_at DESC);"
         "CREATE INDEX IF NOT EXISTS idx_feed_topics_created "
         "    ON feed_topics(created_at DESC);"
+        "CREATE INDEX IF NOT EXISTS idx_feed_topics_activity "
+        "    ON feed_topics(last_activity DESC);"
+        "CREATE INDEX IF NOT EXISTS idx_feed_topics_cat_activity "
+        "    ON feed_topics(category_id, last_activity DESC);"
         "CREATE INDEX IF NOT EXISTS idx_feed_topics_cached "
         "    ON feed_topics(cached_at);"
 
@@ -91,6 +96,36 @@ static int create_schema(void) {
     }
 
     return 0;
+}
+
+/**
+ * Migration: add last_activity column for forum-style bump sorting.
+ * Safe to call multiple times - silently ignores if column already exists.
+ */
+static void migrate_add_last_activity(void) {
+    char *err_msg = NULL;
+    int rc = sqlite3_exec(g_db,
+        "ALTER TABLE feed_topics ADD COLUMN last_activity INTEGER NOT NULL DEFAULT 0;",
+        NULL, NULL, &err_msg);
+    if (rc == SQLITE_OK) {
+        /* New column added - populate from created_at */
+        sqlite3_exec(g_db,
+            "UPDATE feed_topics SET last_activity = created_at WHERE last_activity = 0;",
+            NULL, NULL, NULL);
+        /* Create indexes for new column */
+        sqlite3_exec(g_db,
+            "CREATE INDEX IF NOT EXISTS idx_feed_topics_activity "
+            "    ON feed_topics(last_activity DESC);",
+            NULL, NULL, NULL);
+        sqlite3_exec(g_db,
+            "CREATE INDEX IF NOT EXISTS idx_feed_topics_cat_activity "
+            "    ON feed_topics(category_id, last_activity DESC);",
+            NULL, NULL, NULL);
+        QGP_LOG_INFO(LOG_TAG, "Migration: added last_activity column\n");
+    } else {
+        /* Column already exists - expected on subsequent runs */
+        sqlite3_free(err_msg);
+    }
 }
 
 /* ── Lifecycle ─────────────────────────────────────────────────────── */
@@ -133,6 +168,9 @@ int feed_cache_init(void) {
         g_db = NULL;
         return -1;
     }
+
+    /* Run migrations for existing databases */
+    migrate_add_last_activity();
 
     QGP_LOG_INFO(LOG_TAG, "Feed cache initialized\n");
     return 0;
@@ -206,9 +244,16 @@ int feed_cache_put_topic_json(const char *uuid, const char *topic_json,
     }
 
     const char *sql =
-        "INSERT OR REPLACE INTO feed_topics "
-        "(topic_uuid, topic_json, category_id, created_at, deleted, cached_at) "
-        "VALUES (?, ?, ?, ?, ?, ?);";
+        "INSERT INTO feed_topics "
+        "(topic_uuid, topic_json, category_id, created_at, last_activity, deleted, cached_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(topic_uuid) DO UPDATE SET "
+        "    topic_json = excluded.topic_json,"
+        "    category_id = excluded.category_id,"
+        "    created_at = excluded.created_at,"
+        "    deleted = excluded.deleted,"
+        "    cached_at = excluded.cached_at,"
+        "    last_activity = MAX(feed_topics.last_activity, excluded.last_activity);";
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
@@ -223,14 +268,52 @@ int feed_cache_put_topic_json(const char *uuid, const char *topic_json,
     sqlite3_bind_text(stmt, 2, topic_json, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 3, category_id, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 4, (int64_t)created_at);
-    sqlite3_bind_int(stmt, 5, deleted);
-    sqlite3_bind_int64(stmt, 6, (int64_t)now);
+    sqlite3_bind_int64(stmt, 5, (int64_t)created_at);  /* last_activity defaults to created_at */
+    sqlite3_bind_int(stmt, 6, deleted);
+    sqlite3_bind_int64(stmt, 7, (int64_t)now);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
         QGP_LOG_ERROR(LOG_TAG, "put_topic_json step: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    return 0;
+}
+
+int feed_cache_update_topic_activity(const char *topic_uuid, uint64_t last_activity) {
+    if (!g_db) {
+        if (feed_cache_init() != 0) return -3;
+    }
+
+    if (!topic_uuid) {
+        QGP_LOG_ERROR(LOG_TAG, "update_topic_activity: NULL topic_uuid\n");
+        return -1;
+    }
+
+    /* Only bump forward - never regress */
+    const char *sql =
+        "UPDATE feed_topics SET last_activity = ? "
+        "WHERE topic_uuid = ? AND last_activity < ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "update_topic_activity prepare: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_int64(stmt, 1, (int64_t)last_activity);
+    sqlite3_bind_text(stmt, 2, topic_uuid, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 3, (int64_t)last_activity);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "update_topic_activity step: %s\n", sqlite3_errmsg(g_db));
         return -1;
     }
 
@@ -345,22 +428,22 @@ static int query_topics(const char *category_id, int days_back,
         snprintf(sql, sizeof(sql),
             "SELECT topic_json FROM feed_topics "
             "WHERE deleted = 0 AND category_id = ? AND created_at >= ? "
-            "ORDER BY created_at DESC;");
+            "ORDER BY last_activity DESC;");
     } else if (has_category) {
         snprintf(sql, sizeof(sql),
             "SELECT topic_json FROM feed_topics "
             "WHERE deleted = 0 AND category_id = ? "
-            "ORDER BY created_at DESC;");
+            "ORDER BY last_activity DESC;");
     } else if (has_date) {
         snprintf(sql, sizeof(sql),
             "SELECT topic_json FROM feed_topics "
             "WHERE deleted = 0 AND created_at >= ? "
-            "ORDER BY created_at DESC;");
+            "ORDER BY last_activity DESC;");
     } else {
         snprintf(sql, sizeof(sql),
             "SELECT topic_json FROM feed_topics "
             "WHERE deleted = 0 "
-            "ORDER BY created_at DESC;");
+            "ORDER BY last_activity DESC;");
     }
 
     sqlite3_stmt *stmt = NULL;

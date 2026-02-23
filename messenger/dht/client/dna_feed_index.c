@@ -39,6 +39,15 @@
 
 #define LOG_TAG "DNA_INDEX"
 
+/* Compare index entries by created_at descending (for qsort) */
+static int compare_index_entry_desc(const void *a, const void *b) {
+    const dna_feed_index_entry_t *ea = (const dna_feed_index_entry_t *)a;
+    const dna_feed_index_entry_t *eb = (const dna_feed_index_entry_t *)b;
+    if (eb->created_at > ea->created_at) return 1;
+    if (eb->created_at < ea->created_at) return -1;
+    return 0;
+}
+
 /* ============================================================================
  * JSON Serialization for Index Entries
  * ========================================================================== */
@@ -500,16 +509,8 @@ int dna_feed_index_get_category(dht_context_t *dht_ctx,
         return -2;
     }
 
-    /* Sort by created_at descending (newest first) */
-    for (size_t i = 0; i < all_count - 1; i++) {
-        for (size_t j = i + 1; j < all_count; j++) {
-            if (all_entries[i].created_at < all_entries[j].created_at) {
-                dna_feed_index_entry_t tmp = all_entries[i];
-                all_entries[i] = all_entries[j];
-                all_entries[j] = tmp;
-            }
-        }
-    }
+    /* Sort by created_at descending (newest first) - O(n log n) */
+    qsort(all_entries, all_count, sizeof(dna_feed_index_entry_t), compare_index_entry_desc);
 
     /* Filter out deleted entries */
     size_t filtered = 0;
@@ -590,16 +591,8 @@ int dna_feed_index_get_all(dht_context_t *dht_ctx,
         return -2;
     }
 
-    /* Sort by created_at descending (newest first) */
-    for (size_t i = 0; i < all_count - 1; i++) {
-        for (size_t j = i + 1; j < all_count; j++) {
-            if (all_entries[i].created_at < all_entries[j].created_at) {
-                dna_feed_index_entry_t tmp = all_entries[i];
-                all_entries[i] = all_entries[j];
-                all_entries[j] = tmp;
-            }
-        }
-    }
+    /* Sort by created_at descending (newest first) - O(n log n) */
+    qsort(all_entries, all_count, sizeof(dna_feed_index_entry_t), compare_index_entry_desc);
 
     /* Filter out deleted entries */
     size_t filtered = 0;

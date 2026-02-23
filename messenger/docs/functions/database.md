@@ -210,7 +210,8 @@ SQLite cache for discovered bootstrap nodes, enabling decentralization.
 
 | Function | Description |
 |----------|-------------|
-| `int feed_cache_put_topic_json(const char*, const char*, const char*, uint64_t, int)` | Store/update topic JSON blob |
+| `int feed_cache_put_topic_json(const char*, const char*, const char*, uint64_t, int)` | Store/update topic JSON blob (upsert, preserves last_activity) |
+| `int feed_cache_update_topic_activity(const char*, uint64_t)` | Bump topic last_activity timestamp (forum-style sort, forward-only) |
 | `int feed_cache_get_topic_json(const char*, char**)` | Get single topic JSON by UUID |
 | `int feed_cache_delete_topic(const char*)` | Delete topic from cache |
 | `int feed_cache_get_topics_all(int, char***, int*)` | Get all non-deleted topics within date window |

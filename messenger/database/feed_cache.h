@@ -76,6 +76,16 @@ int feed_cache_put_topic_json(const char *uuid, const char *topic_json,
                               int deleted);
 
 /**
+ * Update the last_activity timestamp of a cached topic (forum-style bump).
+ * Only bumps forward — if the topic already has a higher last_activity, no change.
+ *
+ * @param topic_uuid    Topic UUID
+ * @param last_activity New activity timestamp (e.g., latest comment's created_at)
+ * @return 0 on success, -1 on error, -3 if uninitialized
+ */
+int feed_cache_update_topic_activity(const char *topic_uuid, uint64_t last_activity);
+
+/**
  * Get a single topic JSON by UUID
  *
  * @param uuid           Topic UUID

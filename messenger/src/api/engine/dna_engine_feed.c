@@ -700,8 +700,10 @@ void dna_handle_feed_add_comment(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    /* Cache: invalidate comments for this topic */
+    /* Cache: invalidate comments for this topic and bump activity */
     feed_cache_invalidate_comments(task->params.feed_add_comment.topic_uuid);
+    feed_cache_update_topic_activity(task->params.feed_add_comment.topic_uuid,
+                                     info->created_at);
 
     QGP_LOG_INFO(LOG_TAG, "Added comment to topic: %s",
                  task->params.feed_add_comment.topic_uuid);
@@ -812,6 +814,15 @@ void dna_handle_feed_get_comments(dna_engine_t *engine, dna_task_t *task) {
             free(json);
         }
         feed_cache_update_meta(cache_key);
+
+        /* Bump topic activity to latest comment timestamp (forum-style sort) */
+        uint64_t max_ts = 0;
+        for (size_t i = 0; i < count; i++) {
+            if (info[i].created_at > max_ts) max_ts = info[i].created_at;
+        }
+        if (max_ts > 0) {
+            feed_cache_update_topic_activity(topic_uuid, max_ts);
+        }
     }
 
     task->callback.feed_comments(task->request_id, DNA_OK, info, (int)count, task->user_data);
@@ -1866,6 +1877,15 @@ void dna_handle_feed_revalidate_comments(dna_engine_t *engine, dna_task_t *task)
     if (comment_infos_to_json(infos, valid, &json) == 0) {
         feed_cache_put_comments(topic_uuid, json, valid);
         free(json);
+    }
+
+    /* Bump topic activity to latest comment timestamp (forum-style sort) */
+    uint64_t max_ts = 0;
+    for (int i = 0; i < valid; i++) {
+        if (infos[i].created_at > max_ts) max_ts = infos[i].created_at;
+    }
+    if (max_ts > 0) {
+        feed_cache_update_topic_activity(topic_uuid, max_ts);
     }
 
     /* Free info bodies */
