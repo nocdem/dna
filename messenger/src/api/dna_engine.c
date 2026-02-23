@@ -84,6 +84,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "message_backup.h"
 #include "messenger/status.h"
 #include "dht/client/dht_singleton.h"
+#include "dht/client/dht_bootstrap_discovery.h"
 #include "dht/core/dht_keyserver.h"
 #include "dht/core/dht_listen.h"
 #include "dht/client/dht_contactlist.h"
@@ -1712,6 +1713,11 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* Global caches (profile_manager, keyserver_cache) intentionally NOT closed.
      * They persist for app lifetime to survive engine destroy/recreate cycles
      * (Android pause/resume). Init functions are idempotent. OS cleans up on exit. */
+
+    /* v0.6.126: Stop discovery thread BEFORE freeing DHT context.
+     * The discovery thread holds g_discovery_dht_ctx which points to engine->dht_ctx.
+     * If not joined first, it can call runner.bootstrap() on a freed context (UAF). */
+    dht_bootstrap_discovery_stop();
 
     /* v0.6.0+: Cleanup engine-owned DHT context */
     if (engine->dht_ctx) {
