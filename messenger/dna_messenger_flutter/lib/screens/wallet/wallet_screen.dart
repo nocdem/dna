@@ -7,7 +7,9 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart' show Contact, Transaction, UserProfile, Wallet;
 import '../../providers/addressbook_provider.dart';
 import '../../providers/providers.dart' hide UserProfile;
-import '../../design_system/theme/dna_colors.dart';
+import '../../design_system/design_system.dart'; // includes DnaColors, DnaGradients, DnaSpacing
+import '../../providers/engine_provider.dart' show currentFingerprintProvider;
+import '../../providers/name_resolver_provider.dart';
 import 'address_book_screen.dart';
 import 'address_dialog.dart';
 
@@ -125,7 +127,8 @@ class WalletScreen extends ConsumerWidget {
       },
       child: ListView(
         children: [
-          // All balances from all wallets combined
+          const _WalletHeroCard(),
+          // const _ActionButtonsRow(), // Task 2
           const _AllBalancesSection(),
         ],
       ),
@@ -386,6 +389,106 @@ class _WalletCard extends StatelessWidget {
       default:
         return 'Type $sigType';
     }
+  }
+}
+
+class _WalletHeroCard extends ConsumerWidget {
+  const _WalletHeroCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final fingerprint = ref.watch(currentFingerprintProvider);
+    final nameCache = ref.watch(nameResolverProvider);
+    final identityName = fingerprint != null ? nameCache[fingerprint] : null;
+
+    // Trigger resolution if not yet cached
+    if (fingerprint != null && !nameCache.containsKey(fingerprint)) {
+      ref.read(nameResolverProvider.notifier).resolveName(fingerprint);
+    }
+
+    return Container(
+      margin: const EdgeInsets.all(DnaSpacing.lg),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: DnaGradients.primaryVertical,
+        borderRadius: BorderRadius.circular(DnaSpacing.radiusLg),
+        boxShadow: [
+          BoxShadow(
+            color: DnaColors.gradientStart.withValues(alpha: 0.3),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'My Wallet',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.7),
+              fontSize: 13,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            identityName ?? 'Wallet',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: const [
+              _ChainIcon(asset: 'assets/icons/crypto/cell.svg', label: 'CELL'),
+              SizedBox(width: 12),
+              _ChainIcon(asset: 'assets/icons/crypto/eth.svg', label: 'ETH'),
+              SizedBox(width: 12),
+              _ChainIcon(asset: 'assets/icons/crypto/sol.svg', label: 'SOL'),
+              SizedBox(width: 12),
+              _ChainIcon(asset: 'assets/icons/crypto/trx.svg', label: 'TRX'),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ChainIcon extends StatelessWidget {
+  final String asset;
+  final String label;
+
+  const _ChainIcon({required this.asset, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.15),
+            shape: BoxShape.circle,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(6),
+            child: SvgPicture.asset(asset),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.7),
+            fontSize: 10,
+          ),
+        ),
+      ],
+    );
   }
 }
 
