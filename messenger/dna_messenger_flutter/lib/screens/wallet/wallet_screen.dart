@@ -51,9 +51,7 @@ String getNetworkDisplayLabel(String network) {
 }
 
 class WalletScreen extends ConsumerWidget {
-  final VoidCallback? onMenuPressed;
-
-  const WalletScreen({super.key, this.onMenuPressed});
+  const WalletScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -62,12 +60,6 @@ class WalletScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        leading: onMenuPressed != null
-            ? IconButton(
-                icon: const FaIcon(FontAwesomeIcons.bars),
-                onPressed: onMenuPressed,
-              )
-            : null,
         title: const Text('Wallet'),
         actions: [
           IconButton(

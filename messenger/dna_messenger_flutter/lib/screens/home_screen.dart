@@ -1,21 +1,15 @@
-// Home Screen - Main navigation with drawer
+// Home Screen - Main navigation with bottom tabs
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import '../design_system/design_system.dart';
 import '../providers/providers.dart';
-import '../theme/dna_theme.dart';
-import '../platform/platform_handler.dart';
-// v0.3.0: IdentitySelectionScreen import removed - single-user model
-import 'feed/feed_screen.dart';
 import 'contacts/contacts_screen.dart';
 import 'groups/groups_screen.dart';
-import 'wallet/wallet_screen.dart';
-import 'qr/qr_scanner_screen.dart';
-import 'settings/settings_screen.dart';
+import 'feed/feed_screen.dart';
+import 'more/more_screen.dart';
 
-/// Current tab index
-/// Mobile: 0=Chats, 1=Groups, 2=Feed, 3=Wallet, 4=QR Scanner, 5=Settings
-/// Desktop: 0=Chats, 1=Groups, 2=Feed, 3=Wallet, 4=Settings (no QR)
+/// Current tab index: 0=Chats, 1=Groups, 2=Feed, 3=More
 final currentTabProvider = StateProvider<int>((ref) => 0);
 
 /// v0.3.0: Single-user model - HomeScreen always shows main navigation
@@ -31,35 +25,53 @@ class HomeScreen extends ConsumerWidget {
   }
 }
 
-class _MainNavigation extends ConsumerStatefulWidget {
+class _MainNavigation extends ConsumerWidget {
   const _MainNavigation();
 
   @override
-  ConsumerState<_MainNavigation> createState() => _MainNavigationState();
-}
-
-class _MainNavigationState extends ConsumerState<_MainNavigation> {
-  final _scaffoldKey = GlobalKey<ScaffoldState>();
-
-  void _openDrawer() => _scaffoldKey.currentState?.openDrawer();
-
-  @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final currentTab = ref.watch(currentTabProvider);
-    final supportsCamera = PlatformHandler.instance.supportsCamera;
+
+    // Watch unread counts for badges
+    final chatUnreadCount = ref.watch(totalUnreadCountProvider);
+    final groupUnreadCount = ref.watch(totalGroupUnreadCountProvider);
 
     return Scaffold(
-      key: _scaffoldKey,
-      drawer: const _NavigationDrawer(),
       body: IndexedStack(
         index: currentTab,
-        children: [
-          ContactsScreen(onMenuPressed: _openDrawer),
-          GroupsScreen(onMenuPressed: _openDrawer),
-          FeedScreen(onMenuPressed: _openDrawer),
-          WalletScreen(onMenuPressed: _openDrawer),
-          if (supportsCamera) QrScannerScreen(onMenuPressed: _openDrawer),
-          SettingsScreen(onMenuPressed: _openDrawer),
+        children: const [
+          ContactsScreen(),
+          GroupsScreen(),
+          FeedScreen(),
+          MoreScreen(),
+        ],
+      ),
+      bottomNavigationBar: DnaBottomBar(
+        currentIndex: currentTab,
+        onTap: (index) => ref.read(currentTabProvider.notifier).state = index,
+        items: [
+          DnaBottomBarItem(
+            icon: FontAwesomeIcons.comment,
+            activeIcon: FontAwesomeIcons.solidComment,
+            label: 'Chats',
+            badgeCount: chatUnreadCount,
+          ),
+          DnaBottomBarItem(
+            icon: FontAwesomeIcons.userGroup,
+            activeIcon: FontAwesomeIcons.userGroup,
+            label: 'Groups',
+            badgeCount: groupUnreadCount,
+          ),
+          DnaBottomBarItem(
+            icon: FontAwesomeIcons.newspaper,
+            activeIcon: FontAwesomeIcons.solidNewspaper,
+            label: 'Feed',
+          ),
+          DnaBottomBarItem(
+            icon: FontAwesomeIcons.ellipsis,
+            activeIcon: FontAwesomeIcons.ellipsis,
+            label: 'More',
+          ),
         ],
       ),
     );
@@ -67,163 +79,11 @@ class _MainNavigationState extends ConsumerState<_MainNavigation> {
 }
 
 // =============================================================================
-// NAVIGATION DRAWER
+// DHT STATUS INDICATOR (kept for future integration)
 // =============================================================================
 
-class _NavigationDrawer extends ConsumerWidget {
-  const _NavigationDrawer();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final currentTab = ref.watch(currentTabProvider);
-    final supportsCamera = PlatformHandler.instance.supportsCamera;
-    // Settings tab index: 5 on mobile (with QR), 4 on desktop (no QR)
-    final settingsTabIndex = supportsCamera ? 5 : 4;
-
-    // Watch unread counts for badges
-    final chatUnreadCount = ref.watch(totalUnreadCountProvider);
-    final groupUnreadCount = ref.watch(totalGroupUnreadCountProvider);
-
-    void selectTab(int index) {
-      ref.read(currentTabProvider.notifier).state = index;
-      Navigator.of(context).pop();
-    }
-
-    return Drawer(
-      child: SafeArea(
-        child: Column(
-          children: [
-            // Header with profile
-            const _DrawerHeader(),
-            const SizedBox(height: 8),
-            // Navigation items
-            Expanded(
-              child: ListView(
-                padding: EdgeInsets.zero,
-                children: [
-                  _DrawerItem(
-                    icon: FontAwesomeIcons.comments,
-                    selectedIcon: FontAwesomeIcons.solidComments,
-                    label: 'Chats',
-                    selected: currentTab == 0,
-                    onTap: () => selectTab(0),
-                    badgeCount: chatUnreadCount,
-                  ),
-                  _DrawerItem(
-                    icon: FontAwesomeIcons.users,
-                    selectedIcon: FontAwesomeIcons.users,
-                    label: 'Groups',
-                    selected: currentTab == 1,
-                    onTap: () => selectTab(1),
-                    badgeCount: groupUnreadCount,
-                  ),
-                  _DrawerItem(
-                    icon: FontAwesomeIcons.newspaper,
-                    selectedIcon: FontAwesomeIcons.newspaper,
-                    label: 'Feed',
-                    selected: currentTab == 2,
-                    onTap: () => selectTab(2),
-                  ),
-                  _DrawerItem(
-                    icon: FontAwesomeIcons.wallet,
-                    selectedIcon: FontAwesomeIcons.wallet,
-                    label: 'Wallet',
-                    selected: currentTab == 3,
-                    onTap: () => selectTab(3),
-                  ),
-                  if (supportsCamera)
-                    _DrawerItem(
-                      icon: FontAwesomeIcons.qrcode,
-                      selectedIcon: FontAwesomeIcons.qrcode,
-                      label: 'QR Scanner',
-                      selected: currentTab == 4,
-                      onTap: () => selectTab(4),
-                    ),
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 16),
-                    child: Divider(),
-                  ),
-                  _DrawerItem(
-                    icon: FontAwesomeIcons.gear,
-                    selectedIcon: FontAwesomeIcons.gear,
-                    label: 'Settings',
-                    selected: currentTab == settingsTabIndex,
-                    onTap: () => selectTab(settingsTabIndex),
-                  ),
-                ],
-              ),
-            ),
-            // DHT Connection Status at bottom
-            const _DhtStatusIndicator(),
-            const SizedBox(height: 16),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _DrawerItem extends StatelessWidget {
-  final IconData icon;
-  final IconData selectedIcon;
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  final int badgeCount;
-
-  const _DrawerItem({
-    required this.icon,
-    required this.selectedIcon,
-    required this.label,
-    required this.selected,
-    required this.onTap,
-    this.badgeCount = 0,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return ListTile(
-      leading: FaIcon(
-        selected ? selectedIcon : icon,
-        color: selected ? theme.colorScheme.primary : null,
-      ),
-      title: Text(
-        label,
-        style: TextStyle(
-          color: selected ? theme.colorScheme.primary : null,
-          fontWeight: selected ? FontWeight.w600 : null,
-        ),
-      ),
-      trailing: badgeCount > 0
-          ? Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.primary,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(
-                badgeCount > 99 ? '99+' : badgeCount.toString(),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            )
-          : null,
-      selected: selected,
-      onTap: onTap,
-    );
-  }
-}
-
-// =============================================================================
-// DHT STATUS INDICATOR
-// =============================================================================
-
-class _DhtStatusIndicator extends ConsumerWidget {
-  const _DhtStatusIndicator();
+class DhtStatusIndicator extends ConsumerWidget {
+  const DhtStatusIndicator({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -254,137 +114,4 @@ class _DhtStatusIndicator extends ConsumerWidget {
       ),
     );
   }
-}
-
-// =============================================================================
-// DRAWER HEADER
-// =============================================================================
-
-class _DrawerHeader extends ConsumerWidget {
-  const _DrawerHeader();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final fingerprint = ref.watch(currentFingerprintProvider) ?? '';
-    final userProfile = ref.watch(userProfileProvider);
-    final fullProfile = ref.watch(fullProfileProvider);
-    final shortFp = fingerprint.length > 16
-        ? '${fingerprint.substring(0, 8)}...${fingerprint.substring(fingerprint.length - 8)}'
-        : fingerprint;
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
-      decoration: const BoxDecoration(
-        color: DnaColors.surface,
-        border: Border(bottom: BorderSide(color: DnaColors.border)),
-      ),
-      child: Row(
-        children: [
-          // Avatar
-          _buildAvatar(fullProfile, userProfile.valueOrNull?.nickname ?? shortFp, ref),
-          const SizedBox(width: 12),
-          // Name and fingerprint
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Display name
-                userProfile.when(
-                  data: (profile) => Text(
-                    profile?.nickname?.isNotEmpty == true ? profile!.nickname! : 'Anonymous',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  loading: () => const SizedBox(
-                    height: 20,
-                    width: 100,
-                    child: LinearProgressIndicator(),
-                  ),
-                  error: (e, st) => const Text('Anonymous'),
-                ),
-                const SizedBox(height: 4),
-                // Fingerprint
-                Text(
-                  shortFp,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: DnaColors.textMuted,
-                    fontFamily: 'monospace',
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _getInitials(String name) {
-    if (name.isEmpty) return '?';
-    // Filter out empty strings from split (handles multiple spaces)
-    final words = name.split(' ').where((w) => w.isNotEmpty).toList();
-    if (words.isEmpty) return '?';
-    if (words.length >= 2) {
-      return '${words[0][0]}${words[1][0]}'.toUpperCase();
-    }
-    return words[0].substring(0, words[0].length.clamp(0, 2)).toUpperCase();
-  }
-
-  Widget _buildAvatar(AsyncValue<dynamic> fullProfile, String fallbackName, WidgetRef ref) {
-    return fullProfile.when(
-      data: (profile) {
-        final avatarBytes = profile?.decodeAvatar();
-        if (avatarBytes != null) {
-          return CircleAvatar(
-            radius: 32,
-            backgroundImage: MemoryImage(avatarBytes),
-          );
-        }
-        return CircleAvatar(
-          radius: 32,
-          backgroundColor: DnaColors.primarySoft,
-          child: Text(
-            _getInitials(fallbackName),
-            style: const TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: DnaColors.primary,
-            ),
-          ),
-        );
-      },
-      loading: () {
-        return CircleAvatar(
-          radius: 32,
-          backgroundColor: DnaColors.primarySoft,
-          child: const SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-        );
-      },
-      error: (e, s) => CircleAvatar(
-        radius: 32,
-        backgroundColor: DnaColors.primarySoft,
-        child: Text(
-          _getInitials(fallbackName),
-          style: const TextStyle(
-            fontSize: 24,
-            fontWeight: FontWeight.bold,
-            color: DnaColors.primary,
-          ),
-        ),
-      ),
-    );
-  }
-
-  // v0.3.0: _showSwitchIdentityDialog removed - single-user model
 }

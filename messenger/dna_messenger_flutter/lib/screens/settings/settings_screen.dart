@@ -28,9 +28,7 @@ final packageInfoProvider = FutureProvider<PackageInfo>((ref) async {
 });
 
 class SettingsScreen extends ConsumerWidget {
-  final VoidCallback? onMenuPressed;
-
-  const SettingsScreen({super.key, this.onMenuPressed});
+  const SettingsScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -41,12 +39,6 @@ class SettingsScreen extends ConsumerWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Settings'),
-        leading: onMenuPressed != null
-            ? IconButton(
-                icon: const FaIcon(FontAwesomeIcons.bars),
-                onPressed: onMenuPressed,
-              )
-            : null,
       ),
       body: SafeArea(
         top: false,

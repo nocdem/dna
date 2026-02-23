@@ -12,9 +12,7 @@ import '../chat/chat_screen.dart';
 import 'contact_requests_screen.dart';
 
 class ContactsScreen extends ConsumerWidget {
-  final VoidCallback? onMenuPressed;
-
-  const ContactsScreen({super.key, this.onMenuPressed});
+  const ContactsScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -22,12 +20,7 @@ class ContactsScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        leading: onMenuPressed != null
-            ? IconButton(
-                icon: const FaIcon(FontAwesomeIcons.bars),
-                onPressed: onMenuPressed,
-              )
-            : null,
+        automaticallyImplyLeading: false,
         title: const Text('Chats'),
         actions: [
           _ContactRequestsBadge(

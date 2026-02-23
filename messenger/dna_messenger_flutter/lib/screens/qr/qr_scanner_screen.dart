@@ -8,17 +8,11 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../main.dart' show routeObserver;
 import '../../theme/dna_theme.dart';
 import '../../utils/qr_payload_parser.dart';
-import '../home_screen.dart' show currentTabProvider;
 import 'qr_auth_screen.dart';
 import 'qr_result_screen.dart';
 
-/// QR Scanner tab index in the home screen IndexedStack
-const _kQrScannerTabIndex = 4;
-
 class QrScannerScreen extends ConsumerStatefulWidget {
-  final VoidCallback? onMenuPressed;
-
-  const QrScannerScreen({super.key, this.onMenuPressed});
+  const QrScannerScreen({super.key});
 
   @override
   ConsumerState<QrScannerScreen> createState() => _QrScannerScreenState();
@@ -32,7 +26,6 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
   DateTime? _lastScanAt;
 
   // Visibility and scanning state
-  bool _isTabActive = false;
   bool _isRouteCovered = false;
   bool _isAppPaused = false;
   bool _scannerArmed = true; // false after scan, requires manual re-arm
@@ -45,6 +38,10 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initController();
+    // Start scanner immediately since this is now a pushed route (always visible)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _startScanner();
+    });
   }
 
   @override
@@ -82,7 +79,7 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
 
   /// Compute whether scanner should be running
   bool get _shouldScannerRun {
-    return _isTabActive && !_isRouteCovered && !_isAppPaused;
+    return !_isRouteCovered && !_isAppPaused;
   }
 
   /// Update scanner state based on visibility
@@ -163,19 +160,6 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
         _isAppPaused = false;
         _updateScannerState();
         break;
-    }
-  }
-
-  // ==========================================================================
-  // Tab switching detection (for IndexedStack)
-  // ==========================================================================
-
-  void _onTabChanged(int? previous, int current) {
-    final wasActive = _isTabActive;
-    _isTabActive = (current == _kQrScannerTabIndex);
-
-    if (wasActive != _isTabActive) {
-      _updateScannerState();
     }
   }
 
@@ -280,59 +264,23 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
 
   @override
   Widget build(BuildContext context) {
-    // Watch tab changes to detect when we become visible/hidden
-    ref.listen<int>(currentTabProvider, _onTabChanged);
-
-    // Also check current tab state on build (but don't trigger scanner update here -
-    // that's handled by _onTabChanged listener to avoid redundant calls)
-    final currentTab = ref.watch(currentTabProvider);
-    final wasActive = _isTabActive;
-    _isTabActive = (currentTab == _kQrScannerTabIndex);
-
-    // Only update scanner on INITIAL build when tab is active (not on every rebuild)
-    if (_isTabActive && !wasActive && !_controllerStarted && !_isStarting) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          _updateScannerState();
-        }
-      });
-    }
-
-    // Intercept Android back button: close scanner and return to Chats tab
-    // instead of backgrounding the app. Also ensures camera is stopped cleanly.
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, result) async {
-        if (didPop) return;
-        await _stopScanner();
-        if (mounted) {
-          ref.read(currentTabProvider.notifier).state = 0; // Switch to Chats
-        }
-      },
-      child: Scaffold(
-        appBar: AppBar(
-          leading: widget.onMenuPressed != null
-              ? IconButton(
-                  icon: const FaIcon(FontAwesomeIcons.bars),
-                  onPressed: widget.onMenuPressed,
-                )
-              : null,
-          title: const Text('Scan QR'),
-          actions: [
-            IconButton(
-              icon: FaIcon(_torchOn ? FontAwesomeIcons.lightbulb : FontAwesomeIcons.solidLightbulb),
-              onPressed: _toggleTorch,
-              tooltip: 'Toggle Flash',
-            ),
-            IconButton(
-              icon: const FaIcon(FontAwesomeIcons.cameraRotate),
-              onPressed: _switchCamera,
-              tooltip: 'Switch Camera',
-            ),
-          ],
-        ),
-        body: _buildBody(),
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Scan QR'),
+        actions: [
+          IconButton(
+            icon: FaIcon(_torchOn ? FontAwesomeIcons.lightbulb : FontAwesomeIcons.solidLightbulb),
+            onPressed: _toggleTorch,
+            tooltip: 'Toggle Flash',
+          ),
+          IconButton(
+            icon: const FaIcon(FontAwesomeIcons.cameraRotate),
+            onPressed: _switchCamera,
+            tooltip: 'Switch Camera',
+          ),
+        ],
       ),
+      body: _buildBody(),
     );
   }
 

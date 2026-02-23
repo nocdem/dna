@@ -8,9 +8,7 @@ import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 
 class FeedScreen extends ConsumerWidget {
-  final VoidCallback? onMenuPressed;
-
-  const FeedScreen({super.key, this.onMenuPressed});
+  const FeedScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -19,12 +17,7 @@ class FeedScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        leading: onMenuPressed != null
-            ? IconButton(
-                icon: const FaIcon(FontAwesomeIcons.bars),
-                onPressed: onMenuPressed,
-              )
-            : null,
+        automaticallyImplyLeading: false,
         title: const Text('Feed'),
         actions: [
           IconButton(

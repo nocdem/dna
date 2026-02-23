@@ -7,9 +7,7 @@ import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 
 class GroupsScreen extends ConsumerWidget {
-  final VoidCallback? onMenuPressed;
-
-  const GroupsScreen({super.key, this.onMenuPressed});
+  const GroupsScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -18,12 +16,7 @@ class GroupsScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        leading: onMenuPressed != null
-            ? IconButton(
-                icon: const FaIcon(FontAwesomeIcons.bars),
-                onPressed: onMenuPressed,
-              )
-            : null,
+        automaticallyImplyLeading: false,
         title: const Text('Groups'),
         actions: [
           IconButton(
