@@ -16,7 +16,7 @@ final engineProvider = AsyncNotifierProvider<EngineNotifier, DnaEngine>(
 class EngineNotifier extends AsyncNotifier<DnaEngine> {
   @override
   Future<DnaEngine> build() async {
-    // Desktop: use ~/.dna for consistency with ImGui app
+    // Desktop: use ~/.dna as the standard data directory
     // Mobile: use app-specific files directory
     final String dataDir;
     if (Platform.isLinux || Platform.isMacOS) {

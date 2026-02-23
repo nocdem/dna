@@ -1,14 +1,14 @@
 # DNA Messenger Flutter UI
 
-**Last Updated:** 2025-12-06
-**Status:** Phase 3 Complete (Full Features)
-**Target:** Android first, all platforms from single codebase
+**Last Updated:** 2026-02-23
+**Status:** Phase 4 — Design System + UI Redesign Complete
+**Target:** Mobile-first, all platforms from single codebase
 
 ---
 
 ## Executive Summary
 
-DNA Messenger is migrating from ImGui to Flutter for cross-platform UI. Flutter was chosen for:
+DNA Messenger uses Flutter for cross-platform UI. Flutter was chosen for:
 - **Mobile-first**: First-class Android/iOS support
 - **Single codebase**: Android, iOS, Linux, Windows, macOS (+ Web)
 - **Dart FFI**: Clean interop with existing C API (`dna_engine.h`)
@@ -21,8 +21,9 @@ DNA Messenger is migrating from ImGui to Flutter for cross-platform UI. Flutter 
 | 1 | FFI Foundation | ✅ Complete |
 | 2 | Core Screens | ✅ Complete |
 | 3 | Full Features | ✅ Complete |
-| 4 | Platform Builds | 📋 Planned |
-| 5 | Testing & Polish | 📋 Planned |
+| 4 | Design System + UI Redesign | ✅ Complete |
+| 5 | Platform Builds | 📋 Planned |
+| 6 | Testing & Polish | 📋 Planned |
 
 ---
 
@@ -32,8 +33,14 @@ DNA Messenger is migrating from ImGui to Flutter for cross-platform UI. Flutter 
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Flutter UI Layer                           │
 │  ┌─────────────────────────────────────────────────────────────┐│
-│  │   Screens (chat, contacts, wallet, groups, settings)       ││
-│  │   Widgets (message_bubble, avatar, buttons)                ││
+│  │   Design System (lib/design_system/)                       ││
+│  │   - Theme: colors, gradients, typography, spacing          ││
+│  │   - Components: card, button, avatar, badge, chip, etc.    ││
+│  │   - Navigation: bottom bar, app bar, more menu             ││
+│  │   - Inputs: text field, search bar, switch                 ││
+│  ├─────────────────────────────────────────────────────────────┤│
+│  │   Screens (chats, groups, feed, more, wallet, settings)    ││
+│  │   Navigation: Bottom tabs (Chats, Groups, Feed, More)      ││
 │  └─────────────────────────────────────────────────────────────┘│
 │                              │                                   │
 │                    Riverpod Providers                            │
@@ -359,7 +366,7 @@ dna_messenger_flutter/
 3. Responsive layouts (mobile vs desktop)
 4. Platform-specific polish
 5. Documentation
-6. Deprecate ImGui GUI (keep as fallback)
+6. Platform-specific polish
 
 ---
 

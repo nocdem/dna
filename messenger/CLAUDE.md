@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-02-04 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.6.123 | Flutter v0.100.94 | Nodus v0.4.5
+**Versions:** Library v0.6.123 | Flutter v0.100.95 | Nodus v0.4.5
 
 ---
 
@@ -197,7 +197,7 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
 | C Library | `include/dna/version.h` | v0.6.123 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.100.94+10194 | Flutter/Dart code changes (lib/, assets/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.100.95+10195 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.5 | Nodus server changes (vendor/opendht-pq/tools/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
@@ -714,7 +714,7 @@ Post-quantum E2E encrypted messenger with DNA Wallet. **NIST Category 5 security
 
 **Crypto:** Kyber1024 (ML-KEM-1024), Dilithium5 (ML-DSA-87), AES-256-GCM, SHA3-512
 
-**Key Features:** E2E encrypted messaging • GEK group encryption • DHT groups • Per-identity contacts • User profiles • Wall posts • DNA Wallet • DHT-only messaging • Offline queueing (7d) • BIP39 recovery • SQLite • ImGui GUI • Android SDK (JNI)
+**Key Features:** E2E encrypted messaging • GEK group encryption • DHT groups • Per-identity contacts • User profiles • Wall posts • DNA Wallet • DHT-only messaging • Offline queueing (7d) • BIP39 recovery • SQLite • Flutter UI • Android SDK (JNI)
 
 
 ---
@@ -899,7 +899,7 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 ## Phase Status
 
 ### ✅ Complete
-- **Phase 4:** Desktop GUI (ImGui) + Wallet Integration
+- **Phase 4:** Desktop GUI + Wallet Integration
 - **Phase 5.1-5.9:** P2P Architecture (DHT, GEK, Message Format v0.08)
 - **Phase 6:** Android SDK (JNI bindings, Java classes, Gradle project)
 - **Phase 8:** DNA Wallet Integration

@@ -17,7 +17,7 @@ Oct 2025                              Jan 2026
      │     │     │     │     │     │
      │     │     │     │     │     └─ Flutter cross-platform
      │     │     │     │     └─ Android JNI SDK
-     │     │     │     └─ Qt → ImGui → Flutter
+     │     │     │     └─ Flutter cross-platform UI
      │     │     └─ P2P Transport, DHT, GEK
      │     └─ PostgreSQL → SQLite
      └─ Core library API
@@ -80,24 +80,21 @@ Oct 2025                              Jan 2026
 - Presence system for online status
 
 ### Phase 5: Desktop GUI (November 2025)
-**Qt5 → ImGui migration**
+**GUI Framework Evolution**
 
 ```
 Qt5 GUI (v0.1.60)
     │
     │  Too heavy, complex deployment
     ▼
-ImGui GUI (v0.1.80)
-    │
-    │  C++ only, no mobile support
-    ▼
 Flutter UI (v0.2.0+)
+    │  Cross-platform, mobile-first
 ```
 
 - Initial Qt5 GUI with theming (cpunk.io cyan, cpunk.club orange)
 - Auto-update mechanism
 - Message search and filtering
-- **Migration to ImGui** - Lighter, embedded in C++
+- Migration to Flutter for cross-platform support
 - Custom styling and font scaling
 - Push notifications with sound alerts
 
@@ -205,7 +202,7 @@ Client → DHT (cached) ←→ Client
 | v0.1.0 | 2025-10-14 | Initial fork from QGP |
 | v0.1.30 | 2025-10-23 | DNA Wallet integration |
 | v0.1.50 | 2025-11-03 | PostgreSQL → SQLite migration |
-| v0.1.80 | 2025-11-10 | Qt → ImGui GUI migration |
+| v0.1.80 | 2025-11-10 | Qt → Flutter GUI migration |
 | v0.1.100 | 2025-11-16 | DHT refactoring, profile unification |
 | v0.1.115 | 2025-11-18 | Message format v0.08 (fingerprint privacy) |
 | v0.1.120+ | 2025-11-21 | GEK group encryption (200x speedup) |

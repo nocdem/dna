@@ -42,7 +42,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 | **DHT Network** | OpenDHT-PQ (post-quantum modified) |
 | **NAT Traversal** | DHT-only (ICE/STUN removed v0.4.61) |
 | **Local Storage** | SQLite3 |
-| **GUI Framework** | ImGui (OpenGL3 + GLFW3) |
+| **GUI Framework** | Flutter (Dart FFI to C library) |
 | **Blockchain** | Cellframe (CPUNK), Ethereum (ETH), TRON (TRX), Solana (SOL) |
 | **HD Derivation** | BIP-32/BIP-44 (secp256k1), SLIP-10 (Ed25519) |
 

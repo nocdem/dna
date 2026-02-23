@@ -560,7 +560,7 @@ build:flutter-macos:
     # Build native library for macOS first
     - cd ${CI_PROJECT_DIR}
     - mkdir -p build-macos && cd build-macos
-    - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_IMGUI_GUI=OFF -DBUILD_SHARED_LIBS=ON
+    - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
     - make -j$(sysctl -n hw.ncpu) dna_lib
     # Copy to Flutter
     - cd ${CI_PROJECT_DIR}/dna_messenger_flutter

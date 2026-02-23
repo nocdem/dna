@@ -5,7 +5,7 @@ This directory previously contained deprecated legacy code. All contents have be
 ## Removed Contents
 
 ### imgui_gui/ (DELETED)
-**ImGui Desktop GUI**
+**Legacy Desktop GUI**
 - Deleted: 2026-01-08
 - Previously archived: 2026-01-01
 - Replaced by: Flutter UI (`dna_messenger_flutter/`)

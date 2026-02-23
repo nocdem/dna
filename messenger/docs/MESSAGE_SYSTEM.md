@@ -40,7 +40,7 @@ This document describes how the DNA Messenger message system works, with all fac
 │         ▼                                                      ▼           │
 │  ┌─────────────┐         ENCRYPTION LAYER           ┌─────────────────┐   │
 │  │ GUI Input   │                                    │   GUI Display   │   │
-│  │ (ImGui)     │                                    │   (ImGui)       │   │
+│  │ (Flutter)   │                                    │   (Flutter)     │   │
 │  └──────┬──────┘                                    └────────┬────────┘   │
 │         │                                                    ▲            │
 │         ▼                                                    │            │
