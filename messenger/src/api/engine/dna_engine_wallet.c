@@ -938,6 +938,62 @@ int dna_engine_estimate_eth_gas(int gas_speed, dna_gas_estimate_t *estimate_out)
     return 0;
 }
 
+/* Gas speed multipliers (percent) - must match blockchain_wallet.c */
+static const int ENGINE_GAS_MULTIPLIERS[] = { 80, 100, 150 };
+
+static void fill_gas_estimate(dna_gas_estimate_t *out, uint64_t base_gas_price,
+                               int multiplier_pct, uint64_t gas_limit) {
+    uint64_t adjusted_price = (base_gas_price * multiplier_pct) / 100;
+    uint64_t total_fee_wei = adjusted_price * gas_limit;
+    double fee_eth = (double)total_fee_wei / 1000000000000000000.0;
+
+    out->gas_price = adjusted_price;
+    out->gas_limit = gas_limit;
+    snprintf(out->fee_eth, sizeof(out->fee_eth), "%.6f", fee_eth);
+}
+
+void dna_handle_estimate_gas(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
+
+    /* Single RPC call: get base gas price via normal speed (100% = raw price) */
+    blockchain_gas_estimate_t bc_estimate;
+    if (blockchain_estimate_eth_gas(1, &bc_estimate) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "estimate_gas: RPC failed");
+        if (task->callback.gas_estimates) {
+            task->callback.gas_estimates(task->request_id, -1, NULL, task->user_data);
+        }
+        return;
+    }
+
+    /* bc_estimate.gas_price is already the raw base price (1.0x multiplier) */
+    uint64_t base_gas_price = bc_estimate.gas_price;
+    uint64_t gas_limit = bc_estimate.gas_limit;
+
+    dna_gas_estimates_t estimates;
+    memset(&estimates, 0, sizeof(estimates));
+    fill_gas_estimate(&estimates.slow,   base_gas_price, ENGINE_GAS_MULTIPLIERS[0], gas_limit);
+    fill_gas_estimate(&estimates.normal, base_gas_price, ENGINE_GAS_MULTIPLIERS[1], gas_limit);
+    fill_gas_estimate(&estimates.fast,   base_gas_price, ENGINE_GAS_MULTIPLIERS[2], gas_limit);
+
+    QGP_LOG_DEBUG(LOG_TAG, "estimate_gas: slow=%s normal=%s fast=%s ETH",
+                  estimates.slow.fee_eth, estimates.normal.fee_eth, estimates.fast.fee_eth);
+
+    if (task->callback.gas_estimates) {
+        task->callback.gas_estimates(task->request_id, 0, &estimates, task->user_data);
+    }
+}
+
+dna_request_id_t dna_engine_estimate_gas_async(
+    dna_engine_t *engine,
+    dna_gas_estimates_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = { .gas_estimates = callback };
+    return dna_submit_task(engine, TASK_ESTIMATE_GAS, NULL, cb, user_data);
+}
+
 dna_request_id_t dna_engine_send_tokens(
     dna_engine_t *engine,
     int wallet_index,

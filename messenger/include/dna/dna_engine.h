@@ -2115,7 +2115,28 @@ typedef struct {
 } dna_gas_estimate_t;
 
 /**
- * Get gas fee estimate for ETH transaction
+ * Gas estimates for all speeds (single RPC call)
+ */
+typedef struct {
+    dna_gas_estimate_t slow;    /* 0.8x base gas price */
+    dna_gas_estimate_t normal;  /* 1.0x base gas price */
+    dna_gas_estimate_t fast;    /* 1.5x base gas price */
+} dna_gas_estimates_t;
+
+/**
+ * Gas estimates callback (all 3 speeds from single RPC call)
+ * Error is 0 (DNA_OK) on success, negative on error
+ * estimates is NULL on error
+ */
+typedef void (*dna_gas_estimates_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const dna_gas_estimates_t *estimates,
+    void *user_data
+);
+
+/**
+ * Get gas fee estimate for ETH transaction (DEPRECATED - use dna_engine_estimate_gas_async)
  *
  * Synchronous call - queries current network gas price.
  *
@@ -2124,6 +2145,20 @@ typedef struct {
  * @return              0 on success, -1 on error
  */
 DNA_API int dna_engine_estimate_eth_gas(int gas_speed, dna_gas_estimate_t *estimate_out);
+
+/**
+ * Estimate ETH gas fees asynchronously (all 3 speeds in one RPC call)
+ *
+ * @param engine       Engine instance
+ * @param callback     Called on completion with all 3 gas estimates
+ * @param user_data    User data for callback
+ * @return             Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_estimate_gas_async(
+    dna_engine_t *engine,
+    dna_gas_estimates_cb callback,
+    void *user_data
+);
 
 /**
  * Send tokens

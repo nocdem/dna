@@ -693,6 +693,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   String? _gasFee0; // slow
   String? _gasFee1; // normal
   String? _gasFee2; // fast
+  bool _isLoadingGas = false;
 
   // Backbone network fees (validator fee varies by speed, network fee is fixed)
   static const double _backboneNetworkFee = 0.002;
@@ -810,16 +811,23 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   }
 
   Future<void> _fetchGasEstimates() async {
-    final engine = await ref.read(engineProvider.future);
-    final est0 = engine.estimateEthGas(0);
-    final est1 = engine.estimateEthGas(1);
-    final est2 = engine.estimateEthGas(2);
-    if (mounted) {
-      setState(() {
-        _gasFee0 = est0?.feeEth;
-        _gasFee1 = est1?.feeEth;
-        _gasFee2 = est2?.feeEth;
-      });
+    if (!mounted) return;
+    setState(() => _isLoadingGas = true);
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final estimates = await engine.estimateEthGasAsync();
+      if (mounted) {
+        setState(() {
+          _gasFee0 = estimates.slow.feeEth;
+          _gasFee1 = estimates.normal.feeEth;
+          _gasFee2 = estimates.fast.feeEth;
+          _isLoadingGas = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _isLoadingGas = false);
+      }
     }
   }
 
@@ -1244,6 +1252,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                     _GasSpeedChip(
                       label: 'Slow',
                       sublabel: _gasFee0 != null ? '${_gasFee0!} ETH' : '0.8x',
+                      isLoading: _isLoadingGas,
                       selected: _selectedGasSpeed == 0,
                       onSelected: () => setState(() => _selectedGasSpeed = 0),
                     ),
@@ -1251,6 +1260,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                     _GasSpeedChip(
                       label: 'Normal',
                       sublabel: _gasFee1 != null ? '${_gasFee1!} ETH' : '1.0x',
+                      isLoading: _isLoadingGas,
                       selected: _selectedGasSpeed == 1,
                       onSelected: () => setState(() => _selectedGasSpeed = 1),
                     ),
@@ -1258,6 +1268,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                     _GasSpeedChip(
                       label: 'Fast',
                       sublabel: _gasFee2 != null ? '${_gasFee2!} ETH' : '1.5x',
+                      isLoading: _isLoadingGas,
                       selected: _selectedGasSpeed == 2,
                       onSelected: () => setState(() => _selectedGasSpeed = 2),
                     ),
@@ -1969,6 +1980,7 @@ class _GasSpeedChip extends StatelessWidget {
   final String label;
   final String sublabel;
   final bool selected;
+  final bool isLoading;
   final VoidCallback onSelected;
 
   const _GasSpeedChip({
@@ -1976,6 +1988,7 @@ class _GasSpeedChip extends StatelessWidget {
     required this.sublabel,
     required this.selected,
     required this.onSelected,
+    this.isLoading = false,
   });
 
   @override
@@ -2010,15 +2023,27 @@ class _GasSpeedChip extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 2),
-              Text(
-                sublabel,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: selected
-                      ? theme.colorScheme.primary.withAlpha(179)
-                      : theme.colorScheme.onSurface.withAlpha(128),
+              if (isLoading)
+                SizedBox(
+                  height: 14,
+                  width: 14,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.5,
+                    color: selected
+                        ? theme.colorScheme.primary.withAlpha(179)
+                        : theme.colorScheme.onSurface.withAlpha(128),
+                  ),
+                )
+              else
+                Text(
+                  sublabel,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: selected
+                        ? theme.colorScheme.primary.withAlpha(179)
+                        : theme.colorScheme.onSurface.withAlpha(128),
+                  ),
                 ),
-              ),
             ],
           ),
         ),

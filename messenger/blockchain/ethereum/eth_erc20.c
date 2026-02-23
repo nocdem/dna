@@ -126,7 +126,7 @@ static int eth_call(const char *to, const char *data, char *result_out, size_t r
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
 
     /* Configure SSL CA bundle (required for Android) */
     const char *ca_bundle = qgp_platform_ca_bundle_path();

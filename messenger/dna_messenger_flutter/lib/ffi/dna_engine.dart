@@ -488,6 +488,19 @@ class GasEstimate {
   }
 }
 
+/// Gas estimates for all 3 speeds (from single RPC call)
+class GasEstimates {
+  final GasEstimate slow;
+  final GasEstimate normal;
+  final GasEstimate fast;
+
+  GasEstimates({
+    required this.slow,
+    required this.normal,
+    required this.fast,
+  });
+}
+
 /// Transaction record
 class Transaction {
   final String txHash;
@@ -2786,7 +2799,7 @@ class DnaEngine {
     return completer.future;
   }
 
-  /// Get gas estimate for ETH transaction
+  /// Get gas estimate for ETH transaction (DEPRECATED - use estimateEthGasAsync)
   /// [gasSpeed]: 0=slow (0.8x), 1=normal (1x), 2=fast (1.5x)
   /// Returns null if estimate fails (e.g., network error)
   GasEstimate? estimateEthGas(int gasSpeed) {
@@ -2800,6 +2813,46 @@ class DnaEngine {
     } finally {
       calloc.free(estimatePtr);
     }
+  }
+
+  /// Get all 3 gas estimates asynchronously (single RPC call)
+  /// Returns GasEstimates with slow/normal/fast fees
+  Future<GasEstimates> estimateEthGasAsync() async {
+    final completer = Completer<GasEstimates>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_gas_estimates_t> estimatesPtr, Pointer<Void> userData) {
+      if (error == 0 && estimatesPtr != nullptr) {
+        final est = estimatesPtr.ref;
+        completer.complete(GasEstimates(
+          slow: GasEstimate.fromNative(est.slow),
+          normal: GasEstimate.fromNative(est.normal),
+          fast: GasEstimate.fromNative(est.fast),
+        ));
+      } else {
+        completer.completeError(
+            DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaGasEstimatesCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_estimate_gas_async(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit gas estimate request');
+    }
+
+    return completer.future;
   }
 
   /// Send tokens

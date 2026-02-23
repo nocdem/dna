@@ -257,6 +257,13 @@ final class dna_gas_estimate_t extends Struct {
   external int gas_limit;
 }
 
+/// Gas estimates for all 3 speeds (single RPC call)
+final class dna_gas_estimates_t extends Struct {
+  external dna_gas_estimate_t slow;
+  external dna_gas_estimate_t normal;
+  external dna_gas_estimate_t fast;
+}
+
 /// Transaction record
 final class dna_transaction_t extends Struct {
   @Array(128)
@@ -709,6 +716,15 @@ typedef DnaSendTokensCbNative = Void Function(
   Pointer<Void> user_data,
 );
 typedef DnaSendTokensCb = NativeFunction<DnaSendTokensCbNative>;
+
+/// Gas estimates callback - Native (all 3 speeds)
+typedef DnaGasEstimatesCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_gas_estimates_t> estimates,
+  Pointer<Void> user_data,
+);
+typedef DnaGasEstimatesCb = NativeFunction<DnaGasEstimatesCbNative>;
 
 /// Identities list callback - Native
 typedef DnaIdentitiesCbNative = Void Function(
@@ -2148,6 +2164,18 @@ class DnaBindings {
     Pointer<dna_gas_estimate_t> estimate_out,
   ) {
     return _dna_engine_estimate_eth_gas(gas_speed, estimate_out);
+  }
+
+  late final _dna_engine_estimate_gas_async = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaGasEstimatesCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaGasEstimatesCb>, Pointer<Void>)>('dna_engine_estimate_gas_async');
+
+  int dna_engine_estimate_gas_async(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaGasEstimatesCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_estimate_gas_async(engine, callback, user_data);
   }
 
   late final _dna_engine_send_tokens = _lib.lookupFunction<

@@ -80,7 +80,7 @@ static int eth_rpc_call(const char *method, json_object *params, json_object **r
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L);
 
     /* Configure SSL CA bundle (required for Android) */
     const char *ca_bundle = qgp_platform_ca_bundle_path();

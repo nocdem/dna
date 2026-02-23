@@ -112,6 +112,7 @@ typedef enum {
     TASK_GET_BALANCES,
     TASK_SEND_TOKENS,
     TASK_GET_TRANSACTIONS,
+    TASK_ESTIMATE_GAS,
 
     /* P2P & Presence */
     TASK_REFRESH_PRESENCE,
@@ -425,6 +426,7 @@ typedef union {
     dna_feed_subscriptions_cb feed_subscriptions;
     dna_profile_cb profile;
     dna_presence_cb presence;
+    dna_gas_estimates_cb gas_estimates;
 } dna_task_callback_t;
 
 /**
@@ -771,6 +773,7 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_estimate_gas(dna_engine_t *engine, dna_task_t *task);
 
 /* P2P & Presence */
 void dna_handle_refresh_presence(dna_engine_t *engine, dna_task_t *task);
