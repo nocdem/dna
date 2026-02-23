@@ -10,6 +10,7 @@ import '../../providers/providers.dart' hide UserProfile;
 import '../../design_system/design_system.dart'; // includes DnaColors, DnaGradients, DnaSpacing
 import '../../providers/engine_provider.dart' show currentFingerprintProvider;
 import '../../providers/name_resolver_provider.dart';
+import '../../providers/price_provider.dart';
 import 'address_book_screen.dart';
 import 'address_dialog.dart';
 
@@ -49,6 +50,27 @@ String getNetworkDisplayLabel(String network) {
       return 'TRC20';
     default:
       return network;
+  }
+}
+
+/// Format a USD value for display with comma separators
+String _formatUsdValue(double value) {
+  if (value >= 1000) {
+    // Add comma separators for thousands
+    final parts = value.toStringAsFixed(2).split('.');
+    final intPart = parts[0];
+    final buffer = StringBuffer();
+    for (var i = 0; i < intPart.length; i++) {
+      if (i > 0 && (intPart.length - i) % 3 == 0) buffer.write(',');
+      buffer.write(intPart[i]);
+    }
+    return '${buffer.toString()}.${parts[1]}';
+  } else if (value >= 1) {
+    return value.toStringAsFixed(2);
+  } else if (value >= 0.01) {
+    return value.toStringAsFixed(4);
+  } else {
+    return value.toStringAsFixed(6);
   }
 }
 
@@ -367,6 +389,24 @@ class _WalletHeroCard extends ConsumerWidget {
               fontWeight: FontWeight.bold,
             ),
           ),
+          // Total portfolio value
+          Builder(builder: (context) {
+            final totalValue = ref.watch(totalPortfolioValueProvider);
+            if (totalValue != null && totalValue > 0) {
+              return Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  '\$${_formatUsdValue(totalValue)}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              );
+            }
+            return const SizedBox.shrink();
+          }),
           const SizedBox(height: 16),
           Row(
             children: const [
@@ -548,10 +588,27 @@ class _BalanceTile extends ConsumerWidget {
               ],
             ),
           ),
-          // Balance + chevron
-          Text(
-            balance.balance,
-            style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+          // Balance + USD value + chevron
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                balance.balance,
+                style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              Builder(builder: (context) {
+                final usdValue = ref.watch(tokenUsdValueProvider((token: balance.token, balance: balance.balance)));
+                if (usdValue != null && usdValue > 0) {
+                  return Text(
+                    '\$${_formatUsdValue(usdValue)}',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                    ),
+                  );
+                }
+                return const SizedBox.shrink();
+              }),
+            ],
           ),
           const SizedBox(width: 8),
           FaIcon(
@@ -1507,6 +1564,16 @@ class _TokenDetailSheet extends ConsumerWidget {
                                 '$balance $token',
                                 style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
                               ),
+                              Builder(builder: (context) {
+                                final usdValue = ref.watch(tokenUsdValueProvider((token: token, balance: balance)));
+                                if (usdValue != null && usdValue > 0) {
+                                  return Text(
+                                    '\u2248 \$${_formatUsdValue(usdValue)}',
+                                    style: const TextStyle(color: Colors.white70, fontSize: 14),
+                                  );
+                                }
+                                return const SizedBox.shrink();
+                              }),
                               Text(
                                 getNetworkDisplayLabel(network),
                                 style: const TextStyle(color: Colors.white70, fontSize: 13),
