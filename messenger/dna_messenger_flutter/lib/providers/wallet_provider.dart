@@ -21,8 +21,8 @@ class WalletsNotifier extends AsyncNotifier<List<Wallet>> {
     return engine.listWallets();
   }
 
+  /// Refresh wallets silently — keeps old data visible during fetch
   Future<void> refresh() async {
-    state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
       return engine.listWallets();
@@ -56,9 +56,9 @@ class WalletsNotifier extends AsyncNotifier<List<Wallet>> {
       rethrow;
     }
 
-    // Refresh balances and transactions after send
+    // Refresh balances and transactions after send (silent background refresh)
     ref.invalidate(balancesProvider(walletIndex));
-    ref.invalidate(allBalancesProvider);
+    ref.read(allBalancesProvider.notifier).refresh();
     ref.invalidate(transactionsProvider((walletIndex: walletIndex, network: network)));
 
     return txHash;
@@ -77,8 +77,8 @@ class BalancesNotifier extends FamilyAsyncNotifier<List<Balance>, int> {
     return engine.getBalances(arg);
   }
 
+  /// Refresh balances silently — keeps old data visible during fetch
   Future<void> refresh() async {
-    state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
       return engine.getBalances(arg);
@@ -102,33 +102,54 @@ class WalletBalance {
   });
 }
 
-/// All balances from all wallets combined
-final allBalancesProvider = FutureProvider<List<WalletBalance>>((ref) async {
-  final walletsAsync = ref.watch(walletsProvider);
-  final wallets = walletsAsync.valueOrNull ?? [];
+/// All balances from all wallets combined (cached, stale-while-revalidate)
+final allBalancesProvider = AsyncNotifierProvider<AllBalancesNotifier, List<WalletBalance>>(
+  AllBalancesNotifier.new,
+);
 
-  if (wallets.isEmpty) return [];
+class AllBalancesNotifier extends AsyncNotifier<List<WalletBalance>> {
+  @override
+  Future<List<WalletBalance>> build() async {
+    final walletsAsync = ref.watch(walletsProvider);
+    final wallets = walletsAsync.valueOrNull ?? [];
 
-  final engine = await ref.read(engineProvider.future);
-  final allBalances = <WalletBalance>[];
+    if (wallets.isEmpty) return state.valueOrNull ?? [];
 
-  for (int i = 0; i < wallets.length; i++) {
-    try {
-      final balances = await engine.getBalances(i);
-      for (final balance in balances) {
-        allBalances.add(WalletBalance(
-          walletIndex: i,
-          wallet: wallets[i],
-          balance: balance,
-        ));
-      }
-    } catch (_) {
-      // Skip wallet if balance fetch fails
-    }
+    return _fetchAllBalances(wallets);
   }
 
-  return allBalances;
-});
+  /// Refresh balances silently in the background — old data stays visible
+  Future<void> refresh() async {
+    final walletsAsync = ref.read(walletsProvider);
+    final wallets = walletsAsync.valueOrNull ?? [];
+    if (wallets.isEmpty) return;
+
+    final newState = await AsyncValue.guard(() => _fetchAllBalances(wallets));
+    state = newState;
+  }
+
+  Future<List<WalletBalance>> _fetchAllBalances(List<Wallet> wallets) async {
+    final engine = await ref.read(engineProvider.future);
+    final allBalances = <WalletBalance>[];
+
+    for (int i = 0; i < wallets.length; i++) {
+      try {
+        final balances = await engine.getBalances(i);
+        for (final balance in balances) {
+          allBalances.add(WalletBalance(
+            walletIndex: i,
+            wallet: wallets[i],
+            balance: balance,
+          ));
+        }
+      } catch (_) {
+        // Skip wallet if balance fetch fails
+      }
+    }
+
+    return allBalances;
+  }
+}
 
 /// Transactions for a wallet and network
 final transactionsProvider = AsyncNotifierProviderFamily<
@@ -146,8 +167,8 @@ class TransactionsNotifier
     return engine.getTransactions(arg.walletIndex, arg.network);
   }
 
+  /// Refresh transactions silently — keeps old data visible during fetch
   Future<void> refresh() async {
-    state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
       return engine.getTransactions(arg.walletIndex, arg.network);

@@ -103,11 +103,28 @@ String _formatUsdValue(double value) {
   }
 }
 
-class WalletScreen extends ConsumerWidget {
+class WalletScreen extends ConsumerStatefulWidget {
   const WalletScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<WalletScreen> createState() => _WalletScreenState();
+}
+
+class _WalletScreenState extends ConsumerState<WalletScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // Trigger silent background refresh when wallet screen opens
+    // This runs after the first build, so cached data is shown first
+    Future.microtask(() {
+      if (mounted) {
+        ref.read(allBalancesProvider.notifier).refresh();
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final wallets = ref.watch(walletsProvider);
     final selectedIndex = ref.watch(selectedWalletIndexProvider);
 
@@ -125,22 +142,31 @@ class WalletScreen extends ConsumerWidget {
           ),
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
-            onPressed: () => ref.invalidate(walletsProvider),
+            onPressed: () {
+              ref.read(walletsProvider.notifier).refresh();
+              ref.read(allBalancesProvider.notifier).refresh();
+            },
             tooltip: 'Refresh',
           ),
         ],
       ),
       body: wallets.when(
-        data: (list) => _buildContent(context, ref, list, selectedIndex),
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, stack) => _buildError(context, ref, error),
+        data: (list) => _buildContent(context, list, selectedIndex),
+        loading: () {
+          // Show cached data if available, spinner only on first load
+          final cached = wallets.valueOrNull;
+          if (cached != null && cached.isNotEmpty) {
+            return _buildContent(context, cached, selectedIndex);
+          }
+          return const Center(child: CircularProgressIndicator());
+        },
+        error: (error, stack) => _buildError(context, error),
       ),
     );
   }
 
   Widget _buildContent(
     BuildContext context,
-    WidgetRef ref,
     List<Wallet> wallets,
     int selectedIndex,
   ) {
@@ -174,7 +200,7 @@ class WalletScreen extends ConsumerWidget {
     return RefreshIndicator(
       onRefresh: () async {
         await ref.read(walletsProvider.notifier).refresh();
-        ref.invalidate(allBalancesProvider);
+        await ref.read(allBalancesProvider.notifier).refresh();
       },
       child: ListView(
         children: [
@@ -186,7 +212,7 @@ class WalletScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildError(BuildContext context, WidgetRef ref, Object error) {
+  Widget _buildError(BuildContext context, Object error) {
     final theme = Theme.of(context);
 
     return Center(
