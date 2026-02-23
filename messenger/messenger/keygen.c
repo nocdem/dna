@@ -638,8 +638,9 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
     }
 
     // Parse header (20 bytes): magic[8] + version + sign_key_type + enc_key_type + reserved + sign_size(4) + enc_size(4)
-    if (pubkey_data_size < 20) {
-        QGP_LOG_ERROR(LOG_TAG, "Public key data too small");
+    // Minimum size: 20 (header) + 2592 (Dilithium5 pubkey) + 1568 (Kyber1024 pubkey) = 4180
+    if (pubkey_data_size < 20 + 2592 + 1568) {
+        QGP_LOG_ERROR(LOG_TAG, "Public key data too small: %zu (need >= 4180)", pubkey_data_size);
         free(type);
         free(pubkey_data);
         for (size_t i = 0; i < header_count; i++) free(headers[i]);
@@ -650,6 +651,35 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
     uint32_t sign_pubkey_size, enc_pubkey_size;
     memcpy(&sign_pubkey_size, pubkey_data + 12, 4);  // offset 12: after magic+version+types+reserved
     memcpy(&enc_pubkey_size, pubkey_data + 16, 4);   // offset 16
+
+    // Validate key sizes from header against expected Dilithium5/Kyber1024 sizes
+    if (sign_pubkey_size != 2592) {
+        QGP_LOG_ERROR(LOG_TAG, "Unexpected sign pubkey size: %u (expected 2592)", sign_pubkey_size);
+        free(type);
+        free(pubkey_data);
+        for (size_t i = 0; i < header_count; i++) free(headers[i]);
+        free(headers);
+        return -1;
+    }
+    if (enc_pubkey_size != 1568) {
+        QGP_LOG_ERROR(LOG_TAG, "Unexpected enc pubkey size: %u (expected 1568)", enc_pubkey_size);
+        free(type);
+        free(pubkey_data);
+        for (size_t i = 0; i < header_count; i++) free(headers[i]);
+        free(headers);
+        return -1;
+    }
+
+    // Final bounds check: header + sign key + enc key must fit in buffer
+    if (20 + (size_t)sign_pubkey_size + (size_t)enc_pubkey_size > pubkey_data_size) {
+        QGP_LOG_ERROR(LOG_TAG, "Public key data truncated: %zu < %zu",
+                      pubkey_data_size, 20 + (size_t)sign_pubkey_size + (size_t)enc_pubkey_size);
+        free(type);
+        free(pubkey_data);
+        for (size_t i = 0; i < header_count; i++) free(headers[i]);
+        free(headers);
+        return -1;
+    }
 
     // Extract keys (after 20-byte header)
     uint8_t dilithium_pk[2592];  // Dilithium5 public key size

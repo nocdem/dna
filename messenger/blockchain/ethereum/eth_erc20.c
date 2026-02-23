@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include <math.h>
+#include <stdint.h>
 #ifdef _WIN32
 #define CURL_STATICLIB
 #endif
@@ -299,31 +299,69 @@ static int uint256_to_decimal_string(const uint8_t value[32], uint8_t decimals,
 }
 
 /**
- * Parse decimal amount string to uint256 with decimals
+ * Parse decimal amount string to uint256 with variable decimals.
+ * String-based — no floating-point precision loss.
  */
 static int decimal_to_uint256(const char *amount, uint8_t decimals, uint8_t out[32]) {
     if (!amount || !out) return -1;
+    if (decimals > 19) return -1;  /* uint64_t overflow protection */
 
     memset(out, 0, 32);
 
-    /* Parse decimal number */
-    double value = strtod(amount, NULL);
-    if (value < 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Negative amount: %s", amount);
-        return -1;
+    /* Skip leading whitespace */
+    const char *p = amount;
+    while (*p == ' ') p++;
+    if (*p == '\0') return -1;
+
+    /* Find decimal point */
+    const char *dot = strchr(p, '.');
+
+    /* Parse whole part */
+    uint64_t whole = 0;
+    const char *end = dot ? dot : p + strlen(p);
+    for (const char *c = p; c < end; c++) {
+        if (*c < '0' || *c > '9') {
+            QGP_LOG_ERROR(LOG_TAG, "Invalid character in amount: %s", amount);
+            return -1;
+        }
+        uint64_t prev = whole;
+        whole = whole * 10 + (*c - '0');
+        if (whole < prev) return -1;  /* overflow */
     }
 
-    /* Multiply by 10^decimals */
-    double multiplier = 1.0;
+    /* Parse fractional part — pad or truncate to 'decimals' digits */
+    uint64_t frac = 0;
+    if (dot) {
+        const char *frac_start = dot + 1;
+        int frac_digits = 0;
+        for (const char *c = frac_start; *c && frac_digits < decimals; c++) {
+            if (*c < '0' || *c > '9') {
+                QGP_LOG_ERROR(LOG_TAG, "Invalid character in fractional part: %s", amount);
+                return -1;
+            }
+            frac = frac * 10 + (*c - '0');
+            frac_digits++;
+        }
+        for (int i = frac_digits; i < decimals; i++) {
+            frac *= 10;
+        }
+    }
+
+    /* Compute multiplier = 10^decimals */
+    uint64_t multiplier = 1;
     for (int i = 0; i < decimals; i++) {
-        multiplier *= 10.0;
+        multiplier *= 10;
     }
 
-    uint64_t raw_value = (uint64_t)(value * multiplier + 0.5);  /* Round */
+    /* Compute total: whole * multiplier + frac */
+    if (whole > UINT64_MAX / multiplier) return -1;  /* overflow */
+    uint64_t total = whole * multiplier;
+    if (total > UINT64_MAX - frac) return -1;  /* overflow */
+    total += frac;
 
     /* Store as big-endian in last 8 bytes */
     for (int i = 0; i < 8; i++) {
-        out[31 - i] = (uint8_t)((raw_value >> (i * 8)) & 0xFF);
+        out[31 - i] = (uint8_t)((total >> (i * 8)) & 0xFF);
     }
 
     return 0;

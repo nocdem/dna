@@ -130,7 +130,7 @@ int eth_wallet_create_from_seed(
 
 void eth_wallet_clear(eth_wallet_t *wallet) {
     if (wallet) {
-        memset(wallet, 0, sizeof(*wallet));
+        qgp_secure_memzero(wallet, sizeof(*wallet));
     }
 }
 

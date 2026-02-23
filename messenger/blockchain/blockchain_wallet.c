@@ -50,6 +50,47 @@ extern int blockchain_ops_send_from_wallet(
 
 #define LOG_TAG "BLOCKCHAIN"
 
+/**
+ * Parse decimal SOL amount string to lamports (no floating-point).
+ * SOL has 9 decimals (1 SOL = 1,000,000,000 lamports).
+ */
+static int sol_str_to_lamports(const char *amount_str, uint64_t *lamports_out) {
+    if (!amount_str || !lamports_out) return -1;
+
+    const char *p = amount_str;
+    while (*p == ' ') p++;
+    if (*p == '\0') return -1;
+
+    const char *dot = strchr(p, '.');
+
+    uint64_t whole = 0;
+    const char *end = dot ? dot : p + strlen(p);
+    for (const char *c = p; c < end; c++) {
+        if (*c < '0' || *c > '9') return -1;
+        uint64_t prev = whole;
+        whole = whole * 10 + (*c - '0');
+        if (whole < prev) return -1;
+    }
+
+    uint64_t frac = 0;
+    if (dot) {
+        const char *frac_start = dot + 1;
+        int frac_digits = 0;
+        for (const char *c = frac_start; *c && frac_digits < 9; c++) {
+            if (*c < '0' || *c > '9') return -1;
+            frac = frac * 10 + (*c - '0');
+            frac_digits++;
+        }
+        for (int i = frac_digits; i < 9; i++) {
+            frac *= 10;
+        }
+    }
+
+    if (whole > UINT64_MAX / SOL_LAMPORTS_PER_SOL) return -1;
+    *lamports_out = whole * SOL_LAMPORTS_PER_SOL + frac;
+    return 0;
+}
+
 /* ============================================================================
  * BLOCKCHAIN TYPE UTILITIES
  * ============================================================================ */
@@ -973,9 +1014,14 @@ int blockchain_send_tokens_with_seed(
                 return -1;
             }
 
-            /* Native SOL transfer (SPL tokens not yet supported) */
-            double sol_amount = atof(amount);
-            ret = sol_tx_send_sol(&sol_wallet, to_address, sol_amount, tx_hash_out, 128);
+            /* Native SOL transfer — string-based conversion, no float */
+            uint64_t lamports;
+            if (sol_str_to_lamports(amount, &lamports) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Invalid SOL amount: %s", amount);
+                sol_wallet_clear(&sol_wallet);
+                return -1;
+            }
+            ret = sol_tx_send_lamports(&sol_wallet, to_address, lamports, tx_hash_out, 128);
 
             /* Securely clear private key */
             sol_wallet_clear(&sol_wallet);

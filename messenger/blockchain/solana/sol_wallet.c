@@ -396,7 +396,7 @@ int sol_wallet_load(
 
 void sol_wallet_clear(sol_wallet_t *wallet) {
     if (wallet) {
-        memset(wallet, 0, sizeof(*wallet));
+        qgp_secure_memzero(wallet, sizeof(*wallet));
     }
 }
 

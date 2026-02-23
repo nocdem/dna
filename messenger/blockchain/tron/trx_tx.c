@@ -19,7 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
+#include <stdint.h>
 #ifdef _WIN32
 #define CURL_STATICLIB
 #endif
@@ -495,13 +495,50 @@ int trx_parse_amount(const char *amount_str, uint64_t *sun_out) {
         return -1;
     }
 
-    double trx = strtod(amount_str, NULL);
-    if (trx < 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Negative amount: %s", amount_str);
-        return -1;
+    /* String-based decimal parsing — no floating-point precision loss.
+     * TRX has 6 decimals (1 TRX = 1,000,000 SUN). */
+    const char *p = amount_str;
+    while (*p == ' ') p++;
+    if (*p == '\0') return -1;
+
+    const char *dot = strchr(p, '.');
+
+    /* Parse whole part */
+    uint64_t whole = 0;
+    const char *end = dot ? dot : p + strlen(p);
+    for (const char *c = p; c < end; c++) {
+        if (*c < '0' || *c > '9') {
+            QGP_LOG_ERROR(LOG_TAG, "Invalid character in amount: %s", amount_str);
+            return -1;
+        }
+        uint64_t prev = whole;
+        whole = whole * 10 + (*c - '0');
+        if (whole < prev) return -1;
     }
 
-    *sun_out = (uint64_t)(trx * TRX_SUN_PER_TRX + 0.5);  /* Round */
+    /* Parse fractional part — pad or truncate to 6 digits */
+    uint64_t frac = 0;
+    if (dot) {
+        const char *frac_start = dot + 1;
+        int frac_digits = 0;
+        for (const char *c = frac_start; *c && frac_digits < 6; c++) {
+            if (*c < '0' || *c > '9') {
+                QGP_LOG_ERROR(LOG_TAG, "Invalid character in fractional part: %s", amount_str);
+                return -1;
+            }
+            frac = frac * 10 + (*c - '0');
+            frac_digits++;
+        }
+        for (int i = frac_digits; i < 6; i++) {
+            frac *= 10;
+        }
+    }
+
+    /* Compute total SUN: whole * 1,000,000 + frac */
+    if (whole > UINT64_MAX / TRX_SUN_PER_TRX) return -1;
+    uint64_t total = whole * TRX_SUN_PER_TRX + frac;
+
+    *sun_out = total;
 
     QGP_LOG_DEBUG(LOG_TAG, "Parsed %s TRX = %llu SUN", amount_str, (unsigned long long)*sun_out);
     return 0;

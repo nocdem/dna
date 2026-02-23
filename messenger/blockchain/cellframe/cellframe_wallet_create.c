@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <openssl/evp.h>
 #include "../../crypto/utils/qgp_log.h"
+#include "../../crypto/utils/qgp_platform.h"
 
 #define LOG_TAG "WALLET"
 
@@ -301,11 +302,11 @@ int cellframe_wallet_create_from_seed(
 cleanup:
     /* Securely clear sensitive data */
     if (serialized_privkey) {
-        memset(serialized_privkey, 0, serialized_privkey_size);
+        qgp_secure_memzero(serialized_privkey, serialized_privkey_size);
         free(serialized_privkey);
     }
     if (serialized_pubkey) {
-        memset(serialized_pubkey, 0, serialized_pubkey_size);
+        qgp_secure_memzero(serialized_pubkey, serialized_pubkey_size);
         free(serialized_pubkey);
     }
 

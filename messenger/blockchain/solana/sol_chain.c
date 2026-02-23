@@ -15,7 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
-#include <math.h>
+#include <stdint.h>
 
 #define LOG_TAG "SOL_CHAIN"
 #include "../../crypto/utils/qgp_log.h"
@@ -31,6 +31,49 @@ static inline bool is_native_sol(const char *token) {
     }
     /* Case-insensitive comparison for "SOL" */
     return (strcasecmp(token, "SOL") == 0);
+}
+
+/**
+ * Parse decimal SOL amount string to lamports (no floating-point).
+ * SOL has 9 decimals (1 SOL = 1,000,000,000 lamports).
+ */
+static int sol_parse_amount_to_lamports(const char *amount_str, uint64_t *lamports_out) {
+    if (!amount_str || !lamports_out) return -1;
+
+    const char *p = amount_str;
+    while (*p == ' ') p++;
+    if (*p == '\0') return -1;
+
+    const char *dot = strchr(p, '.');
+
+    /* Parse whole part */
+    uint64_t whole = 0;
+    const char *end = dot ? dot : p + strlen(p);
+    for (const char *c = p; c < end; c++) {
+        if (*c < '0' || *c > '9') return -1;
+        uint64_t prev = whole;
+        whole = whole * 10 + (*c - '0');
+        if (whole < prev) return -1;  /* overflow */
+    }
+
+    /* Parse fractional part — pad or truncate to 9 digits */
+    uint64_t frac = 0;
+    if (dot) {
+        const char *frac_start = dot + 1;
+        int frac_digits = 0;
+        for (const char *c = frac_start; *c && frac_digits < 9; c++) {
+            if (*c < '0' || *c > '9') return -1;
+            frac = frac * 10 + (*c - '0');
+            frac_digits++;
+        }
+        for (int i = frac_digits; i < 9; i++) {
+            frac *= 10;
+        }
+    }
+
+    if (whole > UINT64_MAX / SOL_LAMPORTS_PER_SOL) return -1;
+    *lamports_out = whole * SOL_LAMPORTS_PER_SOL + frac;
+    return 0;
 }
 
 /* ============================================================================
@@ -137,9 +180,13 @@ static int sol_chain_send(
     }
     strncpy(wallet.address, from_address, SOL_ADDRESS_SIZE);
 
-    /* Parse amount (in SOL) to lamports */
-    double sol_amount = atof(amount);
-    uint64_t lamports = (uint64_t)(sol_amount * SOL_LAMPORTS_PER_SOL);
+    /* Parse amount (in SOL) to lamports — string-based, no float */
+    uint64_t lamports;
+    if (sol_parse_amount_to_lamports(amount, &lamports) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid SOL amount: %s", amount);
+        sol_wallet_clear(&wallet);
+        return -1;
+    }
 
     /* Send transaction */
     int ret = sol_tx_send_lamports(&wallet, to_address, lamports,
@@ -181,9 +228,13 @@ static int sol_chain_send_from_wallet(
         return -1;
     }
 
-    /* Parse amount (in SOL) to lamports */
-    double sol_amount = atof(amount);
-    uint64_t lamports = (uint64_t)(sol_amount * SOL_LAMPORTS_PER_SOL);
+    /* Parse amount (in SOL) to lamports — string-based, no float */
+    uint64_t lamports;
+    if (sol_parse_amount_to_lamports(amount, &lamports) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid SOL amount: %s", amount);
+        sol_wallet_clear(&wallet);
+        return -1;
+    }
 
     /* Send transaction */
     int ret = sol_tx_send_lamports(&wallet, to_address, lamports,

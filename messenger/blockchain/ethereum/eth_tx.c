@@ -17,7 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
+#include <stdint.h>
 #ifdef _WIN32
 #define CURL_STATICLIB
 #endif
@@ -508,29 +508,73 @@ int eth_parse_amount(const char *amount_str, uint8_t wei_out[32]) {
 
     memset(wei_out, 0, 32);
 
-    /* Parse decimal number */
-    double eth_amount = strtod(amount_str, NULL);
-    if (eth_amount <= 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid amount: %s", amount_str);
+    /* String-based decimal parsing — no floating-point precision loss.
+     * Split on '.', parse whole and fractional parts as integers,
+     * then compute: whole * 10^18 + frac_padded_to_18_digits */
+
+    /* Skip leading whitespace */
+    const char *p = amount_str;
+    while (*p == ' ') p++;
+    if (*p == '\0') {
+        QGP_LOG_ERROR(LOG_TAG, "Empty amount string");
         return -1;
     }
 
-    /* Convert to wei (multiply by 10^18) */
-    /* For simplicity, handle amounts up to ~18 ETH with uint64_t precision */
-    /* For larger amounts, we'd need arbitrary precision math */
+    /* Find decimal point */
+    const char *dot = strchr(p, '.');
 
-    /* Split into whole and fractional parts */
-    double whole = floor(eth_amount);
-    double frac = eth_amount - whole;
+    /* Parse whole part */
+    uint64_t whole = 0;
+    const char *end = dot ? dot : p + strlen(p);
+    for (const char *c = p; c < end; c++) {
+        if (*c < '0' || *c > '9') {
+            QGP_LOG_ERROR(LOG_TAG, "Invalid character in amount: %s", amount_str);
+            return -1;
+        }
+        uint64_t prev = whole;
+        whole = whole * 10 + (*c - '0');
+        if (whole < prev) {
+            QGP_LOG_ERROR(LOG_TAG, "Amount overflow: %s", amount_str);
+            return -1;
+        }
+    }
 
-    /* Convert whole ETH to wei (whole * 10^18) */
-    uint64_t whole_wei = (uint64_t)whole * 1000000000000000000ULL;
+    /* Parse fractional part — pad or truncate to 18 digits */
+    uint64_t frac = 0;
+    if (dot) {
+        const char *frac_start = dot + 1;
+        int frac_digits = 0;
+        for (const char *c = frac_start; *c && frac_digits < 18; c++) {
+            if (*c < '0' || *c > '9') {
+                QGP_LOG_ERROR(LOG_TAG, "Invalid character in fractional part: %s", amount_str);
+                return -1;
+            }
+            frac = frac * 10 + (*c - '0');
+            frac_digits++;
+        }
+        /* Pad remaining digits with zeros */
+        for (int i = frac_digits; i < 18; i++) {
+            frac *= 10;
+        }
+    }
 
-    /* Convert fractional part */
-    uint64_t frac_wei = (uint64_t)(frac * 1000000000000000000.0);
+    /* Compute total wei: whole * 10^18 + frac */
+    /* Check for overflow: whole must be <= UINT64_MAX / 10^18 */
+    if (whole > UINT64_MAX / 1000000000000000000ULL) {
+        QGP_LOG_ERROR(LOG_TAG, "Amount too large for uint64: %s", amount_str);
+        return -1;
+    }
+    uint64_t whole_wei = whole * 1000000000000000000ULL;
+    if (whole_wei > UINT64_MAX - frac) {
+        QGP_LOG_ERROR(LOG_TAG, "Total wei overflow: %s", amount_str);
+        return -1;
+    }
+    uint64_t total_wei = whole_wei + frac;
 
-    /* Total wei (may overflow for very large amounts) */
-    uint64_t total_wei = whole_wei + frac_wei;
+    if (total_wei == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Zero amount: %s", amount_str);
+        return -1;
+    }
 
     /* Store as big-endian 256-bit */
     for (int i = 0; i < 8; i++) {
