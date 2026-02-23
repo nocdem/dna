@@ -12,11 +12,11 @@ class DnaColors {
 
   // ─── Dark Theme ───────────────────────────────────────────────
   static const darkBackground = Color(0xFF0A0E1A);
-  static const darkSurface = Color(0xFF131829);
-  static const darkSurfaceVariant = Color(0xFF1A2035);
+  static const darkSurface = Color(0xFF161D2E);
+  static const darkSurfaceVariant = Color(0xFF1F2740);
   static const darkText = Color(0xFFF0F2FA);
-  static const darkTextSecondary = Color(0xFF8B95B8);
-  static const darkDivider = Color(0x0FFFFFFF);      // 6% white
+  static const darkTextSecondary = Color(0xFF8892AC);
+  static const darkDivider = Color(0x1AFFFFFF);      // 10% white
   static const darkDividerAccent = Color(0x4D00D4FF); // 30% cyan
 
   // ─── Light Theme ──────────────────────────────────────────────
@@ -50,15 +50,15 @@ class DnaColors {
   static const background = darkBackground;
   static const surface = darkSurface;
   static const panel = darkSurfaceVariant;
-  static const primary = Color(0xFF00F0FF);      // old cyan accent
-  static const primarySoft = Color(0x1400F0FF);  // 8% alpha cyan
-  static const accent = Color(0xFFFF2CD8);        // old magenta
+  static const primary = Color(0xFF00D4FF);      // unified with gradientStart
+  static const primarySoft = Color(0x1400D4FF);  // 8% alpha cyan
+  static const accent = Color(0xFFC084CF);        // soft lavender (was neon magenta)
   static const text = darkText;
   static const textMuted = darkTextSecondary;
-  static const textSuccess = Color(0xFF40FF86);   // old green
-  static const textWarning = Color(0xFFFF8080);   // old red/pink
-  static const textError = Color(0xFFFF6B6B);     // old red
-  static const textInfo = Color(0xFFFFCC66);      // old yellow/amber
+  static const textSuccess = Color(0xFF34D399);   // unified with success
+  static const textWarning = Color(0xFFF87171);   // softer coral (was neon pink)
+  static const textError = Color(0xFFEF4444);     // unified with error
+  static const textInfo = Color(0xFFF5B944);      // warm gold (was neon amber)
   static const border = darkDivider;
   static const borderAccent = darkDividerAccent;
   static const snackbarSuccess = snackbarSuccessDark;
