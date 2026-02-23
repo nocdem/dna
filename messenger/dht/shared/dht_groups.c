@@ -895,6 +895,13 @@ int dht_groups_list_for_user(
 
     sqlite3_finalize(stmt);
 
+    /* v0.6.127: If no rows found, free the pre-allocated buffer and return NULL.
+     * Prevents 5120-byte leak in callers that skip free() when count == 0. */
+    if (count == 0) {
+        free(groups);
+        groups = NULL;
+    }
+
     *groups_out = groups;
     *count_out = count;
 
