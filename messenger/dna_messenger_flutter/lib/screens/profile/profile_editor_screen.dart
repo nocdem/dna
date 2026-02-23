@@ -246,7 +246,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 20),
 
                   // Wallet Addresses (read-only, derived from identity keys)
                   _buildExpansionSection(
@@ -257,25 +257,29 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                       setState(() => _walletsExpanded = expanded);
                     },
                     children: [
-                      _buildReadOnlyField(
+                      _buildWalletAddressDisplay(
                         label: 'Backbone (Cellframe)',
                         controller: _backboneController,
+                        icon: FontAwesomeIcons.link,
                       ),
-                      _buildReadOnlyField(
+                      _buildWalletAddressDisplay(
                         label: 'Ethereum (ETH)',
                         controller: _ethController,
+                        icon: FontAwesomeIcons.ethereum,
                       ),
-                      _buildReadOnlyField(
+                      _buildWalletAddressDisplay(
                         label: 'Solana (SOL)',
                         controller: _solController,
+                        icon: FontAwesomeIcons.coins,
                       ),
-                      _buildReadOnlyField(
+                      _buildWalletAddressDisplay(
                         label: 'TRON (TRX)',
                         controller: _trxController,
+                        icon: FontAwesomeIcons.bolt,
                       ),
                     ],
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 20),
 
                   // Social Media Links
                   _buildExpansionSection(
@@ -415,7 +419,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
         collapsedShape: const Border(),
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
             child: Column(children: children),
           ),
         ],
@@ -452,40 +456,81 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     );
   }
 
-  Widget _buildReadOnlyField({
+  Widget _buildWalletAddressDisplay({
     required String label,
     required TextEditingController controller,
+    required IconData icon,
   }) {
     final theme = Theme.of(context);
+    final address = controller.text;
+
+    if (address.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    // Truncate: first 10 + "..." + last 8
+    final displayAddress = address.length > 22
+        ? '${address.substring(0, 10)}\u2026${address.substring(address.length - 8)}'
+        : address;
 
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: TextFormField(
-        controller: controller,
-        readOnly: true,
-        style: TextStyle(color: theme.colorScheme.onSurface.withAlpha(180)),
-        decoration: InputDecoration(
-          labelText: label,
-          filled: true,
-          fillColor: theme.colorScheme.surfaceContainerHighest.withAlpha(100),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest.withAlpha(80),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: theme.colorScheme.outline.withAlpha(40),
           ),
-          suffixIcon: controller.text.isNotEmpty
-              ? IconButton(
-                  icon: const FaIcon(FontAwesomeIcons.copy, size: 20),
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: controller.text));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('$label copied'),
-                        duration: const Duration(seconds: 1),
-                      ),
-                    );
-                  },
-                  tooltip: 'Copy',
-                )
-              : null,
+        ),
+        child: Row(
+          children: [
+            FaIcon(icon, size: 16, color: theme.colorScheme.primary.withAlpha(180)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withAlpha(150),
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    displayAddress,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontFamily: 'monospace',
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(
+              width: 36,
+              height: 36,
+              child: IconButton(
+                icon: FaIcon(FontAwesomeIcons.copy, size: 15,
+                    color: theme.colorScheme.primary),
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: address));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('$label address copied'),
+                      duration: const Duration(seconds: 1),
+                    ),
+                  );
+                },
+                tooltip: 'Copy full address',
+                padding: EdgeInsets.zero,
+                visualDensity: VisualDensity.compact,
+              ),
+            ),
+          ],
         ),
       ),
     );
