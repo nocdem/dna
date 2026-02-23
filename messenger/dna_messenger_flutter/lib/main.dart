@@ -10,7 +10,8 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'providers/providers.dart';
 import 'screens/screens.dart';
 import 'screens/lock/lock_screen.dart';
-import 'theme/dna_theme.dart';
+import 'design_system/theme/dna_colors.dart';
+import 'design_system/theme/dna_theme.dart';
 import 'utils/window_state.dart';
 import 'utils/lifecycle_observer.dart';
 import 'utils/logger.dart';
@@ -52,10 +53,13 @@ class DnaMessengerApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final themeMode = ref.watch(themeModeProvider);
     return MaterialApp(
       title: 'DNA Messenger',
       debugShowCheckedModeBanner: false,
-      theme: DnaTheme.theme,
+      theme: DnaTheme.light(),
+      darkTheme: DnaTheme.dark(),
+      themeMode: themeMode,
       navigatorObservers: [routeObserver],
       home: const _AppLoader(),
     );

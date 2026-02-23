@@ -42,4 +42,26 @@ class DnaColors {
   static const snackbarSuccessLight = Color(0xFFD1FAE5);
   static const snackbarErrorLight = Color(0xFFFEE2E2);
   static const snackbarInfoLight = Color(0xFFDBEAFE);
+
+  // ─── Legacy aliases (dark-theme values) ─────────────────────
+  // Maps old field names → dark theme equivalents so 23 existing
+  // screens keep compiling via the theme/dna_theme.dart shim.
+  // Will be removed once all screens migrate to design_system imports.
+  static const background = darkBackground;
+  static const surface = darkSurface;
+  static const panel = darkSurfaceVariant;
+  static const primary = Color(0xFF00F0FF);      // old cyan accent
+  static const primarySoft = Color(0x1400F0FF);  // 8% alpha cyan
+  static const accent = Color(0xFFFF2CD8);        // old magenta
+  static const text = darkText;
+  static const textMuted = darkTextSecondary;
+  static const textSuccess = Color(0xFF40FF86);   // old green
+  static const textWarning = Color(0xFFFF8080);   // old red/pink
+  static const textError = Color(0xFFFF6B6B);     // old red
+  static const textInfo = Color(0xFFFFCC66);      // old yellow/amber
+  static const border = darkDivider;
+  static const borderAccent = darkDividerAccent;
+  static const snackbarSuccess = snackbarSuccessDark;
+  static const snackbarError = snackbarErrorDark;
+  static const snackbarInfo = snackbarInfoDark;
 }
