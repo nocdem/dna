@@ -406,33 +406,6 @@ for offline messaging where contacts update the same outbox key with new message
 
 ---
 
-### 3.4 dht_errors.h
-
-Standardized error codes for all DHT operations.
-
-```c
-typedef enum {
-    DHT_SUCCESS           =  0,   // Operation completed successfully
-    DHT_ERROR_GENERAL     = -1,   // General/unspecified error
-    DHT_ERROR_NOT_FOUND   = -2,   // Key/value not found in DHT
-    DHT_ERROR_AUTH_FAILED = -3,   // Signature verification failed
-    DHT_ERROR_TIMEOUT     = -4,   // Operation timed out
-    DHT_ERROR_INVALID_PARAM = -5, // Invalid parameter (NULL or malformed)
-    DHT_ERROR_MEMORY      = -6,   // Memory allocation failed
-    DHT_ERROR_NETWORK     = -7,   // Network/DHT communication error
-    DHT_ERROR_SERIALIZE   = -8,   // Serialization/deserialization failed
-    DHT_ERROR_CRYPTO      = -9,   // Cryptographic operation failed
-    DHT_ERROR_NOT_INIT    = -10,  // DHT context not initialized
-    DHT_ERROR_ALREADY_EXISTS = -11, // Item already exists (duplicate)
-    DHT_ERROR_STORAGE     = -12,  // Storage/persistence error
-} dht_error_t;
-
-// Get human-readable error message
-const char* dht_strerror(int error_code);
-```
-
----
-
 ## 4. DHT Client (`dht/client/`)
 
 ### 4.1 dht_singleton.h/c
@@ -1519,7 +1492,6 @@ await engine.blockUser(fingerprint, "spam");
 | `dht/core/` | `dht_context.cpp`, `dht_context.h` | Core DHT wrapper |
 | `dht/core/` | `dht_bootstrap_registry.c`, `dht_bootstrap_registry.h` | Bootstrap discovery |
 | `dht/core/` | `dht_listen.h`, `dht_listen.cpp` | Real-time notifications |
-| `dht/core/` | `dht_errors.h` | Error codes |
 | `dht/core/` | `dht_stats.h`, `dht_stats.cpp` | Statistics |
 | `dht/client/` | `dht_singleton.c`, `dht_singleton.h` | Global singleton |
 | `dht/client/` | `dht_identity.cpp`, `dht_identity.h` | Identity management |

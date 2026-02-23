@@ -95,13 +95,7 @@ Core DHT (Distributed Hash Table) operations for decentralized storage.
 | `int dht_get_stats(dht_context_t*, size_t*, size_t*)` | Get node count and stored values |
 | `struct dht_value_storage* dht_get_storage(dht_context_t*)` | Get storage pointer |
 
-### 9.9 DHT Errors (`dht_errors.h`)
-
-| Function | Description |
-|----------|-------------|
-| `const char* dht_strerror(int error_code)` | Get error message (inline) |
-
-### 9.10 Bootstrap Registry (`dht_bootstrap_registry.h`)
+### 9.9 Bootstrap Registry (`dht_bootstrap_registry.h`)
 
 | Function | Description |
 |----------|-------------|

@@ -340,17 +340,6 @@ typedef void (*dna_send_tokens_cb)(
 );
 
 /**
- * Identity list callback
- */
-typedef void (*dna_identities_cb)(
-    dna_request_id_t request_id,
-    int error,
-    char **fingerprints,        /* Array of fingerprint strings */
-    int count,
-    void *user_data
-);
-
-/**
  * Identity created callback
  */
 typedef void (*dna_identity_created_cb)(
@@ -2116,15 +2105,6 @@ DNA_API dna_request_id_t dna_engine_get_balances(
 );
 
 /**
- * Gas speed presets for ETH transactions
- */
-typedef enum {
-    DNA_GAS_SLOW   = 0,  /* 0.8x network price - cheaper, slower */
-    DNA_GAS_NORMAL = 1,  /* 1.0x network price - balanced */
-    DNA_GAS_FAST   = 2   /* 1.5x network price - faster confirmation */
-} dna_gas_speed_t;
-
-/**
  * Gas estimate result
  */
 typedef struct {
@@ -2460,41 +2440,6 @@ DNA_API void dna_engine_cancel_all_outbox_listeners(
  * @return          Number of listeners started, or -1 on error
  */
 DNA_API int dna_engine_refresh_listeners(
-    dna_engine_t *engine
-);
-
-/* ============================================================================
- * 7.6 WATERMARK LISTENERS (Message delivery confirmation)
- * ============================================================================ */
-
-/**
- * Start persistent watermark listener for a contact
- *
- * Starts a watermark listener for the contact to track message delivery.
- * When the contact reads messages, their watermark is updated in DHT.
- * When our listener receives an update, messages are marked DELIVERED
- * and DNA_EVENT_MESSAGE_DELIVERED is fired.
- *
- * This is automatically called for all contacts in dna_engine_listen_all_contacts().
- * Use this when adding a new contact to start delivery tracking immediately.
- *
- * @param engine               Engine instance
- * @param contact_fingerprint  Contact's fingerprint (128 hex chars)
- * @return                     DHT listener token (>0 on success, 0 on failure)
- */
-DNA_API size_t dna_engine_start_watermark_listener(
-    dna_engine_t *engine,
-    const char *contact_fingerprint
-);
-
-/**
- * Cancel all persistent watermark listeners
- *
- * Called automatically on engine destroy or identity unload.
- *
- * @param engine    Engine instance
- */
-DNA_API void dna_engine_cancel_all_watermark_listeners(
     dna_engine_t *engine
 );
 

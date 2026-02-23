@@ -147,14 +147,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `void dna_engine_cancel_all_outbox_listeners(dna_engine_t*)` | Cancel all outbox listeners |
 | `int dna_engine_refresh_listeners(dna_engine_t*)` | Refresh all DHT listeners |
 
-## 1.10 Watermark Listeners
-
-| Function | Description |
-|----------|-------------|
-| `size_t dna_engine_start_watermark_listener(dna_engine_t*, const char*)` | Start persistent watermark listener for contact |
-| `void dna_engine_cancel_all_watermark_listeners(dna_engine_t*)` | Cancel all watermark listeners |
-
-## 1.11 Feed v2 (Topic-based Public Feeds)
+## 1.10 Feed v2 (Topic-based Public Feeds)
 
 Topic-based feeds with categories and tags. No voting (deferred).
 

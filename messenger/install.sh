@@ -91,13 +91,6 @@ for pkg in libssl-dev libcurl4-openssl-dev libjson-c-dev libsqlite3-dev; do
     fi
 done
 
-# GUI dependencies (optional but recommended)
-for pkg in libglfw3-dev libglew-dev libfreetype6-dev libgl1-mesa-dev; do
-    if ! dpkg -l 2>/dev/null | grep -q "^ii  $pkg" && ! rpm -q ${pkg//-dev/} &>/dev/null; then
-        MISSING_DEPS="$MISSING_DEPS $pkg"
-    fi
-done
-
 if [ ! -z "$MISSING_DEPS" ]; then
     echo -e "${RED}✗ Missing dependencies:${MISSING_DEPS}${NC}"
     echo ""
