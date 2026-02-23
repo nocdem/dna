@@ -1048,7 +1048,9 @@ class MessageReceivedEvent extends DnaEvent {
 
 class MessageSentEvent extends DnaEvent {
   final int messageId;
-  MessageSentEvent(this.messageId);
+  final int status;
+  final String recipientFingerprint;
+  MessageSentEvent(this.messageId, this.status, this.recipientFingerprint);
 }
 
 class MessageDeliveredEvent extends DnaEvent {
@@ -1372,13 +1374,21 @@ class DnaEngine {
         break;
       case DnaEventType.DNA_EVENT_MESSAGE_SENT:
         // Message was successfully sent - trigger UI refresh
-        // Dart struct now has _padding field matching C struct 8-byte alignment
+        // C struct: int message_id (4), int new_status (4), char recipient[129]
         final messageId = event.data[0] | (event.data[1] << 8) |
                           (event.data[2] << 16) | (event.data[3] << 24);
         final status = event.data[4] | (event.data[5] << 8) |
                        (event.data[6] << 16) | (event.data[7] << 24);
-        _debugLog('[DART-EVENT] MESSAGE_SENT: messageId=$messageId, status=$status');
-        dartEvent = MessageSentEvent(messageId);
+        // Parse recipient fingerprint starting at byte 8
+        final recipientFpBytes = <int>[];
+        for (var i = 8; i < 8 + 128; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          recipientFpBytes.add(byte);
+        }
+        final recipientFp = String.fromCharCodes(recipientFpBytes);
+        _debugLog('[DART-EVENT] MESSAGE_SENT: messageId=$messageId, status=$status, recipient=${recipientFp.length > 16 ? recipientFp.substring(0, 16) : recipientFp}...');
+        dartEvent = MessageSentEvent(messageId, status, recipientFp);
         break;
       case DnaEventType.DNA_EVENT_MESSAGE_DELIVERED:
         // Message delivered - parse recipient fingerprint from message_delivered.recipient

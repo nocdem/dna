@@ -230,14 +230,21 @@ class EventHandler {
         // Unread counts are already updated via incrementCount() above.
         // Full contact list rebuilds cause unnecessary UI churn and presence bouncing.
 
-      case MessageSentEvent(messageId: final msgId):
+      case MessageSentEvent(messageId: final msgId, status: final sentStatus, recipientFingerprint: final recipientFp):
         // Update the pending message status to sent (no full reload needed)
         // The message is already shown via optimistic UI
-        logPrint('[DART-HANDLER] MessageSentEvent received, msgId=$msgId');
-        final selectedContact = _ref.read(selectedContactProvider);
-        if (selectedContact != null) {
-          _ref.read(conversationProvider(selectedContact.fingerprint).notifier)
-              .markLastPendingSent();
+        // v0.6.126: Use recipient fingerprint from event (not selectedContact) to target correct conversation
+        logPrint('[DART-HANDLER] MessageSentEvent received, msgId=$msgId, status=$sentStatus, recipient=${recipientFp.length > 16 ? recipientFp.substring(0, 16) : recipientFp}...');
+        if (recipientFp.isNotEmpty) {
+          final notifier = _ref.read(conversationProvider(recipientFp).notifier);
+          if (sentStatus == 3) {
+            // FAILED status - mark pending message as failed
+            notifier.markLastPendingStatus(MessageStatus.failed);
+          } else {
+            // SUCCESS - mark as sent, then merge from DB to replace temp ID with real ID
+            notifier.markLastPendingSent();
+            notifier.mergeLatest();  // Swaps pending message (temp ID) for DB version (real ID)
+          }
         }
         break;
 

@@ -57,6 +57,7 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task) {
         event.type = DNA_EVENT_MESSAGE_SENT;
         event.data.message_status.message_id = 0;  /* ID not available here */
         event.data.message_status.new_status = 3;  /* FAILED (v15: 0=pending, 1=sent, 2=received, 3=failed) */
+        strncpy(event.data.message_status.recipient, task->params.send_message.recipient, 128);
         dna_dispatch_event(engine, &event);
     } else {
         /* Emit MESSAGE_SENT event so UI can update (triggers refresh)
@@ -67,6 +68,7 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task) {
         event.type = DNA_EVENT_MESSAGE_SENT;
         event.data.message_status.message_id = 0;  /* ID not available here */
         event.data.message_status.new_status = 1;  /* SENT - DHT PUT succeeded */
+        strncpy(event.data.message_status.recipient, task->params.send_message.recipient, 128);
         dna_dispatch_event(engine, &event);
     }
 

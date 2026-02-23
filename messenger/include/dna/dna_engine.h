@@ -629,6 +629,7 @@ typedef struct {
         struct {
             int message_id;
             int new_status;
+            char recipient[129];  /* Recipient fingerprint (v0.6.126+) */
         } message_status;
         struct {
             char fingerprint[129];

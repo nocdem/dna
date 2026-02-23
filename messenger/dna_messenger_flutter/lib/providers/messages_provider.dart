@@ -256,6 +256,12 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
   /// Update last pending outgoing message to sent status
   /// Called when MessageSentEvent fires - the pending message needs status update
   void markLastPendingSent() {
+    markLastPendingStatus(MessageStatus.sent);
+  }
+
+  /// Update last pending outgoing message to given status
+  /// Used for both sent (success) and failed (error) transitions
+  void markLastPendingStatus(MessageStatus newStatus) {
     state.whenData((messages) {
       // Find last outgoing message with pending status
       for (int i = messages.length - 1; i >= 0; i--) {
@@ -269,7 +275,7 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
             plaintext: msg.plaintext,
             timestamp: msg.timestamp,
             isOutgoing: msg.isOutgoing,
-            status: MessageStatus.sent,
+            status: newStatus,
             type: msg.type,
           );
           state = AsyncValue.data(updated);
@@ -281,6 +287,9 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
 
   /// Merge new messages from DB without showing loading state
   /// Used when new message received - fetches from DB and adds to list
+  ///
+  /// v0.6.126: Fixed duplicate message bug - pending messages (negative temp IDs)
+  /// are now REPLACED by their DB counterparts instead of being added alongside.
   Future<void> mergeLatest() async {
     final currentMessages = state.valueOrNull ?? [];
 
@@ -289,18 +298,36 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
       final page = await engine.getConversationPage(arg, _pageSize, 0);
       final newMessages = page.messages.reversed.toList();
 
-      // Find messages not in current list (by ID or by content+timestamp for pending)
+      // Build set of real (positive) IDs already in UI
       final currentIds = currentMessages.map((m) => m.id).toSet();
       final toAdd = <Message>[];
+      // Track which pending messages got replaced by DB versions
+      final replacedPendingIds = <int>{};
 
       for (final msg in newMessages) {
-        if (!currentIds.contains(msg.id)) {
-          // Check if it's not a pending message we already show
+        if (currentIds.contains(msg.id)) continue; // Already in UI by ID
+
+        // Check if this DB message matches a pending message (negative temp ID)
+        // Pending messages have negative IDs, DB messages have positive IDs
+        final pendingIndex = currentMessages.indexWhere((m) =>
+          m.id < 0 &&  // Pending message (negative temp ID)
+          m.plaintext == msg.plaintext &&
+          m.sender == msg.sender &&
+          m.recipient == msg.recipient &&
+          m.timestamp.difference(msg.timestamp).abs().inSeconds < 30
+        );
+
+        if (pendingIndex >= 0) {
+          // Found matching pending message - mark for replacement
+          replacedPendingIds.add(currentMessages[pendingIndex].id);
+          toAdd.add(msg);  // Add the DB version
+        } else {
+          // Truly new message - add if not a content duplicate
           final isDuplicate = currentMessages.any((m) =>
             m.plaintext == msg.plaintext &&
             m.sender == msg.sender &&
             m.recipient == msg.recipient &&
-            m.timestamp.difference(msg.timestamp).abs().inSeconds < 5
+            m.timestamp.difference(msg.timestamp).abs().inSeconds < 30
           );
           if (!isDuplicate) {
             toAdd.add(msg);
@@ -308,9 +335,12 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
         }
       }
 
-      if (toAdd.isNotEmpty) {
-        // Merge and sort by timestamp
-        final merged = [...currentMessages, ...toAdd];
+      if (toAdd.isNotEmpty || replacedPendingIds.isNotEmpty) {
+        // Remove replaced pending messages, then add DB versions
+        final merged = currentMessages
+            .where((m) => !replacedPendingIds.contains(m.id))
+            .toList();
+        merged.addAll(toAdd);
         merged.sort((a, b) => a.timestamp.compareTo(b.timestamp));
         state = AsyncValue.data(merged);
 
