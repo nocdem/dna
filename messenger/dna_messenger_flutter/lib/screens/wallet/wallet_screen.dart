@@ -623,10 +623,9 @@ class _BalanceTile extends ConsumerWidget {
 
   void _showTokenDetails(BuildContext context, WidgetRef ref) {
     final balance = walletBalance.balance;
-    final network = balance.network == 'Ethereum' ? 'Ethereum' : 'Backbone';
 
     // Invalidate to fetch fresh data when opening
-    ref.invalidate(transactionsProvider((walletIndex: walletBalance.walletIndex, network: network)));
+    ref.invalidate(transactionsProvider((walletIndex: walletBalance.walletIndex, network: balance.network)));
     ref.invalidate(balancesProvider(walletBalance.walletIndex));
 
     showModalBottomSheet(
@@ -1196,6 +1195,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                 children: [
                   Expanded(
                     child: DropdownButtonFormField<String>(
+                      key: ValueKey('token_$_selectedNetwork'),
                       initialValue: _selectedToken,
                       decoration: const InputDecoration(labelText: 'Token'),
                       items: _getTokenItems(),
@@ -1209,7 +1209,18 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                       decoration: const InputDecoration(labelText: 'Network'),
                       items: _getNetworkItems(),
                       onChanged: (v) {
-                        setState(() => _selectedNetwork = v ?? 'Backbone');
+                        final newNetwork = v ?? 'Backbone';
+                        setState(() {
+                          _selectedNetwork = newNetwork;
+                          // Reset token to default for the new network
+                          if (widget.preselectedToken == null) {
+                            _selectedToken = _defaultTokenForNetwork(newNetwork);
+                          }
+                        });
+                        // Fetch gas estimates when switching to Ethereum
+                        if (newNetwork == 'Ethereum') {
+                          _fetchGasEstimates();
+                        }
                         // Re-resolve if there's a DNA identity in the input
                         final input = _recipientController.text.trim();
                         if (_isFingerprint(input) || _isDnaName(input)) {
@@ -1305,55 +1316,76 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   }
 
   List<DropdownMenuItem<String>> _getTokenItems() {
-    // If ETH is preselected, show ETH option
-    if (_selectedToken.toUpperCase() == 'ETH') {
+    // If opened from token detail sheet, lock to that token
+    if (widget.preselectedToken != null) {
+      return [
+        DropdownMenuItem(value: _selectedToken, child: Text(_selectedToken)),
+      ];
+    }
+    // Main Send button: show all tokens for the selected network
+    final network = _selectedNetwork.toLowerCase();
+    if (network == 'ethereum') {
       return const [
         DropdownMenuItem(value: 'ETH', child: Text('ETH')),
+        DropdownMenuItem(value: 'USDT', child: Text('USDT')),
       ];
     }
-    // If SOL is preselected, show SOL option
-    if (_selectedToken.toUpperCase() == 'SOL') {
+    if (network == 'solana') {
       return const [
         DropdownMenuItem(value: 'SOL', child: Text('SOL')),
+        DropdownMenuItem(value: 'USDT', child: Text('USDT')),
       ];
     }
-    // If TRX is preselected, show TRX option
-    if (_selectedToken.toUpperCase() == 'TRX') {
+    if (network == 'tron') {
       return const [
         DropdownMenuItem(value: 'TRX', child: Text('TRX')),
+        DropdownMenuItem(value: 'USDT', child: Text('USDT')),
       ];
     }
-    // Default: Cellframe tokens
+    // Backbone (Cellframe)
     return const [
       DropdownMenuItem(value: 'CPUNK', child: Text('CPUNK')),
       DropdownMenuItem(value: 'CELL', child: Text('CELL')),
+      DropdownMenuItem(value: 'KEL', child: Text('KEL')),
+      DropdownMenuItem(value: 'NYS', child: Text('NYS')),
+      DropdownMenuItem(value: 'QEVM', child: Text('QEVM')),
     ];
   }
 
   List<DropdownMenuItem<String>> _getNetworkItems() {
-    final network = _selectedNetwork.toLowerCase();
-    // If Ethereum network, show only Ethereum
-    if (network == 'ethereum') {
+    // If opened from token detail sheet, lock to that network
+    if (widget.preselectedNetwork != null) {
+      final label = _networkDisplayLabel(_selectedNetwork);
       return [
-        DropdownMenuItem(value: _selectedNetwork, child: const Text('ERC20')),
+        DropdownMenuItem(value: _selectedNetwork, child: Text(label)),
       ];
     }
-    // If Solana network, show only Solana
-    if (network == 'solana') {
-      return [
-        DropdownMenuItem(value: _selectedNetwork, child: const Text('SPL')),
-      ];
-    }
-    // If Tron network, show only Tron
-    if (network == 'tron') {
-      return [
-        DropdownMenuItem(value: _selectedNetwork, child: const Text('TRC20')),
-      ];
-    }
-    // Default: Backbone (Cellframe) network
-    return [
-      DropdownMenuItem(value: _selectedNetwork, child: const Text('CF20')),
+    // Main Send button: show all networks
+    return const [
+      DropdownMenuItem(value: 'Backbone', child: Text('CF20')),
+      DropdownMenuItem(value: 'Ethereum', child: Text('ERC20')),
+      DropdownMenuItem(value: 'Solana', child: Text('SPL')),
+      DropdownMenuItem(value: 'Tron', child: Text('TRC20')),
     ];
+  }
+
+  String _networkDisplayLabel(String network) {
+    switch (network.toLowerCase()) {
+      case 'ethereum': return 'ERC20';
+      case 'solana': return 'SPL';
+      case 'tron': return 'TRC20';
+      default: return 'CF20';
+    }
+  }
+
+  /// Default token for a given network
+  String _defaultTokenForNetwork(String network) {
+    switch (network.toLowerCase()) {
+      case 'ethereum': return 'ETH';
+      case 'solana': return 'SOL';
+      case 'tron': return 'TRX';
+      default: return 'CPUNK';
+    }
   }
 
   bool _canSend() {
@@ -1512,7 +1544,7 @@ class _TokenDetailSheet extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final transactionsAsync = ref.watch(
-      transactionsProvider((walletIndex: walletIndex, network: network == 'Ethereum' ? 'Ethereum' : 'Backbone')),
+      transactionsProvider((walletIndex: walletIndex, network: network)),
     );
     // Watch balances to get updated value after refresh
     final balancesAsync = ref.watch(balancesProvider(walletIndex));
