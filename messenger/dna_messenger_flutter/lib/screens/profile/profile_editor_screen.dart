@@ -13,7 +13,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../platform/platform_handler.dart';
 import '../../providers/providers.dart';
-import '../../theme/dna_theme.dart';
+import '../../design_system/theme/dna_colors.dart';
 import 'avatar_crop_screen.dart';
 
 class ProfileEditorScreen extends ConsumerStatefulWidget {

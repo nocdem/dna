@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
-import '../../theme/dna_theme.dart';
+import '../../design_system/theme/dna_colors.dart';
 
 class ContactsManagementScreen extends ConsumerWidget {
   const ContactsManagementScreen({super.key});
@@ -224,6 +224,7 @@ class _ContactTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final mutedColor = theme.textTheme.bodySmall?.color;
 
     return ListTile(
       leading: CircleAvatar(
@@ -245,13 +246,13 @@ class _ContactTile extends StatelessWidget {
             _shortenFingerprint(contact.fingerprint),
             style: theme.textTheme.bodySmall?.copyWith(
               fontFamily: 'monospace',
-              color: DnaColors.textMuted,
+              color: mutedColor,
             ),
           ),
           Text(
             contact.isOnline ? 'Online' : 'Last seen ${_formatTime(contact.lastSeen)}',
             style: theme.textTheme.bodySmall?.copyWith(
-              color: contact.isOnline ? DnaColors.textSuccess : DnaColors.textMuted,
+              color: contact.isOnline ? DnaColors.textSuccess : mutedColor,
             ),
           ),
         ],

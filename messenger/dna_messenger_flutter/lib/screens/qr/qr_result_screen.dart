@@ -6,7 +6,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../providers/providers.dart';
-import '../../theme/dna_theme.dart';
+import '../../design_system/theme/dna_colors.dart';
 import '../../utils/qr_payload_parser.dart';
 import 'qr_auth_screen.dart';
 
@@ -159,20 +159,20 @@ class _ContactResultState extends ConsumerState<_ContactResult> {
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: DnaColors.surface,
+              color: theme.colorScheme.surface,
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: DnaColors.border),
+              border: Border.all(color: theme.colorScheme.outlineVariant),
             ),
             child: Column(
               children: [
                 // Avatar placeholder
                 CircleAvatar(
                   radius: 48,
-                  backgroundColor: DnaColors.primarySoft,
+                  backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.08),
                   child: FaIcon(
                     FontAwesomeIcons.user,
                     size: 40,
-                    color: DnaColors.primary,
+                    color: theme.colorScheme.primary,
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -189,7 +189,7 @@ class _ContactResultState extends ConsumerState<_ContactResult> {
                   shortFp,
                   style: theme.textTheme.bodyMedium?.copyWith(
                     fontFamily: 'monospace',
-                    color: DnaColors.textMuted,
+                    color: theme.textTheme.bodySmall?.color,
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -367,9 +367,9 @@ class _AuthResultState extends State<_AuthResult> {
         child: Container(
           padding: const EdgeInsets.all(24),
           decoration: BoxDecoration(
-            color: DnaColors.surface,
+            color: theme.colorScheme.surface,
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: DnaColors.border),
+            border: Border.all(color: theme.colorScheme.outlineVariant),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -391,7 +391,7 @@ class _AuthResultState extends State<_AuthResult> {
               Text(
                 'The QR code is missing required authorization data.',
                 style: theme.textTheme.bodyMedium?.copyWith(
-                  color: DnaColors.textMuted,
+                  color: theme.textTheme.bodySmall?.color,
                 ),
                 textAlign: TextAlign.center,
               ),
@@ -427,16 +427,16 @@ class _PlainTextResult extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: DnaColors.surface,
+              color: theme.colorScheme.surface,
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: DnaColors.border),
+              border: Border.all(color: theme.colorScheme.outlineVariant),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
                   children: [
-                    const FaIcon(FontAwesomeIcons.qrcode, size: 20, color: DnaColors.primary),
+                    FaIcon(FontAwesomeIcons.qrcode, size: 20, color: theme.colorScheme.primary),
                     const SizedBox(width: 8),
                     Text(
                       'QR Content',

@@ -7,7 +7,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
 
 import '../ffi/dna_engine.dart';
-import '../theme/dna_theme.dart';
+import '../design_system/theme/dna_colors.dart';
 
 /// Message bubble for displaying image attachments
 class ImageMessageBubble extends StatelessWidget {

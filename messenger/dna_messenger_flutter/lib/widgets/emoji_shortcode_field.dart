@@ -2,8 +2,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
-import '../theme/dna_theme.dart';
-
 /// TextField with :shortcode: emoji search popup
 ///
 /// When user types `:` followed by 2+ characters, shows matching emoji suggestions
@@ -166,7 +164,7 @@ class _EmojiShortcodeFieldState extends State<EmojiShortcodeField> {
             child: Container(
               constraints: const BoxConstraints(maxHeight: 250),
               decoration: BoxDecoration(
-                border: Border.all(color: DnaColors.border),
+                border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: ListView.builder(
@@ -191,7 +189,7 @@ class _EmojiShortcodeFieldState extends State<EmojiShortcodeField> {
                               emoji.name,
                               style: TextStyle(
                                 fontSize: 13,
-                                color: DnaColors.textMuted,
+                                color: Theme.of(context).textTheme.bodySmall?.color,
                               ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,

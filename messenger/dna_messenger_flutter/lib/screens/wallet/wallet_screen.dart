@@ -7,7 +7,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart' show Contact, Transaction, UserProfile, Wallet;
 import '../../providers/addressbook_provider.dart';
 import '../../providers/providers.dart' hide UserProfile;
-import '../../theme/dna_theme.dart';
+import '../../design_system/theme/dna_colors.dart';
 import 'address_book_screen.dart';
 import 'address_dialog.dart';
 
@@ -1007,12 +1007,12 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                         final contact = contacts[index];
                         return ListTile(
                           leading: CircleAvatar(
-                            backgroundColor: DnaColors.primary.withAlpha(50),
+                            backgroundColor: Theme.of(context).colorScheme.primary.withAlpha(50),
                             child: Text(
                               contact.displayName.isNotEmpty
                                   ? contact.displayName[0].toUpperCase()
                                   : '?',
-                              style: const TextStyle(color: DnaColors.primary),
+                              style: TextStyle(color: Theme.of(context).colorScheme.primary),
                             ),
                           ),
                           title: Text(contact.displayName.isNotEmpty

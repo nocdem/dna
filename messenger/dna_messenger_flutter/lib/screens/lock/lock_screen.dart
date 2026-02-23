@@ -5,7 +5,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../../providers/app_lock_provider.dart';
-import '../../theme/dna_theme.dart';
+import '../../design_system/theme/dna_colors.dart';
 
 /// Lock screen - requires biometric or PIN to unlock
 class LockScreen extends ConsumerStatefulWidget {
@@ -163,9 +163,10 @@ class _LockScreenState extends ConsumerState<LockScreen>
   @override
   Widget build(BuildContext context) {
     final appLock = ref.watch(appLockProvider);
+    final theme = Theme.of(context);
 
     return Scaffold(
-      backgroundColor: DnaColors.background,
+      backgroundColor: theme.scaffoldBackgroundColor,
       body: KeyboardListener(
         focusNode: _focusNode,
         onKeyEvent: _handleKeyEvent,
@@ -183,7 +184,7 @@ class _LockScreenState extends ConsumerState<LockScreen>
                 Text(
                   '- OR -',
                   style: TextStyle(
-                    color: DnaColors.textMuted,
+                    color: theme.textTheme.bodySmall?.color,
                     fontSize: 12,
                   ),
                 ),
@@ -226,15 +227,16 @@ class _LockScreenState extends ConsumerState<LockScreen>
   }
 
   Widget _buildHeader() {
+    final theme = Theme.of(context);
     return Column(
       children: [
         Container(
           width: 80,
           height: 80,
           decoration: BoxDecoration(
-            color: DnaColors.surface,
+            color: theme.colorScheme.surface,
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: DnaColors.borderAccent),
+            border: Border.all(color: theme.colorScheme.outline),
           ),
           child: Center(
             child: SvgPicture.asset(
@@ -245,19 +247,19 @@ class _LockScreenState extends ConsumerState<LockScreen>
           ),
         ),
         const SizedBox(height: 16),
-        const Text(
+        Text(
           'DNA Messenger',
           style: TextStyle(
-            color: DnaColors.text,
+            color: theme.colorScheme.onSurface,
             fontSize: 24,
             fontWeight: FontWeight.bold,
           ),
         ),
         const SizedBox(height: 8),
-        const Text(
+        Text(
           'Enter PIN to unlock',
           style: TextStyle(
-            color: DnaColors.textMuted,
+            color: theme.textTheme.bodySmall?.color,
             fontSize: 14,
           ),
         ),
@@ -266,30 +268,31 @@ class _LockScreenState extends ConsumerState<LockScreen>
   }
 
   Widget _buildBiometricButton() {
+    final theme = Theme.of(context);
     return GestureDetector(
       onTap: _isAuthenticating ? null : _tryBiometricAuth,
       child: Container(
         width: 64,
         height: 64,
         decoration: BoxDecoration(
-          color: DnaColors.surface,
+          color: theme.colorScheme.surface,
           borderRadius: BorderRadius.circular(32),
-          border: Border.all(color: DnaColors.borderAccent),
+          border: Border.all(color: theme.colorScheme.outline),
         ),
         child: Center(
           child: _isAuthenticating
-              ? const SizedBox(
+              ? SizedBox(
                   width: 24,
                   height: 24,
                   child: CircularProgressIndicator(
                     strokeWidth: 2,
-                    color: DnaColors.primary,
+                    color: theme.colorScheme.primary,
                   ),
                 )
-              : const FaIcon(
+              : FaIcon(
                   FontAwesomeIcons.fingerprint,
                   size: 32,
-                  color: DnaColors.primary,
+                  color: theme.colorScheme.primary,
                 ),
         ),
       ),
@@ -297,6 +300,7 @@ class _LockScreenState extends ConsumerState<LockScreen>
   }
 
   Widget _buildPinDots() {
+    final theme = Theme.of(context);
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: List.generate(6, (index) {
@@ -306,10 +310,10 @@ class _LockScreenState extends ConsumerState<LockScreen>
           height: 16,
           margin: const EdgeInsets.symmetric(horizontal: 8),
           decoration: BoxDecoration(
-            color: filled ? DnaColors.primary : Colors.transparent,
+            color: filled ? theme.colorScheme.primary : Colors.transparent,
             shape: BoxShape.circle,
             border: Border.all(
-              color: filled ? DnaColors.primary : DnaColors.borderAccent,
+              color: filled ? theme.colorScheme.primary : theme.colorScheme.outline,
               width: 2,
             ),
           ),
@@ -348,24 +352,25 @@ class _LockScreenState extends ConsumerState<LockScreen>
   }
 
   Widget _buildKey(String key) {
+    final theme = Theme.of(context);
     Widget child;
     if (key == 'backspace') {
-      child = const FaIcon(
+      child = FaIcon(
         FontAwesomeIcons.deleteLeft,
         size: 20,
-        color: DnaColors.textMuted,
+        color: theme.textTheme.bodySmall?.color,
       );
     } else if (key == 'confirm') {
-      child = const FaIcon(
+      child = FaIcon(
         FontAwesomeIcons.check,
         size: 20,
-        color: DnaColors.primary,
+        color: theme.colorScheme.primary,
       );
     } else {
       child = Text(
         key,
-        style: const TextStyle(
-          color: DnaColors.text,
+        style: TextStyle(
+          color: theme.colorScheme.onSurface,
           fontSize: 24,
           fontWeight: FontWeight.w500,
         ),
@@ -378,9 +383,9 @@ class _LockScreenState extends ConsumerState<LockScreen>
         width: 64,
         height: 64,
         decoration: BoxDecoration(
-          color: DnaColors.surface,
+          color: theme.colorScheme.surface,
           borderRadius: BorderRadius.circular(32),
-          border: Border.all(color: DnaColors.border),
+          border: Border.all(color: theme.colorScheme.outlineVariant),
         ),
         child: Center(child: child),
       ),

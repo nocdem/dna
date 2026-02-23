@@ -14,7 +14,7 @@ import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../platform/android/notification_settings.dart';
 import '../../providers/providers.dart';
 import '../../providers/version_check_provider.dart';
-import '../../theme/dna_theme.dart';
+import '../../design_system/design_system.dart';
 import '../../utils/platform_utils.dart';
 import '../profile/profile_editor_screen.dart';
 import 'app_lock_settings_screen.dart';
@@ -50,6 +50,8 @@ class SettingsScreen extends ConsumerWidget {
               simpleProfile: simpleProfile,
               fullProfile: fullProfile,
             ),
+            // Appearance
+            const _AppearanceSection(),
             // Contacts
             _ContactsSection(),
             // Notifications (Android only)
@@ -154,9 +156,7 @@ class _ProfileSection extends StatelessWidget {
                         fingerprint != null
                             ? _shortenFingerprint(fingerprint!)
                             : 'Not loaded',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: DnaColors.textMuted,
-                        ),
+                        style: theme.textTheme.bodySmall,
                       ),
                       const SizedBox(height: 4),
                       Text(
@@ -170,7 +170,7 @@ class _ProfileSection extends StatelessWidget {
                 ),
                 FaIcon(
                   FontAwesomeIcons.chevronRight,
-                  color: DnaColors.textMuted,
+                  color: theme.textTheme.bodySmall?.color,
                 ),
               ],
             ),
@@ -226,6 +226,28 @@ class _ProfileSection extends StatelessWidget {
           color: theme.colorScheme.primary,
         ),
       ),
+    );
+  }
+}
+
+class _AppearanceSection extends ConsumerWidget {
+  const _AppearanceSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final themeMode = ref.watch(themeModeProvider);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader('Appearance'),
+        DnaSwitch(
+          label: 'Dark Mode',
+          subtitle: 'Switch between dark and light theme',
+          value: themeMode == ThemeMode.dark,
+          onChanged: (v) => ref.read(themeModeProvider.notifier).toggle(),
+        ),
+      ],
     );
   }
 }
@@ -426,7 +448,7 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                       decoration: BoxDecoration(
                         color: Theme.of(context).colorScheme.surface,
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: DnaColors.textMuted.withAlpha(51)),
+                        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
                       ),
                       child: LayoutBuilder(
                         builder: (context, constraints) {
@@ -483,10 +505,7 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                         Expanded(
                           child: Text(
                             'Write these words down in order and store them safely. Anyone with this phrase can access your identity.',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: DnaColors.textMuted,
-                            ),
+                            style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ),
                       ],
@@ -886,7 +905,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
                   height: 24,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : FaIcon(FontAwesomeIcons.chevronRight, color: DnaColors.textMuted),
+              : FaIcon(FontAwesomeIcons.chevronRight, color: Theme.of(context).textTheme.bodySmall?.color),
           onTap: _isDeleting ? null : () => _showDeleteConfirmation(context),
         ),
       ],
@@ -969,13 +988,14 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
   }
 
   Widget _buildBulletPoint(String text) {
+    final mutedColor = Theme.of(context).textTheme.bodySmall?.color;
     return Padding(
       padding: const EdgeInsets.only(left: 8, top: 4),
       child: Row(
         children: [
-          FaIcon(FontAwesomeIcons.circle, size: 6, color: DnaColors.textMuted),
+          FaIcon(FontAwesomeIcons.circle, size: 6, color: mutedColor),
           const SizedBox(width: 8),
-          Text(text, style: TextStyle(color: DnaColors.textMuted)),
+          Text(text, style: TextStyle(color: mutedColor)),
         ],
       ),
     );
@@ -1092,14 +1112,12 @@ class _AboutSection extends ConsumerWidget {
                             const SizedBox(height: 2),
                             Text(
                               'Tap to download',
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: DnaColors.textMuted,
-                              ),
+                              style: theme.textTheme.bodySmall,
                             ),
                           ],
                         ),
                       ),
-                      FaIcon(FontAwesomeIcons.arrowUpRightFromSquare, size: 14, color: DnaColors.textMuted),
+                      FaIcon(FontAwesomeIcons.arrowUpRightFromSquare, size: 14, color: theme.textTheme.bodySmall?.color),
                     ],
                   ),
                 ),
@@ -1118,22 +1136,17 @@ class _AboutSection extends ConsumerWidget {
               const SizedBox(height: 4),
               Text(
                 'Library v$libVersion',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: DnaColors.textMuted,
-                ),
+                style: theme.textTheme.bodySmall,
               ),
               const SizedBox(height: 4),
               Text(
                 'Post-Quantum Encrypted Messenger',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: DnaColors.textMuted,
-                ),
+                style: theme.textTheme.bodySmall,
               ),
               const SizedBox(height: 16),
               Text(
                 'CRYPTO STACK',
                 style: theme.textTheme.labelSmall?.copyWith(
-                  color: DnaColors.textMuted,
                   fontWeight: FontWeight.w600,
                   letterSpacing: 1.2,
                 ),
@@ -1149,16 +1162,12 @@ class _AboutSection extends ConsumerWidget {
               const SizedBox(height: 16),
               Text(
                 '© 2025 cpunk.io',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: DnaColors.textMuted,
-                ),
+                style: theme.textTheme.bodySmall,
               ),
               const SizedBox(height: 4),
               Text(
                 'GNU GPLv3',
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: DnaColors.textMuted,
-                ),
+                style: theme.textTheme.labelSmall,
               ),
             ],
           ),

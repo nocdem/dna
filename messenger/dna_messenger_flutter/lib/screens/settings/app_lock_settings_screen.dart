@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../../providers/app_lock_provider.dart';
-import '../../theme/dna_theme.dart';
+import '../../design_system/theme/dna_colors.dart';
 
 /// App Lock settings screen
 class AppLockSettingsScreen extends ConsumerStatefulWidget {
@@ -98,6 +98,7 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
+            final mutedColor = Theme.of(context).textTheme.bodySmall?.color;
             return AlertDialog(
               title: Text(step == 1 ? 'Set PIN' : 'Confirm PIN'),
               content: Column(
@@ -107,7 +108,7 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
                     step == 1
                         ? 'Enter a 4-6 digit PIN'
                         : 'Enter the same PIN again',
-                    style: const TextStyle(color: DnaColors.textMuted),
+                    style: TextStyle(color: mutedColor),
                   ),
                   const SizedBox(height: 16),
                   _PinEntryField(
@@ -127,7 +128,7 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
                     const SizedBox(height: 8),
                     Text(
                       error!,
-                      style: const TextStyle(color: DnaColors.textWarning),
+                      style: TextStyle(color: DnaColors.textWarning),
                     ),
                   ],
                 ],
@@ -178,14 +179,15 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
+            final mutedColor = Theme.of(context).textTheme.bodySmall?.color;
             return AlertDialog(
               title: const Text('Enter Current PIN'),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text(
+                  Text(
                     'Enter your current PIN to continue',
-                    style: TextStyle(color: DnaColors.textMuted),
+                    style: TextStyle(color: mutedColor),
                   ),
                   const SizedBox(height: 16),
                   _PinEntryField(
@@ -200,7 +202,7 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
                     const SizedBox(height: 8),
                     Text(
                       error!,
-                      style: const TextStyle(color: DnaColors.textWarning),
+                      style: TextStyle(color: DnaColors.textWarning),
                     ),
                   ],
                 ],

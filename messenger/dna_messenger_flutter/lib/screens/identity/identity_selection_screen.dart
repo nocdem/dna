@@ -10,7 +10,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart' as dna;
 import '../../providers/providers.dart';
-import '../../theme/dna_theme.dart';
+import '../../design_system/theme/dna_colors.dart';
 import '../../utils/logger.dart' show log, logError;
 
 /// Entry point for onboarding - in v0.3.0 single-user model, this just shows the unified flow
@@ -824,7 +824,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                 Text(
                   'Last backup: ${_formatBackupDate(backupInfo.timestamp!)}',
                   style: TextStyle(
-                    color: DnaColors.textMuted,
+                    color: Theme.of(context).textTheme.bodySmall?.color,
                     fontSize: 13,
                   ),
                 ),

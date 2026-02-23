@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../providers/providers.dart';
 import '../../services/qr_auth_service.dart';
-import '../../theme/dna_theme.dart';
+import '../../design_system/theme/dna_colors.dart';
 import '../../utils/qr_payload_parser.dart';
 import '../home_screen.dart';
 
@@ -222,7 +222,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
           Text(
             message,
             style: theme.textTheme.bodyMedium?.copyWith(
-              color: DnaColors.textMuted,
+              color: theme.textTheme.bodySmall?.color,
             ),
             textAlign: TextAlign.center,
           ),
@@ -235,9 +235,9 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: DnaColors.surface,
+        color: theme.colorScheme.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: DnaColors.border),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -310,12 +310,13 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
   }
 
   Widget _buildRawPayloadCard(ThemeData theme) {
+    final mutedColor = theme.textTheme.bodySmall?.color;
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: DnaColors.background,
+        color: theme.scaffoldBackgroundColor,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: DnaColors.border),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -323,7 +324,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
           Text(
             'Raw Payload',
             style: theme.textTheme.labelMedium?.copyWith(
-              color: DnaColors.textMuted,
+              color: mutedColor,
             ),
           ),
           const SizedBox(height: 8),
@@ -331,7 +332,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
             widget.payload.rawContent,
             style: theme.textTheme.bodySmall?.copyWith(
               fontFamily: 'monospace',
-              color: DnaColors.textMuted,
+              color: mutedColor,
             ),
           ),
         ],
@@ -367,7 +368,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
                 Text(
                   'Successfully authenticated with ${widget.payload.origin ?? "the service"}',
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: DnaColors.textMuted,
+                    color: theme.textTheme.bodySmall?.color,
                   ),
                 ),
               ],
@@ -409,7 +410,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
           Text(
             error,
             style: theme.textTheme.bodyMedium?.copyWith(
-              color: DnaColors.textMuted,
+              color: theme.textTheme.bodySmall?.color,
             ),
           ),
         ],
@@ -529,7 +530,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        FaIcon(icon, size: 16, color: DnaColors.primary),
+        FaIcon(icon, size: 16, color: theme.colorScheme.primary),
         const SizedBox(width: 12),
         Expanded(
           child: Column(
@@ -538,7 +539,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
               Text(
                 label,
                 style: theme.textTheme.labelMedium?.copyWith(
-                  color: DnaColors.textMuted,
+                  color: theme.textTheme.bodySmall?.color,
                 ),
               ),
               const SizedBox(height: 4),

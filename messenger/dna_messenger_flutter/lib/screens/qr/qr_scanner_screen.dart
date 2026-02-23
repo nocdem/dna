@@ -6,7 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../main.dart' show routeObserver;
-import '../../theme/dna_theme.dart';
+import '../../design_system/theme/dna_colors.dart';
 import '../../utils/qr_payload_parser.dart';
 import 'qr_auth_screen.dart';
 import 'qr_result_screen.dart';
@@ -351,7 +351,7 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
   Widget _buildScanOverlay() {
     return CustomPaint(
       painter: _ScanOverlayPainter(
-        borderColor: DnaColors.primary,
+        borderColor: Theme.of(context).colorScheme.primary,
         overlayColor: Colors.black54,
       ),
       child: const SizedBox.expand(),
@@ -359,11 +359,12 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
   }
 
   Widget _buildInstructions() {
+    final theme = Theme.of(context);
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 32),
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
       decoration: BoxDecoration(
-        color: DnaColors.surface.withAlpha(230),
+        color: theme.colorScheme.surface.withAlpha(230),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
@@ -371,14 +372,14 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
         children: [
           Text(
             'Point camera at a QR code',
-            style: Theme.of(context).textTheme.titleMedium,
+            style: theme.textTheme.titleMedium,
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 8),
           Text(
             'Supports contact sharing, authorization requests, and plain text',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: DnaColors.textMuted,
+            style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.textTheme.bodySmall?.color,
                 ),
             textAlign: TextAlign.center,
           ),

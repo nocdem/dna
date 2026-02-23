@@ -7,7 +7,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart' show UserProfile, decodeBase64WithPadding;
 import '../../providers/providers.dart' show engineProvider;
 import '../../providers/contacts_provider.dart';
-import '../../theme/dna_theme.dart';
+import '../../design_system/theme/dna_colors.dart';
 
 /// Shows a bottom sheet with the contact's profile fetched from DHT
 Future<void> showContactProfileDialog(
@@ -131,6 +131,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
   }
 
   Widget _buildError() {
+    final theme = Theme.of(context);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
@@ -146,7 +147,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
             const SizedBox(height: 8),
             Text(
               _error ?? 'Unknown error',
-              style: TextStyle(color: DnaColors.textMuted, fontSize: 12),
+              style: TextStyle(color: theme.textTheme.bodySmall?.color, fontSize: 12),
               textAlign: TextAlign.center,
             ),
           ],
@@ -220,16 +221,16 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
               padding: const EdgeInsets.all(32),
               child: Column(
                 children: [
-                  FaIcon(FontAwesomeIcons.userSlash, size: 48, color: DnaColors.textMuted),
+                  FaIcon(FontAwesomeIcons.userSlash, size: 48, color: theme.textTheme.bodySmall?.color),
                   const SizedBox(height: 16),
                   Text(
                     'No profile published',
-                    style: TextStyle(color: DnaColors.textMuted),
+                    style: TextStyle(color: theme.textTheme.bodySmall?.color),
                   ),
                   const SizedBox(height: 8),
                   Text(
                     'This user has not published their profile to DHT yet.',
-                    style: TextStyle(color: DnaColors.textMuted, fontSize: 12),
+                    style: TextStyle(color: theme.textTheme.bodySmall?.color, fontSize: 12),
                     textAlign: TextAlign.center,
                   ),
                 ],
@@ -256,7 +257,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
           final avatarBytes = hasAvatar ? decodeBase64WithPadding(profile.avatarBase64) : null;
           return CircleAvatar(
             radius: 48,
-            backgroundColor: DnaColors.primary.withValues(alpha: 0.2),
+            backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.2),
             backgroundImage: avatarBytes != null ? MemoryImage(avatarBytes) : null,
             child: avatarBytes == null
                 ? Text(
@@ -264,7 +265,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
                     style: TextStyle(
                       fontSize: 32,
                       fontWeight: FontWeight.bold,
-                      color: DnaColors.primary,
+                      color: theme.colorScheme.primary,
                     ),
                   )
                 : null,
@@ -299,7 +300,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
         ),
         child: Row(
           children: [
-            FaIcon(FontAwesomeIcons.pen, color: DnaColors.primary),
+            FaIcon(FontAwesomeIcons.pen, color: theme.colorScheme.primary),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -309,7 +310,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
                     'Nickname',
                     style: theme.textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.bold,
-                      color: DnaColors.primary,
+                      color: theme.colorScheme.primary,
                     ),
                   ),
                   const SizedBox(height: 4),
@@ -318,7 +319,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
                     style: TextStyle(
                       color: _currentNickname != null
                           ? theme.textTheme.bodyMedium?.color
-                          : DnaColors.textMuted,
+                          : theme.textTheme.bodySmall?.color,
                       fontStyle: _currentNickname != null
                           ? FontStyle.normal
                           : FontStyle.italic,
@@ -330,14 +331,14 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
                       'Original: $originalName',
                       style: TextStyle(
                         fontSize: 11,
-                        color: DnaColors.textMuted,
+                        color: theme.textTheme.bodySmall?.color,
                       ),
                     ),
                   ],
                 ],
               ),
             ),
-            FaIcon(FontAwesomeIcons.chevronRight, size: 16, color: DnaColors.textMuted),
+            FaIcon(FontAwesomeIcons.chevronRight, size: 16, color: theme.textTheme.bodySmall?.color),
           ],
         ),
       ),
@@ -360,7 +361,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
             Text(
               'Original name: $originalName',
               style: TextStyle(
-                color: DnaColors.textMuted,
+                color: Theme.of(context).textTheme.bodySmall?.color,
                 fontSize: 12,
               ),
             ),
@@ -430,7 +431,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
       ),
       child: Row(
         children: [
-          FaIcon(FontAwesomeIcons.fingerprint, color: DnaColors.textMuted),
+          FaIcon(FontAwesomeIcons.fingerprint, color: theme.textTheme.bodySmall?.color),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
@@ -438,7 +439,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
               style: TextStyle(
                 fontFamily: 'monospace',
                 fontSize: 12,
-                color: DnaColors.textMuted,
+                color: theme.textTheme.bodySmall?.color,
               ),
             ),
           ),
@@ -471,13 +472,13 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
             padding: const EdgeInsets.all(12),
             child: Row(
               children: [
-                FaIcon(icon, size: 20, color: DnaColors.primary),
+                FaIcon(icon, size: 20, color: theme.colorScheme.primary),
                 const SizedBox(width: 8),
                 Text(
                   title,
                   style: theme.textTheme.titleSmall?.copyWith(
                     fontWeight: FontWeight.bold,
-                    color: DnaColors.primary,
+                    color: theme.colorScheme.primary,
                   ),
                 ),
               ],
@@ -498,11 +499,12 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
   }
 
   Widget _buildInfoRow(IconData icon, String text) {
+    final mutedColor = Theme.of(context).textTheme.bodySmall?.color;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
         children: [
-          FaIcon(icon, size: 18, color: DnaColors.textMuted),
+          FaIcon(icon, size: 18, color: mutedColor),
           const SizedBox(width: 12),
           Expanded(child: Text(text)),
         ],
@@ -511,21 +513,22 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
   }
 
   Widget _buildLinkRow(IconData icon, String text, String label) {
+    final theme = Theme.of(context);
     return InkWell(
       onTap: () => _copyToClipboard(text, label),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Row(
           children: [
-            FaIcon(icon, size: 18, color: DnaColors.primary),
+            FaIcon(icon, size: 18, color: theme.colorScheme.primary),
             const SizedBox(width: 12),
             Expanded(
               child: Text(
                 text,
-                style: TextStyle(color: DnaColors.primary),
+                style: TextStyle(color: theme.colorScheme.primary),
               ),
             ),
-            FaIcon(FontAwesomeIcons.copy, size: 16, color: DnaColors.textMuted),
+            FaIcon(FontAwesomeIcons.copy, size: 16, color: theme.textTheme.bodySmall?.color),
           ],
         ),
       ),
@@ -565,6 +568,8 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
   }
 
   Widget _buildSocialRow(String label, String handle, String url) {
+    final theme = Theme.of(context);
+    final mutedColor = theme.textTheme.bodySmall?.color;
     return InkWell(
       onTap: () => _copyToClipboard(url, label),
       child: Padding(
@@ -579,17 +584,17 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
                     label,
                     style: TextStyle(
                       fontSize: 11,
-                      color: DnaColors.textMuted,
+                      color: mutedColor,
                     ),
                   ),
                   Text(
                     handle,
-                    style: TextStyle(color: DnaColors.primary),
+                    style: TextStyle(color: theme.colorScheme.primary),
                   ),
                 ],
               ),
             ),
-            FaIcon(FontAwesomeIcons.copy, size: 16, color: DnaColors.textMuted),
+            FaIcon(FontAwesomeIcons.copy, size: 16, color: mutedColor),
           ],
         ),
       ),
