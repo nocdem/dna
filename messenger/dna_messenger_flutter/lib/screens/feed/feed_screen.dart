@@ -3,9 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
+import '../../design_system/design_system.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
-import '../../theme/dna_theme.dart';
 
 class FeedScreen extends ConsumerWidget {
   const FeedScreen({super.key});
@@ -16,9 +16,8 @@ class FeedScreen extends ConsumerWidget {
     final topics = ref.watch(feedTopicsProvider);
 
     return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: const Text('Feed'),
+      appBar: DnaAppBar(
+        title: 'Feed',
         actions: [
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
@@ -196,16 +195,12 @@ class _CategoryChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-      child: FilterChip(
-        label: Text(label),
+      child: DnaChip(
+        label: label,
         selected: isSelected,
-        onSelected: (_) => onTap(),
-        selectedColor: theme.colorScheme.primary.withAlpha(50),
-        checkmarkColor: theme.colorScheme.primary,
+        onTap: onTap,
       ),
     );
   }
@@ -308,80 +303,75 @@ class _TopicTile extends ConsumerWidget {
     // Trigger resolution if not cached
     ref.read(nameResolverProvider.notifier).resolveName(topic.authorFingerprint);
 
-    return Card(
+    return DnaCard(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.all(12),
+      onTap: onTap,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      topic.title,
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        decoration: topic.deleted ? TextDecoration.lineThrough : null,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+              Expanded(
+                child: Text(
+                  topic.title,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    decoration: topic.deleted ? TextDecoration.lineThrough : null,
                   ),
-                  if (isSubscribed)
-                    Padding(
-                      padding: const EdgeInsets.only(left: 8),
-                      child: FaIcon(
-                        FontAwesomeIcons.solidBookmark,
-                        size: 14,
-                        color: theme.colorScheme.primary,
-                      ),
-                    ),
-                ],
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-              const SizedBox(height: 8),
+              if (isSubscribed)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: FaIcon(
+                    FontAwesomeIcons.solidBookmark,
+                    size: 14,
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            topic.body,
+            style: theme.textTheme.bodyMedium,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              _CategoryBadge(category: topic.categoryId),
+              const SizedBox(width: 8),
+              ...topic.tags.take(2).map((tag) => Padding(
+                padding: const EdgeInsets.only(right: 4),
+                child: Chip(
+                  label: Text(tag, style: const TextStyle(fontSize: 10)),
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  padding: EdgeInsets.zero,
+                  visualDensity: VisualDensity.compact,
+                ),
+              )),
+              const Spacer(),
               Text(
-                topic.body,
-                style: theme.textTheme.bodyMedium,
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
+                authorName,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontWeight: FontWeight.w500,
+                ),
               ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  _CategoryBadge(category: topic.categoryId),
-                  const SizedBox(width: 8),
-                  ...topic.tags.take(2).map((tag) => Padding(
-                    padding: const EdgeInsets.only(right: 4),
-                    child: Chip(
-                      label: Text(tag, style: const TextStyle(fontSize: 10)),
-                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      padding: EdgeInsets.zero,
-                      visualDensity: VisualDensity.compact,
-                    ),
-                  )),
-                  const Spacer(),
-                  Text(
-                    authorName,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    _formatTime(topic.createdAt),
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
+              const SizedBox(width: 8),
+              Text(
+                _formatTime(topic.createdAt),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
             ],
           ),
-        ),
+        ],
       ),
     );
   }
@@ -462,8 +452,8 @@ class _TopicDetailScreen extends ConsumerWidget {
     final isSubscribed = ref.watch(isSubscribedProvider(topicUuid));
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Topic'),
+      appBar: DnaAppBar(
+        title: 'Topic',
         actions: [
           IconButton(
             icon: FaIcon(
@@ -563,66 +553,64 @@ class _TopicDetailContent extends ConsumerWidget {
       slivers: [
         // Topic header
         SliverToBoxAdapter(
-          child: Card(
+          child: DnaCard(
             margin: const EdgeInsets.all(12),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    topic.title,
-                    style: theme.textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      decoration: topic.deleted ? TextDecoration.lineThrough : null,
-                    ),
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  topic.title,
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    decoration: topic.deleted ? TextDecoration.lineThrough : null,
                   ),
-                  if (topic.deleted)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: Text(
-                        '[Deleted]',
-                        style: TextStyle(
-                          color: DnaColors.textWarning,
-                          fontStyle: FontStyle.italic,
-                        ),
+                ),
+                if (topic.deleted)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      '[Deleted]',
+                      style: TextStyle(
+                        color: DnaColors.textWarning,
+                        fontStyle: FontStyle.italic,
                       ),
                     ),
-                  const SizedBox(height: 16),
-                  Text(
-                    topic.body,
-                    style: theme.textTheme.bodyLarge,
                   ),
-                  const SizedBox(height: 16),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 4,
-                    children: [
-                      _CategoryBadge(category: topic.categoryId),
-                      ...topic.tags.map((tag) => Chip(
-                        label: Text(tag),
-                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        padding: EdgeInsets.zero,
-                        visualDensity: VisualDensity.compact,
-                      )),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Text(
-                        'Author: $topicAuthorName',
-                        style: theme.textTheme.bodySmall,
-                      ),
-                      const Spacer(),
-                      Text(
-                        DateFormat('MMM d, yyyy h:mm a').format(topic.createdAt),
-                        style: theme.textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+                const SizedBox(height: 16),
+                Text(
+                  topic.body,
+                  style: theme.textTheme.bodyLarge,
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    _CategoryBadge(category: topic.categoryId),
+                    ...topic.tags.map((tag) => Chip(
+                      label: Text(tag),
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      padding: EdgeInsets.zero,
+                      visualDensity: VisualDensity.compact,
+                    )),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Text(
+                      'Author: $topicAuthorName',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                    const Spacer(),
+                    Text(
+                      DateFormat('MMM d, yyyy h:mm a').format(topic.createdAt),
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
         ),
@@ -1250,8 +1238,8 @@ class _SubscribedTopicsScreen extends ConsumerWidget {
     final subscribedTopics = ref.watch(subscribedTopicsProvider);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('My Subscriptions'),
+      appBar: DnaAppBar(
+        title: 'My Subscriptions',
         actions: [
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.arrowsRotate),

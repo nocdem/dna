@@ -2,9 +2,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import '../../design_system/design_system.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
-import '../../theme/dna_theme.dart';
 
 class GroupsScreen extends ConsumerWidget {
   const GroupsScreen({super.key});
@@ -15,9 +15,8 @@ class GroupsScreen extends ConsumerWidget {
     final invitations = ref.watch(invitationsProvider);
 
     return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: const Text('Groups'),
+      appBar: DnaAppBar(
+        title: 'Groups',
         actions: [
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
@@ -268,7 +267,6 @@ class _GroupTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
     final unreadCounts = ref.watch(groupUnreadCountsProvider);
     final unreadCount = unreadCounts.maybeWhen(
       data: (counts) => counts[group.uuid] ?? 0,
@@ -276,11 +274,11 @@ class _GroupTile extends ConsumerWidget {
     );
 
     return ListTile(
-      leading: CircleAvatar(
-        backgroundColor: theme.colorScheme.secondary.withAlpha(51),
-        child: FaIcon(
-          FontAwesomeIcons.users,
-          color: theme.colorScheme.secondary,
+      leading: DnaBadge(
+        count: unreadCount,
+        child: DnaAvatar(
+          name: group.name,
+          size: DnaAvatarSize.md,
         ),
       ),
       title: Text(
@@ -290,29 +288,7 @@ class _GroupTile extends ConsumerWidget {
             : null,
       ),
       subtitle: Text('${group.memberCount} members'),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (unreadCount > 0)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.primary,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(
-                unreadCount > 99 ? '99+' : unreadCount.toString(),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          const SizedBox(width: 4),
-          const FaIcon(FontAwesomeIcons.chevronRight),
-        ],
-      ),
+      trailing: const FaIcon(FontAwesomeIcons.chevronRight),
       onTap: onTap,
     );
   }
@@ -365,72 +341,67 @@ class _InvitationTileState extends State<_InvitationTile> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Card(
+    return DnaCard(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                CircleAvatar(
-                  backgroundColor: theme.colorScheme.primary.withAlpha(51),
-                  child: FaIcon(
-                    FontAwesomeIcons.envelope,
-                    color: theme.colorScheme.primary,
-                  ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              DnaAvatar(
+                name: widget.invitation.groupName,
+                size: DnaAvatarSize.md,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      widget.invitation.groupName,
+                      style: theme.textTheme.titleMedium,
+                    ),
+                    Text(
+                      'Invited by ${_shortenFingerprint(widget.invitation.inviter)}',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        widget.invitation.groupName,
-                        style: theme.textTheme.titleMedium,
-                      ),
-                      Text(
-                        'Invited by ${_shortenFingerprint(widget.invitation.inviter)}',
-                        style: theme.textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                TextButton(
-                  onPressed: _isLoading ? null : _handleDecline,
-                  child: _isDeclining
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('Decline'),
-                ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed: _isLoading ? null : _handleAccept,
-                  child: _isAccepting
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
-                      : const Text('Accept'),
-                ),
-              ],
-            ),
-          ],
-        ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                onPressed: _isLoading ? null : _handleDecline,
+                child: _isDeclining
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Decline'),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                onPressed: _isLoading ? null : _handleAccept,
+                child: _isAccepting
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Text('Accept'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -595,14 +566,9 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
         titleSpacing: 0,
         title: Row(
           children: [
-            CircleAvatar(
-              radius: 18,
-              backgroundColor: theme.colorScheme.secondary.withAlpha(51),
-              child: FaIcon(
-                FontAwesomeIcons.users,
-                size: 16,
-                color: theme.colorScheme.secondary,
-              ),
+            DnaAvatar(
+              name: widget.group.name,
+              size: DnaAvatarSize.sm,
             ),
             const SizedBox(width: 12),
             Expanded(
