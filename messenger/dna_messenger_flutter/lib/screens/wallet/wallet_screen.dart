@@ -128,7 +128,7 @@ class WalletScreen extends ConsumerWidget {
       child: ListView(
         children: [
           const _WalletHeroCard(),
-          // const _ActionButtonsRow(), // Task 2
+          const _ActionButtonsRow(),
           const _AllBalancesSection(),
         ],
       ),
@@ -172,223 +172,151 @@ class WalletScreen extends ConsumerWidget {
   }
 }
 
-// ignore: unused_element
-class _WalletSelector extends StatelessWidget {
-  final List<Wallet> wallets;
-  final int selectedIndex;
-  final ValueChanged<int> onSelected;
+class _ActionButtonsRow extends ConsumerWidget {
+  const _ActionButtonsRow();
 
-  const _WalletSelector({
-    required this.wallets,
-    required this.selectedIndex,
-    required this.onSelected,
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final walletsAsync = ref.watch(walletsProvider);
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 24),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _CircularAction(
+            icon: FontAwesomeIcons.arrowUp,
+            label: 'Send',
+            onTap: () {
+              showModalBottomSheet(
+                context: context,
+                isScrollControlled: true,
+                builder: (context) => const _SendSheet(walletIndex: 0),
+              );
+            },
+          ),
+          const SizedBox(width: 40),
+          _CircularAction(
+            icon: FontAwesomeIcons.arrowDown,
+            label: 'Receive',
+            onTap: () {
+              final wallets = walletsAsync.valueOrNull;
+              final address = (wallets != null && wallets.isNotEmpty)
+                  ? wallets[0].address
+                  : '';
+              showModalBottomSheet(
+                context: context,
+                builder: (context) => SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'Receive',
+                          style: theme.textTheme.titleLarge,
+                        ),
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const FaIcon(
+                            FontAwesomeIcons.qrcode,
+                            size: 150,
+                            color: Colors.black,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          address,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontFamily: 'monospace',
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 16),
+                        DnaButton(
+                          label: 'Copy Address',
+                          icon: FontAwesomeIcons.copy,
+                          expand: true,
+                          onPressed: address.isNotEmpty
+                              ? () {
+                                  Clipboard.setData(ClipboardData(text: address));
+                                  final messenger = ScaffoldMessenger.of(context);
+                                  Navigator.pop(context);
+                                  messenger.showSnackBar(
+                                    const SnackBar(content: Text('Address copied')),
+                                  );
+                                }
+                              : null,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CircularAction extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  const _CircularAction({
+    required this.icon,
+    required this.label,
+    required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    if (wallets.length <= 1) return const SizedBox.shrink();
-
     final theme = Theme.of(context);
 
-    return Container(
-      height: 64,
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      padding: const EdgeInsets.all(6),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        borderRadius: BorderRadius.circular(28),
-      ),
-      child: Row(
-        children: List.generate(wallets.length, (index) {
-          final wallet = wallets[index];
-          final isSelected = index == selectedIndex;
-
-          return Expanded(
-            child: GestureDetector(
-              onTap: () => onSelected(index),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                curve: Curves.easeInOut,
-                decoration: BoxDecoration(
-                  color: isSelected ? theme.colorScheme.primary : Colors.transparent,
-                  borderRadius: BorderRadius.circular(24),
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 56,
+            height: 56,
+            decoration: BoxDecoration(
+              gradient: DnaGradients.primary,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: DnaColors.gradientStart.withValues(alpha: 0.3),
+                  blurRadius: 8,
+                  offset: const Offset(0, 3),
                 ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      AnimatedDefaultTextStyle(
-                        duration: const Duration(milliseconds: 200),
-                        style: theme.textTheme.bodyMedium!.copyWith(
-                          color: isSelected
-                              ? theme.colorScheme.onPrimary
-                              : theme.colorScheme.onSurface.withAlpha(180),
-                          fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
-                        ),
-                        child: Text(
-                          wallet.name.isNotEmpty ? wallet.name : 'Wallet ${index + 1}',
-                          overflow: TextOverflow.ellipsis,
-                          maxLines: 1,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      AnimatedDefaultTextStyle(
-                        duration: const Duration(milliseconds: 200),
-                        style: theme.textTheme.labelSmall!.copyWith(
-                          color: isSelected
-                              ? theme.colorScheme.onPrimary.withAlpha(200)
-                              : theme.colorScheme.onSurface.withAlpha(120),
-                          fontSize: 10,
-                        ),
-                        child: Text(
-                          _getSigTypeName(wallet.sigType),
-                          overflow: TextOverflow.ellipsis,
-                          maxLines: 1,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          );
-        }),
-      ),
-    );
-  }
-
-  String _getSigTypeName(int sigType) {
-    switch (sigType) {
-      case 0:
-      case 4:
-        return 'Dilithium';
-      case 1:
-        return 'Picnic';
-      case 2:
-        return 'Bliss';
-      case 3:
-        return 'Tesla';
-      case 100:
-        return 'ETH';
-      case 101:
-        return 'SOL';
-      default:
-        return 'Type $sigType';
-    }
-  }
-}
-
-// ignore: unused_element
-class _WalletCard extends StatelessWidget {
-  final Wallet wallet;
-
-  const _WalletCard({required this.wallet});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 16),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                FaIcon(
-                  FontAwesomeIcons.wallet,
-                  color: theme.colorScheme.primary,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    wallet.name.isNotEmpty ? wallet.name : 'Primary Wallet',
-                    style: theme.textTheme.titleMedium,
-                  ),
-                ),
-                if (wallet.isProtected)
-                  Tooltip(
-                    message: 'Protected wallet',
-                    child: FaIcon(
-                      FontAwesomeIcons.lock,
-                      size: 20,
-                      color: theme.colorScheme.secondary,
-                    ),
-                  ),
               ],
             ),
-            const SizedBox(height: 16),
-            Text(
-              'Address',
-              style: theme.textTheme.labelSmall,
-            ),
-            const SizedBox(height: 4),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: theme.scaffoldBackgroundColor,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      wallet.address,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        fontFamily: 'monospace',
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  IconButton(
-                    icon: const FaIcon(FontAwesomeIcons.copy, size: 18),
-                    onPressed: () {
-                      Clipboard.setData(ClipboardData(text: wallet.address));
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Address copied'),
-                          duration: Duration(seconds: 2),
-                        ),
-                      );
-                    },
-                    tooltip: 'Copy address',
-                  ),
-                ],
+            child: Center(
+              child: FaIcon(
+                icon,
+                color: Colors.white,
+                size: 22,
               ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              'Signature: ${_getSigTypeName(wallet.sigType)}',
-              style: theme.textTheme.labelSmall,
-            ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            label,
+            style: theme.textTheme.labelMedium,
+          ),
+        ],
       ),
     );
-  }
-
-  String _getSigTypeName(int sigType) {
-    switch (sigType) {
-      case 0:
-      case 4:
-        return 'Dilithium (Post-Quantum)';
-      case 1:
-        return 'Picnic';
-      case 2:
-        return 'Bliss';
-      case 3:
-        return 'Tesla';
-      case 100:
-        return 'ETH (secp256k1)';
-      case 101:
-        return 'SOL (Ed25519)';
-      default:
-        return 'Type $sigType';
-    }
   }
 }
 
@@ -649,104 +577,6 @@ class _BalanceTile extends ConsumerWidget {
       default:
         return DnaColors.textInfo;
     }
-  }
-}
-
-// ignore: unused_element
-class _ActionButtons extends ConsumerWidget {
-  final Wallet wallet;
-  final int walletIndex;
-
-  const _ActionButtons({required this.wallet, required this.walletIndex});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Row(
-        children: [
-          Expanded(
-            child: OutlinedButton.icon(
-              onPressed: () => _showReceive(context),
-              icon: const FaIcon(FontAwesomeIcons.arrowDown),
-              label: const Text('Receive'),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: ElevatedButton.icon(
-              onPressed: () => _showSend(context, ref),
-              icon: const FaIcon(FontAwesomeIcons.arrowUp),
-              label: const Text('Send'),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showReceive(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'Receive',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const FaIcon(
-                  FontAwesomeIcons.qrcode,
-                  size: 150,
-                  color: Colors.black,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                wallet.address,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  fontFamily: 'monospace',
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 16),
-              ElevatedButton.icon(
-                onPressed: () {
-                  Clipboard.setData(ClipboardData(text: wallet.address));
-                  final messenger = ScaffoldMessenger.of(context);
-                  Navigator.pop(context);
-                  messenger.showSnackBar(
-                    const SnackBar(content: Text('Address copied')),
-                  );
-                },
-                icon: const FaIcon(FontAwesomeIcons.copy),
-                label: const Text('Copy Address'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  void _showSend(BuildContext context, WidgetRef ref) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => _SendSheet(
-        walletIndex: walletIndex,
-      ),
-    );
   }
 }
 
