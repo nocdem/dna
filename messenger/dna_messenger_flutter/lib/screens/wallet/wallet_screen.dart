@@ -543,10 +543,11 @@ class _WalletHeroCard extends ConsumerWidget {
               fontWeight: FontWeight.bold,
             ),
           ),
-          // Total portfolio value + hide toggle
+          // Total portfolio value + 24h change + hide toggle
           Builder(builder: (context) {
             final totalValue = ref.watch(totalPortfolioValueProvider);
             final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
+            final change24h = ref.watch(portfolioChange24hProvider);
             return Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Row(
@@ -563,6 +564,10 @@ class _WalletHeroCard extends ConsumerWidget {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
+                  if (!hideBalances && change24h != null && change24h != 0.0) ...[
+                    const SizedBox(width: 8),
+                    _Change24hBadge(changePercent: change24h, light: true),
+                  ],
                   const SizedBox(width: 10),
                   GestureDetector(
                     onTap: () => ref.read(walletSettingsProvider.notifier).toggleHideBalances(),
@@ -829,7 +834,7 @@ class _BalanceTile extends ConsumerWidget {
               ],
             ),
           ),
-          // Balance + USD value + chevron
+          // Balance + USD value + 24h change + chevron
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
@@ -847,12 +852,23 @@ class _BalanceTile extends ConsumerWidget {
                   );
                 }
                 final usdValue = ref.watch(tokenUsdValueProvider((token: balance.token, balance: balance.balance)));
+                final prices = ref.watch(priceProvider).valueOrNull;
+                final change24h = prices?[balance.token.toUpperCase()]?.changePercent24h;
                 if (usdValue != null && usdValue > 0) {
-                  return Text(
-                    '\$${_formatUsdValue(usdValue)}',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
-                    ),
+                  return Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        '\$${_formatUsdValue(usdValue)}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                        ),
+                      ),
+                      if (change24h != null && change24h != 0.0) ...[
+                        const SizedBox(width: 6),
+                        _Change24hBadge(changePercent: change24h),
+                      ],
+                    ],
                   );
                 }
                 return const SizedBox.shrink();
@@ -908,6 +924,40 @@ class _BalanceTile extends ConsumerWidget {
       default:
         return DnaColors.textInfo;
     }
+  }
+}
+
+/// 24h price change badge — green ▲ for positive, red ▼ for negative
+class _Change24hBadge extends StatelessWidget {
+  final double changePercent;
+  final bool light; // true = white-based colors (for gradient header)
+
+  const _Change24hBadge({required this.changePercent, this.light = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final isPositive = changePercent > 0;
+    final arrow = isPositive ? '▲' : '▼';
+    final sign = isPositive ? '+' : '';
+    final color = isPositive
+        ? (light ? const Color(0xFF80FFB0) : const Color(0xFF00C853))
+        : (light ? const Color(0xFFFF8A80) : const Color(0xFFFF1744));
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: light ? 0.25 : 0.12),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        '$arrow $sign${changePercent.toStringAsFixed(1)}%',
+        style: TextStyle(
+          color: color,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
   }
 }
 

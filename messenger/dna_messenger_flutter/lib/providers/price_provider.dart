@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../utils/logger.dart';
 import 'wallet_provider.dart';
@@ -14,6 +15,13 @@ class PriceData {
   final double changePercent24h;
 
   const PriceData({required this.price, required this.changePercent24h});
+
+  Map<String, dynamic> toJson() => {'p': price, 'c': changePercent24h};
+
+  factory PriceData.fromJson(Map<String, dynamic> json) => PriceData(
+    price: (json['p'] as num).toDouble(),
+    changePercent24h: (json['c'] as num).toDouble(),
+  );
 }
 
 /// Maps token symbols to their BitcoinTry API pair names
@@ -34,14 +42,18 @@ const _cacheDuration = Duration(seconds: 30);
 const _refreshInterval = Duration(seconds: 60);
 const _connectionTimeout = Duration(seconds: 10);
 
+const _spPriceCacheKey = 'price_cache';
+bool _spPriceCacheChecked = false;
+
 DateTime? _lastFetchTime;
 Map<String, PriceData>? _cachedPrices;
 
 /// Fetches prices from BitcoinTry API.
 /// Returns Map<String, PriceData> keyed by uppercase token symbol.
 /// Auto-refreshes every 60 seconds. Caches results for 30 seconds.
+/// v0.100.110: SharedPreferences cache for instant cold-start USD display.
 final priceProvider = FutureProvider<Map<String, PriceData>>((ref) async {
-  // Return cache if still fresh
+  // 1. Return in-memory cache if still fresh
   if (_cachedPrices != null && _lastFetchTime != null) {
     final elapsed = DateTime.now().difference(_lastFetchTime!);
     if (elapsed < _cacheDuration) {
@@ -50,11 +62,45 @@ final priceProvider = FutureProvider<Map<String, PriceData>>((ref) async {
     }
   }
 
+  // 2. Cold start: load SP cache for instant display (checked only once)
+  if (_cachedPrices == null && !_spPriceCacheChecked) {
+    _spPriceCacheChecked = true;
+    final spCached = await _loadPriceCache();
+    if (spCached.isNotEmpty) {
+      log('PRICE', 'Loaded ${spCached.length} prices from cache (cold start)');
+      _cachedPrices = spCached;
+      ref.keepAlive();
+      // Schedule fresh fetch shortly — SP data shown instantly, API replaces it
+      final timer = Timer(const Duration(milliseconds: 500), () {
+        _cachedPrices = null;
+        ref.invalidateSelf();
+      });
+      ref.onDispose(timer.cancel);
+      return spCached;
+    }
+  }
+
+  // 3. Fetch from API
   final prices = await _fetchPrices();
+
+  // If API failed (only USDT returned), try SP cache as fallback
+  if (prices.length <= 1) {
+    final spFallback = await _loadPriceCache();
+    if (spFallback.isNotEmpty) {
+      _cachedPrices = spFallback;
+      _lastFetchTime = DateTime.now();
+      ref.keepAlive();
+      _scheduleRefresh(ref);
+      return spFallback;
+    }
+  }
+
   _cachedPrices = prices;
   _lastFetchTime = DateTime.now();
 
-  // Keep the provider alive and schedule auto-refresh
+  // Save to SP for next cold start
+  if (prices.length > 1) _savePriceCache(prices);
+
   ref.keepAlive();
   _scheduleRefresh(ref);
 
@@ -127,6 +173,31 @@ Future<Map<String, PriceData>> _fetchPrices() async {
   return prices;
 }
 
+/// Save prices to SharedPreferences for cold-start display
+void _savePriceCache(Map<String, PriceData> prices) async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final map = prices.map((k, v) => MapEntry(k, v.toJson()));
+    await prefs.setString(_spPriceCacheKey, jsonEncode(map));
+  } catch (_) {
+    // Non-fatal — in-memory cache is primary
+  }
+}
+
+/// Load prices from SharedPreferences (no network needed)
+Future<Map<String, PriceData>> _loadPriceCache() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_spPriceCacheKey);
+    if (raw == null || raw.isEmpty) return {};
+    final Map<String, dynamic> map = jsonDecode(raw) as Map<String, dynamic>;
+    return map.map((k, v) =>
+        MapEntry(k, PriceData.fromJson(v as Map<String, dynamic>)));
+  } catch (_) {
+    return {};
+  }
+}
+
 /// Helper: returns the USDT value for a given token and balance string.
 /// Returns null if prices are not loaded or token is unknown.
 final tokenUsdValueProvider =
@@ -159,6 +230,41 @@ final totalPortfolioValueProvider = Provider<double?>((ref) {
         total += amount * priceData.price;
       }
       return total;
+    });
+  });
+});
+
+/// Weighted 24h portfolio change percentage.
+/// Calculates: (currentTotal - previousTotal) / previousTotal × 100
+/// where previousTotal uses prices from 24h ago (derived from changePercent24h).
+final portfolioChange24hProvider = Provider<double?>((ref) {
+  final prices = ref.watch(priceProvider);
+  final allBalances = ref.watch(allBalancesProvider);
+
+  return prices.whenOrNull(data: (priceMap) {
+    return allBalances.whenOrNull(data: (balances) {
+      double currentTotal = 0.0;
+      double previousTotal = 0.0;
+
+      for (final wb in balances) {
+        final token = wb.balance.token.toUpperCase();
+        final priceData = priceMap[token];
+        if (priceData == null) continue;
+        final amount = double.tryParse(wb.balance.balance);
+        if (amount == null || amount <= 0) continue;
+
+        final currentValue = amount * priceData.price;
+        final previousPrice = priceData.changePercent24h != -100
+            ? priceData.price / (1 + priceData.changePercent24h / 100)
+            : priceData.price;
+        final previousValue = amount * previousPrice;
+
+        currentTotal += currentValue;
+        previousTotal += previousValue;
+      }
+
+      if (previousTotal <= 0) return null;
+      return ((currentTotal - previousTotal) / previousTotal) * 100;
     });
   });
 });
