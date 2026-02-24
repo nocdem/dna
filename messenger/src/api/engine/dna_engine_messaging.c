@@ -142,11 +142,14 @@ void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
                 messages[i].plaintext = strdup("[Decryption failed]");
             }
 
-            /* Parse timestamp string (format: YYYY-MM-DD HH:MM:SS) */
+            /* Parse timestamp string (format: YYYY-MM-DD HH:MM:SS)
+             * String is in LOCAL time (created by safe_localtime in messages.c),
+             * so use mktime() which interprets struct tm as local time. */
             if (msg_infos[i].timestamp) {
                 struct tm tm = {0};
+                tm.tm_isdst = -1;  /* Let mktime determine DST */
                 if (strptime(msg_infos[i].timestamp, "%Y-%m-%d %H:%M:%S", &tm) != NULL) {
-                    messages[i].timestamp = (uint64_t)safe_timegm(&tm);
+                    messages[i].timestamp = (uint64_t)mktime(&tm);
                 } else {
                     messages[i].timestamp = (uint64_t)time(NULL);
                 }
@@ -234,11 +237,14 @@ void dna_handle_get_conversation_page(dna_engine_t *engine, dna_task_t *task) {
                 messages[i].plaintext = strdup("[Decryption failed]");
             }
 
-            /* Parse timestamp string (format: YYYY-MM-DD HH:MM:SS) */
+            /* Parse timestamp string (format: YYYY-MM-DD HH:MM:SS)
+             * String is in LOCAL time (created by safe_localtime in messages.c),
+             * so use mktime() which interprets struct tm as local time. */
             if (msg_infos[i].timestamp) {
                 struct tm tm = {0};
+                tm.tm_isdst = -1;  /* Let mktime determine DST */
                 if (strptime(msg_infos[i].timestamp, "%Y-%m-%d %H:%M:%S", &tm) != NULL) {
-                    messages[i].timestamp = (uint64_t)safe_timegm(&tm);
+                    messages[i].timestamp = (uint64_t)mktime(&tm);
                 } else {
                     messages[i].timestamp = (uint64_t)time(NULL);
                 }
