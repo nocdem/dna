@@ -234,6 +234,27 @@ final totalPortfolioValueProvider = Provider<double?>((ref) {
   });
 });
 
+/// Cached portfolio total — shows last known USD value on cold start.
+/// Watches live total: saves to SP when available, loads from SP as fallback.
+/// v0.100.111: Eliminates $0.00 flash on cold start.
+const _portfolioTotalCacheKey = 'wallet_portfolio_total_usd';
+
+final cachedPortfolioTotalProvider = FutureProvider<double>((ref) async {
+  final liveTotal = ref.watch(totalPortfolioValueProvider);
+
+  if (liveTotal != null && liveTotal > 0) {
+    // Live total available — save for next cold start (fire-and-forget)
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setDouble(_portfolioTotalCacheKey, liveTotal);
+    });
+    return liveTotal;
+  }
+
+  // Live total not ready — load cached value from SP
+  final prefs = await SharedPreferences.getInstance();
+  return prefs.getDouble(_portfolioTotalCacheKey) ?? 0.0;
+});
+
 /// Weighted 24h portfolio change percentage.
 /// Calculates: (currentTotal - previousTotal) / previousTotal × 100
 /// where previousTotal uses prices from 24h ago (derived from changePercent24h).

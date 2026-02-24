@@ -545,7 +545,8 @@ class _WalletHeroCard extends ConsumerWidget {
           ),
           // Total portfolio value + 24h change + hide toggle
           Builder(builder: (context) {
-            final totalValue = ref.watch(totalPortfolioValueProvider);
+            final cachedTotal = ref.watch(cachedPortfolioTotalProvider);
+            final totalValue = cachedTotal.valueOrNull;
             final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
             final change24h = ref.watch(portfolioChange24hProvider);
             return Padding(
@@ -928,9 +929,11 @@ class _BalanceTile extends ConsumerWidget {
 }
 
 /// 24h price change badge — green ▲ for positive, red ▼ for negative
+/// Uses opaque backgrounds with white text for guaranteed readability
+/// on gradient headers, dark mode, and light mode.
 class _Change24hBadge extends StatelessWidget {
   final double changePercent;
-  final bool light; // true = white-based colors (for gradient header)
+  final bool light; // true = on gradient header background
 
   const _Change24hBadge({required this.changePercent, this.light = false});
 
@@ -939,20 +942,22 @@ class _Change24hBadge extends StatelessWidget {
     final isPositive = changePercent > 0;
     final arrow = isPositive ? '▲' : '▼';
     final sign = isPositive ? '+' : '';
-    final color = isPositive
-        ? (light ? const Color(0xFF80FFB0) : const Color(0xFF00C853))
-        : (light ? const Color(0xFFFF8A80) : const Color(0xFFFF1744));
+
+    // Opaque backgrounds — readable on any surface (gradient, dark, light)
+    final bgColor = isPositive
+        ? const Color(0xFF1B5E20) // Dark green background
+        : const Color(0xFFB71C1C); // Dark red background
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: light ? 0.25 : 0.12),
+        color: bgColor.withValues(alpha: light ? 0.85 : 0.80),
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(
         '$arrow $sign${changePercent.toStringAsFixed(1)}%',
-        style: TextStyle(
-          color: color,
+        style: const TextStyle(
+          color: Colors.white,
           fontSize: 11,
           fontWeight: FontWeight.w600,
         ),
