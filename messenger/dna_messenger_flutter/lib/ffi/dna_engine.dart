@@ -444,6 +444,22 @@ class Wallet {
       isProtected: native.is_protected,
     );
   }
+
+  factory Wallet.fromJson(Map<String, dynamic> json) {
+    return Wallet(
+      name: json['name'] as String,
+      address: json['address'] as String,
+      sigType: json['sigType'] as int,
+      isProtected: json['isProtected'] as bool,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'address': address,
+    'sigType': sigType,
+    'isProtected': isProtected,
+  };
 }
 
 /// Token balance
@@ -465,6 +481,20 @@ class Balance {
       network: native.network.toDartString(64),
     );
   }
+
+  factory Balance.fromJson(Map<String, dynamic> json) {
+    return Balance(
+      token: json['token'] as String,
+      balance: json['balance'] as String,
+      network: json['network'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'token': token,
+    'balance': balance,
+    'network': network,
+  };
 }
 
 /// Gas estimate for ETH transactions

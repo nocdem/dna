@@ -1,6 +1,9 @@
 // Wallet Provider - Wallet and balance state management
 // v0.100.104: SQLite balance cache for stale-while-revalidate pattern
+// v0.100.108: Dart-side SharedPreferences cache for instant cold-start display
+import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../ffi/dna_engine.dart';
 import '../utils/logger.dart';
 import 'engine_provider.dart';
@@ -102,21 +105,48 @@ class WalletBalance {
     required this.wallet,
     required this.balance,
   });
+
+  factory WalletBalance.fromJson(Map<String, dynamic> json) {
+    return WalletBalance(
+      walletIndex: json['walletIndex'] as int,
+      wallet: Wallet.fromJson(json['wallet'] as Map<String, dynamic>),
+      balance: Balance.fromJson(json['balance'] as Map<String, dynamic>),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'walletIndex': walletIndex,
+    'wallet': wallet.toJson(),
+    'balance': balance.toJson(),
+  };
 }
 
 /// All balances from all wallets combined (cached, stale-while-revalidate)
 /// v0.100.104: build() loads from SQLite cache (instant), refresh() fetches live
+/// v0.100.108: Dart-side SharedPreferences cache for instant cold-start display
 final allBalancesProvider = AsyncNotifierProvider<AllBalancesNotifier, List<WalletBalance>>(
   AllBalancesNotifier.new,
 );
 
 class AllBalancesNotifier extends AsyncNotifier<List<WalletBalance>> {
+  static const _cacheKey = 'wallet_balances_cache';
+
   @override
   Future<List<WalletBalance>> build() async {
     final walletsAsync = ref.watch(walletsProvider);
     final wallets = walletsAsync.valueOrNull ?? [];
 
-    if (wallets.isEmpty) return state.valueOrNull ?? [];
+    if (wallets.isEmpty) {
+      // v0.100.108: On cold start, wallets aren't available yet (engine initializing).
+      // Try Dart-side cache (SharedPreferences) for instant display without engine.
+      final prev = state.valueOrNull;
+      if (prev != null && prev.isNotEmpty) return prev;
+
+      final dartCached = await _loadDartCache();
+      if (dartCached.isNotEmpty) return dartCached;
+
+      return [];
+    }
 
     // v0.100.104: Load from SQLite cache first (instant, no network calls)
     return _fetchCachedBalances(wallets);
@@ -129,8 +159,21 @@ class AllBalancesNotifier extends AsyncNotifier<List<WalletBalance>> {
     final wallets = walletsAsync.valueOrNull ?? [];
     if (wallets.isEmpty) return;
 
+    final current = state.valueOrNull;
     final newState = await AsyncValue.guard(() => _fetchLiveBalances(wallets));
+
+    // v0.100.108: Preserve cached data on error — don't lose balances
+    if (newState is AsyncError && current != null && current.isNotEmpty) {
+      return;
+    }
+
     state = newState;
+
+    // Persist to Dart cache for next cold start
+    final data = newState.valueOrNull;
+    if (data != null && data.isNotEmpty) {
+      _saveDartCache(data);
+    }
   }
 
   /// Read balances from SQLite cache (instant, no network calls)
@@ -158,6 +201,9 @@ class AllBalancesNotifier extends AsyncNotifier<List<WalletBalance>> {
       return _fetchLiveBalances(wallets);
     }
 
+    // Persist to Dart cache for next cold start
+    _saveDartCache(allBalances);
+
     return allBalances;
   }
 
@@ -183,6 +229,38 @@ class AllBalancesNotifier extends AsyncNotifier<List<WalletBalance>> {
     }
 
     return allBalances;
+  }
+
+  /// Load from Dart-side cache (SharedPreferences) — no engine needed
+  Future<List<WalletBalance>> _loadDartCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_cacheKey);
+      if (raw == null || raw.isEmpty) return [];
+
+      final List<dynamic> list = jsonDecode(raw);
+      final result = list
+          .map((item) => WalletBalance.fromJson(item as Map<String, dynamic>))
+          .toList();
+      if (result.isNotEmpty) {
+        log('WALLET', 'Loaded ${result.length} balances from Dart cache (cold start)');
+      }
+      return result;
+    } catch (e) {
+      log('WALLET', 'Dart cache read failed: $e');
+      return [];
+    }
+  }
+
+  /// Save to Dart-side cache for next cold start
+  void _saveDartCache(List<WalletBalance> balances) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = jsonEncode(balances.map((b) => b.toJson()).toList());
+      await prefs.setString(_cacheKey, raw);
+    } catch (_) {
+      // Non-fatal — SQLite cache is the primary source
+    }
   }
 }
 
