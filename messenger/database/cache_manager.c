@@ -12,6 +12,7 @@
 #include "presence_cache.h"
 #include "contacts_db.h"
 #include "feed_cache.h"
+#include "wall_cache.h"
 #include "wallet_cache.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -84,6 +85,11 @@ int cache_manager_init(const char *identity) {
         QGP_LOG_WARN(LOG_TAG, "Feed cache init failed (non-fatal)");
     }
 
+    /* Wall cache (global - public DHT wall posts) */
+    if (wall_cache_init() != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Wall cache init failed (non-fatal)");
+    }
+
     /* Wallet balance cache (global - blockchain balance data) */
     if (wallet_cache_init() != 0) {
         QGP_LOG_WARN(LOG_TAG, "Wallet cache init failed (non-fatal)");
@@ -118,6 +124,7 @@ void cache_manager_cleanup(void) {
 
     // Reverse order from init
     wallet_cache_close();
+    wall_cache_close();
     feed_cache_close();
     presence_cache_free();
 
@@ -179,6 +186,12 @@ int cache_manager_evict_expired(void) {
     if (feed_evicted > 0) {
         QGP_LOG_INFO(LOG_TAG, "Feed cache: evicted %d expired entries", feed_evicted);
         total_evicted += feed_evicted;
+    }
+
+    int wall_evicted = wall_cache_evict_expired();
+    if (wall_evicted > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Wall cache: evicted %d expired entries", wall_evicted);
+        total_evicted += wall_evicted;
     }
 
     // Contacts database has no eviction (permanent data)
