@@ -4,12 +4,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../design_system/design_system.dart';
 import '../providers/providers.dart';
-import 'contacts/contacts_screen.dart';
-import 'groups/groups_screen.dart';
+import 'wall/wall_timeline_screen.dart';
+import 'messages/messages_screen.dart';
 import 'feed/feed_screen.dart';
 import 'more/more_screen.dart';
 
-/// Current tab index: 0=Chats, 1=Groups, 2=Feed, 3=More
+/// Current tab index: 0=Home, 1=Messages, 2=Feeds, 3=More
 final currentTabProvider = StateProvider<int>((ref) => 0);
 
 /// v0.3.0: Single-user model - HomeScreen always shows main navigation
@@ -32,18 +32,19 @@ class _MainNavigation extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final currentTab = ref.watch(currentTabProvider);
 
-    // Watch unread counts for badges
+    // Combined unread count for Messages tab badge
     final chatUnreadCount = ref.watch(totalUnreadCountProvider);
     final groupUnreadCount = ref.watch(totalGroupUnreadCountProvider);
+    final totalMsgUnread = chatUnreadCount + groupUnreadCount;
 
     return Scaffold(
       body: IndexedStack(
         index: currentTab,
         children: const [
-          ContactsScreen(),
-          GroupsScreen(),
-          FeedScreen(),
-          MoreScreen(),
+          WallTimelineScreen(),   // 0: Home
+          MessagesScreen(),       // 1: Messages
+          FeedScreen(),           // 2: Feeds
+          MoreScreen(),           // 3: More
         ],
       ),
       bottomNavigationBar: DnaBottomBar(
@@ -51,21 +52,20 @@ class _MainNavigation extends ConsumerWidget {
         onTap: (index) => ref.read(currentTabProvider.notifier).state = index,
         items: [
           DnaBottomBarItem(
-            icon: FontAwesomeIcons.comment,
-            activeIcon: FontAwesomeIcons.solidComment,
-            label: 'Chats',
-            badgeCount: chatUnreadCount,
+            icon: FontAwesomeIcons.house,
+            activeIcon: FontAwesomeIcons.house,
+            label: 'Home',
           ),
           DnaBottomBarItem(
-            icon: FontAwesomeIcons.userGroup,
-            activeIcon: FontAwesomeIcons.userGroup,
-            label: 'Groups',
-            badgeCount: groupUnreadCount,
+            icon: FontAwesomeIcons.comment,
+            activeIcon: FontAwesomeIcons.solidComment,
+            label: 'Messages',
+            badgeCount: totalMsgUnread,
           ),
           DnaBottomBarItem(
             icon: FontAwesomeIcons.newspaper,
             activeIcon: FontAwesomeIcons.solidNewspaper,
-            label: 'Feed',
+            label: 'Feeds',
           ),
           DnaBottomBarItem(
             icon: FontAwesomeIcons.ellipsis,
