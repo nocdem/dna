@@ -590,21 +590,23 @@ typedef void (*dna_feed_subscriptions_cb)(
 
 /**
  * Wall: Single post callback (for post creation)
+ * Caller takes ownership of @p post - free with dna_free_wall_posts(post, 1)
  */
 typedef void (*dna_wall_post_cb)(
     dna_request_id_t request_id,
     int error,
-    dna_wall_post_info_t *post,
+    dna_wall_post_info_t *post,    /* caller-owned, free with dna_free_wall_posts */
     void *user_data
 );
 
 /**
  * Wall: Posts list callback (for wall load and timeline)
+ * Caller takes ownership of @p posts - free with dna_free_wall_posts(posts, count)
  */
 typedef void (*dna_wall_posts_cb)(
     dna_request_id_t request_id,
     int error,
-    dna_wall_post_info_t *posts,
+    dna_wall_post_info_t *posts,   /* caller-owned, free with dna_free_wall_posts */
     int count,
     void *user_data
 );
