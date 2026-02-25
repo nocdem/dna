@@ -435,7 +435,7 @@ cleanup:
    | Engine message queue | 100 | dna_engine_internal.h:37 |
    | Plaintext message | 512 KB | messages.h:30 |
    | Ciphertext message | 10 MB | messages.h:37 |
-   | Wall messages | 100 | dna_message_wall.h:22 |
+   | Wall posts | 50 | dna_wall.h |
 
 ---
 

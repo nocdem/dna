@@ -34,6 +34,7 @@ The DNA Engine has been refactored from a 10,843-line monolith into modular comp
 | `dna_engine_workers.c` | 113 | ✅ Integrated | 3 | Worker thread pool management |
 | `dna_engine_version.c` | 243 | ✅ Integrated | 4 | Version string, DHT publish/check |
 | `dna_engine_signing.c` | 115 | ✅ Integrated | 2 | Dilithium5 signing for QR Auth |
+| `dna_engine_wall.c` | — | ✅ Integrated | 4 | Wall post, delete, load, timeline |
 
 ## Architecture
 

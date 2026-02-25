@@ -527,7 +527,7 @@ Certificate pinning not applicable/needed:
 | Ciphertext message | 10 MB | `messages.h:37` |
 | DHT chunk size | 45 KB | `dht_chunked.h:59` |
 | DHT value size | 64 KB | OpenDHT `value.h:92` |
-| Wall messages | 100 per wall | `dna_message_wall.h:22` |
+| Wall posts | 50 per wall | `dna_wall.h` |
 
 **Enforcement:** Limits validated at all ingress points with immediate rejection of oversized/excess data. Fixed constants prevent misconfiguration.
 

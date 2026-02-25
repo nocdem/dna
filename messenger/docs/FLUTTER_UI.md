@@ -39,8 +39,8 @@ DNA Messenger uses Flutter for cross-platform UI. Flutter was chosen for:
 │  │   - Navigation: bottom bar, app bar, more menu             ││
 │  │   - Inputs: text field, search bar, switch                 ││
 │  ├─────────────────────────────────────────────────────────────┤│
-│  │   Screens (chats, groups, feed, more, wallet, settings)    ││
-│  │   Navigation: Bottom tabs (Chats, Groups, Feed, More)      ││
+│  │   Screens (home, messages, feed, more, wallet, settings)    ││
+│  │   Navigation: Bottom tabs (Home, Messages, Feeds, More)    ││
 │  └─────────────────────────────────────────────────────────────┘│
 │                              │                                   │
 │                    Riverpod Providers                            │
@@ -96,7 +96,8 @@ dna_messenger_flutter/
 │   │   ├── theme_provider.dart
 │   │   ├── event_handler.dart      # ✅ Real-time event handling
 │   │   ├── background_tasks_provider.dart  # ✅ DHT offline message polling
-│   │   └── feed_provider.dart      # ✅ Feed topics, comments, subscriptions
+│   │   ├── feed_provider.dart      # ✅ Feed topics, comments, subscriptions
+│   │   └── wall_provider.dart      # ✅ Wall timeline state management
 │   ├── screens/                # ✅ UI screens
 │   │   ├── identity/identity_selection_screen.dart  # ✅ BIP39 integrated
 │   │   ├── contacts/contacts_screen.dart
@@ -106,10 +107,13 @@ dna_messenger_flutter/
 │   │   ├── wallet/wallet_screen.dart   # ✅ Send dialog
 │   │   ├── settings/settings_screen.dart  # ✅ Name registration
 │   │   ├── feed/feed_screen.dart   # ✅ Topic-based feeds with threaded comments
+│   │   ├── wall/wall_timeline_screen.dart  # ✅ Home tab (wall timeline)
+│   │   ├── messages/messages_screen.dart   # ✅ Messages tab (unified chats + groups)
 │   │   └── home_screen.dart
 │   ├── widgets/                # ✅ Reusable widgets
 │   │   ├── emoji_shortcode_field.dart  # ✅ Enter to send, :shortcode:
-│   │   └── formatted_text.dart     # ✅ Markdown + selectable
+│   │   ├── formatted_text.dart     # ✅ Markdown + selectable
+│   │   └── wall_post_tile.dart     # ✅ Individual wall post display
 │   └── theme/
 │       └── dna_theme.dart      # ✅ cpunk.io theme (system default fonts)
 ├── ffigen.yaml                 # FFI generator config (reference)
@@ -380,10 +384,12 @@ dna_messenger_flutter/
 - Files: `feed_screen.dart`, `feed_provider.dart`
 
 **Navigation:**
-- Hamburger drawer navigation
-- Chats is now the default landing page (index 0)
-- Drawer header shows: Avatar + display name + fingerprint (v0.3.0: Switch Identity removed)
-- Navigation order: Chats, Groups, Wallet, Settings
+- Bottom tab navigation with 4 tabs: **[Home] [Messages] [Feeds] [More]**
+- **Home** tab: `WallTimelineScreen` — contacts' wall posts timeline with create/delete
+- **Messages** tab: `MessagesScreen` — unified view with [All] [Chats] [Groups] filter chips
+- **Feeds** tab: `FeedScreen` — topic-based public feeds (unchanged)
+- **More** tab: `MoreScreen` — wallet, settings, contacts management (unchanged)
+- Home (wall timeline) is the default landing page (index 0)
 
 **Typography:**
 - The app uses system default fonts (no custom fonts are bundled)

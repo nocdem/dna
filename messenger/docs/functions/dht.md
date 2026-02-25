@@ -461,7 +461,20 @@ Uses `dna:feeds:` DHT namespace. No voting (deferred).
 | `void dna_feed_get_category_index_key(const char*, const char*, char*)` | Get DHT key for category day index |
 | `void dna_feed_get_global_index_key(const char*, char*)` | Get DHT key for global day index |
 
-### 11.7 Group Outbox (`dna_group_outbox.h`)
+### 11.7 Wall (Personal Wall Posts)
+
+| Function | Description |
+|----------|-------------|
+| `void dna_wall_make_key(const char *fingerprint, char *out_key)` | Derive DHT key SHA3-512("dna:wall:<fingerprint>") |
+| `int dna_wall_post(dht_context_t *dht, const char *fingerprint, const uint8_t *private_key, const char *text, dna_wall_post_t *out_post)` | Post to own wall (sign + publish to DHT) |
+| `int dna_wall_delete(dht_context_t *dht, const char *fingerprint, const uint8_t *private_key, const char *post_uuid)` | Delete own wall post by UUID |
+| `int dna_wall_load(dht_context_t *dht, const char *fingerprint, dna_wall_t *wall)` | Load user's wall from DHT |
+| `void dna_wall_free(dna_wall_t *wall)` | Free wall structure |
+| `int dna_wall_post_verify(const dna_wall_post_t *post, const uint8_t *public_key)` | Verify post Dilithium5 signature (0=valid) |
+| `char* dna_wall_to_json(const dna_wall_t *wall)` | Serialize wall to JSON string |
+| `int dna_wall_from_json(const char *json, dna_wall_t *wall)` | Deserialize wall from JSON string |
+
+### 11.8 Group Outbox (`dna_group_outbox.h`)
 
 #### Send/Receive API
 
@@ -505,7 +518,7 @@ Uses `dna:feeds:` DHT namespace. No voting (deferred).
 | `void dna_group_outbox_free_bucket(dna_group_outbox_bucket_t*)` | Free bucket structure |
 | `void dna_group_outbox_set_db(void*)` | Set database handle |
 
-### 11.8 Message Backup (`dht_message_backup.h`)
+### 11.9 Message Backup (`dht_message_backup.h`)
 
 | Function | Description |
 |----------|-------------|

@@ -172,6 +172,16 @@ Topic-based feeds with categories and tags. No voting (deferred).
 | `int dna_engine_feed_listen_all_subscriptions(engine)` | Start comment listeners for all subscribed topics |
 | `void dna_engine_feed_cancel_all_topic_listeners(engine)` | Cancel all feed topic listeners |
 
+## 1.11 Wall API
+
+| Function | Description |
+|----------|-------------|
+| `dna_request_id_t dna_engine_wall_post(dna_engine_t *engine, const char *text, dna_wall_post_cb callback, void *user_data)` | Post to own wall |
+| `dna_request_id_t dna_engine_wall_delete(dna_engine_t *engine, const char *post_uuid, dna_completion_cb callback, void *user_data)` | Delete own wall post |
+| `dna_request_id_t dna_engine_wall_load(dna_engine_t *engine, const char *fingerprint, dna_wall_posts_cb callback, void *user_data)` | Load user's wall posts |
+| `dna_request_id_t dna_engine_wall_timeline(dna_engine_t *engine, dna_wall_posts_cb callback, void *user_data)` | Load timeline (all contacts' walls merged) |
+| `void dna_free_wall_posts(dna_wall_post_info_t *posts, int count)` | Free wall posts array |
+
 ## 1.12 Backward Compatibility
 
 | Function | Description |

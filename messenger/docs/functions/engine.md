@@ -116,6 +116,15 @@ Internal DNA engine implementation with async task queue.
 | `void dna_handle_feed_get_category(dna_engine_t*, dna_task_t*)` | Handle get by category |
 | `void dna_handle_feed_get_all(dna_engine_t*, dna_task_t*)` | Handle get all topics |
 
+### Task Handlers - Wall
+
+| Function | Description |
+|----------|-------------|
+| `void dna_handle_wall_post(dna_engine_t*, dna_task_t*)` | Handle wall post |
+| `void dna_handle_wall_delete(dna_engine_t*, dna_task_t*)` | Handle wall delete |
+| `void dna_handle_wall_load(dna_engine_t*, dna_task_t*)` | Handle wall load |
+| `void dna_handle_wall_timeline(dna_engine_t*, dna_task_t*)` | Handle wall timeline |
+
 ### Helpers
 
 | Function | Description |
