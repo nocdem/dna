@@ -265,27 +265,29 @@ Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
    ```
 
 4. **PUBLISH** version to DHT:
+   **IMPORTANT:** MUST use the release identity (`-d /home/nocdem/.dna-release-identity`) — this is the original DHT key owner (`3cbba8d8...`). The default identity on this machine does NOT own the version DHT key and publishes will be rejected.
    ```bash
    cd /opt/dna-messenger/build
-   ./cli/dna-messenger-cli publish-version \
-       --lib 0.6.89 --app 0.100.71 --nodus 0.4.5 \
-       --lib-min 0.6.0 --app-min 0.100.0 --nodus-min 0.4.0
+   ./cli/dna-messenger-cli -d /home/nocdem/.dna-release-identity publish-version \
+       --lib 0.7.0 --app 0.101.0 --nodus 0.4.5 \
+       --lib-min 0.7.0 --app-min 0.101.0 --nodus-min 0.4.0
    ```
 
    **MINIMUM VERSION RULE:** Minimums MUST match major.minor of current versions:
-   - Library 0.6.89 → `--lib-min 0.6.0`
-   - App 0.100.71 → `--app-min 0.100.0`
+   - Library 0.7.0 → `--lib-min 0.7.0`
+   - App 0.101.0 → `--app-min 0.101.0`
    - Nodus 0.4.5 → `--nodus-min 0.4.0`
 
 5. **VERIFY** DHT publication:
    ```bash
-   ./cli/dna-messenger-cli check-version
+   ./cli/dna-messenger-cli -d /home/nocdem/.dna-release-identity check-version
    ```
 
 6. **POST TO DNA UPDATES FEED** - Announce release to users:
+   **IMPORTANT:** MUST use the release identity for feed posts too.
    ```bash
-   ./cli/dna-messenger-cli feeds comment 765ed03d-0c28-4d17-91bd-683a713a63e8 \
-       "🚀 New release available! Please update to Lib v0.6.98 / App v0.100.76"
+   ./cli/dna-messenger-cli -d /home/nocdem/.dna-release-identity feeds comment 765ed03d-0c28-4d17-91bd-683a713a63e8 \
+       "🚀 New release available! Please update to Lib v0.7.0 / App v0.101.0"
    ```
 
    **Format:** `🚀 New release available! Please update to Lib vX.Y.Z / App vX.Y.Z`
@@ -295,9 +297,11 @@ Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
 7. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published"
 
 **DHT Notes:**
-- Uses Claude's identity (first publisher owns the DHT key)
+- **ALWAYS use release identity** for DHT publishing: `-d /home/nocdem/.dna-release-identity`
+- Release identity fingerprint: `3cbba8d8bf0c3603...` (original DHT key owner)
+- The default identity on this machine is a DIFFERENT identity and cannot publish to version or feed DHT keys
 - Minimum versions define compatibility - apps below minimum show warnings
-- Minimum versions use major.minor.0 format (e.g., 0.6.0 for 0.6.x releases)
+- Minimum versions use major.minor.0 format (e.g., 0.7.0 for 0.7.x releases)
 - DHT key: `SHA3-512("dna:system:version")`
 - Version info is signed with Dilithium5
 
