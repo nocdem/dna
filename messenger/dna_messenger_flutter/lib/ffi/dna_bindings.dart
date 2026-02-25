@@ -521,6 +521,32 @@ final class dna_feed_subscription_info_t extends Struct {
 }
 
 // =============================================================================
+// WALL DATA STRUCTURES
+// =============================================================================
+
+/// Wall post information
+/// Matches dna_wall_post_info_t from dna_engine.h
+final class dna_wall_post_info_t extends Struct {
+  @Array(37)
+  external Array<Char> uuid;
+
+  @Array(129)
+  external Array<Char> author_fingerprint;
+
+  @Array(65)
+  external Array<Char> author_name;
+
+  @Array(2048)
+  external Array<Char> text;
+
+  @Uint64()
+  external int timestamp;
+
+  @Bool()
+  external bool verified;
+}
+
+// =============================================================================
 // EVENT TYPES
 // =============================================================================
 
@@ -549,7 +575,8 @@ abstract class DnaEventType {
   static const int DNA_EVENT_FEED_TOPIC_COMMENT = 20;  // New comment on subscribed topic
   static const int DNA_EVENT_FEED_SUBSCRIPTIONS_SYNCED = 21;  // Subscriptions synced from DHT
   static const int DNA_EVENT_FEED_CACHE_UPDATED = 22;  // Feed cache refreshed with new DHT data
-  static const int DNA_EVENT_ERROR = 23;
+  static const int DNA_EVENT_WALL_NEW_POST = 23;  // New wall post from a contact
+  static const int DNA_EVENT_ERROR = 24;
 }
 
 /// Event data union - message received
@@ -978,6 +1005,25 @@ typedef DnaFeedSubscriptionsCbNative = Void Function(
 );
 typedef DnaFeedSubscriptionsCb = NativeFunction<DnaFeedSubscriptionsCbNative>;
 
+/// Wall: Single post callback - Native
+typedef DnaWallPostCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_wall_post_info_t> post,
+  Pointer<Void> user_data,
+);
+typedef DnaWallPostCb = NativeFunction<DnaWallPostCbNative>;
+
+/// Wall: Posts list callback - Native
+typedef DnaWallPostsCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_wall_post_info_t> posts,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaWallPostsCb = NativeFunction<DnaWallPostsCbNative>;
+
 /// Event callback - Native
 typedef DnaEventCbNative = Void Function(
   Pointer<dna_event_t> event,
@@ -1173,6 +1219,21 @@ typedef DnaFeedSubscriptionsCbDart = void Function(
   int requestId,
   int error,
   Pointer<dna_feed_subscription_info_t> subscriptions,
+  int count,
+  Pointer<Void> userData,
+);
+
+typedef DnaWallPostCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_wall_post_info_t> post,
+  Pointer<Void> userData,
+);
+
+typedef DnaWallPostsCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_wall_post_info_t> posts,
   int count,
   Pointer<Void> userData,
 );
@@ -3375,6 +3436,82 @@ class DnaBindings {
   void dna_free_feed_subscriptions(
       Pointer<dna_feed_subscription_info_t> subscriptions, int count) {
     _dna_free_feed_subscriptions(subscriptions, count);
+  }
+
+  // ===========================================================================
+  // WALL API
+  // ===========================================================================
+
+  late final _dna_engine_wall_post = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<DnaWallPostCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<DnaWallPostCb>,
+          Pointer<Void>)>('dna_engine_wall_post');
+
+  int dna_engine_wall_post(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> text,
+    Pointer<DnaWallPostCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_post(engine, text, callback, userData);
+  }
+
+  late final _dna_engine_wall_delete = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<DnaCompletionCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_wall_delete');
+
+  int dna_engine_wall_delete(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> postUuid,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_delete(engine, postUuid, callback, userData);
+  }
+
+  late final _dna_engine_wall_load = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<DnaWallPostsCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaWallPostsCb>, Pointer<Void>)>('dna_engine_wall_load');
+
+  int dna_engine_wall_load(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+    Pointer<DnaWallPostsCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_load(engine, fingerprint, callback, userData);
+  }
+
+  late final _dna_engine_wall_timeline = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<DnaWallPostsCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaWallPostsCb>,
+          Pointer<Void>)>('dna_engine_wall_timeline');
+
+  int dna_engine_wall_timeline(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaWallPostsCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_timeline(engine, callback, userData);
+  }
+
+  late final _dna_free_wall_posts = _lib.lookupFunction<
+      Void Function(Pointer<dna_wall_post_info_t>, Int32),
+      void Function(
+          Pointer<dna_wall_post_info_t>, int)>('dna_free_wall_posts');
+
+  void dna_free_wall_posts(
+      Pointer<dna_wall_post_info_t> posts, int count) {
+    _dna_free_wall_posts(posts, count);
   }
 }
 

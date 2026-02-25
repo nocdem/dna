@@ -1199,6 +1199,49 @@ class FeedCacheUpdatedEvent extends DnaEvent {
 }
 
 // =============================================================================
+// WALL MODELS
+// =============================================================================
+
+/// Wall post data model (v0.6.135+)
+class WallPost {
+  final String uuid;
+  final String authorFingerprint;
+  final String authorName;
+  final String text;
+  final DateTime timestamp;
+  final bool verified;
+
+  WallPost({
+    required this.uuid,
+    required this.authorFingerprint,
+    required this.authorName,
+    required this.text,
+    required this.timestamp,
+    required this.verified,
+  });
+
+  bool isOwn(String myFingerprint) => authorFingerprint == myFingerprint;
+
+  factory WallPost.fromNative(dna_wall_post_info_t native) {
+    return WallPost(
+      uuid: native.uuid.toDartString(37),
+      authorFingerprint: native.author_fingerprint.toDartString(129),
+      authorName: native.author_name.toDartString(65),
+      text: native.text.toDartString(2048),
+      timestamp: DateTime.fromMillisecondsSinceEpoch(native.timestamp * 1000),
+      verified: native.verified,
+    );
+  }
+}
+
+/// Wall new post event (contact posted to their wall)
+class WallNewPostEvent extends DnaEvent {
+  final String authorFingerprint;
+  final String postUuid;
+  WallNewPostEvent(this.authorFingerprint, this.postUuid);
+}
+
+// =============================================================================
 // EXCEPTIONS
 // =============================================================================
 
@@ -1578,6 +1621,25 @@ class DnaEngine {
         }
         final cacheKey = String.fromCharCodes(keyBytes);
         dartEvent = FeedCacheUpdatedEvent(cacheKey);
+        break;
+      case DnaEventType.DNA_EVENT_WALL_NEW_POST:
+        // Parse wall_new_post: author_fingerprint[129] at offset 0, post_uuid[37] at offset 129
+        final authorBytes = <int>[];
+        for (int i = 0; i < 129; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          authorBytes.add(byte);
+        }
+        final postUuidBytes = <int>[];
+        for (int i = 0; i < 37; i++) {
+          final byte = event.data[129 + i];
+          if (byte == 0) break;
+          postUuidBytes.add(byte);
+        }
+        dartEvent = WallNewPostEvent(
+          String.fromCharCodes(authorBytes),
+          String.fromCharCodes(postUuidBytes),
+        );
         break;
       case DnaEventType.DNA_EVENT_ERROR:
         dartEvent = ErrorEvent(0, 'Error occurred');
@@ -5502,6 +5564,179 @@ class DnaEngine {
     if (requestId == 0) {
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
+  // WALL API
+  // ---------------------------------------------------------------------------
+
+  /// Post to own wall
+  Future<WallPost> wallPost(String text) async {
+    final completer = Completer<WallPost>();
+    final localId = _nextLocalId++;
+    final textPtr = text.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_wall_post_info_t> post, Pointer<Void> userData) {
+      calloc.free(textPtr);
+      if (error == 0 && post != nullptr) {
+        final result = WallPost.fromNative(post.ref);
+        _bindings.dna_free_wall_posts(post, 1);
+        completer.complete(result);
+      } else {
+        if (post != nullptr) _bindings.dna_free_wall_posts(post, 1);
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallPostCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_post(
+      _engine,
+      textPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(textPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit wall post request');
+    }
+
+    return completer.future;
+  }
+
+  /// Delete own wall post
+  Future<void> wallDelete(String postUuid) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+    final uuidPtr = postUuid.toNativeUtf8();
+
+    void onComplete(
+        int requestId, int error, Pointer<Void> userData) {
+      calloc.free(uuidPtr);
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_delete(
+      _engine,
+      uuidPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(uuidPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit wall delete request');
+    }
+
+    return completer.future;
+  }
+
+  /// Load a user's wall posts
+  Future<List<WallPost>> wallLoad(String fingerprint) async {
+    final completer = Completer<List<WallPost>>();
+    final localId = _nextLocalId++;
+    final fpPtr = fingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_wall_post_info_t> posts, int count,
+        Pointer<Void> userData) {
+      calloc.free(fpPtr);
+      if (error == 0) {
+        final result = <WallPost>[];
+        for (var i = 0; i < count; i++) {
+          result.add(WallPost.fromNative(posts[i]));
+        }
+        if (posts != nullptr && count > 0) {
+          _bindings.dna_free_wall_posts(posts, count);
+        }
+        completer.complete(result);
+      } else {
+        if (posts != nullptr && count > 0) {
+          _bindings.dna_free_wall_posts(posts, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallPostsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_load(
+      _engine,
+      fpPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fpPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit wall load request');
+    }
+
+    return completer.future;
+  }
+
+  /// Load timeline (all contacts' wall posts merged)
+  Future<List<WallPost>> wallTimeline() async {
+    final completer = Completer<List<WallPost>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_wall_post_info_t> posts, int count,
+        Pointer<Void> userData) {
+      if (error == 0) {
+        final result = <WallPost>[];
+        for (var i = 0; i < count; i++) {
+          result.add(WallPost.fromNative(posts[i]));
+        }
+        if (posts != nullptr && count > 0) {
+          _bindings.dna_free_wall_posts(posts, count);
+        }
+        completer.complete(result);
+      } else {
+        if (posts != nullptr && count > 0) {
+          _bindings.dna_free_wall_posts(posts, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallPostsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_timeline(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit wall timeline request');
     }
 
     return completer.future;
