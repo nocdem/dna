@@ -103,6 +103,15 @@ String _formatUsdValue(double value) {
   }
 }
 
+/// Truncate a balance string to at most 8 decimal places
+String _truncateBalance(String balance) {
+  final dotIndex = balance.indexOf('.');
+  if (dotIndex < 0) return balance;
+  final decimals = balance.length - dotIndex - 1;
+  if (decimals <= 8) return balance;
+  return balance.substring(0, dotIndex + 9);
+}
+
 class WalletScreen extends ConsumerStatefulWidget {
   const WalletScreen({super.key});
 
@@ -849,7 +858,7 @@ class _BalanceTile extends ConsumerWidget {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
-                hideBalances ? '*****' : balance.balance,
+                hideBalances ? '*****' : _truncateBalance(balance.balance),
                 style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
               ),
               Builder(builder: (context) {
@@ -1922,7 +1931,7 @@ class _TokenDetailSheet extends ConsumerWidget {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                '$balance $token',
+                                '${_truncateBalance(balance)} $token',
                                 style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
                               ),
                               Builder(builder: (context) {
