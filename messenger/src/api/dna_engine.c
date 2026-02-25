@@ -496,6 +496,11 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
         }
     }
 
+    /* v0.7.2: Export routing table cache after stabilization (fully populated) */
+    if (engine->dht_ctx) {
+        dht_context_export_routing_table(engine->dht_ctx, NULL);
+    }
+
     QGP_LOG_WARN(LOG_TAG, "[RETRY] >>> STABILIZATION THREAD COMPLETE <<<");
 
 cleanup:
@@ -1757,6 +1762,11 @@ void dna_engine_destroy(dna_engine_t *engine) {
      * The discovery thread holds g_discovery_dht_ctx which points to engine->dht_ctx.
      * If not joined first, it can call runner.bootstrap() on a freed context (UAF). */
     dht_bootstrap_discovery_stop();
+
+    /* v0.7.2: Export routing table cache before destroying DHT */
+    if (engine->dht_ctx) {
+        dht_context_export_routing_table(engine->dht_ctx, NULL);
+    }
 
     /* v0.6.0+: Cleanup engine-owned DHT context */
     if (engine->dht_ctx) {

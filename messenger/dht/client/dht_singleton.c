@@ -333,6 +333,9 @@ int dht_singleton_reinit(void)
         return -1;
     }
 
+    /* v0.7.2: Import cached routing table for faster reconnection */
+    dht_context_import_routing_table(g_dht_context, NULL);
+
     /* Re-register status callback */
     register_status_callback(g_dht_context);
 
@@ -394,6 +397,9 @@ dht_context_t* dht_create_context_with_identity(dht_identity_t *user_identity) {
         dht_context_free(ctx);
         return NULL;
     }
+
+    /* v0.7.2: Import cached routing table for faster bootstrap */
+    dht_context_import_routing_table(ctx, NULL);
 
     /* v0.6.112: Non-blocking DHT start for faster engine creation.
      * Stabilization thread handles waiting for DHT readiness before critical ops. */

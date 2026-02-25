@@ -1898,5 +1898,227 @@ extern "C" int dht_context_bootstrap_runtime(dht_context_t *ctx, const char *ip,
     }
 }
 
+/*
+ * DHT Routing Table Cache — Export/Import
+ *
+ * Persists the routing table across sessions for faster DHT bootstrap.
+ * File format: [Magic 4B][Version 4B][Timestamp 8B][Count 4B][msgpack payload]
+ */
+
+static const uint32_t ROUTING_CACHE_MAGIC   = 0x44525443; /* "DRTC" */
+static const uint32_t ROUTING_CACHE_VERSION = 1;
+static const uint64_t ROUTING_CACHE_EXPIRY_SECS = 7 * 24 * 3600; /* 7 days */
+static const uint32_t ROUTING_CACHE_MAX_NODES   = 1000;
+static const size_t   ROUTING_CACHE_MAX_PAYLOAD = 1 * 1024 * 1024; /* 1 MB */
+static const char     ROUTING_CACHE_FILENAME[]  = "routing_table_cache.bin";
+static const size_t   ROUTING_CACHE_HEADER_SIZE = 4 + 4 + 8 + 4; /* 20 bytes */
+
+static int get_routing_cache_path(const char *file_path, char *out, size_t out_size) {
+    if (file_path) {
+        if (strlen(file_path) >= out_size) return -1;
+        strncpy(out, file_path, out_size - 1);
+        out[out_size - 1] = '\0';
+        return 0;
+    }
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) return -1;
+    int n = snprintf(out, out_size, "%s/%s", data_dir, ROUTING_CACHE_FILENAME);
+    return (n < 0 || (size_t)n >= out_size) ? -1 : 0;
+}
+
+extern "C" int dht_context_export_routing_table(dht_context_t *ctx, const char *file_path) {
+    if (!ctx) return -1;
+
+    char path[512];
+    if (get_routing_cache_path(file_path, path, sizeof(path)) != 0) {
+        QGP_LOG_ERROR("DHT", "Failed to determine routing cache path");
+        return -1;
+    }
+
+    try {
+        auto nodes = ctx->runner.exportNodes();
+        if (nodes.empty()) {
+            QGP_LOG_DEBUG("DHT", "No routing table nodes to export");
+            return 0;
+        }
+
+        /* Serialize nodes with msgpack */
+        msgpack::sbuffer sbuf;
+        msgpack::packer<msgpack::sbuffer> pk(&sbuf);
+        pk.pack_array(nodes.size());
+        for (const auto& node : nodes) {
+            node.msgpack_pack(pk);
+        }
+
+        if (sbuf.size() > ROUTING_CACHE_MAX_PAYLOAD) {
+            QGP_LOG_WARN("DHT", "Routing table payload too large (%zu bytes), skipping export",
+                         sbuf.size());
+            return -1;
+        }
+
+        /* Build header */
+        uint32_t magic   = ROUTING_CACHE_MAGIC;
+        uint32_t version = ROUTING_CACHE_VERSION;
+        uint64_t timestamp = (uint64_t)time(NULL);
+        uint32_t count   = (uint32_t)nodes.size();
+
+        /* Atomic write: .tmp then rename */
+        char tmp_path[520];
+        snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+
+        std::ofstream ofs(tmp_path, std::ios::binary | std::ios::trunc);
+        if (!ofs.is_open()) {
+            QGP_LOG_ERROR("DHT", "Failed to open routing cache tmp file: %s", tmp_path);
+            return -1;
+        }
+
+        ofs.write(reinterpret_cast<const char*>(&magic),     sizeof(magic));
+        ofs.write(reinterpret_cast<const char*>(&version),   sizeof(version));
+        ofs.write(reinterpret_cast<const char*>(&timestamp), sizeof(timestamp));
+        ofs.write(reinterpret_cast<const char*>(&count),     sizeof(count));
+        ofs.write(sbuf.data(), sbuf.size());
+        ofs.close();
+
+        if (ofs.fail()) {
+            QGP_LOG_ERROR("DHT", "Failed to write routing cache tmp file");
+            remove(tmp_path);
+            return -1;
+        }
+
+        if (rename(tmp_path, path) != 0) {
+            QGP_LOG_ERROR("DHT", "Failed to rename routing cache: %s", strerror(errno));
+            remove(tmp_path);
+            return -1;
+        }
+
+        QGP_LOG_INFO("DHT", "Exported %u nodes to routing table cache (%zu bytes)",
+                     count, ROUTING_CACHE_HEADER_SIZE + sbuf.size());
+        return 0;
+
+    } catch (const std::exception& e) {
+        QGP_LOG_ERROR("DHT", "Exception exporting routing table: %s", e.what());
+        return -1;
+    }
+}
+
+extern "C" int dht_context_import_routing_table(dht_context_t *ctx, const char *file_path) {
+    if (!ctx) return -1;
+
+    char path[512];
+    if (get_routing_cache_path(file_path, path, sizeof(path)) != 0) {
+        QGP_LOG_ERROR("DHT", "Failed to determine routing cache path");
+        return -1;
+    }
+
+    try {
+        std::ifstream ifs(path, std::ios::binary);
+        if (!ifs.is_open()) {
+            /* No cache file — first run, silent return */
+            return 0;
+        }
+
+        /* Read header */
+        uint32_t magic = 0, version = 0, count = 0;
+        uint64_t timestamp = 0;
+
+        ifs.read(reinterpret_cast<char*>(&magic),     sizeof(magic));
+        ifs.read(reinterpret_cast<char*>(&version),   sizeof(version));
+        ifs.read(reinterpret_cast<char*>(&timestamp), sizeof(timestamp));
+        ifs.read(reinterpret_cast<char*>(&count),     sizeof(count));
+
+        if (ifs.fail() || ifs.gcount() < (std::streamsize)sizeof(count)) {
+            QGP_LOG_WARN("DHT", "Routing cache file truncated, ignoring");
+            return 0;
+        }
+
+        /* Validate magic */
+        if (magic != ROUTING_CACHE_MAGIC) {
+            QGP_LOG_WARN("DHT", "Routing cache invalid magic (0x%08X), ignoring", magic);
+            return 0;
+        }
+
+        /* Validate version */
+        if (version != ROUTING_CACHE_VERSION) {
+            QGP_LOG_WARN("DHT", "Routing cache version mismatch (%u != %u), ignoring",
+                         version, ROUTING_CACHE_VERSION);
+            return 0;
+        }
+
+        /* Check expiry */
+        uint64_t now = (uint64_t)time(NULL);
+        if (now > timestamp && (now - timestamp) > ROUTING_CACHE_EXPIRY_SECS) {
+            QGP_LOG_INFO("DHT", "Routing cache expired (%llu seconds old), ignoring",
+                         (unsigned long long)(now - timestamp));
+            return 0;
+        }
+
+        /* Sanity check count */
+        if (count == 0 || count > ROUTING_CACHE_MAX_NODES) {
+            QGP_LOG_WARN("DHT", "Routing cache node count out of range (%u), ignoring", count);
+            return 0;
+        }
+
+        /* Read payload */
+        ifs.seekg(0, std::ios::end);
+        size_t file_size = (size_t)ifs.tellg();
+        if (file_size <= ROUTING_CACHE_HEADER_SIZE) {
+            QGP_LOG_WARN("DHT", "Routing cache has no payload, ignoring");
+            return 0;
+        }
+
+        size_t payload_size = file_size - ROUTING_CACHE_HEADER_SIZE;
+        if (payload_size > ROUTING_CACHE_MAX_PAYLOAD) {
+            QGP_LOG_WARN("DHT", "Routing cache payload too large (%zu), ignoring", payload_size);
+            return 0;
+        }
+
+        ifs.seekg(ROUTING_CACHE_HEADER_SIZE, std::ios::beg);
+        std::vector<char> payload(payload_size);
+        ifs.read(payload.data(), payload_size);
+
+        if (ifs.fail()) {
+            QGP_LOG_WARN("DHT", "Failed to read routing cache payload, ignoring");
+            return 0;
+        }
+
+        /* Deserialize with msgpack */
+        auto msg = msgpack::unpack(payload.data(), payload_size);
+        auto obj = msg.get();
+
+        if (obj.type != msgpack::type::ARRAY) {
+            QGP_LOG_WARN("DHT", "Routing cache payload is not an array, ignoring");
+            return 0;
+        }
+
+        std::vector<dht::NodeExport> nodes;
+        nodes.reserve(obj.via.array.size);
+
+        for (uint32_t i = 0; i < obj.via.array.size; i++) {
+            dht::NodeExport ne;
+            ne.msgpack_unpack(obj.via.array.ptr[i]);
+            nodes.push_back(std::move(ne));
+        }
+
+        if (nodes.empty()) {
+            QGP_LOG_DEBUG("DHT", "Routing cache deserialized 0 nodes, ignoring");
+            return 0;
+        }
+
+        /* Insert into routing table (no ping, direct insert) */
+        int imported = (int)nodes.size();
+        ctx->runner.bootstrap(std::move(nodes));
+
+        QGP_LOG_INFO("DHT", "Imported %d cached nodes into routing table", imported);
+        return imported;
+
+    } catch (const msgpack::type_error& e) {
+        QGP_LOG_WARN("DHT", "Routing cache msgpack error: %s, ignoring", e.what());
+        return 0;
+    } catch (const std::exception& e) {
+        QGP_LOG_ERROR("DHT", "Exception importing routing table: %s", e.what());
+        return -1;
+    }
+}
+
 // NOTE: dht_get_stats() and dht_get_storage() moved to dht/core/dht_stats.cpp (Phase 3)
 // NOTE: dht_identity_* functions moved to dht/client/dht_identity.cpp (Phase 3)

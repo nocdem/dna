@@ -494,6 +494,30 @@ int dht_get_owner_value_id(dht_context_t *ctx, uint64_t *value_id_out);
  */
 int dht_context_bootstrap_runtime(dht_context_t *ctx, const char *ip, uint16_t port);
 
+/**
+ * Export DHT routing table to disk cache
+ *
+ * Serializes the current routing table nodes using msgpack and writes
+ * to a binary cache file with atomic rename. Non-fatal on error.
+ *
+ * @param ctx DHT context
+ * @param file_path Cache file path (NULL = auto: {data_dir}/routing_table_cache.bin)
+ * @return 0 on success, -1 on error
+ */
+int dht_context_export_routing_table(dht_context_t *ctx, const char *file_path);
+
+/**
+ * Import DHT routing table from disk cache
+ *
+ * Reads cached nodes and inserts them into the routing table without pinging.
+ * Validates magic, version, and expiry (7 days). Non-fatal on error.
+ *
+ * @param ctx DHT context
+ * @param file_path Cache file path (NULL = auto: {data_dir}/routing_table_cache.bin)
+ * @return Number of imported nodes, 0 if no cache/expired, -1 on error
+ */
+int dht_context_import_routing_table(dht_context_t *ctx, const char *file_path);
+
 #ifdef __cplusplus
 }
 #endif
