@@ -7,12 +7,19 @@ import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 
 class GroupsScreen extends ConsumerWidget {
-  const GroupsScreen({super.key});
+  final bool embedded;
+  const GroupsScreen({super.key, this.embedded = false});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final groups = ref.watch(groupsProvider);
     final invitations = ref.watch(invitationsProvider);
+
+    final body = _buildBody(context, ref, groups, invitations);
+
+    if (embedded) {
+      return body;
+    }
 
     return Scaffold(
       appBar: DnaAppBar(
@@ -28,7 +35,7 @@ class GroupsScreen extends ConsumerWidget {
           ),
         ],
       ),
-      body: _buildBody(context, ref, groups, invitations),
+      body: body,
       floatingActionButton: FloatingActionButton(
         heroTag: 'groups_fab',
         onPressed: () => _showCreateGroupDialog(context, ref),

@@ -12,11 +12,30 @@ import '../chat/chat_screen.dart';
 import 'contact_requests_screen.dart';
 
 class ContactsScreen extends ConsumerWidget {
-  const ContactsScreen({super.key});
+  final bool embedded;
+  const ContactsScreen({super.key, this.embedded = false});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final contacts = ref.watch(contactsProvider);
+
+    final body = contacts.when(
+      data: (list) => _buildContactList(context, ref, list),
+      // Show cached contacts while loading if available, otherwise show spinner
+      // This prevents flash of "No contacts" on initial load
+      loading: () {
+        final cached = contacts.valueOrNull;
+        if (cached != null) {
+          return _buildContactList(context, ref, cached);
+        }
+        return const Center(child: CircularProgressIndicator());
+      },
+      error: (error, stack) => _buildError(context, ref, error),
+    );
+
+    if (embedded) {
+      return body;
+    }
 
     return Scaffold(
       appBar: DnaAppBar(
@@ -37,19 +56,7 @@ class ContactsScreen extends ConsumerWidget {
           ),
         ],
       ),
-      body: contacts.when(
-        data: (list) => _buildContactList(context, ref, list),
-        // Show cached contacts while loading if available, otherwise show spinner
-        // This prevents flash of "No contacts" on initial load
-        loading: () {
-          final cached = contacts.valueOrNull;
-          if (cached != null) {
-            return _buildContactList(context, ref, cached);
-          }
-          return const Center(child: CircularProgressIndicator());
-        },
-        error: (error, stack) => _buildError(context, ref, error),
-      ),
+      body: body,
       floatingActionButton: FloatingActionButton(
         heroTag: 'contacts_fab',
         onPressed: () => _showAddContactDialog(context, ref),
