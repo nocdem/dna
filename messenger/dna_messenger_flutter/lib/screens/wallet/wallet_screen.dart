@@ -9,8 +9,6 @@ import '../../ffi/dna_engine.dart' show Contact, Transaction, UserProfile, Walle
 import '../../providers/addressbook_provider.dart';
 import '../../providers/providers.dart' hide UserProfile;
 import '../../design_system/design_system.dart'; // includes DnaColors, DnaGradients, DnaSpacing
-import '../../providers/engine_provider.dart' show currentFingerprintProvider;
-import '../../providers/name_resolver_provider.dart';
 import '../../providers/price_provider.dart';
 import 'address_book_screen.dart';
 import 'address_dialog.dart';
@@ -29,10 +27,11 @@ String? getTokenIconPath(String token) {
       return 'assets/icons/crypto/trx.svg';
     case 'USDT':
       return 'assets/icons/crypto/usdt.svg';
+    case 'KEL':
+      return 'assets/icons/crypto/kel.svg';
     case 'CELL':
     case 'CPUNK':
     case 'NYS':
-    case 'KEL':
     case 'QEVM':
       return 'assets/icons/crypto/cell.svg';  // CF20 tokens use Cellframe icon
     default:
