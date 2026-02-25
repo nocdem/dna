@@ -9,7 +9,7 @@ import 'messages/messages_screen.dart';
 import 'feed/feed_screen.dart';
 import 'more/more_screen.dart';
 
-/// Current tab index: 0=Home, 1=Messages, 2=Feeds, 3=More
+/// Current tab index: 0=Home, 1=Chats, 2=Feeds, 3=More
 final currentTabProvider = StateProvider<int>((ref) => 0);
 
 /// v0.3.0: Single-user model - HomeScreen always shows main navigation
@@ -32,7 +32,7 @@ class _MainNavigation extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final currentTab = ref.watch(currentTabProvider);
 
-    // Combined unread count for Messages tab badge
+    // Combined unread count for Chats tab badge
     final chatUnreadCount = ref.watch(totalUnreadCountProvider);
     final groupUnreadCount = ref.watch(totalGroupUnreadCountProvider);
     final totalMsgUnread = chatUnreadCount + groupUnreadCount;
@@ -42,7 +42,7 @@ class _MainNavigation extends ConsumerWidget {
         index: currentTab,
         children: const [
           WallTimelineScreen(),   // 0: Home
-          MessagesScreen(),       // 1: Messages
+          MessagesScreen(),       // 1: Chats
           FeedScreen(),           // 2: Feeds
           MoreScreen(),           // 3: More
         ],
@@ -59,7 +59,7 @@ class _MainNavigation extends ConsumerWidget {
           DnaBottomBarItem(
             icon: FontAwesomeIcons.comment,
             activeIcon: FontAwesomeIcons.solidComment,
-            label: 'Messages',
+            label: 'Chats',
             badgeCount: totalMsgUnread,
           ),
           DnaBottomBarItem(
