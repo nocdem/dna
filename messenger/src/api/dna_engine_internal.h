@@ -156,7 +156,18 @@ typedef enum {
 
     /* Wall Comments (v0.7.0+) */
     TASK_WALL_ADD_COMMENT,
-    TASK_WALL_GET_COMMENTS
+    TASK_WALL_GET_COMMENTS,
+
+    /* Channel system (RSS-like channels) */
+    TASK_CHANNEL_CREATE,
+    TASK_CHANNEL_GET,
+    TASK_CHANNEL_DELETE,
+    TASK_CHANNEL_DISCOVER,
+    TASK_CHANNEL_POST,
+    TASK_CHANNEL_GET_POSTS,
+    TASK_CHANNEL_GET_SUBSCRIPTIONS,
+    TASK_CHANNEL_SYNC_SUBS_TO_DHT,
+    TASK_CHANNEL_SYNC_SUBS_FROM_DHT
 } dna_task_type_t;
 
 /* ============================================================================
@@ -437,6 +448,29 @@ typedef union {
         char post_uuid[37];             /* Post UUID */
     } wall_get_comments;
 
+    /* Channel: create */
+    struct {
+        char name[101];
+        char *description;       /* Heap allocated, task owns */
+        bool is_public;
+    } channel_create;
+
+    /* Channel: get / delete / get_posts */
+    struct {
+        char uuid[37];
+    } channel_by_uuid;
+
+    /* Channel: discover */
+    struct {
+        int days_back;
+    } channel_discover;
+
+    /* Channel: post */
+    struct {
+        char channel_uuid[37];
+        char *body;              /* Heap allocated, task owns */
+    } channel_post;
+
 } dna_task_params_t;
 
 /**
@@ -472,6 +506,11 @@ typedef union {
     dna_wall_posts_cb wall_posts;
     dna_wall_comment_cb wall_comment;
     dna_wall_comments_cb wall_comments;
+    dna_channel_cb channel;
+    dna_channels_cb channels;
+    dna_channel_post_cb channel_post_cb;
+    dna_channel_posts_cb channel_posts;
+    dna_channel_subscriptions_cb channel_subscriptions;
 } dna_task_callback_t;
 
 /**
@@ -877,6 +916,17 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task);
 /* Wall Comments (v0.7.0+) */
 void dna_handle_wall_add_comment(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_wall_get_comments(dna_engine_t *engine, dna_task_t *task);
+
+/* Channel handlers (dna_engine_channels.c) */
+void dna_handle_channel_create(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_channel_get(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_channel_delete(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_channel_discover(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_channel_post(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_channel_get_posts(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_channel_get_subscriptions(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_channel_sync_subs_to_dht(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_channel_sync_subs_from_dht(dna_engine_t *engine, dna_task_t *task);
 
 /* ============================================================================
  * INTERNAL FUNCTIONS - Helpers
