@@ -32,7 +32,8 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallPost>> {
   Future<WallPost> createPost(String text) async {
     final engine = await ref.read(engineProvider.future);
     final post = await engine.wallPost(text);
-    await refresh();
+    final current = state.valueOrNull ?? [];
+    state = AsyncData([post, ...current]);
     return post;
   }
 
@@ -40,14 +41,16 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallPost>> {
   Future<WallPost> createPostWithImage(String text, String imageJson) async {
     final engine = await ref.read(engineProvider.future);
     final post = await engine.wallPostWithImage(text, imageJson);
-    await refresh();
+    final current = state.valueOrNull ?? [];
+    state = AsyncData([post, ...current]);
     return post;
   }
 
   Future<void> deletePost(String postUuid) async {
     final engine = await ref.read(engineProvider.future);
     await engine.wallDelete(postUuid);
-    await refresh();
+    final current = state.valueOrNull ?? [];
+    state = AsyncData(current.where((p) => p.uuid != postUuid).toList());
   }
 }
 

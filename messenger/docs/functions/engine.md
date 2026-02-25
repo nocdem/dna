@@ -127,6 +127,14 @@ Internal DNA engine implementation with async task queue.
 | `void dna_handle_wall_add_comment(dna_engine_t*, dna_task_t*)` | Handle wall add comment task (`TASK_WALL_ADD_COMMENT`, v0.7.0+) |
 | `void dna_handle_wall_get_comments(dna_engine_t*, dna_task_t*)` | Handle wall get comments task (`TASK_WALL_GET_COMMENTS`, v0.7.0+) |
 
+### Wall Listeners (v0.7.3+)
+
+| Function | Description |
+|----------|-------------|
+| `size_t dna_engine_start_wall_listener(dna_engine_t*, const char*)` | Start DHT listener for contact's wall changes |
+| `void dna_engine_cancel_wall_listener(dna_engine_t*, const char*)` | Cancel single wall listener |
+| `void dna_engine_cancel_all_wall_listeners(dna_engine_t*)` | Cancel all wall listeners |
+
 ### Helpers
 
 | Function | Description |

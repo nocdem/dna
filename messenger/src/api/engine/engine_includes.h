@@ -220,6 +220,11 @@ size_t dna_engine_start_ack_listener(dna_engine_t *engine, const char *contact_f
 int dna_engine_listen_all_contacts(dna_engine_t *engine);
 int dna_engine_retry_pending_messages(dna_engine_t *engine);
 
+/* From dna_engine_listeners.c (wall) */
+size_t dna_engine_start_wall_listener(dna_engine_t *engine, const char *contact_fingerprint);
+void dna_engine_cancel_wall_listener(dna_engine_t *engine, const char *contact_fingerprint);
+void dna_engine_cancel_all_wall_listeners(dna_engine_t *engine);
+
 /* From dna_engine_groups.c */
 int dna_engine_subscribe_all_groups(dna_engine_t *engine);
 void dna_engine_unsubscribe_all_groups(dna_engine_t *engine);

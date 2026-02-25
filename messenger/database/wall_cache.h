@@ -103,6 +103,24 @@ int wall_cache_delete_by_author(const char *fingerprint);
  */
 int wall_cache_delete_post(const char *post_uuid);
 
+/**
+ * Insert or replace a single wall post in cache
+ * Uses INSERT OR REPLACE on uuid (PRIMARY KEY)
+ *
+ * @param post  Wall post to insert
+ * @return 0 on success, -1 on error, -3 if uninitialized
+ */
+int wall_cache_insert_post(const dna_wall_post_t *post);
+
+/**
+ * Delete staleness metadata for a fingerprint
+ * Forces next timeline load to re-fetch this user's wall from DHT
+ *
+ * @param fingerprint  Cache key to delete from wall_cache_meta
+ * @return 0 on success, -1 on error, -3 if uninitialized
+ */
+int wall_cache_delete_meta(const char *fingerprint);
+
 /* ── Meta / staleness ──────────────────────────────────────────────── */
 
 /**

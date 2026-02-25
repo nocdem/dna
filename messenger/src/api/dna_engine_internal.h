@@ -582,6 +582,17 @@ typedef struct {
 } dna_ack_listener_t;
 
 /**
+ * Wall listener entry (for real-time wall post notifications)
+ */
+#define DNA_MAX_WALL_LISTENERS 128
+
+typedef struct {
+    char contact_fingerprint[129];  /* Contact whose wall we're listening to */
+    size_t dht_token;               /* Token from dht_listen_ex() */
+    bool active;                    /* True if listener is active */
+} dna_wall_listener_t;
+
+/**
  * DNA Engine internal state
  */
 struct dna_engine {
@@ -639,6 +650,11 @@ struct dna_engine {
     dna_ack_listener_t ack_listeners[DNA_MAX_ACK_LISTENERS];
     int ack_listener_count;
     pthread_mutex_t ack_listeners_mutex;
+
+    /* Wall listeners (for real-time wall post notifications) */
+    dna_wall_listener_t wall_listeners[DNA_MAX_WALL_LISTENERS];
+    int wall_listener_count;
+    pthread_mutex_t wall_listeners_mutex;
 
     /* Group outbox listeners (for real-time group message notifications) */
     #define DNA_MAX_GROUP_LISTENERS 64

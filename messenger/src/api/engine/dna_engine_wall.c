@@ -126,8 +126,9 @@ void dna_handle_wall_post(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    /* Invalidate cache so next load refreshes from DHT */
-    wall_cache_delete_by_author(engine->fingerprint);
+    /* Insert new post into cache (avoids cache miss on next timeline load) */
+    wall_cache_insert_post(&out_post);
+    wall_cache_update_meta(engine->fingerprint);
 
     /* Convert to public API format */
     dna_wall_post_info_t *info = calloc(1, sizeof(dna_wall_post_info_t));
@@ -262,6 +263,31 @@ void dna_handle_wall_load(dna_engine_t *engine, dna_task_t *task) {
     task->callback.wall_posts(task->request_id, DNA_OK, info, count, task->user_data);
 }
 
+/* ── Parallel wall fetch for timeline ── */
+
+typedef struct {
+    dht_context_t *dht;
+    char fingerprint[129];
+} wall_fetch_ctx_t;
+
+static void *wall_fetch_thread(void *arg) {
+    wall_fetch_ctx_t *ctx = (wall_fetch_ctx_t *)arg;
+    if (!ctx) return NULL;
+
+    dna_wall_t wall = {0};
+    int ret = dna_wall_load(ctx->dht, ctx->fingerprint, &wall);
+    if (ret == 0) {
+        wall_cache_store(ctx->fingerprint, wall.posts, wall.post_count);
+        wall_cache_update_meta(ctx->fingerprint);
+    } else if (ret == -2) {
+        /* Not found on DHT - store empty and mark fresh */
+        wall_cache_store(ctx->fingerprint, NULL, 0);
+        wall_cache_update_meta(ctx->fingerprint);
+    }
+    dna_wall_free(&wall);
+    return NULL;
+}
+
 void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
     if (!engine->identity_loaded) {
         task->callback.wall_posts(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY,
@@ -277,7 +303,6 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
     contact_list_t *list = NULL;
     contacts_db_list(&list);
 
-    /* Count: own fingerprint + contacts */
     size_t fp_count = 1 + (list ? list->count : 0);
     const char **fingerprints = calloc(fp_count, sizeof(const char *));
     if (!fingerprints) {
@@ -287,124 +312,98 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    /* Own fingerprint first */
     fingerprints[0] = engine->fingerprint;
-
-    /* Add contacts */
     if (list) {
         for (size_t i = 0; i < list->count; i++) {
             fingerprints[1 + i] = list->contacts[i].identity;
         }
     }
 
-    /* Try cache first */
+    /* Phase 1: Refresh stale entries in parallel */
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (dht) {
+        /* Collect stale fingerprints */
+        wall_fetch_ctx_t *stale_ctxs = NULL;
+        int stale_count = 0;
+
+        for (size_t i = 0; i < fp_count; i++) {
+            if (wall_cache_is_stale(fingerprints[i])) {
+                stale_count++;
+            }
+        }
+
+        if (stale_count > 0) {
+            stale_ctxs = calloc(stale_count, sizeof(wall_fetch_ctx_t));
+            pthread_t *threads = calloc(stale_count, sizeof(pthread_t));
+            bool *created = calloc(stale_count, sizeof(bool));
+
+            if (stale_ctxs && threads && created) {
+                int idx = 0;
+                for (size_t i = 0; i < fp_count && idx < stale_count; i++) {
+                    if (wall_cache_is_stale(fingerprints[i])) {
+                        stale_ctxs[idx].dht = dht;
+                        strncpy(stale_ctxs[idx].fingerprint, fingerprints[i], 128);
+                        stale_ctxs[idx].fingerprint[128] = '\0';
+                        idx++;
+                    }
+                }
+
+                /* Spawn parallel fetch threads */
+                for (int i = 0; i < stale_count; i++) {
+                    created[i] = (pthread_create(&threads[i], NULL,
+                                                  wall_fetch_thread, &stale_ctxs[i]) == 0);
+                }
+
+                /* Join all threads */
+                for (int i = 0; i < stale_count; i++) {
+                    if (created[i]) {
+                        pthread_join(threads[i], NULL);
+                    }
+                }
+
+                QGP_LOG_INFO(LOG_TAG, "Timeline: refreshed %d stale walls", stale_count);
+            }
+
+            free(stale_ctxs);
+            free(threads);
+            free(created);
+        }
+    }
+
+    /* Phase 2: Load all from cache (now fresh) */
     dna_wall_post_t *cached_posts = NULL;
     size_t cached_count = 0;
     int cache_ret = wall_cache_load_timeline(fingerprints, fp_count,
                                              &cached_posts, &cached_count);
 
-    if (cache_ret == 0 && cached_posts && cached_count > 0) {
-        /* Cache has data - return it */
-        dna_wall_post_info_t *info = calloc(cached_count, sizeof(dna_wall_post_info_t));
-        if (!info) {
-            wall_cache_free_posts(cached_posts, cached_count);
-            free(fingerprints);
-            if (list) contacts_db_free_list(list);
-            task->callback.wall_posts(task->request_id, DNA_ERROR_INTERNAL,
-                                      NULL, 0, task->user_data);
-            return;
-        }
+    free(fingerprints);
+    if (list) contacts_db_free_list(list);
 
-        for (size_t i = 0; i < cached_count; i++) {
-            wall_post_to_info(&cached_posts[i], &info[i]);
-        }
-
-        wall_cache_free_posts(cached_posts, cached_count);
-        free(fingerprints);
-        if (list) contacts_db_free_list(list);
-
-        QGP_LOG_INFO(LOG_TAG, "Timeline (cache): %zu posts", cached_count);
-        task->callback.wall_posts(task->request_id, DNA_OK,
-                                  info, (int)cached_count, task->user_data);
+    if (cache_ret != 0 || !cached_posts || cached_count == 0) {
+        /* Empty timeline */
+        if (cached_posts) wall_cache_free_posts(cached_posts, cached_count);
+        QGP_LOG_INFO(LOG_TAG, "Timeline: empty (cache_ret=%d)", cache_ret);
+        task->callback.wall_posts(task->request_id, DNA_OK, NULL, 0, task->user_data);
         return;
     }
 
-    if (cached_posts) wall_cache_free_posts(cached_posts, cached_count);
-
-    /* Cache empty - fetch each contact's wall from DHT */
-    dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
-        free(fingerprints);
-        if (list) contacts_db_free_list(list);
-        task->callback.wall_posts(task->request_id, DNA_ENGINE_ERROR_NETWORK,
+    /* Convert to public API format */
+    dna_wall_post_info_t *info = calloc(cached_count, sizeof(dna_wall_post_info_t));
+    if (!info) {
+        wall_cache_free_posts(cached_posts, cached_count);
+        task->callback.wall_posts(task->request_id, DNA_ERROR_INTERNAL,
                                   NULL, 0, task->user_data);
         return;
     }
 
-    /* Collect all posts from all contacts */
-    dna_wall_post_info_t *all_posts = NULL;
-    int total_count = 0;
-    int all_capacity = 0;
-
-    for (size_t fi = 0; fi < fp_count; fi++) {
-        const char *fp = fingerprints[fi];
-
-        dna_wall_t wall = {0};
-        int ret = dna_wall_load(dht, fp, &wall);
-
-        if (ret != 0 || wall.post_count == 0) {
-            dna_wall_free(&wall);
-            continue;
-        }
-
-        /* Cache the fetched wall */
-        wall_cache_store(fp, wall.posts, wall.post_count);
-        wall_cache_update_meta(fp);
-
-        /* Grow output array */
-        int new_total = total_count + (int)wall.post_count;
-        if (new_total > all_capacity) {
-            int new_cap = (new_total > all_capacity * 2) ? new_total : all_capacity * 2;
-            if (new_cap < 32) new_cap = 32;
-            dna_wall_post_info_t *tmp = realloc(all_posts,
-                                                 (size_t)new_cap * sizeof(dna_wall_post_info_t));
-            if (!tmp) {
-                dna_wall_free(&wall);
-                break;
-            }
-            all_posts = tmp;
-            all_capacity = new_cap;
-        }
-
-        for (size_t i = 0; i < wall.post_count; i++) {
-            memset(&all_posts[total_count], 0, sizeof(dna_wall_post_info_t));
-            wall_post_to_info(&wall.posts[i], &all_posts[total_count]);
-            total_count++;
-        }
-
-        dna_wall_free(&wall);
+    for (size_t i = 0; i < cached_count; i++) {
+        wall_post_to_info(&cached_posts[i], &info[i]);
     }
 
-    free(fingerprints);
-    if (list) contacts_db_free_list(list);
+    wall_cache_free_posts(cached_posts, cached_count);
 
-    /* Sort by timestamp descending (newest first) */
-    if (all_posts && total_count > 1) {
-        for (int i = 0; i < total_count - 1; i++) {
-            for (int j = i + 1; j < total_count; j++) {
-                if (all_posts[j].timestamp > all_posts[i].timestamp) {
-                    dna_wall_post_info_t tmp = all_posts[i];
-                    all_posts[i] = all_posts[j];
-                    all_posts[j] = tmp;
-                }
-            }
-        }
-    }
-
-    QGP_LOG_INFO(LOG_TAG, "Timeline (DHT): %d posts from %zu contacts",
-                 total_count, fp_count);
-    task->callback.wall_posts(task->request_id, DNA_OK,
-                              all_posts, total_count, task->user_data);
+    QGP_LOG_INFO(LOG_TAG, "Timeline: %zu posts", cached_count);
+    task->callback.wall_posts(task->request_id, DNA_OK, info, (int)cached_count, task->user_data);
 }
 
 /* ============================================================================

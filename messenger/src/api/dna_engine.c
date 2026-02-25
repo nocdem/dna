@@ -252,6 +252,7 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
     dna_engine_cancel_all_outbox_listeners(engine);
     dna_engine_cancel_all_presence_listeners(engine);
     dna_engine_cancel_contact_request_listener(engine);
+    dna_engine_cancel_all_wall_listeners(engine);
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
@@ -1303,6 +1304,11 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     engine->ack_listener_count = 0;
     memset(engine->ack_listeners, 0, sizeof(engine->ack_listeners));
 
+    /* Initialize wall listeners */
+    pthread_mutex_init(&engine->wall_listeners_mutex, NULL);
+    engine->wall_listener_count = 0;
+    memset(engine->wall_listeners, 0, sizeof(engine->wall_listeners));
+
     /* Initialize group outbox listeners */
     pthread_mutex_init(&engine->group_listen_mutex, NULL);
     engine->group_listen_count = 0;
@@ -1717,6 +1723,10 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* Cancel all ACK listeners (v15) */
     dna_engine_cancel_all_ack_listeners(engine);
     pthread_mutex_destroy(&engine->ack_listeners_mutex);
+
+    /* Cancel all wall listeners */
+    dna_engine_cancel_all_wall_listeners(engine);
+    pthread_mutex_destroy(&engine->wall_listeners_mutex);
 
     /* Unsubscribe from all groups */
     dna_engine_unsubscribe_all_groups(engine);

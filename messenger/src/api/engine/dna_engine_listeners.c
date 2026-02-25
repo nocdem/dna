@@ -26,6 +26,8 @@
 #define DNA_ENGINE_LISTENERS_IMPL
 #include "engine_includes.h"
 #include "transport/internal/transport_core.h"  /* For parse_presence_json */
+#include "dht/client/dna_wall.h"
+#include "database/wall_cache.h"
 
 /* ============================================================================
  * PARALLEL LISTENER SETUP (Mobile Performance Optimization)
@@ -50,6 +52,7 @@ static void parallel_listener_worker(void *arg) {
     dna_engine_listen_outbox(ctx->engine, ctx->fingerprint);
     dna_engine_start_presence_listener(ctx->engine, ctx->fingerprint);
     dna_engine_start_ack_listener(ctx->engine, ctx->fingerprint);
+    dna_engine_start_wall_listener(ctx->engine, ctx->fingerprint);
 }
 
 /* ============================================================================
@@ -798,6 +801,7 @@ int dna_engine_refresh_listeners(dna_engine_t *engine)
     dna_engine_cancel_all_outbox_listeners(engine);
     dna_engine_cancel_all_presence_listeners(engine);
     dna_engine_cancel_contact_request_listener(engine);
+    dna_engine_cancel_all_wall_listeners(engine);
 
     /* Restart listeners for all contacts (includes contact request listener) */
     int count = dna_engine_listen_all_contacts(engine);
@@ -1440,4 +1444,192 @@ int dna_engine_check_outbox_day_rotation(dna_engine_t *engine) {
         QGP_LOG_INFO(LOG_TAG, "[DM-OUTBOX] Day rotation completed for %d contacts", rotated);
     }
     return rotated;
+}
+
+/* ============================================================================
+ * WALL LISTENERS (Real-time wall post notifications)
+ * ============================================================================ */
+
+/**
+ * Context passed to wall DHT listen callback
+ */
+typedef struct {
+    dna_engine_t *engine;
+    char contact_fingerprint[129];
+} wall_listener_ctx_t;
+
+/**
+ * Cleanup callback for wall listener - frees the context when listener cancelled
+ */
+static void wall_listener_cleanup(void *user_data) {
+    wall_listener_ctx_t *ctx = (wall_listener_ctx_t *)user_data;
+    if (ctx) {
+        QGP_LOG_DEBUG(LOG_TAG, "[WALL_LISTEN] Cleanup: freeing wall listener ctx for %.16s...",
+                      ctx->contact_fingerprint);
+        free(ctx);
+    }
+}
+
+/**
+ * DHT callback when a contact's wall data changes
+ * Invalidates cache metadata (forces re-fetch) and fires DNA_EVENT_WALL_NEW_POST
+ */
+static bool wall_listen_callback(
+    const uint8_t *value,
+    size_t value_len,
+    bool expired,
+    void *user_data)
+{
+    wall_listener_ctx_t *ctx = (wall_listener_ctx_t *)user_data;
+    if (!ctx || !ctx->engine) {
+        return false;  /* Stop listening */
+    }
+
+    /* Check shutdown */
+    if (atomic_load(&ctx->engine->shutdown_requested)) {
+        return false;
+    }
+
+    /* Only fire for new/updated values, not expirations */
+    if (!expired && value && value_len > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[WALL_LISTEN] Wall updated for %.16s...",
+                     ctx->contact_fingerprint);
+
+        /* Invalidate cache staleness so next timeline load refreshes from DHT */
+        wall_cache_delete_meta(ctx->contact_fingerprint);
+
+        /* Fire DNA_EVENT_WALL_NEW_POST event */
+        dna_event_t event = {0};
+        event.type = DNA_EVENT_WALL_NEW_POST;
+        strncpy(event.data.wall_new_post.author_fingerprint,
+                ctx->contact_fingerprint,
+                sizeof(event.data.wall_new_post.author_fingerprint) - 1);
+
+        dna_dispatch_event(ctx->engine, &event);
+    }
+
+    return true;  /* Continue listening */
+}
+
+/**
+ * Start listening for wall changes from a contact
+ */
+size_t dna_engine_start_wall_listener(dna_engine_t *engine, const char *contact_fingerprint) {
+    if (!engine || !contact_fingerprint) return 0;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (!dht_ctx) return 0;
+
+    pthread_mutex_lock(&engine->wall_listeners_mutex);
+
+    /* Check if already listening */
+    for (int i = 0; i < engine->wall_listener_count; i++) {
+        if (engine->wall_listeners[i].active &&
+            strcmp(engine->wall_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
+            pthread_mutex_unlock(&engine->wall_listeners_mutex);
+            return engine->wall_listeners[i].dht_token;
+        }
+    }
+
+    /* Check capacity */
+    if (engine->wall_listener_count >= DNA_MAX_WALL_LISTENERS) {
+        QGP_LOG_WARN(LOG_TAG, "[WALL_LISTEN] Max wall listeners reached (%d)",
+                     DNA_MAX_WALL_LISTENERS);
+        pthread_mutex_unlock(&engine->wall_listeners_mutex);
+        return 0;
+    }
+
+    /* Derive DHT key for this contact's wall */
+    uint8_t wall_key[64];
+    dna_wall_make_key(contact_fingerprint, wall_key);
+
+    /* Allocate context */
+    wall_listener_ctx_t *ctx = calloc(1, sizeof(wall_listener_ctx_t));
+    if (!ctx) {
+        pthread_mutex_unlock(&engine->wall_listeners_mutex);
+        return 0;
+    }
+    ctx->engine = engine;
+    strncpy(ctx->contact_fingerprint, contact_fingerprint, 128);
+    ctx->contact_fingerprint[128] = '\0';
+
+    /* Start listening */
+    size_t token = dht_listen_ex(dht_ctx, wall_key, 64,
+                                  wall_listen_callback, ctx,
+                                  wall_listener_cleanup);
+
+    if (token == 0) {
+        QGP_LOG_WARN(LOG_TAG, "[WALL_LISTEN] Failed to start listener for %.16s...",
+                     contact_fingerprint);
+        free(ctx);
+        pthread_mutex_unlock(&engine->wall_listeners_mutex);
+        return 0;
+    }
+
+    /* Store in engine */
+    int idx = engine->wall_listener_count;
+    strncpy(engine->wall_listeners[idx].contact_fingerprint, contact_fingerprint, 128);
+    engine->wall_listeners[idx].contact_fingerprint[128] = '\0';
+    engine->wall_listeners[idx].dht_token = token;
+    engine->wall_listeners[idx].active = true;
+    engine->wall_listener_count++;
+
+    pthread_mutex_unlock(&engine->wall_listeners_mutex);
+
+    QGP_LOG_DEBUG(LOG_TAG, "[WALL_LISTEN] Started wall listener for %.16s... (token=%zu)",
+                  contact_fingerprint, token);
+    return token;
+}
+
+/**
+ * Cancel wall listener for a specific contact
+ */
+void dna_engine_cancel_wall_listener(dna_engine_t *engine, const char *contact_fingerprint) {
+    if (!engine || !contact_fingerprint) return;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+
+    pthread_mutex_lock(&engine->wall_listeners_mutex);
+
+    for (int i = 0; i < engine->wall_listener_count; i++) {
+        if (engine->wall_listeners[i].active &&
+            strcmp(engine->wall_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
+            if (dht_ctx) {
+                dht_cancel_listen(dht_ctx, engine->wall_listeners[i].dht_token);
+            }
+            engine->wall_listeners[i].active = false;
+
+            /* Compact: move last entry to this slot */
+            if (i < engine->wall_listener_count - 1) {
+                engine->wall_listeners[i] = engine->wall_listeners[engine->wall_listener_count - 1];
+            }
+            engine->wall_listener_count--;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&engine->wall_listeners_mutex);
+}
+
+/**
+ * Cancel all wall listeners
+ */
+void dna_engine_cancel_all_wall_listeners(dna_engine_t *engine) {
+    if (!engine) return;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+
+    pthread_mutex_lock(&engine->wall_listeners_mutex);
+
+    for (int i = 0; i < engine->wall_listener_count; i++) {
+        if (engine->wall_listeners[i].active && dht_ctx) {
+            dht_cancel_listen(dht_ctx, engine->wall_listeners[i].dht_token);
+        }
+        engine->wall_listeners[i].active = false;
+    }
+
+    engine->wall_listener_count = 0;
+    QGP_LOG_INFO(LOG_TAG, "Cancelled all wall listeners");
+
+    pthread_mutex_unlock(&engine->wall_listeners_mutex);
 }

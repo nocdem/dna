@@ -573,6 +573,88 @@ int wall_cache_delete_post(const char *post_uuid) {
     return 0;
 }
 
+int wall_cache_insert_post(const dna_wall_post_t *post) {
+    if (!g_db) {
+        if (wall_cache_init() != 0) return -3;
+    }
+
+    if (!post) {
+        QGP_LOG_ERROR(LOG_TAG, "insert_post: NULL post\n");
+        return -1;
+    }
+
+    const char *sql =
+        "INSERT OR REPLACE INTO wall_posts "
+        "(uuid, author_fingerprint, text, image_json, timestamp, signature, signature_len, verified, cached_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "insert_post prepare: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    uint64_t now = (uint64_t)time(NULL);
+
+    sqlite3_bind_text(stmt, 1, post->uuid, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, post->author_fingerprint, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, post->text, -1, SQLITE_TRANSIENT);
+    if (post->image_json) {
+        sqlite3_bind_text(stmt, 4, post->image_json, -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, 4);
+    }
+    sqlite3_bind_int64(stmt, 5, (int64_t)post->timestamp);
+    sqlite3_bind_blob(stmt, 6, post->signature, (int)post->signature_len, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 7, (int)post->signature_len);
+    sqlite3_bind_int(stmt, 8, post->verified ? 1 : 0);
+    sqlite3_bind_int64(stmt, 9, (int64_t)now);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "insert_post step: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Inserted post %s by %.16s...\n", post->uuid, post->author_fingerprint);
+    return 0;
+}
+
+int wall_cache_delete_meta(const char *fingerprint) {
+    if (!g_db) {
+        if (wall_cache_init() != 0) return -3;
+    }
+
+    if (!fingerprint) {
+        QGP_LOG_ERROR(LOG_TAG, "delete_meta: NULL fingerprint\n");
+        return -1;
+    }
+
+    const char *sql = "DELETE FROM wall_cache_meta WHERE cache_key = ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "delete_meta prepare: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "delete_meta step: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    return 0;
+}
+
 /* ── Meta / staleness ──────────────────────────────────────────────── */
 
 int wall_cache_update_meta(const char *fingerprint) {

@@ -263,6 +263,7 @@ SQLite cache for discovered bootstrap nodes, enabling decentralization.
 | `int wall_cache_load_timeline(const char**, size_t, dna_wall_post_t**, size_t*)` | Load merged timeline for multiple authors sorted by timestamp DESC (limit 200) |
 | `int wall_cache_delete_by_author(const char*)` | Delete all cached posts for a specific author |
 | `int wall_cache_delete_post(const char*)` | Delete a specific post by UUID |
+| `int wall_cache_insert_post(const dna_wall_post_t*)` | INSERT OR REPLACE single post by uuid (v0.7.3+) |
 | `void wall_cache_free_posts(dna_wall_post_t*, size_t)` | Free posts array returned by load functions |
 
 ### Comment Cache (v0.7.0+)
@@ -279,4 +280,5 @@ SQLite cache for discovered bootstrap nodes, enabling decentralization.
 | Function | Description |
 |----------|-------------|
 | `int wall_cache_update_meta(const char*)` | Update last-fetched timestamp for a fingerprint cache key |
+| `int wall_cache_delete_meta(const char*)` | Delete staleness metadata to force DHT re-fetch (v0.7.3+) |
 | `bool wall_cache_is_stale(const char*)` | Check if post cache is stale for a fingerprint (>5 min) |
