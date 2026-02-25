@@ -632,6 +632,17 @@ typedef struct {
 } dna_wall_listener_t;
 
 /**
+ * Channel listener entry (for real-time channel post notifications)
+ */
+#define DNA_MAX_CHANNEL_LISTENERS 64
+
+typedef struct {
+    char channel_uuid[37];          /* Channel UUID we're listening to */
+    size_t dht_token;               /* Token from dht_listen_ex() */
+    bool active;                    /* True if listener is active */
+} dna_channel_listener_t;
+
+/**
  * DNA Engine internal state
  */
 struct dna_engine {
@@ -694,6 +705,11 @@ struct dna_engine {
     dna_wall_listener_t wall_listeners[DNA_MAX_WALL_LISTENERS];
     int wall_listener_count;
     pthread_mutex_t wall_listeners_mutex;
+
+    /* Channel listeners (for real-time channel post notifications) */
+    dna_channel_listener_t channel_listeners[DNA_MAX_CHANNEL_LISTENERS];
+    int channel_listener_count;
+    pthread_mutex_t channel_listeners_mutex;
 
     /* Group outbox listeners (for real-time group message notifications) */
     #define DNA_MAX_GROUP_LISTENERS 64

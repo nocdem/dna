@@ -6,6 +6,8 @@
  *   - Presence listeners (contact online status)
  *   - Contact request listeners (incoming requests)
  *   - ACK listeners (message delivery confirmation)
+ *   - Wall post listeners (contact wall updates)
+ *   - Channel post listeners (channel post updates)
  *
  * Functions:
  *   - dna_engine_listen_outbox()                    // Start outbox listener
@@ -21,12 +23,16 @@
  *   - dna_engine_start_ack_listener()              // Start ACK listener
  *   - dna_engine_cancel_ack_listener()             // Cancel single ACK listener
  *   - dna_engine_cancel_all_ack_listeners()        // Cancel all ACK listeners
+ *   - dna_engine_start_channel_listener()          // Start channel post listener
+ *   - dna_engine_cancel_channel_listener()         // Cancel single channel listener
+ *   - dna_engine_cancel_all_channel_listeners()    // Cancel all channel listeners
  */
 
 #define DNA_ENGINE_LISTENERS_IMPL
 #include "engine_includes.h"
 #include "transport/internal/transport_core.h"  /* For parse_presence_json */
 #include "dht/client/dna_wall.h"
+#include "dht/client/dna_channels.h"  /* For dna_channel_make_posts_key */
 #include "database/wall_cache.h"
 
 /* ============================================================================
@@ -802,6 +808,7 @@ int dna_engine_refresh_listeners(dna_engine_t *engine)
     dna_engine_cancel_all_presence_listeners(engine);
     dna_engine_cancel_contact_request_listener(engine);
     dna_engine_cancel_all_wall_listeners(engine);
+    dna_engine_cancel_all_channel_listeners(engine);
 
     /* Restart listeners for all contacts (includes contact request listener) */
     int count = dna_engine_listen_all_contacts(engine);
@@ -1632,4 +1639,199 @@ void dna_engine_cancel_all_wall_listeners(dna_engine_t *engine) {
     QGP_LOG_INFO(LOG_TAG, "Cancelled all wall listeners");
 
     pthread_mutex_unlock(&engine->wall_listeners_mutex);
+}
+
+/* ============================================================================
+ * CHANNEL LISTENERS (Real-time channel post notifications)
+ * ============================================================================ */
+
+/**
+ * Context passed to channel DHT listen callback
+ */
+typedef struct {
+    dna_engine_t *engine;
+    char channel_uuid[37];
+} channel_listener_ctx_t;
+
+/**
+ * Cleanup callback for channel listener - frees the context when listener cancelled
+ */
+static void channel_listener_cleanup(void *user_data) {
+    channel_listener_ctx_t *ctx = (channel_listener_ctx_t *)user_data;
+    if (ctx) {
+        QGP_LOG_DEBUG(LOG_TAG, "[CHAN_LISTEN] Cleanup: freeing channel listener ctx for %.8s...",
+                      ctx->channel_uuid);
+        free(ctx);
+    }
+}
+
+/**
+ * DHT callback when a channel's post data changes
+ * Fires DNA_EVENT_CHANNEL_NEW_POST to notify Flutter UI
+ */
+static bool channel_post_listen_callback(
+    const uint8_t *value,
+    size_t value_len,
+    bool expired,
+    void *user_data)
+{
+    channel_listener_ctx_t *ctx = (channel_listener_ctx_t *)user_data;
+    if (!ctx || !ctx->engine) {
+        return false;  /* Stop listening */
+    }
+
+    /* Check shutdown */
+    if (atomic_load(&ctx->engine->shutdown_requested)) {
+        return false;
+    }
+
+    /* Only fire for new/updated values, not expirations */
+    if (!expired && value && value_len > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[CHAN_LISTEN] New post in channel %.8s...",
+                     ctx->channel_uuid);
+
+        /* Fire DNA_EVENT_CHANNEL_NEW_POST event */
+        dna_event_t event = {0};
+        event.type = DNA_EVENT_CHANNEL_NEW_POST;
+        strncpy(event.data.channel_new_post.channel_uuid,
+                ctx->channel_uuid,
+                sizeof(event.data.channel_new_post.channel_uuid) - 1);
+
+        dna_dispatch_event(ctx->engine, &event);
+    }
+
+    return true;  /* Continue listening */
+}
+
+/**
+ * Start listening for new posts in a channel
+ *
+ * @param engine Engine instance
+ * @param channel_uuid Channel UUID to listen on
+ * @return 0 on success, -1 on failure
+ */
+int dna_engine_start_channel_listener(dna_engine_t *engine, const char *channel_uuid) {
+    if (!engine || !channel_uuid) return -1;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (!dht_ctx) return -1;
+
+    pthread_mutex_lock(&engine->channel_listeners_mutex);
+
+    /* Check if already listening */
+    for (int i = 0; i < engine->channel_listener_count; i++) {
+        if (engine->channel_listeners[i].active &&
+            strcmp(engine->channel_listeners[i].channel_uuid, channel_uuid) == 0) {
+            pthread_mutex_unlock(&engine->channel_listeners_mutex);
+            return 0;  /* Already listening */
+        }
+    }
+
+    /* Check capacity */
+    if (engine->channel_listener_count >= DNA_MAX_CHANNEL_LISTENERS) {
+        QGP_LOG_WARN(LOG_TAG, "[CHAN_LISTEN] Max channel listeners reached (%d)",
+                     DNA_MAX_CHANNEL_LISTENERS);
+        pthread_mutex_unlock(&engine->channel_listeners_mutex);
+        return -1;
+    }
+
+    /* Derive DHT key for channel posts */
+    uint8_t key[32];
+    size_t key_len = 0;
+    if (dna_channel_make_posts_key(channel_uuid, key, &key_len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[CHAN_LISTEN] Failed to derive posts key for %.8s...",
+                      channel_uuid);
+        pthread_mutex_unlock(&engine->channel_listeners_mutex);
+        return -1;
+    }
+
+    /* Allocate context */
+    channel_listener_ctx_t *ctx = calloc(1, sizeof(channel_listener_ctx_t));
+    if (!ctx) {
+        pthread_mutex_unlock(&engine->channel_listeners_mutex);
+        return -1;
+    }
+    ctx->engine = engine;
+    strncpy(ctx->channel_uuid, channel_uuid, 36);
+    ctx->channel_uuid[36] = '\0';
+
+    /* Start listening */
+    size_t token = dht_listen_ex(dht_ctx, key, key_len,
+                                  channel_post_listen_callback, ctx,
+                                  channel_listener_cleanup);
+
+    if (token == 0) {
+        QGP_LOG_WARN(LOG_TAG, "[CHAN_LISTEN] Failed to start listener for %.8s...",
+                     channel_uuid);
+        free(ctx);
+        pthread_mutex_unlock(&engine->channel_listeners_mutex);
+        return -1;
+    }
+
+    /* Store in engine */
+    int idx = engine->channel_listener_count;
+    strncpy(engine->channel_listeners[idx].channel_uuid, channel_uuid, 36);
+    engine->channel_listeners[idx].channel_uuid[36] = '\0';
+    engine->channel_listeners[idx].dht_token = token;
+    engine->channel_listeners[idx].active = true;
+    engine->channel_listener_count++;
+
+    pthread_mutex_unlock(&engine->channel_listeners_mutex);
+
+    QGP_LOG_INFO(LOG_TAG, "[CHAN_LISTEN] Started channel listener for %.8s... (token=%zu)",
+                 channel_uuid, token);
+    return 0;
+}
+
+/**
+ * Cancel channel listener for a specific channel
+ */
+void dna_engine_cancel_channel_listener(dna_engine_t *engine, const char *channel_uuid) {
+    if (!engine || !channel_uuid) return;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+
+    pthread_mutex_lock(&engine->channel_listeners_mutex);
+
+    for (int i = 0; i < engine->channel_listener_count; i++) {
+        if (engine->channel_listeners[i].active &&
+            strcmp(engine->channel_listeners[i].channel_uuid, channel_uuid) == 0) {
+            if (dht_ctx) {
+                dht_cancel_listen(dht_ctx, engine->channel_listeners[i].dht_token);
+            }
+            engine->channel_listeners[i].active = false;
+
+            /* Compact: move last entry to this slot */
+            if (i < engine->channel_listener_count - 1) {
+                engine->channel_listeners[i] = engine->channel_listeners[engine->channel_listener_count - 1];
+            }
+            engine->channel_listener_count--;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&engine->channel_listeners_mutex);
+}
+
+/**
+ * Cancel all channel listeners
+ */
+void dna_engine_cancel_all_channel_listeners(dna_engine_t *engine) {
+    if (!engine) return;
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+
+    pthread_mutex_lock(&engine->channel_listeners_mutex);
+
+    for (int i = 0; i < engine->channel_listener_count; i++) {
+        if (engine->channel_listeners[i].active && dht_ctx) {
+            dht_cancel_listen(dht_ctx, engine->channel_listeners[i].dht_token);
+        }
+        engine->channel_listeners[i].active = false;
+    }
+
+    engine->channel_listener_count = 0;
+    QGP_LOG_INFO(LOG_TAG, "Cancelled all channel listeners");
+
+    pthread_mutex_unlock(&engine->channel_listeners_mutex);
 }

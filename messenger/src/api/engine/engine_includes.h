@@ -225,6 +225,11 @@ size_t dna_engine_start_wall_listener(dna_engine_t *engine, const char *contact_
 void dna_engine_cancel_wall_listener(dna_engine_t *engine, const char *contact_fingerprint);
 void dna_engine_cancel_all_wall_listeners(dna_engine_t *engine);
 
+/* From dna_engine_listeners.c (channel) */
+int dna_engine_start_channel_listener(dna_engine_t *engine, const char *channel_uuid);
+void dna_engine_cancel_channel_listener(dna_engine_t *engine, const char *channel_uuid);
+void dna_engine_cancel_all_channel_listeners(dna_engine_t *engine);
+
 /* From dna_engine_groups.c */
 int dna_engine_subscribe_all_groups(dna_engine_t *engine);
 void dna_engine_unsubscribe_all_groups(dna_engine_t *engine);

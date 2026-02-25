@@ -176,6 +176,8 @@ void dna_engine_cancel_all_ack_listeners(dna_engine_t *engine);
 size_t dna_engine_listen_outbox(dna_engine_t *engine, const char *contact_fingerprint);
 size_t dna_engine_start_presence_listener(dna_engine_t *engine, const char *contact_fingerprint);
 size_t dna_engine_start_ack_listener(dna_engine_t *engine, const char *contact_fingerprint);
+void dna_engine_cancel_all_wall_listeners(dna_engine_t *engine);
+void dna_engine_cancel_all_channel_listeners(dna_engine_t *engine);
 
 /* Forward declaration for log config initialization (defined in LOG CONFIGURATION section) */
 void init_log_config(void);
@@ -254,6 +256,7 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
     dna_engine_cancel_all_presence_listeners(engine);
     dna_engine_cancel_contact_request_listener(engine);
     dna_engine_cancel_all_wall_listeners(engine);
+    dna_engine_cancel_all_channel_listeners(engine);
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
@@ -1345,6 +1348,11 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     engine->wall_listener_count = 0;
     memset(engine->wall_listeners, 0, sizeof(engine->wall_listeners));
 
+    /* Initialize channel listeners */
+    pthread_mutex_init(&engine->channel_listeners_mutex, NULL);
+    engine->channel_listener_count = 0;
+    memset(engine->channel_listeners, 0, sizeof(engine->channel_listeners));
+
     /* Initialize group outbox listeners */
     pthread_mutex_init(&engine->group_listen_mutex, NULL);
     engine->group_listen_count = 0;
@@ -1766,6 +1774,10 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* Cancel all wall listeners */
     dna_engine_cancel_all_wall_listeners(engine);
     pthread_mutex_destroy(&engine->wall_listeners_mutex);
+
+    /* Cancel all channel listeners */
+    dna_engine_cancel_all_channel_listeners(engine);
+    pthread_mutex_destroy(&engine->channel_listeners_mutex);
 
     /* Unsubscribe from all groups */
     dna_engine_unsubscribe_all_groups(engine);
