@@ -255,14 +255,13 @@ class _ActionButtonsRow extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final walletsAsync = ref.watch(walletsProvider);
-    final theme = Theme.of(context);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 24),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          _CircularAction(
+          _PillAction(
             icon: FontAwesomeIcons.arrowUp,
             label: 'Send',
             onTap: () {
@@ -274,7 +273,7 @@ class _ActionButtonsRow extends ConsumerWidget {
             },
           ),
           const SizedBox(width: 40),
-          _CircularAction(
+          _PillAction(
             icon: FontAwesomeIcons.arrowDown,
             label: 'Receive',
             onTap: () {
@@ -291,12 +290,12 @@ class _ActionButtonsRow extends ConsumerWidget {
   }
 }
 
-class _CircularAction extends StatelessWidget {
+class _PillAction extends StatelessWidget {
   final IconData icon;
   final String label;
   final VoidCallback onTap;
 
-  const _CircularAction({
+  const _PillAction({
     required this.icon,
     required this.label,
     required this.onTap,
@@ -304,41 +303,36 @@ class _CircularAction extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return GestureDetector(
       onTap: onTap,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-              gradient: DnaGradients.primary,
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: DnaColors.gradientStart.withValues(alpha: 0.3),
-                  blurRadius: 8,
-                  offset: const Offset(0, 3),
-                ),
-              ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+        decoration: BoxDecoration(
+          gradient: DnaGradients.primary,
+          borderRadius: BorderRadius.circular(DnaSpacing.radiusFull),
+          boxShadow: [
+            BoxShadow(
+              color: DnaColors.gradientStart.withValues(alpha: 0.3),
+              blurRadius: 8,
+              offset: const Offset(0, 3),
             ),
-            child: Center(
-              child: FaIcon(
-                icon,
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FaIcon(icon, color: Colors.white, size: 16),
+            const SizedBox(width: 10),
+            Text(
+              label,
+              style: const TextStyle(
                 color: Colors.white,
-                size: 22,
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
               ),
             ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            label,
-            style: theme.textTheme.labelMedium,
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -373,7 +367,7 @@ class _ReceiveSheetState extends State<_ReceiveSheet> {
     final address = _currentAddress;
 
     return SafeArea(
-      child: SingleChildScrollView(
+      child: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -431,34 +425,44 @@ class _ReceiveSheetState extends State<_ReceiveSheet> {
               }).toList(),
             ),
             const SizedBox(height: 16),
-            // QR code
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: address.isNotEmpty
-                  ? QrImageView(
-                      data: address,
-                      version: QrVersions.auto,
-                      size: 180,
-                      backgroundColor: Colors.white,
-                    )
-                  : const SizedBox(
-                      width: 180,
-                      height: 180,
-                      child: Center(child: Text('No address')),
+            // QR code + address (scrollable if needed)
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: address.isNotEmpty
+                          ? QrImageView(
+                              data: address,
+                              version: QrVersions.auto,
+                              size: 180,
+                              backgroundColor: Colors.white,
+                            )
+                          : const SizedBox(
+                              width: 180,
+                              height: 180,
+                              child: Center(child: Text('No address')),
+                            ),
                     ),
+                    const SizedBox(height: 16),
+                    // Address text
+                    Text(
+                      address,
+                      style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
             ),
             const SizedBox(height: 16),
-            // Address text
-            Text(
-              address,
-              style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 16),
+            // Copy button pinned at bottom
             DnaButton(
               label: 'Copy Address',
               icon: FontAwesomeIcons.copy,
@@ -821,17 +825,21 @@ class _BalanceTile extends ConsumerWidget {
                   ),
                 ),
           const SizedBox(width: 12),
-          // Token name + network chip
+          // Token name + network inline
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Row(
               children: [
                 Text(
                   balance.token,
                   style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
                 ),
-                const SizedBox(height: 4),
-                DnaChip(label: getNetworkDisplayLabel(balance.network)),
+                const SizedBox(width: 6),
+                Text(
+                  '(${getNetworkDisplayLabel(balance.network)})',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.45),
+                  ),
+                ),
               ],
             ),
           ),
