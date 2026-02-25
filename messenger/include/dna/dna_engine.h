@@ -3503,7 +3503,7 @@ DNA_API dna_request_id_t dna_engine_wall_post(
 DNA_API dna_request_id_t dna_engine_wall_delete(
     dna_engine_t *engine,
     const char *post_uuid,
-    dna_status_cb callback,
+    dna_completion_cb callback,
     void *user_data
 );
 

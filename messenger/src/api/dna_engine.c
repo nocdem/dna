@@ -102,6 +102,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "database/presence_cache.h"
 #include "database/keyserver_cache.h"
 #include "database/feed_cache.h"
+#include "database/wall_cache.h"
 #include "database/profile_cache.h"
 #include "database/profile_manager.h"
 #include "database/contacts_db.h"
@@ -759,6 +760,9 @@ void dna_free_task_params(dna_task_t *task) {
             free(task->params.feed_add_comment.body);
             free(task->params.feed_add_comment.mentions_json);
             break;
+        case TASK_WALL_POST:
+            free(task->params.wall_post.text);
+            break;
         default:
             break;
     }
@@ -1185,6 +1189,20 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_FEED_REVALIDATE_COMMENTS:
             dna_handle_feed_revalidate_comments(engine, task);
             break;
+
+        /* Wall (v0.6.135+) */
+        case TASK_WALL_POST:
+            dna_handle_wall_post(engine, task);
+            break;
+        case TASK_WALL_DELETE:
+            dna_handle_wall_delete(engine, task);
+            break;
+        case TASK_WALL_LOAD:
+            dna_handle_wall_load(engine, task);
+            break;
+        case TASK_WALL_TIMELINE:
+            dna_handle_wall_timeline(engine, task);
+            break;
     }
 }
 
@@ -1302,6 +1320,9 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
 
     /* Initialize global feed cache (for instant feed rendering) */
     feed_cache_init();
+
+    /* Initialize global wall cache (for instant wall rendering) */
+    wall_cache_init();
 
     /* Initialize global profile cache + manager (for profile prefetching)
      * DHT context is obtained dynamically via dht_singleton_get() to handle reinit

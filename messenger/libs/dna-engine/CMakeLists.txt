@@ -38,6 +38,7 @@ get_filename_component(DNA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(ENGINE_SOURCES
     ${DNA_ROOT}/src/api/engine/dna_engine_unified.c
     ${DNA_ROOT}/src/api/engine/dna_engine_feed.c
+    ${DNA_ROOT}/src/api/engine/dna_engine_wall.c
     ${DNA_ROOT}/src/api/engine/dna_engine_identity.c
     ${DNA_ROOT}/src/api/engine/dna_engine_contacts.c
     ${DNA_ROOT}/src/api/engine/dna_engine_messaging.c
