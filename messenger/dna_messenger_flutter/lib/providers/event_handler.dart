@@ -12,6 +12,7 @@ import 'groups_provider.dart';
 import 'contact_requests_provider.dart';
 import 'identity_provider.dart';
 import 'identity_profile_cache_provider.dart';
+import 'contact_profile_cache_provider.dart';
 import 'feed_provider.dart';
 import 'wall_provider.dart';
 
@@ -171,6 +172,9 @@ class EventHandler {
         // Refresh identity profiles (display names/avatars) now that DHT is connected
         // This fixes the race condition where prefetch fails on startup before DHT ready
         _refreshIdentityProfiles();
+        // Refresh contact profiles (avatars) from DHT on reconnect
+        // Bypasses C-side cache to get fresh data after connection restored
+        _refreshContactProfiles();
         // Start periodic presence refresh (every 30 seconds)
         _startPresencePolling();
 
@@ -550,6 +554,34 @@ class EventHandler {
     if (identities != null && identities.isNotEmpty) {
       _ref.read(identityProfileCacheProvider.notifier).prefetchIdentities(identities);
     }
+  }
+
+  /// Refresh contact profiles from DHT on reconnect
+  /// Uses refreshProfile() to bypass C-side cache and get fresh avatar data
+  void _refreshContactProfiles() {
+    final contacts = _ref.read(contactsProvider).valueOrNull;
+    if (contacts == null || contacts.isEmpty) return;
+
+    // Refresh profiles in background (batched to avoid overloading DHT)
+    _ref.read(engineProvider).whenData((engine) async {
+      const batchSize = 3;
+      for (var i = 0; i < contacts.length; i += batchSize) {
+        final batch = contacts.skip(i).take(batchSize).toList();
+        await Future.wait(
+          batch.map((contact) async {
+            try {
+              final profile = await engine.refreshContactProfile(contact.fingerprint);
+              if (profile != null) {
+                _ref.read(contactProfileCacheProvider.notifier)
+                    .updateProfile(contact.fingerprint, profile);
+              }
+            } catch (_) {
+              // Individual profile refresh failed - continue with others
+            }
+          }),
+        );
+      }
+    });
   }
 
   /// Update selectedContactProvider when presence changes

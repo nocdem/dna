@@ -33,7 +33,9 @@ class ContactProfileCacheNotifier extends StateNotifier<Map<String, UserProfile>
       // Load all cached profiles from SQLite
       final cached = await _db.getAllProfiles();
       if (cached.isNotEmpty && mounted) {
-        state = cached;
+        // Merge: SQLite as base, in-memory state takes priority
+        // This preserves any profiles fetched from DHT during the async _init() window
+        state = {...cached, ...state};
       }
 
       // Clean up old entries (fire and forget)
@@ -102,6 +104,11 @@ class ContactProfileCacheNotifier extends StateNotifier<Map<String, UserProfile>
       final profile = await engine.lookupProfile(fingerprint);
 
       if (profile != null) {
+        // Preserve existing avatar if new profile has none
+        // This prevents stale C-side cache or partial DHT responses
+        // from overwriting good avatar data
+        _preserveAvatar(fingerprint, profile);
+
         // Update in-memory cache
         if (mounted) {
           state = {...state, fingerprint: profile};
@@ -170,6 +177,7 @@ class ContactProfileCacheNotifier extends StateNotifier<Map<String, UserProfile>
             try {
               final profile = await engine.lookupProfile(fp);
               if (profile != null && mounted) {
+                _preserveAvatar(fp, profile);
                 state = {...state, fp: profile};
                 // Persist to SQLite (fire and forget)
                 _db.saveProfile(fp, profile);
@@ -195,10 +203,26 @@ class ContactProfileCacheNotifier extends StateNotifier<Map<String, UserProfile>
 
   /// Update a specific profile in cache
   Future<void> updateProfile(String fingerprint, UserProfile profile) async {
+    // Preserve existing avatar if new profile has none
+    _preserveAvatar(fingerprint, profile);
+
     state = {...state, fingerprint: profile};
     try {
       await _db.saveProfile(fingerprint, profile);
     } catch (_) {}
+  }
+
+  /// Preserve existing avatar data when new profile has none.
+  /// Prevents stale C-side cache or partial DHT responses from
+  /// overwriting good avatar data with empty strings.
+  void _preserveAvatar(String fingerprint, UserProfile newProfile) {
+    if (newProfile.avatarBase64.isNotEmpty) return; // New profile has avatar, no need to preserve
+
+    final existing = state[fingerprint];
+    if (existing != null && existing.avatarBase64.isNotEmpty) {
+      // Carry forward the existing avatar
+      newProfile.avatarBase64 = existing.avatarBase64;
+    }
   }
 
   /// Remove a profile from cache
