@@ -310,6 +310,53 @@ typedef struct {
     uint64_t last_synced;           /* Unix timestamp of last DHT sync */
 } dna_feed_subscription_info_t;
 
+/* =====================================================
+ * Channel System (RSS-like channels)
+ * ===================================================== */
+
+/**
+ * Channel information (simplified for async API)
+ */
+typedef struct {
+    char channel_uuid[37];          /* UUID v4 */
+    char name[101];                 /* Channel name (max 100 chars) */
+    char *description;              /* Optional description (caller frees, max 500 chars) */
+    char creator_fingerprint[129];  /* Creator's SHA3-512 fingerprint */
+    uint64_t created_at;            /* Unix timestamp */
+    bool is_public;                 /* Listed on public DHT index */
+    bool deleted;                   /* Soft delete flag */
+    uint64_t deleted_at;            /* When deleted (0 if not deleted) */
+    bool verified;                  /* Dilithium5 signature verified */
+} dna_channel_info_t;
+
+/**
+ * Channel post (flat text entry in a channel)
+ */
+typedef struct {
+    char post_uuid[37];             /* UUID v4 */
+    char channel_uuid[37];          /* Parent channel UUID */
+    char author_fingerprint[129];   /* Author's SHA3-512 fingerprint */
+    char *body;                     /* Post text content (caller frees, max 4000 chars) */
+    uint64_t created_at;            /* Unix timestamp */
+    bool verified;                  /* Dilithium5 signature verified */
+} dna_channel_post_info_t;
+
+/**
+ * Channel subscription (local + DHT sync)
+ */
+typedef struct {
+    char channel_uuid[37];          /* UUID v4 of subscribed channel */
+    uint64_t subscribed_at;         /* Unix timestamp when subscribed */
+    uint64_t last_synced;           /* Unix timestamp of last DHT sync */
+    uint64_t last_read_at;          /* For unread tracking */
+} dna_channel_subscription_info_t;
+
+/* Default channel constants */
+#define DNA_DEFAULT_CHANNEL_COUNT 7
+extern const char *DNA_DEFAULT_CHANNEL_UUIDS[DNA_DEFAULT_CHANNEL_COUNT];
+extern const char *DNA_DEFAULT_CHANNEL_NAMES[DNA_DEFAULT_CHANNEL_COUNT];
+extern const char *DNA_DEFAULT_CHANNEL_DESCRIPTIONS[DNA_DEFAULT_CHANNEL_COUNT];
+
 /**
  * User profile information (wallet addresses, socials, bio, avatar)
  * Synced with DHT dna_unified_identity_t structure
@@ -603,6 +650,27 @@ typedef void (*dna_feed_subscriptions_cb)(
     void *user_data
 );
 
+/* Channel callbacks */
+typedef void (*dna_channel_cb)(
+    dna_request_id_t request_id, int error,
+    dna_channel_info_t *channel, void *user_data);
+
+typedef void (*dna_channels_cb)(
+    dna_request_id_t request_id, int error,
+    dna_channel_info_t *channels, int count, void *user_data);
+
+typedef void (*dna_channel_post_cb)(
+    dna_request_id_t request_id, int error,
+    dna_channel_post_info_t *post, void *user_data);
+
+typedef void (*dna_channel_posts_cb)(
+    dna_request_id_t request_id, int error,
+    dna_channel_post_info_t *posts, int count, void *user_data);
+
+typedef void (*dna_channel_subscriptions_cb)(
+    dna_request_id_t request_id, int error,
+    dna_channel_subscription_info_t *subscriptions, int count, void *user_data);
+
 /**
  * Wall: Single post callback (for post creation)
  * Caller takes ownership of @p post - free with dna_free_wall_posts(post, 1)
@@ -688,6 +756,8 @@ typedef enum {
     DNA_EVENT_FEED_SUBSCRIPTIONS_SYNCED, /* Subscriptions synced from DHT (v0.6.91+) */
     DNA_EVENT_FEED_CACHE_UPDATED,        /* Feed cache refreshed with new DHT data (v0.6.121+) */
     DNA_EVENT_WALL_NEW_POST,             /* New wall post from a contact (v0.6.135+) */
+    DNA_EVENT_CHANNEL_NEW_POST,          /* New post in subscribed channel */
+    DNA_EVENT_CHANNEL_SUBS_SYNCED,       /* Channel subscriptions synced from DHT */
     DNA_EVENT_ERROR
 } dna_event_type_t;
 
@@ -762,6 +832,14 @@ typedef struct {
             char author_fingerprint[129];   /* Post author's fingerprint */
             char post_uuid[37];             /* New post UUID */
         } wall_new_post;
+        struct {
+            char channel_uuid[37];
+            char post_uuid[37];
+            char author_fingerprint[129];
+        } channel_new_post;
+        struct {
+            int subscriptions_synced;
+        } channel_subs_synced;
         struct {
             int code;
             char message[256];
@@ -3055,6 +3133,31 @@ DNA_API void dna_free_feed_comments(dna_feed_comment_info_t *comments, int count
 DNA_API void dna_free_feed_subscriptions(dna_feed_subscription_info_t *subscriptions, int count);
 
 /**
+ * Free single channel info returned by callbacks
+ */
+DNA_API void dna_free_channel_info(dna_channel_info_t *channel);
+
+/**
+ * Free channel infos array returned by callbacks
+ */
+DNA_API void dna_free_channel_infos(dna_channel_info_t *channels, int count);
+
+/**
+ * Free single channel post returned by callbacks
+ */
+DNA_API void dna_free_channel_post(dna_channel_post_info_t *post);
+
+/**
+ * Free channel posts array returned by callbacks
+ */
+DNA_API void dna_free_channel_posts(dna_channel_post_info_t *posts, int count);
+
+/**
+ * Free channel subscriptions array returned by callbacks
+ */
+DNA_API void dna_free_channel_subscriptions(dna_channel_subscription_info_t *subs, int count);
+
+/**
  * Free profile returned by callbacks
  */
 DNA_API void dna_free_profile(dna_profile_t *profile);
@@ -3645,6 +3748,49 @@ DNA_API dna_request_id_t dna_engine_wall_get_comments(
  * Free wall comments array returned by callbacks
  */
 DNA_API void dna_free_wall_comments(dna_wall_comment_info_t *comments, int count);
+
+/* ============================================================================
+ * CHANNELS (RSS-like public channels via DHT)
+ * ============================================================================ */
+
+/* Channel CRUD */
+DNA_API dna_request_id_t dna_engine_channel_create(dna_engine_t *engine,
+    const char *name, const char *description, bool is_public,
+    dna_channel_cb callback, void *user_data);
+
+DNA_API dna_request_id_t dna_engine_channel_get(dna_engine_t *engine,
+    const char *uuid, dna_channel_cb callback, void *user_data);
+
+DNA_API dna_request_id_t dna_engine_channel_delete(dna_engine_t *engine,
+    const char *uuid, dna_completion_cb callback, void *user_data);
+
+DNA_API dna_request_id_t dna_engine_channel_discover(dna_engine_t *engine,
+    int days_back, dna_channels_cb callback, void *user_data);
+
+/* Channel posts */
+DNA_API dna_request_id_t dna_engine_channel_post(dna_engine_t *engine,
+    const char *channel_uuid, const char *body,
+    dna_channel_post_cb callback, void *user_data);
+
+DNA_API dna_request_id_t dna_engine_channel_get_posts(dna_engine_t *engine,
+    const char *channel_uuid,
+    dna_channel_posts_cb callback, void *user_data);
+
+/* Channel subscriptions (synchronous) */
+DNA_API int  dna_engine_channel_subscribe(dna_engine_t *engine, const char *channel_uuid);
+DNA_API int  dna_engine_channel_unsubscribe(dna_engine_t *engine, const char *channel_uuid);
+DNA_API bool dna_engine_channel_is_subscribed(dna_engine_t *engine, const char *channel_uuid);
+DNA_API int  dna_engine_channel_mark_read(dna_engine_t *engine, const char *channel_uuid);
+
+/* Channel subscriptions (async) */
+DNA_API dna_request_id_t dna_engine_channel_get_subscriptions(dna_engine_t *engine,
+    dna_channel_subscriptions_cb callback, void *user_data);
+
+DNA_API dna_request_id_t dna_engine_channel_sync_subs_to_dht(dna_engine_t *engine,
+    dna_completion_cb callback, void *user_data);
+
+DNA_API dna_request_id_t dna_engine_channel_sync_subs_from_dht(dna_engine_t *engine,
+    dna_completion_cb callback, void *user_data);
 
 /* ============================================================================
  * SIGNING (for QR Auth and external authentication)
