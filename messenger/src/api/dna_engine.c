@@ -103,6 +103,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "database/keyserver_cache.h"
 #include "database/feed_cache.h"
 #include "database/wall_cache.h"
+#include "database/channel_cache.h"
 #include "database/profile_cache.h"
 #include "database/profile_manager.h"
 #include "database/contacts_db.h"
@@ -773,6 +774,12 @@ void dna_free_task_params(dna_task_t *task) {
         case TASK_WALL_ADD_COMMENT:
             free(task->params.wall_add_comment.body);
             break;
+        case TASK_CHANNEL_CREATE:
+            free(task->params.channel_create.description);
+            break;
+        case TASK_CHANNEL_POST:
+            free(task->params.channel_post.body);
+            break;
         default:
             break;
     }
@@ -1221,6 +1228,35 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_WALL_GET_COMMENTS:
             dna_handle_wall_get_comments(engine, task);
             break;
+
+        /* Channel system (RSS-like channels) */
+        case TASK_CHANNEL_CREATE:
+            dna_handle_channel_create(engine, task);
+            break;
+        case TASK_CHANNEL_GET:
+            dna_handle_channel_get(engine, task);
+            break;
+        case TASK_CHANNEL_DELETE:
+            dna_handle_channel_delete(engine, task);
+            break;
+        case TASK_CHANNEL_DISCOVER:
+            dna_handle_channel_discover(engine, task);
+            break;
+        case TASK_CHANNEL_POST:
+            dna_handle_channel_post(engine, task);
+            break;
+        case TASK_CHANNEL_GET_POSTS:
+            dna_handle_channel_get_posts(engine, task);
+            break;
+        case TASK_CHANNEL_GET_SUBSCRIPTIONS:
+            dna_handle_channel_get_subscriptions(engine, task);
+            break;
+        case TASK_CHANNEL_SYNC_SUBS_TO_DHT:
+            dna_handle_channel_sync_subs_to_dht(engine, task);
+            break;
+        case TASK_CHANNEL_SYNC_SUBS_FROM_DHT:
+            dna_handle_channel_sync_subs_from_dht(engine, task);
+            break;
     }
 }
 
@@ -1346,6 +1382,9 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
 
     /* Initialize global wall cache (for instant wall rendering) */
     wall_cache_init();
+
+    /* Initialize global channel cache (for instant channel rendering) */
+    channel_cache_init();
 
     /* Initialize global profile cache + manager (for profile prefetching)
      * DHT context is obtained dynamically via dht_singleton_get() to handle reinit
