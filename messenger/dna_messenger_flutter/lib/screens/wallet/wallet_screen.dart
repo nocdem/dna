@@ -16,7 +16,15 @@ import 'address_dialog.dart';
 /// Network filter for the wallet assets list (null = show all)
 final walletNetworkFilterProvider = StateProvider<String?>((ref) => null);
 
-/// Get the SVG icon path for a token
+/// Render a crypto icon asset, supporting both SVG and PNG formats.
+Widget buildCryptoIcon(String assetPath, {BoxFit fit = BoxFit.contain}) {
+  if (assetPath.endsWith('.svg')) {
+    return SvgPicture.asset(assetPath, fit: fit);
+  }
+  return Image.asset(assetPath, fit: fit);
+}
+
+/// Get the icon path for a token
 String? getTokenIconPath(String token) {
   switch (token.toUpperCase()) {
     case 'ETH':
@@ -29,9 +37,10 @@ String? getTokenIconPath(String token) {
       return 'assets/icons/crypto/usdt.svg';
     case 'KEL':
       return 'assets/icons/crypto/kel.svg';
+    case 'NYS':
+      return 'assets/icons/crypto/nys.png';
     case 'CELL':
     case 'CPUNK':
-    case 'NYS':
     case 'QEVM':
       return 'assets/icons/crypto/cell.svg';  // CF20 tokens use Cellframe icon
     default:
@@ -413,7 +422,7 @@ class _ReceiveSheetState extends State<_ReceiveSheet> {
                           ),
                           child: Padding(
                             padding: const EdgeInsets.all(8),
-                            child: SvgPicture.asset(icon),
+                            child: buildCryptoIcon(icon),
                           ),
                         ),
                         const SizedBox(height: 4),
@@ -681,7 +690,7 @@ class _ChainIcon extends StatelessWidget {
             ),
             child: Padding(
               padding: const EdgeInsets.all(6),
-              child: SvgPicture.asset(asset),
+              child: buildCryptoIcon(asset),
             ),
           ),
           const SizedBox(height: 4),
@@ -820,7 +829,7 @@ class _BalanceTile extends ConsumerWidget {
               ? SizedBox(
                   width: 40,
                   height: 40,
-                  child: SvgPicture.asset(iconPath, fit: BoxFit.contain),
+                  child: buildCryptoIcon(iconPath),
                 )
               : CircleAvatar(
                   backgroundColor: _getTokenColor(balance.token).withValues(alpha: 0.2),
@@ -2097,7 +2106,7 @@ class _TokenDetailSheet extends ConsumerWidget {
       return SizedBox(
         width: size,
         height: size,
-        child: SvgPicture.asset(iconPath, fit: BoxFit.contain),
+        child: buildCryptoIcon(iconPath),
       );
     }
     return CircleAvatar(
