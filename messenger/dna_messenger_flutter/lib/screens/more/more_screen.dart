@@ -12,8 +12,7 @@ import '../wallet/wallet_screen.dart';
 import '../qr/qr_scanner_screen.dart';
 import '../wallet/address_book_screen.dart';
 import '../settings/starred_messages_screen.dart';
-import '../settings/blocked_users_screen.dart';
-import '../contacts/contact_requests_screen.dart';
+import '../contacts/contacts_hub_screen.dart';
 import '../settings/settings_screen.dart';
 import '../settings/app_lock_settings_screen.dart';
 import '../profile/profile_editor_screen.dart';
@@ -68,19 +67,12 @@ class MoreScreen extends ConsumerWidget {
         ),
       ),
       DnaMoreGridItem(
-        icon: FontAwesomeIcons.ban,
-        label: 'Blocked',
+        icon: FontAwesomeIcons.addressCard,
+        label: 'Contacts',
+        badgeCount: ref.watch(pendingRequestCountProvider),
         onTap: () => Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => const BlockedUsersScreen()),
-        ),
-      ),
-      DnaMoreGridItem(
-        icon: FontAwesomeIcons.userPlus,
-        label: 'Requests',
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const ContactRequestsScreen()),
+          MaterialPageRoute(builder: (_) => const ContactsHubScreen()),
         ),
       ),
     ];

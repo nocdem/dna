@@ -18,9 +18,6 @@ import '../../design_system/design_system.dart';
 import '../../utils/platform_utils.dart';
 import '../profile/profile_editor_screen.dart';
 import 'app_lock_settings_screen.dart';
-import 'blocked_users_screen.dart';
-import 'contacts_management_screen.dart';
-import 'starred_messages_screen.dart';
 
 /// Provider for app package info (version from pubspec.yaml)
 final packageInfoProvider = FutureProvider<PackageInfo>((ref) async {
@@ -52,8 +49,6 @@ class SettingsScreen extends ConsumerWidget {
             ),
             // Appearance
             const _AppearanceSection(),
-            // Contacts
-            _ContactsSection(),
             // Notifications (Android only)
             const _NotificationsSection(),
             // Security
@@ -252,53 +247,6 @@ class _AppearanceSection extends ConsumerWidget {
   }
 }
 
-class _ContactsSection extends ConsumerWidget {
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final contacts = ref.watch(contactsProvider);
-    final contactCount = contacts.when(
-      data: (list) => list.length,
-      loading: () => 0,
-      error: (_, _) => 0,
-    );
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const _SectionHeader('Contacts'),
-        ListTile(
-          leading: const FaIcon(FontAwesomeIcons.users),
-          title: const Text('Manage Contacts'),
-          subtitle: Text(contactCount > 0 ? '$contactCount contacts' : 'No contacts'),
-          trailing: const FaIcon(FontAwesomeIcons.chevronRight),
-          onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => const ContactsManagementScreen(),
-              ),
-            );
-          },
-        ),
-        ListTile(
-          leading: const FaIcon(FontAwesomeIcons.star),
-          title: const Text('Starred Messages'),
-          subtitle: const Text('View bookmarked messages'),
-          trailing: const FaIcon(FontAwesomeIcons.chevronRight),
-          onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => const StarredMessagesScreen(),
-              ),
-            );
-          },
-        ),
-      ],
-    );
-  }
-}
-
 /// Notifications section - Android only
 /// Desktop notifications not yet implemented (see MISSING_FEATURES.md)
 class _NotificationsSection extends StatelessWidget {
@@ -329,13 +277,6 @@ class _SecuritySection extends ConsumerStatefulWidget {
 class _SecuritySectionState extends ConsumerState<_SecuritySection> {
   @override
   Widget build(BuildContext context) {
-    final blockedUsers = ref.watch(blockedUsersProvider);
-    final blockedCount = blockedUsers.when(
-      data: (list) => list.length,
-      loading: () => 0,
-      error: (e, st) => 0,
-    );
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -357,20 +298,6 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
               context,
               MaterialPageRoute(
                 builder: (context) => const AppLockSettingsScreen(),
-              ),
-            );
-          },
-        ),
-        ListTile(
-          leading: const FaIcon(FontAwesomeIcons.ban),
-          title: const Text('Blocked Users'),
-          subtitle: Text(blockedCount > 0 ? '$blockedCount blocked' : 'No blocked users'),
-          trailing: const FaIcon(FontAwesomeIcons.chevronRight),
-          onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => const BlockedUsersScreen(),
               ),
             );
           },
