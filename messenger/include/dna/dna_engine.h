@@ -260,6 +260,18 @@ typedef struct {
 } dna_feed_topic_info_t;
 
 /**
+ * Wall: Post information (for async API callbacks)
+ */
+typedef struct {
+    char uuid[37];                      /* UUID v4 */
+    char author_fingerprint[129];       /* Author's SHA3-512 fingerprint */
+    char author_name[65];              /* Resolved display name (empty if unknown) */
+    char text[2048];                    /* Post content */
+    uint64_t timestamp;                 /* Unix timestamp (seconds) */
+    bool verified;                      /* Signature verified */
+} dna_wall_post_info_t;
+
+/**
  * Feed v2: Comment information (single-level threaded with mentions)
  */
 typedef struct {
@@ -577,6 +589,27 @@ typedef void (*dna_feed_subscriptions_cb)(
 );
 
 /**
+ * Wall: Single post callback (for post creation)
+ */
+typedef void (*dna_wall_post_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_wall_post_info_t *post,
+    void *user_data
+);
+
+/**
+ * Wall: Posts list callback (for wall load and timeline)
+ */
+typedef void (*dna_wall_posts_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_wall_post_info_t *posts,
+    int count,
+    void *user_data
+);
+
+/**
  * Profile callback
  */
 typedef void (*dna_profile_cb)(
@@ -614,6 +647,7 @@ typedef enum {
     DNA_EVENT_FEED_TOPIC_COMMENT,        /* New comment on subscribed topic (v0.6.91+) */
     DNA_EVENT_FEED_SUBSCRIPTIONS_SYNCED, /* Subscriptions synced from DHT (v0.6.91+) */
     DNA_EVENT_FEED_CACHE_UPDATED,        /* Feed cache refreshed with new DHT data (v0.6.121+) */
+    DNA_EVENT_WALL_NEW_POST,             /* New wall post from a contact (v0.6.135+) */
     DNA_EVENT_ERROR
 } dna_event_type_t;
 
@@ -684,6 +718,10 @@ typedef struct {
         struct {
             char cache_key[64];
         } feed_cache_updated;
+        struct {
+            char author_fingerprint[129];   /* Post author's fingerprint */
+            char post_uuid[37];             /* New post UUID */
+        } wall_new_post;
         struct {
             int code;
             char message[256];
@@ -3432,6 +3470,80 @@ DNA_API int dna_engine_check_version_dht(
     dna_engine_t *engine,
     dna_version_check_result_t *result_out
 );
+
+/* ============================================================================
+ * WALL (personal wall posts, v0.6.135+)
+ * ============================================================================ */
+
+/**
+ * Post a message to own wall
+ *
+ * @param engine    Engine instance
+ * @param text      Post text (max 2047 chars, will be truncated)
+ * @param callback  Called with created post info
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_wall_post(
+    dna_engine_t *engine,
+    const char *text,
+    dna_wall_post_cb callback,
+    void *user_data
+);
+
+/**
+ * Delete own wall post
+ *
+ * @param engine     Engine instance
+ * @param post_uuid  UUID of post to delete
+ * @param callback   Called when complete
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_wall_delete(
+    dna_engine_t *engine,
+    const char *post_uuid,
+    dna_status_cb callback,
+    void *user_data
+);
+
+/**
+ * Load a user's wall posts
+ *
+ * @param engine       Engine instance
+ * @param fingerprint  Wall owner's fingerprint
+ * @param callback     Called with posts array
+ * @param user_data    User data for callback
+ * @return             Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_wall_load(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_wall_posts_cb callback,
+    void *user_data
+);
+
+/**
+ * Load timeline (all contacts' wall posts merged)
+ *
+ * Returns posts from all contacts sorted by timestamp descending.
+ * Also includes own posts.
+ *
+ * @param engine    Engine instance
+ * @param callback  Called with merged posts array
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_wall_timeline(
+    dna_engine_t *engine,
+    dna_wall_posts_cb callback,
+    void *user_data
+);
+
+/**
+ * Free wall posts array returned by callbacks
+ */
+DNA_API void dna_free_wall_posts(dna_wall_post_info_t *posts, int count);
 
 /* ============================================================================
  * SIGNING (for QR Auth and external authentication)
