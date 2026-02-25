@@ -13,6 +13,7 @@ import 'contact_requests_provider.dart';
 import 'identity_provider.dart';
 import 'identity_profile_cache_provider.dart';
 import 'feed_provider.dart';
+import 'wall_provider.dart';
 
 /// Connection state for DHT
 enum DhtConnectionState { disconnected, connecting, connected }
@@ -373,6 +374,11 @@ class EventHandler {
           _ref.invalidate(selectedTopicProvider);
           _ref.invalidate(topicCommentsProvider(selectedUuid));
         }
+        break;
+
+      case WallNewPostEvent(authorFingerprint: final author, postUuid: final uuid):
+        logPrint('[DART-HANDLER] WallNewPostEvent: author=${author.substring(0, 16)}..., post=$uuid');
+        _ref.invalidate(wallTimelineProvider);
         break;
 
       case ErrorEvent(message: final errorMsg):
