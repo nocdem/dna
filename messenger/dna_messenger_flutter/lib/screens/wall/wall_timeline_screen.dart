@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../design_system/design_system.dart';
+import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../widgets/wall_post_tile.dart';
 
@@ -41,6 +42,9 @@ class WallTimelineScreen extends ConsumerWidget {
                       myFingerprint: myFp,
                       onDelete: post.isOwn(myFp)
                           ? () => _confirmDelete(context, ref, post.uuid)
+                          : null,
+                      onShare: !post.isOwn(myFp)
+                          ? () => _showRepostDialog(context, ref, post)
                           : null,
                     );
                   },
@@ -188,6 +192,124 @@ class WallTimelineScreen extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+
+  void _showRepostDialog(BuildContext context, WidgetRef ref, WallPost post) {
+    final controller = TextEditingController();
+    final authorName = post.authorName.isNotEmpty
+        ? post.authorName
+        : post.authorFingerprint.substring(0, 16);
+
+    // Build the quote block
+    final quotedLines = post.text.split('\n').map((l) => '\u2502 $l').join('\n');
+    final quoteBlock = '\u25b8 $authorName wrote:\n$quotedLines';
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        final theme = Theme.of(dialogContext);
+        return AlertDialog(
+          title: Row(
+            children: [
+              FaIcon(FontAwesomeIcons.retweet, size: 16, color: theme.colorScheme.primary),
+              const SizedBox(width: DnaSpacing.sm),
+              const Text('Repost'),
+            ],
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Quote preview
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(DnaSpacing.md),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(DnaSpacing.radiusSm),
+                      border: Border(
+                        left: BorderSide(
+                          color: theme.colorScheme.primary,
+                          width: 3,
+                        ),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          authorName,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                            color: theme.colorScheme.primary,
+                          ),
+                        ),
+                        const SizedBox(height: DnaSpacing.xs),
+                        Text(
+                          post.text,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                          maxLines: 6,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: DnaSpacing.md),
+                  // Optional comment
+                  TextField(
+                    controller: controller,
+                    maxLines: 3,
+                    maxLength: 2000 - quoteBlock.length - 2,
+                    decoration: const InputDecoration(
+                      hintText: 'Add a comment (optional)',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                Navigator.pop(dialogContext);
+                final comment = controller.text.trim();
+                final fullText = comment.isEmpty
+                    ? quoteBlock
+                    : '$quoteBlock\n\n$comment';
+                try {
+                  await ref.read(wallTimelineProvider.notifier).createPost(fullText);
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Reposted to your wall'),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  }
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Failed to repost: $e')),
+                    );
+                  }
+                }
+              },
+              child: const Text('Repost'),
+            ),
+          ],
+        );
+      },
     );
   }
 }

@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import '../../design_system/design_system.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
+import '../../utils/time_format.dart';
 
 class FeedScreen extends ConsumerWidget {
   const FeedScreen({super.key});
@@ -306,91 +307,90 @@ class _TopicTile extends ConsumerWidget {
     ref.read(nameResolverProvider.notifier).resolveName(topic.authorFingerprint);
 
     return DnaCard(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      padding: const EdgeInsets.all(12),
+      margin: const EdgeInsets.symmetric(
+        horizontal: DnaSpacing.md,
+        vertical: DnaSpacing.xs + 2,
+      ),
+      padding: const EdgeInsets.all(DnaSpacing.lg),
       onTap: onTap,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Author row (social media style - at top)
           Row(
             children: [
+              DnaAvatar(
+                name: authorName.isNotEmpty ? authorName : '?',
+                size: DnaAvatarSize.sm,
+              ),
+              const SizedBox(width: DnaSpacing.sm),
               Expanded(
-                child: Text(
-                  topic.title,
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    decoration: topic.deleted ? TextDecoration.lineThrough : null,
-                  ),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      authorName,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Text(
+                      formatRelativeTime(topic.createdAt),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
                 ),
               ),
               if (isSubscribed)
-                Padding(
-                  padding: const EdgeInsets.only(left: 8),
-                  child: FaIcon(
-                    FontAwesomeIcons.solidBookmark,
-                    size: 14,
-                    color: theme.colorScheme.primary,
-                  ),
+                FaIcon(
+                  FontAwesomeIcons.solidBookmark,
+                  size: 13,
+                  color: theme.colorScheme.primary,
                 ),
             ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: DnaSpacing.md),
+          // Title
+          Text(
+            topic.title,
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.bold,
+              decoration: topic.deleted ? TextDecoration.lineThrough : null,
+            ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: DnaSpacing.xs),
+          // Body preview
           Text(
             topic.body,
-            style: theme.textTheme.bodyMedium,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              height: 1.3,
+            ),
             maxLines: 3,
             overflow: TextOverflow.ellipsis,
           ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              _CategoryBadge(category: topic.categoryId),
-              const SizedBox(width: 8),
-              ...topic.tags.take(2).map((tag) => Padding(
-                padding: const EdgeInsets.only(right: 4),
-                child: Chip(
-                  label: Text(tag, style: const TextStyle(fontSize: 10)),
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  padding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                ),
-              )),
-              const Spacer(),
-              Text(
-                authorName,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                _formatTime(topic.createdAt),
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
+          // Category + tags footer
+          if (topic.categoryId.isNotEmpty || topic.tags.isNotEmpty) ...[
+            const SizedBox(height: DnaSpacing.md),
+            Wrap(
+              spacing: DnaSpacing.xs,
+              runSpacing: DnaSpacing.xs,
+              children: [
+                _CategoryBadge(category: topic.categoryId),
+                ...topic.tags.take(3).map((tag) => DnaChip(label: tag)),
+              ],
+            ),
+          ],
         ],
       ),
     );
-  }
-
-  String _formatTime(DateTime time) {
-    final now = DateTime.now();
-    final diff = now.difference(time);
-
-    if (diff.inMinutes < 60) {
-      return '${diff.inMinutes}m ago';
-    } else if (diff.inHours < 24) {
-      return '${diff.inHours}h ago';
-    } else if (diff.inDays < 7) {
-      return '${diff.inDays}d ago';
-    } else {
-      return DateFormat('MMM d').format(time);
-    }
   }
 }
 
@@ -588,29 +588,36 @@ class _TopicDetailContent extends ConsumerWidget {
                 ),
                 const SizedBox(height: 16),
                 Wrap(
-                  spacing: 8,
-                  runSpacing: 4,
+                  spacing: DnaSpacing.xs,
+                  runSpacing: DnaSpacing.xs,
                   children: [
                     _CategoryBadge(category: topic.categoryId),
-                    ...topic.tags.map((tag) => Chip(
-                      label: Text(tag),
-                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      padding: EdgeInsets.zero,
-                      visualDensity: VisualDensity.compact,
-                    )),
+                    ...topic.tags.map((tag) => DnaChip(label: tag)),
                   ],
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: DnaSpacing.md),
                 Row(
                   children: [
-                    Text(
-                      'Author: $topicAuthorName',
-                      style: theme.textTheme.bodySmall,
+                    DnaAvatar(
+                      name: topicAuthorName.isNotEmpty ? topicAuthorName : '?',
+                      size: DnaAvatarSize.sm,
                     ),
-                    const Spacer(),
+                    const SizedBox(width: DnaSpacing.sm),
+                    Expanded(
+                      child: Text(
+                        topicAuthorName,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
                     Text(
                       DateFormat('MMM d, yyyy h:mm a').format(topic.createdAt),
-                      style: theme.textTheme.bodySmall,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ],
                 ),
@@ -737,7 +744,7 @@ void _showReplyDialog(BuildContext context, WidgetRef ref, String topicUuid, Fee
 class _CommentTile extends ConsumerWidget {
   final FeedComment comment;
   final VoidCallback? onReply;
-  final bool isReply; // True if this is a reply (indented)
+  final bool isReply;
 
   const _CommentTile({
     required this.comment,
@@ -753,90 +760,137 @@ class _CommentTile extends ConsumerWidget {
     final authorName = ref.watch(nameResolverProvider)[comment.authorFingerprint]
         ?? '${comment.authorFingerprint.substring(0, 16)}...';
 
-    return Padding(
-      padding: EdgeInsets.only(left: isReply ? 24 : 0), // Indent replies
-      child: Card(
-        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        color: isReply ? theme.colorScheme.surfaceContainerHighest : null,
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    // Resolve mention names
+    final resolvedNames = ref.watch(nameResolverProvider);
+
+    Widget card = DnaCard(
+      margin: EdgeInsets.only(
+        left: isReply ? DnaSpacing.xl + DnaSpacing.md : DnaSpacing.md,
+        right: DnaSpacing.md,
+        top: DnaSpacing.xs,
+        bottom: DnaSpacing.xs,
+      ),
+      padding: const EdgeInsets.all(DnaSpacing.md),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Author row with avatar
+          Row(
             children: [
-              Row(
-                children: [
-                  if (isReply) ...[
-                    FaIcon(
-                      FontAwesomeIcons.reply,
-                      size: 10,
-                      color: theme.colorScheme.primary,
-                    ),
-                    const SizedBox(width: 6),
-                  ],
-                  Text(
-                    authorName,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const Spacer(),
-                  Text(
-                    _formatTime(comment.createdAt),
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
+              DnaAvatar(
+                name: authorName.isNotEmpty ? authorName : '?',
+                size: DnaAvatarSize.sm,
               ),
-              const SizedBox(height: 8),
-              Text(comment.body),
-              if (comment.mentions.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 4,
-                  children: comment.mentions.map((m) => Chip(
-                    label: Text('@${m.substring(0, 8)}...', style: const TextStyle(fontSize: 10)),
-                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    padding: EdgeInsets.zero,
-                    visualDensity: VisualDensity.compact,
-                  )).toList(),
-                ),
-              ],
-              // Reply button (only for top-level comments to enforce single-level threading)
-              if (!isReply && onReply != null) ...[
-                const SizedBox(height: 8),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton.icon(
-                    onPressed: onReply,
-                    icon: const FaIcon(FontAwesomeIcons.reply, size: 12),
-                    label: const Text('Reply'),
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              const SizedBox(width: DnaSpacing.sm),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      authorName,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                  ),
+                    Text(
+                      formatRelativeTime(comment.createdAt),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
+              if (isReply)
+                FaIcon(
+                  FontAwesomeIcons.reply,
+                  size: 11,
+                  color: theme.colorScheme.primary.withAlpha(160),
+                ),
             ],
           ),
-        ),
+          const SizedBox(height: DnaSpacing.sm),
+          // Comment body
+          Text(
+            comment.body,
+            style: theme.textTheme.bodyMedium?.copyWith(height: 1.4),
+          ),
+          // Mentions
+          if (comment.mentions.isNotEmpty) ...[
+            const SizedBox(height: DnaSpacing.sm),
+            Wrap(
+              spacing: DnaSpacing.xs,
+              runSpacing: DnaSpacing.xs,
+              children: comment.mentions.map((m) {
+                final mentionName = resolvedNames[m]
+                    ?? '@${m.substring(0, 8)}...';
+                return DnaChip(label: mentionName);
+              }).toList(),
+            ),
+          ],
+          // Reply button
+          if (!isReply && onReply != null) ...[
+            const SizedBox(height: DnaSpacing.xs),
+            Align(
+              alignment: Alignment.centerRight,
+              child: InkWell(
+                onTap: onReply,
+                borderRadius: BorderRadius.circular(DnaSpacing.radiusSm),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: DnaSpacing.sm,
+                    vertical: DnaSpacing.xs,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FaIcon(
+                        FontAwesomeIcons.reply,
+                        size: 12,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: DnaSpacing.xs),
+                      Text(
+                        'Reply',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
-  }
 
-  String _formatTime(DateTime time) {
-    final now = DateTime.now();
-    final diff = now.difference(time);
-
-    if (diff.inMinutes < 60) {
-      return '${diff.inMinutes}m ago';
-    } else if (diff.inHours < 24) {
-      return '${diff.inHours}h ago';
-    } else {
-      return DateFormat('MMM d').format(time);
+    // Add left border accent for replies
+    if (isReply) {
+      card = Stack(
+        children: [
+          card,
+          Positioned(
+            left: DnaSpacing.xl + DnaSpacing.md,
+            top: DnaSpacing.xs,
+            bottom: DnaSpacing.xs,
+            child: Container(
+              width: 3,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primary.withAlpha(120),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+        ],
+      );
     }
+
+    return card;
   }
 }
 
