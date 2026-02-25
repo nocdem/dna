@@ -146,7 +146,13 @@ typedef enum {
     /* Feed cache revalidation (v0.6.121+) */
     TASK_FEED_REVALIDATE_INDEX,
     TASK_FEED_REVALIDATE_TOPIC,
-    TASK_FEED_REVALIDATE_COMMENTS
+    TASK_FEED_REVALIDATE_COMMENTS,
+
+    /* Wall (personal wall posts, v0.6.135+) */
+    TASK_WALL_POST,
+    TASK_WALL_DELETE,
+    TASK_WALL_LOAD,
+    TASK_WALL_TIMELINE
 } dna_task_type_t;
 
 /* ============================================================================
@@ -397,6 +403,23 @@ typedef union {
         char group_uuid[37];
     } sync_group_by_uuid;
 
+    /* Wall: Post message */
+    struct {
+        char *text;                     /* Heap allocated, task owns (max 2048 chars) */
+    } wall_post;
+
+    /* Wall: Delete post */
+    struct {
+        char uuid[37];                  /* Post UUID to delete */
+    } wall_delete;
+
+    /* Wall: Load one user's wall */
+    struct {
+        char fingerprint[129];          /* Wall owner's fingerprint */
+    } wall_load;
+
+    /* Wall: Timeline has no extra params (uses engine->contacts list) */
+
 } dna_task_params_t;
 
 /**
@@ -428,6 +451,8 @@ typedef union {
     dna_profile_cb profile;
     dna_presence_cb presence;
     dna_gas_estimates_cb gas_estimates;
+    dna_wall_post_cb wall_post;
+    dna_wall_posts_cb wall_posts;
 } dna_task_callback_t;
 
 /**
@@ -807,6 +832,12 @@ void dna_handle_feed_sync_subscriptions_from_dht(dna_engine_t *engine, dna_task_
 void dna_handle_feed_revalidate_index(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_feed_revalidate_topic(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_feed_revalidate_comments(dna_engine_t *engine, dna_task_t *task);
+
+/* Wall (personal wall posts, v0.6.135+) */
+void dna_handle_wall_post(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_wall_delete(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_wall_load(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task);
 
 /* ============================================================================
  * INTERNAL FUNCTIONS - Helpers
