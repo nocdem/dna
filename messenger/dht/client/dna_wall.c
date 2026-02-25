@@ -62,7 +62,13 @@ static void wall_generate_uuid(char *uuid_out) {
 }
 
 /**
- * Build signing payload for a wall post: uuid + text + timestamp_be (8 bytes)
+ * Build signing payload for a wall post:
+ *   uuid + text + timestamp_be (8 bytes) [+ SHA3-512(image_json) if present]
+ *
+ * When image_json is present, its SHA3-512 hash (64 bytes) is appended.
+ * This ensures image data integrity without bloating the signing payload.
+ * Old clients without image support produce the same payload for text-only posts.
+ *
  * Caller must free the returned buffer.
  */
 static uint8_t *wall_build_sign_payload(const dna_wall_post_t *post, size_t *payload_len_out) {
@@ -70,7 +76,8 @@ static uint8_t *wall_build_sign_payload(const dna_wall_post_t *post, size_t *pay
 
     size_t uuid_len = strlen(post->uuid);
     size_t text_len = strlen(post->text);
-    size_t payload_len = uuid_len + text_len + 8;
+    bool has_image = (post->image_json != NULL && post->image_json[0] != '\0');
+    size_t payload_len = uuid_len + text_len + 8 + (has_image ? 64 : 0);
 
     uint8_t *payload = malloc(payload_len);
     if (!payload) return NULL;
@@ -80,6 +87,12 @@ static uint8_t *wall_build_sign_payload(const dna_wall_post_t *post, size_t *pay
 
     uint64_t ts_be = htobe64(post->timestamp);
     memcpy(payload + uuid_len + text_len, &ts_be, 8);
+
+    /* Append SHA3-512 hash of image_json if present */
+    if (has_image) {
+        qgp_sha3_512((const uint8_t *)post->image_json, strlen(post->image_json),
+                      payload + uuid_len + text_len + 8);
+    }
 
     *payload_len_out = payload_len;
     return payload;
@@ -128,6 +141,14 @@ char *dna_wall_to_json(const dna_wall_t *wall) {
         json_object_object_add(obj, "author", json_object_new_string(post->author_fingerprint));
         json_object_object_add(obj, "text", json_object_new_string(post->text));
         json_object_object_add(obj, "ts", json_object_new_int64((int64_t)post->timestamp));
+
+        /* Image JSON (v0.7.0+) - omit if not present for backward compat */
+        if (post->image_json && post->image_json[0] != '\0') {
+            json_object *img_obj = json_tokener_parse(post->image_json);
+            if (img_obj) {
+                json_object_object_add(obj, "img", img_obj);
+            }
+        }
 
         /* Signature as base64 */
         if (post->signature_len > 0) {
@@ -206,6 +227,14 @@ int dna_wall_from_json(const char *json, dna_wall_t *wall) {
 
         if (json_object_object_get_ex(obj, "ts", &j_val))
             post->timestamp = (uint64_t)json_object_get_int64(j_val);
+
+        /* Image JSON (v0.7.0+) - old posts won't have this field */
+        if (json_object_object_get_ex(obj, "img", &j_val) && j_val) {
+            const char *img_str = json_object_to_json_string_ext(j_val, JSON_C_TO_STRING_PLAIN);
+            if (img_str) {
+                post->image_json = strdup(img_str);
+            }
+        }
 
         if (json_object_object_get_ex(obj, "sig", &j_val)) {
             const char *sig_b64 = json_object_get_string(j_val);
@@ -307,6 +336,8 @@ int dna_wall_post(dht_context_t *dht,
                 oldest_idx = i;
             }
         }
+        /* Free heap members before overwriting */
+        free(wall.posts[oldest_idx].image_json);
         if (oldest_idx < wall.post_count - 1) {
             memmove(&wall.posts[oldest_idx], &wall.posts[oldest_idx + 1],
                     (wall.post_count - oldest_idx - 1) * sizeof(dna_wall_post_t));
@@ -359,6 +390,140 @@ int dna_wall_post(dht_context_t *dht,
     return 0;
 }
 
+int dna_wall_post_with_image(dht_context_t *dht,
+                              const char *fingerprint,
+                              const uint8_t *private_key,
+                              const char *text,
+                              const char *image_json,
+                              dna_wall_post_t *out_post) {
+    if (!image_json) {
+        /* No image — delegate to text-only variant */
+        return dna_wall_post(dht, fingerprint, private_key, text, out_post);
+    }
+
+    if (!dht || !fingerprint || !private_key || !text) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for wall post with image");
+        return -1;
+    }
+
+    size_t text_len = strlen(text);
+    if (text_len == 0 || text_len >= DNA_WALL_MAX_TEXT_LEN) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid text length: %zu", text_len);
+        return -1;
+    }
+
+    /* Create new post with image */
+    dna_wall_post_t new_post;
+    memset(&new_post, 0, sizeof(new_post));
+
+    wall_generate_uuid(new_post.uuid);
+    strncpy(new_post.author_fingerprint, fingerprint, 128);
+    new_post.author_fingerprint[128] = '\0';
+    strncpy(new_post.text, text, DNA_WALL_MAX_TEXT_LEN - 1);
+    new_post.text[DNA_WALL_MAX_TEXT_LEN - 1] = '\0';
+    new_post.image_json = strdup(image_json);
+    new_post.timestamp = (uint64_t)time(NULL);
+
+    /* Build signing payload (includes image hash) and sign */
+    size_t payload_len = 0;
+    uint8_t *payload = wall_build_sign_payload(&new_post, &payload_len);
+    if (!payload) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to build signing payload");
+        free(new_post.image_json);
+        return -1;
+    }
+
+    size_t sig_len = 0;
+    int ret = qgp_dsa87_sign(new_post.signature, &sig_len,
+                              payload, payload_len, private_key);
+    free(payload);
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign wall post");
+        free(new_post.image_json);
+        return -1;
+    }
+    new_post.signature_len = sig_len;
+    new_post.verified = true;
+
+    /* Load existing wall from DHT */
+    dna_wall_t wall;
+    memset(&wall, 0, sizeof(wall));
+    strncpy(wall.owner_fingerprint, fingerprint, 128);
+    wall.owner_fingerprint[128] = '\0';
+
+    int load_ret = dna_wall_load(dht, fingerprint, &wall);
+    if (load_ret != 0 && load_ret != -2) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to load existing wall, starting fresh");
+        wall.posts = NULL;
+        wall.post_count = 0;
+    }
+
+    /* If at max capacity, remove oldest post */
+    if (wall.post_count >= DNA_WALL_MAX_POSTS) {
+        size_t oldest_idx = 0;
+        uint64_t oldest_ts = wall.posts[0].timestamp;
+        for (size_t i = 1; i < wall.post_count; i++) {
+            if (wall.posts[i].timestamp < oldest_ts) {
+                oldest_ts = wall.posts[i].timestamp;
+                oldest_idx = i;
+            }
+        }
+        free(wall.posts[oldest_idx].image_json);
+        if (oldest_idx < wall.post_count - 1) {
+            memmove(&wall.posts[oldest_idx], &wall.posts[oldest_idx + 1],
+                    (wall.post_count - oldest_idx - 1) * sizeof(dna_wall_post_t));
+        }
+        wall.post_count--;
+    }
+
+    /* Append new post */
+    dna_wall_post_t *new_posts = realloc(wall.posts,
+                                          (wall.post_count + 1) * sizeof(dna_wall_post_t));
+    if (!new_posts) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate memory for new post");
+        free(new_post.image_json);
+        dna_wall_free(&wall);
+        return -1;
+    }
+    wall.posts = new_posts;
+    wall.posts[wall.post_count] = new_post;
+    wall.post_count++;
+
+    /* Serialize and publish to DHT */
+    char *json_str = dna_wall_to_json(&wall);
+    if (!json_str) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize wall to JSON");
+        dna_wall_free(&wall);
+        return -1;
+    }
+
+    char base_key[256];
+    wall_base_key(fingerprint, base_key, sizeof(base_key));
+
+    QGP_LOG_INFO(LOG_TAG, "Publishing wall post %s (with image) to DHT", new_post.uuid);
+    ret = dht_chunked_publish(dht, base_key,
+                               (const uint8_t *)json_str, strlen(json_str),
+                               DHT_CHUNK_TTL_30DAY);
+    free(json_str);
+
+    if (ret != DHT_CHUNK_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish wall: %s", dht_chunked_strerror(ret));
+        dna_wall_free(&wall);
+        return -1;
+    }
+
+    /* Fill out_post with a separate copy of image_json (wall_free will free the array's copy) */
+    if (out_post) {
+        *out_post = new_post;
+        out_post->image_json = new_post.image_json ? strdup(new_post.image_json) : NULL;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Wall post %s (with image) published successfully", new_post.uuid);
+    dna_wall_free(&wall);
+    return 0;
+}
+
 int dna_wall_delete(dht_context_t *dht,
                     const char *fingerprint,
                     const uint8_t *private_key,
@@ -381,6 +546,8 @@ int dna_wall_delete(dht_context_t *dht,
     bool found = false;
     for (size_t i = 0; i < wall.post_count; i++) {
         if (strcmp(wall.posts[i].uuid, post_uuid) == 0) {
+            /* Free heap members before overwriting */
+            free(wall.posts[i].image_json);
             /* Shift remaining posts */
             if (i < wall.post_count - 1) {
                 memmove(&wall.posts[i], &wall.posts[i + 1],
@@ -476,7 +643,12 @@ int dna_wall_load(dht_context_t *dht, const char *fingerprint,
 
 void dna_wall_free(dna_wall_t *wall) {
     if (!wall) return;
-    free(wall->posts);
+    if (wall->posts) {
+        for (size_t i = 0; i < wall->post_count; i++) {
+            free(wall->posts[i].image_json);
+        }
+        free(wall->posts);
+    }
     wall->posts = NULL;
     wall->post_count = 0;
 }

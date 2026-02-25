@@ -1,6 +1,6 @@
 # DNA Messenger Flutter UI
 
-**Last Updated:** 2026-02-23
+**Last Updated:** 2026-02-25
 **Status:** Phase 4 — Design System + UI Redesign Complete
 **Target:** Mobile-first, all platforms from single codebase
 
@@ -97,7 +97,7 @@ dna_messenger_flutter/
 │   │   ├── event_handler.dart      # ✅ Real-time event handling
 │   │   ├── background_tasks_provider.dart  # ✅ DHT offline message polling
 │   │   ├── feed_provider.dart      # ✅ Feed topics, comments, subscriptions
-│   │   └── wall_provider.dart      # ✅ Wall timeline state management
+│   │   └── wall_provider.dart      # ✅ Wall timeline + per-post comments (v0.7.0+)
 │   ├── screens/                # ✅ UI screens
 │   │   ├── identity/identity_selection_screen.dart  # ✅ BIP39 integrated
 │   │   ├── contacts/contacts_screen.dart
@@ -107,13 +107,15 @@ dna_messenger_flutter/
 │   │   ├── wallet/wallet_screen.dart   # ✅ Send dialog
 │   │   ├── settings/settings_screen.dart  # ✅ Name registration
 │   │   ├── feed/feed_screen.dart   # ✅ Topic-based feeds with threaded comments
-│   │   ├── wall/wall_timeline_screen.dart  # ✅ Home tab (wall timeline)
+│   │   ├── wall/wall_timeline_screen.dart  # ✅ Home tab (wall timeline + image attach)
+│   │   ├── wall/wall_post_detail_screen.dart  # ✅ Post detail with threaded comments
 │   │   ├── messages/messages_screen.dart   # ✅ Messages tab (unified chats + groups)
 │   │   └── home_screen.dart
 │   ├── widgets/                # ✅ Reusable widgets
 │   │   ├── emoji_shortcode_field.dart  # ✅ Enter to send, :shortcode:
 │   │   ├── formatted_text.dart     # ✅ Markdown + selectable
-│   │   └── wall_post_tile.dart     # ✅ Individual wall post display
+│   │   ├── wall_post_tile.dart     # ✅ Individual wall post display (with image + reply)
+│   │   └── wall_comment_tile.dart  # ✅ Single comment display (threaded)
 │   └── theme/
 │       └── dna_theme.dart      # ✅ cpunk.io theme (system default fonts)
 ├── ffigen.yaml                 # FFI generator config (reference)
@@ -371,6 +373,79 @@ dna_messenger_flutter/
 4. Platform-specific polish
 5. Documentation
 6. Platform-specific polish
+
+---
+
+## Recent UI Changes (2026-02-25)
+
+**Wall Comments and Image Attachments (v0.7.0+):**
+
+New screen — `WallPostDetailScreen` (`lib/screens/wall/wall_post_detail_screen.dart`):
+- Detail view for a single wall post with threaded comments
+- Full post rendered at top via `WallPostTile`
+- Comment count header ("N comments" or "No comments yet")
+- Threaded comment list: top-level comments followed by their indented replies
+- Reply indicator bar shows "Replying to \<author\>" when a reply is in progress; dismiss with X
+- Comment input field at the bottom with paper-plane send button; shows spinner while sending
+- Refresh button in app bar (`FontAwesomeIcons.arrowsRotate`) invalidates `wallCommentsProvider`
+
+New widget — `WallCommentTile` (`lib/widgets/wall_comment_tile.dart`):
+- Displays a single comment: `DnaAvatar` (sm), author name, relative timestamp, body text
+- Author falls back to first 12 chars of fingerprint when no name is registered
+- Reply button (`FontAwesomeIcons.reply`) shown only on top-level comments (hidden when `isReply == true`)
+- Indented via left padding (`DnaSpacing.xl`) when `isReply == true`
+
+Modified widget — `WallPostTile` (`lib/widgets/wall_post_tile.dart`):
+- Added `onReply` callback; wired to a Reply action button (`FontAwesomeIcons.comment`)
+- Displays image from `post.imageJson` when `post.hasImage == true` (rendered before post text)
+- Image is base64-decoded from the JSON `data` field; tapping opens a full-screen `InteractiveViewer`
+- Image is clipped with `radiusSm` rounded corners, constrained to max height 300px
+
+Modified screen — `WallTimelineScreen` (`lib/screens/wall/wall_timeline_screen.dart`):
+- Create post dialog (`_CreatePostDialog`) now supports image attachments via `ImageAttachmentService`
+- Gallery picker button (`FontAwesomeIcons.image`) and camera picker button (`FontAwesomeIcons.camera`) in dialog toolbar
+- Selected image previewed inside the dialog before posting
+- If an attachment is present, calls `wallTimelineProvider.notifier.createPostWithImage(text, imageJson)` instead of `createPost(text)`
+- Reply button on each `WallPostTile` navigates to `WallPostDetailScreen(post: post)`
+
+New provider — `wallCommentsProvider` (`lib/providers/wall_provider.dart`):
+- `AsyncNotifierProviderFamily<WallCommentsNotifier, List<WallComment>, String>`
+- Parameterized by post UUID; each post has independent comment state
+- `build(String arg)` loads comments via `engine.wallGetComments(arg)` when identity is loaded
+- `addComment(body, {parentCommentUuid})` calls `engine.wallAddComment()` then refreshes
+- Guards identity loaded state; preserves cached data with `state.valueOrNull ?? []`
+
+New Dart model — `WallComment` (`lib/ffi/dna_engine.dart`):
+```dart
+class WallComment {
+  final String uuid;
+  final String postUuid;
+  final String? parentCommentUuid;  // null = top-level comment
+  final String authorFingerprint;
+  final String authorName;
+  final String body;
+  final DateTime createdAt;
+  final bool verified;
+
+  bool get isReply => parentCommentUuid != null && parentCommentUuid!.isNotEmpty;
+}
+```
+
+Modified Dart model — `WallPost` (`lib/ffi/dna_engine.dart`):
+- Added `final String? imageJson` field — JSON string with base64-encoded image data
+- Added `bool get hasImage` getter — `true` when `imageJson` is non-null and non-empty
+
+New FFI wrapper methods (`lib/ffi/dna_engine.dart`):
+```dart
+// Create a wall post with an image attachment
+Future<WallPost> wallPostWithImage(String text, String imageJson)
+
+// Add a comment to a wall post; pass parentCommentUuid for a reply
+Future<WallComment> wallAddComment(String postUuid, String body, {String? parentCommentUuid})
+
+// Fetch all comments for a wall post (top-level and replies)
+Future<List<WallComment>> wallGetComments(String postUuid)
+```
 
 ---
 

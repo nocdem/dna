@@ -539,8 +539,39 @@ final class dna_wall_post_info_t extends Struct {
   @Array(2048)
   external Array<Char> text;
 
+  /// Heap-allocated image JSON, nullptr if no image (v0.7.0+)
+  external Pointer<Utf8> image_json;
+
   @Uint64()
   external int timestamp;
+
+  @Bool()
+  external bool verified;
+}
+
+/// Wall comment information (v0.7.0+)
+/// Matches dna_wall_comment_info_t from dna_engine.h
+final class dna_wall_comment_info_t extends Struct {
+  @Array(37)
+  external Array<Char> comment_uuid;
+
+  @Array(37)
+  external Array<Char> post_uuid;
+
+  @Array(37)
+  external Array<Char> parent_comment_uuid;
+
+  @Array(129)
+  external Array<Char> author_fingerprint;
+
+  @Array(65)
+  external Array<Char> author_name;
+
+  @Array(2001)
+  external Array<Char> body;
+
+  @Uint64()
+  external int created_at;
 
   @Bool()
   external bool verified;
@@ -1024,6 +1055,25 @@ typedef DnaWallPostsCbNative = Void Function(
 );
 typedef DnaWallPostsCb = NativeFunction<DnaWallPostsCbNative>;
 
+/// Wall: Comment callback (single comment) - Native
+typedef DnaWallCommentCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_wall_comment_info_t> comment,
+  Pointer<Void> user_data,
+);
+typedef DnaWallCommentCb = NativeFunction<DnaWallCommentCbNative>;
+
+/// Wall: Comments list callback - Native
+typedef DnaWallCommentsCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_wall_comment_info_t> comments,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaWallCommentsCb = NativeFunction<DnaWallCommentsCbNative>;
+
 /// Event callback - Native
 typedef DnaEventCbNative = Void Function(
   Pointer<dna_event_t> event,
@@ -1234,6 +1284,21 @@ typedef DnaWallPostsCbDart = void Function(
   int requestId,
   int error,
   Pointer<dna_wall_post_info_t> posts,
+  int count,
+  Pointer<Void> userData,
+);
+
+typedef DnaWallCommentCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_wall_comment_info_t> comment,
+  Pointer<Void> userData,
+);
+
+typedef DnaWallCommentsCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_wall_comment_info_t> comments,
   int count,
   Pointer<Void> userData,
 );
@@ -3512,6 +3577,78 @@ class DnaBindings {
   void dna_free_wall_posts(
       Pointer<dna_wall_post_info_t> posts, int count) {
     _dna_free_wall_posts(posts, count);
+  }
+
+  // ── Wall: Post with image (v0.7.0+) ──
+
+  late final _dna_engine_wall_post_with_image = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaWallPostCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaWallPostCb>, Pointer<Void>)>(
+      'dna_engine_wall_post_with_image');
+
+  int dna_engine_wall_post_with_image(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> text,
+    Pointer<Utf8> imageJson,
+    Pointer<DnaWallPostCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_post_with_image(
+        engine, text, imageJson, callback, userData);
+  }
+
+  // ── Wall Comments (v0.7.0+) ──
+
+  late final _dna_engine_wall_add_comment = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<Utf8>, Pointer<DnaWallCommentCb>, Pointer<Void>),
+      int Function(
+          Pointer<dna_engine_t>,
+          Pointer<Utf8>,
+          Pointer<Utf8>,
+          Pointer<Utf8>,
+          Pointer<DnaWallCommentCb>,
+          Pointer<Void>)>('dna_engine_wall_add_comment');
+
+  int dna_engine_wall_add_comment(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> postUuid,
+    Pointer<Utf8> parentCommentUuid,
+    Pointer<Utf8> body,
+    Pointer<DnaWallCommentCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_add_comment(
+        engine, postUuid, parentCommentUuid, body, callback, userData);
+  }
+
+  late final _dna_engine_wall_get_comments = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaWallCommentsCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaWallCommentsCb>, Pointer<Void>)>(
+      'dna_engine_wall_get_comments');
+
+  int dna_engine_wall_get_comments(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> postUuid,
+    Pointer<DnaWallCommentsCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_get_comments(
+        engine, postUuid, callback, userData);
+  }
+
+  late final _dna_free_wall_comments = _lib.lookupFunction<
+      Void Function(Pointer<dna_wall_comment_info_t>, Int32),
+      void Function(
+          Pointer<dna_wall_comment_info_t>, int)>('dna_free_wall_comments');
+
+  void dna_free_wall_comments(
+      Pointer<dna_wall_comment_info_t> comments, int count) {
+    _dna_free_wall_comments(comments, count);
   }
 }
 

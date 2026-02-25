@@ -177,10 +177,23 @@ Topic-based feeds with categories and tags. No voting (deferred).
 | Function | Description |
 |----------|-------------|
 | `dna_request_id_t dna_engine_wall_post(dna_engine_t *engine, const char *text, dna_wall_post_cb callback, void *user_data)` | Post to own wall |
+| `dna_request_id_t dna_engine_wall_post_with_image(dna_engine_t *engine, const char *text, const char *image_path, dna_wall_post_cb callback, void *user_data)` | Post to own wall with an attached image |
 | `dna_request_id_t dna_engine_wall_delete(dna_engine_t *engine, const char *post_uuid, dna_completion_cb callback, void *user_data)` | Delete own wall post |
 | `dna_request_id_t dna_engine_wall_load(dna_engine_t *engine, const char *fingerprint, dna_wall_posts_cb callback, void *user_data)` | Load user's wall posts |
 | `dna_request_id_t dna_engine_wall_timeline(dna_engine_t *engine, dna_wall_posts_cb callback, void *user_data)` | Load timeline (all contacts' walls merged) |
+| `dna_request_id_t dna_engine_wall_add_comment(dna_engine_t *engine, const char *post_uuid, const char *parent_comment_uuid, const char *text, dna_wall_comment_cb callback, void *user_data)` | Add a comment or reply to a wall post (parent_comment_uuid = NULL for top-level, UUID for reply) |
+| `dna_request_id_t dna_engine_wall_get_comments(dna_engine_t *engine, const char *post_uuid, dna_wall_comments_cb callback, void *user_data)` | Fetch all comments for a wall post |
 | `void dna_free_wall_posts(dna_wall_post_info_t *posts, int count)` | Free wall posts array |
+| `void dna_free_wall_comments(dna_wall_comment_info_t *comments, int count)` | Free wall comments array |
+
+**Structures and Types:**
+
+| Type | Description |
+|------|-------------|
+| `dna_wall_post_info_t` | Wall post info struct; includes `char *image_json` field for attached image metadata |
+| `dna_wall_comment_info_t` | Wall comment info struct (uuid, post_uuid, parent_comment_uuid, author_fp, text, timestamp) |
+| `dna_wall_comment_cb` | Callback for a single wall comment result: `void (*)(dna_wall_comment_info_t *comment, int error, void *user_data)` |
+| `dna_wall_comments_cb` | Callback for a list of wall comments: `void (*)(dna_wall_comment_info_t *comments, int count, int error, void *user_data)` |
 
 ## 1.12 Backward Compatibility
 
@@ -217,6 +230,8 @@ Topic-based feeds with categories and tags. No voting (deferred).
 | `void dna_free_feed_topics(dna_feed_topic_info_t*, int)` | Free feed topics array |
 | `void dna_free_feed_comment(dna_feed_comment_info_t*)` | Free single feed comment |
 | `void dna_free_feed_comments(dna_feed_comment_info_t*, int)` | Free feed comments array |
+| `void dna_free_wall_posts(dna_wall_post_info_t*, int)` | Free wall posts array |
+| `void dna_free_wall_comments(dna_wall_comment_info_t*, int)` | Free wall comments array |
 | `void dna_free_profile(dna_profile_t*)` | Free profile |
 | `void dna_free_addressbook_entries(dna_addressbook_entry_t*, int)` | Free address book entries array |
 

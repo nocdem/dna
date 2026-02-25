@@ -267,9 +267,24 @@ typedef struct {
     char author_fingerprint[129];       /* Author's SHA3-512 fingerprint */
     char author_name[65];              /* Resolved display name (empty if unknown) */
     char text[2048];                    /* Post content */
+    char *image_json;                   /* Heap-allocated image JSON, NULL if no image (v0.7.0+) */
     uint64_t timestamp;                 /* Unix timestamp (seconds) */
     bool verified;                      /* Signature verified */
 } dna_wall_post_info_t;
+
+/**
+ * Wall: Comment information (v0.7.0+, single-level threaded)
+ */
+typedef struct {
+    char comment_uuid[37];          /* UUID v4 */
+    char post_uuid[37];             /* Parent post UUID */
+    char parent_comment_uuid[37];   /* Reply-to comment UUID (empty = top-level) */
+    char author_fingerprint[129];   /* Author's SHA3-512 fingerprint */
+    char author_name[65];           /* Resolved display name */
+    char body[2001];                /* Comment content */
+    uint64_t created_at;            /* Unix timestamp */
+    bool verified;                  /* Signature verified */
+} dna_wall_comment_info_t;
 
 /**
  * Feed v2: Comment information (single-level threaded with mentions)
@@ -607,6 +622,29 @@ typedef void (*dna_wall_posts_cb)(
     dna_request_id_t request_id,
     int error,
     dna_wall_post_info_t *posts,   /* caller-owned, free with dna_free_wall_posts */
+    int count,
+    void *user_data
+);
+
+/**
+ * Wall: Single comment callback (v0.7.0+)
+ * Caller takes ownership - free with dna_free_wall_comments(comment, 1)
+ */
+typedef void (*dna_wall_comment_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_wall_comment_info_t *comment,
+    void *user_data
+);
+
+/**
+ * Wall: Comments list callback (v0.7.0+)
+ * Caller takes ownership - free with dna_free_wall_comments(comments, count)
+ */
+typedef void (*dna_wall_comments_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_wall_comment_info_t *comments,
     int count,
     void *user_data
 );
@@ -3494,6 +3532,24 @@ DNA_API dna_request_id_t dna_engine_wall_post(
 );
 
 /**
+ * Post a message with image to own wall (v0.7.0+)
+ *
+ * @param engine      Engine instance
+ * @param text        Post text (max 2047 chars, will be truncated)
+ * @param image_json  JSON string with image data (base64 + metadata), NULL for text-only
+ * @param callback    Called with created post info
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_wall_post_with_image(
+    dna_engine_t *engine,
+    const char *text,
+    const char *image_json,
+    dna_wall_post_cb callback,
+    void *user_data
+);
+
+/**
  * Delete own wall post
  *
  * @param engine     Engine instance
@@ -3546,6 +3602,49 @@ DNA_API dna_request_id_t dna_engine_wall_timeline(
  * Free wall posts array returned by callbacks
  */
 DNA_API void dna_free_wall_posts(dna_wall_post_info_t *posts, int count);
+
+/* ── Wall Comments (v0.7.0+) ── */
+
+/**
+ * Add a comment to a wall post
+ *
+ * @param engine               Engine instance
+ * @param post_uuid            UUID of the wall post to comment on
+ * @param parent_comment_uuid  Parent comment UUID for replies (NULL = top-level)
+ * @param body                 Comment text (max 2000 chars)
+ * @param callback             Called with created comment info
+ * @param user_data            User data for callback
+ * @return                     Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_wall_add_comment(
+    dna_engine_t *engine,
+    const char *post_uuid,
+    const char *parent_comment_uuid,
+    const char *body,
+    dna_wall_comment_cb callback,
+    void *user_data
+);
+
+/**
+ * Get all comments for a wall post
+ *
+ * @param engine     Engine instance
+ * @param post_uuid  UUID of the wall post
+ * @param callback   Called with comments array
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_wall_get_comments(
+    dna_engine_t *engine,
+    const char *post_uuid,
+    dna_wall_comments_cb callback,
+    void *user_data
+);
+
+/**
+ * Free wall comments array returned by callbacks
+ */
+DNA_API void dna_free_wall_comments(dna_wall_comment_info_t *comments, int count);
 
 /* ============================================================================
  * SIGNING (for QR Auth and external authentication)

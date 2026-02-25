@@ -762,6 +762,10 @@ void dna_free_task_params(dna_task_t *task) {
             break;
         case TASK_WALL_POST:
             free(task->params.wall_post.text);
+            free(task->params.wall_post.image_json);
+            break;
+        case TASK_WALL_ADD_COMMENT:
+            free(task->params.wall_add_comment.body);
             break;
         default:
             break;
@@ -1202,6 +1206,14 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_WALL_TIMELINE:
             dna_handle_wall_timeline(engine, task);
+            break;
+
+        /* Wall Comments (v0.7.0+) */
+        case TASK_WALL_ADD_COMMENT:
+            dna_handle_wall_add_comment(engine, task);
+            break;
+        case TASK_WALL_GET_COMMENTS:
+            dna_handle_wall_get_comments(engine, task);
             break;
     }
 }

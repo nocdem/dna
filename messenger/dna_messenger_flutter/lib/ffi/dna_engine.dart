@@ -1208,6 +1208,7 @@ class WallPost {
   final String authorFingerprint;
   final String authorName;
   final String text;
+  final String? imageJson;
   final DateTime timestamp;
   final bool verified;
 
@@ -1216,19 +1217,68 @@ class WallPost {
     required this.authorFingerprint,
     required this.authorName,
     required this.text,
+    this.imageJson,
     required this.timestamp,
     required this.verified,
   });
 
   bool isOwn(String myFingerprint) => authorFingerprint == myFingerprint;
+  bool get hasImage => imageJson != null && imageJson!.isNotEmpty;
 
   factory WallPost.fromNative(dna_wall_post_info_t native) {
+    String? imgJson;
+    if (native.image_json != nullptr) {
+      imgJson = native.image_json.toDartString();
+      if (imgJson.isEmpty) imgJson = null;
+    }
     return WallPost(
       uuid: native.uuid.toDartString(37),
       authorFingerprint: native.author_fingerprint.toDartString(129),
       authorName: native.author_name.toDartString(65),
       text: native.text.toDartString(2048),
+      imageJson: imgJson,
       timestamp: DateTime.fromMillisecondsSinceEpoch(native.timestamp * 1000),
+      verified: native.verified,
+    );
+  }
+}
+
+/// Wall comment (v0.7.0+)
+class WallComment {
+  final String uuid;
+  final String postUuid;
+  final String? parentCommentUuid;
+  final String authorFingerprint;
+  final String authorName;
+  final String body;
+  final DateTime createdAt;
+  final bool verified;
+
+  WallComment({
+    required this.uuid,
+    required this.postUuid,
+    this.parentCommentUuid,
+    required this.authorFingerprint,
+    required this.authorName,
+    required this.body,
+    required this.createdAt,
+    required this.verified,
+  });
+
+  bool get isReply =>
+      parentCommentUuid != null && parentCommentUuid!.isNotEmpty;
+
+  factory WallComment.fromNative(dna_wall_comment_info_t native) {
+    final parentUuid = native.parent_comment_uuid.toDartString(37);
+    return WallComment(
+      uuid: native.comment_uuid.toDartString(37),
+      postUuid: native.post_uuid.toDartString(37),
+      parentCommentUuid: parentUuid.isEmpty ? null : parentUuid,
+      authorFingerprint: native.author_fingerprint.toDartString(129),
+      authorName: native.author_name.toDartString(65),
+      body: native.body.toDartString(2001),
+      createdAt:
+          DateTime.fromMillisecondsSinceEpoch(native.created_at * 1000),
       verified: native.verified,
     );
   }
@@ -5737,6 +5787,155 @@ class DnaEngine {
     if (requestId == 0) {
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit wall timeline request');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
+  // WALL: Post with image (v0.7.0+)
+  // ---------------------------------------------------------------------------
+
+  /// Post to own wall with optional image
+  Future<WallPost> wallPostWithImage(String text, String imageJson) async {
+    final completer = Completer<WallPost>();
+    final localId = _nextLocalId++;
+    final textPtr = text.toNativeUtf8();
+    final imgPtr = imageJson.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_wall_post_info_t> post, Pointer<Void> userData) {
+      calloc.free(textPtr);
+      calloc.free(imgPtr);
+      if (error == 0 && post != nullptr) {
+        final result = WallPost.fromNative(post.ref);
+        _bindings.dna_free_wall_posts(post, 1);
+        completer.complete(result);
+      } else {
+        if (post != nullptr) _bindings.dna_free_wall_posts(post, 1);
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallPostCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_post_with_image(
+      _engine,
+      textPtr.cast(),
+      imgPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(textPtr);
+      calloc.free(imgPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit wall post with image');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
+  // WALL COMMENTS (v0.7.0+)
+  // ---------------------------------------------------------------------------
+
+  /// Add a comment to a wall post
+  Future<WallComment> wallAddComment(String postUuid, String body,
+      {String? parentCommentUuid}) async {
+    final completer = Completer<WallComment>();
+    final localId = _nextLocalId++;
+    final postUuidPtr = postUuid.toNativeUtf8();
+    final bodyPtr = body.toNativeUtf8();
+    final parentPtr = (parentCommentUuid ?? '').toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_wall_comment_info_t> comment, Pointer<Void> userData) {
+      calloc.free(postUuidPtr);
+      calloc.free(bodyPtr);
+      calloc.free(parentPtr);
+      if (error == 0 && comment != nullptr) {
+        final result = WallComment.fromNative(comment.ref);
+        _bindings.dna_free_wall_comments(comment, 1);
+        completer.complete(result);
+      } else {
+        if (comment != nullptr) _bindings.dna_free_wall_comments(comment, 1);
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallCommentCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_add_comment(
+      _engine,
+      postUuidPtr.cast(),
+      parentPtr.cast(),
+      bodyPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(postUuidPtr);
+      calloc.free(bodyPtr);
+      calloc.free(parentPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit wall comment');
+    }
+
+    return completer.future;
+  }
+
+  /// Get all comments for a wall post
+  Future<List<WallComment>> wallGetComments(String postUuid) async {
+    final completer = Completer<List<WallComment>>();
+    final localId = _nextLocalId++;
+    final postUuidPtr = postUuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_wall_comment_info_t> comments, int count,
+        Pointer<Void> userData) {
+      calloc.free(postUuidPtr);
+      if (error == 0) {
+        final result = <WallComment>[];
+        for (var i = 0; i < count; i++) {
+          result.add(WallComment.fromNative(comments[i]));
+        }
+        if (comments != nullptr && count > 0) {
+          _bindings.dna_free_wall_comments(comments, count);
+        }
+        completer.complete(result);
+      } else {
+        if (comments != nullptr && count > 0) {
+          _bindings.dna_free_wall_comments(comments, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallCommentsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_get_comments(
+      _engine,
+      postUuidPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(postUuidPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit wall get comments');
     }
 
     return completer.future;

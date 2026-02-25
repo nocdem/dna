@@ -124,6 +124,8 @@ Internal DNA engine implementation with async task queue.
 | `void dna_handle_wall_delete(dna_engine_t*, dna_task_t*)` | Handle wall delete |
 | `void dna_handle_wall_load(dna_engine_t*, dna_task_t*)` | Handle wall load |
 | `void dna_handle_wall_timeline(dna_engine_t*, dna_task_t*)` | Handle wall timeline |
+| `void dna_handle_wall_add_comment(dna_engine_t*, dna_task_t*)` | Handle wall add comment task (`TASK_WALL_ADD_COMMENT`, v0.7.0+) |
+| `void dna_handle_wall_get_comments(dna_engine_t*, dna_task_t*)` | Handle wall get comments task (`TASK_WALL_GET_COMMENTS`, v0.7.0+) |
 
 ### Helpers
 

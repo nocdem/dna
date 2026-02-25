@@ -46,6 +46,7 @@ set(DHT_COMMON_SOURCES
     client/dna_feed_index.c     # Feed v2: Day-bucket indexing
     client/dna_group_outbox.c   # Group message outbox (feed pattern)
     client/dna_wall.c           # Personal wall posts (DHT)
+    client/dna_wall_comments.c  # Wall post comments (v0.7.0+)
     # Keyserver modules
     keyserver/keyserver_helpers.c
     keyserver/keyserver_publish.c

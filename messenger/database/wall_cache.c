@@ -55,6 +55,7 @@ static int create_schema(void) {
         "    uuid TEXT PRIMARY KEY,"
         "    author_fingerprint TEXT NOT NULL,"
         "    text TEXT NOT NULL,"
+        "    image_json TEXT,"
         "    timestamp INTEGER NOT NULL,"
         "    signature BLOB,"
         "    signature_len INTEGER DEFAULT 0,"
@@ -70,6 +71,14 @@ static int create_schema(void) {
         "CREATE TABLE IF NOT EXISTS wall_cache_meta ("
         "    cache_key TEXT PRIMARY KEY,"
         "    last_fetched INTEGER NOT NULL"
+        ");"
+
+        /* ── wall_comments (v0.7.0+) ─────────────────────────── */
+        "CREATE TABLE IF NOT EXISTS wall_comments ("
+        "    post_uuid TEXT PRIMARY KEY,"
+        "    comments_json TEXT NOT NULL,"
+        "    comment_count INTEGER DEFAULT 0,"
+        "    cached_at INTEGER NOT NULL"
         ");";
 
     char *err_msg = NULL;
@@ -80,13 +89,17 @@ static int create_schema(void) {
         return -1;
     }
 
+    /* v0.7.0 migration: add image_json column if missing (existing DBs) */
+    sqlite3_exec(g_db, "ALTER TABLE wall_posts ADD COLUMN image_json TEXT;",
+                 NULL, NULL, NULL);
+
     return 0;
 }
 
 /**
  * Fill a dna_wall_post_t from a SELECT statement row.
- * Expected column order: uuid, author_fingerprint, text, timestamp,
- *                        signature, signature_len, verified
+ * Expected column order: uuid, author_fingerprint, text, image_json,
+ *                        timestamp, signature, signature_len, verified
  */
 static void fill_post_from_row(sqlite3_stmt *stmt, dna_wall_post_t *post) {
     memset(post, 0, sizeof(dna_wall_post_t));
@@ -106,16 +119,20 @@ static void fill_post_from_row(sqlite3_stmt *stmt, dna_wall_post_t *post) {
         strncpy(post->text, text_str, DNA_WALL_MAX_TEXT_LEN - 1);
     }
 
-    post->timestamp = (uint64_t)sqlite3_column_int64(stmt, 3);
+    /* image_json: heap-allocated, NULL if no image (v0.7.0+) */
+    const char *img_str = (const char *)sqlite3_column_text(stmt, 3);
+    post->image_json = img_str ? strdup(img_str) : NULL;
 
-    const void *sig_blob = sqlite3_column_blob(stmt, 4);
-    int sig_len = sqlite3_column_int(stmt, 5);
+    post->timestamp = (uint64_t)sqlite3_column_int64(stmt, 4);
+
+    const void *sig_blob = sqlite3_column_blob(stmt, 5);
+    int sig_len = sqlite3_column_int(stmt, 6);
     if (sig_blob && sig_len > 0 && (size_t)sig_len <= sizeof(post->signature)) {
         memcpy(post->signature, sig_blob, (size_t)sig_len);
         post->signature_len = (size_t)sig_len;
     }
 
-    post->verified = sqlite3_column_int(stmt, 6) ? true : false;
+    post->verified = sqlite3_column_int(stmt, 7) ? true : false;
 }
 
 /* ── Lifecycle ─────────────────────────────────────────────────────── */
@@ -261,8 +278,8 @@ int wall_cache_store(const char *fingerprint,
     if (posts && count > 0) {
         const char *sql_insert =
             "INSERT INTO wall_posts "
-            "(uuid, author_fingerprint, text, timestamp, signature, signature_len, verified, cached_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?);";
+            "(uuid, author_fingerprint, text, image_json, timestamp, signature, signature_len, verified, cached_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);";
 
         sqlite3_stmt *ins_stmt = NULL;
         rc = sqlite3_prepare_v2(g_db, sql_insert, -1, &ins_stmt, NULL);
@@ -281,11 +298,16 @@ int wall_cache_store(const char *fingerprint,
             sqlite3_bind_text(ins_stmt, 1, posts[i].uuid, -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(ins_stmt, 2, posts[i].author_fingerprint, -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(ins_stmt, 3, posts[i].text, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int64(ins_stmt, 4, (int64_t)posts[i].timestamp);
-            sqlite3_bind_blob(ins_stmt, 5, posts[i].signature, (int)posts[i].signature_len, SQLITE_TRANSIENT);
-            sqlite3_bind_int(ins_stmt, 6, (int)posts[i].signature_len);
-            sqlite3_bind_int(ins_stmt, 7, posts[i].verified ? 1 : 0);
-            sqlite3_bind_int64(ins_stmt, 8, (int64_t)now);
+            if (posts[i].image_json) {
+                sqlite3_bind_text(ins_stmt, 4, posts[i].image_json, -1, SQLITE_TRANSIENT);
+            } else {
+                sqlite3_bind_null(ins_stmt, 4);
+            }
+            sqlite3_bind_int64(ins_stmt, 5, (int64_t)posts[i].timestamp);
+            sqlite3_bind_blob(ins_stmt, 6, posts[i].signature, (int)posts[i].signature_len, SQLITE_TRANSIENT);
+            sqlite3_bind_int(ins_stmt, 7, (int)posts[i].signature_len);
+            sqlite3_bind_int(ins_stmt, 8, posts[i].verified ? 1 : 0);
+            sqlite3_bind_int64(ins_stmt, 9, (int64_t)now);
 
             rc = sqlite3_step(ins_stmt);
             if (rc != SQLITE_DONE) {
@@ -353,7 +375,7 @@ int wall_cache_load(const char *fingerprint,
     *count = 0;
 
     const char *sql =
-        "SELECT uuid, author_fingerprint, text, timestamp, "
+        "SELECT uuid, author_fingerprint, text, image_json, timestamp, "
         "signature, signature_len, verified "
         "FROM wall_posts WHERE author_fingerprint = ? "
         "ORDER BY timestamp DESC;";
@@ -425,7 +447,7 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
     }
 
     int written = snprintf(sql, sql_size,
-        "SELECT uuid, author_fingerprint, text, timestamp, "
+        "SELECT uuid, author_fingerprint, text, image_json, timestamp, "
         "signature, signature_len, verified "
         "FROM wall_posts WHERE author_fingerprint IN (");
 
@@ -625,8 +647,131 @@ bool wall_cache_is_stale(const char *fingerprint) {
 /* ── Memory management ─────────────────────────────────────────────── */
 
 void wall_cache_free_posts(dna_wall_post_t *posts, size_t count) {
-    (void)count; /* dna_wall_post_t has no heap members, just free the array */
     if (posts) {
+        for (size_t i = 0; i < count; i++) {
+            free(posts[i].image_json); /* NULL-safe */
+        }
         free(posts);
     }
+}
+
+/* ── Comment cache (v0.7.0+) ──────────────────────────────────────── */
+
+int wall_cache_store_comments(const char *post_uuid, const char *comments_json, int count) {
+    if (!g_db) {
+        if (wall_cache_init() != 0) return -1;
+    }
+    if (!post_uuid || !comments_json) return -1;
+
+    const char *sql =
+        "INSERT OR REPLACE INTO wall_comments "
+        "(post_uuid, comments_json, comment_count, cached_at) VALUES (?, ?, ?, ?);";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "store_comments prepare: %s", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, post_uuid, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, comments_json, -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 3, count);
+    sqlite3_bind_int64(stmt, 4, (int64_t)time(NULL));
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "store_comments step: %s", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    return 0;
+}
+
+int wall_cache_load_comments(const char *post_uuid, char **json_out, int *count_out) {
+    if (!g_db) {
+        if (wall_cache_init() != 0) return -1;
+    }
+    if (!post_uuid || !json_out || !count_out) return -1;
+
+    *json_out = NULL;
+    *count_out = 0;
+
+    const char *sql =
+        "SELECT comments_json, comment_count FROM wall_comments WHERE post_uuid = ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "load_comments prepare: %s", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, post_uuid, -1, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -2; /* Not found */
+    }
+
+    const char *json = (const char *)sqlite3_column_text(stmt, 0);
+    int cnt = sqlite3_column_int(stmt, 1);
+
+    if (json) {
+        *json_out = strdup(json);
+    }
+    *count_out = cnt;
+
+    sqlite3_finalize(stmt);
+    return (*json_out) ? 0 : -1;
+}
+
+int wall_cache_invalidate_comments(const char *post_uuid) {
+    if (!g_db) {
+        if (wall_cache_init() != 0) return -1;
+    }
+    if (!post_uuid) return -1;
+
+    const char *sql = "DELETE FROM wall_comments WHERE post_uuid = ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "invalidate_comments prepare: %s", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, post_uuid, -1, SQLITE_STATIC);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+bool wall_cache_is_stale_comments(const char *post_uuid) {
+    if (!post_uuid) return true;
+    if (!g_db) {
+        if (wall_cache_init() != 0) return true;
+    }
+
+    const char *sql = "SELECT cached_at FROM wall_comments WHERE post_uuid = ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return true;
+
+    sqlite3_bind_text(stmt, 1, post_uuid, -1, SQLITE_STATIC);
+
+    bool stale = true;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        uint64_t cached_at = (uint64_t)sqlite3_column_int64(stmt, 0);
+        uint64_t age = (uint64_t)time(NULL) - cached_at;
+        stale = (age >= WALL_CACHE_TTL_SECONDS);
+    }
+
+    sqlite3_finalize(stmt);
+    return stale;
 }

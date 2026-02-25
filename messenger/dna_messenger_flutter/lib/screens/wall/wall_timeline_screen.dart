@@ -1,10 +1,16 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../design_system/design_system.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
+import '../../services/image_attachment_service.dart';
 import '../../widgets/wall_post_tile.dart';
+import 'wall_post_detail_screen.dart';
 
 class WallTimelineScreen extends ConsumerWidget {
   const WallTimelineScreen({super.key});
@@ -40,6 +46,12 @@ class WallTimelineScreen extends ConsumerWidget {
                     return WallPostTile(
                       post: post,
                       myFingerprint: myFp,
+                      onReply: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => WallPostDetailScreen(post: post),
+                        ),
+                      ),
                       onDelete: post.isOwn(myFp)
                           ? () => _confirmDelete(context, ref, post.uuid)
                           : null,
@@ -122,58 +134,12 @@ class WallTimelineScreen extends ConsumerWidget {
   }
 
   void _showCreatePostDialog(BuildContext context, WidgetRef ref) {
-    final controller = TextEditingController();
     showDialog(
       context: context,
-      builder: (dialogContext) {
-        final theme = Theme.of(dialogContext);
-        return AlertDialog(
-          title: Row(
-            children: [
-              FaIcon(FontAwesomeIcons.pen, size: 18, color: theme.colorScheme.primary),
-              const SizedBox(width: DnaSpacing.sm),
-              const Text('New Post'),
-            ],
-          ),
-          content: SizedBox(
-            width: double.maxFinite,
-            child: TextField(
-              controller: controller,
-              maxLines: 5,
-              maxLength: 2000,
-              autofocus: true,
-              decoration: const InputDecoration(
-                hintText: "What's on your mind?",
-              ),
-            ),
-          ),
-          actions: [
-            DnaButton(
-              label: 'Cancel',
-              variant: DnaButtonVariant.ghost,
-              onPressed: () => Navigator.pop(dialogContext),
-            ),
-            DnaButton(
-              label: 'Post',
-              icon: FontAwesomeIcons.paperPlane,
-              onPressed: () async {
-                final text = controller.text.trim();
-                if (text.isEmpty) return;
-                Navigator.pop(dialogContext);
-                try {
-                  await ref.read(wallTimelineProvider.notifier).createPost(text);
-                } catch (e) {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Failed to post: $e')),
-                    );
-                  }
-                }
-              },
-            ),
-          ],
-        );
-      },
+      builder: (dialogContext) => _CreatePostDialog(
+        ref: ref,
+        parentContext: context,
+      ),
     );
   }
 
@@ -325,6 +291,173 @@ class WallTimelineScreen extends ConsumerWidget {
           ],
         );
       },
+    );
+  }
+}
+
+/// Create post dialog with optional image attachment
+class _CreatePostDialog extends StatefulWidget {
+  final WidgetRef ref;
+  final BuildContext parentContext;
+
+  const _CreatePostDialog({required this.ref, required this.parentContext});
+
+  @override
+  State<_CreatePostDialog> createState() => _CreatePostDialogState();
+}
+
+class _CreatePostDialogState extends State<_CreatePostDialog> {
+  final _controller = TextEditingController();
+  final _imageService = ImageAttachmentService();
+  ImageAttachment? _attachment;
+  Uint8List? _previewBytes;
+  bool _posting = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
+    try {
+      final bytes = await _imageService.pickImage(source);
+      if (bytes == null) return;
+      final attachment = await _imageService.processImage(bytes);
+      setState(() {
+        _attachment = attachment;
+        _previewBytes = base64Decode(attachment.base64Data);
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _submit() async {
+    final text = _controller.text.trim();
+    if (text.isEmpty || _posting) return;
+
+    setState(() => _posting = true);
+    Navigator.pop(context);
+
+    try {
+      final notifier = widget.ref.read(wallTimelineProvider.notifier);
+      if (_attachment != null) {
+        final imageJson = _attachment!.toMessageJson();
+        await notifier.createPostWithImage(text, imageJson);
+      } else {
+        await notifier.createPost(text);
+      }
+    } catch (e) {
+      if (widget.parentContext.mounted) {
+        ScaffoldMessenger.of(widget.parentContext).showSnackBar(
+          SnackBar(content: Text('Failed to post: $e')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return AlertDialog(
+      title: Row(
+        children: [
+          FaIcon(FontAwesomeIcons.pen,
+              size: 18, color: theme.colorScheme.primary),
+          const SizedBox(width: DnaSpacing.sm),
+          const Text('New Post'),
+        ],
+      ),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: _controller,
+                maxLines: 5,
+                maxLength: 2000,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  hintText: "What's on your mind?",
+                ),
+              ),
+              // Image preview
+              if (_previewBytes != null) ...[
+                const SizedBox(height: DnaSpacing.sm),
+                Stack(
+                  alignment: Alignment.topRight,
+                  children: [
+                    ClipRRect(
+                      borderRadius:
+                          BorderRadius.circular(DnaSpacing.radiusSm),
+                      child: Image.memory(
+                        _previewBytes!,
+                        height: 150,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const FaIcon(FontAwesomeIcons.circleXmark,
+                          size: 20),
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.black54,
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: () => setState(() {
+                        _attachment = null;
+                        _previewBytes = null;
+                      }),
+                    ),
+                  ],
+                ),
+              ],
+              // Image picker buttons
+              if (_previewBytes == null) ...[
+                const SizedBox(height: DnaSpacing.sm),
+                Row(
+                  children: [
+                    IconButton(
+                      icon: FaIcon(FontAwesomeIcons.image,
+                          size: 18,
+                          color: theme.colorScheme.onSurfaceVariant),
+                      tooltip: 'Gallery',
+                      onPressed: () => _pickImage(ImageSource.gallery),
+                    ),
+                    IconButton(
+                      icon: FaIcon(FontAwesomeIcons.camera,
+                          size: 18,
+                          color: theme.colorScheme.onSurfaceVariant),
+                      tooltip: 'Camera',
+                      onPressed: () => _pickImage(ImageSource.camera),
+                    ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        DnaButton(
+          label: 'Cancel',
+          variant: DnaButtonVariant.ghost,
+          onPressed: () => Navigator.pop(context),
+        ),
+        DnaButton(
+          label: _posting ? 'Posting...' : 'Post',
+          icon: FontAwesomeIcons.paperPlane,
+          onPressed: _posting ? null : _submit,
+        ),
+      ],
     );
   }
 }

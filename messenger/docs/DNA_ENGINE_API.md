@@ -1,10 +1,11 @@
 # DNA Engine API Reference
 
-**Version:** 1.13.0
-**Date:** 2026-01-31
+**Version:** 1.14.0
+**Date:** 2026-02-25
 **Location:** `include/dna/dna_engine.h`
 
 **Changelog:**
+- v1.14.0 (2026-02-25): Added Wall API (section 5b) - user wall posts with images, comments, and timeline. New functions: `dna_engine_wall_post`, `dna_engine_wall_post_with_image`, `dna_engine_wall_delete`, `dna_engine_wall_load`, `dna_engine_wall_timeline`, `dna_engine_wall_add_comment`, `dna_engine_wall_get_comments`. New types: `dna_wall_post_info_t` (includes `image_json` field), `dna_wall_comment_info_t`, `dna_wall_post_cb`, `dna_wall_posts_cb`, `dna_wall_comment_cb`, `dna_wall_comments_cb`. Free functions: `dna_free_wall_posts`, `dna_free_wall_comments`.
 - v1.13.0 (2026-01-31): Added threaded comment replies - `dna_engine_feed_add_comment` now accepts `parent_comment_uuid` parameter for single-level threading. Comments can reply to other comments (not reply-to-reply). Added `parent_comment_uuid` field to `dna_feed_comment_info_t` struct.
 - v1.12.0 (2026-01-30): Added Feeds v2 API - topic-based public feeds with categories, tags, comments (replaces v1 channel/post system). 7 new functions: `dna_engine_feed_create_topic`, `dna_engine_feed_get_topic`, `dna_engine_feed_delete_topic`, `dna_engine_feed_add_comment`, `dna_engine_feed_get_comments`, `dna_engine_feed_get_category`, `dna_engine_feed_get_all`
 - v1.11.0 (2026-01-22): Added centralized thread pool for parallel I/O, `dna_engine_check_offline_messages_cached()` for background polling without watermarks, removed `dna_engine_listen_all_contacts_minimal()` (replaced by polling)
@@ -167,6 +168,7 @@ void initApp() {
 | [Messaging](#4-messaging) | 3 | Send messages, get conversations |
 | [Groups](#5-groups) | 6 | Create groups, send group messages, invitations |
 | [Feeds v2](#5a-feeds-v2) | 7 | Topic-based public feeds with categories |
+| [Wall](#5b-wall) | 7 | User wall posts, images, comments, timeline |
 | [Wallet](#6-wallet) | 4 | Cellframe wallet operations |
 | [P2P & Presence](#7-p2p--presence) | 7 | Online status, DHT sync |
 | [Backward Compat](#8-backward-compatibility) | 2 | Access raw contexts |
@@ -1546,6 +1548,322 @@ void dna_free_feed_comments(dna_feed_comment_info_t *comments, int count);
 
 ---
 
+## 5b. Wall
+
+User wall posts (public micro-blog on a user's profile), with optional image attachments, comments, and a merged timeline from all contacts. All data is signed with Dilithium5 and stored in DHT.
+
+### Data Structures
+
+```c
+// Post information
+typedef struct {
+    char uuid[37];                  // UUID v4
+    char author_fingerprint[129];   // Author's SHA3-512 fingerprint
+    char author_name[65];           // Resolved display name (empty if unknown)
+    char text[2048];                // Post content
+    char *image_json;               // Heap-allocated image JSON, NULL if no image (v0.7.0+)
+    uint64_t timestamp;             // Unix timestamp (seconds)
+    bool verified;                  // Signature verified
+} dna_wall_post_info_t;
+
+// Comment information (v0.7.0+, single-level threaded)
+typedef struct {
+    char comment_uuid[37];          // UUID v4
+    char post_uuid[37];             // Parent post UUID
+    char parent_comment_uuid[37];   // Reply-to comment UUID (empty string = top-level)
+    char author_fingerprint[129];   // Author's SHA3-512 fingerprint
+    char author_name[65];           // Resolved display name
+    char body[2001];                // Comment content
+    uint64_t created_at;            // Unix timestamp
+    bool verified;                  // Signature verified
+} dna_wall_comment_info_t;
+```
+
+**Notes on `dna_wall_post_info_t`:**
+- `image_json` is heap-allocated and owned by the caller. It is `NULL` when no image is attached. Free the containing struct with `dna_free_wall_posts()`.
+
+**Notes on `dna_wall_comment_info_t`:**
+- Threading is single-level only: a comment may reply to another comment but replies to replies are not supported.
+- `parent_comment_uuid` is an empty string (not NULL) for top-level comments.
+
+---
+
+### Callbacks
+
+```c
+// Single post callback (for post creation)
+// Caller takes ownership - free with dna_free_wall_posts(post, 1)
+typedef void (*dna_wall_post_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_wall_post_info_t *post,
+    void *user_data
+);
+
+// Posts list callback (for wall load and timeline)
+// Caller takes ownership - free with dna_free_wall_posts(posts, count)
+typedef void (*dna_wall_posts_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_wall_post_info_t *posts,
+    int count,
+    void *user_data
+);
+
+// Single comment callback (for add comment)
+// Caller takes ownership - free with dna_free_wall_comments(comment, 1)
+typedef void (*dna_wall_comment_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_wall_comment_info_t *comment,
+    void *user_data
+);
+
+// Comments list callback (for get comments)
+// Caller takes ownership - free with dna_free_wall_comments(comments, count)
+typedef void (*dna_wall_comments_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_wall_comment_info_t *comments,
+    int count,
+    void *user_data
+);
+```
+
+---
+
+### dna_engine_wall_post
+
+```c
+dna_request_id_t dna_engine_wall_post(
+    dna_engine_t *engine,
+    const char *text,
+    dna_wall_post_cb callback,
+    void *user_data
+);
+```
+
+Creates a new text-only wall post on the current user's public wall.
+
+**Parameters:**
+- `engine` - Engine instance
+- `text` - Post content (max 2047 chars)
+- `callback` - Called with the created post on success
+- `user_data` - User data for callback
+
+**Memory:** The `post` in the callback is caller-owned. Free with `dna_free_wall_posts(post, 1)`.
+
+**Example:**
+```c
+dna_engine_wall_post(engine,
+    "Hello from the wall!",
+    on_post_created, NULL
+);
+```
+
+---
+
+### dna_engine_wall_post_with_image
+
+```c
+dna_request_id_t dna_engine_wall_post_with_image(
+    dna_engine_t *engine,
+    const char *text,
+    const char *image_json,
+    dna_wall_post_cb callback,
+    void *user_data
+);
+```
+
+Creates a new wall post with an attached image. The image is embedded in the post as a JSON string containing base64-encoded image data.
+
+**Parameters:**
+- `engine` - Engine instance
+- `text` - Post content (max 2047 chars)
+- `image_json` - JSON string with base64-encoded image data (e.g., `{"data":"<base64>","mime":"image/jpeg"}`)
+- `callback` - Called with the created post on success
+- `user_data` - User data for callback
+
+**Memory:** The `post` in the callback is caller-owned. Free with `dna_free_wall_posts(post, 1)`. The `post->image_json` field is heap-allocated and freed automatically by `dna_free_wall_posts`.
+
+**Example:**
+```c
+dna_engine_wall_post_with_image(engine,
+    "Check out this photo!",
+    "{\"data\":\"<base64-encoded-jpeg>\",\"mime\":\"image/jpeg\"}",
+    on_post_created, NULL
+);
+```
+
+---
+
+### dna_engine_wall_delete
+
+```c
+dna_request_id_t dna_engine_wall_delete(
+    dna_engine_t *engine,
+    const char *post_uuid,
+    dna_completion_cb callback,
+    void *user_data
+);
+```
+
+Deletes a wall post. Only the post's author can delete their own posts.
+
+**Parameters:**
+- `engine` - Engine instance
+- `post_uuid` - UUID of the post to delete
+- `callback` - Called on completion
+- `user_data` - User data for callback
+
+---
+
+### dna_engine_wall_load
+
+```c
+dna_request_id_t dna_engine_wall_load(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_wall_posts_cb callback,
+    void *user_data
+);
+```
+
+Fetches all wall posts for a given user by fingerprint. Returns cached results first and refreshes from DHT in the background.
+
+**Parameters:**
+- `engine` - Engine instance
+- `fingerprint` - 128-char SHA3-512 fingerprint of the user whose wall to load
+- `callback` - Called with the posts array
+- `user_data` - User data for callback
+
+**Memory:** Free with `dna_free_wall_posts(posts, count)`.
+
+**Example:**
+```c
+dna_engine_wall_load(engine,
+    "3cbba8d8bf0c3603...",   // 128-char fingerprint
+    on_wall_loaded, NULL
+);
+```
+
+---
+
+### dna_engine_wall_timeline
+
+```c
+dna_request_id_t dna_engine_wall_timeline(
+    dna_engine_t *engine,
+    dna_wall_posts_cb callback,
+    void *user_data
+);
+```
+
+Fetches a merged timeline of wall posts from all contacts, sorted by timestamp descending.
+
+**Parameters:**
+- `engine` - Engine instance
+- `callback` - Called with the merged posts array
+- `user_data` - User data for callback
+
+**Memory:** Free with `dna_free_wall_posts(posts, count)`.
+
+---
+
+### dna_engine_wall_add_comment
+
+```c
+dna_request_id_t dna_engine_wall_add_comment(
+    dna_engine_t *engine,
+    const char *post_uuid,
+    const char *parent_comment_uuid,
+    const char *body,
+    dna_wall_comment_cb callback,
+    void *user_data
+);
+```
+
+Adds a comment to a wall post. Supports single-level threading: a comment may reply to another comment but replies to replies are not supported.
+
+**Parameters:**
+- `engine` - Engine instance
+- `post_uuid` - UUID of the wall post to comment on
+- `parent_comment_uuid` - UUID of the parent comment for a reply, or `NULL` for a top-level comment
+- `body` - Comment text (max 2000 chars)
+- `callback` - Called with the created comment on success
+- `user_data` - User data for callback
+
+**Threading rules:**
+- Top-level comments: `parent_comment_uuid = NULL`
+- Replies to a comment: `parent_comment_uuid = "<uuid of the parent comment>"`
+- `dna_wall_comment_info_t.parent_comment_uuid` is an empty string for top-level comments
+
+**Memory:** The `comment` in the callback is caller-owned. Free with `dna_free_wall_comments(comment, 1)`.
+
+**Example:**
+```c
+// Top-level comment
+dna_engine_wall_add_comment(engine,
+    "post-uuid-here",
+    NULL,           // top-level
+    "Great post!",
+    on_comment_added, NULL
+);
+
+// Reply to a comment
+dna_engine_wall_add_comment(engine,
+    "post-uuid-here",
+    "parent-comment-uuid-here",
+    "Thanks for your thoughts!",
+    on_comment_added, NULL
+);
+```
+
+---
+
+### dna_engine_wall_get_comments
+
+```c
+dna_request_id_t dna_engine_wall_get_comments(
+    dna_engine_t *engine,
+    const char *post_uuid,
+    dna_wall_comments_cb callback,
+    void *user_data
+);
+```
+
+Fetches all comments for a wall post. Returns cached results if available and not stale (5-minute TTL), otherwise fetches from DHT.
+
+**Parameters:**
+- `engine` - Engine instance
+- `post_uuid` - UUID of the wall post whose comments to fetch
+- `callback` - Called with the comments array
+- `user_data` - User data for callback
+
+**Memory:** Free with `dna_free_wall_comments(comments, count)`.
+
+**Example:**
+```c
+dna_engine_wall_get_comments(engine,
+    "post-uuid-here",
+    on_comments_loaded, NULL
+);
+```
+
+---
+
+### Memory Management
+
+```c
+void dna_free_wall_posts(dna_wall_post_info_t *posts, int count);
+void dna_free_wall_comments(dna_wall_comment_info_t *comments, int count);
+```
+
+- `dna_free_wall_posts` frees the posts array and all heap-allocated fields within each post (including `image_json`).
+- `dna_free_wall_comments` frees the comments array.
+
+---
+
 ## 6. Wallet
 
 ### dna_engine_list_wallets
@@ -1733,6 +2051,8 @@ dna_free_wallets(wallets, count);           // For wallets list
 dna_free_balances(balances, count);         // For balances list
 dna_free_transactions(transactions, count); // For transactions list
 dna_free_profile(profile);                  // For profile
+dna_free_wall_posts(posts, count);          // For wall posts (also frees image_json)
+dna_free_wall_comments(comments, count);    // For wall comments
 ```
 
 ---

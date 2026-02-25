@@ -152,7 +152,11 @@ typedef enum {
     TASK_WALL_POST,
     TASK_WALL_DELETE,
     TASK_WALL_LOAD,
-    TASK_WALL_TIMELINE
+    TASK_WALL_TIMELINE,
+
+    /* Wall Comments (v0.7.0+) */
+    TASK_WALL_ADD_COMMENT,
+    TASK_WALL_GET_COMMENTS
 } dna_task_type_t;
 
 /* ============================================================================
@@ -403,9 +407,10 @@ typedef union {
         char group_uuid[37];
     } sync_group_by_uuid;
 
-    /* Wall: Post message */
+    /* Wall: Post message (with optional image v0.7.0+) */
     struct {
         char *text;                     /* Heap allocated, task owns (max 2048 chars) */
+        char *image_json;              /* Heap allocated, task owns; NULL = text-only */
     } wall_post;
 
     /* Wall: Delete post */
@@ -419,6 +424,18 @@ typedef union {
     } wall_load;
 
     /* Wall: Timeline has no extra params (uses engine->contacts list) */
+
+    /* Wall: Add comment (v0.7.0+) */
+    struct {
+        char post_uuid[37];             /* Post UUID to comment on */
+        char parent_comment_uuid[37];   /* Parent comment for replies (empty = top-level) */
+        char *body;                     /* Heap allocated, task owns */
+    } wall_add_comment;
+
+    /* Wall: Get comments (v0.7.0+) */
+    struct {
+        char post_uuid[37];             /* Post UUID */
+    } wall_get_comments;
 
 } dna_task_params_t;
 
@@ -453,6 +470,8 @@ typedef union {
     dna_gas_estimates_cb gas_estimates;
     dna_wall_post_cb wall_post;
     dna_wall_posts_cb wall_posts;
+    dna_wall_comment_cb wall_comment;
+    dna_wall_comments_cb wall_comments;
 } dna_task_callback_t;
 
 /**
@@ -838,6 +857,10 @@ void dna_handle_wall_post(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_wall_delete(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_wall_load(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task);
+
+/* Wall Comments (v0.7.0+) */
+void dna_handle_wall_add_comment(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_wall_get_comments(dna_engine_t *engine, dna_task_t *task);
 
 /* ============================================================================
  * INTERNAL FUNCTIONS - Helpers

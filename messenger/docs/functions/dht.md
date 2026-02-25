@@ -467,12 +467,26 @@ Uses `dna:feeds:` DHT namespace. No voting (deferred).
 |----------|-------------|
 | `void dna_wall_make_key(const char *fingerprint, char *out_key)` | Derive DHT key SHA3-512("dna:wall:<fingerprint>") |
 | `int dna_wall_post(dht_context_t *dht, const char *fingerprint, const uint8_t *private_key, const char *text, dna_wall_post_t *out_post)` | Post to own wall (sign + publish to DHT) |
+| `int dna_wall_post_with_image(dht_context_t *dht, const char *fingerprint, const uint8_t *private_key, const char *text, const char *image_json, dna_wall_post_t *out_post)` | Post to own wall with image attachment; image_json is base64+metadata JSON (v0.7.0+) |
 | `int dna_wall_delete(dht_context_t *dht, const char *fingerprint, const uint8_t *private_key, const char *post_uuid)` | Delete own wall post by UUID |
 | `int dna_wall_load(dht_context_t *dht, const char *fingerprint, dna_wall_t *wall)` | Load user's wall from DHT |
 | `void dna_wall_free(dna_wall_t *wall)` | Free wall structure |
 | `int dna_wall_post_verify(const dna_wall_post_t *post, const uint8_t *public_key)` | Verify post Dilithium5 signature (0=valid) |
 | `char* dna_wall_to_json(const dna_wall_t *wall)` | Serialize wall to JSON string |
 | `int dna_wall_from_json(const char *json, dna_wall_t *wall)` | Deserialize wall from JSON string |
+
+### 11.7a Wall Comments (`dna_wall.h`) - v0.7.0+
+
+Single-level threaded comment system for wall posts. Comments are stored as multi-owner
+chunked values under a per-post DHT key (`SHA3-512("dna:wall:comments:<post_uuid>")`).
+Each commenter stores their own value_id slot, allowing concurrent writers without conflict.
+
+| Function | Description |
+|----------|-------------|
+| `int dna_wall_comment_add(dht_context_t *dht_ctx, const char *post_uuid, const char *parent_comment_uuid, const char *body, const char *author_fingerprint, const uint8_t *private_key, char *uuid_out)` | Add a comment to a wall post; parent_comment_uuid may be NULL for top-level comments |
+| `int dna_wall_comments_get(dht_context_t *dht_ctx, const char *post_uuid, dna_wall_comment_t **comments_out, size_t *count_out)` | Fetch all comments for a wall post from DHT; returns 0 on success, -2 if none found |
+| `int dna_wall_comment_verify(const dna_wall_comment_t *comment, const uint8_t *public_key)` | Verify comment Dilithium5 signature (0=valid) |
+| `void dna_wall_comments_free(dna_wall_comment_t *comments, size_t count)` | Free comments array returned by dna_wall_comments_get |
 
 ### 11.8 Group Outbox (`dna_group_outbox.h`)
 

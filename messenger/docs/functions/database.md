@@ -233,3 +233,50 @@ SQLite cache for discovered bootstrap nodes, enabling decentralization.
 | `int feed_cache_update_meta(const char*)` | Update last-fetched timestamp for cache key |
 | `bool feed_cache_is_stale(const char*)` | Check if cache key is stale (>5 min) |
 | `int feed_cache_stats(int*, int*, int*)` | Get cache statistics |
+
+---
+
+## 13.10 Wall Cache (`database/wall_cache.h`)
+
+**Added in v0.7.0** - Global SQLite cache for wall posts and comments with stale-while-revalidate semantics.
+
+**Database:** `~/.dna/wall_cache.db`
+
+**Tables:** wall_posts, wall_cache_meta, wall_comments
+
+**Constants:** `WALL_CACHE_TTL_SECONDS` (300), `WALL_CACHE_EVICT_SECONDS` (2592000)
+
+### Lifecycle
+
+| Function | Description |
+|----------|-------------|
+| `int wall_cache_init(void)` | Initialize wall cache database |
+| `void wall_cache_close(void)` | Close wall cache database |
+| `int wall_cache_evict_expired(void)` | Evict entries older than 30 days |
+
+### Post Operations
+
+| Function | Description |
+|----------|-------------|
+| `int wall_cache_store(const char*, const dna_wall_post_t*, size_t)` | Store wall posts for an author; includes `image_json` column (v0.7.0+) |
+| `int wall_cache_load(const char*, dna_wall_post_t**, size_t*)` | Load cached wall posts for one author; populates `image_json` field (v0.7.0+) |
+| `int wall_cache_load_timeline(const char**, size_t, dna_wall_post_t**, size_t*)` | Load merged timeline for multiple authors sorted by timestamp DESC (limit 200) |
+| `int wall_cache_delete_by_author(const char*)` | Delete all cached posts for a specific author |
+| `int wall_cache_delete_post(const char*)` | Delete a specific post by UUID |
+| `void wall_cache_free_posts(dna_wall_post_t*, size_t)` | Free posts array returned by load functions |
+
+### Comment Cache (v0.7.0+)
+
+| Function | Description |
+|----------|-------------|
+| `int wall_cache_store_comments(const char*, const char*, int)` | Cache wall post comments as JSON blob with comment count |
+| `int wall_cache_load_comments(const char*, char**, int*)` | Load cached wall post comments; returns heap-allocated JSON (caller frees) |
+| `int wall_cache_invalidate_comments(const char*)` | Invalidate comment cache for a post by UUID |
+| `bool wall_cache_is_stale_comments(const char*)` | Check if comment cache is stale for a post (5-min TTL) |
+
+### Meta / Staleness
+
+| Function | Description |
+|----------|-------------|
+| `int wall_cache_update_meta(const char*)` | Update last-fetched timestamp for a fingerprint cache key |
+| `bool wall_cache_is_stale(const char*)` | Check if post cache is stale for a fingerprint (>5 min) |

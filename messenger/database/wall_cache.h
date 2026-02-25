@@ -130,6 +130,44 @@ int wall_cache_update_meta(const char *fingerprint);
  */
 void wall_cache_free_posts(dna_wall_post_t *posts, size_t count);
 
+/* ── Comment cache (v0.7.0+) ─────────────────────────────────────── */
+
+/**
+ * Store comments JSON blob for a wall post
+ *
+ * @param post_uuid      Post UUID
+ * @param comments_json  JSON array of comment info structs
+ * @param count          Number of comments
+ * @return 0 on success, -1 on error
+ */
+int wall_cache_store_comments(const char *post_uuid, const char *comments_json, int count);
+
+/**
+ * Load cached comments for a wall post
+ *
+ * @param post_uuid       Post UUID
+ * @param json_out        Output: heap-allocated JSON string (caller frees)
+ * @param count_out       Output: number of comments
+ * @return 0 on success, -1 on error, -2 if not found
+ */
+int wall_cache_load_comments(const char *post_uuid, char **json_out, int *count_out);
+
+/**
+ * Invalidate cached comments for a wall post
+ *
+ * @param post_uuid  Post UUID
+ * @return 0 on success, -1 on error
+ */
+int wall_cache_invalidate_comments(const char *post_uuid);
+
+/**
+ * Check if comment cache is stale for a post (older than 5 minutes)
+ *
+ * @param post_uuid  Post UUID to check
+ * @return true if stale or not found, false if still fresh
+ */
+bool wall_cache_is_stale_comments(const char *post_uuid);
+
 #ifdef __cplusplus
 }
 #endif
