@@ -44,6 +44,7 @@ set(DHT_COMMON_SOURCES
     client/dna_feed_topic.c     # Feed v2: Topic operations
     client/dna_feed_comments.c  # Feed v2: Comment system with mentions
     client/dna_feed_index.c     # Feed v2: Day-bucket indexing
+    client/dna_channels.c       # Channels: DHT channel operations
     client/dna_group_outbox.c   # Group message outbox (feed pattern)
     client/dna_wall.c           # Personal wall posts (DHT)
     client/dna_wall_comments.c  # Wall post comments (v0.7.0+)
