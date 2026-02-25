@@ -125,41 +125,55 @@ class WallTimelineScreen extends ConsumerWidget {
     final controller = TextEditingController();
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('New Post'),
-        content: TextField(
-          controller: controller,
-          maxLines: 5,
-          maxLength: 2000,
-          decoration: const InputDecoration(
-            hintText: "What's on your mind?",
-            border: OutlineInputBorder(),
+      builder: (dialogContext) {
+        final theme = Theme.of(dialogContext);
+        return AlertDialog(
+          title: Row(
+            children: [
+              FaIcon(FontAwesomeIcons.pen, size: 18, color: theme.colorScheme.primary),
+              const SizedBox(width: DnaSpacing.sm),
+              const Text('New Post'),
+            ],
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: TextField(
+              controller: controller,
+              maxLines: 5,
+              maxLength: 2000,
+              autofocus: true,
+              decoration: const InputDecoration(
+                hintText: "What's on your mind?",
+              ),
+            ),
           ),
-          FilledButton(
-            onPressed: () async {
-              final text = controller.text.trim();
-              if (text.isEmpty) return;
-              Navigator.pop(context);
-              try {
-                await ref.read(wallTimelineProvider.notifier).createPost(text);
-              } catch (e) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Failed to post: $e')),
-                  );
+          actions: [
+            DnaButton(
+              label: 'Cancel',
+              variant: DnaButtonVariant.ghost,
+              onPressed: () => Navigator.pop(dialogContext),
+            ),
+            DnaButton(
+              label: 'Post',
+              icon: FontAwesomeIcons.paperPlane,
+              onPressed: () async {
+                final text = controller.text.trim();
+                if (text.isEmpty) return;
+                Navigator.pop(dialogContext);
+                try {
+                  await ref.read(wallTimelineProvider.notifier).createPost(text);
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Failed to post: $e')),
+                    );
+                  }
                 }
-              }
-            },
-            child: const Text('Post'),
-          ),
-        ],
-      ),
+              },
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -268,7 +282,6 @@ class WallTimelineScreen extends ConsumerWidget {
                     maxLength: 2000 - quoteBlock.length - 2,
                     decoration: const InputDecoration(
                       hintText: 'Add a comment (optional)',
-                      border: OutlineInputBorder(),
                     ),
                   ),
                 ],
@@ -276,11 +289,14 @@ class WallTimelineScreen extends ConsumerWidget {
             ),
           ),
           actions: [
-            TextButton(
+            DnaButton(
+              label: 'Cancel',
+              variant: DnaButtonVariant.ghost,
               onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
             ),
-            FilledButton(
+            DnaButton(
+              label: 'Repost',
+              icon: FontAwesomeIcons.retweet,
               onPressed: () async {
                 Navigator.pop(dialogContext);
                 final comment = controller.text.trim();
@@ -305,7 +321,6 @@ class WallTimelineScreen extends ConsumerWidget {
                   }
                 }
               },
-              child: const Text('Repost'),
             ),
           ],
         );

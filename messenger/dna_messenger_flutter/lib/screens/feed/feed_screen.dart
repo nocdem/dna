@@ -924,69 +924,92 @@ class _CreateTopicDialogState extends ConsumerState<_CreateTopicDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return AlertDialog(
-      title: const Text('Create Topic'),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: _titleController,
-              decoration: const InputDecoration(
-                labelText: 'Title',
-                hintText: 'Enter topic title',
+      title: Row(
+        children: [
+          FaIcon(FontAwesomeIcons.squarePlus, size: 18, color: theme.colorScheme.primary),
+          const SizedBox(width: DnaSpacing.sm),
+          const Text('Create Topic'),
+        ],
+      ),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: _titleController,
+                decoration: const InputDecoration(
+                  hintText: 'Topic title',
+                  prefixIcon: Padding(
+                    padding: EdgeInsets.only(left: DnaSpacing.md, right: DnaSpacing.sm),
+                    child: FaIcon(FontAwesomeIcons.heading, size: 14),
+                  ),
+                  prefixIconConstraints: BoxConstraints(minWidth: 0, minHeight: 0),
+                ),
+                maxLength: 200,
               ),
-              maxLength: 200,
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _bodyController,
-              decoration: const InputDecoration(
-                labelText: 'Body',
-                hintText: 'Enter topic body',
+              const SizedBox(height: DnaSpacing.md),
+              TextField(
+                controller: _bodyController,
+                decoration: const InputDecoration(
+                  hintText: 'What do you want to discuss?',
+                ),
+                maxLines: 5,
+                maxLength: 4000,
               ),
-              maxLines: 5,
-              maxLength: 4000,
-            ),
-            const SizedBox(height: 8),
-            DropdownButtonFormField<String>(
-              initialValue: _selectedCategory,
-              decoration: const InputDecoration(labelText: 'Category'),
-              items: FeedCategories.all.map((cat) => DropdownMenuItem(
-                value: cat,
-                child: Text(FeedCategories.displayName(cat)),
-              )).toList(),
-              onChanged: (value) {
-                if (value != null) {
-                  setState(() => _selectedCategory = value);
-                }
-              },
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _tagsController,
-              decoration: const InputDecoration(
-                labelText: 'Tags (optional)',
-                hintText: 'tag1, tag2, tag3',
+              const SizedBox(height: DnaSpacing.md),
+              DropdownButtonFormField<String>(
+                initialValue: _selectedCategory,
+                decoration: InputDecoration(
+                  hintText: 'Category',
+                  prefixIcon: Padding(
+                    padding: const EdgeInsets.only(left: DnaSpacing.md, right: DnaSpacing.sm),
+                    child: FaIcon(FontAwesomeIcons.layerGroup, size: 14, color: theme.hintColor),
+                  ),
+                  prefixIconConstraints: const BoxConstraints(minWidth: 0, minHeight: 0),
+                ),
+                items: FeedCategories.all.map((cat) => DropdownMenuItem(
+                  value: cat,
+                  child: Text(FeedCategories.displayName(cat)),
+                )).toList(),
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() => _selectedCategory = value);
+                  }
+                },
               ),
-            ),
-          ],
+              const SizedBox(height: DnaSpacing.md),
+              TextField(
+                controller: _tagsController,
+                decoration: const InputDecoration(
+                  hintText: 'Tags (optional, comma-separated)',
+                  prefixIcon: Padding(
+                    padding: EdgeInsets.only(left: DnaSpacing.md, right: DnaSpacing.sm),
+                    child: FaIcon(FontAwesomeIcons.tags, size: 14),
+                  ),
+                  prefixIconConstraints: BoxConstraints(minWidth: 0, minHeight: 0),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
       actions: [
-        TextButton(
+        DnaButton(
+          label: 'Cancel',
+          variant: DnaButtonVariant.ghost,
           onPressed: _isLoading ? null : () => Navigator.pop(context),
-          child: const Text('Cancel'),
         ),
-        ElevatedButton(
+        DnaButton(
+          label: 'Create',
+          loading: _isLoading,
+          icon: FontAwesomeIcons.paperPlane,
           onPressed: _isLoading ? null : _createTopic,
-          child: _isLoading
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Text('Create'),
         ),
       ],
     );
@@ -1066,31 +1089,39 @@ class _AddCommentDialogState extends ConsumerState<_AddCommentDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return AlertDialog(
-      title: const Text('Add Comment'),
-      content: TextField(
-        controller: _bodyController,
-        decoration: const InputDecoration(
-          labelText: 'Comment',
-          hintText: 'Enter your comment',
+      title: Row(
+        children: [
+          FaIcon(FontAwesomeIcons.comment, size: 18, color: theme.colorScheme.primary),
+          const SizedBox(width: DnaSpacing.sm),
+          const Text('Add Comment'),
+        ],
+      ),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: TextField(
+          controller: _bodyController,
+          decoration: const InputDecoration(
+            hintText: 'Share your thoughts...',
+          ),
+          maxLines: 4,
+          maxLength: 2000,
+          autofocus: true,
         ),
-        maxLines: 4,
-        maxLength: 2000,
       ),
       actions: [
-        TextButton(
+        DnaButton(
+          label: 'Cancel',
+          variant: DnaButtonVariant.ghost,
           onPressed: _isLoading ? null : () => Navigator.pop(context),
-          child: const Text('Cancel'),
         ),
-        ElevatedButton(
+        DnaButton(
+          label: 'Post',
+          loading: _isLoading,
+          icon: FontAwesomeIcons.paperPlane,
           onPressed: _isLoading ? null : _addComment,
-          child: _isLoading
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Text('Post'),
         ),
       ],
     );
@@ -1171,78 +1202,81 @@ class _ReplyCommentDialogState extends ConsumerState<_ReplyCommentDialog> {
     return AlertDialog(
       title: Row(
         children: [
-          const FaIcon(FontAwesomeIcons.reply, size: 16),
-          const SizedBox(width: 8),
+          FaIcon(FontAwesomeIcons.reply, size: 18, color: theme.colorScheme.primary),
+          const SizedBox(width: DnaSpacing.sm),
           const Text('Reply'),
         ],
       ),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Show parent comment preview
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(8),
-                border: Border(
-                  left: BorderSide(
-                    color: theme.colorScheme.primary,
-                    width: 3,
-                  ),
-                ),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    parentAuthorName,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      fontWeight: FontWeight.bold,
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Parent comment preview
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(DnaSpacing.md),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(DnaSpacing.radiusSm),
+                  border: Border(
+                    left: BorderSide(
+                      color: theme.colorScheme.primary,
+                      width: 3,
                     ),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    widget.parentComment.body.length > 100
-                        ? '${widget.parentComment.body.substring(0, 100)}...'
-                        : widget.parentComment.body,
-                    style: theme.textTheme.bodySmall,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      parentAuthorName,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
+                    const SizedBox(height: DnaSpacing.xs),
+                    Text(
+                      widget.parentComment.body.length > 100
+                          ? '${widget.parentComment.body.substring(0, 100)}...'
+                          : widget.parentComment.body,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _bodyController,
-              decoration: const InputDecoration(
-                labelText: 'Your reply',
-                hintText: 'Enter your reply',
+              const SizedBox(height: DnaSpacing.lg),
+              TextField(
+                controller: _bodyController,
+                decoration: const InputDecoration(
+                  hintText: 'Write your reply...',
+                ),
+                maxLines: 4,
+                maxLength: 2000,
+                autofocus: true,
               ),
-              maxLines: 4,
-              maxLength: 2000,
-              autofocus: true,
-            ),
-          ],
+            ],
+          ),
         ),
       ),
       actions: [
-        TextButton(
+        DnaButton(
+          label: 'Cancel',
+          variant: DnaButtonVariant.ghost,
           onPressed: _isLoading ? null : () => Navigator.pop(context),
-          child: const Text('Cancel'),
         ),
-        ElevatedButton(
+        DnaButton(
+          label: 'Reply',
+          loading: _isLoading,
+          icon: FontAwesomeIcons.paperPlane,
           onPressed: _isLoading ? null : _addReply,
-          child: _isLoading
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Text('Reply'),
         ),
       ],
     );
