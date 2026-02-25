@@ -80,6 +80,8 @@ class FeedScreen extends ConsumerWidget {
         ),
       ),
       body: topics.when(
+        skipLoadingOnReload: true,
+        skipLoadingOnRefresh: true,
         data: (topicList) => _TopicsList(topics: topicList),
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (error, stack) => _ErrorView(
@@ -474,6 +476,8 @@ class _TopicDetailScreen extends ConsumerWidget {
         ],
       ),
       body: topic.when(
+        skipLoadingOnReload: true,
+        skipLoadingOnRefresh: true,
         data: (t) => t != null
             ? _TopicDetailContent(
                 topic: t,
@@ -628,6 +632,8 @@ class _TopicDetailContent extends ConsumerWidget {
         ),
         // Comments list (threaded view)
         comments.when(
+          skipLoadingOnReload: true,
+          skipLoadingOnRefresh: true,
           data: (commentList) {
             if (commentList.isEmpty) {
               return SliverToBoxAdapter(
@@ -1249,6 +1255,8 @@ class _SubscribedTopicsScreen extends ConsumerWidget {
         ],
       ),
       body: subscribedTopics.when(
+        skipLoadingOnReload: true,
+        skipLoadingOnRefresh: true,
         data: (topics) => topics.isEmpty
             ? Center(
                 child: Column(
