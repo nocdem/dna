@@ -176,6 +176,7 @@ if(BUILD_SHARED_LIB)
         src/api/dna_engine.c
         # Modular engine components
         src/api/engine/dna_engine_feed.c
+        src/api/engine/dna_engine_channels.c
         src/api/engine/dna_engine_wall.c
         src/api/engine/dna_engine_presence.c
         src/api/engine/dna_engine_wallet.c
@@ -259,6 +260,7 @@ else()
         src/api/dna_engine.c
         # Modular engine components
         src/api/engine/dna_engine_feed.c
+        src/api/engine/dna_engine_channels.c
         src/api/engine/dna_engine_wall.c
         src/api/engine/dna_engine_presence.c
         src/api/engine/dna_engine_wallet.c
