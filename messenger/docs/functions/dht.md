@@ -286,7 +286,7 @@ Non-blocking async publish queue with automatic retry and per-key serialization.
 
 ## 11. DHT Client (`dht/client/`)
 
-High-level DHT client operations including singleton management, identity backup, contact lists, profiles, feeds, and message walls.
+High-level DHT client operations including singleton management, identity backup, contact lists, profiles, and feeds.
 
 ### 11.1 DHT Singleton (`dht_singleton.h`)
 
@@ -461,32 +461,7 @@ Uses `dna:feeds:` DHT namespace. No voting (deferred).
 | `void dna_feed_get_category_index_key(const char*, const char*, char*)` | Get DHT key for category day index |
 | `void dna_feed_get_global_index_key(const char*, char*)` | Get DHT key for global day index |
 
-### 11.7 Message Wall (`dna_message_wall.h`)
-
-| Function | Description |
-|----------|-------------|
-| `int dna_post_to_wall(dht_context_t*, const char*, const char*, const char*, const uint8_t*, const char*)` | Post message to wall |
-| `int dna_load_wall(dht_context_t*, const char*, dna_message_wall_t**)` | Load message wall from DHT |
-| `void dna_message_wall_free(dna_message_wall_t*)` | Free message wall |
-| `int dna_message_wall_verify_signature(const dna_wall_message_t*, const uint8_t*)` | Verify message signature |
-| `int dna_message_wall_to_json(const dna_message_wall_t*, char**)` | Serialize wall to JSON |
-| `int dna_message_wall_from_json(const char*, dna_message_wall_t**)` | Parse wall from JSON |
-| `int dna_wall_get_replies(const dna_message_wall_t*, const char*, dna_wall_message_t***, size_t*)` | Get direct replies to post |
-| `int dna_wall_get_thread(const dna_message_wall_t*, const char*, dna_wall_message_t***, size_t*)` | Get full conversation thread |
-| `int dna_wall_make_post_id(const char*, uint64_t, char*)` | Generate post_id |
-| `int dna_wall_update_reply_counts(dna_message_wall_t*)` | Update reply counts |
-
-### 11.8 Wall Votes (`dna_wall_votes.h`)
-
-| Function | Description |
-|----------|-------------|
-| `int dna_cast_vote(dht_context_t*, const char*, const char*, int8_t, const uint8_t*)` | Cast vote on wall post |
-| `int dna_load_votes(dht_context_t*, const char*, dna_wall_votes_t**)` | Load votes from DHT |
-| `int8_t dna_get_user_vote(const dna_wall_votes_t*, const char*)` | Get user's vote on post |
-| `void dna_wall_votes_free(dna_wall_votes_t*)` | Free votes structure |
-| `int dna_verify_vote_signature(const dna_wall_vote_t*, const char*, const uint8_t*)` | Verify vote signature |
-
-### 11.9 Group Outbox (`dna_group_outbox.h`)
+### 11.7 Group Outbox (`dna_group_outbox.h`)
 
 #### Send/Receive API
 
@@ -530,7 +505,7 @@ Uses `dna:feeds:` DHT namespace. No voting (deferred).
 | `void dna_group_outbox_free_bucket(dna_group_outbox_bucket_t*)` | Free bucket structure |
 | `void dna_group_outbox_set_db(void*)` | Set database handle |
 
-### 11.10 Message Backup (`dht_message_backup.h`)
+### 11.8 Message Backup (`dht_message_backup.h`)
 
 | Function | Description |
 |----------|-------------|

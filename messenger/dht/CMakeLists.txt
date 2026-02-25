@@ -41,8 +41,6 @@ set(DHT_COMMON_SOURCES
     client/dht_addressbook.c      # Wallet address book DHT sync
     client/dht_message_backup.c
     client/dna_profile.c
-    client/dna_message_wall.c
-    client/dna_wall_votes.c
     client/dna_feed_topic.c     # Feed v2: Topic operations
     client/dna_feed_comments.c  # Feed v2: Comment system with mentions
     client/dna_feed_index.c     # Feed v2: Day-bucket indexing
