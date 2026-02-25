@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -12,11 +13,50 @@ import '../../services/image_attachment_service.dart';
 import '../../widgets/wall_post_tile.dart';
 import 'wall_post_detail_screen.dart';
 
-class WallTimelineScreen extends ConsumerWidget {
+class WallTimelineScreen extends ConsumerStatefulWidget {
   const WallTimelineScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<WallTimelineScreen> createState() =>
+      _WallTimelineScreenState();
+}
+
+class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
+  @override
+  void initState() {
+    super.initState();
+    _checkLostCameraData();
+  }
+
+  /// Recover image data lost when Android killed the Activity during camera use
+  Future<void> _checkLostCameraData() async {
+    final picker = ImagePicker();
+    final response = await picker.retrieveLostData();
+    if (response.isEmpty || response.file == null) return;
+
+    try {
+      final bytes = await File(response.file!.path).readAsBytes();
+      final imageService = ImageAttachmentService();
+      final attachment = await imageService.processImage(bytes);
+      final previewBytes = base64Decode(attachment.base64Data);
+
+      if (mounted) {
+        _showCreatePostDialog(
+          initialAttachment: attachment,
+          initialPreview: previewBytes,
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to process camera image: $e')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final timeline = ref.watch(wallTimelineProvider);
     final myFp = ref.watch(currentFingerprintProvider) ?? '';
 
@@ -95,7 +135,7 @@ class WallTimelineScreen extends ConsumerWidget {
       ),
       floatingActionButton: FloatingActionButton(
         heroTag: 'wall_fab',
-        onPressed: () => _showCreatePostDialog(context, ref),
+        onPressed: () => _showCreatePostDialog(),
         tooltip: 'New Post',
         child: const FaIcon(FontAwesomeIcons.pen),
       ),
@@ -133,12 +173,17 @@ class WallTimelineScreen extends ConsumerWidget {
     );
   }
 
-  void _showCreatePostDialog(BuildContext context, WidgetRef ref) {
+  void _showCreatePostDialog({
+    ImageAttachment? initialAttachment,
+    Uint8List? initialPreview,
+  }) {
     showDialog(
       context: context,
       builder: (dialogContext) => _CreatePostDialog(
         ref: ref,
         parentContext: context,
+        initialAttachment: initialAttachment,
+        initialPreview: initialPreview,
       ),
     );
   }
@@ -299,8 +344,15 @@ class WallTimelineScreen extends ConsumerWidget {
 class _CreatePostDialog extends StatefulWidget {
   final WidgetRef ref;
   final BuildContext parentContext;
+  final ImageAttachment? initialAttachment;
+  final Uint8List? initialPreview;
 
-  const _CreatePostDialog({required this.ref, required this.parentContext});
+  const _CreatePostDialog({
+    required this.ref,
+    required this.parentContext,
+    this.initialAttachment,
+    this.initialPreview,
+  });
 
   @override
   State<_CreatePostDialog> createState() => _CreatePostDialogState();
@@ -312,6 +364,13 @@ class _CreatePostDialogState extends State<_CreatePostDialog> {
   ImageAttachment? _attachment;
   Uint8List? _previewBytes;
   bool _posting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _attachment = widget.initialAttachment;
+    _previewBytes = widget.initialPreview;
+  }
 
   @override
   void dispose() {
