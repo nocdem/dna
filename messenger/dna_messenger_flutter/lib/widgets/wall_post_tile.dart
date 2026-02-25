@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../design_system/design_system.dart';
 import '../ffi/dna_engine.dart';
+import '../providers/contact_profile_cache_provider.dart';
 import '../utils/time_format.dart';
 
 class WallPostTile extends ConsumerWidget {
@@ -29,6 +30,10 @@ class WallPostTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final isOwn = post.isOwn(myFingerprint);
     final theme = Theme.of(context);
+    final cachedProfile = ref.watch(
+      contactProfileCacheProvider.select((cache) => cache[post.authorFingerprint]),
+    );
+    final avatarBytes = cachedProfile?.decodeAvatar();
 
     return DnaCard(
       padding: const EdgeInsets.only(
@@ -46,6 +51,7 @@ class WallPostTile extends ConsumerWidget {
               GestureDetector(
                 onTap: onAuthorTap,
                 child: DnaAvatar(
+                  imageBytes: avatarBytes,
                   name: post.authorName.isNotEmpty ? post.authorName : '?',
                   size: DnaAvatarSize.md,
                 ),
