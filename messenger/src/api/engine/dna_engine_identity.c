@@ -20,6 +20,7 @@
 
 #include "engine_includes.h"
 #include "database/feed_subscriptions_db.h"
+#include "database/channel_subscriptions_db.h"
 
 /* ============================================================================
  * IDENTITY TASK HANDLERS
@@ -214,6 +215,11 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     if (feed_subscriptions_db_init() != 0) {
         QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize feed subscriptions database");
         /* Non-fatal - continue, subscriptions will be initialized on first access */
+    }
+
+    /* Initialize channel subscriptions database */
+    if (channel_subscriptions_db_init() != 0) {
+        QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize channel subscriptions database");
     }
 
     /* Profile cache is now global - initialized in dna_engine_create() */
@@ -1083,6 +1089,16 @@ int dna_engine_create_identity_sync(
             QGP_LOG_INFO(LOG_TAG, "Auto-subscribed to DNA Updates feed");
         }
         /* -1 = already subscribed, which is fine */
+    }
+
+    /* Step 7: Auto-subscribe to default channels */
+    if (channel_subscriptions_db_init() == 0) {
+        for (int i = 0; i < DNA_DEFAULT_CHANNEL_COUNT; i++) {
+            if (channel_subscriptions_db_subscribe(DNA_DEFAULT_CHANNEL_UUIDS[i]) == 0) {
+                QGP_LOG_INFO(LOG_TAG, "Auto-subscribed to default channel: %s",
+                             DNA_DEFAULT_CHANNEL_NAMES[i]);
+            }
+        }
     }
 
     return DNA_OK;
