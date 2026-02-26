@@ -50,17 +50,6 @@ extern "C" {
 DNA_API const char* dna_engine_get_version(void);
 
 /* ============================================================================
- * WELL-KNOWN CONSTANTS
- * ============================================================================ */
-
-/**
- * Official DNA Messenger Updates feed topic UUID
- * Created by Claude's identity - all new users auto-subscribe to this feed.
- * Use: dna-messenger-cli feeds comment <UUID> "message"
- */
-#define DNA_UPDATES_TOPIC_UUID "765ed03d-0c28-4d17-91bd-683a713a63e8"
-
-/* ============================================================================
  * OPAQUE TYPES
  * ============================================================================ */
 
@@ -239,27 +228,6 @@ typedef struct {
 } dna_addressbook_entry_t;
 
 /**
- * Feed v2: Topic information (simplified for async API)
- * Topics are the primary content unit with categories and tags.
- */
-#define DNA_FEED_MAX_TAGS 5
-#define DNA_FEED_MAX_MENTIONS 10
-
-typedef struct {
-    char topic_uuid[37];            /* UUID v4 */
-    char author_fingerprint[129];   /* Author's SHA3-512 fingerprint */
-    char *title;                    /* Topic title (caller frees) */
-    char *body;                     /* Topic body (caller frees, NULL for list views) */
-    char category_id[65];           /* SHA256 hex of lowercase category name */
-    char tags[DNA_FEED_MAX_TAGS][33]; /* Up to 5 tags, 32 chars each */
-    int tag_count;                  /* Number of tags */
-    uint64_t created_at;            /* Unix timestamp */
-    bool deleted;                   /* Soft delete flag */
-    uint64_t deleted_at;            /* When deleted (0 if not deleted) */
-    bool verified;                  /* Signature verified */
-} dna_feed_topic_info_t;
-
-/**
  * Wall: Post information (for async API callbacks)
  */
 typedef struct {
@@ -285,30 +253,6 @@ typedef struct {
     uint64_t created_at;            /* Unix timestamp */
     bool verified;                  /* Signature verified */
 } dna_wall_comment_info_t;
-
-/**
- * Feed v2: Comment information (single-level threaded with mentions)
- */
-typedef struct {
-    char comment_uuid[37];          /* UUID v4 */
-    char topic_uuid[37];            /* Parent topic UUID */
-    char parent_comment_uuid[37];   /* Reply-to comment UUID (empty = top-level) */
-    char author_fingerprint[129];   /* Author's SHA3-512 fingerprint */
-    char *body;                     /* Comment content (caller frees) */
-    char mentions[DNA_FEED_MAX_MENTIONS][129]; /* @mentioned fingerprints */
-    int mention_count;              /* Number of mentions */
-    uint64_t created_at;            /* Unix timestamp */
-    bool verified;                  /* Signature verified */
-} dna_feed_comment_info_t;
-
-/**
- * Feed v2: Subscription information (local + DHT sync)
- */
-typedef struct {
-    char topic_uuid[37];            /* UUID v4 of subscribed topic */
-    uint64_t subscribed_at;         /* Unix timestamp when subscribed */
-    uint64_t last_synced;           /* Unix timestamp of last DHT sync */
-} dna_feed_subscription_info_t;
 
 /* =====================================================
  * Channel System (RSS-like channels)
@@ -597,59 +541,6 @@ typedef void (*dna_presence_cb)(
     void *user_data
 );
 
-/**
- * Feed v2: Single topic callback
- */
-typedef void (*dna_feed_topic_cb)(
-    dna_request_id_t request_id,
-    int error,
-    dna_feed_topic_info_t *topic,
-    void *user_data
-);
-
-/**
- * Feed v2: Topics list callback
- */
-typedef void (*dna_feed_topics_cb)(
-    dna_request_id_t request_id,
-    int error,
-    dna_feed_topic_info_t *topics,
-    int count,
-    void *user_data
-);
-
-/**
- * Feed v2: Comments list callback
- */
-typedef void (*dna_feed_comments_cb)(
-    dna_request_id_t request_id,
-    int error,
-    dna_feed_comment_info_t *comments,
-    int count,
-    void *user_data
-);
-
-/**
- * Feed v2: Single comment callback
- */
-typedef void (*dna_feed_comment_cb)(
-    dna_request_id_t request_id,
-    int error,
-    dna_feed_comment_info_t *comment,
-    void *user_data
-);
-
-/**
- * Feed v2: Subscriptions list callback
- */
-typedef void (*dna_feed_subscriptions_cb)(
-    dna_request_id_t request_id,
-    int error,
-    dna_feed_subscription_info_t *subscriptions,
-    int count,
-    void *user_data
-);
-
 /* Channel callbacks */
 typedef void (*dna_channel_cb)(
     dna_request_id_t request_id, int error,
@@ -752,9 +643,6 @@ typedef enum {
     DNA_EVENT_GEKS_SYNCED,               /* GEKs restored from DHT to local cache */
     DNA_EVENT_DHT_PUBLISH_COMPLETE,      /* Async DHT publish completed successfully (v0.6.80+) */
     DNA_EVENT_DHT_PUBLISH_FAILED,        /* Async DHT publish failed after retries (v0.6.80+) */
-    DNA_EVENT_FEED_TOPIC_COMMENT,        /* New comment on subscribed topic (v0.6.91+) */
-    DNA_EVENT_FEED_SUBSCRIPTIONS_SYNCED, /* Subscriptions synced from DHT (v0.6.91+) */
-    DNA_EVENT_FEED_CACHE_UPDATED,        /* Feed cache refreshed with new DHT data (v0.6.121+) */
     DNA_EVENT_WALL_NEW_POST,             /* New wall post from a contact (v0.6.135+) */
     DNA_EVENT_CHANNEL_NEW_POST,          /* New post in subscribed channel */
     DNA_EVENT_CHANNEL_SUBS_SYNCED,       /* Channel subscriptions synced from DHT */
@@ -817,17 +705,6 @@ typedef struct {
             char base_key[256];             /* DHT key that was published */
             int error_code;                 /* DHT_CHUNK_* error code (0 on success) */
         } dht_publish;
-        struct {
-            char topic_uuid[37];            /* Topic UUID with new comment */
-            char comment_uuid[37];          /* New comment UUID */
-            char author_fingerprint[129];   /* Comment author fingerprint */
-        } feed_topic_comment;
-        struct {
-            int subscriptions_synced;       /* Number of subscriptions synced from DHT */
-        } feed_subscriptions_synced;
-        struct {
-            char cache_key[64];
-        } feed_cache_updated;
         struct {
             char author_fingerprint[129];   /* Post author's fingerprint */
             char post_uuid[37];             /* New post UUID */
@@ -2650,325 +2527,6 @@ DNA_API int dna_engine_refresh_listeners(
 );
 
 /* ============================================================================
- * 8. FEED v2 (7 async functions) - Topic-based public feeds via DHT
- *
- * v2 replaces the channel/post/vote system with topic-based feeds.
- * Topics have categories and tags for organization.
- * No voting system (deferred to future version).
- * Uses "dna:feeds:" DHT namespace.
- * ============================================================================ */
-
-/**
- * Create a new feed topic
- *
- * Topics are signed with Dilithium5 and stored in DHT.
- * Automatically adds to category and global indexes.
- *
- * @param engine     Engine instance
- * @param title      Topic title (max 200 chars)
- * @param body       Topic body (max 4000 chars)
- * @param category   Category name (e.g., "general", "technology") or NULL for "general"
- * @param tags_json  JSON array of tags, e.g., "[\"tag1\", \"tag2\"]" or NULL
- * @param callback   Called with created topic
- * @param user_data  User data for callback
- * @return           Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_feed_create_topic(
-    dna_engine_t *engine,
-    const char *title,
-    const char *body,
-    const char *category,
-    const char *tags_json,
-    dna_feed_topic_cb callback,
-    void *user_data
-);
-
-/**
- * Get a single topic by UUID
- *
- * Returns full topic with body, tags, and signature verification.
- *
- * @param engine    Engine instance
- * @param uuid      Topic UUID (36 chars)
- * @param callback  Called with topic
- * @param user_data User data for callback
- * @return          Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_feed_get_topic(
-    dna_engine_t *engine,
-    const char *uuid,
-    dna_feed_topic_cb callback,
-    void *user_data
-);
-
-/**
- * Soft delete a topic (author only)
- *
- * Sets deleted=true and deleted_at. Topic remains retrievable but
- * filtered from index listings. Only the original author can delete.
- *
- * @param engine    Engine instance
- * @param uuid      Topic UUID to delete
- * @param callback  Called on completion
- * @param user_data User data for callback
- * @return          Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_feed_delete_topic(
-    dna_engine_t *engine,
-    const char *uuid,
-    dna_completion_cb callback,
-    void *user_data
-);
-
-/**
- * Re-index an existing topic
- *
- * Fetches the topic from DHT and adds it to the day-bucket index.
- * Use this to migrate existing topics to a new index format.
- *
- * @param engine    Engine instance
- * @param uuid      Topic UUID to reindex
- * @param callback  Called on completion
- * @param user_data User data for callback
- * @return          Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_feed_reindex_topic(
-    dna_engine_t *engine,
-    const char *uuid,
-    dna_completion_cb callback,
-    void *user_data
-);
-
-/**
- * Add a comment to a topic (optionally as a reply)
- *
- * Supports single-level threading via parent_comment_uuid.
- * Signed with Dilithium5. Stored using multi-owner DHT pattern.
- *
- * @param engine              Engine instance
- * @param topic_uuid          Topic UUID to comment on
- * @param parent_comment_uuid Parent comment UUID for replies, or NULL for top-level
- * @param body                Comment content (max 2000 chars)
- * @param mentions_json       JSON array of fingerprints to mention, or NULL
- * @param callback            Called with created comment
- * @param user_data           User data for callback
- * @return                    Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_feed_add_comment(
-    dna_engine_t *engine,
-    const char *topic_uuid,
-    const char *parent_comment_uuid,
-    const char *body,
-    const char *mentions_json,
-    dna_feed_comment_cb callback,
-    void *user_data
-);
-
-/**
- * Get all comments for a topic
- *
- * @param engine      Engine instance
- * @param topic_uuid  Topic UUID
- * @param callback    Called with comments array
- * @param user_data   User data for callback
- * @return            Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_feed_get_comments(
-    dna_engine_t *engine,
-    const char *topic_uuid,
-    dna_feed_comments_cb callback,
-    void *user_data
-);
-
-/**
- * Get topics by category
- *
- * Returns topics from category index, sorted by created_at descending.
- * Index entries include title but not body (preview only).
- *
- * @param engine     Engine instance
- * @param category   Category name (e.g., "general", "technology")
- * @param days_back  How many days to look back (1-30, default 7)
- * @param callback   Called with topics array
- * @param user_data  User data for callback
- * @return           Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_feed_get_category(
-    dna_engine_t *engine,
-    const char *category,
-    int days_back,
-    dna_feed_topics_cb callback,
-    void *user_data
-);
-
-/**
- * Get all topics (global feed)
- *
- * Returns topics from all categories, sorted by created_at descending.
- * Index entries include title but not body (preview only).
- *
- * @param engine     Engine instance
- * @param days_back  How many days to look back (1-30, default 7)
- * @param callback   Called with topics array
- * @param user_data  User data for callback
- * @return           Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_feed_get_all(
-    dna_engine_t *engine,
-    int days_back,
-    dna_feed_topics_cb callback,
-    void *user_data
-);
-
-/* ============================================================================
- * 8.5 FEED SUBSCRIPTIONS (Local + DHT sync for multi-device) - v0.6.91+
- *
- * Subscription management for feed topics with DHT sync.
- * Local SQLite storage + DHT backup for multi-device support.
- * ============================================================================ */
-
-/**
- * Subscribe to a feed topic
- *
- * Adds topic to local subscription database.
- * Call dna_engine_feed_sync_subscriptions_to_dht() to sync to DHT.
- *
- * @param engine      Engine instance
- * @param topic_uuid  Topic UUID to subscribe to (36 chars)
- * @return            0 on success, -1 if already subscribed, negative on error
- */
-DNA_API int dna_engine_feed_subscribe(
-    dna_engine_t *engine,
-    const char *topic_uuid
-);
-
-/**
- * Unsubscribe from a feed topic
- *
- * Removes topic from local subscription database.
- * Call dna_engine_feed_sync_subscriptions_to_dht() to sync to DHT.
- *
- * @param engine      Engine instance
- * @param topic_uuid  Topic UUID to unsubscribe from (36 chars)
- * @return            0 on success, -1 if not subscribed, negative on error
- */
-DNA_API int dna_engine_feed_unsubscribe(
-    dna_engine_t *engine,
-    const char *topic_uuid
-);
-
-/**
- * Check if subscribed to a feed topic
- *
- * @param engine      Engine instance
- * @param topic_uuid  Topic UUID to check (36 chars)
- * @return            1 if subscribed, 0 if not subscribed
- */
-DNA_API int dna_engine_feed_is_subscribed(
-    dna_engine_t *engine,
-    const char *topic_uuid
-);
-
-/**
- * Get all subscribed topics
- *
- * Returns array of subscription info from local database.
- * Caller must free with dna_free_feed_subscriptions().
- *
- * @param engine     Engine instance
- * @param callback   Called with subscriptions array
- * @param user_data  User data for callback
- * @return           Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_feed_get_subscriptions(
-    dna_engine_t *engine,
-    dna_feed_subscriptions_cb callback,
-    void *user_data
-);
-
-/**
- * Sync subscriptions TO DHT (multi-device backup)
- *
- * Publishes current subscription list to DHT using signed put.
- * Key: SHA3-512("dna:feeds:subscriptions:" + fingerprint)
- *
- * @param engine    Engine instance
- * @param callback  Called on completion
- * @param user_data User data for callback
- * @return          Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_feed_sync_subscriptions_to_dht(
-    dna_engine_t *engine,
-    dna_completion_cb callback,
-    void *user_data
-);
-
-/**
- * Sync subscriptions FROM DHT (restore on new device)
- *
- * Retrieves subscription list from DHT and merges with local.
- * Fires DNA_EVENT_FEED_SUBSCRIPTIONS_SYNCED on completion.
- *
- * @param engine    Engine instance
- * @param callback  Called on completion
- * @param user_data User data for callback
- * @return          Request ID (0 on immediate error)
- */
-DNA_API dna_request_id_t dna_engine_feed_sync_subscriptions_from_dht(
-    dna_engine_t *engine,
-    dna_completion_cb callback,
-    void *user_data
-);
-
-/**
- * Start listening for comments on a subscribed topic
- *
- * Subscribes to DHT notifications for the topic's comment key.
- * When new comments are posted, fires DNA_EVENT_FEED_TOPIC_COMMENT.
- *
- * @param engine      Engine instance
- * @param topic_uuid  Topic UUID to listen for comments
- * @return            Listener token (> 0 on success, 0 on failure)
- */
-DNA_API size_t dna_engine_feed_listen_topic_comments(
-    dna_engine_t *engine,
-    const char *topic_uuid
-);
-
-/**
- * Cancel comment listener for a topic
- *
- * @param engine      Engine instance
- * @param topic_uuid  Topic UUID to stop listening
- */
-DNA_API void dna_engine_feed_cancel_topic_listener(
-    dna_engine_t *engine,
-    const char *topic_uuid
-);
-
-/**
- * Start listeners for all subscribed topics
- *
- * Convenience function that starts comment listeners for all
- * subscribed topics in the local database.
- *
- * @param engine    Engine instance
- * @return          Number of listeners started
- */
-DNA_API int dna_engine_feed_listen_all_subscriptions(
-    dna_engine_t *engine
-);
-
-/**
- * Cancel all feed topic listeners
- *
- * @param engine    Engine instance
- */
-DNA_API void dna_engine_feed_cancel_all_topic_listeners(
-    dna_engine_t *engine
-);
-
-/* ============================================================================
  * 9. BACKWARD COMPATIBILITY (for gradual GUI migration)
  * ============================================================================ */
 
@@ -3106,31 +2664,6 @@ DNA_API void dna_free_balances(dna_balance_t *balances, int count);
  * Free transactions array returned by callbacks
  */
 DNA_API void dna_free_transactions(dna_transaction_t *transactions, int count);
-
-/**
- * Free single feed topic returned by callbacks
- */
-DNA_API void dna_free_feed_topic(dna_feed_topic_info_t *topic);
-
-/**
- * Free feed topics array returned by callbacks
- */
-DNA_API void dna_free_feed_topics(dna_feed_topic_info_t *topics, int count);
-
-/**
- * Free single feed comment returned by callbacks
- */
-DNA_API void dna_free_feed_comment(dna_feed_comment_info_t *comment);
-
-/**
- * Free feed comments array returned by callbacks
- */
-DNA_API void dna_free_feed_comments(dna_feed_comment_info_t *comments, int count);
-
-/**
- * Free feed subscriptions array returned by callbacks
- */
-DNA_API void dna_free_feed_subscriptions(dna_feed_subscription_info_t *subscriptions, int count);
 
 /**
  * Free single channel info returned by callbacks

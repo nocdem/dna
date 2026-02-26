@@ -175,7 +175,6 @@ if(BUILD_SHARED_LIB)
         # Unified Engine API (Core/GUI separation)
         src/api/dna_engine.c
         # Modular engine components
-        src/api/engine/dna_engine_feed.c
         src/api/engine/dna_engine_channels.c
         src/api/engine/dna_engine_wall.c
         src/api/engine/dna_engine_presence.c
@@ -214,9 +213,7 @@ if(BUILD_SHARED_LIB)
         database/keyserver_cache.c  # SQLite keyserver cache
         database/contacts_db.c      # Local contacts database
         database/addressbook_db.c   # Wallet address book database
-        database/feed_subscriptions_db.c # Feed topic subscriptions database
         database/channel_subscriptions_db.c # Channel subscriptions database
-        database/feed_cache.c       # Feed cache (topics, comments, indexes)
         database/channel_cache.c    # Channel cache (metadata, posts, staleness)
         database/wall_cache.c       # Wall post cache (timeline, staleness)
         database/wallet_cache.c     # Wallet balance cache (stale-while-revalidate)
@@ -259,7 +256,6 @@ else()
         # Unified Engine API (Core/GUI separation)
         src/api/dna_engine.c
         # Modular engine components
-        src/api/engine/dna_engine_feed.c
         src/api/engine/dna_engine_channels.c
         src/api/engine/dna_engine_wall.c
         src/api/engine/dna_engine_presence.c
@@ -298,9 +294,7 @@ else()
         database/keyserver_cache.c  # SQLite keyserver cache
         database/contacts_db.c      # Local contacts database
         database/addressbook_db.c   # Wallet address book database
-        database/feed_subscriptions_db.c # Feed topic subscriptions database
         database/channel_subscriptions_db.c # Channel subscriptions database
-        database/feed_cache.c       # Feed cache (topics, comments, indexes)
         database/channel_cache.c    # Channel cache (metadata, posts, staleness)
         database/wall_cache.c       # Wall post cache (timeline, staleness)
         database/wallet_cache.c     # Wallet balance cache (stale-while-revalidate)

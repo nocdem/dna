@@ -468,21 +468,6 @@ int cmd_transactions(dna_engine_t *engine, int wallet_idx);
 int cmd_estimate_gas(dna_engine_t *engine, int network_id);
 
 /* ============================================================================
- * PHASE 10: FEED v2 (7 commands) - Topic-based public feeds
- * ============================================================================ */
-
-int cmd_feeds_create(dna_engine_t *engine, const char *title, const char *body,
-                     const char *category, const char *tags);
-int cmd_feeds_get(dna_engine_t *engine, const char *uuid);
-int cmd_feeds_delete(dna_engine_t *engine, const char *uuid);
-int cmd_feeds_list(dna_engine_t *engine, const char *category, int days);
-int cmd_feeds_list_all(dna_engine_t *engine, int days);
-int cmd_feeds_comment(dna_engine_t *engine, const char *topic_uuid, const char *body,
-                      const char *mentions);
-int cmd_feeds_comments(dna_engine_t *engine, const char *topic_uuid);
-int cmd_feeds_reindex(dna_engine_t *engine, const char *uuid);
-
-/* ============================================================================
  * PHASE 11: MESSAGE BACKUP (2 commands)
  * ============================================================================ */
 

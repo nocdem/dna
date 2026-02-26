@@ -90,7 +90,6 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/client/dht_contactlist.h"
 #include "dht/client/dht_message_backup.h"
 #include "dht/shared/dht_offline_queue.h"
-#include "dht/client/dna_feed.h"
 #include "dht/client/dna_profile.h"
 #include "dht/shared/dht_chunked.h"
 #include "dht/shared/dht_contact_request.h"
@@ -101,7 +100,6 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 /* TURN credentials removed in v0.4.61 for privacy */
 #include "database/presence_cache.h"
 #include "database/keyserver_cache.h"
-#include "database/feed_cache.h"
 #include "database/wall_cache.h"
 #include "database/channel_cache.h"
 #include "database/profile_cache.h"
@@ -762,14 +760,6 @@ void dna_free_task_params(dna_task_t *task) {
         case TASK_SEND_GROUP_MESSAGE:
             free(task->params.send_group_message.message);
             break;
-        case TASK_FEED_CREATE_TOPIC:
-            free(task->params.feed_create_topic.body);
-            free(task->params.feed_create_topic.tags_json);
-            break;
-        case TASK_FEED_ADD_COMMENT:
-            free(task->params.feed_add_comment.body);
-            free(task->params.feed_add_comment.mentions_json);
-            break;
         case TASK_WALL_POST:
             free(task->params.wall_post.text);
             free(task->params.wall_post.image_json);
@@ -1162,54 +1152,6 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             dna_handle_get_registered_name(engine, task);
             break;
 
-        /* Feed v2 (topic-based, no voting) */
-        case TASK_FEED_CREATE_TOPIC:
-            dna_handle_feed_create_topic(engine, task);
-            break;
-        case TASK_FEED_GET_TOPIC:
-            dna_handle_feed_get_topic(engine, task);
-            break;
-        case TASK_FEED_DELETE_TOPIC:
-            dna_handle_feed_delete_topic(engine, task);
-            break;
-        case TASK_FEED_ADD_COMMENT:
-            dna_handle_feed_add_comment(engine, task);
-            break;
-        case TASK_FEED_GET_COMMENTS:
-            dna_handle_feed_get_comments(engine, task);
-            break;
-        case TASK_FEED_GET_CATEGORY:
-            dna_handle_feed_get_category(engine, task);
-            break;
-        case TASK_FEED_GET_ALL:
-            dna_handle_feed_get_all(engine, task);
-            break;
-        case TASK_FEED_REINDEX_TOPIC:
-            dna_handle_feed_reindex_topic(engine, task);
-            break;
-
-        /* Feed v2 subscriptions (v0.6.91+) */
-        case TASK_FEED_GET_SUBSCRIPTIONS:
-            dna_handle_feed_get_subscriptions(engine, task);
-            break;
-        case TASK_FEED_SYNC_SUBSCRIPTIONS_TO_DHT:
-            dna_handle_feed_sync_subscriptions_to_dht(engine, task);
-            break;
-        case TASK_FEED_SYNC_SUBSCRIPTIONS_FROM_DHT:
-            dna_handle_feed_sync_subscriptions_from_dht(engine, task);
-            break;
-
-        /* Feed cache revalidation */
-        case TASK_FEED_REVALIDATE_INDEX:
-            dna_handle_feed_revalidate_index(engine, task);
-            break;
-        case TASK_FEED_REVALIDATE_TOPIC:
-            dna_handle_feed_revalidate_topic(engine, task);
-            break;
-        case TASK_FEED_REVALIDATE_COMMENTS:
-            dna_handle_feed_revalidate_comments(engine, task);
-            break;
-
         /* Wall (v0.6.135+) */
         case TASK_WALL_POST:
             dna_handle_wall_post(engine, task);
@@ -1384,9 +1326,6 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
 
     /* Initialize global keyserver cache (for display names before login) */
     keyserver_cache_init(NULL);
-
-    /* Initialize global feed cache (for instant feed rendering) */
-    feed_cache_init();
 
     /* Initialize global wall cache (for instant wall rendering) */
     wall_cache_init();
@@ -1999,8 +1938,6 @@ void dna_free_transactions(dna_transaction_t *transactions, int count) {
     (void)count;
     free(transactions);
 }
-
-/* Feed v2 free functions moved to src/api/engine/dna_engine_feed.c */
 
 void dna_free_profile(dna_profile_t *profile) {
     if (!profile) return;

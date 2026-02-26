@@ -19,6 +19,7 @@
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_types.h"
+#include "crypto/utils/qgp_random.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,8 +47,18 @@ extern int pqcrystals_dilithium5_ref_signature(uint8_t *sig, size_t *siglen,
                                                 const uint8_t *ctx, size_t ctxlen,
                                                 const uint8_t *sk);
 
-/* UUID generation (from dna_wall.c) */
-extern void dna_feed_generate_uuid(char *uuid_out);
+/* UUID v4 generation (local) */
+static void wall_comment_generate_uuid(char *uuid_out) {
+    uint8_t bytes[16];
+    qgp_randombytes(bytes, 16);
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;  /* Version 4 */
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;  /* Variant 1 */
+    snprintf(uuid_out, 37,
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             bytes[0], bytes[1], bytes[2], bytes[3],
+             bytes[4], bytes[5], bytes[6], bytes[7],
+             bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
+}
 
 /* ============================================================================
  * Comparison Functions for qsort
@@ -268,7 +279,7 @@ int dna_wall_comment_add(dht_context_t *dht_ctx,
     /* Create comment structure */
     dna_wall_comment_t new_comment = {0};
 
-    dna_feed_generate_uuid(new_comment.uuid);
+    wall_comment_generate_uuid(new_comment.uuid);
     strncpy(new_comment.post_uuid, post_uuid, 36);
     if (parent_comment_uuid && parent_comment_uuid[0] != '\0') {
         strncpy(new_comment.parent_comment_uuid, parent_comment_uuid, 36);

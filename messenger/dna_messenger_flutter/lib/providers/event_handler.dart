@@ -13,7 +13,6 @@ import 'contact_requests_provider.dart';
 import 'identity_provider.dart';
 import 'identity_profile_cache_provider.dart';
 import 'contact_profile_cache_provider.dart';
-import 'feed_provider.dart';
 import 'wall_provider.dart';
 import 'channel_provider.dart';
 
@@ -356,29 +355,6 @@ class EventHandler {
         // GEKs synced from DHT - group messages can now be decrypted
         // No UI refresh needed, just log for debugging
         logPrint('[DART-HANDLER] GeksSyncedEvent: GEKs synced from DHT (count=$count)');
-        break;
-
-      case FeedTopicCommentEvent(topicUuid: final uuid, commentUuid: final cUuid, authorFingerprint: final author):
-        // New comment on a subscribed topic - refresh comments
-        logPrint('[DART-HANDLER] FeedTopicCommentEvent: topic=$uuid, comment=$cUuid, author=${author.substring(0, 16)}...');
-        _ref.invalidate(topicCommentsProvider(uuid));
-        break;
-
-      case FeedSubscriptionsSyncedEvent(subscriptionsSynced: final count):
-        // Feed subscriptions synced from DHT - refresh subscription list
-        logPrint('[DART-HANDLER] FeedSubscriptionsSyncedEvent: subscriptions synced from DHT (count=$count)');
-        _ref.invalidate(feedSubscriptionsProvider);
-        break;
-
-      case FeedCacheUpdatedEvent(cacheKey: final key):
-        // Feed cache refreshed with new DHT data - invalidate feed providers
-        logPrint('[DART-HANDLER] FeedCacheUpdatedEvent: cache updated (key=$key)');
-        _ref.invalidate(feedTopicsProvider);
-        final selectedUuid = _ref.read(selectedTopicUuidProvider);
-        if (selectedUuid != null && key.contains(selectedUuid)) {
-          _ref.invalidate(selectedTopicProvider);
-          _ref.invalidate(topicCommentsProvider(selectedUuid));
-        }
         break;
 
       case WallNewPostEvent(authorFingerprint: final author, postUuid: final uuid):

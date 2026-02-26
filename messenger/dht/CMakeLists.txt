@@ -29,7 +29,6 @@ set(DHT_COMMON_SOURCES
     shared/dht_chunked.c      # Generic chunked storage layer
     shared/dht_publish_queue.c  # Non-blocking publish queue (v0.6.80+)
     shared/dht_contact_request.c  # ICQ-style contact request system
-    shared/dht_feed_subscriptions.c  # Feed v2: Subscription DHT sync
     shared/dht_channel_subscriptions.c  # Channel subscription DHT sync
     # Client modules (Phase 3/4)
     client/dht_identity.cpp
@@ -42,9 +41,6 @@ set(DHT_COMMON_SOURCES
     client/dht_addressbook.c      # Wallet address book DHT sync
     client/dht_message_backup.c
     client/dna_profile.c
-    client/dna_feed_topic.c     # Feed v2: Topic operations
-    client/dna_feed_comments.c  # Feed v2: Comment system with mentions
-    client/dna_feed_index.c     # Feed v2: Day-bucket indexing
     client/dna_channels.c       # Channels: DHT channel operations
     client/dna_group_outbox.c   # Group message outbox (feed pattern)
     client/dna_wall.c           # Personal wall posts (DHT)

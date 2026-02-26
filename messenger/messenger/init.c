@@ -28,7 +28,6 @@
 #include "../dht/shared/dht_groups.h"
 #include "../database/group_invitations.h"
 #include "../database/addressbook_db.h"
-#include "../database/feed_subscriptions_db.h"
 #include "../messenger_transport.h"
 
 /**
@@ -333,7 +332,6 @@ void messenger_free(messenger_context_t *ctx) {
     dht_groups_cleanup();
     group_invitations_cleanup();
     addressbook_db_close();
-    feed_subscriptions_db_close();
 
     // Free fingerprint (Phase 4)
     if (ctx->fingerprint) {

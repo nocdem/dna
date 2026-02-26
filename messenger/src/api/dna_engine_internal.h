@@ -126,28 +126,6 @@ typedef enum {
     TASK_SYNC_GROUP_BY_UUID,
     TASK_GET_REGISTERED_NAME,
 
-    /* Feed v2 (topic-based, no voting) */
-    TASK_FEED_CREATE_TOPIC,
-    TASK_FEED_GET_TOPIC,
-    TASK_FEED_DELETE_TOPIC,
-    TASK_FEED_ADD_COMMENT,
-    TASK_FEED_GET_COMMENTS,
-    TASK_FEED_GET_CATEGORY,
-    TASK_FEED_GET_ALL,
-
-    /* Feed v2 subscriptions (v0.6.91+) */
-    TASK_FEED_GET_SUBSCRIPTIONS,
-    TASK_FEED_SYNC_SUBSCRIPTIONS_TO_DHT,
-    TASK_FEED_SYNC_SUBSCRIPTIONS_FROM_DHT,
-
-    /* Feed v2 reindex (v0.6.104+) */
-    TASK_FEED_REINDEX_TOPIC,
-
-    /* Feed cache revalidation (v0.6.121+) */
-    TASK_FEED_REVALIDATE_INDEX,
-    TASK_FEED_REVALIDATE_TOPIC,
-    TASK_FEED_REVALIDATE_COMMENTS,
-
     /* Wall (personal wall posts, v0.6.135+) */
     TASK_WALL_POST,
     TASK_WALL_DELETE,
@@ -341,68 +319,6 @@ typedef union {
         char network[64];
     } get_transactions;
 
-    /* Feed v2: Create topic */
-    struct {
-        char title[201];          /* Max 200 chars */
-        char *body;               /* Heap allocated, task owns (max 4000 chars) */
-        char category[65];        /* Category name or ID */
-        char *tags_json;          /* JSON array of tags, heap allocated, task owns */
-    } feed_create_topic;
-
-    /* Feed v2: Get topic */
-    struct {
-        char uuid[37];            /* Topic UUID */
-    } feed_get_topic;
-
-    /* Feed v2: Delete topic */
-    struct {
-        char uuid[37];            /* Topic UUID */
-    } feed_delete_topic;
-
-    /* Feed v2: Reindex topic (add existing topic to index) */
-    struct {
-        char uuid[37];            /* Topic UUID */
-    } feed_reindex_topic;
-
-    /* Feed v2: Add comment (with optional reply support) */
-    struct {
-        char topic_uuid[37];         /* Topic UUID */
-        char parent_comment_uuid[37]; /* Parent comment UUID for replies (empty = top-level) */
-        char *body;                  /* Heap allocated, task owns (max 2000 chars) */
-        char *mentions_json;         /* JSON array of fingerprints, heap allocated, task owns */
-    } feed_add_comment;
-
-    /* Feed v2: Get comments */
-    struct {
-        char topic_uuid[37];      /* Topic UUID */
-    } feed_get_comments;
-
-    /* Feed v2: Get topics by category */
-    struct {
-        char category[65];        /* Category name or ID */
-        int days_back;            /* How many days to look back (1-30) */
-    } feed_get_category;
-
-    /* Feed v2: Get all topics */
-    struct {
-        int days_back;            /* How many days to look back (1-30) */
-    } feed_get_all;
-
-    /* Feed cache revalidation (v0.6.121+) */
-    struct {
-        char category[65];
-        int days_back;
-        char cache_key[64];
-    } feed_revalidate_index;
-
-    struct {
-        char uuid[37];
-    } feed_revalidate_topic;
-
-    struct {
-        char topic_uuid[37];
-    } feed_revalidate_comments;
-
     /* Update profile */
     struct {
         dna_profile_t profile;
@@ -494,11 +410,6 @@ typedef union {
     dna_wallets_cb wallets;
     dna_balances_cb balances;
     dna_transactions_cb transactions;
-    dna_feed_topic_cb feed_topic;
-    dna_feed_topics_cb feed_topics;
-    dna_feed_comments_cb feed_comments;
-    dna_feed_comment_cb feed_comment;
-    dna_feed_subscriptions_cb feed_subscriptions;
     dna_profile_cb profile;
     dna_presence_cb presence;
     dna_gas_estimates_cb gas_estimates;
@@ -902,26 +813,6 @@ void dna_handle_sync_groups_to_dht(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_group_by_uuid(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_subscribe_to_contacts(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_registered_name(dna_engine_t *engine, dna_task_t *task);
-
-/* Feed v2 (topic-based, no voting) */
-void dna_handle_feed_create_topic(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_feed_get_topic(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_feed_delete_topic(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_feed_add_comment(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_feed_get_comments(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_feed_get_category(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_feed_get_all(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_feed_reindex_topic(dna_engine_t *engine, dna_task_t *task);
-
-/* Feed v2 subscriptions (v0.6.91+) */
-void dna_handle_feed_get_subscriptions(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_feed_sync_subscriptions_to_dht(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_feed_sync_subscriptions_from_dht(dna_engine_t *engine, dna_task_t *task);
-
-/* Feed cache revalidation (v0.6.121+) */
-void dna_handle_feed_revalidate_index(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_feed_revalidate_topic(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_feed_revalidate_comments(dna_engine_t *engine, dna_task_t *task);
 
 /* Wall (personal wall posts, v0.6.135+) */
 void dna_handle_wall_post(dna_engine_t *engine, dna_task_t *task);

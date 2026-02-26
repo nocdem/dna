@@ -117,7 +117,6 @@ static inline char* win_strptime(const char* s, const char* format, struct tm* t
 #include "dht/core/dht_context.h"
 #include "dht/client/dht_contactlist.h"
 #include "dht/client/dht_message_backup.h"
-#include "dht/client/dna_feed.h"
 #include "dht/client/dna_profile.h"
 #include "dht/client/dna_group_outbox.h"
 #include "dht/client/dht_addressbook.h"
