@@ -227,7 +227,7 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 5. **COMMIT** with version in commit message (e.g., "fix: Something (v0.3.39)")
 6. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
 
-**NOTE:** Feed announcements are posted in CHECKPOINT 9 (release only), not on every commit.
+
 
 **IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.
 
@@ -283,23 +283,12 @@ Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
    ./cli/dna-messenger-cli -d /home/nocdem/.dna-release-identity check-version
    ```
 
-6. **POST TO DNA UPDATES FEED** - Announce release to users:
-   **IMPORTANT:** MUST use the release identity for feed posts too.
-   ```bash
-   ./cli/dna-messenger-cli -d /home/nocdem/.dna-release-identity channel post 765ed03d-0c28-4d17-91bd-683a713a63e8 \
-       "🚀 New release available! Please update to Lib v0.7.0 / App v0.101.0"
-   ```
-
-   **Format:** `🚀 New release available! Please update to Lib vX.Y.Z / App vX.Y.Z`
-   - Always use both version numbers (library AND app)
-   - Users subscribed to DNA Updates will see this in their Feeds
-
-7. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published"
+6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published"
 
 **DHT Notes:**
 - **ALWAYS use release identity** for DHT publishing: `-d /home/nocdem/.dna-release-identity`
 - Release identity fingerprint: `3cbba8d8bf0c3603...` (original DHT key owner)
-- The default identity on this machine is a DIFFERENT identity and cannot publish to version or feed DHT keys
+- The default identity on this machine is a DIFFERENT identity and cannot publish to version DHT keys
 - Minimum versions define compatibility - apps below minimum show warnings
 - Minimum versions use major.minor.0 format (e.g., 0.7.0 for 0.7.x releases)
 - DHT key: `SHA3-512("dna:system:version")`
@@ -633,35 +622,7 @@ $CLI contacts                    # List contacts with status (shows names + fing
 **IMPORTANT:** For `send` command, use the contact's **registered name** (e.g., `nox`) or the **full 128-character fingerprint**. Partial fingerprints will fail with "Network error".
 
 ## DNA OFFICIAL CHANNELS
-Official channels for announcements, bug reports, and feature requests.
-
-| Channel | UUID | Purpose |
-|---------|------|---------|
-| DNA Updates | `765ed03d-0c28-4d17-91bd-683a713a63e8` | Official announcements (auto-subscribed) |
-| Bug Reports | `6d42f8ac-959a-48cc-bcac-37b0f3eb2ba0` | User bug reports |
-| Feature Requests | `089b850f-4eb9-4c27-a50c-b51230b3173c` | User feature requests |
-
-**Post to a channel:**
-```bash
-dna-messenger-cli channel post <UUID> "<message>"
-```
-
-**Post changelog (after push):**
-```bash
-dna-messenger-cli channel post 765ed03d-0c28-4d17-91bd-683a713a63e8 "<commit message>"
-```
-
-**IMPORTANT:** When pushing C library or Flutter changes, post the commit message to the DNA Updates Channel so users see the changelog.
-
-**View channel:**
-```bash
-dna-messenger-cli channel get <UUID>
-dna-messenger-cli channel posts <UUID>
-```
-
-**Constant:** `DNA_UPDATES_TOPIC_UUID` in `include/dna/dna_engine.h`
-
-**Note:** New users are auto-subscribed to DNA Updates via `channel_subscriptions_db_subscribe()` during identity creation.
+Feed/channel system has been removed.
 
 ## FUZZ TESTING REQUIREMENT
 When implementing **new methods in dna_engine or dna_api** that parse external input (network data, user input, file formats), you **MUST** add a corresponding fuzz test.
