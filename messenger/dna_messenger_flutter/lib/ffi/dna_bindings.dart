@@ -3320,20 +3320,21 @@ class DnaBindings {
   }
 
   late final _dna_engine_channel_get_posts = _lib.lookupFunction<
-      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Int32,
           Pointer<DnaChannelPostsCb>, Pointer<Void>),
-      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, int,
           Pointer<DnaChannelPostsCb>, Pointer<Void>)>(
       'dna_engine_channel_get_posts');
 
   int dna_engine_channel_get_posts(
     Pointer<dna_engine_t> engine,
     Pointer<Utf8> channelUuid,
+    int daysBack,
     Pointer<DnaChannelPostsCb> callback,
     Pointer<Void> userData,
   ) {
     return _dna_engine_channel_get_posts(
-        engine, channelUuid, callback, userData);
+        engine, channelUuid, daysBack, callback, userData);
   }
 
   // --- Channel subscriptions (synchronous) ---

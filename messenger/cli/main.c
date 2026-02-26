@@ -183,7 +183,7 @@ static void print_usage(const char *prog_name) {
     printf("  channel delete <uuid>          Delete a channel\n");
     printf("  channel discover [--days N]    Discover channels (default 7 days)\n");
     printf("  channel post <uuid> <body>     Post to a channel\n");
-    printf("  channel posts <uuid>           Get posts in a channel\n");
+    printf("  channel posts <uuid> [--days N] Get posts in a channel (default 3 days)\n");
     printf("  channel subscribe <uuid>       Subscribe to a channel\n");
     printf("  channel unsubscribe <uuid>     Unsubscribe from a channel\n");
     printf("  channel subscriptions          List subscriptions\n");
@@ -957,7 +957,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "  channel delete <uuid>\n");
             fprintf(stderr, "  channel discover [--days N]\n");
             fprintf(stderr, "  channel post <uuid> <body>\n");
-            fprintf(stderr, "  channel posts <uuid>\n");
+            fprintf(stderr, "  channel posts <uuid> [--days N]\n");
             fprintf(stderr, "  channel subscribe <uuid>\n");
             fprintf(stderr, "  channel unsubscribe <uuid>\n");
             fprintf(stderr, "  channel subscriptions\n");
@@ -1014,7 +1014,12 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "Error: 'channel posts' requires <uuid>\n");
                     result = 1;
                 } else {
-                    result = cmd_channel_posts(g_engine, argv[optind + 2]);
+                    int days = 0;
+                    /* Parse optional --days N */
+                    if (optind + 4 < argc && strcmp(argv[optind + 3], "--days") == 0) {
+                        days = atoi(argv[optind + 4]);
+                    }
+                    result = cmd_channel_posts(g_engine, argv[optind + 2], days);
                 }
             }
             else if (strcmp(subcmd, "subscribe") == 0) {

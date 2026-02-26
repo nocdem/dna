@@ -674,7 +674,8 @@ void dna_handle_channel_post(dna_engine_t *engine, dna_task_t *task) {
 }
 
 void dna_handle_channel_get_posts(dna_engine_t *engine, dna_task_t *task) {
-    const char *channel_uuid = task->params.channel_by_uuid.uuid;
+    const char *channel_uuid = task->params.channel_get_posts.uuid;
+    int days_back = task->params.channel_get_posts.days_back;
 
     /* Cache check */
     char cache_key[64];
@@ -709,7 +710,7 @@ void dna_handle_channel_get_posts(dna_engine_t *engine, dna_task_t *task) {
 
     dna_channel_post_internal_t *posts = NULL;
     size_t count = 0;
-    int ret = dna_channel_posts_get(dht, channel_uuid, &posts, &count);
+    int ret = dna_channel_posts_get(dht, channel_uuid, days_back, &posts, &count);
 
     if (ret != 0 && ret != -2) {
         task->callback.channel_posts(task->request_id, DNA_ERROR_INTERNAL,
@@ -1018,13 +1019,15 @@ dna_request_id_t dna_engine_channel_post(
 dna_request_id_t dna_engine_channel_get_posts(
     dna_engine_t *engine,
     const char *channel_uuid,
+    int days_back,
     dna_channel_posts_cb callback,
     void *user_data
 ) {
     if (!engine || !channel_uuid) return DNA_REQUEST_ID_INVALID;
 
     dna_task_params_t params = {0};
-    strncpy(params.channel_by_uuid.uuid, channel_uuid, 36);
+    strncpy(params.channel_get_posts.uuid, channel_uuid, 36);
+    params.channel_get_posts.days_back = days_back;
 
     dna_task_callback_t cb = {0};
     cb.channel_posts = callback;

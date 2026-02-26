@@ -371,10 +371,16 @@ typedef union {
         bool is_public;
     } channel_create;
 
-    /* Channel: get / delete / get_posts */
+    /* Channel: get / delete */
     struct {
         char uuid[37];
     } channel_by_uuid;
+
+    /* Channel: get_posts */
+    struct {
+        char uuid[37];
+        int days_back;
+    } channel_get_posts;
 
     /* Channel: discover */
     struct {
@@ -549,6 +555,7 @@ typedef struct {
 
 typedef struct {
     char channel_uuid[37];          /* Channel UUID we're listening to */
+    char current_date[12];          /* YYYYMMDD for daily bucket rotation */
     size_t dht_token;               /* Token from dht_listen_ex() */
     bool active;                    /* True if listener is active */
 } dna_channel_listener_t;
@@ -902,6 +909,12 @@ int dna_engine_check_group_day_rotation(dna_engine_t *engine);
  * @return Number of DM outbox listeners that rotated
  */
 int dna_engine_check_outbox_day_rotation(dna_engine_t *engine);
+
+/**
+ * Check and rotate channel post listeners at midnight UTC.
+ * @return Number of channel listeners that rotated
+ */
+int dna_engine_check_channel_day_rotation(dna_engine_t *engine);
 
 /* ============================================================================
  * HELPER FUNCTIONS (from dna_engine_helpers.c)

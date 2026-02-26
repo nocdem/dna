@@ -172,8 +172,11 @@ final channelPostsProvider =
 );
 
 class ChannelPostsNotifier extends FamilyAsyncNotifier<List<ChannelPost>, String> {
+  int _daysBack = 3;
+
   @override
   Future<List<ChannelPost>> build(String arg) async {
+    _daysBack = 3; // Reset on rebuild
     final identityLoaded = ref.watch(identityLoadedProvider);
     if (!identityLoaded) {
       // Preserve previous data during engine lifecycle transitions
@@ -181,15 +184,28 @@ class ChannelPostsNotifier extends FamilyAsyncNotifier<List<ChannelPost>, String
     }
 
     final engine = await ref.watch(engineProvider.future);
-    return engine.channelGetPosts(arg);
+    return engine.channelGetPosts(arg, daysBack: _daysBack);
   }
 
   Future<void> refresh() async {
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
-      return engine.channelGetPosts(arg);
+      return engine.channelGetPosts(arg, daysBack: _daysBack);
     });
   }
+
+  /// Load more days of posts
+  Future<void> loadMore() async {
+    _daysBack += 3;
+    if (_daysBack > 30) _daysBack = 30;
+    state = await AsyncValue.guard(() async {
+      final engine = await ref.read(engineProvider.future);
+      return engine.channelGetPosts(arg, daysBack: _daysBack);
+    });
+  }
+
+  /// Whether more days can be loaded
+  bool get canLoadMore => _daysBack < 30;
 
   /// Add a post to this channel
   Future<ChannelPost> addPost(String body) async {

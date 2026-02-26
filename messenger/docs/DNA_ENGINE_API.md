@@ -1864,6 +1864,39 @@ void dna_free_wall_comments(dna_wall_comment_info_t *comments, int count);
 
 ---
 
+## 5c. Channels (RSS-like Public Channels)
+
+Named channels with flat text posts. Posts stored in daily DHT buckets for scalable retrieval.
+
+### dna_engine_channel_get_posts
+
+```c
+dna_request_id_t dna_engine_channel_get_posts(
+    dna_engine_t *engine,
+    const char *channel_uuid,
+    int days_back,
+    dna_channel_posts_cb callback,
+    void *user_data
+);
+```
+
+Gets posts from a channel by iterating daily DHT buckets from today backwards.
+
+**Parameters:**
+- `channel_uuid` - UUID of the channel
+- `days_back` - Number of days to fetch (default: 3, max: 30). Pass 0 to use default.
+- `callback` - Called with posts array
+- `user_data` - User data for callback
+
+**Notes:**
+- Posts are fetched from newest to oldest (today first, then yesterday, etc.)
+- During migration, also fetches legacy undated key for posts published before daily buckets
+- Legacy fallback will naturally stop after 30 days (DHT TTL expiry)
+
+**Memory:** Free with `dna_free_channel_post_infos(posts, count)`
+
+---
+
 ## 6. Wallet
 
 ### dna_engine_list_wallets

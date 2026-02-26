@@ -4255,16 +4255,17 @@ int cmd_channel_post(dna_engine_t *engine, const char *channel_uuid, const char 
     return 0;
 }
 
-int cmd_channel_posts(dna_engine_t *engine, const char *channel_uuid) {
+int cmd_channel_posts(dna_engine_t *engine, const char *channel_uuid, int days_back) {
     if (!engine) { printf("Error: Engine not initialized\n"); return -1; }
     if (!channel_uuid || strlen(channel_uuid) == 0) { printf("Error: Channel UUID required\n"); return -1; }
 
-    printf("Getting posts for channel %s...\n", channel_uuid);
+    printf("Getting posts for channel %s (%d days)...\n", channel_uuid,
+           days_back > 0 ? days_back : 3);
 
     cli_wait_t wait;
     cli_wait_init(&wait);
 
-    dna_engine_channel_get_posts(engine, channel_uuid, on_channel_posts_list, &wait);
+    dna_engine_channel_get_posts(engine, channel_uuid, days_back, on_channel_posts_list, &wait);
     int result = cli_wait_for(&wait);
     cli_wait_destroy(&wait);
 

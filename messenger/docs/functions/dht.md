@@ -426,7 +426,18 @@ Uses `dna:channels:` DHT namespace.
 | `int dna_channel_delete(dht_context_t*, const char*, const char*, const uint8_t*)` | Delete channel (creator only) |
 | `int dna_channel_discover(dht_context_t*, int, dna_channel_t**, size_t*)` | Discover channels by scanning recent day-buckets |
 | `int dna_channel_post(dht_context_t*, const char*, const char*, const char*, const uint8_t*)` | Post message to channel |
-| `int dna_channel_get_posts(dht_context_t*, const char*, int, int, dna_channel_post_t**, size_t*)` | Get posts from channel (paginated) |
+| `int dna_channel_get_posts(dht_context_t*, const char*, int days_back, int, int, dna_channel_post_t**, size_t*)` | Get posts from channel (paginated, iterates daily buckets) |
+
+#### Internal DHT Functions (`dna_channels.h`)
+
+| Function | Description |
+|----------|-------------|
+| `int dna_channel_posts_get(dht_context_t*, const char*, int days_back, dna_channel_post_internal_t**, size_t*)` | Fetch posts from daily buckets (newest first, iterates `days_back` days) |
+| `int dna_channel_make_posts_key(const char *uuid, const char *date, uint8_t*, size_t*)` | Generate DHT key for posts; `date` = "YYYYMMDD" for daily bucket, NULL for legacy undated key |
+| `void channel_get_today_date(char *date_out)` | Get today's date as "YYYYMMDD" string (UTC) |
+| `void channel_get_date_offset(int days_ago, char *date_out)` | Get date N days ago as "YYYYMMDD" string (UTC) |
+| `int dna_channel_make_meta_key(const char *uuid, uint8_t*, size_t*)` | Generate DHT key for channel metadata |
+| `int dna_channel_make_index_key(const char *date_str, uint8_t*, size_t*)` | Generate DHT key for channel index day-bucket |
 
 #### Subscription Sync (`dht_channel_subscriptions.c`)
 

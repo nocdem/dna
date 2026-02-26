@@ -629,6 +629,61 @@ int dht_message_backup_restore(
 - **Duplicate handling**: Uses `message_backup_exists_ciphertext()` to skip existing messages
 - **Expiry**: User must restore within 7 days of backup
 
+### 4.5 dna_channels.h/c (Channel Post Daily Buckets)
+
+Channel posts use daily bucket storage for scalable retrieval. Instead of a single DHT key per channel, posts are partitioned by date.
+
+#### Key Format
+
+```
+Posts key:  SHA256("dna:channels:posts:" + uuid + ":" + YYYYMMDD)
+Legacy key: SHA256("dna:channels:posts:" + uuid)  (no date suffix, pre-v0.7.5)
+```
+
+Each day's posts are stored under a separate DHT key. This prevents unbounded growth on a single key and enables efficient pagination.
+
+#### Fetch Pattern (Newest First)
+
+When fetching posts, the client iterates daily buckets from today backwards:
+
+```
+Day 0: today        (e.g., "20260226")
+Day 1: yesterday    (e.g., "20260225")
+Day 2: 2 days ago   (e.g., "20260224")
+...up to days_back
+```
+
+- Default `days_back`: 3 (fetches today + 2 previous days)
+- Maximum `days_back`: 30
+- Posts within each day are sorted by timestamp (newest first)
+
+#### Legacy Fallback (Migration)
+
+During the transition from single-key to daily-bucket storage, the old undated key is also fetched:
+
+```
+Legacy: SHA256("dna:channels:posts:" + uuid)  -- no date suffix
+```
+
+This ensures posts published before the daily bucket migration are still visible. The legacy key will naturally expire after 30 days (DHT TTL), at which point only daily buckets will be queried.
+
+#### Daily Listener Rotation
+
+Channel post listeners are set up per daily bucket key. At midnight UTC, the heartbeat worker detects the date change and:
+
+1. Cancels the listener on yesterday's bucket key
+2. Creates a new listener on today's bucket key
+
+This ensures real-time notifications always point to the current day's posts.
+
+#### Constants
+
+```c
+#define DNA_CHANNEL_POSTS_DAYS_DEFAULT 3
+#define DNA_CHANNEL_POSTS_DAYS_MAX     30
+#define DNA_CHANNEL_TTL_SECONDS        (30 * 24 * 60 * 60)  // 30 days
+```
+
 ---
 
 ## 5. DHT Shared (`dht/shared/`)

@@ -7,7 +7,6 @@ import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:crypto/crypto.dart';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 
@@ -5135,8 +5134,8 @@ class DnaEngine {
     return completer.future;
   }
 
-  /// Get all posts for a channel
-  Future<List<ChannelPost>> channelGetPosts(String channelUuid) async {
+  /// Get posts for a channel (daily buckets, default 3 days)
+  Future<List<ChannelPost>> channelGetPosts(String channelUuid, {int daysBack = 0}) async {
     final completer = Completer<List<ChannelPost>>();
     final localId = _nextLocalId++;
 
@@ -5172,6 +5171,7 @@ class DnaEngine {
     final requestId = _bindings.dna_engine_channel_get_posts(
       _engine,
       uuidPtr.cast(),
+      daysBack,
       callback.nativeFunction.cast(),
       nullptr,
     );

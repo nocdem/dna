@@ -234,6 +234,7 @@ int dna_engine_subscribe_all_groups(dna_engine_t *engine);
 void dna_engine_unsubscribe_all_groups(dna_engine_t *engine);
 int dna_engine_check_group_day_rotation(dna_engine_t *engine);
 int dna_engine_check_outbox_day_rotation(dna_engine_t *engine);
+int dna_engine_check_channel_day_rotation(dna_engine_t *engine);
 
 /* Global engine accessors (thread-safe) */
 extern dna_engine_t *g_dht_callback_engine;

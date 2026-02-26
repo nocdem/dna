@@ -55,6 +55,9 @@ static void* presence_heartbeat_thread(void *arg) {
 
         /* Check for day rotation on 1-1 DM outbox listeners (v0.4.81+) */
         dna_engine_check_outbox_day_rotation(engine);
+
+        /* Check for day rotation on channel post listeners */
+        dna_engine_check_channel_day_rotation(engine);
     }
 
     QGP_LOG_INFO(LOG_TAG, "Presence heartbeat thread stopped");

@@ -84,13 +84,13 @@ static void channel_generate_uuid(char *uuid_out) {
  * Date Helpers
  * ========================================================================== */
 
-static void channel_get_today_date(char *date_out) {
+void channel_get_today_date(char *date_out) {
     time_t now = time(NULL);
     struct tm *tm_info = gmtime(&now);
     strftime(date_out, 12, "%Y%m%d", tm_info);
 }
 
-static void channel_get_date_offset(int days_ago, char *date_out) {
+void channel_get_date_offset(int days_ago, char *date_out) {
     time_t now = time(NULL);
     now -= days_ago * 86400;
     struct tm *tm_info = gmtime(&now);
@@ -124,11 +124,16 @@ int dna_channel_make_meta_key(const char *uuid, uint8_t *key_out, size_t *key_le
     return 0;
 }
 
-int dna_channel_make_posts_key(const char *uuid, uint8_t *key_out, size_t *key_len_out) {
+int dna_channel_make_posts_key(const char *uuid, const char *date,
+                                uint8_t *key_out, size_t *key_len_out) {
     if (!uuid || !key_out || !key_len_out) return -1;
 
     char input[256];
-    snprintf(input, sizeof(input), "%s%s", DNA_CHANNEL_NS_POSTS, uuid);
+    if (date) {
+        snprintf(input, sizeof(input), "%s%s:%s", DNA_CHANNEL_NS_POSTS, uuid, date);
+    } else {
+        snprintf(input, sizeof(input), "%s%s", DNA_CHANNEL_NS_POSTS, uuid);
+    }
 
     uint8_t hash[32];
     EVP_MD_CTX *ctx = EVP_MD_CTX_new();
@@ -892,9 +897,11 @@ int dna_channel_post_create(dht_context_t *dht_ctx, const char *channel_uuid,
     }
     new_post.signature_len = sig_len;
 
-    /* Get DHT key for posts */
+    /* Get DHT key for posts (daily bucket) */
+    char today[12];
+    channel_get_today_date(today);
     char posts_key[256];
-    snprintf(posts_key, sizeof(posts_key), "%s%s", DNA_CHANNEL_NS_POSTS, channel_uuid);
+    snprintf(posts_key, sizeof(posts_key), "%s%s:%s", DNA_CHANNEL_NS_POSTS, channel_uuid, today);
 
     /* Step 1: Fetch MY existing posts using dht_chunked_fetch_mine() */
     dna_channel_post_internal_t *existing_posts = NULL;
@@ -970,40 +977,27 @@ int dna_channel_post_create(dht_context_t *dht_ctx, const char *channel_uuid,
     return 0;
 }
 
-int dna_channel_posts_get(dht_context_t *dht_ctx, const char *channel_uuid,
-                           dna_channel_post_internal_t **posts_out, size_t *count_out) {
-    if (!dht_ctx || !channel_uuid || !posts_out || !count_out) return -1;
-
-    *posts_out = NULL;
-    *count_out = 0;
-
-    /* Get DHT key for posts */
-    char posts_key[256];
-    snprintf(posts_key, sizeof(posts_key), "%s%s", DNA_CHANNEL_NS_POSTS, channel_uuid);
-
-    QGP_LOG_INFO(LOG_TAG, "Fetching posts for channel %s from key %s\n", channel_uuid, posts_key);
-
-    /* Fetch all authors' posts using dht_chunked_fetch_all() */
+/**
+ * Helper: Merge posts from a single DHT key into the accumulator arrays.
+ * Fetches all authors' buckets from the given key and appends non-duplicate posts.
+ */
+static void merge_posts_from_key(dht_context_t *dht_ctx, const char *key,
+                                  dna_channel_post_internal_t **all_posts,
+                                  size_t *total_count, size_t *allocated,
+                                  const dna_channel_post_internal_t *existing,
+                                  size_t existing_count) {
     uint8_t **values = NULL;
     size_t *lens = NULL;
     size_t value_count = 0;
 
-    int ret = dht_chunked_fetch_all(dht_ctx, posts_key, &values, &lens, &value_count);
-
-    if (ret != 0 || value_count == 0) {
-        QGP_LOG_DEBUG(LOG_TAG, "No post buckets found at key %s\n", posts_key);
-        return -2;  /* No posts */
-    }
-
-    QGP_LOG_DEBUG(LOG_TAG, "Got %zu author buckets from key %s\n", value_count, posts_key);
-
-    /* Merge all posts from all authors */
-    dna_channel_post_internal_t *all_posts = NULL;
-    size_t total_count = 0;
-    size_t allocated = 0;
+    int ret = dht_chunked_fetch_all(dht_ctx, key, &values, &lens, &value_count);
+    if (ret != 0 || value_count == 0) return;
 
     for (size_t i = 0; i < value_count; i++) {
-        if (!values[i] || lens[i] == 0) continue;
+        if (!values[i] || lens[i] == 0) {
+            free(values[i]);
+            continue;
+        }
 
         char *json_str = malloc(lens[i] + 1);
         if (!json_str) {
@@ -1019,27 +1013,47 @@ int dna_channel_posts_get(dht_context_t *dht_ctx, const char *channel_uuid,
         size_t bucket_count = 0;
 
         if (posts_bucket_from_json(json_str, &bucket_posts, &bucket_count) == 0 && bucket_posts) {
-            /* Expand array if needed */
-            if (total_count + bucket_count > allocated) {
-                size_t new_alloc = allocated == 0 ? 64 : allocated * 2;
-                while (new_alloc < total_count + bucket_count) new_alloc *= 2;
-
-                dna_channel_post_internal_t *new_arr = realloc(all_posts,
-                    new_alloc * sizeof(dna_channel_post_internal_t));
-                if (!new_arr) {
-                    dna_channel_posts_free(bucket_posts, bucket_count);
-                    free(json_str);
+            for (size_t j = 0; j < bucket_count; j++) {
+                /* Dedup by post_uuid against already-collected posts */
+                bool duplicate = false;
+                for (size_t k = 0; k < *total_count; k++) {
+                    if (strcmp((*all_posts)[k].post_uuid, bucket_posts[j].post_uuid) == 0) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                /* Also check against existing posts passed in (for legacy dedup) */
+                if (!duplicate && existing) {
+                    for (size_t k = 0; k < existing_count; k++) {
+                        if (strcmp(existing[k].post_uuid, bucket_posts[j].post_uuid) == 0) {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                }
+                if (duplicate) {
+                    /* Free heap fields of duplicate post */
+                    free(bucket_posts[j].body);
+                    free(bucket_posts[j].signature);
                     continue;
                 }
-                all_posts = new_arr;
-                allocated = new_alloc;
-            }
 
-            /* Copy posts (transfer ownership of heap fields) */
-            for (size_t j = 0; j < bucket_count; j++) {
-                all_posts[total_count++] = bucket_posts[j];
+                /* Expand array if needed */
+                if (*total_count >= *allocated) {
+                    size_t new_alloc = *allocated == 0 ? 64 : *allocated * 2;
+                    dna_channel_post_internal_t *new_arr = realloc(*all_posts,
+                        new_alloc * sizeof(dna_channel_post_internal_t));
+                    if (!new_arr) {
+                        free(bucket_posts[j].body);
+                        free(bucket_posts[j].signature);
+                        continue;
+                    }
+                    *all_posts = new_arr;
+                    *allocated = new_alloc;
+                }
+
+                (*all_posts)[(*total_count)++] = bucket_posts[j];
             }
-            /* Free the array container only */
             free(bucket_posts);
         }
         free(json_str);
@@ -1047,6 +1061,42 @@ int dna_channel_posts_get(dht_context_t *dht_ctx, const char *channel_uuid,
 
     free(values);
     free(lens);
+}
+
+int dna_channel_posts_get(dht_context_t *dht_ctx, const char *channel_uuid,
+                           int days_back,
+                           dna_channel_post_internal_t **posts_out, size_t *count_out) {
+    if (!dht_ctx || !channel_uuid || !posts_out || !count_out) return -1;
+
+    *posts_out = NULL;
+    *count_out = 0;
+
+    /* Validate days_back */
+    if (days_back <= 0) days_back = DNA_CHANNEL_POSTS_DAYS_DEFAULT;
+    if (days_back > DNA_CHANNEL_POSTS_DAYS_MAX) days_back = DNA_CHANNEL_POSTS_DAYS_MAX;
+
+    QGP_LOG_INFO(LOG_TAG, "Fetching posts for channel %s (%d days)\n", channel_uuid, days_back);
+
+    /* Iterate day buckets (newest first) */
+    dna_channel_post_internal_t *all_posts = NULL;
+    size_t total_count = 0;
+    size_t allocated = 0;
+
+    for (int d = 0; d < days_back; d++) {
+        char date[12];
+        channel_get_date_offset(d, date);
+
+        char posts_key[256];
+        snprintf(posts_key, sizeof(posts_key), "%s%s:%s", DNA_CHANNEL_NS_POSTS, channel_uuid, date);
+
+        merge_posts_from_key(dht_ctx, posts_key, &all_posts, &total_count, &allocated, NULL, 0);
+    }
+
+    /* Legacy fallback: fetch from old undated key (migration period) */
+    char legacy_key[256];
+    snprintf(legacy_key, sizeof(legacy_key), "%s%s", DNA_CHANNEL_NS_POSTS, channel_uuid);
+    merge_posts_from_key(dht_ctx, legacy_key, &all_posts, &total_count, &allocated,
+                         all_posts, total_count);
 
     if (total_count == 0) {
         free(all_posts);
@@ -1056,7 +1106,7 @@ int dna_channel_posts_get(dht_context_t *dht_ctx, const char *channel_uuid,
     /* Sort by created_at descending (newest first) */
     qsort(all_posts, total_count, sizeof(dna_channel_post_internal_t), compare_post_by_time_desc);
 
-    QGP_LOG_INFO(LOG_TAG, "Fetched %zu posts from %zu authors\n", total_count, value_count);
+    QGP_LOG_INFO(LOG_TAG, "Fetched %zu posts across %d day buckets + legacy\n", total_count, days_back);
 
     *posts_out = all_posts;
     *count_out = total_count;

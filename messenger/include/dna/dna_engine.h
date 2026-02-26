@@ -3306,7 +3306,7 @@ DNA_API dna_request_id_t dna_engine_channel_post(dna_engine_t *engine,
     dna_channel_post_cb callback, void *user_data);
 
 DNA_API dna_request_id_t dna_engine_channel_get_posts(dna_engine_t *engine,
-    const char *channel_uuid,
+    const char *channel_uuid, int days_back,
     dna_channel_posts_cb callback, void *user_data);
 
 /* Channel subscriptions (synchronous) */

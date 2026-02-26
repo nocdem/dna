@@ -49,7 +49,7 @@ DateTime? _lastFetchTime;
 Map<String, PriceData>? _cachedPrices;
 
 /// Fetches prices from BitcoinTry API.
-/// Returns Map<String, PriceData> keyed by uppercase token symbol.
+/// Returns `Map<String, PriceData>` keyed by uppercase token symbol.
 /// Auto-refreshes every 60 seconds. Caches results for 30 seconds.
 /// v0.100.110: SharedPreferences cache for instant cold-start USD display.
 final priceProvider = FutureProvider<Map<String, PriceData>>((ref) async {
@@ -107,7 +107,7 @@ final priceProvider = FutureProvider<Map<String, PriceData>>((ref) async {
   return prices;
 });
 
-void _scheduleRefresh(FutureProviderRef<Map<String, PriceData>> ref) {
+void _scheduleRefresh(Ref ref) {
   final timer = Timer(_refreshInterval, () {
     _cachedPrices = null;
     _lastFetchTime = null;

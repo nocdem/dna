@@ -113,7 +113,7 @@ Internal DNA engine implementation with async task queue.
 | `void dna_handle_channel_delete(dna_engine_t*, dna_task_t*)` | Handle delete channel |
 | `void dna_handle_channel_discover(dna_engine_t*, dna_task_t*)` | Handle discover channels |
 | `void dna_handle_channel_post(dna_engine_t*, dna_task_t*)` | Handle post to channel |
-| `void dna_handle_channel_get_posts(dna_engine_t*, dna_task_t*)` | Handle get channel posts |
+| `void dna_handle_channel_get_posts(dna_engine_t*, dna_task_t*)` | Handle get channel posts (task params include `days_back` for daily bucket iteration) |
 | `void dna_handle_channel_get_subscriptions(dna_engine_t*, dna_task_t*)` | Handle get channel subscriptions |
 | `void dna_handle_channel_sync_subs_to_dht(dna_engine_t*, dna_task_t*)` | Handle sync subscriptions to DHT |
 | `void dna_handle_channel_sync_subs_from_dht(dna_engine_t*, dna_task_t*)` | Handle sync subscriptions from DHT |

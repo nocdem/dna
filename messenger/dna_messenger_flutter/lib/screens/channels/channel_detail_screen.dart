@@ -109,6 +109,10 @@ class _ChannelDetailScreenState extends ConsumerState<ChannelDetailScreen> {
                 final sorted = List<ChannelPost>.from(posts)
                   ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
+                final notifier = ref.read(
+                    channelPostsProvider(widget.channelUuid).notifier);
+                final canLoadMore = notifier.canLoadMore;
+
                 return RefreshIndicator(
                   onRefresh: () => ref
                       .read(
@@ -120,8 +124,28 @@ class _ChannelDetailScreenState extends ConsumerState<ChannelDetailScreen> {
                       horizontal: DnaSpacing.md,
                       vertical: DnaSpacing.sm,
                     ),
-                    itemCount: sorted.length,
+                    itemCount: sorted.length + (canLoadMore ? 1 : 0),
                     itemBuilder: (context, index) {
+                      // Last item in reversed list = top of screen = "Load older"
+                      if (canLoadMore && index == sorted.length) {
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(
+                              vertical: DnaSpacing.md),
+                          child: Center(
+                            child: TextButton.icon(
+                              icon: const FaIcon(
+                                  FontAwesomeIcons.clockRotateLeft,
+                                  size: 14),
+                              label: const Text('Load older posts'),
+                              onPressed: () => ref
+                                  .read(channelPostsProvider(
+                                          widget.channelUuid)
+                                      .notifier)
+                                  .loadMore(),
+                            ),
+                          ),
+                        );
+                      }
                       // Reverse index since list is reversed
                       final post = sorted[sorted.length - 1 - index];
                       return _PostCard(

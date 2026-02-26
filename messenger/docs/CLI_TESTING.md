@@ -94,7 +94,7 @@ $CLI channel get <uuid>               # Get channel by UUID
 $CLI channel delete <uuid>            # Delete channel (author only)
 $CLI channel discover --days 7        # Discover channels
 $CLI channel post <uuid> "Message"    # Post to channel
-$CLI channel posts <uuid>             # Get posts in channel
+$CLI channel posts <uuid> [--days N]   # Get posts in channel (default 3 days, max 30)
 $CLI channel subscribe <uuid>         # Subscribe to channel
 $CLI channel unsubscribe <uuid>       # Unsubscribe from channel
 $CLI channel subscriptions            # List subscriptions
@@ -819,13 +819,17 @@ dna-messenger-cli channel post 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e "Great topic
 
 ---
 
-### `channel posts <uuid>` - Get Posts
+### `channel posts <uuid> [--days N]` - Get Posts
 
-Retrieves all posts in a channel.
+Retrieves posts from a channel by scanning daily DHT buckets.
 
 ```bash
 dna-messenger-cli channel posts 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
+dna-messenger-cli channel posts 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e --days 7
 ```
+
+**Options:**
+- `--days N` - Number of days to look back (default: 3, max: 30). Scans daily buckets from today backwards.
 
 **Sample Output:**
 ```

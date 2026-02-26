@@ -158,7 +158,7 @@ Named channels with flat text posts. Open posting, day-bucket discovery.
 | `dna_request_id_t dna_engine_channel_delete(engine, uuid, cb, user_data)` | Delete a channel (creator only) |
 | `dna_request_id_t dna_engine_channel_discover(engine, days_back, cb, user_data)` | Discover channels by scanning recent day-buckets |
 | `dna_request_id_t dna_engine_channel_post(engine, channel_uuid, body, cb, user_data)` | Post a message to a channel |
-| `dna_request_id_t dna_engine_channel_get_posts(engine, channel_uuid, limit, offset, cb, user_data)` | Get posts from a channel (paginated) |
+| `dna_request_id_t dna_engine_channel_get_posts(engine, channel_uuid, days_back, cb, user_data)` | Get posts from a channel (daily buckets, default 3 days, max 30) |
 | `dna_request_id_t dna_engine_channel_get_subscriptions(engine, cb, user_data)` | Get all channel subscriptions from local DB |
 | `dna_request_id_t dna_engine_channel_sync_subs_to_dht(engine, cb, user_data)` | Sync subscription list to DHT (multi-device backup) |
 | `dna_request_id_t dna_engine_channel_sync_subs_from_dht(engine, cb, user_data)` | Sync subscriptions from DHT (restore on new device) |

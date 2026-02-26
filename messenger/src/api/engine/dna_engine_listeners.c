@@ -1738,7 +1738,10 @@ int dna_engine_start_channel_listener(dna_engine_t *engine, const char *channel_
     /* Derive DHT key for channel posts */
     uint8_t key[32];
     size_t key_len = 0;
-    if (dna_channel_make_posts_key(channel_uuid, key, &key_len) != 0) {
+    /* Listen on today's daily bucket key */
+    char today[12];
+    channel_get_today_date(today);
+    if (dna_channel_make_posts_key(channel_uuid, today, key, &key_len) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "[CHAN_LISTEN] Failed to derive posts key for %.8s...",
                       channel_uuid);
         pthread_mutex_unlock(&engine->channel_listeners_mutex);
@@ -1772,6 +1775,8 @@ int dna_engine_start_channel_listener(dna_engine_t *engine, const char *channel_
     int idx = engine->channel_listener_count;
     strncpy(engine->channel_listeners[idx].channel_uuid, channel_uuid, 36);
     engine->channel_listeners[idx].channel_uuid[36] = '\0';
+    strncpy(engine->channel_listeners[idx].current_date, today, 11);
+    engine->channel_listeners[idx].current_date[11] = '\0';
     engine->channel_listeners[idx].dht_token = token;
     engine->channel_listeners[idx].active = true;
     engine->channel_listener_count++;
@@ -1834,4 +1839,60 @@ void dna_engine_cancel_all_channel_listeners(dna_engine_t *engine) {
     QGP_LOG_INFO(LOG_TAG, "Cancelled all channel listeners");
 
     pthread_mutex_unlock(&engine->channel_listeners_mutex);
+}
+
+/**
+ * Check and rotate channel post listeners at midnight UTC.
+ * Called from heartbeat thread. Cancels old listener and starts
+ * new one on today's dated key when the date changes.
+ */
+int dna_engine_check_channel_day_rotation(dna_engine_t *engine) {
+    if (!engine) return 0;
+
+    char today[12];
+    channel_get_today_date(today);
+
+    int rotated = 0;
+    pthread_mutex_lock(&engine->channel_listeners_mutex);
+
+    for (int i = 0; i < engine->channel_listener_count; i++) {
+        if (!engine->channel_listeners[i].active) continue;
+        if (strcmp(engine->channel_listeners[i].current_date, today) == 0) continue;
+
+        /* Date changed — rotate this listener */
+        char uuid[37];
+        strncpy(uuid, engine->channel_listeners[i].channel_uuid, 36);
+        uuid[36] = '\0';
+
+        QGP_LOG_INFO(LOG_TAG, "[CHAN_LISTEN] Day rotation for %.8s... (%s -> %s)",
+                     uuid, engine->channel_listeners[i].current_date, today);
+
+        /* Cancel old listener */
+        dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+        if (dht_ctx) {
+            dht_cancel_listen(dht_ctx, engine->channel_listeners[i].dht_token);
+        }
+        engine->channel_listeners[i].active = false;
+
+        /* Compact: move last entry to this slot */
+        if (i < engine->channel_listener_count - 1) {
+            engine->channel_listeners[i] = engine->channel_listeners[engine->channel_listener_count - 1];
+        }
+        engine->channel_listener_count--;
+        i--;  /* Re-check this slot (now holds moved entry) */
+
+        /* Restart on new day's key (must unlock to avoid deadlock) */
+        pthread_mutex_unlock(&engine->channel_listeners_mutex);
+        dna_engine_start_channel_listener(engine, uuid);
+        pthread_mutex_lock(&engine->channel_listeners_mutex);
+
+        rotated++;
+    }
+
+    pthread_mutex_unlock(&engine->channel_listeners_mutex);
+
+    if (rotated > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[CHAN_LISTEN] Day rotation completed for %d channels", rotated);
+    }
+    return rotated;
 }

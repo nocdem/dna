@@ -6,6 +6,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../design_system/design_system.dart';
 import '../ffi/dna_engine.dart';
 import '../providers/contact_profile_cache_provider.dart';
+import '../providers/identity_profile_cache_provider.dart';
 import '../utils/time_format.dart';
 
 class WallPostTile extends ConsumerWidget {
@@ -33,7 +34,19 @@ class WallPostTile extends ConsumerWidget {
     final cachedProfile = ref.watch(
       contactProfileCacheProvider.select((cache) => cache[post.authorFingerprint]),
     );
-    final avatarBytes = cachedProfile?.decodeAvatar();
+    Uint8List? avatarBytes = cachedProfile?.decodeAvatar();
+
+    // Own profile lives in identityProfileCacheProvider, not contactProfileCache
+    if (avatarBytes == null && isOwn) {
+      final cachedIdentity = ref.watch(
+        identityProfileCacheProvider.select((cache) => cache[myFingerprint]),
+      );
+      if (cachedIdentity != null && cachedIdentity.avatarBase64.isNotEmpty) {
+        try {
+          avatarBytes = base64Decode(cachedIdentity.avatarBase64);
+        } catch (_) {}
+      }
+    }
 
     return DnaCard(
       padding: const EdgeInsets.only(

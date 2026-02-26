@@ -490,7 +490,7 @@ int cmd_channel_get(dna_engine_t *engine, const char *uuid);
 int cmd_channel_delete(dna_engine_t *engine, const char *uuid);
 int cmd_channel_discover(dna_engine_t *engine, int days);
 int cmd_channel_post(dna_engine_t *engine, const char *channel_uuid, const char *body);
-int cmd_channel_posts(dna_engine_t *engine, const char *channel_uuid);
+int cmd_channel_posts(dna_engine_t *engine, const char *channel_uuid, int days_back);
 int cmd_channel_subscribe(dna_engine_t *engine, const char *uuid);
 int cmd_channel_unsubscribe(dna_engine_t *engine, const char *uuid);
 int cmd_channel_subscriptions(dna_engine_t *engine);

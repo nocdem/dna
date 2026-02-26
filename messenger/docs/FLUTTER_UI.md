@@ -462,6 +462,20 @@ Future<List<WallComment>> wallGetComments(String postUuid)
 - Channel subscriptions with DHT sync for multi-device
 - Files: `channel_list_screen.dart`, `channel_detail_screen.dart`, `create_channel_screen.dart`, `discover_channels_screen.dart`, `channel_provider.dart`
 
+**Channel Post Daily Bucket Pagination (v0.7.5+):**
+
+Channel posts are stored in daily DHT buckets. The `ChannelPostsNotifier` supports incremental loading:
+
+- `_daysBack` state: tracks how many days of posts are currently loaded (starts at 3)
+- `canLoadMore` getter: returns `true` if `_daysBack < 30` (max)
+- `loadMore()` method: increments `_daysBack` by 3 and re-fetches posts from DHT
+- `channelGetPosts(uuid, daysBack: N)` FFI call passes `days_back` parameter to C engine
+
+UI in `ChannelDetailScreen`:
+- "Load older posts" button appears at bottom of post list when `canLoadMore` is true
+- Button triggers `ref.read(channelPostsProvider(uuid).notifier).loadMore()`
+- Shows loading indicator while fetching, then appends older posts to the list
+
 **Navigation:**
 - Bottom tab navigation with 4 tabs: **[Home] [Messages] [Channels] [More]**
 - **Home** tab: `WallTimelineScreen` — contacts' wall posts timeline with create/delete

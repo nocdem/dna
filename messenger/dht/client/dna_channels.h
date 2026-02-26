@@ -5,7 +5,7 @@
  *
  * Storage Model:
  * - Channel metadata: SHA256("dna:channels:meta:" + uuid) -> chunked JSON (single-owner)
- * - Channel posts: "dna:channels:posts:" + uuid -> chunked JSON (multi-owner)
+ * - Channel posts: "dna:channels:posts:" + uuid + ":" + YYYYMMDD -> chunked JSON (multi-owner, daily buckets)
  * - Public index: "dna:channels:idx:" + YYYYMMDD -> multi-owner day buckets
  *
  * Patterns:
@@ -43,6 +43,10 @@ typedef struct dht_context dht_context_t;
 /* Index limits */
 #define DNA_CHANNEL_INDEX_DAYS_DEFAULT 7
 #define DNA_CHANNEL_INDEX_DAYS_MAX     30
+
+/* Post fetch limits */
+#define DNA_CHANNEL_POSTS_DAYS_DEFAULT 3
+#define DNA_CHANNEL_POSTS_DAYS_MAX     30
 
 /* UUID and fingerprint lengths */
 #define DNA_CHANNEL_UUID_LEN        37   /* UUID v4 + null */
@@ -104,6 +108,7 @@ int dna_channel_post_create(dht_context_t *dht_ctx, const char *channel_uuid,
     const uint8_t *private_key, char *post_uuid_out);
 
 int dna_channel_posts_get(dht_context_t *dht_ctx, const char *channel_uuid,
+    int days_back,
     dna_channel_post_internal_t **posts_out, size_t *count_out);
 
 void dna_channel_post_free(dna_channel_post_internal_t *post);
@@ -117,9 +122,14 @@ int dna_channel_index_register(dht_context_t *dht_ctx, const char *channel_uuid,
 int dna_channel_index_browse(dht_context_t *dht_ctx, int days_back,
     dna_channel_t **channels_out, size_t *count_out);
 
+/* Date helpers */
+void channel_get_today_date(char *date_out);
+void channel_get_date_offset(int days_ago, char *date_out);
+
 /* DHT key derivation */
 int dna_channel_make_meta_key(const char *uuid, uint8_t *key_out, size_t *key_len_out);
-int dna_channel_make_posts_key(const char *uuid, uint8_t *key_out, size_t *key_len_out);
+int dna_channel_make_posts_key(const char *uuid, const char *date,
+                                uint8_t *key_out, size_t *key_len_out);
 int dna_channel_make_index_key(const char *date_str, uint8_t *key_out, size_t *key_len_out);
 
 #ifdef __cplusplus
