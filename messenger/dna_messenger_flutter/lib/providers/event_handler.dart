@@ -15,6 +15,7 @@ import 'identity_profile_cache_provider.dart';
 import 'contact_profile_cache_provider.dart';
 import 'feed_provider.dart';
 import 'wall_provider.dart';
+import 'channel_provider.dart';
 
 /// Connection state for DHT
 enum DhtConnectionState { disconnected, connecting, connected }
@@ -383,6 +384,16 @@ class EventHandler {
       case WallNewPostEvent(authorFingerprint: final author, postUuid: final uuid):
         logPrint('[DART-HANDLER] WallNewPostEvent: author=${author.substring(0, 16)}..., post=$uuid');
         _ref.invalidate(wallTimelineProvider);
+        break;
+
+      case ChannelNewPostEvent(channelUuid: final uuid):
+        logPrint('[DART-HANDLER] ChannelNewPostEvent: channel=$uuid');
+        _ref.invalidate(channelPostsProvider(uuid));
+        break;
+
+      case ChannelSubsSyncedEvent(subscriptionsSynced: final count):
+        logPrint('[DART-HANDLER] ChannelSubsSyncedEvent: subscriptions synced from DHT (count=$count)');
+        _ref.invalidate(channelSubscriptionsProvider);
         break;
 
       case ErrorEvent(message: final errorMsg):

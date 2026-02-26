@@ -1292,6 +1292,20 @@ class WallNewPostEvent extends DnaEvent {
   WallNewPostEvent(this.authorFingerprint, this.postUuid);
 }
 
+/// Channel new post event (new post in subscribed channel)
+class ChannelNewPostEvent extends DnaEvent {
+  final String channelUuid;
+  final String postUuid;
+  final String authorFingerprint;
+  ChannelNewPostEvent(this.channelUuid, this.postUuid, this.authorFingerprint);
+}
+
+/// Channel subscriptions synced from DHT
+class ChannelSubsSyncedEvent extends DnaEvent {
+  final int subscriptionsSynced;
+  ChannelSubsSyncedEvent(this.subscriptionsSynced);
+}
+
 // =============================================================================
 // EXCEPTIONS
 // =============================================================================
@@ -1691,6 +1705,40 @@ class DnaEngine {
           String.fromCharCodes(authorBytes),
           String.fromCharCodes(postUuidBytes),
         );
+        break;
+      case DnaEventType.DNA_EVENT_CHANNEL_NEW_POST:
+        // Parse channel_new_post: channel_uuid[37] at offset 0, post_uuid[37] at offset 37, author_fingerprint[129] at offset 74
+        final chanUuidBytes = <int>[];
+        for (int i = 0; i < 37; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          chanUuidBytes.add(byte);
+        }
+        final chanPostUuidBytes = <int>[];
+        for (int i = 0; i < 37; i++) {
+          final byte = event.data[37 + i];
+          if (byte == 0) break;
+          chanPostUuidBytes.add(byte);
+        }
+        final chanAuthorBytes = <int>[];
+        for (int i = 0; i < 129; i++) {
+          final byte = event.data[74 + i];
+          if (byte == 0) break;
+          chanAuthorBytes.add(byte);
+        }
+        dartEvent = ChannelNewPostEvent(
+          String.fromCharCodes(chanUuidBytes),
+          String.fromCharCodes(chanPostUuidBytes),
+          String.fromCharCodes(chanAuthorBytes),
+        );
+        break;
+      case DnaEventType.DNA_EVENT_CHANNEL_SUBS_SYNCED:
+        // Parse subscriptions_synced (int32 at offset 0)
+        final chanSubsSynced = event.data[0] |
+            (event.data[1] << 8) |
+            (event.data[2] << 16) |
+            (event.data[3] << 24);
+        dartEvent = ChannelSubsSyncedEvent(chanSubsSynced);
         break;
       case DnaEventType.DNA_EVENT_ERROR:
         dartEvent = ErrorEvent(0, 'Error occurred');

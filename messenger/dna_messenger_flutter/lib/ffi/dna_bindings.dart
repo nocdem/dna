@@ -698,7 +698,9 @@ abstract class DnaEventType {
   static const int DNA_EVENT_FEED_SUBSCRIPTIONS_SYNCED = 21;  // Subscriptions synced from DHT
   static const int DNA_EVENT_FEED_CACHE_UPDATED = 22;  // Feed cache refreshed with new DHT data
   static const int DNA_EVENT_WALL_NEW_POST = 23;  // New wall post from a contact
-  static const int DNA_EVENT_ERROR = 24;
+  static const int DNA_EVENT_CHANNEL_NEW_POST = 24;  // New post in subscribed channel
+  static const int DNA_EVENT_CHANNEL_SUBS_SYNCED = 25;  // Channel subscriptions synced from DHT
+  static const int DNA_EVENT_ERROR = 26;
 }
 
 /// Event data union - message received
