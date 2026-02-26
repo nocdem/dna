@@ -88,14 +88,17 @@ $CLI group-info <uuid>                # Show group info and members
 $CLI group-invite <uuid> <fp>         # Invite member to group
 $CLI group-sync <uuid>                # Sync group from DHT to local cache
 
-# Feeds v2 (Topic-based public feeds)
-$CLI feeds create "Title" "Body" --category general --tags "tag1,tag2"
-$CLI feeds get <uuid>                 # Get topic by UUID
-$CLI feeds delete <uuid>              # Soft delete topic (author only)
-$CLI feeds list --category tech --days 7   # List by category
-$CLI feeds list-all --days 7          # List all topics
-$CLI feeds comment <uuid> "Comment"   # Add comment to topic
-$CLI feeds comments <uuid>            # Get comments for topic
+# Channels (Topic-based public channels)
+$CLI channel create "Name" "Description"
+$CLI channel get <uuid>               # Get channel by UUID
+$CLI channel delete <uuid>            # Delete channel (author only)
+$CLI channel discover --days 7        # Discover channels
+$CLI channel post <uuid> "Message"    # Post to channel
+$CLI channel posts <uuid>             # Get posts in channel
+$CLI channel subscribe <uuid>         # Subscribe to channel
+$CLI channel unsubscribe <uuid>       # Unsubscribe from channel
+$CLI channel subscriptions            # List subscriptions
+$CLI channel sync                     # Sync subscriptions to/from DHT
 ```
 
 ---
@@ -751,12 +754,12 @@ Topic: My Topic
 
 ---
 
-### `feeds get <uuid>` - Get Topic
+### `channel get <uuid>` - Get Channel
 
-Retrieves a topic by its UUID.
+Retrieves a channel by its UUID.
 
 ```bash
-dna-messenger-cli feeds get 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
+dna-messenger-cli channel get 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
 ```
 
 ---
@@ -806,23 +809,22 @@ dna-messenger-cli feeds list-all --days 7
 
 ---
 
-### `feeds comment <uuid> <body> [--mentions <fps>]` - Add Comment
+### `channel post <uuid> <body>` - Post to Channel
 
-Adds a comment to a topic. Uses multi-owner DHT pattern.
+Posts a message to a channel.
 
 ```bash
-dna-messenger-cli feeds comment 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e "Great topic!"
-dna-messenger-cli feeds comment 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e "Check this @user" --mentions "5a8f2c3d..."
+dna-messenger-cli channel post 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e "Great topic!"
 ```
 
 ---
 
-### `feeds comments <uuid>` - Get Comments
+### `channel posts <uuid>` - Get Posts
 
-Retrieves all comments for a topic.
+Retrieves all posts in a channel.
 
 ```bash
-dna-messenger-cli feeds comments 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
+dna-messenger-cli channel posts 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
 ```
 
 **Sample Output:**
@@ -993,15 +995,17 @@ These warnings appear during normal operation and don't indicate errors:
 
 ## Changelog
 
-### v2.6.0
-- Added Feeds v2 commands (topic-based public feeds):
-  - `feeds create` - Create topic with category and tags
-  - `feeds get` - Get topic by UUID
-  - `feeds delete` - Soft delete topic (author only)
-  - `feeds list` - List by category
-  - `feeds list-all` - List all topics
-  - `feeds comment` - Add comment with optional mentions
-  - `feeds comments` - Get comments for topic
+### v2.7.0
+- Migrated feeds to channels system:
+  - `channel create` - Create a channel
+  - `channel get` - Get channel by UUID
+  - `channel delete` - Delete channel (author only)
+  - `channel discover` - Discover channels
+  - `channel post` - Post to channel
+  - `channel posts` - Get posts in channel
+  - `channel subscribe` / `channel unsubscribe` - Manage subscriptions
+  - `channel subscriptions` - List subscriptions
+  - `channel sync` - Sync subscriptions to/from DHT
 
 ### v2.5.0
 - Added Group commands (GEK encrypted group messaging):

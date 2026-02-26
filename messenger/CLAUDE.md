@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-02-26 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.7.5 | Flutter v0.101.14 | Nodus v0.4.5
+**Versions:** Library v0.7.5 | Flutter v0.101.15 | Nodus v0.4.5
 
 ---
 
@@ -197,7 +197,7 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
 | C Library | `include/dna/version.h` | v0.7.5 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.101.14+10314 | Flutter/Dart code changes (lib/, assets/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.101.15+10315 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.5 | Nodus server changes (vendor/opendht-pq/tools/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
@@ -286,7 +286,7 @@ Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
 6. **POST TO DNA UPDATES FEED** - Announce release to users:
    **IMPORTANT:** MUST use the release identity for feed posts too.
    ```bash
-   ./cli/dna-messenger-cli -d /home/nocdem/.dna-release-identity feeds comment 765ed03d-0c28-4d17-91bd-683a713a63e8 \
+   ./cli/dna-messenger-cli -d /home/nocdem/.dna-release-identity channel post 765ed03d-0c28-4d17-91bd-683a713a63e8 \
        "🚀 New release available! Please update to Lib v0.7.0 / App v0.101.0"
    ```
 
@@ -632,36 +632,36 @@ $CLI contacts                    # List contacts with status (shows names + fing
 
 **IMPORTANT:** For `send` command, use the contact's **registered name** (e.g., `nox`) or the **full 128-character fingerprint**. Partial fingerprints will fail with "Network error".
 
-## DNA OFFICIAL FEEDS
-Official feeds for announcements, bug reports, and feature requests.
+## DNA OFFICIAL CHANNELS
+Official channels for announcements, bug reports, and feature requests.
 
-| Feed | UUID | Purpose |
-|------|------|---------|
+| Channel | UUID | Purpose |
+|---------|------|---------|
 | DNA Updates | `765ed03d-0c28-4d17-91bd-683a713a63e8` | Official announcements (auto-subscribed) |
 | Bug Reports | `6d42f8ac-959a-48cc-bcac-37b0f3eb2ba0` | User bug reports |
 | Feature Requests | `089b850f-4eb9-4c27-a50c-b51230b3173c` | User feature requests |
 
-**Post to a feed:**
+**Post to a channel:**
 ```bash
-dna-messenger-cli feeds comment <UUID> "<message>"
+dna-messenger-cli channel post <UUID> "<message>"
 ```
 
 **Post changelog (after push):**
 ```bash
-dna-messenger-cli feeds comment 765ed03d-0c28-4d17-91bd-683a713a63e8 "<commit message>"
+dna-messenger-cli channel post 765ed03d-0c28-4d17-91bd-683a713a63e8 "<commit message>"
 ```
 
-**IMPORTANT:** When pushing C library or Flutter changes, post the commit message to the DNA Updates Feed so users see the changelog.
+**IMPORTANT:** When pushing C library or Flutter changes, post the commit message to the DNA Updates Channel so users see the changelog.
 
-**View feed:**
+**View channel:**
 ```bash
-dna-messenger-cli feeds get <UUID>
-dna-messenger-cli feeds comments <UUID>
+dna-messenger-cli channel get <UUID>
+dna-messenger-cli channel posts <UUID>
 ```
 
 **Constant:** `DNA_UPDATES_TOPIC_UUID` in `include/dna/dna_engine.h`
 
-**Note:** New users are auto-subscribed to DNA Updates via `feed_subscriptions_db_subscribe()` during identity creation.
+**Note:** New users are auto-subscribed to DNA Updates via `channel_subscriptions_db_subscribe()` during identity creation.
 
 ## FUZZ TESTING REQUIREMENT
 When implementing **new methods in dna_engine or dna_api** that parse external input (network data, user input, file formats), you **MUST** add a corresponding fuzz test.
