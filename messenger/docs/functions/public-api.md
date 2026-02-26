@@ -147,30 +147,45 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `void dna_engine_cancel_all_outbox_listeners(dna_engine_t*)` | Cancel all outbox listeners |
 | `int dna_engine_refresh_listeners(dna_engine_t*)` | Refresh all DHT listeners |
 
-## 1.10 Feed v2 (Topic-based Public Feeds)
+## 1.10 Channels (RSS-like Public Channels)
 
-Topic-based feeds with categories and tags. No voting (deferred).
+Named channels with flat text posts. Open posting, day-bucket discovery.
 
 | Function | Description |
 |----------|-------------|
-| `dna_request_id_t dna_engine_feed_create_topic(engine, title, body, category, tags_json, cb, ud)` | Create topic with category/tags |
-| `dna_request_id_t dna_engine_feed_get_topic(engine, uuid, cb, ud)` | Get topic by UUID |
-| `dna_request_id_t dna_engine_feed_delete_topic(engine, uuid, cb, ud)` | Soft delete topic (author only) |
-| `dna_request_id_t dna_engine_feed_add_comment(engine, topic_uuid, parent_comment_uuid, body, mentions_json, cb, ud)` | Add comment with @mentions (parent_comment_uuid = NULL for top-level, UUID for reply) |
-| `dna_request_id_t dna_engine_feed_get_comments(engine, topic_uuid, cb, ud)` | Get comments for topic |
-| `dna_request_id_t dna_engine_feed_get_category(engine, category, days_back, cb, ud)` | Get topics by category |
-| `dna_request_id_t dna_engine_feed_get_all(engine, days_back, cb, ud)` | Get all topics (global feed) |
-| `dna_request_id_t dna_engine_feed_reindex_topic(engine, uuid, cb, ud)` | Re-index existing topic into day-bucket index |
-| `int dna_engine_feed_subscribe(engine, topic_uuid)` | Subscribe to a feed topic (local DB, sync to DHT separately) |
-| `int dna_engine_feed_unsubscribe(engine, topic_uuid)` | Unsubscribe from a feed topic |
-| `int dna_engine_feed_is_subscribed(engine, topic_uuid)` | Check if subscribed to a topic (1=yes, 0=no) |
-| `dna_request_id_t dna_engine_feed_get_subscriptions(engine, cb, ud)` | Get all subscribed topics from local DB |
-| `dna_request_id_t dna_engine_feed_sync_subscriptions_to_dht(engine, cb, ud)` | Sync subscription list to DHT (multi-device backup) |
-| `dna_request_id_t dna_engine_feed_sync_subscriptions_from_dht(engine, cb, ud)` | Sync subscriptions from DHT (restore on new device) |
-| `size_t dna_engine_feed_listen_topic_comments(engine, topic_uuid)` | Start listening for comments on a topic (returns listener token) |
-| `void dna_engine_feed_cancel_topic_listener(engine, topic_uuid)` | Cancel comment listener for a topic |
-| `int dna_engine_feed_listen_all_subscriptions(engine)` | Start comment listeners for all subscribed topics |
-| `void dna_engine_feed_cancel_all_topic_listeners(engine)` | Cancel all feed topic listeners |
+| `dna_request_id_t dna_engine_channel_create(engine, name, description, is_public, cb, user_data)` | Create a new channel |
+| `dna_request_id_t dna_engine_channel_get(engine, uuid, cb, user_data)` | Get channel info by UUID |
+| `dna_request_id_t dna_engine_channel_delete(engine, uuid, cb, user_data)` | Delete a channel (creator only) |
+| `dna_request_id_t dna_engine_channel_discover(engine, days_back, cb, user_data)` | Discover channels by scanning recent day-buckets |
+| `dna_request_id_t dna_engine_channel_post(engine, channel_uuid, body, cb, user_data)` | Post a message to a channel |
+| `dna_request_id_t dna_engine_channel_get_posts(engine, channel_uuid, limit, offset, cb, user_data)` | Get posts from a channel (paginated) |
+| `dna_request_id_t dna_engine_channel_get_subscriptions(engine, cb, user_data)` | Get all channel subscriptions from local DB |
+| `dna_request_id_t dna_engine_channel_sync_subs_to_dht(engine, cb, user_data)` | Sync subscription list to DHT (multi-device backup) |
+| `dna_request_id_t dna_engine_channel_sync_subs_from_dht(engine, cb, user_data)` | Sync subscriptions from DHT (restore on new device) |
+| `int dna_engine_channel_subscribe(engine, uuid)` | Subscribe to a channel (sync) |
+| `int dna_engine_channel_unsubscribe(engine, uuid)` | Unsubscribe from a channel (sync) |
+| `bool dna_engine_channel_is_subscribed(engine, uuid)` | Check if subscribed to a channel (sync) |
+| `int dna_engine_channel_mark_read(engine, uuid)` | Mark a channel as read (sync) |
+| `void dna_free_channel_info(dna_channel_info_t*)` | Free single channel info |
+| `void dna_free_channel_infos(dna_channel_info_t*, int)` | Free channel infos array |
+| `void dna_free_channel_post_info(dna_channel_post_info_t*)` | Free single channel post info |
+| `void dna_free_channel_post_infos(dna_channel_post_info_t*, int)` | Free channel post infos array |
+| `void dna_free_channel_subscription_infos(dna_channel_subscription_info_t*, int)` | Free channel subscription infos array |
+
+**Structures and Types:**
+
+| Type | Description |
+|------|-------------|
+| `dna_channel_info_t` | Channel info struct (uuid, name, description, creator fingerprint, created_at, is_public) |
+| `dna_channel_post_info_t` | Channel post info struct (uuid, channel_uuid, author fingerprint, body, timestamp) |
+| `dna_channel_subscription_info_t` | Channel subscription info struct (channel_uuid, channel_name, subscribed_at, last_read) |
+
+**Events:**
+
+| Constant | Description |
+|----------|-------------|
+| `DNA_EVENT_CHANNEL_NEW_POST` | New post received in a subscribed channel |
+| `DNA_EVENT_CHANNEL_SUBS_SYNCED` | Channel subscriptions synced from DHT |
 
 ## 1.11 Wall API
 
@@ -226,10 +241,11 @@ Topic-based feeds with categories and tags. No voting (deferred).
 | `void dna_free_wallets(dna_wallet_t*, int)` | Free wallets array |
 | `void dna_free_balances(dna_balance_t*, int)` | Free balances array |
 | `void dna_free_transactions(dna_transaction_t*, int)` | Free transactions array |
-| `void dna_free_feed_topic(dna_feed_topic_info_t*)` | Free single feed topic |
-| `void dna_free_feed_topics(dna_feed_topic_info_t*, int)` | Free feed topics array |
-| `void dna_free_feed_comment(dna_feed_comment_info_t*)` | Free single feed comment |
-| `void dna_free_feed_comments(dna_feed_comment_info_t*, int)` | Free feed comments array |
+| `void dna_free_channel_info(dna_channel_info_t*)` | Free single channel info |
+| `void dna_free_channel_infos(dna_channel_info_t*, int)` | Free channel infos array |
+| `void dna_free_channel_post_info(dna_channel_post_info_t*)` | Free single channel post info |
+| `void dna_free_channel_post_infos(dna_channel_post_info_t*, int)` | Free channel post infos array |
+| `void dna_free_channel_subscription_infos(dna_channel_subscription_info_t*, int)` | Free channel subscription infos array |
 | `void dna_free_wall_posts(dna_wall_post_info_t*, int)` | Free wall posts array |
 | `void dna_free_wall_comments(dna_wall_comment_info_t*, int)` | Free wall comments array |
 | `void dna_free_profile(dna_profile_t*)` | Free profile |

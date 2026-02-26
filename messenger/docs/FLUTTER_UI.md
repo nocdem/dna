@@ -39,8 +39,8 @@ DNA Messenger uses Flutter for cross-platform UI. Flutter was chosen for:
 │  │   - Navigation: bottom bar, app bar, more menu             ││
 │  │   - Inputs: text field, search bar, switch                 ││
 │  ├─────────────────────────────────────────────────────────────┤│
-│  │   Screens (home, messages, feed, more, wallet, settings)    ││
-│  │   Navigation: Bottom tabs (Home, Messages, Feeds, More)    ││
+│  │   Screens (home, messages, channels, more, wallet, settings)││
+│  │   Navigation: Bottom tabs (Home, Messages, Channels, More) ││
 │  └─────────────────────────────────────────────────────────────┘│
 │                              │                                   │
 │                    Riverpod Providers                            │
@@ -96,7 +96,7 @@ dna_messenger_flutter/
 │   │   ├── theme_provider.dart
 │   │   ├── event_handler.dart      # ✅ Real-time event handling
 │   │   ├── background_tasks_provider.dart  # ✅ DHT offline message polling
-│   │   ├── feed_provider.dart      # ✅ Feed topics, comments, subscriptions
+│   │   ├── channel_provider.dart    # ✅ Channel subscriptions, posts, discovery
 │   │   └── wall_provider.dart      # ✅ Wall timeline + per-post comments (v0.7.0+)
 │   ├── screens/                # ✅ UI screens
 │   │   ├── identity/identity_selection_screen.dart  # ✅ BIP39 integrated
@@ -106,7 +106,10 @@ dna_messenger_flutter/
 │   │   ├── groups/groups_screen.dart   # ✅ + GroupChatScreen
 │   │   ├── wallet/wallet_screen.dart   # ✅ Send dialog
 │   │   ├── settings/settings_screen.dart  # ✅ Name registration
-│   │   ├── feed/feed_screen.dart   # ✅ Topic-based feeds with threaded comments
+│   │   ├── channels/channel_list_screen.dart      # ✅ Lists subscribed channels
+│   │   ├── channels/channel_detail_screen.dart    # ✅ Shows posts in a channel
+│   │   ├── channels/create_channel_screen.dart    # ✅ Create new channel form
+│   │   ├── channels/discover_channels_screen.dart # ✅ Discover and subscribe to channels
 │   │   ├── wall/wall_timeline_screen.dart  # ✅ Home tab (wall timeline + image attach)
 │   │   ├── wall/wall_post_detail_screen.dart  # ✅ Post detail with threaded comments
 │   │   ├── messages/messages_screen.dart   # ✅ Messages tab (unified chats + groups)
@@ -451,18 +454,19 @@ Future<List<WallComment>> wallGetComments(String postUuid)
 
 ## Recent UI Changes (2025-12-06)
 
-**Feed v2 (Topic-based):**
-- Topic-based public feeds with categories and subscriptions
-- Categories: General, Technology, Help, Announcements, Trading, Off-topic
-- Threaded comments with single-level replies (reply to comment, not reply-to-reply)
-- Reply button on top-level comments, replies shown indented below parent
-- Files: `feed_screen.dart`, `feed_provider.dart`
+**Channels (RSS-like):**
+- Named channels (UUID-based) with flat text posts, no threading
+- Open posting: anyone can post to any channel
+- Day-bucket discovery: discover channels by scanning recent days
+- 7 default channels: General, Technology, Help, Announcements, Trading, Off Topic, Cpunk
+- Channel subscriptions with DHT sync for multi-device
+- Files: `channel_list_screen.dart`, `channel_detail_screen.dart`, `create_channel_screen.dart`, `discover_channels_screen.dart`, `channel_provider.dart`
 
 **Navigation:**
-- Bottom tab navigation with 4 tabs: **[Home] [Messages] [Feeds] [More]**
+- Bottom tab navigation with 4 tabs: **[Home] [Messages] [Channels] [More]**
 - **Home** tab: `WallTimelineScreen` — contacts' wall posts timeline with create/delete
 - **Messages** tab: `MessagesScreen` — unified view with [All] [Chats] [Groups] filter chips
-- **Feeds** tab: `FeedScreen` — topic-based public feeds (unchanged)
+- **Channels** tab: `ChannelListScreen` — subscribed channels with unread indicators
 - **More** tab: `MoreScreen` — wallet, settings, contacts management (unchanged)
 - Home (wall timeline) is the default landing page (index 0)
 

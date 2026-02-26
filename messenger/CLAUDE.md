@@ -775,7 +775,7 @@ The DNA library uses a **modular architecture**. The DNA Engine was refactored f
 | `dna_engine_identity.c` | Identity create/load, profiles |
 | `dna_engine_presence.c` | Heartbeat, presence lookup |
 | `dna_engine_wallet.c` | Multi-chain wallet, balances |
-| `dna_engine_feed.c` | Posts, comments, voting, subscriptions |
+| `dna_engine_channels.c` | Channel CRUD, posts, subscriptions, discovery |
 | `dna_engine_listeners.c` | DHT listeners (outbox, presence, ACK) |
 | `dna_engine_backup.c` | DHT sync for all data types |
 | `dna_engine_lifecycle.c` | Engine pause/resume (mobile) |

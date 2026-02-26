@@ -188,51 +188,59 @@ SQLite cache for discovered bootstrap nodes, enabling decentralization.
 
 ---
 
-## 13.9 Feed Cache (`database/feed_cache.h`)
+## 13.9 Channel Cache (`database/channel_cache.h`)
 
-**Added in v0.6.121** - Global SQLite cache for feed topics and comments with stale-while-revalidate semantics.
+Global SQLite cache for channel metadata and posts.
 
-**Database:** `~/.dna/db/feed_cache.db`
+**Database:** `~/.dna/db/channel_cache.db`
 
-**Tables:** feed_topics, feed_comments, feed_cache_meta
-
-**Constants:** `FEED_CACHE_TTL_SECONDS` (300), `FEED_CACHE_EVICT_SECONDS` (2592000)
+**Tables:** channels, channel_posts
 
 ### Lifecycle
 
 | Function | Description |
 |----------|-------------|
-| `int feed_cache_init(void)` | Initialize feed cache database |
-| `void feed_cache_close(void)` | Close feed cache database |
-| `int feed_cache_evict_expired(void)` | Evict entries older than 30 days |
+| `int channel_cache_init(void)` | Initialize channel cache database |
+| `void channel_cache_close(void)` | Close channel cache database |
+| `int channel_cache_evict_expired(void)` | Evict expired entries |
 
-### Topic Operations
-
-| Function | Description |
-|----------|-------------|
-| `int feed_cache_put_topic_json(const char*, const char*, const char*, uint64_t, int)` | Store/update topic JSON blob (upsert, preserves last_activity) |
-| `int feed_cache_update_topic_activity(const char*, uint64_t)` | Bump topic last_activity timestamp (forum-style sort, forward-only) |
-| `int feed_cache_get_topic_json(const char*, char**)` | Get single topic JSON by UUID |
-| `int feed_cache_delete_topic(const char*)` | Delete topic from cache |
-| `int feed_cache_get_topics_all(int, char***, int*)` | Get all non-deleted topics within date window |
-| `int feed_cache_get_topics_by_category(const char*, int, char***, int*)` | Get topics filtered by category |
-| `void feed_cache_free_json_list(char**, int)` | Free array of JSON strings |
-
-### Comment Operations
+### Channel Operations
 
 | Function | Description |
 |----------|-------------|
-| `int feed_cache_put_comments(const char*, const char*, int)` | Store cached comments for topic |
-| `int feed_cache_get_comments(const char*, char**, int*)` | Get cached comments for topic |
-| `int feed_cache_invalidate_comments(const char*)` | Invalidate cached comments for topic |
+| `int channel_cache_store(const dna_channel_info_t*)` | Store/update channel info |
+| `int channel_cache_get(const char*, dna_channel_info_t*)` | Get channel info by UUID |
+| `int channel_cache_delete(const char*)` | Delete channel from cache |
 
-### Meta / Staleness
+### Post Operations
 
 | Function | Description |
 |----------|-------------|
-| `int feed_cache_update_meta(const char*)` | Update last-fetched timestamp for cache key |
-| `bool feed_cache_is_stale(const char*)` | Check if cache key is stale (>5 min) |
-| `int feed_cache_stats(int*, int*, int*)` | Get cache statistics |
+| `int channel_cache_store_post(const dna_channel_post_info_t*)` | Store/update channel post |
+| `int channel_cache_get_posts(const char*, int, int, dna_channel_post_info_t**, size_t*)` | Get posts for channel (paginated) |
+
+---
+
+## 13.9a Channel Subscriptions (`database/channel_subscriptions_db.h`)
+
+Per-identity SQLite database for channel subscriptions.
+
+### Lifecycle
+
+| Function | Description |
+|----------|-------------|
+| `int channel_subscriptions_db_init(void)` | Initialize channel subscriptions database |
+| `void channel_subscriptions_db_close(void)` | Close channel subscriptions database |
+
+### Subscription Operations
+
+| Function | Description |
+|----------|-------------|
+| `int channel_subscriptions_db_subscribe(const char*)` | Subscribe to a channel by UUID |
+| `int channel_subscriptions_db_unsubscribe(const char*)` | Unsubscribe from a channel |
+| `bool channel_subscriptions_db_is_subscribed(const char*)` | Check if subscribed to a channel |
+| `int channel_subscriptions_db_get_all(dna_channel_subscription_info_t**, size_t*)` | Get all subscriptions |
+| `int channel_subscriptions_db_mark_read(const char*)` | Mark a channel as read |
 
 ---
 

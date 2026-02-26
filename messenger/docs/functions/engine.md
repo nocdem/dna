@@ -104,17 +104,19 @@ Internal DNA engine implementation with async task queue.
 | `void dna_handle_sync_groups(dna_engine_t*, dna_task_t*)` | Handle sync groups |
 | `void dna_handle_get_registered_name(dna_engine_t*, dna_task_t*)` | Handle get name |
 
-### Task Handlers - Feed v2
+### Task Handlers - Channels
 
 | Function | Description |
 |----------|-------------|
-| `void dna_handle_feed_create_topic(dna_engine_t*, dna_task_t*)` | Handle create topic |
-| `void dna_handle_feed_get_topic(dna_engine_t*, dna_task_t*)` | Handle get topic |
-| `void dna_handle_feed_delete_topic(dna_engine_t*, dna_task_t*)` | Handle delete topic |
-| `void dna_handle_feed_add_comment(dna_engine_t*, dna_task_t*)` | Handle add comment |
-| `void dna_handle_feed_get_comments(dna_engine_t*, dna_task_t*)` | Handle get comments |
-| `void dna_handle_feed_get_category(dna_engine_t*, dna_task_t*)` | Handle get by category |
-| `void dna_handle_feed_get_all(dna_engine_t*, dna_task_t*)` | Handle get all topics |
+| `void dna_handle_channel_create(dna_engine_t*, dna_task_t*)` | Handle create channel |
+| `void dna_handle_channel_get(dna_engine_t*, dna_task_t*)` | Handle get channel |
+| `void dna_handle_channel_delete(dna_engine_t*, dna_task_t*)` | Handle delete channel |
+| `void dna_handle_channel_discover(dna_engine_t*, dna_task_t*)` | Handle discover channels |
+| `void dna_handle_channel_post(dna_engine_t*, dna_task_t*)` | Handle post to channel |
+| `void dna_handle_channel_get_posts(dna_engine_t*, dna_task_t*)` | Handle get channel posts |
+| `void dna_handle_channel_get_subscriptions(dna_engine_t*, dna_task_t*)` | Handle get channel subscriptions |
+| `void dna_handle_channel_sync_subs_to_dht(dna_engine_t*, dna_task_t*)` | Handle sync subscriptions to DHT |
+| `void dna_handle_channel_sync_subs_from_dht(dna_engine_t*, dna_task_t*)` | Handle sync subscriptions from DHT |
 
 ### Task Handlers - Wall
 

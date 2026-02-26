@@ -286,7 +286,7 @@ Non-blocking async publish queue with automatic retry and per-key serialization.
 
 ## 11. DHT Client (`dht/client/`)
 
-High-level DHT client operations including singleton management, identity backup, contact lists, profiles, and feeds.
+High-level DHT client operations including singleton management, identity backup, contact lists, profiles, and channels.
 
 ### 11.1 DHT Singleton (`dht_singleton.h`)
 
@@ -412,54 +412,28 @@ GEKs are self-encrypted and synced across devices, eliminating the need for per-
 | `const char* dna_identity_get_wallet(const dna_unified_identity_t*, const char*)` | Get wallet for network |
 | `int dna_identity_set_wallet(dna_unified_identity_t*, const char*, const char*)` | Set wallet for network |
 
-### 11.6 DNA Feed v2 (`dna_feed.h`)
+### 11.6 DNA Channels (`dna_channels.h`)
 
-Topic-based public feeds with categories and tags. Replaces v1 channel/post/vote system.
-Uses `dna:feeds:` DHT namespace. No voting (deferred).
+RSS-like public channels with flat text posts and day-bucket discovery.
+Uses `dna:channels:` DHT namespace.
 
-#### Topic Operations (`dna_feed_topic.c`)
-
-| Function | Description |
-|----------|-------------|
-| `int dna_feed_topic_create(dht_context_t*, const char*, const char*, const char*, const char**, int, const char*, const uint8_t*, char*)` | Create topic with title, body, category, tags |
-| `int dna_feed_topic_get(dht_context_t*, const char*, dna_feed_topic_t**)` | Get topic by UUID |
-| `int dna_feed_topic_delete(dht_context_t*, const char*, const char*, const uint8_t*)` | Soft delete topic (author only) |
-| `int dna_feed_topic_verify(const dna_feed_topic_t*, const uint8_t*)` | Verify topic signature |
-| `void dna_feed_topic_free(dna_feed_topic_t*)` | Free topic structure |
-| `void dna_feed_topics_free(dna_feed_topic_t*, size_t)` | Free topics array |
-
-#### Comment Operations (`dna_feed_comments.c`)
+#### Channel Operations (`dna_channels.c`)
 
 | Function | Description |
 |----------|-------------|
-| `int dna_feed_comment_add(dht_context_t*, const char*, const char*, const char**, int, const char*, const uint8_t*, char*)` | Add comment with mentions |
-| `int dna_feed_comments_get(dht_context_t*, const char*, dna_feed_comment_t**, size_t*)` | Get comments for topic |
-| `int dna_feed_comment_verify(const dna_feed_comment_t*, const uint8_t*)` | Verify comment signature |
-| `void dna_feed_comment_free(dna_feed_comment_t*)` | Free comment structure |
-| `void dna_feed_comments_free(dna_feed_comment_t*, size_t)` | Free comments array |
+| `int dna_channel_create(dht_context_t*, const char*, const char*, bool, const char*, const uint8_t*)` | Create channel with name, description, is_public flag |
+| `int dna_channel_get(dht_context_t*, const char*)` | Get channel info by UUID |
+| `int dna_channel_delete(dht_context_t*, const char*, const char*, const uint8_t*)` | Delete channel (creator only) |
+| `int dna_channel_discover(dht_context_t*, int, dna_channel_t**, size_t*)` | Discover channels by scanning recent day-buckets |
+| `int dna_channel_post(dht_context_t*, const char*, const char*, const char*, const uint8_t*)` | Post message to channel |
+| `int dna_channel_get_posts(dht_context_t*, const char*, int, int, dna_channel_post_t**, size_t*)` | Get posts from channel (paginated) |
 
-#### Index Operations (`dna_feed_index.c`)
-
-| Function | Description |
-|----------|-------------|
-| `int dna_feed_index_add(dht_context_t*, const dna_feed_index_entry_t*)` | Add entry to category/global index |
-| `int dna_feed_index_update_deleted(dht_context_t*, const char*, const char*, const char*, const char*, uint64_t)` | Update index entries to mark topic as deleted |
-| `int dna_feed_index_get_category(dht_context_t*, const char*, int, dna_feed_index_entry_t**, size_t*)` | Get topics by category |
-| `int dna_feed_index_get_all(dht_context_t*, int, dna_feed_index_entry_t**, size_t*)` | Get all topics (global) |
-| `void dna_feed_index_entries_free(dna_feed_index_entry_t*, size_t)` | Free index entries |
-
-#### Utility Functions
+#### Subscription Sync (`dht_channel_subscriptions.c`)
 
 | Function | Description |
 |----------|-------------|
-| `int dna_feed_make_category_id(const char*, char*)` | Generate category_id from name |
-| `void dna_feed_generate_uuid(char*)` | Generate UUID v4 for topic/comment |
-| `void dna_feed_get_today_date(char*)` | Get YYYYMMDD date string |
-| `void dna_feed_get_date_from_timestamp(uint64_t, char*)` | Convert Unix timestamp to YYYYMMDD |
-| `void dna_feed_get_topic_key(const char*, char*)` | Get DHT key for topic |
-| `void dna_feed_get_comments_key(const char*, char*)` | Get DHT key for topic comments |
-| `void dna_feed_get_category_index_key(const char*, const char*, char*)` | Get DHT key for category day index |
-| `void dna_feed_get_global_index_key(const char*, char*)` | Get DHT key for global day index |
+| `int dht_channel_subscriptions_sync_to_dht(dht_context_t*, const char*, const uint8_t*)` | Sync subscription list to DHT (multi-device backup) |
+| `int dht_channel_subscriptions_sync_from_dht(dht_context_t*, const char*)` | Sync subscriptions from DHT (restore on new device) |
 
 ### 11.7 Wall (Personal Wall Posts)
 
