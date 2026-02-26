@@ -166,11 +166,9 @@ class _ChannelTile extends ConsumerWidget {
         vertical: DnaSpacing.xs,
       ),
       child: DnaCard(
-        child: Padding(
-          padding: const EdgeInsets.all(DnaSpacing.lg),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
               // Channel icon
               Container(
                 width: DnaSpacing.avatarMd,
@@ -231,7 +229,6 @@ class _ChannelTile extends ConsumerWidget {
               ),
             ],
           ),
-        ),
       ),
     );
   }
