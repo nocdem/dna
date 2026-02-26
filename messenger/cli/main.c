@@ -177,6 +177,18 @@ static void print_usage(const char *prog_name) {
     printf("  transactions <wallet_idx>   Show transaction history\n");
     printf("  estimate-gas <network_id>   Estimate ETH gas fees\n");
     printf("\n");
+    printf("CHANNEL COMMANDS:\n");
+    printf("  channel create <name> [desc]   Create a channel\n");
+    printf("  channel get <uuid>             Get channel info\n");
+    printf("  channel delete <uuid>          Delete a channel\n");
+    printf("  channel discover [--days N]    Discover channels (default 7 days)\n");
+    printf("  channel post <uuid> <body>     Post to a channel\n");
+    printf("  channel posts <uuid>           Get posts in a channel\n");
+    printf("  channel subscribe <uuid>       Subscribe to a channel\n");
+    printf("  channel unsubscribe <uuid>     Unsubscribe from a channel\n");
+    printf("  channel subscriptions          List subscriptions\n");
+    printf("  channel sync                   Sync subscriptions to/from DHT\n");
+    printf("\n");
     printf("BACKUP COMMANDS:\n");
     printf("  backup-messages             Backup messages to DHT\n");
     printf("  restore-messages            Restore messages from DHT\n");
@@ -935,7 +947,104 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* Feed v2 commands removed - replaced by Channels system */
+    /* ====== CHANNELS (RSS-like channel system) ====== */
+    else if (strcmp(command, "channel") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'channel' requires a subcommand\n");
+            fprintf(stderr, "Usage:\n");
+            fprintf(stderr, "  channel create <name> [description]\n");
+            fprintf(stderr, "  channel get <uuid>\n");
+            fprintf(stderr, "  channel delete <uuid>\n");
+            fprintf(stderr, "  channel discover [--days N]\n");
+            fprintf(stderr, "  channel post <uuid> <body>\n");
+            fprintf(stderr, "  channel posts <uuid>\n");
+            fprintf(stderr, "  channel subscribe <uuid>\n");
+            fprintf(stderr, "  channel unsubscribe <uuid>\n");
+            fprintf(stderr, "  channel subscriptions\n");
+            fprintf(stderr, "  channel sync\n");
+            result = 1;
+        } else {
+            const char *subcmd = argv[optind + 1];
+
+            if (strcmp(subcmd, "create") == 0) {
+                if (optind + 2 >= argc) {
+                    fprintf(stderr, "Error: 'channel create' requires <name>\n");
+                    result = 1;
+                } else {
+                    const char *name = argv[optind + 2];
+                    const char *description = (optind + 3 < argc) ? argv[optind + 3] : NULL;
+                    result = cmd_channel_create(g_engine, name, description);
+                }
+            }
+            else if (strcmp(subcmd, "get") == 0) {
+                if (optind + 2 >= argc) {
+                    fprintf(stderr, "Error: 'channel get' requires <uuid>\n");
+                    result = 1;
+                } else {
+                    result = cmd_channel_get(g_engine, argv[optind + 2]);
+                }
+            }
+            else if (strcmp(subcmd, "delete") == 0) {
+                if (optind + 2 >= argc) {
+                    fprintf(stderr, "Error: 'channel delete' requires <uuid>\n");
+                    result = 1;
+                } else {
+                    result = cmd_channel_delete(g_engine, argv[optind + 2]);
+                }
+            }
+            else if (strcmp(subcmd, "discover") == 0) {
+                int days = 7;
+                for (int i = optind + 2; i < argc; i++) {
+                    if (strcmp(argv[i], "--days") == 0 && i + 1 < argc) {
+                        days = atoi(argv[++i]);
+                    }
+                }
+                result = cmd_channel_discover(g_engine, days);
+            }
+            else if (strcmp(subcmd, "post") == 0) {
+                if (optind + 3 >= argc) {
+                    fprintf(stderr, "Error: 'channel post' requires <uuid> <body>\n");
+                    result = 1;
+                } else {
+                    result = cmd_channel_post(g_engine, argv[optind + 2], argv[optind + 3]);
+                }
+            }
+            else if (strcmp(subcmd, "posts") == 0) {
+                if (optind + 2 >= argc) {
+                    fprintf(stderr, "Error: 'channel posts' requires <uuid>\n");
+                    result = 1;
+                } else {
+                    result = cmd_channel_posts(g_engine, argv[optind + 2]);
+                }
+            }
+            else if (strcmp(subcmd, "subscribe") == 0) {
+                if (optind + 2 >= argc) {
+                    fprintf(stderr, "Error: 'channel subscribe' requires <uuid>\n");
+                    result = 1;
+                } else {
+                    result = cmd_channel_subscribe(g_engine, argv[optind + 2]);
+                }
+            }
+            else if (strcmp(subcmd, "unsubscribe") == 0) {
+                if (optind + 2 >= argc) {
+                    fprintf(stderr, "Error: 'channel unsubscribe' requires <uuid>\n");
+                    result = 1;
+                } else {
+                    result = cmd_channel_unsubscribe(g_engine, argv[optind + 2]);
+                }
+            }
+            else if (strcmp(subcmd, "subscriptions") == 0) {
+                result = cmd_channel_subscriptions(g_engine);
+            }
+            else if (strcmp(subcmd, "sync") == 0) {
+                result = cmd_channel_sync(g_engine);
+            }
+            else {
+                fprintf(stderr, "Error: Unknown channel subcommand '%s'\n", subcmd);
+                result = 1;
+            }
+        }
+    }
 
     /* ====== PHASE 11: MESSAGE BACKUP ====== */
     else if (strcmp(command, "backup-messages") == 0) {

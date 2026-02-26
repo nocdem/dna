@@ -3992,6 +3992,375 @@ int cmd_signing_pubkey(dna_engine_t *engine) {
 }
 
 /* ============================================================================
+ * CHANNELS (10 commands) - RSS-like channel system
+ * ============================================================================ */
+
+/* Callback for single channel info */
+static void on_channel_info(dna_request_id_t request_id, int error,
+                            dna_channel_info_t *channel, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    if (error == 0 && channel) {
+        time_t ts = (time_t)channel->created_at;
+        char time_str[32];
+        struct tm tm_buf;
+        if (safe_localtime(&ts, &tm_buf)) {
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &tm_buf);
+        } else {
+            strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
+        }
+
+        printf("\nChannel: %s\n", channel->name);
+        printf("  UUID: %s\n", channel->channel_uuid);
+        printf("  Description: %s\n", channel->description ? channel->description : "(none)");
+        printf("  Creator: %.16s...\n", channel->creator_fingerprint);
+        printf("  Created: %s\n", time_str);
+        printf("  Public: %s\n", channel->is_public ? "yes" : "no");
+        printf("  Verified: %s\n", channel->verified ? "yes" : "no");
+        if (channel->deleted) {
+            printf("  Status: DELETED\n");
+        }
+        printf("\n");
+
+        dna_free_channel_info(channel);
+    }
+
+    cli_wait_signal(wait, error);
+}
+
+/* Callback for channel list (discover) */
+static void on_channels_list(dna_request_id_t request_id, int error,
+                             dna_channel_info_t *channels, int count, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    if (error == 0 && channels && count > 0) {
+        printf("\nChannels (%d):\n", count);
+        for (int i = 0; i < count; i++) {
+            time_t ts = (time_t)channels[i].created_at;
+            char time_str[32];
+            struct tm tm_buf;
+            if (safe_localtime(&ts, &tm_buf)) {
+                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &tm_buf);
+            } else {
+                strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
+            }
+
+            printf("\n  %d. %s%s\n", i + 1, channels[i].name,
+                   channels[i].deleted ? " [DELETED]" : "");
+            printf("     UUID: %s\n", channels[i].channel_uuid);
+            printf("     Description: %s\n", channels[i].description ? channels[i].description : "(none)");
+            printf("     Creator: %.16s...  |  Created: %s\n",
+                   channels[i].creator_fingerprint, time_str);
+        }
+        printf("\n");
+
+        dna_free_channel_infos(channels, count);
+    } else if (error == 0) {
+        printf("No channels found.\n");
+    }
+
+    cli_wait_signal(wait, error);
+}
+
+/* Callback for single channel post */
+static void on_channel_post_created(dna_request_id_t request_id, int error,
+                                     dna_channel_post_info_t *post, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    if (error == 0 && post) {
+        printf("Post created:\n");
+        printf("  UUID: %s\n", post->post_uuid);
+        printf("  Channel: %s\n", post->channel_uuid);
+        printf("  Body: %s\n", post->body ? post->body : "(empty)");
+        dna_free_channel_post(post);
+    }
+
+    cli_wait_signal(wait, error);
+}
+
+/* Callback for channel posts list */
+static void on_channel_posts_list(dna_request_id_t request_id, int error,
+                                   dna_channel_post_info_t *posts, int count, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    if (error == 0 && posts && count > 0) {
+        printf("\nPosts (%d):\n", count);
+        for (int i = 0; i < count; i++) {
+            time_t ts = (time_t)posts[i].created_at;
+            char time_str[32];
+            struct tm tm_buf;
+            if (safe_localtime(&ts, &tm_buf)) {
+                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &tm_buf);
+            } else {
+                strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
+            }
+
+            printf("\n  [%s] %.16s...:\n", time_str, posts[i].author_fingerprint);
+            printf("    %s\n", posts[i].body ? posts[i].body : "(empty)");
+            printf("    UUID: %s  Verified: %s\n", posts[i].post_uuid,
+                   posts[i].verified ? "yes" : "no");
+        }
+        printf("\n");
+
+        dna_free_channel_posts(posts, count);
+    } else if (error == 0) {
+        printf("No posts in this channel.\n");
+    }
+
+    cli_wait_signal(wait, error);
+}
+
+/* Callback for channel subscriptions list */
+static void on_channel_subscriptions(dna_request_id_t request_id, int error,
+                                      dna_channel_subscription_info_t *subs, int count, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    if (error == 0 && subs && count > 0) {
+        printf("\nSubscriptions (%d):\n", count);
+        for (int i = 0; i < count; i++) {
+            time_t ts = (time_t)subs[i].subscribed_at;
+            char time_str[32];
+            struct tm tm_buf;
+            if (safe_localtime(&ts, &tm_buf)) {
+                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &tm_buf);
+            } else {
+                strncpy(time_str, "0000-00-00 00:00", sizeof(time_str));
+            }
+
+            printf("  %d. %s (subscribed: %s)\n", i + 1, subs[i].channel_uuid, time_str);
+        }
+        printf("\n");
+
+        dna_free_channel_subscriptions(subs, count);
+    } else if (error == 0) {
+        printf("No subscriptions.\n");
+    }
+
+    cli_wait_signal(wait, error);
+}
+
+int cmd_channel_create(dna_engine_t *engine, const char *name, const char *description) {
+    if (!engine) { printf("Error: Engine not initialized\n"); return -1; }
+    if (!name || strlen(name) == 0) { printf("Error: Channel name required\n"); return -1; }
+
+    printf("Creating channel '%s'...\n", name);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_channel_create(engine, name, description, true, on_channel_info, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to create channel: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Channel created successfully!\n");
+    return 0;
+}
+
+int cmd_channel_get(dna_engine_t *engine, const char *uuid) {
+    if (!engine) { printf("Error: Engine not initialized\n"); return -1; }
+    if (!uuid || strlen(uuid) == 0) { printf("Error: Channel UUID required\n"); return -1; }
+
+    printf("Getting channel %s...\n", uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_channel_get(engine, uuid, on_channel_info, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get channel: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+int cmd_channel_delete(dna_engine_t *engine, const char *uuid) {
+    if (!engine) { printf("Error: Engine not initialized\n"); return -1; }
+    if (!uuid || strlen(uuid) == 0) { printf("Error: Channel UUID required\n"); return -1; }
+
+    printf("Deleting channel %s...\n", uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_channel_delete(engine, uuid, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to delete channel: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Channel deleted successfully!\n");
+    return 0;
+}
+
+int cmd_channel_discover(dna_engine_t *engine, int days) {
+    if (!engine) { printf("Error: Engine not initialized\n"); return -1; }
+
+    if (days < 1) days = 7;
+    if (days > 30) days = 30;
+
+    printf("Discovering channels (last %d days)...\n", days);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_channel_discover(engine, days, on_channels_list, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to discover channels: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+int cmd_channel_post(dna_engine_t *engine, const char *channel_uuid, const char *body) {
+    if (!engine) { printf("Error: Engine not initialized\n"); return -1; }
+    if (!channel_uuid || strlen(channel_uuid) == 0) { printf("Error: Channel UUID required\n"); return -1; }
+    if (!body || strlen(body) == 0) { printf("Error: Post body required\n"); return -1; }
+
+    printf("Posting to channel %s...\n", channel_uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_channel_post(engine, channel_uuid, body, on_channel_post_created, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to post: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Posted successfully!\n");
+    return 0;
+}
+
+int cmd_channel_posts(dna_engine_t *engine, const char *channel_uuid) {
+    if (!engine) { printf("Error: Engine not initialized\n"); return -1; }
+    if (!channel_uuid || strlen(channel_uuid) == 0) { printf("Error: Channel UUID required\n"); return -1; }
+
+    printf("Getting posts for channel %s...\n", channel_uuid);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_channel_get_posts(engine, channel_uuid, on_channel_posts_list, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get posts: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+int cmd_channel_subscribe(dna_engine_t *engine, const char *uuid) {
+    if (!engine) { printf("Error: Engine not initialized\n"); return -1; }
+    if (!uuid || strlen(uuid) == 0) { printf("Error: Channel UUID required\n"); return -1; }
+
+    int result = dna_engine_channel_subscribe(engine, uuid);
+    if (result != 0) {
+        printf("Error: Failed to subscribe: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Subscribed to channel %s\n", uuid);
+    return 0;
+}
+
+int cmd_channel_unsubscribe(dna_engine_t *engine, const char *uuid) {
+    if (!engine) { printf("Error: Engine not initialized\n"); return -1; }
+    if (!uuid || strlen(uuid) == 0) { printf("Error: Channel UUID required\n"); return -1; }
+
+    int result = dna_engine_channel_unsubscribe(engine, uuid);
+    if (result != 0) {
+        printf("Error: Failed to unsubscribe: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Unsubscribed from channel %s\n", uuid);
+    return 0;
+}
+
+int cmd_channel_subscriptions(dna_engine_t *engine) {
+    if (!engine) { printf("Error: Engine not initialized\n"); return -1; }
+
+    printf("Getting subscriptions...\n");
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_channel_get_subscriptions(engine, on_channel_subscriptions, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to get subscriptions: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+int cmd_channel_sync(dna_engine_t *engine) {
+    if (!engine) { printf("Error: Engine not initialized\n"); return -1; }
+
+    printf("Syncing subscriptions to DHT...\n");
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_channel_sync_subs_to_dht(engine, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to sync to DHT: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Subscriptions synced to DHT!\n");
+
+    printf("Syncing subscriptions from DHT...\n");
+
+    cli_wait_init(&wait);
+
+    dna_engine_channel_sync_subs_from_dht(engine, on_completion, &wait);
+    result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to sync from DHT: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Subscriptions synced from DHT!\n");
+    return 0;
+}
+
+/* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */
 
