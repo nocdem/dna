@@ -1499,6 +1499,16 @@ static bool wall_listen_callback(
 
     /* Only fire for new/updated values, not expirations */
     if (!expired && value && value_len > 0) {
+        /* Skip own-wall events: when we post, the cache + optimistic state
+         * are already up-to-date.  Firing an event here would invalidate
+         * the fresh cache and destroy the Flutter optimistic update,
+         * causing posts to temporarily disappear. */
+        if (ctx->engine->identity_loaded &&
+            strcmp(ctx->contact_fingerprint, ctx->engine->fingerprint) == 0) {
+            QGP_LOG_DEBUG(LOG_TAG, "[WALL_LISTEN] Skipping own-wall event");
+            return true;
+        }
+
         QGP_LOG_INFO(LOG_TAG, "[WALL_LISTEN] Wall updated for %.16s...",
                      ctx->contact_fingerprint);
 

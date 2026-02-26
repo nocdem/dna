@@ -280,9 +280,12 @@ static void *wall_fetch_thread(void *arg) {
         wall_cache_store(ctx->fingerprint, wall.posts, wall.post_count);
         wall_cache_update_meta(ctx->fingerprint);
     } else if (ret == -2) {
-        /* Not found on DHT - store empty and mark fresh */
-        wall_cache_store(ctx->fingerprint, NULL, 0);
-        wall_cache_update_meta(ctx->fingerprint);
+        /* Not found on DHT - keep existing cached posts.
+         * DHT lookups can temporarily fail (propagation delay,
+         * node offline). Don't wipe cache; leave stale so
+         * next timeline load retries the fetch. */
+        QGP_LOG_DEBUG(LOG_TAG, "Wall not found on DHT for %.16s..., keeping cache",
+                      ctx->fingerprint);
     }
     dna_wall_free(&wall);
     return NULL;
