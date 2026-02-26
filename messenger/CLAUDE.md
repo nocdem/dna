@@ -197,7 +197,7 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
 | C Library | `include/dna/version.h` | v0.7.7 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.101.16+10316 | Flutter/Dart code changes (lib/, assets/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.101.17+10317 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.5 | Nodus server changes (vendor/opendht-pq/tools/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
