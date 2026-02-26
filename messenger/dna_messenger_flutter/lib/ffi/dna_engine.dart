@@ -11,6 +11,7 @@ import 'package:crypto/crypto.dart';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 
+import '../models/channel.dart';
 import 'dna_bindings.dart';
 
 // Debug logging helper - only prints in debug mode
@@ -5606,6 +5607,454 @@ class DnaEngine {
     _pendingRequests[localId] = _PendingRequest(callback: callback);
 
     final requestId = _bindings.dna_engine_feed_sync_subscriptions_from_dht(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
+  // CHANNELS - RSS-like public channels via DHT
+  // ---------------------------------------------------------------------------
+
+  /// Create a new channel
+  ///
+  /// [name] - Channel name (max 100 chars)
+  /// [description] - Channel description (max 500 chars)
+  /// [isPublic] - Whether channel is listed on public DHT index
+  ///
+  /// Returns the created channel on success.
+  Future<Channel> channelCreate(
+    String name,
+    String description, {
+    bool isPublic = true,
+  }) async {
+    final completer = Completer<Channel>();
+    final localId = _nextLocalId++;
+
+    final namePtr = name.toNativeUtf8();
+    final descPtr = description.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_channel_info_t> channel, Pointer<Void> userData) {
+      calloc.free(namePtr);
+      calloc.free(descPtr);
+
+      if (error == 0 && channel != nullptr) {
+        final result = Channel.fromNative(channel.ref);
+        _bindings.dna_free_channel_info(channel);
+        completer.complete(result);
+      } else {
+        if (channel != nullptr) {
+          _bindings.dna_free_channel_info(channel);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaChannelCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_channel_create(
+      _engine,
+      namePtr.cast(),
+      descPtr.cast(),
+      isPublic,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(namePtr);
+      calloc.free(descPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get a specific channel by UUID
+  Future<Channel> channelGet(String uuid) async {
+    final completer = Completer<Channel>();
+    final localId = _nextLocalId++;
+
+    final uuidPtr = uuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_channel_info_t> channel, Pointer<Void> userData) {
+      calloc.free(uuidPtr);
+
+      if (error == 0 && channel != nullptr) {
+        final result = Channel.fromNative(channel.ref);
+        _bindings.dna_free_channel_info(channel);
+        completer.complete(result);
+      } else {
+        if (channel != nullptr) {
+          _bindings.dna_free_channel_info(channel);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaChannelCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_channel_get(
+      _engine,
+      uuidPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(uuidPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Delete a channel (soft delete - creator only)
+  Future<void> channelDelete(String uuid) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final uuidPtr = uuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(uuidPtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_channel_delete(
+      _engine,
+      uuidPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(uuidPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Discover public channels from DHT
+  ///
+  /// [daysBack] - Number of days to look back (default 7)
+  Future<List<Channel>> channelDiscover({int daysBack = 7}) async {
+    final completer = Completer<List<Channel>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_channel_info_t> channels, int count,
+        Pointer<Void> userData) {
+      if (error == 0) {
+        final result = <Channel>[];
+        for (var i = 0; i < count; i++) {
+          result.add(Channel.fromNative(channels[i]));
+        }
+        if (channels != nullptr && count > 0) {
+          _bindings.dna_free_channel_infos(channels, count);
+        }
+        completer.complete(result);
+      } else {
+        if (channels != nullptr && count > 0) {
+          _bindings.dna_free_channel_infos(channels, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaChannelsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_channel_discover(
+      _engine,
+      daysBack,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Post to a channel
+  ///
+  /// [channelUuid] - UUID of the channel to post to
+  /// [body] - Post text content (max 4000 chars)
+  ///
+  /// Returns the created post on success.
+  Future<ChannelPost> channelPost(String channelUuid, String body) async {
+    final completer = Completer<ChannelPost>();
+    final localId = _nextLocalId++;
+
+    final uuidPtr = channelUuid.toNativeUtf8();
+    final bodyPtr = body.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_channel_post_info_t> post, Pointer<Void> userData) {
+      calloc.free(uuidPtr);
+      calloc.free(bodyPtr);
+
+      if (error == 0 && post != nullptr) {
+        final result = ChannelPost.fromNative(post.ref);
+        _bindings.dna_free_channel_post(post);
+        completer.complete(result);
+      } else {
+        if (post != nullptr) {
+          _bindings.dna_free_channel_post(post);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaChannelPostCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_channel_post(
+      _engine,
+      uuidPtr.cast(),
+      bodyPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(uuidPtr);
+      calloc.free(bodyPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get all posts for a channel
+  Future<List<ChannelPost>> channelGetPosts(String channelUuid) async {
+    final completer = Completer<List<ChannelPost>>();
+    final localId = _nextLocalId++;
+
+    final uuidPtr = channelUuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_channel_post_info_t> posts, int count,
+        Pointer<Void> userData) {
+      calloc.free(uuidPtr);
+
+      if (error == 0) {
+        final result = <ChannelPost>[];
+        for (var i = 0; i < count; i++) {
+          result.add(ChannelPost.fromNative(posts[i]));
+        }
+        if (posts != nullptr && count > 0) {
+          _bindings.dna_free_channel_posts(posts, count);
+        }
+        completer.complete(result);
+      } else {
+        if (posts != nullptr && count > 0) {
+          _bindings.dna_free_channel_posts(posts, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaChannelPostsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_channel_get_posts(
+      _engine,
+      uuidPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(uuidPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
+  // CHANNELS - Subscriptions
+  // ---------------------------------------------------------------------------
+
+  /// Subscribe to a channel
+  ///
+  /// Returns 0 on success.
+  int channelSubscribe(String channelUuid) {
+    final uuidPtr = channelUuid.toNativeUtf8();
+    try {
+      return _bindings.dna_engine_channel_subscribe(_engine, uuidPtr.cast());
+    } finally {
+      calloc.free(uuidPtr);
+    }
+  }
+
+  /// Unsubscribe from a channel
+  ///
+  /// Returns 0 on success.
+  int channelUnsubscribe(String channelUuid) {
+    final uuidPtr = channelUuid.toNativeUtf8();
+    try {
+      return _bindings.dna_engine_channel_unsubscribe(_engine, uuidPtr.cast());
+    } finally {
+      calloc.free(uuidPtr);
+    }
+  }
+
+  /// Check if subscribed to a channel
+  bool channelIsSubscribed(String channelUuid) {
+    final uuidPtr = channelUuid.toNativeUtf8();
+    try {
+      return _bindings.dna_engine_channel_is_subscribed(
+          _engine, uuidPtr.cast());
+    } finally {
+      calloc.free(uuidPtr);
+    }
+  }
+
+  /// Mark a channel as read (update last_read_at)
+  ///
+  /// Returns 0 on success.
+  int channelMarkRead(String channelUuid) {
+    final uuidPtr = channelUuid.toNativeUtf8();
+    try {
+      return _bindings.dna_engine_channel_mark_read(_engine, uuidPtr.cast());
+    } finally {
+      calloc.free(uuidPtr);
+    }
+  }
+
+  /// Get all channel subscriptions
+  Future<List<ChannelSubscription>> channelGetSubscriptions() async {
+    final completer = Completer<List<ChannelSubscription>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_channel_subscription_info_t> subs, int count,
+        Pointer<Void> userData) {
+      if (error == 0) {
+        final result = <ChannelSubscription>[];
+        for (var i = 0; i < count; i++) {
+          result.add(ChannelSubscription.fromNative(subs[i]));
+        }
+        if (subs != nullptr && count > 0) {
+          _bindings.dna_free_channel_subscriptions(subs, count);
+        }
+        completer.complete(result);
+      } else {
+        if (subs != nullptr && count > 0) {
+          _bindings.dna_free_channel_subscriptions(subs, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaChannelSubscriptionsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_channel_get_subscriptions(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Sync channel subscriptions to DHT (for multi-device)
+  Future<void> channelSyncSubsToDht() async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_channel_sync_subs_to_dht(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Sync channel subscriptions from DHT (for multi-device)
+  Future<void> channelSyncSubsFromDht() async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_channel_sync_subs_from_dht(
       _engine,
       callback.nativeFunction.cast(),
       nullptr,

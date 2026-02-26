@@ -521,6 +521,97 @@ final class dna_feed_subscription_info_t extends Struct {
 }
 
 // =============================================================================
+// CHANNEL DATA STRUCTURES
+// =============================================================================
+
+/// Channel information
+/// Matches dna_channel_info_t from dna_engine.h
+final class dna_channel_info_t extends Struct {
+  @Array(37)
+  external Array<Char> channel_uuid;
+
+  @Array(101)
+  external Array<Char> name;
+
+  // Padding for pointer alignment (37+101=138, next 8-byte boundary=144)
+  @Array(6)
+  external Array<Uint8> _padding1;
+
+  external Pointer<Utf8> description;
+
+  @Array(129)
+  external Array<Char> creator_fingerprint;
+
+  // Padding for uint64_t alignment (129 bytes, next 8-byte boundary needs 7)
+  @Array(7)
+  external Array<Uint8> _padding2;
+
+  @Uint64()
+  external int created_at;
+
+  @Bool()
+  external bool is_public;
+
+  @Bool()
+  external bool deleted;
+
+  // Padding for uint64_t alignment (2 bools = 2 bytes, need 6 more)
+  @Array(6)
+  external Array<Uint8> _padding3;
+
+  @Uint64()
+  external int deleted_at;
+
+  @Bool()
+  external bool verified;
+}
+
+/// Channel post information
+/// Matches dna_channel_post_info_t from dna_engine.h
+final class dna_channel_post_info_t extends Struct {
+  @Array(37)
+  external Array<Char> post_uuid;
+
+  @Array(37)
+  external Array<Char> channel_uuid;
+
+  @Array(129)
+  external Array<Char> author_fingerprint;
+
+  // Padding for pointer alignment (37+37+129=203, next 8-byte boundary=208)
+  @Array(5)
+  external Array<Uint8> _padding1;
+
+  external Pointer<Utf8> body;
+
+  @Uint64()
+  external int created_at;
+
+  @Bool()
+  external bool verified;
+}
+
+/// Channel subscription information
+/// Matches dna_channel_subscription_info_t from dna_engine.h
+final class dna_channel_subscription_info_t extends Struct {
+  @Array(37)
+  external Array<Char> channel_uuid;
+
+  // Padding for uint64_t alignment (37 bytes, next 8-byte boundary=40)
+  @Array(3)
+  external Array<Uint8> _padding1;
+
+  @Uint64()
+  external int subscribed_at;
+
+  @Uint64()
+  external int last_synced;
+
+  @Uint64()
+  external int last_read_at;
+}
+
+// =============================================================================
 // WALL DATA STRUCTURES
 // =============================================================================
 
@@ -1036,6 +1127,54 @@ typedef DnaFeedSubscriptionsCbNative = Void Function(
 );
 typedef DnaFeedSubscriptionsCb = NativeFunction<DnaFeedSubscriptionsCbNative>;
 
+/// Channel: Single channel callback - Native
+typedef DnaChannelCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_channel_info_t> channel,
+  Pointer<Void> user_data,
+);
+typedef DnaChannelCb = NativeFunction<DnaChannelCbNative>;
+
+/// Channel: Channels list callback - Native
+typedef DnaChannelsCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_channel_info_t> channels,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaChannelsCb = NativeFunction<DnaChannelsCbNative>;
+
+/// Channel: Single post callback - Native
+typedef DnaChannelPostCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_channel_post_info_t> post,
+  Pointer<Void> user_data,
+);
+typedef DnaChannelPostCb = NativeFunction<DnaChannelPostCbNative>;
+
+/// Channel: Posts list callback - Native
+typedef DnaChannelPostsCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_channel_post_info_t> posts,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaChannelPostsCb = NativeFunction<DnaChannelPostsCbNative>;
+
+/// Channel: Subscriptions list callback - Native
+typedef DnaChannelSubscriptionsCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_channel_subscription_info_t> subscriptions,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaChannelSubscriptionsCb = NativeFunction<DnaChannelSubscriptionsCbNative>;
+
 /// Wall: Single post callback - Native
 typedef DnaWallPostCbNative = Void Function(
   Uint64 request_id,
@@ -1269,6 +1408,44 @@ typedef DnaFeedSubscriptionsCbDart = void Function(
   int requestId,
   int error,
   Pointer<dna_feed_subscription_info_t> subscriptions,
+  int count,
+  Pointer<Void> userData,
+);
+
+typedef DnaChannelCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_channel_info_t> channel,
+  Pointer<Void> userData,
+);
+
+typedef DnaChannelsCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_channel_info_t> channels,
+  int count,
+  Pointer<Void> userData,
+);
+
+typedef DnaChannelPostCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_channel_post_info_t> post,
+  Pointer<Void> userData,
+);
+
+typedef DnaChannelPostsCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_channel_post_info_t> posts,
+  int count,
+  Pointer<Void> userData,
+);
+
+typedef DnaChannelSubscriptionsCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_channel_subscription_info_t> subscriptions,
   int count,
   Pointer<Void> userData,
 );
@@ -3501,6 +3678,258 @@ class DnaBindings {
   void dna_free_feed_subscriptions(
       Pointer<dna_feed_subscription_info_t> subscriptions, int count) {
     _dna_free_feed_subscriptions(subscriptions, count);
+  }
+
+  // ===========================================================================
+  // CHANNEL API (RSS-like public channels via DHT)
+  // ===========================================================================
+
+  // --- Channel CRUD ---
+
+  late final _dna_engine_channel_create = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Bool, Pointer<DnaChannelCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          bool, Pointer<DnaChannelCb>, Pointer<Void>)>(
+      'dna_engine_channel_create');
+
+  int dna_engine_channel_create(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> name,
+    Pointer<Utf8> description,
+    bool isPublic,
+    Pointer<DnaChannelCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_channel_create(
+        engine, name, description, isPublic, callback, userData);
+  }
+
+  late final _dna_engine_channel_get = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaChannelCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaChannelCb>, Pointer<Void>)>('dna_engine_channel_get');
+
+  int dna_engine_channel_get(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> uuid,
+    Pointer<DnaChannelCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_channel_get(engine, uuid, callback, userData);
+  }
+
+  late final _dna_engine_channel_delete = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>(
+      'dna_engine_channel_delete');
+
+  int dna_engine_channel_delete(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> uuid,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_channel_delete(engine, uuid, callback, userData);
+  }
+
+  late final _dna_engine_channel_discover = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Int32,
+          Pointer<DnaChannelsCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, int,
+          Pointer<DnaChannelsCb>, Pointer<Void>)>(
+      'dna_engine_channel_discover');
+
+  int dna_engine_channel_discover(
+    Pointer<dna_engine_t> engine,
+    int daysBack,
+    Pointer<DnaChannelsCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_channel_discover(engine, daysBack, callback, userData);
+  }
+
+  // --- Channel posts ---
+
+  late final _dna_engine_channel_post = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaChannelPostCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaChannelPostCb>, Pointer<Void>)>(
+      'dna_engine_channel_post');
+
+  int dna_engine_channel_post(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> channelUuid,
+    Pointer<Utf8> body,
+    Pointer<DnaChannelPostCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_channel_post(
+        engine, channelUuid, body, callback, userData);
+  }
+
+  late final _dna_engine_channel_get_posts = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaChannelPostsCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaChannelPostsCb>, Pointer<Void>)>(
+      'dna_engine_channel_get_posts');
+
+  int dna_engine_channel_get_posts(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> channelUuid,
+    Pointer<DnaChannelPostsCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_channel_get_posts(
+        engine, channelUuid, callback, userData);
+  }
+
+  // --- Channel subscriptions (synchronous) ---
+
+  late final _dna_engine_channel_subscribe = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>),
+      int Function(
+          Pointer<dna_engine_t>, Pointer<Utf8>)>('dna_engine_channel_subscribe');
+
+  int dna_engine_channel_subscribe(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> channelUuid,
+  ) {
+    return _dna_engine_channel_subscribe(engine, channelUuid);
+  }
+
+  late final _dna_engine_channel_unsubscribe = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>),
+      int Function(
+          Pointer<dna_engine_t>, Pointer<Utf8>)>('dna_engine_channel_unsubscribe');
+
+  int dna_engine_channel_unsubscribe(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> channelUuid,
+  ) {
+    return _dna_engine_channel_unsubscribe(engine, channelUuid);
+  }
+
+  late final _dna_engine_channel_is_subscribed = _lib.lookupFunction<
+      Bool Function(Pointer<dna_engine_t>, Pointer<Utf8>),
+      bool Function(Pointer<dna_engine_t>,
+          Pointer<Utf8>)>('dna_engine_channel_is_subscribed');
+
+  bool dna_engine_channel_is_subscribed(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> channelUuid,
+  ) {
+    return _dna_engine_channel_is_subscribed(engine, channelUuid);
+  }
+
+  late final _dna_engine_channel_mark_read = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>),
+      int Function(
+          Pointer<dna_engine_t>, Pointer<Utf8>)>('dna_engine_channel_mark_read');
+
+  int dna_engine_channel_mark_read(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> channelUuid,
+  ) {
+    return _dna_engine_channel_mark_read(engine, channelUuid);
+  }
+
+  // --- Channel subscriptions (async) ---
+
+  late final _dna_engine_channel_get_subscriptions = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaChannelSubscriptionsCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaChannelSubscriptionsCb>,
+          Pointer<Void>)>('dna_engine_channel_get_subscriptions');
+
+  int dna_engine_channel_get_subscriptions(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaChannelSubscriptionsCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_channel_get_subscriptions(engine, callback, userData);
+  }
+
+  late final _dna_engine_channel_sync_subs_to_dht = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaCompletionCb>,
+          Pointer<Void>)>('dna_engine_channel_sync_subs_to_dht');
+
+  int dna_engine_channel_sync_subs_to_dht(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_channel_sync_subs_to_dht(engine, callback, userData);
+  }
+
+  late final _dna_engine_channel_sync_subs_from_dht = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaCompletionCb>,
+          Pointer<Void>)>('dna_engine_channel_sync_subs_from_dht');
+
+  int dna_engine_channel_sync_subs_from_dht(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_channel_sync_subs_from_dht(engine, callback, userData);
+  }
+
+  // ===========================================================================
+  // CHANNEL MEMORY CLEANUP
+  // ===========================================================================
+
+  late final _dna_free_channel_info = _lib.lookupFunction<
+      Void Function(Pointer<dna_channel_info_t>),
+      void Function(Pointer<dna_channel_info_t>)>('dna_free_channel_info');
+
+  void dna_free_channel_info(Pointer<dna_channel_info_t> channel) {
+    _dna_free_channel_info(channel);
+  }
+
+  late final _dna_free_channel_infos = _lib.lookupFunction<
+      Void Function(Pointer<dna_channel_info_t>, Int32),
+      void Function(
+          Pointer<dna_channel_info_t>, int)>('dna_free_channel_infos');
+
+  void dna_free_channel_infos(Pointer<dna_channel_info_t> channels, int count) {
+    _dna_free_channel_infos(channels, count);
+  }
+
+  late final _dna_free_channel_post = _lib.lookupFunction<
+      Void Function(Pointer<dna_channel_post_info_t>),
+      void Function(Pointer<dna_channel_post_info_t>)>('dna_free_channel_post');
+
+  void dna_free_channel_post(Pointer<dna_channel_post_info_t> post) {
+    _dna_free_channel_post(post);
+  }
+
+  late final _dna_free_channel_posts = _lib.lookupFunction<
+      Void Function(Pointer<dna_channel_post_info_t>, Int32),
+      void Function(
+          Pointer<dna_channel_post_info_t>, int)>('dna_free_channel_posts');
+
+  void dna_free_channel_posts(
+      Pointer<dna_channel_post_info_t> posts, int count) {
+    _dna_free_channel_posts(posts, count);
+  }
+
+  late final _dna_free_channel_subscriptions = _lib.lookupFunction<
+      Void Function(Pointer<dna_channel_subscription_info_t>, Int32),
+      void Function(Pointer<dna_channel_subscription_info_t>,
+          int)>('dna_free_channel_subscriptions');
+
+  void dna_free_channel_subscriptions(
+      Pointer<dna_channel_subscription_info_t> subscriptions, int count) {
+    _dna_free_channel_subscriptions(subscriptions, count);
   }
 
   // ===========================================================================
