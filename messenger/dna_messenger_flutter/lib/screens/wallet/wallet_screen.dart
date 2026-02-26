@@ -39,8 +39,9 @@ String? getTokenIconPath(String token) {
       return 'assets/icons/crypto/kel.svg';
     case 'NYS':
       return 'assets/icons/crypto/nys.png';
-    case 'CELL':
     case 'CPUNK':
+      return 'assets/icons/crypto/cpunk.png';
+    case 'CELL':
     case 'QEVM':
       return 'assets/icons/crypto/cell.svg';  // CF20 tokens use Cellframe icon
     default:
