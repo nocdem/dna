@@ -1,8 +1,8 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-02-25 | **Status:** BETA | **Phase:** 7 (Flutter UI)
+**Last Updated:** 2026-02-26 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.7.3 | Flutter v0.101.13 | Nodus v0.4.5
+**Versions:** Library v0.7.4 | Flutter v0.101.14 | Nodus v0.4.5
 
 ---
 
@@ -196,8 +196,8 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.7.3 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.101.12+10312 | Flutter/Dart code changes (lib/, assets/) |
+| C Library | `include/dna/version.h` | v0.7.4 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.101.14+10314 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.5 | Nodus server changes (vendor/opendht-pq/tools/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
