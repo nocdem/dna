@@ -226,6 +226,7 @@ void dna_engine_cancel_all_wall_listeners(dna_engine_t *engine);
 
 /* From dna_engine_listeners.c (channel) */
 int dna_engine_start_channel_listener(dna_engine_t *engine, const char *channel_uuid);
+int dna_engine_listen_all_channels(dna_engine_t *engine);
 void dna_engine_cancel_channel_listener(dna_engine_t *engine, const char *channel_uuid);
 void dna_engine_cancel_all_channel_listeners(dna_engine_t *engine);
 

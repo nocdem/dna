@@ -430,49 +430,50 @@ void dna_handle_channel_create(dna_engine_t *engine, dna_task_t *task) {
 void dna_handle_channel_get(dna_engine_t *engine, dna_task_t *task) {
     const char *uuid = task->params.channel_by_uuid.uuid;
 
-    /* Cache check */
+    /* Cache check — keep cached_json alive for stale fallback */
     char cache_key[64];
     snprintf(cache_key, sizeof(cache_key), "channel:%s", uuid);
 
     char *cached_json = NULL;
     int cache_ret = channel_cache_get_channel_json(uuid, &cached_json);
-    if (cache_ret == 0 && cached_json) {
-        if (!channel_cache_is_stale(cache_key)) {
-            /* Fresh cache hit */
-            dna_channel_info_t *info = calloc(1, sizeof(dna_channel_info_t));
-            if (info && channel_info_from_json(cached_json, info) == 0) {
-                free(cached_json);
-                task->callback.channel(task->request_id, DNA_OK, info, task->user_data);
-                return;
-            }
-            /* Parse failed - fall through to DHT fetch */
-            free(info);
+    if (cache_ret == 0 && cached_json && !channel_cache_is_stale(cache_key)) {
+        /* Fresh cache hit */
+        dna_channel_info_t *info = calloc(1, sizeof(dna_channel_info_t));
+        if (info && channel_info_from_json(cached_json, info) == 0) {
+            free(cached_json);
+            task->callback.channel(task->request_id, DNA_OK, info, task->user_data);
+            return;
         }
-        free(cached_json);
+        /* Parse failed - fall through to DHT fetch */
+        free(info);
     }
 
     /* Fetch from DHT */
     dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
-        task->callback.channel(task->request_id, DNA_ENGINE_ERROR_NETWORK,
-                               NULL, task->user_data);
-        return;
-    }
-
     dna_channel_t *channel = NULL;
-    int ret = dna_channel_get(dht, uuid, &channel);
-
-    if (ret == -2) {
-        task->callback.channel(task->request_id, DNA_ENGINE_ERROR_NOT_FOUND,
-                               NULL, task->user_data);
-        return;
-    }
+    int ret = dht ? dna_channel_get(dht, uuid, &channel) : -1;
 
     if (ret != 0 || !channel) {
-        task->callback.channel(task->request_id, DNA_ERROR_INTERNAL,
-                               NULL, task->user_data);
+        /* DHT failed — fallback to stale cache if available */
+        if (cached_json) {
+            dna_channel_info_t *info = calloc(1, sizeof(dna_channel_info_t));
+            if (info && channel_info_from_json(cached_json, info) == 0) {
+                free(cached_json);
+                QGP_LOG_INFO(LOG_TAG, "Channel %.8s...: DHT unavailable, using cached metadata", uuid);
+                task->callback.channel(task->request_id, DNA_OK, info, task->user_data);
+                return;
+            }
+            free(info);
+        }
+        free(cached_json);
+        int err = !dht ? DNA_ENGINE_ERROR_NETWORK :
+                  (ret == -2) ? DNA_ENGINE_ERROR_NOT_FOUND : DNA_ERROR_INTERNAL;
+        task->callback.channel(task->request_id, err, NULL, task->user_data);
+        if (channel) dna_channel_free(channel);
         return;
     }
+
+    free(cached_json);  /* No longer need stale cache */
 
     /* Convert to public API format */
     dna_channel_info_t *info = calloc(1, sizeof(dna_channel_info_t));
@@ -662,11 +663,11 @@ void dna_handle_channel_post(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    /* Invalidate posts cache for this channel so next fetch is fresh */
+    /* Invalidate posts cache for this channel so next fetch goes to DHT */
     char cache_key[64];
     snprintf(cache_key, sizeof(cache_key), "posts:%s",
              task->params.channel_post.channel_uuid);
-    channel_cache_mark_fresh(cache_key);
+    channel_cache_invalidate(cache_key);
 
     QGP_LOG_INFO(LOG_TAG, "Created post %s in channel %.8s...",
                  post_uuid_out, task->params.channel_post.channel_uuid);

@@ -404,6 +404,26 @@ int channel_cache_mark_fresh(const char *cache_key) {
     return 0;
 }
 
+int channel_cache_invalidate(const char *cache_key) {
+    if (!g_db) {
+        if (channel_cache_init() != 0) return -3;
+    }
+
+    if (!cache_key) return -1;
+
+    const char *sql = "DELETE FROM cache_meta WHERE cache_key = ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_text(stmt, 1, cache_key, -1, SQLITE_STATIC);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
 /* ---- Eviction ---------------------------------------------------------- */
 
 int channel_cache_evict_old(void) {

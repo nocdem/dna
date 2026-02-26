@@ -23,8 +23,8 @@
 extern "C" {
 #endif
 
-/* Cache staleness: 5 minutes */
-#define CHANNEL_CACHE_TTL_SECONDS 300
+/* Cache staleness: 60 seconds (listeners handle real-time delivery) */
+#define CHANNEL_CACHE_TTL_SECONDS 60
 
 /* Cache eviction: 30 days */
 #define CHANNEL_CACHE_EVICT_SECONDS (30 * 24 * 60 * 60)
@@ -111,6 +111,15 @@ bool channel_cache_is_stale(const char *cache_key);
  * @return 0 on success, -1 on error, -3 if uninitialized
  */
 int channel_cache_mark_fresh(const char *cache_key);
+
+/**
+ * Invalidate a cache key (force next access to be stale)
+ * Deletes the cache_meta entry so is_stale() returns true
+ *
+ * @param cache_key Key to invalidate
+ * @return 0 on success, -1 on error, -3 if uninitialized
+ */
+int channel_cache_invalidate(const char *cache_key);
 
 /* ---- Eviction ---------------------------------------------------------- */
 

@@ -33,6 +33,8 @@
 #include "transport/internal/transport_core.h"  /* For parse_presence_json */
 #include "dht/client/dna_wall.h"
 #include "dht/client/dna_channels.h"  /* For dna_channel_make_posts_key */
+#include "database/channel_subscriptions_db.h"  /* For dna_engine_listen_all_channels */
+#include "database/channel_cache.h"  /* For cache invalidation on new posts */
 #include "database/wall_cache.h"
 
 /* ============================================================================
@@ -812,9 +814,13 @@ int dna_engine_refresh_listeners(dna_engine_t *engine)
 
     /* Restart listeners for all contacts (includes contact request listener) */
     int count = dna_engine_listen_all_contacts(engine);
-    QGP_LOG_INFO(LOG_TAG, "[REFRESH] Restarted %d listeners", count);
+    QGP_LOG_INFO(LOG_TAG, "[REFRESH] Restarted %d contact listeners", count);
 
-    return count;
+    /* Restart channel listeners */
+    int ch_count = dna_engine_listen_all_channels(engine);
+    QGP_LOG_INFO(LOG_TAG, "[REFRESH] Restarted %d channel listeners", ch_count);
+
+    return count + ch_count;
 }
 
 /* ============================================================================
@@ -1700,6 +1706,11 @@ static bool channel_post_listen_callback(
         QGP_LOG_INFO(LOG_TAG, "[CHAN_LISTEN] New post in channel %.8s...",
                      ctx->channel_uuid);
 
+        /* Invalidate posts cache so Flutter re-fetch goes to DHT */
+        char cache_key[64];
+        snprintf(cache_key, sizeof(cache_key), "posts:%s", ctx->channel_uuid);
+        channel_cache_invalidate(cache_key);
+
         /* Fire DNA_EVENT_CHANNEL_NEW_POST event */
         dna_event_t event = {0};
         event.type = DNA_EVENT_CHANNEL_NEW_POST;
@@ -1849,6 +1860,38 @@ void dna_engine_cancel_all_channel_listeners(dna_engine_t *engine) {
     QGP_LOG_INFO(LOG_TAG, "Cancelled all channel listeners");
 
     pthread_mutex_unlock(&engine->channel_listeners_mutex);
+}
+
+/**
+ * Start listeners for all subscribed channels.
+ * Called from setup_listeners_thread on DHT connect.
+ *
+ * @param engine Engine instance
+ * @return Number of listeners started, or -1 on error
+ */
+int dna_engine_listen_all_channels(dna_engine_t *engine) {
+    if (!engine) return -1;
+
+    channel_subscription_t *subs = NULL;
+    int count = 0;
+    int ret = channel_subscriptions_db_get_all(&subs, &count);
+    if (ret != 0 || count == 0) {
+        QGP_LOG_INFO(LOG_TAG, "[CHAN_LISTEN] No channel subscriptions to listen on");
+        return 0;
+    }
+
+    int started = 0;
+    for (int i = 0; i < count; i++) {
+        if (atomic_load(&engine->shutdown_requested)) break;
+
+        if (dna_engine_start_channel_listener(engine, subs[i].channel_uuid) == 0) {
+            started++;
+        }
+    }
+
+    channel_subscriptions_db_free(subs, count);
+    QGP_LOG_INFO(LOG_TAG, "[CHAN_LISTEN] Started %d/%d channel listeners", started, count);
+    return started;
 }
 
 /**

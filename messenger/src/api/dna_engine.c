@@ -176,6 +176,7 @@ size_t dna_engine_start_presence_listener(dna_engine_t *engine, const char *cont
 size_t dna_engine_start_ack_listener(dna_engine_t *engine, const char *contact_fingerprint);
 void dna_engine_cancel_all_wall_listeners(dna_engine_t *engine);
 void dna_engine_cancel_all_channel_listeners(dna_engine_t *engine);
+int dna_engine_listen_all_channels(dna_engine_t *engine);
 
 /* Forward declaration for log config initialization (defined in LOG CONFIGURATION section) */
 void init_log_config(void);
@@ -260,6 +261,12 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
 
     int count = dna_engine_listen_all_contacts(engine);
     QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: started %d listeners", count);
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+
+    /* Start channel post listeners for all subscribed channels */
+    int channel_count = dna_engine_listen_all_channels(engine);
+    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: started %d channel listeners", channel_count);
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
