@@ -16,6 +16,8 @@ class WallPostTile extends ConsumerWidget {
   final VoidCallback? onAuthorTap;
   final VoidCallback? onShare;
   final VoidCallback? onReply;
+  final List<WallComment>? comments;
+  final VoidCallback? onViewAllComments;
 
   const WallPostTile({
     super.key,
@@ -25,6 +27,8 @@ class WallPostTile extends ConsumerWidget {
     this.onAuthorTap,
     this.onShare,
     this.onReply,
+    this.comments,
+    this.onViewAllComments,
   });
 
   @override
@@ -109,6 +113,17 @@ class WallPostTile extends ConsumerWidget {
             ),
           ),
           const SizedBox(height: DnaSpacing.sm),
+          // Inline comments preview
+          if (comments != null && comments!.isNotEmpty) ...[
+            Divider(
+              height: 1,
+              color: theme.colorScheme.outlineVariant.withAlpha(80),
+            ),
+            _InlineComments(
+              comments: comments!,
+              onViewAll: onViewAllComments ?? onReply,
+            ),
+          ],
           // Action bar
           Divider(
             height: 1,
@@ -131,7 +146,9 @@ class WallPostTile extends ConsumerWidget {
               ),
               _ActionButton(
                 icon: FontAwesomeIcons.comment,
-                label: 'Reply',
+                label: comments != null && comments!.isNotEmpty
+                    ? 'Reply (${comments!.length})'
+                    : 'Reply',
                 onTap: onReply,
               ),
               if (!isOwn && onShare != null)
@@ -212,6 +229,74 @@ class _WallPostImage extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Shows up to 3 most recent comments inline under a wall post
+class _InlineComments extends StatelessWidget {
+  final List<WallComment> comments;
+  final VoidCallback? onViewAll;
+
+  static const int _maxPreview = 3;
+
+  const _InlineComments({
+    required this.comments,
+    this.onViewAll,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final preview = comments.length <= _maxPreview
+        ? comments
+        : comments.sublist(0, _maxPreview);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: DnaSpacing.sm),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (comments.length > _maxPreview)
+            GestureDetector(
+              onTap: onViewAll,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: DnaSpacing.xs),
+                child: Text(
+                  'View all ${comments.length} comments',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ),
+          for (final comment in preview)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 2),
+              child: Text.rich(
+                TextSpan(
+                  children: [
+                    TextSpan(
+                      text: comment.authorName.isNotEmpty
+                          ? comment.authorName
+                          : comment.authorFingerprint.substring(0, 12),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const TextSpan(text: '  '),
+                    TextSpan(
+                      text: comment.body,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+        ],
       ),
     );
   }

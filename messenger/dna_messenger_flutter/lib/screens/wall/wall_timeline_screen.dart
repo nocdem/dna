@@ -83,7 +83,7 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                   separatorBuilder: (_, _) => const SizedBox(height: DnaSpacing.sm),
                   itemBuilder: (context, index) {
                     final post = posts[index];
-                    return WallPostTile(
+                    return _WallPostWithComments(
                       post: post,
                       myFingerprint: myFp,
                       onReply: () => Navigator.push(
@@ -336,6 +336,39 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
           ],
         );
       },
+    );
+  }
+}
+
+/// Wrapper that fetches comments for a post and passes them to WallPostTile
+class _WallPostWithComments extends ConsumerWidget {
+  final WallPost post;
+  final String myFingerprint;
+  final VoidCallback? onReply;
+  final VoidCallback? onDelete;
+  final VoidCallback? onShare;
+
+  const _WallPostWithComments({
+    required this.post,
+    required this.myFingerprint,
+    this.onReply,
+    this.onDelete,
+    this.onShare,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final commentsAsync = ref.watch(wallCommentsProvider(post.uuid));
+    final comments = commentsAsync.valueOrNull;
+
+    return WallPostTile(
+      post: post,
+      myFingerprint: myFingerprint,
+      comments: comments,
+      onReply: onReply,
+      onViewAllComments: onReply,
+      onDelete: onDelete,
+      onShare: onShare,
     );
   }
 }
