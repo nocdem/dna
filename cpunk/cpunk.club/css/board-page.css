@@ -1,0 +1,450 @@
+/* CPUNK Community Board Styles */
+
+/* Main Board Container - CPUNK Theme */
+.container {
+    background-color: var(--card-bg);
+    padding: 30px;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.4), 0 0 0 1px rgba(249,120,52,.1);
+    width: 100%;
+    max-width: 800px;
+    margin: 20px auto;
+    position: relative;
+    overflow: hidden;
+}
+
+.container::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--primary), transparent);
+    border-radius: 12px 12px 0 0;
+}
+
+.intro-section {
+    background-color: var(--section-bg);
+    border: 1px solid var(--primary-dim);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 25px;
+    text-align: center;
+    box-shadow: 0 4px 16px rgba(0,0,0,.2);
+    position: relative;
+    overflow: hidden;
+}
+
+.intro-section::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 4px;
+    height: 100%;
+    background: var(--primary);
+    border-radius: 4px 0 0 4px;
+}
+
+.intro-section p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 1.1em;
+    padding-left: 10px;
+}
+
+/* Post Creator - CPUNK Style */
+.post-creator {
+    background-color: var(--section-bg);
+    border: 1px solid var(--primary-dim);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 25px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.2);
+    position: relative;
+    overflow: hidden;
+}
+
+.post-creator::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 4px;
+    height: 100%;
+    background: var(--primary);
+    border-radius: 4px 0 0 4px;
+}
+
+.post-creator h3 {
+    margin-top: 0;
+    margin-bottom: 15px;
+    color: var(--primary);
+    font-size: 1.2em;
+}
+
+#postContent {
+    width: 100%;
+    min-height: 120px;
+    padding: 14px;
+    border: 1px solid var(--text-dimmer);
+    border-radius: 6px;
+    background-color: var(--dark-bg);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 1em;
+    resize: vertical;
+    box-sizing: border-box;
+    transition: all 0.3s ease;
+}
+
+#postContent:focus {
+    outline: 0;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px var(--primary-bg);
+}
+
+.post-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 10px;
+}
+
+#postButton {
+    width: auto;
+    padding: 10px 30px;
+    font-size: 1em;
+    min-width: 100px;
+}
+
+.char-count {
+    color: var(--text-dimmer);
+    font-size: 14px;
+}
+
+/* Board Header - CPUNK Style */
+.board-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 30px;
+}
+
+.board-header h2 {
+    margin: 0;
+    color: var(--primary);
+    font-size: 1.5em;
+    position: relative;
+}
+
+.board-header h2::after {
+    content: "";
+    display: block;
+    width: 100%;
+    height: 1px;
+    background: linear-gradient(90deg, var(--primary), transparent);
+    position: absolute;
+    bottom: -5px;
+    left: 0;
+}
+
+/* Posts Container - Single Column Layout */
+.posts-container {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    padding: 20px 0;
+    min-height: 400px;
+}
+
+/* Individual Post - CPUNK Card Style */
+.post-item {
+    background-color: var(--section-bg);
+    border: 1px solid #444;
+    border-radius: 8px;
+    padding: 20px;
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0,0,0,.2);
+    height: fit-content;
+}
+
+.post-item::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--primary), transparent);
+    transform: scaleX(0);
+    transition: transform 0.3s ease;
+}
+
+.post-item:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 16px rgba(249,120,52,.2);
+    border-color: var(--primary);
+}
+
+.post-item:hover::before {
+    transform: scaleX(1);
+}
+
+.post-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 12px;
+}
+
+.post-author {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.author-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--primary), var(--primary-hover));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    font-size: 18px;
+    box-shadow: 0 2px 8px rgba(249, 120, 52, 0.3);
+    position: relative;
+}
+
+.author-avatar.dna-verified {
+    background: linear-gradient(135deg, var(--success), #2196F3);
+    box-shadow: 0 0 0 2px rgba(0, 200, 81, 0.3);
+}
+
+.author-avatar.dna-verified::after {
+    content: '✓';
+    position: absolute;
+    bottom: -2px;
+    right: -2px;
+    background: var(--success);
+    color: white;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    border: 2px solid var(--section-bg);
+}
+
+.author-info {
+    display: flex;
+    flex-direction: column;
+}
+
+.author-name {
+    font-weight: 700;
+    color: var(--text);
+    font-size: 16px;
+}
+
+.author-wallet {
+    font-size: 12px;
+    color: var(--text-dimmer);
+    font-family: 'Courier New', monospace;
+}
+
+.dna-badge {
+    color: var(--success);
+    font-size: 14px;
+    margin-left: 4px;
+    vertical-align: middle;
+}
+
+.post-time {
+    font-size: 12px;
+    color: var(--text-dimmer);
+}
+
+.post-content {
+    color: var(--text-dim);
+    line-height: 1.6;
+    word-wrap: break-word;
+    margin: 16px 0;
+    font-size: 1em;
+}
+
+.post-actions {
+    display: flex;
+    gap: 20px;
+    padding-top: 12px;
+    border-top: 1px solid #444;
+}
+
+.post-action {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text-dimmer);
+    font-size: 14px;
+    cursor: pointer;
+    transition: color 0.2s ease;
+}
+
+.post-action:hover {
+    color: var(--primary);
+}
+
+.post-action.liked {
+    color: var(--primary);
+}
+
+/* Loading and Empty States */
+.loading-message,
+.empty-message {
+    text-align: center;
+    color: var(--text-dimmer);
+    padding: 40px 20px;
+}
+
+.load-more-section {
+    text-align: center;
+    margin-top: 30px;
+}
+
+.load-more-button {
+    background-color: var(--section-bg);
+    border: 1px solid var(--primary);
+    color: var(--text);
+    padding: 10px 30px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.load-more-button:hover {
+    background-color: var(--primary);
+    box-shadow: 0 0 15px var(--primary-dim);
+    transform: translateY(-2px);
+}
+
+/* Status Box - CPUNK Style */
+.status-box {
+    background-color: var(--section-bg);
+    padding: 0 15px;
+    border-radius: 5px;
+    border: 1px solid var(--primary-dim);
+    margin-bottom: 20px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.2);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    height: 50px;
+    box-sizing: border-box;
+}
+
+/* New Wall-Specific Styles */
+.refresh-icon {
+    display: inline-block;
+    transition: transform 0.3s ease;
+}
+
+.icon-button:hover .refresh-icon {
+    transform: rotate(180deg);
+}
+
+.icon-button {
+    background-color: var(--primary);
+    color: var(--text);
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+}
+
+.icon-button:hover {
+    background-color: var(--primary-hover);
+    box-shadow: 0 0 20px var(--primary-dim);
+    transform: translateY(-2px);
+}
+
+.icon-button::after {
+    content: "";
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: rgba(255,255,255,.1);
+    transform: rotate(30deg);
+    transition: transform .3s ease;
+}
+
+.icon-button:hover::after {
+    transform: rotate(30deg) translate(10%,10%);
+}
+
+/* Animation for new posts */
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.post-item {
+    animation: slideIn 0.4s ease-out;
+}
+
+/* Responsive Design */
+@media (max-width: 1200px) {
+    .posts-container {
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    }
+}
+
+@media (max-width: 768px) {
+    .posts-container {
+        grid-template-columns: 1fr;
+        gap: 15px;
+    }
+    
+    .board-header {
+        flex-direction: column;
+        gap: 15px;
+        align-items: flex-start;
+        padding: 15px;
+    }
+    
+    .post-header {
+        flex-direction: column;
+        gap: 10px;
+    }
+    
+    .post-author {
+        width: 100%;
+    }
+    
+    .post-time {
+        align-self: flex-start;
+    }
+    
+    .container {
+        padding: 10px;
+    }
+}

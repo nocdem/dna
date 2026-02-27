@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="mainnetParty.title">CPUNK - Cellframe Mainnet Birthday Bash</title>
+    <!-- CSS files -->
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/mainnet-party-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    <style>
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar will be added here by JS -->
+    <div class="navbar-placeholder"></div>
+    
+    <div class="container">
+        <!-- Script to load navbar template -->
+        <script src="js/translation.js"></script>
+        <script src="js/navbar.js"></script>
+        <script src="js/sso.js"></script>
+
+        <div class="event-header">
+            <div class="event-tagline" data-i18n="pages.mainnetTagline">"The Post-Quantum Ark" in ISTANBUL</div>
+            <div class="event-date" data-i18n="pages.mainnetDate">July 12th, 2025</div>
+        </div>
+
+        <div class="event-banner">
+            <div class="banner-content">
+                <div class="countdown" id="countdown">
+                    <div class="countdown-item">
+                        <span id="days"></span>
+                        <span class="countdown-label" data-i18n="mainnetParty.countdown.days">Days</span>
+                    </div>
+                    <div class="countdown-item">
+                        <span id="hours"></span>
+                        <span class="countdown-label" data-i18n="mainnetParty.countdown.hours">Hours</span>
+                    </div>
+                    <div class="countdown-item">
+                        <span id="minutes"></span>
+                        <span class="countdown-label" data-i18n="mainnetParty.countdown.minutes">Minutes</span>
+                    </div>
+                    <div class="countdown-item">
+                        <span id="seconds"></span>
+                        <span class="countdown-label" data-i18n="mainnetParty.countdown.seconds">Seconds</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="event-description">
+            <p class="highlight" data-i18n="mainnetParty.eventDescription.intro">Alright Chip-Punks! Mark your calendars!</p>
+            <p data-i18n="mainnetParty.eventDescription.location">Thrilled to announce the winning location for our Cellframe Mainnet Birthday bash: <span class="highlight">"The Post-Quantum Ark" in ISTANBUL!</span> July 12th, 2025!</p>
+            <p data-i18n="mainnetParty.eventDescription.teams">Join the teams from CPUNK, QEVM, NODE.sys, KelVPN, DotFlat & the Cellframe team!</p>
+            
+            <div class="features">
+                <div class="feature-item">
+                    <div class="feature-icon">👥</div>
+                    <div class="feature-text" data-i18n="mainnetParty.features.connect">Connect face-to-face</div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">🚀</div>
+                    <div class="feature-text" data-i18n="mainnetParty.features.products">See groundbreaking products</div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">🎤</div>
+                    <div class="feature-text" data-i18n="mainnetParty.features.presentations">Insightful presentations & Q&A</div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">🎵</div>
+                    <div class="feature-text" data-i18n="mainnetParty.features.beats">Epic beats by DJ Naeper!</div>
+                </div>
+            </div>
+            
+            <p class="highlight" data-i18n="mainnetParty.rules.header">Here's how to secure your place:</p>
+            <ul class="reservation-rules">
+                <li data-i18n="mainnetParty.rules.dnaLinked"><strong>DNA-Linked Reservation:</strong> Connect with your registered DNA to reserve.</li>
+                <li data-i18n="mainnetParty.rules.cpunkCommitment"><strong>CPUNK Commitment:</strong> Reserving your spot requires locking 1,000,000 CPUNK. This CPUNK will be securely held until the party on July 12th and fully refunded to attendees.</li>
+                <li data-i18n="mainnetParty.rules.reward"><strong>Reward for Attendance:</strong> If you book your spot and join us at the celebration, you will receive your 1,000,000 CPUNK deposit back PLUS a reward of 10%, totaling 1,100,000 CPUNK! Consider it a thank you for your commitment.</li>
+                <li data-i18n="mainnetParty.rules.noShow"><strong>No-Show Consideration:</strong> If you book but can't attend, your 1,000,000 CPUNK deposit will be returned minus a 10% no-show fee (you'll receive 900,000 CPUNK).</li>
+                <li data-i18n="mainnetParty.rules.oneWallet"><strong>One Wallet, One Reservation:</strong> For an accurate headcount, only one reservation per wallet is permitted. Use a separate wallet for each family member or friend.</li>
+            </ul>
+        </div>
+
+        <div class="reservation-section">
+            <h3 data-i18n="mainnetParty.reservation.title">Reserve Your Spot</h3>
+            <p class="reservation-info" data-i18n="mainnetParty.reservation.info">Secure your attendance by reserving with 1,000,000 CPUNK on the Backbone network.</p>
+            <p class="reservation-info" data-i18n="mainnetParty.reservation.loginPrompt">Login to access reservation functionality.</p>
+
+            <!-- Login Required Section -->
+            <div id="loginRequiredSection" class="section" style="display: none;">
+                <div class="info-section">
+                    <p data-i18n="mainnetParty.reservation.loginRequired">Please login to reserve your spot at the Cellframe Mainnet Birthday Bash.</p>
+                    <button id="loginBtn" class="btn btn-primary" data-i18n="mainnetParty.reservation.loginButton">Login</button>
+                </div>
+            </div>
+
+            <!-- Wallet Selection Section -->
+            <div id="walletSection" class="section" style="display: none;">
+                <h3 data-i18n="mainnetParty.wallet.selectTitle">Select Your Wallet</h3>
+                <p data-i18n="mainnetParty.wallet.selectDescription">Choose the Backbone network wallet to use for reservation:</p>
+
+                <div id="walletsList" class="wallets-container"></div>
+
+                <button id="continueButton" disabled data-i18n="mainnetParty.wallet.continueButton">Continue with Selected Wallet</button>
+                <div class="error-message" id="walletError"></div>
+            </div>
+
+            <!-- DNA Verification Section -->
+            <div id="dnaSection" class="section" style="display: none;">
+                <h3 data-i18n="mainnetParty.dna.title">CPUNK Identity</h3>
+                <div id="dnaStatus"></div>
+                <div class="error-message" id="dnaError"></div>
+
+                <!-- DNA Selection List -->
+                <div id="dnaSelectionList" style="display:none;"></div>
+
+                <div id="dnaDetails" style="display:none;">
+                    <div class="profile-preview">
+                        <div class="profile-header">
+                            <div class="profile-avatar" id="profileAvatar"></div>
+                            <div class="profile-info">
+                                <div class="profile-nickname" id="profileNickname"></div>
+                                <div class="nickname-tags" id="profileNicknames"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="reservation-buttons">
+                        <button id="reserveButton" data-i18n="mainnetParty.dna.reserveButton">Reserve Your Spot - 1,000,000 CPUNK</button>
+                        <div class="reservation-divider">OR</div>
+                        <button id="toggleInvitationButton" class="secondary-button" data-i18n="mainnetParty.invitationCode.useButton">Use Invitation Code</button>
+                    </div>
+
+                    <!-- Invitation Code Section -->
+                    <div id="invitationCodeSection" class="section" style="display: none;">
+                        <div class="invitation-container">
+                            <h4 data-i18n="mainnetParty.invitationCode.title">Enter Your Invitation Code</h4>
+                            <p class="invitation-info" data-i18n="mainnetParty.invitationCode.description">If you've received a special invitation code, enter it below to reserve your spot without CPUNK payment.</p>
+
+                            <div class="code-input-container">
+                                <input type="text" id="invitationCodeInput" data-i18n-placeholder="mainnetParty.invitationCode.placeholder" placeholder="Enter invitation code" class="invitation-input">
+                                <button id="validateCodeButton" class="secondary-button" data-i18n="mainnetParty.invitationCode.validateButton">Validate</button>
+                            </div>
+
+                            <div id="codeStatus" class="code-status" style="display: none;"></div>
+
+                            <div id="validCodeDetails" style="display: none;">
+                                <div class="valid-code-container">
+                                    <div class="code-icon">✓</div>
+                                    <div class="code-details">
+                                        <div class="code-type" id="codeType"></div>
+                                        <div class="code-description" id="codeDescription"></div>
+                                    </div>
+                                </div>
+                                <button id="redeemCodeButton" class="success-button" data-i18n="mainnetParty.invitationCode.redeemButton">Reserve With Invitation Code</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Transaction Processing Section -->
+            <div id="txSection" class="section" style="display: none;">
+                <h3 data-i18n="mainnetParty.transaction.title">Processing Reservation</h3>
+                <div id="txProcessingContainer" class="tx-processing-container">
+                    <div class="tx-processing-animation">
+                        <div class="tx-processing-spinner"></div>
+                    </div>
+                    <div id="txStatus" class="tx-status"></div>
+                    <div class="error-message" id="txError"></div>
+                    <div class="success-message" id="txSuccess"></div>
+                    <div class="tx-note">
+                        Transaction verification works similarly to DNA registration. The transaction will be checked at increasing intervals to confirm payment.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Reservation Confirmed Section -->
+            <div id="confirmationSection" class="section" style="display: none;">
+                <div class="confirmation-container">
+                    <div class="confirmation-icon">✓</div>
+                    <h3 data-i18n="mainnetParty.confirmation.title">Reservation Confirmed!</h3>
+                    <p data-i18n="mainnetParty.confirmation.description">Your spot at the Cellframe Mainnet Birthday Bash has been reserved.</p>
+                    <p data-i18n="mainnetParty.confirmation.emailSent">We've sent a confirmation to your DNA profile.</p>
+                    <div class="confirmation-details">
+                        <div class="detail-item">
+                            <span class="detail-label" data-i18n="mainnetParty.confirmation.event">Event:</span>
+                            <span class="detail-value" data-i18n="mainnetParty.confirmation.eventName">Cellframe Mainnet Birthday Bash</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label" data-i18n="mainnetParty.confirmation.date">Date:</span>
+                            <span class="detail-value" data-i18n="mainnetParty.confirmation.dateValue">July 12th, 2025</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label" data-i18n="mainnetParty.confirmation.location">Location:</span>
+                            <span class="detail-value" data-i18n="mainnetParty.confirmation.locationValue">"The Post-Quantum Ark", Istanbul</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label" data-i18n="mainnetParty.confirmation.reservedBy">Reserved by:</span>
+                            <span class="detail-value" id="reservedByDna"></span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label" data-i18n="mainnetParty.confirmation.transaction">Transaction:</span>
+                            <span class="detail-value" id="reservationTxId"></span>
+                        </div>
+                    </div>
+                    <p class="note" data-i18n="mainnetParty.confirmation.saveInfo">Save this information for your records. We'll contact you with more details closer to the event date.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="attendees-section" id="attendeesSection">
+            <h3 data-i18n="mainnetParty.attendees.title">Confirmed Attendees</h3>
+            <div id="attendeesList" class="attendees-container">
+                <div class="loading" data-i18n="mainnetParty.attendees.loading">Loading attendees list...</div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- External JavaScript -->
+    <!-- Utility Libraries -->
+    <script src="js/cpunk-utils.js"></script>
+    <script src="js/cpunk-transaction.js"></script>
+    <script src="js/cpunk-ui.js"></script>
+    <script src="js/cpunk-api-console.js"></script>
+    
+    <!-- Page-specific JavaScript -->
+    <script src="js/mainnet_party.js"></script>
+</body>
+</html>

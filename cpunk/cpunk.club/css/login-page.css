@@ -1,0 +1,284 @@
+/* Login Page Styles */
+.login-container {
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 2rem 1rem;
+}
+
+.page-title {
+    text-align: center;
+    color: #f97834;
+    margin-bottom: 2rem;
+    font-size: 2.5rem;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-family: 'Courier New', monospace;
+    position: relative;
+}
+
+.page-title::after {
+    content: '';
+    position: absolute;
+    bottom: -10px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 100px;
+    height: 3px;
+    background: linear-gradient(90deg, transparent, #f97834, transparent);
+}
+
+.login-card, .info-card {
+    background: #2b1816;
+    border: 1px solid rgba(249, 120, 52, 0.3);
+    border-radius: 12px;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3), 0 0 20px rgba(249, 120, 52, 0.1);
+    border-top: 3px solid #f97834;
+    transition: all 0.3s ease;
+}
+
+.login-card:hover, .info-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4), 0 0 30px rgba(249, 120, 52, 0.2);
+}
+
+.login-card h2 {
+    color: var(--text-primary);
+    margin-bottom: 1.5rem;
+    text-align: center;
+}
+
+/* Info section styling */
+.info-section {
+    background: #1a0f0e;
+    border: 1px solid rgba(249, 120, 52, 0.2);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+    border-top: 3px solid #f97834;
+}
+
+.info-section p {
+    color: #cccccc;
+    text-align: center;
+    margin: 0;
+    line-height: 1.6;
+}
+
+
+
+/* Section styling */
+.section {
+    background: #2b1816;
+    border: 1px solid rgba(249, 120, 52, 0.3);
+    border-radius: 12px;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    border-top: 3px solid #f97834;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3), 0 0 20px rgba(249, 120, 52, 0.1);
+}
+
+.section h2 {
+    color: #f97834;
+    margin-bottom: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-size: 1.5rem;
+}
+
+.section p {
+    color: #cccccc;
+    margin-bottom: 1.5rem;
+}
+
+/* Wallets and DNA containers */
+.wallets-container,
+.dna-container {
+    display: grid;
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.wallet-item,
+.dna-item {
+    background: #1a0f0e;
+    border: 1px solid rgba(249, 120, 52, 0.2);
+    border-radius: 8px;
+    padding: 1.5rem;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    position: relative;
+}
+
+.wallet-item:hover,
+.dna-item:hover {
+    border-color: #f97834;
+    background: rgba(249, 120, 52, 0.1);
+    transform: translateX(5px);
+    box-shadow: 0 0 15px rgba(249, 120, 52, 0.3);
+}
+
+.wallet-item.selected,
+.dna-item.selected {
+    border-color: #f97834;
+    background: rgba(249, 120, 52, 0.2);
+    box-shadow: 0 0 20px rgba(249, 120, 52, 0.4);
+}
+
+.wallet-item.selected::before,
+.dna-item.selected::before {
+    content: '✓';
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    color: #f97834;
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+
+/* Error messages */
+.error-message {
+    background: rgba(255, 68, 68, 0.1);
+    border: 1px solid #ff4444;
+    border-radius: 6px;
+    padding: 1rem;
+    margin-top: 1rem;
+    color: #ff4444;
+    text-align: center;
+    display: none;
+}
+
+.error-message:not(:empty) {
+    display: block;
+}
+
+/* Login button */
+#loginButton {
+    width: 100%;
+    background: linear-gradient(135deg, #f97834, #ff8c42);
+    color: white;
+    border: none;
+    padding: 1rem 2rem;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 1.1rem;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 6px rgba(249, 120, 52, 0.4);
+    position: relative;
+    overflow: hidden;
+}
+
+#loginButton::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+    transition: left 0.5s ease;
+}
+
+#loginButton:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 12px rgba(249, 120, 52, 0.5);
+}
+
+#loginButton:hover::before {
+    left: 100%;
+}
+
+#loginButton:active {
+    transform: translateY(0);
+}
+
+#loginButton:disabled {
+    background: #555;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+
+/* Container styling */
+.container {
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 2rem 1rem;
+}
+
+/* Loading State */
+.loading {
+    color: #f97834;
+    text-align: center;
+    padding: 2rem;
+    font-size: 1.1rem;
+    position: relative;
+}
+
+.loading::after {
+    content: "...";
+    animation: dots 1.5s steps(4, end) infinite;
+}
+
+@keyframes dots {
+    0%, 20% {
+        content: "";
+    }
+    40% {
+        content: ".";
+    }
+    60% {
+        content: "..";
+    }
+    80%, 100% {
+        content: "...";
+    }
+}
+
+/* Pulse animation for loading */
+@keyframes pulse {
+    0% {
+        opacity: 0.6;
+    }
+    50% {
+        opacity: 1;
+    }
+    100% {
+        opacity: 0.6;
+    }
+}
+
+.loading {
+    animation: pulse 2s ease-in-out infinite;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .container {
+        padding: 1rem 0.5rem;
+    }
+
+    .status-box,
+    .section {
+        padding: 1.5rem;
+    }
+
+    .page-title {
+        font-size: 2rem;
+    }
+
+    .status-header {
+        flex-direction: column;
+        gap: 1rem;
+        text-align: center;
+    }
+
+    #connectButton,
+    #loginButton {
+        width: 100%;
+    }
+}

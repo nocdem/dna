@@ -1,0 +1,62 @@
+**/.claude/settings.local.json
+
+# Environment and configuration
+.env
+.env.local
+.env.production
+
+# OAuth and authentication logs
+*_oauth_log.txt
+github_oauth_log.txt
+google_oauth_log.txt
+linkedin_oauth_log.txt
+twitter_oauth_log.txt
+
+# Data files
+*.txt
+party_list.txt
+code_attendees.txt
+invitation_codes.txt
+invitation_logs.txt
+admins.txt
+council_applications.txt
+rune_submissions.txt
+
+# Logs
+*.log
+content_edits.log
+save_content_debug.log
+deployment.log
+
+# Backup directories
+backup/
+*.backup
+
+# Development files
+devel/
+test/
+
+# Certificates (keep templates only)
+*.dcert
+!*.example.dcert
+
+# Configuration files (keep templates only)
+configs/*.cfg
+!configs/*.example.cfg
+
+# IDE and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/

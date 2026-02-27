@@ -1,0 +1,12 @@
+**/.claude/settings.local.json
+**/*.txt
+cellframe-masternode-webui/
+cellframe-node/
+cellframe-tool-sign/
+cellframe-wallet/
+cellframe-dex-webui/
+check/
+dev-tools/
+hosts
+**/CLAUDE.local.md
+deployment.log
