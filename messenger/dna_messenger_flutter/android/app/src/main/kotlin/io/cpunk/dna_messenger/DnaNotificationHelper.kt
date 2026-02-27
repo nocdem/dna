@@ -26,15 +26,26 @@ class DnaNotificationHelper(private val context: Context) {
         private const val FLUTTER_PREFS_FILE = "FlutterSharedPreferences"
         private const val NOTIFICATIONS_ENABLED_KEY = "flutter.notifications_enabled"
 
+        private var nativeLogAvailable = false
+
         init {
             // Load the native library (may already be loaded by Flutter FFI)
             try {
                 System.loadLibrary("dna_lib")
+                nativeLogAvailable = true
                 android.util.Log.i(TAG, "Native library loaded")
             } catch (e: UnsatisfiedLinkError) {
                 android.util.Log.e(TAG, "Failed to load native library: ${e.message}")
             }
         }
+    }
+
+    /** Log to both logcat and dna.log via JNI */
+    private fun dnaLog(msg: String) {
+        android.util.Log.i(TAG, msg)
+        try {
+            if (nativeLogAvailable) nativeLogToDna(msg)
+        } catch (_: Exception) {}
     }
 
     /**
@@ -46,8 +57,9 @@ class DnaNotificationHelper(private val context: Context) {
         return prefs.getBoolean(NOTIFICATIONS_ENABLED_KEY, true)
     }
 
-    // Native method to register this helper
+    // Native methods
     private external fun nativeSetNotificationHelper(helper: DnaNotificationHelper?)
+    private external fun nativeLogToDna(message: String)
 
     init {
         createNotificationChannel()
@@ -75,9 +87,9 @@ class DnaNotificationHelper(private val context: Context) {
     private fun registerWithNative() {
         try {
             nativeSetNotificationHelper(this)
-            android.util.Log.i(TAG, "Registered as notification helper")
+            dnaLog("Registered as notification helper")
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "Failed to register: ${e.message}")
+            dnaLog("ERROR: Failed to register: ${e.message}")
         }
     }
 
@@ -86,23 +98,42 @@ class DnaNotificationHelper(private val context: Context) {
      * This method is called from a native thread, not the main thread.
      */
     fun onOutboxUpdated(contactFingerprint: String, displayName: String?) {
-        android.util.Log.i(TAG, "onOutboxUpdated: fp=${contactFingerprint.take(16)}... name=$displayName")
+        dnaLog("onOutboxUpdated: fp=${contactFingerprint.take(16)}... name=$displayName")
 
         // Check if user has notifications enabled
         if (!areNotificationsEnabled()) {
-            android.util.Log.i(TAG, "Notifications disabled by user, skipping")
+            dnaLog("Notifications disabled by user, skipping")
             return
+        }
+
+        // Check POST_NOTIFICATIONS permission on Android 13+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val hasPermission = context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            if (!hasPermission) {
+                dnaLog("ERROR: POST_NOTIFICATIONS permission NOT granted, cannot show notification")
+                return
+            }
         }
 
         // Show notification
         val senderName = displayName ?: "${contactFingerprint.take(8)}..."
-        showMessageNotification(senderName, contactFingerprint)
+        try {
+            showMessageNotification(senderName, contactFingerprint)
+        } catch (e: Exception) {
+            dnaLog("ERROR: showMessageNotification failed: ${e.message}")
+        }
     }
 
     private fun showMessageNotification(senderName: String, contactFingerprint: String) {
+        val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+        if (launchIntent == null) {
+            dnaLog("ERROR: getLaunchIntentForPackage returned null")
+            return
+        }
+
         val pendingIntent = PendingIntent.getActivity(
-            context, 0,
-            context.packageManager.getLaunchIntentForPackage(context.packageName),
+            context, 0, launchIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
@@ -121,9 +152,23 @@ class DnaNotificationHelper(private val context: Context) {
         val notificationManager = context.getSystemService(NotificationManager::class.java)
         // Use fingerprint hash for unique notification ID per contact
         val notificationId = MESSAGE_NOTIFICATION_ID + contactFingerprint.hashCode()
-        notificationManager.notify(notificationId, notification)
 
-        android.util.Log.i(TAG, "Notification shown for $senderName")
+        // Check if channel is enabled
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = notificationManager.getNotificationChannel(MESSAGE_CHANNEL_ID)
+            if (channel == null) {
+                dnaLog("ERROR: Notification channel '$MESSAGE_CHANNEL_ID' does not exist!")
+                return
+            }
+            if (channel.importance == NotificationManager.IMPORTANCE_NONE) {
+                dnaLog("ERROR: Notification channel '$MESSAGE_CHANNEL_ID' is disabled by user")
+                return
+            }
+            dnaLog("Channel OK: importance=${channel.importance}")
+        }
+
+        notificationManager.notify(notificationId, notification)
+        dnaLog("Notification posted for $senderName (id=$notificationId)")
     }
 
     /**
@@ -131,21 +176,30 @@ class DnaNotificationHelper(private val context: Context) {
      * This method is called from a native thread, not the main thread.
      */
     fun onContactRequestReceived(userFingerprint: String, displayName: String?) {
-        android.util.Log.i(TAG, "onContactRequestReceived: fp=${userFingerprint.take(16)}... name=$displayName")
+        dnaLog("onContactRequestReceived: fp=${userFingerprint.take(16)}... name=$displayName")
 
         if (!areNotificationsEnabled()) {
-            android.util.Log.i(TAG, "Notifications disabled by user, skipping")
+            dnaLog("Notifications disabled by user, skipping")
             return
         }
 
         val senderName = displayName ?: "${userFingerprint.take(8)}..."
-        showContactRequestNotification(senderName, userFingerprint)
+        try {
+            showContactRequestNotification(senderName, userFingerprint)
+        } catch (e: Exception) {
+            dnaLog("ERROR: showContactRequestNotification failed: ${e.message}")
+        }
     }
 
     private fun showContactRequestNotification(senderName: String, userFingerprint: String) {
+        val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+        if (launchIntent == null) {
+            dnaLog("ERROR: getLaunchIntentForPackage returned null for contact request")
+            return
+        }
+
         val pendingIntent = PendingIntent.getActivity(
-            context, 0,
-            context.packageManager.getLaunchIntentForPackage(context.packageName),
+            context, 0, launchIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
@@ -166,15 +220,15 @@ class DnaNotificationHelper(private val context: Context) {
         val notificationId = MESSAGE_NOTIFICATION_ID + 10000 + userFingerprint.hashCode()
         notificationManager.notify(notificationId, notification)
 
-        android.util.Log.i(TAG, "Contact request notification shown for $senderName")
+        dnaLog("Contact request notification posted for $senderName (id=$notificationId)")
     }
 
     fun unregister() {
         try {
             nativeSetNotificationHelper(null)
-            android.util.Log.i(TAG, "Unregistered notification helper")
+            dnaLog("Unregistered notification helper")
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "Failed to unregister: ${e.message}")
+            dnaLog("ERROR: Failed to unregister: ${e.message}")
         }
     }
 }

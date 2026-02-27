@@ -767,6 +767,32 @@ static void jni_android_notification_callback(const char *contact_fingerprint, c
 
     if (fp_str) {
         (*env)->CallVoidMethod(env, g_notification_helper, method, fp_str, name_str);
+
+        /* Check for Java exceptions thrown by onOutboxUpdated() */
+        if ((*env)->ExceptionCheck(env)) {
+            jthrowable exc = (*env)->ExceptionOccurred(env);
+            (*env)->ExceptionClear(env);
+            if (exc) {
+                jclass exc_cls = (*env)->GetObjectClass(env, exc);
+                jmethodID get_msg = (*env)->GetMethodID(env, exc_cls, "getMessage", "()Ljava/lang/String;");
+                if (get_msg) {
+                    jstring jmsg = (jstring)(*env)->CallObjectMethod(env, exc, get_msg);
+                    if (jmsg) {
+                        const char *msg = (*env)->GetStringUTFChars(env, jmsg, NULL);
+                        LOGE("[NOTIFY] Java exception in onOutboxUpdated: %s", msg ? msg : "(null)");
+                        if (msg) (*env)->ReleaseStringUTFChars(env, jmsg, msg);
+                        (*env)->DeleteLocalRef(env, jmsg);
+                    }
+                }
+                (*env)->DeleteLocalRef(env, exc_cls);
+                (*env)->DeleteLocalRef(env, exc);
+            } else {
+                LOGE("[NOTIFY] Java exception in onOutboxUpdated (no details)");
+            }
+        } else {
+            LOGI("[NOTIFY] Java notification helper called successfully");
+        }
+
         (*env)->DeleteLocalRef(env, fp_str);
     }
     if (name_str) {
@@ -774,7 +800,6 @@ static void jni_android_notification_callback(const char *contact_fingerprint, c
     }
     (*env)->DeleteLocalRef(env, cls);
 
-    LOGI("[NOTIFY] Java notification helper called successfully");
     release_env(did_attach);
 }
 
@@ -1764,6 +1789,19 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeServiceLog(JNIEnv *env, j
     const char *msg = (*env)->GetStringUTFChars(env, message, NULL);
     if (msg) {
         LOGI("[SVC] %s", msg);
+        (*env)->ReleaseStringUTFChars(env, message, msg);
+    }
+}
+
+/**
+ * Log from DnaNotificationHelper to dna.log
+ */
+JNIEXPORT void JNICALL
+Java_io_cpunk_dna_1messenger_DnaNotificationHelper_nativeLogToDna(JNIEnv *env, jobject thiz, jstring message) {
+    if (!message) return;
+    const char *msg = (*env)->GetStringUTFChars(env, message, NULL);
+    if (msg) {
+        LOGI("[NOTIF] %s", msg);
         (*env)->ReleaseStringUTFChars(env, message, msg);
     }
 }
