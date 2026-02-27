@@ -308,7 +308,10 @@ class DnaMessengerService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        android.util.Log.i(TAG, "Task removed - service continues running")
+        svcLog("Task removed (swipe from recents) - ensuring service survives")
+
+        // Flutter is definitely dead after swipe
+        flutterActive = false
 
         // Only continue if notifications are enabled
         val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
@@ -321,8 +324,40 @@ class DnaMessengerService : Service() {
                 val notificationManager = getSystemService(NotificationManager::class.java)
                 notificationManager.notify(NOTIFICATION_ID, notification)
             } catch (e: Exception) {
-                android.util.Log.e(TAG, "Failed to re-post notification: ${e.message}")
+                svcLog("Failed to re-post notification: ${e.message}")
             }
+
+            // Schedule poll alarm - ensures service restarts even if process is killed
+            schedulePollAlarm()
+
+            // Also schedule a restart alarm as safety net (5s from now)
+            // In case the process is killed before START_STICKY can restart us
+            try {
+                val restartIntent = Intent(this, DnaMessengerService::class.java).apply {
+                    action = "START"
+                }
+                val restartPi = PendingIntent.getService(
+                    this, POLL_ALARM_REQUEST_CODE + 1, restartIntent,
+                    PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+                )
+                val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager.setExactAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        System.currentTimeMillis() + 5000,
+                        restartPi
+                    )
+                } else {
+                    alarmManager.set(AlarmManager.RTC_WAKEUP,
+                        System.currentTimeMillis() + 5000, restartPi)
+                }
+                svcLog("Restart alarm scheduled in 5s")
+            } catch (e: Exception) {
+                svcLog("Failed to schedule restart alarm: ${e.message}")
+            }
+
+            // Do an immediate poll before process might die
+            performMessageCheckAsync()
         }
 
         super.onTaskRemoved(rootIntent)
