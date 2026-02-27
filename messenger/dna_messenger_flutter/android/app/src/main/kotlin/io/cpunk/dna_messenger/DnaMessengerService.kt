@@ -95,7 +95,7 @@ class DnaMessengerService : Service() {
         fun setFlutterActive(active: Boolean) {
             val wasActive = flutterActive
             flutterActive = active
-            android.util.Log.i(TAG, "Flutter active: $active (was: $wasActive)")
+            svcLog("setFlutterActive: $active (was: $wasActive)")
 
             if (active && !wasActive) {
                 // Flutter taking over - release service's engine on BACKGROUND thread
@@ -138,7 +138,7 @@ class DnaMessengerService : Service() {
                 }.start()
             } else if (!active && wasActive) {
                 // Flutter going away - service should take over
-                android.util.Log.i(TAG, "Flutter inactive - service taking over")
+                svcLog("Flutter inactive - service taking over, serviceInstance=${serviceInstance != null}")
                 serviceInstance?.performMessageCheckAsync()
             }
         }
@@ -208,6 +208,22 @@ class DnaMessengerService : Service() {
         @JvmStatic
         external fun nativeCheckOfflineMessages(): Int
 
+        /**
+         * Log bridge (v0.7.9) - writes to dna.log + ring buffer (Debug Log screen)
+         */
+        @JvmStatic
+        external fun nativeServiceLog(message: String)
+
+        /**
+         * Helper to log to both logcat and dna.log file (visible in Debug Log)
+         */
+        private fun svcLog(msg: String) {
+            android.util.Log.i(TAG, msg)
+            try {
+                if (libraryLoaded) nativeServiceLog(msg)
+            } catch (_: Exception) {}
+        }
+
         // Error code for identity lock held by another process
         private const val ERROR_IDENTITY_LOCKED = -117
 
@@ -247,7 +263,7 @@ class DnaMessengerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action ?: "START"
-        android.util.Log.i(TAG, "onStartCommand: action=$action")
+        svcLog("onStartCommand: action=$action, flutterActive=$flutterActive")
 
         when (action) {
             "START" -> startForegroundService()
@@ -402,13 +418,13 @@ class DnaMessengerService : Service() {
         try {
             if (canScheduleExact && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-                android.util.Log.d(TAG, "Poll alarm scheduled (exact) for ${pollIntervalMs / 1000}s")
+                svcLog("[ALARM] Scheduled exact in ${pollIntervalMs / 1000}s")
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-                android.util.Log.d(TAG, "Poll alarm scheduled (inexact) for ${pollIntervalMs / 1000}s")
+                svcLog("[ALARM] Scheduled inexact in ${pollIntervalMs / 1000}s (exact not available)")
             } else {
                 alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-                android.util.Log.d(TAG, "Poll alarm scheduled for ${pollIntervalMs / 1000}s")
+                svcLog("[ALARM] Scheduled in ${pollIntervalMs / 1000}s")
             }
         } catch (e: SecurityException) {
             // Fall back to inexact alarm if exact fails
@@ -457,31 +473,28 @@ class DnaMessengerService : Service() {
      */
     private fun performMessageCheck() {
         if (!libraryLoaded) {
-            android.util.Log.e(TAG, "[POLL] Native library not loaded")
+            svcLog("[POLL] SKIP: native library not loaded")
             schedulePollAlarm()
             return
         }
 
         // Skip if Flutter is active (in foreground - Flutter handles messaging)
         if (flutterActive) {
-            android.util.Log.d(TAG, "[POLL] Skipped - Flutter active")
+            svcLog("[POLL] SKIP: Flutter active")
             schedulePollAlarm()
             return
         }
 
-        android.util.Log.i(TAG, "[POLL] Starting message check...")
+        svcLog("[POLL] === Starting message check ===")
         val startTime = System.currentTimeMillis()
 
         // v0.100.93: Ensure notification helper is registered before polling.
-        // When user swipes app away, MainActivity.onDestroy() clears the JNI
-        // notification callback (g_android_notification_cb). Without re-registering,
-        // the service polls successfully but notifications are never shown.
         if (MainActivity.notificationHelper == null) {
             try {
                 MainActivity.initNotificationHelper(this)
-                android.util.Log.i(TAG, "[POLL] Re-registered notification helper (was cleared by onDestroy)")
+                svcLog("[POLL] Re-registered notification helper")
             } catch (e: Exception) {
-                android.util.Log.e(TAG, "[POLL] Failed to re-register notification helper: ${e.message}")
+                svcLog("[POLL] WARN: Failed to re-register notification helper: ${e.message}")
             }
         }
 
@@ -489,10 +502,9 @@ class DnaMessengerService : Service() {
         acquireWakeLock()
 
         // v0.6.105: Acquire engine lock to prevent race with setFlutterActive()
-        // Use tryLock to avoid blocking forever if Flutter is releasing engine
         val gotLock = engineLock.tryLock(5, java.util.concurrent.TimeUnit.SECONDS)
         if (!gotLock) {
-            android.util.Log.w(TAG, "[POLL] Couldn't acquire engine lock - Flutter may be taking over")
+            svcLog("[POLL] FAIL: couldn't acquire engine lock (5s timeout)")
             releaseWakeLock()
             schedulePollAlarm()
             return
@@ -501,7 +513,7 @@ class DnaMessengerService : Service() {
         try {
             // Double-check Flutter didn't become active while we waited for lock
             if (flutterActive) {
-                android.util.Log.d(TAG, "[POLL] Aborted - Flutter became active")
+                svcLog("[POLL] ABORT: Flutter became active during lock wait")
                 return
             }
 
@@ -509,38 +521,28 @@ class DnaMessengerService : Service() {
 
             // Check if Flutter has the engine paused (holding the lock)
             if (nativeIsIdentityLocked(dataDir)) {
-                // v0.100.64+: Flutter engine is paused - poll directly on it
-                // nativeCheckOfflineMessages() uses global g_engine which is still valid
-                android.util.Log.i(TAG, "[POLL] Flutter paused - polling on paused engine")
+                svcLog("[POLL] Identity locked - polling on paused engine")
                 val result = nativeCheckOfflineMessages()
                 val elapsed = System.currentTimeMillis() - startTime
-
-                if (result >= 0) {
-                    android.util.Log.i(TAG, "[POLL] Paused engine check completed in ${elapsed}ms (result=$result)")
-                } else {
-                    android.util.Log.e(TAG, "[POLL] Paused engine check failed in ${elapsed}ms (error=$result)")
-                }
+                svcLog("[POLL] Paused engine result=$result (${elapsed}ms)")
                 return
             }
 
             // Flutter doesn't have the lock - ensure our own identity is loaded
+            svcLog("[POLL] Identity not locked, ensuring identity...")
             if (!ensureIdentityForCheck()) {
-                android.util.Log.w(TAG, "[POLL] Cannot check - identity not available")
+                svcLog("[POLL] FAIL: identity not available")
                 return
             }
 
             // Check offline messages
+            svcLog("[POLL] Identity ready, checking offline messages...")
             val result = nativeCheckOfflineMessages()
             val elapsed = System.currentTimeMillis() - startTime
-
-            if (result >= 0) {
-                android.util.Log.i(TAG, "[POLL] Check completed in ${elapsed}ms (result=$result)")
-            } else {
-                android.util.Log.e(TAG, "[POLL] Check failed in ${elapsed}ms (error=$result)")
-            }
+            svcLog("[POLL] === Check done: result=$result (${elapsed}ms) ===")
 
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "[POLL] Error: ${e.message}")
+            svcLog("[POLL] ERROR: ${e.message}")
         } finally {
             engineLock.unlock()
             releaseWakeLock()
@@ -560,6 +562,7 @@ class DnaMessengerService : Service() {
     private fun ensureIdentityForCheck(): Boolean {
         // Already loaded?
         if (nativeIsIdentityLoaded()) {
+            svcLog("[POLL] Identity already loaded, skipping setup")
             return true
         }
 
@@ -567,7 +570,7 @@ class DnaMessengerService : Service() {
         val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
         val fingerprint = prefs.getString("flutter.identity_fingerprint", null)
         if (fingerprint.isNullOrEmpty()) {
-            android.util.Log.d(TAG, "[POLL] No stored fingerprint")
+            svcLog("[POLL] FAIL: no fingerprint in SharedPreferences")
             return false
         }
 
@@ -575,53 +578,54 @@ class DnaMessengerService : Service() {
 
         // Check if Flutter has the lock
         if (nativeIsIdentityLocked(dataDir)) {
-            android.util.Log.d(TAG, "[POLL] Identity locked by Flutter")
+            svcLog("[POLL] FAIL: identity locked by Flutter")
             return false
         }
 
         // Ensure engine
+        svcLog("[POLL] Creating engine (dataDir=$dataDir)")
         if (!nativeEnsureEngine(dataDir)) {
-            android.util.Log.e(TAG, "[POLL] Failed to ensure engine")
+            svcLog("[POLL] FAIL: nativeEnsureEngine returned false")
             return false
         }
 
         // Load identity (minimal mode - DHT only, no listeners)
-        android.util.Log.i(TAG, "[POLL] Loading identity: ${fingerprint.take(16)}...")
+        svcLog("[POLL] Loading identity: ${fingerprint.take(16)}...")
         val result = nativeLoadIdentityMinimalSync(fingerprint)
 
         return when (result) {
             0 -> {
-                android.util.Log.i(TAG, "[POLL] Identity loaded successfully")
-                // Wait for DHT to be ready (same approach as CLI's wait_for_dht).
-                // Checks dht_context_is_ready() every 100ms instead of blind sleep.
-                // Also interruptible: checks flutterActive so service releases lock
-                // quickly when Flutter resumes.
-                android.util.Log.i(TAG, "[POLL] Waiting up to 15s for DHT ready (checking dht_context_is_ready)...")
+                svcLog("[POLL] Identity loaded OK, waiting for DHT...")
+                // Wait for DHT to be ready with progressive logging
                 var dhtReady = false
-                for (i in 0 until 150) {  // 150 * 100ms = 15s
+                for (i in 0 until 250) {  // 250 * 100ms = 25s (increased from 15s)
                     if (flutterActive) {
-                        android.util.Log.i(TAG, "[POLL] DHT wait interrupted - Flutter active (after ${i * 100}ms)")
+                        svcLog("[POLL] DHT wait interrupted - Flutter active (${i * 100}ms)")
                         break
                     }
                     if (nativeDhtIsReady()) {
-                        android.util.Log.i(TAG, "[POLL] DHT ready after ${i * 100}ms")
+                        svcLog("[POLL] DHT ready after ${i * 100}ms")
                         dhtReady = true
                         break
+                    }
+                    // Progressive logging at 5s, 10s, 15s, 20s
+                    if (i > 0 && i % 50 == 0) {
+                        svcLog("[POLL] DHT still waiting... ${i * 100 / 1000}s elapsed")
                     }
                     Thread.sleep(100)
                 }
                 if (!dhtReady && !flutterActive) {
-                    android.util.Log.w(TAG, "[POLL] DHT not ready after 15s - polling anyway")
+                    svcLog("[POLL] WARN: DHT not ready after 25s - polling anyway")
                 }
                 true
             }
             ERROR_IDENTITY_LOCKED -> {
-                android.util.Log.w(TAG, "[POLL] Identity locked during load")
+                svcLog("[POLL] FAIL: identity locked during load (race condition)")
                 nativeReleaseEngine()
                 false
             }
             else -> {
-                android.util.Log.e(TAG, "[POLL] Identity load failed: $result")
+                svcLog("[POLL] FAIL: identity load error=$result")
                 false
             }
         }

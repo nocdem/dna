@@ -20,12 +20,30 @@
 #include "dht/core/dht_context.h"
 #include "dht/core/dht_listen.h"
 #include "crypto/utils/qgp_platform.h"  /* v0.6.0+: For identity lock check */
+#include "crypto/utils/qgp_log.h"       /* v0.7.9: Route JNI logs to dna.log + ring buffer */
 
 #define LOG_TAG "DNA-JNI"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+/* v0.7.9: JNI logs now go to logcat + ring buffer + dna.log file */
+#define LOGI(fmt, ...) do { \
+    __android_log_print(ANDROID_LOG_INFO, LOG_TAG, fmt, ##__VA_ARGS__); \
+    qgp_log_ring_add(QGP_LOG_LEVEL_INFO, "JNI", fmt, ##__VA_ARGS__); \
+    qgp_log_file_write(QGP_LOG_LEVEL_INFO, "JNI", fmt, ##__VA_ARGS__); \
+} while(0)
+#define LOGW(fmt, ...) do { \
+    __android_log_print(ANDROID_LOG_WARN, LOG_TAG, fmt, ##__VA_ARGS__); \
+    qgp_log_ring_add(QGP_LOG_LEVEL_WARN, "JNI", fmt, ##__VA_ARGS__); \
+    qgp_log_file_write(QGP_LOG_LEVEL_WARN, "JNI", fmt, ##__VA_ARGS__); \
+} while(0)
+#define LOGE(fmt, ...) do { \
+    __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, fmt, ##__VA_ARGS__); \
+    qgp_log_ring_add(QGP_LOG_LEVEL_ERROR, "JNI", fmt, ##__VA_ARGS__); \
+    qgp_log_file_write(QGP_LOG_LEVEL_ERROR, "JNI", fmt, ##__VA_ARGS__); \
+} while(0)
+#define LOGD(fmt, ...) do { \
+    __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, fmt, ##__VA_ARGS__); \
+    qgp_log_ring_add(QGP_LOG_LEVEL_DEBUG, "JNI", fmt, ##__VA_ARGS__); \
+    qgp_log_file_write(QGP_LOG_LEVEL_DEBUG, "JNI", fmt, ##__VA_ARGS__); \
+} while(0)
 
 /* ============================================================================
  * GLOBAL STATE
@@ -1733,4 +1751,19 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeCheckOfflineMessages(JNIE
     }
 
     return ctx.result;
+}
+
+/**
+ * Service log bridge (v0.7.9)
+ * Allows Kotlin DnaMessengerService to write logs to dna.log + ring buffer.
+ * Visible in Settings > Debug Log.
+ */
+JNIEXPORT void JNICALL
+Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeServiceLog(JNIEnv *env, jobject thiz, jstring message) {
+    if (!message) return;
+    const char *msg = (*env)->GetStringUTFChars(env, message, NULL);
+    if (msg) {
+        LOGI("[SVC] %s", msg);
+        (*env)->ReleaseStringUTFChars(env, message, msg);
+    }
 }
