@@ -1,0 +1,123 @@
+# FFI bindings configuration for DNA Messenger Engine
+# Run: dart run ffigen
+
+llvm-path:
+  - '/usr/lib/llvm-14/lib'
+  - '/usr/lib/x86_64-linux-gnu'
+
+name: DnaBindings
+description: FFI bindings for DNA Messenger Engine C API
+output: 'lib/ffi/dna_bindings_generated.dart'
+
+headers:
+  entry-points:
+    - '../include/dna/dna_engine.h'
+  include-directives:
+    - '../include/dna/dna_engine.h'
+
+compiler-opts:
+  - '-I../include'
+
+preamble: |
+  // AUTO-GENERATED FILE - DO NOT EDIT
+  // Generated from dna_engine.h
+  // ignore_for_file: type=lint
+
+# Functions to include
+functions:
+  include:
+    # Lifecycle
+    - 'dna_engine_create'
+    - 'dna_engine_destroy'
+    - 'dna_engine_set_event_callback'
+    - 'dna_engine_get_fingerprint'
+    - 'dna_engine_error_string'
+    # Identity
+    - 'dna_engine_list_identities'
+    - 'dna_engine_create_identity'
+    - 'dna_engine_load_identity'
+    - 'dna_engine_register_name'
+    - 'dna_engine_get_display_name'
+    - 'dna_engine_get_registered_name'
+    # Contacts
+    - 'dna_engine_get_contacts'
+    - 'dna_engine_add_contact'
+    - 'dna_engine_remove_contact'
+    # Messaging
+    - 'dna_engine_send_message'
+    - 'dna_engine_get_conversation'
+    - 'dna_engine_check_offline_messages'
+    # Groups
+    - 'dna_engine_get_groups'
+    - 'dna_engine_create_group'
+    - 'dna_engine_send_group_message'
+    - 'dna_engine_get_invitations'
+    - 'dna_engine_accept_invitation'
+    - 'dna_engine_reject_invitation'
+    # Wallet
+    - 'dna_engine_list_wallets'
+    - 'dna_engine_get_balances'
+    - 'dna_engine_send_tokens'
+    - 'dna_engine_get_transactions'
+    # P2P & Presence
+    - 'dna_engine_refresh_presence'
+    - 'dna_engine_is_peer_online'
+    - 'dna_engine_sync_contacts_to_dht'
+    - 'dna_engine_sync_contacts_from_dht'
+    - 'dna_engine_sync_groups'
+    - 'dna_engine_subscribe_to_contacts'
+    # Memory management
+    - 'dna_free_strings'
+    - 'dna_free_contacts'
+    - 'dna_free_messages'
+    - 'dna_free_groups'
+    - 'dna_free_invitations'
+    - 'dna_free_wallets'
+    - 'dna_free_balances'
+    - 'dna_free_transactions'
+
+# Structs to include
+structs:
+  include:
+    - 'dna_contact_t'
+    - 'dna_message_t'
+    - 'dna_group_t'
+    - 'dna_invitation_t'
+    - 'dna_wallet_t'
+    - 'dna_balance_t'
+    - 'dna_transaction_t'
+    - 'dna_event_t'
+
+# Enums
+enums:
+  include:
+    - 'dna_event_type_t'
+
+# Typedefs - callbacks and opaque types
+typedefs:
+  include:
+    - 'dna_engine_t'
+    - 'dna_request_id_t'
+    - 'dna_completion_cb'
+    - 'dna_identities_cb'
+    - 'dna_identity_created_cb'
+    - 'dna_display_name_cb'
+    - 'dna_contacts_cb'
+    - 'dna_messages_cb'
+    - 'dna_groups_cb'
+    - 'dna_group_created_cb'
+    - 'dna_invitations_cb'
+    - 'dna_wallets_cb'
+    - 'dna_balances_cb'
+    - 'dna_transactions_cb'
+    - 'dna_event_cb'
+
+# Unions need special handling
+unions:
+  include:
+    - '.*'
+
+# Don't include macros (they're just version info)
+macros:
+  exclude:
+    - '.*'

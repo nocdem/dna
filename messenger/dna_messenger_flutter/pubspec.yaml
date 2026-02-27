@@ -1,0 +1,74 @@
+name: dna_messenger
+description: "Post-quantum encrypted P2P messenger with integrated cryptocurrency wallet"
+publish_to: 'none'
+
+version: 0.101.24+10324
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # State management (pinned to 2.x - code not compatible with 3.x)
+  flutter_riverpod: 2.6.1
+  riverpod_annotation: 2.6.1
+
+  # FFI
+  ffi: ^2.1.0
+
+  # Utilities
+  path: ^1.9.0
+  path_provider: ^2.1.0
+  shared_preferences: ^2.2.0
+  share_plus: ^10.0.0
+  archive: ^3.6.0  # For zipping log files
+  file_picker: ^8.0.0  # For desktop file save dialogs
+  window_manager: ^0.4.0
+  sqflite: ^2.3.0  # Local SQLite for caching (Android/iOS)
+  sqflite_common_ffi: ^2.3.0  # SQLite FFI for desktop (Linux/Windows/macOS)
+  mobile_scanner: ^5.2.3
+
+  # UI components
+  qr_flutter: ^4.1.0
+  image_picker: ^1.0.0
+  image: ^4.1.0  # For reliable cross-platform image resizing
+  crop_your_image: ^1.1.0  # Cross-platform avatar cropping
+  emoji_picker_flutter: ^3.0.0
+  flutter_svg: ^2.0.9
+  font_awesome_flutter: ^10.6.0
+
+  # Date formatting
+  intl: ^0.19.0
+
+  # App info
+  package_info_plus: ^8.0.0
+
+  # URL launcher
+  url_launcher: ^6.2.0
+
+  # App lock (biometric + PIN)
+  local_auth: ^2.3.0
+  flutter_secure_storage: ^10.0.0
+  crypto: ^3.0.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+  # Code generation
+  ffigen: ^9.0.0
+  riverpod_generator: 2.6.5
+  build_runner: ^2.4.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/icon.png
+    - assets/logo-icon.svg
+    - assets/icons/crypto/
+    - assets/cacert.pem

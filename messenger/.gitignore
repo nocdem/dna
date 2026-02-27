@@ -1,0 +1,200 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.tox/
+
+# Old Python implementation (obsolete, replaced by C implementation)
+pqsignum/
+
+# Build artifacts
+build/
+build-release/
+build-*/
+build-android*/
+build-windows*/
+build-linux*/
+build-macos*/
+dist/
+native-libs/
+*.a
+*.o
+*.so
+
+# CMake build artifacts
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+!*.cmake.in
+!cmake/*.cmake
+CTestTestfile.cmake
+Testing/
+_deps/
+
+# CMake generated binaries
+dna-messenger
+quick_lookup
+test_*
+*_test
+migrate_storage_once
+persistent_bootstrap
+
+# Runtime data and test files
+**/migrate_storage_once
+**/persistent_bootstrap
+**/test_identity_backup
+**/test_dna_profile
+**/test_simple
+*.ini
+!dna_messenger.ini
+# CMake dependency files
+*.d
+
+# Compiler/linker artifacts
+*.exe
+*.dll
+*.dylib
+link.txt
+progress.marks
+compiler_depend.internal
+compiler_depend.make
+flags.make
+progress.make
+
+# libjuice external project
+vendor/libjuice/src/
+vendor/libjuice/install/
+*-stamp/
+*-complete
+*-build/
+
+# Cross-compilation toolchains
+mxe/
+
+# Keys and sensitive data
+*.key
+*.pem
+# Exception: CA certificate bundle is public/safe
+!**/cacert.pem
+*.priv
+*.dsa
+*.kem
+keys/
+wallets/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS
+Thumbs.db
+
+# Note: CLAUDE.md and docs/ are now tracked for team collaboration
+# Security audit (internal only, not for public repo)
+docs/SECURITY_AUDIT.md
+
+# Planning docs (completed, not needed in repo)
+docs/NODUS_L1_SPEC.md
+*_PLAN.md
+*_ANALYSIS.md
+*_ARCHITECTURE.md
+*_SUMMARY.md
+*_DECISIONS.md
+*_DISCOVERIES.md
+CONTRIBUTORS.md
+FOLDER_ANALYSIS.md
+
+# Test files
+*.asc
+*.sig
+*.enc
+*.dcert
+*_test.*
+
+# Additional build artifacts 
+p2p/test_p2p_basic
+p2p/build/
+dht/build/
+
+# CMake build artifacts (comprehensive)
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+!*.cmake.in
+!cmake/*.cmake
+CTestTestfile.cmake
+Testing/
+_deps/
+
+# CMake generated binaries
+dna-messenger
+test_*
+*_test
+migrate_storage_once
+persistent_bootstrap
+
+# CMake dependency and build files
+*.d
+link.txt
+progress.marks
+compiler_depend.internal
+compiler_depend.make
+flags.make
+progress.make
+DependInfo.cmake
+build.make
+cmake_clean.cmake
+
+# External project artifacts
+vendor/libjuice/src/
+vendor/libjuice/install/
+*-stamp/
+*-complete
+*-build/
+
+# Development notes
+CLAUDE.md
+
+# Claude Code local files
+.claude/
+*.apk
+
+# Git worktrees
+.worktrees/

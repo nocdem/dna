@@ -1,0 +1,515 @@
+/*
+ * DNA Messenger CLI - Command Definitions
+ *
+ * Interactive CLI tool for testing DNA Messenger without GUI.
+ */
+
+#ifndef CLI_COMMANDS_H
+#define CLI_COMMANDS_H
+
+#include <dna/dna_engine.h>
+#include <stdbool.h>
+#include <pthread.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ============================================================================
+ * SYNCHRONIZATION HELPERS
+ * ============================================================================ */
+
+/**
+ * Blocking wait structure for async callbacks
+ */
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    bool done;
+    int result;
+    /* Result data storage */
+    char **fingerprints;
+    int fingerprint_count;
+    char fingerprint[129];
+    char display_name[256];
+    /* Contacts storage */
+    dna_contact_t *contacts;
+    int contact_count;
+    /* Messages storage */
+    dna_message_t *messages;
+    int message_count;
+    /* Contact requests storage */
+    dna_contact_request_t *requests;
+    int request_count;
+    /* Wallets storage */
+    dna_wallet_t *wallets;
+    int wallet_count;
+    /* Balances storage */
+    dna_balance_t *balances;
+    int balance_count;
+    /* Profile storage */
+    dna_profile_t *profile;
+} cli_wait_t;
+
+/**
+ * Initialize wait structure
+ */
+void cli_wait_init(cli_wait_t *wait);
+
+/**
+ * Destroy wait structure
+ */
+void cli_wait_destroy(cli_wait_t *wait);
+
+/**
+ * Block until async operation completes
+ * Returns: result code from callback
+ */
+int cli_wait_for(cli_wait_t *wait);
+
+/* v0.3.0: cli_list_identities removed - single-user model, use dna_engine_has_identity() */
+
+/* ============================================================================
+ * BASIC COMMANDS (existing)
+ * ============================================================================ */
+
+void cmd_help(void);
+int cmd_create(dna_engine_t *engine, const char *name);
+int cmd_list(dna_engine_t *engine);
+int cmd_load(dna_engine_t *engine, const char *fingerprint);
+int cmd_send(dna_engine_t *engine, const char *recipient, const char *message);
+void cmd_whoami(dna_engine_t *engine);
+
+/* ============================================================================
+ * IDENTITY COMMANDS (new)
+ * ============================================================================ */
+
+/**
+ * Restore identity from BIP39 mnemonic
+ * @param engine DNA engine instance
+ * @param mnemonic Space-separated 24-word mnemonic
+ * @return 0 on success, negative on error
+ */
+int cmd_restore(dna_engine_t *engine, const char *mnemonic);
+
+/**
+ * Delete an identity and all associated data
+ * @param engine DNA engine instance
+ * @param fingerprint Identity fingerprint to delete
+ * @return 0 on success, negative on error
+ */
+int cmd_delete(dna_engine_t *engine, const char *fingerprint);
+
+/**
+ * Register a name for current identity on DHT
+ * @param engine DNA engine instance
+ * @param name Name to register (3-20 chars)
+ * @return 0 on success, negative on error
+ */
+int cmd_register(dna_engine_t *engine, const char *name);
+
+/**
+ * Lookup if a name is available or taken
+ * @param engine DNA engine instance
+ * @param name Name to lookup
+ * @return 0 on success, negative on error
+ */
+int cmd_lookup(dna_engine_t *engine, const char *name);
+
+/**
+ * Get registered name for current identity
+ * @param engine DNA engine instance
+ * @return 0 on success, negative on error
+ */
+int cmd_name(dna_engine_t *engine);
+
+/**
+ * Get or update profile
+ * @param engine DNA engine instance
+ * @param field Field to update (NULL to show profile)
+ * @param value Value to set (NULL to show profile)
+ * @return 0 on success, negative on error
+ */
+int cmd_profile(dna_engine_t *engine, const char *field, const char *value);
+
+/**
+ * Lookup another user's profile from DHT
+ * @param engine DNA engine instance
+ * @param identifier Name or fingerprint to lookup
+ * @return 0 on success, negative on error
+ */
+int cmd_lookup_profile(dna_engine_t *engine, const char *identifier);
+
+/* ============================================================================
+ * CONTACT COMMANDS (new)
+ * ============================================================================ */
+
+/**
+ * List all contacts
+ * @param engine DNA engine instance
+ * @return 0 on success, negative on error
+ */
+int cmd_contacts(dna_engine_t *engine);
+
+/**
+ * Add a contact by fingerprint or name
+ * @param engine DNA engine instance
+ * @param identifier Fingerprint or registered name
+ * @return 0 on success, negative on error
+ */
+int cmd_add_contact(dna_engine_t *engine, const char *identifier);
+
+/**
+ * Remove a contact
+ * @param engine DNA engine instance
+ * @param fingerprint Contact fingerprint
+ * @return 0 on success, negative on error
+ */
+int cmd_remove_contact(dna_engine_t *engine, const char *fingerprint);
+
+/**
+ * Send a contact request
+ * @param engine DNA engine instance
+ * @param fingerprint Recipient fingerprint
+ * @param message Optional message (can be NULL)
+ * @return 0 on success, negative on error
+ */
+int cmd_request(dna_engine_t *engine, const char *fingerprint, const char *message);
+
+/**
+ * List pending contact requests
+ * @param engine DNA engine instance
+ * @return 0 on success, negative on error
+ */
+int cmd_requests(dna_engine_t *engine);
+
+/**
+ * Approve a contact request
+ * @param engine DNA engine instance
+ * @param fingerprint Requester fingerprint
+ * @return 0 on success, negative on error
+ */
+int cmd_approve(dna_engine_t *engine, const char *fingerprint);
+
+/* ============================================================================
+ * MESSAGING COMMANDS (new)
+ * ============================================================================ */
+
+/**
+ * Get conversation with a contact
+ * @param engine DNA engine instance
+ * @param fingerprint Contact fingerprint
+ * @return 0 on success, negative on error
+ */
+int cmd_messages(dna_engine_t *engine, const char *fingerprint);
+
+/**
+ * Check for offline messages
+ * @param engine DNA engine instance
+ * @return 0 on success, negative on error
+ */
+int cmd_check_offline(dna_engine_t *engine);
+
+/**
+ * Subscribe to contacts' outboxes and listen for push notifications
+ * Stays running until Ctrl+C
+ * @param engine DNA engine instance
+ * @return 0 on success, negative on error
+ */
+int cmd_listen(dna_engine_t *engine);
+
+/* ============================================================================
+ * WALLET COMMANDS (new)
+ * ============================================================================ */
+
+/**
+ * List wallets
+ * @param engine DNA engine instance
+ * @return 0 on success, negative on error
+ */
+int cmd_wallets(dna_engine_t *engine);
+
+/**
+ * Get wallet balances
+ * @param engine DNA engine instance
+ * @param wallet_index Wallet index (0-based)
+ * @return 0 on success, negative on error
+ */
+int cmd_balance(dna_engine_t *engine, int wallet_index);
+
+/* ============================================================================
+ * PRESENCE COMMANDS (new)
+ * ============================================================================ */
+
+/**
+ * Check if a peer is online
+ * @param engine DNA engine instance
+ * @param fingerprint Peer fingerprint
+ * @return 0 on success, negative on error
+ */
+int cmd_online(dna_engine_t *engine, const char *fingerprint);
+
+/* ============================================================================
+ * VERSION COMMANDS
+ * ============================================================================ */
+
+/**
+ * Publish version info to DHT (requires identity loaded)
+ * @param engine DNA engine instance
+ * @param lib_ver Library version (e.g., "0.3.90")
+ * @param lib_min Library minimum version
+ * @param app_ver App version (e.g., "0.99.29")
+ * @param app_min App minimum version
+ * @param nodus_ver Nodus version (e.g., "0.4.3")
+ * @param nodus_min Nodus minimum version
+ * @return 0 on success, negative on error
+ */
+int cmd_publish_version(dna_engine_t *engine,
+                        const char *lib_ver, const char *lib_min,
+                        const char *app_ver, const char *app_min,
+                        const char *nodus_ver, const char *nodus_min);
+
+/**
+ * Check version info from DHT
+ * @param engine DNA engine instance
+ * @return 0 on success, negative on error
+ */
+int cmd_check_version(dna_engine_t *engine);
+
+/* ============================================================================
+ * GROUP COMMANDS (GEK System)
+ * ============================================================================ */
+
+/**
+ * List all groups the user belongs to
+ * @param engine DNA engine instance
+ * @return 0 on success, negative on error
+ */
+int cmd_group_list(dna_engine_t *engine);
+
+/**
+ * Create a new group
+ * @param engine DNA engine instance
+ * @param name Group name
+ * @return 0 on success, negative on error
+ */
+int cmd_group_create(dna_engine_t *engine, const char *name);
+
+/**
+ * Send a message to a group
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID
+ * @param message Message text
+ * @return 0 on success, negative on error
+ */
+int cmd_group_send(dna_engine_t *engine, const char *group_uuid, const char *message);
+
+/**
+ * Show group info and members
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID
+ * @return 0 on success, negative on error
+ */
+int cmd_group_info(dna_engine_t *engine, const char *group_uuid);
+
+/**
+ * Invite a member to a group
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID
+ * @param fingerprint Member fingerprint to invite
+ * @return 0 on success, negative on error
+ */
+int cmd_group_invite(dna_engine_t *engine, const char *group_uuid, const char *fingerprint);
+
+/**
+ * Sync a specific group from DHT to local cache
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID to sync
+ * @return 0 on success, negative on error
+ */
+int cmd_group_sync(dna_engine_t *engine, const char *group_uuid);
+
+/**
+ * Publish GEK for a group to DHT
+ *
+ * Only the group creator/owner can publish GEK. This generates or rotates
+ * the GEK and publishes it to DHT so members can fetch it.
+ *
+ * @param engine DNA engine instance
+ * @param name_or_uuid Group name or UUID to publish GEK for
+ * @return 0 on success, negative on error
+ */
+int cmd_group_publish_gek(dna_engine_t *engine, const char *name_or_uuid);
+
+/**
+ * Fetch GEK (Group Encryption Key) from DHT for a group
+ *
+ * Fetches the Initial Key Packet from DHT and attempts to decrypt the GEK.
+ * Useful for debugging group message encryption issues.
+ *
+ * @param engine DNA engine instance
+ * @param group_uuid Group UUID to fetch GEK for
+ * @return 0 on success, negative on error
+ */
+int cmd_gek_fetch(dna_engine_t *engine, const char *group_uuid);
+
+/**
+ * Show group conversation messages
+ *
+ * Retrieves and displays all messages from a group chat.
+ * Messages are decrypted with the locally stored GEK.
+ *
+ * @param engine DNA engine instance
+ * @param name_or_uuid Group name or UUID
+ * @return 0 on success, negative on error
+ */
+int cmd_group_messages(dna_engine_t *engine, const char *name_or_uuid);
+
+/* ============================================================================
+ * DHT DEBUG COMMANDS
+ * ============================================================================ */
+
+/**
+ * Fetch and display the DHT bootstrap registry
+ * Shows all registered bootstrap nodes with their status.
+ * @param engine DNA engine instance
+ * @return 0 on success, negative on error
+ */
+int cmd_bootstrap_registry(dna_engine_t *engine);
+
+/* ============================================================================
+ * PHASE 1: CONTACT BLOCKING & REQUESTS (6 commands)
+ * ============================================================================ */
+
+int cmd_block(dna_engine_t *engine, const char *identifier);
+int cmd_unblock(dna_engine_t *engine, const char *fingerprint);
+int cmd_blocked(dna_engine_t *engine);
+int cmd_is_blocked(dna_engine_t *engine, const char *fingerprint);
+int cmd_deny(dna_engine_t *engine, const char *fingerprint);
+int cmd_request_count(dna_engine_t *engine);
+
+/* ============================================================================
+ * PHASE 2: MESSAGE QUEUE OPERATIONS (5 commands)
+ * ============================================================================ */
+
+int cmd_queue_status(dna_engine_t *engine);
+int cmd_queue_send(dna_engine_t *engine, const char *recipient, const char *message);
+int cmd_set_queue_capacity(dna_engine_t *engine, int capacity);
+int cmd_retry_pending(dna_engine_t *engine);
+int cmd_retry_message(dna_engine_t *engine, int64_t message_id);
+
+/* ============================================================================
+ * PHASE 3: MESSAGE MANAGEMENT (4 commands)
+ * ============================================================================ */
+
+int cmd_delete_message(dna_engine_t *engine, int64_t message_id);
+int cmd_mark_read(dna_engine_t *engine, const char *identifier);
+int cmd_unread(dna_engine_t *engine, const char *identifier);
+int cmd_messages_page(dna_engine_t *engine, const char *identifier, int limit, int offset);
+
+/* ============================================================================
+ * PHASE 4: DHT SYNC OPERATIONS (5 commands)
+ * ============================================================================ */
+
+int cmd_sync_contacts_up(dna_engine_t *engine);
+int cmd_sync_contacts_down(dna_engine_t *engine);
+int cmd_sync_groups(dna_engine_t *engine);
+int cmd_sync_groups_up(dna_engine_t *engine);
+int cmd_sync_groups_down(dna_engine_t *engine);
+int cmd_refresh_presence(dna_engine_t *engine);
+int cmd_presence(dna_engine_t *engine, const char *identifier);
+
+/* ============================================================================
+ * PHASE 5: DEBUG LOGGING (7 commands)
+ * ============================================================================ */
+
+int cmd_log_level(dna_engine_t *engine, const char *level);
+int cmd_log_tags(dna_engine_t *engine, const char *tags);
+int cmd_debug_log(dna_engine_t *engine, bool enable);
+int cmd_debug_entries(dna_engine_t *engine, int max_entries);
+int cmd_debug_count(dna_engine_t *engine);
+int cmd_debug_clear(dna_engine_t *engine);
+int cmd_debug_export(dna_engine_t *engine, const char *filepath);
+
+/* ============================================================================
+ * PHASE 6: GROUP EXTENSIONS (4 commands)
+ * ============================================================================ */
+
+int cmd_group_members(dna_engine_t *engine, const char *group_uuid);
+int cmd_invitations(dna_engine_t *engine);
+int cmd_invite_accept(dna_engine_t *engine, const char *group_uuid);
+int cmd_invite_reject(dna_engine_t *engine, const char *group_uuid);
+
+/* ============================================================================
+ * PHASE 7: PRESENCE CONTROL (3 commands)
+ * ============================================================================ */
+
+int cmd_pause_presence(dna_engine_t *engine);
+int cmd_resume_presence(dna_engine_t *engine);
+int cmd_network_changed(dna_engine_t *engine);
+
+/* ============================================================================
+ * PHASE 8: CONTACT & IDENTITY EXTENSIONS (5 commands)
+ * ============================================================================ */
+
+int cmd_set_nickname(dna_engine_t *engine, const char *fingerprint, const char *nickname);
+int cmd_get_avatar(dna_engine_t *engine, const char *fingerprint);
+int cmd_get_mnemonic(dna_engine_t *engine);
+int cmd_refresh_profile(dna_engine_t *engine, const char *fingerprint);
+int cmd_dht_status(dna_engine_t *engine);
+
+/* ============================================================================
+ * PHASE 9: WALLET OPERATIONS (3 commands)
+ * ============================================================================ */
+
+int cmd_send_tokens(dna_engine_t *engine, int wallet_idx, const char *network,
+                    const char *token, const char *to_address, const char *amount);
+int cmd_transactions(dna_engine_t *engine, int wallet_idx);
+int cmd_estimate_gas(dna_engine_t *engine, int network_id);
+
+/* ============================================================================
+ * PHASE 11: MESSAGE BACKUP (2 commands)
+ * ============================================================================ */
+
+int cmd_backup_messages(dna_engine_t *engine);
+int cmd_restore_messages(dna_engine_t *engine);
+
+/* ============================================================================
+ * PHASE 12: SIGNING API (2 commands)
+ * ============================================================================ */
+
+int cmd_sign(dna_engine_t *engine, const char *data);
+int cmd_signing_pubkey(dna_engine_t *engine);
+
+/* ============================================================================
+ * CHANNELS (10 commands) - RSS-like channel system
+ * ============================================================================ */
+
+int cmd_channel_create(dna_engine_t *engine, const char *name, const char *description);
+int cmd_channel_get(dna_engine_t *engine, const char *uuid);
+int cmd_channel_delete(dna_engine_t *engine, const char *uuid);
+int cmd_channel_discover(dna_engine_t *engine, int days);
+int cmd_channel_post(dna_engine_t *engine, const char *channel_uuid, const char *body);
+int cmd_channel_posts(dna_engine_t *engine, const char *channel_uuid, int days_back);
+int cmd_channel_subscribe(dna_engine_t *engine, const char *uuid);
+int cmd_channel_unsubscribe(dna_engine_t *engine, const char *uuid);
+int cmd_channel_subscriptions(dna_engine_t *engine);
+int cmd_channel_sync(dna_engine_t *engine);
+
+/* ============================================================================
+ * COMMAND PARSER
+ * ============================================================================ */
+
+/**
+ * Parse and execute a command line
+ * @param engine DNA engine instance
+ * @param line Input line from user
+ * @return true to continue REPL, false to exit
+ */
+bool execute_command(dna_engine_t *engine, const char *line);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* CLI_COMMANDS_H */

@@ -1,0 +1,153 @@
+if (MSVC)
+    set (MSC_COMPAT_DIR ../src/compat/win32)
+    set (MSC_COMPAT_SOURCES ${MSC_COMPAT_DIR}/wingetopt.c)
+    set (MSVC_COMPAT_DIR ../src/compat/msvc)
+endif()
+
+function (configure_tool name extra_files)
+    add_executable (${name} ${name}.cpp ${extra_files})
+    add_dependencies(${name} opendht dht_lib dsa)
+    if (MSVC)
+        target_sources(${name} PRIVATE ${MSC_COMPAT_SOURCES})
+        target_link_libraries (${name} PUBLIC opendht)
+        # Add crypto/dsa include path for Dilithium5 api.h header
+        target_include_directories (${name} PRIVATE SYSTEM
+            ${MSC_COMPAT_DIR}
+            ${MSVC_COMPAT_DIR}
+            ${CMAKE_SOURCE_DIR}/crypto/dsa
+        )
+    else()
+        # DNA Messenger: Add linker group to resolve circular deps (dsa <-> dht_lib)
+        # opendht depends on dsa (Dilithium5), dsa needs qgp_randombytes from dht_lib
+        # Solution: Link everything together using CMake targets with linker group
+        # Link all libraries in order with proper grouping
+        target_link_libraries (${name} LINK_PUBLIC
+            -Wl,--start-group
+            opendht
+            dsa
+            dht_lib
+            -Wl,--end-group
+            ${SQLite3_LIBRARIES}
+            ${READLINE_LIBRARIES}
+        )
+        # Add crypto/dsa include path for Dilithium5 api.h header
+        target_include_directories (${name} PRIVATE
+            ${CMAKE_CURRENT_BINARY_DIR}
+            ${CMAKE_SOURCE_DIR}/crypto/dsa
+        )
+    endif ()
+endfunction ()
+
+# DNA Nodus v0.4 - Post-Quantum DHT Bootstrap (STUN/TURN removed for privacy)
+# Additional sources for dna-nodus (config only)
+# TURN files removed in v0.4.61: turn_server.cpp, turn_credential_manager.cpp, turn_credential_udp.cpp
+set(DNA_NODUS_SOURCES
+    nodus_config.cpp
+)
+
+function (configure_nodus name)
+    add_executable (${name} ${name}.cpp ${DNA_NODUS_SOURCES})
+    add_dependencies(${name} opendht dht_lib dsa)  # libjuice_external removed
+    if (MSVC)
+        target_sources(${name} PRIVATE ${MSC_COMPAT_SOURCES})
+        target_link_libraries (${name} PUBLIC opendht)  # JUICE_LIBRARIES removed
+        target_include_directories (${name} PRIVATE SYSTEM
+            ${MSC_COMPAT_DIR}
+            ${MSVC_COMPAT_DIR}
+            ${CMAKE_SOURCE_DIR}/crypto/dsa
+            ${CMAKE_SOURCE_DIR}/vendor  # nlohmann/json.hpp
+        )
+    else()
+        target_link_libraries (${name} LINK_PUBLIC
+            -Wl,--start-group
+            opendht
+            dsa
+            dht_lib
+            -Wl,--end-group
+            ${SQLite3_LIBRARIES}
+            ${READLINE_LIBRARIES}
+        )  # JUICE_LIBRARIES removed
+        target_include_directories (${name} PRIVATE
+            ${CMAKE_CURRENT_BINARY_DIR}
+            ${CMAKE_SOURCE_DIR}/crypto/dsa
+            ${CMAKE_SOURCE_DIR}/vendor  # nlohmann/json.hpp
+        )  # JUICE_INCLUDE_DIRS removed
+    endif ()
+endfunction ()
+
+# DNA Nodus v0.4 - Post-Quantum DHT Bootstrap Node (DHT-only, privacy-preserving)
+configure_nodus (dna-nodus)
+if (OPENDHT_EXAMPLES)
+    configure_tool (dhtscanner tools_common.h)
+    configure_tool (dhtchat tools_common.h)
+endif ()
+if (OPENDHT_HTTP)
+    configure_tool (durl tools_common.h)
+endif ()
+
+if (OPENDHT_C)
+    add_executable (dhtcnode dhtcnode.c)
+    add_dependencies(dhtcnode opendht-c)
+    target_link_libraries (dhtcnode PUBLIC opendht-c)
+    target_include_directories (dhtcnode SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/c)
+    if (WIN32)
+        target_link_libraries (dhtcnode PUBLIC ws2_32)
+    endif()
+    if (MSVC)
+        target_sources(dhtcnode PRIVATE ${MSC_COMPAT_SOURCES})
+        target_link_libraries(dhtcnode PRIVATE unofficial::readline-win32::readline)
+        target_include_directories (dhtcnode SYSTEM PRIVATE ${MSC_COMPAT_DIR} ${MSVC_COMPAT_DIR})
+    endif()
+endif ()
+
+if (NOT DEFINED CMAKE_INSTALL_BINDIR)
+    set(CMAKE_INSTALL_BINDIR bin)
+endif ()
+
+install (TARGETS dna-nodus RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if (OPENDHT_EXAMPLES)
+    install (TARGETS dhtscanner dhtchat RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif ()
+if(MSVC)
+    install(FILES $<TARGET_PDB_FILE:dna-nodus> CONFIGURATIONS "Debug" "RelWithDebInfo" DESTINATION ${CMAKE_INSTALL_BINDIR})
+    if (OPENDHT_EXAMPLES)
+        install(FILES $<TARGET_PDB_FILE:dhtscanner> $<TARGET_PDB_FILE:dhtchat> CONFIGURATIONS "Debug" "RelWithDebInfo" DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
+endif()
+
+if (OPENDHT_SYSTEMD)
+    if (NOT DEFINED OPENDHT_SYSTEMD_UNIT_FILE_LOCATION OR NOT OPENDHT_SYSTEMD_UNIT_FILE_LOCATION)
+        execute_process(COMMAND ${PKG_CONFIG_EXECUTABLE} systemd --variable=systemdsystemunitdir
+                        OUTPUT_VARIABLE SYSTEMD_UNIT_INSTALL_DIR)
+        message("-- Using Systemd unit installation directory by pkg-config: " ${SYSTEMD_UNIT_INSTALL_DIR})
+    else()
+        message("-- Using Systemd unit installation directory requested: " ${OPENDHT_SYSTEMD_UNIT_FILE_LOCATION})
+        set(SYSTEMD_UNIT_INSTALL_DIR ${OPENDHT_SYSTEMD_UNIT_FILE_LOCATION})
+    endif()
+
+    configure_file (
+        systemd/dhtnode.service.in
+        systemd/dhtnode.service
+        @ONLY
+    )
+    if (SYSTEMD_UNIT_INSTALL_DIR)
+        string(REGEX REPLACE "[ \t\n]+" "" SYSTEMD_UNIT_INSTALL_DIR "${SYSTEMD_UNIT_INSTALL_DIR}")
+        set (systemdunitdir "${SYSTEMD_UNIT_INSTALL_DIR}")
+        install (FILES ${CMAKE_CURRENT_BINARY_DIR}/systemd/dhtnode.service DESTINATION ${systemdunitdir})
+        install (FILES systemd/dhtnode.conf DESTINATION ${sysconfdir})
+    else()
+        message(WARNING "Systemd unit installation directory not found. The systemd unit won't be installed.")
+    endif()
+
+    if (OPENDHT_PYTHON)
+        configure_file (
+            systemd/dhtcluster.service.in
+            systemd/dhtcluster.service
+            @ONLY
+        )
+        if (SYSTEMD_UNIT_INSTALL_DIR)
+            install (FILES ${CMAKE_CURRENT_BINARY_DIR}/systemd/dhtcluster.service DESTINATION ${systemdunitdir})
+            install (FILES systemd/dhtcluster.conf DESTINATION ${sysconfdir})
+        endif()
+    endif()
+endif ()

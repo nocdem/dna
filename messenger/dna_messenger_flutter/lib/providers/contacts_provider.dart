@@ -1,0 +1,440 @@
+// Contacts Provider - Contact list state management
+import 'dart:async';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../ffi/dna_engine.dart';
+import 'engine_provider.dart';
+import 'contact_profile_cache_provider.dart';
+
+/// Contact list provider
+final contactsProvider = AsyncNotifierProvider<ContactsNotifier, List<Contact>>(
+  ContactsNotifier.new,
+);
+
+class ContactsNotifier extends AsyncNotifier<List<Contact>> {
+  // Debounce timer for batching presence updates
+  Timer? _presenceDebounceTimer;
+  // Pending presence updates to apply
+  final Map<String, DateTime> _pendingPresenceUpdates = {};
+  // Track if initial presence load has been triggered
+  bool _initialLoadTriggered = false;
+
+  @override
+  Future<List<Contact>> build() async {
+    // Only fetch if identity is loaded (for initial launch / after logout)
+    final identityLoaded = ref.watch(identityLoadedProvider);
+    if (!identityLoaded) {
+      // Reset initial load flag when identity is unloaded
+      _initialLoadTriggered = false;
+      // Defer state modification to avoid "modifying provider during build" error
+      Future.microtask(() {
+        ref.read(appFullyReadyProvider.notifier).state = false;
+      });
+      // v0.100.82: Preserve previous data during engine lifecycle transitions
+      // This prevents "flash of empty" when engine is destroyed/recreated
+      return state.valueOrNull ?? [];
+    }
+
+    // v0.100.87: STALE-WHILE-REVALIDATE - check engine state without blocking
+    final engineAsync = ref.watch(engineProvider);
+    final cachedContacts = state.valueOrNull;
+
+    // If engine is loading but we have cached data, return cached (no spinner)
+    if (engineAsync is AsyncLoading && cachedContacts != null && cachedContacts.isNotEmpty) {
+      return cachedContacts;
+    }
+
+    final engine = await ref.watch(engineProvider.future);
+    final contacts = await engine.getContacts();
+
+    // Stable sort: online first, then by name (won't change on presence updates)
+    final sortedContacts = List<Contact>.from(contacts);
+    sortedContacts.sort((a, b) {
+      if (a.isOnline != b.isOnline) {
+        return a.isOnline ? -1 : 1;
+      }
+      return a.displayName.compareTo(b.displayName);
+    });
+
+    // Prefetch contact profiles in background (for avatars, display names)
+    if (sortedContacts.isNotEmpty) {
+      final fingerprints = sortedContacts.map((c) => c.fingerprint).toList();
+      ref.read(contactProfileCacheProvider.notifier).prefetchProfiles(fingerprints);
+    }
+
+    // Start presence lookups in background (non-blocking)
+    // Mark as initial load only on first build after identity loads
+    final isInitialLoad = !_initialLoadTriggered;
+    _initialLoadTriggered = true;
+    _updatePresenceInBackground(engine, sortedContacts, isInitialLoad: isInitialLoad);
+
+    return sortedContacts;
+  }
+
+  /// Update presence for contacts in background, updating state as data arrives
+  /// Called on initial load and manual refresh only (background polling handled by EventHandler)
+  Future<void> _updatePresenceInBackground(
+    DnaEngine engine,
+    List<Contact> contacts, {
+    bool forceRefresh = false,
+    bool isInitialLoad = false,
+  }) async {
+    if (contacts.isEmpty) {
+      // No contacts - mark app as ready immediately
+      // Defer state modification to avoid "modifying provider during build" error
+      if (isInitialLoad) {
+        Future.microtask(() {
+          ref.read(appFullyReadyProvider.notifier).state = true;
+        });
+      }
+      return;
+    }
+
+    // Query presence for all contacts in parallel
+    final presenceFutures = <Future<void>>[];
+    for (final contact in contacts) {
+      final future = _lookupSinglePresence(engine, contact.fingerprint).then((lastSeen) {
+        if (lastSeen != null && lastSeen.millisecondsSinceEpoch > 0) {
+          _updateContactPresence(contact.fingerprint, lastSeen);
+        }
+      });
+      presenceFutures.add(future);
+    }
+
+    // Wait for ALL initial DHT operations to complete before showing UI
+    if (isInitialLoad) {
+      _completeInitialLoad(engine, presenceFutures);
+    }
+  }
+
+  /// Complete initial load: mark app ready immediately, DHT ops continue in background
+  /// v0.100.71: Non-blocking for faster startup (<2s instead of 5-15s)
+  Future<void> _completeInitialLoad(DnaEngine engine, List<Future<void>> presenceFutures) async {
+    // Mark app as ready IMMEDIATELY - don't wait for DHT operations
+    // UI will show "Syncing..." for contacts until presence data arrives
+    Future.microtask(() {
+      ref.read(appFullyReadyProvider.notifier).state = true;
+    });
+
+    // Continue presence lookups in background (non-blocking, reduced timeout)
+    try {
+      await Future.wait(presenceFutures).timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // Timeout or error - presence will update on next poll
+    }
+
+    // Offline message check in background (non-blocking, reduced timeout)
+    try {
+      await engine.checkOfflineMessages().timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // Timeout or error - messages will arrive on next poll
+    }
+  }
+
+  /// Lookup presence for a single contact with timeout
+  Future<DateTime?> _lookupSinglePresence(DnaEngine engine, String fingerprint) async {
+    try {
+      return await engine
+          .lookupPresence(fingerprint)
+          .timeout(const Duration(seconds: 5));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Queue a presence update and debounce the re-sort
+  void _updateContactPresence(String fingerprint, DateTime lastSeen) {
+    // Collect the update
+    _pendingPresenceUpdates[fingerprint] = lastSeen;
+
+    // Cancel existing timer and start a new one
+    _presenceDebounceTimer?.cancel();
+    _presenceDebounceTimer = Timer(const Duration(milliseconds: 300), () {
+      _applyPendingPresenceUpdates();
+    });
+  }
+
+  /// Apply all pending presence updates WITHOUT re-sorting
+  /// This prevents the "bouncing" effect when presence data arrives
+  void _applyPendingPresenceUpdates() {
+    if (_pendingPresenceUpdates.isEmpty) return;
+
+    final currentState = state.valueOrNull;
+    if (currentState == null) {
+      _pendingPresenceUpdates.clear();
+      return;
+    }
+
+    // Check if any presence data actually changed
+    bool hasChanges = false;
+    for (final entry in _pendingPresenceUpdates.entries) {
+      final fingerprint = entry.key;
+      final lastSeen = entry.value;
+      final contact = currentState.firstWhere(
+        (c) => c.fingerprint == fingerprint,
+        orElse: () => Contact(fingerprint: '', displayName: '', nickname: '', isOnline: false, lastSeen: DateTime.fromMillisecondsSinceEpoch(0)),
+      );
+      // Only count as change if lastSeen differs by more than 1 minute
+      // This prevents unnecessary updates for small time differences
+      if (contact.fingerprint.isNotEmpty &&
+          (contact.lastSeen.millisecondsSinceEpoch == 0 ||
+           (lastSeen.difference(contact.lastSeen).inMinutes.abs() > 1))) {
+        hasChanges = true;
+        break;
+      }
+    }
+
+    if (!hasChanges) {
+      _pendingPresenceUpdates.clear();
+      return;
+    }
+
+    // Apply updates without changing order (preserve current sort)
+    final updated = List<Contact>.from(currentState);
+    final selectedContact = ref.read(selectedContactProvider);
+
+    for (final entry in _pendingPresenceUpdates.entries) {
+      final fingerprint = entry.key;
+      final lastSeen = entry.value;
+
+      final index = updated.indexWhere((c) => c.fingerprint == fingerprint);
+      if (index != -1) {
+        final contact = updated[index];
+        final updatedContact = Contact(
+          fingerprint: contact.fingerprint,
+          displayName: contact.displayName,
+          nickname: contact.nickname,
+          isOnline: contact.isOnline,
+          lastSeen: lastSeen,
+        );
+        updated[index] = updatedContact;
+
+        // Also update selectedContactProvider if this is the currently selected contact
+        if (selectedContact != null && selectedContact.fingerprint == fingerprint) {
+          ref.read(selectedContactProvider.notifier).state = updatedContact;
+        }
+      }
+    }
+
+    _pendingPresenceUpdates.clear();
+
+    // DON'T re-sort here - keep stable order to prevent bouncing
+    // Sort is only done on initial load and when online status changes
+    state = AsyncValue.data(updated);
+  }
+
+  /// Refresh contacts without showing loading state (seamless update)
+  /// Keeps existing data visible while fetching new data to prevent "bouncing"
+  Future<void> refresh() async {
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final contacts = await engine.getContacts();
+
+      // Stable sort: online first, then by name
+      final sortedContacts = List<Contact>.from(contacts);
+      sortedContacts.sort((a, b) {
+        if (a.isOnline != b.isOnline) {
+          return a.isOnline ? -1 : 1;
+        }
+        return a.displayName.compareTo(b.displayName);
+      });
+
+      // Prefetch contact profiles in background
+      if (sortedContacts.isNotEmpty) {
+        final fingerprints = sortedContacts.map((c) => c.fingerprint).toList();
+        ref.read(contactProfileCacheProvider.notifier).prefetchProfiles(fingerprints);
+      }
+
+      // Start presence lookups in background (non-blocking)
+      // Force refresh on manual refresh to bypass throttle
+      _updatePresenceInBackground(engine, sortedContacts, forceRefresh: true);
+
+      // Sync selectedContactProvider with refreshed data (prevents showing stale lastSeen)
+      final selectedContact = ref.read(selectedContactProvider);
+      if (selectedContact != null) {
+        final refreshedContact = sortedContacts.firstWhere(
+          (c) => c.fingerprint == selectedContact.fingerprint,
+          orElse: () => selectedContact,
+        );
+        if (refreshedContact.fingerprint == selectedContact.fingerprint) {
+          ref.read(selectedContactProvider.notifier).state = refreshedContact;
+        }
+      }
+
+      // Atomic swap - only update state once we have new data
+      state = AsyncValue.data(sortedContacts);
+    } catch (e, st) {
+      // Only set error if we don't have existing data
+      if (state.valueOrNull == null) {
+        state = AsyncValue.error(e, st);
+      }
+      // Otherwise keep showing existing data (silent failure)
+    }
+  }
+
+  Future<void> addContact(String identifier) async {
+    final engine = await ref.read(engineProvider.future);
+    await engine.addContact(identifier);
+    await refresh();
+    // v0.6.26: Outbox listener is now started in C after adding contact
+    // This avoids blocking UI with listenAllContacts() which waits for DHT
+  }
+
+  Future<void> removeContact(String fingerprint) async {
+    final engine = await ref.read(engineProvider.future);
+    await engine.removeContact(fingerprint);
+    await refresh();
+  }
+
+  /// Set a local nickname for a contact (local-only, not synced to DHT)
+  Future<void> setContactNickname(String fingerprint, String? nickname) async {
+    final engine = await ref.read(engineProvider.future);
+    engine.setContactNickname(fingerprint, nickname);
+    await refresh(); // Refresh to show updated display name
+  }
+
+  void updateContactStatus(String fingerprint, bool isOnline) {
+    if (fingerprint.isEmpty) {
+      return;
+    }
+
+    state.whenData((contacts) {
+      final index = contacts.indexWhere((c) => c.fingerprint == fingerprint);
+      if (index != -1) {
+        final contact = contacts[index];
+
+        // Skip update if status hasn't actually changed
+        if (contact.isOnline == isOnline) {
+          return;
+        }
+
+        final updated = List<Contact>.from(contacts);
+        updated[index] = Contact(
+          fingerprint: contact.fingerprint,
+          displayName: contact.displayName,
+          nickname: contact.nickname,
+          isOnline: isOnline,
+          lastSeen: isOnline ? DateTime.now() : contact.lastSeen,
+        );
+
+        // Only re-sort when online status changes (stable sort: online first, then by name)
+        updated.sort((a, b) {
+          if (a.isOnline != b.isOnline) {
+            return a.isOnline ? -1 : 1;
+          }
+          return a.displayName.compareTo(b.displayName);
+        });
+        state = AsyncValue.data(updated);
+      }
+    });
+  }
+}
+
+/// Currently selected contact for chat
+final selectedContactProvider = StateProvider<Contact?>((ref) => null);
+
+/// Unread message counts per contact (fingerprint -> count)
+final unreadCountsProvider = AsyncNotifierProvider<UnreadCountsNotifier, Map<String, int>>(
+  UnreadCountsNotifier.new,
+);
+
+class UnreadCountsNotifier extends AsyncNotifier<Map<String, int>> {
+  @override
+  Future<Map<String, int>> build() async {
+    // Only fetch if identity is loaded
+    final identityLoaded = ref.watch(identityLoadedProvider);
+    if (!identityLoaded) {
+      // v0.100.82: Preserve previous data during engine lifecycle transitions
+      return state.valueOrNull ?? {};
+    }
+
+    final engine = await ref.watch(engineProvider.future);
+    // Use ref.read instead of ref.watch to prevent automatic rebuilds
+    // when contacts change. We manage unread counts via incrementCount/clearCount.
+    final contacts = await ref.read(contactsProvider.future);
+
+    final counts = <String, int>{};
+    for (final contact in contacts) {
+      final count = engine.getUnreadCount(contact.fingerprint);
+      if (count > 0) {
+        counts[contact.fingerprint] = count;
+      }
+    }
+    return counts;
+  }
+
+  Future<void> refresh() async {
+    state = const AsyncValue.loading();
+    state = await AsyncValue.guard(() async {
+      final engine = await ref.read(engineProvider.future);
+      final contacts = await ref.read(contactsProvider.future);
+
+      final counts = <String, int>{};
+      for (final contact in contacts) {
+        final count = engine.getUnreadCount(contact.fingerprint);
+        if (count > 0) {
+          counts[contact.fingerprint] = count;
+        }
+      }
+      return counts;
+    });
+  }
+
+  /// Update count for a single contact (used when message received)
+  void incrementCount(String fingerprint) {
+    final currentState = state;
+    if (currentState is AsyncData<Map<String, int>>) {
+      final counts = currentState.value;
+      final updated = Map<String, int>.from(counts);
+      updated[fingerprint] = (updated[fingerprint] ?? 0) + 1;
+      state = AsyncValue.data(updated);
+    } else {
+      // State not ready (loading/error) - initialize with this count
+      // This ensures we don't lose the increment during startup race
+      state = AsyncValue.data({fingerprint: 1});
+    }
+  }
+
+  /// Set count for a contact to a specific value (used when syncing from DB)
+  void setCount(String fingerprint, int count) {
+    final currentState = state;
+    if (currentState is AsyncData<Map<String, int>>) {
+      final counts = currentState.value;
+      final currentCount = counts[fingerprint] ?? 0;
+      // Only update if DB count is different (avoid unnecessary rebuilds)
+      if (currentCount != count) {
+        final updated = Map<String, int>.from(counts);
+        if (count > 0) {
+          updated[fingerprint] = count;
+        } else {
+          updated.remove(fingerprint);
+        }
+        state = AsyncValue.data(updated);
+      }
+    } else {
+      // State not ready - initialize with this count
+      if (count > 0) {
+        state = AsyncValue.data({fingerprint: count});
+      }
+    }
+  }
+
+  /// Clear count for a contact (used when conversation opened)
+  void clearCount(String fingerprint) {
+    state.whenData((counts) {
+      if (counts.containsKey(fingerprint)) {
+        final updated = Map<String, int>.from(counts);
+        updated.remove(fingerprint);
+        state = AsyncValue.data(updated);
+      }
+    });
+  }
+}
+
+/// Get total unread count across all contacts
+final totalUnreadCountProvider = Provider<int>((ref) {
+  final countsAsync = ref.watch(unreadCountsProvider);
+  return countsAsync.maybeWhen(
+    data: (counts) => counts.values.fold(0, (sum, count) => sum + count),
+    orElse: () => 0,
+  );
+});

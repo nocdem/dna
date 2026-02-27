@@ -1,0 +1,610 @@
+# DNA Messenger CI/CD Pipeline
+# Builds Flutter app for Linux, Windows, Android, macOS
+# Uses instrumentisto/flutter for Android/Linux/Web builds
+
+workflow:
+  rules:
+    # Run when triggered from GitLab web UI
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: always
+    # Run when commit message contains [BUILD]
+    - if: $CI_COMMIT_MESSAGE =~ /\[BUILD\]/
+      when: always
+    # Otherwise skip
+    - when: never
+
+stages:
+  - build-native
+  - build-flutter
+  - deploy
+
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+  CMAKE_BUILD_TYPE: Release
+  DEBIAN_FRONTEND: noninteractive
+  FLUTTER_VERSION: "3.38"
+
+# =============================================================================
+# STAGE 1: Build Native Libraries (dna_lib)
+# =============================================================================
+
+# Build native library for Linux x64
+build:native-linux-x64:
+  stage: build-native
+  tags:
+    - linux
+  image: ubuntu:24.04
+  cache:
+    key: opendht-linux-x64-ubuntu2404-v1
+    paths:
+      - .cache/opendht/
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq build-essential cmake git pkg-config xxd wget tar
+    # Core dependencies
+    - apt-get install -y -qq libssl-dev libcurl4-openssl-dev libjson-c-dev libsqlite3-dev libzstd-dev
+    # OpenDHT build dependencies
+    - apt-get install -y -qq libgnutls28-dev libargon2-dev libmsgpack-dev libreadline-dev libncurses5-dev nettle-dev libjsoncpp-dev libfmt-dev libasio-dev libhttp-parser-dev libcppunit-dev
+    # Flutter Linux desktop dependencies
+    - apt-get install -y -qq libgtk-3-dev libblkid-dev liblzma-dev libsecret-1-dev
+    # Build OpenDHT from source
+    - |
+      export HOME="${CI_PROJECT_DIR}"
+      if [ ! -f ".cache/opendht/lib/libopendht.a" ]; then
+        mkdir -p .cache/opendht-src && cd .cache/opendht-src
+        git clone --depth 1 --branch v3.2.0 https://github.com/savoirfairelinux/opendht.git || true
+        cd opendht && mkdir -p build && cd build
+        cmake .. -DCMAKE_INSTALL_PREFIX=${CI_PROJECT_DIR}/.cache/opendht \
+                 -DCMAKE_BUILD_TYPE=Release \
+                 -DOPENDHT_PYTHON=OFF \
+                 -DOPENDHT_TOOLS=OFF \
+                 -DBUILD_SHARED_LIBS=OFF
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    - export PKG_CONFIG_PATH="${CI_PROJECT_DIR}/.cache/opendht/lib/pkgconfig:$PKG_CONFIG_PATH"
+    - export CMAKE_PREFIX_PATH="${CI_PROJECT_DIR}/.cache/opendht:$CMAKE_PREFIX_PATH"
+  script:
+    - mkdir -p build && cd build
+    - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF
+    - make -j$(nproc) dna_lib
+    - mkdir -p ${CI_PROJECT_DIR}/native-libs/linux-x64
+    - cp libdna_lib.so ${CI_PROJECT_DIR}/native-libs/linux-x64/
+  artifacts:
+    paths:
+      - native-libs/linux-x64/
+    expire_in: 1 day
+
+# Build native library for Android (arm64-v8a)
+# This builds all dependencies from source for Android cross-compilation
+build:native-android-arm64:
+  stage: build-native
+  tags:
+    - linux
+  image: ubuntu:24.04
+  timeout: 3h
+  variables:
+    ANDROID_NDK_VERSION: "26b"
+    ANDROID_API_LEVEL: "24"
+    ANDROID_ABI: "arm64-v8a"
+  cache:
+    key: android-deps-arm64-v14
+    policy: pull-push
+    paths:
+      - .cache/android-ndk/
+      - .cache/android-deps/
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq build-essential cmake git pkg-config xxd wget unzip autoconf automake libtool python3 ninja-build m4 texinfo
+    # Download Android NDK
+    - |
+      export HOME="${CI_PROJECT_DIR}"
+      if [ ! -d ".cache/android-ndk/android-ndk-r${ANDROID_NDK_VERSION}" ]; then
+        mkdir -p .cache/android-ndk && cd .cache/android-ndk
+        wget -q https://dl.google.com/android/repository/android-ndk-r${ANDROID_NDK_VERSION}-linux.zip
+        unzip -q android-ndk-r${ANDROID_NDK_VERSION}-linux.zip
+        rm -f android-ndk-r${ANDROID_NDK_VERSION}-linux.zip
+        cd "${CI_PROJECT_DIR}"
+      fi
+    - export ANDROID_NDK_HOME="${CI_PROJECT_DIR}/.cache/android-ndk/android-ndk-r${ANDROID_NDK_VERSION}"
+    - export TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64"
+    - export TARGET="aarch64-linux-android"
+    - export API="${ANDROID_API_LEVEL}"
+    - export AR="${TOOLCHAIN}/bin/llvm-ar"
+    - export CC="${TOOLCHAIN}/bin/${TARGET}${API}-clang"
+    - export CXX="${TOOLCHAIN}/bin/${TARGET}${API}-clang++"
+    - export LD="${TOOLCHAIN}/bin/ld"
+    - export RANLIB="${TOOLCHAIN}/bin/llvm-ranlib"
+    - export STRIP="${TOOLCHAIN}/bin/llvm-strip"
+    - export PATH="${TOOLCHAIN}/bin:$PATH"
+    # AndroidBuild.cmake expects deps in $HOME/android-deps
+    - export HOME="${CI_PROJECT_DIR}/.cache"
+    - export DEPS_DIR="${HOME}/android-deps"
+    - mkdir -p "${DEPS_DIR}"
+    # Build GMP for Android (needed by GnuTLS/nettle)
+    - |
+      if [ ! -f "${DEPS_DIR}/gmp-arm64/lib/libgmp.a" ]; then
+        echo "Building GMP for Android..."
+        cd /tmp && rm -rf gmp-6.3.0*
+        wget -q https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz
+        tar xf gmp-6.3.0.tar.xz && cd gmp-6.3.0
+        ./configure --host=aarch64-linux-android \
+          --prefix="${DEPS_DIR}/gmp-arm64" \
+          --enable-static --disable-shared --with-pic \
+          CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" \
+          CFLAGS="-fPIC"
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build Nettle for Android (needed by GnuTLS)
+    - |
+      if [ ! -f "${DEPS_DIR}/nettle-arm64/lib/libnettle.a" ]; then
+        echo "Building Nettle for Android..."
+        cd /tmp && rm -rf nettle-3.10*
+        wget -q https://ftp.gnu.org/gnu/nettle/nettle-3.10.tar.gz
+        tar xzf nettle-3.10.tar.gz && cd nettle-3.10
+        ./configure --host=aarch64-linux-android \
+          --prefix="${DEPS_DIR}/nettle-arm64" \
+          --enable-static --disable-shared \
+          --disable-documentation \
+          --with-lib-path="${DEPS_DIR}/gmp-arm64/lib" \
+          --with-include-path="${DEPS_DIR}/gmp-arm64/include" \
+          CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" \
+          CFLAGS="-fPIC -I${DEPS_DIR}/gmp-arm64/include" \
+          LDFLAGS="-L${DEPS_DIR}/gmp-arm64/lib"
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build libtasn1 for Android (needed by GnuTLS)
+    - |
+      if [ ! -f "${DEPS_DIR}/libtasn1-arm64/lib/libtasn1.a" ]; then
+        echo "Building libtasn1 for Android..."
+        cd /tmp && rm -rf libtasn1-4.19.0*
+        wget -q https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.19.0.tar.gz
+        tar xzf libtasn1-4.19.0.tar.gz && cd libtasn1-4.19.0
+        ./configure --host=aarch64-linux-android \
+          --prefix="${DEPS_DIR}/libtasn1-arm64" \
+          --enable-static --disable-shared \
+          CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" \
+          CFLAGS="-fPIC"
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build GnuTLS for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/gnutls-arm64/lib/libgnutls.a" ]; then
+        echo "Building GnuTLS for Android..."
+        cd /tmp && rm -rf gnutls-3.8.7*
+        wget -q https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.7.tar.xz
+        tar xf gnutls-3.8.7.tar.xz && cd gnutls-3.8.7
+        ./configure --host=aarch64-linux-android \
+          --prefix="${DEPS_DIR}/gnutls-arm64" \
+          --enable-static --disable-shared \
+          --disable-tools --disable-tests --disable-doc \
+          --disable-cxx --disable-nls \
+          --without-p11-kit --without-tpm --without-tpm2 \
+          --with-included-libtasn1=no \
+          --with-included-unistring \
+          GMP_CFLAGS="-I${DEPS_DIR}/gmp-arm64/include" \
+          GMP_LIBS="-L${DEPS_DIR}/gmp-arm64/lib -lgmp" \
+          NETTLE_CFLAGS="-I${DEPS_DIR}/nettle-arm64/include" \
+          NETTLE_LIBS="-L${DEPS_DIR}/nettle-arm64/lib -lnettle" \
+          HOGWEED_CFLAGS="-I${DEPS_DIR}/nettle-arm64/include" \
+          HOGWEED_LIBS="-L${DEPS_DIR}/nettle-arm64/lib -lhogweed -L${DEPS_DIR}/gmp-arm64/lib -lgmp" \
+          LIBTASN1_CFLAGS="-I${DEPS_DIR}/libtasn1-arm64/include" \
+          LIBTASN1_LIBS="-L${DEPS_DIR}/libtasn1-arm64/lib -ltasn1" \
+          CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" \
+          CFLAGS="-fPIC -I${DEPS_DIR}/gmp-arm64/include -I${DEPS_DIR}/nettle-arm64/include -I${DEPS_DIR}/libtasn1-arm64/include" \
+          LDFLAGS="-L${DEPS_DIR}/gmp-arm64/lib -L${DEPS_DIR}/nettle-arm64/lib -L${DEPS_DIR}/libtasn1-arm64/lib"
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build argon2 for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/argon2-arm64/lib/libargon2.a" ]; then
+        echo "Building argon2 for Android..."
+        cd /tmp && rm -rf phc-winner-argon2-*
+        wget -q https://github.com/P-H-C/phc-winner-argon2/archive/refs/tags/20190702.tar.gz -O argon2.tar.gz
+        tar xzf argon2.tar.gz && cd phc-winner-argon2-20190702
+        make CC="${CC}" AR="${AR}" CFLAGS="-fPIC -Iinclude" LIBRARY_REL=lib PREFIX="${DEPS_DIR}/argon2-arm64" OPTTARGET=none libargon2.a
+        mkdir -p "${DEPS_DIR}/argon2-arm64/lib" "${DEPS_DIR}/argon2-arm64/include"
+        cp libargon2.a "${DEPS_DIR}/argon2-arm64/lib/"
+        cp include/argon2.h "${DEPS_DIR}/argon2-arm64/include/"
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build fmt for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/fmt-arm64/lib/libfmt.a" ]; then
+        echo "Building fmt for Android..."
+        cd /tmp && rm -rf fmt-*
+        wget -q https://github.com/fmtlib/fmt/archive/refs/tags/10.2.1.tar.gz -O fmt.tar.gz
+        tar xzf fmt.tar.gz && cd fmt-10.2.1 && mkdir build && cd build
+        cmake .. \
+          -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=${ANDROID_ABI} \
+          -DANDROID_PLATFORM=android-${API} \
+          -DANDROID_STL=c++_static \
+          -DCMAKE_INSTALL_PREFIX="${DEPS_DIR}/fmt-arm64" \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DFMT_TEST=OFF
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Download ASIO (header-only)
+    - |
+      if [ ! -d "${DEPS_DIR}/asio-1.30.2" ]; then
+        echo "Downloading ASIO..."
+        cd /tmp && rm -rf asio-*
+        wget -q https://sourceforge.net/projects/asio/files/asio/1.30.2%20%28Stable%29/asio-1.30.2.tar.gz/download -O asio.tar.gz
+        tar xzf asio.tar.gz
+        mkdir -p "${DEPS_DIR}/asio-1.30.2/include"
+        cp -r asio-1.30.2/include/* "${DEPS_DIR}/asio-1.30.2/include/"
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Download msgpack (header-only)
+    - |
+      if [ ! -d "${DEPS_DIR}/msgpack-arm64" ]; then
+        echo "Downloading msgpack..."
+        cd /tmp && rm -rf msgpack-*
+        wget -q https://github.com/msgpack/msgpack-c/releases/download/cpp-6.1.1/msgpack-cxx-6.1.1.tar.gz
+        tar xzf msgpack-cxx-6.1.1.tar.gz
+        mkdir -p "${DEPS_DIR}/msgpack-arm64/include"
+        cp -r msgpack-cxx-6.1.1/include/* "${DEPS_DIR}/msgpack-arm64/include/"
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build OpenSSL for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/openssl-arm64/lib/libcrypto.a" ]; then
+        echo "Building OpenSSL for Android..."
+        cd /tmp && rm -rf openssl-*
+        wget -q https://www.openssl.org/source/openssl-3.3.2.tar.gz
+        tar xzf openssl-3.3.2.tar.gz && cd openssl-3.3.2
+        export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}"
+        export PATH="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+        ./Configure android-arm64 no-shared no-tests \
+          --prefix="${DEPS_DIR}/openssl-arm64" \
+          -D__ANDROID_API__=${API}
+        make -j$(nproc)
+        make install_sw
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build SQLite for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/sqlite-arm64/lib/libsqlite3.a" ]; then
+        echo "Building SQLite for Android..."
+        cd /tmp && rm -rf sqlite-*
+        wget -q https://www.sqlite.org/2024/sqlite-autoconf-3460000.tar.gz
+        tar xzf sqlite-autoconf-3460000.tar.gz && cd sqlite-autoconf-3460000
+        ./configure --host=aarch64-linux-android \
+          --prefix="${DEPS_DIR}/sqlite-arm64" \
+          --enable-static --disable-shared \
+          CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" \
+          CFLAGS="-fPIC"
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build json-c for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/jsonc-arm64/lib/libjson-c.a" ]; then
+        echo "Building json-c for Android..."
+        cd /tmp && rm -rf json-c-*
+        wget -q https://github.com/json-c/json-c/archive/refs/tags/json-c-0.17-20230812.tar.gz
+        tar xzf json-c-0.17-20230812.tar.gz && cd json-c-json-c-0.17-20230812
+        mkdir build && cd build
+        cmake .. \
+          -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=${ANDROID_ABI} \
+          -DANDROID_PLATFORM=android-${API} \
+          -DANDROID_STL=c++_static \
+          -DCMAKE_INSTALL_PREFIX="${DEPS_DIR}/jsonc-arm64" \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DBUILD_STATIC_LIBS=ON
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build libcurl for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/curl-arm64/lib/libcurl.a" ]; then
+        echo "Building curl for Android..."
+        cd /tmp && rm -rf curl-*
+        wget -q https://curl.se/download/curl-8.10.1.tar.gz
+        tar xzf curl-8.10.1.tar.gz && cd curl-8.10.1
+        ./configure --host=aarch64-linux-android \
+          --prefix="${DEPS_DIR}/curl-arm64" \
+          --with-openssl="${DEPS_DIR}/openssl-arm64" \
+          --enable-static --disable-shared \
+          --disable-ldap --disable-ldaps --disable-rtsp \
+          --disable-dict --disable-telnet --disable-tftp \
+          --disable-pop3 --disable-imap --disable-smb \
+          --disable-smtp --disable-gopher --disable-mqtt \
+          --disable-manual --disable-docs \
+          --without-libidn2 --without-librtmp --without-libpsl \
+          CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" \
+          CFLAGS="-fPIC -I${DEPS_DIR}/openssl-arm64/include" \
+          LDFLAGS="-L${DEPS_DIR}/openssl-arm64/lib"
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build zstd for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/zstd-arm64/lib/libzstd.a" ]; then
+        echo "Building zstd for Android..."
+        cd /tmp && rm -rf zstd-*
+        wget -q https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz
+        tar xzf zstd-1.5.6.tar.gz && cd zstd-1.5.6/build/cmake
+        cmake . \
+          -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=${ANDROID_ABI} \
+          -DANDROID_PLATFORM=android-${API} \
+          -DANDROID_STL=c++_static \
+          -DCMAKE_INSTALL_PREFIX="${DEPS_DIR}/zstd-arm64" \
+          -DZSTD_BUILD_PROGRAMS=OFF \
+          -DZSTD_BUILD_SHARED=OFF \
+          -DZSTD_BUILD_STATIC=ON
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+  script:
+    - export ANDROID_NDK_HOME="${CI_PROJECT_DIR}/.cache/android-ndk/android-ndk-r${ANDROID_NDK_VERSION}"
+    - export HOME="${CI_PROJECT_DIR}/.cache"
+    - mkdir -p build-android && cd build-android
+    - |
+      cmake .. \
+        -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
+        -DANDROID_ABI=${ANDROID_ABI} \
+        -DANDROID_PLATFORM=android-${ANDROID_API_LEVEL} \
+        -DANDROID_STL=c++_static \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIB=ON
+    - make -j$(nproc) dna_lib
+    - mkdir -p ${CI_PROJECT_DIR}/native-libs/android-arm64
+    - cp libdna_lib.so ${CI_PROJECT_DIR}/native-libs/android-arm64/
+  artifacts:
+    paths:
+      - native-libs/android-arm64/
+    expire_in: 1 day
+
+# =============================================================================
+# STAGE 2: Build Flutter Apps
+# =============================================================================
+
+# Flutter Linux build
+build:flutter-linux:
+  stage: build-flutter
+  tags:
+    - linux
+  image: instrumentisto/flutter:${FLUTTER_VERSION}
+  needs:
+    - build:native-linux-x64
+  cache:
+    - key:
+        files:
+          - dna_messenger_flutter/pubspec.lock
+        prefix: flutter-pub-linux-v1
+      paths:
+        - .pub-cache/
+  variables:
+    PUB_CACHE: "${CI_PROJECT_DIR}/.pub-cache"
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq libgtk-3-dev libblkid-dev liblzma-dev libsecret-1-dev clang llvm lld cmake ninja-build pkg-config libfuse2 file binutils
+  script:
+    - cd dna_messenger_flutter
+    # Copy native library
+    - mkdir -p linux/libs
+    - cp ${CI_PROJECT_DIR}/native-libs/linux-x64/libdna_lib.so linux/libs/
+    # Build Flutter Linux app
+    - flutter pub upgrade
+    - flutter pub get
+    - flutter build linux --release
+    # Package as tarball
+    - mkdir -p ${CI_PROJECT_DIR}/dist/flutter-linux
+    - cp -r build/linux/x64/release/bundle/* ${CI_PROJECT_DIR}/dist/flutter-linux/
+    - cd ${CI_PROJECT_DIR}/dist && tar -czf dna-messenger-linux-${CI_COMMIT_SHORT_SHA}.tar.gz flutter-linux/
+    # Create AppImage
+    - cd ${CI_PROJECT_DIR}
+    - mkdir -p AppDir/usr/bin AppDir/usr/lib AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
+    - cp -r dna_messenger_flutter/build/linux/x64/release/bundle/* AppDir/usr/bin/
+    - cp native-libs/linux-x64/libdna_lib.so AppDir/usr/lib/
+    # Bundle libraries that libdna_lib.so depends on (using ldd)
+    # Exclude core system libs (libc, libm, libdl, libpthread, ld-linux) - these must come from the system
+    - ldd native-libs/linux-x64/libdna_lib.so | grep "=> /" | grep -v -E "libc\.|libm\.|libdl\.|libpthread\.|ld-linux" | awk '{print $3}' | xargs -I{} cp -L {} AppDir/usr/lib/ 2>/dev/null || true
+    - ls -la AppDir/usr/lib/
+    # Create desktop file
+    - |
+      cat > AppDir/usr/share/applications/dna-messenger.desktop << 'DESKTOP'
+      [Desktop Entry]
+      Name=DNA Messenger
+      Comment=Post-quantum encrypted P2P messenger
+      Exec=dna_messenger
+      Icon=dna-messenger
+      Type=Application
+      Categories=Network;InstantMessaging;Security;
+      DESKTOP
+    - cp AppDir/usr/share/applications/dna-messenger.desktop AppDir/
+    # Use app icon or create placeholder
+    - |
+      if [ -f dna_messenger_flutter/assets/icon.png ]; then
+        cp dna_messenger_flutter/assets/icon.png AppDir/usr/share/icons/hicolor/256x256/apps/dna-messenger.png
+        cp dna_messenger_flutter/assets/icon.png AppDir/dna-messenger.png
+      else
+        touch AppDir/dna-messenger.png
+        touch AppDir/usr/share/icons/hicolor/256x256/apps/dna-messenger.png
+      fi
+    # Create AppRun
+    - |
+      cat > AppDir/AppRun << 'APPRUN'
+      #!/bin/bash
+      SELF=$(readlink -f "$0")
+      HERE=${SELF%/*}
+      export LD_LIBRARY_PATH="${HERE}/usr/bin/lib:${HERE}/usr/lib:${LD_LIBRARY_PATH}"
+      cd "${HERE}/usr/bin"
+      exec "./dna_messenger" "$@"
+      APPRUN
+    - chmod +x AppDir/AppRun
+    # Download appimagetool and create AppImage
+    - wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
+    - chmod +x appimagetool
+    - ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir dist/dna-messenger-${CI_COMMIT_SHORT_SHA}-x86_64.AppImage
+  artifacts:
+    name: "dna-messenger-linux-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - dist/*.tar.gz
+      - dist/*.AppImage
+    expire_in: 1 day
+
+# Flutter Android build
+build:flutter-android:
+  stage: build-flutter
+  tags:
+    - linux
+  image: instrumentisto/flutter:${FLUTTER_VERSION}
+  needs:
+    - build:native-android-arm64
+  cache:
+    - key:
+        files:
+          - dna_messenger_flutter/pubspec.lock
+        prefix: flutter-pub-android-v1
+      paths:
+        - .pub-cache/
+    - key:
+        files:
+          - dna_messenger_flutter/android/build.gradle
+          - dna_messenger_flutter/android/app/build.gradle
+        prefix: gradle-v1
+      paths:
+        - .gradle/
+  variables:
+    GRADLE_USER_HOME: "${CI_PROJECT_DIR}/.gradle"
+    PUB_CACHE: "${CI_PROJECT_DIR}/.pub-cache"
+  script:
+    - cd dna_messenger_flutter
+    # Copy native library to jniLibs
+    - mkdir -p android/app/src/main/jniLibs/arm64-v8a
+    - cp ${CI_PROJECT_DIR}/native-libs/android-arm64/libdna_lib.so android/app/src/main/jniLibs/arm64-v8a/
+    # Build APK
+    - flutter pub upgrade
+    - flutter pub get
+    - flutter build apk --release
+    # Package
+    - mkdir -p ${CI_PROJECT_DIR}/dist
+    - cp build/app/outputs/flutter-apk/app-release.apk ${CI_PROJECT_DIR}/dist/dna-messenger-android-${CI_COMMIT_SHORT_SHA}.apk
+  artifacts:
+    name: "dna-messenger-android-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - dist/*.apk
+    expire_in: 1 day
+
+# Full Windows build (native lib + Flutter) on Windows runner
+# Uses MSYS2/MinGW for native lib (GCC compatible), Flutter for app
+# Prerequisites on runner: MSYS2 with mingw-w64 packages, Flutter SDK
+build:windows:
+  stage: build-native
+  tags:
+    - windows
+  timeout: 2h
+  variables:
+    GIT_SUBMODULE_STRATEGY: recursive
+    MSYS2_PATH: C:\tools\msys64
+    GIT_CONFIG_PARAMETERS: "'core.longPaths=true'"
+  before_script:
+    # Clean Flutter build to avoid long path issues with cached files
+    - if (Test-Path dna_messenger_flutter\build) { Remove-Item -Recurse -Force dna_messenger_flutter\build -ErrorAction SilentlyContinue }
+  script:
+    # Build native library with MSYS2/MinGW
+    - $env:MSYSTEM = "MINGW64"
+    - C:\tools\msys64\usr\bin\bash.exe -lc "export PATH=/mingw64/bin:/usr/bin:$PATH && cd '$env:CI_PROJECT_DIR' && mkdir -p build-windows && cd build-windows && cmake .. -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF -DOPENDHT_DOWNLOAD_DEPS=OFF && mingw32-make -j4 dna_lib"
+    # Copy native library to Flutter
+    - mkdir -p dna_messenger_flutter\windows\libs
+    - copy build-windows\libdna_lib.dll dna_messenger_flutter\windows\libs\dna_lib.dll
+    # Build Flutter Windows app (requires LongPathsEnabled in registry)
+    - cd dna_messenger_flutter
+    - flutter pub upgrade
+    - flutter pub get
+    - flutter build windows --release
+    # Package
+    - mkdir -p ..\dist\flutter-windows
+    - xcopy /E /I build\windows\x64\runner\Release ..\dist\flutter-windows
+    - copy windows\libs\dna_lib.dll ..\dist\flutter-windows\
+    # Bundle MinGW runtime DLLs that dna_lib.dll depends on
+    - cd ..
+    - copy C:\tools\msys64\mingw64\bin\*.dll dist\flutter-windows\
+    # Check artifact size
+    - powershell -Command "(Get-ChildItem -Path dist\flutter-windows -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB"
+    # Build Windows installer with Inno Setup (pre-installed on runner)
+    - '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion="${CI_COMMIT_SHORT_SHA}" scripts\installer.iss'
+    - move dist\dna-messenger-setup.exe dist\dna-messenger-setup-${CI_COMMIT_SHORT_SHA}.exe
+  artifacts:
+    name: "dna-messenger-windows-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - dist/flutter-windows/
+      - dist/dna-messenger-setup-*.exe
+    expire_in: 1 day
+  allow_failure: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: always
+
+# Flutter macOS build (requires macOS runner)
+build:flutter-macos:
+  stage: build-flutter
+  tags:
+    - macos
+  before_script:
+    # Ensure Flutter is installed via Homebrew or direct download
+    - brew install flutter || true
+    - flutter doctor
+  script:
+    - cd dna_messenger_flutter
+    # Build native library for macOS first
+    - cd ${CI_PROJECT_DIR}
+    - mkdir -p build-macos && cd build-macos
+    - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
+    - make -j$(sysctl -n hw.ncpu) dna_lib
+    # Copy to Flutter
+    - cd ${CI_PROJECT_DIR}/dna_messenger_flutter
+    - mkdir -p macos/Frameworks
+    - cp ${CI_PROJECT_DIR}/build-macos/libdna_lib.dylib macos/Frameworks/
+    # Build Flutter macOS app
+    - flutter pub upgrade
+    - flutter pub get
+    - flutter build macos --release
+    # Package
+    - mkdir -p ${CI_PROJECT_DIR}/dist
+    - cd build/macos/Build/Products/Release
+    - zip -r ${CI_PROJECT_DIR}/dist/dna-messenger-macos-${CI_COMMIT_SHORT_SHA}.zip "DNA Messenger.app"
+  artifacts:
+    name: "dna-messenger-macos-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - dist/*.zip
+    expire_in: 1 day
+  allow_failure: true  # Requires macOS runner
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual  # Manual trigger for macOS builds
+
+# =============================================================================
+# STAGE 3: Deploy Artifacts to artifacts.cpunk.io
+# =============================================================================
+
+deploy:artifacts:
+  stage: deploy
+  tags:
+    - linux
+  image: alpine:latest
+  needs:
+    - job: build:flutter-linux
+      artifacts: true
+    - job: build:flutter-android
+      artifacts: true
+    - job: build:windows
+      artifacts: true
+      optional: true
+  script:
+    - chmod +x scripts/deploy-artifacts.sh
+    - sh scripts/deploy-artifacts.sh
+  rules:
+    # Only deploy to website when commit message contains [RELEASE]
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_MESSAGE =~ /\[RELEASE\]/
+      when: on_success

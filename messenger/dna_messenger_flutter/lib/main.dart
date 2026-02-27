@@ -1,0 +1,283 @@
+// DNA Messenger - Post-Quantum Encrypted P2P Messenger
+// Phase 14: DHT-only messaging with Android background support
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+import 'providers/providers.dart';
+import 'screens/screens.dart';
+import 'screens/lock/lock_screen.dart';
+import 'design_system/theme/dna_colors.dart';
+import 'design_system/theme/dna_theme.dart';
+import 'utils/window_state.dart';
+import 'utils/lifecycle_observer.dart';
+import 'utils/logger.dart';
+
+/// Global RouteObserver for screens that need to know when they're covered/uncovered
+/// Used by QrScannerScreen to stop camera when covered by another route
+final RouteObserver<ModalRoute<void>> routeObserver = RouteObserver<ModalRoute<void>>();
+
+void main() {
+  // Run app with error zone to capture uncaught exceptions
+  // All initialization must be inside the zone to avoid zone mismatch
+  runAppWithErrorLogging(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+
+    // Setup error handlers to capture exceptions to log file
+    setupErrorHandlers();
+
+    // Initialize SQLite FFI for desktop platforms
+    if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
+      sqfliteFfiInit();
+      databaseFactory = databaseFactoryFfi;
+    }
+
+    // Initialize window manager on desktop (restores position/size)
+    if (WindowStateManager.isDesktop) {
+      await windowStateManager.init();
+    }
+
+    runApp(
+      const ProviderScope(
+        child: DnaMessengerApp(),
+      ),
+    );
+  });
+}
+
+class DnaMessengerApp extends ConsumerWidget {
+  const DnaMessengerApp({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final themeMode = ref.watch(themeModeProvider);
+    return MaterialApp(
+      title: 'DNA Messenger',
+      debugShowCheckedModeBanner: false,
+      theme: DnaTheme.light(),
+      darkTheme: DnaTheme.dark(),
+      themeMode: themeMode,
+      navigatorObservers: [routeObserver],
+      home: const _AppLoader(),
+    );
+  }
+}
+
+/// App loader - initializes engine and shows loading screen
+/// Phase 14: Added lifecycle observer for resume/pause handling
+/// v0.3.0: Single-user model - auto-loads identity if exists, shows onboarding if not
+class _AppLoader extends ConsumerStatefulWidget {
+  const _AppLoader();
+
+  @override
+  ConsumerState<_AppLoader> createState() => _AppLoaderState();
+}
+
+class _AppLoaderState extends ConsumerState<_AppLoader> {
+  AppLifecycleObserver? _lifecycleObserver;
+  bool _autoLoadStarted = false;
+  bool _autoLoadComplete = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Set up lifecycle observer after first frame
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _lifecycleObserver = AppLifecycleObserver(ref);
+      WidgetsBinding.instance.addObserver(_lifecycleObserver!);
+    });
+  }
+
+  @override
+  void dispose() {
+    if (_lifecycleObserver != null) {
+      WidgetsBinding.instance.removeObserver(_lifecycleObserver!);
+    }
+    super.dispose();
+  }
+
+  /// Try to auto-load identity if one exists on disk (runs once at startup)
+  /// v0.100.94: Added try/catch to prevent permanent loading screen on errors.
+  Future<void> _tryAutoLoadIdentity(dynamic engine) async {
+    if (_autoLoadStarted) return;
+    if (engine == null) return;
+
+    _autoLoadStarted = true;
+
+    try {
+      // v0.3.0: Check if identity exists and auto-load
+      final hasIdentity = engine.hasIdentity();
+      engine.debugLog('STARTUP', 'v0.3.0: hasIdentity=$hasIdentity');
+
+      if (hasIdentity) {
+        // Pre-warm: Set DHT state to "connecting" immediately for UI feedback
+        // This shows "Connecting to network..." banner while DHT bootstraps
+        ref.read(dhtConnectionStateProvider.notifier).state =
+            DhtConnectionState.connecting;
+        engine.debugLog('STARTUP', 'v0.3.0: DHT pre-warm - state set to connecting');
+
+        engine.debugLog('STARTUP', 'v0.3.0: Identity exists, auto-loading...');
+        await ref.read(identitiesProvider.notifier).loadIdentity();
+        engine.debugLog('STARTUP', 'v0.3.0: Identity auto-loaded');
+      } else {
+        engine.debugLog('STARTUP', 'v0.3.0: No identity, showing onboarding');
+      }
+    } catch (e) {
+      // v0.100.94: Don't get stuck on loading screen forever.
+      // loadIdentity has its own retry logic for lock errors.
+      // If we still fail here, show onboarding/error instead of infinite spinner.
+      engine.debugLog('STARTUP', 'v0.3.0: Auto-load failed: $e');
+    }
+
+    // Trigger rebuild after check completes (even on error - prevents stuck loading screen)
+    if (mounted) {
+      setState(() {
+        _autoLoadComplete = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final engine = ref.watch(engineProvider);
+    // Watch currentFingerprintProvider to reactively update when identity is loaded
+    // This is set by loadIdentity() after successful load, and by createIdentity() path
+    final currentFingerprint = ref.watch(currentFingerprintProvider);
+    // Watch appFullyReadyProvider to wait for DHT operations (presence lookups) to complete
+    // ignore: unused_local_variable
+    final _ = ref.watch(appFullyReadyProvider);
+
+    // App lock state
+    final appLock = ref.watch(appLockProvider);
+    final isLocked = ref.watch(appLockedProvider);
+
+    return engine.when(
+      data: (eng) {
+        // Check app lock first - before any other logic
+        if (appLock.enabled && isLocked) {
+          return const LockScreen();
+        }
+
+        // Trigger auto-load once at startup (for existing identities)
+        if (!_autoLoadStarted) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _tryAutoLoadIdentity(eng);
+          });
+          return const _LoadingScreen();
+        }
+
+        // Still loading - wait for check to complete
+        if (!_autoLoadComplete) {
+          return const _LoadingScreen();
+        }
+
+        // v0.3.0: Route based on whether identity is loaded (reactive)
+        // currentFingerprint is non-null when identity is loaded
+        if (currentFingerprint != null) {
+          // Trigger contacts provider to start presence lookups in background
+          // (presence data will update progressively via _updatePresenceInBackground)
+          ref.watch(contactsProvider);
+
+          // v0.100.71: Removed appFullyReady blocking check for faster startup
+          // UI now shows immediately, presence data updates in background
+          // Contacts show "Syncing..." until presence is fetched
+
+          // Only activate providers AFTER identity is loaded
+          ref.watch(eventHandlerActiveProvider);
+          ref.watch(backgroundTasksActiveProvider);
+          ref.watch(foregroundServiceProvider);
+          return const HomeScreen();
+        } else {
+          return const IdentitySelectionScreen();
+        }
+      },
+      loading: () => const _LoadingScreen(),
+      error: (error, stack) => _ErrorScreen(error: error),
+    );
+  }
+}
+
+class _LoadingScreen extends StatelessWidget {
+  const _LoadingScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SvgPicture.asset(
+              'assets/logo-icon.svg',
+              width: 128,
+              height: 128,
+            ),
+            const SizedBox(height: 24),
+            Text(
+              'DNA Messenger',
+              style: theme.textTheme.headlineMedium,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Initializing...',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 32),
+            const CircularProgressIndicator(),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ErrorScreen extends StatelessWidget {
+  final Object error;
+
+  const _ErrorScreen({required this.error});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              FaIcon(
+                FontAwesomeIcons.circleExclamation,
+                size: 64,
+                color: DnaColors.textWarning,
+              ),
+              const SizedBox(height: 24),
+              Text(
+                'Failed to initialize',
+                style: theme.textTheme.headlineSmall,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                error.toString(),
+                style: theme.textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 32),
+              Text(
+                'Make sure the native library is available.',
+                style: theme.textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
