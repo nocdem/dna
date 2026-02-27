@@ -19,7 +19,9 @@ import androidx.core.app.NotificationCompat
 class DnaNotificationHelper(private val context: Context) {
     companion object {
         private const val TAG = "DnaNotificationHelper"
-        private const val MESSAGE_CHANNEL_ID = "dna_messages"
+        // v2: Fresh channel ID to guarantee IMPORTANCE_HIGH (Android caches channel settings)
+        private const val MESSAGE_CHANNEL_ID = "dna_messages_v2"
+        private const val OLD_CHANNEL_ID = "dna_messages"
         private const val MESSAGE_NOTIFICATION_ID = 2001
 
         // Flutter SharedPreferences file and key
@@ -39,6 +41,9 @@ class DnaNotificationHelper(private val context: Context) {
             }
         }
     }
+
+    // Track which contacts we've already notified (prevent repeated alerts)
+    private val notifiedContacts = mutableSetOf<String>()
 
     /** Log to both logcat and dna.log via JNI */
     private fun dnaLog(msg: String) {
@@ -70,7 +75,10 @@ class DnaNotificationHelper(private val context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val notificationManager = context.getSystemService(NotificationManager::class.java)
 
-            // Message channel
+            // Delete old channel (importance was cached at DEFAULT)
+            notificationManager.deleteNotificationChannel(OLD_CHANNEL_ID)
+
+            // Create v2 channel with guaranteed IMPORTANCE_HIGH
             val messageChannel = NotificationChannel(
                 MESSAGE_CHANNEL_ID,
                 "Messages",
@@ -98,6 +106,15 @@ class DnaNotificationHelper(private val context: Context) {
      * This method is called from a native thread, not the main thread.
      */
     fun onOutboxUpdated(contactFingerprint: String, displayName: String?) {
+        // Deduplicate: only alert once per contact until cleared
+        synchronized(notifiedContacts) {
+            if (notifiedContacts.contains(contactFingerprint)) {
+                dnaLog("onOutboxUpdated: fp=${contactFingerprint.take(16)}... SKIP (already notified)")
+                return
+            }
+            notifiedContacts.add(contactFingerprint)
+        }
+
         dnaLog("onOutboxUpdated: fp=${contactFingerprint.take(16)}... name=$displayName")
 
         // Check if user has notifications enabled
@@ -111,7 +128,7 @@ class DnaNotificationHelper(private val context: Context) {
             val hasPermission = context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
                 android.content.pm.PackageManager.PERMISSION_GRANTED
             if (!hasPermission) {
-                dnaLog("ERROR: POST_NOTIFICATIONS permission NOT granted, cannot show notification")
+                dnaLog("ERROR: POST_NOTIFICATIONS permission NOT granted")
                 return
             }
         }
@@ -139,36 +156,35 @@ class DnaNotificationHelper(private val context: Context) {
 
         val notification = NotificationCompat.Builder(context, MESSAGE_CHANNEL_ID)
             .setContentTitle(senderName)
-            .setContentText("You have received a new message!")
+            .setContentText("New message received")
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVibrate(longArrayOf(0, 250, 250, 250))
-            .setLocalOnly(false)  // Enable bridging to Wear OS watches
+            .setOnlyAlertOnce(true)  // Don't re-alert if notification already showing
+            .setLocalOnly(false)
             .build()
 
         val notificationManager = context.getSystemService(NotificationManager::class.java)
-        // Use fingerprint hash for unique notification ID per contact
         val notificationId = MESSAGE_NOTIFICATION_ID + contactFingerprint.hashCode()
-
-        // Check if channel is enabled
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = notificationManager.getNotificationChannel(MESSAGE_CHANNEL_ID)
-            if (channel == null) {
-                dnaLog("ERROR: Notification channel '$MESSAGE_CHANNEL_ID' does not exist!")
-                return
-            }
-            if (channel.importance == NotificationManager.IMPORTANCE_NONE) {
-                dnaLog("ERROR: Notification channel '$MESSAGE_CHANNEL_ID' is disabled by user")
-                return
-            }
-            dnaLog("Channel OK: importance=${channel.importance}")
-        }
-
         notificationManager.notify(notificationId, notification)
         dnaLog("Notification posted for $senderName (id=$notificationId)")
+    }
+
+    /**
+     * Clear notification state when Flutter becomes active.
+     * Called from service when user opens the app.
+     */
+    fun clearNotifications() {
+        synchronized(notifiedContacts) {
+            notifiedContacts.clear()
+        }
+        // Cancel all message notifications
+        val notificationManager = context.getSystemService(NotificationManager::class.java)
+        notificationManager.cancelAll()
+        dnaLog("Notifications cleared (Flutter active)")
     }
 
     /**
@@ -212,11 +228,11 @@ class DnaNotificationHelper(private val context: Context) {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_SOCIAL)
             .setVibrate(longArrayOf(0, 250, 250, 250))
+            .setOnlyAlertOnce(true)
             .setLocalOnly(false)
             .build()
 
         val notificationManager = context.getSystemService(NotificationManager::class.java)
-        // Use different base ID for contact requests
         val notificationId = MESSAGE_NOTIFICATION_ID + 10000 + userFingerprint.hashCode()
         notificationManager.notify(notificationId, notification)
 

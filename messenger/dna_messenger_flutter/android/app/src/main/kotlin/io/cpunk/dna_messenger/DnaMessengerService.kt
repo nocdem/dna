@@ -98,6 +98,9 @@ class DnaMessengerService : Service() {
             svcLog("setFlutterActive: $active (was: $wasActive)")
 
             if (active && !wasActive) {
+                // Clear background notifications when user opens the app
+                MainActivity.notificationHelper?.clearNotifications()
+
                 // Flutter taking over - release service's engine on BACKGROUND thread
                 // v0.100.89: Moved to background thread to prevent UI freeze/ANR
                 // v0.100.90: CORE FIX - signal shutdown BEFORE acquiring lock!
