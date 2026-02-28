@@ -197,6 +197,18 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
     /* Notify listeners */
     notify_listeners(srv, &msg->key, val);
 
+    /* Replicate to alive PBFT peers via UDP STORE */
+    for (int i = 0; i < srv->pbft.peer_count; i++) {
+        nodus_cluster_peer_t *peer = &srv->pbft.peers[i];
+        if (peer->state != NODUS_NODE_ALIVE)
+            continue;
+        uint8_t rep_buf[65536];
+        size_t rlen = 0;
+        if (nodus_t1_store_value(0, val, rep_buf, sizeof(rep_buf), &rlen) == 0) {
+            nodus_udp_send(&srv->udp, rep_buf, rlen, peer->ip, peer->udp_port);
+        }
+    }
+
     /* Respond OK */
     size_t len = 0;
     nodus_t2_put_ok(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
@@ -559,9 +571,19 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
         nodus_routing_insert(&srv->routing, &peer);
 
     } else if (strcmp(msg.method, "pong") == 0) {
-        /* Update routing table + PBFT health */
+        /* Update routing table + PBFT health (IP-aware for seed discovery) */
         nodus_routing_touch(&srv->routing, &msg.node_id);
-        nodus_pbft_on_heartbeat(&srv->pbft, &msg.node_id);
+        nodus_pbft_on_pong(&srv->pbft, &msg.node_id, from_ip, from_port);
+
+        /* Also insert into routing table if new */
+        nodus_peer_t rpeer;
+        memset(&rpeer, 0, sizeof(rpeer));
+        rpeer.node_id = msg.node_id;
+        strncpy(rpeer.ip, from_ip, sizeof(rpeer.ip) - 1);
+        rpeer.udp_port = from_port;
+        rpeer.tcp_port = from_port + 1;
+        rpeer.last_seen = nodus_time_now();
+        nodus_routing_insert(&srv->routing, &rpeer);
 
     } else if (strcmp(msg.method, "fn") == 0) {
         /* FIND_NODE: return k closest nodes */
@@ -579,6 +601,38 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
             msg.peers[i].last_seen = nodus_time_now();
             nodus_routing_insert(&srv->routing, &msg.peers[i]);
         }
+
+    } else if (strcmp(msg.method, "sv") == 0) {
+        /* STORE_VALUE: inter-node replication */
+        if (msg.value) {
+            if (nodus_value_verify(msg.value) == 0) {
+                nodus_storage_put(&srv->storage, msg.value);
+                /* Notify local listeners */
+                notify_listeners(srv, &msg.value->key_hash, msg.value);
+            }
+            /* Send ACK */
+            size_t rlen = 0;
+            nodus_t1_store_ack(msg.txn_id, resp_buf, sizeof(resp_buf), &rlen);
+            nodus_udp_send(&srv->udp, resp_buf, rlen, from_ip, from_port);
+        }
+
+    } else if (strcmp(msg.method, "fv") == 0) {
+        /* FIND_VALUE: respond with value or closest nodes */
+        nodus_value_t *val = NULL;
+        int rc = nodus_storage_get(&srv->storage, &msg.target, &val);
+
+        size_t rlen = 0;
+        if (rc == 0 && val) {
+            nodus_t1_value_found(msg.txn_id, val, resp_buf, sizeof(resp_buf), &rlen);
+            nodus_value_free(val);
+        } else {
+            nodus_peer_t results[NODUS_K];
+            int found = nodus_routing_find_closest(&srv->routing, &msg.target,
+                                                    results, NODUS_K);
+            nodus_t1_value_not_found(msg.txn_id, results, found,
+                                      resp_buf, sizeof(resp_buf), &rlen);
+        }
+        nodus_udp_send(&srv->udp, resp_buf, rlen, from_ip, from_port);
     }
 
     nodus_t1_msg_free(&msg);

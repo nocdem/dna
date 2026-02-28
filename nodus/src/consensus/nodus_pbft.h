@@ -78,6 +78,15 @@ void nodus_pbft_on_heartbeat(nodus_pbft_t *pbft,
                                const nodus_key_t *node_id);
 
 /**
+ * Called when a PONG is received from a peer.
+ * Uses IP to match seed peers whose node_id was a placeholder,
+ * then updates to the real node_id from the PONG.
+ */
+void nodus_pbft_on_pong(nodus_pbft_t *pbft,
+                           const nodus_key_t *real_node_id,
+                           const char *from_ip, uint16_t from_port);
+
+/**
  * Get the current leader's node_id.
  */
 const nodus_key_t *nodus_pbft_leader(const nodus_pbft_t *pbft);

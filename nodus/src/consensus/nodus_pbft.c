@@ -194,6 +194,48 @@ void nodus_pbft_on_heartbeat(nodus_pbft_t *pbft,
     }
 }
 
+void nodus_pbft_on_pong(nodus_pbft_t *pbft,
+                           const nodus_key_t *real_node_id,
+                           const char *from_ip, uint16_t from_port) {
+    /* First try exact node_id match (already-discovered peer) */
+    nodus_cluster_peer_t *peer = find_peer(pbft, real_node_id);
+
+    /* If not found, search by IP + port (seed with placeholder node_id) */
+    if (!peer) {
+        for (int i = 0; i < pbft->peer_count; i++) {
+            if (strcmp(pbft->peers[i].ip, from_ip) == 0 &&
+                pbft->peers[i].udp_port == from_port) {
+                peer = &pbft->peers[i];
+
+                /* Update placeholder node_id to real one */
+                nodus_server_t *srv = (nodus_server_t *)pbft->srv;
+                nodus_key_t old_id = peer->node_id;
+                peer->node_id = *real_node_id;
+
+                /* Update hash ring: remove old placeholder, add real */
+                nodus_hashring_remove(&srv->ring, &old_id);
+                nodus_hashring_add(&srv->ring, real_node_id,
+                                    peer->ip, peer->tcp_port);
+
+                fprintf(stderr, "PBFT: discovered real node_id for %s:%d\n",
+                        from_ip, from_port);
+                break;
+            }
+        }
+    }
+
+    if (!peer) return;
+
+    nodus_node_state_t old_state = peer->state;
+    peer->last_seen = nodus_time_now();
+
+    if (old_state != NODUS_NODE_ALIVE) {
+        peer->state = NODUS_NODE_ALIVE;
+        sync_ring(pbft, peer, old_state);
+        elect_leader(pbft);
+    }
+}
+
 const nodus_key_t *nodus_pbft_leader(const nodus_pbft_t *pbft) {
     return &pbft->leader_id;
 }
