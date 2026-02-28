@@ -20,10 +20,10 @@ extern "C" {
 
 /* ── Protocol constants ──────────────────────────────────────────── */
 
-#define NODUS_VERSION_MAJOR  1
-#define NODUS_VERSION_MINOR  0
+#define NODUS_VERSION_MAJOR  0
+#define NODUS_VERSION_MINOR  5
 #define NODUS_VERSION_PATCH  0
-#define NODUS_VERSION_STRING "1.0.0"
+#define NODUS_VERSION_STRING "0.5.0"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
