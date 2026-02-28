@@ -10,6 +10,7 @@
 #include "consensus/nodus_pbft.h"
 #include "protocol/nodus_tier1.h"
 #include "protocol/nodus_tier2.h"
+#include "protocol/nodus_wire.h"
 #include "protocol/nodus_cbor.h"
 #include "crypto/nodus_sign.h"
 
@@ -18,6 +19,11 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/epoll.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <errno.h>
 
 /* Response buffer (shared, single-threaded) — 64KB covers multi-value results.
  * Each serialized NodusValue is ~7.3KB (Dilithium5 pk+sig overhead). */
@@ -144,6 +150,80 @@ static void notify_ch_subscribers(nodus_server_t *srv,
     }
 }
 
+/* ── Server-to-server TCP STORE (fire-and-forget replication) ──── */
+
+static void replicate_to_peer(const nodus_value_t *val,
+                                const char *peer_ip, uint16_t peer_tcp_port) {
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (fd < 0) return;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(peer_tcp_port);
+    inet_pton(AF_INET, peer_ip, &addr.sin_addr);
+
+    int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+    if (rc < 0 && errno != EINPROGRESS) {
+        close(fd);
+        return;
+    }
+
+    /* Wait for connect (100ms timeout) */
+    fd_set wfds;
+    FD_ZERO(&wfds);
+    FD_SET(fd, &wfds);
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };
+    rc = select(fd + 1, NULL, &wfds, NULL, &tv);
+    if (rc <= 0) {
+        close(fd);
+        return;
+    }
+
+    /* Check for connect error */
+    int err = 0;
+    socklen_t errlen = sizeof(err);
+    getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen);
+    if (err != 0) {
+        close(fd);
+        return;
+    }
+
+    /* Encode T1 STORE_VALUE */
+    uint8_t *cbor_buf = malloc(65536);
+    if (!cbor_buf) { close(fd); return; }
+    size_t clen = 0;
+    if (nodus_t1_store_value(0, val, cbor_buf, 65536, &clen) != 0) {
+        free(cbor_buf);
+        close(fd);
+        return;
+    }
+
+    /* Wire-frame it */
+    uint8_t *frame = malloc(clen + 16);
+    if (!frame) { free(cbor_buf); close(fd); return; }
+    size_t flen = nodus_frame_encode(frame, clen + 16, cbor_buf, (uint32_t)clen);
+    free(cbor_buf);
+
+    if (flen > 0) {
+        /* Blocking send (small payload, should complete quickly) */
+        int flags_save = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags_save & ~O_NONBLOCK);
+        send(fd, frame, flen, MSG_NOSIGNAL);
+    }
+    free(frame);
+    close(fd);
+}
+
+static void replicate_value(nodus_server_t *srv, const nodus_value_t *val) {
+    for (int i = 0; i < srv->pbft.peer_count; i++) {
+        nodus_cluster_peer_t *peer = &srv->pbft.peers[i];
+        if (peer->state != NODUS_NODE_ALIVE)
+            continue;
+        replicate_to_peer(val, peer->ip, peer->tcp_port);
+    }
+}
+
 /* ── Tier 2 message handlers (Client -> Nodus) ──────────────────── */
 
 static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
@@ -197,17 +277,8 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
     /* Notify listeners */
     notify_listeners(srv, &msg->key, val);
 
-    /* Replicate to alive PBFT peers via UDP STORE */
-    for (int i = 0; i < srv->pbft.peer_count; i++) {
-        nodus_cluster_peer_t *peer = &srv->pbft.peers[i];
-        if (peer->state != NODUS_NODE_ALIVE)
-            continue;
-        uint8_t rep_buf[65536];
-        size_t rlen = 0;
-        if (nodus_t1_store_value(0, val, rep_buf, sizeof(rep_buf), &rlen) == 0) {
-            nodus_udp_send(&srv->udp, rep_buf, rlen, peer->ip, peer->udp_port);
-        }
-    }
+    /* Replicate to alive PBFT peers via TCP STORE */
+    replicate_value(srv, val);
 
     /* Respond OK */
     size_t len = 0;
@@ -450,6 +521,18 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
 
     if (nodus_t2_decode(payload, len, &msg) != 0) {
         nodus_t2_msg_free(&msg);
+
+        /* Fallback: try T1 decode for inter-node messages (STORE, etc.) */
+        nodus_tier1_msg_t t1msg;
+        memset(&t1msg, 0, sizeof(t1msg));
+        if (nodus_t1_decode(payload, len, &t1msg) == 0 &&
+            strcmp(t1msg.method, "sv") == 0 && t1msg.value) {
+            if (nodus_value_verify(t1msg.value) == 0) {
+                nodus_storage_put(&srv->storage, t1msg.value);
+                notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
+            }
+        }
+        nodus_t1_msg_free(&t1msg);
         return;
     }
 
