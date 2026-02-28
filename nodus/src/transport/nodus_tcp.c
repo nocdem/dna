@@ -152,6 +152,8 @@ static void try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 
 /* ── Event handlers ──────────────────────────────────────────────── */
 
+static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
+
 static void handle_accept(nodus_tcp_t *tcp) {
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
@@ -181,6 +183,10 @@ static void handle_accept(nodus_tcp_t *tcp) {
 
     if (tcp->on_accept)
         tcp->on_accept(conn, tcp->cb_ctx);
+
+    /* Edge-triggered: data may already be in buffer before epoll_add.
+     * Do an immediate read to avoid missing the initial EPOLLIN edge. */
+    handle_read(tcp, conn);
 }
 
 static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
