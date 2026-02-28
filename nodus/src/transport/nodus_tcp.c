@@ -465,7 +465,7 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
             continue;
         }
 
-        if (events[i].events & (EPOLLERR | EPOLLHUP)) {
+        if (events[i].events & EPOLLERR) {
             if (tcp->on_disconnect)
                 tcp->on_disconnect(conn, tcp->cb_ctx);
             conn_free(tcp, conn);
@@ -475,8 +475,15 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
         if (events[i].events & EPOLLOUT)
             handle_write(tcp, conn);
 
+        /* Read data before handling HUP — sender may close immediately
+         * after sending, producing EPOLLIN|EPOLLHUP in the same event. */
         if (events[i].events & EPOLLIN)
             handle_read(tcp, conn);
+        else if (events[i].events & EPOLLHUP) {
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(conn, tcp->cb_ctx);
+            conn_free(tcp, conn);
+        }
     }
 
     return n;
