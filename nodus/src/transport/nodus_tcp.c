@@ -206,7 +206,8 @@ static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             continue;
         }
         if (n == 0) {
-            /* Peer closed */
+            /* Peer closed — process any buffered data before disconnect */
+            try_parse_frames(tcp, conn);
             if (tcp->on_disconnect)
                 tcp->on_disconnect(conn, tcp->cb_ctx);
             conn_free(tcp, conn);
