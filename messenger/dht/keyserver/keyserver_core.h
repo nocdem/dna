@@ -18,7 +18,7 @@
 /* Redirect printf/fprintf to Android logcat */
 #define QGP_LOG_TAG "KEYSERVER"
 #define QGP_LOG_REDIRECT_STDIO 1
-#include "../../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_log.h"
 
 // Platform-specific network byte order includes
 #ifdef _WIN32
@@ -40,8 +40,8 @@
 #include "../core/dht_keyserver.h"  // Includes size constants and dna_unified_identity_t
 #include "../shared/dht_chunked.h"  // Chunked storage layer
 #include "../client/dna_profile.h"
-#include "../../crypto/utils/qgp_dilithium.h"
-#include "../../crypto/utils/qgp_sha3.h"
+#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/utils/qgp_sha3.h"
 #include "../../blockchain/cellframe/cellframe_rpc.h"
 #include <openssl/evp.h>
 #include <json-c/json.h>

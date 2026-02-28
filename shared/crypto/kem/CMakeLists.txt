@@ -55,7 +55,8 @@ add_library(${PROJECT_NAME} STATIC ${KYBER512_SOURCES} ${KYBER512_HEADERS})
 # Include directory for Kyber headers
 target_include_directories(${PROJECT_NAME} PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/..   # shared/crypto/ root (for crypto/utils/*.h includes)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..  # shared/ root
 )
 
 # No external dependencies - uses qgp_randombytes via #define in kem.c and indcpa.c

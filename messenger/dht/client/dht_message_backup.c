@@ -7,9 +7,9 @@
 
 #include "dht_message_backup.h"
 #include "../shared/dht_chunked.h"
-#include "../crypto/utils/qgp_sha3.h"
-#include "../crypto/utils/qgp_dilithium.h"
-#include "../crypto/utils/qgp_kyber.h"
+#include "crypto/utils/qgp_sha3.h"
+#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/utils/qgp_kyber.h"
 #include "../dna_api.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_types.h"

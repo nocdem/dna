@@ -14,7 +14,7 @@
 #include "dht_chunked.h"
 #include "dht_offline_queue.h"
 #include "../core/dht_listen.h"
-#include "../crypto/utils/qgp_sha3.h"
+#include "crypto/utils/qgp_sha3.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>

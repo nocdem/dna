@@ -12,14 +12,14 @@
 #include "cellframe_json.h"
 #include "cellframe_rpc.h"
 #include "cellframe_wallet.h"
-#include "../../crypto/utils/base58.h"
+#include "crypto/utils/base58.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <getopt.h>
 #include <time.h>
 #include <json-c/json.h>
-#include "../../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "WALLET_TX"
 

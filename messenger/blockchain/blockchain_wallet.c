@@ -41,9 +41,9 @@ extern int blockchain_ops_send_from_wallet(
 #include "tron/trx_rpc.h"
 #include "tron/trx_tx.h"
 #include "tron/trx_trc20.h"
-#include "../crypto/utils/qgp_log.h"
-#include "../crypto/utils/qgp_platform.h"
-#include "../crypto/utils/seed_storage.h"
+#include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/seed_storage.h"
 #include <string.h>
 #include <stdlib.h>
 #include <dirent.h>

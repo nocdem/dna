@@ -8,7 +8,7 @@
 #include "../dht/core/dht_context.h"
 #include "../dht/client/dht_singleton.h"
 #include "../dht/shared/dht_offline_queue.h"
-#include "../crypto/utils/qgp_sha3.h"
+#include "crypto/utils/qgp_sha3.h"
 
 #include <stdio.h>
 #include <stdlib.h>

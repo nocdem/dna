@@ -8,8 +8,8 @@
 
 #include "sol_tx.h"
 #include "sol_rpc.h"
-#include "../../crypto/utils/base58.h"
-#include "../../crypto/utils/qgp_log.h"
+#include "crypto/utils/base58.h"
+#include "crypto/utils/qgp_log.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>

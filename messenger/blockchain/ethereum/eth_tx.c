@@ -9,9 +9,9 @@
 #include "eth_tx.h"
 #include "eth_rlp.h"
 #include "eth_wallet.h"
-#include "../../crypto/utils/keccak256.h"
-#include "../../crypto/utils/qgp_log.h"
-#include "../../crypto/utils/qgp_platform.h"
+#include "crypto/utils/keccak256.h"
+#include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 #include <secp256k1.h>
 #include <secp256k1_recovery.h>
 #include <stdio.h>

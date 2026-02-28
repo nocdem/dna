@@ -53,11 +53,11 @@ set(DHT_COMMON_SOURCES
     keyserver/keyserver_profiles.c
     keyserver/keyserver_addresses.c
     # Crypto utilities
-    ../crypto/utils/qgp_sha3.c
-    ../crypto/utils/qgp_dilithium.c
-    ../crypto/utils/qgp_random.c
-    ../crypto/utils/qgp_aes.c
-    ../crypto/utils/qgp_log.c
+    ${SHARED_DIR}/crypto/utils/qgp_sha3.c
+    ${SHARED_DIR}/crypto/utils/qgp_dilithium.c
+    ${SHARED_DIR}/crypto/utils/qgp_random.c
+    ${SHARED_DIR}/crypto/utils/qgp_aes.c
+    ${SHARED_DIR}/crypto/utils/qgp_log.c
     # Config (needed by qgp_log.c for auto-loading log settings)
     ../dna_config.c
 )
@@ -68,20 +68,20 @@ if(WIN32)
         # Platform-specific
         gnutls_win_shim.c
         ../blockchain/cellframe/cellframe_rpc.c
-        ../crypto/utils/qgp_platform_windows.c
+        ${SHARED_DIR}/crypto/utils/qgp_platform_windows.c
     )
 elseif(ANDROID)
     # Android: No curl (no wallet RPC), use Android platform source
     add_library(dht_lib STATIC
         ${DHT_COMMON_SOURCES}
-        ../crypto/utils/qgp_platform_android.c
+        ${SHARED_DIR}/crypto/utils/qgp_platform_android.c
     )
 else()
     # Linux/Unix
     add_library(dht_lib STATIC
         ${DHT_COMMON_SOURCES}
         ../blockchain/cellframe/cellframe_rpc.c
-        ../crypto/utils/qgp_platform_linux.c
+        ${SHARED_DIR}/crypto/utils/qgp_platform_linux.c
     )
 endif()
 target_include_directories(dht_lib PUBLIC
@@ -92,7 +92,8 @@ target_include_directories(dht_lib PUBLIC
     ${OPENDHT_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${CMAKE_SOURCE_DIR}/include           # For dna/dna_engine.h (dna_profile_t)
-    ${CMAKE_CURRENT_SOURCE_DIR}/../crypto
+    ${SHARED_DIR}                         # shared/ root (for crypto/... includes)
+    ${SHARED_DIR}/crypto                  # shared/crypto/ (for utils/*.h includes)
     ${CMAKE_CURRENT_SOURCE_DIR}/../blockchain/cellframe)
 if(WIN32)
     target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES} zstd)

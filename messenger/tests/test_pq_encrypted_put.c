@@ -16,9 +16,9 @@
 #include <unistd.h>
 #include "../dht/client/dht_singleton.h"
 #include "../dht/core/dht_context.h"
-#include "../crypto/kem/qgp_kyber.h"
-#include "../crypto/utils/qgp_aes.h"
-#include "../crypto/dsa/api.h"
+#include "crypto/kem/qgp_kyber.h"
+#include "crypto/utils/qgp_aes.h"
+#include "crypto/dsa/api.h"
 
 #define TEST_KEY "test_encrypted_value"
 #define TEST_DATA "Secret post-quantum encrypted message"

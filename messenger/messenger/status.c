@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../message_backup.h"
-#include "../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "MSG_STATUS"
 

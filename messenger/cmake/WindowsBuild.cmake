@@ -10,7 +10,7 @@ if(WIN32)
 
     # Platform sources - POSIX compatibility layer
     set(PLATFORM_SOURCES
-        crypto/utils/qgp_platform_windows.c
+        ${SHARED_DIR}/crypto/utils/qgp_platform_windows.c
         win32/getopt.c      # POSIX getopt for Windows
         win32/dirent.c      # POSIX dirent for Windows
         win32/strndup.c     # POSIX strndup for Windows

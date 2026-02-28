@@ -14,17 +14,17 @@
 #include <string.h>
 #include <time.h>
 #include <dirent.h>
-#include "../crypto/utils/qgp_platform.h"
-#include "../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "KEYGEN"
-#include "../crypto/utils/qgp_types.h"
-#include "../crypto/utils/qgp_dilithium.h"
-#include "../crypto/utils/qgp_kyber.h"
-#include "../crypto/utils/qgp_sha3.h"
+#include "crypto/utils/qgp_types.h"
+#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/utils/qgp_kyber.h"
+#include "crypto/utils/qgp_sha3.h"
 #include "../qgp.h"
-#include "../crypto/bip39/bip39.h"
-#include "../crypto/utils/kyber_deterministic.h"
+#include "crypto/bip39/bip39.h"
+#include "crypto/utils/kyber_deterministic.h"
 #include "../dht/core/dht_keyserver.h"
 #include "../dht/core/dht_context.h"
 #include "../dht/client/dht_singleton.h"
@@ -39,7 +39,7 @@
 #include "../blockchain/cellframe/cellframe_wallet.h"
 #include "../blockchain/blockchain_wallet.h"
 #include "../blockchain/tron/trx_wallet.h"
-#include "../crypto/utils/seed_storage.h"
+#include "crypto/utils/seed_storage.h"
 
 // Network byte order conversion
 #ifdef _WIN32

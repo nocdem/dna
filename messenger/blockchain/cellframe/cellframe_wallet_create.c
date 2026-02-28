@@ -7,14 +7,14 @@
 #include "cellframe_wallet_create.h"
 #include "cellframe_addr.h"
 #include "cellframe_minimal.h"
-#include "../../crypto/cellframe_dilithium/dilithium_params.h"
+#include "crypto/cellframe_dilithium/dilithium_params.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <openssl/evp.h>
-#include "../../crypto/utils/qgp_log.h"
-#include "../../crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 
 #define LOG_TAG "WALLET"
 

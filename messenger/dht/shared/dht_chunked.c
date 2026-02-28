@@ -9,7 +9,7 @@
 
 #include "dht_chunked.h"
 #include "../core/dht_stats.h"
-#include "../../crypto/utils/qgp_sha3.h"
+#include "crypto/utils/qgp_sha3.h"
 #include <zstd.h>
 #include <stdio.h>
 #include <stdlib.h>

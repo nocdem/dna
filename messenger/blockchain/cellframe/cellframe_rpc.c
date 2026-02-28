@@ -10,7 +10,7 @@
 #define CURL_STATICLIB  // Required for static linking on Windows
 #endif
 #include <curl/curl.h>
-#include "../../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "WALLET_RPC"
 

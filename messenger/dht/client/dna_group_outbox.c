@@ -19,9 +19,9 @@
 #include "../../messenger/gek.h"
 #include "../../messenger.h"  // For messenger_sync_group_gek
 #include "../../message_backup.h"
-#include "../../crypto/utils/qgp_aes.h"
-#include "../../crypto/utils/qgp_dilithium.h"
-#include "../../crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_aes.h"
+#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/utils/qgp_platform.h"
 #include "../core/dht_context.h"
 #include <stdio.h>
 #include <stdlib.h>

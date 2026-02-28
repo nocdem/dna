@@ -11,19 +11,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
-#include "../crypto/utils/qgp_platform.h"
-#include "../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "MESSENGER"
 #define LOG_TAG_DHT "DHT_IDENTITY"
-#include "../crypto/utils/qgp_types.h"
+#include "crypto/utils/qgp_types.h"
 #include "../message_backup.h"
 #include "../database/keyserver_cache.h"
 #include "../dht/client/dht_identity.h"
 #include "../dht/client/dht_singleton.h"
-#include "../crypto/utils/qgp_sha3.h"
-#include "../crypto/utils/seed_storage.h"
-#include "../crypto/bip39/bip39.h"
+#include "crypto/utils/qgp_sha3.h"
+#include "crypto/utils/seed_storage.h"
+#include "crypto/bip39/bip39.h"
 #include "../dht/client/dna_group_outbox.h"
 #include "../dht/shared/dht_groups.h"
 #include "../database/group_invitations.h"

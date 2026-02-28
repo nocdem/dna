@@ -7,7 +7,7 @@
  */
 
 #include "eth_rlp.h"
-#include "../../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_log.h"
 #include <stdlib.h>
 #include <string.h>
 

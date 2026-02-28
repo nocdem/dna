@@ -6,7 +6,7 @@ if(UNIX AND NOT ANDROID AND NOT APPLE)
     message(STATUS "=== Linux/Unix Build Configuration ===")
 
     # Platform sources
-    set(PLATFORM_SOURCES crypto/utils/qgp_platform_linux.c)
+    set(PLATFORM_SOURCES ${SHARED_DIR}/crypto/utils/qgp_platform_linux.c)
 
     # No extra platform libs needed on Linux (pthread linked separately)
     set(PLATFORM_LIBS)

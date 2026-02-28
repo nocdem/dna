@@ -18,9 +18,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
-#include "../crypto/bip39/bip39.h"
-#include "../crypto/bip32/bip32.h"
-#include "../crypto/utils/qgp_random.h"
+#include "crypto/bip39/bip39.h"
+#include "crypto/bip32/bip32.h"
+#include "crypto/utils/qgp_random.h"
 
 #define TEST_PASSED(name) printf("   ✓ %s\n", name)
 #define TEST_FAILED(name) do { printf("   ✗ %s\n", name); return 1; } while(0)

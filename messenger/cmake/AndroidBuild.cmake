@@ -38,7 +38,7 @@ if(ANDROID)
     set(ANDROID_STL c++_static)
 
     # Platform-specific sources
-    set(PLATFORM_SOURCES crypto/utils/qgp_platform_android.c)
+    set(PLATFORM_SOURCES ${SHARED_DIR}/crypto/utils/qgp_platform_android.c)
 
     # Android platform libs
     # - log: Android logging (__android_log_print for logcat)

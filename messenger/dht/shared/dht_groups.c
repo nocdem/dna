@@ -12,14 +12,14 @@
 #include "dht_groups.h"
 #include "dht_chunked.h"
 #include "../core/dht_context.h"
-#include "../../crypto/utils/qgp_sha3.h"
-#include "../../crypto/utils/qgp_random.h"
+#include "crypto/utils/qgp_sha3.h"
+#include "crypto/utils/qgp_random.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <sqlite3.h>
-#include "../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "DHT_GROUPS"
 

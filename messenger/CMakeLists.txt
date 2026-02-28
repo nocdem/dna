@@ -62,6 +62,11 @@ if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 # =============================================================================
+# Shared Libraries (monorepo: shared/ at repo root)
+# =============================================================================
+set(SHARED_DIR "${CMAKE_SOURCE_DIR}/../shared")
+
+# =============================================================================
 # CMake Module Includes
 # =============================================================================
 # Version and build metadata
@@ -76,12 +81,10 @@ include(${CMAKE_SOURCE_DIR}/cmake/Dependencies.cmake)
 # libjuice removed in v0.4.61 for privacy (was ICE/STUN NAT traversal)
 # include(${CMAKE_SOURCE_DIR}/cmake/Libjuice.cmake)
 
-# =============================================================================
-# Vendored Cryptographic Libraries
-# =============================================================================
-add_subdirectory(crypto/kem)        # ML-KEM-1024 KEM (includes FIPS202/SHAKE256)
-add_subdirectory(crypto/dsa)        # ML-DSA-87 signatures (NIST Category 5)
-add_subdirectory(crypto/cellframe_dilithium)  # Cellframe-compatible Dilithium (for CF20 wallet)
+# Vendored Cryptographic Libraries (in shared/crypto/)
+add_subdirectory(${SHARED_DIR}/crypto/kem ${CMAKE_BINARY_DIR}/crypto/kem)          # ML-KEM-1024 KEM
+add_subdirectory(${SHARED_DIR}/crypto/dsa ${CMAKE_BINARY_DIR}/crypto/dsa)          # ML-DSA-87 signatures
+add_subdirectory(${SHARED_DIR}/crypto/cellframe_dilithium ${CMAKE_BINARY_DIR}/crypto/cellframe_dilithium)  # Cellframe Dilithium
 
 # secp256k1 for Ethereum/Bitcoin key derivation (BIP-32/BIP-44)
 include(${CMAKE_SOURCE_DIR}/cmake/Secp256k1.cmake)
@@ -114,7 +117,13 @@ add_library(cellframe_minimal STATIC
     blockchain/cellframe/cellframe_tx_builder.c
     blockchain/cellframe/cellframe_sign.c
     blockchain/cellframe/cellframe_json.c
-    crypto/utils/base58.c
+    ${SHARED_DIR}/crypto/utils/base58.c
+)
+target_include_directories(cellframe_minimal PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${SHARED_DIR}
+    ${SHARED_DIR}/crypto
+    ${CMAKE_SOURCE_DIR}/include
 )
 target_link_libraries(cellframe_minimal
     cellframe_dilithium
@@ -134,27 +143,27 @@ set(COMMON_SOURCES
     #   cmd_restore_key_from_seed → messenger/keygen.c
     #   read_file_data → qgp_platform_*.c
     #   get_home_dir, build_path, file_exists → replaced with qgp_platform_* calls
-    crypto/utils/armor.c
-    crypto/utils/aes_keywrap.c
-    crypto/bip39/bip39.c
-    crypto/bip39/bip39_pbkdf2.c
-    crypto/bip39/seed_derivation.c
-    crypto/utils/kyber_deterministic.c
+    ${SHARED_DIR}/crypto/utils/armor.c
+    ${SHARED_DIR}/crypto/utils/aes_keywrap.c
+    ${SHARED_DIR}/crypto/bip39/bip39.c
+    ${SHARED_DIR}/crypto/bip39/bip39_pbkdf2.c
+    ${SHARED_DIR}/crypto/bip39/seed_derivation.c
+    ${SHARED_DIR}/crypto/utils/kyber_deterministic.c
     dna_config.c
     # SDK Independence: New crypto modules
-    crypto/utils/qgp_random.c
-    crypto/utils/qgp_aes.c
-    crypto/utils/qgp_kyber.c
-    crypto/utils/qgp_dilithium.c
-    crypto/utils/seed_storage.c
-    crypto/utils/qgp_sha3.c         # SHA3-512 for Category 5 security
+    ${SHARED_DIR}/crypto/utils/qgp_random.c
+    ${SHARED_DIR}/crypto/utils/qgp_aes.c
+    ${SHARED_DIR}/crypto/utils/qgp_kyber.c
+    ${SHARED_DIR}/crypto/utils/qgp_dilithium.c
+    ${SHARED_DIR}/crypto/utils/seed_storage.c
+    ${SHARED_DIR}/crypto/utils/qgp_sha3.c         # SHA3-512 for Category 5 security
     # NOTE: qgp_log.c is ONLY in dht_lib to ensure single copy of static vars
     # SDK Independence: Infrastructure modules
-    crypto/utils/qgp_key.c
-    crypto/utils/key_encryption.c
-    crypto/utils/qgp_signature.c
-    crypto/utils/qgp_utils_standalone.c
-    crypto/utils/threadpool.c       # Centralized thread pool for parallel I/O
+    ${SHARED_DIR}/crypto/utils/qgp_key.c
+    ${SHARED_DIR}/crypto/utils/key_encryption.c
+    ${SHARED_DIR}/crypto/utils/qgp_signature.c
+    ${SHARED_DIR}/crypto/utils/qgp_utils_standalone.c
+    ${SHARED_DIR}/crypto/utils/threadpool.c       # Centralized thread pool for parallel I/O
     # Cross-platform abstraction layer
     ${PLATFORM_SOURCES}
 )
@@ -245,9 +254,9 @@ if(BUILD_SHARED_LIB)
         blockchain/tron/trx_chain.c                    # TRON blockchain_ops implementation
         blockchain/tron/trx_tx.c                       # TRON transaction building/signing
         blockchain/tron/trx_trc20.c                    # TRC-20 token support (USDT, USDC)
-        crypto/bip32/bip32.c                           # BIP-32 HD key derivation
-        crypto/utils/keccak256.c                       # Keccak-256 (Ethereum hash)
-        crypto/utils/base58.c       # Base58 encoding for addresses
+        ${SHARED_DIR}/crypto/bip32/bip32.c                           # BIP-32 HD key derivation
+        ${SHARED_DIR}/crypto/utils/keccak256.c                       # Keccak-256 (Ethereum hash)
+        ${SHARED_DIR}/crypto/utils/base58.c       # Base58 encoding for addresses
         ${COMMON_SOURCES}
     )
 else()
@@ -326,9 +335,9 @@ else()
         blockchain/tron/trx_chain.c                    # TRON blockchain_ops implementation
         blockchain/tron/trx_tx.c                       # TRON transaction building/signing
         blockchain/tron/trx_trc20.c                    # TRC-20 token support (USDT, USDC)
-        crypto/bip32/bip32.c                           # BIP-32 HD key derivation
-        crypto/utils/keccak256.c                       # Keccak-256 (Ethereum hash)
-        crypto/utils/base58.c       # Base58 encoding for addresses
+        ${SHARED_DIR}/crypto/bip32/bip32.c                           # BIP-32 HD key derivation
+        ${SHARED_DIR}/crypto/utils/keccak256.c                       # Keccak-256 (Ethereum hash)
+        ${SHARED_DIR}/crypto/utils/base58.c       # Base58 encoding for addresses
         ${COMMON_SOURCES}
     )
 endif()
@@ -392,6 +401,7 @@ endif()
 # =============================================================================
 target_include_directories(dna_lib PUBLIC
     ${CMAKE_SOURCE_DIR}
+    ${SHARED_DIR}                      # Shared code root (crypto/utils/*.h)
     ${CMAKE_SOURCE_DIR}/include       # Unified Engine API headers
     ${CMAKE_SOURCE_DIR}/src/api       # Internal API headers
     ${CMAKE_SOURCE_DIR}/transport      # Transport layer headers
@@ -462,8 +472,8 @@ if(BUILD_DNA_SEND)
         blockchain/cellframe/cellframe_wallet_create.c
         blockchain/cellframe/cellframe_addr.c
         blockchain/cellframe/cellframe_rpc.c
-        crypto/utils/base58.c
-        crypto/utils/qgp_platform_linux.c
+        ${SHARED_DIR}/crypto/utils/base58.c
+        ${SHARED_DIR}/crypto/utils/qgp_platform_linux.c
     )
 
     # For static CURL on Windows, define CURL_STATICLIB

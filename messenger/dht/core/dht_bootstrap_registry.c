@@ -9,13 +9,13 @@
 #include "dht_bootstrap_registry.h"
 #include "dht_context.h"
 #include "../shared/dht_chunked.h"
-#include "../../crypto/utils/qgp_sha3.h"
+#include "crypto/utils/qgp_sha3.h"
 #include <json-c/json.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include "../../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "DHT_REGISTRY"
 

@@ -6,14 +6,14 @@
 
 #include "cellframe_json.h"
 #include "cellframe_sign.h"
-#include "../../crypto/utils/base58.h"
+#include "crypto/utils/base58.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/buffer.h>
-#include "../../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "WALLET_JSON"
 

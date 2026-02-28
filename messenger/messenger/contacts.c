@@ -6,9 +6,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../crypto/utils/qgp_platform.h"
-#include "../crypto/utils/qgp_types.h"
-#include "../crypto/utils/key_encryption.h"
+#include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_types.h"
+#include "crypto/utils/key_encryption.h"
 #include "../dht/client/dht_contactlist.h"
 #include "../dht/client/dht_singleton.h"
 #include "../dht/core/dht_context.h"

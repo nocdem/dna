@@ -44,8 +44,9 @@ endif()
 # Dependencies
 # ============================================================================
 
-# libdna from DNA Messenger
-set(DNA_MESSENGER_DIR "/opt/dna-messenger" CACHE PATH "Path to DNA Messenger source")
+# Monorepo paths
+set(SHARED_DIR "${CMAKE_SOURCE_DIR}/../shared")
+set(DNA_MESSENGER_DIR "${CMAKE_SOURCE_DIR}/../messenger" CACHE PATH "Path to DNA Messenger source")
 set(DNA_BUILD_DIR "${DNA_MESSENGER_DIR}/build" CACHE PATH "Path to DNA Messenger build")
 
 # Check if libdna exists
@@ -67,8 +68,9 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/include
     ${DNA_MESSENGER_DIR}/include
     ${DNA_MESSENGER_DIR}
-    ${DNA_MESSENGER_DIR}/crypto
-    ${DNA_MESSENGER_DIR}/crypto/utils
+    ${SHARED_DIR}
+    ${SHARED_DIR}/crypto
+    ${SHARED_DIR}/crypto/utils
     ${OPENSSL_INCLUDE_DIR}
     ${SQLITE3_INCLUDE_DIRS}
 )

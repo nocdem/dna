@@ -23,7 +23,7 @@
 
 #include "groups.h"
 #include "group_database.h"
-#include "../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_log.h"
 #include <stdlib.h>
 #include <string.h>
 #include <sqlite3.h>

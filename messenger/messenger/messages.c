@@ -25,15 +25,15 @@
 #endif
 
 #include "../dna_api.h"
-#include "../crypto/utils/qgp_types.h"
+#include "crypto/utils/qgp_types.h"
 
-#include "../crypto/utils/qgp_platform.h"
-#include "../crypto/utils/qgp_dilithium.h"
-#include "../crypto/utils/qgp_kyber.h"
-#include "../crypto/utils/qgp_sha3.h"
-#include "../crypto/utils/qgp_aes.h"
-#include "../crypto/utils/qgp_random.h"
-#include "../crypto/utils/aes_keywrap.h"
+#include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/utils/qgp_kyber.h"
+#include "crypto/utils/qgp_sha3.h"
+#include "crypto/utils/qgp_aes.h"
+#include "crypto/utils/qgp_random.h"
+#include "crypto/utils/aes_keywrap.h"
 #include "../message_backup.h"
 #include "../messenger_transport.h"
 #include "../transport/transport.h"

@@ -9,8 +9,8 @@
  */
 
 #include "eth_wallet.h"
-#include "../../crypto/utils/qgp_log.h"
-#include "../../crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

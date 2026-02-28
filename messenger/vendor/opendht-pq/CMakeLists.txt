@@ -520,7 +520,7 @@ endif ()
 
 # DILITHIUM5: Add DNA Messenger crypto library path (relative to vendor/opendht-pq)
 include_directories (
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../crypto/dsa
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../shared/crypto/dsa
 )
 
 include_directories (

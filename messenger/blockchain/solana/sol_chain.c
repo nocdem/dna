@@ -18,7 +18,7 @@
 #include <stdint.h>
 
 #define LOG_TAG "SOL_CHAIN"
-#include "../../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_log.h"
 
 /* ============================================================================
  * HELPER FUNCTIONS

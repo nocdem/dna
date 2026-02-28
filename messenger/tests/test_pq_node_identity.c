@@ -15,8 +15,8 @@
 #include <assert.h>
 #include <unistd.h>
 #include "../dht/client/dht_identity.h"
-#include "../crypto/dsa/api.h"
-#include "../crypto/utils/qgp_sha3.h"
+#include "crypto/dsa/api.h"
+#include "crypto/utils/qgp_sha3.h"
 
 #define TEST_IDENTITY_NAME "test_node"
 #define TEST_IDENTITY_PATH "/tmp/test_identity.pqkey"

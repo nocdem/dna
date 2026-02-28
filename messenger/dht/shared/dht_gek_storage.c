@@ -13,11 +13,11 @@
 
 #include "dht_gek_storage.h"
 #include "dht_chunked.h"
-#include "../../crypto/utils/qgp_sha3.h"
+#include "crypto/utils/qgp_sha3.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "DHT_GEK"
 

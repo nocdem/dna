@@ -2,7 +2,7 @@
 #include "dht_dm_outbox.h"  /* Daily bucket messaging (v0.4.81+) */
 #include "dht_chunked.h"
 #include "../core/dht_listen.h"
-#include "../crypto/utils/qgp_sha3.h"
+#include "crypto/utils/qgp_sha3.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>

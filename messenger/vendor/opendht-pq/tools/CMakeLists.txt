@@ -14,7 +14,7 @@ function (configure_tool name extra_files)
         target_include_directories (${name} PRIVATE SYSTEM
             ${MSC_COMPAT_DIR}
             ${MSVC_COMPAT_DIR}
-            ${CMAKE_SOURCE_DIR}/crypto/dsa
+            ${SHARED_DIR}/crypto/dsa
         )
     else()
         # DNA Messenger: Add linker group to resolve circular deps (dsa <-> dht_lib)
@@ -33,7 +33,7 @@ function (configure_tool name extra_files)
         # Add crypto/dsa include path for Dilithium5 api.h header
         target_include_directories (${name} PRIVATE
             ${CMAKE_CURRENT_BINARY_DIR}
-            ${CMAKE_SOURCE_DIR}/crypto/dsa
+            ${SHARED_DIR}/crypto/dsa
         )
     endif ()
 endfunction ()
@@ -54,7 +54,7 @@ function (configure_nodus name)
         target_include_directories (${name} PRIVATE SYSTEM
             ${MSC_COMPAT_DIR}
             ${MSVC_COMPAT_DIR}
-            ${CMAKE_SOURCE_DIR}/crypto/dsa
+            ${SHARED_DIR}/crypto/dsa
             ${CMAKE_SOURCE_DIR}/vendor  # nlohmann/json.hpp
         )
     else()
@@ -69,7 +69,7 @@ function (configure_nodus name)
         )  # JUICE_LIBRARIES removed
         target_include_directories (${name} PRIVATE
             ${CMAKE_CURRENT_BINARY_DIR}
-            ${CMAKE_SOURCE_DIR}/crypto/dsa
+            ${SHARED_DIR}/crypto/dsa
             ${CMAKE_SOURCE_DIR}/vendor  # nlohmann/json.hpp
         )  # JUICE_INCLUDE_DIRS removed
     endif ()

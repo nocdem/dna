@@ -6,9 +6,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../crypto/utils/qgp_platform.h"
-#include "../crypto/utils/qgp_types.h"
-#include "../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_types.h"
+#include "crypto/utils/qgp_log.h"
 #include "../dht/core/dht_keyserver.h"
 #include "../dht/client/dht_singleton.h"  // Phase 14: Direct DHT access
 

@@ -16,7 +16,7 @@ elseif(APPLE)
     message(STATUS "Platform: macOS/iOS")
     # Future: include(${CMAKE_SOURCE_DIR}/cmake/AppleBuild.cmake)
     # For now, treat as Unix-like
-    set(PLATFORM_SOURCES crypto/utils/qgp_platform_linux.c)
+    set(PLATFORM_SOURCES ${SHARED_DIR}/crypto/utils/qgp_platform_linux.c)
     set(PLATFORM_LIBS)
 else()
     message(STATUS "Platform: Linux/Unix")

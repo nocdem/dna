@@ -11,7 +11,7 @@
 #include <time.h>
 #include <ctype.h>
 #include <errno.h>
-#include "../../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "WALLET_TX"
 

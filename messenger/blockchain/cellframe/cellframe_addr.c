@@ -6,9 +6,9 @@
 
 #include "cellframe_addr.h"
 #include "cellframe_minimal.h"  // For cellframe_addr_t (77 bytes)
-#include "../../crypto/utils/base58.h"
-#include "../../crypto/utils/qgp_platform.h"
-#include "../../crypto/utils/qgp_log.h"
+#include "crypto/utils/base58.h"
+#include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

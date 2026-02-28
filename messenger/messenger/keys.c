@@ -15,8 +15,8 @@
 #define CURL_STATICLIB  // Required for static linking on Windows
 #endif
 #include <curl/curl.h>
-#include "../crypto/utils/qgp_platform.h"
-#include "../crypto/utils/qgp_types.h"
+#include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_types.h"
 #include "../dht/core/dht_keyserver.h"
 #include "../dht/client/dht_singleton.h"
 #include "../database/keyserver_cache.h"
