@@ -341,6 +341,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Using random identity: %s\n", identity.fingerprint);
     }
 
+    int rc = 1;
+
     /* Connect */
     nodus_tcp_init(&transport, -1);
     transport.on_frame = on_frame;
@@ -373,7 +375,7 @@ int main(int argc, char **argv) {
     printf("Authenticated.\n");
 
     /* Dispatch command */
-    int rc = 0;
+    rc = 0;
     if (strcmp(command, "ping") == 0) {
         rc = cmd_ping();
     } else if (strcmp(command, "put") == 0) {
