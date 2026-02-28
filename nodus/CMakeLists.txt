@@ -124,6 +124,7 @@ target_link_libraries(nodus_lib PUBLIC
 target_compile_options(nodus_lib PRIVATE
     -Wall -Wextra -Werror
     -Wno-unused-parameter
+    -Wno-format-truncation
     -fstack-protector-strong
     -D_FORTIFY_SOURCE=2
 )
