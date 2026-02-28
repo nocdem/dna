@@ -1,0 +1,1 @@
+/usr/bin/cc -g CMakeFiles/test_client.dir/tests/test_client.c.o -o test_client  libnodus_lib.a dsa/libdsa.a libnodus_lib.a -lpthread dsa/libdsa.a /usr/lib/x86_64-linux-gnu/libcrypto.so /usr/lib/x86_64-linux-gnu/libsqlite3.so 

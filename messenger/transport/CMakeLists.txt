@@ -6,16 +6,6 @@ set(CMAKE_C_STANDARD 11)
 # Find required packages
 find_package(OpenSSL REQUIRED)
 
-if(WIN32)
-    # Windows cross-compile: OpenDHT found via CMAKE_PREFIX_PATH
-    message(STATUS "Using OpenDHT from CMAKE_PREFIX_PATH for Windows (Transport)")
-else()
-    # Linux/Android: Use vendored OpenDHT-PQ
-    message(STATUS "Using vendor OpenDHT-PQ (Transport)")
-    set(OPENDHT_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/vendor/opendht-pq/include")
-    set(OPENDHT_LIBRARIES opendht)
-endif()
-
 # Get absolute path to DHT directory
 get_filename_component(DHT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../dht" ABSOLUTE)
 
@@ -34,12 +24,10 @@ target_include_directories(transport_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${DHT_DIR}
     ${OPENSSL_INCLUDE_DIR}
-    ${OPENDHT_INCLUDE_DIRS}
 )
 
 target_link_libraries(transport_lib
     ${DHT_LIB}
-    ${OPENDHT_LIBRARIES}
     ${OPENSSL_LIBRARIES}
 )
 
@@ -54,5 +42,3 @@ endif()
 
 message(STATUS "DHT directory: ${DHT_DIR}")
 message(STATUS "DHT library: ${DHT_LIB}")
-message(STATUS "OpenDHT include dirs: ${OPENDHT_INCLUDE_DIRS}")
-message(STATUS "OpenDHT libraries: ${OPENDHT_LIBRARIES}")

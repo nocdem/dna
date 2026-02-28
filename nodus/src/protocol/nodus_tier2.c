@@ -1,0 +1,853 @@
+/**
+ * Nodus v5 — Tier 2 Protocol (Client-Nodus)
+ *
+ * CBOR encode/decode for client↔server messages.
+ * Auth: hello, challenge, auth, auth_ok
+ * DHT:  put, get, get_all, listen, unlisten, ping/pong
+ * Push: result, error, value_changed
+ */
+
+#include "protocol/nodus_tier2.h"
+#include "protocol/nodus_cbor.h"
+#include "core/nodus_value.h"
+
+#include <string.h>
+#include <stdlib.h>
+
+/* ── Common helpers ──────────────────────────────────────────────── */
+
+static void enc_query_header(cbor_encoder_t *enc, size_t map_count,
+                              uint32_t txn, const char *method) {
+    cbor_encode_map(enc, map_count);
+    cbor_encode_cstr(enc, "t");  cbor_encode_uint(enc, txn);
+    cbor_encode_cstr(enc, "y");  cbor_encode_cstr(enc, "q");
+    cbor_encode_cstr(enc, "q");  cbor_encode_cstr(enc, method);
+}
+
+static void enc_response_header(cbor_encoder_t *enc, size_t map_count,
+                                 uint32_t txn, const char *method) {
+    cbor_encode_map(enc, map_count);
+    cbor_encode_cstr(enc, "t");  cbor_encode_uint(enc, txn);
+    cbor_encode_cstr(enc, "y");  cbor_encode_cstr(enc, "r");
+    cbor_encode_cstr(enc, "q");  cbor_encode_cstr(enc, method);
+}
+
+static void enc_token(cbor_encoder_t *enc, const uint8_t *token) {
+    cbor_encode_cstr(enc, "tok");
+    cbor_encode_bstr(enc, token, NODUS_SESSION_TOKEN_LEN);
+}
+
+static int finish(cbor_encoder_t *enc, size_t *out_len) {
+    size_t len = cbor_encoder_len(enc);
+    if (len == 0) return -1;
+    *out_len = len;
+    return 0;
+}
+
+/* ── Client → Nodus encode ───────────────────────────────────────── */
+
+int nodus_t2_hello(uint32_t txn, const nodus_pubkey_t *pk,
+                    const nodus_key_t *fp,
+                    uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "hello");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "pk");
+    cbor_encode_bstr(&enc, pk->bytes, NODUS_PK_BYTES);
+    cbor_encode_cstr(&enc, "fp");
+    cbor_encode_bstr(&enc, fp->bytes, NODUS_KEY_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_auth(uint32_t txn, const nodus_sig_t *sig,
+                   uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "auth");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "sig");
+    cbor_encode_bstr(&enc, sig->bytes, NODUS_SIG_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_put(uint32_t txn, const uint8_t *token,
+                  const nodus_key_t *key, const uint8_t *data, size_t data_len,
+                  nodus_value_type_t type, uint32_t ttl,
+                  uint64_t vid, uint64_t seq,
+                  const nodus_sig_t *sig,
+                  uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "put");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 7);
+    cbor_encode_cstr(&enc, "k");
+    cbor_encode_bstr(&enc, key->bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "d");
+    cbor_encode_bstr(&enc, data, data_len);
+    cbor_encode_cstr(&enc, "type");
+    cbor_encode_uint(&enc, (uint64_t)type);
+    cbor_encode_cstr(&enc, "ttl");
+    cbor_encode_uint(&enc, ttl);
+    cbor_encode_cstr(&enc, "vid");
+    cbor_encode_uint(&enc, vid);
+    cbor_encode_cstr(&enc, "seq");
+    cbor_encode_uint(&enc, seq);
+    cbor_encode_cstr(&enc, "sig");
+    cbor_encode_bstr(&enc, sig->bytes, NODUS_SIG_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_get(uint32_t txn, const uint8_t *token,
+                  const nodus_key_t *key,
+                  uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "get");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "k");
+    cbor_encode_bstr(&enc, key->bytes, NODUS_KEY_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_get_all(uint32_t txn, const uint8_t *token,
+                      const nodus_key_t *key,
+                      uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "get_all");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "k");
+    cbor_encode_bstr(&enc, key->bytes, NODUS_KEY_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_listen(uint32_t txn, const uint8_t *token,
+                     const nodus_key_t *key,
+                     uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "listen");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "k");
+    cbor_encode_bstr(&enc, key->bytes, NODUS_KEY_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_unlisten(uint32_t txn, const uint8_t *token,
+                       const nodus_key_t *key,
+                       uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "unlisten");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "k");
+    cbor_encode_bstr(&enc, key->bytes, NODUS_KEY_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ping(uint32_t txn, const uint8_t *token,
+                   uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "ping");
+    enc_token(&enc, token);
+    return finish(&enc, out_len);
+}
+
+/* ── Channel operations (Client → Nodus) ─────────────────────────── */
+
+int nodus_t2_ch_create(uint32_t txn, const uint8_t *token,
+                        const uint8_t uuid[NODUS_UUID_BYTES],
+                        uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "ch_create");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "ch");
+    cbor_encode_bstr(&enc, uuid, NODUS_UUID_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_post(uint32_t txn, const uint8_t *token,
+                      const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                      const uint8_t post_uuid[NODUS_UUID_BYTES],
+                      const uint8_t *body, size_t body_len,
+                      uint64_t timestamp, const nodus_sig_t *sig,
+                      uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "ch_post");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 5);
+    cbor_encode_cstr(&enc, "ch");
+    cbor_encode_bstr(&enc, ch_uuid, NODUS_UUID_BYTES);
+    cbor_encode_cstr(&enc, "pid");
+    cbor_encode_bstr(&enc, post_uuid, NODUS_UUID_BYTES);
+    cbor_encode_cstr(&enc, "d");
+    cbor_encode_bstr(&enc, body, body_len);
+    cbor_encode_cstr(&enc, "ts");
+    cbor_encode_uint(&enc, timestamp);
+    cbor_encode_cstr(&enc, "sig");
+    cbor_encode_bstr(&enc, sig->bytes, NODUS_SIG_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_get_posts(uint32_t txn, const uint8_t *token,
+                           const uint8_t uuid[NODUS_UUID_BYTES],
+                           uint32_t since_seq, int max_count,
+                           uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "ch_get");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 3);
+    cbor_encode_cstr(&enc, "ch");
+    cbor_encode_bstr(&enc, uuid, NODUS_UUID_BYTES);
+    cbor_encode_cstr(&enc, "seq");
+    cbor_encode_uint(&enc, since_seq);
+    cbor_encode_cstr(&enc, "max");
+    cbor_encode_uint(&enc, (uint64_t)max_count);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_subscribe(uint32_t txn, const uint8_t *token,
+                           const uint8_t uuid[NODUS_UUID_BYTES],
+                           uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "ch_sub");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "ch");
+    cbor_encode_bstr(&enc, uuid, NODUS_UUID_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_unsubscribe(uint32_t txn, const uint8_t *token,
+                              const uint8_t uuid[NODUS_UUID_BYTES],
+                              uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "ch_unsub");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "ch");
+    cbor_encode_bstr(&enc, uuid, NODUS_UUID_BYTES);
+    return finish(&enc, out_len);
+}
+
+/* ── Nodus → Client encode ───────────────────────────────────────── */
+
+int nodus_t2_challenge(uint32_t txn, const uint8_t *nonce,
+                        uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "challenge");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "nonce");
+    cbor_encode_bstr(&enc, nonce, NODUS_NONCE_LEN);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_auth_ok(uint32_t txn, const uint8_t *token,
+                      uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "auth_ok");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "tok");
+    cbor_encode_bstr(&enc, token, NODUS_SESSION_TOKEN_LEN);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_result(uint32_t txn, const nodus_value_t *val,
+                     uint8_t *buf, size_t cap, size_t *out_len) {
+    uint8_t *vbuf = NULL;
+    size_t vlen = 0;
+    if (nodus_value_serialize(val, &vbuf, &vlen) != 0)
+        return -1;
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "result");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "val");
+    cbor_encode_bstr(&enc, vbuf, vlen);
+
+    free(vbuf);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_result_multi(uint32_t txn, nodus_value_t **vals, size_t count,
+                           uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "result");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "vals");
+    cbor_encode_array(&enc, count);
+
+    for (size_t i = 0; i < count; i++) {
+        uint8_t *vbuf = NULL;
+        size_t vlen = 0;
+        if (nodus_value_serialize(vals[i], &vbuf, &vlen) != 0) {
+            return -1;
+        }
+        cbor_encode_bstr(&enc, vbuf, vlen);
+        free(vbuf);
+    }
+
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_result_empty(uint32_t txn,
+                           uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "result");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 0);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_error(uint32_t txn, int code, const char *msg,
+                    uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    /* Error type 'e' */
+    cbor_encode_map(&enc, 3);
+    cbor_encode_cstr(&enc, "t"); cbor_encode_uint(&enc, txn);
+    cbor_encode_cstr(&enc, "y"); cbor_encode_cstr(&enc, "e");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "code"); cbor_encode_uint(&enc, (uint64_t)code);
+    cbor_encode_cstr(&enc, "msg");  cbor_encode_cstr(&enc, msg ? msg : "");
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_value_changed(uint32_t txn, const nodus_key_t *key,
+                            const nodus_value_t *val,
+                            uint8_t *buf, size_t cap, size_t *out_len) {
+    uint8_t *vbuf = NULL;
+    size_t vlen = 0;
+    if (nodus_value_serialize(val, &vbuf, &vlen) != 0)
+        return -1;
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "value_changed");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "k");
+    cbor_encode_bstr(&enc, key->bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "val");
+    cbor_encode_bstr(&enc, vbuf, vlen);
+
+    free(vbuf);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_pong(uint32_t txn,
+                   uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 3, txn, "pong");
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_put_ok(uint32_t txn,
+                     uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "put_ok");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 0);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_listen_ok(uint32_t txn,
+                        uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "listen_ok");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 0);
+    return finish(&enc, out_len);
+}
+
+/* ── Channel responses (Nodus → Client) ──────────────────────────── */
+
+int nodus_t2_ch_create_ok(uint32_t txn,
+                           uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "ch_create_ok");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 0);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_post_ok(uint32_t txn, uint32_t seq_id,
+                         uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "ch_post_ok");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "seq");
+    cbor_encode_uint(&enc, seq_id);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_posts(uint32_t txn, const nodus_channel_post_t *posts,
+                       size_t count,
+                       uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "ch_posts");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "posts");
+    cbor_encode_array(&enc, count);
+
+    for (size_t i = 0; i < count; i++) {
+        const nodus_channel_post_t *p = &posts[i];
+        cbor_encode_map(&enc, 7);
+        cbor_encode_cstr(&enc, "seq");
+        cbor_encode_uint(&enc, p->seq_id);
+        cbor_encode_cstr(&enc, "pid");
+        cbor_encode_bstr(&enc, p->post_uuid, NODUS_UUID_BYTES);
+        cbor_encode_cstr(&enc, "afp");
+        cbor_encode_bstr(&enc, p->author_fp.bytes, NODUS_KEY_BYTES);
+        cbor_encode_cstr(&enc, "ts");
+        cbor_encode_uint(&enc, p->timestamp);
+        cbor_encode_cstr(&enc, "d");
+        cbor_encode_bstr(&enc, (const uint8_t *)p->body, p->body_len);
+        cbor_encode_cstr(&enc, "sig");
+        cbor_encode_bstr(&enc, p->signature.bytes, NODUS_SIG_BYTES);
+        cbor_encode_cstr(&enc, "ra");
+        cbor_encode_uint(&enc, p->received_at);
+    }
+
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_sub_ok(uint32_t txn,
+                        uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "ch_sub_ok");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 0);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_post_notify(uint32_t txn,
+                             const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                             const nodus_channel_post_t *post,
+                             uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "ch_ntf");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 7);
+    cbor_encode_cstr(&enc, "ch");
+    cbor_encode_bstr(&enc, ch_uuid, NODUS_UUID_BYTES);
+    cbor_encode_cstr(&enc, "seq");
+    cbor_encode_uint(&enc, post->seq_id);
+    cbor_encode_cstr(&enc, "pid");
+    cbor_encode_bstr(&enc, post->post_uuid, NODUS_UUID_BYTES);
+    cbor_encode_cstr(&enc, "afp");
+    cbor_encode_bstr(&enc, post->author_fp.bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "ts");
+    cbor_encode_uint(&enc, post->timestamp);
+    cbor_encode_cstr(&enc, "d");
+    cbor_encode_bstr(&enc, (const uint8_t *)post->body, post->body_len);
+    cbor_encode_cstr(&enc, "sig");
+    cbor_encode_bstr(&enc, post->signature.bytes, NODUS_SIG_BYTES);
+    return finish(&enc, out_len);
+}
+
+/* ── Inter-Nodus replication ──────────────────────────────────────── */
+
+int nodus_t2_ch_replicate(uint32_t txn,
+                           const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                           const nodus_channel_post_t *post,
+                           uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "ch_rep");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 8);
+    cbor_encode_cstr(&enc, "ch");
+    cbor_encode_bstr(&enc, ch_uuid, NODUS_UUID_BYTES);
+    cbor_encode_cstr(&enc, "seq");
+    cbor_encode_uint(&enc, post->seq_id);
+    cbor_encode_cstr(&enc, "pid");
+    cbor_encode_bstr(&enc, post->post_uuid, NODUS_UUID_BYTES);
+    cbor_encode_cstr(&enc, "afp");
+    cbor_encode_bstr(&enc, post->author_fp.bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "ts");
+    cbor_encode_uint(&enc, post->timestamp);
+    cbor_encode_cstr(&enc, "d");
+    cbor_encode_bstr(&enc, (const uint8_t *)post->body, post->body_len);
+    cbor_encode_cstr(&enc, "sig");
+    cbor_encode_bstr(&enc, post->signature.bytes, NODUS_SIG_BYTES);
+    cbor_encode_cstr(&enc, "ra");
+    cbor_encode_uint(&enc, post->received_at);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_rep_ok(uint32_t txn,
+                        uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "ch_rep_ok");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 0);
+    return finish(&enc, out_len);
+}
+
+/* ── Decode ──────────────────────────────────────────────────────── */
+
+int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
+    if (!buf || !msg) return -1;
+    memset(msg, 0, sizeof(*msg));
+
+    cbor_decoder_t dec;
+    cbor_decoder_init(&dec, buf, len);
+
+    cbor_item_t top = cbor_decode_next(&dec);
+    if (top.type != CBOR_ITEM_MAP) return -1;
+    size_t map_count = top.count;
+
+    for (size_t i = 0; i < map_count; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+
+        /* "t" → transaction ID */
+        if (key.tstr.len == 1 && key.tstr.ptr[0] == 't') {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type == CBOR_ITEM_UINT)
+                msg->txn_id = (uint32_t)val.uint_val;
+        }
+        /* "y" → type */
+        else if (key.tstr.len == 1 && key.tstr.ptr[0] == 'y') {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type == CBOR_ITEM_TSTR && val.tstr.len >= 1)
+                msg->type = val.tstr.ptr[0];
+        }
+        /* "q" → method */
+        else if (key.tstr.len == 1 && key.tstr.ptr[0] == 'q') {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type == CBOR_ITEM_TSTR) {
+                size_t clen = val.tstr.len < sizeof(msg->method) - 1 ?
+                              val.tstr.len : sizeof(msg->method) - 1;
+                memcpy(msg->method, val.tstr.ptr, clen);
+                msg->method[clen] = '\0';
+            }
+        }
+        /* "tok" → session token */
+        else if (key.tstr.len == 3 && memcmp(key.tstr.ptr, "tok", 3) == 0) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SESSION_TOKEN_LEN) {
+                memcpy(msg->token, val.bstr.ptr, NODUS_SESSION_TOKEN_LEN);
+                msg->has_token = true;
+            }
+        }
+        /* "a" → arguments */
+        else if (key.tstr.len == 1 && key.tstr.ptr[0] == 'a') {
+            cbor_item_t args = cbor_decode_next(&dec);
+            if (args.type != CBOR_ITEM_MAP) continue;
+
+            for (size_t j = 0; j < args.count; j++) {
+                cbor_item_t akey = cbor_decode_next(&dec);
+                if (akey.type != CBOR_ITEM_TSTR) {
+                    cbor_decode_skip(&dec); continue;
+                }
+
+                /* pk (hello) */
+                if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "pk", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_PK_BYTES)
+                        memcpy(msg->pk.bytes, val.bstr.ptr, NODUS_PK_BYTES);
+                }
+                /* fp (hello) */
+                else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "fp", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
+                        memcpy(msg->fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
+                }
+                /* sig (auth) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "sig", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES)
+                        memcpy(msg->sig.bytes, val.bstr.ptr, NODUS_SIG_BYTES);
+                }
+                /* k (put/get/listen key) */
+                else if (akey.tstr.len == 1 && akey.tstr.ptr[0] == 'k') {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
+                        memcpy(msg->key.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
+                }
+                /* d (put data) */
+                else if (akey.tstr.len == 1 && akey.tstr.ptr[0] == 'd') {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len > 0) {
+                        msg->data = malloc(val.bstr.len);
+                        if (msg->data) {
+                            memcpy(msg->data, val.bstr.ptr, val.bstr.len);
+                            msg->data_len = val.bstr.len;
+                        }
+                    }
+                }
+                /* type (put) */
+                else if (akey.tstr.len == 4 && memcmp(akey.tstr.ptr, "type", 4) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->val_type = (nodus_value_type_t)val.uint_val;
+                }
+                /* ttl (put) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "ttl", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->ttl = (uint32_t)val.uint_val;
+                }
+                /* vid (put) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "vid", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->vid = val.uint_val;
+                }
+                /* seq (put) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "seq", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->seq = val.uint_val;
+                }
+                /* val (value_changed, serialized value) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "val", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR)
+                        nodus_value_deserialize(val.bstr.ptr, val.bstr.len, &msg->value);
+                }
+                /* ch (channel UUID) */
+                else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "ch", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_UUID_BYTES)
+                        memcpy(msg->channel_uuid, val.bstr.ptr, NODUS_UUID_BYTES);
+                }
+                /* pid (post UUID) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "pid", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_UUID_BYTES)
+                        memcpy(msg->post_uuid_ch, val.bstr.ptr, NODUS_UUID_BYTES);
+                }
+                /* ts (timestamp) */
+                else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "ts", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->ch_timestamp = val.uint_val;
+                }
+                /* max (max count) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "max", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->ch_max_count = (int)val.uint_val;
+                }
+                /* afp (author fingerprint) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "afp", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
+                        memcpy(msg->fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
+                }
+                else {
+                    cbor_decode_skip(&dec);
+                }
+            }
+        }
+        /* "r" → results */
+        else if (key.tstr.len == 1 && key.tstr.ptr[0] == 'r') {
+            cbor_item_t res = cbor_decode_next(&dec);
+            if (res.type != CBOR_ITEM_MAP) continue;
+
+            for (size_t j = 0; j < res.count; j++) {
+                cbor_item_t rkey = cbor_decode_next(&dec);
+                if (rkey.type != CBOR_ITEM_TSTR) {
+                    cbor_decode_skip(&dec); continue;
+                }
+
+                /* nonce (challenge) */
+                if (rkey.tstr.len == 5 && memcmp(rkey.tstr.ptr, "nonce", 5) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_NONCE_LEN)
+                        memcpy(msg->nonce, val.bstr.ptr, NODUS_NONCE_LEN);
+                }
+                /* tok (auth_ok) */
+                else if (rkey.tstr.len == 3 && memcmp(rkey.tstr.ptr, "tok", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SESSION_TOKEN_LEN) {
+                        memcpy(msg->token, val.bstr.ptr, NODUS_SESSION_TOKEN_LEN);
+                        msg->has_token = true;
+                    }
+                }
+                /* val (result single) */
+                else if (rkey.tstr.len == 3 && memcmp(rkey.tstr.ptr, "val", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR)
+                        nodus_value_deserialize(val.bstr.ptr, val.bstr.len, &msg->value);
+                }
+                /* vals (result multi) */
+                else if (rkey.tstr.len == 4 && memcmp(rkey.tstr.ptr, "vals", 4) == 0) {
+                    cbor_item_t arr = cbor_decode_next(&dec);
+                    if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        msg->values = calloc(arr.count, sizeof(nodus_value_t *));
+                        if (msg->values) {
+                            msg->value_count = 0;
+                            for (size_t k = 0; k < arr.count; k++) {
+                                cbor_item_t vi = cbor_decode_next(&dec);
+                                if (vi.type == CBOR_ITEM_BSTR) {
+                                    nodus_value_t *v = NULL;
+                                    if (nodus_value_deserialize(vi.bstr.ptr, vi.bstr.len, &v) == 0)
+                                        msg->values[msg->value_count++] = v;
+                                }
+                            }
+                        }
+                    }
+                }
+                /* seq (ch_post_ok: assigned seq_id) */
+                else if (rkey.tstr.len == 3 && memcmp(rkey.tstr.ptr, "seq", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->ch_seq_id = (uint32_t)val.uint_val;
+                }
+                /* posts (ch_posts: array of channel posts) */
+                else if (rkey.tstr.len == 5 && memcmp(rkey.tstr.ptr, "posts", 5) == 0) {
+                    cbor_item_t arr = cbor_decode_next(&dec);
+                    if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        msg->ch_posts = calloc(arr.count, sizeof(nodus_channel_post_t));
+                        if (msg->ch_posts) {
+                            msg->ch_post_count = 0;
+                            for (size_t k = 0; k < arr.count; k++) {
+                                cbor_item_t pmap = cbor_decode_next(&dec);
+                                if (pmap.type != CBOR_ITEM_MAP) continue;
+                                nodus_channel_post_t *p = &msg->ch_posts[msg->ch_post_count];
+                                memset(p, 0, sizeof(*p));
+                                for (size_t m = 0; m < pmap.count; m++) {
+                                    cbor_item_t pk = cbor_decode_next(&dec);
+                                    if (pk.type != CBOR_ITEM_TSTR) {
+                                        cbor_decode_skip(&dec); continue;
+                                    }
+                                    if (pk.tstr.len == 3 && memcmp(pk.tstr.ptr, "seq", 3) == 0) {
+                                        cbor_item_t v = cbor_decode_next(&dec);
+                                        if (v.type == CBOR_ITEM_UINT) p->seq_id = (uint32_t)v.uint_val;
+                                    } else if (pk.tstr.len == 3 && memcmp(pk.tstr.ptr, "pid", 3) == 0) {
+                                        cbor_item_t v = cbor_decode_next(&dec);
+                                        if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_UUID_BYTES)
+                                            memcpy(p->post_uuid, v.bstr.ptr, NODUS_UUID_BYTES);
+                                    } else if (pk.tstr.len == 3 && memcmp(pk.tstr.ptr, "afp", 3) == 0) {
+                                        cbor_item_t v = cbor_decode_next(&dec);
+                                        if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_KEY_BYTES)
+                                            memcpy(p->author_fp.bytes, v.bstr.ptr, NODUS_KEY_BYTES);
+                                    } else if (pk.tstr.len == 2 && memcmp(pk.tstr.ptr, "ts", 2) == 0) {
+                                        cbor_item_t v = cbor_decode_next(&dec);
+                                        if (v.type == CBOR_ITEM_UINT) p->timestamp = v.uint_val;
+                                    } else if (pk.tstr.len == 1 && pk.tstr.ptr[0] == 'd') {
+                                        cbor_item_t v = cbor_decode_next(&dec);
+                                        if (v.type == CBOR_ITEM_BSTR && v.bstr.len > 0) {
+                                            p->body = malloc(v.bstr.len + 1);
+                                            if (p->body) {
+                                                memcpy(p->body, v.bstr.ptr, v.bstr.len);
+                                                p->body[v.bstr.len] = '\0';
+                                                p->body_len = v.bstr.len;
+                                            }
+                                        }
+                                    } else if (pk.tstr.len == 3 && memcmp(pk.tstr.ptr, "sig", 3) == 0) {
+                                        cbor_item_t v = cbor_decode_next(&dec);
+                                        if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_SIG_BYTES)
+                                            memcpy(p->signature.bytes, v.bstr.ptr, NODUS_SIG_BYTES);
+                                    } else if (pk.tstr.len == 2 && memcmp(pk.tstr.ptr, "ra", 2) == 0) {
+                                        cbor_item_t v = cbor_decode_next(&dec);
+                                        if (v.type == CBOR_ITEM_UINT) p->received_at = v.uint_val;
+                                    } else {
+                                        cbor_decode_skip(&dec);
+                                    }
+                                }
+                                msg->ch_post_count++;
+                            }
+                        }
+                    }
+                }
+                /* code (error) */
+                else if (rkey.tstr.len == 4 && memcmp(rkey.tstr.ptr, "code", 4) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->error_code = (int)val.uint_val;
+                }
+                /* msg (error) */
+                else if (rkey.tstr.len == 3 && memcmp(rkey.tstr.ptr, "msg", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_TSTR) {
+                        size_t clen = val.tstr.len < sizeof(msg->error_msg) - 1 ?
+                                      val.tstr.len : sizeof(msg->error_msg) - 1;
+                        memcpy(msg->error_msg, val.tstr.ptr, clen);
+                        msg->error_msg[clen] = '\0';
+                    }
+                }
+                else {
+                    cbor_decode_skip(&dec);
+                }
+            }
+        }
+        else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    return dec.error ? -1 : 0;
+}
+
+void nodus_t2_msg_free(nodus_tier2_msg_t *msg) {
+    if (!msg) return;
+    free(msg->data);
+    msg->data = NULL;
+    if (msg->value) {
+        nodus_value_free(msg->value);
+        msg->value = NULL;
+    }
+    if (msg->values) {
+        for (size_t i = 0; i < msg->value_count; i++)
+            nodus_value_free(msg->values[i]);
+        free(msg->values);
+        msg->values = NULL;
+    }
+    if (msg->ch_posts) {
+        for (size_t i = 0; i < msg->ch_post_count; i++)
+            free(msg->ch_posts[i].body);
+        free(msg->ch_posts);
+        msg->ch_posts = NULL;
+    }
+}

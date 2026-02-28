@@ -1,0 +1,1 @@
+/usr/bin/cc -g CMakeFiles/test_cbor.dir/tests/test_cbor.c.o -o test_cbor  libnodus_lib.a dsa/libdsa.a /usr/lib/x86_64-linux-gnu/libcrypto.so /usr/lib/x86_64-linux-gnu/libsqlite3.so 

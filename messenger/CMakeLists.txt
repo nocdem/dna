@@ -90,23 +90,14 @@ add_subdirectory(${SHARED_DIR}/crypto/cellframe_dilithium ${CMAKE_BINARY_DIR}/cr
 include(${CMAKE_SOURCE_DIR}/cmake/Secp256k1.cmake)
 
 # =============================================================================
-# DHT and P2P Transport Layer
+# DHT and P2P Transport Layer — Nodus v5
 # =============================================================================
-# Force OpenDHT-PQ to build as static library (not shared) WITHOUT poisoning the whole build
-set(_SAVED_BUILD_SHARED_LIBS "${BUILD_SHARED_LIBS}")
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries (OpenDHT-PQ only)" FORCE)
+# Build Nodus v5 library (replaces vendor/opendht-pq)
+# NODUS_STANDALONE=OFF: shared crypto already compiled in dht_lib, skip duplicates
+set(NODUS_STANDALONE OFF CACHE BOOL "Nodus built within messenger tree" FORCE)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../nodus ${CMAKE_BINARY_DIR}/nodus)
 
-set(BUILD_TESTING OFF CACHE BOOL "Disable OpenDHT-PQ tests (not updated for Dilithium5)" FORCE)
-set(OPENDHT_TOOLS ON CACHE BOOL "Enable OpenDHT-PQ tools for dna-nodus" FORCE)
-set(SKIP_INSTALL_ALL ON CACHE BOOL "Skip install for vendored opendht-pq" FORCE)
-
-add_subdirectory(vendor/opendht-pq)  # OpenDHT-PQ with Dilithium5 support
-
-# Restore whatever the parent project wanted
-set(BUILD_SHARED_LIBS "${_SAVED_BUILD_SHARED_LIBS}" CACHE BOOL "Build shared libraries" FORCE)
-unset(_SAVED_BUILD_SHARED_LIBS)
-
-add_subdirectory(dht)               # DHT integration (uses vendor/opendht-pq)
+add_subdirectory(dht)               # DHT integration (uses Nodus v5 compat shim)
 add_subdirectory(transport)         # Transport layer (DHT-only messaging)
 
 # =============================================================================
@@ -360,12 +351,7 @@ target_link_libraries(dna_lib
 # secp256k1 include directory for BIP-32 derivation
 target_include_directories(dna_lib PRIVATE ${SECP256K1_INCLUDE_DIR})
 
-# C++ standard library linking
-# On Android, don't explicitly link stdc++ - let ANDROID_STL handle it
-# On other platforms, link stdc++ for OpenDHT compatibility
-if(NOT ANDROID)
-    target_link_libraries(dna_lib stdc++)
-endif()
+# C++ standard library no longer needed (OpenDHT removed in Nodus v5)
 
 # CURL linking
 if(HAS_CURL)

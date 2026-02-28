@@ -1,0 +1,385 @@
+Start testing: Feb 28 12:03 +03
+----------------------------------------------------------
+1/13 Testing: test_cbor
+1/13 Test: test_cbor
+Command: "/opt/dna/nodus/build/test_cbor"
+Directory: /opt/dna/nodus/build
+"test_cbor" start time: Feb 28 12:03 +03
+Output:
+----------------------------------------------------------
+=== Nodus CBOR Tests ===
+  encode uint small (0-23)                          PASS
+  encode uint 1-byte (24-255)                       PASS
+  encode uint 2-byte (256-65535)                    PASS
+  encode uint 4-byte                                PASS
+  encode uint 8-byte                                PASS
+  encode byte string                                PASS
+  encode text string                                PASS
+  encode empty byte string                          PASS
+  encode map {"a": 1, "b": 2}                       PASS
+  encode array [1, 2, 3]                            PASS
+  encode booleans                                   PASS
+  encode null                                       PASS
+  encode overflow detection                         PASS
+  decode unsigned integers                          PASS
+  decode byte string                                PASS
+  decode text string                                PASS
+  decode map and find key                           PASS
+  decode nested: map containing array               PASS
+  decode skip complex item                          PASS
+  roundtrip: protocol PUT message                   PASS
+
+=== Results: 20 passed, 0 failed ===
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"test_cbor" end time: Feb 28 12:03 +03
+"test_cbor" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/13 Testing: test_wire
+2/13 Test: test_wire
+Command: "/opt/dna/nodus/build/test_wire"
+Directory: /opt/dna/nodus/build
+"test_wire" start time: Feb 28 12:03 +03
+Output:
+----------------------------------------------------------
+=== Nodus Wire Frame Tests ===
+  encode basic frame                                PASS
+  encode empty payload                              PASS
+  encode fails if buffer too small                  PASS
+  decode basic frame                                PASS
+  decode returns 0 on incomplete header             PASS
+  decode returns 0 on incomplete payload            PASS
+  decode rejects bad magic                          PASS
+  validate UDP frame size limit                     PASS
+  validate TCP frame size limit                     PASS
+  validate rejects bad version                      PASS
+  roundtrip with 1000-byte payload                  PASS
+
+=== Results: 11 passed, 0 failed ===
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"test_wire" end time: Feb 28 12:03 +03
+"test_wire" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/13 Testing: test_value
+3/13 Test: test_value
+Command: "/opt/dna/nodus/build/test_value"
+Directory: /opt/dna/nodus/build
+"test_value" start time: Feb 28 12:03 +03
+Output:
+----------------------------------------------------------
+=== Nodus Value Tests ===
+  create ephemeral value                            PASS
+  create permanent value                            PASS
+  sign and verify value                             PASS
+  reject tampered value                             PASS
+  serialize/deserialize roundtrip                   PASS
+  value expiry check                                PASS
+  value with empty data (tombstone)                 PASS
+
+=== Results: 7 passed, 0 failed ===
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"test_value" end time: Feb 28 12:03 +03
+"test_value" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/13 Testing: test_identity
+4/13 Test: test_identity
+Command: "/opt/dna/nodus/build/test_identity"
+Directory: /opt/dna/nodus/build
+"test_identity" start time: Feb 28 12:03 +03
+Output:
+----------------------------------------------------------
+=== Nodus Identity Tests ===
+  generate random identity                          PASS
+  seed derivation is deterministic                  PASS
+  different seeds produce different identities      PASS
+  fingerprint = SHA3-512(pubkey)                    PASS
+  sign and verify with identity                     PASS
+  value_id from identity                            PASS
+  save/load identity roundtrip                      PASS
+  hex fingerprint is 128 lowercase hex chars        PASS
+
+=== Results: 8 passed, 0 failed ===
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"test_identity" end time: Feb 28 12:03 +03
+"test_identity" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/13 Testing: test_routing
+5/13 Test: test_routing
+Command: "/opt/dna/nodus/build/test_routing"
+Directory: /opt/dna/nodus/build
+"test_routing" start time: Feb 28 12:03 +03
+Output:
+----------------------------------------------------------
+=== Nodus Routing Table Tests ===
+  init routing table                                PASS
+  insert peers and count                            PASS
+  insert self is rejected                           PASS
+  insert duplicate updates existing                 PASS
+  remove peer                                       PASS
+  lookup peer                                       PASS
+  lookup non-existent peer                          PASS
+  find k closest peers                              PASS
+  bucket overflow evicts LRU                        PASS
+  touch updates last_seen                           PASS
+
+=== Results: 10 passed, 0 failed ===
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"test_routing" end time: Feb 28 12:03 +03
+"test_routing" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/13 Testing: test_storage
+6/13 Test: test_storage
+Command: "/opt/dna/nodus/build/test_storage"
+Directory: /opt/dna/nodus/build
+"test_storage" start time: Feb 28 12:03 +03
+Output:
+----------------------------------------------------------
+=== Nodus Storage Tests ===
+  open and close database                           PASS
+  put and get value                                 PASS
+  put replaces on same key+owner+vid                PASS
+  get_all returns multi-writer values               PASS
+  delete specific value                             PASS
+  cleanup removes expired values                    PASS
+  count values                                      PASS
+  values persist across close/reopen                PASS
+
+=== Results: 8 passed, 0 failed ===
+<end of output>
+Test time =   0.22 sec
+----------------------------------------------------------
+Test Passed.
+"test_storage" end time: Feb 28 12:03 +03
+"test_storage" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/13 Testing: test_hashring
+7/13 Test: test_hashring
+Command: "/opt/dna/nodus/build/test_hashring"
+Directory: /opt/dna/nodus/build
+"test_hashring" start time: Feb 28 12:03 +03
+Output:
+----------------------------------------------------------
+=== Nodus Hash Ring Tests ===
+  init ring                                         PASS
+  add and remove nodes                              PASS
+  duplicate add rejected                            PASS
+  responsible set with 3 nodes                      PASS
+  responsible set is deterministic                  PASS
+  responsible set with fewer than R nodes           PASS
+  version increments on add/remove                  PASS
+  different channels may get different primaries    PASS
+  responsible on empty ring returns error           PASS
+
+=== Results: 9 passed, 0 failed ===
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"test_hashring" end time: Feb 28 12:03 +03
+"test_hashring" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/13 Testing: test_tcp
+8/13 Test: test_tcp
+Command: "/opt/dna/nodus/build/test_tcp"
+Directory: /opt/dna/nodus/build
+"test_tcp" start time: Feb 28 12:03 +03
+Output:
+----------------------------------------------------------
+=== Nodus TCP Transport Tests ===
+  tcp init and close                                PASS
+  tcp listen on port 0 (random)                     PASS
+  tcp connect and accept loopback                   PASS
+  tcp send and receive frame                        PASS
+  tcp multiple frames in sequence                   PASS
+  tcp disconnect callback                           PASS
+  tcp find connection by address                    PASS
+  nodus_time_now returns reasonable value           PASS
+
+=== Results: 8 passed, 0 failed ===
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"test_tcp" end time: Feb 28 12:03 +03
+"test_tcp" time elapsed: 00:00:00
+----------------------------------------------------------
+
+9/13 Testing: test_tier1
+9/13 Test: test_tier1
+Command: "/opt/dna/nodus/build/test_tier1"
+Directory: /opt/dna/nodus/build
+"test_tier1" start time: Feb 28 12:03 +03
+Output:
+----------------------------------------------------------
+=== Nodus Tier 1 Protocol Tests ===
+  ping encode/decode                                PASS
+  pong encode/decode                                PASS
+  find_node encode/decode                           PASS
+  nodes_found encode/decode                         PASS
+  store_value encode/decode                         PASS
+  store_ack encode/decode                           PASS
+  find_value encode/decode                          PASS
+  subscribe encode/decode                           PASS
+
+=== Results: 8 passed, 0 failed ===
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"test_tier1" end time: Feb 28 12:03 +03
+"test_tier1" time elapsed: 00:00:00
+----------------------------------------------------------
+
+10/13 Testing: test_tier2
+10/13 Test: test_tier2
+Command: "/opt/dna/nodus/build/test_tier2"
+Directory: /opt/dna/nodus/build
+"test_tier2" start time: Feb 28 12:03 +03
+Output:
+----------------------------------------------------------
+=== Nodus Tier 2 Protocol Tests ===
+  hello encode/decode                               PASS
+  challenge encode/decode                           PASS
+  auth encode/decode                                PASS
+  auth_ok encode/decode                             PASS
+  put encode/decode                                 PASS
+  get encode/decode                                 PASS
+  listen encode/decode                              PASS
+  error encode/decode                               PASS
+  result with value encode/decode                   PASS
+  pong encode/decode                                PASS
+
+=== Results: 10 passed, 0 failed ===
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"test_tier2" end time: Feb 28 12:03 +03
+"test_tier2" time elapsed: 00:00:00
+----------------------------------------------------------
+
+11/13 Testing: test_channel_store
+11/13 Test: test_channel_store
+Command: "/opt/dna/nodus/build/test_channel_store"
+Directory: /opt/dna/nodus/build
+"test_channel_store" start time: Feb 28 12:03 +03
+Output:
+----------------------------------------------------------
+test_channel_store: Channel storage tests
+  [1] open and close channel store                  PASS
+  [2] create channel table                          PASS
+  [3] create channel is idempotent                  PASS
+  [4] post and get                                  PASS
+  [5] duplicate post_uuid returns 1                 PASS
+  [6] sequential seq_id assignment                  PASS
+  [7] get posts since seq_id                        PASS
+  [8] max_seq returns highest seq_id                PASS
+  [9] hinted handoff insert + get + delete          PASS
+  [10] drop channel table                            PASS
+  [11] operations on nonexistent channel             PASS
+
+  11/11 tests passed
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"test_channel_store" end time: Feb 28 12:03 +03
+"test_channel_store" time elapsed: 00:00:00
+----------------------------------------------------------
+
+12/13 Testing: test_server
+12/13 Test: test_server
+Command: "/opt/dna/nodus/build/test_server"
+Directory: /opt/dna/nodus/build
+"test_server" start time: Feb 28 12:03 +03
+Output:
+----------------------------------------------------------
+Nodus v0.5.0 running
+  Identity: 1da7958fecdfc84a7e76ff3e906a6d6b38ec411a259f20fb1bc038e118e7c835eba661e0033feee811f0e9d1e01e8ec574cb46dc5a8533d37641a6211ec8c1a0
+  TCP port: 14001
+  UDP port: 14000
+test_server: Nodus server integration tests
+  [1] client connects to server                     PASS
+  [2] 3-way Dilithium5 auth handshake               PASS
+  [3] ping → pong                                 PASS
+  [4] PUT + GET round-trip                          PASS
+  [5] LISTEN + PUT triggers VALUE_CHANGED           PASS
+  [6] unauthenticated request is rejected           PASS
+  [7] rate limiting on PUT                          PASS
+  [8] GET_ALL returns multiple values               PASS
+  [9] ch_create creates a channel                   PASS
+  [10] ch_post posts to a channel                    PASS
+  [11] ch_get retrieves channel posts                PASS
+  [12] ch_get with since_seq filters correctly       PASS
+  [13] ch_sub + ch_post → ch_ntf notification      PASS
+  [14] ch_post to nonexistent channel returns error  PASS
+
+  14/14 tests passed
+<end of output>
+Test time =   8.10 sec
+----------------------------------------------------------
+Test Passed.
+"test_server" end time: Feb 28 12:03 +03
+"test_server" time elapsed: 00:00:08
+----------------------------------------------------------
+
+13/13 Testing: test_client
+13/13 Test: test_client
+Command: "/opt/dna/nodus/build/test_client"
+Directory: /opt/dna/nodus/build
+"test_client" start time: Feb 28 12:03 +03
+Output:
+----------------------------------------------------------
+Nodus v0.5.0 running
+  Identity: fd7eefcd4dc0d999711c2b203a2f0938eb4a35da88a25fc68e5d127becfd3c936d4161058c7b7743c6c3f0d0b331b9b6c465886b9421a62d77e74da00d16a0fb
+  TCP port: 15001
+  UDP port: 15000
+=== Nodus Client SDK Test ===
+
+  [1] client SDK init                               PASS
+  [2] client connects and authenticates             PASS
+  [3] client fingerprint matches identity           PASS
+  [4] client state is READY                         PASS
+  [5] client put DHT value                          PASS
+  [6] client get DHT value                          PASS
+  [7] client get returns NOT_FOUND for missing key  PASS
+  [8] client listen + value_changed notification    PASS
+  [9] client unlisten removes subscription          PASS
+  [10] client create channel                         PASS
+  [11] client post to channel                        PASS
+  [12] client get channel posts                      PASS
+  [13] client channel subscribe + notification       PASS
+  [14] client channel unsubscribe                    PASS
+  [15] client failover skips bad server              PASS
+
+15/15 tests passed
+<end of output>
+Test time =   0.18 sec
+----------------------------------------------------------
+Test Passed.
+"test_client" end time: Feb 28 12:03 +03
+"test_client" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Feb 28 12:03 +03

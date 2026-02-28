@@ -1,0 +1,14 @@
+test_cbor 10 0.0001332
+test_wire 10 0.000126099
+test_value 10 0.000904235
+test_identity 10 0.000930341
+test_routing 10 0.000184222
+test_storage 10 0.0220892
+test_hashring 10 0.000396086
+test_tcp 10 0.0022899
+test_tier1 10 0.00112122
+test_tier2 10 0.00161272
+test_server 9 0.899797
+test_channel_store 9 0.00212586
+test_client 3 0.0603656
+---
