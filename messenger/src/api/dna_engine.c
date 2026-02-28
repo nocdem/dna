@@ -362,6 +362,19 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
             /* Profile: load from local cache and publish */
             dna_auto_republish_own_profile(engine);
 
+            /* Name lookup alias: republish name→fingerprint so lookup works on v5 */
+            {
+                dna_unified_identity_t *cached_id = NULL;
+                uint64_t cached_at = 0;
+                if (profile_cache_get(engine->fingerprint, &cached_id, &cached_at) == 0 &&
+                    cached_id && cached_id->has_registered_name && cached_id->registered_name[0]) {
+                    int name_rc = dht_keyserver_publish_alias(cached_id->registered_name, engine->fingerprint);
+                    QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Name alias '%s' republish: %s",
+                                 cached_id->registered_name, name_rc == 0 ? "OK" : "failed (non-fatal)");
+                }
+                if (cached_id) dna_identity_free(cached_id);
+            }
+
             /* Contacts: push from local SQLite to DHT */
             int rc = messenger_sync_contacts_to_dht(engine->messenger);
             QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Contacts push: %s", rc == 0 ? "OK" : "failed (non-fatal)");
