@@ -1,0 +1,12 @@
+{
+    "bind_ip": "0.0.0.0",
+    "udp_port": 4000,
+    "tcp_port": 4001,
+    "identity_path": "/var/lib/nodus/identity",
+    "data_path": "/var/lib/nodus/data",
+    "seed_nodes": [
+        "161.97.85.25:4000",
+        "156.67.24.125:4000",
+        "156.67.25.251:4000"
+    ]
+}
