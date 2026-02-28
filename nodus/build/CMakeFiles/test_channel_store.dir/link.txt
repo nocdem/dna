@@ -1,1 +1,0 @@
-/usr/bin/cc -g CMakeFiles/test_channel_store.dir/tests/test_channel_store.c.o -o test_channel_store  libnodus_lib.a dsa/libdsa.a libnodus_lib.a dsa/libdsa.a /usr/lib/x86_64-linux-gnu/libcrypto.so /usr/lib/x86_64-linux-gnu/libsqlite3.so 

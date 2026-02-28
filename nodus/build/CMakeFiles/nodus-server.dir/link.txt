@@ -1,1 +1,0 @@
-/usr/bin/cc -g "CMakeFiles/nodus-server.dir/tools/nodus-server.c.o" -o nodus-server  libnodus_lib.a dsa/libdsa.a libnodus_lib.a -ljson-c dsa/libdsa.a /usr/lib/x86_64-linux-gnu/libcrypto.so /usr/lib/x86_64-linux-gnu/libsqlite3.so 

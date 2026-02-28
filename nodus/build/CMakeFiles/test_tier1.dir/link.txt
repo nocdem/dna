@@ -1,1 +1,0 @@
-/usr/bin/cc -g CMakeFiles/test_tier1.dir/tests/test_tier1.c.o -o test_tier1  libnodus_lib.a dsa/libdsa.a libnodus_lib.a dsa/libdsa.a /usr/lib/x86_64-linux-gnu/libcrypto.so /usr/lib/x86_64-linux-gnu/libsqlite3.so 
