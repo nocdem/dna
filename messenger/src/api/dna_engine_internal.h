@@ -767,6 +767,7 @@ void dna_handle_lookup_name(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task);
+void dna_auto_republish_own_profile(dna_engine_t *engine);
 
 /* Contacts */
 void dna_handle_get_contacts(dna_engine_t *engine, dna_task_t *task);

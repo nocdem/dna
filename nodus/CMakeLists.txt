@@ -92,6 +92,7 @@ set(NODUS_SOURCES
     src/client/nodus_client.c
     src/client/nodus_singleton.c
     src/client/nodus_compat.c
+    src/client/nodus_republish.c
 
     # Shared crypto (standalone only — messenger tree provides these via dht_lib)
     ${SHARED_CRYPTO_SOURCES}

@@ -18,6 +18,7 @@ All rules from that file apply here. This file only adds monorepo-specific conte
 ├── shared/          # Shared code (crypto libraries used by all projects)
 │   └── crypto/      # Post-quantum crypto: Kyber, Dilithium, BIP39, utils
 ├── messenger/       # DNA Messenger (main project) - C library + Flutter app
+├── nodus/           # Nodus v5 - DHT server + client SDK (pure C)
 ├── dnac/            # DNA Cash - Post-quantum digital cash over DHT
 ├── cpunk/           # cpunk.io website (web project, no C build)
 └── CLAUDE.md        # This file
@@ -36,11 +37,12 @@ All rules from that file apply here. This file only adds monorepo-specific conte
 | Project | Build Command |
 |---------|---------------|
 | Messenger (C library) | `cd messenger/build && cmake .. && make -j$(nproc)` |
+| Nodus v5 | `cd nodus/build && cmake .. && make -j$(nproc)` |
 | dnac | `cd dnac/build && cmake .. && make -j$(nproc)` |
 | Flutter app | `cd messenger/dna_messenger_flutter && flutter build linux` |
 | cpunk | Web project — no C build |
 
-**Build order matters:** Messenger must be built first (dnac links against `libdna_lib.so`).
+**Build order matters:** Messenger must be built first (dnac links against `libdna_lib.so`). Nodus builds independently.
 
 ## Shared Code (`shared/crypto/`)
 
@@ -66,7 +68,8 @@ target_include_directories(my_target PUBLIC ${SHARED_DIR})
 |-----------|-------------|-----------|
 | C Library | `messenger/include/dna/version.h` | Messenger C code changes |
 | Flutter App | `messenger/dna_messenger_flutter/pubspec.yaml` | Flutter/Dart changes |
-| Nodus Server | `messenger/vendor/opendht-pq/tools/nodus_version.h` | Nodus changes |
+| Nodus v5 | `nodus/include/nodus/nodus_types.h` (NODUS_VERSION_*) | Nodus v5 changes |
+| Nodus v0.4 (legacy) | `messenger/vendor/opendht-pq/tools/nodus_version.h` | Legacy nodus changes |
 | DNAC | `dnac/CMakeLists.txt` (project VERSION) | DNAC changes |
 
 ## Push to Remote

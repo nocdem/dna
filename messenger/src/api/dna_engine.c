@@ -112,6 +112,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/key_encryption.h"
 #include "crypto/utils/qgp_dilithium.h"
+#include "client/nodus_republish.h"
 
 /* Blockchain/Wallet includes for send_tokens */
 #include "cellframe_wallet.h"
@@ -351,6 +352,34 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
     if (!dht_wait_for_stabilization(engine)) goto cleanup;
 
     QGP_LOG_INFO(LOG_TAG, "[RETRY] Stabilization complete, starting retries...");
+
+    /* 0. Nodus v5 migration: republish local data to new DHT on first connect.
+     * Old OpenDHT data expires naturally (7-day TTL for contacts/GEKs, 365-day for profile).
+     * This pushes local cache → Nodus v5 DHT so data is available on the new network. */
+    if (engine->messenger) {
+        const char *data_dir = qgp_platform_app_data_dir();
+        if (data_dir && !nodus_republish_check_migrated(data_dir)) {
+            QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Nodus v5: republishing local data to new DHT...");
+
+            /* Profile: load from local cache and publish */
+            dna_auto_republish_own_profile(engine);
+
+            /* Contacts: push from local SQLite to DHT */
+            int rc = messenger_sync_contacts_to_dht(engine->messenger);
+            QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Contacts push: %s", rc == 0 ? "OK" : "failed (non-fatal)");
+
+            /* Groups: push from local SQLite to DHT */
+            rc = messenger_sync_groups_to_dht(engine->messenger);
+            QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Groups push: %s", rc == 0 ? "OK" : "failed (non-fatal)");
+
+            /* GEKs: handled by existing bidirectional sync below (step 1c) */
+
+            nodus_republish_mark_done(data_dir);
+            QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Nodus v5 migration complete");
+        }
+    }
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
     /* 1. Re-register presence - initial registration during identity load often fails
      * with nodes_tried=0 because routing table only has bootstrap nodes */

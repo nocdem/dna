@@ -578,7 +578,7 @@ done:
  * This happens when profile format changes (e.g., displayName removal in v0.6.24)
  * The old profile in DHT has a signature over different JSON, so we need to re-sign.
  */
-static void dna_auto_republish_own_profile(dna_engine_t *engine) {
+void dna_auto_republish_own_profile(dna_engine_t *engine) {
     if (!engine || !engine->identity_loaded) return;
 
     QGP_LOG_WARN(LOG_TAG, "[AUTO-REPUBLISH] Own profile signature invalid, republishing...");
