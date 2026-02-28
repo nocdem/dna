@@ -24,6 +24,7 @@ set(DHT_COMMON_SOURCES
     shared/dht_publish_queue.c  # Non-blocking publish queue (v0.6.80+)
     shared/dht_contact_request.c  # ICQ-style contact request system
     shared/dht_channel_subscriptions.c  # Channel subscription DHT sync
+    shared/nodus_ops.c                  # Nodus v5 direct operations layer
     # Client modules
     client/dht_singleton.c
     client/dht_bootstrap_discovery.c  # Client-side node discovery

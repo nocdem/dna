@@ -36,7 +36,6 @@
 #ifndef DHT_PUBLISH_QUEUE_H
 #define DHT_PUBLISH_QUEUE_H
 
-#include "../core/dht_context.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -142,11 +141,10 @@ void dht_publish_queue_destroy(dht_publish_queue_t *queue);
  * Returns immediately; actual publish happens in worker thread.
  *
  * @param queue        Publish queue
- * @param ctx          DHT context (must remain valid until callback)
- * @param base_key     Base key for chunked storage (copied internally)
+ * @param base_key     Base key for storage (copied internally)
  * @param data         Data to publish (copied internally)
  * @param data_len     Data length
- * @param ttl_seconds  TTL for DHT storage (use DHT_CHUNK_TTL_* constants)
+ * @param ttl_seconds  TTL for DHT storage
  * @param callback     Callback when complete (may be NULL for fire-and-forget)
  * @param user_data    User data passed to callback
  *
@@ -154,7 +152,6 @@ void dht_publish_queue_destroy(dht_publish_queue_t *queue);
  */
 dht_publish_request_id_t dht_chunked_publish_async(
     dht_publish_queue_t *queue,
-    dht_context_t *ctx,
     const char *base_key,
     const uint8_t *data,
     size_t data_len,

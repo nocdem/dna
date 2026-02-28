@@ -27,10 +27,8 @@
 #else
 #include <arpa/inet.h>
 #endif
-#include "../dht/core/dht_context.h"
 #include "../dht/core/dht_keyserver.h"
 #include "../dht/shared/dht_groups.h"
-#include "../dht/client/dht_singleton.h"
 #include "../dht/shared/dht_gek_storage.h"
 #include "../dht/client/dht_geks.h"
 #include <stdio.h>
@@ -603,8 +601,8 @@ void gek_clear_kem_keys(void) {
  *
  * Common logic for both member add/remove operations.
  */
-static int gek_rotate_and_publish(dht_context_t *dht_ctx, const char *group_uuid, const char *owner_identity) {
-    if (!dht_ctx || !group_uuid || !owner_identity) {
+static int gek_rotate_and_publish(const char *group_uuid, const char *owner_identity) {
+    if (!group_uuid || !owner_identity) {
         QGP_LOG_ERROR(LOG_TAG, "gek_rotate_and_publish: NULL parameter\n");
         return -1;
     }
@@ -627,7 +625,7 @@ static int gek_rotate_and_publish(dht_context_t *dht_ctx, const char *group_uuid
 
     // Step 3: Get group metadata (members list)
     dht_group_metadata_t *meta = NULL;
-    if (dht_groups_get(dht_ctx, group_uuid, &meta) != 0 || !meta) {
+    if (dht_groups_get(group_uuid, &meta) != 0 || !meta) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to get group metadata\n");
         return -1;
     }
@@ -656,7 +654,7 @@ static int gek_rotate_and_publish(dht_context_t *dht_ctx, const char *group_uuid
 
         // Lookup member's public keys from DHT keyserver
         dna_unified_identity_t *member_id = NULL;
-        if (dht_keyserver_lookup(dht_ctx, member_identity, &member_id) != 0 || !member_id) {
+        if (dht_keyserver_lookup(member_identity, &member_id) != 0 || !member_id) {
             QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to lookup keys for %s (skipping)\n", member_identity);
             continue;
         }
@@ -756,7 +754,7 @@ static int gek_rotate_and_publish(dht_context_t *dht_ctx, const char *group_uuid
     dht_groups_free_metadata(meta);
 
     // Step 7: Publish to DHT via chunked storage
-    if (dht_gek_publish(dht_ctx, group_uuid, new_version, packet, packet_size) != 0) {
+    if (dht_gek_publish(group_uuid, new_version, packet, packet_size) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to publish Initial Key Packet to DHT\n");
         free(packet);
         return -1;
@@ -766,7 +764,7 @@ static int gek_rotate_and_publish(dht_context_t *dht_ctx, const char *group_uuid
 
     // Step 8: Update group metadata with new GEK version
     // This allows invitees to know which IKP version to fetch
-    if (dht_groups_update_gek_version(dht_ctx, group_uuid, new_version) != 0) {
+    if (dht_groups_update_gek_version(group_uuid, new_version) != 0) {
         QGP_LOG_WARN(LOG_TAG, "Failed to update GEK version in metadata (IKP still published)\n");
         // Non-fatal: IKP is published, metadata update is best-effort
     }
@@ -777,14 +775,14 @@ static int gek_rotate_and_publish(dht_context_t *dht_ctx, const char *group_uuid
     return 0;
 }
 
-int gek_rotate_on_member_add(void *dht_ctx, const char *group_uuid, const char *owner_identity) {
+int gek_rotate_on_member_add(const char *group_uuid, const char *owner_identity) {
     QGP_LOG_INFO(LOG_TAG, "Member added to group %s, rotating GEK...\n", group_uuid);
-    return gek_rotate_and_publish((dht_context_t *)dht_ctx, group_uuid, owner_identity);
+    return gek_rotate_and_publish(group_uuid, owner_identity);
 }
 
-int gek_rotate_on_member_remove(void *dht_ctx, const char *group_uuid, const char *owner_identity) {
+int gek_rotate_on_member_remove(const char *group_uuid, const char *owner_identity) {
     QGP_LOG_INFO(LOG_TAG, "Member removed from group %s, rotating GEK...\n", group_uuid);
-    return gek_rotate_and_publish((dht_context_t *)dht_ctx, group_uuid, owner_identity);
+    return gek_rotate_and_publish(group_uuid, owner_identity);
 }
 
 /* ============================================================================
@@ -1496,14 +1494,13 @@ static int gek_import_plain_entries(const dht_gek_entry_t *entries, size_t count
 }
 
 int gek_sync_to_dht(
-    void *dht_ctx,
     const char *identity,
     const uint8_t *kyber_pubkey,
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey,
     const uint8_t *dilithium_privkey)
 {
-    if (!dht_ctx || !identity || !kyber_pubkey || !kyber_privkey ||
+    if (!identity || !kyber_pubkey || !kyber_privkey ||
         !dilithium_pubkey || !dilithium_privkey) {
         QGP_LOG_ERROR(LOG_TAG, "gek_sync_to_dht: NULL parameter\n");
         return -1;
@@ -1527,7 +1524,6 @@ int gek_sync_to_dht(
 
     // Publish to DHT
     int result = dht_geks_publish(
-        (dht_context_t *)dht_ctx,
         identity,
         entries,
         count,
@@ -1554,13 +1550,12 @@ int gek_sync_to_dht(
 }
 
 int gek_sync_from_dht(
-    void *dht_ctx,
     const char *identity,
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey,
     int *imported_out)
 {
-    if (!dht_ctx || !identity || !kyber_privkey || !dilithium_pubkey) {
+    if (!identity || !kyber_privkey || !dilithium_pubkey) {
         QGP_LOG_ERROR(LOG_TAG, "gek_sync_from_dht: NULL parameter\n");
         return -1;
     }
@@ -1576,7 +1571,6 @@ int gek_sync_from_dht(
     size_t count = 0;
 
     int result = dht_geks_fetch(
-        (dht_context_t *)dht_ctx,
         identity,
         &entries,
         &count,
@@ -1623,14 +1617,13 @@ int gek_sync_from_dht(
 }
 
 int gek_auto_sync(
-    void *dht_ctx,
     const char *identity,
     const uint8_t *kyber_pubkey,
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey,
     const uint8_t *dilithium_privkey)
 {
-    if (!dht_ctx || !identity || !kyber_pubkey || !kyber_privkey ||
+    if (!identity || !kyber_pubkey || !kyber_privkey ||
         !dilithium_pubkey || !dilithium_privkey) {
         QGP_LOG_ERROR(LOG_TAG, "gek_auto_sync: NULL parameter\n");
         return -1;
@@ -1640,7 +1633,7 @@ int gek_auto_sync(
 
     // First, try to sync from DHT (get any new GEKs from other devices)
     int imported = 0;
-    int from_result = gek_sync_from_dht(dht_ctx, identity, kyber_privkey,
+    int from_result = gek_sync_from_dht(identity, kyber_privkey,
                                          dilithium_pubkey, &imported);
 
     if (from_result == -2) {
@@ -1652,7 +1645,7 @@ int gek_auto_sync(
     }
 
     // Then, sync to DHT (share local GEKs with other devices)
-    int to_result = gek_sync_to_dht(dht_ctx, identity, kyber_pubkey, kyber_privkey,
+    int to_result = gek_sync_to_dht(identity, kyber_pubkey, kyber_privkey,
                                      dilithium_pubkey, dilithium_privkey);
 
     if (to_result != 0) {
@@ -1672,13 +1665,6 @@ int messenger_gek_auto_sync(void *ctx_ptr) {
     messenger_context_t *ctx = (messenger_context_t *)ctx_ptr;
     if (!ctx || !ctx->fingerprint) {
         QGP_LOG_ERROR(LOG_TAG, "messenger_gek_auto_sync: Invalid context\n");
-        return -1;
-    }
-
-    // Get DHT context from singleton
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "messenger_gek_auto_sync: DHT not available\n");
         return -1;
     }
 
@@ -1746,7 +1732,6 @@ int messenger_gek_auto_sync(void *ctx_ptr) {
 
     // Call the low-level auto-sync
     int result = gek_auto_sync(
-        dht_ctx,
         ctx->fingerprint,
         kyber_key->public_key,
         kyber_key->private_key,

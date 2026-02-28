@@ -61,7 +61,6 @@
 #ifndef DHT_MESSAGE_BACKUP_H
 #define DHT_MESSAGE_BACKUP_H
 
-#include "../core/dht_context.h"
 #include "../../message_backup.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -124,7 +123,6 @@ void dht_message_backup_cleanup(void);
  * 5. Create binary blob: [header][encrypted_json][signature]
  * 6. Store in DHT at SHA3-512(fingerprint + ":message_backup")
  *
- * @param dht_ctx DHT context
  * @param msg_ctx Message backup context (SQLite database)
  * @param fingerprint Owner fingerprint (128-char hex string)
  * @param kyber_pubkey Owner's Kyber1024 public key (1568 bytes)
@@ -135,7 +133,6 @@ void dht_message_backup_cleanup(void);
  * @return 0 on success, -1 on error
  */
 int dht_message_backup_publish(
-    dht_context_t *dht_ctx,
     message_backup_context_t *msg_ctx,
     const char *fingerprint,
     const uint8_t *kyber_pubkey,
@@ -157,7 +154,6 @@ int dht_message_backup_publish(
  * 6. For each message, check if exists (skip duplicates)
  * 7. Import non-duplicate messages to SQLite
  *
- * @param dht_ctx DHT context
  * @param msg_ctx Message backup context (SQLite database)
  * @param fingerprint Owner fingerprint (128-char hex string)
  * @param kyber_privkey Owner's Kyber1024 private key (for decryption)
@@ -167,7 +163,6 @@ int dht_message_backup_publish(
  * @return 0 on success, -1 on error, -2 if not found
  */
 int dht_message_backup_restore(
-    dht_context_t *dht_ctx,
     message_backup_context_t *msg_ctx,
     const char *fingerprint,
     const uint8_t *kyber_privkey,
@@ -179,12 +174,10 @@ int dht_message_backup_restore(
 /**
  * Check if message backup exists in DHT
  *
- * @param dht_ctx DHT context
  * @param fingerprint Owner fingerprint
  * @return true if exists, false otherwise
  */
 bool dht_message_backup_exists(
-    dht_context_t *dht_ctx,
     const char *fingerprint
 );
 
@@ -192,14 +185,12 @@ bool dht_message_backup_exists(
  * Get message backup timestamp from DHT (without full fetch)
  * Useful for checking if backup exists and when it was created
  *
- * @param dht_ctx DHT context
  * @param fingerprint Owner fingerprint
  * @param timestamp_out Output timestamp
  * @param message_count_out Output message count (can be NULL)
  * @return 0 on success, -1 on error, -2 if not found
  */
 int dht_message_backup_get_info(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     uint64_t *timestamp_out,
     int *message_count_out

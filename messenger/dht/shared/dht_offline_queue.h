@@ -77,7 +77,6 @@ typedef struct {
  *       Each update to sender's outbox REPLACES the old version (not appends).
  *       Caller should use message_backup_get_next_seq() to get seq_num.
  *
- * @param ctx DHT context
  * @param sender Sender identity (fingerprint - 128 hex chars)
  * @param recipient Recipient identity (fingerprint - 128 hex chars)
  * @param ciphertext Encrypted message blob (already encrypted)
@@ -87,7 +86,6 @@ typedef struct {
  * @return 0 on success, -1 on failure
  */
 int dht_queue_message(
-    dht_context_t *ctx,
     const char *sender,
     const char *recipient,
     const uint8_t *ciphertext,
@@ -111,7 +109,6 @@ int dht_queue_message(
  * Note: Only queries contacts in sender_list (spam prevention).
  *       Messages from unknown senders are ignored (not queried).
  *
- * @param ctx DHT context
  * @param recipient Recipient identity (fingerprint - 128 hex chars)
  * @param sender_list Array of sender identities (contacts' fingerprints)
  * @param sender_count Number of senders in list
@@ -120,7 +117,6 @@ int dht_queue_message(
  * @return 0 on success, -1 on failure
  */
 int dht_retrieve_queued_messages_from_contacts(
-    dht_context_t *ctx,
     const char *recipient,
     const char **sender_list,
     size_t sender_count,
@@ -138,7 +134,6 @@ int dht_retrieve_queued_messages_from_contacts(
  * - Sequential: N contacts × 300ms/contact = 30 seconds for 100 contacts
  * - Parallel:   ~300ms total (all queries concurrent)
  *
- * @param ctx DHT context
  * @param recipient Recipient identity (fingerprint - 128 hex chars)
  * @param sender_list Array of sender identities (contacts' fingerprints)
  * @param sender_count Number of senders in list
@@ -147,7 +142,6 @@ int dht_retrieve_queued_messages_from_contacts(
  * @return 0 on success, -1 on failure
  */
 int dht_retrieve_queued_messages_from_contacts_parallel(
-    dht_context_t *ctx,
     const char *recipient,
     const char **sender_list,
     size_t sender_count,
@@ -280,13 +274,11 @@ void dht_generate_ack_key(
  * Used by recipient after fetching messages from a sender's outbox.
  * Publishes current timestamp to notify sender of delivery.
  *
- * @param ctx DHT context
  * @param my_fp My fingerprint (ACK owner - the recipient)
  * @param sender_fp Sender fingerprint (whose messages I fetched)
  * @return 0 on success, -1 on failure
  */
 int dht_publish_ack(
-    dht_context_t *ctx,
     const char *my_fp,
     const char *sender_fp
 );
@@ -312,7 +304,6 @@ typedef void (*dht_ack_callback_t)(
  * Subscribes to real-time notifications when recipient publishes ACK.
  * Callback fires when recipient acknowledges fetching messages.
  *
- * @param ctx DHT context
  * @param my_fp My fingerprint (I'm the sender)
  * @param recipient_fp Contact fingerprint (they're the recipient)
  * @param callback Function to invoke when ACK updates
@@ -321,7 +312,6 @@ typedef void (*dht_ack_callback_t)(
  * @return Listen token (> 0 on success, 0 on failure)
  */
 size_t dht_listen_ack(
-    dht_context_t *ctx,
     const char *my_fp,
     const char *recipient_fp,
     dht_ack_callback_t callback,
@@ -331,11 +321,9 @@ size_t dht_listen_ack(
 /**
  * Cancel ACK listener
  *
- * @param ctx DHT context
  * @param token Listen token returned by dht_listen_ack()
  */
 void dht_cancel_ack_listener(
-    dht_context_t *ctx,
     size_t token
 );
 
@@ -345,10 +333,9 @@ void dht_cancel_ack_listener(
  * Iterates all cached outboxes that failed to publish (needs_dht_sync=true)
  * and attempts to republish them. Call this when DHT becomes ready.
  *
- * @param ctx DHT context
  * @return Number of entries successfully synced
  */
-int dht_offline_queue_sync_pending(dht_context_t *ctx);
+int dht_offline_queue_sync_pending(void);
 
 #ifdef __cplusplus
 }

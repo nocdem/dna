@@ -10,6 +10,7 @@
 #include "keyserver_core.h"
 #include "../core/dht_keyserver.h"
 #include "../client/dna_profile.h"
+#include "dht/shared/nodus_ops.h"
 #include <pthread.h>
 #include <ctype.h>
 #include "crypto/utils/qgp_log.h"
@@ -19,11 +20,10 @@
 // Lookup identity from DHT (supports both fingerprint and name)
 // Returns dna_unified_identity_t from fingerprint:profile
 int dht_keyserver_lookup(
-    dht_context_t *dht_ctx,
     const char *name_or_fingerprint,
     dna_unified_identity_t **identity_out
 ) {
-    if (!dht_ctx || !name_or_fingerprint || !identity_out) {
+    if (!name_or_fingerprint || !identity_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments\n");
         return -1;
     }
@@ -54,11 +54,11 @@ int dht_keyserver_lookup(
 
         uint8_t *alias_data = NULL;
         size_t alias_data_len = 0;
-        int alias_ret = dht_chunked_fetch(dht_ctx, alias_base_key, &alias_data, &alias_data_len);
+        int alias_ret = nodus_ops_get_str(alias_base_key, &alias_data, &alias_data_len);
 
-        if (alias_ret != DHT_CHUNK_OK || !alias_data) {
-            QGP_LOG_ERROR(LOG_TAG, "Name '%s' not registered: %s\n",
-                    name_or_fingerprint, dht_chunked_strerror(alias_ret));
+        if (alias_ret != 0 || !alias_data) {
+            QGP_LOG_ERROR(LOG_TAG, "Name '%s' not registered (ret=%d)\n",
+                    name_or_fingerprint, alias_ret);
             return -2;  // Name not found
         }
 
@@ -83,10 +83,10 @@ int dht_keyserver_lookup(
 
     uint8_t *data = NULL;
     size_t data_len = 0;
-    int ret = dht_chunked_fetch(dht_ctx, base_key, &data, &data_len);
+    int ret = nodus_ops_get_str(base_key, &data, &data_len);
 
-    if (ret != DHT_CHUNK_OK || !data) {
-        QGP_LOG_ERROR(LOG_TAG, "Identity not found: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0 || !data) {
+        QGP_LOG_ERROR(LOG_TAG, "Identity not found (ret=%d)\n", ret);
         return -2;  // Not found
     }
 
@@ -156,11 +156,10 @@ int dht_keyserver_lookup(
 // Reverse lookup: fingerprint → name
 // Fetches from fingerprint:profile and extracts registered_name
 int dht_keyserver_reverse_lookup(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     char **identity_out
 ) {
-    if (!dht_ctx || !fingerprint || !identity_out) {
+    if (!fingerprint || !identity_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to reverse_lookup\n");
         return -1;
     }
@@ -171,7 +170,7 @@ int dht_keyserver_reverse_lookup(
 
     // Use dht_keyserver_lookup to fetch the full identity
     dna_unified_identity_t *identity = NULL;
-    int ret = dht_keyserver_lookup(dht_ctx, fingerprint, &identity);
+    int ret = dht_keyserver_lookup(fingerprint, &identity);
 
     if (ret != 0 || !identity) {
         QGP_LOG_INFO(LOG_TAG, "Identity not found for fingerprint\n");
@@ -196,7 +195,6 @@ int dht_keyserver_reverse_lookup(
 
 // Thread context for async reverse lookup
 typedef struct {
-    dht_context_t *dht_ctx;
     char fingerprint[129];
     void (*callback)(char *identity, void *userdata);
     void *userdata;
@@ -208,7 +206,7 @@ static void *reverse_lookup_thread(void *arg) {
 
     // Perform synchronous lookup in this thread
     char *identity = NULL;
-    int ret = dht_keyserver_reverse_lookup(ctx->dht_ctx, ctx->fingerprint, &identity);
+    int ret = dht_keyserver_reverse_lookup(ctx->fingerprint, &identity);
 
     // Call the callback with the result
     if (ret != 0) {
@@ -225,12 +223,11 @@ static void *reverse_lookup_thread(void *arg) {
 // Async reverse lookup: fingerprint → identity (true async using pthread)
 // Spawns a detached thread to perform the lookup without blocking the caller
 void dht_keyserver_reverse_lookup_async(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     void (*callback)(char *identity, void *userdata),
     void *userdata
 ) {
-    if (!dht_ctx || !fingerprint || !callback) {
+    if (!fingerprint || !callback) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to reverse_lookup_async\n");
         if (callback) callback(NULL, userdata);
         return;
@@ -246,7 +243,6 @@ void dht_keyserver_reverse_lookup_async(
         return;
     }
 
-    ctx->dht_ctx = dht_ctx;
     strncpy(ctx->fingerprint, fingerprint, 128);
     ctx->fingerprint[128] = '\0';
     ctx->callback = callback;

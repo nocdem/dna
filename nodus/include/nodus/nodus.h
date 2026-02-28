@@ -216,6 +216,19 @@ int nodus_client_listen(nodus_client_t *client,
 int nodus_client_unlisten(nodus_client_t *client,
                            const nodus_key_t *key);
 
+/**
+ * Request list of cluster servers from the connected server.
+ * Returns endpoints of all alive PBFT peers + self.
+ *
+ * @param endpoints_out  Output array (caller provides, up to max_count)
+ * @param max_count      Max entries in endpoints_out
+ * @param count_out      Actual count written
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_get_servers(nodus_client_t *client,
+                              nodus_server_endpoint_t *endpoints_out,
+                              int max_count, int *count_out);
+
 /* ── Channel Operations ─────────────────────────────────────────── */
 
 /**

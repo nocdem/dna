@@ -144,12 +144,6 @@ size_t dna_engine_listen_outbox(
         return 0;
     }
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Cannot listen: DHT context is NULL");
-        return 0;
-    }
-
     QGP_LOG_WARN(LOG_TAG, "[LISTEN] Setting up daily bucket listener for %.32s... (len=%zu)",
                  contact_fingerprint, fp_len);
 
@@ -161,7 +155,7 @@ size_t dna_engine_listen_outbox(
             strcmp(engine->outbox_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
             /* Verify listener is actually active in DHT layer */
             if (engine->outbox_listeners[i].dm_listen_ctx &&
-                dht_is_listener_active(engine->outbox_listeners[i].dht_token)) {
+                nodus_ops_is_listener_active(engine->outbox_listeners[i].dht_token)) {
                 QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Already listening (token=%zu verified active)",
                              engine->outbox_listeners[i].dht_token);
                 pthread_mutex_unlock(&engine->outbox_listeners_mutex);
@@ -171,7 +165,7 @@ size_t dna_engine_listen_outbox(
                 QGP_LOG_WARN(LOG_TAG, "[LISTEN] Stale entry (token=%zu inactive in DHT), recreating",
                              engine->outbox_listeners[i].dht_token);
                 if (engine->outbox_listeners[i].dm_listen_ctx) {
-                    dht_dm_outbox_unsubscribe(dht_ctx, engine->outbox_listeners[i].dm_listen_ctx);
+                    dht_dm_outbox_unsubscribe(engine->outbox_listeners[i].dm_listen_ctx);
                     engine->outbox_listeners[i].dm_listen_ctx = NULL;
                 }
                 engine->outbox_listeners[i].active = false;
@@ -207,7 +201,7 @@ size_t dna_engine_listen_outbox(
     QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Calling dht_dm_outbox_subscribe() for daily bucket...");
 
     dht_dm_listen_ctx_t *dm_listen_ctx = NULL;
-    int result = dht_dm_outbox_subscribe(dht_ctx,
+    int result = dht_dm_outbox_subscribe(
                                           engine->fingerprint,      /* my_fp (recipient) */
                                           contact_fingerprint,      /* contact_fp (sender) */
                                           outbox_listen_callback,
@@ -249,24 +243,18 @@ void dna_engine_cancel_outbox_listener(
         return;
     }
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-
     pthread_mutex_lock(&engine->outbox_listeners_mutex);
 
     for (int i = 0; i < engine->outbox_listener_count; i++) {
         if (engine->outbox_listeners[i].active &&
             strcmp(engine->outbox_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
 
-            /* Cancel daily bucket listener (v0.4.81+)
-             * v0.6.48: user_data is freed by dm_listen_cleanup() callback AFTER
-             * dht_cancel_listen() marks listener inactive. This prevents use-after-free
-             * when callback fires between free() and cancel(). */
+            /* Cancel daily bucket listener */
             if (engine->outbox_listeners[i].dm_listen_ctx) {
-                dht_dm_outbox_unsubscribe(dht_ctx, engine->outbox_listeners[i].dm_listen_ctx);
+                dht_dm_outbox_unsubscribe(engine->outbox_listeners[i].dm_listen_ctx);
                 engine->outbox_listeners[i].dm_listen_ctx = NULL;
-            } else if (dht_ctx && engine->outbox_listeners[i].dht_token != 0) {
-                /* Legacy fallback: direct DHT cancel */
-                dht_cancel_listen(dht_ctx, engine->outbox_listeners[i].dht_token);
+            } else if (engine->outbox_listeners[i].dht_token != 0) {
+                nodus_ops_cancel_listen(engine->outbox_listeners[i].dht_token);
             }
 
             QGP_LOG_INFO(LOG_TAG, "Cancelled outbox listener for %.32s... (token=%zu)",
@@ -301,7 +289,7 @@ void dna_engine_log_active_listeners(dna_engine_t *engine) {
 
     for (int i = 0; i < engine->outbox_listener_count; i++) {
         if (engine->outbox_listeners[i].active) {
-            bool dht_active = dht_is_listener_active(engine->outbox_listeners[i].dht_token);
+            bool dht_active = nodus_ops_is_listener_active(engine->outbox_listeners[i].dht_token);
             QGP_LOG_WARN(LOG_TAG, "[LISTEN-DEBUG]   [%d] %.32s... token=%zu dht_active=%d",
                          i,
                          engine->outbox_listeners[i].contact_fingerprint,
@@ -369,16 +357,20 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     engine->listeners_starting = true;
     pthread_mutex_unlock(&engine->background_threads_mutex);
 
-    /* Wait for DHT to become ready (have peers in routing table)
+    /* Wait for nodus to become ready (connected + authenticated).
      * This ensures listeners actually work instead of silently failing.
      * v0.6.113: Reduced from 30s to 10s - listeners retry anyway. */
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-    if (dht_ctx && !dht_context_is_ready(dht_ctx)) {
-        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Waiting for DHT to become ready...");
-        if (dht_context_wait_for_ready(dht_ctx, 10000)) {
-            QGP_LOG_INFO(LOG_TAG, "[LISTEN] DHT ready");
+    if (!nodus_ops_is_ready()) {
+        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Waiting for nodus to become ready...");
+        bool ready = false;
+        for (int w = 0; w < 10; w++) {
+            if (nodus_ops_is_ready()) { ready = true; break; }
+            qgp_platform_sleep(1);
+        }
+        if (ready) {
+            QGP_LOG_INFO(LOG_TAG, "[LISTEN] Nodus ready");
         } else {
-            QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT not ready after 10s, proceeding anyway");
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN] Nodus not ready after 10s, proceeding anyway");
         }
     }
 
@@ -522,22 +514,16 @@ void dna_engine_cancel_all_outbox_listeners(dna_engine_t *engine)
         return;
     }
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-
     pthread_mutex_lock(&engine->outbox_listeners_mutex);
 
     for (int i = 0; i < engine->outbox_listener_count; i++) {
         if (engine->outbox_listeners[i].active) {
-            /* Cancel daily bucket context (v0.5.0+)
-             * v0.6.48: user_data is freed by dm_listen_cleanup() callback AFTER
-             * dht_cancel_listen() marks listener inactive. This prevents use-after-free
-             * when callback fires between free() and cancel(). */
+            /* Cancel daily bucket context */
             if (engine->outbox_listeners[i].dm_listen_ctx) {
-                dht_dm_outbox_unsubscribe(dht_ctx, engine->outbox_listeners[i].dm_listen_ctx);
+                dht_dm_outbox_unsubscribe(engine->outbox_listeners[i].dm_listen_ctx);
                 engine->outbox_listeners[i].dm_listen_ctx = NULL;
-            } else if (dht_ctx && engine->outbox_listeners[i].dht_token != 0) {
-                /* Legacy fallback */
-                dht_cancel_listen(dht_ctx, engine->outbox_listeners[i].dht_token);
+            } else if (engine->outbox_listeners[i].dht_token != 0) {
+                nodus_ops_cancel_listen(engine->outbox_listeners[i].dht_token);
             }
             QGP_LOG_DEBUG(LOG_TAG, "Cancelled outbox listener for %s...",
                           engine->outbox_listeners[i].contact_fingerprint);
@@ -636,9 +622,8 @@ size_t dna_engine_start_presence_listener(
         return 0;
     }
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "[PRESENCE] DHT not available");
+    if (!nodus_ops_is_ready()) {
+        QGP_LOG_ERROR(LOG_TAG, "[PRESENCE] Nodus not available");
         return 0;
     }
 
@@ -648,15 +633,15 @@ size_t dna_engine_start_presence_listener(
     for (int i = 0; i < engine->presence_listener_count; i++) {
         if (engine->presence_listeners[i].active &&
             strcmp(engine->presence_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
-            /* Verify listener is actually active in DHT layer */
-            if (dht_is_listener_active(engine->presence_listeners[i].dht_token)) {
+            /* Verify listener is actually active in nodus layer */
+            if (nodus_ops_is_listener_active(engine->presence_listeners[i].dht_token)) {
                 QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Already listening (token=%zu verified active)",
                              engine->presence_listeners[i].dht_token);
                 pthread_mutex_unlock(&engine->presence_listeners_mutex);
                 return engine->presence_listeners[i].dht_token;
             } else {
-                /* Stale entry - DHT listener was suspended/cancelled but engine not updated */
-                QGP_LOG_WARN(LOG_TAG, "[PRESENCE] Stale entry (token=%zu inactive in DHT), recreating",
+                /* Stale entry - listener was cancelled but engine not updated */
+                QGP_LOG_WARN(LOG_TAG, "[PRESENCE] Stale entry (token=%zu inactive), recreating",
                              engine->presence_listeners[i].dht_token);
                 engine->presence_listeners[i].active = false;
                 /* Don't return - continue to create new listener */
@@ -694,11 +679,11 @@ size_t dna_engine_start_presence_listener(
     strncpy(ctx->contact_fingerprint, contact_fingerprint, sizeof(ctx->contact_fingerprint) - 1);
     ctx->contact_fingerprint[sizeof(ctx->contact_fingerprint) - 1] = '\0';
 
-    /* Start DHT listen on presence key */
-    size_t token = dht_listen_ex(dht_ctx, presence_key, 64,
-                                  presence_listen_callback, ctx, presence_listener_cleanup);
+    /* Start listening on presence key */
+    size_t token = nodus_ops_listen(presence_key, 64,
+                                     presence_listen_callback, ctx, presence_listener_cleanup);
     if (token == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "[PRESENCE] dht_listen_ex() failed for %.16s...", contact_fingerprint);
+        QGP_LOG_ERROR(LOG_TAG, "[PRESENCE] nodus_ops_listen() failed for %.16s...", contact_fingerprint);
         free(ctx);  /* Cleanup not called on failure, free manually */
         pthread_mutex_unlock(&engine->presence_listeners_mutex);
         return 0;
@@ -731,17 +716,13 @@ void dna_engine_cancel_presence_listener(
         return;
     }
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-
     pthread_mutex_lock(&engine->presence_listeners_mutex);
 
     for (int i = 0; i < engine->presence_listener_count; i++) {
         if (engine->presence_listeners[i].active &&
             strcmp(engine->presence_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
 
-            if (dht_ctx) {
-                dht_cancel_listen(dht_ctx, engine->presence_listeners[i].dht_token);
-            }
+            nodus_ops_cancel_listen(engine->presence_listeners[i].dht_token);
 
             engine->presence_listeners[i].active = false;
 
@@ -766,13 +747,11 @@ void dna_engine_cancel_all_presence_listeners(dna_engine_t *engine)
         return;
     }
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-
     pthread_mutex_lock(&engine->presence_listeners_mutex);
 
     for (int i = 0; i < engine->presence_listener_count; i++) {
-        if (engine->presence_listeners[i].active && dht_ctx) {
-            dht_cancel_listen(dht_ctx, engine->presence_listeners[i].dht_token);
+        if (engine->presence_listeners[i].active) {
+            nodus_ops_cancel_listen(engine->presence_listeners[i].dht_token);
         }
         engine->presence_listeners[i].active = false;
     }
@@ -800,10 +779,8 @@ int dna_engine_refresh_listeners(dna_engine_t *engine)
     QGP_LOG_INFO(LOG_TAG, "[REFRESH] Refreshing all listeners...");
 
     /* Get listener stats before refresh for debugging */
-    size_t total = 0, active = 0, suspended = 0;
-    dht_get_listener_stats(&total, &active, &suspended);
-    QGP_LOG_INFO(LOG_TAG, "[REFRESH] DHT layer: total=%zu active=%zu suspended=%zu",
-                 total, active, suspended);
+    size_t active_count = nodus_ops_listen_count();
+    QGP_LOG_INFO(LOG_TAG, "[REFRESH] Nodus listeners active: %zu", active_count);
 
     /* Cancel all engine-level listener tracking (clears arrays) */
     dna_engine_cancel_all_outbox_listeners(engine);
@@ -921,9 +898,8 @@ size_t dna_engine_start_contact_request_listener(dna_engine_t *engine)
         return 0;
     }
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "[CONTACT_REQ] DHT not available");
+    if (!nodus_ops_is_ready()) {
+        QGP_LOG_ERROR(LOG_TAG, "[CONTACT_REQ] Nodus not available");
         return 0;
     }
 
@@ -931,15 +907,15 @@ size_t dna_engine_start_contact_request_listener(dna_engine_t *engine)
 
     /* Check if already listening */
     if (engine->contact_request_listener.active) {
-        /* Verify listener is actually active in DHT layer */
-        if (dht_is_listener_active(engine->contact_request_listener.dht_token)) {
+        /* Verify listener is actually active in nodus layer */
+        if (nodus_ops_is_listener_active(engine->contact_request_listener.dht_token)) {
             QGP_LOG_DEBUG(LOG_TAG, "[CONTACT_REQ] Already listening (token=%zu verified active)",
                          engine->contact_request_listener.dht_token);
             pthread_mutex_unlock(&engine->contact_request_listener_mutex);
             return engine->contact_request_listener.dht_token;
         } else {
-            /* Stale entry - DHT listener was suspended/cancelled but engine not updated */
-            QGP_LOG_WARN(LOG_TAG, "[CONTACT_REQ] Stale entry (token=%zu inactive in DHT), recreating",
+            /* Stale entry - listener was cancelled but engine not updated */
+            QGP_LOG_WARN(LOG_TAG, "[CONTACT_REQ] Stale entry (token=%zu inactive), recreating",
                          engine->contact_request_listener.dht_token);
             engine->contact_request_listener.active = false;
         }
@@ -957,11 +933,11 @@ size_t dna_engine_start_contact_request_listener(dna_engine_t *engine)
     }
     ctx->engine = engine;
 
-    /* Start DHT listen on inbox key */
-    size_t token = dht_listen_ex(dht_ctx, inbox_key, 64,
-                                  contact_request_listen_callback, ctx, contact_request_listener_cleanup);
+    /* Start listening on inbox key */
+    size_t token = nodus_ops_listen(inbox_key, 64,
+                                     contact_request_listen_callback, ctx, contact_request_listener_cleanup);
     if (token == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "[CONTACT_REQ] dht_listen_ex() failed");
+        QGP_LOG_ERROR(LOG_TAG, "[CONTACT_REQ] nodus_ops_listen() failed");
         free(ctx);  /* Cleanup not called on failure, free manually */
         pthread_mutex_unlock(&engine->contact_request_listener_mutex);
         return 0;
@@ -986,12 +962,10 @@ void dna_engine_cancel_contact_request_listener(dna_engine_t *engine)
         return;
     }
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-
     pthread_mutex_lock(&engine->contact_request_listener_mutex);
 
-    if (engine->contact_request_listener.active && dht_ctx) {
-        dht_cancel_listen(dht_ctx, engine->contact_request_listener.dht_token);
+    if (engine->contact_request_listener.active) {
+        nodus_ops_cancel_listen(engine->contact_request_listener.dht_token);
         QGP_LOG_INFO(LOG_TAG, "[CONTACT_REQ] Listener cancelled (token=%zu)",
                      engine->contact_request_listener.dht_token);
     }
@@ -1096,12 +1070,6 @@ size_t dna_engine_start_ack_listener(
         return 0;
     }
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "[ACK] DHT not available");
-        return 0;
-    }
-
     /* Phase 1: Check duplicates and capacity under mutex */
     pthread_mutex_lock(&engine->ack_listeners_mutex);
 
@@ -1131,7 +1099,7 @@ size_t dna_engine_start_ack_listener(
     /* Phase 2: DHT operations WITHOUT holding mutex (prevents ABBA deadlock) */
 
     /* Start DHT ACK listener */
-    size_t token = dht_listen_ack(dht_ctx,
+    size_t token = dht_listen_ack(
                                    engine->fingerprint,
                                    fp_copy,
                                    ack_listener_callback,
@@ -1148,7 +1116,7 @@ size_t dna_engine_start_ack_listener(
     if (engine->ack_listener_count >= DNA_MAX_ACK_LISTENERS) {
         QGP_LOG_ERROR(LOG_TAG, "[ACK] Capacity reached after DHT start, cancelling");
         pthread_mutex_unlock(&engine->ack_listeners_mutex);
-        dht_cancel_ack_listener(dht_ctx, token);
+        dht_cancel_ack_listener(token);
         return 0;
     }
 
@@ -1158,7 +1126,7 @@ size_t dna_engine_start_ack_listener(
             strcmp(engine->ack_listeners[i].contact_fingerprint, fp_copy) == 0) {
             QGP_LOG_WARN(LOG_TAG, "[ACK] Race: duplicate for %.20s..., cancelling", fp_copy);
             pthread_mutex_unlock(&engine->ack_listeners_mutex);
-            dht_cancel_ack_listener(dht_ctx, token);
+            dht_cancel_ack_listener(token);
             return engine->ack_listeners[i].dht_token;
         }
     }
@@ -1188,13 +1156,11 @@ void dna_engine_cancel_all_ack_listeners(dna_engine_t *engine)
         return;
     }
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-
     pthread_mutex_lock(&engine->ack_listeners_mutex);
 
     for (int i = 0; i < engine->ack_listener_count; i++) {
-        if (engine->ack_listeners[i].active && dht_ctx) {
-            dht_cancel_ack_listener(dht_ctx, engine->ack_listeners[i].dht_token);
+        if (engine->ack_listeners[i].active) {
+            dht_cancel_ack_listener(engine->ack_listeners[i].dht_token);
             QGP_LOG_DEBUG(LOG_TAG, "[ACK] Cancelled listener for %.20s...",
                           engine->ack_listeners[i].contact_fingerprint);
         }
@@ -1217,17 +1183,13 @@ void dna_engine_cancel_ack_listener(dna_engine_t *engine, const char *contact_fi
         return;
     }
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-
     pthread_mutex_lock(&engine->ack_listeners_mutex);
 
     for (int i = 0; i < engine->ack_listener_count; i++) {
         if (engine->ack_listeners[i].active &&
             strcmp(engine->ack_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
 
-            if (dht_ctx) {
-                dht_cancel_ack_listener(dht_ctx, engine->ack_listeners[i].dht_token);
-            }
+            dht_cancel_ack_listener(engine->ack_listeners[i].dht_token);
 
             QGP_LOG_INFO(LOG_TAG, "[ACK] Cancelled listener for %.20s...", contact_fingerprint);
 
@@ -1285,8 +1247,7 @@ int dna_engine_subscribe_all_groups(dna_engine_t *engine) {
         return 0;
     }
 
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
+    if (!nodus_ops_is_ready()) {
         QGP_LOG_WARN(LOG_TAG, "[GROUP] Cannot subscribe - DHT not available");
         return 0;
     }
@@ -1334,13 +1295,13 @@ int dna_engine_subscribe_all_groups(dna_engine_t *engine) {
         /* Full sync before subscribing (catch up on last 7 days) */
         QGP_LOG_WARN(LOG_TAG, "[GROUP] Syncing group %s...", group_uuid);
         size_t sync_count = 0;
-        dna_group_outbox_sync(dht_ctx, group_uuid, &sync_count);
+        dna_group_outbox_sync(group_uuid, &sync_count);
         QGP_LOG_WARN(LOG_TAG, "[GROUP] Sync done: %zu messages", sync_count);
 
         /* Subscribe for real-time updates - single listener per group */
         QGP_LOG_WARN(LOG_TAG, "[GROUP] Subscribing to group %s...", group_uuid);
         dna_group_listen_ctx_t *ctx = NULL;
-        ret = dna_group_outbox_subscribe(dht_ctx, group_uuid,
+        ret = dna_group_outbox_subscribe(group_uuid,
                                           on_group_new_message, NULL, &ctx);
         if (ret == 0 && ctx) {
             engine->group_listen_contexts[engine->group_listen_count++] = ctx;
@@ -1363,13 +1324,11 @@ int dna_engine_subscribe_all_groups(dna_engine_t *engine) {
 void dna_engine_unsubscribe_all_groups(dna_engine_t *engine) {
     if (!engine) return;
 
-    dht_context_t *dht_ctx = dht_singleton_get();
-
     pthread_mutex_lock(&engine->group_listen_mutex);
 
     for (int i = 0; i < engine->group_listen_count; i++) {
         if (engine->group_listen_contexts[i]) {
-            dna_group_outbox_unsubscribe(dht_ctx, engine->group_listen_contexts[i]);
+            dna_group_outbox_unsubscribe(engine->group_listen_contexts[i]);
             engine->group_listen_contexts[i] = NULL;
         }
     }
@@ -1383,16 +1342,13 @@ void dna_engine_unsubscribe_all_groups(dna_engine_t *engine) {
 int dna_engine_check_group_day_rotation(dna_engine_t *engine) {
     if (!engine) return 0;
 
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) return 0;
-
     int rotated = 0;
     pthread_mutex_lock(&engine->group_listen_mutex);
 
     for (int i = 0; i < engine->group_listen_count; i++) {
         if (engine->group_listen_contexts[i]) {
             int result = dna_group_outbox_check_day_rotation(
-                dht_ctx, engine->group_listen_contexts[i]);
+                engine->group_listen_contexts[i]);
             if (result > 0) {
                 rotated++;
                 QGP_LOG_INFO(LOG_TAG, "[GROUP] Day rotation for group %s",
@@ -1430,9 +1386,6 @@ int dna_engine_check_group_day_rotation(dna_engine_t *engine) {
 int dna_engine_check_outbox_day_rotation(dna_engine_t *engine) {
     if (!engine) return 0;
 
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) return 0;
-
     int rotated = 0;
     pthread_mutex_lock(&engine->outbox_listeners_mutex);
 
@@ -1441,7 +1394,7 @@ int dna_engine_check_outbox_day_rotation(dna_engine_t *engine) {
             engine->outbox_listeners[i].dm_listen_ctx) {
 
             int result = dht_dm_outbox_check_day_rotation(
-                dht_ctx, engine->outbox_listeners[i].dm_listen_ctx);
+                engine->outbox_listeners[i].dm_listen_ctx);
 
             if (result > 0) {
                 rotated++;
@@ -1540,8 +1493,7 @@ static bool wall_listen_callback(
 size_t dna_engine_start_wall_listener(dna_engine_t *engine, const char *contact_fingerprint) {
     if (!engine || !contact_fingerprint) return 0;
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-    if (!dht_ctx) return 0;
+    if (!nodus_ops_is_ready()) return 0;
 
     pthread_mutex_lock(&engine->wall_listeners_mutex);
 
@@ -1577,9 +1529,9 @@ size_t dna_engine_start_wall_listener(dna_engine_t *engine, const char *contact_
     ctx->contact_fingerprint[128] = '\0';
 
     /* Start listening */
-    size_t token = dht_listen_ex(dht_ctx, wall_key, 64,
-                                  wall_listen_callback, ctx,
-                                  wall_listener_cleanup);
+    size_t token = nodus_ops_listen(wall_key, 64,
+                                     wall_listen_callback, ctx,
+                                     wall_listener_cleanup);
 
     if (token == 0) {
         QGP_LOG_WARN(LOG_TAG, "[WALL_LISTEN] Failed to start listener for %.16s...",
@@ -1610,16 +1562,12 @@ size_t dna_engine_start_wall_listener(dna_engine_t *engine, const char *contact_
 void dna_engine_cancel_wall_listener(dna_engine_t *engine, const char *contact_fingerprint) {
     if (!engine || !contact_fingerprint) return;
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-
     pthread_mutex_lock(&engine->wall_listeners_mutex);
 
     for (int i = 0; i < engine->wall_listener_count; i++) {
         if (engine->wall_listeners[i].active &&
             strcmp(engine->wall_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
-            if (dht_ctx) {
-                dht_cancel_listen(dht_ctx, engine->wall_listeners[i].dht_token);
-            }
+            nodus_ops_cancel_listen(engine->wall_listeners[i].dht_token);
             engine->wall_listeners[i].active = false;
 
             /* Compact: move last entry to this slot */
@@ -1640,13 +1588,11 @@ void dna_engine_cancel_wall_listener(dna_engine_t *engine, const char *contact_f
 void dna_engine_cancel_all_wall_listeners(dna_engine_t *engine) {
     if (!engine) return;
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-
     pthread_mutex_lock(&engine->wall_listeners_mutex);
 
     for (int i = 0; i < engine->wall_listener_count; i++) {
-        if (engine->wall_listeners[i].active && dht_ctx) {
-            dht_cancel_listen(dht_ctx, engine->wall_listeners[i].dht_token);
+        if (engine->wall_listeners[i].active) {
+            nodus_ops_cancel_listen(engine->wall_listeners[i].dht_token);
         }
         engine->wall_listeners[i].active = false;
     }
@@ -1734,8 +1680,7 @@ static bool channel_post_listen_callback(
 int dna_engine_start_channel_listener(dna_engine_t *engine, const char *channel_uuid) {
     if (!engine || !channel_uuid) return -1;
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-    if (!dht_ctx) return -1;
+    if (!nodus_ops_is_ready()) return -1;
 
     pthread_mutex_lock(&engine->channel_listeners_mutex);
 
@@ -1780,9 +1725,9 @@ int dna_engine_start_channel_listener(dna_engine_t *engine, const char *channel_
     ctx->channel_uuid[36] = '\0';
 
     /* Start listening */
-    size_t token = dht_listen_ex(dht_ctx, key, key_len,
-                                  channel_post_listen_callback, ctx,
-                                  channel_listener_cleanup);
+    size_t token = nodus_ops_listen(key, key_len,
+                                     channel_post_listen_callback, ctx,
+                                     channel_listener_cleanup);
 
     if (token == 0) {
         QGP_LOG_WARN(LOG_TAG, "[CHAN_LISTEN] Failed to start listener for %.8s...",
@@ -1815,16 +1760,12 @@ int dna_engine_start_channel_listener(dna_engine_t *engine, const char *channel_
 void dna_engine_cancel_channel_listener(dna_engine_t *engine, const char *channel_uuid) {
     if (!engine || !channel_uuid) return;
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-
     pthread_mutex_lock(&engine->channel_listeners_mutex);
 
     for (int i = 0; i < engine->channel_listener_count; i++) {
         if (engine->channel_listeners[i].active &&
             strcmp(engine->channel_listeners[i].channel_uuid, channel_uuid) == 0) {
-            if (dht_ctx) {
-                dht_cancel_listen(dht_ctx, engine->channel_listeners[i].dht_token);
-            }
+            nodus_ops_cancel_listen(engine->channel_listeners[i].dht_token);
             engine->channel_listeners[i].active = false;
 
             /* Compact: move last entry to this slot */
@@ -1845,13 +1786,11 @@ void dna_engine_cancel_channel_listener(dna_engine_t *engine, const char *channe
 void dna_engine_cancel_all_channel_listeners(dna_engine_t *engine) {
     if (!engine) return;
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-
     pthread_mutex_lock(&engine->channel_listeners_mutex);
 
     for (int i = 0; i < engine->channel_listener_count; i++) {
-        if (engine->channel_listeners[i].active && dht_ctx) {
-            dht_cancel_listen(dht_ctx, engine->channel_listeners[i].dht_token);
+        if (engine->channel_listeners[i].active) {
+            nodus_ops_cancel_listen(engine->channel_listeners[i].dht_token);
         }
         engine->channel_listeners[i].active = false;
     }
@@ -1921,10 +1860,7 @@ int dna_engine_check_channel_day_rotation(dna_engine_t *engine) {
                      uuid, engine->channel_listeners[i].current_date, today);
 
         /* Cancel old listener */
-        dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-        if (dht_ctx) {
-            dht_cancel_listen(dht_ctx, engine->channel_listeners[i].dht_token);
-        }
+        nodus_ops_cancel_listen(engine->channel_listeners[i].dht_token);
         engine->channel_listeners[i].active = false;
 
         /* Compact: move last entry to this slot */

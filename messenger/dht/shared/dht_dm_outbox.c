@@ -11,9 +11,8 @@
  */
 
 #include "dht_dm_outbox.h"
-#include "dht_chunked.h"
 #include "dht_offline_queue.h"
-#include "../core/dht_listen.h"
+#include "nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include <string.h>
 #include <stdlib.h>
@@ -32,7 +31,6 @@
  *============================================================================*/
 
 typedef struct {
-    dht_context_t *ctx;
     const char *my_fp;
     const char *contact_fp;
     bool use_full_sync;              /* true = 8-day full, false = 3-day recent */
@@ -43,21 +41,21 @@ typedef struct {
 
 /* Thread pool task: fetch messages from one contact's outbox */
 static void dm_fetch_worker(void *arg) {
-    dm_fetch_worker_ctx_t *ctx = (dm_fetch_worker_ctx_t *)arg;
-    ctx->messages = NULL;
-    ctx->count = 0;
-    ctx->result = -1;
+    dm_fetch_worker_ctx_t *wctx = (dm_fetch_worker_ctx_t *)arg;
+    wctx->messages = NULL;
+    wctx->count = 0;
+    wctx->result = -1;
 
-    if (!ctx->ctx || !ctx->my_fp || !ctx->contact_fp) {
+    if (!wctx->my_fp || !wctx->contact_fp) {
         return;
     }
 
-    if (ctx->use_full_sync) {
-        ctx->result = dht_dm_outbox_sync_full(ctx->ctx, ctx->my_fp, ctx->contact_fp,
-                                               &ctx->messages, &ctx->count);
+    if (wctx->use_full_sync) {
+        wctx->result = dht_dm_outbox_sync_full(wctx->my_fp, wctx->contact_fp,
+                                                &wctx->messages, &wctx->count);
     } else {
-        ctx->result = dht_dm_outbox_sync_recent(ctx->ctx, ctx->my_fp, ctx->contact_fp,
-                                                 &ctx->messages, &ctx->count);
+        wctx->result = dht_dm_outbox_sync_recent(wctx->my_fp, wctx->contact_fp,
+                                                   &wctx->messages, &wctx->count);
     }
 }
 
@@ -199,7 +197,6 @@ int dht_dm_outbox_make_key(
  *============================================================================*/
 
 int dht_dm_queue_message(
-    dht_context_t *ctx,
     const char *sender,
     const char *recipient,
     const uint8_t *ciphertext,
@@ -207,7 +204,7 @@ int dht_dm_queue_message(
     uint64_t seq_num,
     uint32_t ttl_seconds
 ) {
-    if (!ctx || !sender || !recipient || !ciphertext || ciphertext_len == 0) {
+    if (!sender || !recipient || !ciphertext || ciphertext_len == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for queue message");
         return -1;
     }
@@ -279,8 +276,8 @@ int dht_dm_queue_message(
         uint8_t *existing_data = NULL;
         size_t existing_len = 0;
 
-        int fetch_result = dht_chunked_fetch(ctx, base_key, &existing_data, &existing_len);
-        if (fetch_result == DHT_CHUNK_OK && existing_data && existing_len > 0) {
+        int fetch_result = nodus_ops_get_str(base_key, &existing_data, &existing_len);
+        if (fetch_result == 0 && existing_data && existing_len > 0) {
             dht_deserialize_messages(existing_data, existing_len, &existing_messages, &existing_count);
             free(existing_data);
             QGP_LOG_DEBUG(LOG_TAG, "Fetched %zu existing messages from DHT", existing_count);
@@ -367,11 +364,12 @@ int dht_dm_queue_message(
         return -1;
     }
 
-    /* Publish to DHT */
-    int put_result = dht_chunked_publish(ctx, base_key, serialized, serialized_len, DHT_CHUNK_TTL_7DAY);
+    /* Publish to nodus */
+    int put_result = nodus_ops_put_str(base_key, serialized, serialized_len,
+                                        DNA_DM_OUTBOX_TTL, nodus_ops_value_id());
     free(serialized);
 
-    if (put_result != DHT_CHUNK_OK) {
+    if (put_result != 0) {
         QGP_LOG_WARN(LOG_TAG, "DHT publish failed, caching for retry");
         dm_cache_store(base_key, all_messages, new_count, true);
         pthread_mutex_unlock(&g_dm_cache_mutex);
@@ -390,14 +388,13 @@ int dht_dm_queue_message(
  *============================================================================*/
 
 int dht_dm_outbox_sync_day(
-    dht_context_t *ctx,
     const char *my_fp,
     const char *contact_fp,
     uint64_t day_bucket,
     dht_offline_message_t **messages_out,
     size_t *count_out
 ) {
-    if (!ctx || !my_fp || !contact_fp || !messages_out || !count_out) {
+    if (!my_fp || !contact_fp || !messages_out || !count_out) {
         return -1;
     }
 
@@ -421,8 +418,8 @@ int dht_dm_outbox_sync_day(
     uint8_t *data = NULL;
     size_t data_len = 0;
 
-    int fetch_result = dht_chunked_fetch(ctx, base_key, &data, &data_len);
-    if (fetch_result != DHT_CHUNK_OK || !data || data_len == 0) {
+    int fetch_result = nodus_ops_get_str(base_key, &data, &data_len);
+    if (fetch_result != 0 || !data || data_len == 0) {
         QGP_LOG_DEBUG(LOG_TAG, "No messages found for day=%lu", (unsigned long)day_bucket);
         return 0;  /* No messages is not an error */
     }
@@ -440,13 +437,12 @@ int dht_dm_outbox_sync_day(
 }
 
 int dht_dm_outbox_sync_recent(
-    dht_context_t *ctx,
     const char *my_fp,
     const char *contact_fp,
     dht_offline_message_t **messages_out,
     size_t *count_out
 ) {
-    if (!ctx || !my_fp || !contact_fp || !messages_out || !count_out) {
+    if (!my_fp || !contact_fp || !messages_out || !count_out) {
         return -1;
     }
 
@@ -467,7 +463,7 @@ int dht_dm_outbox_sync_recent(
         dht_offline_message_t *day_messages = NULL;
         size_t day_count = 0;
 
-        if (dht_dm_outbox_sync_day(ctx, my_fp, contact_fp, days[i], &day_messages, &day_count) == 0 &&
+        if (dht_dm_outbox_sync_day(my_fp, contact_fp, days[i], &day_messages, &day_count) == 0 &&
             day_messages && day_count > 0) {
 
             /* Append to combined array */
@@ -493,13 +489,12 @@ int dht_dm_outbox_sync_recent(
 }
 
 int dht_dm_outbox_sync_full(
-    dht_context_t *ctx,
     const char *my_fp,
     const char *contact_fp,
     dht_offline_message_t **messages_out,
     size_t *count_out
 ) {
-    if (!ctx || !my_fp || !contact_fp || !messages_out || !count_out) {
+    if (!my_fp || !contact_fp || !messages_out || !count_out) {
         return -1;
     }
 
@@ -519,7 +514,7 @@ int dht_dm_outbox_sync_full(
         dht_offline_message_t *day_messages = NULL;
         size_t day_count = 0;
 
-        if (dht_dm_outbox_sync_day(ctx, my_fp, contact_fp, day, &day_messages, &day_count) == 0 &&
+        if (dht_dm_outbox_sync_day(my_fp, contact_fp, day, &day_messages, &day_count) == 0 &&
             day_messages && day_count > 0) {
 
             /* Append to combined array */
@@ -545,14 +540,13 @@ int dht_dm_outbox_sync_full(
 }
 
 int dht_dm_outbox_sync_all_contacts_recent(
-    dht_context_t *ctx,
     const char *my_fp,
     const char **contact_list,
     size_t contact_count,
     dht_offline_message_t **messages_out,
     size_t *count_out
 ) {
-    if (!ctx || !my_fp || !contact_list || !messages_out || !count_out) {
+    if (!my_fp || !contact_list || !messages_out || !count_out) {
         return -1;
     }
 
@@ -577,7 +571,6 @@ int dht_dm_outbox_sync_all_contacts_recent(
 
     /* Initialize worker contexts */
     for (size_t i = 0; i < contact_count; i++) {
-        workers[i].ctx = ctx;
         workers[i].my_fp = my_fp;
         workers[i].contact_fp = contact_list[i];
         workers[i].use_full_sync = false;  /* Recent sync */
@@ -627,14 +620,13 @@ int dht_dm_outbox_sync_all_contacts_recent(
 }
 
 int dht_dm_outbox_sync_all_contacts_full(
-    dht_context_t *ctx,
     const char *my_fp,
     const char **contact_list,
     size_t contact_count,
     dht_offline_message_t **messages_out,
     size_t *count_out
 ) {
-    if (!ctx || !my_fp || !contact_list || !messages_out || !count_out) {
+    if (!my_fp || !contact_list || !messages_out || !count_out) {
         return -1;
     }
 
@@ -659,7 +651,6 @@ int dht_dm_outbox_sync_all_contacts_full(
 
     /* Initialize worker contexts */
     for (size_t i = 0; i < contact_count; i++) {
-        workers[i].ctx = ctx;
         workers[i].my_fp = my_fp;
         workers[i].contact_fp = contact_list[i];
         workers[i].use_full_sync = true;  /* Full 8-day sync */
@@ -726,7 +717,7 @@ static void dm_listen_cleanup(void *user_data) {
 
 /* Internal: subscribe to a specific day's bucket */
 static int dm_subscribe_to_day(dht_dm_listen_ctx_t *listen_ctx) {
-    if (!listen_ctx || !listen_ctx->dht_ctx) {
+    if (!listen_ctx) {
         return -1;
     }
 
@@ -737,19 +728,14 @@ static int dm_subscribe_to_day(dht_dm_listen_ctx_t *listen_ctx) {
         return -1;
     }
 
-    /* Derive chunk[0] key for listen */
-    uint8_t chunk0_key[DHT_CHUNK_KEY_SIZE];
-    dht_chunked_make_key(base_key, 0, chunk0_key);
-
     QGP_LOG_DEBUG(LOG_TAG, "Subscribing to day=%lu for contact %.16s...",
                  (unsigned long)listen_ctx->current_day, listen_ctx->contact_fp);
 
-    /* Start listening */
-    size_t token = dht_listen_ex(listen_ctx->dht_ctx,
-                                  chunk0_key, DHT_CHUNK_KEY_SIZE,
-                                  listen_ctx->callback,
-                                  listen_ctx->user_data,
-                                  dm_listen_cleanup);
+    /* Start listening on base key string */
+    size_t token = nodus_ops_listen((const uint8_t *)base_key, strlen(base_key),
+                                    listen_ctx->callback,
+                                    listen_ctx->user_data,
+                                    dm_listen_cleanup);
 
     if (token == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT listener");
@@ -763,14 +749,13 @@ static int dm_subscribe_to_day(dht_dm_listen_ctx_t *listen_ctx) {
 }
 
 int dht_dm_outbox_subscribe(
-    dht_context_t *ctx,
     const char *my_fp,
     const char *contact_fp,
-    dht_listen_callback_t callback,
+    nodus_ops_listen_cb_t callback,
     void *user_data,
     dht_dm_listen_ctx_t **listen_ctx_out
 ) {
-    if (!ctx || !my_fp || !contact_fp || !callback || !listen_ctx_out) {
+    if (!my_fp || !contact_fp || !callback || !listen_ctx_out) {
         return -1;
     }
 
@@ -785,7 +770,6 @@ int dht_dm_outbox_subscribe(
     listen_ctx->current_day = dht_dm_outbox_get_day_bucket();
     listen_ctx->callback = callback;
     listen_ctx->user_data = user_data;
-    listen_ctx->dht_ctx = ctx;
     listen_ctx->listen_token = 0;
 
     /* Subscribe to today's bucket */
@@ -799,7 +783,6 @@ int dht_dm_outbox_subscribe(
 }
 
 void dht_dm_outbox_unsubscribe(
-    dht_context_t *ctx,
     dht_dm_listen_ctx_t *listen_ctx
 ) {
     if (!listen_ctx) {
@@ -807,8 +790,8 @@ void dht_dm_outbox_unsubscribe(
     }
 
     /* Cancel DHT listener if active */
-    if (listen_ctx->listen_token != 0 && ctx) {
-        dht_cancel_listen(ctx, listen_ctx->listen_token);
+    if (listen_ctx->listen_token != 0) {
+        nodus_ops_cancel_listen(listen_ctx->listen_token);
         QGP_LOG_DEBUG(LOG_TAG, "Unsubscribed token=%zu for %.16s...",
                      listen_ctx->listen_token, listen_ctx->contact_fp);
     }
@@ -817,10 +800,9 @@ void dht_dm_outbox_unsubscribe(
 }
 
 int dht_dm_outbox_check_day_rotation(
-    dht_context_t *ctx,
     dht_dm_listen_ctx_t *listen_ctx
 ) {
-    if (!ctx || !listen_ctx) {
+    if (!listen_ctx) {
         return -1;
     }
 
@@ -837,7 +819,7 @@ int dht_dm_outbox_check_day_rotation(
 
     /* Cancel old listener */
     if (listen_ctx->listen_token != 0) {
-        dht_cancel_listen(ctx, listen_ctx->listen_token);
+        nodus_ops_cancel_listen(listen_ctx->listen_token);
         listen_ctx->listen_token = 0;
     }
 
@@ -875,11 +857,7 @@ void dht_dm_outbox_cache_clear(void) {
     QGP_LOG_INFO(LOG_TAG, "Cache cleared");
 }
 
-int dht_dm_outbox_cache_sync_pending(dht_context_t *ctx) {
-    if (!ctx) {
-        return 0;
-    }
-
+int dht_dm_outbox_cache_sync_pending(void) {
     int synced = 0;
 
     pthread_mutex_lock(&g_dm_cache_mutex);
@@ -896,8 +874,9 @@ int dht_dm_outbox_cache_sync_pending(dht_context_t *ctx) {
             if (dht_serialize_messages(g_dm_cache[i].messages, g_dm_cache[i].count,
                                         &serialized, &serialized_len) == 0) {
                 /* Try to publish */
-                if (dht_chunked_publish(ctx, g_dm_cache[i].base_key,
-                                        serialized, serialized_len, DHT_CHUNK_TTL_7DAY) == DHT_CHUNK_OK) {
+                if (nodus_ops_put_str(g_dm_cache[i].base_key,
+                                      serialized, serialized_len,
+                                      DNA_DM_OUTBOX_TTL, nodus_ops_value_id()) == 0) {
                     g_dm_cache[i].needs_dht_sync = false;
                     synced++;
                 }

@@ -27,7 +27,6 @@
 #ifndef DHT_CONTACT_REQUEST_H
 #define DHT_CONTACT_REQUEST_H
 
-#include "../core/dht_context.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -104,7 +103,6 @@ void dht_generate_requests_inbox_key(
  * @return 0 on success, -1 on failure
  */
 int dht_send_contact_request(
-    dht_context_t *ctx,
     const char *sender_fingerprint,
     const char *sender_name,
     const uint8_t *sender_dilithium_pubkey,
@@ -130,7 +128,6 @@ int dht_send_contact_request(
  * @return 0 on success, -1 on failure
  */
 int dht_fetch_contact_requests(
-    dht_context_t *ctx,
     const char *my_fingerprint,
     dht_contact_request_t **requests_out,
     size_t *count_out
@@ -163,7 +160,6 @@ int dht_verify_contact_request(const dht_contact_request_t *request);
  * @return 0 on success, -1 on failure
  */
 int dht_cancel_contact_request(
-    dht_context_t *ctx,
     const char *sender_fingerprint,
     const char *recipient_fingerprint
 );

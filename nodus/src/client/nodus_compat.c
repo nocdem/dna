@@ -91,8 +91,10 @@ static int do_put(const uint8_t *key, size_t key_len,
         return -1;
     }
 
+    nodus_singleton_lock();
     int rc = nodus_client_put(c, &k, value, value_len,
                                type, ttl, vid, seq, &val->signature);
+    nodus_singleton_unlock();
     nodus_value_free(val);
     return rc;
 }
@@ -117,8 +119,10 @@ static int do_put_hashed(const nodus_key_t *k,
         return -1;
     }
 
+    nodus_singleton_lock();
     int rc = nodus_client_put(c, k, value, value_len,
                                type, ttl, vid, seq, &val->signature);
+    nodus_singleton_unlock();
     nodus_value_free(val);
     return rc;
 }
@@ -160,12 +164,12 @@ dht_context_t* dht_context_new(const dht_config_t *config) {
 
 int dht_context_start(dht_context_t *ctx) {
     if (!ctx) return -1;
-    /* The actual connection is managed by nodus_singleton.
-     * This just marks the context as running and wires up
-     * the compat dispatch callback for LISTEN notifications. */
+    /* Without identity, we can only mark as running.
+     * Actual Nodus connection requires identity for auth. */
     ctx->running = true;
     ctx->started = true;
 
+    /* Wire up callback if singleton is already connected */
     nodus_client_t *c = nodus_singleton_get();
     if (c) c->config.on_value_changed = compat_on_value_changed;
 
@@ -174,8 +178,60 @@ int dht_context_start(dht_context_t *ctx) {
 
 int dht_context_start_with_identity(dht_context_t *ctx,
                                      dht_identity_t *identity) {
-    (void)identity;
-    return dht_context_start(ctx);
+    if (!ctx || !identity) return -1;
+    ctx->running = true;
+    ctx->started = true;
+
+    /* If Nodus singleton is already connected, just wire up callbacks */
+    if (nodus_singleton_is_ready()) {
+        nodus_client_t *c = nodus_singleton_get();
+        if (c) c->config.on_value_changed = compat_on_value_changed;
+        return 0;
+    }
+
+    /* Build Nodus client config from DHT bootstrap nodes */
+    nodus_client_config_t nconfig;
+    memset(&nconfig, 0, sizeof(nconfig));
+    nconfig.auto_reconnect = true;
+
+    for (size_t i = 0; i < ctx->config.bootstrap_count &&
+                        nconfig.server_count < NODUS_CLIENT_MAX_SERVERS; i++) {
+        const char *node = ctx->config.bootstrap_nodes[i];
+        if (!node[0]) continue;
+
+        const char *colon = strrchr(node, ':');
+        if (colon) {
+            size_t ip_len = (size_t)(colon - node);
+            if (ip_len >= sizeof(nconfig.servers[0].ip))
+                ip_len = sizeof(nconfig.servers[0].ip) - 1;
+            memcpy(nconfig.servers[nconfig.server_count].ip, node, ip_len);
+            nconfig.servers[nconfig.server_count].ip[ip_len] = '\0';
+            nconfig.servers[nconfig.server_count].port = (uint16_t)atoi(colon + 1);
+        } else {
+            strncpy(nconfig.servers[nconfig.server_count].ip, node,
+                    sizeof(nconfig.servers[0].ip) - 1);
+            nconfig.servers[nconfig.server_count].port = NODUS_DEFAULT_TCP_PORT;
+        }
+        nconfig.server_count++;
+    }
+
+    if (nconfig.server_count == 0) return -1;
+
+    /* Initialize and connect the Nodus singleton */
+    int rc_init = nodus_singleton_init(&nconfig, &identity->nid);
+    if (rc_init != 0) return -1;
+
+    int rc_conn = nodus_singleton_connect();
+    if (rc_conn != 0) {
+        nodus_singleton_close();
+        return -1;
+    }
+
+    /* Wire up compat dispatch callback for LISTEN notifications */
+    nodus_client_t *c = nodus_singleton_get();
+    if (c) c->config.on_value_changed = compat_on_value_changed;
+
+    return 0;
 }
 
 void dht_context_stop(dht_context_t *ctx) {
@@ -185,6 +241,11 @@ void dht_context_stop(dht_context_t *ctx) {
 
 void dht_context_free(dht_context_t *ctx) {
     if (!ctx) return;
+    if (ctx->started) {
+        /* Close the Nodus singleton connection.
+         * Safe to call multiple times (idempotent). */
+        nodus_singleton_close();
+    }
     free(ctx);
 }
 
@@ -304,7 +365,9 @@ int dht_get(dht_context_t *ctx, const uint8_t *key, size_t key_len,
     hash_key(key, key_len, &k);
 
     nodus_value_t *val = NULL;
+    nodus_singleton_lock();
     int rc = nodus_client_get(c, &k, &val);
+    nodus_singleton_unlock();
     if (rc != 0 || !val) return -1;
 
     /* Copy data to caller-owned buffer */
@@ -344,7 +407,9 @@ int dht_get_all(dht_context_t *ctx, const uint8_t *key, size_t key_len,
 
     nodus_value_t **vals = NULL;
     size_t count = 0;
+    nodus_singleton_lock();
     int rc = nodus_client_get_all(c, &k, &vals, &count);
+    nodus_singleton_unlock();
     if (rc != 0 || count == 0) return (rc == 0) ? 0 : -1;
 
     /* Convert to caller format */
@@ -385,7 +450,9 @@ int dht_get_all_with_ids(dht_context_t *ctx, const uint8_t *key, size_t key_len,
 
     nodus_value_t **vals = NULL;
     size_t count = 0;
+    nodus_singleton_lock();
     int rc = nodus_client_get_all(c, &k, &vals, &count);
+    nodus_singleton_unlock();
     if (rc != 0 || count == 0) {
         *count_out = 0;
         return (rc == 0) ? 0 : -1;
@@ -517,7 +584,10 @@ size_t dht_listen_ex(dht_context_t *ctx, const uint8_t *key, size_t key_len,
     hash_key(key, key_len, &k);
 
     /* Register LISTEN on the server */
-    if (nodus_client_listen(c, &k) != 0) return 0;
+    nodus_singleton_lock();
+    int rc = nodus_client_listen(c, &k);
+    nodus_singleton_unlock();
+    if (rc != 0) return 0;
 
     /* Track locally for callback dispatch */
     for (int i = 0; i < MAX_COMPAT_LISTENERS; i++) {
@@ -539,8 +609,11 @@ void dht_cancel_listen(dht_context_t *ctx, size_t token) {
     for (int i = 0; i < MAX_COMPAT_LISTENERS; i++) {
         if (g_listeners[i].active && g_listeners[i].token == token) {
             nodus_client_t *c = nodus_singleton_get();
-            if (c && nodus_client_is_ready(c))
+            if (c && nodus_client_is_ready(c)) {
+                nodus_singleton_lock();
                 nodus_client_unlisten(c, &g_listeners[i].key);
+                nodus_singleton_unlock();
+            }
             g_listeners[i].active = false;
             if (g_listeners[i].cleanup)
                 g_listeners[i].cleanup(g_listeners[i].user_data);
@@ -651,7 +724,7 @@ int dht_identity_import_from_buffer(const uint8_t *buffer, size_t buffer_size,
                                      dht_identity_t **identity_out) {
     if (!buffer || !identity_out) return -1;
     size_t total = NODUS_PK_BYTES + NODUS_SK_BYTES;
-    if (buffer_size < total) return -1;
+    if (buffer_size != total) return -1;  /* Exact match: reject old formats */
 
     dht_identity_t *id = calloc(1, sizeof(dht_identity_t));
     if (!id) return -1;
@@ -706,7 +779,9 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
     hash_str_key(base_key, &k);
 
     nodus_value_t *val = NULL;
+    nodus_singleton_lock();
     int rc = nodus_client_get(c, &k, &val);
+    nodus_singleton_unlock();
     if (rc != 0 || !val) return DHT_CHUNK_ERR_DHT_GET;
 
     *data_out = malloc(val->data_len);
@@ -742,7 +817,9 @@ int dht_chunked_fetch_all(dht_context_t *ctx, const char *base_key,
 
     nodus_value_t **vals = NULL;
     size_t count = 0;
+    nodus_singleton_lock();
     int rc = nodus_client_get_all(c, &k, &vals, &count);
+    nodus_singleton_unlock();
     if (rc != 0) return DHT_CHUNK_ERR_DHT_GET;
     if (count == 0) return DHT_CHUNK_OK;
 

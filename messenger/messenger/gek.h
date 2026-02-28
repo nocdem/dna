@@ -277,12 +277,11 @@ int gek_decrypt(
  * Generates new GEK, builds Initial Key Packet, publishes to DHT,
  * and notifies all members.
  *
- * @param dht_ctx DHT context for publishing
  * @param group_uuid Group UUID
  * @param owner_identity Owner's identity (for signing)
  * @return 0 on success, -1 on error
  */
-int gek_rotate_on_member_add(void *dht_ctx, const char *group_uuid, const char *owner_identity);
+int gek_rotate_on_member_add(const char *group_uuid, const char *owner_identity);
 
 /**
  * Rotate GEK when a member is removed from the group
@@ -291,12 +290,11 @@ int gek_rotate_on_member_add(void *dht_ctx, const char *group_uuid, const char *
  * Generates new GEK, builds Initial Key Packet, publishes to DHT,
  * and notifies all members.
  *
- * @param dht_ctx DHT context for publishing
  * @param group_uuid Group UUID
  * @param owner_identity Owner's identity (for signing)
  * @return 0 on success, -1 on error
  */
-int gek_rotate_on_member_remove(void *dht_ctx, const char *group_uuid, const char *owner_identity);
+int gek_rotate_on_member_remove(const char *group_uuid, const char *owner_identity);
 
 /* ============================================================================
  * IKP (Initial Key Packet) FUNCTIONS
@@ -412,7 +410,6 @@ int ikp_get_member_count(const uint8_t *packet, size_t packet_size, uint8_t *cou
  * Uses self-encryption (Kyber1024 + Dilithium5) for security.
  * Other devices can sync from DHT to get the same GEKs.
  *
- * @param dht_ctx DHT context
  * @param identity Owner's identity fingerprint (128-char hex)
  * @param kyber_pubkey Owner's Kyber1024 public key (1568 bytes)
  * @param kyber_privkey Owner's Kyber1024 private key (3168 bytes)
@@ -421,7 +418,6 @@ int ikp_get_member_count(const uint8_t *packet, size_t packet_size, uint8_t *cou
  * @return 0 on success, -1 on error
  */
 int gek_sync_to_dht(
-    void *dht_ctx,
     const char *identity,
     const uint8_t *kyber_pubkey,
     const uint8_t *kyber_privkey,
@@ -435,7 +431,6 @@ int gek_sync_to_dht(
  * Fetches GEKs from DHT and imports missing entries to local database.
  * Only imports GEKs that don't already exist locally.
  *
- * @param dht_ctx DHT context
  * @param identity Owner's identity fingerprint (128-char hex)
  * @param kyber_privkey Owner's Kyber1024 private key (3168 bytes)
  * @param dilithium_pubkey Owner's Dilithium5 public key (2592 bytes)
@@ -443,7 +438,6 @@ int gek_sync_to_dht(
  * @return 0 on success, -1 on error, -2 if not found in DHT
  */
 int gek_sync_from_dht(
-    void *dht_ctx,
     const char *identity,
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey,
@@ -459,7 +453,6 @@ int gek_sync_from_dht(
  * 3. If local is newer, syncs to DHT
  * 4. If neither exists, does nothing
  *
- * @param dht_ctx DHT context
  * @param identity Owner's identity fingerprint
  * @param kyber_pubkey Owner's Kyber1024 public key
  * @param kyber_privkey Owner's Kyber1024 private key
@@ -468,7 +461,6 @@ int gek_sync_from_dht(
  * @return 0 on success, -1 on error
  */
 int gek_auto_sync(
-    void *dht_ctx,
     const char *identity,
     const uint8_t *kyber_pubkey,
     const uint8_t *kyber_privkey,

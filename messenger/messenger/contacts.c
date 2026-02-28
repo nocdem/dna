@@ -10,8 +10,6 @@
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/key_encryption.h"
 #include "../dht/client/dht_contactlist.h"
-#include "../dht/client/dht_singleton.h"
-#include "../dht/core/dht_context.h"
 #include "../dht/keyserver/keyserver_core.h"
 #include "../database/contacts_db.h"
 #include "../transport/transport.h"
@@ -29,13 +27,6 @@
 int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
     if (!ctx || !ctx->identity) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid context for DHT sync\n");
-        return -1;
-    }
-
-    // Get DHT context from singleton (works even before P2P init)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT singleton not available\n");
         return -1;
     }
 
@@ -124,7 +115,6 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
 
     // Publish to DHT
     int result = dht_contactlist_publish(
-        dht_ctx,
         ctx->identity,
         contacts,
         list->count,
@@ -160,13 +150,6 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
 int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     if (!ctx || !ctx->identity) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid context for DHT sync\n");
-        return -1;
-    }
-
-    // Get DHT context from singleton (works even before P2P init)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT singleton not available\n");
         return -1;
     }
 
@@ -222,7 +205,6 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     size_t count = 0;
 
     int result = dht_contactlist_fetch(
-        dht_ctx,
         ctx->identity,
         &contacts,
         &count,

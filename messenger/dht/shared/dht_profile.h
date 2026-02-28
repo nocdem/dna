@@ -31,8 +31,6 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include "../core/dht_context.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -77,14 +75,12 @@ void dht_profile_cleanup(void);
  * Publish user profile to DHT
  * Uses signed puts with value_id=1 for replacement (no accumulation)
  *
- * @param dht_ctx DHT context
  * @param user_fingerprint User's fingerprint (64-byte hex string)
  * @param profile Profile data to publish
  * @param dilithium_privkey Dilithium5 private key for signing (4896 bytes)
  * @return 0 on success, -1 on error
  */
 int dht_profile_publish(
-    dht_context_t *dht_ctx,
     const char *user_fingerprint,
     const dht_profile_t *profile,
     const uint8_t *dilithium_privkey
@@ -93,13 +89,11 @@ int dht_profile_publish(
 /**
  * Fetch user profile from DHT
  *
- * @param dht_ctx DHT context
  * @param user_fingerprint User's fingerprint (64-byte hex string)
  * @param profile_out Output profile data (caller provides buffer)
  * @return 0 on success, -1 on error, -2 if not found
  */
 int dht_profile_fetch(
-    dht_context_t *dht_ctx,
     const char *user_fingerprint,
     dht_profile_t *profile_out
 );
@@ -109,12 +103,10 @@ int dht_profile_fetch(
  * Note: DHT deletion is not guaranteed. For reliable deletion,
  * publish an empty profile instead.
  *
- * @param dht_ctx DHT context
  * @param user_fingerprint User's fingerprint (64-byte hex string)
  * @return 0 on success, -1 on error
  */
 int dht_profile_delete(
-    dht_context_t *dht_ctx,
     const char *user_fingerprint
 );
 

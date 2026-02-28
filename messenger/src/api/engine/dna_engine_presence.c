@@ -104,27 +104,12 @@ int dna_engine_network_changed(dna_engine_t *engine) {
         dna_engine_cancel_contact_request_listener(engine);
     }
 
-    /* v0.6.8+: Recreate DHT context from scratch instead of using dht_singleton_reinit().
-     * This works for both owned and borrowed contexts. The identity is loaded fresh
-     * from the cached dht_identity.bin file. */
-
-    /* Free old context */
-    if (engine->dht_ctx) {
-        QGP_LOG_INFO(LOG_TAG, "Freeing old DHT context");
-        dht_singleton_set_borrowed_context(NULL);  /* Clear singleton reference first */
-        dht_context_free(engine->dht_ctx);
-        engine->dht_ctx = NULL;
-    }
-
-    /* Recreate DHT context from identity */
-    if (messenger_load_dht_identity_for_engine(engine->fingerprint, &engine->dht_ctx) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to recreate DHT context");
+    /* Reinitialize DHT singleton (handles context recreation internally) */
+    if (dht_singleton_reinit() != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to reinitialize DHT singleton");
         return -1;
     }
-
-    /* Lend to singleton for backwards compatibility */
-    dht_singleton_set_borrowed_context(engine->dht_ctx);
-    QGP_LOG_INFO(LOG_TAG, "DHT context recreated - status callback will restart listeners");
+    QGP_LOG_INFO(LOG_TAG, "DHT singleton reinitialized - status callback will restart listeners");
     return 0;
 }
 
@@ -196,15 +181,12 @@ void dna_handle_get_registered_name(dna_engine_t *engine, dna_task_t *task) {
     if (!engine->messenger || !engine->identity_loaded) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
-        dht_context_t *dht_ctx = dht_singleton_get();
-        if (dht_ctx) {
-            char *registered_name = NULL;
-            int ret = dht_keyserver_reverse_lookup(dht_ctx, engine->fingerprint, &registered_name);
-            if (ret == 0 && registered_name) {
-                name = registered_name; /* Transfer ownership */
-            }
-            /* Not found is not an error - just returns NULL name */
+        char *registered_name = NULL;
+        int ret = dht_keyserver_reverse_lookup(engine->fingerprint, &registered_name);
+        if (ret == 0 && registered_name) {
+            name = registered_name; /* Transfer ownership */
         }
+        /* Not found is not an error - just returns NULL name */
     }
 
     if (task->callback.display_name) {

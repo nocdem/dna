@@ -86,9 +86,11 @@ int dna_engine_pause(dna_engine_t *engine) {
     QGP_LOG_INFO(LOG_TAG, "[PAUSE] Group listeners cancelled");
 
     /* v0.7.2: Export routing table cache on pause (crash/kill protection) */
-    dht_context_t *dht_export_ctx = dna_get_dht_ctx(engine);
-    if (dht_export_ctx) {
-        dht_context_export_routing_table(dht_export_ctx, NULL);
+    {
+        dht_context_t *dht_export_ctx = dna_get_dht_ctx(engine);
+        if (dht_export_ctx) {
+            dht_context_export_routing_table(dht_export_ctx, NULL);
+        }
     }
 
     /* 4. Update state (protected by mutex) */

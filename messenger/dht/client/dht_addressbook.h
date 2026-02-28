@@ -47,7 +47,6 @@
 #ifndef DHT_ADDRESSBOOK_H
 #define DHT_ADDRESSBOOK_H
 
-#include "../core/dht_context.h"
 #include "database/addressbook_db.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -120,7 +119,6 @@ void dht_addressbook_cleanup(void);
  * 4. Create binary blob: [header][encrypted_json][signature]
  * 5. Store in DHT at SHA3-512(identity + ":addressbook")
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity (e.g., "alice")
  * @param entries Array of address book entries
  * @param entry_count Number of entries
@@ -132,7 +130,6 @@ void dht_addressbook_cleanup(void);
  * @return 0 on success, -1 on error
  */
 int dht_addressbook_publish(
-    dht_context_t *dht_ctx,
     const char *identity,
     const dht_addressbook_entry_t *entries,
     size_t entry_count,
@@ -153,7 +150,6 @@ int dht_addressbook_publish(
  * 4. Verify Dilithium5 signature
  * 5. Parse JSON to address book
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity
  * @param entries_out Output array of address entries (caller must free with dht_addressbook_free_entries)
  * @param count_out Output number of entries
@@ -162,7 +158,6 @@ int dht_addressbook_publish(
  * @return 0 on success, -1 on error, -2 if not found
  */
 int dht_addressbook_fetch(
-    dht_context_t *dht_ctx,
     const char *identity,
     dht_addressbook_entry_t **entries_out,
     size_t *count_out,
@@ -188,12 +183,10 @@ void dht_addressbook_free(dht_addressbook_t *addressbook);
 /**
  * Check if address book exists in DHT
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity
  * @return true if exists, false otherwise
  */
 bool dht_addressbook_exists(
-    dht_context_t *dht_ctx,
     const char *identity
 );
 
@@ -201,13 +194,11 @@ bool dht_addressbook_exists(
  * Get address book timestamp from DHT (without full fetch)
  * Useful for checking if local copy is outdated
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity
  * @param timestamp_out Output timestamp
  * @return 0 on success, -1 on error, -2 if not found
  */
 int dht_addressbook_get_timestamp(
-    dht_context_t *dht_ctx,
     const char *identity,
     uint64_t *timestamp_out
 );

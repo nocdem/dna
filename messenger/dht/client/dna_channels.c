@@ -15,8 +15,7 @@
  */
 
 #include "dna_channels.h"
-#include "../shared/dht_chunked.h"
-#include "../core/dht_context.h"
+#include "../shared/nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_types.h"
@@ -619,11 +618,11 @@ void dna_channel_posts_free(dna_channel_post_internal_t *posts, size_t count) {
  * Channel CRUD Operations
  * ========================================================================== */
 
-int dna_channel_create(dht_context_t *dht_ctx, const char *name,
+int dna_channel_create(const char *name,
                         const char *description, bool is_public,
                         const char *creator_fingerprint, const uint8_t *private_key,
                         char *uuid_out) {
-    if (!dht_ctx || !name || !creator_fingerprint || !private_key) {
+    if (!name || !creator_fingerprint || !private_key) {
         return -1;
     }
 
@@ -695,13 +694,13 @@ int dna_channel_create(dht_context_t *dht_ctx, const char *name,
     snprintf(base_key, sizeof(base_key), "%s%s", DNA_CHANNEL_NS_META, channel->uuid);
 
     QGP_LOG_INFO(LOG_TAG, "Publishing channel %s (%s) to DHT...\n", channel->uuid, channel->name);
-    ret = dht_chunked_publish(dht_ctx, base_key,
-                              (const uint8_t *)json_data, strlen(json_data),
-                              DNA_CHANNEL_TTL_SECONDS);
+    ret = nodus_ops_put_str(base_key,
+                            (const uint8_t *)json_data, strlen(json_data),
+                            DNA_CHANNEL_TTL_SECONDS, nodus_ops_value_id());
     free(json_data);
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to publish channel: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish channel: %d\n", ret);
         dna_channel_free(channel);
         return -1;
     }
@@ -717,9 +716,9 @@ int dna_channel_create(dht_context_t *dht_ctx, const char *name,
     return 0;
 }
 
-int dna_channel_get(dht_context_t *dht_ctx, const char *uuid,
+int dna_channel_get(const char *uuid,
                      dna_channel_t **channel_out) {
-    if (!dht_ctx || !uuid || !channel_out) return -1;
+    if (!uuid || !channel_out) return -1;
 
     /* Derive base key for channel metadata */
     char base_key[256];
@@ -729,9 +728,9 @@ int dna_channel_get(dht_context_t *dht_ctx, const char *uuid,
 
     uint8_t *value = NULL;
     size_t value_len = 0;
-    int ret = dht_chunked_fetch(dht_ctx, base_key, &value, &value_len);
+    int ret = nodus_ops_get_str(base_key, &value, &value_len);
 
-    if (ret != DHT_CHUNK_OK || !value || value_len == 0) {
+    if (ret != 0 || !value || value_len == 0) {
         return -2;  /* Not found */
     }
 
@@ -750,13 +749,13 @@ int dna_channel_get(dht_context_t *dht_ctx, const char *uuid,
     return ret;
 }
 
-int dna_channel_delete(dht_context_t *dht_ctx, const char *uuid,
+int dna_channel_delete(const char *uuid,
                         const char *creator_fingerprint, const uint8_t *private_key) {
-    if (!dht_ctx || !uuid || !creator_fingerprint || !private_key) return -1;
+    if (!uuid || !creator_fingerprint || !private_key) return -1;
 
     /* Fetch existing channel */
     dna_channel_t *channel = NULL;
-    int ret = dna_channel_get(dht_ctx, uuid, &channel);
+    int ret = dna_channel_get(uuid, &channel);
     if (ret != 0 || !channel) {
         return -2;  /* Not found */
     }
@@ -820,14 +819,14 @@ int dna_channel_delete(dht_context_t *dht_ctx, const char *uuid,
     snprintf(base_key, sizeof(base_key), "%s%s", DNA_CHANNEL_NS_META, uuid);
 
     QGP_LOG_INFO(LOG_TAG, "Publishing deleted channel %s...\n", uuid);
-    ret = dht_chunked_publish(dht_ctx, base_key,
-                              (const uint8_t *)json_data, strlen(json_data),
-                              DNA_CHANNEL_TTL_SECONDS);
+    ret = nodus_ops_put_str(base_key,
+                            (const uint8_t *)json_data, strlen(json_data),
+                            DNA_CHANNEL_TTL_SECONDS, nodus_ops_value_id());
     free(json_data);
     dna_channel_free(channel);
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to publish deleted channel: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish deleted channel: %d\n", ret);
         return -1;
     }
 
@@ -839,10 +838,10 @@ int dna_channel_delete(dht_context_t *dht_ctx, const char *uuid,
  * Post Operations (multi-owner pattern, like dna_feed_comments.c)
  * ========================================================================== */
 
-int dna_channel_post_create(dht_context_t *dht_ctx, const char *channel_uuid,
+int dna_channel_post_create(const char *channel_uuid,
                              const char *body, const char *author_fingerprint,
                              const uint8_t *private_key, char *post_uuid_out) {
-    if (!dht_ctx || !channel_uuid || !body || !author_fingerprint || !private_key) {
+    if (!channel_uuid || !body || !author_fingerprint || !private_key) {
         return -1;
     }
 
@@ -903,13 +902,13 @@ int dna_channel_post_create(dht_context_t *dht_ctx, const char *channel_uuid,
     char posts_key[256];
     snprintf(posts_key, sizeof(posts_key), "%s%s:%s", DNA_CHANNEL_NS_POSTS, channel_uuid, today);
 
-    /* Step 1: Fetch MY existing posts using dht_chunked_fetch_mine() */
+    /* Step 1: Fetch MY existing posts using nodus_ops_get_str() */
     dna_channel_post_internal_t *existing_posts = NULL;
     size_t existing_count = 0;
 
     uint8_t *existing_data = NULL;
     size_t existing_len = 0;
-    ret = dht_chunked_fetch_mine(dht_ctx, posts_key, &existing_data, &existing_len);
+    ret = nodus_ops_get_str(posts_key, &existing_data, &existing_len);
 
     if (ret == 0 && existing_data && existing_len > 0) {
         char *json_str = malloc(existing_len + 1);
@@ -944,7 +943,7 @@ int dna_channel_post_create(dht_context_t *dht_ctx, const char *channel_uuid,
     /* Add new post (transfer ownership) */
     all_posts[existing_count] = new_post;
 
-    /* Step 3: Serialize and publish using dht_chunked_publish() */
+    /* Step 3: Serialize and publish using nodus_ops_put_str() */
     char *bucket_json = NULL;
     if (posts_bucket_to_json(all_posts, new_count, &bucket_json) != 0) {
         dna_channel_posts_free(all_posts, new_count);
@@ -953,14 +952,14 @@ int dna_channel_post_create(dht_context_t *dht_ctx, const char *channel_uuid,
 
     QGP_LOG_INFO(LOG_TAG, "Publishing %zu posts to key %s\n", new_count, posts_key);
 
-    ret = dht_chunked_publish(dht_ctx, posts_key,
-                               (const uint8_t *)bucket_json, strlen(bucket_json),
-                               DNA_CHANNEL_TTL_SECONDS);
+    ret = nodus_ops_put_str(posts_key,
+                            (const uint8_t *)bucket_json, strlen(bucket_json),
+                            DNA_CHANNEL_TTL_SECONDS, nodus_ops_value_id());
 
     free(bucket_json);
 
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT chunked publish failed: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "DHT put failed: %d\n", ret);
         dna_channel_posts_free(all_posts, new_count);
         return -1;
     }
@@ -981,7 +980,7 @@ int dna_channel_post_create(dht_context_t *dht_ctx, const char *channel_uuid,
  * Helper: Merge posts from a single DHT key into the accumulator arrays.
  * Fetches all authors' buckets from the given key and appends non-duplicate posts.
  */
-static void merge_posts_from_key(dht_context_t *dht_ctx, const char *key,
+static void merge_posts_from_key(const char *key,
                                   dna_channel_post_internal_t **all_posts,
                                   size_t *total_count, size_t *allocated,
                                   const dna_channel_post_internal_t *existing,
@@ -990,7 +989,7 @@ static void merge_posts_from_key(dht_context_t *dht_ctx, const char *key,
     size_t *lens = NULL;
     size_t value_count = 0;
 
-    int ret = dht_chunked_fetch_all(dht_ctx, key, &values, &lens, &value_count);
+    int ret = nodus_ops_get_all_str(key, &values, &lens, &value_count);
     if (ret != 0 || value_count == 0) return;
 
     for (size_t i = 0; i < value_count; i++) {
@@ -1063,10 +1062,10 @@ static void merge_posts_from_key(dht_context_t *dht_ctx, const char *key,
     free(lens);
 }
 
-int dna_channel_posts_get(dht_context_t *dht_ctx, const char *channel_uuid,
+int dna_channel_posts_get(const char *channel_uuid,
                            int days_back,
                            dna_channel_post_internal_t **posts_out, size_t *count_out) {
-    if (!dht_ctx || !channel_uuid || !posts_out || !count_out) return -1;
+    if (!channel_uuid || !posts_out || !count_out) return -1;
 
     *posts_out = NULL;
     *count_out = 0;
@@ -1089,13 +1088,13 @@ int dna_channel_posts_get(dht_context_t *dht_ctx, const char *channel_uuid,
         char posts_key[256];
         snprintf(posts_key, sizeof(posts_key), "%s%s:%s", DNA_CHANNEL_NS_POSTS, channel_uuid, date);
 
-        merge_posts_from_key(dht_ctx, posts_key, &all_posts, &total_count, &allocated, NULL, 0);
+        merge_posts_from_key(posts_key, &all_posts, &total_count, &allocated, NULL, 0);
     }
 
     /* Legacy fallback: fetch from old undated key (migration period) */
     char legacy_key[256];
     snprintf(legacy_key, sizeof(legacy_key), "%s%s", DNA_CHANNEL_NS_POSTS, channel_uuid);
-    merge_posts_from_key(dht_ctx, legacy_key, &all_posts, &total_count, &allocated,
+    merge_posts_from_key(legacy_key, &all_posts, &total_count, &allocated,
                          all_posts, total_count);
 
     if (total_count == 0) {
@@ -1119,25 +1118,24 @@ int dna_channel_posts_get(dht_context_t *dht_ctx, const char *channel_uuid,
 
 /**
  * Helper: Publish index entries to a multi-owner index bucket.
- * Uses dht_chunked_fetch_mine() and dht_chunked_publish() like
+ * Uses nodus_ops_get_str() and nodus_ops_put_str() like
  * dna_feed_index.c:publish_index_entries().
  */
-static int publish_channel_index_entries(dht_context_t *dht_ctx,
-                                          const char *index_key,
+static int publish_channel_index_entries(const char *index_key,
                                           const dna_channel_index_entry_t *entries,
                                           size_t count) {
-    if (!dht_ctx || !index_key || !entries || count == 0) return -1;
+    if (!index_key || !entries || count == 0) return -1;
 
     int ret;
 
-    /* Step 1: Fetch MY existing entries using dht_chunked_fetch_mine() */
+    /* Step 1: Fetch MY existing entries using nodus_ops_get_str() */
     dna_channel_index_entry_t *my_entries = NULL;
     size_t my_count = 0;
 
     uint8_t *existing_data = NULL;
     size_t existing_len = 0;
 
-    ret = dht_chunked_fetch_mine(dht_ctx, index_key, &existing_data, &existing_len);
+    ret = nodus_ops_get_str(index_key, &existing_data, &existing_len);
 
     if (ret == 0 && existing_data && existing_len > 0) {
         char *json_str = malloc(existing_len + 1);
@@ -1183,7 +1181,7 @@ static int publish_channel_index_entries(dht_context_t *dht_ctx,
         merged[merged_count++] = entries[i];
     }
 
-    /* Step 3: Serialize and publish using dht_chunked_publish() */
+    /* Step 3: Serialize and publish using nodus_ops_put_str() */
     char *bucket_json = NULL;
     if (index_bucket_to_json(merged, merged_count, &bucket_json) != 0) {
         free(merged);
@@ -1193,15 +1191,15 @@ static int publish_channel_index_entries(dht_context_t *dht_ctx,
     QGP_LOG_INFO(LOG_TAG, "Publishing %zu index entries to DHT key %s\n",
                  merged_count, index_key);
 
-    ret = dht_chunked_publish(dht_ctx, index_key,
-                               (const uint8_t *)bucket_json, strlen(bucket_json),
-                               DNA_CHANNEL_TTL_SECONDS);
+    ret = nodus_ops_put_str(index_key,
+                            (const uint8_t *)bucket_json, strlen(bucket_json),
+                            DNA_CHANNEL_TTL_SECONDS, nodus_ops_value_id());
 
     free(bucket_json);
     free(merged);
 
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT chunked publish failed: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "DHT put failed: %d\n", ret);
         return -1;
     }
 
@@ -1210,23 +1208,22 @@ static int publish_channel_index_entries(dht_context_t *dht_ctx,
 
 /**
  * Helper: Fetch all entries from a day bucket (all senders).
- * Uses dht_chunked_fetch_all() like dna_feed_index.c:fetch_day_bucket().
+ * Uses nodus_ops_get_all_str() like dna_feed_index.c:fetch_day_bucket().
  */
-static int fetch_channel_day_bucket(dht_context_t *dht_ctx,
-                                      const char *index_key,
+static int fetch_channel_day_bucket(const char *index_key,
                                       dna_channel_index_entry_t **entries_out,
                                       size_t *count_out) {
-    if (!dht_ctx || !index_key || !entries_out || !count_out) return -1;
+    if (!index_key || !entries_out || !count_out) return -1;
 
     *entries_out = NULL;
     *count_out = 0;
 
-    /* Fetch all senders' buckets using dht_chunked_fetch_all() */
+    /* Fetch all senders' buckets using nodus_ops_get_all_str() */
     uint8_t **values = NULL;
     size_t *lens = NULL;
     size_t value_count = 0;
 
-    int ret = dht_chunked_fetch_all(dht_ctx, index_key, &values, &lens, &value_count);
+    int ret = nodus_ops_get_all_str(index_key, &values, &lens, &value_count);
 
     if (ret != 0 || value_count == 0) {
         QGP_LOG_DEBUG(LOG_TAG, "No buckets found at key %s\n", index_key);
@@ -1297,11 +1294,11 @@ static int fetch_channel_day_bucket(dht_context_t *dht_ctx,
     return 0;
 }
 
-int dna_channel_index_register(dht_context_t *dht_ctx, const char *channel_uuid,
+int dna_channel_index_register(const char *channel_uuid,
                                 const char *name, const char *description,
                                 const char *creator_fingerprint,
                                 const uint8_t *private_key) {
-    if (!dht_ctx || !channel_uuid || !name || !creator_fingerprint) return -1;
+    if (!channel_uuid || !name || !creator_fingerprint) return -1;
     (void)private_key;  /* Reserved for future use (signed index entries) */
 
     /* Get today's date */
@@ -1325,7 +1322,7 @@ int dna_channel_index_register(dht_context_t *dht_ctx, const char *channel_uuid,
     char index_key[256];
     snprintf(index_key, sizeof(index_key), "%s%s", DNA_CHANNEL_NS_INDEX, today);
 
-    int ret = publish_channel_index_entries(dht_ctx, index_key, &entry, 1);
+    int ret = publish_channel_index_entries(index_key, &entry, 1);
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to register channel %s in index\n", channel_uuid);
         return -1;
@@ -1335,9 +1332,9 @@ int dna_channel_index_register(dht_context_t *dht_ctx, const char *channel_uuid,
     return 0;
 }
 
-int dna_channel_index_browse(dht_context_t *dht_ctx, int days_back,
+int dna_channel_index_browse(int days_back,
                               dna_channel_t **channels_out, size_t *count_out) {
-    if (!dht_ctx || !channels_out || !count_out) return -1;
+    if (!channels_out || !count_out) return -1;
 
     *channels_out = NULL;
     *count_out = 0;
@@ -1363,7 +1360,7 @@ int dna_channel_index_browse(dht_context_t *dht_ctx, int days_back,
         dna_channel_index_entry_t *day_entries = NULL;
         size_t day_count = 0;
 
-        int ret = fetch_channel_day_bucket(dht_ctx, index_key, &day_entries, &day_count);
+        int ret = fetch_channel_day_bucket(index_key, &day_entries, &day_count);
         if (ret == 0 && day_entries && day_count > 0) {
             /* Merge, deduping by channel_uuid */
             for (size_t i = 0; i < day_count; i++) {

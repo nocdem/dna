@@ -20,8 +20,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include "../core/dht_context.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -83,8 +81,7 @@ void dna_wall_make_key(const char *fingerprint, uint8_t *out_key);
  * @param out_post     If non-NULL, filled with the created post
  * @return 0 on success, negative on error
  */
-int dna_wall_post(dht_context_t *dht,
-                  const char *fingerprint,
+int dna_wall_post(const char *fingerprint,
                   const uint8_t *private_key,
                   const char *text,
                   dna_wall_post_t *out_post);
@@ -92,7 +89,6 @@ int dna_wall_post(dht_context_t *dht,
 /**
  * Post a message with image to own wall (v0.7.0+)
  *
- * @param dht          DHT context
  * @param fingerprint  Poster's SHA3-512 fingerprint
  * @param private_key  Poster's Dilithium5 private key (for signing)
  * @param text         Post text (max DNA_WALL_MAX_TEXT_LEN-1 chars)
@@ -100,8 +96,7 @@ int dna_wall_post(dht_context_t *dht,
  * @param out_post     If non-NULL, filled with the created post (caller owns image_json)
  * @return 0 on success, negative on error
  */
-int dna_wall_post_with_image(dht_context_t *dht,
-                              const char *fingerprint,
+int dna_wall_post_with_image(const char *fingerprint,
                               const uint8_t *private_key,
                               const char *text,
                               const char *image_json,
@@ -109,25 +104,22 @@ int dna_wall_post_with_image(dht_context_t *dht,
 
 /**
  * Delete a post from own wall
- * @param dht          DHT context
  * @param fingerprint  Owner's SHA3-512 fingerprint
  * @param private_key  Owner's Dilithium5 private key
  * @param post_uuid    UUID of post to delete
  * @return 0 on success, negative on error
  */
-int dna_wall_delete(dht_context_t *dht,
-                    const char *fingerprint,
+int dna_wall_delete(const char *fingerprint,
                     const uint8_t *private_key,
                     const char *post_uuid);
 
 /**
  * Load a user's wall posts from DHT
- * @param dht          DHT context
  * @param fingerprint  Wall owner's fingerprint
  * @param wall         Output wall structure (caller must free with dna_wall_free)
  * @return 0 on success, -1 on error, -2 if not found
  */
-int dna_wall_load(dht_context_t *dht, const char *fingerprint,
+int dna_wall_load(const char *fingerprint,
                   dna_wall_t *wall);
 
 /* ── Memory Management ── */
@@ -187,7 +179,6 @@ typedef struct {
 /**
  * Add a comment to a wall post (multi-owner DHT)
  *
- * @param dht_ctx              DHT context
  * @param post_uuid            UUID of the wall post to comment on
  * @param parent_comment_uuid  Parent comment UUID for replies (NULL = top-level)
  * @param body                 Comment text (max DNA_WALL_COMMENT_MAX_BODY chars)
@@ -196,8 +187,7 @@ typedef struct {
  * @param uuid_out             Output: created comment UUID (37 bytes)
  * @return 0 on success, negative on error
  */
-int dna_wall_comment_add(dht_context_t *dht_ctx,
-                          const char *post_uuid,
+int dna_wall_comment_add(const char *post_uuid,
                           const char *parent_comment_uuid,
                           const char *body,
                           const char *author_fingerprint,
@@ -207,14 +197,12 @@ int dna_wall_comment_add(dht_context_t *dht_ctx,
 /**
  * Fetch all comments for a wall post from DHT
  *
- * @param dht_ctx       DHT context
  * @param post_uuid     UUID of the wall post
  * @param comments_out  Output: heap-allocated array (caller frees with dna_wall_comments_free)
  * @param count_out     Output: number of comments
  * @return 0 on success, -1 on error, -2 if no comments found
  */
-int dna_wall_comments_get(dht_context_t *dht_ctx,
-                           const char *post_uuid,
+int dna_wall_comments_get(const char *post_uuid,
                            dna_wall_comment_t **comments_out,
                            size_t *count_out);
 

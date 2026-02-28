@@ -15,7 +15,6 @@
 #include "crypto/nodus_identity.h"
 #include "core/nodus_value.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -77,43 +76,50 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                              size_t len, void *ctx) {
     (void)conn;
     nodus_client_t *client = (nodus_client_t *)ctx;
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
 
-    /* Decode into pending response */
-    nodus_t2_msg_free(resp);
-    memset(resp, 0, sizeof(*resp));
-    if (nodus_t2_decode(payload, len, resp) != 0)
+    /* Decode into a temporary struct first to check if it's a push notification.
+     * Push notifications must NOT clobber the pending_response — multiple frames
+     * can arrive in a single TCP read, and a push following a synchronous response
+     * would zero the response data before the caller reads it. */
+    nodus_tier2_msg_t tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    if (nodus_t2_decode(payload, len, &tmp) != 0)
         return;
 
     /* Push notifications (async — not a response to a request) */
-    if (strcmp(resp->method, "value_changed") == 0) {
-        if (client->config.on_value_changed && resp->value)
-            client->config.on_value_changed(&resp->key, resp->value,
+    if (strcmp(tmp.method, "value_changed") == 0) {
+        if (client->config.on_value_changed && tmp.value)
+            client->config.on_value_changed(&tmp.key, tmp.value,
                                              client->config.callback_data);
+        nodus_t2_msg_free(&tmp);
         return;
     }
 
-    if (strcmp(resp->method, "ch_ntf") == 0) {
+    if (strcmp(tmp.method, "ch_ntf") == 0) {
         if (client->config.on_ch_post) {
             /* ch_ntf encodes post fields individually in args, not as posts array.
              * Construct a temporary post from decoded fields. */
             nodus_channel_post_t post;
             memset(&post, 0, sizeof(post));
-            memcpy(post.channel_uuid, resp->channel_uuid, NODUS_UUID_BYTES);
-            memcpy(post.post_uuid, resp->post_uuid_ch, NODUS_UUID_BYTES);
-            post.author_fp = resp->fp;
-            post.timestamp = resp->ch_timestamp;
-            post.seq_id = (uint32_t)resp->seq;  /* "seq" in args → msg->seq */
-            post.signature = resp->sig;
-            post.body = (char *)resp->data;
-            post.body_len = resp->data_len;
-            client->config.on_ch_post(resp->channel_uuid, &post,
+            memcpy(post.channel_uuid, tmp.channel_uuid, NODUS_UUID_BYTES);
+            memcpy(post.post_uuid, tmp.post_uuid_ch, NODUS_UUID_BYTES);
+            post.author_fp = tmp.fp;
+            post.timestamp = tmp.ch_timestamp;
+            post.seq_id = (uint32_t)tmp.seq;  /* "seq" in args → msg->seq */
+            post.signature = tmp.sig;
+            post.body = (char *)tmp.data;
+            post.body_len = tmp.data_len;
+            client->config.on_ch_post(tmp.channel_uuid, &post,
                                        client->config.callback_data);
         }
+        nodus_t2_msg_free(&tmp);
         return;
     }
 
-    /* Synchronous response */
+    /* Synchronous response — move into pending_response */
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
+    nodus_t2_msg_free(resp);
+    *resp = tmp;  /* Transfer ownership (shallow copy, no double-free) */
     client->response_ready = true;
 }
 
@@ -210,7 +216,7 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
     set_state(client, NODUS_CLIENT_CONNECTING);
 
     nodus_tcp_conn_t *conn = nodus_tcp_connect(tcp, ep->ip, ep->port);
-    if (!conn) return -1;
+    if (!conn) { return -1; }
     client->conn = conn;
 
     /* Wait for TCP connection to establish */
@@ -512,6 +518,33 @@ int nodus_client_unlisten(nodus_client_t *client, const nodus_key_t *key) {
             break;
         }
     }
+    return 0;
+}
+
+int nodus_client_get_servers(nodus_client_t *client,
+                              nodus_server_endpoint_t *endpoints_out,
+                              int max_count, int *count_out) {
+    if (!nodus_client_is_ready(client) || !endpoints_out || !count_out) return -1;
+    *count_out = 0;
+
+    size_t len = 0;
+    uint32_t txn = client->next_txn++;
+    nodus_t2_servers(txn, client->token,
+                      g_proto_buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, g_proto_buf, len) != 0) return -1;
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
+    if (!wait_response(client, client->config.request_timeout_ms)) return NODUS_ERR_TIMEOUT;
+    if (resp->type == 'e') return resp->error_code;
+
+    int n = resp->server_count < max_count ? resp->server_count : max_count;
+    for (int i = 0; i < n; i++) {
+        memset(&endpoints_out[i], 0, sizeof(endpoints_out[i]));
+        strncpy(endpoints_out[i].ip, resp->servers[i].ip,
+                sizeof(endpoints_out[i].ip) - 1);
+        endpoints_out[i].port = resp->servers[i].tcp_port;
+    }
+    *count_out = n;
     return 0;
 }
 

@@ -91,10 +91,7 @@ void dna_handle_get_group_info(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Sync from DHT first to get latest member list */
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (dht_ctx) {
-        dht_groups_sync_from_dht(dht_ctx, group_uuid);
-    }
+    dht_groups_sync_from_dht(group_uuid);
 
     /* Get group from local cache (now up-to-date) */
     int rc = dht_groups_get_cache_entry(group_uuid, &cache_entry);
@@ -150,10 +147,7 @@ void dna_handle_get_group_members(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Sync from DHT first to get latest member list */
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (dht_ctx) {
-        dht_groups_sync_from_dht(dht_ctx, group_uuid);
-    }
+    dht_groups_sync_from_dht(group_uuid);
 
     /* Get group from local cache (now up-to-date) */
     int rc = dht_groups_get_cache_entry(group_uuid, &cache_entry);

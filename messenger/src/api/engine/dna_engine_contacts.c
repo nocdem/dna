@@ -163,14 +163,8 @@ void dna_handle_add_contact(dna_engine_t *engine, dna_task_t *task) {
         strncpy(fingerprint, identifier, 128);
     } else {
         /* Lookup name in DHT */
-        dht_context_t *dht = dht_singleton_get();
-        if (!dht) {
-            error = DNA_ENGINE_ERROR_NETWORK;
-            goto done;
-        }
-
         char *fp_out = NULL;
-        if (dna_lookup_by_name(dht, identifier, &fp_out) != 0 || !fp_out) {
+        if (dna_lookup_by_name(identifier, &fp_out) != 0 || !fp_out) {
             error = DNA_ERROR_NOT_FOUND;
             goto done;
         }
@@ -306,13 +300,6 @@ void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Get DHT context */
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-    if (!dht_ctx) {
-        error = DNA_ENGINE_ERROR_NETWORK;
-        goto done;
-    }
-
     /* Get sender keys */
     privkey = dna_load_private_key(engine);
     if (!privkey) {
@@ -330,7 +317,6 @@ void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task) {
 
     /* Send the contact request via DHT */
     int rc = dht_send_contact_request(
-        dht_ctx,
         engine->fingerprint,
         display_name,
         privkey->public_key,
@@ -370,13 +356,12 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* First, fetch new requests from DHT and store them */
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
     bool contacts_changed = false;  /* Track if we need to sync */
-    if (dht_ctx) {
+    {
         dht_contact_request_t *dht_requests = NULL;
         size_t dht_count = 0;
 
-        if (dht_fetch_contact_requests(dht_ctx, engine->fingerprint, &dht_requests, &dht_count) == 0) {
+        if (dht_fetch_contact_requests(engine->fingerprint, &dht_requests, &dht_count) == 0) {
             /* Store new requests in local database */
             for (size_t i = 0; i < dht_count; i++) {
                 /* Skip if blocked */
@@ -396,7 +381,7 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                 if (sender_name[0] == '\0') {
                     QGP_LOG_INFO(LOG_TAG, "Sender name empty, doing reverse lookup for %.20s...",
                                  dht_requests[i].sender_fingerprint);
-                    if (dht_keyserver_reverse_lookup(dht_ctx, dht_requests[i].sender_fingerprint,
+                    if (dht_keyserver_reverse_lookup(dht_requests[i].sender_fingerprint,
                                                      &looked_up_name) == 0 && looked_up_name) {
                         sender_name = looked_up_name;
                         /* Cache the name for future use */
@@ -474,10 +459,10 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
             requests[out_idx].fingerprint[128] = '\0';
 
             /* If display_name is empty, try reverse lookup from DHT */
-            if (db_requests[i].display_name[0] == '\0' && dht_ctx) {
+            if (db_requests[i].display_name[0] == '\0') {
                 char *looked_up_name = NULL;
                 QGP_LOG_INFO("DNA_ENGINE", "DB request[%d] has empty name, doing reverse lookup", i);
-                if (dht_keyserver_reverse_lookup(dht_ctx, db_requests[i].fingerprint,
+                if (dht_keyserver_reverse_lookup(db_requests[i].fingerprint,
                                                  &looked_up_name) == 0 && looked_up_name) {
                     strncpy(requests[out_idx].display_name, looked_up_name, 63);
                     requests[out_idx].display_name[63] = '\0';
@@ -550,8 +535,7 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
     dna_engine_start_ack_listener(engine, task->params.contact_request.fingerprint);
 
     /* Send a reciprocal request so they know we approved */
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-    if (dht_ctx) {
+    {
         qgp_key_t *privkey = dna_load_private_key(engine);
         if (privkey) {
             /* Get our registered display name from keyserver cache */
@@ -563,7 +547,6 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
             }
 
             dht_send_contact_request(
-                dht_ctx,
                 engine->fingerprint,
                 display_name,
                 privkey->public_key,

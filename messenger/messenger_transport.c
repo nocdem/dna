@@ -8,13 +8,10 @@
 #include "messenger.h"
 #include "transport/transport.h"
 #include "transport/internal/transport_core.h"  // For parse_presence_json
-#include "dht/client/dht_singleton.h"
 #include "dht/shared/dht_offline_queue.h"
-#include "dht/shared/dht_chunked.h"
+#include "dht/shared/nodus_ops.h"
 #include "dht/shared/dht_groups.h"
 #include "dht/core/dht_keyserver.h"
-#include "dht/core/dht_context.h"
-#include "dht/core/dht_listen.h"
 #include "database/keyserver_cache.h"
 #include "database/contacts_db.h"
 #include "database/group_invitations.h"
@@ -303,13 +300,12 @@ static char* extract_sender_from_encrypted(
     }
     fingerprint[128] = '\0';
 
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
+    if (!nodus_ops_is_ready()) {
         return NULL;
     }
 
     char *identity = NULL;
-    int result = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &identity);
+    int result = dht_keyserver_reverse_lookup(fingerprint, &identity);
 
     if (result == 0 && identity) {
         return identity;
@@ -355,13 +351,12 @@ static char* lookup_identity_for_pubkey(
     }
     fingerprint[128] = '\0';
 
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
+    if (!nodus_ops_is_ready()) {
         return NULL;
     }
 
     char *identity = NULL;
-    int result = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &identity);
+    int result = dht_keyserver_reverse_lookup(fingerprint, &identity);
 
     if (result == 0 && identity) {
         return identity;
@@ -519,12 +514,6 @@ int messenger_queue_to_dht(
         return -1;
     }
 
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available for message queue\n");
-        return -1;
-    }
-
     char recipient_fingerprint[129];
     if (resolve_identity_to_fingerprint(ctx, recipient, recipient_fingerprint) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to resolve recipient '%s' to fingerprint\n", recipient);
@@ -532,7 +521,6 @@ int messenger_queue_to_dht(
     }
 
     int queue_result = dht_queue_message(
-        dht_ctx,
         ctx->identity,
         recipient_fingerprint,
         encrypted_message,
@@ -776,12 +764,6 @@ int messenger_transport_refresh_presence(messenger_context_t *ctx)
 
     QGP_LOG_DEBUG(LOG_TAG, "Refreshing presence in DHT for %s", ctx->identity);
 
-    dht_context_t *dht = dht_singleton_get();
-    if (!dht) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available for presence refresh");
-        return -1;
-    }
-
     uint8_t *pubkey = NULL;
     size_t pubkey_len = 0;
     if (load_my_dilithium_pubkey(ctx, &pubkey, &pubkey_len) != 0) {
@@ -801,9 +783,9 @@ int messenger_transport_refresh_presence(messenger_context_t *ctx)
     free(pubkey);
 
     unsigned int ttl_7days = 7 * 24 * 3600;
-    int result = dht_put_signed(dht, dht_key, sizeof(dht_key),
-                                (const uint8_t*)presence_data, strlen(presence_data),
-                                1, ttl_7days, "presence_heartbeat");
+    int result = nodus_ops_put(dht_key, sizeof(dht_key),
+                               (const uint8_t*)presence_data, strlen(presence_data),
+                               ttl_7days, 1);
 
     if (result != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to register presence in DHT");
@@ -825,12 +807,6 @@ int messenger_transport_lookup_presence(
 
     *last_seen_out = 0;
 
-    dht_context_t *dht = dht_singleton_get();
-    if (!dht) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available for presence lookup");
-        return -1;
-    }
-
     size_t fp_len = strlen(fingerprint);
     if (fp_len != 128) {
         return -1;
@@ -848,7 +824,7 @@ int messenger_transport_lookup_presence(
     uint8_t *value = NULL;
     size_t value_len = 0;
 
-    if (dht_get(dht, dht_key, sizeof(dht_key), &value, &value_len) != 0 || !value) {
+    if (nodus_ops_get(dht_key, sizeof(dht_key), &value, &value_len) != 0 || !value) {
         return -1;
     }
 

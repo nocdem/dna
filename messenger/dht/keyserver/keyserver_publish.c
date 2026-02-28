@@ -9,23 +9,18 @@
 
 #include "keyserver_core.h"
 #include "../core/dht_keyserver.h"
-#include "../core/dht_context.h"
 #include "../client/dna_profile.h"
+#include "dht/shared/nodus_ops.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 #include "database/profile_cache.h"
 
 #define LOG_TAG "KEYSERVER"
 
-// Maximum time to wait for DHT to be ready (in milliseconds)
-// v0.6.113: Reduced from 10s to 5s for faster identity creation
-#define DHT_READY_TIMEOUT_MS 5000
-
 // Publish identity to DHT (NAME-FIRST architecture)
 // Creates dna_unified_identity_t and stores at fingerprint:profile
 // Also publishes name:lookup alias for name-based lookups
 int dht_keyserver_publish(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     const char *name,  // REQUIRED - DNA name
     const uint8_t *dilithium_pubkey,
@@ -40,14 +35,14 @@ int dht_keyserver_publish(
            name, fingerprint);
 
     // Validate required arguments
-    if (!dht_ctx || !fingerprint || !name || !dilithium_pubkey || !kyber_pubkey || !dilithium_privkey) {
+    if (!fingerprint || !name || !dilithium_pubkey || !kyber_pubkey || !dilithium_privkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments (all fields required)\n");
         return -1;
     }
 
-    // Wait for DHT to be ready (connected to network)
-    if (!dht_context_wait_for_ready(dht_ctx, DHT_READY_TIMEOUT_MS)) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not ready - cannot publish identity\n");
+    // Wait for Nodus to be ready (connected to network)
+    if (!nodus_ops_is_ready()) {
+        QGP_LOG_ERROR(LOG_TAG, "Nodus not ready - cannot publish identity\n");
         return -3;
     }
 
@@ -70,9 +65,9 @@ int dht_keyserver_publish(
 
     uint8_t *existing_alias = NULL;
     size_t existing_len = 0;
-    int alias_check = dht_chunked_fetch(dht_ctx, alias_base_key, &existing_alias, &existing_len);
+    int alias_check = nodus_ops_get_str(alias_base_key, &existing_alias, &existing_len);
 
-    if (alias_check == DHT_CHUNK_OK && existing_alias) {
+    if (alias_check == 0 && existing_alias) {
         // Name exists - check if it's the same fingerprint (re-publish ok)
         if (existing_len == 128 && strncmp((char*)existing_alias, fingerprint, 128) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Name '%s' already taken by different identity\n", name);
@@ -142,7 +137,7 @@ int dht_keyserver_publish(
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "✓ Identity signed with Dilithium5\n");
+    QGP_LOG_INFO(LOG_TAG, "Identity signed with Dilithium5\n");
 
     // Serialize to JSON
     char *json = dna_identity_to_json(identity);
@@ -158,53 +153,50 @@ int dht_keyserver_publish(
 
     QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] Publishing to DHT key: %s\n", profile_base_key);
 
-    // Use PERMANENT TTL for identity profiles - they should never expire
-    // and PERMANENT values are persisted differently (expires_at=0) which
-    // improves survival across bootstrap node restarts
-    int ret = dht_chunked_publish(dht_ctx, profile_base_key,
-                                  (uint8_t*)json, strlen(json),
-                                  DHT_CHUNK_TTL_PERMANENT);
+    // Use permanent TTL (0) for identity profiles - they should never expire
+    int ret = nodus_ops_put_str(profile_base_key,
+                                (uint8_t*)json, strlen(json),
+                                0, nodus_ops_value_id());
     free(json);
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to publish identity: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish identity (ret=%d)\n", ret);
         dna_identity_free(identity);
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "✓ Identity published to fingerprint:profile\n");
+    QGP_LOG_INFO(LOG_TAG, "Identity published to fingerprint:profile\n");
 
     // Cache locally to avoid DHT propagation delay issues
     // This ensures getProfile() returns correct data immediately after publish
     if (profile_cache_add_or_update(fingerprint, identity) == 0) {
-        QGP_LOG_INFO(LOG_TAG, "✓ Identity cached locally\n");
+        QGP_LOG_INFO(LOG_TAG, "Identity cached locally\n");
     }
 
     dna_identity_free(identity);
 
-    // Publish name:lookup alias - also PERMANENT for consistent persistence
-    ret = dht_chunked_publish(dht_ctx, alias_base_key,
-                              (uint8_t*)fingerprint, 128,
-                              DHT_CHUNK_TTL_PERMANENT);
+    // Publish name:lookup alias - also permanent for consistent persistence
+    ret = nodus_ops_put_str(alias_base_key,
+                            (uint8_t*)fingerprint, 128,
+                            0, nodus_ops_value_id());
 
-    if (ret != DHT_CHUNK_OK) {
+    if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to publish name alias (lookups may not work)\n");
         // Non-fatal - identity is already published
     } else {
-        QGP_LOG_INFO(LOG_TAG, "✓ Name alias published: %s -> %.16s...\n", name, fingerprint);
+        QGP_LOG_INFO(LOG_TAG, "Name alias published: %s -> %.16s...\n", name, fingerprint);
     }
 
-    QGP_LOG_INFO(LOG_TAG, "✓ Identity published successfully\n");
+    QGP_LOG_INFO(LOG_TAG, "Identity published successfully\n");
     return 0;
 }
 
-// Publish name → fingerprint alias (for name-based lookups)
+// Publish name -> fingerprint alias (for name-based lookups)
 int dht_keyserver_publish_alias(
-    dht_context_t *dht_ctx,
     const char *name,
     const char *fingerprint
 ) {
-    if (!dht_ctx || !name || !fingerprint) {
+    if (!name || !fingerprint) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to publish_alias\n");
         return -1;
     }
@@ -222,45 +214,44 @@ int dht_keyserver_publish_alias(
         return -1;
     }
 
-    // Create base key for alias (chunked layer handles hashing)
+    // Create base key for alias
     char alias_base_key[256];
     snprintf(alias_base_key, sizeof(alias_base_key), "%s:lookup", name);
 
-    // Store fingerprint as plain text via chunked layer
-    QGP_LOG_INFO(LOG_TAG, "Publishing alias: '%s' → %s\n", name, fingerprint);
+    // Store fingerprint as plain text
+    QGP_LOG_INFO(LOG_TAG, "Publishing alias: '%s' -> %s\n", name, fingerprint);
     QGP_LOG_INFO(LOG_TAG, "Alias base key: %s\n", alias_base_key);
 
-    // Use PERMANENT TTL for name aliases
-    int ret = dht_chunked_publish(dht_ctx, alias_base_key,
-                                  (uint8_t*)fingerprint, 128,
-                                  DHT_CHUNK_TTL_PERMANENT);
+    // Use permanent TTL (0) for name aliases
+    int ret = nodus_ops_put_str(alias_base_key,
+                                (uint8_t*)fingerprint, 128,
+                                0, nodus_ops_value_id());
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to publish alias: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish alias (ret=%d)\n", ret);
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "✓ Alias published successfully (TTL=PERMANENT)\n");
+    QGP_LOG_INFO(LOG_TAG, "Alias published successfully (TTL=PERMANENT)\n");
     return 0;
 }
 
 // Update keys in DHT (key rotation)
 // Loads existing identity, updates keys, increments version, re-signs, and publishes to :profile
 int dht_keyserver_update(
-    dht_context_t *dht_ctx,
     const char *name_or_fingerprint,
     const uint8_t *new_dilithium_pubkey,
     const uint8_t *new_kyber_pubkey,
     const uint8_t *new_dilithium_privkey
 ) {
-    if (!dht_ctx || !name_or_fingerprint || !new_dilithium_pubkey || !new_kyber_pubkey || !new_dilithium_privkey) {
+    if (!name_or_fingerprint || !new_dilithium_pubkey || !new_kyber_pubkey || !new_dilithium_privkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments\n");
         return -1;
     }
 
     // Fetch existing identity
     dna_unified_identity_t *identity = NULL;
-    int ret = dht_keyserver_lookup(dht_ctx, name_or_fingerprint, &identity);
+    int ret = dht_keyserver_lookup(name_or_fingerprint, &identity);
 
     if (ret != 0 || !identity) {
         QGP_LOG_ERROR(LOG_TAG, "Cannot update - identity not found\n");
@@ -311,19 +302,19 @@ int dht_keyserver_update(
     char base_key[256];
     snprintf(base_key, sizeof(base_key), "%s:profile", new_fingerprint);
 
-    // Use PERMANENT TTL for identity updates
-    ret = dht_chunked_publish(dht_ctx, base_key,
-                              (uint8_t*)json, strlen(json),
-                              DHT_CHUNK_TTL_PERMANENT);
+    // Use permanent TTL (0) for identity updates
+    ret = nodus_ops_put_str(base_key,
+                            (uint8_t*)json, strlen(json),
+                            0, nodus_ops_value_id());
     free(json);
     dna_identity_free(identity);
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to update in DHT: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update in DHT (ret=%d)\n", ret);
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "✓ Identity updated successfully (TTL=PERMANENT)\n");
+    QGP_LOG_INFO(LOG_TAG, "Identity updated successfully (TTL=PERMANENT)\n");
     return 0;
 }
 

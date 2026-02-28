@@ -1,7 +1,6 @@
 #include "dht_offline_queue.h"
 #include "dht_dm_outbox.h"  /* Daily bucket messaging (v0.4.81+) */
-#include "dht_chunked.h"
-#include "../core/dht_listen.h"
+#include "nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include <string.h>
 #include <stdlib.h>
@@ -484,7 +483,6 @@ error:
  * No watermark pruning - TTL handles cleanup automatically.
  */
 int dht_queue_message(
-    dht_context_t *ctx,
     const char *sender,
     const char *recipient,
     const uint8_t *ciphertext,
@@ -492,20 +490,9 @@ int dht_queue_message(
     uint64_t seq_num,
     uint32_t ttl_seconds)
 {
-    /*
-     * v0.4.81: Redirect to daily bucket API
-     *
-     * Old behavior (removed):
-     * - Watermark fetch + pruning (lines 515-617)
-     * - Static key: sender:outbox:recipient
-     *
-     * New behavior:
-     * - Daily bucket key: sender:outbox:recipient:DAY
-     * - No watermark pruning (TTL auto-expire)
-     * - Watermark still used for delivery reports (separate API)
-     */
+    /* v0.4.81: Redirect to daily bucket API */
     QGP_LOG_DEBUG(LOG_TAG, "Redirecting to daily bucket API (v0.4.81+)");
-    return dht_dm_queue_message(ctx, sender, recipient, ciphertext,
+    return dht_dm_queue_message(sender, recipient, ciphertext,
                                  ciphertext_len, seq_num, ttl_seconds);
 }
 
@@ -516,14 +503,13 @@ int dht_queue_message(
  * and accumulates all messages from all senders.
  */
 int dht_retrieve_queued_messages_from_contacts(
-    dht_context_t *ctx,
     const char *recipient,
     const char **sender_list,
     size_t sender_count,
     dht_offline_message_t **messages_out,
     size_t *count_out)
 {
-    if (!ctx || !recipient || !sender_list || sender_count == 0 || !messages_out || !count_out) {
+    if (!recipient || !sender_list || sender_count == 0 || !messages_out || !count_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for retrieval\n");
         return -1;
     }
@@ -559,13 +545,13 @@ int dht_retrieve_queued_messages_from_contacts(
         size_t outbox_len = 0;
 
         clock_gettime(CLOCK_MONOTONIC, &dht_get_start);
-        int get_result = dht_chunked_fetch(ctx, outbox_base_key, &outbox_data, &outbox_len);
+        int get_result = nodus_ops_get_str(outbox_base_key, &outbox_data, &outbox_len);
         struct timespec dht_get_end;
         clock_gettime(CLOCK_MONOTONIC, &dht_get_end);
         long dht_get_ms = (dht_get_end.tv_sec - dht_get_start.tv_sec) * 1000 +
                           (dht_get_end.tv_nsec - dht_get_start.tv_nsec) / 1000000;
 
-        if (get_result != DHT_CHUNK_OK || !outbox_data || outbox_len == 0) {
+        if (get_result != 0 || !outbox_data || outbox_len == 0) {
             // No messages from this sender (outbox empty or doesn't exist)
             QGP_LOG_INFO(LOG_TAG, "✗ No messages (chunked_fetch took %ld ms)\n", dht_get_ms);
             continue;
@@ -667,14 +653,13 @@ int dht_retrieve_queued_messages_from_contacts(
  * massive speedup for checking offline messages from many contacts.
  */
 int dht_retrieve_queued_messages_from_contacts_parallel(
-    dht_context_t *ctx,
     const char *recipient,
     const char **sender_list,
     size_t sender_count,
     dht_offline_message_t **messages_out,
     size_t *count_out)
 {
-    if (!ctx || !recipient || !sender_list || sender_count == 0 || !messages_out || !count_out) {
+    if (!recipient || !sender_list || sender_count == 0 || !messages_out || !count_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for parallel retrieval\n");
         return -1;
     }
@@ -702,56 +687,39 @@ int dht_retrieve_queued_messages_from_contacts_parallel(
         make_outbox_base_key(sender_list[i], recipient, outbox_keys[i], 512);
     }
 
-    // Step 2: Batch fetch all outboxes in parallel
-    dht_chunked_batch_result_t *batch_results = NULL;
-    int fetch_count = dht_chunked_fetch_batch(ctx,
-                                               (const char **)outbox_keys,
-                                               sender_count,
-                                               &batch_results);
-
-    // Free outbox keys (no longer needed after batch fetch)
-    for (size_t i = 0; i < sender_count; i++) {
-        free(outbox_keys[i]);
-    }
-    free(outbox_keys);
-
-    if (fetch_count < 0 || !batch_results) {
-        QGP_LOG_ERROR(LOG_TAG, "PARALLEL: Batch fetch failed\n");
-        return -1;
-    }
-
-    // Step 3: Process results and accumulate messages
+    // Step 2: Fetch all outboxes sequentially (nodus v5 client-server is fast)
     dht_offline_message_t *all_messages = NULL;
     size_t all_count = 0;
     size_t all_capacity = 0;
     uint64_t now = (uint64_t)time(NULL);
 
     for (size_t i = 0; i < sender_count; i++) {
-        if (batch_results[i].error != DHT_CHUNK_OK ||
-            !batch_results[i].data || batch_results[i].data_len == 0) {
-            // No messages from this sender
+        uint8_t *outbox_data = NULL;
+        size_t outbox_len = 0;
+
+        int get_result = nodus_ops_get_str(outbox_keys[i], &outbox_data, &outbox_len);
+        if (get_result != 0 || !outbox_data || outbox_len == 0) {
             continue;
         }
 
         QGP_LOG_INFO(LOG_TAG, "PARALLEL: [%zu/%zu] Found outbox from %.20s... (%zu bytes)\n",
-                     i + 1, sender_count, sender_list[i], batch_results[i].data_len);
+                     i + 1, sender_count, sender_list[i], outbox_len);
 
-        // Deserialize messages from this sender's outbox
         dht_offline_message_t *sender_messages = NULL;
         size_t sender_msg_count = 0;
 
-        if (dht_deserialize_messages(batch_results[i].data, batch_results[i].data_len,
+        if (dht_deserialize_messages(outbox_data, outbox_len,
                                      &sender_messages, &sender_msg_count) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "PARALLEL: Failed to deserialize sender's outbox\n");
+            free(outbox_data);
             continue;
         }
+        free(outbox_data);
 
         QGP_LOG_INFO(LOG_TAG, "PARALLEL: Deserialized %zu message(s) from sender\n", sender_msg_count);
 
-        // Filter and accumulate valid messages
         for (size_t j = 0; j < sender_msg_count; j++) {
             if (sender_messages[j].expiry >= now) {
-                // Valid message - add to combined array
                 if (all_count >= all_capacity) {
                     size_t new_capacity = (all_capacity == 0) ? 16 : (all_capacity * 2);
                     dht_offline_message_t *new_array = (dht_offline_message_t *)realloc(
@@ -760,27 +728,26 @@ int dht_retrieve_queued_messages_from_contacts_parallel(
                         QGP_LOG_ERROR(LOG_TAG, "Failed to grow message array\n");
                         dht_offline_messages_free(all_messages, all_count);
                         dht_offline_messages_free(sender_messages, sender_msg_count);
-                        dht_chunked_batch_results_free(batch_results, sender_count);
+                        for (size_t k = i; k < sender_count; k++) free(outbox_keys[k]);
+                        free(outbox_keys);
                         return -1;
                     }
                     all_messages = new_array;
                     all_capacity = new_capacity;
                 }
-
-                // Transfer ownership
                 all_messages[all_count++] = sender_messages[j];
             } else {
-                // Expired - free it
                 dht_offline_message_free(&sender_messages[j]);
             }
         }
-
-        // Free sender_messages array (contents transferred or freed)
         free(sender_messages);
     }
 
-    // Free batch results
-    dht_chunked_batch_results_free(batch_results, sender_count);
+    // Free outbox keys
+    for (size_t i = 0; i < sender_count; i++) {
+        free(outbox_keys[i]);
+    }
+    free(outbox_keys);
 
     struct timespec function_end;
     clock_gettime(CLOCK_MONOTONIC, &function_end);
@@ -835,10 +802,9 @@ void dht_generate_ack_key(const char *recipient, const char *sender,
  * @param sender_fp Sender fingerprint (whose messages I fetched)
  * @return 0 on success, -1 on failure
  */
-int dht_publish_ack(dht_context_t *ctx,
-                    const char *my_fp,
+int dht_publish_ack(const char *my_fp,
                     const char *sender_fp) {
-    if (!ctx || !my_fp || !sender_fp) {
+    if (!my_fp || !sender_fp) {
         return -1;
     }
 
@@ -860,15 +826,11 @@ int dht_publish_ack(dht_context_t *ctx,
     value[6] = (uint8_t)(timestamp >> 8);
     value[7] = (uint8_t)(timestamp);
 
-    // Use SYNC put to ensure ACK is actually published before returning
-    // (async put would return immediately, CLI might exit before ACK reaches DHT)
-    int result = dht_put_signed_sync(ctx,
-                                      key, 64,
-                                      value, sizeof(value),
-                                      1,  // value_id=1 for replacement
-                                      DHT_ACK_TTL,
-                                      "ack",
-                                      5000);  // 5 second timeout
+    // Publish ACK via nodus (synchronous - blocks until server responds)
+    int result = nodus_ops_put(key, 64,
+                                value, sizeof(value),
+                                DHT_ACK_TTL,
+                                1);  // value_id=1 for replacement
 
     if (result == 0) {
         QGP_LOG_DEBUG(LOG_TAG, "[ACK-PUT] Published: %.20s... -> %.20s... ts=%lu\n",
@@ -971,13 +933,12 @@ static void ack_listener_cleanup(void *user_data) {
  * Listen for ACK updates from a recipient
  */
 size_t dht_listen_ack(
-    dht_context_t *ctx,
     const char *my_fp,
     const char *recipient_fp,
     dht_ack_callback_t callback,
     void *user_data
 ) {
-    if (!ctx || !my_fp || !recipient_fp || !callback) {
+    if (!my_fp || !recipient_fp || !callback) {
         QGP_LOG_ERROR(LOG_TAG, "[ACK] Invalid parameters for listener\n");
         return 0;
     }
@@ -1012,10 +973,10 @@ size_t dht_listen_ack(
     QGP_LOG_INFO(LOG_TAG, "[ACK] Starting listener: %.20s... -> %.20s...\n",
            recipient_fp, my_fp);
 
-    // Start DHT listen
-    size_t token = dht_listen_ex(ctx, key, 64, ack_listen_callback, actx, ack_listener_cleanup);
+    // Start listening via nodus
+    size_t token = nodus_ops_listen(key, 64, ack_listen_callback, actx, ack_listener_cleanup);
     if (token == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "[ACK] Failed to start DHT listener\n");
+        QGP_LOG_ERROR(LOG_TAG, "[ACK] Failed to start nodus listener\n");
         free(actx);  // Clean up allocated context on failure
         return 0;
     }
@@ -1027,15 +988,14 @@ size_t dht_listen_ack(
  * Cancel ACK listener
  */
 void dht_cancel_ack_listener(
-    dht_context_t *ctx,
     size_t token
 ) {
-    if (!ctx || token == 0) {
+    if (token == 0) {
         return;
     }
 
     QGP_LOG_INFO(LOG_TAG, "[ACK] Cancelling listener (token=%zu)\n", token);
-    dht_cancel_listen(ctx, token);
+    nodus_ops_cancel_listen(token);
 }
 
 /**
@@ -1047,8 +1007,7 @@ void dht_cancel_ack_listener(
  * @param ctx DHT context
  * @return Number of entries successfully synced
  */
-int dht_offline_queue_sync_pending(dht_context_t *ctx) {
-    if (!ctx) return 0;
+int dht_offline_queue_sync_pending(void) {
 
     pthread_mutex_lock(&g_queue_mutex);
     outbox_cache_init();
@@ -1075,16 +1034,17 @@ int dht_offline_queue_sync_pending(dht_context_t *ctx) {
             continue;
         }
 
-        // Try to publish
-        int result = dht_chunked_publish(ctx, entry->base_key, serialized, serialized_len, DHT_CHUNK_TTL_7DAY);
+        // Try to publish via nodus
+        int result = nodus_ops_put_str(entry->base_key, serialized, serialized_len,
+                                        7 * 24 * 3600, nodus_ops_value_id());
         free(serialized);
 
-        if (result == DHT_CHUNK_OK) {
+        if (result == 0) {
             entry->needs_dht_sync = false;
             synced++;
             QGP_LOG_INFO(LOG_TAG, "Successfully synced pending outbox\n");
         } else {
-            QGP_LOG_WARN(LOG_TAG, "Still failed to sync outbox: %s\n", dht_chunked_strerror(result));
+            QGP_LOG_WARN(LOG_TAG, "Still failed to sync outbox (result=%d)\n", result);
         }
     }
 

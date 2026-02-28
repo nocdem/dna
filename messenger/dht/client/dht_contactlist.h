@@ -37,7 +37,6 @@
 #ifndef DHT_CONTACTLIST_H
 #define DHT_CONTACTLIST_H
 
-#include "../core/dht_context.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -96,7 +95,6 @@ void dht_contactlist_cleanup(void);
  * 4. Create binary blob: [header][encrypted_json][signature]
  * 5. Store in DHT at SHA3-512(identity + ":contactlist")
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity (e.g., "alice")
  * @param contacts Array of contact identities
  * @param contact_count Number of contacts
@@ -108,7 +106,6 @@ void dht_contactlist_cleanup(void);
  * @return 0 on success, -1 on error
  */
 int dht_contactlist_publish(
-    dht_context_t *dht_ctx,
     const char *identity,
     const char **contacts,
     size_t contact_count,
@@ -129,7 +126,6 @@ int dht_contactlist_publish(
  * 4. Verify Dilithium5 signature
  * 5. Parse JSON to contact list
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity
  * @param contacts_out Output array of contact identities (caller must free)
  * @param count_out Output number of contacts
@@ -138,7 +134,6 @@ int dht_contactlist_publish(
  * @return 0 on success, -1 on error, -2 if not found
  */
 int dht_contactlist_fetch(
-    dht_context_t *dht_ctx,
     const char *identity,
     char ***contacts_out,
     size_t *count_out,
@@ -164,12 +159,10 @@ void dht_contactlist_free(dht_contactlist_t *list);
 /**
  * Check if contact list exists in DHT
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity
  * @return true if exists, false otherwise
  */
 bool dht_contactlist_exists(
-    dht_context_t *dht_ctx,
     const char *identity
 );
 
@@ -177,13 +170,11 @@ bool dht_contactlist_exists(
  * Get contact list timestamp from DHT (without full fetch)
  * Useful for checking if local copy is outdated
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity
  * @param timestamp_out Output timestamp
  * @return 0 on success, -1 on error, -2 if not found
  */
 int dht_contactlist_get_timestamp(
-    dht_context_t *dht_ctx,
     const char *identity,
     uint64_t *timestamp_out
 );

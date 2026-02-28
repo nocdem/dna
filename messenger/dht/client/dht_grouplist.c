@@ -6,7 +6,7 @@
  */
 
 #include "dht_grouplist.h"
-#include "../shared/dht_chunked.h"
+#include "../shared/nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_dilithium.h"
 #include "crypto/utils/qgp_kyber.h"
@@ -212,7 +212,6 @@ void dht_grouplist_cleanup(void) {
  * Publish group list to DHT
  */
 int dht_grouplist_publish(
-    dht_context_t *dht_ctx,
     const char *identity,
     const char **group_uuids,
     size_t group_count,
@@ -222,7 +221,7 @@ int dht_grouplist_publish(
     const uint8_t *dilithium_privkey,
     uint32_t ttl_seconds)
 {
-    if (!dht_ctx || !identity || !kyber_pubkey || !kyber_privkey || !dilithium_pubkey || !dilithium_privkey) {
+    if (!identity || !kyber_pubkey || !kyber_privkey || !dilithium_pubkey || !dilithium_privkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for publish\n");
         return -1;
     }
@@ -355,11 +354,11 @@ int dht_grouplist_publish(
     }
 
     // Step 6: Store in DHT using chunked layer (handles compression, chunking, signing)
-    int result = dht_chunked_publish(dht_ctx, base_key, blob, blob_size, DHT_CHUNK_TTL_365DAY);
+    int result = nodus_ops_put_str(base_key, blob, blob_size, (365*24*3600), nodus_ops_value_id());
     free(blob);
 
-    if (result != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT: %s\n", dht_chunked_strerror(result));
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT (ret=%d)\n", result);
         return -1;
     }
 
@@ -371,14 +370,13 @@ int dht_grouplist_publish(
  * Fetch group list from DHT
  */
 int dht_grouplist_fetch(
-    dht_context_t *dht_ctx,
     const char *identity,
     char ***groups_out,
     size_t *count_out,
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey)
 {
-    if (!dht_ctx || !identity || !groups_out || !count_out || !kyber_privkey || !dilithium_pubkey) {
+    if (!identity || !groups_out || !count_out || !kyber_privkey || !dilithium_pubkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for fetch\n");
         return -1;
     }
@@ -396,9 +394,9 @@ int dht_grouplist_fetch(
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
-    if (result != DHT_CHUNK_OK || !blob) {
-        QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] NOT FOUND in DHT: %s\n", dht_chunked_strerror(result));
+    int result = nodus_ops_get_str(base_key, &blob, &blob_size);
+    if (result != 0 || !blob) {
+        QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] NOT FOUND in DHT (ret=%d)\n", result);
         return -2;  // Not found
     }
 
@@ -603,8 +601,8 @@ void dht_grouplist_free(dht_grouplist_t *list) {
 /**
  * Check if group list exists in DHT
  */
-bool dht_grouplist_exists(dht_context_t *dht_ctx, const char *identity) {
-    if (!dht_ctx || !identity) {
+bool dht_grouplist_exists(const char *identity) {
+    if (!identity) {
         return false;
     }
 
@@ -616,8 +614,8 @@ bool dht_grouplist_exists(dht_context_t *dht_ctx, const char *identity) {
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
-    if (result == DHT_CHUNK_OK && blob) {
+    int result = nodus_ops_get_str(base_key, &blob, &blob_size);
+    if (result == 0 && blob) {
         free(blob);
         return true;
     }
@@ -628,8 +626,8 @@ bool dht_grouplist_exists(dht_context_t *dht_ctx, const char *identity) {
 /**
  * Get group list timestamp from DHT
  */
-int dht_grouplist_get_timestamp(dht_context_t *dht_ctx, const char *identity, uint64_t *timestamp_out) {
-    if (!dht_ctx || !identity || !timestamp_out) {
+int dht_grouplist_get_timestamp(const char *identity, uint64_t *timestamp_out) {
+    if (!identity || !timestamp_out) {
         return -1;
     }
 
@@ -641,8 +639,8 @@ int dht_grouplist_get_timestamp(dht_context_t *dht_ctx, const char *identity, ui
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
-    if (result != DHT_CHUNK_OK || !blob) {
+    int result = nodus_ops_get_str(base_key, &blob, &blob_size);
+    if (result != 0 || !blob) {
         return -2;  // Not found
     }
 

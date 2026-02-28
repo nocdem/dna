@@ -11,12 +11,11 @@
 
 // Resolve DNA name to wallet address
 int dna_resolve_address(
-    dht_context_t *dht_ctx,
     const char *name,
     const char *network,
     char **address_out
 ) {
-    if (!dht_ctx || !name || !network || !address_out) {
+    if (!name || !network || !address_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to dna_resolve_address\n");
         return -1;
     }
@@ -40,7 +39,7 @@ int dna_resolve_address(
         fingerprint = strdup(name);
     } else {
         // Look up name → fingerprint
-        int ret = dna_lookup_by_name(dht_ctx, name, &fingerprint);
+        int ret = dna_lookup_by_name(name, &fingerprint);
         if (ret != 0) {
             return ret;  // -1 error, -2 not found
         }
@@ -48,7 +47,7 @@ int dna_resolve_address(
 
     // Load identity
     dna_unified_identity_t *identity = NULL;
-    int ret = dna_load_identity(dht_ctx, fingerprint, &identity);
+    int ret = dna_load_identity(fingerprint, &identity);
     free(fingerprint);
 
     if (ret != 0) {

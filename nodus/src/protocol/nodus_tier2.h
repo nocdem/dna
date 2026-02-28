@@ -54,6 +54,9 @@ int nodus_t2_unlisten(uint32_t txn, const uint8_t *token,
 int nodus_t2_ping(uint32_t txn, const uint8_t *token,
                    uint8_t *buf, size_t cap, size_t *out_len);
 
+int nodus_t2_servers(uint32_t txn, const uint8_t *token,
+                      uint8_t *buf, size_t cap, size_t *out_len);
+
 /* ── Channel operations (Client → Nodus) ─────────────────────────── */
 
 int nodus_t2_ch_create(uint32_t txn, const uint8_t *token,
@@ -133,6 +136,19 @@ int nodus_t2_ch_post_notify(uint32_t txn,
                              const nodus_channel_post_t *post,
                              uint8_t *buf, size_t cap, size_t *out_len);
 
+/* ── Server list response ─────────────────────────────────────────── */
+
+/** Server endpoint for gossip response */
+typedef struct {
+    char        ip[64];
+    uint16_t    tcp_port;
+} nodus_t2_server_info_t;
+
+int nodus_t2_servers_result(uint32_t txn,
+                             const nodus_t2_server_info_t *servers,
+                             int server_count,
+                             uint8_t *buf, size_t cap, size_t *out_len);
+
 /* ── Inter-Nodus replication ──────────────────────────────────────── */
 
 /** Encode a channel replication message (Nodus → Nodus, no auth). */
@@ -177,6 +193,13 @@ typedef struct {
     uint32_t        ch_seq_id;
     nodus_channel_post_t *ch_posts;
     size_t          ch_post_count;
+
+    /* Server list (servers response) */
+    struct {
+        char        ip[64];
+        uint16_t    tcp_port;
+    } servers[17];  /* NODUS_PBFT_MAX_PEERS(16) + 1 for self */
+    int             server_count;
 
     /* Error */
     int             error_code;

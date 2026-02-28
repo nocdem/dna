@@ -9,8 +9,7 @@
 #include "dht/shared/dht_groups.h"
 #include "dht/shared/dht_gek_storage.h"  // GEK fetch from DHT
 #include "crypto/utils/qgp_sha3.h"  // For fingerprint calculation
-#include "dht/core/dht_context.h"
-#include "dht/client/dht_singleton.h"  // For dht_singleton_get
+#include "dht/shared/nodus_ops.h"      // Nodus v5 operations layer
 #include "dht/client/dna_group_outbox.h"  // Group outbox (feed pattern)
 #include "dht/client/dht_grouplist.h"  // Group list DHT sync (v0.5.26+)
 #include "messenger/groups.h"  // For groups_leave() cleanup (v0.6.83: removed groups_export_all)
@@ -19,7 +18,7 @@
 #include "dna_api.h"  // For dna_decrypt_message_raw
 #include "crypto/utils/qgp_types.h"  // For qgp_key_load/free
 #include "crypto/utils/qgp_platform.h"  // For qgp_platform_home_dir
-// transport_ctx.h no longer needed - Phase 14 uses dht_singleton_get() directly
+// transport_ctx.h no longer needed - nodus_ops replaces direct DHT access
 #include <json-c/json.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,16 +85,13 @@ int messenger_create_group(messenger_context_t *ctx, const char *name, const cha
         return -1;
     }
 
-    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
+    if (!nodus_ops_is_ready()) {
         QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
         return -1;
     }
 
     char group_uuid[37];
     int ret = dht_groups_create(
-        dht_ctx,
         name,
         description,
         ctx->identity,
@@ -144,7 +140,7 @@ int messenger_create_group(messenger_context_t *ctx, const char *name, const cha
 
     // Phase 13: Create initial GEK (version 0) and publish to DHT
     QGP_LOG_INFO(LOG_TAG, "Creating initial GEK for group %s...\n", group_uuid);
-    if (gek_rotate_on_member_add(dht_ctx, group_uuid, ctx->identity) != 0) {
+    if (gek_rotate_on_member_add(group_uuid, ctx->identity) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Warning: Initial GEK creation failed (non-fatal)\n");
         // Continue - group is created, but GEK needs to be created later
     } else {
@@ -236,13 +232,6 @@ int messenger_get_group_info(messenger_context_t *ctx, int group_id, group_info_
         return -1;
     }
 
-    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
-        return -1;
-    }
-
     // Get group UUID from local group_id (Phase 6.1)
     char group_uuid[37] = {0};
     if (get_group_uuid_by_id(ctx->identity, group_id, group_uuid) != 0) {
@@ -251,7 +240,7 @@ int messenger_get_group_info(messenger_context_t *ctx, int group_id, group_info_
 
     // Get full metadata from DHT
     dht_group_metadata_t *meta = NULL;
-    int ret = dht_groups_get(dht_ctx, group_uuid, &meta);
+    int ret = dht_groups_get(group_uuid, &meta);
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to get group metadata from DHT\n");
         return -1;
@@ -277,13 +266,6 @@ int messenger_get_group_members(messenger_context_t *ctx, int group_id, char ***
         return -1;
     }
 
-    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
-        return -1;
-    }
-
     *members_out = NULL;
     *count_out = 0;
 
@@ -295,7 +277,7 @@ int messenger_get_group_members(messenger_context_t *ctx, int group_id, char ***
 
     // Get metadata from DHT
     dht_group_metadata_t *meta = NULL;
-    int ret = dht_groups_get(dht_ctx, group_uuid, &meta);
+    int ret = dht_groups_get(group_uuid, &meta);
     if (ret != 0) {
         return -1;
     }
@@ -326,9 +308,7 @@ int messenger_add_group_member(messenger_context_t *ctx, int group_id, const cha
         return -1;
     }
 
-    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
+    if (!nodus_ops_is_ready()) {
         QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
         return -1;
     }
@@ -340,25 +320,25 @@ int messenger_add_group_member(messenger_context_t *ctx, int group_id, const cha
     }
 
     // Add member in DHT
-    int ret = dht_groups_add_member(dht_ctx, group_uuid, identity, ctx->identity);
+    int ret = dht_groups_add_member(group_uuid, identity, ctx->identity);
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to add member to DHT (ret=%d)\n", ret);
         return ret;  // Preserve specific error code: -2=unauthorized, -3=already member
     }
 
     // Sync back to local cache
-    dht_groups_sync_from_dht(dht_ctx, group_uuid);
+    dht_groups_sync_from_dht(group_uuid);
 
     // Phase 5 (v0.09): Rotate GEK when member is added
     QGP_LOG_INFO(LOG_TAG, "Rotating GEK for group %s after adding member...\n", group_uuid);
-    if (gek_rotate_on_member_add(dht_ctx, group_uuid, ctx->identity) != 0) {
+    if (gek_rotate_on_member_add(group_uuid, ctx->identity) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Warning: GEK rotation failed (non-fatal)\n");
         // Continue - member is still added, but GEK rotation failed
     }
 
     // Fetch group metadata to get name and member count for invitation
     dht_group_metadata_t *meta = NULL;
-    ret = dht_groups_get(dht_ctx, group_uuid, &meta);
+    ret = dht_groups_get(group_uuid, &meta);
     if (ret == 0 && meta) {
         // Send invitation to the new member
         ret = messenger_send_group_invitation(ctx, group_uuid, identity,
@@ -386,9 +366,7 @@ int messenger_remove_group_member(messenger_context_t *ctx, int group_id, const 
         return -1;
     }
 
-    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
+    if (!nodus_ops_is_ready()) {
         QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
         return -1;
     }
@@ -400,18 +378,18 @@ int messenger_remove_group_member(messenger_context_t *ctx, int group_id, const 
     }
 
     // Remove member from DHT
-    int ret = dht_groups_remove_member(dht_ctx, group_uuid, identity, ctx->identity);
+    int ret = dht_groups_remove_member(group_uuid, identity, ctx->identity);
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to remove member from DHT\n");
         return -1;
     }
 
     // Sync back to local cache
-    dht_groups_sync_from_dht(dht_ctx, group_uuid);
+    dht_groups_sync_from_dht(group_uuid);
 
     // Phase 5 (v0.09): Rotate GEK when member is removed
     QGP_LOG_INFO(LOG_TAG, "Rotating GEK for group %s after removing member...\n", group_uuid);
-    if (gek_rotate_on_member_remove(dht_ctx, group_uuid, ctx->identity) != 0) {
+    if (gek_rotate_on_member_remove(group_uuid, ctx->identity) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Warning: GEK rotation failed (non-fatal)\n");
         // Continue - member is still removed, but GEK rotation failed
     }
@@ -464,13 +442,6 @@ int messenger_delete_group(messenger_context_t *ctx, int group_id) {
         return -1;
     }
 
-    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
-        return -1;
-    }
-
     // Get group UUID from local group_id (Phase 6.1)
     char group_uuid[37] = {0};
     if (get_group_uuid_by_id(ctx->identity, group_id, group_uuid) != 0) {
@@ -478,7 +449,7 @@ int messenger_delete_group(messenger_context_t *ctx, int group_id) {
     }
 
     // Delete from DHT (only creator can do this)
-    int ret = dht_groups_delete(dht_ctx, group_uuid, ctx->identity);
+    int ret = dht_groups_delete(group_uuid, ctx->identity);
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to delete group from DHT\n");
         return -1;
@@ -494,13 +465,6 @@ int messenger_update_group_info(messenger_context_t *ctx, int group_id, const ch
         return -1;
     }
 
-    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
-        return -1;
-    }
-
     // Get group UUID from local group_id (Phase 6.1)
     char group_uuid[37] = {0};
     if (get_group_uuid_by_id(ctx->identity, group_id, group_uuid) != 0) {
@@ -508,14 +472,14 @@ int messenger_update_group_info(messenger_context_t *ctx, int group_id, const ch
     }
 
     // Update in DHT
-    int ret = dht_groups_update(dht_ctx, group_uuid, new_name, new_description, ctx->identity);
+    int ret = dht_groups_update(group_uuid, new_name, new_description, ctx->identity);
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to update group in DHT\n");
         return -1;
     }
 
     // Sync back to local cache
-    dht_groups_sync_from_dht(dht_ctx, group_uuid);
+    dht_groups_sync_from_dht(group_uuid);
 
     QGP_LOG_INFO(LOG_TAG, "Updated group %d\n", group_id);
     return 0;
@@ -602,16 +566,8 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
     }
 
     // Sync group metadata from DHT
-    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: Getting DHT context <<<\n");
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not initialized\n");
-        group_invitations_free(invitation, 1);
-        return -1;
-    }
-
-    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: Calling dht_groups_sync_from_dht <<<\n");
-    ret = dht_groups_sync_from_dht(dht_ctx, group_uuid);
+    QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: Syncing group from DHT <<<\n");
+    ret = dht_groups_sync_from_dht(group_uuid);
     QGP_LOG_WARN(LOG_TAG, ">>> ACCEPT_INV: dht_groups_sync_from_dht returned %d <<<\n", ret);
 
     if (ret != 0) {
@@ -669,7 +625,7 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
 
         // Get group metadata to find current GEK version
         dht_group_metadata_t *group_meta = NULL;
-        ret = dht_groups_get(dht_ctx, group_uuid, &group_meta);
+        ret = dht_groups_get(group_uuid, &group_meta);
         if (ret != 0 || !group_meta) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to get group metadata for GEK version\n");
             qgp_key_free(kyber_key);
@@ -683,7 +639,7 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
         // Fetch the specific GEK version from metadata
         uint8_t *ikp_packet = NULL;
         size_t ikp_size = 0;
-        ret = dht_gek_fetch(dht_ctx, group_uuid, gek_version, &ikp_packet, &ikp_size);
+        ret = dht_gek_fetch(group_uuid, gek_version, &ikp_packet, &ikp_size);
 
         if (ret != 0 || !ikp_packet || ikp_size == 0) {
             QGP_LOG_WARN(LOG_TAG, "No GEK v%u found in DHT for group %s (may be published later)\n",
@@ -782,12 +738,6 @@ int messenger_sync_group_gek(const char *group_uuid) {
 
     QGP_LOG_INFO(LOG_TAG, "Syncing GEK for group %s...\n", group_uuid);
 
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not initialized\n");
-        return -1;
-    }
-
     // Load user's Kyber private key for IKP extraction
     const char *data_dir = qgp_platform_app_data_dir();
     if (!data_dir) {
@@ -834,7 +784,7 @@ int messenger_sync_group_gek(const char *group_uuid) {
 
     // Get group metadata to find current GEK version
     dht_group_metadata_t *group_meta = NULL;
-    int ret = dht_groups_get(dht_ctx, group_uuid, &group_meta);
+    int ret = dht_groups_get(group_uuid, &group_meta);
     if (ret != 0 || !group_meta) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to get group metadata for GEK sync\n");
         qgp_key_free(kyber_key);
@@ -848,7 +798,7 @@ int messenger_sync_group_gek(const char *group_uuid) {
     // Fetch the specific GEK version from metadata
     uint8_t *ikp_packet = NULL;
     size_t ikp_size = 0;
-    ret = dht_gek_fetch(dht_ctx, group_uuid, gek_version, &ikp_packet, &ikp_size);
+    ret = dht_gek_fetch(group_uuid, gek_version, &ikp_packet, &ikp_size);
 
     if (ret != 0 || !ikp_packet || ikp_size == 0) {
         QGP_LOG_WARN(LOG_TAG, "No GEK v%u found in DHT for group %s\n", gek_version, group_uuid);
@@ -1063,13 +1013,6 @@ int messenger_sync_groups_to_dht(messenger_context_t *ctx) {
         return -1;
     }
 
-    // Get DHT context from singleton
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT singleton not available\n");
-        return -1;
-    }
-
     QGP_LOG_INFO(LOG_TAG, "[GROUPLIST_PUBLISH] messenger_sync_groups_to_dht called for %.16s...\n", ctx->identity);
 
     // Load user's keys
@@ -1157,7 +1100,6 @@ int messenger_sync_groups_to_dht(messenger_context_t *ctx) {
 
     // Publish to DHT
     int result = dht_grouplist_publish(
-        dht_ctx,
         ctx->identity,
         group_uuids,
         entry_count,
@@ -1209,9 +1151,7 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
 
     QGP_LOG_INFO(LOG_TAG, "Sending message to group %s (feed pattern)\n", group_uuid);
 
-    // Step 1: Get DHT context
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
+    if (!nodus_ops_is_ready()) {
         QGP_LOG_ERROR(LOG_TAG, "DHT not initialized\n");
         return -1;
     }
@@ -1246,7 +1186,6 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
     // Step 4: Send via group outbox (feed pattern)
     char message_id[DNA_GROUP_MSG_ID_SIZE];
     int result = dna_group_outbox_send(
-        dht_ctx,
         group_uuid,
         sender_fingerprint,
         message,
@@ -1290,13 +1229,6 @@ int messenger_restore_groups_from_dht(messenger_context_t *ctx) {
     }
 
     QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] Restoring groups from DHT for identity: %.32s...\n", ctx->identity);
-
-    // Get DHT context
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "[RESTORE] DHT not available\n");
-        return -1;
-    }
 
     // Load user's keys for decryption/verification
     const char *data_dir = qgp_platform_app_data_dir();
@@ -1348,7 +1280,6 @@ int messenger_restore_groups_from_dht(messenger_context_t *ctx) {
     QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] Calling dht_grouplist_fetch for %.32s...\n", ctx->identity);
 
     int ret = dht_grouplist_fetch(
-        dht_ctx,
         ctx->identity,
         &group_uuids,
         &group_count,
@@ -1386,7 +1317,7 @@ int messenger_restore_groups_from_dht(messenger_context_t *ctx) {
 
         QGP_LOG_DEBUG(LOG_TAG, "[RESTORE] Syncing group %zu/%zu: %s\n", i + 1, group_count, group_uuids[i]);
 
-        ret = dht_groups_sync_from_dht(dht_ctx, group_uuids[i]);
+        ret = dht_groups_sync_from_dht(group_uuids[i]);
         if (ret == 0) {
             restored++;
             QGP_LOG_INFO(LOG_TAG, "[RESTORE] Synced group: %s\n", group_uuids[i]);

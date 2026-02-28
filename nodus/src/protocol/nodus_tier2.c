@@ -167,6 +167,15 @@ int nodus_t2_ping(uint32_t txn, const uint8_t *token,
     return finish(&enc, out_len);
 }
 
+int nodus_t2_servers(uint32_t txn, const uint8_t *token,
+                      uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "servers");
+    enc_token(&enc, token);
+    return finish(&enc, out_len);
+}
+
 /* ── Channel operations (Client → Nodus) ─────────────────────────── */
 
 int nodus_t2_ch_create(uint32_t txn, const uint8_t *token,
@@ -491,6 +500,31 @@ int nodus_t2_ch_post_notify(uint32_t txn,
     return finish(&enc, out_len);
 }
 
+/* ── Server list response ─────────────────────────────────────────── */
+
+int nodus_t2_servers_result(uint32_t txn,
+                             const nodus_t2_server_info_t *servers,
+                             int server_count,
+                             uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "servers");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "srvs");
+    cbor_encode_array(&enc, (size_t)server_count);
+
+    for (int i = 0; i < server_count; i++) {
+        cbor_encode_map(&enc, 2);
+        cbor_encode_cstr(&enc, "ip");
+        cbor_encode_cstr(&enc, servers[i].ip);
+        cbor_encode_cstr(&enc, "tp");
+        cbor_encode_uint(&enc, servers[i].tcp_port);
+    }
+
+    return finish(&enc, out_len);
+}
+
 /* ── Inter-Nodus replication ──────────────────────────────────────── */
 
 int nodus_t2_ch_replicate(uint32_t txn,
@@ -798,6 +832,41 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                                 }
                                 msg->ch_post_count++;
                             }
+                        }
+                    }
+                }
+                /* srvs (servers list) */
+                else if (rkey.tstr.len == 4 && memcmp(rkey.tstr.ptr, "srvs", 4) == 0) {
+                    cbor_item_t arr = cbor_decode_next(&dec);
+                    if (arr.type == CBOR_ITEM_ARRAY) {
+                        msg->server_count = 0;
+                        for (size_t k = 0; k < arr.count && msg->server_count < 17; k++) {
+                            cbor_item_t smap = cbor_decode_next(&dec);
+                            if (smap.type != CBOR_ITEM_MAP) continue;
+                            int idx = msg->server_count;
+                            memset(&msg->servers[idx], 0, sizeof(msg->servers[idx]));
+                            for (size_t m = 0; m < smap.count; m++) {
+                                cbor_item_t sk = cbor_decode_next(&dec);
+                                if (sk.type != CBOR_ITEM_TSTR) {
+                                    cbor_decode_skip(&dec); continue;
+                                }
+                                if (sk.tstr.len == 2 && memcmp(sk.tstr.ptr, "ip", 2) == 0) {
+                                    cbor_item_t sv = cbor_decode_next(&dec);
+                                    if (sv.type == CBOR_ITEM_TSTR) {
+                                        size_t cl = sv.tstr.len < sizeof(msg->servers[0].ip) - 1 ?
+                                                    sv.tstr.len : sizeof(msg->servers[0].ip) - 1;
+                                        memcpy(msg->servers[idx].ip, sv.tstr.ptr, cl);
+                                        msg->servers[idx].ip[cl] = '\0';
+                                    }
+                                } else if (sk.tstr.len == 2 && memcmp(sk.tstr.ptr, "tp", 2) == 0) {
+                                    cbor_item_t sv = cbor_decode_next(&dec);
+                                    if (sv.type == CBOR_ITEM_UINT)
+                                        msg->servers[idx].tcp_port = (uint16_t)sv.uint_val;
+                                } else {
+                                    cbor_decode_skip(&dec);
+                                }
+                            }
+                            msg->server_count++;
                         }
                     }
                 }

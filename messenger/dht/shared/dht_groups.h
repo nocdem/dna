@@ -20,9 +20,6 @@
 extern "C" {
 #endif
 
-// Forward declaration
-typedef struct dht_context dht_context_t;
-
 /**
  * DHT Group Metadata
  * Stored in DHT at key: hash(group_uuid)
@@ -69,7 +66,6 @@ void dht_groups_cleanup(void);
 /**
  * Create a new group in DHT
  *
- * @param dht_ctx: DHT context
  * @param name: Group name
  * @param description: Group description (can be NULL)
  * @param creator: Creator identity
@@ -79,7 +75,6 @@ void dht_groups_cleanup(void);
  * @return: 0 on success, -1 on error
  */
 int dht_groups_create(
-    dht_context_t *dht_ctx,
     const char *name,
     const char *description,
     const char *creator,
@@ -91,13 +86,11 @@ int dht_groups_create(
 /**
  * Get group metadata from DHT
  *
- * @param dht_ctx: DHT context
  * @param group_uuid: Group UUID
  * @param metadata_out: Output metadata structure (caller must free with dht_groups_free_metadata)
  * @return: 0 on success, -1 on error, -2 if not found
  */
 int dht_groups_get(
-    dht_context_t *dht_ctx,
     const char *group_uuid,
     dht_group_metadata_t **metadata_out
 );
@@ -105,7 +98,6 @@ int dht_groups_get(
 /**
  * Update group metadata in DHT
  *
- * @param dht_ctx: DHT context
  * @param group_uuid: Group UUID
  * @param new_name: New group name (NULL to keep current)
  * @param new_description: New description (NULL to keep current)
@@ -113,7 +105,6 @@ int dht_groups_get(
  * @return: 0 on success, -1 on error, -2 if not authorized
  */
 int dht_groups_update(
-    dht_context_t *dht_ctx,
     const char *group_uuid,
     const char *new_name,
     const char *new_description,
@@ -123,14 +114,12 @@ int dht_groups_update(
 /**
  * Add member to group
  *
- * @param dht_ctx: DHT context
  * @param group_uuid: Group UUID
  * @param new_member: Identity to add
  * @param adder: Identity adding the member
  * @return: 0 on success, -1 on error, -2 if not authorized, -3 if already member
  */
 int dht_groups_add_member(
-    dht_context_t *dht_ctx,
     const char *group_uuid,
     const char *new_member,
     const char *adder
@@ -139,14 +128,12 @@ int dht_groups_add_member(
 /**
  * Remove member from group
  *
- * @param dht_ctx: DHT context
  * @param group_uuid: Group UUID
  * @param member: Identity to remove
  * @param remover: Identity removing the member
  * @return: 0 on success, -1 on error, -2 if not authorized
  */
 int dht_groups_remove_member(
-    dht_context_t *dht_ctx,
     const char *group_uuid,
     const char *member,
     const char *remover
@@ -158,13 +145,11 @@ int dht_groups_remove_member(
  * Called after GEK rotation to update the current GEK version.
  * Invitees use this to know which IKP version to fetch.
  *
- * @param dht_ctx: DHT context
  * @param group_uuid: Group UUID
  * @param new_gek_version: New GEK version number
  * @return: 0 on success, -1 on error
  */
 int dht_groups_update_gek_version(
-    dht_context_t *dht_ctx,
     const char *group_uuid,
     uint32_t new_gek_version
 );
@@ -173,13 +158,11 @@ int dht_groups_update_gek_version(
  * Delete group from DHT
  * Only creator can delete
  *
- * @param dht_ctx: DHT context
  * @param group_uuid: Group UUID
  * @param deleter: Identity attempting deletion
  * @return: 0 on success, -1 on error, -2 if not authorized
  */
 int dht_groups_delete(
-    dht_context_t *dht_ctx,
     const char *group_uuid,
     const char *deleter
 );
@@ -247,12 +230,10 @@ int dht_groups_get_local_id_by_uuid(
 /**
  * Sync group metadata from DHT to local cache
  *
- * @param dht_ctx: DHT context
  * @param group_uuid: Group UUID
  * @return: 0 on success, -1 on error
  */
 int dht_groups_sync_from_dht(
-    dht_context_t *dht_ctx,
     const char *group_uuid
 );
 

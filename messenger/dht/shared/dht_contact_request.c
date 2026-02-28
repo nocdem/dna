@@ -9,6 +9,7 @@
  */
 
 #include "dht_contact_request.h"
+#include "nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_dilithium.h"
 #include "crypto/utils/qgp_log.h"
@@ -413,7 +414,6 @@ int dht_verify_contact_request(const dht_contact_request_t *request) {
  * Send a contact request to recipient
  */
 int dht_send_contact_request(
-    dht_context_t *ctx,
     const char *sender_fingerprint,
     const char *sender_name,
     const uint8_t *sender_dilithium_pubkey,
@@ -421,7 +421,7 @@ int dht_send_contact_request(
     const char *recipient_fingerprint,
     const char *optional_message)
 {
-    if (!ctx || !sender_fingerprint || !sender_dilithium_pubkey ||
+    if (!sender_fingerprint || !sender_dilithium_pubkey ||
         !sender_dilithium_privkey || !recipient_fingerprint) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for sending contact request\n");
         return -1;
@@ -562,16 +562,14 @@ int dht_send_contact_request(
 
     QGP_LOG_INFO(LOG_TAG, "Publishing request to inbox with value_id=0x%llX\n", (unsigned long long)value_id);
 
-    /* Publish to DHT with signed put */
-    int put_result = dht_put_signed(
-        ctx,
+    /* Publish to DHT via nodus_ops */
+    int put_result = nodus_ops_put(
         inbox_key,
         64,
         serialized,
         serialized_len,
-        value_id,
         DHT_CONTACT_REQUEST_DEFAULT_TTL,
-        "contact_request_send"
+        value_id
     );
 
     free(serialized);
@@ -589,12 +587,11 @@ int dht_send_contact_request(
  * Fetch all pending contact requests from my inbox
  */
 int dht_fetch_contact_requests(
-    dht_context_t *ctx,
     const char *my_fingerprint,
     dht_contact_request_t **requests_out,
     size_t *count_out)
 {
-    if (!ctx || !my_fingerprint || !requests_out || !count_out) {
+    if (!my_fingerprint || !requests_out || !count_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for fetching contact requests\n");
         return -1;
     }
@@ -613,12 +610,12 @@ int dht_fetch_contact_requests(
     key_hex[32] = '\0';
     QGP_LOG_DEBUG(LOG_TAG, "Inbox key (first 16 bytes): %s\n", key_hex);
 
-    /* Get all values at this key (from multiple requesters) */
+    /* Get all values at this key (from multiple requesters) via nodus_ops */
     uint8_t **values = NULL;
     size_t *values_len = NULL;
     size_t values_count = 0;
 
-    int get_result = dht_get_all(ctx, inbox_key, 64, &values, &values_len, &values_count);
+    int get_result = nodus_ops_get_all(inbox_key, 64, &values, &values_len, &values_count);
 
     if (get_result != 0 || values_count == 0) {
         QGP_LOG_INFO(LOG_TAG, "No pending contact requests found\n");
@@ -710,11 +707,10 @@ int dht_fetch_contact_requests(
  * Cancel a previously sent contact request
  */
 int dht_cancel_contact_request(
-    dht_context_t *ctx,
     const char *sender_fingerprint,
     const char *recipient_fingerprint)
 {
-    if (!ctx || !sender_fingerprint || !recipient_fingerprint) {
+    if (!sender_fingerprint || !recipient_fingerprint) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for canceling contact request\n");
         return -1;
     }
@@ -733,15 +729,13 @@ int dht_cancel_contact_request(
     /* Note: DHT doesn't support true deletion, so we publish expired data */
     uint8_t empty_data[1] = {0};
 
-    int put_result = dht_put_signed(
-        ctx,
+    int put_result = nodus_ops_put(
         inbox_key,
         64,
         empty_data,
         1,
-        value_id,
         1,  /* 1 second TTL - effectively immediate expiry */
-        "contact_request_clear"
+        value_id
     );
 
     if (put_result != 0) {

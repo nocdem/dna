@@ -27,8 +27,6 @@
 extern "C" {
 #endif
 
-typedef struct dht_context dht_context_t;
-
 /* Limits */
 #define DNA_CHANNEL_NAME_MAX    100
 #define DNA_CHANNEL_DESC_MAX    500
@@ -88,26 +86,26 @@ typedef struct {
 } dna_channel_index_entry_t;
 
 /* Channel CRUD */
-int dna_channel_create(dht_context_t *dht_ctx, const char *name,
+int dna_channel_create(const char *name,
     const char *description, bool is_public,
     const char *creator_fingerprint, const uint8_t *private_key,
     char *uuid_out);
 
-int dna_channel_get(dht_context_t *dht_ctx, const char *uuid,
+int dna_channel_get(const char *uuid,
     dna_channel_t **channel_out);
 
-int dna_channel_delete(dht_context_t *dht_ctx, const char *uuid,
+int dna_channel_delete(const char *uuid,
     const char *creator_fingerprint, const uint8_t *private_key);
 
 void dna_channel_free(dna_channel_t *channel);
 void dna_channels_free(dna_channel_t *channels, size_t count);
 
 /* Posts */
-int dna_channel_post_create(dht_context_t *dht_ctx, const char *channel_uuid,
+int dna_channel_post_create(const char *channel_uuid,
     const char *body, const char *author_fingerprint,
     const uint8_t *private_key, char *post_uuid_out);
 
-int dna_channel_posts_get(dht_context_t *dht_ctx, const char *channel_uuid,
+int dna_channel_posts_get(const char *channel_uuid,
     int days_back,
     dna_channel_post_internal_t **posts_out, size_t *count_out);
 
@@ -115,11 +113,11 @@ void dna_channel_post_free(dna_channel_post_internal_t *post);
 void dna_channel_posts_free(dna_channel_post_internal_t *posts, size_t count);
 
 /* Public index */
-int dna_channel_index_register(dht_context_t *dht_ctx, const char *channel_uuid,
+int dna_channel_index_register(const char *channel_uuid,
     const char *name, const char *description,
     const char *creator_fingerprint, const uint8_t *private_key);
 
-int dna_channel_index_browse(dht_context_t *dht_ctx, int days_back,
+int dna_channel_index_browse(int days_back,
     dna_channel_t **channels_out, size_t *count_out);
 
 /* Date helpers */

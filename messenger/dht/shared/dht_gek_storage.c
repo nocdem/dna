@@ -12,7 +12,7 @@
  */
 
 #include "dht_gek_storage.h"
-#include "dht_chunked.h"
+#include "nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,16 +65,22 @@ int dht_gek_make_chunk_key(const char *group_uuid,
         return -1;
     }
 
-    // Generate using the new chunked layer format for consistency
+    // Generate key: SHA3-512(base_key + ":chunk:" + index), take first 32 bytes
     char base_key[256];
     if (make_gek_base_key(group_uuid, gek_version, base_key, sizeof(base_key)) != 0) {
         return -1;
     }
 
-    uint8_t binary_key[32];
-    if (dht_chunked_make_key(base_key, chunk_index, binary_key) != 0) {
+    char key_input[512];
+    snprintf(key_input, sizeof(key_input), "%s:chunk:%u", base_key, chunk_index);
+
+    uint8_t full_hash[64];
+    if (qgp_sha3_512((const uint8_t *)key_input, strlen(key_input), full_hash) != 0) {
         return -1;
     }
+
+    uint8_t binary_key[32];
+    memcpy(binary_key, full_hash, 32);
 
     // Convert to hex string
     for (int i = 0; i < 32; i++) {
@@ -237,12 +243,11 @@ void dht_gek_free_chunk(dht_gek_chunk_t *chunk) {
  * Uses the generic dht_chunked layer for automatic chunking,
  * compression, and parallel-friendly storage.
  */
-int dht_gek_publish(dht_context_t *ctx,
-                    const char *group_uuid,
+int dht_gek_publish(const char *group_uuid,
                     uint32_t gek_version,
                     const uint8_t *packet,
                     size_t packet_size) {
-    if (!ctx || !group_uuid || !packet || packet_size == 0) {
+    if (!group_uuid || !packet || packet_size == 0) {
         QGP_LOG_ERROR(LOG_TAG, "publish: NULL parameter\n");
         return -1;
     }
@@ -257,11 +262,11 @@ int dht_gek_publish(dht_context_t *ctx,
     QGP_LOG_INFO(LOG_TAG, "Publishing packet (group=%s v%u): %zu bytes\n",
            group_uuid, gek_version, packet_size);
 
-    // Use the generic chunked layer
-    int ret = dht_chunked_publish(ctx, base_key, packet, packet_size, DHT_GEK_DEFAULT_TTL);
+    // Use nodus_ops layer
+    int ret = nodus_ops_put_str(base_key, packet, packet_size, DHT_GEK_DEFAULT_TTL, nodus_ops_value_id());
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to publish: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish: %d\n", ret);
         return -1;
     }
 
@@ -275,12 +280,11 @@ int dht_gek_publish(dht_context_t *ctx,
  * Uses the generic dht_chunked layer for parallel fetching,
  * automatic reassembly, and decompression.
  */
-int dht_gek_fetch(dht_context_t *ctx,
-                  const char *group_uuid,
+int dht_gek_fetch(const char *group_uuid,
                   uint32_t gek_version,
                   uint8_t **packet_out,
                   size_t *packet_size_out) {
-    if (!ctx || !group_uuid || !packet_out || !packet_size_out) {
+    if (!group_uuid || !packet_out || !packet_size_out) {
         QGP_LOG_ERROR(LOG_TAG, "fetch: NULL parameter\n");
         return -1;
     }
@@ -294,11 +298,11 @@ int dht_gek_fetch(dht_context_t *ctx,
 
     QGP_LOG_INFO(LOG_TAG, "Fetching packet (group=%s v%u)...\n", group_uuid, gek_version);
 
-    // Use the generic chunked layer
-    int ret = dht_chunked_fetch(ctx, base_key, packet_out, packet_size_out);
+    // Use nodus_ops layer
+    int ret = nodus_ops_get_str(base_key, packet_out, packet_size_out);
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to fetch: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to fetch: %d\n", ret);
         return -1;
     }
 

@@ -8,7 +8,7 @@
 
 #include "transport_core.h"
 #include "crypto/utils/qgp_log.h"
-#include "dht/client/dht_singleton.h"
+#include "dht/shared/nodus_ops.h"
 
 #define LOG_TAG "PRESENCE"
 
@@ -43,15 +43,14 @@ int transport_register_presence(transport_t *ctx) {
     QGP_LOG_INFO(LOG_TAG, "Presence data: %s\n", presence_data);
 
     // Store in DHT (signed, 7-day TTL, value_id=1 for replacement)
-    dht_context_t *dht = dht_singleton_get();
-    if (!dht) {
+    if (!nodus_ops_is_ready()) {
         QGP_LOG_ERROR(LOG_TAG, "DHT not available for presence registration\n");
         return -1;
     }
     unsigned int ttl_7days = 7 * 24 * 3600;  // 604800 seconds
-    int result = dht_put_signed(dht, dht_key, sizeof(dht_key),
-                                (const uint8_t*)presence_data, strlen(presence_data),
-                                1, ttl_7days, "presence");
+    int result = nodus_ops_put(dht_key, sizeof(dht_key),
+                               (const uint8_t*)presence_data, strlen(presence_data),
+                               ttl_7days, 1);
 
     if (result == 0) {
         QGP_LOG_INFO(LOG_TAG, "Presence registered (timestamp only, no IP leaked)\n");

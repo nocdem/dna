@@ -44,7 +44,6 @@
 #ifndef DHT_GEKS_H
 #define DHT_GEKS_H
 
-#include "../core/dht_context.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -124,7 +123,6 @@ void dht_geks_cleanup(void);
  * 5. Create binary blob: [header][encrypted_json][signature]
  * 6. Store in DHT at SHA3-512(identity + ":geks")
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity fingerprint (128-char hex)
  * @param entries Array of GEK entries to publish
  * @param entry_count Number of entries
@@ -136,7 +134,6 @@ void dht_geks_cleanup(void);
  * @return 0 on success, -1 on error
  */
 int dht_geks_publish(
-    dht_context_t *dht_ctx,
     const char *identity,
     const dht_gek_entry_t *entries,
     size_t entry_count,
@@ -157,7 +154,6 @@ int dht_geks_publish(
  * 4. Verify Dilithium5 signature
  * 5. Parse JSON to GEK entries
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity fingerprint
  * @param entries_out Output array of GEK entries (caller must free with dht_geks_free_entries)
  * @param count_out Output number of entries
@@ -166,7 +162,6 @@ int dht_geks_publish(
  * @return 0 on success, -1 on error, -2 if not found
  */
 int dht_geks_fetch(
-    dht_context_t *dht_ctx,
     const char *identity,
     dht_gek_entry_t **entries_out,
     size_t *count_out,
@@ -192,12 +187,10 @@ void dht_geks_free_cache(dht_geks_cache_t *cache);
 /**
  * Check if GEKs exist in DHT for identity
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity fingerprint
  * @return true if exists, false otherwise
  */
 bool dht_geks_exists(
-    dht_context_t *dht_ctx,
     const char *identity
 );
 
@@ -205,13 +198,11 @@ bool dht_geks_exists(
  * Get GEKs timestamp from DHT (without full fetch)
  * Useful for checking if local copy is outdated
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity fingerprint
  * @param timestamp_out Output timestamp
  * @return 0 on success, -1 on error, -2 if not found
  */
 int dht_geks_get_timestamp(
-    dht_context_t *dht_ctx,
     const char *identity,
     uint64_t *timestamp_out
 );

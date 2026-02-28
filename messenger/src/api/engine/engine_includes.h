@@ -112,6 +112,7 @@ static inline char* win_strptime(const char* s, const char* format, struct tm* t
 
 /* DHT */
 #include "dht/client/dht_singleton.h"
+#include "dht/shared/nodus_ops.h"
 #include "dht/core/dht_keyserver.h"
 #include "dht/core/dht_listen.h"
 #include "dht/core/dht_context.h"

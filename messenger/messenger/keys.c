@@ -18,7 +18,6 @@
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_types.h"
 #include "../dht/core/dht_keyserver.h"
-#include "../dht/client/dht_singleton.h"
 #include "../database/keyserver_cache.h"
 #include "../database/contacts_db.h"
 #include "../transport/transport.h"
@@ -79,13 +78,6 @@ int messenger_store_pubkey(
         QGP_LOG_INFO(LOG_TAG, "Publishing public keys for fingerprint '%.16s...' to DHT keyserver", fingerprint);
     }
 
-    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available for key publishing");
-        return -1;
-    }
-
     // Get data directory
     const char *data_dir = qgp_platform_app_data_dir();
     if (!data_dir) {
@@ -115,7 +107,6 @@ int messenger_store_pubkey(
     // Publish to DHT (FINGERPRINT-FIRST)
     QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] messenger_publish_pubkeys calling dht_keyserver_publish");
     int ret = dht_keyserver_publish(
-        dht_ctx,
         fingerprint,
         display_name,  // Optional human-readable name
         signing_pubkey,
@@ -188,16 +179,9 @@ int messenger_load_pubkey(
     // Cache miss - fetch from DHT keyserver
     QGP_LOG_INFO(LOG_TAG, "Fetching public keys for '%s' from DHT keyserver...", identity);
 
-    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available");
-        return -1;
-    }
-
     // Lookup in DHT
     dna_unified_identity_t *dht_identity = NULL;
-    ret = dht_keyserver_lookup(dht_ctx, identity, &dht_identity);
+    ret = dht_keyserver_lookup(identity, &dht_identity);
 
     if (ret != 0) {
         if (ret == -2) {

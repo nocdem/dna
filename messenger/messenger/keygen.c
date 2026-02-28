@@ -26,11 +26,8 @@
 #include "crypto/bip39/bip39.h"
 #include "crypto/utils/kyber_deterministic.h"
 #include "../dht/core/dht_keyserver.h"
-#include "../dht/core/dht_context.h"
-#include "../dht/client/dht_singleton.h"
 #include "../dht/client/dht_identity.h"
 #include "../database/keyserver_cache.h"
-// transport_ctx.h no longer needed - Phase 14 uses dht_singleton_get() directly
 #include "../dna_config.h"
 #include "keys.h"
 #include "../blockchain/cellframe/cellframe_wallet_create.h"
@@ -427,15 +424,6 @@ int messenger_register_name(
         return -1;
     }
 
-    // Phase 14: Use global DHT singleton directly (no P2P transport dependency)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available, cannot register name");
-        qgp_key_free(sign_key);
-        qgp_key_free(enc_key);
-        return -1;
-    }
-
     // Derive wallet addresses from mnemonic (on-demand derivation)
     // Wallet files are no longer stored - addresses are derived when needed
     char wallet_address[128] = {0};
@@ -513,7 +501,6 @@ int messenger_register_name(
     // Publish identity to DHT (unified: creates fingerprint:profile and name:lookup)
     QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] keygen calling dht_keyserver_publish for new identity");
     int publish_result = dht_keyserver_publish(
-        dht_ctx,
         fingerprint,
         desired_name,
         sign_key->public_key,
@@ -549,7 +536,7 @@ int messenger_register_name(
     qgp_platform_sleep_ms(1500);  // 1.5 seconds
 
     dna_unified_identity_t *verify_identity = NULL;
-    int verify_result = dht_keyserver_lookup(dht_ctx, fingerprint, &verify_identity);
+    int verify_result = dht_keyserver_lookup(fingerprint, &verify_identity);
     if (verify_result == 0 && verify_identity) {
         QGP_LOG_INFO(LOG_TAG, "✓ Read-back verification: profile confirmed in DHT");
         dna_identity_free(verify_identity);
@@ -560,7 +547,7 @@ int messenger_register_name(
 
     // Verify name lookup alias
     char *lookup_fp = NULL;
-    int alias_verify = dna_lookup_by_name(dht_ctx, desired_name, &lookup_fp);
+    int alias_verify = dna_lookup_by_name(desired_name, &lookup_fp);
     if (alias_verify == 0 && lookup_fp) {
         if (strncmp(lookup_fp, fingerprint, 128) == 0) {
             QGP_LOG_INFO(LOG_TAG, "✓ Read-back verification: name '%s' -> fingerprint confirmed", desired_name);

@@ -469,9 +469,8 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
     /* 2. Sync any pending outboxes (messages that failed to publish earlier) */
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (dht_ctx) {
-        int synced = dht_offline_queue_sync_pending(dht_ctx);
+    {
+        int synced = dht_offline_queue_sync_pending();
         if (synced > 0) {
             QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: synced %d pending outboxes", synced);
         }
@@ -536,8 +535,11 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
     }
 
     /* v0.7.2: Export routing table cache after stabilization (fully populated) */
-    if (engine->dht_ctx) {
-        dht_context_export_routing_table(engine->dht_ctx, NULL);
+    {
+        dht_context_t *export_ctx = dht_singleton_get();
+        if (export_ctx) {
+            dht_context_export_routing_table(export_ctx, NULL);
+        }
     }
 
     QGP_LOG_WARN(LOG_TAG, "[RETRY] >>> STABILIZATION THREAD COMPLETE <<<");
@@ -1269,8 +1271,7 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
         return NULL;
     }
 
-    /* v0.6.0+: Initialize DHT context and identity lock (will be set during identity load) */
-    engine->dht_ctx = NULL;
+    /* Initialize identity lock (will be set during identity load) */
     engine->identity_lock_fd = -1;
 
     /* Load config and apply log settings BEFORE any logging */
@@ -1794,26 +1795,17 @@ void dna_engine_destroy(dna_engine_t *engine) {
      * They persist for app lifetime to survive engine destroy/recreate cycles
      * (Android pause/resume). Init functions are idempotent. OS cleans up on exit. */
 
-    /* v0.6.126: Stop discovery thread BEFORE freeing DHT context.
-     * The discovery thread holds g_discovery_dht_ctx which points to engine->dht_ctx.
-     * If not joined first, it can call runner.bootstrap() on a freed context (UAF). */
+    /* v0.6.126: Stop discovery thread BEFORE cleaning up DHT singleton. */
     dht_bootstrap_discovery_stop();
 
-    /* v0.7.2: Export routing table cache before destroying DHT */
-    if (engine->dht_ctx) {
-        dht_context_export_routing_table(engine->dht_ctx, NULL);
+    /* Cleanup DHT singleton */
+    {
+        dht_context_t *ctx = dht_singleton_get();
+        if (ctx) {
+            dht_context_export_routing_table(ctx, NULL);
+        }
     }
-
-    /* v0.6.0+: Cleanup engine-owned DHT context */
-    if (engine->dht_ctx) {
-        QGP_LOG_INFO(LOG_TAG, "Cleaning up engine-owned DHT context");
-        /* Clear borrowed context from singleton FIRST (prevents use-after-free) */
-        dht_singleton_set_borrowed_context(NULL);
-        /* Now safe to free the context */
-        dht_context_stop(engine->dht_ctx);
-        dht_context_free(engine->dht_ctx);
-        engine->dht_ctx = NULL;
-    }
+    dht_singleton_cleanup();
 
     /* v0.6.0+: Release identity lock */
     if (engine->identity_lock_fd >= 0) {

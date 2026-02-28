@@ -7,6 +7,7 @@
 
 #include "dht_message_backup.h"
 #include "../shared/dht_chunked.h"
+#include "dht_singleton.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_dilithium.h"
 #include "crypto/utils/qgp_kyber.h"
@@ -435,7 +436,6 @@ void dht_message_backup_cleanup(void) {
  * Backup all messages to DHT
  */
 int dht_message_backup_publish(
-    dht_context_t *dht_ctx,
     message_backup_context_t *msg_ctx,
     const char *fingerprint,
     const uint8_t *kyber_pubkey,
@@ -444,9 +444,15 @@ int dht_message_backup_publish(
     const uint8_t *dilithium_privkey,
     int *message_count_out)
 {
-    if (!dht_ctx || !msg_ctx || !fingerprint || !kyber_pubkey || !kyber_privkey ||
+    if (!msg_ctx || !fingerprint || !kyber_pubkey || !kyber_privkey ||
         !dilithium_pubkey || !dilithium_privkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for publish");
+        return -1;
+    }
+
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available for publish");
         return -1;
     }
 
@@ -595,7 +601,6 @@ int dht_message_backup_publish(
  * Restore messages from DHT
  */
 int dht_message_backup_restore(
-    dht_context_t *dht_ctx,
     message_backup_context_t *msg_ctx,
     const char *fingerprint,
     const uint8_t *kyber_privkey,
@@ -603,8 +608,14 @@ int dht_message_backup_restore(
     int *restored_count_out,
     int *skipped_count_out)
 {
-    if (!dht_ctx || !msg_ctx || !fingerprint || !kyber_privkey || !dilithium_pubkey) {
+    if (!msg_ctx || !fingerprint || !kyber_privkey || !dilithium_pubkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for restore");
+        return -1;
+    }
+
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available for restore");
         return -1;
     }
 
@@ -801,8 +812,13 @@ int dht_message_backup_restore(
 /**
  * Check if message backup exists in DHT
  */
-bool dht_message_backup_exists(dht_context_t *dht_ctx, const char *fingerprint) {
-    if (!dht_ctx || !fingerprint) {
+bool dht_message_backup_exists(const char *fingerprint) {
+    if (!fingerprint) {
+        return false;
+    }
+
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
         return false;
     }
 
@@ -827,12 +843,16 @@ bool dht_message_backup_exists(dht_context_t *dht_ctx, const char *fingerprint) 
  * Get message backup info from DHT
  */
 int dht_message_backup_get_info(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     uint64_t *timestamp_out,
     int *message_count_out)
 {
-    if (!dht_ctx || !fingerprint) {
+    if (!fingerprint) {
+        return -1;
+    }
+
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
         return -1;
     }
 

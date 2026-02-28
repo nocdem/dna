@@ -8,7 +8,7 @@
  */
 
 #include "dht_channel_subscriptions.h"
-#include "../core/dht_context.h"
+#include "nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 #include <string.h>
@@ -256,12 +256,11 @@ static int deserialize_subscriptions(
  * Sync channel subscription list TO DHT
  */
 int dht_channel_subscriptions_sync_to_dht(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     const dht_channel_subscription_entry_t *subscriptions,
     size_t count)
 {
-    if (!dht_ctx || !fingerprint) {
+    if (!fingerprint) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to sync_to_dht");
         return -1;
     }
@@ -286,9 +285,9 @@ int dht_channel_subscriptions_sync_to_dht(
         return ret;
     }
 
-    /* Put to DHT using signed put */
-    ret = dht_put_signed(dht_ctx, dht_key, key_len, data, data_len,
-                         CHAN_SUBS_VALUE_ID, DHT_CHANNEL_SUBS_TTL_SECONDS, "chan_subs");
+    /* Put to DHT using nodus_ops */
+    ret = nodus_ops_put(dht_key, key_len, data, data_len,
+                        DHT_CHANNEL_SUBS_TTL_SECONDS, CHAN_SUBS_VALUE_ID);
 
     free(data);
 
@@ -306,12 +305,11 @@ int dht_channel_subscriptions_sync_to_dht(
  * Sync channel subscription list FROM DHT
  */
 int dht_channel_subscriptions_sync_from_dht(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     dht_channel_subscription_entry_t **subscriptions_out,
     size_t *count_out)
 {
-    if (!dht_ctx || !fingerprint || !subscriptions_out || !count_out) {
+    if (!fingerprint || !subscriptions_out || !count_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to sync_from_dht");
         return -1;
     }
@@ -326,10 +324,10 @@ int dht_channel_subscriptions_sync_from_dht(
         return -1;
     }
 
-    /* Get from DHT */
+    /* Get from DHT via nodus_ops */
     uint8_t *data = NULL;
     size_t data_len = 0;
-    int ret = dht_get(dht_ctx, dht_key, key_len, &data, &data_len);
+    int ret = nodus_ops_get(dht_key, key_len, &data, &data_len);
 
     if (ret != 0) {
         QGP_LOG_DEBUG(LOG_TAG, "No channel subscriptions found in DHT for %.16s...", fingerprint);

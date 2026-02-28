@@ -10,8 +10,7 @@
  */
 
 #include "dht_groups.h"
-#include "dht_chunked.h"
-#include "../core/dht_context.h"
+#include "nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_random.h"
 #include <stdio.h>
@@ -326,7 +325,6 @@ void dht_groups_cleanup(void) {
 
 // Create a new group in DHT
 int dht_groups_create(
-    dht_context_t *dht_ctx,
     const char *name,
     const char *description,
     const char *creator,
@@ -334,7 +332,7 @@ int dht_groups_create(
     size_t member_count,
     char *group_uuid_out
 ) {
-    if (!dht_ctx || !name || !creator || !group_uuid_out) {
+    if (!name || !creator || !group_uuid_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to create\n");
         return -1;
     }
@@ -402,10 +400,10 @@ int dht_groups_create(
     char base_key[256];
     make_base_key(group_uuid, base_key, sizeof(base_key));
 
-    // Store in DHT via chunked layer (30-day TTL for group metadata)
-    int ret = dht_chunked_publish(dht_ctx, base_key, (uint8_t*)json, strlen(json), DHT_CHUNK_TTL_30DAY);
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT: %s\n", dht_chunked_strerror(ret));
+    // Store in DHT via nodus_ops (30-day TTL for group metadata)
+    int ret = nodus_ops_put_str(base_key, (uint8_t*)json, strlen(json), 30*24*3600, nodus_ops_value_id());
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT\n");
         free(json);
         for (uint32_t i = 0; i < meta.member_count; i++) free(meta.members[i]);
         free(meta.members);
@@ -449,11 +447,10 @@ int dht_groups_create(
 
 // Get group metadata from DHT
 int dht_groups_get(
-    dht_context_t *dht_ctx,
     const char *group_uuid,
     dht_group_metadata_t **metadata_out
 ) {
-    if (!dht_ctx || !group_uuid || !metadata_out) {
+    if (!group_uuid || !metadata_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to get\n");
         return -1;
     }
@@ -462,12 +459,12 @@ int dht_groups_get(
     char base_key[256];
     make_base_key(group_uuid, base_key, sizeof(base_key));
 
-    // Retrieve from DHT via chunked layer
+    // Retrieve from DHT via nodus_ops
     uint8_t *value = NULL;
     size_t value_len = 0;
-    int ret = dht_chunked_fetch(dht_ctx, base_key, &value, &value_len);
-    if (ret != DHT_CHUNK_OK || !value || value_len == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Group not found in DHT: %s (%s)\n", group_uuid, dht_chunked_strerror(ret));
+    int ret = nodus_ops_get_str(base_key, &value, &value_len);
+    if (ret != 0 || !value || value_len == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Group not found in DHT: %s\n", group_uuid);
         if (value) free(value);
         return -2;  // Not found
     }
@@ -497,20 +494,19 @@ int dht_groups_get(
 
 // Update group metadata in DHT
 int dht_groups_update(
-    dht_context_t *dht_ctx,
     const char *group_uuid,
     const char *new_name,
     const char *new_description,
     const char *updater
 ) {
-    if (!dht_ctx || !group_uuid || !updater) {
+    if (!group_uuid || !updater) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to update\n");
         return -1;
     }
 
     // Get current metadata
     dht_group_metadata_t *meta = NULL;
-    int ret = dht_groups_get(dht_ctx, group_uuid, &meta);
+    int ret = dht_groups_get(group_uuid, &meta);
     if (ret != 0) {
         return ret;
     }
@@ -551,12 +547,12 @@ int dht_groups_update(
     char base_key[256];
     make_base_key(group_uuid, base_key, sizeof(base_key));
 
-    ret = dht_chunked_publish(dht_ctx, base_key, (uint8_t*)json, strlen(json), DHT_CHUNK_TTL_30DAY);
+    ret = nodus_ops_put_str(base_key, (uint8_t*)json, strlen(json), 30*24*3600, nodus_ops_value_id());
     free(json);
     dht_groups_free_metadata(meta);
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to update DHT: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update DHT\n");
         return -1;
     }
 
@@ -566,19 +562,18 @@ int dht_groups_update(
 
 // Add member to group
 int dht_groups_add_member(
-    dht_context_t *dht_ctx,
     const char *group_uuid,
     const char *new_member,
     const char *adder
 ) {
-    if (!dht_ctx || !group_uuid || !new_member || !adder) {
+    if (!group_uuid || !new_member || !adder) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to add_member\n");
         return -1;
     }
 
     // Get current metadata
     dht_group_metadata_t *meta = NULL;
-    int ret = dht_groups_get(dht_ctx, group_uuid, &meta);
+    int ret = dht_groups_get(group_uuid, &meta);
     if (ret != 0) {
         return ret;
     }
@@ -630,12 +625,12 @@ int dht_groups_add_member(
     char base_key[256];
     make_base_key(group_uuid, base_key, sizeof(base_key));
 
-    ret = dht_chunked_publish(dht_ctx, base_key, (uint8_t*)json, strlen(json), DHT_CHUNK_TTL_30DAY);
+    ret = nodus_ops_put_str(base_key, (uint8_t*)json, strlen(json), 30*24*3600, nodus_ops_value_id());
     free(json);
     dht_groups_free_metadata(meta);
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to add member to DHT: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add member to DHT\n");
         return -1;
     }
 
@@ -645,19 +640,18 @@ int dht_groups_add_member(
 
 // Remove member from group
 int dht_groups_remove_member(
-    dht_context_t *dht_ctx,
     const char *group_uuid,
     const char *member,
     const char *remover
 ) {
-    if (!dht_ctx || !group_uuid || !member || !remover) {
+    if (!group_uuid || !member || !remover) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to remove_member\n");
         return -1;
     }
 
     // Get current metadata
     dht_group_metadata_t *meta = NULL;
-    int ret = dht_groups_get(dht_ctx, group_uuid, &meta);
+    int ret = dht_groups_get(group_uuid, &meta);
     if (ret != 0) {
         return ret;
     }
@@ -704,12 +698,12 @@ int dht_groups_remove_member(
     char base_key[256];
     make_base_key(group_uuid, base_key, sizeof(base_key));
 
-    ret = dht_chunked_publish(dht_ctx, base_key, (uint8_t*)json, strlen(json), DHT_CHUNK_TTL_30DAY);
+    ret = nodus_ops_put_str(base_key, (uint8_t*)json, strlen(json), 30*24*3600, nodus_ops_value_id());
     free(json);
     dht_groups_free_metadata(meta);
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to remove member from DHT: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to remove member from DHT\n");
         return -1;
     }
 
@@ -719,18 +713,17 @@ int dht_groups_remove_member(
 
 // Update GEK version in group metadata
 int dht_groups_update_gek_version(
-    dht_context_t *dht_ctx,
     const char *group_uuid,
     uint32_t new_gek_version
 ) {
-    if (!dht_ctx || !group_uuid) {
+    if (!group_uuid) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to update_gek_version\n");
         return -1;
     }
 
     // Get current metadata
     dht_group_metadata_t *meta = NULL;
-    int ret = dht_groups_get(dht_ctx, group_uuid, &meta);
+    int ret = dht_groups_get(group_uuid, &meta);
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to get group metadata for GEK version update\n");
         return ret;
@@ -750,12 +743,12 @@ int dht_groups_update_gek_version(
     char base_key[256];
     make_base_key(group_uuid, base_key, sizeof(base_key));
 
-    ret = dht_chunked_publish(dht_ctx, base_key, (uint8_t*)json, strlen(json), DHT_CHUNK_TTL_30DAY);
+    ret = nodus_ops_put_str(base_key, (uint8_t*)json, strlen(json), 30*24*3600, nodus_ops_value_id());
     free(json);
     dht_groups_free_metadata(meta);
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to update GEK version in DHT: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update GEK version in DHT\n");
         return -1;
     }
 
@@ -765,18 +758,17 @@ int dht_groups_update_gek_version(
 
 // Delete group from DHT
 int dht_groups_delete(
-    dht_context_t *dht_ctx,
     const char *group_uuid,
     const char *deleter
 ) {
-    if (!dht_ctx || !group_uuid || !deleter) {
+    if (!group_uuid || !deleter) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to delete\n");
         return -1;
     }
 
     // Get current metadata
     dht_group_metadata_t *meta = NULL;
-    int ret = dht_groups_get(dht_ctx, group_uuid, &meta);
+    int ret = dht_groups_get(group_uuid, &meta);
     if (ret != 0) {
         return ret;
     }
@@ -790,15 +782,15 @@ int dht_groups_delete(
 
     dht_groups_free_metadata(meta);
 
-    // Delete from DHT via chunked layer
+    // Delete from DHT
     char base_key[256];
     make_base_key(group_uuid, base_key, sizeof(base_key));
 
-    // Chunked layer has explicit delete
-    ret = dht_chunked_delete(dht_ctx, base_key, 0);
+    // Overwrite with empty value to delete (short TTL so it expires quickly)
+    ret = nodus_ops_put_str(base_key, (uint8_t*)"", 0, 1, nodus_ops_value_id());
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to delete from DHT: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to delete from DHT\n");
         return -1;
     }
 
@@ -1068,17 +1060,16 @@ int dht_groups_get_local_id_by_uuid(
 
 // Sync group metadata from DHT to local cache
 int dht_groups_sync_from_dht(
-    dht_context_t *dht_ctx,
     const char *group_uuid
 ) {
-    if (!dht_ctx || !group_uuid || !g_db) {
+    if (!group_uuid || !g_db) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to sync_from_dht\n");
         return -1;
     }
 
     // Get from DHT
     dht_group_metadata_t *meta = NULL;
-    int ret = dht_groups_get(dht_ctx, group_uuid, &meta);
+    int ret = dht_groups_get(group_uuid, &meta);
     if (ret != 0) {
         return ret;
     }

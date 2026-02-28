@@ -10,7 +10,7 @@
  */
 
 #include "dht_profile.h"
-#include "dht_chunked.h"
+#include "nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_dilithium.h"
 #include <stdio.h>
@@ -247,12 +247,11 @@ void dht_profile_cleanup(void) {
  * Publish user profile to DHT
  */
 int dht_profile_publish(
-    dht_context_t *dht_ctx,
     const char *user_fingerprint,
     const dht_profile_t *profile,
     const uint8_t *dilithium_privkey)
 {
-    if (!dht_ctx || !user_fingerprint || !profile || !dilithium_privkey) {
+    if (!user_fingerprint || !profile || !dilithium_privkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for publish\n");
         return -1;
     }
@@ -326,12 +325,12 @@ int dht_profile_publish(
 
     QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] dht_profile_publish called for %.16s...\n", user_fingerprint);
 
-    // Store in DHT using chunked layer (handles compression, chunking, signing)
-    int result = dht_chunked_publish(dht_ctx, base_key, blob, blob_size, DHT_CHUNK_TTL_365DAY);
+    // Store in DHT via nodus_ops
+    int result = nodus_ops_put_str(base_key, blob, blob_size, (365*24*3600), nodus_ops_value_id());
     free(blob);
 
-    if (result != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT: %s\n", dht_chunked_strerror(result));
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT: %d\n", result);
         return -1;
     }
 
@@ -343,11 +342,10 @@ int dht_profile_publish(
  * Fetch user profile from DHT
  */
 int dht_profile_fetch(
-    dht_context_t *dht_ctx,
     const char *user_fingerprint,
     dht_profile_t *profile_out)
 {
-    if (!dht_ctx || !user_fingerprint || !profile_out) {
+    if (!user_fingerprint || !profile_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for fetch\n");
         return -1;
     }
@@ -361,13 +359,13 @@ int dht_profile_fetch(
         return -1;
     }
 
-    // Fetch from DHT using chunked layer (handles decompression, reassembly)
+    // Fetch from DHT via nodus_ops
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
-    if (result != DHT_CHUNK_OK || !blob) {
-        QGP_LOG_INFO(LOG_TAG, "Profile not found in DHT: %s\n", dht_chunked_strerror(result));
+    int result = nodus_ops_get_str(base_key, &blob, &blob_size);
+    if (result != 0 || !blob) {
+        QGP_LOG_INFO(LOG_TAG, "Profile not found in DHT: %d\n", result);
         return -2;  // Not found
     }
 
@@ -448,10 +446,9 @@ int dht_profile_fetch(
  * empty chunks to overwrite existing data. Chunks will fully expire via TTL.
  */
 int dht_profile_delete(
-    dht_context_t *dht_ctx,
     const char *user_fingerprint)
 {
-    if (!dht_ctx || !user_fingerprint) {
+    if (!user_fingerprint) {
         return -1;
     }
 
@@ -460,8 +457,8 @@ int dht_profile_delete(
         return -1;
     }
 
-    // Note: dht_chunked_delete overwrites with empty chunks
-    dht_chunked_delete(dht_ctx, base_key, 0);
+    // Overwrite with empty data and short TTL to effectively delete
+    nodus_ops_put_str(base_key, (const uint8_t *)"", 0, 1, nodus_ops_value_id());
 
     QGP_LOG_INFO(LOG_TAG, "Deleted profile for '%s' (best-effort)\n", user_fingerprint);
     return 0;

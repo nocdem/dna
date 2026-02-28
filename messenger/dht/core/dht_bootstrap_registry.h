@@ -26,9 +26,6 @@
 extern "C" {
 #endif
 
-// Forward declaration
-typedef struct dht_context dht_context_t;
-
 #define DHT_BOOTSTRAP_MAX_NODES 256
 #define DHT_BOOTSTRAP_REGISTRY_KEY_SIZE 129  // SHA3-512 hex = 128 + null
 #define DHT_BOOTSTRAP_STALE_TIMEOUT 900      // 15 minutes (in seconds)
@@ -59,7 +56,6 @@ typedef struct {
  * Register this bootstrap node in the DHT registry
  * Called by dna-nodus on startup and every 5 minutes
  *
- * @param dht_ctx: DHT context
  * @param my_ip: This node's public IP
  * @param my_port: This node's DHT port
  * @param node_id: SHA3-512(public_key) hex string
@@ -68,7 +64,6 @@ typedef struct {
  * @return: 0 on success, -1 on error
  */
 int dht_bootstrap_registry_register(
-    dht_context_t *dht_ctx,
     const char *my_ip,
     uint16_t my_port,
     const char *node_id,
@@ -80,12 +75,10 @@ int dht_bootstrap_registry_register(
  * Fetch the bootstrap registry from DHT
  * Used by clients to discover active bootstrap nodes
  *
- * @param dht_ctx: DHT context
  * @param registry_out: Output registry structure
  * @return: 0 on success, -1 on error
  */
 int dht_bootstrap_registry_fetch(
-    dht_context_t *dht_ctx,
     bootstrap_registry_t *registry_out
 );
 

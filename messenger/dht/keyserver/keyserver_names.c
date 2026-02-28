@@ -5,6 +5,7 @@
 
 #include "keyserver_core.h"
 #include "../core/dht_keyserver.h"
+#include "dht/shared/nodus_ops.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "KEYSERVER"
@@ -19,14 +20,13 @@ void dna_compute_fingerprint(
 
 // Register DNA name for a fingerprint identity
 int dna_register_name(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     const char *name,
     const char *tx_hash,
     const char *network,
     const uint8_t *dilithium_privkey
 ) {
-    if (!dht_ctx || !fingerprint || !name || !tx_hash || !network || !dilithium_privkey) {
+    if (!fingerprint || !name || !tx_hash || !network || !dilithium_privkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to dna_register_name\n");
         return -1;
     }
@@ -55,7 +55,7 @@ int dna_register_name(
 
     // Check if name is already taken
     char *existing_fp = NULL;
-    int ret = dna_lookup_by_name(dht_ctx, name, &existing_fp);
+    int ret = dna_lookup_by_name(name, &existing_fp);
     if (ret == 0) {
         // Name exists - check if it's the same fingerprint
         if (strcmp(existing_fp, fingerprint) != 0) {
@@ -69,7 +69,7 @@ int dna_register_name(
 
     // Load or create identity
     dna_unified_identity_t *identity = NULL;
-    ret = dna_load_identity(dht_ctx, fingerprint, &identity);
+    ret = dna_load_identity(fingerprint, &identity);
 
     if (ret != 0) {
         // Create new identity
@@ -101,18 +101,18 @@ int dna_register_name(
     char base_key[256];
     snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
 
-    ret = dht_chunked_publish(dht_ctx, base_key,
-                              (uint8_t*)json, strlen(json),
-                              DHT_CHUNK_TTL_PERMANENT);
+    ret = nodus_ops_put_str(base_key,
+                           (uint8_t*)json, strlen(json),
+                           0, nodus_ops_value_id());
     free(json);
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to store identity in DHT: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store identity in DHT (ret=%d)\n", ret);
         dna_identity_free(identity);
         return -1;
     }
 
-    // Store reverse mapping: name → fingerprint
+    // Store reverse mapping: name -> fingerprint
     // Normalize name to lowercase
     char normalized_name[256];
     strncpy(normalized_name, name, sizeof(normalized_name) - 1);
@@ -121,16 +121,16 @@ int dna_register_name(
         *p = tolower(*p);
     }
 
-    // Create base key for name lookup (chunked layer handles hashing)
+    // Create base key for name lookup
     char name_base_key[256];
     snprintf(name_base_key, sizeof(name_base_key), "%s:lookup", normalized_name);
 
-    ret = dht_chunked_publish(dht_ctx, name_base_key,
-                              (uint8_t*)fingerprint, 128,
-                              DHT_CHUNK_TTL_PERMANENT);
+    ret = nodus_ops_put_str(name_base_key,
+                            (uint8_t*)fingerprint, 128,
+                            0, nodus_ops_value_id());
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to store name mapping in DHT: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store name mapping in DHT (ret=%d)\n", ret);
         dna_identity_free(identity);
         return -1;
     }
@@ -144,19 +144,18 @@ int dna_register_name(
 
 // Renew DNA name registration
 int dna_renew_name(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     const char *renewal_tx_hash,
     const uint8_t *dilithium_privkey
 ) {
-    if (!dht_ctx || !fingerprint || !renewal_tx_hash || !dilithium_privkey) {
+    if (!fingerprint || !renewal_tx_hash || !dilithium_privkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to dna_renew_name\n");
         return -1;
     }
 
     // Load existing identity first to get name and network
     dna_unified_identity_t *identity = NULL;
-    int ret_load = dna_load_identity(dht_ctx, fingerprint, &identity);
+    int ret_load = dna_load_identity(fingerprint, &identity);
 
     if (ret_load != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Identity not found\n");
@@ -207,13 +206,13 @@ int dna_renew_name(
     char base_key[256];
     snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
 
-    int ret = dht_chunked_publish(dht_ctx, base_key,
-                                  (uint8_t*)json, strlen(json),
-                                  DHT_CHUNK_TTL_PERMANENT);
+    int ret = nodus_ops_put_str(base_key,
+                               (uint8_t*)json, strlen(json),
+                               0, nodus_ops_value_id());
     free(json);
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to store renewed identity in DHT: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store renewed identity in DHT (ret=%d)\n", ret);
         dna_identity_free(identity);
         return -1;
     }
@@ -227,11 +226,10 @@ int dna_renew_name(
 
 // Lookup fingerprint by DNA name
 int dna_lookup_by_name(
-    dht_context_t *dht_ctx,
     const char *name,
     char **fingerprint_out
 ) {
-    if (!dht_ctx || !name || !fingerprint_out) {
+    if (!name || !fingerprint_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to dna_lookup_by_name\n");
         return -1;
     }
@@ -251,13 +249,13 @@ int dna_lookup_by_name(
     QGP_LOG_INFO(LOG_TAG, "Looking up name '%s'\n", normalized_name);
     QGP_LOG_INFO(LOG_TAG, "Base key: %s\n", base_key);
 
-    // Fetch from DHT via chunked layer
+    // Fetch from DHT via nodus_ops
     uint8_t *value = NULL;
     size_t value_len = 0;
 
-    int ret = dht_chunked_fetch(dht_ctx, base_key, &value, &value_len);
-    if (ret != DHT_CHUNK_OK || !value) {
-        QGP_LOG_ERROR(LOG_TAG, "Name not found in DHT: %s\n", dht_chunked_strerror(ret));
+    int ret = nodus_ops_get_str(base_key, &value, &value_len);
+    if (ret != 0 || !value) {
+        QGP_LOG_ERROR(LOG_TAG, "Name not found in DHT (ret=%d)\n", ret);
         return -2;  // Not found
     }
 

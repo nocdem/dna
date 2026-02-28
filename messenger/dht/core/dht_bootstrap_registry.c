@@ -7,8 +7,7 @@
  */
 
 #include "dht_bootstrap_registry.h"
-#include "dht_context.h"
-#include "../shared/dht_chunked.h"
+#include "dht/shared/nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include <json-c/json.h>
 #include <string.h>
@@ -195,14 +194,13 @@ int dht_bootstrap_registry_from_json(const char *json_str, bootstrap_registry_t 
  * - Node index at: dna:bootstrap:nodes (multi-owner, small)
  */
 int dht_bootstrap_registry_register(
-    dht_context_t *dht_ctx,
     const char *my_ip,
     uint16_t my_port,
     const char *node_id,
     const char *version,
     uint64_t uptime)
 {
-    if (!dht_ctx || !my_ip || !node_id || !version) return -1;
+    if (!my_ip || !node_id || !version) return -1;
 
     QGP_LOG_INFO(LOG_TAG, "Registering bootstrap node: %s:%d (owner-namespaced)\n", my_ip, my_port);
 
@@ -227,14 +225,13 @@ int dht_bootstrap_registry_register(
     char node_key[256];
     make_node_base_key(node_id, node_key, sizeof(node_key));
 
-    QGP_LOG_INFO(LOG_TAG, "Publishing node entry via chunked\n");
-    int ret = dht_chunked_publish(dht_ctx, node_key,
-                                   (uint8_t*)json, strlen(json),
-                                   DHT_CHUNK_TTL_7DAY);
+    QGP_LOG_INFO(LOG_TAG, "Publishing node entry via nodus_ops\n");
+    int ret = nodus_ops_put_str(node_key, (const uint8_t*)json, strlen(json),
+                                604800, nodus_ops_value_id());
     free(json);
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to publish node entry: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish node entry\n");
         return -1;
     }
 
@@ -243,13 +240,12 @@ int dht_bootstrap_registry_register(
     make_nodes_index_key(index_key, sizeof(index_key));
 
     // Get unique value_id for this DHT identity (prevents overwrites between owners)
-    uint64_t value_id = 1;
-    dht_get_owner_value_id(dht_ctx, &value_id);
+    uint64_t value_id = nodus_ops_value_id();
 
     QGP_LOG_INFO(LOG_TAG, "Registering node_id in index (value_id=%llu)\n", (unsigned long long)value_id);
-    ret = dht_put_signed(dht_ctx, (uint8_t*)index_key, strlen(index_key),
-                         (uint8_t*)node_id, strlen(node_id),
-                         value_id, DHT_CHUNK_TTL_7DAY, "bootstrap_registry");
+    ret = nodus_ops_put((const uint8_t*)index_key, strlen(index_key),
+                        (const uint8_t*)node_id, strlen(node_id),
+                        604800, value_id);
 
     if (ret != 0) {
         // Non-fatal - node entry is already stored
@@ -277,8 +273,8 @@ static int find_node_by_ip_port(const bootstrap_registry_t *reg, const char *ip,
  *
  * Gets node index → fetches each node's entry → merges
  */
-int dht_bootstrap_registry_fetch(dht_context_t *dht_ctx, bootstrap_registry_t *registry_out) {
-    if (!dht_ctx || !registry_out) return -1;
+int dht_bootstrap_registry_fetch(bootstrap_registry_t *registry_out) {
+    if (!registry_out) return -1;
 
     QGP_LOG_INFO(LOG_TAG, "Fetching bootstrap registry (owner-namespaced)...\n");
 
@@ -290,8 +286,8 @@ int dht_bootstrap_registry_fetch(dht_context_t *dht_ctx, bootstrap_registry_t *r
     size_t *index_lens = NULL;
     size_t index_count = 0;
 
-    int ret = dht_get_all(dht_ctx, (uint8_t*)index_key, strlen(index_key),
-                          &index_values, &index_lens, &index_count);
+    int ret = nodus_ops_get_all((const uint8_t*)index_key, strlen(index_key),
+                               &index_values, &index_lens, &index_count);
 
     // Collect unique node_ids
     char **node_ids = NULL;
@@ -342,8 +338,8 @@ int dht_bootstrap_registry_fetch(dht_context_t *dht_ctx, bootstrap_registry_t *r
         uint8_t *data = NULL;
         size_t data_len = 0;
 
-        ret = dht_chunked_fetch(dht_ctx, node_key, &data, &data_len);
-        if (ret != DHT_CHUNK_OK || !data) {
+        ret = nodus_ops_get_str(node_key, &data, &data_len);
+        if (ret != 0 || !data) {
             QGP_LOG_INFO(LOG_TAG, "Node %s: no data\n", node_ids[n]);
             continue;
         }

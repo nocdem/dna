@@ -330,11 +330,9 @@ static int post_infos_from_json(const char *json_str, dna_channel_post_info_t **
  * ============================================================================ */
 
 void dna_handle_channel_create(dna_engine_t *engine, dna_task_t *task) {
-    dht_context_t *dht = dna_get_dht_ctx(engine);
     qgp_key_t *key = dna_load_private_key(engine);
 
-    if (!dht || !key) {
-        if (key) qgp_key_free(key);
+    if (!key) {
         task->callback.channel(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY,
                                NULL, task->user_data);
         return;
@@ -343,7 +341,6 @@ void dna_handle_channel_create(dna_engine_t *engine, dna_task_t *task) {
     /* Create channel */
     char uuid_out[37] = {0};
     int ret = dna_channel_create(
-        dht,
         task->params.channel_create.name,
         task->params.channel_create.description,
         task->params.channel_create.is_public,
@@ -363,7 +360,7 @@ void dna_handle_channel_create(dna_engine_t *engine, dna_task_t *task) {
     /* If public, register in the discovery index */
     if (task->params.channel_create.is_public) {
         int idx_ret = dna_channel_index_register(
-            dht, uuid_out,
+            uuid_out,
             task->params.channel_create.name,
             task->params.channel_create.description,
             engine->fingerprint,
@@ -381,7 +378,7 @@ void dna_handle_channel_create(dna_engine_t *engine, dna_task_t *task) {
 
     /* Fetch the created channel to return full info */
     dna_channel_t *channel = NULL;
-    ret = dna_channel_get(dht, uuid_out, &channel);
+    ret = dna_channel_get(uuid_out, &channel);
 
     if (ret != 0 || !channel) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to fetch created channel: %d", ret);
@@ -449,9 +446,8 @@ void dna_handle_channel_get(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Fetch from DHT */
-    dht_context_t *dht = dna_get_dht_ctx(engine);
     dna_channel_t *channel = NULL;
-    int ret = dht ? dna_channel_get(dht, uuid, &channel) : -1;
+    int ret = dna_channel_get(uuid, &channel);
 
     if (ret != 0 || !channel) {
         /* DHT failed — fallback to stale cache if available */
@@ -466,8 +462,7 @@ void dna_handle_channel_get(dna_engine_t *engine, dna_task_t *task) {
             free(info);
         }
         free(cached_json);
-        int err = !dht ? DNA_ENGINE_ERROR_NETWORK :
-                  (ret == -2) ? DNA_ENGINE_ERROR_NOT_FOUND : DNA_ERROR_INTERNAL;
+        int err = (ret == -2) ? DNA_ENGINE_ERROR_NOT_FOUND : DNA_ERROR_INTERNAL;
         task->callback.channel(task->request_id, err, NULL, task->user_data);
         if (channel) dna_channel_free(channel);
         return;
@@ -513,18 +508,15 @@ void dna_handle_channel_get(dna_engine_t *engine, dna_task_t *task) {
 }
 
 void dna_handle_channel_delete(dna_engine_t *engine, dna_task_t *task) {
-    dht_context_t *dht = dna_get_dht_ctx(engine);
     qgp_key_t *key = dna_load_private_key(engine);
 
-    if (!dht || !key) {
-        if (key) qgp_key_free(key);
+    if (!key) {
         task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY,
                                   task->user_data);
         return;
     }
 
     int ret = dna_channel_delete(
-        dht,
         task->params.channel_by_uuid.uuid,
         engine->fingerprint,
         key->private_key
@@ -558,16 +550,9 @@ void dna_handle_channel_discover(dna_engine_t *engine, dna_task_t *task) {
     if (days < 1) days = 1;
     if (days > DNA_CHANNEL_INDEX_DAYS_MAX) days = DNA_CHANNEL_INDEX_DAYS_MAX;
 
-    dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
-        task->callback.channels(task->request_id, DNA_ENGINE_ERROR_NETWORK,
-                                NULL, 0, task->user_data);
-        return;
-    }
-
     dna_channel_t *channels = NULL;
     size_t count = 0;
-    int ret = dna_channel_index_browse(dht, days, &channels, &count);
+    int ret = dna_channel_index_browse(days, &channels, &count);
 
     if (ret != 0 && ret != -2) {
         task->callback.channels(task->request_id, DNA_ERROR_INTERNAL,
@@ -613,11 +598,9 @@ void dna_handle_channel_discover(dna_engine_t *engine, dna_task_t *task) {
 }
 
 void dna_handle_channel_post(dna_engine_t *engine, dna_task_t *task) {
-    dht_context_t *dht = dna_get_dht_ctx(engine);
     qgp_key_t *key = dna_load_private_key(engine);
 
-    if (!dht || !key) {
-        if (key) qgp_key_free(key);
+    if (!key) {
         task->callback.channel_post_cb(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY,
                                        NULL, task->user_data);
         return;
@@ -625,7 +608,6 @@ void dna_handle_channel_post(dna_engine_t *engine, dna_task_t *task) {
 
     char post_uuid_out[37] = {0};
     int ret = dna_channel_post_create(
-        dht,
         task->params.channel_post.channel_uuid,
         task->params.channel_post.body,
         engine->fingerprint,
@@ -702,16 +684,9 @@ void dna_handle_channel_get_posts(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Fetch from DHT */
-    dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
-        task->callback.channel_posts(task->request_id, DNA_ENGINE_ERROR_NETWORK,
-                                     NULL, 0, task->user_data);
-        return;
-    }
-
     dna_channel_post_internal_t *posts = NULL;
     size_t count = 0;
-    int ret = dna_channel_posts_get(dht, channel_uuid, days_back, &posts, &count);
+    int ret = dna_channel_posts_get(channel_uuid, days_back, &posts, &count);
 
     if (ret != 0 && ret != -2) {
         task->callback.channel_posts(task->request_id, DNA_ERROR_INTERNAL,
@@ -817,12 +792,6 @@ void dna_handle_channel_get_subscriptions(dna_engine_t *engine, dna_task_t *task
 }
 
 void dna_handle_channel_sync_subs_to_dht(dna_engine_t *engine, dna_task_t *task) {
-    dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
-        task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NETWORK, task->user_data);
-        return;
-    }
-
     if (!engine->fingerprint[0]) {
         task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY, task->user_data);
         return;
@@ -856,7 +825,7 @@ void dna_handle_channel_sync_subs_to_dht(dna_engine_t *engine, dna_task_t *task)
     channel_subscriptions_db_free(subs, count);
 
     /* Sync to DHT */
-    ret = dht_channel_subscriptions_sync_to_dht(dht, engine->fingerprint, entries, (size_t)count);
+    ret = dht_channel_subscriptions_sync_to_dht(engine->fingerprint, entries, (size_t)count);
     if (entries) free(entries);
 
     if (ret != 0) {
@@ -870,12 +839,6 @@ void dna_handle_channel_sync_subs_to_dht(dna_engine_t *engine, dna_task_t *task)
 }
 
 void dna_handle_channel_sync_subs_from_dht(dna_engine_t *engine, dna_task_t *task) {
-    dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
-        task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NETWORK, task->user_data);
-        return;
-    }
-
     if (!engine->fingerprint[0]) {
         task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY, task->user_data);
         return;
@@ -884,7 +847,7 @@ void dna_handle_channel_sync_subs_from_dht(dna_engine_t *engine, dna_task_t *tas
     /* Fetch from DHT */
     dht_channel_subscription_entry_t *entries = NULL;
     size_t count = 0;
-    int ret = dht_channel_subscriptions_sync_from_dht(dht, engine->fingerprint, &entries, &count);
+    int ret = dht_channel_subscriptions_sync_from_dht(engine->fingerprint, &entries, &count);
 
     if (ret == -2) {
         /* Not found - no subscriptions in DHT yet */

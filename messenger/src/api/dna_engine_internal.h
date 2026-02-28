@@ -570,8 +570,7 @@ struct dna_engine {
     /* Engine state (v0.6.50+: pause/resume lifecycle for Android) */
     dna_engine_state_t state;    /* Current lifecycle state */
 
-    /* DHT context (v0.6.0+: engine owns its own DHT, no global singleton) */
-    dht_context_t *dht_ctx;      /* DHT context owned by this engine */
+    /* DHT: engine uses nodus singleton (no engine-owned context) */
 
     /* Identity lock (prevents multiple engines from loading same identity) */
     int identity_lock_fd;        /* File lock descriptor (-1 if not held) */

@@ -13,7 +13,7 @@
  */
 
 #include "dht_publish_queue.h"
-#include "dht_chunked.h"
+#include "nodus_ops.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 
@@ -33,7 +33,6 @@
  */
 typedef struct publish_queue_item {
     dht_publish_request_id_t id;        // Unique request ID
-    dht_context_t *ctx;                 // DHT context (borrowed, not owned)
     char *base_key;                     // Key to publish to (owned, heap allocated)
     uint8_t *data;                      // Data to publish (owned, heap allocated)
     size_t data_len;                    // Data length
@@ -140,31 +139,20 @@ static int process_publish_item(publish_queue_item_t *item) {
             retry_delay_ms *= DHT_PUBLISH_QUEUE_RETRY_BACKOFF;
         }
 
-        // Call existing sync publish (has per-key mutex internally)
-        int result = dht_chunked_publish(item->ctx, item->base_key,
-                                          item->data, item->data_len,
-                                          item->ttl_seconds);
+        // Publish via nodus_ops (synchronous)
+        int result = nodus_ops_put_str(item->base_key,
+                                        item->data, item->data_len,
+                                        item->ttl_seconds, nodus_ops_value_id());
 
-        if (result == DHT_CHUNK_OK) {
+        if (result == 0) {
             QGP_LOG_INFO(LOG_TAG, "Publish OK: key=%s (attempt %d)", item->base_key, attempt + 1);
             return DHT_PUBLISH_STATUS_OK;
         }
 
         last_error = result;
 
-        // DHT_CHUNK_ERR_HASH_MISMATCH is retryable (DHT version inconsistency)
-        // DHT_CHUNK_ERR_DHT_PUT is retryable (network issues)
-        // Other errors may not benefit from retry
-        if (result != DHT_CHUNK_ERR_DHT_PUT &&
-            result != DHT_CHUNK_ERR_HASH_MISMATCH &&
-            result != DHT_CHUNK_ERR_TIMEOUT) {
-            QGP_LOG_WARN(LOG_TAG, "Non-retryable error %d (%s) for key=%s",
-                         result, dht_chunked_strerror(result), item->base_key);
-            break;
-        }
-
-        QGP_LOG_WARN(LOG_TAG, "Publish failed (attempt %d): key=%s, error=%d (%s)",
-                     attempt + 1, item->base_key, result, dht_chunked_strerror(result));
+        QGP_LOG_WARN(LOG_TAG, "Publish failed (attempt %d): key=%s, error=%d",
+                     attempt + 1, item->base_key, result);
     }
 
     QGP_LOG_ERROR(LOG_TAG, "Publish FAILED after %d retries: key=%s, last_error=%d",
@@ -319,7 +307,6 @@ void dht_publish_queue_destroy(dht_publish_queue_t *queue) {
 
 dht_publish_request_id_t dht_chunked_publish_async(
     dht_publish_queue_t *queue,
-    dht_context_t *ctx,
     const char *base_key,
     const uint8_t *data,
     size_t data_len,
@@ -327,7 +314,7 @@ dht_publish_request_id_t dht_chunked_publish_async(
     dht_publish_callback_t callback,
     void *user_data
 ) {
-    if (!queue || !ctx || !base_key || !data || data_len == 0) {
+    if (!queue || !base_key || !data || data_len == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for async publish");
         return 0;
     }
@@ -361,7 +348,6 @@ dht_publish_request_id_t dht_chunked_publish_async(
     memcpy(item->data, data, data_len);
 
     // Fill in other fields
-    item->ctx = ctx;
     item->data_len = data_len;
     item->ttl_seconds = ttl_seconds;
     item->callback = callback;

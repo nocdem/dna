@@ -158,16 +158,9 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     strncpy(engine->fingerprint, fingerprint, 128);
     engine->fingerprint[128] = '\0';
 
-    /* v0.6.0+: Load DHT identity and create engine-owned context */
-    if (messenger_load_dht_identity_for_engine(fingerprint, &engine->dht_ctx) == 0) {
-        QGP_LOG_INFO(LOG_TAG, "Engine-owned DHT context created");
-        /* Lend context to singleton for backwards compatibility with code that
-         * still uses dht_singleton_get() directly */
-        dht_singleton_set_borrowed_context(engine->dht_ctx);
-    } else {
-        QGP_LOG_WARN(LOG_TAG, "Failed to create engine DHT context (falling back to singleton)");
-        /* Fallback: try singleton-based load for compatibility */
-        messenger_load_dht_identity(fingerprint);
+    /* Load DHT identity and initialize nodus singleton */
+    if (messenger_load_dht_identity(fingerprint) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to load DHT identity (DHT unavailable)");
     }
 
     /* Load KEM keys for GEK encryption (H3 security fix) */
@@ -395,14 +388,8 @@ void dna_handle_lookup_name(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     char *fingerprint = NULL;
 
-    dht_context_t *dht = dht_singleton_get();
-    if (!dht) {
-        error = DNA_ENGINE_ERROR_NETWORK;
-        goto done;
-    }
-
     char *fp_out = NULL;
-    int rc = dna_lookup_by_name(dht, task->params.lookup_name.name, &fp_out);
+    int rc = dna_lookup_by_name(task->params.lookup_name.name, &fp_out);
 
     if (rc == 0 && fp_out) {
         /* Name is taken - return the fingerprint of who owns it */
@@ -416,7 +403,6 @@ void dna_handle_lookup_name(dna_engine_t *engine, dna_task_t *task) {
         error = DNA_ENGINE_ERROR_NETWORK;
     }
 
-done:
     /* Allocate on heap for thread-safe callback - caller frees via dna_free_string */
     fingerprint = strdup(fingerprint_buf);
     task->callback.display_name(task->request_id, error, fingerprint, task->user_data);
@@ -433,9 +419,6 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
         goto done;
     }
-
-    /* Get DHT context (needed for auto-publish later if wallet changed) */
-    dht_context_t *dht = dna_get_dht_ctx(engine);
 
     /* Get own identity (cache first, then DHT via profile_manager) */
     dna_unified_identity_t *identity = NULL;
@@ -546,7 +529,7 @@ populate_wallets:
                 qgp_key_t *enc_key = dna_load_encryption_key(engine);
                 if (enc_key) {
                     /* Update profile in DHT - profile is already a dna_profile_t* */
-                    int update_rc = dna_update_profile(dht, engine->fingerprint, profile,
+                    int update_rc = dna_update_profile(engine->fingerprint, profile,
                                                        sign_key->private_key, sign_key->public_key,
                                                        enc_key->public_key);
                     if (update_rc == 0) {
@@ -582,12 +565,6 @@ void dna_auto_republish_own_profile(dna_engine_t *engine) {
     if (!engine || !engine->identity_loaded) return;
 
     QGP_LOG_WARN(LOG_TAG, "[AUTO-REPUBLISH] Own profile signature invalid, republishing...");
-
-    dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
-        QGP_LOG_ERROR(LOG_TAG, "[AUTO-REPUBLISH] No DHT context");
-        return;
-    }
 
     /* Load profile from local cache */
     dna_unified_identity_t *cached = NULL;
@@ -638,7 +615,7 @@ void dna_auto_republish_own_profile(dna_engine_t *engine) {
     }
 
     /* Republish with fresh signature */
-    int rc = dna_update_profile(dht, engine->fingerprint, &profile,
+    int rc = dna_update_profile(engine->fingerprint, &profile,
                                 sign_key->private_key, sign_key->public_key,
                                 enc_key->public_key);
 
@@ -656,11 +633,9 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     dna_profile_t *profile = NULL;
 
-    /* lookupProfile only needs DHT context - it can lookup ANY profile by fingerprint
-     * without requiring local identity to be loaded. This is needed for the restore
-     * flow where we check if a profile exists in DHT before identity is loaded. */
-    dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
+    /* lookupProfile can lookup ANY profile by fingerprint without requiring
+     * local identity to be loaded. Needed for restore flow. */
+    if (!nodus_ops_is_ready()) {
         error = DNA_ENGINE_ERROR_NETWORK;
         goto done;
     }
@@ -771,8 +746,7 @@ void dna_handle_refresh_contact_profile(dna_engine_t *engine, dna_task_t *task) 
         goto done;
     }
 
-    dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
+    if (!nodus_ops_is_ready()) {
         error = DNA_ENGINE_ERROR_NETWORK;
         goto done;
     }
@@ -851,12 +825,6 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
-        error = DNA_ENGINE_ERROR_NETWORK;
-        goto done;
-    }
-
     /* Load private keys for signing */
     qgp_key_t *sign_key = dna_load_private_key(engine);
     if (!sign_key) {
@@ -880,7 +848,7 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
                  avatar_len, p->location, p->website);
 
     /* Update profile in DHT */
-    int rc = dna_update_profile(dht, engine->fingerprint, p,
+    int rc = dna_update_profile(engine->fingerprint, p,
                                  sign_key->private_key, sign_key->public_key,
                                  enc_key->public_key);
 
@@ -1109,13 +1077,9 @@ int dna_engine_restore_identity_sync(
         return DNA_ERROR_CRYPTO;
     }
 
-    /* Step 2: v0.6.0+: Load DHT identity into engine-owned context */
-    if (messenger_load_dht_identity_for_engine(fingerprint_out, &engine->dht_ctx) == 0) {
-        QGP_LOG_INFO(LOG_TAG, "Engine-owned DHT context created for restored identity");
-        dht_singleton_set_borrowed_context(engine->dht_ctx);
-    } else {
-        QGP_LOG_WARN(LOG_TAG, "Fallback: using singleton DHT for restored identity");
-        messenger_load_dht_identity(fingerprint_out);
+    /* Step 2: Load DHT identity and initialize nodus singleton */
+    if (messenger_load_dht_identity(fingerprint_out) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to load DHT identity for restored identity");
     }
 
     QGP_LOG_INFO(LOG_TAG, "Identity restored from seed: %.16s...", fingerprint_out);

@@ -10,7 +10,6 @@
 #include "profile_manager.h"
 #include "profile_cache.h"
 #include "dht/core/dht_keyserver.h"
-#include "dht/client/dht_singleton.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,7 +22,7 @@ static bool g_initialized = false;
 
 /**
  * Initialize profile manager (global, no identity required)
- * DHT context is fetched dynamically via dht_singleton_get() to handle reinit
+ * DHT operations use nodus_ops internally (no explicit context needed)
  */
 int profile_manager_init(void) {
     if (g_initialized) {
@@ -84,22 +83,9 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
         QGP_LOG_DEBUG(LOG_TAG, "Cache miss: %.16s...\n", user_fingerprint);
     }
 
-    // Step 2: Get DHT context for refresh (only needed if cache miss or expired)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        // DHT not available - return cached data if we have it (stale > nothing)
-        if (cached_identity) {
-            QGP_LOG_INFO(LOG_TAG, "DHT unavailable, returning cached profile: %.16s...\n", user_fingerprint);
-            *identity_out = cached_identity;
-            return 0;
-        }
-        QGP_LOG_DEBUG(LOG_TAG, "DHT unavailable and no cache for: %.16s...\n", user_fingerprint);
-        return -1;
-    }
-
-    // Step 3: Fetch from DHT (using keyserver)
+    // Step 2: Fetch from DHT (using keyserver)
     dna_unified_identity_t *fresh_identity = NULL;
-    result = dna_load_identity(dht_ctx, user_fingerprint, &fresh_identity);
+    result = dna_load_identity(user_fingerprint, &fresh_identity);
 
     if (result == -2) {
         // Not found in DHT
@@ -176,18 +162,11 @@ int profile_manager_refresh_profile(const char *user_fingerprint, dna_unified_id
         return -1;
     }
 
-    // Get current DHT context (handles reinit)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
-        return -1;
-    }
-
     QGP_LOG_INFO(LOG_TAG, "Force refresh from DHT: %s\n", user_fingerprint);
 
     // Fetch from DHT (using keyserver)
     dna_unified_identity_t *identity = NULL;
-    int result = dna_load_identity(dht_ctx, user_fingerprint, &identity);
+    int result = dna_load_identity(user_fingerprint, &identity);
 
     if (result == -2) {
         QGP_LOG_INFO(LOG_TAG, "Identity not found in DHT: %s\n", user_fingerprint);
@@ -223,13 +202,6 @@ int profile_manager_refresh_all_expired(void) {
         return -1;
     }
 
-    // Get current DHT context (handles reinit)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
-        return -1;
-    }
-
     // Get list of expired profiles
     char **fingerprints = NULL;
     size_t count = 0;
@@ -250,7 +222,7 @@ int profile_manager_refresh_all_expired(void) {
     int success_count = 0;
     for (size_t i = 0; i < count; i++) {
         dna_unified_identity_t *identity = NULL;
-        int result = dna_load_identity(dht_ctx, fingerprints[i], &identity);
+        int result = dna_load_identity(fingerprints[i], &identity);
 
         if (result == 0 && identity) {
             // Update cache
@@ -352,13 +324,6 @@ int profile_manager_prefetch_local_identities(const char *data_dir) {
         return -1;
     }
 
-    // Check DHT is available (handles reinit)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_DEBUG(LOG_TAG, "DHT not available, skipping prefetch\n");
-        return -1;
-    }
-
     if (!data_dir) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid data_dir\n");
         return -1;
@@ -415,7 +380,6 @@ int profile_manager_prefetch_local_identities(const char *data_dir) {
  * Tries reverse lookup first (fast), then full profile, then fallback to shortened fingerprint
  */
 int dna_get_display_name(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     char **display_name_out
 ) {
@@ -426,9 +390,9 @@ int dna_get_display_name(
     int ret;
 
     // 1. Try reverse lookup first (fingerprint:reverse key) - fast, small payload
-    if (dht_ctx) {
+    {
         char *registered_name = NULL;
-        ret = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &registered_name);
+        ret = dht_keyserver_reverse_lookup(fingerprint, &registered_name);
         if (ret == 0 && registered_name && registered_name[0] != '\0') {
             *display_name_out = registered_name;
             QGP_LOG_INFO(LOG_TAG, "✓ Display name: %s (from reverse lookup)\n", registered_name);
@@ -442,7 +406,7 @@ int dna_get_display_name(
     // 2. Reverse lookup failed - try full profile as fallback
     // This is slower but may have name in older profiles without reverse key
     dna_unified_identity_t *identity = NULL;
-    ret = dna_load_identity(dht_ctx, fingerprint, &identity);
+    ret = dna_load_identity(fingerprint, &identity);
 
     if (ret == 0 && identity) {
         // Cache the full profile (including avatar) for later use

@@ -19,13 +19,9 @@
  * DHT CONTEXT ACCESS
  * ============================================================================ */
 
-/* Get DHT context (uses singleton - P2P transport reserved for voice/video) */
+/* Get DHT context (uses compat singleton — operations still flow through compat shim) */
 dht_context_t* dna_get_dht_ctx(dna_engine_t *engine) {
-    /* v0.6.0+: Engine owns its own DHT context (no global singleton) */
-    if (engine && engine->dht_ctx) {
-        return engine->dht_ctx;
-    }
-    /* Fallback to singleton during migration (will be removed) */
+    (void)engine;
     return dht_singleton_get();
 }
 
@@ -83,30 +79,24 @@ qgp_key_t* dna_load_encryption_key(dna_engine_t *engine) {
  * DHT STABILIZATION
  * ============================================================================ */
 
-/* Wait for DHT routing table to stabilize */
+/* Wait for DHT (nodus singleton) to stabilize */
 bool dht_wait_for_stabilization(dna_engine_t *engine) {
-    dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) return false;
-
     for (int i = 0; i < DHT_STABILIZATION_MAX_SECONDS; i++) {
         if (atomic_load(&engine->shutdown_requested)) return false;
 
-        size_t node_count = dht_context_get_node_count(dht);
-        if (node_count >= DHT_STABILIZATION_MIN_NODES) {
-            QGP_LOG_INFO(LOG_TAG, "[STABILIZE] Routing table ready: %zu nodes after %ds",
-                         node_count, i);
+        if (nodus_ops_is_ready()) {
+            QGP_LOG_INFO(LOG_TAG, "[STABILIZE] Nodus ready after %ds", i);
             return true;
         }
 
         if (i > 0 && i % 5 == 0) {
-            QGP_LOG_DEBUG(LOG_TAG, "[STABILIZE] Waiting for nodes... (%zu/%d after %ds)",
-                          node_count, DHT_STABILIZATION_MIN_NODES, i);
+            QGP_LOG_DEBUG(LOG_TAG, "[STABILIZE] Waiting for nodus connection... (%ds)",
+                          i);
         }
         qgp_platform_sleep_ms(1000);
     }
 
-    size_t final_count = dht_context_get_node_count(dht);
-    QGP_LOG_WARN(LOG_TAG, "[STABILIZE] Timeout after %ds with %zu nodes (wanted %d)",
-                 DHT_STABILIZATION_MAX_SECONDS, final_count, DHT_STABILIZATION_MIN_NODES);
-    return true;  /* Continue anyway — sync functions have invariant guards against empty DHT */
+    QGP_LOG_WARN(LOG_TAG, "[STABILIZE] Timeout after %ds (nodus_ready=%d)",
+                 DHT_STABILIZATION_MAX_SECONDS, nodus_ops_is_ready());
+    return true;  /* Continue anyway — sync functions have invariant guards */
 }

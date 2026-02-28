@@ -194,7 +194,7 @@ int dht_bootstrap_discovery_run_sync(dht_context_t *dht_ctx) {
 
     int fetch_result = -1;
     for (int attempt = 1; attempt <= 3; attempt++) {
-        fetch_result = dht_bootstrap_registry_fetch(dht_ctx, &registry);
+        fetch_result = dht_bootstrap_registry_fetch(&registry);
         if (fetch_result == 0) {
             break;
         }

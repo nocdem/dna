@@ -6,9 +6,11 @@
 
 #include "client/nodus_singleton.h"
 #include <string.h>
+#include <pthread.h>
 
 static nodus_client_t g_client;
 static bool g_initialized = false;
+static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 int nodus_singleton_init(const nodus_client_config_t *config,
                           const nodus_identity_t *identity) {
@@ -44,4 +46,12 @@ void nodus_singleton_close(void) {
     if (!g_initialized) return;
     nodus_client_close(&g_client);
     g_initialized = false;
+}
+
+void nodus_singleton_lock(void) {
+    pthread_mutex_lock(&g_mutex);
+}
+
+void nodus_singleton_unlock(void) {
+    pthread_mutex_unlock(&g_mutex);
 }

@@ -924,7 +924,7 @@ int cmd_lookup_profile(dna_engine_t *engine, const char *identifier) {
 
     /* Lookup identity from DHT (handles both name and fingerprint) */
     dna_unified_identity_t *identity = NULL;
-    int ret = dht_keyserver_lookup(dht, identifier, &identity);
+    int ret = dht_keyserver_lookup(identifier, &identity);
 
     if (ret == -2) {
         printf("Error: Identity not found in DHT\n");
@@ -1656,7 +1656,7 @@ int cmd_bootstrap_registry(dna_engine_t *engine) {
     bootstrap_registry_t registry;
     memset(&registry, 0, sizeof(registry));
 
-    int ret = dht_bootstrap_registry_fetch(dht, &registry);
+    int ret = dht_bootstrap_registry_fetch(&registry);
 
     if (ret != 0) {
         printf("Error: Failed to fetch bootstrap registry (error: %d)\n", ret);
@@ -2156,15 +2156,9 @@ int cmd_group_publish_gek(dna_engine_t *engine, const char *name_or_uuid) {
      * 2. Builds IKP for all current members
      * 3. Publishes to DHT
      */
-    extern int gek_rotate_on_member_add(void *dht_ctx, const char *group_uuid, const char *owner_identity);
+    extern int gek_rotate_on_member_add(const char *group_uuid, const char *owner_identity);
 
-    void *dht_ctx = dna_engine_get_dht_context(engine);
-    if (!dht_ctx) {
-        printf("Error: DHT not initialized\n");
-        return -1;
-    }
-
-    int ret = gek_rotate_on_member_add(dht_ctx, resolved_uuid, fingerprint);
+    int ret = gek_rotate_on_member_add(resolved_uuid, fingerprint);
     if (ret != 0) {
         printf("Error: Failed to publish GEK\n");
         return -1;
@@ -2236,7 +2230,7 @@ int cmd_gek_fetch(dna_engine_t *engine, const char *group_uuid) {
     /* Get group metadata to find current GEK version */
     printf("Fetching group metadata...\n");
     dht_group_metadata_t *group_meta = NULL;
-    int ret = dht_groups_get(dht_ctx, group_uuid, &group_meta);
+    int ret = dht_groups_get(group_uuid, &group_meta);
     if (ret != 0 || !group_meta) {
         printf("Error: Failed to get group metadata (group may not exist in DHT)\n");
         qgp_key_free(kyber_key);
@@ -2252,7 +2246,7 @@ int cmd_gek_fetch(dna_engine_t *engine, const char *group_uuid) {
     printf("Fetching IKP for GEK version %u...\n", gek_version);
     uint8_t *ikp_packet = NULL;
     size_t ikp_size = 0;
-    ret = dht_gek_fetch(dht_ctx, group_uuid, gek_version, &ikp_packet, &ikp_size);
+    ret = dht_gek_fetch(group_uuid, gek_version, &ikp_packet, &ikp_size);
 
     if (ret != 0 || !ikp_packet || ikp_size == 0) {
         printf("Error: No GEK v%u found in DHT for group %s\n", gek_version, group_uuid);

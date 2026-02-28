@@ -361,6 +361,34 @@ static void handle_t2_ping(nodus_server_t *srv, nodus_session_t *sess,
     nodus_tcp_send(sess->conn, resp_buf, len);
 }
 
+static void handle_t2_servers(nodus_server_t *srv, nodus_session_t *sess,
+                                nodus_tier2_msg_t *msg) {
+    /* Build server info list: self + alive PBFT peers */
+    nodus_t2_server_info_t infos[NODUS_PBFT_MAX_PEERS + 1];
+    int count = 0;
+
+    /* Self first */
+    memset(&infos[count], 0, sizeof(infos[0]));
+    snprintf(infos[count].ip, sizeof(infos[0].ip), "%s",
+             srv->config.bind_ip[0] ? srv->config.bind_ip : "0.0.0.0");
+    infos[count].tcp_port = srv->config.tcp_port;
+    count++;
+
+    /* Alive peers */
+    for (int i = 0; i < srv->pbft.peer_count && count < NODUS_PBFT_MAX_PEERS + 1; i++) {
+        if (srv->pbft.peers[i].state != NODUS_NODE_ALIVE) continue;
+        memset(&infos[count], 0, sizeof(infos[0]));
+        snprintf(infos[count].ip, sizeof(infos[0].ip), "%s", srv->pbft.peers[i].ip);
+        infos[count].tcp_port = srv->pbft.peers[i].tcp_port;
+        count++;
+    }
+
+    size_t len = 0;
+    nodus_t2_servers_result(msg->txn_id, infos, count,
+                             resp_buf, sizeof(resp_buf), &len);
+    nodus_tcp_send(sess->conn, resp_buf, len);
+}
+
 /* ── Channel handlers ────────────────────────────────────────────── */
 
 static void handle_t2_ch_create(nodus_server_t *srv, nodus_session_t *sess,
@@ -615,6 +643,8 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         handle_t2_unlisten(srv, sess, &msg);
     else if (strcmp(msg.method, "ping") == 0)
         handle_t2_ping(srv, sess, &msg);
+    else if (strcmp(msg.method, "servers") == 0)
+        handle_t2_servers(srv, sess, &msg);
     else if (strcmp(msg.method, "ch_create") == 0)
         handle_t2_ch_create(srv, sess, &msg);
     else if (strcmp(msg.method, "ch_post") == 0)

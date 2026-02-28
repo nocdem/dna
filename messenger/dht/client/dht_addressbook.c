@@ -2,11 +2,11 @@
  * DHT Address Book Synchronization Implementation
  * Per-identity encrypted address books with DHT storage
  *
- * Uses dht_chunked layer for automatic chunking, compression, and parallel fetch.
+ * Uses nodus_ops layer for DHT storage operations.
  */
 
 #include "dht_addressbook.h"
-#include "../shared/dht_chunked.h"
+#include "../shared/nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_dilithium.h"
 #include "crypto/utils/qgp_kyber.h"
@@ -251,7 +251,6 @@ void dht_addressbook_cleanup(void) {
  * Publish address book to DHT
  */
 int dht_addressbook_publish(
-    dht_context_t *dht_ctx,
     const char *identity,
     const dht_addressbook_entry_t *entries,
     size_t entry_count,
@@ -261,7 +260,7 @@ int dht_addressbook_publish(
     const uint8_t *dilithium_privkey,
     uint32_t ttl_seconds)
 {
-    if (!dht_ctx || !identity || !kyber_pubkey || !kyber_privkey || !dilithium_pubkey || !dilithium_privkey) {
+    if (!identity || !kyber_pubkey || !kyber_privkey || !dilithium_pubkey || !dilithium_privkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for publish\n");
         return -1;
     }
@@ -390,12 +389,12 @@ int dht_addressbook_publish(
         return -1;
     }
 
-    // Step 6: Store in DHT using chunked layer
-    int result = dht_chunked_publish(dht_ctx, base_key, blob, blob_size, DHT_CHUNK_TTL_365DAY);
+    // Step 6: Store in DHT using nodus_ops layer
+    int result = nodus_ops_put_str(base_key, blob, blob_size, (365*24*3600), nodus_ops_value_id());
     free(blob);
 
-    if (result != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT: %s\n", dht_chunked_strerror(result));
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT\n");
         return -1;
     }
 
@@ -407,14 +406,13 @@ int dht_addressbook_publish(
  * Fetch address book from DHT
  */
 int dht_addressbook_fetch(
-    dht_context_t *dht_ctx,
     const char *identity,
     dht_addressbook_entry_t **entries_out,
     size_t *count_out,
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey)
 {
-    if (!dht_ctx || !identity || !entries_out || !count_out || !kyber_privkey || !dilithium_pubkey) {
+    if (!identity || !entries_out || !count_out || !kyber_privkey || !dilithium_pubkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for fetch\n");
         return -1;
     }
@@ -428,13 +426,13 @@ int dht_addressbook_fetch(
         return -1;
     }
 
-    // Step 2: Fetch from DHT using chunked layer
+    // Step 2: Fetch from DHT using nodus_ops layer
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
-    if (result != DHT_CHUNK_OK || !blob) {
-        QGP_LOG_INFO(LOG_TAG, "Address book not found in DHT: %s\n", dht_chunked_strerror(result));
+    int result = nodus_ops_get_str(base_key, &blob, &blob_size);
+    if (result != 0 || !blob) {
+        QGP_LOG_INFO(LOG_TAG, "Address book not found in DHT\n");
         return -2;  // Not found
     }
 
@@ -632,8 +630,8 @@ void dht_addressbook_free(dht_addressbook_t *addressbook) {
 /**
  * Check if address book exists in DHT
  */
-bool dht_addressbook_exists(dht_context_t *dht_ctx, const char *identity) {
-    if (!dht_ctx || !identity) {
+bool dht_addressbook_exists(const char *identity) {
+    if (!identity) {
         return false;
     }
 
@@ -645,8 +643,8 @@ bool dht_addressbook_exists(dht_context_t *dht_ctx, const char *identity) {
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
-    if (result == DHT_CHUNK_OK && blob) {
+    int result = nodus_ops_get_str(base_key, &blob, &blob_size);
+    if (result == 0 && blob) {
         free(blob);
         return true;
     }
@@ -657,8 +655,8 @@ bool dht_addressbook_exists(dht_context_t *dht_ctx, const char *identity) {
 /**
  * Get address book timestamp from DHT
  */
-int dht_addressbook_get_timestamp(dht_context_t *dht_ctx, const char *identity, uint64_t *timestamp_out) {
-    if (!dht_ctx || !identity || !timestamp_out) {
+int dht_addressbook_get_timestamp(const char *identity, uint64_t *timestamp_out) {
+    if (!identity || !timestamp_out) {
         return -1;
     }
 
@@ -670,8 +668,8 @@ int dht_addressbook_get_timestamp(dht_context_t *dht_ctx, const char *identity, 
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
-    if (result != DHT_CHUNK_OK || !blob) {
+    int result = nodus_ops_get_str(base_key, &blob, &blob_size);
+    if (result != 0 || !blob) {
         return -2;  // Not found
     }
 

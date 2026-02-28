@@ -18,7 +18,6 @@
 
 /* Context for parallel ACK publishing (v15) */
 typedef struct {
-    dht_context_t *dht;
     char my_identity[129];
     char sender[129];
 } ack_task_t;
@@ -29,7 +28,7 @@ static void ack_publish_task(void *arg) {
     if (!task) return;
 
     /* Publish ACK to notify sender we received their messages */
-    dht_publish_ack(task->dht, task->my_identity, task->sender);
+    dht_publish_ack(task->my_identity, task->sender);
 }
 
 /* 3 days in seconds - threshold for full sync */
@@ -68,17 +67,10 @@ int transport_queue_offline_message(
         return -1;
     }
 
-    dht_context_t *dht = dht_singleton_get();
-    if (!dht) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available for offline queue\n");
-        return -1;
-    }
-
     QGP_LOG_DEBUG(LOG_TAG, "Calling dht_queue_message (seq=%lu, ttl=%u)\n",
                   (unsigned long)seq_num, ctx->config.offline_ttl_seconds);
 
     int result = dht_queue_message(
-        dht,
         sender,
         recipient,
         message,
@@ -170,16 +162,6 @@ int transport_check_offline_messages(
         sender_count = contacts->count;
     }
 
-    // Query contact outboxes
-    dht_context_t *dht = dht_singleton_get();
-    if (!dht) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available for offline message check\n");
-        free(sender_fps_array);
-        if (contacts) contacts_db_free_list(contacts);
-        if (messages_received) *messages_received = 0;
-        return -1;
-    }
-
     dht_offline_message_t *messages = NULL;
     size_t count = 0;
 
@@ -216,7 +198,6 @@ int transport_check_offline_messages(
     if (need_full_sync) {
         QGP_LOG_INFO(LOG_TAG, "Smart sync: FULL (8 days) from %zu contacts", sender_count);
         result = dht_dm_outbox_sync_all_contacts_full(
-            dht,
             ctx->config.identity,
             (const char **)sender_fps_array,
             sender_count,
@@ -226,7 +207,6 @@ int transport_check_offline_messages(
     } else {
         QGP_LOG_DEBUG(LOG_TAG, "Smart sync: RECENT (3 days) from %zu contacts", sender_count);
         result = dht_dm_outbox_sync_all_contacts_recent(
-            dht,
             ctx->config.identity,
             (const char **)sender_fps_array,
             sender_count,
@@ -323,7 +303,6 @@ int transport_check_offline_messages(
 
         if (tasks && task_args) {
             for (size_t i = 0; i < ack_count; i++) {
-                tasks[i].dht = dht;
                 strncpy(tasks[i].my_identity, ctx->config.identity, sizeof(tasks[i].my_identity) - 1);
                 strncpy(tasks[i].sender, acks[i].sender, sizeof(tasks[i].sender) - 1);
                 task_args[i] = &tasks[i];

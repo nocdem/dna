@@ -258,6 +258,32 @@ static int cmd_listen(const char *key_str) {
     return 0;
 }
 
+static int cmd_servers(void) {
+    size_t len = 0;
+    uint32_t txn = next_txn++;
+    nodus_t2_servers(txn, session_token, proto_buf, sizeof(proto_buf), &len);
+    nodus_tcp_send(server_conn, proto_buf, len);
+
+    if (!wait_response(5000)) {
+        fprintf(stderr, "No response to servers request\n");
+        return 1;
+    }
+
+    if (last_response.type == 'e') {
+        fprintf(stderr, "servers error: [%d] %s\n",
+                last_response.error_code, last_response.error_msg);
+        return 1;
+    }
+
+    printf("Cluster servers (%d):\n", last_response.server_count);
+    for (int i = 0; i < last_response.server_count; i++) {
+        printf("  %s:%u\n",
+               last_response.servers[i].ip,
+               last_response.servers[i].tcp_port);
+    }
+    return 0;
+}
+
 static void cmd_whoami(void) {
     printf("Fingerprint: %s\n", identity.fingerprint);
     printf("Node ID:     ");
@@ -276,6 +302,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  put <key> <val>  Store DHT value\n");
     fprintf(stderr, "  get <key>        Retrieve DHT value\n");
     fprintf(stderr, "  listen <key>     Subscribe to key changes\n");
+    fprintf(stderr, "  servers          List cluster servers\n");
 }
 
 /* ── Main ────────────────────────────────────────────────────────── */
@@ -378,6 +405,8 @@ int main(int argc, char **argv) {
     rc = 0;
     if (strcmp(command, "ping") == 0) {
         rc = cmd_ping();
+    } else if (strcmp(command, "servers") == 0) {
+        rc = cmd_servers();
     } else if (strcmp(command, "put") == 0) {
         if (optind + 2 >= argc) {
             fprintf(stderr, "Usage: put <key> <value>\n");

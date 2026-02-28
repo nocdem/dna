@@ -20,8 +20,6 @@
 extern "C" {
 #endif
 
-typedef struct dht_context dht_context_t;
-
 #define DHT_CHANNEL_SUBS_VERSION     1
 #define DHT_CHANNEL_SUBS_TTL_SECONDS (30 * 24 * 60 * 60)
 #define DHT_CHANNEL_SUBS_MAX_COUNT   300
@@ -43,14 +41,12 @@ typedef struct {
  * Uses dht_put_signed() for owner verification - only the identity owner
  * can update their subscription list.
  *
- * @param dht_ctx DHT context
  * @param fingerprint User's 128-char fingerprint
  * @param subscriptions Array of subscriptions to sync
  * @param count Number of subscriptions (max DHT_CHANNEL_SUBS_MAX_COUNT)
  * @return 0 on success, -1 on error, -2 if too many subscriptions
  */
 int dht_channel_subscriptions_sync_to_dht(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     const dht_channel_subscription_entry_t *subscriptions,
     size_t count);
@@ -61,14 +57,12 @@ int dht_channel_subscriptions_sync_to_dht(
  * Retrieves subscriptions from DHT and returns them.
  * Does NOT automatically merge with local database - caller decides policy.
  *
- * @param dht_ctx DHT context
  * @param fingerprint User's 128-char fingerprint
  * @param subscriptions_out Output array (caller must free with dht_channel_subscriptions_free)
  * @param count_out Number of subscriptions returned
  * @return 0 on success, -1 on error, -2 if not found
  */
 int dht_channel_subscriptions_sync_from_dht(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     dht_channel_subscription_entry_t **subscriptions_out,
     size_t *count_out);

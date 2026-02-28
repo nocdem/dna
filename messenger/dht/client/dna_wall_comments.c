@@ -6,16 +6,15 @@
  * Comments are stored as multi-owner chunked values under post key.
  *
  * Storage Model (same as feed comments):
- * - Comments: "dna:wall:comments:<post_uuid>" (chunked, multi-owner)
+ * - Comments: "dna:wall:comments:<post_uuid>" (multi-owner)
  * - Each author stores their comments in their own value_id slot
- * - Uses dht_chunked_* functions like dna_feed_comments.c
+ * - Uses nodus_ops_* functions (Nodus v5 native)
  *
  * v0.7.0: Initial implementation
  */
 
 #include "dna_wall.h"
-#include "../shared/dht_chunked.h"
-#include "../core/dht_context.h"
+#include "../shared/nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_types.h"
@@ -259,14 +258,13 @@ int dna_wall_comment_verify(const dna_wall_comment_t *comment, const uint8_t *pu
     return (ret == 0) ? 0 : -1;
 }
 
-int dna_wall_comment_add(dht_context_t *dht_ctx,
-                          const char *post_uuid,
+int dna_wall_comment_add(const char *post_uuid,
                           const char *parent_comment_uuid,
                           const char *body,
                           const char *author_fingerprint,
                           const uint8_t *private_key,
                           char *uuid_out) {
-    if (!dht_ctx || !post_uuid || !body || !author_fingerprint || !private_key) {
+    if (!post_uuid || !body || !author_fingerprint || !private_key) {
         return -1;
     }
 
@@ -313,13 +311,13 @@ int dna_wall_comment_add(dht_context_t *dht_ctx,
     snprintf(comments_key, sizeof(comments_key), "%s%s",
              DNA_WALL_COMMENT_KEY_PREFIX, post_uuid);
 
-    /* Fetch MY existing comments using dht_chunked_fetch_mine() */
+    /* Fetch MY existing comments using nodus_ops_get_str() */
     dna_wall_comment_t *existing_comments = NULL;
     size_t existing_count = 0;
 
     uint8_t *existing_data = NULL;
     size_t existing_len = 0;
-    ret = dht_chunked_fetch_mine(dht_ctx, comments_key, &existing_data, &existing_len);
+    ret = nodus_ops_get_str(comments_key, &existing_data, &existing_len);
 
     if (ret == 0 && existing_data && existing_len > 0) {
         char *json_str = malloc(existing_len + 1);
@@ -350,7 +348,7 @@ int dna_wall_comment_add(dht_context_t *dht_ctx,
 
     all_comments[existing_count] = new_comment;
 
-    /* Serialize and publish using dht_chunked_publish() */
+    /* Serialize and publish using nodus_ops_put_str() */
     char *bucket_json = NULL;
     if (comments_bucket_to_json(all_comments, new_count, &bucket_json) != 0) {
         free(all_comments);
@@ -359,15 +357,15 @@ int dna_wall_comment_add(dht_context_t *dht_ctx,
 
     QGP_LOG_INFO(LOG_TAG, "Publishing %zu comments to key %s", new_count, comments_key);
 
-    ret = dht_chunked_publish(dht_ctx, comments_key,
-                               (const uint8_t *)bucket_json, strlen(bucket_json),
-                               DNA_WALL_COMMENT_TTL_SECONDS);
+    ret = nodus_ops_put_str(comments_key,
+                             (const uint8_t *)bucket_json, strlen(bucket_json),
+                             DNA_WALL_COMMENT_TTL_SECONDS, nodus_ops_value_id());
 
     free(bucket_json);
     free(all_comments);
 
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT chunked publish failed: %s", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "DHT publish failed for wall comment");
         return -1;
     }
 
@@ -380,11 +378,10 @@ int dna_wall_comment_add(dht_context_t *dht_ctx,
     return 0;
 }
 
-int dna_wall_comments_get(dht_context_t *dht_ctx,
-                           const char *post_uuid,
+int dna_wall_comments_get(const char *post_uuid,
                            dna_wall_comment_t **comments_out,
                            size_t *count_out) {
-    if (!dht_ctx || !post_uuid || !comments_out || !count_out) return -1;
+    if (!post_uuid || !comments_out || !count_out) return -1;
 
     *comments_out = NULL;
     *count_out = 0;
@@ -395,12 +392,12 @@ int dna_wall_comments_get(dht_context_t *dht_ctx,
 
     QGP_LOG_INFO(LOG_TAG, "Fetching comments for post %s", post_uuid);
 
-    /* Fetch all authors' comments using dht_chunked_fetch_all() */
+    /* Fetch all authors' comments using nodus_ops_get_all_str() */
     uint8_t **values = NULL;
     size_t *lens = NULL;
     size_t value_count = 0;
 
-    int ret = dht_chunked_fetch_all(dht_ctx, comments_key, &values, &lens, &value_count);
+    int ret = nodus_ops_get_all_str(comments_key, &values, &lens, &value_count);
 
     if (ret != 0 || value_count == 0) {
         QGP_LOG_DEBUG(LOG_TAG, "No comments found for post %s", post_uuid);

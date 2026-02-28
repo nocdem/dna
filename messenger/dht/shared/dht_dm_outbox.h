@@ -21,9 +21,8 @@
 #ifndef DHT_DM_OUTBOX_H
 #define DHT_DM_OUTBOX_H
 
-#include "../core/dht_context.h"
-#include "../core/dht_listen.h"
 #include "dht_offline_queue.h"
+#include "nodus_ops.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -65,10 +64,9 @@ typedef struct {
     char my_fp[129];                    /* My fingerprint (recipient) */
     char contact_fp[129];               /* Contact fingerprint (sender) */
     uint64_t current_day;               /* Current day bucket being listened */
-    size_t listen_token;                /* Token from dht_listen_ex() */
-    dht_listen_callback_t callback;     /* User callback for new messages */
+    size_t listen_token;                /* Token from nodus_ops_listen() */
+    nodus_ops_listen_cb_t callback;     /* User callback for new messages */
     void *user_data;                    /* User data for callback */
-    dht_context_t *dht_ctx;             /* DHT context (for resubscription) */
 } dht_dm_listen_ctx_t;
 
 /*============================================================================
@@ -118,7 +116,6 @@ int dht_dm_outbox_make_key(
  *
  * NOTE: No watermark fetching or pruning! TTL handles cleanup.
  *
- * @param ctx DHT context
  * @param sender Sender fingerprint (128 hex chars)
  * @param recipient Recipient fingerprint (128 hex chars)
  * @param ciphertext Encrypted message blob
@@ -128,7 +125,6 @@ int dht_dm_outbox_make_key(
  * @return 0 on success, -1 on failure
  */
 int dht_dm_queue_message(
-    dht_context_t *ctx,
     const char *sender,
     const char *recipient,
     const uint8_t *ciphertext,
@@ -144,7 +140,6 @@ int dht_dm_queue_message(
 /**
  * @brief Sync messages from a specific day bucket
  *
- * @param ctx DHT context
  * @param my_fp My fingerprint (recipient)
  * @param contact_fp Contact fingerprint (sender)
  * @param day_bucket Day to sync (0 = current day)
@@ -153,7 +148,6 @@ int dht_dm_queue_message(
  * @return 0 on success, -1 on failure
  */
 int dht_dm_outbox_sync_day(
-    dht_context_t *ctx,
     const char *my_fp,
     const char *contact_fp,
     uint64_t day_bucket,
@@ -167,7 +161,6 @@ int dht_dm_outbox_sync_day(
  * Fetches 3 days in parallel for clock skew tolerance.
  * Use this for periodic sync while app is running.
  *
- * @param ctx DHT context
  * @param my_fp My fingerprint (recipient)
  * @param contact_fp Contact fingerprint (sender)
  * @param messages_out Output array (caller must free with dht_offline_messages_free)
@@ -175,7 +168,6 @@ int dht_dm_outbox_sync_day(
  * @return 0 on success, -1 on failure
  */
 int dht_dm_outbox_sync_recent(
-    dht_context_t *ctx,
     const char *my_fp,
     const char *contact_fp,
     dht_offline_message_t **messages_out,
@@ -188,7 +180,6 @@ int dht_dm_outbox_sync_recent(
  * Fetches today-6 to today+1 (8 days total).
  * Use this on login or recovery.
  *
- * @param ctx DHT context
  * @param my_fp My fingerprint (recipient)
  * @param contact_fp Contact fingerprint (sender)
  * @param messages_out Output array (caller must free with dht_offline_messages_free)
@@ -196,7 +187,6 @@ int dht_dm_outbox_sync_recent(
  * @return 0 on success, -1 on failure
  */
 int dht_dm_outbox_sync_full(
-    dht_context_t *ctx,
     const char *my_fp,
     const char *contact_fp,
     dht_offline_message_t **messages_out,
@@ -209,7 +199,6 @@ int dht_dm_outbox_sync_full(
  * For each contact, syncs 3 days (yesterday, today, tomorrow).
  * All contacts queried in parallel for performance.
  *
- * @param ctx DHT context
  * @param my_fp My fingerprint (recipient)
  * @param contact_list Array of contact fingerprints (senders)
  * @param contact_count Number of contacts
@@ -218,7 +207,6 @@ int dht_dm_outbox_sync_full(
  * @return 0 on success, -1 on failure
  */
 int dht_dm_outbox_sync_all_contacts_recent(
-    dht_context_t *ctx,
     const char *my_fp,
     const char **contact_list,
     size_t contact_count,
@@ -232,7 +220,6 @@ int dht_dm_outbox_sync_all_contacts_recent(
  * For each contact, syncs today-6 to today+1 (8 days total).
  * Use this on login after extended offline period (>3 days).
  *
- * @param ctx DHT context
  * @param my_fp My fingerprint (recipient)
  * @param contact_list Array of contact fingerprints (senders)
  * @param contact_count Number of contacts
@@ -241,7 +228,6 @@ int dht_dm_outbox_sync_all_contacts_recent(
  * @return 0 on success, -1 on failure
  */
 int dht_dm_outbox_sync_all_contacts_full(
-    dht_context_t *ctx,
     const char *my_fp,
     const char **contact_list,
     size_t contact_count,
@@ -260,7 +246,6 @@ int dht_dm_outbox_sync_all_contacts_full(
  * Caller must call dht_dm_outbox_check_day_rotation() periodically
  * to rotate listener at midnight UTC.
  *
- * @param ctx DHT context
  * @param my_fp My fingerprint (recipient)
  * @param contact_fp Contact fingerprint (sender to listen to)
  * @param callback Callback when new messages arrive
@@ -269,10 +254,9 @@ int dht_dm_outbox_sync_all_contacts_full(
  * @return 0 on success, -1 on failure
  */
 int dht_dm_outbox_subscribe(
-    dht_context_t *ctx,
     const char *my_fp,
     const char *contact_fp,
-    dht_listen_callback_t callback,
+    nodus_ops_listen_cb_t callback,
     void *user_data,
     dht_dm_listen_ctx_t **listen_ctx_out
 );
@@ -282,11 +266,9 @@ int dht_dm_outbox_subscribe(
  *
  * Cancels DHT listener and frees context.
  *
- * @param ctx DHT context (may be NULL if already freed)
  * @param listen_ctx Listen context to free
  */
 void dht_dm_outbox_unsubscribe(
-    dht_context_t *ctx,
     dht_dm_listen_ctx_t *listen_ctx
 );
 
@@ -299,12 +281,10 @@ void dht_dm_outbox_unsubscribe(
  * 2. Subscribes to new day's bucket
  * 3. Syncs yesterday (catch any messages from previous bucket)
  *
- * @param ctx DHT context
  * @param listen_ctx Listen context
  * @return 1 if rotated, 0 if no change, -1 on error
  */
 int dht_dm_outbox_check_day_rotation(
-    dht_context_t *ctx,
     dht_dm_listen_ctx_t *listen_ctx
 );
 
@@ -325,10 +305,9 @@ void dht_dm_outbox_cache_clear(void);
  * Republishes entries that failed to publish earlier.
  * Call when DHT becomes ready.
  *
- * @param ctx DHT context
  * @return Number of entries synced
  */
-int dht_dm_outbox_cache_sync_pending(dht_context_t *ctx);
+int dht_dm_outbox_cache_sync_pending(void);
 
 #ifdef __cplusplus
 }

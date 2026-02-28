@@ -37,7 +37,6 @@
 #ifndef DHT_GROUPLIST_H
 #define DHT_GROUPLIST_H
 
-#include "../core/dht_context.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -96,7 +95,6 @@ void dht_grouplist_cleanup(void);
  * 4. Create binary blob: [header][encrypted_json][signature]
  * 5. Store in DHT at SHA3-512(identity + ":grouplist")
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity (fingerprint, 128 hex chars)
  * @param group_uuids Array of group UUIDs (36 chars each)
  * @param group_count Number of groups
@@ -108,7 +106,6 @@ void dht_grouplist_cleanup(void);
  * @return 0 on success, -1 on error
  */
 int dht_grouplist_publish(
-    dht_context_t *dht_ctx,
     const char *identity,
     const char **group_uuids,
     size_t group_count,
@@ -129,7 +126,6 @@ int dht_grouplist_publish(
  * 4. Verify Dilithium5 signature
  * 5. Parse JSON to group list
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity
  * @param groups_out Output array of group UUIDs (caller must free with dht_grouplist_free_groups)
  * @param count_out Output number of groups
@@ -138,7 +134,6 @@ int dht_grouplist_publish(
  * @return 0 on success, -1 on error, -2 if not found
  */
 int dht_grouplist_fetch(
-    dht_context_t *dht_ctx,
     const char *identity,
     char ***groups_out,
     size_t *count_out,
@@ -164,12 +159,10 @@ void dht_grouplist_free(dht_grouplist_t *list);
 /**
  * Check if group list exists in DHT
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity
  * @return true if exists, false otherwise
  */
 bool dht_grouplist_exists(
-    dht_context_t *dht_ctx,
     const char *identity
 );
 
@@ -177,13 +170,11 @@ bool dht_grouplist_exists(
  * Get group list timestamp from DHT (without full fetch)
  * Useful for checking if local copy is outdated
  *
- * @param dht_ctx DHT context
  * @param identity Owner identity
  * @param timestamp_out Output timestamp
  * @return 0 on success, -1 on error, -2 if not found
  */
 int dht_grouplist_get_timestamp(
-    dht_context_t *dht_ctx,
     const char *identity,
     uint64_t *timestamp_out
 );

@@ -60,6 +60,15 @@ const nodus_identity_t *nodus_singleton_identity(void);
  */
 void nodus_singleton_close(void);
 
+/**
+ * Lock/unlock the singleton mutex.
+ * Must be held around any sequence of nodus_client_* calls
+ * (send request + wait response) to prevent concurrent access.
+ * The nodus client is single-threaded; the mutex serializes callers.
+ */
+void nodus_singleton_lock(void);
+void nodus_singleton_unlock(void);
+
 #ifdef __cplusplus
 }
 #endif

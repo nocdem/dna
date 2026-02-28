@@ -2,14 +2,14 @@
  * DHT GEK (Group Encryption Key) Synchronization Implementation
  * Per-identity encrypted GEK cache with DHT storage
  *
- * Uses dht_chunked layer for automatic chunking, compression, and parallel fetch.
+ * Uses nodus_ops layer for DHT storage operations.
  *
  * @file dht_geks.c
  * @date 2026-01-25
  */
 
 #include "dht_geks.h"
-#include "../shared/dht_chunked.h"
+#include "../shared/nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_dilithium.h"
 #include "crypto/utils/qgp_kyber.h"
@@ -141,7 +141,7 @@ static int base64_decode(const char *data, uint8_t *out, size_t *out_len) {
 /**
  * Generate base key string for GEK storage
  * Format: "identity:geks"
- * The dht_chunked layer handles hashing internally
+ * The nodus_ops layer handles hashing internally
  */
 static int make_base_key(const char *identity, char *key_out, size_t key_out_size) {
     if (!identity || !key_out) {
@@ -379,7 +379,6 @@ void dht_geks_cleanup(void) {
  * Publish GEKs to DHT
  */
 int dht_geks_publish(
-    dht_context_t *dht_ctx,
     const char *identity,
     const dht_gek_entry_t *entries,
     size_t entry_count,
@@ -389,7 +388,7 @@ int dht_geks_publish(
     const uint8_t *dilithium_privkey,
     uint32_t ttl_seconds)
 {
-    if (!dht_ctx || !identity || !kyber_pubkey || !kyber_privkey || !dilithium_pubkey || !dilithium_privkey) {
+    if (!identity || !kyber_pubkey || !kyber_privkey || !dilithium_pubkey || !dilithium_privkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for publish\n");
         return -1;
     }
@@ -520,12 +519,12 @@ int dht_geks_publish(
         return -1;
     }
 
-    // Step 6: Store in DHT using chunked layer (handles compression, chunking, signing)
-    int result = dht_chunked_publish(dht_ctx, base_key, blob, blob_size, DHT_CHUNK_TTL_365DAY);
+    // Step 6: Store in DHT using nodus_ops layer
+    int result = nodus_ops_put_str(base_key, blob, blob_size, (365*24*3600), nodus_ops_value_id());
     free(blob);
 
-    if (result != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT: %s\n", dht_chunked_strerror(result));
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT\n");
         return -1;
     }
 
@@ -537,14 +536,13 @@ int dht_geks_publish(
  * Fetch GEKs from DHT
  */
 int dht_geks_fetch(
-    dht_context_t *dht_ctx,
     const char *identity,
     dht_gek_entry_t **entries_out,
     size_t *count_out,
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey)
 {
-    if (!dht_ctx || !identity || !entries_out || !count_out || !kyber_privkey || !dilithium_pubkey) {
+    if (!identity || !entries_out || !count_out || !kyber_privkey || !dilithium_pubkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for fetch\n");
         return -1;
     }
@@ -558,13 +556,13 @@ int dht_geks_fetch(
         return -1;
     }
 
-    // Step 2: Fetch from DHT using chunked layer (handles decompression, reassembly)
+    // Step 2: Fetch from DHT using nodus_ops layer
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
-    if (result != DHT_CHUNK_OK || !blob) {
-        QGP_LOG_INFO(LOG_TAG, "GEKs not found in DHT: %s\n", dht_chunked_strerror(result));
+    int result = nodus_ops_get_str(base_key, &blob, &blob_size);
+    if (result != 0 || !blob) {
+        QGP_LOG_INFO(LOG_TAG, "GEKs not found in DHT\n");
         return -2;  // Not found
     }
 
@@ -762,8 +760,8 @@ void dht_geks_free_cache(dht_geks_cache_t *cache) {
 /**
  * Check if GEKs exist in DHT
  */
-bool dht_geks_exists(dht_context_t *dht_ctx, const char *identity) {
-    if (!dht_ctx || !identity) {
+bool dht_geks_exists(const char *identity) {
+    if (!identity) {
         return false;
     }
 
@@ -775,8 +773,8 @@ bool dht_geks_exists(dht_context_t *dht_ctx, const char *identity) {
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
-    if (result == DHT_CHUNK_OK && blob) {
+    int result = nodus_ops_get_str(base_key, &blob, &blob_size);
+    if (result == 0 && blob) {
         free(blob);
         return true;
     }
@@ -787,8 +785,8 @@ bool dht_geks_exists(dht_context_t *dht_ctx, const char *identity) {
 /**
  * Get GEKs timestamp from DHT
  */
-int dht_geks_get_timestamp(dht_context_t *dht_ctx, const char *identity, uint64_t *timestamp_out) {
-    if (!dht_ctx || !identity || !timestamp_out) {
+int dht_geks_get_timestamp(const char *identity, uint64_t *timestamp_out) {
+    if (!identity || !timestamp_out) {
         return -1;
     }
 
@@ -800,8 +798,8 @@ int dht_geks_get_timestamp(dht_context_t *dht_ctx, const char *identity, uint64_
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
-    if (result != DHT_CHUNK_OK || !blob) {
+    int result = nodus_ops_get_str(base_key, &blob, &blob_size);
+    if (result != 0 || !blob) {
         return -2;  // Not found
     }
 

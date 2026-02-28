@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
     // Lookup by name first
     printf("[4/4] Looking up '%s'...\n", lookup_target);
     char *fingerprint = NULL;
-    int ret = dna_lookup_by_name(ctx, lookup_target, &fingerprint);
+    int ret = dna_lookup_by_name(lookup_target, &fingerprint);
 
     if (ret == 0 && fingerprint) {
         printf("✓ Name found!\n");
@@ -82,7 +82,7 @@ int main(int argc, char **argv) {
     // Load full identity/profile
     printf("Loading full identity from DHT...\n");
     dna_unified_identity_t *identity = NULL;
-    ret = dna_load_identity(ctx, fingerprint, &identity);
+    ret = dna_load_identity(fingerprint, &identity);
 
     if (ret != 0 || !identity) {
         printf("✗ Identity not found or verification failed\n");

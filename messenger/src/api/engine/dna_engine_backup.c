@@ -67,19 +67,6 @@ static void *backup_thread_func(void *arg) {
         return NULL;
     }
 
-    /* Get DHT context */
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "[BACKUP-THREAD] DHT not available");
-        if (ctx->callback) {
-            ctx->callback(ctx->request_id, -1, 0, 0, ctx->user_data);
-        }
-        qgp_key_free(ctx->kyber_key);
-        qgp_key_free(ctx->dilithium_key);
-        free(ctx);
-        return NULL;
-    }
-
     /* Get message backup context */
     message_backup_context_t *msg_ctx = engine->messenger->backup_ctx;
     if (!msg_ctx) {
@@ -96,7 +83,6 @@ static void *backup_thread_func(void *arg) {
     /* Perform backup (slow DHT operation) */
     int message_count = 0;
     int result = dht_message_backup_publish(
-        dht_ctx,
         msg_ctx,
         engine->fingerprint,
         ctx->kyber_key->public_key,
@@ -146,19 +132,6 @@ static void *restore_thread_func(void *arg) {
         return NULL;
     }
 
-    /* Get DHT context */
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "[RESTORE-THREAD] DHT not available");
-        if (ctx->callback) {
-            ctx->callback(ctx->request_id, -1, 0, 0, ctx->user_data);
-        }
-        qgp_key_free(ctx->kyber_key);
-        qgp_key_free(ctx->dilithium_key);
-        free(ctx);
-        return NULL;
-    }
-
     /* Get message backup context */
     message_backup_context_t *msg_ctx = engine->messenger->backup_ctx;
     if (!msg_ctx) {
@@ -176,7 +149,6 @@ static void *restore_thread_func(void *arg) {
     int restored_count = 0;
     int skipped_count = 0;
     int result = dht_message_backup_restore(
-        dht_ctx,
         msg_ctx,
         engine->fingerprint,
         ctx->kyber_key->private_key,
@@ -525,9 +497,8 @@ void dna_handle_sync_group_by_uuid(dna_engine_t *engine, dna_task_t *task) {
     } else if (!group_uuid || strlen(group_uuid) != 36) {
         error = DNA_ENGINE_ERROR_INVALID_PARAM;
     } else {
-        dht_context_t *dht_ctx = dht_singleton_get();
-        if (dht_ctx) {
-            int ret = dht_groups_sync_from_dht(dht_ctx, group_uuid);
+        if (nodus_ops_is_ready()) {
+            int ret = dht_groups_sync_from_dht(group_uuid);
             if (ret != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "Failed to sync group %s from DHT: %d", group_uuid, ret);
                 error = DNA_ENGINE_ERROR_NETWORK;
@@ -543,7 +514,7 @@ void dna_handle_sync_group_by_uuid(dna_engine_t *engine, dna_task_t *task) {
 
                 /* Sync messages from DHT to local DB */
                 size_t msg_count = 0;
-                int msg_ret = dna_group_outbox_sync(dht_ctx, group_uuid, &msg_count);
+                int msg_ret = dna_group_outbox_sync(group_uuid, &msg_count);
                 if (msg_ret != 0) {
                     QGP_LOG_WARN(LOG_TAG, "Failed to sync messages for group %s (non-fatal)", group_uuid);
                 } else if (msg_count > 0) {
@@ -578,14 +549,6 @@ static void task_sync_addressbook_to_dht(void *data) {
 
     int error = 0;
 
-    /* Get DHT context */
-    dht_context_t *dht_ctx = dna_get_dht_ctx(task->engine);
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "No DHT context for address book sync");
-        error = -1;
-        goto done;
-    }
-
     /* Load keys */
     qgp_key_t *sign_key = dna_load_private_key(task->engine);
     qgp_key_t *enc_key = dna_load_encryption_key(task->engine);
@@ -615,7 +578,6 @@ static void task_sync_addressbook_to_dht(void *data) {
 
     /* Publish to DHT */
     int result = dht_addressbook_publish(
-        dht_ctx,
         task->engine->fingerprint,
         dht_entries,
         list->count,
@@ -654,14 +616,6 @@ static void task_sync_addressbook_from_dht(void *data) {
 
     int error = 0;
 
-    /* Get DHT context */
-    dht_context_t *dht_ctx = dna_get_dht_ctx(task->engine);
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "No DHT context for address book sync");
-        error = -1;
-        goto done;
-    }
-
     /* Load keys */
     qgp_key_t *sign_key = dna_load_private_key(task->engine);
     qgp_key_t *enc_key = dna_load_encryption_key(task->engine);
@@ -678,7 +632,6 @@ static void task_sync_addressbook_from_dht(void *data) {
     size_t entry_count = 0;
 
     int result = dht_addressbook_fetch(
-        dht_ctx,
         task->engine->fingerprint,
         &dht_entries,
         &entry_count,
@@ -811,22 +764,13 @@ dna_request_id_t dna_engine_check_backup_exists(
         return request_id;
     }
 
-    /* Get DHT context */
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "check_backup_exists: DHT not initialized");
-        dna_backup_info_t info = {0};
-        callback(request_id, -1, &info, user_data);
-        return request_id;
-    }
-
     QGP_LOG_INFO(LOG_TAG, "Checking if backup exists for fingerprint %.20s...",
                  engine->fingerprint);
 
     /* Use dht_message_backup_get_info to check without full download */
     uint64_t timestamp = 0;
     int message_count = -1;
-    int result = dht_message_backup_get_info(dht_ctx, engine->fingerprint,
+    int result = dht_message_backup_get_info(engine->fingerprint,
                                               &timestamp, &message_count);
 
     dna_backup_info_t info = {0};

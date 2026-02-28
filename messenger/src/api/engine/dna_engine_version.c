@@ -70,13 +70,6 @@ int dna_engine_publish_version(
         return DNA_ENGINE_ERROR_INVALID_PARAM;
     }
 
-    /* Get DHT context */
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "publish_version: DHT not available");
-        return DNA_ENGINE_ERROR_NETWORK;
-    }
-
     /* Build JSON payload */
     json_object *root = json_object_new_object();
     json_object_object_add(root, "version", json_object_new_int(1));
@@ -112,12 +105,10 @@ int dna_engine_publish_version(
                  library_version, app_version, nodus_version);
 
     /* Publish with signed permanent (first writer owns the key) */
-    int result = dht_put_signed_permanent(
-        dht_ctx,
+    int result = nodus_ops_put_permanent(
         dht_key, sizeof(dht_key),
         (const uint8_t *)json_str, json_len,
-        VERSION_VALUE_ID,
-        "version_publish"
+        VERSION_VALUE_ID
     );
 
     json_object_put(root);
@@ -143,13 +134,6 @@ int dna_engine_check_version_dht(
 
     memset(result_out, 0, sizeof(dna_version_check_result_t));
 
-    /* Get DHT context - can work without identity for reading */
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "check_version: DHT not available");
-        return DNA_ENGINE_ERROR_NETWORK;
-    }
-
     /* Compute DHT key: SHA3-512(VERSION_DHT_KEY_BASE) */
     uint8_t dht_key[64];
     qgp_sha3_512((const uint8_t *)VERSION_DHT_KEY_BASE, strlen(VERSION_DHT_KEY_BASE), dht_key);
@@ -157,7 +141,7 @@ int dna_engine_check_version_dht(
     /* Fetch from DHT */
     uint8_t *value = NULL;
     size_t value_len = 0;
-    int fetch_result = dht_get(dht_ctx, dht_key, sizeof(dht_key), &value, &value_len);
+    int fetch_result = nodus_ops_get(dht_key, sizeof(dht_key), &value, &value_len);
 
     if (fetch_result != 0 || !value || value_len == 0) {
         QGP_LOG_DEBUG(LOG_TAG, "No version info found in DHT");

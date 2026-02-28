@@ -5,6 +5,7 @@
 
 #include "keyserver_core.h"
 #include "../core/dht_keyserver.h"
+#include "dht/shared/nodus_ops.h"
 #include "crypto/utils/qgp_log.h"
 #include "database/profile_cache.h"
 
@@ -12,21 +13,20 @@
 
 // Update DNA profile data
 int dna_update_profile(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     const dna_profile_t *profile,
     const uint8_t *dilithium_privkey,
     const uint8_t *dilithium_pubkey,
     const uint8_t *kyber_pubkey
 ) {
-    if (!dht_ctx || !fingerprint || !profile || !dilithium_privkey || !dilithium_pubkey || !kyber_pubkey) {
+    if (!fingerprint || !profile || !dilithium_privkey || !dilithium_pubkey || !kyber_pubkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to dna_update_profile\n");
         return -1;
     }
 
     // Load existing identity from DHT
     dna_unified_identity_t *identity = NULL;
-    int ret = dna_load_identity(dht_ctx, fingerprint, &identity);
+    int ret = dna_load_identity(fingerprint, &identity);
 
     if (ret != 0) {
         // DHT failed - try cache fallback to preserve existing data
@@ -137,13 +137,13 @@ int dna_update_profile(
     QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] dna_update_profile called for %.16s...\n", fingerprint);
     QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] Base key: %s\n", base_key);
 
-    // Store in DHT via chunked layer with PERMANENT TTL for identity data
-    ret = dht_chunked_publish(dht_ctx, base_key,
-                              (uint8_t*)json, strlen(json),
-                              DHT_CHUNK_TTL_PERMANENT);
+    // Store in DHT with permanent TTL (0) for identity data
+    ret = nodus_ops_put_str(base_key,
+                            (uint8_t*)json, strlen(json),
+                            0, nodus_ops_value_id());
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT: %s\n", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT (ret=%d)\n", ret);
         free(json);
         dna_identity_free(identity);
         return -1;
@@ -157,11 +157,10 @@ int dna_update_profile(
 
 // Load complete DNA identity from DHT
 int dna_load_identity(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     dna_unified_identity_t **identity_out
 ) {
-    if (!dht_ctx || !fingerprint || !identity_out) {
+    if (!fingerprint || !identity_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to dna_load_identity\n");
         return -1;
     }
@@ -173,13 +172,13 @@ int dna_load_identity(
     QGP_LOG_INFO(LOG_TAG, "Loading identity for fingerprint %.16s...\n", fingerprint);
     QGP_LOG_INFO(LOG_TAG, "Base key: %s\n", base_key);
 
-    // Fetch from DHT via chunked layer (single value, chunked handles versioning)
+    // Fetch from DHT via nodus_ops
     uint8_t *value = NULL;
     size_t value_len = 0;
 
-    int ret = dht_chunked_fetch(dht_ctx, base_key, &value, &value_len);
-    if (ret != DHT_CHUNK_OK || !value) {
-        QGP_LOG_ERROR(LOG_TAG, "Identity not found in DHT: %s\n", dht_chunked_strerror(ret));
+    int ret = nodus_ops_get_str(base_key, &value, &value_len);
+    if (ret != 0 || !value) {
+        QGP_LOG_ERROR(LOG_TAG, "Identity not found in DHT (ret=%d)\n", ret);
         return -2;  // Not found
     }
 

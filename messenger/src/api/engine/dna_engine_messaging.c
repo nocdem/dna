@@ -310,9 +310,8 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* First, sync any pending outboxes (our messages that failed to publish earlier) */
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (dht_ctx) {
-        int synced = dht_offline_queue_sync_pending(dht_ctx);
+    {
+        int synced = dht_offline_queue_sync_pending();
         if (synced > 0) {
             QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] Synced %d pending outboxes to DHT", synced);
         }
@@ -359,9 +358,9 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
     if (contacts) contacts_db_free_list(contacts);
 
     /* Also sync group messages from DHT */
-    if (dht_ctx) {
+    {
         size_t group_msg_count = 0;
-        rc = dna_group_outbox_sync_all(dht_ctx, engine->fingerprint, &group_msg_count);
+        rc = dna_group_outbox_sync_all(engine->fingerprint, &group_msg_count);
         if (rc == 0) {
             QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] Group messages sync complete: %zu new", group_msg_count);
         } else if (rc != DNA_GROUP_OUTBOX_ERR_NULL_PARAM) {
@@ -494,12 +493,9 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine) {
     if (!engine) return -1;
     if (!engine->messenger) return -1;
 
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-    if (!dht_ctx) return -1;
-
     /* Skip retry if DHT is not connected - retries will fail and block for timeout
      * Messages will be retried when DHT reconnects (triggers this function again) */
-    if (!dht_context_is_ready(dht_ctx)) {
+    if (!nodus_ops_is_ready()) {
         QGP_LOG_INFO(LOG_TAG, "[RETRY] Skipping retry - DHT not connected");
         return 0;
     }
@@ -581,10 +577,6 @@ int dna_engine_retry_pending_messages(dna_engine_t *engine) {
 int dna_engine_retry_message(dna_engine_t *engine, int message_id) {
     if (!engine || message_id <= 0) return -1;
     if (!engine->messenger) return -1;
-
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-    if (!dht_ctx) return -1;
-    (void)dht_ctx;  /* Used by retry_single_message via dna_get_dht_ctx */
 
     message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
     if (!backup_ctx) return -1;

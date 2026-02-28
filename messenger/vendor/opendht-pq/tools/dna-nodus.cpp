@@ -200,7 +200,7 @@ int main(int argc, char** argv) {
     // No longer providing STUN/TURN relay services to protect user IP privacy
 
     // Register in bootstrap registry
-    if (dht_bootstrap_registry_register(global_ctx, public_ip.c_str(), cfg.dht_port,
+    if (dht_bootstrap_registry_register(public_ip.c_str(), cfg.dht_port,
                                          node_id, NODUS_VERSION_STRING, 0) == 0) {
         std::cout << "[REGISTRY] Registered in bootstrap registry" << std::endl;
     }
@@ -246,12 +246,12 @@ int main(int argc, char** argv) {
         // Every 5 minutes: Refresh registry + discover peers
         if (seconds % 300 == 0) {
             // Refresh own registration
-            dht_bootstrap_registry_register(global_ctx, public_ip.c_str(), cfg.dht_port,
+            dht_bootstrap_registry_register(public_ip.c_str(), cfg.dht_port,
                                             node_id, NODUS_VERSION_STRING, seconds);
 
             // Discover new peers
             bootstrap_registry_t registry;
-            if (dht_bootstrap_registry_fetch(global_ctx, &registry) == 0) {
+            if (dht_bootstrap_registry_fetch(&registry) == 0) {
                 dht_bootstrap_registry_filter_active(&registry);
 
                 int new_peers = 0;

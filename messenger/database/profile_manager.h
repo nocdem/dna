@@ -8,7 +8,7 @@
  * - Falls back to DHT if not cached or expired (>7 days)
  * - Automatically updates cache after DHT fetch
  * - Can be initialized before identity is loaded (for prefetching)
- * - DHT context obtained dynamically via dht_singleton_get() (handles reinit)
+ * - DHT operations use nodus_ops internally (no explicit context needed)
  *
  * Usage:
  * 1. Initialize: profile_manager_init() - at engine startup
@@ -31,7 +31,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "dht/client/dna_profile.h"
-#include "dht/core/dht_context.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -40,7 +39,7 @@ extern "C" {
 /**
  * Initialize profile manager (global, no identity required)
  * Opens global cache database
- * DHT context is obtained dynamically via dht_singleton_get()
+ * DHT operations use nodus_ops internally
  *
  * @return 0 on success, -1 on error
  */
@@ -121,13 +120,11 @@ int profile_manager_prefetch_local_identities(const char *data_dir);
  * Get display name for fingerprint
  * Tries reverse lookup first (fast), then full profile, then fallback to shortened fingerprint
  *
- * @param dht_ctx DHT context (can be NULL, will skip reverse lookup)
  * @param fingerprint Fingerprint (128 hex chars)
  * @param display_name_out Output display name (caller must free)
  * @return 0 on success, -1 on error
  */
 int dna_get_display_name(
-    dht_context_t *dht_ctx,
     const char *fingerprint,
     char **display_name_out
 );

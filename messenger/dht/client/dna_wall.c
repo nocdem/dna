@@ -9,8 +9,7 @@
  */
 
 #include "dna_wall.h"
-#include "../shared/dht_chunked.h"
-#include "../core/dht_context.h"
+#include "../shared/nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_dilithium.h"
 #include "crypto/utils/qgp_random.h"
@@ -264,12 +263,11 @@ int dna_wall_from_json(const char *json, dna_wall_t *wall) {
  * Wall Operations
  * ========================================================================== */
 
-int dna_wall_post(dht_context_t *dht,
-                  const char *fingerprint,
+int dna_wall_post(const char *fingerprint,
                   const uint8_t *private_key,
                   const char *text,
                   dna_wall_post_t *out_post) {
-    if (!dht || !fingerprint || !private_key || !text) {
+    if (!fingerprint || !private_key || !text) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for wall post");
         return -1;
     }
@@ -318,7 +316,7 @@ int dna_wall_post(dht_context_t *dht,
     strncpy(wall.owner_fingerprint, fingerprint, 128);
     wall.owner_fingerprint[128] = '\0';
 
-    int load_ret = dna_wall_load(dht, fingerprint, &wall);
+    int load_ret = dna_wall_load(fingerprint, &wall);
     /* load_ret == -2 means no existing wall, which is fine */
     if (load_ret != 0 && load_ret != -2) {
         QGP_LOG_WARN(LOG_TAG, "Failed to load existing wall, starting fresh");
@@ -369,13 +367,13 @@ int dna_wall_post(dht_context_t *dht,
     wall_base_key(fingerprint, base_key, sizeof(base_key));
 
     QGP_LOG_INFO(LOG_TAG, "Publishing wall post %s to DHT", new_post.uuid);
-    ret = dht_chunked_publish(dht, base_key,
-                               (const uint8_t *)json_str, strlen(json_str),
-                               DHT_CHUNK_TTL_30DAY);
+    ret = nodus_ops_put_str(base_key,
+                             (const uint8_t *)json_str, strlen(json_str),
+                             (30*24*3600), nodus_ops_value_id());
     free(json_str);
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to publish wall: %s", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish wall (ret=%d)", ret);
         dna_wall_free(&wall);
         return -1;
     }
@@ -390,18 +388,17 @@ int dna_wall_post(dht_context_t *dht,
     return 0;
 }
 
-int dna_wall_post_with_image(dht_context_t *dht,
-                              const char *fingerprint,
+int dna_wall_post_with_image(const char *fingerprint,
                               const uint8_t *private_key,
                               const char *text,
                               const char *image_json,
                               dna_wall_post_t *out_post) {
     if (!image_json) {
         /* No image — delegate to text-only variant */
-        return dna_wall_post(dht, fingerprint, private_key, text, out_post);
+        return dna_wall_post(fingerprint, private_key, text, out_post);
     }
 
-    if (!dht || !fingerprint || !private_key || !text) {
+    if (!fingerprint || !private_key || !text) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for wall post with image");
         return -1;
     }
@@ -452,7 +449,7 @@ int dna_wall_post_with_image(dht_context_t *dht,
     strncpy(wall.owner_fingerprint, fingerprint, 128);
     wall.owner_fingerprint[128] = '\0';
 
-    int load_ret = dna_wall_load(dht, fingerprint, &wall);
+    int load_ret = dna_wall_load(fingerprint, &wall);
     if (load_ret != 0 && load_ret != -2) {
         QGP_LOG_WARN(LOG_TAG, "Failed to load existing wall, starting fresh");
         wall.posts = NULL;
@@ -502,13 +499,13 @@ int dna_wall_post_with_image(dht_context_t *dht,
     wall_base_key(fingerprint, base_key, sizeof(base_key));
 
     QGP_LOG_INFO(LOG_TAG, "Publishing wall post %s (with image) to DHT", new_post.uuid);
-    ret = dht_chunked_publish(dht, base_key,
-                               (const uint8_t *)json_str, strlen(json_str),
-                               DHT_CHUNK_TTL_30DAY);
+    ret = nodus_ops_put_str(base_key,
+                             (const uint8_t *)json_str, strlen(json_str),
+                             (30*24*3600), nodus_ops_value_id());
     free(json_str);
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to publish wall: %s", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish wall (ret=%d)", ret);
         dna_wall_free(&wall);
         return -1;
     }
@@ -524,11 +521,10 @@ int dna_wall_post_with_image(dht_context_t *dht,
     return 0;
 }
 
-int dna_wall_delete(dht_context_t *dht,
-                    const char *fingerprint,
+int dna_wall_delete(const char *fingerprint,
                     const uint8_t *private_key,
                     const char *post_uuid) {
-    if (!dht || !fingerprint || !private_key || !post_uuid) {
+    if (!fingerprint || !private_key || !post_uuid) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for wall delete");
         return -1;
     }
@@ -536,7 +532,7 @@ int dna_wall_delete(dht_context_t *dht,
     /* Load existing wall */
     dna_wall_t wall;
     memset(&wall, 0, sizeof(wall));
-    int ret = dna_wall_load(dht, fingerprint, &wall);
+    int ret = dna_wall_load(fingerprint, &wall);
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to load wall for delete");
         return ret;
@@ -577,14 +573,14 @@ int dna_wall_delete(dht_context_t *dht,
     wall_base_key(fingerprint, base_key, sizeof(base_key));
 
     QGP_LOG_INFO(LOG_TAG, "Republishing wall after deleting post %s", post_uuid);
-    ret = dht_chunked_publish(dht, base_key,
-                               (const uint8_t *)json_str, strlen(json_str),
-                               DHT_CHUNK_TTL_30DAY);
+    ret = nodus_ops_put_str(base_key,
+                             (const uint8_t *)json_str, strlen(json_str),
+                             (30*24*3600), nodus_ops_value_id());
     free(json_str);
     dna_wall_free(&wall);
 
-    if (ret != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to republish wall: %s", dht_chunked_strerror(ret));
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to republish wall (ret=%d)", ret);
         return -1;
     }
 
@@ -592,9 +588,9 @@ int dna_wall_delete(dht_context_t *dht,
     return 0;
 }
 
-int dna_wall_load(dht_context_t *dht, const char *fingerprint,
+int dna_wall_load(const char *fingerprint,
                   dna_wall_t *wall) {
-    if (!dht || !fingerprint || !wall) {
+    if (!fingerprint || !wall) {
         return -1;
     }
 
@@ -603,9 +599,9 @@ int dna_wall_load(dht_context_t *dht, const char *fingerprint,
 
     uint8_t *value = NULL;
     size_t value_len = 0;
-    int ret = dht_chunked_fetch(dht, base_key, &value, &value_len);
+    int ret = nodus_ops_get_str(base_key, &value, &value_len);
 
-    if (ret != DHT_CHUNK_OK || !value || value_len == 0) {
+    if (ret != 0 || !value || value_len == 0) {
         QGP_LOG_DEBUG(LOG_TAG, "No wall found for %s (ret=%d)", fingerprint, ret);
         return -2;
     }

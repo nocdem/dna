@@ -97,11 +97,9 @@ static void wall_post_to_info(const dna_wall_post_t *post, dna_wall_post_info_t 
  * ============================================================================ */
 
 void dna_handle_wall_post(dna_engine_t *engine, dna_task_t *task) {
-    dht_context_t *dht = dna_get_dht_ctx(engine);
     qgp_key_t *key = dna_load_private_key(engine);
 
-    if (!dht || !key) {
-        if (key) qgp_key_free(key);
+    if (!key) {
         task->callback.wall_post(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY,
                                  NULL, task->user_data);
         return;
@@ -110,11 +108,11 @@ void dna_handle_wall_post(dna_engine_t *engine, dna_task_t *task) {
     dna_wall_post_t out_post = {0};
     int ret;
     if (task->params.wall_post.image_json) {
-        ret = dna_wall_post_with_image(dht, engine->fingerprint, key->private_key,
+        ret = dna_wall_post_with_image(engine->fingerprint, key->private_key,
                                         task->params.wall_post.text,
                                         task->params.wall_post.image_json, &out_post);
     } else {
-        ret = dna_wall_post(dht, engine->fingerprint, key->private_key,
+        ret = dna_wall_post(engine->fingerprint, key->private_key,
                             task->params.wall_post.text, &out_post);
     }
     qgp_key_free(key);
@@ -147,17 +145,15 @@ void dna_handle_wall_post(dna_engine_t *engine, dna_task_t *task) {
 }
 
 void dna_handle_wall_delete(dna_engine_t *engine, dna_task_t *task) {
-    dht_context_t *dht = dna_get_dht_ctx(engine);
     qgp_key_t *key = dna_load_private_key(engine);
 
-    if (!dht || !key) {
-        if (key) qgp_key_free(key);
+    if (!key) {
         task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY,
                                   task->user_data);
         return;
     }
 
-    int ret = dna_wall_delete(dht, engine->fingerprint, key->private_key,
+    int ret = dna_wall_delete(engine->fingerprint, key->private_key,
                               task->params.wall_delete.uuid);
     qgp_key_free(key);
 
@@ -210,15 +206,8 @@ void dna_handle_wall_load(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Cache miss or stale - fetch from DHT */
-    dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
-        task->callback.wall_posts(task->request_id, DNA_ENGINE_ERROR_NETWORK,
-                                  NULL, 0, task->user_data);
-        return;
-    }
-
     dna_wall_t wall = {0};
-    int ret = dna_wall_load(dht, fp, &wall);
+    int ret = dna_wall_load(fp, &wall);
 
     if (ret == -2) {
         /* Not found - return empty list (not an error) */
@@ -266,7 +255,6 @@ void dna_handle_wall_load(dna_engine_t *engine, dna_task_t *task) {
 /* ── Parallel wall fetch for timeline ── */
 
 typedef struct {
-    dht_context_t *dht;
     char fingerprint[129];
 } wall_fetch_ctx_t;
 
@@ -275,7 +263,7 @@ static void *wall_fetch_thread(void *arg) {
     if (!ctx) return NULL;
 
     dna_wall_t wall = {0};
-    int ret = dna_wall_load(ctx->dht, ctx->fingerprint, &wall);
+    int ret = dna_wall_load(ctx->fingerprint, &wall);
     if (ret == 0) {
         wall_cache_store(ctx->fingerprint, wall.posts, wall.post_count);
         wall_cache_update_meta(ctx->fingerprint);
@@ -323,8 +311,7 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Phase 1: Refresh stale entries in parallel */
-    dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (dht) {
+    {
         /* Collect stale fingerprints */
         wall_fetch_ctx_t *stale_ctxs = NULL;
         int stale_count = 0;
@@ -344,7 +331,6 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
                 int idx = 0;
                 for (size_t i = 0; i < fp_count && idx < stale_count; i++) {
                     if (wall_cache_is_stale(fingerprints[i])) {
-                        stale_ctxs[idx].dht = dht;
                         strncpy(stale_ctxs[idx].fingerprint, fingerprints[i], 128);
                         stale_ctxs[idx].fingerprint[128] = '\0';
                         idx++;
@@ -505,11 +491,9 @@ static int wall_comment_infos_from_json(const char *json, dna_wall_comment_info_
  * ============================================================================ */
 
 void dna_handle_wall_add_comment(dna_engine_t *engine, dna_task_t *task) {
-    dht_context_t *dht = dna_get_dht_ctx(engine);
     qgp_key_t *key = dna_load_private_key(engine);
 
-    if (!dht || !key) {
-        if (key) qgp_key_free(key);
+    if (!key) {
         task->callback.wall_comment(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY,
                                      NULL, task->user_data);
         return;
@@ -520,7 +504,6 @@ void dna_handle_wall_add_comment(dna_engine_t *engine, dna_task_t *task) {
         ? task->params.wall_add_comment.parent_comment_uuid : NULL;
 
     int ret = dna_wall_comment_add(
-        dht,
         task->params.wall_add_comment.post_uuid,
         parent_uuid,
         task->params.wall_add_comment.body,
@@ -590,16 +573,9 @@ void dna_handle_wall_get_comments(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Cache miss - fetch from DHT */
-    dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
-        task->callback.wall_comments(task->request_id, DNA_ENGINE_ERROR_NETWORK,
-                                      NULL, 0, task->user_data);
-        return;
-    }
-
     dna_wall_comment_t *comments = NULL;
     size_t count = 0;
-    int ret = dna_wall_comments_get(dht, post_uuid, &comments, &count);
+    int ret = dna_wall_comments_get(post_uuid, &comments, &count);
 
     if (ret != 0 && ret != -2) {
         task->callback.wall_comments(task->request_id, DNA_ERROR_INTERNAL,

@@ -28,7 +28,6 @@
 #ifndef DHT_GEK_STORAGE_H
 #define DHT_GEK_STORAGE_H
 
-#include "../core/dht_context.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -78,15 +77,13 @@ typedef struct {
  * Splits the packet into 50 KB chunks and publishes each chunk with
  * a sequential DHT key. Chunks are signed with owner's Dilithium5 key.
  *
- * @param ctx DHT context
  * @param group_uuid Group UUID (36-char UUID v4 string)
  * @param gek_version GEK version number
  * @param packet Initial Key Packet data
  * @param packet_size Packet size in bytes
  * @return 0 on success, -1 on error
  */
-int dht_gek_publish(dht_context_t *ctx,
-                    const char *group_uuid,
+int dht_gek_publish(const char *group_uuid,
                     uint32_t gek_version,
                     const uint8_t *packet,
                     size_t packet_size);
@@ -97,15 +94,13 @@ int dht_gek_publish(dht_context_t *ctx,
  * Fetches chunk0 to determine total_chunks, then fetches remaining chunks
  * sequentially. Reassembles the complete packet.
  *
- * @param ctx DHT context
  * @param group_uuid Group UUID
  * @param gek_version GEK version number
  * @param packet_out Output buffer for reassembled packet (allocated by function, caller must free)
  * @param packet_size_out Output for packet size
  * @return 0 on success, -1 on error (missing chunks or timeout)
  */
-int dht_gek_fetch(dht_context_t *ctx,
-                  const char *group_uuid,
+int dht_gek_fetch(const char *group_uuid,
                   uint32_t gek_version,
                   uint8_t **packet_out,
                   size_t *packet_size_out);
