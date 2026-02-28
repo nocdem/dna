@@ -155,10 +155,7 @@ static void notify_ch_subscribers(nodus_server_t *srv,
 static void replicate_to_peer(const nodus_value_t *val,
                                 const char *peer_ip, uint16_t peer_tcp_port) {
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-    if (fd < 0) {
-        fprintf(stderr, "REPL: socket() failed: %s\n", strerror(errno));
-        return;
-    }
+    if (fd < 0) return;
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -168,8 +165,6 @@ static void replicate_to_peer(const nodus_value_t *val,
 
     int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
     if (rc < 0 && errno != EINPROGRESS) {
-        fprintf(stderr, "REPL: connect to %s:%d failed: %s\n",
-                peer_ip, peer_tcp_port, strerror(errno));
         close(fd);
         return;
     }
@@ -181,8 +176,6 @@ static void replicate_to_peer(const nodus_value_t *val,
     struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
     rc = select(fd + 1, NULL, &wfds, NULL, &tv);
     if (rc <= 0) {
-        fprintf(stderr, "REPL: connect timeout to %s:%d\n",
-                peer_ip, peer_tcp_port);
         close(fd);
         return;
     }
@@ -192,8 +185,6 @@ static void replicate_to_peer(const nodus_value_t *val,
     socklen_t errlen = sizeof(err);
     getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen);
     if (err != 0) {
-        fprintf(stderr, "REPL: connect error to %s:%d: %s\n",
-                peer_ip, peer_tcp_port, strerror(err));
         close(fd);
         return;
     }
@@ -203,7 +194,6 @@ static void replicate_to_peer(const nodus_value_t *val,
     if (!cbor_buf) { close(fd); return; }
     size_t clen = 0;
     if (nodus_t1_store_value(0, val, cbor_buf, 65536, &clen) != 0) {
-        fprintf(stderr, "REPL: T1 encode failed\n");
         free(cbor_buf);
         close(fd);
         return;
@@ -219,26 +209,19 @@ static void replicate_to_peer(const nodus_value_t *val,
         /* Blocking send (small payload, should complete quickly) */
         int flags_save = fcntl(fd, F_GETFL, 0);
         fcntl(fd, F_SETFL, flags_save & ~O_NONBLOCK);
-        ssize_t sent = send(fd, frame, flen, MSG_NOSIGNAL);
-        fprintf(stderr, "REPL: sent %zd/%zu bytes to %s:%d\n",
-                sent, flen, peer_ip, peer_tcp_port);
+        send(fd, frame, flen, MSG_NOSIGNAL);
     }
     free(frame);
     close(fd);
 }
 
 static void replicate_value(nodus_server_t *srv, const nodus_value_t *val) {
-    int replicated = 0;
     for (int i = 0; i < srv->pbft.peer_count; i++) {
         nodus_cluster_peer_t *peer = &srv->pbft.peers[i];
-        fprintf(stderr, "REPL: peer[%d] %s:%d state=%d\n",
-                i, peer->ip, peer->tcp_port, peer->state);
         if (peer->state != NODUS_NODE_ALIVE)
             continue;
         replicate_to_peer(val, peer->ip, peer->tcp_port);
-        replicated++;
     }
-    fprintf(stderr, "REPL: replicated to %d peers\n", replicated);
 }
 
 /* ── Tier 2 message handlers (Client -> Nodus) ──────────────────── */
@@ -542,17 +525,11 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         /* Fallback: try T1 decode for inter-node messages (STORE, etc.) */
         nodus_tier1_msg_t t1msg;
         memset(&t1msg, 0, sizeof(t1msg));
-        int t1rc = nodus_t1_decode(payload, len, &t1msg);
-        fprintf(stderr, "T2 decode failed, T1 fallback: rc=%d method=%s value=%p len=%zu\n",
-                t1rc, t1msg.method[0] ? t1msg.method : "(empty)",
-                (void*)t1msg.value, len);
-        if (t1rc == 0 && strcmp(t1msg.method, "sv") == 0 && t1msg.value) {
-            int vrc = nodus_value_verify(t1msg.value);
-            fprintf(stderr, "REPL-RX: verify=%d, storing value\n", vrc);
-            if (vrc == 0) {
+        if (nodus_t1_decode(payload, len, &t1msg) == 0 &&
+            strcmp(t1msg.method, "sv") == 0 && t1msg.value) {
+            if (nodus_value_verify(t1msg.value) == 0) {
                 nodus_storage_put(&srv->storage, t1msg.value);
                 notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
-                fprintf(stderr, "REPL-RX: stored replicated value\n");
             }
         }
         nodus_t1_msg_free(&t1msg);
@@ -565,6 +542,19 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             nodus_auth_handle_hello(srv, sess, &msg.pk, &msg.fp, msg.txn_id);
         } else if (strcmp(msg.method, "auth") == 0) {
             nodus_auth_handle_auth(srv, sess, &msg.sig, msg.txn_id);
+        } else if (strcmp(msg.method, "sv") == 0) {
+            /* Inter-nodus DHT value replication (no auth required) */
+            nodus_tier1_msg_t t1msg;
+            memset(&t1msg, 0, sizeof(t1msg));
+            if (nodus_t1_decode(payload, len, &t1msg) == 0 &&
+                t1msg.value && nodus_value_verify(t1msg.value) == 0) {
+                nodus_storage_put(&srv->storage, t1msg.value);
+                notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
+                fprintf(stderr, "REPL-RX: stored replicated value\n");
+            }
+            nodus_t1_msg_free(&t1msg);
+            nodus_t2_msg_free(&msg);
+            return;
         } else if (strcmp(msg.method, "ch_rep") == 0) {
             /* Inter-nodus channel replication (no auth required) */
             nodus_channel_post_t post;
