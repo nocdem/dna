@@ -8,7 +8,6 @@
 #include "transport_core.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/threadpool.h"   /* Parallel ACK publishing */
-#include "dht/client/dht_singleton.h"
 #include "dht/shared/dht_dm_outbox.h"  /* v0.5.0+ daily bucket API */
 #include "dht/shared/dht_offline_queue.h"  /* v15: ACK API */
 #include "database/contacts_db.h"       /* v0.5.22+ smart sync timestamps */

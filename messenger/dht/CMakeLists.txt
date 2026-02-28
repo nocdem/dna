@@ -1,16 +1,10 @@
 cmake_minimum_required(VERSION 3.10)
 project(dna_dht C)
 
-# Nodus v5 replaces OpenDHT-PQ. The compat shim (nodus_compat.c) provides
-# all dht_context_*, dht_listen_*, dht_identity_*, dht_chunked_* functions.
+# Nodus v5 replaces OpenDHT-PQ. The nodus_init module handles lifecycle,
+# nodus_ops handles all DHT operations. No compat shim needed.
 # The nodus_lib target is built by add_subdirectory(../nodus) in root CMakeLists.txt.
-message(STATUS "Using Nodus v5 (post-quantum DHT — pure C)")
-
-# DHT library
-# Common DHT sources (shared across all platforms)
-# NOTE: C++ files removed (dht_context.cpp, dht_listen.cpp, dht_stats.cpp,
-#        dht_value_storage.cpp, dht_identity.cpp) — replaced by nodus_compat.c
-# NOTE: dht_chunked.c removed — replaced by nodus_compat.c
+message(STATUS "Using Nodus v5 (post-quantum DHT — pure C, direct integration)")
 set(DHT_COMMON_SOURCES
     # Core modules
     core/dht_keyserver.c
@@ -25,9 +19,8 @@ set(DHT_COMMON_SOURCES
     shared/dht_contact_request.c  # ICQ-style contact request system
     shared/dht_channel_subscriptions.c  # Channel subscription DHT sync
     shared/nodus_ops.c                  # Nodus v5 direct operations layer
+    shared/nodus_init.c                 # Nodus v5 messenger init/lifecycle
     # Client modules
-    client/dht_singleton.c
-    client/dht_bootstrap_discovery.c  # Client-side node discovery
     client/bootstrap_cache.c          # Bootstrap node SQLite cache
     client/dht_contactlist.c
     client/dht_grouplist.c        # Group list DHT sync (v0.5.26+)
@@ -89,11 +82,11 @@ target_include_directories(dht_lib PUBLIC
     ${SHARED_DIR}/crypto                  # shared/crypto/ (for utils/*.h includes)
     ${CMAKE_CURRENT_SOURCE_DIR}/../blockchain/cellframe)
 
-# Nodus v5 include paths (for nodus_compat.h → nodus.h → nodus_types.h)
+# Nodus v5 include paths
 get_filename_component(NODUS_DIR "${CMAKE_SOURCE_DIR}/../nodus" ABSOLUTE)
 target_include_directories(dht_lib PUBLIC
     ${NODUS_DIR}/include                  # nodus/nodus.h, nodus/nodus_types.h
-    ${NODUS_DIR}/src                      # client/nodus_compat.h, etc.
+    ${NODUS_DIR}/src                      # client/nodus_singleton.h, crypto/nodus_identity.h
 )
 
 if(WIN32)

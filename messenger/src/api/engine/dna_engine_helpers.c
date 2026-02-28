@@ -19,11 +19,7 @@
  * DHT CONTEXT ACCESS
  * ============================================================================ */
 
-/* Get DHT context (uses compat singleton — operations still flow through compat shim) */
-dht_context_t* dna_get_dht_ctx(dna_engine_t *engine) {
-    (void)engine;
-    return dht_singleton_get();
-}
+/* dna_get_dht_ctx() removed — use nodus_ops_is_ready() / nodus_messenger_is_ready() instead */
 
 /* ============================================================================
  * KEY LOADING

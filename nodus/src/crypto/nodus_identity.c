@@ -160,6 +160,35 @@ uint64_t nodus_identity_value_id(const nodus_identity_t *id) {
     return vid;
 }
 
+int nodus_identity_export(const nodus_identity_t *id, uint8_t **buf, size_t *len) {
+    if (!id || !buf || !len) return -1;
+    size_t total = NODUS_PK_BYTES + NODUS_SK_BYTES;  /* 7488 */
+    uint8_t *out = malloc(total);
+    if (!out) return -1;
+    memcpy(out, id->pk.bytes, NODUS_PK_BYTES);
+    memcpy(out + NODUS_PK_BYTES, id->sk.bytes, NODUS_SK_BYTES);
+    *buf = out;
+    *len = total;
+    return 0;
+}
+
+int nodus_identity_import(const uint8_t *buf, size_t len, nodus_identity_t *id_out) {
+    if (!buf || !id_out) return -1;
+    size_t total = NODUS_PK_BYTES + NODUS_SK_BYTES;  /* 7488 */
+    if (len != total) return -1;
+
+    memset(id_out, 0, sizeof(*id_out));
+    memcpy(id_out->pk.bytes, buf, NODUS_PK_BYTES);
+    memcpy(id_out->sk.bytes, buf + NODUS_PK_BYTES, NODUS_SK_BYTES);
+
+    if (nodus_fingerprint(&id_out->pk, &id_out->node_id) != 0)
+        return -1;
+    if (nodus_fingerprint_hex(&id_out->pk, id_out->fingerprint) != 0)
+        return -1;
+
+    return 0;
+}
+
 void nodus_identity_clear(nodus_identity_t *id) {
     if (!id) return;
     /* Use volatile to prevent optimizer from removing the memset */

@@ -11,7 +11,8 @@
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_types.h"
 #include "dht/core/dht_keyserver.h"
-#include "dht/client/dht_singleton.h"
+#include "dht/shared/nodus_ops.h"
+#include "dht/shared/nodus_init.h"
 #include "dht/shared/dht_gek_storage.h"
 #include "dht/shared/dht_groups.h"
 #include "transport/internal/transport_core.h"
@@ -914,8 +915,7 @@ int cmd_lookup_profile(dna_engine_t *engine, const char *identifier) {
         return -1;
     }
 
-    dht_context_t *dht = dht_singleton_get();
-    if (!dht) {
+    if (!nodus_ops_is_ready()) {
         printf("Error: DHT not initialized\n");
         return -1;
     }
@@ -1633,21 +1633,15 @@ int cmd_bootstrap_registry(dna_engine_t *engine) {
 
     printf("Fetching bootstrap registry from DHT...\n\n");
 
-    dht_context_t *dht = dht_singleton_get();
-    if (!dht) {
+    if (!nodus_messenger_is_initialized()) {
         printf("Error: DHT not initialized\n");
         return -1;
     }
 
     /* Wait for DHT to be ready */
-    if (!dht_context_is_ready(dht)) {
+    if (!nodus_messenger_is_ready()) {
         printf("Waiting for DHT connection...\n");
-        for (int i = 0; i < 50; i++) {
-            if (dht_context_is_ready(dht)) break;
-            struct timespec ts = {0, 100000000};  /* 100ms */
-            nanosleep(&ts, NULL);
-        }
-        if (!dht_context_is_ready(dht)) {
+        if (!nodus_messenger_wait_for_ready(5000)) {
             printf("Error: DHT not connected\n");
             return -1;
         }
@@ -2176,9 +2170,8 @@ int cmd_gek_fetch(dna_engine_t *engine, const char *group_uuid) {
 
     printf("Fetching GEK for group %s from DHT...\n", group_uuid);
 
-    /* Get DHT context */
-    void *dht_ctx = dna_engine_get_dht_context(engine);
-    if (!dht_ctx) {
+    /* Check nodus is ready */
+    if (!nodus_ops_is_ready()) {
         printf("Error: DHT not initialized\n");
         return -1;
     }

@@ -19,8 +19,7 @@
 #include <dna/version.h>
 #include "cli_commands.h"
 #include "crypto/utils/qgp_log.h"
-#include "dht/core/dht_context.h"
-#include "dht/client/dht_singleton.h"
+#include "dht/shared/nodus_init.h"
 
 #define LOG_TAG "CLI_MAIN"
 
@@ -237,10 +236,9 @@ static char* join_args(int argc, char *argv[], int start) {
  * @return 0 if connected, -1 if timeout
  */
 static int wait_for_dht(int quiet, int timeout_sec) {
-    dht_context_t *dht = dht_singleton_get();
-    if (!dht) {
+    if (!nodus_messenger_is_initialized()) {
         if (!quiet) {
-            fprintf(stderr, "Warning: DHT not initialized\n");
+            fprintf(stderr, "Warning: Nodus not initialized\n");
         }
         return -1;
     }
@@ -249,15 +247,11 @@ static int wait_for_dht(int quiet, int timeout_sec) {
         fprintf(stderr, "Waiting for DHT connection...");
     }
 
-    for (int i = 0; i < timeout_sec * 10; i++) {
-        if (dht_context_is_ready(dht)) {
-            if (!quiet) {
-                fprintf(stderr, " connected!\n");
-            }
-            return 0;
+    if (nodus_messenger_wait_for_ready(timeout_sec * 1000)) {
+        if (!quiet) {
+            fprintf(stderr, " connected!\n");
         }
-        struct timespec ts = {0, 100000000};  /* 100ms */
-        nanosleep(&ts, NULL);
+        return 0;
     }
 
     if (!quiet) {

@@ -72,26 +72,13 @@ int dna_engine_pause(dna_engine_t *engine) {
     /* 1. Pause presence heartbeat (stops marking us as online) */
     dna_engine_pause_presence(engine);
 
-    /* 2. Suspend all DHT listeners (preserves them for resubscription)
-     * This uses the existing infrastructure from dht_listen.cpp that stores
-     * key_data for each listener, allowing fast resubscription. */
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-    if (dht_ctx) {
-        dht_suspend_all_listeners(dht_ctx);
-        QGP_LOG_INFO(LOG_TAG, "[PAUSE] DHT listeners suspended");
-    }
+    /* 2. Nodus v5: No need to suspend DHT listeners — auto-resubscribe on reconnect */
 
     /* 3. Unsubscribe from all groups (group listeners are managed separately) */
     dna_engine_unsubscribe_all_groups(engine);
     QGP_LOG_INFO(LOG_TAG, "[PAUSE] Group listeners cancelled");
 
-    /* v0.7.2: Export routing table cache on pause (crash/kill protection) */
-    {
-        dht_context_t *dht_export_ctx = dna_get_dht_ctx(engine);
-        if (dht_export_ctx) {
-            dht_context_export_routing_table(dht_export_ctx, NULL);
-        }
-    }
+    /* v0.7.2: Routing table export removed — nodus v5 manages its own state */
 
     /* 4. Update state (protected by mutex) */
     pthread_mutex_lock(&engine->state_mutex);
@@ -133,12 +120,9 @@ static void *resume_thread(void *arg) {
         return NULL;
     }
 
-    /* 1. Resubscribe all DHT listeners (this is the slow part) */
-    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-    if (dht_ctx) {
-        size_t resubscribed = dht_resubscribe_all_listeners(dht_ctx);
-        QGP_LOG_INFO(LOG_TAG, "[RESUME-THREAD] Resubscribed %zu DHT listeners", resubscribed);
-    }
+    /* 1. Nodus v5: listeners auto-resubscribe — just re-listen all contacts */
+    int relisten = dna_engine_listen_all_contacts(engine);
+    QGP_LOG_INFO(LOG_TAG, "[RESUME-THREAD] Re-listened %d contacts", relisten);
 
     /* v0.6.107+: Check for abort (engine might have been paused again) */
     pthread_mutex_lock(&engine->state_mutex);
@@ -211,10 +195,7 @@ int dna_engine_resume(dna_engine_t *engine) {
     if (rc != 0) {
         QGP_LOG_ERROR(LOG_TAG, "[RESUME] Failed to spawn resume thread: %d", rc);
         /* Fall back to synchronous resume */
-        dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
-        if (dht_ctx) {
-            dht_resubscribe_all_listeners(dht_ctx);
-        }
+        dna_engine_listen_all_contacts(engine);
         dna_engine_subscribe_all_groups(engine);
         dna_engine_retry_pending_messages(engine);
     } else {

@@ -71,6 +71,30 @@ int nodus_identity_load(const char *path, nodus_identity_t *id_out);
 uint64_t nodus_identity_value_id(const nodus_identity_t *id);
 
 /**
+ * Export identity to buffer (pk + sk = 7488 bytes).
+ *
+ * Caller must free *buf with free().
+ *
+ * @param id   Identity to export
+ * @param buf  Output buffer (allocated by callee)
+ * @param len  Output length (always 7488)
+ * @return 0 on success, -1 on error
+ */
+int nodus_identity_export(const nodus_identity_t *id, uint8_t **buf, size_t *len);
+
+/**
+ * Import identity from buffer (pk + sk = 7488 bytes).
+ *
+ * Derives node_id and fingerprint from the imported public key.
+ *
+ * @param buf     Input buffer (7488 bytes: pk + sk)
+ * @param len     Buffer length (must be 7488)
+ * @param id_out  Output identity (caller-owned, stack or heap)
+ * @return 0 on success, -1 on error
+ */
+int nodus_identity_import(const uint8_t *buf, size_t len, nodus_identity_t *id_out);
+
+/**
  * Securely zero identity memory.
  *
  * @param id  Identity to clear

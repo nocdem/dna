@@ -26,7 +26,7 @@
 #include "crypto/bip39/bip39.h"
 #include "crypto/utils/kyber_deterministic.h"
 #include "../dht/core/dht_keyserver.h"
-#include "../dht/client/dht_identity.h"
+#include "crypto/nodus_identity.h"
 #include "../database/keyserver_cache.h"
 #include "../dna_config.h"
 #include "keys.h"
@@ -272,8 +272,8 @@ int messenger_generate_keys_from_seeds(
             qgp_secure_memzero(full_hash, sizeof(full_hash));
 
             // Generate DHT identity deterministically from derived seed
-            dht_identity_t *dht_identity = NULL;
-            if (dht_identity_generate_from_seed(dht_seed, &dht_identity) != 0) {
+            nodus_identity_t nid;
+            if (nodus_identity_from_seed(dht_seed, &nid) != 0) {
                 QGP_LOG_WARN(LOG_TAG, "Failed to create deterministic DHT identity");
             } else {
                 printf("[DHT Identity] ✓ Deterministic DHT identity derived from master seed\n");
@@ -283,7 +283,7 @@ int messenger_generate_keys_from_seeds(
                 // v0.3.0: Flat structure - dht_identity.bin in root data dir
                 uint8_t *dht_id_buffer = NULL;
                 size_t dht_id_size = 0;
-                if (dht_identity_export_to_buffer(dht_identity, &dht_id_buffer, &dht_id_size) == 0) {
+                if (nodus_identity_export(&nid, &dht_id_buffer, &dht_id_size) == 0) {
                     char dht_id_path[512];
                     snprintf(dht_id_path, sizeof(dht_id_path), "%s/dht_identity.bin", data_dir);
                     FILE *f = fopen(dht_id_path, "wb");
@@ -295,8 +295,7 @@ int messenger_generate_keys_from_seeds(
                     free(dht_id_buffer);
                 }
 
-                // Free the identity (will be derived again on login)
-                dht_identity_free(dht_identity);
+                nodus_identity_clear(&nid);
             }
 
             // Securely wipe seed data

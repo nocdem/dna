@@ -104,12 +104,12 @@ int dna_engine_network_changed(dna_engine_t *engine) {
         dna_engine_cancel_contact_request_listener(engine);
     }
 
-    /* Reinitialize DHT singleton (handles context recreation internally) */
-    if (dht_singleton_reinit() != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to reinitialize DHT singleton");
+    /* Reinitialize nodus singleton (handles reconnection internally) */
+    if (nodus_messenger_reinit() != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to reinitialize nodus connection");
         return -1;
     }
-    QGP_LOG_INFO(LOG_TAG, "DHT singleton reinitialized - status callback will restart listeners");
+    QGP_LOG_INFO(LOG_TAG, "Nodus reinitialized - status callback will restart listeners");
     return 0;
 }
 

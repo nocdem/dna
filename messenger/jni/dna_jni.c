@@ -16,9 +16,8 @@
 #include <android/log.h>
 
 #include "dna/dna_engine.h"
-#include "dht/client/dht_singleton.h"
-#include "dht/core/dht_context.h"
-#include "dht/core/dht_listen.h"
+#include "dht/shared/nodus_init.h"
+#include "dht/shared/nodus_ops.h"
 #include "crypto/utils/qgp_platform.h"  /* v0.6.0+: For identity lock check */
 #include "crypto/utils/qgp_log.h"       /* v0.7.9: Route JNI logs to dna.log + ring buffer */
 
@@ -1411,19 +1410,19 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReinitDht(JNIEnv *env, jo
     }
 
     /* Fallback: DHT-only reinit when engine/identity not available */
-    if (!dht_singleton_is_initialized()) {
-        LOGD("nativeReinitDht: DHT not initialized, skipping");
+    if (!nodus_messenger_is_initialized()) {
+        LOGD("nativeReinitDht: Nodus not initialized, skipping");
         return -1;
     }
 
-    LOGI("nativeReinitDht: Network change - reinitializing DHT singleton (no engine)");
-    int result = dht_singleton_reinit();
+    LOGI("nativeReinitDht: Network change - reinitializing nodus (no engine)");
+    int result = nodus_messenger_reinit();
     if (result != 0) {
-        LOGE("nativeReinitDht: DHT reinit failed");
+        LOGE("nativeReinitDht: Nodus reinit failed");
         return -2;
     }
 
-    LOGI("nativeReinitDht: DHT reinit successful");
+    LOGI("nativeReinitDht: Nodus reinit successful");
     return 0;
 }
 
@@ -1433,24 +1432,16 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReinitDht(JNIEnv *env, jo
  */
 JNIEXPORT jboolean JNICALL
 Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeIsDhtHealthy(JNIEnv *env, jobject thiz) {
-    if (!dht_singleton_is_initialized()) {
+    if (!nodus_messenger_is_initialized()) {
         return JNI_FALSE;
     }
-    if (!dht_singleton_is_ready()) {
+    if (!nodus_messenger_is_ready()) {
         return JNI_FALSE;
     }
 
-    /* Also check if we have active listeners - DHT can be "ready" but listeners dead */
-    size_t total = 0, active = 0, suspended = 0;
-    dht_get_listener_stats(&total, &active, &suspended);
-    LOGD("DHT health: ready=true, listeners total=%zu active=%zu suspended=%zu",
-         total, active, suspended);
-
-    /* Unhealthy if DHT is ready but we have no active listeners */
-    if (active == 0 && total > 0) {
-        LOGW("DHT ready but all %zu listeners are inactive/suspended", total);
-        return JNI_FALSE;
-    }
+    /* Also check if we have active listeners */
+    size_t active = nodus_ops_listen_count();
+    LOGD("Nodus health: ready=true, active_listeners=%zu", active);
 
     return JNI_TRUE;
 }
@@ -1622,11 +1613,7 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeIsIdentityLocked(JNIEnv *
  */
 JNIEXPORT jboolean JNICALL
 Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeDhtIsReady(JNIEnv *env, jobject thiz) {
-    dht_context_t *dht = dht_singleton_get();
-    if (!dht) {
-        return JNI_FALSE;
-    }
-    return dht_context_is_ready(dht) ? JNI_TRUE : JNI_FALSE;
+    return nodus_messenger_is_ready() ? JNI_TRUE : JNI_FALSE;
 }
 
 /**

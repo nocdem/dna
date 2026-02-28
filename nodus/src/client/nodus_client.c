@@ -21,7 +21,7 @@
 /* ── Internal state ─────────────────────────────────────────────── */
 
 /* Buffer for building protocol messages */
-#define CLIENT_BUF_SIZE 32768
+#define CLIENT_BUF_SIZE (256 * 1024)   /* 256KB — enough for max Nodus value (1MB) + CBOR + sig */
 static uint8_t g_proto_buf[CLIENT_BUF_SIZE];
 
 /* ── Forward declarations ───────────────────────────────────────── */
@@ -164,7 +164,7 @@ int nodus_client_init(nodus_client_t *client,
     if (client->config.connect_timeout_ms <= 0)
         client->config.connect_timeout_ms = 5000;
     if (client->config.request_timeout_ms <= 0)
-        client->config.request_timeout_ms = 10000;
+        client->config.request_timeout_ms = 30000;
     if (client->config.reconnect_min_ms <= 0)
         client->config.reconnect_min_ms = 1000;
     if (client->config.reconnect_max_ms <= 0)

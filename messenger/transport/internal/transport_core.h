@@ -35,9 +35,7 @@
 
 // External dependencies
 #include "transport.h"
-#include "dht_context.h"
 #include "dht_offline_queue.h"
-#include "dht_singleton.h"
 #include "../database/contacts_db.h"
 #include "crypto/utils/qgp_sha3.h"
 

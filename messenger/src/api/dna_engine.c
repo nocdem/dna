@@ -83,15 +83,13 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "messenger_transport.h"
 #include "message_backup.h"
 #include "messenger/status.h"
-#include "dht/client/dht_singleton.h"
-#include "dht/client/dht_bootstrap_discovery.h"
+#include "dht/shared/nodus_init.h"
+#include "dht/shared/nodus_ops.h"
 #include "dht/core/dht_keyserver.h"
-#include "dht/core/dht_listen.h"
 #include "dht/client/dht_contactlist.h"
 #include "dht/client/dht_message_backup.h"
 #include "dht/shared/dht_offline_queue.h"
 #include "dht/client/dna_profile.h"
-#include "dht/shared/dht_chunked.h"
 #include "dht/shared/dht_contact_request.h"
 #include "dht/shared/dht_groups.h"
 #include "dht/client/dna_group_outbox.h"
@@ -534,13 +532,7 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
         }
     }
 
-    /* v0.7.2: Export routing table cache after stabilization (fully populated) */
-    {
-        dht_context_t *export_ctx = dht_singleton_get();
-        if (export_ctx) {
-            dht_context_export_routing_table(export_ctx, NULL);
-        }
-    }
+    /* v0.7.2: Routing table export removed — Nodus v5 uses server-side Kademlia */
 
     QGP_LOG_WARN(LOG_TAG, "[RETRY] >>> STABILIZATION THREAD COMPLETE <<<");
 
@@ -1358,8 +1350,8 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     /* Initialize presence heartbeat as active (will start thread after identity load) */
     atomic_store(&engine->presence_active, true);
 
-    /* DHT is NOT initialized here - only after identity is created/restored
-     * via dht_singleton_init_with_identity() in messenger/init.c */
+    /* Nodus is NOT initialized here - only after identity is created/restored
+     * via nodus_messenger_init() in messenger/init.c */
 
     /* Initialize global keyserver cache (for display names before login) */
     keyserver_cache_init(NULL);
@@ -1371,19 +1363,18 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     channel_cache_init();
 
     /* Initialize global profile cache + manager (for profile prefetching)
-     * DHT context is obtained dynamically via dht_singleton_get() to handle reinit
      * MUST be before status callback registration - callback triggers prefetch */
     profile_manager_init();
 
     /* Register DHT status callback to emit events on connection changes
      * This waits for DHT connection and fires callback which triggers prefetch */
     g_dht_callback_engine = engine;
-    dht_singleton_set_status_callback(dna_dht_status_callback, NULL);
+    nodus_messenger_set_status_callback(dna_dht_status_callback, NULL);
 
     /* Start worker threads */
     if (dna_start_workers(engine) != 0) {
         g_dht_callback_engine = NULL;
-        dht_singleton_set_status_callback(NULL, NULL);
+        nodus_messenger_set_status_callback(NULL, NULL);
         pthread_mutex_destroy(&engine->event_mutex);
         pthread_mutex_destroy(&engine->task_mutex);
         pthread_cond_destroy(&engine->task_cond);
@@ -1605,7 +1596,7 @@ void dna_engine_destroy(dna_engine_t *engine) {
      * 4. Release identity lock (new engine can start) */
     pthread_mutex_lock(&g_engine_global_mutex);
     if (g_dht_callback_engine == engine) {
-        dht_singleton_set_status_callback(NULL, NULL);
+        nodus_messenger_set_status_callback(NULL, NULL);
         g_dht_callback_engine = NULL;
     }
     pthread_mutex_unlock(&g_engine_global_mutex);
@@ -1795,17 +1786,8 @@ void dna_engine_destroy(dna_engine_t *engine) {
      * They persist for app lifetime to survive engine destroy/recreate cycles
      * (Android pause/resume). Init functions are idempotent. OS cleans up on exit. */
 
-    /* v0.6.126: Stop discovery thread BEFORE cleaning up DHT singleton. */
-    dht_bootstrap_discovery_stop();
-
-    /* Cleanup DHT singleton */
-    {
-        dht_context_t *ctx = dht_singleton_get();
-        if (ctx) {
-            dht_context_export_routing_table(ctx, NULL);
-        }
-    }
-    dht_singleton_cleanup();
+    /* Close Nodus connection (cancels listeners, disconnects, frees client) */
+    nodus_messenger_close();
 
     /* v0.6.0+: Release identity lock */
     if (engine->identity_lock_fd >= 0) {
@@ -1887,13 +1869,14 @@ void* dna_engine_get_messenger_context(dna_engine_t *engine) {
 }
 
 void* dna_engine_get_dht_context(dna_engine_t *engine) {
-    (void)engine; /* DHT is global singleton */
-    return dht_singleton_get();
+    (void)engine;
+    /* FFI compat — Flutter doesn't use the pointer, cli_commands.c checks NULL */
+    return nodus_messenger_is_ready() ? (void *)1 : NULL;
 }
 
 int dna_engine_is_dht_connected(dna_engine_t *engine) {
-    (void)engine; /* DHT is global singleton */
-    return dht_singleton_is_ready() ? 1 : 0;
+    (void)engine;
+    return nodus_messenger_is_ready() ? 1 : 0;
 }
 
 /* Version moved to src/api/engine/dna_engine_version.c */

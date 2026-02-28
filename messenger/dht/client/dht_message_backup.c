@@ -6,8 +6,7 @@
  */
 
 #include "dht_message_backup.h"
-#include "../shared/dht_chunked.h"
-#include "dht_singleton.h"
+#include "../shared/nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_dilithium.h"
 #include "crypto/utils/qgp_kyber.h"
@@ -450,9 +449,8 @@ int dht_message_backup_publish(
         return -1;
     }
 
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available for publish");
+    if (!nodus_ops_is_ready()) {
+        QGP_LOG_ERROR(LOG_TAG, "Nodus not available for publish");
         return -1;
     }
 
@@ -584,12 +582,13 @@ int dht_message_backup_publish(
         return -1;
     }
 
-    // Step 6: Store in DHT using chunked layer (handles compression, chunking, signing)
-    int result = dht_chunked_publish(dht_ctx, base_key, blob, blob_size, DHT_CHUNK_TTL_7DAY);
+    // Step 6: Store in DHT via nodus_ops (handles chunked storage internally)
+    int result = nodus_ops_put_str(base_key, blob, blob_size,
+                                   7 * 24 * 3600, nodus_ops_value_id());
     free(blob);
 
-    if (result != DHT_CHUNK_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT: %s", dht_chunked_strerror(result));
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT (nodus_ops_put_str rc=%d)", result);
         return -1;
     }
 
@@ -613,9 +612,8 @@ int dht_message_backup_restore(
         return -1;
     }
 
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available for restore");
+    if (!nodus_ops_is_ready()) {
+        QGP_LOG_ERROR(LOG_TAG, "Nodus not available for restore");
         return -1;
     }
 
@@ -628,13 +626,13 @@ int dht_message_backup_restore(
         return -1;
     }
 
-    // Step 2: Fetch from DHT using chunked layer
+    // Step 2: Fetch from DHT via nodus_ops
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
-    if (result != DHT_CHUNK_OK || !blob) {
-        QGP_LOG_INFO(LOG_TAG, "Message backup not found in DHT: %s", dht_chunked_strerror(result));
+    int result = nodus_ops_get_str(base_key, &blob, &blob_size);
+    if (result != 0 || !blob) {
+        QGP_LOG_INFO(LOG_TAG, "Message backup not found in DHT (nodus_ops_get_str rc=%d)", result);
         return -2;  // Not found
     }
 
@@ -817,8 +815,7 @@ bool dht_message_backup_exists(const char *fingerprint) {
         return false;
     }
 
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
+    if (!nodus_ops_is_ready()) {
         return false;
     }
 
@@ -830,8 +827,8 @@ bool dht_message_backup_exists(const char *fingerprint) {
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
-    if (result == DHT_CHUNK_OK && blob) {
+    int result = nodus_ops_get_str(base_key, &blob, &blob_size);
+    if (result == 0 && blob) {
         free(blob);
         return true;
     }
@@ -851,8 +848,7 @@ int dht_message_backup_get_info(
         return -1;
     }
 
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
+    if (!nodus_ops_is_ready()) {
         return -1;
     }
 
@@ -864,8 +860,8 @@ int dht_message_backup_get_info(
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
-    if (result != DHT_CHUNK_OK || !blob) {
+    int result = nodus_ops_get_str(base_key, &blob, &blob_size);
+    if (result != 0 || !blob) {
         return -2;  // Not found
     }
 

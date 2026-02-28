@@ -12,6 +12,7 @@
 
 #include "transport.h"
 #include "internal/transport_core.h"
+#include "dht/shared/nodus_init.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 
@@ -63,14 +64,14 @@ transport_t* transport_init(
     // Initialize mutex
     pthread_mutex_init(&ctx->callback_mutex, NULL);
 
-    // Verify DHT singleton is available (required for presence and messaging)
-    if (!dht_singleton_is_initialized()) {
-        QGP_LOG_ERROR(LOG_TAG, "Global DHT not initialized! Call dht_singleton_init() at app startup.\n");
+    // Verify nodus is available (required for presence and messaging)
+    if (!nodus_messenger_is_initialized()) {
+        QGP_LOG_ERROR(LOG_TAG, "Nodus not initialized! Call nodus_messenger_init() at app startup.\n");
         free(ctx);
         return NULL;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "DHT singleton available for transport\n");
+    QGP_LOG_INFO(LOG_TAG, "Nodus available for transport\n");
 
     ctx->running = false;
 
