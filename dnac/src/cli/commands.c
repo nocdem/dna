@@ -10,6 +10,7 @@
 #include "dnac/genesis.h"
 #include "dnac/version.h"
 #include <dna/dna_engine.h>
+#include "nodus_ops.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -465,7 +466,7 @@ int dnac_cli_info(dnac_context_t *ctx) {
     }
 
     /* DHT status */
-    int dht_connected = dna_engine_is_dht_connected(engine);
+    bool dht_connected = nodus_ops_is_ready();
     printf("DHT:         %s\n", dht_connected ? "Connected" : "Disconnected");
 
     /* Balance summary */

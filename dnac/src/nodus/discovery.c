@@ -17,15 +17,6 @@
 #include <time.h>
 #include <openssl/evp.h>
 
-/* Forward declare DHT context type */
-typedef struct dht_context dht_context_t;
-
-/* DHT functions from libdna */
-extern void* dna_engine_get_dht_context(dna_engine_t *engine);
-extern int dht_get(dht_context_t *ctx,
-                   const uint8_t *key, size_t key_len,
-                   uint8_t **value_out, size_t *value_len_out);
-
 /* DHT key for witness server list */
 #define WITNESS_DHT_KEY "dna:system:witness-servers"
 

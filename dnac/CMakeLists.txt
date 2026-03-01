@@ -64,10 +64,14 @@ pkg_check_modules(SQLITE3 REQUIRED sqlite3)
 # Include directories
 # ============================================================================
 
+set(NODUS_DIR "${CMAKE_SOURCE_DIR}/../nodus")
+
 include_directories(
     ${CMAKE_SOURCE_DIR}/include
     ${DNA_MESSENGER_DIR}/include
     ${DNA_MESSENGER_DIR}
+    ${DNA_MESSENGER_DIR}/dht/shared
+    ${NODUS_DIR}/include
     ${SHARED_DIR}
     ${SHARED_DIR}/crypto
     ${SHARED_DIR}/crypto/utils

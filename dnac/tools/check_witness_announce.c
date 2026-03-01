@@ -12,7 +12,7 @@
 #include <time.h>
 
 #include <dna/dna_engine.h>
-#include "dht/core/dht_context.h"
+#include "nodus_ops.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_types.h"
 #include "dnac/epoch.h"
@@ -69,7 +69,7 @@ static int compute_identity_fingerprint(const char *data_dir, char *fingerprint_
     return rc;
 }
 
-static int check_witness_announcement(dht_context_t *dht, const char *fingerprint, const char *name) {
+static int check_witness_announcement(const char *fingerprint, const char *name) {
     /* Build the key: SHA3-512(prefix + fingerprint) */
     char key_input[256];
     snprintf(key_input, sizeof(key_input), "%s%s", WITNESS_ANNOUNCE_PREFIX, fingerprint);
@@ -93,7 +93,7 @@ static int check_witness_announcement(dht_context_t *dht, const char *fingerprin
     /* Query DHT (blocking) */
     uint8_t *data = NULL;
     size_t data_len = 0;
-    int rc = dht_get(dht, key_hash, 64, &data, &data_len);
+    int rc = nodus_ops_get(key_hash, 64, &data, &data_len);
 
     if (rc == 0 && data != NULL && data_len > 0) {
         printf("    Status: FOUND (%zu bytes)\n", data_len);
@@ -186,12 +186,12 @@ int main(int argc, char *argv[]) {
     /* Wait for DHT to be ready */
     printf("Waiting for DHT connection...\n");
     wait_count = 0;
-    while (!dna_engine_is_dht_connected(engine) && wait_count < 100) {
+    while (!nodus_ops_is_ready() && wait_count < 100) {
         usleep(100000);  /* 100ms */
         wait_count++;
     }
 
-    if (!dna_engine_is_dht_connected(engine)) {
+    if (!nodus_ops_is_ready()) {
         fprintf(stderr, "DHT not connected after 10s\n");
         dna_engine_destroy(engine);
         free(data_dir);
@@ -200,20 +200,11 @@ int main(int argc, char *argv[]) {
 
     printf("DHT connected.\n\n");
 
-    /* Get DHT context */
-    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
-    if (!dht) {
-        fprintf(stderr, "Failed to get DHT context\n");
-        dna_engine_destroy(engine);
-        free(data_dir);
-        return 1;
-    }
-
     printf("Checking witness announcements:\n");
 
     int found_count = 0;
     for (int i = 0; WITNESSES[i] != NULL; i++) {
-        if (check_witness_announcement(dht, WITNESSES[i], WITNESS_NAMES[i]) == 0) {
+        if (check_witness_announcement(WITNESSES[i], WITNESS_NAMES[i]) == 0) {
             found_count++;
         }
         printf("\n");

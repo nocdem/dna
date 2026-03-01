@@ -29,42 +29,23 @@
  * - dht_put_signed_sync: Synchronous signed put with timeout
  * ========================================================================== */
 
-/* Forward declare DHT context type */
-typedef struct dht_context dht_context_t;
-
-/* DHT functions from libdna */
-extern void* dna_engine_get_dht_context(dna_engine_t *engine);
-extern int dht_get(dht_context_t *ctx, const uint8_t *key, size_t key_len,
-                   uint8_t **value_out, size_t *value_len_out);
-extern int dht_put_signed_sync(dht_context_t *ctx,
-                               const uint8_t *key, size_t key_len,
-                               const uint8_t *value, size_t value_len,
-                               uint64_t value_id,
-                               unsigned int ttl_seconds,
-                               const char *caller,
-                               int timeout_ms);
+#include "nodus_ops.h"
 
 /* Roster DHT value_id (fixed for replacement behavior) */
 #define ROSTER_DHT_VALUE_ID 1
 #define ROSTER_DHT_TTL_SECS (7 * 24 * 3600)  /* 1 week */
 #define ROSTER_DHT_TIMEOUT_MS 5000           /* 5 seconds */
 
-static int dna_dht_get_sync(dna_engine_t *engine, const uint8_t *key, size_t key_len,
+static int dna_dht_get_sync(const uint8_t *key, size_t key_len,
                             uint8_t *buffer, size_t buffer_len, size_t *data_len_out) {
-    if (!engine || !key || !buffer || !data_len_out) {
-        return -1;
-    }
-
-    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
-    if (!dht) {
-        QGP_LOG_WARN(LOG_TAG, "DHT context not available");
+    if (!key || !buffer || !data_len_out) {
         return -1;
     }
 
     uint8_t *value = NULL;
     size_t value_len = 0;
 
-    int rc = dht_get(dht, key, key_len, &value, &value_len);
+    int rc = nodus_ops_get(key, key_len, &value, &value_len);
     if (rc != 0 || value == NULL || value_len == 0) {
         QGP_LOG_DEBUG(LOG_TAG, "DHT get returned no data");
         *data_len_out = 0;
@@ -86,21 +67,14 @@ static int dna_dht_get_sync(dna_engine_t *engine, const uint8_t *key, size_t key
     return 0;
 }
 
-static int dna_dht_put_signed_sync(dna_engine_t *engine, const uint8_t *key, size_t key_len,
+static int dna_dht_put_signed_sync(const uint8_t *key, size_t key_len,
                                    const uint8_t *data, size_t data_len) {
-    if (!engine || !key || !data) {
+    if (!key || !data) {
         return -1;
     }
 
-    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
-    if (!dht) {
-        QGP_LOG_WARN(LOG_TAG, "DHT context not available");
-        return -1;
-    }
-
-    int rc = dht_put_signed_sync(dht, key, key_len, data, data_len,
-                                  ROSTER_DHT_VALUE_ID, ROSTER_DHT_TTL_SECS,
-                                  "bft_roster", ROSTER_DHT_TIMEOUT_MS);
+    int rc = nodus_ops_put(key, key_len, data, data_len,
+                           ROSTER_DHT_TTL_SECS, ROSTER_DHT_VALUE_ID);
     if (rc != 0) {
         QGP_LOG_WARN(LOG_TAG, "DHT put failed: %d", rc);
         return -1;
@@ -196,8 +170,6 @@ int dnac_bft_roster_load_from_dht(dnac_bft_context_t *ctx) {
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
-    dna_engine_t *engine = (dna_engine_t*)ctx->dna_engine;
-
     /* Generate DHT key (v0.10.0: zone-scoped) */
     uint8_t key[32];
     roster_get_dht_key_ctx(ctx->chain_id, key);
@@ -208,7 +180,7 @@ int dnac_bft_roster_load_from_dht(dnac_bft_context_t *ctx) {
 
     QGP_LOG_DEBUG(LOG_TAG, "Loading roster from DHT...");
 
-    int rc = dna_dht_get_sync(engine, key, 32, buffer, sizeof(buffer), &data_len);
+    int rc = dna_dht_get_sync(key, 32, buffer, sizeof(buffer), &data_len);
     if (rc != 0 || data_len == 0) {
         QGP_LOG_INFO(LOG_TAG, "No roster found in DHT (new network?)");
         return DNAC_BFT_ERROR_NOT_FOUND;
@@ -241,8 +213,6 @@ int dnac_bft_roster_save_to_dht(dnac_bft_context_t *ctx) {
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
-    dna_engine_t *engine = (dna_engine_t*)ctx->dna_engine;
-
     /* Serialize roster */
     uint8_t buffer[65536];
     size_t written;
@@ -263,7 +233,7 @@ int dnac_bft_roster_save_to_dht(dnac_bft_context_t *ctx) {
     /* Store in DHT */
     QGP_LOG_DEBUG(LOG_TAG, "Saving roster to DHT (%zu bytes)...", written);
 
-    rc = dna_dht_put_signed_sync(engine, key, 32, buffer, written);
+    rc = dna_dht_put_signed_sync(key, 32, buffer, written);
     if (rc != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to save roster to DHT");
         return DNAC_BFT_ERROR_NETWORK;
@@ -527,10 +497,8 @@ int dnac_bft_client_discover_roster(void *dna_engine, dnac_roster_t *roster_out)
         }
     }
 
-    /* Fall back to DHT (currently stubbed) */
+    /* Fall back to DHT */
     if (dna_engine) {
-        dna_engine_t *engine = (dna_engine_t*)dna_engine;
-
         /* Generate DHT key */
         uint8_t key[32];
         roster_get_dht_key(key);
@@ -541,7 +509,7 @@ int dnac_bft_client_discover_roster(void *dna_engine, dnac_roster_t *roster_out)
 
         QGP_LOG_DEBUG(LOG_TAG, "Client discovering roster from DHT...");
 
-        int rc = dna_dht_get_sync(engine, key, 32, buffer, sizeof(buffer), &data_len);
+        int rc = dna_dht_get_sync(key, 32, buffer, sizeof(buffer), &data_len);
         if (rc == 0 && data_len > 0) {
             /* Deserialize */
             rc = dnac_bft_roster_deserialize(buffer, data_len, roster_out);

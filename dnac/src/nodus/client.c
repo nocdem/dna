@@ -26,34 +26,7 @@
 #include "crypto/utils/qgp_dilithium.h"
 #include "crypto/utils/qgp_log.h"
 
-/* Forward declare DHT context type */
-typedef struct dht_context dht_context_t;
-
-/* DHT functions from libdna */
-extern void* dna_engine_get_dht_context(dna_engine_t *engine);
-extern int dht_put_signed_permanent(dht_context_t *ctx,
-                                    const uint8_t *key, size_t key_len,
-                                    const uint8_t *value, size_t value_len,
-                                    uint64_t value_id,
-                                    const char *caller);
-extern int dht_get(dht_context_t *ctx,
-                   const uint8_t *key, size_t key_len,
-                   uint8_t **value_out, size_t *value_len_out);
-
-/* DHT listen callback type */
-typedef bool (*dht_listen_callback_t)(
-    const uint8_t *value,
-    size_t value_len,
-    bool expired,
-    void *user_data
-);
-
-/* DHT listen functions from libdna */
-extern size_t dht_listen(dht_context_t *ctx,
-                         const uint8_t *key, size_t key_len,
-                         dht_listen_callback_t callback,
-                         void *user_data);
-extern void dht_cancel_listen(dht_context_t *ctx, size_t token);
+#include "nodus_ops.h"
 
 /* Dilithium5 verification from libdna */
 extern int dna_engine_verify_signature(dna_engine_t *engine,
@@ -227,8 +200,7 @@ static int build_epoch_request_key(const char *witness_fp, uint64_t epoch,
 /**
  * Fetch witness announcement from permanent DHT key
  */
-static int fetch_witness_announcement(dht_context_t *dht,
-                                      const char *witness_fp,
+static int fetch_witness_announcement(const char *witness_fp,
                                       dnac_witness_announcement_t *announcement_out) {
     /* Build announcement key */
     uint8_t announce_key[64];
@@ -239,7 +211,7 @@ static int fetch_witness_announcement(dht_context_t *dht,
     /* GET from DHT */
     uint8_t *data = NULL;
     size_t data_len = 0;
-    int rc = dht_get(dht, announce_key, 64, &data, &data_len);
+    int rc = nodus_ops_get(announce_key, 64, &data, &data_len);
 
     if (rc != 0 || !data || data_len == 0) {
         return -1;
@@ -466,13 +438,6 @@ int dnac_witness_check_nullifier(dnac_context_t *ctx,
 
     *is_spent_out = false;
 
-    /* Get DNA engine and DHT context */
-    dna_engine_t *engine = dnac_get_engine(ctx);
-    if (!engine) return DNAC_ERROR_NOT_INITIALIZED;
-
-    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
-    if (!dht) return DNAC_ERROR_NETWORK;
-
     /* Build nullifier lookup key */
     /* Key: SHA3-512("dnac:nullifier:" + nullifier) */
     uint8_t key_data[256];
@@ -491,7 +456,7 @@ int dnac_witness_check_nullifier(dnac_context_t *ctx,
     /* Query DHT for nullifier */
     uint8_t *value = NULL;
     size_t value_len = 0;
-    int rc = dht_get(dht, lookup_key, 64, &value, &value_len);
+    int rc = nodus_ops_get(lookup_key, 64, &value, &value_len);
 
     if (rc == 0 && value && value_len > 0) {
         /* Nullifier found - it has been spent */
@@ -539,13 +504,6 @@ int dnac_witness_ping(dnac_context_t *ctx,
 
     *latency_ms_out = -1;
 
-    /* Get DNA engine and DHT context */
-    dna_engine_t *engine = dnac_get_engine(ctx);
-    if (!engine) return -1;
-
-    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
-    if (!dht) return -1;
-
     /* Build ping key */
     uint8_t key_data[128];
     const char *prefix = "dnac:nodus:ping:";
@@ -563,9 +521,8 @@ int dnac_witness_ping(dnac_context_t *ctx,
     uint8_t ping_data[8];
     memcpy(ping_data, &start, 8);
 
-    int rc = dht_put_signed_permanent(dht, ping_key, 64, ping_data, 8,
-                                      start % 1000, /* unique value_id */
-                                      "nodus_ping");
+    int rc = nodus_ops_put_permanent(ping_key, 64, ping_data, 8,
+                                     start % 1000);
     if (rc != 0) return -1;
 
     /* Wait for pong (response at same key from server) */
@@ -573,7 +530,7 @@ int dnac_witness_ping(dnac_context_t *ctx,
 
     uint8_t *pong_data = NULL;
     size_t pong_len = 0;
-    rc = dht_get(dht, ping_key, 64, &pong_data, &pong_len);
+    rc = nodus_ops_get(ping_key, 64, &pong_data, &pong_len);
 
     if (rc == 0 && pong_data && pong_len >= 8) {
         uint64_t end = get_time_ms();

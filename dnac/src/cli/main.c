@@ -9,6 +9,7 @@
 #include "dnac/cli.h"
 #include "dnac/dnac.h"
 #include <dna/dna_engine.h>
+#include "nodus_ops.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -186,9 +187,8 @@ int main(int argc, char **argv) {
     }
 
     /* Wait for DHT connection (needed for send/sync/recover) */
-    extern int dna_engine_is_dht_connected(dna_engine_t *engine);
     for (int i = 0; i < 100; i++) {  /* up to 10 seconds */
-        if (dna_engine_is_dht_connected(engine)) break;
+        if (nodus_ops_is_ready()) break;
         usleep(100000);  /* 100ms */
     }
 

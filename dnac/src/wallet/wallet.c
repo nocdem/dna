@@ -16,30 +16,7 @@
 #include <time.h>
 #include <openssl/evp.h>
 
-/* Forward declare DHT context type */
-typedef struct dht_context dht_context_t;
-
-/* DHT functions from libdna */
-extern void* dna_engine_get_dht_context(dna_engine_t *engine);
-extern int dht_get_all(dht_context_t *ctx,
-                       const uint8_t *key, size_t key_len,
-                       uint8_t ***values_out, size_t **values_len_out,
-                       size_t *count_out);
-
-/* DHT listen callback type */
-typedef bool (*dht_listen_callback_t)(
-    const uint8_t *value,
-    size_t value_len,
-    bool expired,
-    void *user_data
-);
-
-/* DHT listen functions from libdna */
-extern size_t dht_listen(dht_context_t *ctx,
-                         const uint8_t *key, size_t key_len,
-                         dht_listen_callback_t callback,
-                         void *user_data);
-extern void dht_cancel_listen(dht_context_t *ctx, size_t token);
+#include "nodus_ops.h"
 
 /* Default database filename */
 #define DNAC_DB_FILENAME "dnac.db"
@@ -112,13 +89,7 @@ void dnac_shutdown(dnac_context_t *ctx) {
 
     /* Cancel inbox listener if active */
     if (ctx->inbox_listen_token != 0) {
-        dna_engine_t *engine = ctx->dna_engine;
-        if (engine) {
-            dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
-            if (dht) {
-                dht_cancel_listen(dht, ctx->inbox_listen_token);
-            }
-        }
+        nodus_ops_cancel_listen(ctx->inbox_listen_token);
         ctx->inbox_listen_token = 0;
     }
 
@@ -225,12 +196,6 @@ int dnac_start_listening(dnac_context_t *ctx) {
         return DNAC_SUCCESS;
     }
 
-    dna_engine_t *engine = ctx->dna_engine;
-    if (!engine) return DNAC_ERROR_NOT_INITIALIZED;
-
-    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
-    if (!dht) return DNAC_ERROR_NETWORK;
-
     /* Build inbox key */
     uint8_t inbox_key[64];
     if (build_inbox_key(ctx->owner_fingerprint, NULL, inbox_key) != 0) {
@@ -238,7 +203,7 @@ int dnac_start_listening(dnac_context_t *ctx) {
     }
 
     /* Start listening */
-    size_t token = dht_listen(dht, inbox_key, 64, inbox_listener_callback, ctx);
+    size_t token = nodus_ops_listen(inbox_key, 64, inbox_listener_callback, ctx, NULL);
     if (token == 0) {
         return DNAC_ERROR_NETWORK;
     }
@@ -254,14 +219,7 @@ int dnac_stop_listening(dnac_context_t *ctx) {
         return DNAC_SUCCESS;  /* Not listening */
     }
 
-    dna_engine_t *engine = ctx->dna_engine;
-    if (!engine) return DNAC_ERROR_NOT_INITIALIZED;
-
-    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
-    if (dht) {
-        dht_cancel_listen(dht, ctx->inbox_listen_token);
-    }
-
+    nodus_ops_cancel_listen(ctx->inbox_listen_token);
     ctx->inbox_listen_token = 0;
     return DNAC_SUCCESS;
 }
@@ -385,32 +343,18 @@ static bool utxo_exists(sqlite3 *db, const uint8_t *tx_hash, uint32_t output_ind
 int dnac_sync_wallet(dnac_context_t *ctx) {
     if (!ctx || !ctx->initialized) return DNAC_ERROR_INVALID_PARAM;
 
-    dna_engine_t *engine = ctx->dna_engine;
-    if (!engine) return DNAC_ERROR_NOT_INITIALIZED;
-
-    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
-    if (!dht) return DNAC_ERROR_NETWORK;
-
     /* Step 1: Build inbox key */
     uint8_t inbox_key[64];
     if (build_inbox_key(ctx->owner_fingerprint, NULL, inbox_key) != 0) {
         return DNAC_ERROR_CRYPTO;
     }
 
-    /* DEBUG: Print inbox key */
-    fprintf(stderr, "[SYNC] Owner fingerprint: %.16s...\n", ctx->owner_fingerprint);
-    fprintf(stderr, "[SYNC] Inbox key (first 16 bytes): ");
-    for (int i = 0; i < 16; i++) fprintf(stderr, "%02x", inbox_key[i]);
-    fprintf(stderr, "...\n");
-
     /* Step 2: Query DHT for all payments in our inbox */
     uint8_t **values = NULL;
     size_t *values_len = NULL;
     size_t count = 0;
 
-    fprintf(stderr, "[SYNC] Calling dht_get_all...\n");
-    int rc = dht_get_all(dht, inbox_key, 64, &values, &values_len, &count);
-    fprintf(stderr, "[SYNC] dht_get_all returned rc=%d, count=%zu\n", rc, count);
+    int rc = nodus_ops_get_all(inbox_key, 64, &values, &values_len, &count);
     if (rc != 0 || count == 0) {
         /* No payments or error - not fatal */
         fprintf(stderr, "[SYNC] No payments found (rc=%d, count=%zu)\n", rc, count);
@@ -557,12 +501,6 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
 int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count) {
     if (!ctx || !ctx->initialized) return DNAC_ERROR_INVALID_PARAM;
 
-    dna_engine_t *engine = ctx->dna_engine;
-    if (!engine) return DNAC_ERROR_NOT_INITIALIZED;
-
-    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
-    if (!dht) return DNAC_ERROR_NETWORK;
-
     /* Step 1: Clear existing UTXOs (fresh start) */
     int rc = dnac_db_clear_utxos(ctx->db, ctx->owner_fingerprint);
     if (rc != DNAC_SUCCESS) {
@@ -580,7 +518,7 @@ int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count) {
     size_t *values_len = NULL;
     size_t count = 0;
 
-    rc = dht_get_all(dht, inbox_key, 64, &values, &values_len, &count);
+    rc = nodus_ops_get_all(inbox_key, 64, &values, &values_len, &count);
     if (rc != 0 || count == 0) {
         /* No payments or error - wallet is empty */
         if (recovered_count) *recovered_count = 0;

@@ -33,19 +33,8 @@
 
 #define LOG_TAG "GENESIS"
 
-/* Forward declare DHT context type */
-typedef struct dht_context dht_context_t;
-
-/* DHT functions from libdna */
-extern void* dna_engine_get_dht_context(dna_engine_t *engine);
-extern bool dht_context_wait_for_ready(dht_context_t *ctx, int timeout_ms);
-extern int dht_put_signed_sync(dht_context_t *ctx,
-                               const uint8_t *key, size_t key_len,
-                               const uint8_t *value, size_t value_len,
-                               uint64_t value_id,
-                               unsigned int ttl_seconds,
-                               const char *caller,
-                               int timeout_ms);
+#include "nodus_ops.h"
+#include "nodus_init.h"
 
 /**
  * Compute SHA3-512 hash of data
@@ -312,10 +301,7 @@ int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
     sqlite3 *db = dnac_get_db(ctx);
     if (!db) return DNAC_ERROR_NOT_INITIALIZED;
 
-    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
-    if (!dht) return DNAC_ERROR_NETWORK;
-
-    if (!dht_context_wait_for_ready(dht, 5000)) {
+    if (!nodus_messenger_wait_for_ready(5000)) {
         QGP_LOG_ERROR(LOG_TAG, "DHT not ready after 5s — cannot broadcast genesis");
         return DNAC_ERROR_NETWORK;
     }
@@ -344,10 +330,9 @@ int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
             continue;
         }
 
-        /* PUT payment to recipient's inbox (synchronous, permanent) */
-        rc = dht_put_signed_sync(dht, inbox_key, 64, tx_buffer, tx_len,
-                                 payment_value_id, UINT_MAX,
-                                 "dnac_genesis", 5000);
+        /* PUT payment to recipient's inbox (permanent) */
+        rc = nodus_ops_put(inbox_key, 64, tx_buffer, tx_len,
+                           0, payment_value_id);
         if (rc != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to send genesis to recipient %d: %d", i, rc);
             return DNAC_ERROR_NETWORK;

@@ -35,8 +35,7 @@
 #include "dnac/nodus.h"
 
 #include <dna/dna_engine.h>
-#include "dht/client/dht_singleton.h"
-#include "dht/core/dht_context.h"
+#include "nodus_ops.h"
 
 /* ============================================================================
  * Test State
@@ -149,16 +148,14 @@ static int setup_test_env(void) {
     printf("  Our fingerprint: %.32s...\n", g_fingerprint);
 
     /* Wait for DHT to become ready */
-    dht_context_t *dht_ctx = dht_singleton_get();
-    bool dht_ready = dht_ctx ? dht_context_is_ready(dht_ctx) : false;
+    bool dht_ready = nodus_ops_is_ready();
 
     if (!dht_ready) {
         printf("  Waiting for DHT (30s)...\n");
         struct timespec ts = {0, 100000000};  /* 100ms */
         for (int i = 0; i < 300; i++) {
             nanosleep(&ts, NULL);
-            dht_ctx = dht_singleton_get();
-            if (dht_ctx && dht_context_is_ready(dht_ctx)) {
+            if (nodus_ops_is_ready()) {
                 printf("  DHT ready after %.1f seconds\n", (i+1) * 0.1);
                 dht_ready = true;
                 break;

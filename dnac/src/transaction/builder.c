@@ -22,19 +22,8 @@
 #include <limits.h>
 #include <openssl/evp.h>
 
-/* Forward declare DHT context type */
-typedef struct dht_context dht_context_t;
-
-/* DHT functions from libdna */
-extern void* dna_engine_get_dht_context(dna_engine_t *engine);
-extern bool dht_context_wait_for_ready(dht_context_t *ctx, int timeout_ms);
-extern int dht_put_signed_sync(dht_context_t *ctx,
-                               const uint8_t *key, size_t key_len,
-                               const uint8_t *value, size_t value_len,
-                               uint64_t value_id,
-                               unsigned int ttl_seconds,
-                               const char *caller,
-                               int timeout_ms);
+#include "nodus_ops.h"
+#include "nodus_init.h"
 
 struct dnac_tx_builder {
     dnac_context_t *ctx;
@@ -267,11 +256,7 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
     const char *owner_fp = dnac_get_owner_fingerprint(ctx);
     if (!owner_fp) return DNAC_ERROR_NOT_INITIALIZED;
 
-    dht_context_t *dht = (dht_context_t *)dna_engine_get_dht_context(engine);
-    if (!dht) return DNAC_ERROR_NETWORK;
-
-    if (!dht_context_wait_for_ready(dht, 5000)) {
-        fprintf(stderr, "[SEND] DHT not ready after 5s\n");
+    if (!nodus_messenger_wait_for_ready(5000)) {
         return DNAC_ERROR_NETWORK;
     }
 
@@ -342,7 +327,6 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
     for (int i = 0; i < tx->output_count; i++) {
         /* Skip change outputs (back to ourselves) */
         if (strcmp(tx->outputs[i].owner_fingerprint, owner_fp) == 0) {
-            fprintf(stderr, "[SEND] Skipping change output to self\n");
             continue;
         }
 
@@ -352,20 +336,10 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
             continue;
         }
 
-        /* DEBUG: Print what we're publishing */
-        fprintf(stderr, "[SEND] Publishing to recipient: %.16s...\n", tx->outputs[i].owner_fingerprint);
-        fprintf(stderr, "[SEND] Inbox key (first 16 bytes): ");
-        for (int j = 0; j < 16; j++) fprintf(stderr, "%02x", inbox_key[j]);
-        fprintf(stderr, "...\n");
-        fprintf(stderr, "[SEND] TX size: %zu bytes, value_id: %llu\n", tx_len, (unsigned long long)payment_value_id);
-
-        /* PUT payment to recipient's inbox (synchronous, permanent) */
-        rc = dht_put_signed_sync(dht, inbox_key, 64, tx_buffer, tx_len,
-                                 payment_value_id, UINT_MAX,
-                                 "dnac_payment", 5000);
-        fprintf(stderr, "[SEND] dht_put_signed_sync returned: %d\n", rc);
+        /* PUT payment to recipient's inbox (permanent) */
+        rc = nodus_ops_put(inbox_key, 64, tx_buffer, tx_len,
+                           0, payment_value_id);
         if (rc != 0) {
-            fprintf(stderr, "[SEND] ERROR: DHT put failed for output %d: %d\n", i, rc);
             return DNAC_ERROR_NETWORK;
         }
     }
@@ -393,10 +367,6 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
         memcpy(nullifier_data + fp_len, tx->outputs[i].nullifier_seed, 32);
         if (compute_sha3_512(nullifier_data, fp_len + 32, utxo.nullifier) == 0) {
             rc = dnac_db_store_utxo(db, &utxo);
-            if (rc == DNAC_SUCCESS) {
-                fprintf(stderr, "[SEND] Stored change UTXO locally: %llu coins\n",
-                        (unsigned long long)utxo.amount);
-            }
         }
     }
 
