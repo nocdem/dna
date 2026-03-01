@@ -72,7 +72,7 @@ Oct 2025                              Jan 2026
 ### Phase 4: P2P Network (October-November 2025)
 **Decentralized transport layer**
 
-- OpenDHT-PQ fork (RSA → Dilithium5)
+- OpenDHT-PQ fork (RSA → Dilithium5) *(later replaced by Nodus v5, pure C)*
 - DHT-based message routing
 - Offline message queueing (7-day TTL)
 - Bootstrap node infrastructure
@@ -247,7 +247,7 @@ Client → DHT (cached) ←→ Client
 - [x] GEK (Group Encryption Key) versioning
 
 ### Network
-- [x] OpenDHT-PQ (Dilithium5 signatures)
+- [x] ~~OpenDHT-PQ~~ Nodus v5 DHT (Dilithium5 signatures, pure C — replaced OpenDHT)
 - [x] DHT-only transport (no ICE)
 - [x] Spillway Protocol v2 (daily buckets)
 - [x] Bootstrap node infrastructure

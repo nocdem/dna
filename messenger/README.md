@@ -125,7 +125,7 @@ cd dna_messenger_flutter && flutter build apk
 │  (You)      │                                     │  (Contact)  │
 └──────┬──────┘                                     └──────┬──────┘
        │                                                   │
-       │              OpenDHT-PQ Network                   │
+       │              Nodus v5 DHT Network                   │
        │    ┌────────────────────────────────────┐        │
        │    │    P2P Distributed Hash Table      │        │
        │    │                                    │        │
@@ -144,7 +144,7 @@ cd dna_messenger_flutter && flutter build apk
 **Components:**
 - **Flutter App** — Cross-platform UI (Android, Linux, Windows)
 - **C Library** — Core crypto, DHT, database (`libdna_engine.so`)
-- **OpenDHT-PQ** — Forked OpenDHT with post-quantum crypto
+- **Nodus v5** — Pure C Kademlia DHT with PBFT consensus
 
 **Local Storage:**
 - Messages: `~/.dna/messages.db`
@@ -155,27 +155,30 @@ cd dna_messenger_flutter && flutter build apk
 
 ## Network Infrastructure
 
-### OpenDHT-PQ
+### Nodus v5
 
-DNA Messenger uses a **forked version of OpenDHT** with post-quantum cryptography:
+DNA Messenger uses **Nodus v5**, a pure C Kademlia DHT with PBFT consensus:
 
-- **Dilithium5 signatures** replace RSA-2048 (FIPS 204 compliant)
-- **Mandatory signing** — All DHT values must be cryptographically signed
-- **Binary identity format** — `.dsa`, `.pub`, `.cert` key files
-- Source: `vendor/opendht-pq/`
+- **Pure C** — No C++ dependencies, minimal footprint
+- **Dilithium5 signatures** — All DHT values cryptographically signed (FIPS 204)
+- **PBFT consensus** — Byzantine fault-tolerant replication across nodes
+- **512-bit keyspace** — Kademlia routing with k=8 buckets
+- **Two protocol tiers** — Tier 1 (Kademlia: ping/find_node/put/get) and Tier 2 (Client: auth/dht_put/dht_get/listen)
+- **CBOR wire format** — 7-byte frame header (magic `0x4E44` + version + length)
+- **7-day TTL** — Values persist across restarts with SQLite storage
+- Source: `/opt/dna/nodus/`
 
-### DNA Nodus (Bootstrap Server)
+### Nodus Servers
 
-Lightweight DHT bootstrap nodes that help peers discover each other:
+DHT nodes that form the distributed network:
 
-- **Purpose:** Peer discovery and DHT entry point only
-- **No message relay** — Messages go peer-to-peer via DHT, not through servers
-- **No logging** — Bootstrap nodes never see message content or metadata
+- **Purpose:** DHT storage, replication, and client connections
+- **No message relay** — Messages stored/retrieved via DHT, not relayed through servers
+- **No logging** — Nodes never see message content or metadata
 - **Persistence:** SQLite-backed DHT state survives restarts
-- **Config:** `/etc/dna-nodus.conf` (JSON)
-- **Port:** 4000/UDP
+- **Ports:** 4000/UDP (Kademlia peer discovery), 4001/TCP (client connections + replication)
 
-Public bootstrap nodes are operated by cpunk.io — see [docs/DNA_NODUS.md](docs/DNA_NODUS.md) for deployment info.
+Public nodes are operated by cpunk.io — see [docs/DNA_NODUS.md](docs/DNA_NODUS.md) for deployment info.
 
 ---
 

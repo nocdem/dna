@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# Build OpenDHT and ALL dependencies for Windows (llvm-mingw cross-compilation)
-# This builds a complete P2P stack for Windows
+# Build all C dependencies for Windows (llvm-mingw cross-compilation)
+# Builds GnuTLS, OpenSSL, curl, SQLite, and other libraries needed by DNA Messenger
 #
 
 set -e
@@ -27,16 +27,16 @@ export PATH="${MINGW_PREFIX}/bin:$PATH"
 export PKG_CONFIG_PATH="${MINGW_TARGET_PREFIX}/lib/pkgconfig"
 
 echo -e "${BLUE}=========================================${NC}"
-echo -e "${BLUE} Building Full P2P Stack for Windows${NC}"
+echo -e "${BLUE} Building Dependencies for Windows${NC}"
 echo -e "${BLUE}=========================================${NC}"
 echo -e "llvm-mingw: ${MINGW_PREFIX}"
 echo -e "Target: ${MINGW_TARGET}"
 echo -e "Prefix: ${MINGW_TARGET_PREFIX}"
 echo ""
 
-# Check if already built
-if [ -f "${MINGW_TARGET_PREFIX}/lib/libopendht.a" ] && [ -f "${MINGW_TARGET_PREFIX}/include/opendht/dhtrunner.h" ]; then
-    echo -e "${GREEN}✓${NC} OpenDHT already built for Windows"
+# Check if already built (use GnuTLS as the sentinel — it's the most complex dependency)
+if [ -f "${MINGW_TARGET_PREFIX}/lib/libgnutls.a" ] && [ -f "${MINGW_TARGET_PREFIX}/lib/libcurl.a" ]; then
+    echo -e "${GREEN}✓${NC} Windows dependencies already built"
     exit 0
 fi
 
@@ -72,7 +72,7 @@ EOF
 echo -e "${GREEN}✓${NC} Created CMake toolchain file: $TOOLCHAIN_FILE"
 
 # 1. Build fmt (formatting library)
-echo -e "${BLUE}[1/6] Building fmt...${NC}"
+echo -e "${BLUE}[1/16] Building fmt...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libfmt.a" ]; then
     if [ ! -d "fmt" ]; then
         git clone --depth 1 --branch 10.2.1 https://github.com/fmtlib/fmt.git
@@ -94,7 +94,7 @@ else
 fi
 
 # 2. Build jsoncpp (JSON library)
-echo -e "${BLUE}[2/6] Building jsoncpp...${NC}"
+echo -e "${BLUE}[2/16] Building jsoncpp...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libjsoncpp.a" ]; then
     if [ ! -d "jsoncpp" ]; then
         git clone --depth 1 --branch 1.9.5 https://github.com/open-source-parsers/jsoncpp.git
@@ -117,7 +117,7 @@ else
 fi
 
 # 3. Build libargon2 (password hashing)
-echo -e "${BLUE}[3/6] Building libargon2...${NC}"
+echo -e "${BLUE}[3/16] Building libargon2...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libargon2.a" ]; then
     if [ ! -d "phc-winner-argon2" ]; then
         git clone --depth 1 --branch 20190702 https://github.com/P-H-C/phc-winner-argon2.git
@@ -160,7 +160,7 @@ else
 fi
 
 # 4. Build msgpack-cxx (serialization library)
-echo -e "${BLUE}[4/6] Installing msgpack-cxx...${NC}"
+echo -e "${BLUE}[4/16] Installing msgpack-cxx...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/include/msgpack.hpp" ]; then
     if [ ! -d "msgpack-c" ]; then
         git clone --depth 1 --branch cpp-6.1.0 https://github.com/msgpack/msgpack-c.git
@@ -185,7 +185,7 @@ else
 fi
 
 # 5. Build GMP (GNU Multiple Precision library - required by Nettle)
-echo -e "${BLUE}[5/14] Building GMP...${NC}"
+echo -e "${BLUE}[5/16] Building GMP...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libgmp.a" ]; then
     if [ ! -d "gmp-6.3.0" ]; then
         wget https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
@@ -208,7 +208,7 @@ else
 fi
 
 # 6. Build Nettle (low-level crypto library - required by GnuTLS)
-echo -e "${BLUE}[6/14] Building Nettle...${NC}"
+echo -e "${BLUE}[6/16] Building Nettle...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libnettle.a" ]; then
     if [ ! -d "nettle-3.9.1" ]; then
         wget https://ftp.gnu.org/gnu/nettle/nettle-3.9.1.tar.gz
@@ -232,7 +232,7 @@ else
 fi
 
 # 7. Build Brotli (compression library - required by GnuTLS)
-echo -e "${BLUE}[7/15] Building Brotli...${NC}"
+echo -e "${BLUE}[7/16] Building Brotli...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libbrotlicommon.a" ]; then
     if [ ! -d "brotli" ]; then
         git clone --depth 1 --branch v1.1.0 https://github.com/google/brotli.git
@@ -290,7 +290,7 @@ else
 fi
 
 # 9. Build libidn2 (Internationalized Domain Names - required by GnuTLS)
-echo -e "${BLUE}[9/18] Building libidn2...${NC}"
+echo -e "${BLUE}[9/16] Building libidn2...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libidn2.a" ]; then
     if [ ! -d "libidn2-2.3.7" ]; then
         wget https://ftp.gnu.org/gnu/libidn/libidn2-2.3.7.tar.gz
@@ -313,8 +313,8 @@ else
     echo -e "${GREEN}✓${NC} libidn2 already installed"
 fi
 
-# 10. Build GnuTLS (TLS library - required by OpenDHT)
-echo -e "${BLUE}[10/17] Building GnuTLS...${NC}"
+# 10. Build GnuTLS (TLS library - required by Nodus v5)
+echo -e "${BLUE}[10/16] Building GnuTLS...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libgnutls.a" ]; then
     if [ ! -d "gnutls-3.8.3" ]; then
         wget https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.3.tar.xz
@@ -347,7 +347,7 @@ else
 fi
 
 # 11. Build zlib (compression library)
-echo -e "${BLUE}[11/17] Building zlib...${NC}"
+echo -e "${BLUE}[11/16] Building zlib...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libz.a" ]; then
     if [ ! -d "zlib-1.3.1" ]; then
         wget https://zlib.net/zlib-1.3.1.tar.gz
@@ -372,7 +372,7 @@ else
 fi
 
 # 12. Build Freetype (font rendering)
-echo -e "${BLUE}[12/17] Building Freetype...${NC}"
+echo -e "${BLUE}[12/16] Building Freetype...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libfreetype.a" ]; then
     if [ ! -d "freetype-2.13.3" ]; then
         wget https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.gz
@@ -399,7 +399,7 @@ else
 fi
 
 # 13. Build SQLite3 (database library)
-echo -e "${BLUE}[13/17] Building SQLite3...${NC}"
+echo -e "${BLUE}[13/16] Building SQLite3...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libsqlite3.a" ]; then
     if [ ! -d "sqlite-autoconf-3470200" ]; then
         wget https://www.sqlite.org/2024/sqlite-autoconf-3470200.tar.gz
@@ -422,7 +422,7 @@ else
 fi
 
 # 14. Build OpenSSL (TLS library)
-echo -e "${BLUE}[14/17] Building OpenSSL...${NC}"
+echo -e "${BLUE}[14/16] Building OpenSSL...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libssl.a" ]; then
     if [ ! -d "openssl-3.0.15" ]; then
         wget https://www.openssl.org/source/openssl-3.0.15.tar.gz
@@ -449,7 +449,7 @@ else
 fi
 
 # 15. Build json-c (JSON library)
-echo -e "${BLUE}[15/17] Building json-c...${NC}"
+echo -e "${BLUE}[15/16] Building json-c...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libjson-c.a" ]; then
     if [ ! -d "json-c-0.17" ]; then
         wget https://github.com/json-c/json-c/archive/refs/tags/json-c-0.17-20230812.tar.gz
@@ -477,7 +477,7 @@ else
 fi
 
 # 16. Build CURL (HTTP library)
-echo -e "${BLUE}[16/17] Building CURL...${NC}"
+echo -e "${BLUE}[16/16] Building CURL...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libcurl.a" ]; then
     if [ ! -d "curl-8.11.0" ]; then
         wget https://curl.se/download/curl-8.11.0.tar.gz
@@ -510,47 +510,24 @@ else
     echo -e "${GREEN}✓${NC} CURL already installed"
 fi
 
-# 17. Build OpenDHT (finally!)
-echo -e "${BLUE}[17/17] Building OpenDHT...${NC}"
-if [ ! -d "opendht" ]; then
-    git clone --depth 1 --branch v3.2.0 https://github.com/savoirfairelinux/opendht.git
-fi
-cd opendht
-rm -rf build-win
-mkdir -p build-win && cd build-win
-
-cmake .. \
-    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
-    -DCMAKE_INSTALL_PREFIX="${MINGW_TARGET_PREFIX}" \
-    -DCMAKE_PREFIX_PATH="${MINGW_TARGET_PREFIX}" \
-    -DOPENDHT_PYTHON=OFF \
-    -DOPENDHT_TOOLS=OFF \
-    -DOPENDHT_DOCUMENTATION=OFF \
-    -DBUILD_TESTING=OFF \
-    -DOPENDHT_PROXY_SERVER=OFF \
-    -DOPENDHT_PUSH_NOTIFICATIONS=OFF \
-    -DOPENDHT_HTTP=OFF \
-    -DOPENDHT_PEER_DISCOVERY=OFF \
-    -DOPENDHT_STATIC=ON \
-    -DBUILD_SHARED_LIBS=OFF
-
-make -j$(nproc)
-make install
-
 echo -e "${GREEN}=========================================${NC}"
-echo -e "${GREEN} ✓ Full P2P Stack Built for Windows!${NC}"
+echo -e "${GREEN} ✓ Windows Dependencies Built!${NC}"
 echo -e "${GREEN}=========================================${NC}"
 echo -e "Dependencies installed:"
 echo -e "  - fmt (formatting)"
 echo -e "  - jsoncpp (JSON)"
 echo -e "  - libargon2 (password hashing)"
 echo -e "  - msgpack-cxx (serialization)"
+echo -e "  - GMP (multi-precision arithmetic)"
+echo -e "  - Nettle (low-level crypto)"
+echo -e "  - Brotli (compression)"
+echo -e "  - zstd (compression)"
+echo -e "  - libidn2 (internationalized domain names)"
+echo -e "  - GnuTLS (TLS library)"
 echo -e "  - zlib (compression)"
 echo -e "  - Freetype (font rendering)"
 echo -e "  - SQLite3 (database)"
 echo -e "  - OpenSSL (TLS library)"
 echo -e "  - json-c (JSON library)"
 echo -e "  - CURL (HTTP library)"
-echo -e "  - OpenDHT (P2P DHT library)"
 echo ""
-echo -e "Windows builds now have full P2P support!"

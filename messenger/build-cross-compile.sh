@@ -231,8 +231,8 @@ build_windows_x64() {
     echo -e "  Target: ${MINGW_TARGET}"
     echo -e "  Prefix: ${MINGW_TARGET_PREFIX}"
 
-    # Build OpenDHT and msgpack for Windows
-    echo -e "${BLUE}Building P2P dependencies (OpenDHT, msgpack)...${NC}"
+    # Build Windows dependencies (GnuTLS, msgpack, etc.)
+    echo -e "${BLUE}Building Windows dependencies...${NC}"
     "${PROJECT_ROOT}/setup-windows-build.sh"
 
     # Download and install GLFW prebuilt binaries for Windows
@@ -352,8 +352,8 @@ build_windows_x64_debug() {
     echo -e "  Target: ${MINGW_TARGET}"
     echo -e "  Prefix: ${MINGW_TARGET_PREFIX}"
 
-    # Build OpenDHT and msgpack for Windows
-    echo -e "${BLUE}Building P2P dependencies (OpenDHT, msgpack)...${NC}"
+    # Build Windows dependencies (GnuTLS, msgpack, etc.)
+    echo -e "${BLUE}Building Windows dependencies...${NC}"
     "${PROJECT_ROOT}/setup-windows-build.sh"
 
     # Download and install GLFW prebuilt binaries for Windows

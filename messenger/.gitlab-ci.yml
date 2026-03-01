@@ -34,36 +34,15 @@ build:native-linux-x64:
   tags:
     - linux
   image: ubuntu:24.04
-  cache:
-    key: opendht-linux-x64-ubuntu2404-v1
-    paths:
-      - .cache/opendht/
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq build-essential cmake git pkg-config xxd wget tar
     # Core dependencies
     - apt-get install -y -qq libssl-dev libcurl4-openssl-dev libjson-c-dev libsqlite3-dev libzstd-dev
-    # OpenDHT build dependencies
-    - apt-get install -y -qq libgnutls28-dev libargon2-dev libmsgpack-dev libreadline-dev libncurses5-dev nettle-dev libjsoncpp-dev libfmt-dev libasio-dev libhttp-parser-dev libcppunit-dev
+    # GnuTLS (required by Nodus v5 TLS)
+    - apt-get install -y -qq libgnutls28-dev libargon2-dev
     # Flutter Linux desktop dependencies
     - apt-get install -y -qq libgtk-3-dev libblkid-dev liblzma-dev libsecret-1-dev
-    # Build OpenDHT from source
-    - |
-      export HOME="${CI_PROJECT_DIR}"
-      if [ ! -f ".cache/opendht/lib/libopendht.a" ]; then
-        mkdir -p .cache/opendht-src && cd .cache/opendht-src
-        git clone --depth 1 --branch v3.2.0 https://github.com/savoirfairelinux/opendht.git || true
-        cd opendht && mkdir -p build && cd build
-        cmake .. -DCMAKE_INSTALL_PREFIX=${CI_PROJECT_DIR}/.cache/opendht \
-                 -DCMAKE_BUILD_TYPE=Release \
-                 -DOPENDHT_PYTHON=OFF \
-                 -DOPENDHT_TOOLS=OFF \
-                 -DBUILD_SHARED_LIBS=OFF
-        make -j$(nproc) && make install
-        cd "${CI_PROJECT_DIR}"
-      fi
-    - export PKG_CONFIG_PATH="${CI_PROJECT_DIR}/.cache/opendht/lib/pkgconfig:$PKG_CONFIG_PATH"
-    - export CMAKE_PREFIX_PATH="${CI_PROJECT_DIR}/.cache/opendht:$CMAKE_PREFIX_PATH"
   script:
     - mkdir -p build && cd build
     - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF
@@ -514,7 +493,7 @@ build:windows:
   script:
     # Build native library with MSYS2/MinGW
     - $env:MSYSTEM = "MINGW64"
-    - C:\tools\msys64\usr\bin\bash.exe -lc "export PATH=/mingw64/bin:/usr/bin:$PATH && cd '$env:CI_PROJECT_DIR' && mkdir -p build-windows && cd build-windows && cmake .. -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF -DOPENDHT_DOWNLOAD_DEPS=OFF && mingw32-make -j4 dna_lib"
+    - C:\tools\msys64\usr\bin\bash.exe -lc "export PATH=/mingw64/bin:/usr/bin:$PATH && cd '$env:CI_PROJECT_DIR' && mkdir -p build-windows && cd build-windows && cmake .. -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF && mingw32-make -j4 dna_lib"
     # Copy native library to Flutter
     - mkdir -p dna_messenger_flutter\windows\libs
     - copy build-windows\libdna_lib.dll dna_messenger_flutter\windows\libs\dna_lib.dll

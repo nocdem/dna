@@ -4,6 +4,12 @@
 **Status:** Research Complete - Requires Separate Implementation Session
 **Impact:** Critical for future voting/reputation features at scale
 
+> **Note (2026-03):** OpenDHT-PQ has been completely removed from the codebase and replaced
+> by Nodus v5 (pure C). The `vendor/opendht-pq/` directory no longer exists. References to
+> OpenDHT source files (securedht.cpp, value.cpp, etc.) in this report are historical and
+> reflect the architecture at the time of analysis. The double-signing problem described here
+> no longer applies in the same way under Nodus v5, which uses a different DHT transport layer.
+
 ---
 
 ## Executive Summary

@@ -3,7 +3,8 @@
 
 Every claim verified TWICE by grepping all .c, .h, .cpp, .dart files across all source
 directories: src/, dht/, messenger/, transport/, database/, crypto/, blockchain/, cli/,
-jni/, tests/, vendor/opendht-pq/tools/, dna_messenger_flutter/.
+jni/, tests/, dna_messenger_flutter/.
+(Note: `vendor/opendht-pq/tools/` was also searched at audit time but has since been removed; OpenDHT replaced by Nodus v5.)
 
 Zero false positives remain. All items below are confirmed dead code.
 
@@ -44,7 +45,8 @@ These are compiled into `dht_lib.a` (dht/CMakeLists.txt lines 27, 30, 44-45) but
 | DHT Profile (old) | `dht/shared/dht_profile.c` + `.h` | 27 | DEAD — 0 external callers |
 | DHT Publish Queue | `dht/shared/dht_publish_queue.c` + `.h` | 30 | DEAD — 0 external callers (only a comment in dna_engine.h:682) |
 
-**Searched in:** src/, cli/, jni/, messenger/, transport/, database/, tests/, vendor/opendht-pq/tools/
+**Searched in:** src/, cli/, jni/, messenger/, transport/, database/, tests/
+(Note: `vendor/opendht-pq/tools/` was also searched at audit time but has since been removed.)
 **Reason:** Old wall/votes replaced by Feed system (`dna_engine_feed.c`). Old profile replaced by engine profile system. Publish queue never integrated.
 
 ---
