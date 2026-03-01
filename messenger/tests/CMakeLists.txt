@@ -118,22 +118,6 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 endif()
 
-# =============================================================================
-# Test: DHT listen() Update Detection
-# NOTE: test_listen_updates.c was removed, using test_dht_listen.c instead
-# =============================================================================
-
-# =============================================================================
-# Test: DHT listen() Basic Functionality
-# =============================================================================
-add_executable(test_dht_listen
-    test_dht_listen.c
-)
-set_target_properties(test_dht_listen PROPERTIES LINKER_LANGUAGE CXX)
-target_link_libraries(test_dht_listen ${TEST_LIBS} stdc++)
-
-# Note: test_signed_put.c and test_pq_put_get.c use different include paths
-# They need to be updated to use the same pattern as the other tests
 
 # =============================================================================
 # Build info
@@ -144,14 +128,12 @@ message(STATUS "========================")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "")
 message(STATUS "Test executables:")
-message(STATUS "  - test_dht_listen      : DHT listen() basic functionality")
 message(STATUS "  - test_aes256_gcm      : AES-256-GCM encryption/decryption")
 message(STATUS "  - test_key_encryption  : Key encryption (PBKDF2 + AES-256-GCM)")
 message(STATUS "  - test_kyber1024       : Kyber1024 (ML-KEM-1024) post-quantum KEM")
 message(STATUS "  - test_bip39_bip32     : BIP39/BIP32 mnemonic and HD key derivation")
 message(STATUS "")
 message(STATUS "Run tests:")
-message(STATUS "  ./test_dht_listen")
 message(STATUS "  ./test_aes256_gcm")
 message(STATUS "  ./test_key_encryption")
 message(STATUS "  ./test_kyber1024")

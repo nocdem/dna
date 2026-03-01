@@ -38,45 +38,7 @@ function (configure_tool name extra_files)
     endif ()
 endfunction ()
 
-# DNA Nodus v0.4 - Post-Quantum DHT Bootstrap (STUN/TURN removed for privacy)
-# Additional sources for dna-nodus (config only)
-# TURN files removed in v0.4.61: turn_server.cpp, turn_credential_manager.cpp, turn_credential_udp.cpp
-set(DNA_NODUS_SOURCES
-    nodus_config.cpp
-)
-
-function (configure_nodus name)
-    add_executable (${name} ${name}.cpp ${DNA_NODUS_SOURCES})
-    add_dependencies(${name} opendht dht_lib dsa)  # libjuice_external removed
-    if (MSVC)
-        target_sources(${name} PRIVATE ${MSC_COMPAT_SOURCES})
-        target_link_libraries (${name} PUBLIC opendht)  # JUICE_LIBRARIES removed
-        target_include_directories (${name} PRIVATE SYSTEM
-            ${MSC_COMPAT_DIR}
-            ${MSVC_COMPAT_DIR}
-            ${SHARED_DIR}/crypto/dsa
-            ${CMAKE_SOURCE_DIR}/vendor  # nlohmann/json.hpp
-        )
-    else()
-        target_link_libraries (${name} LINK_PUBLIC
-            -Wl,--start-group
-            opendht
-            dsa
-            dht_lib
-            -Wl,--end-group
-            ${SQLite3_LIBRARIES}
-            ${READLINE_LIBRARIES}
-        )  # JUICE_LIBRARIES removed
-        target_include_directories (${name} PRIVATE
-            ${CMAKE_CURRENT_BINARY_DIR}
-            ${SHARED_DIR}/crypto/dsa
-            ${CMAKE_SOURCE_DIR}/vendor  # nlohmann/json.hpp
-        )  # JUICE_INCLUDE_DIRS removed
-    endif ()
-endfunction ()
-
-# DNA Nodus v0.4 - Post-Quantum DHT Bootstrap Node (DHT-only, privacy-preserving)
-configure_nodus (dna-nodus)
+# DNA Nodus v0.4 removed — replaced by Nodus v5 (pure C, /opt/dna/nodus/)
 if (OPENDHT_EXAMPLES)
     configure_tool (dhtscanner tools_common.h)
     configure_tool (dhtchat tools_common.h)
@@ -104,16 +66,12 @@ if (NOT DEFINED CMAKE_INSTALL_BINDIR)
     set(CMAKE_INSTALL_BINDIR bin)
 endif ()
 
-install (TARGETS dna-nodus RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 if (OPENDHT_EXAMPLES)
     install (TARGETS dhtscanner dhtchat RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-endif ()
-if(MSVC)
-    install(FILES $<TARGET_PDB_FILE:dna-nodus> CONFIGURATIONS "Debug" "RelWithDebInfo" DESTINATION ${CMAKE_INSTALL_BINDIR})
-    if (OPENDHT_EXAMPLES)
+    if(MSVC)
         install(FILES $<TARGET_PDB_FILE:dhtscanner> $<TARGET_PDB_FILE:dhtchat> CONFIGURATIONS "Debug" "RelWithDebInfo" DESTINATION ${CMAKE_INSTALL_BINDIR})
     endif()
-endif()
+endif ()
 
 if (OPENDHT_SYSTEMD)
     if (NOT DEFINED OPENDHT_SYSTEMD_UNIT_FILE_LOCATION OR NOT OPENDHT_SYSTEMD_UNIT_FILE_LOCATION)
