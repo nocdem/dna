@@ -120,6 +120,10 @@ typedef struct {
     /* Synchronous response handling */
     void                  *pending_response;  /* nodus_tier2_msg_t* */
     bool                   response_ready;
+
+    /* Raw response payload (for DNAC-specific CBOR decoding) */
+    uint8_t               *raw_response;
+    size_t                 raw_response_len;
 } nodus_client_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */
@@ -282,6 +286,106 @@ int nodus_client_ch_subscribe(nodus_client_t *client,
  */
 int nodus_client_ch_unsubscribe(nodus_client_t *client,
                                  const uint8_t uuid[NODUS_UUID_BYTES]);
+
+/* ── DNAC Operations ─────────────────────────────────────────────── */
+
+/**
+ * Submit spend transaction for BFT consensus.
+ * This is asynchronous on the server — blocks until COMMIT or error (up to 30s).
+ *
+ * @param tx_hash     SHA3-512 hash of tx_data (64 bytes)
+ * @param tx_data     Serialized DNAC transaction
+ * @param tx_len      Length of tx_data
+ * @param sender_pk   Sender's Dilithium5 public key
+ * @param sender_sig  Sender's signature over tx_hash
+ * @param fee         Fee amount
+ * @param result_out  Witness attestation result
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_spend(nodus_client_t *client,
+                              const uint8_t *tx_hash,
+                              const uint8_t *tx_data, uint32_t tx_len,
+                              const nodus_pubkey_t *sender_pk,
+                              const nodus_sig_t *sender_sig,
+                              uint64_t fee,
+                              nodus_dnac_spend_result_t *result_out);
+
+/**
+ * Check if a nullifier has been spent.
+ *
+ * @param nullifier  64-byte nullifier to check
+ * @param result_out  Nullifier check result
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_nullifier(nodus_client_t *client,
+                                  const uint8_t *nullifier,
+                                  nodus_dnac_nullifier_result_t *result_out);
+
+/**
+ * Query ledger entry by transaction hash.
+ *
+ * @param tx_hash     64-byte transaction hash
+ * @param result_out  Ledger entry result
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_ledger(nodus_client_t *client,
+                               const uint8_t *tx_hash,
+                               nodus_dnac_ledger_result_t *result_out);
+
+/**
+ * Query supply state.
+ *
+ * @param result_out  Supply state result
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_supply(nodus_client_t *client,
+                               nodus_dnac_supply_result_t *result_out);
+
+/**
+ * Query UTXOs by owner fingerprint.
+ * Caller must free result_out->entries when done.
+ *
+ * @param owner        Owner fingerprint string
+ * @param max_results  Maximum entries to return (capped at 100)
+ * @param result_out   UTXO query result
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_utxo(nodus_client_t *client,
+                             const char *owner,
+                             int max_results,
+                             nodus_dnac_utxo_result_t *result_out);
+
+/**
+ * Query ledger entries in a sequence range.
+ * Caller must free result_out->entries when done.
+ *
+ * @param from_seq    Start sequence (inclusive)
+ * @param to_seq      End sequence (inclusive)
+ * @param result_out  Ledger range result
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_ledger_range(nodus_client_t *client,
+                                     uint64_t from_seq, uint64_t to_seq,
+                                     nodus_dnac_range_result_t *result_out);
+
+/**
+ * Query witness roster.
+ *
+ * @param result_out  Roster result
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_roster(nodus_client_t *client,
+                               nodus_dnac_roster_result_t *result_out);
+
+/**
+ * Free UTXO entries from nodus_client_dnac_utxo().
+ */
+void nodus_client_free_utxo_result(nodus_dnac_utxo_result_t *result);
+
+/**
+ * Free range entries from nodus_client_dnac_ledger_range().
+ */
+void nodus_client_free_range_result(nodus_dnac_range_result_t *result);
 
 /* ── Utility ────────────────────────────────────────────────────── */
 

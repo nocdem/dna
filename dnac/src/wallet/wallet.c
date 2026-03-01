@@ -160,8 +160,8 @@ static bool inbox_listener_callback(const uint8_t *value, size_t value_len,
         memcpy(utxo.tx_hash, tx->tx_hash, DNAC_TX_HASH_SIZE);
         utxo.output_index = (uint32_t)j;
         utxo.amount = tx->outputs[j].amount;
-        strncpy(utxo.owner_fingerprint, ctx->owner_fingerprint,
-                sizeof(utxo.owner_fingerprint) - 1);
+        snprintf(utxo.owner_fingerprint, sizeof(utxo.owner_fingerprint),
+                 "%s", ctx->owner_fingerprint);
         utxo.status = DNAC_UTXO_UNSPENT;
         utxo.received_at = (uint64_t)time(NULL);
 
@@ -434,8 +434,8 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
             memcpy(utxo.tx_hash, tx->tx_hash, DNAC_TX_HASH_SIZE);
             utxo.output_index = (uint32_t)j;
             utxo.amount = tx->outputs[j].amount;
-            strncpy(utxo.owner_fingerprint, ctx->owner_fingerprint,
-                    sizeof(utxo.owner_fingerprint) - 1);
+            snprintf(utxo.owner_fingerprint, sizeof(utxo.owner_fingerprint),
+                     "%s", ctx->owner_fingerprint);
             utxo.status = DNAC_UTXO_UNSPENT;
             utxo.received_at = (uint64_t)time(NULL);
 
@@ -558,8 +558,8 @@ int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count) {
             memcpy(utxo.tx_hash, tx->tx_hash, DNAC_TX_HASH_SIZE);
             utxo.output_index = (uint32_t)j;
             utxo.amount = tx->outputs[j].amount;
-            strncpy(utxo.owner_fingerprint, ctx->owner_fingerprint,
-                    sizeof(utxo.owner_fingerprint) - 1);
+            snprintf(utxo.owner_fingerprint, sizeof(utxo.owner_fingerprint),
+                     "%s", ctx->owner_fingerprint);
             utxo.status = DNAC_UTXO_UNSPENT;
             utxo.received_at = (uint64_t)time(NULL);
 

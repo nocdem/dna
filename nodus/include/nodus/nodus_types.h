@@ -76,6 +76,21 @@ extern "C" {
 #define NODUS_PBFT_HEARTBEAT_SEC 10
 #define NODUS_PBFT_SUSPECT_SEC   30
 
+/* Tier 3: Witness/BFT consensus (DNAC) */
+#define NODUS_T3_MAX_WITNESSES      16
+#define NODUS_T3_WITNESS_ID_LEN     32
+#define NODUS_T3_NULLIFIER_LEN      64      /* SHA3-512 */
+#define NODUS_T3_TX_HASH_LEN        64      /* SHA3-512 */
+#define NODUS_T3_MAX_TX_SIZE        65536   /* 64 KB serialized TX */
+#define NODUS_T3_MAX_TX_INPUTS      16
+#define NODUS_T3_MAX_TX_OUTPUTS     16
+#define NODUS_T3_MAX_TX_WITNESSES   3
+#define NODUS_T3_ROUND_TIMEOUT_MS   5000
+#define NODUS_T3_VIEWCHG_TIMEOUT_MS 10000
+#define NODUS_T3_MAX_VIEW_CHANGES   3
+#define NODUS_T3_EPOCH_DURATION_SEC 60      /* DNAC epoch = 60s */
+#define NODUS_T3_BFT_PROTOCOL_VER   2
+
 /* TCP keepalive */
 #define NODUS_TCP_KEEPIDLE       30
 #define NODUS_TCP_KEEPINTVL      10
@@ -172,9 +187,11 @@ typedef enum {
     NODUS_ERR_TIMEOUT           = 6,
     NODUS_ERR_PROTOCOL_ERROR    = 7,
     NODUS_ERR_INTERNAL_ERROR    = 8,
+    NODUS_ERR_ALREADY_EXISTS    = 9,
     NODUS_ERR_CHANNEL_NOT_FOUND = 10,
     NODUS_ERR_NOT_RESPONSIBLE   = 11,
-    NODUS_ERR_RING_MISMATCH     = 12
+    NODUS_ERR_RING_MISMATCH     = 12,
+    NODUS_ERR_DOUBLE_SPEND      = 13
 } nodus_error_t;
 
 /** PBFT phases */
@@ -190,6 +207,102 @@ typedef enum {
     NODUS_RING_ADD    = 1,
     NODUS_RING_REMOVE = 2
 } nodus_ring_change_t;
+
+/* ── DNAC Client Response Types ───────────────────────────────────── */
+
+/** Maximum UTXO entries per query */
+#define NODUS_DNAC_MAX_UTXO_RESULTS   100
+
+/** Maximum ledger range entries per query */
+#define NODUS_DNAC_MAX_RANGE_RESULTS  100
+
+/** DNAC spend status */
+typedef enum {
+    NODUS_DNAC_APPROVED  = 0,
+    NODUS_DNAC_REJECTED  = 1,
+    NODUS_DNAC_ERROR     = 2
+} nodus_dnac_status_t;
+
+/** Spend result (returned after BFT consensus) */
+typedef struct {
+    nodus_dnac_status_t status;
+    uint8_t  witness_id[NODUS_T3_WITNESS_ID_LEN];
+    uint8_t  witness_pubkey[NODUS_PK_BYTES];
+    uint8_t  signature[NODUS_SIG_BYTES];
+    uint64_t timestamp;
+} nodus_dnac_spend_result_t;
+
+/** Nullifier check result */
+typedef struct {
+    bool     is_spent;
+} nodus_dnac_nullifier_result_t;
+
+/** Ledger entry query result */
+typedef struct {
+    bool     found;
+    uint64_t sequence;
+    uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
+    uint8_t  tx_type;
+    uint64_t epoch;
+    uint64_t timestamp;
+    uint64_t nullifier_count;
+} nodus_dnac_ledger_result_t;
+
+/** Supply state result */
+typedef struct {
+    uint64_t genesis_supply;
+    uint64_t total_burned;
+    uint64_t current_supply;
+    uint64_t last_sequence;
+} nodus_dnac_supply_result_t;
+
+/** UTXO entry in query response */
+typedef struct {
+    uint8_t  nullifier[NODUS_T3_NULLIFIER_LEN];
+    char     owner[NODUS_KEY_HEX_LEN];
+    uint64_t amount;
+    uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
+    uint32_t output_index;
+    uint64_t block_height;
+} nodus_dnac_utxo_entry_t;
+
+/** UTXO query result */
+typedef struct {
+    int count;
+    nodus_dnac_utxo_entry_t *entries;   /* Heap-allocated, caller frees */
+} nodus_dnac_utxo_result_t;
+
+/** Ledger range entry */
+typedef struct {
+    uint64_t sequence;
+    uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
+    uint8_t  tx_type;
+    uint64_t epoch;
+    uint64_t timestamp;
+    uint64_t nullifier_count;
+} nodus_dnac_range_entry_t;
+
+/** Ledger range query result */
+typedef struct {
+    uint64_t total_entries;
+    int      count;
+    nodus_dnac_range_entry_t *entries;  /* Heap-allocated, caller frees */
+} nodus_dnac_range_result_t;
+
+/** Roster witness entry */
+typedef struct {
+    uint8_t  witness_id[NODUS_T3_WITNESS_ID_LEN];
+    uint8_t  pubkey[NODUS_PK_BYTES];
+    char     address[256];
+    bool     active;
+} nodus_dnac_roster_entry_t;
+
+/** Roster query result */
+typedef struct {
+    uint32_t version;
+    int      count;
+    nodus_dnac_roster_entry_t entries[NODUS_T3_MAX_WITNESSES];
+} nodus_dnac_roster_result_t;
 
 /* ── Utility ─────────────────────────────────────────────────────── */
 

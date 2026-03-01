@@ -124,14 +124,6 @@ int dnac_db_init(sqlite3 *db) {
 
     /* P0-4 (v0.7.0): Add ledger confirmation tracking columns */
     if (current_version < 3) {
-        const char *migration_v3 =
-            /* Add ledger sequence/epoch to UTXOs */
-            "ALTER TABLE dnac_utxos ADD COLUMN ledger_seq INTEGER;"
-            "ALTER TABLE dnac_utxos ADD COLUMN ledger_epoch INTEGER;"
-            /* Add ledger sequence/epoch to transactions */
-            "ALTER TABLE dnac_transactions ADD COLUMN ledger_seq INTEGER;"
-            "ALTER TABLE dnac_transactions ADD COLUMN ledger_epoch INTEGER;";
-
         /* Execute each ALTER separately (SQLite doesn't support multi-statement ALTER) */
         const char *alters[] = {
             "ALTER TABLE dnac_utxos ADD COLUMN ledger_seq INTEGER;",

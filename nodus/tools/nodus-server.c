@@ -81,6 +81,16 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
         snprintf(cfg->data_path, sizeof(cfg->data_path), "%s",
                  json_object_get_string(val));
 
+    /* Witness module config */
+    if (json_object_object_get_ex(root, "witness_enabled", &val))
+        cfg->witness.enabled = json_object_get_boolean(val);
+    if (json_object_object_get_ex(root, "witness_address", &val))
+        snprintf(cfg->witness.address, sizeof(cfg->witness.address), "%s",
+                 json_object_get_string(val));
+    if (json_object_object_get_ex(root, "witness_roster_file", &val))
+        snprintf(cfg->witness.roster_file, sizeof(cfg->witness.roster_file), "%s",
+                 json_object_get_string(val));
+
     if (json_object_object_get_ex(root, "seed_nodes", &val) &&
         json_object_is_type(val, json_type_array)) {
         int n = json_object_array_length(val);

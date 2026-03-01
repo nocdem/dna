@@ -20,6 +20,7 @@
 #include "channel/nodus_replication.h"
 #include "consensus/nodus_pbft.h"
 #include "crypto/nodus_identity.h"
+#include "witness/nodus_witness.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,6 +42,9 @@ typedef struct {
     char        seed_nodes[NODUS_MAX_SEED_NODES][64];
     uint16_t    seed_ports[NODUS_MAX_SEED_NODES];
     int         seed_count;
+
+    /* Witness module (optional DNAC BFT consensus) */
+    nodus_witness_config_t  witness;
 } nodus_server_config_t;
 
 /* ── Client session ──────────────────────────────────────────────── */
@@ -92,6 +96,9 @@ typedef struct nodus_server {
     /* Replication + consensus */
     nodus_replication_t     replication;
     nodus_pbft_t            pbft;
+
+    /* Witness module (NULL when disabled) */
+    nodus_witness_t        *witness;
 
     /* Sessions (indexed by conn->slot) */
     nodus_session_t         sessions[NODUS_MAX_SESSIONS];

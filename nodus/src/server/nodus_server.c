@@ -564,8 +564,15 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
-    /* Pre-auth: hello, auth, and inter-nodus ch_rep allowed */
+    /* Pre-auth: hello, auth, w_* (witness BFT), and inter-nodus ch_rep allowed */
     if (!sess->authenticated) {
+        /* Tier 3: Witness BFT messages (self-authenticated via wsig) */
+        if (strncmp(msg.method, "w_", 2) == 0 && srv->witness) {
+            nodus_witness_dispatch_t3(srv->witness, sess->conn, payload, len);
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+
         if (strcmp(msg.method, "hello") == 0) {
             nodus_auth_handle_hello(srv, sess, &msg.pk, &msg.fp, msg.txn_id);
         } else if (strcmp(msg.method, "auth") == 0) {
@@ -626,6 +633,30 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
                         "invalid token", resp_buf, sizeof(resp_buf), &rlen);
         nodus_tcp_send(sess->conn, resp_buf, rlen);
+        nodus_t2_msg_free(&msg);
+        return;
+    }
+
+    /* Witness BFT messages in post-auth path (peer may have authenticated) */
+    if (strncmp(msg.method, "w_", 2) == 0 && srv->witness) {
+        nodus_witness_dispatch_t3(srv->witness, sess->conn, payload, len);
+        nodus_t2_msg_free(&msg);
+        return;
+    }
+
+    /* DNAC client methods (post-auth, requires witness module) */
+    if (strncmp(msg.method, "dnac_", 5) == 0) {
+        if (srv->witness) {
+            nodus_witness_dispatch_dnac(srv->witness, sess->conn,
+                                         payload, len,
+                                         msg.method, msg.txn_id);
+        } else {
+            size_t rlen = 0;
+            nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                            "witness module not enabled",
+                            resp_buf, sizeof(resp_buf), &rlen);
+            nodus_tcp_send(sess->conn, resp_buf, rlen);
+        }
         nodus_t2_msg_free(&msg);
         return;
     }
@@ -789,6 +820,10 @@ static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_session_t *sess = session_for_conn(srv, conn);
     if (sess)
         session_clear(sess);
+
+    /* Clear any witness peer references before conn is freed */
+    if (srv->witness)
+        nodus_witness_peer_conn_closed(srv->witness, conn);
 }
 
 /* ── Public API ──────────────────────────────────────────────────── */
@@ -882,6 +917,21 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
                               config->seed_ports[i] + 1);  /* TCP = UDP + 1 */
     }
 
+    /* Initialize witness module if enabled */
+    if (config->witness.enabled) {
+        srv->witness = calloc(1, sizeof(nodus_witness_t));
+        if (!srv->witness) {
+            fprintf(stderr, "Failed to allocate witness context\n");
+            return -1;
+        }
+        if (nodus_witness_init(srv->witness, srv, &config->witness) != 0) {
+            fprintf(stderr, "Witness module init failed\n");
+            free(srv->witness);
+            srv->witness = NULL;
+            return -1;
+        }
+    }
+
     return 0;
 }
 
@@ -904,6 +954,10 @@ int nodus_server_run(nodus_server_t *srv) {
         /* PBFT: send heartbeats, check peer health */
         nodus_pbft_tick(&srv->pbft);
 
+        /* Witness BFT: timeout checks, peer reconnection */
+        if (srv->witness)
+            nodus_witness_tick(srv->witness);
+
         /* Retry hinted handoff (runs at most every NODUS_HINTED_RETRY_SEC) */
         nodus_replication_retry(&srv->replication);
     }
@@ -917,6 +971,13 @@ void nodus_server_stop(nodus_server_t *srv) {
 
 void nodus_server_close(nodus_server_t *srv) {
     if (!srv) return;
+
+    if (srv->witness) {
+        nodus_witness_close(srv->witness);
+        free(srv->witness);
+        srv->witness = NULL;
+    }
+
     nodus_tcp_close(&srv->tcp);
     nodus_udp_close(&srv->udp);
     nodus_storage_close(&srv->storage);

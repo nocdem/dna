@@ -110,12 +110,13 @@ set(DNAC_SOURCES
     # Database
     src/db/db.c
 
-    # BFT Consensus
+    # BFT Consensus (tightly coupled — all files needed by tests and discovery.c)
     src/bft/serialize.c
     src/bft/tcp.c
     src/bft/peer.c
     src/bft/consensus.c
     src/bft/roster.c
+    # Note: standalone dnac-witness removed — witness runs inside nodus-server
 )
 
 # ============================================================================
@@ -190,51 +191,11 @@ if(DNAC_BUILD_CLI)
 endif()
 
 # ============================================================================
-# Witness Server
+# Witness Server — REMOVED (v0.10.0)
 # ============================================================================
-
-option(DNAC_BUILD_WITNESS "Build dnac-witness server" ON)
-
-if(DNAC_BUILD_WITNESS)
-    set(DNAC_WITNESS_SOURCES
-        src/witness/main.c
-        src/witness/nullifier.c
-        src/witness/ledger.c
-        src/witness/utxo_tree.c
-        src/witness/bft_main.c
-        src/witness/forward.c
-        src/witness/utxo_set.c
-        src/witness/block.c
-        src/witness/zone.c
-    )
-
-    add_executable(dnac-witness ${DNAC_WITNESS_SOURCES})
-
-    target_include_directories(dnac-witness PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/witness
-    )
-
-    target_link_libraries(dnac-witness
-        dnac
-    )
-
-    # Link libdna directly for dna_engine functions
-    if(EXISTS "${DNA_BUILD_DIR}/libdna_lib.so")
-        target_link_libraries(dnac-witness ${DNA_BUILD_DIR}/libdna_lib.so)
-    else()
-        target_link_libraries(dnac-witness ${DNA_BUILD_DIR}/libdna_lib.a)
-    endif()
-
-    target_link_libraries(dnac-witness
-        OpenSSL::SSL
-        OpenSSL::Crypto
-        ${SQLITE3_LIBRARIES}
-        pthread
-        m
-    )
-
-    install(TARGETS dnac-witness RUNTIME DESTINATION bin)
-endif()
+# Witness functionality now runs inside nodus-server as an optional module.
+# See nodus/src/witness/ for the replacement implementation.
+# Old standalone dnac-witness source files remain in src/witness/ for reference.
 
 # ============================================================================
 # Tests

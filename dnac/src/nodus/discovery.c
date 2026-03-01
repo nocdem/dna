@@ -117,8 +117,9 @@ static void derive_fingerprint(const uint8_t *pubkey, char *fingerprint_out) {
  * Parse witness server list from DHT value
  *
  * Format: count(1) + [id(64 hex) + address(256) + pubkey(2592)]...
+ * (Currently unused — discovery goes through nodus roster)
  */
-static int parse_witness_list(const uint8_t *data, size_t len,
+static int __attribute__((unused)) parse_witness_list(const uint8_t *data, size_t len,
                               dnac_witness_info_t **servers_out, int *count_out) {
     if (!data || len < 1 || !servers_out || !count_out) return -1;
 

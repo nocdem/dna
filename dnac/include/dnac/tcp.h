@@ -268,78 +268,8 @@ void dnac_tcp_server_set_peer_id(dnac_tcp_server_t *server,
  */
 int dnac_tcp_server_peer_count(dnac_tcp_server_t *server);
 
-/* ============================================================================
- * TCP Client (for dnac-cli)
- * ========================================================================== */
-
-/**
- * @brief Simple TCP client for sending requests
- */
-typedef struct dnac_tcp_client {
-    int fd;                             /**< Socket */
-    char address[256];                  /**< Connected address */
-    bool connected;                     /**< Connection state */
-
-    /* Receive buffer */
-    uint8_t recv_buffer[DNAC_TCP_BUFFER_SIZE];
-    size_t recv_len;
-} dnac_tcp_client_t;
-
-/**
- * @brief Create TCP client
- *
- * @return Client pointer or NULL
- */
-dnac_tcp_client_t* dnac_tcp_client_create(void);
-
-/**
- * @brief Destroy TCP client
- */
-void dnac_tcp_client_destroy(dnac_tcp_client_t *client);
-
-/**
- * @brief Connect to server
- *
- * @param client Client context
- * @param address IP:port to connect to
- * @return 0 on success
- */
-int dnac_tcp_client_connect(dnac_tcp_client_t *client, const char *address);
-
-/**
- * @brief Disconnect
- *
- * @param client Client context
- */
-void dnac_tcp_client_disconnect(dnac_tcp_client_t *client);
-
-/**
- * @brief Send message
- *
- * @param client Client context
- * @param data Message data
- * @param len Message length
- * @return 0 on success
- */
-int dnac_tcp_client_send(dnac_tcp_client_t *client,
-                         const uint8_t *data,
-                         size_t len);
-
-/**
- * @brief Receive message (blocking with timeout)
- *
- * @param client Client context
- * @param buffer Output buffer
- * @param buffer_len Buffer length
- * @param received_out Bytes received
- * @param timeout_ms Timeout in milliseconds
- * @return 0 on success, -1 on error/timeout
- */
-int dnac_tcp_client_recv(dnac_tcp_client_t *client,
-                         uint8_t *buffer,
-                         size_t buffer_len,
-                         size_t *received_out,
-                         int timeout_ms);
+/* TCP Client removed — all client operations now use Nodus SDK
+ * (nodus_client_dnac_*) via the authenticated Nodus TCP connection. */
 
 /* ============================================================================
  * Message Framing

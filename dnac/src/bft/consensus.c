@@ -1237,8 +1237,8 @@ int dnac_bft_handle_proposal(dnac_bft_context_t *ctx,
     vote.vote = double_spend ? BFT_VOTE_REJECT : BFT_VOTE_APPROVE;
 
     if (double_spend) {
-        strncpy(vote.reason, reject_reason[0] ? reject_reason : "Validation failed",
-                sizeof(vote.reason) - 1);
+        snprintf(vote.reason, sizeof(vote.reason), "%s",
+                 reject_reason[0] ? reject_reason : "Validation failed");
     }
 
     /* Sign PREVOTE with Dilithium5 (Gap 3: v0.6.0) */

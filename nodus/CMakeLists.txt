@@ -67,6 +67,7 @@ set(NODUS_SOURCES
     src/protocol/nodus_wire.c
     src/protocol/nodus_tier1.c
     src/protocol/nodus_tier2.c
+    src/protocol/nodus_tier3.c
 
     # Transport (Linux: epoll)
     src/transport/nodus_tcp.c
@@ -87,6 +88,13 @@ set(NODUS_SOURCES
     # Server
     src/server/nodus_server.c
     src/server/nodus_auth.c
+
+    # Witness (DNAC BFT consensus module)
+    src/witness/nodus_witness.c
+    src/witness/nodus_witness_db.c
+    src/witness/nodus_witness_bft.c
+    src/witness/nodus_witness_peer.c
+    src/witness/nodus_witness_handlers.c
 
     # Client SDK
     src/client/nodus_client.c
@@ -186,6 +194,11 @@ add_test(NAME test_tier1 COMMAND test_tier1)
 add_executable(test_tier2 tests/test_tier2.c)
 target_link_libraries(test_tier2 nodus_lib dsa nodus_lib)
 add_test(NAME test_tier2 COMMAND test_tier2)
+
+# Tier 3 protocol test (BFT CBOR)
+add_executable(test_tier3 tests/test_tier3.c)
+target_link_libraries(test_tier3 nodus_lib dsa nodus_lib)
+add_test(NAME test_tier3 COMMAND test_tier3)
 
 # Channel storage test
 add_executable(test_channel_store tests/test_channel_store.c)

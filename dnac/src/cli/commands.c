@@ -70,16 +70,6 @@ static int hex_to_bytes(const char *hex, uint8_t *out, size_t out_len) {
     return 0;
 }
 
-/**
- * Convert bytes to hex string
- */
-static void bytes_to_hex(const uint8_t *data, size_t len, char *out) {
-    for (size_t i = 0; i < len; i++) {
-        sprintf(out + i * 2, "%02x", data[i]);
-    }
-    out[len * 2] = '\0';
-}
-
 /* ============================================================================
  * Command Implementations
  * ========================================================================== */
@@ -244,7 +234,8 @@ int dnac_cli_history(dnac_context_t *ctx, int limit) {
         /* Truncate counterparty for display */
         char cp_short[13] = "";
         if (history[i].counterparty[0]) {
-            strncpy(cp_short, history[i].counterparty, 8);
+            memcpy(cp_short, history[i].counterparty, 8);
+            cp_short[8] = '\0';
             strcat(cp_short, "...");
         }
 
@@ -357,7 +348,8 @@ int dnac_cli_nodus_list(dnac_context_t *ctx) {
         /* Truncate fingerprint for display */
         char fp_short[13] = "";
         if (servers[i].fingerprint[0]) {
-            strncpy(fp_short, servers[i].fingerprint, 8);
+            memcpy(fp_short, servers[i].fingerprint, 8);
+            fp_short[8] = '\0';
             strcat(fp_short, "...");
         }
 
@@ -585,7 +577,7 @@ int dnac_cli_query(dnac_context_t *ctx, const char *query) {
             return 1;
         }
 
-        strncpy(fp_buf, lookup.fingerprint, 128);
+        snprintf(fp_buf, sizeof(fp_buf), "%s", lookup.fingerprint);
         fingerprint = fp_buf;
     }
 

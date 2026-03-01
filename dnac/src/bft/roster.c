@@ -449,7 +449,7 @@ static int load_roster_from_file_client(const char *filename, dnac_roster_t *ros
         /* Generate placeholder ID from address hash */
         qgp_sha3_256((const uint8_t*)addr, strlen(addr), entry->witness_id);
 
-        strncpy(entry->address, addr, DNAC_BFT_MAX_ADDRESS_LEN - 1);
+        snprintf(entry->address, DNAC_BFT_MAX_ADDRESS_LEN, "%s", addr);
         entry->active = true;
         entry->joined_epoch = time(NULL) / DNAC_EPOCH_DURATION_SEC;
 
