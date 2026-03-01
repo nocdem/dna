@@ -33,7 +33,6 @@ target_link_libraries(dna_jni
     dna_lib
     dht_lib
     transport_lib
-    opendht
     cellframe_minimal
     cellframe_dilithium
     kem

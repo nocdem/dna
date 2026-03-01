@@ -1,7 +1,7 @@
 /*
  * GnuTLS Windows Linker Shim
  *
- * The MXE-built OpenDHT library expects DLL import symbols (__imp_*)
+ * The MXE-built GnuTLS library expects DLL import symbols (__imp_*)
  * from gnutls. gnutls_free already exists in libgnutls.a, so we just
  * need to provide the __imp_ pointer that references it.
  */

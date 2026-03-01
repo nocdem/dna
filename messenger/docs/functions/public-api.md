@@ -215,7 +215,6 @@ Named channels with flat text posts. Open posting, day-bucket discovery.
 | Function | Description |
 |----------|-------------|
 | `void* dna_engine_get_messenger_context(dna_engine_t*)` | Get underlying messenger context |
-| `void* dna_engine_get_dht_context(dna_engine_t*)` | Get DHT context |
 | `int dna_engine_is_dht_connected(dna_engine_t*)` | Check if DHT is connected |
 
 ## 1.13 Log Configuration

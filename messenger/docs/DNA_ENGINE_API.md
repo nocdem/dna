@@ -2062,8 +2062,6 @@ For gradual GUI migration from direct API calls:
 // Get messenger context (cast to messenger_context_t*)
 void* ctx = dna_engine_get_messenger_context(engine);
 
-// Get DHT context (cast to dht_context_t*)
-void* dht = dna_engine_get_dht_context(engine);
 ```
 
 **Warning:** Prefer engine API functions. These are for transitional use only.

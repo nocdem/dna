@@ -351,7 +351,7 @@ target_link_libraries(dna_lib
 # secp256k1 include directory for BIP-32 derivation
 target_include_directories(dna_lib PRIVATE ${SECP256K1_INCLUDE_DIR})
 
-# C++ standard library no longer needed (OpenDHT removed in Nodus v5)
+# C++ standard library no longer needed (pure C with Nodus v5)
 
 # CURL linking
 if(HAS_CURL)

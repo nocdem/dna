@@ -154,9 +154,6 @@ if(ANDROID)
     # Disable features not available/needed on Android
     set(BUILD_DNA_SEND OFF CACHE BOOL "Disable dna-send on Android" FORCE)
 
-    # OpenDHT-PQ configuration for Android
-    set(OPENDHT_TOOLS OFF CACHE BOOL "Disable OpenDHT tools on Android" FORCE)
-
     # Fix msgpack boost dependency
     add_definitions(-DMSGPACK_NO_BOOST)
 

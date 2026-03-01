@@ -40,7 +40,6 @@ message(STATUS "DNA build: ${DNA_BUILD}")
 include_directories(
     ${DNA_ROOT}
     ${DNA_ROOT}/include
-    ${DNA_ROOT}/vendor/opendht-pq/include
     /usr/local/include
 )
 
@@ -59,7 +58,6 @@ find_package(OpenSSL REQUIRED)
 link_directories(
     ${DNA_BUILD}/dht
     ${DNA_BUILD}/transport
-    ${DNA_BUILD}/vendor/opendht-pq
     ${DNA_BUILD}/crypto/kem
     ${DNA_BUILD}/crypto/dsa
     /usr/local/lib
@@ -81,7 +79,6 @@ set(TEST_LIBS
     ${DNA_BUILD}/libdna_lib.a
     ${DNA_BUILD}/transport/libtransport_lib.a
     ${DNA_BUILD}/dht/libdht_lib.a
-    ${DNA_BUILD}/vendor/opendht-pq/libopendht.a
     ${DNA_BUILD}/crypto/kem/libkem.a
     ${DNA_BUILD}/crypto/dsa/libdsa.a
     ${GNUTLS_LIBRARIES}

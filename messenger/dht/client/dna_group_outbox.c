@@ -1494,7 +1494,7 @@ void dna_group_outbox_free_bucket(dna_group_outbox_bucket_t *bucket) {
  * Called when ANY sender publishes to the shared group key.
  *
  * IMPORTANT: Do NOT do blocking DHT operations (like fetch) inside this callback!
- * The callback runs in OpenDHT's internal thread. Doing a DHT GET here causes
+ * The callback runs in the DHT callback thread. Doing a DHT GET here causes
  * deadlock/timeout because the thread is busy handling this callback.
  *
  * Instead, we just fire the event immediately. Flutter will handle the actual

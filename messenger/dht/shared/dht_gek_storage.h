@@ -44,7 +44,7 @@ extern "C" {
 
 /**
  * Chunk size limit (50 KB)
- * OpenDHT max value size is typically ~64 KB, we use 50 KB for safety
+ * Nodus max value size is ~64 KB, we use 50 KB for safety
  */
 #define DHT_GEK_CHUNK_SIZE (50 * 1024)
 

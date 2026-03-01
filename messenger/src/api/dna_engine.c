@@ -233,7 +233,7 @@ dna_engine_t* dna_engine_get_global(void) {
 
 /**
  * Background thread for listener setup
- * Runs on separate thread to avoid blocking OpenDHT's callback thread.
+ * Runs on separate thread to avoid blocking the DHT callback thread.
  */
 static void *dna_engine_setup_listeners_thread(void *arg) {
     dna_engine_t *engine = (dna_engine_t *)arg;
@@ -352,7 +352,7 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
     QGP_LOG_INFO(LOG_TAG, "[RETRY] Stabilization complete, starting retries...");
 
     /* 0. Nodus v5 migration: republish local data to new DHT on first connect.
-     * Old OpenDHT data expires naturally (7-day TTL for contacts/GEKs, 365-day for profile).
+     * Old DHT data expires naturally (7-day TTL for contacts/GEKs, 365-day for profile).
      * This pushes local cache → Nodus v5 DHT so data is available on the new network. */
     if (engine->messenger) {
         const char *data_dir = qgp_platform_app_data_dir();
@@ -560,7 +560,7 @@ cleanup:
 
 /**
  * DHT status change callback - dispatches DHT_CONNECTED/DHT_DISCONNECTED events
- * Called from OpenDHT's internal thread when connection status changes.
+ * Called from the Nodus callback thread when connection status changes.
  */
 static void dna_dht_status_callback(bool is_connected, void *user_data) {
     (void)user_data;  /* Using global engine pointer instead */
@@ -594,8 +594,8 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
          * Listeners fire DNA_EVENT_OUTBOX_UPDATED -> Flutter polls + refreshes UI
          *
          * IMPORTANT: Run listener setup on a background thread!
-         * This callback runs on OpenDHT's internal thread. If we block here with
-         * dht_listen_ex()'s future.get(), we deadlock (OpenDHT needs this thread). */
+         * This callback runs on the Nodus callback thread. If we block here
+         * we deadlock (Nodus needs this thread for dispatch). */
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT connected, identity_loaded=%d reconnect_cb=%p",
                      engine->identity_loaded, (void*)g_android_reconnect_cb);
         if (engine->identity_loaded) {
@@ -1615,7 +1615,7 @@ void dna_engine_destroy(dna_engine_t *engine) {
     pthread_mutex_unlock(&g_engine_global_mutex);
 
     /* v0.6.111: Memory barrier - allow in-flight DHT callbacks to complete.
-     * DHT callbacks run on OpenDHT's internal thread and check shutdown_requested.
+     * DHT callbacks run on the Nodus callback thread and check shutdown_requested.
      * 20ms is enough for callbacks to see the flag and exit cleanly. */
     struct timespec barrier_sleep = { 0, 20 * 1000000L };  /* 20ms */
     nanosleep(&barrier_sleep, NULL);
@@ -1879,12 +1879,6 @@ void dna_engine_destroy(dna_engine_t *engine) {
 void* dna_engine_get_messenger_context(dna_engine_t *engine) {
     if (!engine) return NULL;
     return engine->messenger;
-}
-
-void* dna_engine_get_dht_context(dna_engine_t *engine) {
-    (void)engine;
-    /* FFI compat — Flutter doesn't use the pointer, cli_commands.c checks NULL */
-    return nodus_messenger_is_ready() ? (void *)1 : NULL;
 }
 
 int dna_engine_is_dht_connected(dna_engine_t *engine) {

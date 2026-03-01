@@ -2544,19 +2544,6 @@ DNA_API int dna_engine_refresh_listeners(
 void* dna_engine_get_messenger_context(dna_engine_t *engine);
 
 /**
- * Get DHT context
- *
- * For backward compatibility during GUI migration.
- * Returns NULL if DHT not initialized.
- *
- * WARNING: Use sparingly - prefer engine API functions.
- *
- * @param engine    Engine instance
- * @return          dht_context_t* (opaque, cast as needed)
- */
-void* dna_engine_get_dht_context(dna_engine_t *engine);
-
-/**
  * Check if DHT is connected
  *
  * Returns the current DHT connection status. Use this to query status
