@@ -13,7 +13,7 @@
 The CLI is built alongside the DNAC library:
 
 ```bash
-cd /opt/dnac/build
+cd /opt/dna/dnac/build
 cmake .. && make -j$(nproc)
 ./dnac-cli --help
 ```
@@ -265,17 +265,17 @@ Name-to-fingerprint resolution uses `dna_engine_lookup_name()`:
 3. Callback receives fingerprint (or empty string if name available)
 4. **Important:** Callback must `free()` the returned fingerprint string
 
-### DHT Integration
+### DHT Integration (Nodus v5)
 
-All commands interact with the DHT network via libdna:
+All commands interact with the Nodus v5 DHT network via the `nodus_ops` API (OpenDHT has been completely removed):
 - Identity loaded from local storage
 - Balance/UTXOs stored in local SQLite database
-- Transactions broadcast via DHT
+- Transactions broadcast via Nodus v5 DHT
 - Name lookups query DHT name registry
 
 ### Permanent Storage (v0.1.29+)
 
-All DHT data is stored permanently using `dht_put_signed_permanent()`:
+All DHT data is stored permanently on the Nodus v5 network via the `nodus_ops` API:
 - **Payments**: Never expire (cash doesn't expire)
 - **Witness attestations**: Permanent record of double-spend prevention
 - **Witness announcements**: Permanent identity publication
@@ -332,7 +332,7 @@ static void on_name_lookup(uint64_t request_id, int error,
 
 #### Memory Management
 
-The `dna_engine_lookup_name()` callback receives a `strdup()`'d string that **must be freed by the callback**. This matches the pattern used in `dna-messenger-cli` (see `/opt/dna-messenger/cli/cli_commands.c:103-106`).
+The `dna_engine_lookup_name()` callback receives a `strdup()`'d string that **must be freed by the callback**. This matches the pattern used in `dna-messenger-cli` (see `messenger/cli/cli_commands.c`).
 
 ---
 

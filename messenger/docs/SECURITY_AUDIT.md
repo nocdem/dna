@@ -256,9 +256,9 @@ Implemented centralized message size limits with validation at all layers:
    - Added ciphertext size validation
 
 ### M7. DHT Sybil Attack Resistance - **MITIGATED**
-**File:** `/opt/dna-messenger/dht/core/dht_context.cpp`
+**File:** `dht/core/` (DHT context layer, now backed by Nodus v5)
 **Category:** P2P Security
-**Issue:** DHT relies on OpenDHT's built-in Sybil resistance
+**Issue:** DHT Sybil resistance
 **Risk:** Attacker with many nodes could influence routing
 **Mitigation:** Bootstrap nodes are trusted, signed values
 **Fix:** Document threat model, consider proof-of-work for node registration
@@ -268,9 +268,9 @@ Implemented centralized message size limits with validation at all layers:
 Sybil attacks mitigated by existing design:
 
 1. **Signed Values:** All DHT values use `dht_put_signed()` with Dilithium5 - attackers can't forge data
-2. **OpenDHT Protections:** Library has built-in routing table protections
+2. **Nodus v5 Protections:** Kademlia routing table with PBFT consensus for replication integrity
 3. **Data Integrity:** Even if routing influenced, signed values can't be tampered
-4. **Default Bootstrap:** Current defaults point to official dna-nodus servers
+4. **Default Bootstrap:** Current defaults point to official Nodus v5 servers
 
 Note: Users can run their own nodus instances. Sybil resistance relies on signed values, not trusted nodes.
 
@@ -486,12 +486,12 @@ Vendored dependencies tracked and audited:
 
 | Library | Version | Status |
 |---------|---------|--------|
-| opendht-pq | 3.5.5 (fork) | Our fork, we control updates |
+| ~~opendht-pq~~ | - | Removed (replaced by Nodus v5) |
 | ~~libjuice~~ | - | Removed v0.4.61 |
 | secp256k1 | Bitcoin Core | Most audited crypto library |
 | nlohmann | header-only | Widely used, minimal surface |
 
-No known CVEs in current versions. Critical libs (secp256k1, opendht) actively maintained.
+No known CVEs in current versions. Critical libs (secp256k1) actively maintained. Nodus v5 is pure C with no external C++ dependencies.
 
 ### L7. Certificate Pinning for Bootstrap - **MITIGATED**
 **File:** `/opt/dna-messenger/messenger_transport.c`
@@ -526,7 +526,7 @@ Certificate pinning not applicable/needed:
 | Plaintext message | 512 KB | `messages.h:30` |
 | Ciphertext message | 10 MB | `messages.h:37` |
 | DHT chunk size | 45 KB | `dht_chunked.h:59` |
-| DHT value size | 64 KB | OpenDHT `value.h:92` |
+| DHT value size | 64 KB | Nodus `nodus_types.h` |
 | Wall posts | 50 per wall | `dna_wall.h` |
 
 **Enforcement:** Limits validated at all ingress points with immediate rejection of oversized/excess data. Fixed constants prevent misconfiguration.

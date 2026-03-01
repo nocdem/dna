@@ -127,30 +127,20 @@ int main() {
 }
 ```
 
-### C++ Usage (GUI)
+### Flutter FFI Usage
 
-```cpp
-#include "helpers/engine_wrapper.h"
+```dart
+// Load native library
+final dylib = DynamicLibrary.open('libdna_lib.so');
+final bindings = DnaBindings(dylib);
 
-// Using the global engine singleton
-void initApp() {
-    // Initialize engine (called once at startup)
-    if (!DNA::GetEngine().init()) {
-        fprintf(stderr, "Failed to initialize engine\n");
-        return;
-    }
+// Create engine
+final engine = bindings.dna_engine_create(dataDir.toNativeUtf8());
 
-    // Check if identity exists (v0.3.0+ single-user model)
-    if (DNA::GetEngine().hasIdentity()) {
-        // Async: Load identity
-        DNA::GetEngine().loadIdentity(NULL, [](int error) {
-            if (error == 0) {
-                printf("Identity loaded!\n");
-            }
-        });
-    } else {
-        printf("No identity found, show onboarding\n");
-    }
+// Check if identity exists (single-user model)
+if (bindings.dna_engine_has_identity(engine, dataDir.toNativeUtf8())) {
+    // Load identity (async with callback)
+    bindings.dna_engine_load_identity(engine, fingerprint, password, callback, nullptr);
 }
 ```
 
@@ -2204,7 +2194,7 @@ Use `dna_engine_error_string(error)` for human-readable messages.
 
 - All async functions are thread-safe
 - Event callback is called from worker thread - **must be thread-safe**
-- C++ wrapper's sync methods block the calling thread
+- Sync methods (e.g. `_sync` variants) block the calling thread
 - Request IDs are atomically generated
 
 ---

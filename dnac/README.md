@@ -2,13 +2,13 @@
 
 **Version:** v0.8.1 | **Protocol:** v1 (Transparent Amounts)
 
-DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger](https://github.com/nocdem/dna-messenger).
+DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger](https://github.com/nocdem/dna-messenger). It lives in the DNA monorepo at `/opt/dna/dnac/`.
 
 ## Features
 
 - **UTXO Model** - Unspent Transaction Output model for privacy
 - **Dilithium5 Signatures** - Post-quantum digital signatures (NIST Category 5)
-- **DHT Transport** - Payments delivered via DNA Messenger's DHT network
+- **Nodus v5 DHT Transport** - Payments delivered via Nodus v5 DHT network (nodus_ops API)
 - **Permanent Storage** - All data stored permanently on DHT
 - **BFT Consensus** - Byzantine Fault Tolerant witness consensus (PBFT-like)
 - **2-of-3 Witnessing** - Transactions require 2 witness attestations
@@ -58,10 +58,9 @@ v1 uses transparent amounts for simplicity. v2 will add STARK-based zero-knowled
 
 ### Prerequisites
 
-1. Build DNA Messenger first:
+1. Build DNA Messenger first (DNAC links against `libdna_lib.so`):
 ```bash
-cd /opt/dna-messenger
-mkdir build && cd build
+cd /opt/dna/messenger/build
 cmake .. && make -j$(nproc)
 ```
 
@@ -74,8 +73,7 @@ sudo apt install libssl-dev libsqlite3-dev pkg-config cmake
 ### Build DNAC
 
 ```bash
-cd /opt/dnac
-mkdir build && cd build
+cd /opt/dna/dnac/build
 cmake .. && make -j$(nproc)
 ```
 
@@ -170,9 +168,9 @@ PROPOSE → PREVOTE → PRECOMMIT → COMMIT
 - **TCP Mesh** - Full mesh connectivity between witnesses
 - **Request Forwarding** - Non-leaders forward to current leader
 
-### Permanent DHT Storage
+### DHT Storage via Nodus v5
 
-All DHT data is stored permanently:
+All DHT data is stored via Nodus v5 (the `nodus_ops` convenience API). OpenDHT has been completely removed from the codebase. Data is stored permanently on the Nodus network:
 - **Payments**
 - **Witness attestations**
 - **Nullifier replication**
@@ -240,4 +238,5 @@ MIT
 
 ## Related Projects
 
-- [DNA Messenger](https://github.com/nocdem/dna-messenger) - Post-quantum encrypted messenger
+- [DNA Messenger](https://github.com/nocdem/dna-messenger) - Post-quantum encrypted messenger (monorepo: `/opt/dna/messenger/`)
+- [Nodus v5](../nodus/) - Post-quantum Kademlia DHT with PBFT consensus (monorepo: `/opt/dna/nodus/`)

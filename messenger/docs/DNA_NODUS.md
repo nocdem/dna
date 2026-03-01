@@ -1,219 +1,215 @@
-# DNA Nodus - Post-Quantum DHT Bootstrap Node
+# DNA Nodus - Post-Quantum DHT Network
 
-**Version:** 0.4.5
+**Current Version:** Nodus v5 (v0.5.0)
 **Security:** FIPS 204 / ML-DSA-87 (Dilithium5) - NIST Category 5
 
 ## Overview
 
-DNA Nodus is the bootstrap infrastructure for DNA Messenger. It provides:
+DNA Nodus is the DHT (Distributed Hash Table) infrastructure for DNA Messenger. It is a pure C implementation (no C++ dependencies) providing:
 
-1. **DHT Bootstrap Node** - Entry point for new clients joining the DHT network
-2. **SQLite Persistence** - Durable storage for DHT values
-3. **Bootstrap Registry** - Auto-discovery of peer nodus via DHT
+1. **Kademlia DHT** - Decentralized key-value storage with 512-bit keyspace
+2. **PBFT Consensus** - Byzantine fault-tolerant replication across nodes
+3. **Client SDK** - TCP-based client protocol for messenger integration
+4. **SQLite Persistence** - Durable storage for DHT values
 
-**Privacy Note:** STUN/TURN was removed in v0.4.5 to eliminate IP address leakage to third-party servers. DNA Messenger now uses DHT-only messaging for improved privacy.
+**Architecture:** Nodus v5 replaced the former OpenDHT-PQ (C++) backend entirely. The `vendor/opendht-pq/` directory has been deleted. All messenger DHT operations now go through the Nodus v5 client SDK directly via `nodus_ops.c` / `nodus_init.c`.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     DNA Nodus v0.4.5                         │
-│                   (DHT-only, privacy-preserving)             │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌─────────────────────────────────────────────────────────┐│
-│  │              DHT Context (UDP 4000)                      ││
-│  │  - Post-quantum signatures (Dilithium5)                  ││
-│  │  - Value persistence (SQLite)                            ││
-│  │  - Bootstrap registry participation                      ││
-│  └─────────────────────────────────────────────────────────┘│
-│         │                                                    │
-│  ┌──────┴──────────────────────────────────────────────────┐│
-│  │              SQLite Persistence Layer                    ││
-│  │         /var/lib/dna-dht/bootstrap.state.values.db      ││
-│  └─────────────────────────────────────────────────────────┘│
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
++-----------------------------------------------------------------+
+|                      Nodus v5 Server                            |
+|                   (Pure C, CBOR protocol)                       |
++-----------------------------------------------------------------+
+|                                                                 |
+|  +-----------------------------------------------------------+ |
+|  |         UDP Layer (port 4000) - Kademlia                   | |
+|  |  - Peer discovery (ping, find_node)                        | |
+|  |  - Inter-node DHT operations (put, get)                    | |
+|  |  - k=8 routing buckets, 512-bit keyspace                   | |
+|  +-----------------------------------------------------------+ |
+|                                                                 |
+|  +-----------------------------------------------------------+ |
+|  |         TCP Layer (port 4001) - Client + Replication       | |
+|  |  - Client auth (Dilithium5 challenge/response)             | |
+|  |  - Client DHT operations (dht_put, dht_get, listen)        | |
+|  |  - PBFT consensus + cross-node replication                 | |
+|  |  - Channel subscriptions                                   | |
+|  +-----------------------------------------------------------+ |
+|                                                                 |
+|  +-----------------------------------------------------------+ |
+|  |              SQLite Persistence Layer                      | |
+|  |         /var/lib/nodus/ (identity + data)                  | |
+|  +-----------------------------------------------------------+ |
+|                                                                 |
++-----------------------------------------------------------------+
 ```
 
-## Configuration
+### Protocol
 
-DNA Nodus uses a JSON configuration file at `/etc/dna-nodus.conf`. No CLI arguments are needed.
+- **Wire format:** CBOR over wire frames with 7-byte header (magic `0x4E44` + version + length)
+- **Two tiers:**
+  - **Tier 1 (Kademlia):** ping, find_node, put, get (UDP, inter-node)
+  - **Tier 2 (Client):** auth, dht_put, dht_get, listen, channels (TCP, client-facing)
 
-### Configuration File Format
+### Messenger Integration
+
+```
+DNA Engine
+    |
+    v
+nodus_ops.c / nodus_init.c  (messenger/dht/shared/)
+    |
+    v
+Nodus v5 Client SDK  (nodus/src/client/)
+    |
+    v  TCP connection
+Nodus v5 Server Cluster
+```
+
+The messenger integrates directly with Nodus v5 -- no compatibility layer, no OpenDHT. Key files:
+- `messenger/dht/shared/nodus_ops.c` - Convenience wrappers (`nodus_ops_put`, `nodus_ops_get`, `nodus_ops_listen`)
+- `messenger/dht/shared/nodus_init.c` - Lifecycle management (init/connect/cleanup)
+- `nodus/include/nodus/nodus.h` - Client SDK public API
+- `nodus/include/nodus/nodus_types.h` - Constants, version, crypto sizes
+
+## Nodus v5 Test Cluster
+
+Three nodes running v0.5.0 with PBFT ring formed and cross-node replication verified.
+
+| Node | IP | UDP Port | TCP Port |
+|------|-----|----------|----------|
+| nodus-01 | 161.97.85.25 | 4000 | 4001 |
+| nodus-02 | 156.67.24.125 | 4000 | 4001 |
+| nodus-03 | 156.67.25.251 | 4000 | 4001 |
+
+**Configuration:** `/etc/nodus-v5.conf` (per-machine, each seeds the other 2)
+**Data directory:** `/var/lib/nodus/` (identity + SQLite storage)
+**Systemd service:** `nodus-v5.service` (enabled, auto-start)
+
+### Deployment
+
+```bash
+# Build Nodus v5
+cd /opt/dna/nodus/build && cmake .. && make -j$(nproc)
+
+# Redeploy to a server
+ssh root@<IP> 'bash /tmp/nodus-redeploy.sh'
+```
+
+### Configuration (v5)
+
+Nodus v5 uses `/etc/nodus-v5.conf`:
 
 ```json
 {
-    "dht_port": 4000,
+    "listen_port": 4001,
+    "udp_port": 4000,
     "seed_nodes": [
-        "154.38.182.161",
-        "164.68.105.227",
-        "164.68.116.180"
+        "161.97.85.25:4000",
+        "156.67.24.125:4000"
     ],
-    "persistence_path": "/var/lib/dna-dht/bootstrap.state",
-    "identity": "dna-bootstrap-node",
-    "public_ip": "auto",
-    "verbose": false
+    "data_dir": "/var/lib/nodus",
+    "identity": "nodus-01"
 }
 ```
 
-### Configuration Options
+## Production Servers (Legacy v0.4.5)
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `dht_port` | 4000 | UDP port for DHT operations |
-| `seed_nodes` | US-1 | List of seed node IPs |
-| `persistence_path` | `/var/lib/dna-dht/bootstrap.state` | SQLite database path |
-| `identity` | `dna-bootstrap-node` | Node identity string |
-| `public_ip` | `auto` | Public IP (or "auto" to detect) |
-| `verbose` | false | Enable verbose logging |
+These servers still run the legacy dna-nodus v0.4.5 (OpenDHT-based) for production clients. They will be migrated to Nodus v5 during production cutover.
 
-**Note:** TURN configuration fields (`turn_port`, `credential_port`, etc.) are parsed but ignored for backwards compatibility with older config files.
+| Server | IP | DHT Port | Location |
+|--------|-----|----------|----------|
+| US-1 | 154.38.182.161 | 4000 | United States |
+| EU-1 | 164.68.105.227 | 4000 | Europe |
+| EU-2 | 164.68.116.180 | 4000 | Europe |
 
-## DHT Bootstrap Node
+**Note:** The legacy v0.4 codebase was in `vendor/opendht-pq/` which has been deleted from the monorepo. The production servers still run the old binary from `/opt/dna-messenger/` on each server.
 
-The DHT bootstrap node provides:
-- Entry point for new clients joining the network
-- Dilithium5 signature enforcement for all DHT operations
-- SQLite persistence for DHT values
-- Bootstrap registry for peer discovery
+## Building
 
-**Key Features:**
-- Mandatory post-quantum signatures (FIPS 204 compliant)
-- 7-day TTL for stored values
-- Automatic peer discovery via DHT registry
-- Cross-node value synchronization
-
-## Deployment
-
-### Systemd Service
-
-DNA Nodus includes a systemd service file:
+### Nodus v5 (current)
 
 ```bash
-# Copy service file
-sudo cp vendor/opendht-pq/tools/systemd/dna-nodus.service /etc/systemd/system/
-
-# Create config
-sudo cp vendor/opendht-pq/tools/dna-nodus.conf.example /etc/dna-nodus.conf
-
-# Create persistence directory
-sudo mkdir -p /var/lib/dna-dht
-
-# Enable and start
-sudo systemctl daemon-reload
-sudo systemctl enable dna-nodus
-sudo systemctl start dna-nodus
+cd /opt/dna/nodus/build
+cmake .. && make -j$(nproc)
 ```
 
-### Manual Start
+This produces the server binary and client SDK library. The messenger build links against the Nodus v5 client SDK automatically.
+
+### Messenger (with Nodus v5 integration)
 
 ```bash
-# Build
-mkdir build && cd build
-cmake -DBUILD_GUI=OFF .. && make -j$(nproc)
-
-# Run (loads /etc/dna-nodus.conf)
-./vendor/opendht-pq/tools/dna-nodus
+cd /opt/dna/messenger/build
+cmake .. && make -j$(nproc)
 ```
 
-### Production Servers
+The messenger CMake configuration links against the Nodus v5 client library. No separate build step is needed for the SDK.
 
-Current DNA Nodus servers:
-
-| Server | IP | DHT Port |
-|--------|-----|----------|
-| US-1 | 154.38.182.161 | 4000 |
-| EU-1 | 164.68.105.227 | 4000 |
-| EU-2 | 164.68.116.180 | 4000 |
-
-### Update All Servers
-
-To update a server, SSH in and run the build script:
-
-```bash
-ssh root@154.38.182.161 "bash /opt/dna-messenger/build-nodus.sh"  # US-1
-ssh root@164.68.105.227 "bash /opt/dna-messenger/build-nodus.sh"  # EU-1
-ssh root@164.68.116.180 "bash /opt/dna-messenger/build-nodus.sh"  # EU-2
-```
-
-The `build-nodus.sh` script pulls latest code, builds dna-nodus, installs to `/usr/local/bin/`, and restarts the systemd service.
-
-## Monitoring
-
-### Status Output
-
-DNA Nodus prints status every 60 seconds:
+## Key Source Files
 
 ```
-[1 min] [5 nodes] [128 values] | DB: 1024
-```
+/opt/dna/nodus/
+├── include/nodus/
+│   ├── nodus.h               # Client SDK public API
+│   └── nodus_types.h         # Constants, version (NODUS_VERSION_*)
+├── src/
+│   ├── server/
+│   │   └── nodus_server.c    # Server event loop (epoll)
+│   ├── client/
+│   │   └── nodus_client.c    # Client SDK implementation
+│   ├── protocol/
+│   │   └── nodus_tier2.c     # Client protocol message dispatch
+│   └── ...
+└── tests/
+    ├── integration_test.sh   # SSH to 3-node cluster
+    └── test_*.c              # Unit tests (13 tests via ctest)
 
-Fields:
-- **nodes** - Number of DHT nodes discovered
-- **values** - Number of values in DHT routing table
-- **DB** - Values in SQLite persistence
-
-### Peer Discovery
-
-Every 5 minutes, nodus:
-1. Refreshes own registration in bootstrap registry
-2. Fetches registry for new peers
-3. Connects to discovered peers
-
-## Files
-
-```
-/opt/dna-messenger/
-├── vendor/opendht-pq/tools/
-│   ├── dna-nodus.cpp              # Main entry point
-│   ├── nodus_config.h             # Config structure
-│   ├── nodus_config.cpp           # JSON config loader
-│   ├── nodus_version.h            # Version string
-│   ├── dna-nodus.conf.example     # Example config file
-│   └── systemd/
-│       └── dna-nodus.service      # Systemd service file
-└── vendor/nlohmann/
-    └── json.hpp                   # JSON parser (header-only)
+/opt/dna/messenger/dht/shared/
+├── nodus_ops.c               # Convenience wrappers for nodus singleton
+├── nodus_ops.h
+├── nodus_init.c              # Lifecycle management
+└── nodus_init.h
 ```
 
 ## Security Considerations
 
-1. **Post-Quantum Signatures** - All DHT operations require Dilithium5 signatures
-2. **No IP Leakage** - DHT-only mode prevents IP disclosure to third parties
-3. **Distributed Architecture** - No central servers for message relay
-4. **Timestamp-Only Presence** - Online status without IP disclosure
+1. **Post-Quantum Signatures** - All DHT operations require Dilithium5 (ML-DSA-87) signatures
+2. **Client Authentication** - Dilithium5 challenge/response on TCP connect
+3. **No IP Leakage** - DHT-only mode prevents IP disclosure to third parties
+4. **Distributed Architecture** - No central servers for message relay
+5. **PBFT Consensus** - Byzantine fault tolerance for data replication
+6. **Timestamp-Only Presence** - Online status without IP disclosure
 
-## Troubleshooting
+## Monitoring
 
-### Common Issues
+### Nodus v5 Status
 
-**1. Config not loading**
 ```bash
-# Check config exists
-cat /etc/dna-nodus.conf
+# Check service status
+ssh root@<IP> 'systemctl status nodus-v5'
 
-# Check JSON syntax
-python3 -m json.tool /etc/dna-nodus.conf
+# View logs
+ssh root@<IP> 'journalctl -u nodus-v5 -f'
 ```
 
-**2. Port binding failure**
-```bash
-# Check port availability
-netstat -tulpn | grep 4000
+### Legacy v0.4 Status
 
-# Run with root for privileged ports
-sudo ./dna-nodus
-```
-
-**3. No peer discovery**
 ```bash
-# Verify seed nodes are reachable
-nc -uvz 154.38.182.161 4000
+ssh root@<IP> 'systemctl status dna-nodus'
 ```
 
 ## Version History
 
+### Nodus v5 (Pure C rewrite)
+- **v0.5.0** - Production-ready Nodus v5: Kademlia DHT + PBFT consensus + TCP client SDK
+  - Pure C implementation (no C++ dependencies)
+  - CBOR wire protocol with 7-byte frame header
+  - Two-tier protocol (Kademlia + Client)
+  - 3-node test cluster deployed and verified
+  - Direct messenger integration via nodus_ops.c (OpenDHT removed)
+
+### Legacy (OpenDHT-based, now removed from codebase)
 - **v0.4.5** - Removed STUN/TURN for privacy (DHT-only mode)
 - **v0.3.1** - Added direct UDP credential server (port 3479)
 - **v0.3** - Added TURN server and credential management

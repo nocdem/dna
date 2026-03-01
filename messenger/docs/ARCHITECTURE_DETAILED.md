@@ -39,7 +39,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 | **Digital Signatures** | Dilithium5 (ML-DSA-87) |
 | **Symmetric Encryption** | AES-256-GCM |
 | **Hash Function** | SHA3-512, Keccak-256 (ETH) |
-| **DHT Network** | OpenDHT-PQ (post-quantum modified) |
+| **DHT Network** | Nodus v5 (post-quantum Kademlia DHT) |
 | **NAT Traversal** | DHT-only (ICE/STUN removed v0.4.61) |
 | **Local Storage** | SQLite3 |
 | **GUI Framework** | Flutter (Dart FFI to C library) |
@@ -154,7 +154,6 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 │   └── CMakeLists.txt        # Build configuration
 │
 ├── vendor/                   # Third-party libraries
-│   ├── opendht-pq/           # OpenDHT with Dilithium5
 │   ├── secp256k1/            # Bitcoin's EC library (for ETH/BTC)
 │   └── nativefiledialog-extended/
 │
@@ -224,10 +223,7 @@ kem (STATIC)              # Kyber1024 implementation
 dsa (STATIC)              # Dilithium5 implementation
 dht_lib (STATIC)          # DHT integration
 transport_lib (STATIC)    # P2P layer
-
-# Vendor
-opendht (STATIC)          # OpenDHT-PQ
-# libjuice removed v0.4.61
+# OpenDHT removed — Nodus v5 is the only DHT layer
 ```
 
 ### Build Options
@@ -247,7 +243,7 @@ opendht (STATIC)          # OpenDHT-PQ
 | SQLite3 | Local storage | System |
 | json-c | JSON parsing | System |
 | ~~libjuice~~ | ~~ICE/STUN NAT traversal~~ | Removed v0.4.61 |
-| OpenDHT-PQ | DHT with Dilithium5 | Vendored |
+| ~~OpenDHT-PQ~~ | ~~DHT with Dilithium5~~ | Removed (replaced by Nodus v5) |
 
 ### Platform-Specific Notes
 
@@ -1727,7 +1723,7 @@ The Flutter app uses a native library (`libdna_lib.so` / `dna_lib.dll`) for cryp
 
 **Bundled dependencies (Linux/Windows):**
 - libfmt - Formatting library
-- libgnutls - TLS/crypto (used by OpenDHT)
+- ~~libgnutls~~ - Removed (was used by OpenDHT, no longer needed)
 - libnettle, libhogweed - Crypto primitives
 - libgmp - Big integer math
 - libtasn1 - ASN.1 parsing
@@ -1745,28 +1741,19 @@ rm -rf build && mkdir build && cd build
 cmake -DBUILD_GUI=OFF .. && make -j$(nproc)
 ```
 
-**Run:**
-```bash
-# Foreground with verbose logging
-./vendor/opendht-pq/tools/dna-nodus \
-    -b 154.38.182.161:4000 \
-    -b 164.68.105.227:4000 \
-    -b 164.68.116.180:4000 \
-    -v
+**Note:** The legacy OpenDHT-based `dna-nodus` has been replaced by Nodus v5 (pure C, located at `/opt/dna/nodus/`). See `nodus/docs/` for deployment details.
 
-# Background with persistence
-nohup ./vendor/opendht-pq/tools/dna-nodus \
-    -b 154.38.182.161:4000 \
-    -b 164.68.105.227:4000 \
-    -b 164.68.116.180:4000 \
-    -s /var/lib/dna-dht/bootstrap.state \
-    -v > /var/log/dna-nodus.log 2>&1 &
-```
+**Nodus v5 Test Cluster:**
+| Node | IP | Ports |
+|------|-----|-------|
+| nodus-01 | 161.97.85.25 | UDP 4000, TCP 4001 |
+| nodus-02 | 156.67.24.125 | UDP 4000, TCP 4001 |
+| nodus-03 | 156.67.25.251 | UDP 4000, TCP 4001 |
 
 **Persistence:**
-- Default path: `/var/lib/dna-dht/bootstrap.state`
-- SQLite database: `bootstrap.state.values.db`
-- Use `-s <path>` to override
+- Config: `/etc/nodus-v5.conf` (per-machine)
+- Data: `/var/lib/nodus/` (identity + SQLite storage)
+- Systemd: `nodus-v5.service`
 
 ### 14.4 Configuration Files
 

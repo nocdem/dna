@@ -71,8 +71,8 @@ This document describes how the DNA Messenger message system works, with all fac
 │  │                           ▼                                      │   │
 │  │               ┌────────────────┐                                 │   │
 │  │               │   DHT Network  │                                 │   │
-│  │               │   (UDP:4000)   │                                 │   │
-│  │               │  OpenDHT-PQ    │                                 │   │
+│  │               │  (TCP:4001)    │                                 │   │
+│  │               │   Nodus v5     │                                 │   │
 │  │               └────────────────┘                                 │   │
 │  │                                                                  │   │
 │  │   Note: P2P transport was removed in v0.4.61 (DHT-only)         │   │
@@ -669,7 +669,8 @@ execution restrictions make P2P connections unreliable.
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
-| 4000 | UDP | DHT Network (OpenDHT-PQ) |
+| 4000 | UDP | Nodus v5 Kademlia (peer discovery) |
+| 4001 | TCP | Nodus v5 Client (DHT operations) |
 | 4001 | TCP | P2P Messaging |
 
 **Source:** `transport/transport.h:20-25`

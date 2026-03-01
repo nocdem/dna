@@ -59,11 +59,10 @@ Unlike Bitcoin where all nodes maintain the UTXO set, DNAC has no shared state:
 
 ### 2. DHT Data Expiration
 
-OpenDHT data has limited lifetime:
+**Note:** OpenDHT has been completely removed from the codebase. DNAC now uses Nodus v5 for all DHT operations via the `nodus_ops` API. Nodus v5 provides 7-day TTL with server-side persistence, which mitigates some of the original concerns below. However, the fundamental issue remains:
 
-- Default TTL is ~30 minutes for mutable data
-- Even "permanent" puts require republishing
-- If sender goes offline, recipient may never receive payment
+- DHT data has limited lifetime (7-day TTL on Nodus v5)
+- If sender goes offline and data expires, recipient may never receive payment
 - Network partitions can cause data loss
 
 ### 3. Single Point of Failure

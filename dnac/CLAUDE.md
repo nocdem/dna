@@ -91,7 +91,7 @@ DNAC is a **Post-Quantum Zero-Knowledge Cash** system built on top of DNA Messen
 |-----------|------------|
 | Token Model | UTXO |
 | Signatures | Dilithium5 (Post-Quantum) |
-| Transport | DHT (via libdna) |
+| Transport | DHT via Nodus v5 (nodus_ops API) |
 | Double-Spend Prevention | Nodus 2-of-3 Witnessing |
 | Database | SQLite |
 | ZK (v2 future) | STARKs (Post-Quantum) |
@@ -238,17 +238,17 @@ When this mode is active:
 
 ### Build
 
-**Prerequisites:** libdna must be built first at `/opt/dna-messenger/build`
+**Prerequisites:** libdna must be built first at `/opt/dna/messenger/build`
 
 **Release Build (recommended for production):**
 ```bash
-mkdir build && cd build
+cd /opt/dna/dnac/build
 cmake -DCMAKE_BUILD_TYPE=Release .. && make -j$(nproc)
 ```
 
 **Debug Build with ASAN (required if libdna was built with ASAN):**
 ```bash
-mkdir build && cd build
+cd /opt/dna/dnac/build
 cmake -DCMAKE_BUILD_TYPE=Debug \
       -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" \
       -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address" ..
@@ -257,7 +257,7 @@ make -j$(nproc)
 
 **Check if libdna has ASAN:**
 ```bash
-nm /opt/dna-messenger/build/libdna_lib.so | grep -i asan
+nm /opt/dna/messenger/build/libdna_lib.so | grep -i asan
 # If output shows __asan symbols, use Debug build with ASAN
 ```
 
@@ -268,13 +268,16 @@ ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/dnac-asan" ./dnac-witness -p 4200
 ```
 
 ### Dependencies
-- **libdna** - DNA Messenger library (must be built first at /opt/dna-messenger/build)
+- **libdna** - DNA Messenger library (must be built first at /opt/dna/messenger/build)
+- **Nodus v5** - DHT transport via nodus_ops API (built as part of messenger)
 - **OpenSSL** - Cryptographic operations
 - **SQLite3** - Database storage
 
+**Note:** OpenDHT has been completely removed from the codebase. All DHT operations use Nodus v5 via the `nodus_ops` convenience API.
+
 ### Directory Structure
 ```
-/opt/dnac/
+/opt/dna/dnac/
 ├── CMakeLists.txt
 ├── CLAUDE.md              # This file
 ├── README.md
@@ -336,8 +339,8 @@ QGP_LOG_ERROR(LOG_TAG, "Error message: %s", error_str);
 
 ## Git Workflow
 
-**Repository:** `github.com/nocdem/dnac`
-**Local:** `/opt/dnac/`
+**Repository:** `github.com/nocdem/dna-messenger` (monorepo)
+**Local:** `/opt/dna/dnac/`
 
 **Commit format:**
 ```

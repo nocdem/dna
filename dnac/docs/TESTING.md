@@ -8,7 +8,7 @@
 
 ### Gap Fixes Test (`test_gaps.c`)
 
-Location: `/opt/dnac/tests/test_gaps.c`
+Location: `dnac/tests/test_gaps.c`
 
 18 unit tests validating v0.6.0 security fixes:
 
@@ -21,19 +21,19 @@ Location: `/opt/dnac/tests/test_gaps.c`
 | Gap 25 | Memo support validation (up to 255 bytes) |
 
 ```bash
-cd /opt/dnac/build
+cd /opt/dna/dnac/build
 ASAN_OPTIONS=detect_leaks=0 ./test_gaps
 ```
 
 ### Remote Test (`test_remote.c`)
 
-Location: `/opt/dnac/tests/test_remote.c`
+Location: `dnac/tests/test_remote.c`
 
 Cross-machine send/receive testing for validating real-world transaction flow.
 
 ### End-to-End Test (`test_real.c`)
 
-Location: `/opt/dnac/tests/test_real.c`
+Location: `dnac/tests/test_real.c`
 
 This is the primary integration test that validates the complete transaction flow using the real BFT witness infrastructure.
 
@@ -51,7 +51,7 @@ This is the primary integration test that validates the complete transaction flo
 #### Running Tests
 
 ```bash
-cd /opt/dnac/build
+cd /opt/dna/dnac/build
 
 # Clean run (clear databases first)
 rm -f ~/.dna/dnac_wallet.db
@@ -220,8 +220,8 @@ sleep 5
 ### Local Machine
 
 - DNA Messenger identity created (`dna-cli create <name>`)
-- libdna built at `/opt/dna-messenger/build`
-- DNAC built at `/opt/dnac/build`
+- libdna built at `/opt/dna/messenger/build`
+- DNAC built at `/opt/dna/dnac/build`
 
 ### Witness Nodes
 
@@ -233,7 +233,7 @@ sleep 5
 ### Network
 
 - All nodes can reach each other on port 4200/TCP
-- DHT bootstrap nodes accessible
+- Nodus v5 DHT cluster accessible (OpenDHT has been removed)
 
 ---
 

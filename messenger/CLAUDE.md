@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-02-26 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.7.10 | Flutter v0.101.24 | Nodus v0.4.5
+**Versions:** Library v0.7.10 | Flutter v0.101.24 | Nodus v0.5.0
 
 ---
 
@@ -198,13 +198,13 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 |-----------|--------------|---------|-----------|
 | C Library | `include/dna/version.h` | v0.7.10 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
 | Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.101.24+10324 | Flutter/Dart code changes (lib/, assets/) |
-| Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.5 | Nodus server changes (vendor/opendht-pq/tools/) |
+| Nodus v5 | `../nodus/include/nodus/nodus_types.h` | v0.5.0 | Nodus code changes (../nodus/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
 - Each component has its **own version number** - they do NOT need to match
 - **C Library changes** → bump `version.h` only
 - **Flutter/Dart changes** → bump `pubspec.yaml` only
-- **Nodus server changes** → bump `nodus_version.h` only
+- **Nodus v5 changes** → bump `nodus_types.h` (`NODUS_VERSION_*`) only
 - **Build scripts, CI, docs** → no version bump needed
 - Flutter app displays **both versions** in Settings:
   - App version: from `pubspec.yaml`
@@ -664,7 +664,7 @@ make && ./fuzz_<target> ../fuzz/corpus/<target>/ -max_total_time=60
 - **[Protocol Specs](docs/PROTOCOL.md)** - Wire formats (Seal, Spillway, Anchor, Atlas, Nexus)
 - **[CLI Testing](docs/CLI_TESTING.md)** - CLI tool for debugging and testing
 - **[Flutter UI](docs/FLUTTER_UI.md)** - Flutter migration (Phase 7)
-- **[DNA Nodus](docs/DNA_NODUS.md)** - Bootstrap server (v0.4)
+- **[DNA Nodus](docs/DNA_NODUS.md)** - Nodus DHT deployment (v5 + legacy v0.4)
 - **[DHT System](docs/DHT_SYSTEM.md)** - DHT architecture and operations
 - **[Message System](docs/MESSAGE_SYSTEM.md)** - Message handling and encryption
 - **[P2P Architecture](docs/P2P_ARCHITECTURE.md)** - Peer-to-peer transport layer
@@ -815,46 +815,35 @@ Details: what/why/breaking
 
 ## DNA Nodus Deployment
 
-**Bootstrap Servers (dna-nodus v0.4):**
+**Nodus v5 is the DHT layer.** OpenDHT has been completely removed. Messenger integrates directly via `nodus_ops.c` / `nodus_init.c`.
+
+**Nodus v5 Test Cluster (running v0.5.0):**
+| Server | IP | UDP Port | TCP Port |
+|--------|-----|----------|----------|
+| nodus-01 | 161.97.85.25 | 4000 | 4001 |
+| nodus-02 | 156.67.24.125 | 4000 | 4001 |
+| nodus-03 | 156.67.25.251 | 4000 | 4001 |
+
+**Production Bootstrap Servers (legacy dna-nodus v0.4.5, still running):**
 | Server | IP | DHT Port |
 |--------|-----|----------|
 | US-1 | 154.38.182.161 | 4000 |
 | EU-1 | 164.68.105.227 | 4000 |
 | EU-2 | 164.68.116.180 | 4000 |
 
-**Deployment Process (v0.4+):**
+**Nodus v5 Build:**
 ```bash
-# Use the build script on each server:
-ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
-
-# The script will:
-# 1. Pull latest code
-# 2. Build dna-nodus
-# 3. Install to /usr/local/bin/
-# 4. Restart systemd service
+cd /opt/dna/nodus/build && cmake .. && make -j$(nproc)
 ```
 
-**Configuration (v0.4+):**
-- Config file: `/etc/dna-nodus.conf` (JSON format)
-- No CLI arguments needed - pure config file
-- See `vendor/opendht-pq/tools/dna-nodus.conf.example`
-
-**Example config:**
-```json
-{
-    "dht_port": 4000,
-    "seed_nodes": ["154.38.182.161", "164.68.105.227"],
-    "public_ip": "auto",
-    "persistence_path": "/var/lib/dna-dht/bootstrap.state"
-}
-```
+**Nodus v5 Configuration:**
+- Config file: `/etc/nodus-v5.conf` (per-machine, each seeds the other 2)
+- Data: `/var/lib/nodus/` (identity + SQLite storage)
+- Systemd: `nodus-v5.service` (enabled, auto-start)
 
 **Services:**
-- DHT: UDP port 4000
-
-**Persistence:**
-- Default path: `/var/lib/dna-dht/bootstrap.state`
-- SQLite database: `bootstrap.state.values.db`
+- Kademlia (peer discovery): UDP port 4000
+- Client connections + replication: TCP port 4001
 - Values persist across restarts automatically
 
 **Documentation:** See [docs/DNA_NODUS.md](docs/DNA_NODUS.md) for full details.

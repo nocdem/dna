@@ -18,7 +18,7 @@ DNA Messenger has been successfully ported to Android. The Android SDK provides 
 | 2 | Platform Abstraction | ✅ Complete |
 | 3 | HTTP Abstraction | ✅ Complete (CURL via NDK) |
 | 4 | Android NDK Build Config | ✅ Complete |
-| 5 | OpenDHT-PQ Android Port | ✅ Complete (arm64-v8a) |
+| 5 | ~~OpenDHT-PQ Android Port~~ | Removed (replaced by Nodus v5 client SDK, pure C) |
 | 6 | JNI Bindings | ✅ Complete (26 functions) |
 | 7 | Android UI | 🚧 In Progress |
 | 8 | iOS Port | 📋 Future |
@@ -58,15 +58,15 @@ DNA Messenger has been successfully ported to Android. The Android SDK provides 
 └─────────────────────────────────────────────────────────────┘
                             │
 ┌─────────────────────────────────────────────────────────────┐
-│                   Core Libraries (C/C++)                     │
+│                     Core Libraries (Pure C)                   │
 │  ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌──────────────┐│
 │  │ libdna_lib│ │libdht_lib │ │  libkem   │ │   libdsa     ││
 │  │  (1.4MB)  │ │  (DHT)    │ │ (Kyber)   │ │ (Dilithium)  ││
 │  └───────────┘ └───────────┘ └───────────┘ └──────────────┘│
-│  ┌───────────────────┐ ┌────────────┐ ┌──────────────────┐ │
-│  │ libtransport_lib  │ │libopendht  │                      │
-│  │   (P2P + DHT)     │ │   (PQ)     │                      │
-│  └───────────────────┘ └────────────┘                      │
+│  ┌───────────────────┐ ┌──────────────────┐                 │
+│  │ libtransport_lib  │ │ libnodus_client  │                 │
+│  │   (P2P + DHT)     │ │  (Nodus v5 SDK)  │                 │
+│  └───────────────────┘ └──────────────────┘                 │
 └─────────────────────────────────────────────────────────────┘
                             │
 ┌─────────────────────────────────────────────────────────────┐
@@ -189,31 +189,24 @@ build-android-arm64-v8a/
 ├── libkem.a               # Kyber1024
 ├── libdsa.a               # Dilithium5
 ├── libtransport_lib.a     # P2P transport
-└── libopendht.a           # OpenDHT-PQ (libjuice removed v0.4.61)
+└── libnodus_client.a      # Nodus v5 client SDK (pure C)
 ```
 
 ---
 
 ## Completed Work
 
-### Phase 5: OpenDHT-PQ Android Build ✅
+### Phase 5: DHT Layer (Nodus v5 Client SDK)
 
-**Status:** Complete (arm64-v8a)
+**Status:** Complete (replaced OpenDHT-PQ)
 
-Successfully built OpenDHT-PQ for Android with all dependencies:
-- C++17 support via NDK r26d
-- Threading works correctly (std::thread)
-- POSIX sockets work on Android
+OpenDHT-PQ has been completely removed and replaced by the Nodus v5 client SDK, which is pure C with no C++ dependencies. This simplifies the Android build significantly:
+- No C++ runtime needed (no `libc++_shared.so`)
+- No GnuTLS/nettle/hogweed dependencies
+- Pure C, POSIX sockets, pthreads
 - getrandom() available on API 24+
 
-**Build tested with:**
-```bash
-cmake -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
-      -DANDROID_ABI=arm64-v8a \
-      -DANDROID_PLATFORM=android-24 \
-      -DBUILD_GUI=OFF \
-      -DANDROID=ON ..
-```
+**Messenger integration:** `dht/shared/nodus_ops.c` wraps the Nodus singleton with convenience functions. Lifecycle managed by `dht/shared/nodus_init.c`.
 
 ### Phase 6: JNI Bindings ✅
 
@@ -239,7 +232,7 @@ android/
 │       │   └── DNAEvent.java      # Event wrapper
 │       └── jniLibs/arm64-v8a/
 │           ├── libdna_jni.so      # 16MB (stripped)
-│           └── libc++_shared.so   # 1.8MB (NDK C++ runtime)
+│           └── (no C++ runtime needed — pure C)
 ├── build.gradle
 ├── gradle.properties
 └── settings.gradle
@@ -650,7 +643,7 @@ void onPause(DnaEngine engine) {
 | | | iOS: Replace with URLSession or bundle |
 | CA Bundle | SSL certificates | Android: Bundle cacert.pem in assets, copy to filesDir |
 | | | iOS: Uses system certificates |
-| OpenDHT-PQ | DHT networking | Needs NDK/Xcode build testing |
+| ~~OpenDHT-PQ~~ | ~~DHT networking~~ | Removed (replaced by Nodus v5, pure C) |
 
 ---
 

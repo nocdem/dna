@@ -138,7 +138,7 @@ After=network.target
 [Service]
 Type=simple
 User=nocdem
-ExecStart=/opt/dnac/build/dnac-witness -d /home/nocdem/.dna -p 4200 -a "192.168.0.195:4200" -r /etc/dnac/roster.txt
+ExecStart=/opt/dna/dnac/build/dnac-witness -d /home/nocdem/.dna -p 4200 -a "192.168.0.195:4200" -r /etc/dnac/roster.txt
 Restart=always
 RestartSec=5
 
@@ -246,4 +246,4 @@ Epoch state anchored by BFT consensus:
 
 ## Contact
 
-Repository: `github.com/nocdem/dnac`
+Repository: `github.com/nocdem/dna-messenger` (monorepo, DNAC at `dnac/`)

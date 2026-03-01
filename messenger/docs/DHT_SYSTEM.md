@@ -1,10 +1,12 @@
 # DHT System Documentation
 
-**Last Updated:** 2026-01-23
+**Last Updated:** 2026-03-01
 **Phase:** 14 (DHT-Only Messaging)
-**Version:** 0.6.27
+**Version:** 0.7.10
 
-Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) system, covering both client operations and the dna-nodus bootstrap server.
+Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) system. The DHT layer is powered by Nodus v5, a pure C Kademlia DHT with PBFT consensus. OpenDHT has been completely removed.
+
+**Migration Note:** Many API function signatures in this document still show `dht_context_t *ctx` as the first parameter. As of the Nodus v5 migration, the `dht_context_t` type no longer exists. All DHT functions now use the Nodus singleton internally (via `nodus_ops.c`) and no longer require an explicit context parameter. Consult the header files in `dht/` for current signatures.
 
 ---
 
@@ -27,7 +29,7 @@ Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) sy
 
 ### What is DHT in DNA Messenger?
 
-The DHT is a distributed key-value store built on OpenDHT-PQ (post-quantum fork). It provides:
+The DHT is a distributed key-value store powered by Nodus v5 (pure C, Kademlia + PBFT consensus). It provides:
 
 - **Decentralized storage** - No central server; data replicated across nodes
 - **Post-quantum security** - Dilithium5 (ML-DSA-87) signatures, NIST Category 5
@@ -57,40 +59,31 @@ Three production bootstrap servers run `dna-nodus`:
                               |
                               v
 +-------------------------------------------------------------+
-|                     DHT Singleton                           |
-|  dht/client/dht_singleton.c                                 |
-|  - Single shared DHT instance per app                       |
-|  - Bootstraps to seed node -> discovers registry            |
-|  - Memory-only mode (no persistence)                        |
+|                  Nodus Operations Layer                      |
+|  dht/shared/nodus_ops.c + nodus_init.c                      |
+|  - Convenience wrappers (nodus_ops_put, _get, _listen)      |
+|  - Lifecycle management (init, connect, cleanup)            |
+|  - Direct integration with Nodus v5 client SDK              |
 +-------------------------------------------------------------+
                               |
                               v
 +-------------------------------------------------------------+
-|                     DHT Context                              |
-|  dht/core/dht_context.cpp                                   |
-|  - OpenDHT-PQ wrapper (C API over C++)                      |
-|  - 3 ValueTypes: 7-day, 30-day, 365-day                     |
-|  - PUT/GET/Listen operations                                 |
+|                  Nodus v5 Client SDK                         |
+|  nodus/src/client/nodus_client.c                            |
+|  - TCP connection to Nodus server cluster                   |
+|  - CBOR wire protocol (7-byte frame header)                 |
+|  - Tier 2 protocol: auth, dht_put, dht_get, listen         |
+|  - Dilithium5 challenge/response authentication             |
 +-------------------------------------------------------------+
                               |
                               v
 +-------------------------------------------------------------+
-|                  Bootstrap Registry                          |
-|  dht/core/dht_bootstrap_registry.c                          |
-|  - Well-known key: SHA3-512("dna:bootstrap:registry")       |
-|  - Self-healing distributed discovery                        |
-|  - 15-minute stale timeout, 5-minute refresh                |
-+-------------------------------------------------------------+
-                              |
-                              v
-+-------------------------------------------------------------+
-|                  dna-nodus Bootstrap Nodes                   |
-|  vendor/opendht-pq/tools/dna-nodus.cpp                      |
-|  - US-1: 154.38.182.161:4000                                |
-|  - EU-1: 164.68.105.227:4000                                |
-|  - EU-2: 164.68.116.180:4000                                |
-|  - SQLite persistence for PERMANENT/365-day values          |
-|  - Self-registers every 5 minutes                            |
+|                  Nodus v5 Server Cluster                     |
+|  nodus/src/server/nodus_server.c                            |
+|  - Test: 161.97.85.25, 156.67.24.125, 156.67.25.251       |
+|  - Kademlia DHT (UDP 4000) + Client/Replication (TCP 4001) |
+|  - PBFT consensus for cross-node replication                |
+|  - SQLite persistence for stored values                     |
 +-------------------------------------------------------------+
 ```
 
@@ -103,113 +96,105 @@ Three production bootstrap servers run `dna-nodus`:
 
 ---
 
-## 3. DHT Core (`dht/core/`)
+## 3. DHT Core (`dht/core/` and `dht/shared/nodus_*`)
 
-### 3.1 dht_context.h/cpp
+**Note:** The old `dht_context.h/cpp` (OpenDHT wrapper) and related files (`dht_listen.cpp`, `dht_stats.cpp`, `dht_identity.cpp`, `dht_value_storage.cpp`) have been removed. DHT operations now go through the Nodus v5 client SDK via `nodus_ops.c`.
 
-The core DHT wrapper around OpenDHT's `DhtRunner` class.
+### 3.1 Nodus Operations (nodus_ops.h/c)
 
-#### Configuration Structure
+The DHT interface layer wrapping the Nodus v5 client singleton. All functions use the nodus singleton internally -- no explicit context parameter needed.
 
-```c
-typedef struct {
-    uint16_t port;                    // DHT port (default: 4000)
-    bool is_bootstrap;                // Is this a bootstrap node?
-    char identity[256];               // Node identity name
-    char bootstrap_nodes[5][256];     // Up to 5 bootstrap nodes (IP:port)
-    size_t bootstrap_count;           // Number of bootstrap nodes
-    char persistence_path[512];       // Disk persistence path (empty = memory-only)
-} dht_config_t;
-```
-
-#### Lifecycle Functions
+#### Callback Types
 
 ```c
-// Create context
-dht_context_t* dht_context_new(const dht_config_t *config);
-
-// Start node (generates Dilithium5 identity)
-int dht_context_start(dht_context_t *ctx);
-
-// Start with user-provided identity
-int dht_context_start_with_identity(dht_context_t *ctx, dht_identity_t *identity);
-
-// Check if connected to network
-bool dht_context_is_ready(dht_context_t *ctx);
-
-// Stop and cleanup
-void dht_context_stop(dht_context_t *ctx);
-void dht_context_free(dht_context_t *ctx);
+typedef bool (*nodus_ops_listen_cb_t)(const uint8_t *data, size_t data_len,
+                                      bool expired, void *user_data);
+typedef void (*nodus_ops_listen_cleanup_t)(void *user_data);
 ```
 
 #### PUT Operations
 
 ```c
-// Default 7-day TTL
-int dht_put(dht_context_t *ctx,
-            const uint8_t *key, size_t key_len,
-            const uint8_t *value, size_t value_len);
+// Store a signed ephemeral value (key hashed to SHA3-512 internally)
+int nodus_ops_put(const uint8_t *key, size_t key_len,
+                  const uint8_t *data, size_t data_len,
+                  uint32_t ttl, uint64_t vid);
 
-// Custom TTL (seconds)
-int dht_put_ttl(dht_context_t *ctx,
-                const uint8_t *key, size_t key_len,
-                const uint8_t *value, size_t value_len,
-                unsigned int ttl_seconds);
+// Store using a string key (hashed to SHA3-512)
+int nodus_ops_put_str(const char *str_key,
+                      const uint8_t *data, size_t data_len,
+                      uint32_t ttl, uint64_t vid);
 
-// Permanent storage (never expires)
-int dht_put_permanent(dht_context_t *ctx,
-                      const uint8_t *key, size_t key_len,
-                      const uint8_t *value, size_t value_len);
-
-// Signed PUT with fixed value_id (enables replacement)
-int dht_put_signed(dht_context_t *ctx,
-                   const uint8_t *key, size_t key_len,
-                   const uint8_t *value, size_t value_len,
-                   uint64_t value_id,
-                   unsigned int ttl_seconds);
-
-// Republish packed value (preserves original signature)
-int dht_republish_packed(dht_context_t *ctx,
-                         const char *key_hex,
-                         const uint8_t *packed_data,
-                         size_t packed_len);
+// Store a permanent (never-expiring) value
+int nodus_ops_put_permanent(const uint8_t *key, size_t key_len,
+                            const uint8_t *data, size_t data_len,
+                            uint64_t vid);
 ```
 
 #### GET Operations
 
 ```c
-// Synchronous GET (returns first value)
-int dht_get(dht_context_t *ctx,
-            const uint8_t *key, size_t key_len,
-            uint8_t **value_out, size_t *value_len_out);
+// Retrieve latest value for a key (caller must free *data_out)
+int nodus_ops_get(const uint8_t *key, size_t key_len,
+                  uint8_t **data_out, size_t *len_out);
 
-// Get all values for key
-int dht_get_all(dht_context_t *ctx,
-                const uint8_t *key, size_t key_len,
-                uint8_t ***values_out, size_t **values_len_out,
-                size_t *count_out);
+// Retrieve using a string key
+int nodus_ops_get_str(const char *str_key,
+                      uint8_t **data_out, size_t *len_out);
 
-// Asynchronous GET with callback
-void dht_get_async(dht_context_t *ctx,
-                   const uint8_t *key, size_t key_len,
-                   void (*callback)(uint8_t *value, size_t value_len, void *userdata),
-                   void *userdata);
+// Retrieve all values for a key (all writers)
+int nodus_ops_get_all(const uint8_t *key, size_t key_len,
+                      uint8_t ***values_out, size_t **lens_out,
+                      size_t *count_out);
+
+// Retrieve all values with their value IDs
+int nodus_ops_get_all_with_ids(const uint8_t *key, size_t key_len,
+                               uint8_t ***values_out, size_t **lens_out,
+                               uint64_t **vids_out, size_t *count_out);
 ```
 
-#### ValueTypes
+#### LISTEN Operations
 
-Three custom ValueTypes with specific TTLs:
+```c
+// Subscribe to changes on a DHT key
+size_t nodus_ops_listen(const uint8_t *key, size_t key_len,
+                        nodus_ops_listen_cb_t callback,
+                        void *user_data,
+                        nodus_ops_listen_cleanup_t cleanup);
 
-| Type ID | Name | TTL | Use Case |
-|---------|------|-----|----------|
-| 0x1001 | DNA_7DAY | 7 days | Messages, offline queue, contact lists |
-| 0x1002 | DNA_365DAY | 365 days | Profiles (legacy) |
-| 0x1003 | DNA_30DAY | 30 days | Group metadata, message walls |
-| PERMANENT | DHT_CHUNK_TTL_PERMANENT | ~136 years | Name registrations, profiles (v0.3.0+) |
+// Cancel a listener by token
+void nodus_ops_cancel_listen(size_t token);
 
-**v0.3.0 Change:** Name registrations and profiles now use `DHT_CHUNK_TTL_PERMANENT` (UINT32_MAX = 4294967295 seconds ≈ 136 years). Once a name is registered (with blockchain tx verification), it never expires.
+// Cancel all active listeners
+void nodus_ops_cancel_all(void);
 
-ValueTypes are registered on startup and handle automatic persistence to SQLite on bootstrap nodes.
+// Get count of active listeners
+size_t nodus_ops_listen_count(void);
+```
+
+#### Utility
+
+```c
+// Check if the Nodus singleton is connected and authenticated
+bool nodus_ops_is_ready(void);
+
+// Get the value_id for the current identity
+uint64_t nodus_ops_value_id(void);
+
+// Get the hex fingerprint of the current identity
+const char *nodus_ops_fingerprint(void);
+```
+
+#### TTL Values
+
+| TTL | Use Case |
+|-----|----------|
+| 7 days (604800s) | Messages, offline queue, contact lists |
+| 30 days (2592000s) | Group metadata, message walls |
+| 365 days (31536000s) | Profiles |
+| 0 (permanent) | Name registrations (v0.3.0+) |
+
+**Note:** Nodus v5 supports values up to 1MB natively. No chunking abstraction is needed at the nodus_ops level.
 
 ---
 
@@ -270,103 +255,22 @@ void dht_bootstrap_registry_filter_active(bootstrap_registry_t *registry);
 
 ---
 
-### 3.3 dht_listen.h
+### 3.3 DHT Listeners (via nodus_ops)
 
-Real-time notifications when DHT values change.
+Real-time notifications when DHT values change. The listener API is provided by `nodus_ops.h` (see section 3.1 LISTEN Operations above).
 
-#### Constants (Phase 14)
+#### Callback Behavior
 
-```c
-// Maximum number of simultaneous listeners
-#define DHT_MAX_LISTENERS 1024
-```
+The callback is triggered when:
+- New value published (`expired=false`)
+- Existing value updated (content changed, `expired=false`)
+- Value expired/removed (`expired=true`, `data=NULL`)
 
-#### Basic API
-
-```c
-// Callback type
-typedef bool (*dht_listen_callback_t)(
-    const uint8_t *value,      // NULL if expired
-    size_t value_len,
-    bool expired,              // true = value expired, false = new/updated value
-    void *user_data
-);
-
-// Callback is triggered when:
-// - New value published (expired=false)
-// - Existing value updated (content changed + seq incremented, expired=false)
-// - Value expired/removed (expired=true, value=NULL)
-
-// Start listening (returns token > 0 on success)
-size_t dht_listen(dht_context_t *ctx,
-                  const uint8_t *key, size_t key_len,
-                  dht_listen_callback_t callback,
-                  void *user_data);
-
-// Cancel subscription
-void dht_cancel_listen(dht_context_t *ctx, size_t token);
-
-// Get active subscription count
-size_t dht_get_active_listen_count(dht_context_t *ctx);
-```
-
-#### Extended API (Phase 14)
-
-Phase 14 added extended API with cleanup callbacks, auto-resubscription, and
-listener limits for reliable Android background operation.
+#### Example: Listen with Cleanup
 
 ```c
-// Cleanup callback - invoked when listener is cancelled
-typedef void (*dht_listen_cleanup_t)(void *user_data);
+#include "dht/shared/nodus_ops.h"
 
-// Start listening with cleanup callback support
-// Also stores key data for auto-resubscription after network loss
-// Returns 0 if DHT_MAX_LISTENERS limit is reached
-size_t dht_listen_ex(dht_context_t *ctx,
-                     const uint8_t *key, size_t key_len,
-                     dht_listen_callback_t callback,
-                     void *user_data,
-                     dht_listen_cleanup_t cleanup);  // may be NULL
-
-// Cancel all active listeners and invoke their cleanup callbacks
-// Useful for shutdown or DHT reconnection
-void dht_cancel_all_listeners(dht_context_t *ctx);
-
-// Re-register all active listeners with OpenDHT
-// Call when DHT connection is restored after network loss
-// Only works for listeners created with dht_listen_ex()
-size_t dht_resubscribe_all_listeners(dht_context_t *ctx);
-```
-
-#### Example: Basic Usage
-
-```c
-// Listen for messages from a contact's outbox
-// Callback fires when contact sends NEW message (updates their outbox)
-//
-// IMPORTANT: Outbox uses chunked storage, so listen to chunk[0] key:
-// - Base key: "contact_fp:outbox:my_fp"
-// - Chunk[0] key: SHA3-512(base_key + ":chunk:0")[0:32]
-#include "dht/shared/dht_chunked.h"
-
-char base_key[512];
-snprintf(base_key, sizeof(base_key), "%s:outbox:%s", contact_fp, my_fp);
-
-uint8_t chunk0_key[DHT_CHUNK_KEY_SIZE];  // 32 bytes
-dht_chunked_make_key(base_key, 0, chunk0_key);
-
-size_t token = dht_listen(ctx, chunk0_key, DHT_CHUNK_KEY_SIZE, my_callback, my_context);
-if (token == 0) {
-    fprintf(stderr, "Failed to start listening\n");
-}
-
-// Later, stop listening:
-dht_cancel_listen(ctx, token);
-```
-
-#### Example: Extended API with Cleanup (Phase 14)
-
-```c
 // Context structure for listener
 typedef struct {
     char contact_fp[129];
@@ -375,45 +279,39 @@ typedef struct {
 
 // Cleanup function - free resources when listener is cancelled
 void my_cleanup(void *user_data) {
-    listener_ctx_t *ctx = (listener_ctx_t *)user_data;
-    free(ctx);
+    listener_ctx_t *lctx = (listener_ctx_t *)user_data;
+    free(lctx);
 }
 
 // Create listener with cleanup
-listener_ctx_t *ctx = malloc(sizeof(listener_ctx_t));
-strncpy(ctx->contact_fp, contact_fp, 128);
-ctx->engine = engine;
+listener_ctx_t *lctx = malloc(sizeof(listener_ctx_t));
+strncpy(lctx->contact_fp, contact_fp, 128);
+lctx->engine = engine;
 
-size_t token = dht_listen_ex(dht_ctx, key, 64, my_callback, ctx, my_cleanup);
+size_t token = nodus_ops_listen(key, 64, my_callback, lctx, my_cleanup);
 if (token == 0) {
-    // Failure - cleanup was already called by dht_listen_ex, do NOT free ctx here
+    // Failure - cleanup was already called, do NOT free lctx here
     return;
 }
 
-// When cancelled, my_cleanup is called automatically
-dht_cancel_listen(dht_ctx, token);  // calls my_cleanup(ctx)
+// Cancel specific listener (cleanup called automatically)
+nodus_ops_cancel_listen(token);
 
 // Or cancel all listeners at once (during shutdown)
-dht_cancel_all_listeners(dht_ctx);  // calls cleanup for each
+nodus_ops_cancel_all();
 ```
 
-**Important:** `dht_listen_ex()` calls the cleanup function on ALL failure paths (timeout,
-exception, max listeners). Do NOT manually free user_data if the function returns 0.
-
-**Note:** The callback is triggered for both new values AND updates to existing values
-(when content changes and sequence number increases). This enables real-time notifications
-for offline messaging where contacts update the same outbox key with new messages.
+**Note:** The callback is triggered for both new values AND updates to existing values.
+This enables real-time notifications for offline messaging where contacts update
+the same outbox key with new messages.
 
 ---
 
 ## 4. DHT Client (`dht/client/`)
 
-### 4.1 dht_singleton.h/c
+### 4.1 Nodus Integration (nodus_init.h/c)
 
-**v0.6.0+: Engine-Owned DHT Context**
-
-As of v0.6.0, each engine instance owns its own DHT context. The singleton pattern
-is kept for backwards compatibility but now uses a "borrowed context" model:
+**Nodus v5 replaced the old `dht_singleton` / `dht_context` / `dht_identity` layer entirely.** The old files (`dht_singleton.c`, `dht_context.cpp`, `dht_identity.cpp`) have been deleted. Lifecycle is now managed through `nodus_init.c`.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -429,69 +327,36 @@ is kept for backwards compatibility but now uses a "borrowed context" model:
 │                       │       │                       │
 │   dna_engine_create() │       │   dna_engine_create() │
 │   ↓                   │       │   ↓                   │
-│   engine owns DHT ctx │       │   engine owns DHT ctx │
-│   (via identity lock) │       │   (via identity lock) │
+│   nodus_init()        │       │   nodus_init()        │
+│   nodus_ops_*()       │       │   nodus_ops_*()       │
 └───────────────────────┘       └───────────────────────┘
 
     Only ONE can hold the identity lock at a time.
     File-based mutex prevents race conditions.
 ```
 
-#### Bootstrap Configuration
+#### Nodus v5 Seed Nodes
 
-```c
-// Hardcoded seed node for cold start
-static const char *SEED_NODE = "154.38.182.161:4000";
+The messenger connects to the Nodus v5 test cluster:
 
-// Fallback nodes if registry unavailable
-static const char *FALLBACK_NODES[] = {
-    "154.38.182.161:4000",  // US-1
-    "164.68.105.227:4000",  // EU-1
-    "164.68.116.180:4000"   // EU-2
-};
-```
+| Node | IP | TCP Port |
+|------|-----|----------|
+| nodus-01 | 161.97.85.25 | 4001 |
+| nodus-02 | 156.67.24.125 | 4001 |
+| nodus-03 | 156.67.25.251 | 4001 |
 
-#### API
-
-```c
-// DEPRECATED: Use engine-owned context instead
-int dht_singleton_init(void);
-int dht_singleton_init_with_identity(dht_identity_t *user_identity);
-
-// Get DHT context (returns borrowed context from engine, or NULL)
-dht_context_t* dht_singleton_get(void);
-
-// Check if initialized
-bool dht_singleton_is_initialized(void);
-
-// Cleanup on shutdown
-void dht_singleton_cleanup(void);
-
-// v0.6.0+: Create engine-owned DHT context
-dht_context_t* dht_create_context_with_identity(dht_identity_t *user_identity);
-
-// v0.6.0+: Set borrowed context (engine lends its context to singleton)
-void dht_singleton_set_borrowed_context(dht_context_t *ctx);
-```
-
-#### Initialization Flow (v0.6.0+)
+#### Initialization Flow
 
 1. Engine acquires identity lock (file-based mutex)
-2. Engine loads DHT identity from encrypted backup
-3. Engine creates its own DHT context via `dht_create_context_with_identity()`
-4. Engine lends context to singleton via `dht_singleton_set_borrowed_context()`
-5. DHT bootstraps to seed nodes (async)
-6. On engine destroy: clear borrowed context, stop/free DHT, release lock
+2. Engine loads identity from encrypted backup
+3. Engine calls `nodus_init()` to connect to Nodus v5 cluster
+4. Nodus client authenticates via Dilithium5 challenge/response
+5. DHT operations available via `nodus_ops_*()` convenience functions
+6. On engine destroy: `nodus_cleanup()`, release lock
 
----
+### 4.2 DHT Identity (Deterministic)
 
-### 4.2 dht_identity.h/cpp
-
-Dilithium5 identity management for DHT operations.
-
-**v0.3.0 Change: Deterministic DHT Identity**
-
-As of v0.3.0, DHT identity is derived deterministically from the BIP39 master seed:
+DHT identity is derived deterministically from the BIP39 master seed:
 
 ```
 BIP39 mnemonic → master_seed (64 bytes)
@@ -507,33 +372,6 @@ BIP39 mnemonic → master_seed (64 bytes)
 - Same mnemonic = same DHT identity (always recoverable)
 - No network dependency for recovery
 - No encrypted backup needed
-- Eliminates `dht_identity_backup.c/h` (removed in v0.3.0)
-
-```c
-// Opaque identity structure (wraps dht::crypto::Identity)
-typedef struct dht_identity dht_identity_t;
-
-// Generate new Dilithium5 identity (random)
-dht_identity_t* dht_identity_generate(const char *name);
-
-// Generate deterministically from 32-byte seed (v0.3.0+)
-int dht_identity_generate_from_seed(const uint8_t *seed, dht_identity_t **out);
-
-// Load from binary files (.dsa, .pub, .cert)
-dht_identity_t* dht_identity_load(const char *base_path);
-
-// Save to binary files
-int dht_identity_save(dht_identity_t *id, const char *base_path);
-
-// Export to binary blob
-int dht_identity_export(dht_identity_t *id, uint8_t **data_out, size_t *len_out);
-
-// Import from binary blob
-dht_identity_t* dht_identity_import(const uint8_t *data, size_t len);
-
-// Free identity
-void dht_identity_free(dht_identity_t *id);
-```
 
 ---
 
@@ -688,9 +526,11 @@ This ensures real-time notifications always point to the current day's posts.
 
 ## 5. DHT Shared (`dht/shared/`)
 
-### 5.1 dht_value_storage.h/cpp
+### 5.1 Value Persistence
 
-SQLite persistence for bootstrap nodes only.
+**Note:** The old `dht_value_storage.h/cpp` (SQLite persistence for OpenDHT bootstrap nodes) has been removed. Value persistence is now handled natively by Nodus v5 servers (SQLite in `/var/lib/nodus/`).
+
+The following statistics and persistence concepts still apply at the Nodus v5 server level:
 
 #### Statistics Structure
 
@@ -1289,110 +1129,71 @@ int dht_keyserver_reverse_lookup(
 
 ---
 
-## 7. dna-nodus Bootstrap Server
+## 7. Nodus v5 Server
 
 ### 7.1 Overview
 
-`dna-nodus` is a specialized post-quantum DHT bootstrap node:
+Nodus v5 is a pure C post-quantum DHT server with PBFT consensus:
 
-- **Port**: 4000 (default)
+- **UDP Port**: 4000 (Kademlia peer discovery)
+- **TCP Port**: 4001 (client connections + replication)
 - **Crypto**: Dilithium5 (ML-DSA-87) mandatory
-- **Storage**: SQLite persistence for critical values
-- **Binary**: `vendor/opendht-pq/tools/dna-nodus`
+- **Storage**: SQLite persistence in `/var/lib/nodus/`
+- **Source**: `/opt/dna/nodus/` (top-level in monorepo)
+- **Protocol**: CBOR over wire frames (7-byte header: magic `0x4E44` + version + length)
 
-### 7.2 Command-Line Options
+**Note:** The old `dna-nodus` (OpenDHT-based, `vendor/opendht-pq/tools/dna-nodus.cpp`) has been removed from the codebase. Production servers still run the legacy v0.4.5 binary from `/opt/dna-messenger/`.
 
+### 7.2 Protocol Tiers
+
+| Tier | Transport | Messages | Purpose |
+|------|-----------|----------|---------|
+| Tier 1 | UDP | ping, find_node, put, get | Kademlia inter-node operations |
+| Tier 2 | TCP | auth, dht_put, dht_get, listen, channels | Client-facing operations |
+
+### 7.3 Deployment
+
+**Nodus v5 Test Cluster (3 nodes, v0.5.0):**
+
+| Node | IP | Config |
+|------|-----|--------|
+| nodus-01 | 161.97.85.25 | `/etc/nodus-v5.conf` |
+| nodus-02 | 156.67.24.125 | `/etc/nodus-v5.conf` |
+| nodus-03 | 156.67.25.251 | `/etc/nodus-v5.conf` |
+
+```bash
+# Build
+cd /opt/dna/nodus/build && cmake .. && make -j$(nproc)
+
+# Deploy to a server
+ssh root@<IP> 'bash /tmp/nodus-redeploy.sh'
+
+# Check status
+ssh root@<IP> 'systemctl status nodus-v5'
 ```
-Usage: dna-nodus [options]
 
-Options:
-  -p <port>           Port to listen on (default: 4000)
-  -i <path>           Identity name (default: dna-bootstrap-node)
-  -s <path>           Persistence path (default: /var/lib/dna-dht/bootstrap.state)
-  -b <host>:port      Bootstrap from host (can specify multiple, max 3)
-  --public-ip <ip>    Public IP address
-  -v                  Verbose logging
-  -h, --help          Show help
-```
+**Legacy Production Servers (v0.4.5, still running):**
 
-### 7.3 Startup Sequence
-
-```cpp
-// From dna-nodus.cpp main()
-1. Parse command-line arguments
-2. Auto-detect public IP if not specified
-3. Setup signal handlers (SIGINT, SIGTERM)
-4. Configure DHT context (bootstrap mode)
-5. Create DHT context with dht_context_new()
-6. Start DHT node with dht_context_start()
-7. Get node ID with dht_get_node_id()
-8. Register in bootstrap registry (dht_bootstrap_registry_register)
-9. Main loop:
-   - Print stats every 60 seconds
-   - Refresh registry every 5 minutes
-```
+| Server | IP | Port |
+|--------|-----|------|
+| US-1 | 154.38.182.161 | 4000 |
+| EU-1 | 164.68.105.227 | 4000 |
+| EU-2 | 164.68.116.180 | 4000 |
 
 ### 7.4 Persistence
 
-#### Database Location
+Nodus v5 stores data in `/var/lib/nodus/`:
+- Identity files (Dilithium5 keypair)
+- SQLite database for DHT values
 
-```
-Default: /var/lib/dna-dht/bootstrap.state.values.db
-Override: -s <path> sets base path, database is <path>.values.db
-```
-
-#### Identity Files
-
-```
-<persistence_path>.identity.dsa   - Private key (Dilithium5)
-<persistence_path>.identity.pub   - Public key
-<persistence_path>.identity.cert  - Certificate
-```
-
-#### What Gets Persisted
-
-| ValueType | TTL | Persisted |
-|-----------|-----|-----------|
-| 0x1001 | 7-day | No (ephemeral) |
-| 0x1002 | 365-day | Yes |
-| 0x1003 | 30-day | Yes |
-| PERMANENT | Never | Yes |
-
-### 7.5 Deployment
-
-**CRITICAL: Always build on server, never deploy via scp**
+### 7.5 Monitoring
 
 ```bash
-# On each bootstrap server:
-cd /opt/dna-messenger
-git pull
-rm -rf build && mkdir build && cd build
-cmake -DBUILD_GUI=OFF .. && make -j$(nproc)
+# Service status
+ssh root@<IP> 'systemctl status nodus-v5'
 
-# Kill old nodus
-killall -9 dna-nodus
-
-# Start dna-nodus with all bootstrap nodes
-./vendor/opendht-pq/tools/dna-nodus \
-  -b 154.38.182.161:4000 \
-  -b 164.68.105.227:4000 \
-  -b 164.68.116.180:4000 \
-  -v
-
-# OR run in background:
-nohup ./vendor/opendht-pq/tools/dna-nodus \
-  -b 154.38.182.161:4000 \
-  -b 164.68.105.227:4000 \
-  -b 164.68.116.180:4000 \
-  -v > /var/log/dna-nodus.log 2>&1 &
-```
-
-### 7.6 Monitoring
-
-Stats printed every 60 seconds:
-```
-[1 min] [8 nodes] [42 values] | DB: 156 values
-[2 min] [12 nodes] [67 values] | DB: 156 values (republishing...)
+# Live logs
+ssh root@<IP> 'journalctl -u nodus-v5 -f'
 ```
 
 ---
@@ -1544,39 +1345,42 @@ await engine.blockUser(fingerprint, "spam");
 
 | Directory | Key Files | Purpose |
 |-----------|-----------|---------|
-| `dht/core/` | `dht_context.cpp`, `dht_context.h` | Core DHT wrapper |
+| `dht/shared/` | `nodus_ops.c`, `nodus_ops.h` | Nodus v5 convenience wrappers (put, get, listen) |
+| `dht/shared/` | `nodus_init.c`, `nodus_init.h` | Nodus v5 lifecycle (init, connect, cleanup) |
 | `dht/core/` | `dht_bootstrap_registry.c`, `dht_bootstrap_registry.h` | Bootstrap discovery |
-| `dht/core/` | `dht_listen.h`, `dht_listen.cpp` | Real-time notifications |
-| `dht/core/` | `dht_stats.h`, `dht_stats.cpp` | Statistics |
-| `dht/client/` | `dht_singleton.c`, `dht_singleton.h` | Global singleton |
-| `dht/client/` | `dht_identity.cpp`, `dht_identity.h` | Identity management |
+| `dht/core/` | `dht_keyserver.c`, `dht_keyserver.h` | Keyserver operations |
 | `dht/client/` | `dht_contactlist.c`, `dht_contactlist.h` | Contact list storage |
 | `dht/client/` | `dht_message_backup.c`, `dht_message_backup.h` | Message backup/restore |
-| `dht/shared/` | `dht_value_storage.cpp`, `dht_value_storage.h` | SQLite persistence |
 | `dht/shared/` | `dht_offline_queue.c`, `dht_offline_queue.h` | Offline messaging |
+| `dht/shared/` | `dht_dm_outbox.c`, `dht_dm_outbox.h` | Daily bucket DM outbox |
+| `dht/shared/` | `dht_publish_queue.c`, `dht_publish_queue.h` | Async publish queue |
 | `dht/shared/` | `dht_groups.c`, `dht_groups.h` | Group metadata |
 | `dht/shared/` | `dht_profile.c`, `dht_profile.h` | User profiles |
 | `dht/shared/` | `dht_contact_request.c`, `dht_contact_request.h` | Contact request DHT operations |
+| `dht/shared/` | `dht_gek_storage.c`, `dht_gek_storage.h` | GEK chunked storage |
 | `dht/keyserver/` | `keyserver_*.c`, `keyserver_*.h` | Name/key resolution |
-| `vendor/opendht-pq/tools/` | `dna-nodus.cpp` | Bootstrap server |
+| `nodus/` | `include/nodus/nodus.h` | Nodus v5 client SDK public API |
+| `nodus/` | `include/nodus/nodus_types.h` | Nodus v5 constants, version |
+| `nodus/` | `src/server/nodus_server.c` | Nodus v5 server (epoll event loop) |
+| `nodus/` | `src/client/nodus_client.c` | Nodus v5 client SDK |
 
 ---
 
 ## Quick Reference
 
-### Initialize DHT (Client)
+### Initialize DHT (via Nodus v5)
 
 ```c
-#include "dht/client/dht_singleton.h"
+#include "dht/shared/nodus_init.h"
+#include "dht/shared/nodus_ops.h"
 
-// Initialize global DHT
-if (dht_singleton_init() != 0) {
-    fprintf(stderr, "DHT init failed\n");
-    return -1;
-}
+// Initialize Nodus v5 connection (called by engine)
+nodus_init();
 
-// Get context for operations
-dht_context_t *ctx = dht_singleton_get();
+// DHT operations via nodus_ops convenience wrappers
+nodus_ops_put(key, key_len, value, value_len, ttl);
+nodus_ops_get(key, key_len, &value_out, &value_len_out);
+nodus_ops_listen(key, key_len, callback, user_data);
 ```
 
 ### Store Value
@@ -1588,14 +1392,8 @@ uint8_t key[64];
 uint8_t *value = "Hello DHT";
 size_t value_len = strlen(value);
 
-// 7-day TTL
-dht_put(ctx, key, 64, value, value_len);
-
-// Custom TTL
-dht_put_ttl(ctx, key, 64, value, value_len, 30 * 24 * 3600);  // 30 days
-
-// Signed (enables replacement)
-dht_put_signed(ctx, key, 64, value, value_len, 1, 7 * 24 * 3600);
+// Store via nodus_ops
+nodus_ops_put(key, 64, value, value_len, 7 * 24 * 3600);  // 7-day TTL
 ```
 
 ### Retrieve Value
@@ -1604,8 +1402,8 @@ dht_put_signed(ctx, key, 64, value, value_len, 1, 7 * 24 * 3600);
 uint8_t *value_out;
 size_t value_len_out;
 
-if (dht_get(ctx, key, 64, &value_out, &value_len_out) == 0) {
-    printf("Got: %.*s\n", (int)value_len_out, value_out);
+if (nodus_ops_get(key, 64, &value_out, &value_len_out) == 0) {
+    // Use value
     free(value_out);
 }
 ```
@@ -1613,5 +1411,5 @@ if (dht_get(ctx, key, 64, &value_out, &value_len_out) == 0) {
 ### Cleanup
 
 ```c
-dht_singleton_cleanup();
+nodus_cleanup();
 ```
