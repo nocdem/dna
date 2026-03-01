@@ -18,6 +18,7 @@
 
 #include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_db.h"
+#include "witness/nodus_witness_verify.h"
 #include "witness/nodus_witness_handlers.h"
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
@@ -215,12 +216,100 @@ int nodus_witness_bft_broadcast(nodus_witness_t *w, nodus_t3_msg_t *msg) {
 /* ── Commit to database ──────────────────────────────────────────── */
 
 /**
+ * Update UTXO set from committed transaction data.
+ *
+ * Parses the serialized transaction to extract outputs, then:
+ *   - SPEND: removes spent UTXOs (by input nullifiers)
+ *   - ALL: adds new output UTXOs (computing nullifier from fingerprint + seed)
+ *
+ * Called inside the same SQLite transaction as nullifier/genesis writes.
+ *
+ * DNAC v1 wire format (outputs section):
+ *   Header: version(1) + type(1) + timestamp(8) + tx_hash(64) = 74
+ *   Inputs: count(1) + [nullifier(64) + amount(8)] * N
+ *   Outputs: count(1) + [version(1) + fingerprint(129) + amount(8) + seed(32) + memo_len(1) + memo(n)] * M
+ */
+static void update_utxo_set(nodus_witness_t *w,
+                               const uint8_t *tx_hash,
+                               uint8_t tx_type,
+                               const uint8_t *const *nullifiers,
+                               uint8_t nullifier_count,
+                               const uint8_t *tx_data,
+                               uint32_t tx_len) {
+    if (!tx_data || tx_len < 75) return;  /* Need at least header + input_count */
+
+    /* For SPEND: remove spent UTXOs by input nullifiers */
+    if (tx_type != NODUS_W_TX_GENESIS) {
+        for (int i = 0; i < nullifier_count; i++) {
+            nodus_witness_utxo_remove(w, nullifiers[i]);
+        }
+    }
+
+    /* Parse to output section:
+     * Header: version(1) + type(1) + timestamp(8) + tx_hash(64) = 74 */
+    size_t offset = 74;
+    if (offset >= tx_len) return;
+
+    /* Skip inputs */
+    uint8_t input_count = tx_data[offset++];
+    size_t input_skip = (size_t)input_count * (NODUS_T3_NULLIFIER_LEN + 8);
+    offset += input_skip;
+
+    /* Read output count */
+    if (offset >= tx_len) return;
+    uint8_t output_count = tx_data[offset++];
+    if (output_count > NODUS_T3_MAX_TX_OUTPUTS) return;
+
+    uint64_t block_height = nodus_witness_block_height(w) + 1;
+
+    for (int i = 0; i < output_count; i++) {
+        /* Minimum output: version(1) + fp(129) + amount(8) + seed(32) + memo_len(1) = 171 */
+        if (offset + 171 > tx_len) break;
+
+        offset += 1;  /* output version */
+
+        const char *fingerprint = (const char *)(tx_data + offset);
+        offset += 129;  /* fingerprint (128 hex + null) */
+
+        uint64_t amount;
+        memcpy(&amount, tx_data + offset, 8);
+        offset += 8;
+
+        const uint8_t *nullifier_seed = tx_data + offset;
+        offset += 32;
+
+        uint8_t memo_len = tx_data[offset++];
+        if (offset + memo_len > tx_len) break;
+        offset += memo_len;
+
+        /* Compute nullifier = SHA3-512(fingerprint_str + nullifier_seed) */
+        size_t fp_len = strnlen(fingerprint, 128);
+        uint8_t nul_input[256];
+        memcpy(nul_input, fingerprint, fp_len);
+        memcpy(nul_input + fp_len, nullifier_seed, 32);
+
+        nodus_key_t nul_hash;
+        if (nodus_hash(nul_input, fp_len + 32, &nul_hash) != 0)
+            continue;
+
+        nodus_witness_utxo_add(w, nul_hash.bytes, fingerprint,
+                                  amount, tx_hash, (uint32_t)i, block_height);
+    }
+
+    fprintf(stderr, "%s: UTXO set updated: -%d spent, +%d outputs\n",
+            LOG_TAG,
+            (tx_type != NODUS_W_TX_GENESIS) ? nullifier_count : 0,
+            output_count);
+}
+
+/**
  * Write committed transaction state to witness database.
  * Called for both local commit (PRECOMMIT quorum) and remote commit.
  *
  * Operations (atomic via SQLite transaction):
  *   - Genesis: record genesis state
  *   - Non-genesis: add all nullifiers
+ *   - Update UTXO set (remove spent, add outputs)
  * After atomic block:
  *   - Add ledger entry (audit trail)
  *   - Create block
@@ -232,7 +321,9 @@ static int do_commit_db(nodus_witness_t *w,
                           uint8_t nullifier_count,
                           uint64_t total_supply,
                           uint64_t proposal_timestamp,
-                          const uint8_t *proposer_id) {
+                          const uint8_t *proposer_id,
+                          const uint8_t *tx_data,
+                          uint32_t tx_len) {
     /* Begin atomic transaction */
     if (nodus_witness_db_begin(w) != 0) {
         fprintf(stderr, "%s: db begin failed\n", LOG_TAG);
@@ -242,7 +333,28 @@ static int do_commit_db(nodus_witness_t *w,
     bool failed = false;
 
     if (tx_type == NODUS_W_TX_GENESIS) {
-        int rc = nodus_witness_genesis_set(w, tx_hash, total_supply, tx_hash);
+        /* Derive genesis supply from tx outputs if not provided */
+        uint64_t supply = total_supply;
+        if (supply == 0 && tx_data && tx_len > 75) {
+            size_t off = 74;
+            uint8_t in_count = tx_data[off++];
+            off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8);
+            if (off < tx_len) {
+                uint8_t out_count = tx_data[off++];
+                for (int i = 0; i < out_count && off + 171 <= tx_len; i++) {
+                    off += 1;   /* version */
+                    off += 129; /* fingerprint */
+                    uint64_t amt;
+                    memcpy(&amt, tx_data + off, 8);
+                    supply += amt;
+                    off += 8;   /* amount */
+                    off += 32;  /* seed */
+                    uint8_t ml = tx_data[off++]; /* memo_len */
+                    off += ml;
+                }
+            }
+        }
+        int rc = nodus_witness_genesis_set(w, tx_hash, supply, tx_hash);
         if (rc != 0 && rc != -2) {
             fprintf(stderr, "%s: genesis record failed: %d\n", LOG_TAG, rc);
             failed = true;
@@ -256,6 +368,12 @@ static int do_commit_db(nodus_witness_t *w,
                 break;
             }
         }
+    }
+
+    /* Update UTXO set within the same atomic transaction */
+    if (!failed && tx_data && tx_len > 0) {
+        update_utxo_set(w, tx_hash, tx_type, nullifiers, nullifier_count,
+                           tx_data, tx_len);
     }
 
     if (failed) {
@@ -331,13 +449,15 @@ int nodus_witness_bft_start_round(nodus_witness_t *w,
         return -1;
     }
 
-    /* Check nullifiers locally for double-spend */
-    for (int i = 0; i < nullifier_count; i++) {
-        if (nodus_witness_nullifier_exists(w, nullifiers[i])) {
-            fprintf(stderr, "%s: nullifier %d already spent (local check)\n",
-                    LOG_TAG, i);
-            return -2;
-        }
+    /* Full transaction verification */
+    char reject_reason[256] = {0};
+    int vrc = nodus_witness_verify_transaction(w, tx_data, tx_len, tx_hash,
+                  tx_type, (const uint8_t *)nullifiers, nullifier_count,
+                  client_pubkey, client_sig, fee,
+                  reject_reason, sizeof(reject_reason));
+    if (vrc != 0) {
+        fprintf(stderr, "%s: TX rejected: %s\n", LOG_TAG, reject_reason);
+        return vrc;  /* -1 invalid, -2 double-spend */
     }
 
     /* Save client connection info (set by handler before calling us) */
@@ -439,6 +559,13 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
         return -1;
 
+    /* Check for existing round in progress */
+    if (w->round_state.phase != NODUS_W_PHASE_IDLE) {
+        fprintf(stderr, "%s: proposal rejected — round in progress (phase=%d)\n",
+                LOG_TAG, w->round_state.phase);
+        return -1;
+    }
+
     /* Verify proposal is from current leader */
     uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
     int leader = nodus_witness_bft_leader_index(epoch, hdr->view,
@@ -450,19 +577,7 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
         return -1;
     }
 
-    /* Check nullifiers locally for double-spend */
-    bool double_spend = false;
-    char reject_reason[256] = {0};
-    for (int i = 0; i < prop->nullifier_count; i++) {
-        if (nodus_witness_nullifier_exists(w, prop->nullifiers[i])) {
-            double_spend = true;
-            snprintf(reject_reason, sizeof(reject_reason),
-                     "Nullifier %d already spent", i);
-            break;
-        }
-    }
-
-    /* Initialize round state from proposal */
+    /* Initialize round state from proposal (needed before verification) */
     w->current_round = hdr->round;
     w->current_view = hdr->view;
 
@@ -497,10 +612,23 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     memcpy(w->round_state.proposer_id, hdr->sender_id,
            NODUS_T3_WITNESS_ID_LEN);
 
-    /* Record our own PREVOTE */
-    nodus_witness_vote_t my_vote =
-        double_spend ? NODUS_W_VOTE_REJECT : NODUS_W_VOTE_APPROVE;
+    /* Full transaction verification */
+    char reject_reason[256] = {0};
+    int vrc = nodus_witness_verify_transaction(w,
+                  w->round_state.tx_data, w->round_state.tx_len,
+                  prop->tx_hash, prop->tx_type,
+                  (const uint8_t *)w->round_state.nullifiers,
+                  w->round_state.nullifier_count,
+                  w->round_state.client_pubkey,
+                  w->round_state.client_signature,
+                  w->round_state.fee_amount,
+                  reject_reason, sizeof(reject_reason));
 
+    bool tx_invalid = (vrc != 0);
+    nodus_witness_vote_t my_vote =
+        tx_invalid ? NODUS_W_VOTE_REJECT : NODUS_W_VOTE_APPROVE;
+
+    /* Record our own PREVOTE */
     memcpy(w->round_state.prevotes[0].voter_id, w->my_id,
            NODUS_T3_WITNESS_ID_LEN);
     w->round_state.prevotes[0].vote = my_vote;
@@ -515,7 +643,7 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     vote_msg.txn_id = ++w->next_txn_id;
     memcpy(vote_msg.vote.tx_hash, prop->tx_hash, NODUS_T3_TX_HASH_LEN);
     vote_msg.vote.vote = (uint32_t)my_vote;
-    if (double_spend)
+    if (tx_invalid)
         snprintf(vote_msg.vote.reason, sizeof(vote_msg.vote.reason),
                  "%s", reject_reason);
 
@@ -669,7 +797,9 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
                        w->round_state.nullifier_count,
                        w->round_state.fee_amount,
                        w->round_state.proposal_timestamp,
-                       w->round_state.proposer_id) != 0) {
+                       w->round_state.proposer_id,
+                       w->round_state.tx_data,
+                       w->round_state.tx_len) != 0) {
         fprintf(stderr, "%s: commit to DB failed!\n", LOG_TAG);
     }
 
@@ -743,7 +873,7 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             fwd_rsp.fwd_rsp.status = 0;  /* approved */
             memcpy(fwd_rsp.fwd_rsp.tx_hash, w->round_state.tx_hash,
                    NODUS_T3_TX_HASH_LEN);
-            fwd_rsp.fwd_rsp.witness_count = (uint32_t)w->round_state.precommit_count;
+            fwd_rsp.fwd_rsp.witness_count = 0;  /* forwarder doesn't use sigs */
 
             fwd_rsp.header.version = NODUS_T3_BFT_PROTOCOL_VER;
             fwd_rsp.header.round = w->current_round;
@@ -807,7 +937,8 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                        nul_ptrs, cmt->nullifier_count,
                        0, /* total_supply not in commit */
                        cmt->proposal_timestamp,
-                       cmt->proposer_id) != 0) {
+                       cmt->proposer_id,
+                       cmt->tx_data, cmt->tx_len) != 0) {
         fprintf(stderr, "%s: remote commit to DB failed!\n", LOG_TAG);
         return -1;
     }
@@ -844,7 +975,7 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                 fwd_rsp.fwd_rsp.status = 0;
                 memcpy(fwd_rsp.fwd_rsp.tx_hash, cmt->tx_hash,
                        NODUS_T3_TX_HASH_LEN);
-                fwd_rsp.fwd_rsp.witness_count = cmt->n_precommits;
+                fwd_rsp.fwd_rsp.witness_count = 0;  /* forwarder doesn't use sigs */
 
                 fwd_rsp.header.version = NODUS_T3_BFT_PROTOCOL_VER;
                 fwd_rsp.header.round = hdr->round;

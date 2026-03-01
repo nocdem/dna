@@ -728,7 +728,7 @@ static void handle_dnac_spend(nodus_witness_t *w,
                         "nullifier already spent (double-spend)");
         } else if (rc != 0) {
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "consensus failed to start");
+                        "transaction verification failed");
         }
         /* If rc == 0: response sent asynchronously on COMMIT */
     } else {

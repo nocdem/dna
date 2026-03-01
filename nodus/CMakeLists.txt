@@ -93,6 +93,7 @@ set(NODUS_SOURCES
     src/witness/nodus_witness.c
     src/witness/nodus_witness_db.c
     src/witness/nodus_witness_bft.c
+    src/witness/nodus_witness_verify.c
     src/witness/nodus_witness_peer.c
     src/witness/nodus_witness_handlers.c
 
@@ -214,6 +215,11 @@ add_test(NAME test_server COMMAND test_server)
 add_executable(test_client tests/test_client.c)
 target_link_libraries(test_client nodus_lib dsa nodus_lib pthread)
 add_test(NAME test_client COMMAND test_client)
+
+# Witness transaction verification test
+add_executable(test_witness_verify tests/test_witness_verify.c)
+target_link_libraries(test_witness_verify nodus_lib dsa nodus_lib)
+add_test(NAME test_witness_verify COMMAND test_witness_verify)
 
 # ── Tools ────────────────────────────────────────────────────────────
 add_executable(nodus-cli tools/nodus-cli.c)
