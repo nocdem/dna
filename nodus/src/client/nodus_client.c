@@ -219,17 +219,22 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
     if (!conn) { return -1; }
     client->conn = conn;
 
-    /* Wait for TCP connection to establish */
+    /* Wait for TCP connection to establish.
+     * Note: nodus_tcp_poll() may free conn via on_disconnect callback
+     * (which sets client->conn = NULL), so check client->conn after
+     * each poll iteration to avoid use-after-free on the local ptr. */
     int elapsed = 0;
-    while (conn->state == NODUS_CONN_CONNECTING &&
+    while (client->conn && conn->state == NODUS_CONN_CONNECTING &&
            elapsed < client->config.connect_timeout_ms) {
         nodus_tcp_poll(tcp, 50);
         elapsed += 50;
+        conn = (nodus_tcp_conn_t *)client->conn;  /* re-read (may be NULL) */
+        if (!conn) break;
     }
 
-    if (!client->conn || conn->state != NODUS_CONN_CONNECTED) {
+    if (!client->conn || conn == NULL || conn->state != NODUS_CONN_CONNECTED) {
         if (client->conn) {
-            nodus_tcp_disconnect(tcp, conn);
+            nodus_tcp_disconnect(tcp, (nodus_tcp_conn_t *)client->conn);
             client->conn = NULL;
         }
         return -1;
