@@ -250,14 +250,18 @@ int nodus_witness_bft_broadcast(nodus_witness_t *w, nodus_t3_msg_t *msg) {
  *   Inputs: count(1) + [nullifier(64) + amount(8)] * N
  *   Outputs: count(1) + [version(1) + fingerprint(129) + amount(8) + seed(32) + memo_len(1) + memo(n)] * M
  */
-static void update_utxo_set(nodus_witness_t *w,
-                               const uint8_t *tx_hash,
-                               uint8_t tx_type,
-                               const uint8_t *const *nullifiers,
-                               uint8_t nullifier_count,
-                               const uint8_t *tx_data,
-                               uint32_t tx_len) {
-    if (!tx_data || tx_len < 75) return;  /* Need at least header + input_count */
+static int update_utxo_set(nodus_witness_t *w,
+                              const uint8_t *tx_hash,
+                              uint8_t tx_type,
+                              const uint8_t *const *nullifiers,
+                              uint8_t nullifier_count,
+                              const uint8_t *tx_data,
+                              uint32_t tx_len) {
+    if (!tx_data || tx_len < 75) {
+        fprintf(stderr, "%s: update_utxo_set: invalid tx_data (ptr=%p len=%u)\n",
+                LOG_TAG, (void *)tx_data, tx_len);
+        return -1;
+    }
 
     /* For SPEND: remove spent UTXOs by input nullifiers */
     if (tx_type != NODUS_W_TX_GENESIS) {
@@ -269,7 +273,11 @@ static void update_utxo_set(nodus_witness_t *w,
     /* Parse to output section:
      * Header: version(1) + type(1) + timestamp(8) + tx_hash(64) = 74 */
     size_t offset = 74;
-    if (offset >= tx_len) return;
+    if (offset >= tx_len) {
+        fprintf(stderr, "%s: update_utxo_set: tx_data too short for inputs (len=%u)\n",
+                LOG_TAG, tx_len);
+        return -1;
+    }
 
     /* Skip inputs */
     uint8_t input_count = tx_data[offset++];
@@ -277,15 +285,28 @@ static void update_utxo_set(nodus_witness_t *w,
     offset += input_skip;
 
     /* Read output count */
-    if (offset >= tx_len) return;
+    if (offset >= tx_len) {
+        fprintf(stderr, "%s: update_utxo_set: tx_data truncated at outputs (offset=%zu len=%u)\n",
+                LOG_TAG, offset, tx_len);
+        return -1;
+    }
     uint8_t output_count = tx_data[offset++];
-    if (output_count > NODUS_T3_MAX_TX_OUTPUTS) return;
+    if (output_count > NODUS_T3_MAX_TX_OUTPUTS) {
+        fprintf(stderr, "%s: update_utxo_set: output_count %u exceeds max %d\n",
+                LOG_TAG, output_count, NODUS_T3_MAX_TX_OUTPUTS);
+        return -1;
+    }
 
     uint64_t block_height = nodus_witness_block_height(w) + 1;
+    int stored = 0;
 
     for (int i = 0; i < output_count; i++) {
         /* Minimum output: version(1) + fp(129) + amount(8) + seed(32) + memo_len(1) = 171 */
-        if (offset + 171 > tx_len) break;
+        if (offset + 171 > tx_len) {
+            fprintf(stderr, "%s: update_utxo_set: output %d truncated (need %zu, have %u)\n",
+                    LOG_TAG, i, offset + 171, tx_len);
+            break;
+        }
 
         offset += 1;  /* output version */
 
@@ -300,7 +321,11 @@ static void update_utxo_set(nodus_witness_t *w,
         offset += 32;
 
         uint8_t memo_len = tx_data[offset++];
-        if (offset + memo_len > tx_len) break;
+        if (offset + memo_len > tx_len) {
+            fprintf(stderr, "%s: update_utxo_set: memo truncated at output %d\n",
+                    LOG_TAG, i);
+            break;
+        }
         offset += memo_len;
 
         /* Compute nullifier = SHA3-512(fingerprint_str + nullifier_seed) */
@@ -310,17 +335,24 @@ static void update_utxo_set(nodus_witness_t *w,
         memcpy(nul_input + fp_len, nullifier_seed, 32);
 
         nodus_key_t nul_hash;
-        if (nodus_hash(nul_input, fp_len + 32, &nul_hash) != 0)
+        if (nodus_hash(nul_input, fp_len + 32, &nul_hash) != 0) {
+            fprintf(stderr, "%s: update_utxo_set: hash failed for output %d\n",
+                    LOG_TAG, i);
             continue;
+        }
 
-        nodus_witness_utxo_add(w, nul_hash.bytes, fingerprint,
-                                  amount, tx_hash, (uint32_t)i, block_height);
+        if (nodus_witness_utxo_add(w, nul_hash.bytes, fingerprint,
+                                      amount, tx_hash, (uint32_t)i, block_height) == 0) {
+            stored++;
+        }
     }
 
-    fprintf(stderr, "%s: UTXO set updated: -%d spent, +%d outputs\n",
+    fprintf(stderr, "%s: UTXO set updated: -%d spent, +%d/%d outputs (block %llu)\n",
             LOG_TAG,
             (tx_type != NODUS_W_TX_GENESIS) ? nullifier_count : 0,
-            output_count);
+            stored, output_count,
+            (unsigned long long)block_height);
+    return 0;
 }
 
 /**
@@ -393,8 +425,11 @@ static int do_commit_db(nodus_witness_t *w,
 
     /* Update UTXO set within the same atomic transaction */
     if (!failed && tx_data && tx_len > 0) {
-        update_utxo_set(w, tx_hash, tx_type, nullifiers, nullifier_count,
-                           tx_data, tx_len);
+        if (update_utxo_set(w, tx_hash, tx_type, nullifiers, nullifier_count,
+                               tx_data, tx_len) != 0) {
+            fprintf(stderr, "%s: UTXO set update failed\n", LOG_TAG);
+            failed = true;
+        }
     }
 
     /* Store full transaction data for client retrieval */

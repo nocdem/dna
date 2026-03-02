@@ -628,6 +628,21 @@ int dnac_send(dnac_context_t *ctx,
     if (!ctx || !recipient_fingerprint || amount == 0 || !ctx->initialized) {
         return DNAC_ERROR_INVALID_PARAM;
     }
+
+    /* Validate fingerprint: must be exactly 128 lowercase hex characters */
+    size_t fp_len = strlen(recipient_fingerprint);
+    if (fp_len != 128) {
+        fprintf(stderr, "DNAC: invalid recipient fingerprint length: %zu (expected 128)\n", fp_len);
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+    for (size_t i = 0; i < 128; i++) {
+        char c = recipient_fingerprint[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+            fprintf(stderr, "DNAC: invalid character '%c' at position %zu in fingerprint\n", c, i);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+    }
+
     (void)memo;  /* TODO: Add memo to payment message in Phase 9 */
 
     int rc;

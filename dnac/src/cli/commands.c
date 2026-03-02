@@ -139,6 +139,20 @@ int dnac_cli_utxos(dnac_context_t *ctx) {
 
 int dnac_cli_send(dnac_context_t *ctx, const char *recipient,
                   uint64_t amount, const char *memo) {
+    /* Validate fingerprint early */
+    size_t fp_len = strlen(recipient);
+    if (fp_len != 128) {
+        fprintf(stderr, "Error: Invalid fingerprint length %zu (expected 128 hex chars)\n", fp_len);
+        return 1;
+    }
+    for (size_t i = 0; i < 128; i++) {
+        char c = recipient[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+            fprintf(stderr, "Error: Invalid character '%c' at position %zu in fingerprint\n", c, i);
+            return 1;
+        }
+    }
+
     char amount_str[64];
     format_amount(amount, amount_str, sizeof(amount_str));
 

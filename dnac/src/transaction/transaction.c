@@ -201,9 +201,11 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
         return DNAC_ERROR_CRYPTO;
     }
 
-    /* Hash header fields */
+    /* Hash header fields — type must be cast to uint8_t to match wire format.
+     * dnac_tx_type_t is an enum (sizeof(int) = 4), but wire uses 1 byte. */
+    uint8_t type_byte = (uint8_t)tx->type;
     EVP_DigestUpdate(ctx, &tx->version, sizeof(tx->version));
-    EVP_DigestUpdate(ctx, &tx->type, sizeof(tx->type));
+    EVP_DigestUpdate(ctx, &type_byte, sizeof(type_byte));
     EVP_DigestUpdate(ctx, &tx->timestamp, sizeof(tx->timestamp));
 
     /* Hash sender public key (binds TX to sender identity) */
