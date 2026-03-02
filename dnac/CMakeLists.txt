@@ -110,13 +110,10 @@ set(DNAC_SOURCES
     # Database
     src/db/db.c
 
-    # BFT Consensus (tightly coupled — all files needed by tests and discovery.c)
+    # BFT (serialization, roster, replay detection)
     src/bft/serialize.c
-    src/bft/tcp.c
-    src/bft/peer.c
-    src/bft/consensus.c
     src/bft/roster.c
-    # Note: standalone dnac-witness removed — witness runs inside nodus-server
+    src/bft/replay.c
 )
 
 # ============================================================================
@@ -189,13 +186,6 @@ if(DNAC_BUILD_CLI)
 
     install(TARGETS dnac-cli RUNTIME DESTINATION bin)
 endif()
-
-# ============================================================================
-# Witness Server — REMOVED (v0.10.0)
-# ============================================================================
-# Witness functionality now runs inside nodus-server as an optional module.
-# See nodus/src/witness/ for the replacement implementation.
-# Old standalone dnac-witness source files remain in src/witness/ for reference.
 
 # ============================================================================
 # Tests

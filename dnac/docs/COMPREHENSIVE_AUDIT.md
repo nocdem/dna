@@ -1,7 +1,7 @@
 # DNAC (DNA Cash) - Comprehensive Audit Documentation
 
-**Version:** 0.10.1
-**Audit Date:** 2026-03-01
+**Version:** 0.10.3
+**Audit Date:** 2026-03-01 | **P0 Fixes Applied:** 2026-03-02 | **Dead Code Cleanup:** 2026-03-02
 **Audit Depth:** Exhaustive (all source files verified)
 
 ---
@@ -31,11 +31,11 @@ DNAC (DNA Cash) is a UTXO-based digital cash system with BFT witness consensus, 
 
 | Metric | Value |
 |--------|-------|
-| Total source lines | 16,855 |
-| Public headers | 17 files |
+| Total source lines | ~6,900 (after v0.10.3 cleanup) |
+| Public headers | 6 files |
 | Test files | 3 (test_real, test_gaps, test_remote) |
-| Test cases | 18 unit + 6 integration + cross-machine |
-| Version | 0.10.1 |
+| Test cases | 17 unit + 6 integration + cross-machine |
+| Version | 0.10.3 |
 | Build system | CMake 3.16+ |
 
 ---
@@ -46,71 +46,61 @@ DNAC (DNA Cash) is a UTXO-based digital cash system with BFT witness consensus, 
 /opt/dna/dnac/
 ├── CMakeLists.txt              Build system
 ├── README.md                   Main documentation
-├── include/dnac/               Public headers (17 files)
+├── include/dnac/               Public headers (6 files)
 │   ├── dnac.h                  Main public API
-│   ├── version.h               Version 0.10.1
-│   ├── bft.h                   BFT consensus API (900+ lines)
-│   ├── witness.h               Witness server API
-│   └── ... (13 more headers)
+│   ├── version.h               Version 0.10.3
+│   ├── bft.h                   BFT types, serialization, roster
+│   ├── nodus.h                 Nodus client + witness announcements
+│   ├── wallet.h                Wallet internals
+│   └── transaction.h           Transaction types
 ├── src/
-│   ├── bft/                    BFT consensus (5 files, 5,568 lines)
-│   │   ├── consensus.c         2,168 lines - State machine
-│   │   ├── serialize.c         891 lines - Message serialization
-│   │   ├── tcp.c               824 lines - Witness-to-witness TCP mesh
-│   │   ├── peer.c              552 lines - Peer connection management
-│   │   └── roster.c            526 lines - Witness roster
-│   ├── witness/                Witness server (10 files, 4,359 lines)
-│   │   ├── bft_main.c          1,784 lines - Witness server main
-│   │   ├── ledger.c            907 lines - Transaction ledger
-│   │   ├── utxo_tree.c         630 lines - UTXO state root
-│   │   ├── zone.c              564 lines - Zone/shard isolation
-│   │   ├── nullifier.c         532 lines - Nullifier database
-│   │   ├── forward.c           438 lines - Request forwarding
-│   │   ├── utxo_set.c          384 lines - Shared UTXO set
-│   │   └── block.c             374 lines - Block chain storage
-│   ├── transaction/            Transaction handling (6 files, 2,073 lines)
-│   │   ├── genesis.c           440 lines - Genesis TX
-│   │   ├── builder.c           421 lines - TX builder
-│   │   ├── serialize.c         233 lines - Binary serialization
-│   │   ├── verify.c            145 lines - TX verification
-│   │   ├── nullifier.c         52 lines - Nullifier derivation
-│   │   └── transaction.c       ~800 lines - Core TX functions
-│   ├── wallet/                 Wallet management (4 files, 1,454 lines)
+│   ├── bft/                    BFT support (3 files)
+│   │   ├── serialize.c         Message serialization
+│   │   ├── roster.c            Witness roster + config/leader election
+│   │   └── replay.c            Nonce-based replay prevention
+│   ├── transaction/            Transaction handling (6 files)
+│   │   ├── genesis.c           Genesis TX
+│   │   ├── builder.c           TX builder
+│   │   ├── serialize.c         Binary serialization
+│   │   ├── verify.c            TX verification
+│   │   ├── nullifier.c         Nullifier derivation
+│   │   └── transaction.c       Core TX functions
+│   ├── wallet/                 Wallet management (4 files)
 │   │   ├── wallet.c            Core wallet operations
 │   │   ├── utxo.c              UTXO storage
 │   │   ├── balance.c           Balance calculation
-│   │   └── selection.c         110 lines - Coin selection
-│   ├── nodus/                  Nodus/DHT client (4 files, 1,978 lines)
-│   │   ├── attestation.c       1,011 lines - Witness request handling
-│   │   └── ... (3 more files)
-│   ├── db/                     Database (1 file, 898 lines)
+│   │   └── selection.c         Coin selection
+│   ├── nodus/                  Nodus/DHT client (4 files)
+│   │   ├── attestation.c       Witness request handling
+│   │   ├── client.c            Witness client (Nodus SDK)
+│   │   ├── discovery.c         Witness discovery
+│   │   └── tcp_client.c        Direct TCP client
+│   ├── db/                     Database (1 file)
 │   │   └── db.c                SQLite schema, queries
-│   └── cli/                    CLI tool (2 files, 898 lines)
-│       ├── main.c              275 lines - Argument parsing
-│       └── commands.c          623 lines - Command implementations
+│   └── cli/                    CLI tool (2 files)
+│       ├── main.c              Argument parsing
+│       └── commands.c          Command implementations
 ├── tests/
-│   ├── test_real.c             427 lines - End-to-end integration
-│   ├── test_gaps.c             750 lines - 18 security gap tests
-│   └── test_remote.c           1,000+ lines - Cross-machine testing
-├── deploy/
-│   └── dnac-witness.service    Systemd service
-├── docs/                       5 documentation files
-├── plans/                      BFT design docs
-└── tools/                      Utility scripts
+│   ├── test_real.c             End-to-end integration
+│   ├── test_gaps.c             17 security gap tests
+│   └── test_remote.c           Cross-machine testing
+├── docs/                       Documentation
+└── plans/                      BFT design docs
 ```
 
 ### Module Breakdown (Lines of Code)
 
 | Module | Files | Lines | Purpose |
 |--------|-------|-------|---------|
-| BFT Consensus | 5 | 5,568 | PBFT-like 3-node consensus |
-| Witness Server | 10 | 4,359 | Nullifier DB, ledger, blocks |
-| Transaction | 6 | 2,073 | Building, signing, verification |
-| Nodus/DHT Client | 4 | 1,978 | Witness discovery, requests |
-| Wallet | 4 | 1,454 | UTXO management, balance |
-| Database | 1 | 898 | SQLite schema, queries |
-| CLI | 2 | 898 | Command-line tool |
-| **Total** | **~40** | **16,855** | |
+| Transaction | 6 | ~2,073 | Building, signing, verification |
+| Nodus/DHT Client | 4 | ~1,978 | Witness discovery, requests |
+| Wallet | 4 | ~1,454 | UTXO management, balance |
+| BFT Support | 3 | ~2,000 | Serialization, roster, replay |
+| Database | 1 | ~898 | SQLite schema, queries |
+| CLI | 2 | ~898 | Command-line tool |
+| **Total** | **~20** | **~6,900** | |
+
+**v0.10.3 cleanup removed ~10K lines:** Old standalone witness server (src/witness/), TCP mesh (bft/tcp.c), peer management (bft/peer.c), consensus state machine (bft/consensus.c), and associated headers (witness.h, tcp.h, zone.h). Witness functionality now lives in Nodus v5 (`nodus/src/witness/`).
 
 ---
 
@@ -292,9 +282,9 @@ void dnac_tx_builder_free(builder);
 
 ## 6. BFT Consensus
 
-### Protocol: PBFT-like (5,568 lines)
+### Protocol: PBFT-like (embedded in Nodus v5)
 
-**Participants:** 3 witness servers
+**Participants:** 3 witness servers (running inside nodus-server)
 **Quorum:** 2-of-3 (SPEND), 3-of-3 (GENESIS)
 **Byzantine tolerance:** f=1
 **Leader:** (epoch + view) % N
@@ -334,18 +324,19 @@ Client Request -> Leader -> PROPOSE -> PREVOTE -> PRECOMMIT -> COMMIT
 
 ## 7. Witness System
 
-### Architecture (10 files, 4,359 lines)
+### Architecture (embedded in Nodus v5 since v0.10.0)
 
-| Component | Lines | Purpose |
-|-----------|-------|---------|
-| bft_main.c | 1,784 | Witness server main loop |
-| ledger.c | 907 | Transaction ledger, Merkle tree |
-| utxo_tree.c | 630 | UTXO state root (SHA3-512 rolling hash) |
-| zone.c | 564 | Zone/shard isolation (v0.10.0) |
-| nullifier.c | 532 | SQLite nullifier database |
-| forward.c | 438 | Request forwarding (non-leader) |
-| utxo_set.c | 384 | Shared UTXO set (v0.8.0) |
-| block.c | 374 | Block chain storage |
+Witness logic now lives in `nodus/src/witness/` and runs inside the nodus-server process:
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| nodus_witness.c | nodus/src/witness/ | Witness server main, message dispatch |
+| nodus_witness_bft.c | nodus/src/witness/ | BFT consensus (PROPOSE/PREVOTE/PRECOMMIT/COMMIT) |
+| nodus_witness_db.c | nodus/src/witness/ | Nullifier DB, UTXO set, block storage |
+| nodus_witness_verify.c | nodus/src/witness/ | TX verification, UTXO ownership |
+| nodus_witness_handlers.c | nodus/src/witness/ | Hub/spoke query handlers |
+
+The old standalone `dnac/src/witness/` directory was removed in v0.10.3 (~5,600 lines of dead code).
 
 ### Block Structure (v0.9.0)
 
@@ -520,7 +511,8 @@ Nodus v5 Server Cluster
 
 ### Phase Completion
 
-- Phases 1-23: Complete (v0.10.1)
+- Phases 1-24: Complete (v0.10.2)
+- Dead code cleanup: Complete (v0.10.3) — removed ~10K lines of old standalone witness code
 - Phase 4 (PQ Zero-Knowledge): Deferred to v2
 
 ### Deferred Features
@@ -540,12 +532,24 @@ All 18 security gaps resolved and tested:
 - Replay prevention (nonce/timestamp)
 - Memo support
 
+### P0 Security Audit Fixes (v0.10.2)
+
+6 critical/high vulnerabilities resolved:
+- UTXO ownership verification — sender fingerprint vs UTXO owner (CRITICAL-4)
+- Nullifier fail-closed — DB errors return true/spent (HIGH-10)
+- Chain ID validation — 10 BFT handlers check chain_id (CRITICAL-2)
+- Secure nonce generation — abort() on RNG failure (CRITICAL-3)
+- Overflow protection — safe_add_u64 for genesis supply and balance (HIGH-3, HIGH-8)
+- COMMIT signature verification — Dilithium5 sig check on COMMIT messages (CRITICAL-1)
+
+See `docs/SECURITY_AUDIT_2026-03-02.md` for full audit report and fix details.
+
 ### Quality Assessment
 
 | Aspect | Rating | Evidence |
 |--------|--------|---------|
 | Architecture | EXCELLENT | Modular: wallet, TX, consensus, witness |
-| Security | STRONG | 18 gap tests, real crypto operations |
+| Security | STRONG | 18 gap tests + 6 P0 audit fixes, real crypto operations |
 | Atomicity | VERIFIED | Database transactions for multi-nullifier |
 | Determinism | VERIFIED | Identical results across witnesses |
 | Testing | GOOD | Unit + integration + cross-machine |

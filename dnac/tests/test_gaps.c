@@ -355,13 +355,9 @@ static void test_valid_pubkey_invalid_sig_rejected(void) {
 /* ============================================================================
  * Gap 23-24 Tests: Replay Prevention
  *
- * Test the is_replay() function from consensus.c
- * Since is_replay is static, we test via the BFT message handling or
- * expose it for testing
+ * Test the is_replay() function from bft/replay.c
+ * Declared in dnac/bft.h
  * ========================================================================== */
-
-/* External declaration if is_replay is exposed for testing */
-extern bool is_replay(const uint8_t *sender_id, uint64_t nonce, uint64_t timestamp);
 
 static void test_replay_same_nonce_rejected(void) {
     TEST("Same nonce from same sender rejected");

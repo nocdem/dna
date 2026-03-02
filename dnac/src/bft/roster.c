@@ -22,6 +22,56 @@
 #define LOG_TAG "BFT_ROSTER"
 
 /* ============================================================================
+ * Config & Leader Election (moved from consensus.c in v0.10.3)
+ * ========================================================================== */
+
+void dnac_bft_config_init(dnac_bft_config_t *config, uint32_t n_witnesses) {
+    if (!config) return;
+
+    config->n_witnesses = n_witnesses;
+
+    if (n_witnesses == 0) {
+        config->f_tolerance = 0;
+        config->quorum = 0;
+    } else {
+        config->f_tolerance = (n_witnesses - 1) / 3;
+        config->quorum = 2 * config->f_tolerance + 1;
+    }
+
+    config->round_timeout_ms = DNAC_BFT_ROUND_TIMEOUT_MS;
+    config->view_change_timeout_ms = DNAC_BFT_VIEW_CHANGE_TIMEOUT_MS;
+    config->max_view_changes = DNAC_BFT_MAX_VIEW_CHANGES;
+    config->tcp_port = 0;  /* Unused — witness runs inside nodus-server */
+}
+
+int dnac_bft_get_leader_index(uint64_t epoch, uint32_t view, int n_witnesses) {
+    if (n_witnesses <= 0) return 0;
+    return (int)((epoch + view) % (uint64_t)n_witnesses);
+}
+
+int dnac_bft_get_quorum(int n_witnesses) {
+    if (n_witnesses <= 0) return 0;
+    int f = (n_witnesses - 1) / 3;
+    return 2 * f + 1;
+}
+
+/* ============================================================================
+ * Roster Find (moved from consensus.c in v0.10.3)
+ * ========================================================================== */
+
+int dnac_bft_roster_find(const dnac_roster_t *roster, const uint8_t *witness_id) {
+    if (!roster || !witness_id) return -1;
+
+    for (uint32_t i = 0; i < roster->n_witnesses; i++) {
+        if (memcmp(roster->witnesses[i].witness_id, witness_id,
+                   DNAC_BFT_WITNESS_ID_SIZE) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+/* ============================================================================
  * DHT Functions for Roster Persistence (Gap 27-28: v0.6.0)
  *
  * Uses libdna's synchronous DHT API:

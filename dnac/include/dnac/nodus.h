@@ -598,6 +598,28 @@ int dnac_ledger_range_response_deserialize(const uint8_t *buffer,
                                             size_t buffer_len,
                                             dnac_ledger_range_response_t *response_out);
 
+/* ============================================================================
+ * Witness Announcement (DHT roster discovery)
+ * ========================================================================== */
+
+typedef struct {
+    uint8_t  version;
+    uint8_t  witness_id[32];
+    uint64_t current_epoch;
+    uint64_t epoch_duration;
+    uint64_t timestamp;
+    uint8_t  software_version[3];
+    uint8_t  witness_pubkey[DNAC_PUBKEY_SIZE];
+    uint8_t  signature[DNAC_SIGNATURE_SIZE];
+} dnac_witness_announcement_t;
+
+#define DNAC_ANNOUNCEMENT_SERIALIZED_SIZE (1 + 32 + 8 + 8 + 8 + 3 + DNAC_PUBKEY_SIZE + DNAC_SIGNATURE_SIZE)
+
+int witness_announcement_serialize(const dnac_witness_announcement_t *announcement,
+                                   uint8_t *buffer, size_t buffer_len, size_t *written_out);
+int witness_announcement_deserialize(const uint8_t *buffer, size_t buffer_len,
+                                     dnac_witness_announcement_t *announcement_out);
+
 #ifdef __cplusplus
 }
 #endif

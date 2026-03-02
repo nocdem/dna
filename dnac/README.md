@@ -1,6 +1,6 @@
 # DNAC - Post-Quantum Zero-Knowledge Cash over DHT
 
-**Version:** v0.10.1 | **Protocol:** v1 (Transparent Amounts)
+**Version:** v0.10.3 | **Protocol:** v1 (Transparent Amounts)
 
 DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger](https://github.com/nocdem/dna-messenger). It lives in the DNA monorepo at `/opt/dna/dnac/`.
 
@@ -12,7 +12,6 @@ DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger]
 - **Permanent Storage** - All data stored permanently on DHT
 - **BFT Consensus** - Byzantine Fault Tolerant witness consensus (PBFT-like)
 - **2-of-3 Witnessing** - Transactions require 2 witness attestations
-- **TCP Mesh Network** - Witnesses communicate via TCP for consensus
 - **Memo Support** - Optional transaction memos up to 255 bytes (v0.6.0)
 - **Replay Prevention** - Nonce and timestamp-based replay attack prevention (v0.6.0)
 - **Merkle Proofs** - Transaction inclusion proofs via Merkle tree (v0.7.0)
@@ -83,7 +82,6 @@ cmake .. && make -j$(nproc)
 This builds:
 - `libdnac.a` - Static library
 - `dnac-cli` - Command-line wallet
-- `dnac-witness` - Witness server (for infrastructure operators)
 
 ## CLI Commands
 
@@ -221,13 +219,11 @@ PROPOSE → PREVOTE → PRECOMMIT → COMMIT
 | Witnesses | 3 | Total nodes in cluster |
 | Quorum | 2 | Required for consensus |
 | Leader Election | `(epoch + view) % N` | Rotates hourly |
-| TCP Port | 4200 | Inter-witness communication |
 
 ### Features
 
-- **Auto-start on boot** - systemd service with `Restart=always`
+- **Embedded in Nodus v5** - Witness logic runs inside nodus-server process
 - **Nullifier Database** - SQLite-based persistent storage
-- **TCP Mesh** - Full mesh connectivity between witnesses
 - **Request Forwarding** - Non-leaders forward to current leader
 
 ### DHT Storage via Nodus v5
@@ -246,18 +242,23 @@ All DHT data is stored via Nodus v5 (the `nodus_ops` convenience API). OpenDHT h
 - **Double-Spend Prevention**: 2-of-3 witness attestation required
 - **UTXO Validation**: Witnesses verify UTXO legitimacy before voting (v0.8.0)
 - **Fee Burn**: Transaction fees are permanently removed from circulation (v0.8.1)
+- **UTXO Ownership Verification**: Sender fingerprint must match UTXO owner (v0.10.2)
+- **Nullifier Fail-Closed**: DB errors assume nullifier exists to prevent double-spend (v0.10.2)
+- **Chain ID Validation**: All BFT messages validated against zone chain_id to prevent cross-zone replay (v0.10.2)
+- **Secure Nonce Generation**: RNG failure aborts instead of falling back to weak source (v0.10.2)
+- **Overflow Protection**: Safe integer arithmetic for genesis supply and balance calculation (v0.10.2)
+- **COMMIT Signature Verification**: All BFT COMMIT messages require valid Dilithium5 signature (v0.10.2)
 
 ## Status
 
-**Development Phase** - v0.10.1. Not for production use.
+**Development Phase** - v0.10.3. Not for production use.
 
 ### Implemented (v0.8.1)
 
 - [x] Core wallet functionality (UTXO management, balance tracking)
 - [x] Send/receive transactions via DHT
-- [x] BFT consensus protocol (PBFT-like)
-- [x] 3-node witness cluster with systemd deployment
-- [x] TCP mesh networking between witnesses
+- [x] BFT consensus protocol (PBFT-like, embedded in Nodus v5)
+- [x] 3-node witness cluster
 - [x] Leader election and request forwarding
 - [x] Double-spend prevention via nullifiers
 - [x] End-to-end integration tests
@@ -278,6 +279,8 @@ All DHT data is stored via Nodus v5 (the `nodus_ops` convenience API). OpenDHT h
 - [x] Hub/spoke TX storage — witnesses persist full tx_data during BFT commit (v0.10.0)
 - [x] TX query protocol — clients retrieve full transaction by hash (v0.10.0)
 - [x] Block query protocol — clients query blocks by height or range (v0.10.0)
+- [x] P0 Security audit fixes — 3 CRITICAL + 3 HIGH vulnerabilities resolved (v0.10.2)
+- [x] Dead code cleanup — removed ~10K lines of old standalone witness code (v0.10.3)
 
 ### Tested
 

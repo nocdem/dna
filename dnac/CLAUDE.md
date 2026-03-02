@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-03-02 | **Status:** DESIGN | **Version:** v0.10.1
+**Last Updated:** 2026-03-02 | **Status:** DESIGN | **Version:** v0.10.3
 
 ---
 
@@ -193,7 +193,7 @@ OUTPUT:
 **EVERY successful build that will be pushed MUST increment the version.**
 
 **Version File:** `include/dnac/version.h`
-**Current:** v0.10.1
+**Current:** v0.10.3
 
 **Which Number to Bump:**
 - **PATCH** (0.1.X): Bug fixes, small features
@@ -286,26 +286,18 @@ ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/dnac-asan" ./dnac-witness -p 4200
 │   ├── version.h          # Version info
 │   ├── wallet.h           # Wallet internals
 │   ├── transaction.h      # Transaction types
-│   ├── nodus.h            # Nodus client
-│   ├── bft.h              # BFT consensus API
-│   └── tcp.h              # TCP networking
+│   ├── nodus.h            # Nodus client + witness announcements
+│   └── bft.h              # BFT types, serialization, roster
 ├── src/
 │   ├── wallet/            # Wallet operations
 │   ├── transaction/       # TX building/verification
 │   ├── nodus/             # Nodus client
 │   ├── db/                # SQLite operations
-│   ├── bft/               # BFT consensus (v0.2.0)
-│   │   ├── consensus.c    # State machine
+│   ├── bft/               # BFT support (serialization, roster, replay)
 │   │   ├── serialize.c    # Message serialization
-│   │   ├── tcp.c          # TCP server/client
-│   │   ├── peer.c         # Peer management
-│   │   └── roster.c       # Witness roster
-│   └── witness/           # Witness server
-│       ├── main.c         # Entry point
-│       ├── bft_main.c     # BFT consensus main loop
-│       ├── nullifier.c    # Nullifier database
-│       ├── replication.c  # Nullifier replication
-│       └── forward.c      # Request forwarding
+│   │   ├── roster.c       # Witness roster + config/leader election
+│   │   └── replay.c       # Nonce-based replay prevention
+│   └── cli/               # CLI tool
 ├── tests/                 # Unit tests
 └── docs/                  # Documentation
 ```
@@ -361,19 +353,9 @@ git push origin main
 
 ---
 
-## Witness Server Protocol
+## Witness System (Embedded in Nodus v5)
 
-### Usage
-
-```bash
-./dnac-witness -p 4200 -a "192.168.0.195:4200" -r roster.txt
-```
-
-**Options:**
-- `-d <dir>` - Data directory (default: ~/.dna)
-- `-p <port>` - TCP port (default: 4200)
-- `-a <addr>` - My address for roster (IP:port)
-- `-r <file>` - Initial roster file
+The old standalone `dnac-witness` binary was removed in v0.10.3. Witness logic now runs inside `nodus-server` via the embedded witness module (`nodus/src/witness/`).
 
 ### BFT Consensus
 
@@ -386,45 +368,12 @@ git push origin main
 
 **Consensus Phases:** PROPOSE → PREVOTE → PRECOMMIT → COMMIT
 
-**Witness Nodes (SSH as `nocdem`):**
-- 192.168.0.195:4200 (hostname: chat1)
-- 192.168.0.196:4200 (hostname: treasury)
-- 192.168.0.199:4200 (hostname: cpunkroot2)
+### DNAC BFT Source (in dnac/)
 
-**Test Machines (SSH as `root`):**
-- 192.168.0.50 (hostname: alice)
-- 192.168.0.51 (hostname: bob)
-- 192.168.0.52 (hostname: charlie)
-
-**Build Machine:**
-- 192.168.0.198 (this machine, user: nocdem)
-
-**SSH Access:**
-```bash
-# Witnesses
-ssh nocdem@192.168.0.195   # chat1
-ssh nocdem@192.168.0.196   # treasury
-ssh nocdem@192.168.0.199   # cpunkroot2
-
-# Test machines
-ssh root@192.168.0.50      # alice
-ssh root@192.168.0.51      # bob
-ssh root@192.168.0.52      # charlie
-```
-
-### Version Tracking
-- **Response includes:** `software_version[3]` - [major, minor, patch]
-- **Announcement includes:** `software_version[3]` - [major, minor, patch]
-- Logs show: `witness %.8s... v%d.%d.%d VERIFIED`
-
-### Protocol Versions
-| Version | Field | Format |
-|---------|-------|--------|
-| v1 | Response | status + witness_id + sig + timestamp + error |
-| v2 | Response | + server_pubkey (2592 bytes) |
-| v3 | Response | + software_version (3 bytes) |
-| v1 | Announce | version + witness_id + epoch + duration + ts + pubkey + sig |
-| v2 | Announce | + software_version (3 bytes) |
+Only serialization, roster, and replay prevention remain in `dnac/src/bft/`:
+- `serialize.c` — Message type serialization/deserialization
+- `roster.c` — Witness roster management, config init, leader election
+- `replay.c` — Nonce-based replay prevention (is_replay())
 
 ---
 
@@ -434,6 +383,12 @@ ssh root@192.168.0.52      # charlie
 2. **Nodus Witnessing** - Require 2-of-3 attestations for double-spend prevention
 3. **Key Storage** - Rely on libdna's secure key storage
 4. **Dilithium5** - Post-quantum secure signatures
+5. **UTXO Ownership** - Sender fingerprint verified against UTXO owner before PREVOTE (v0.10.2)
+6. **Nullifier Fail-Closed** - DB errors assume nullifier exists, preventing double-spend (v0.10.2)
+7. **Chain ID Validation** - All BFT handlers validate chain_id to prevent cross-zone replay (v0.10.2)
+8. **Secure Nonce** - RNG failure aborts process instead of weak fallback (v0.10.2)
+9. **Overflow Protection** - safe_add_u64 for genesis supply and balance calculations (v0.10.2)
+10. **COMMIT Signatures** - All COMMIT messages require valid Dilithium5 signature (v0.10.2)
 
 ---
 

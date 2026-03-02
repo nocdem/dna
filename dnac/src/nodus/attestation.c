@@ -4,7 +4,6 @@
  */
 
 #include "dnac/nodus.h"
-#include "dnac/witness.h"
 #include <string.h>
 
 int dnac_spend_request_serialize(const dnac_spend_request_t *request,

@@ -1,6 +1,6 @@
 # DNAC Witness Nodes - BFT Consensus Cluster
 
-**Created:** 2026-01-21 | **Updated:** 2026-01-24 | **Version:** v0.7.1
+**Created:** 2026-01-21 | **Updated:** 2026-03-02 | **Version:** v0.10.2
 
 ---
 
@@ -163,6 +163,10 @@ WantedBy=multi-user.target
 - **Consensus ensures atomicity**: No nullifier can be recorded without 2f+1 agreement
 - **No race conditions**: Unlike DHT mode, BFT prevents concurrent conflicting approvals
 - **Byzantine tolerance**: Can tolerate up to f malicious witnesses (f=0 for N=3)
+- **UTXO ownership**: Sender fingerprint verified against UTXO owner before PREVOTE (v0.10.2)
+- **Nullifier fail-closed**: DB errors assume nullifier exists, preventing false approvals (v0.10.2)
+- **COMMIT signature verification**: All COMMIT messages require valid Dilithium5 signature (v0.10.2)
+- **Chain ID validation**: Cross-zone replay attacks prevented by chain_id check on all BFT messages (v0.10.2)
 
 ---
 
@@ -193,7 +197,7 @@ ss -tnp | grep 4200
 
 ---
 
-## Features (v0.7.1)
+## Features (v0.10.2)
 
 ### Version Announcements
 

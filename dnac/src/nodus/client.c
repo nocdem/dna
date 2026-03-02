@@ -9,7 +9,6 @@
 
 #include "dnac/nodus.h"
 #include "dnac/wallet.h"
-#include "dnac/witness.h"
 #include <string.h>
 #include <stdlib.h>
 

@@ -24,3 +24,6 @@ Makefile
 # Test binaries
 test_*
 !test_*.c
+
+# Audit reports (local only)
+docs/SECURITY_AUDIT_*.md

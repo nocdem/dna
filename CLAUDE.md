@@ -138,8 +138,9 @@ Nodus is a post-quantum Kademlia DHT with PBFT consensus. Pure C, no C++ depende
 UTXO-based digital cash with BFT witness consensus:
 - `dnac/src/wallet/` — UTXO management, coin selection, balance
 - `dnac/src/transaction/` — TX building, verification, nullifiers, genesis
-- `dnac/src/bft/` — PBFT consensus state machine, TCP mesh
-- `dnac/src/witness/` — Witness server (nullifier DB, shared UTXO set, epoch/block management)
+- `dnac/src/bft/` — BFT serialization, roster management, replay prevention
+- `dnac/src/nodus/` — Witness client (Nodus SDK), discovery, attestation
+- Witness server logic lives in `nodus/src/witness/` (embedded in nodus-server)
 - Public API: `dnac/include/dnac/dnac.h`
 
 ---

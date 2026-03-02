@@ -1,6 +1,6 @@
 # DNAC Testing Documentation
 
-**Last Updated:** 2026-01-24 | **Version:** v0.7.1
+**Last Updated:** 2026-03-02 | **Version:** v0.10.2
 
 ---
 
@@ -10,7 +10,7 @@
 
 Location: `dnac/tests/test_gaps.c`
 
-18 unit tests validating v0.6.0 security fixes:
+17 unit tests validating v0.6.0 security fixes:
 
 | Test Group | Coverage |
 |------------|----------|
@@ -122,7 +122,27 @@ sleep 5
 
 ---
 
-## What Has Been Implemented (v0.7.1)
+### Nodus Witness Verify Tests (`test_witness_verify`)
+
+Location: `nodus/tests/test_witness_verify.c`
+
+9 test cases validating BFT PREVOTE transaction verification (run via `cd nodus/build && ctest`):
+
+| Test | Coverage |
+|------|----------|
+| test_valid_spend | Valid SPEND with correct owner fingerprint |
+| test_insufficient_balance | Reject spend exceeding UTXO amount |
+| test_fee_too_low | Reject spend with insufficient fee |
+| test_double_spend | Reject already-spent nullifier |
+| test_invalid_genesis_supply | Reject genesis with mismatched supply |
+| test_valid_genesis | Valid genesis transaction |
+| test_unknown_tx_type | Reject unknown transaction types |
+| test_null_params | Handle NULL parameter inputs |
+| test_empty_tx | Handle empty transaction data |
+
+Tests updated in v0.10.2 to use computed sender fingerprints (via `nodus_fingerprint_hex()`) as UTXO owners, validating the new UTXO ownership check (CRITICAL-4 fix).
+
+## What Has Been Implemented (v0.10.2)
 
 ### BFT Consensus
 
@@ -163,6 +183,15 @@ sleep 5
 - [x] Fingerprint derivation from public keys
 - [x] Integer overflow protection (v0.6.0)
 - [x] Public key validation (v0.6.0)
+
+### P0 Security Audit Fixes (v0.10.2)
+
+- [x] UTXO ownership verification — sender fingerprint vs UTXO owner (CRITICAL-4)
+- [x] Nullifier fail-closed — DB errors return true/spent (HIGH-10)
+- [x] Chain ID validation — 10 BFT handlers check chain_id (CRITICAL-2)
+- [x] Secure nonce generation — abort() on RNG failure (CRITICAL-3)
+- [x] Overflow protection — safe_add_u64 for genesis supply and balance (HIGH-3, HIGH-8)
+- [x] COMMIT signature verification — Dilithium5 sig check on COMMIT messages (CRITICAL-1)
 
 ---
 

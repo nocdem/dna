@@ -1,8 +1,8 @@
 # DNAC Implementation Roadmap
 
 **Project:** DNAC - Post-Quantum Digital Cash over DHT
-**Version:** v0.7.1
-**Status:** Phase 23 Complete (BFT-Anchored Proofs)
+**Version:** v0.10.2
+**Status:** Phase 24 Complete (P0 Security Audit)
 
 ---
 
@@ -222,6 +222,15 @@ DNAC is a post-quantum digital cash system that integrates with DNA Messenger:
 - [x] Epoch roots signed by BFT consensus
 - [x] Merkle proofs anchored to BFT-signed state
 - [x] Trust verification for transaction inclusion
+
+### Phase 24: P0 Security Audit ✅ COMPLETE (v0.10.2)
+- [x] UTXO ownership verification — sender fingerprint checked against UTXO owner (CRITICAL-4)
+- [x] Nullifier fail-closed — DB errors default to "spent" to prevent double-spend (HIGH-10)
+- [x] Chain ID validation — all 10 BFT handlers validate chain_id (CRITICAL-2)
+- [x] Secure nonce generation — abort() on RNG failure instead of weak fallback (CRITICAL-3)
+- [x] Overflow protection — safe_add_u64 in genesis supply + balance calculation (HIGH-3, HIGH-8)
+- [x] COMMIT signature verification — Dilithium5 sig required on all COMMIT messages (CRITICAL-1)
+- [x] Test fixes — witness verify tests updated for ownership check
 
 ---
 
