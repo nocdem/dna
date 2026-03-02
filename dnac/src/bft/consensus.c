@@ -20,6 +20,7 @@
 #include "dnac/tcp.h"
 #include "dnac/genesis.h"
 #include "dnac/transaction.h"
+#include "dnac/safe_math.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_dilithium.h"
@@ -466,6 +467,57 @@ static int bft_build_new_view_sign_data(const dnac_bft_new_view_t *nv,
     return 0;
 }
 
+/**
+ * @brief Build COMMIT signing data
+ *
+ * Signs: tx_hash || sender_id || round || view || nullifier_count || tx_type || timestamp || chain_id
+ */
+static int bft_build_commit_sign_data(const dnac_bft_commit_t *commit,
+                                       uint8_t *sign_data, size_t *sign_data_len) {
+    if (!commit || !sign_data || !sign_data_len) return -1;
+
+    size_t offset = 0;
+
+    /* tx_hash (64 bytes) */
+    memcpy(sign_data + offset, commit->tx_hash, DNAC_TX_HASH_SIZE);
+    offset += DNAC_TX_HASH_SIZE;
+
+    /* sender_id (32 bytes) */
+    memcpy(sign_data + offset, commit->header.sender_id, DNAC_BFT_WITNESS_ID_SIZE);
+    offset += DNAC_BFT_WITNESS_ID_SIZE;
+
+    /* round (8 bytes, little-endian) */
+    for (int i = 0; i < 8; i++) {
+        sign_data[offset + i] = (commit->header.round >> (i * 8)) & 0xFF;
+    }
+    offset += 8;
+
+    /* view (4 bytes, little-endian) */
+    for (int i = 0; i < 4; i++) {
+        sign_data[offset + i] = (commit->header.view >> (i * 8)) & 0xFF;
+    }
+    offset += 4;
+
+    /* nullifier_count (1 byte) */
+    sign_data[offset++] = commit->nullifier_count;
+
+    /* tx_type (1 byte) */
+    sign_data[offset++] = commit->tx_type;
+
+    /* timestamp (8 bytes, little-endian) */
+    for (int i = 0; i < 8; i++) {
+        sign_data[offset + i] = (commit->header.timestamp >> (i * 8)) & 0xFF;
+    }
+    offset += 8;
+
+    /* chain_id (32 bytes) */
+    memcpy(sign_data + offset, commit->header.chain_id, 32);
+    offset += 32;
+
+    *sign_data_len = offset;
+    return 0;
+}
+
 /* ============================================================================
  * Callback Setup
  * ========================================================================== */
@@ -693,8 +745,9 @@ static int bft_validate_utxo(dnac_bft_context_t *ctx,
 
     /* UTXO lookup callback is required for SPEND/BURN validation */
     if (!ctx->utxo_lookup_cb) {
-        QGP_LOG_WARN(LOG_TAG, "UTXO lookup callback not set — skipping UTXO validation");
-        return 0;  /* Fail open during transition (before callback is wired up) */
+        QGP_LOG_ERROR(LOG_TAG, "UTXO lookup callback not set — rejecting transaction");
+        if (reason_out) strncpy(reason_out, "UTXO validation not available", 255);
+        return -1;  /* Fail CLOSED */
     }
 
     /* Deserialize the transaction */
@@ -752,12 +805,22 @@ static int bft_validate_utxo(dnac_bft_context_t *ctx,
             return -1;
         }
 
-        total_input += tx->inputs[i].amount;
+        if (safe_add_u64(total_input, tx->inputs[i].amount, &total_input) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Input amount overflow at index %d", i);
+            dnac_free_transaction(tx);
+            if (reason_out) strncpy(reason_out, "Input amount overflow", 255);
+            return -1;
+        }
     }
 
     /* Sum outputs */
     for (int i = 0; i < tx->output_count; i++) {
-        total_output += tx->outputs[i].amount;
+        if (safe_add_u64(total_output, tx->outputs[i].amount, &total_output) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Output amount overflow at index %d", i);
+            dnac_free_transaction(tx);
+            if (reason_out) strncpy(reason_out, "Output amount overflow", 255);
+            return -1;
+        }
     }
 
     /* Verify: sum(inputs) >= sum(outputs) */
@@ -1663,6 +1726,17 @@ int dnac_bft_handle_vote(dnac_bft_context_t *ctx,
             memcpy(commit->proposer_id, ctx->round_state.proposer_id, DNAC_BFT_WITNESS_ID_SIZE);
 
             commit->n_precommits = ctx->round_state.precommit_count;
+
+            /* Sign COMMIT with Dilithium5 */
+            {
+                uint8_t commit_sign_data[256];
+                size_t commit_sign_len;
+                if (bft_build_commit_sign_data(commit, commit_sign_data, &commit_sign_len) != 0) {
+                    QGP_LOG_ERROR(LOG_TAG, "Failed to build COMMIT signing data");
+                } else if (bft_sign_message(ctx, commit->signature, commit_sign_data, commit_sign_len) != 0) {
+                    QGP_LOG_ERROR(LOG_TAG, "Failed to sign COMMIT");
+                }
+            }
 
             /* Reset round state */
             ctx->round_state.phase = BFT_PHASE_IDLE;

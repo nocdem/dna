@@ -378,6 +378,42 @@ int nodus_client_dnac_roster(nodus_client_t *client,
                                nodus_dnac_roster_result_t *result_out);
 
 /**
+ * Query full transaction data by hash.
+ * Caller must free result_out->tx_data when done.
+ *
+ * @param tx_hash     64-byte transaction hash
+ * @param result_out  Transaction data result
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_tx(nodus_client_t *client,
+                           const uint8_t *tx_hash,
+                           nodus_dnac_tx_result_t *result_out);
+
+/**
+ * Query block by height.
+ *
+ * @param height      Block height
+ * @param result_out  Block result
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_block(nodus_client_t *client,
+                              uint64_t height,
+                              nodus_dnac_block_result_t *result_out);
+
+/**
+ * Query blocks in a height range.
+ * Caller must free result_out->blocks when done.
+ *
+ * @param from_height Start height (inclusive)
+ * @param to_height   End height (inclusive)
+ * @param result_out  Block range result
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_block_range(nodus_client_t *client,
+                                    uint64_t from_height, uint64_t to_height,
+                                    nodus_dnac_block_range_result_t *result_out);
+
+/**
  * Free UTXO entries from nodus_client_dnac_utxo().
  */
 void nodus_client_free_utxo_result(nodus_dnac_utxo_result_t *result);
@@ -386,6 +422,16 @@ void nodus_client_free_utxo_result(nodus_dnac_utxo_result_t *result);
  * Free range entries from nodus_client_dnac_ledger_range().
  */
 void nodus_client_free_range_result(nodus_dnac_range_result_t *result);
+
+/**
+ * Free TX data from nodus_client_dnac_tx().
+ */
+void nodus_client_free_tx_result(nodus_dnac_tx_result_t *result);
+
+/**
+ * Free block range from nodus_client_dnac_block_range().
+ */
+void nodus_client_free_block_range_result(nodus_dnac_block_range_result_t *result);
 
 /* ── Utility ────────────────────────────────────────────────────── */
 

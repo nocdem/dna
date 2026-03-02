@@ -1,6 +1,6 @@
 # DNAC - Post-Quantum Zero-Knowledge Cash over DHT
 
-**Version:** v0.8.1 | **Protocol:** v1 (Transparent Amounts)
+**Version:** v0.10.1 | **Protocol:** v1 (Transparent Amounts)
 
 DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger](https://github.com/nocdem/dna-messenger). It lives in the DNA monorepo at `/opt/dna/dnac/`.
 
@@ -21,6 +21,9 @@ DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger]
 - **Cross-Identity Sends** - Full TX data through BFT consensus for multi-party transfers (v0.8.0)
 - **Fee Burn Model** - Fees burned (removed from circulation) instead of sent to witnesses (v0.8.1)
 - **Genesis System** - Unanimous 3-of-3 witness authorization for token creation (v0.5.0)
+- **Hub/Spoke TX Storage** - Witnesses store full serialized transactions during BFT commit (v0.10.0)
+- **TX Query Protocol** - Clients retrieve full transaction data by hash from witnesses (v0.10.0)
+- **Block Query Protocol** - Clients query blocks by height or range from witnesses (v0.10.0)
 
 ## Protocol Versions
 
@@ -106,6 +109,65 @@ dnac-cli tx <hash>               # Show transaction details
 dnac-cli nodus-list              # Show witness servers
 ```
 
+## Hub/Spoke Query API (v0.10.0)
+
+Clients trust witnesses and can query the full blockchain view via the hub/spoke model:
+
+### Transaction Query
+```c
+// Retrieve full serialized TX by hash (caller frees tx_data)
+int dnac_query_transaction(dnac_context_t *ctx,
+                            const uint8_t *tx_hash,
+                            uint8_t **tx_data_out,
+                            uint32_t *tx_len_out,
+                            uint8_t *tx_type_out,
+                            uint64_t *block_height_out);
+```
+
+### Block Query
+```c
+// Query single block by height
+int dnac_query_block(dnac_context_t *ctx,
+                      uint64_t height,
+                      uint8_t *tx_hash_out,
+                      uint8_t *tx_type_out,
+                      uint64_t *timestamp_out,
+                      uint8_t *proposer_out);
+
+// Query block range (max 100 per request)
+int dnac_query_block_range(dnac_context_t *ctx,
+                            uint64_t from_height,
+                            uint64_t to_height,
+                            int *count_out,
+                            uint64_t *total_out);
+```
+
+### Wire Protocol (CBOR over Nodus Tier 2)
+
+| Message Type | ID | Direction | Description |
+|---|---|---|---|
+| `DNAC_NODUS_MSG_TX_QUERY` | 144 | Client→Witness | Query TX by hash |
+| `DNAC_NODUS_MSG_TX_RESPONSE` | 145 | Witness→Client | Full TX data blob |
+| `DNAC_NODUS_MSG_BLOCK_QUERY` | 146 | Client→Witness | Query block by height |
+| `DNAC_NODUS_MSG_BLOCK_RESPONSE` | 147 | Witness→Client | Block fields |
+| `DNAC_NODUS_MSG_BLOCK_RANGE_QUERY` | 148 | Client→Witness | Query block range |
+| `DNAC_NODUS_MSG_BLOCK_RANGE_RESPONSE` | 149 | Witness→Client | Array of blocks |
+
+### Witness-Side Storage
+
+Witnesses store full serialized `tx_data` in the `committed_transactions` table during BFT commit. Schema:
+```sql
+CREATE TABLE committed_transactions (
+    tx_hash BLOB PRIMARY KEY,
+    tx_type INTEGER NOT NULL,
+    tx_data BLOB NOT NULL,
+    tx_len  INTEGER NOT NULL,
+    block_height INTEGER NOT NULL DEFAULT 0,
+    timestamp INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX idx_ctx_height ON committed_transactions(block_height);
+```
+
 ### Wallet Address
 
 The wallet address is a **SHA3-512 hash of the Dilithium5 public key**:
@@ -187,7 +249,7 @@ All DHT data is stored via Nodus v5 (the `nodus_ops` convenience API). OpenDHT h
 
 ## Status
 
-**Development Phase** - v0.8.1. Not for production use.
+**Development Phase** - v0.10.1. Not for production use.
 
 ### Implemented (v0.8.1)
 
@@ -213,6 +275,9 @@ All DHT data is stored via Nodus v5 (the `nodus_ops` convenience API). OpenDHT h
 - [x] Cross-identity sends with full TX data through BFT (v0.8.0)
 - [x] Fee burn model — fees permanently removed from circulation (v0.8.1)
 - [x] Genesis TX verification fix (v0.8.1)
+- [x] Hub/spoke TX storage — witnesses persist full tx_data during BFT commit (v0.10.0)
+- [x] TX query protocol — clients retrieve full transaction by hash (v0.10.0)
+- [x] Block query protocol — clients query blocks by height or range (v0.10.0)
 
 ### Tested
 

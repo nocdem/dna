@@ -402,6 +402,9 @@ int dnac_wallet_recover_from_witnesses(dnac_context_t *ctx,
     const char *fingerprint = dnac_get_owner_fingerprint(ctx);
     if (!fingerprint) return DNAC_ERROR_NOT_INITIALIZED;
 
+    sqlite3 *db = dnac_get_db(ctx);
+    if (!db) return DNAC_ERROR_NOT_INITIALIZED;
+
     nodus_client_t *client = nodus_singleton_get();
     if (!client) return DNAC_ERROR_NOT_INITIALIZED;
 
@@ -418,16 +421,60 @@ int dnac_wallet_recover_from_witnesses(dnac_context_t *ctx,
         return DNAC_ERROR_NETWORK;
     }
 
-    /* Sum up UTXOs */
+    /* Step 1: Get current local unspent UTXOs */
+    dnac_utxo_t *local_utxos = NULL;
+    int local_count = 0;
+    dnac_db_get_unspent_utxos(db, fingerprint, &local_utxos, &local_count);
+
+    /* Step 2: Mark local UTXOs not in witness set as spent */
+    for (int i = 0; i < local_count; i++) {
+        bool found = false;
+        for (int j = 0; j < result.count; j++) {
+            if (memcmp(local_utxos[i].nullifier, result.entries[j].nullifier,
+                       DNAC_NULLIFIER_SIZE) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            dnac_db_mark_utxo_spent(db, local_utxos[i].nullifier, NULL);
+            QGP_LOG_INFO(LOG_TAG, "Marked stale UTXO as spent (amount=%llu)",
+                         (unsigned long long)local_utxos[i].amount);
+        }
+    }
+    free(local_utxos);
+
+    /* Step 3: Store witness UTXOs that are missing locally */
     int count = 0;
     uint64_t total = 0;
     for (int i = 0; i < result.count; i++) {
-        total += result.entries[i].amount;
-        count++;
+        nodus_dnac_utxo_entry_t *e = &result.entries[i];
+        if (total + e->amount < total) {
+            QGP_LOG_ERROR(LOG_TAG, "UTXO total overflow at entry %d", i);
+            break;  /* Stop accumulating on overflow */
+        }
+        total += e->amount;
 
-        QGP_LOG_DEBUG(LOG_TAG, "Found UTXO: amount=%llu, output_index=%u",
-                      (unsigned long long)result.entries[i].amount,
-                      result.entries[i].output_index);
+        /* Build UTXO from witness data */
+        dnac_utxo_t utxo = {0};
+        utxo.version = 1;
+        memcpy(utxo.tx_hash, e->tx_hash, DNAC_TX_HASH_SIZE);
+        utxo.output_index = e->output_index;
+        utxo.amount = e->amount;
+        memcpy(utxo.nullifier, e->nullifier, DNAC_NULLIFIER_SIZE);
+        snprintf(utxo.owner_fingerprint, sizeof(utxo.owner_fingerprint),
+                 "%s", fingerprint);
+        utxo.status = DNAC_UTXO_UNSPENT;
+        utxo.received_at = (uint64_t)time(NULL);
+
+        /* INSERT OR IGNORE — won't overwrite existing entries */
+        rc = dnac_db_store_utxo(db, &utxo);
+        if (rc == DNAC_SUCCESS) {
+            count++;
+        }
+
+        QGP_LOG_DEBUG(LOG_TAG, "Witness UTXO: amount=%llu, output_index=%u",
+                      (unsigned long long)e->amount, e->output_index);
     }
 
     nodus_client_free_utxo_result(&result);
@@ -436,14 +483,146 @@ int dnac_wallet_recover_from_witnesses(dnac_context_t *ctx,
     if (total_amount) *total_amount = total;
 
     if (count > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Witness recovery found %d UTXOs, total: %llu",
+        QGP_LOG_INFO(LOG_TAG, "Witness recovery: stored %d new UTXOs, total: %llu",
                      count, (unsigned long long)total);
-    } else {
-        QGP_LOG_INFO(LOG_TAG, "No UTXOs found for this identity");
     }
 
     return DNAC_SUCCESS;
 }
+
+/* ============================================================================
+ * Transaction Query (v0.10.0 hub/spoke)
+ * ========================================================================== */
+
+int dnac_query_transaction(dnac_context_t *ctx,
+                            const uint8_t *tx_hash,
+                            uint8_t **tx_data_out,
+                            uint32_t *tx_len_out,
+                            uint8_t *tx_type_out,
+                            uint64_t *block_height_out) {
+    if (!ctx || !tx_hash || !tx_data_out || !tx_len_out) {
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    *tx_data_out = NULL;
+    *tx_len_out = 0;
+
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) return DNAC_ERROR_NOT_INITIALIZED;
+
+    nodus_singleton_lock();
+
+    nodus_dnac_tx_result_t result;
+    int rc = nodus_client_dnac_tx(client, tx_hash, &result);
+
+    nodus_singleton_unlock();
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "TX query failed: %d", rc);
+        return DNAC_ERROR_NETWORK;
+    }
+
+    if (!result.found) {
+        return DNAC_ERROR_NOT_FOUND;
+    }
+
+    *tx_data_out = result.tx_data;   /* Ownership transferred to caller */
+    *tx_len_out = result.tx_len;
+
+    if (tx_type_out) *tx_type_out = result.tx_type;
+    if (block_height_out) *block_height_out = result.block_height;
+
+    QGP_LOG_INFO(LOG_TAG, "TX query: type=%d, len=%u, block=%llu",
+                 result.tx_type, result.tx_len,
+                 (unsigned long long)result.block_height);
+    return DNAC_SUCCESS;
+}
+
+/* ============================================================================
+ * Block Query (v0.10.0 hub/spoke)
+ * ========================================================================== */
+
+int dnac_query_block(dnac_context_t *ctx,
+                      uint64_t height,
+                      uint8_t *tx_hash_out,
+                      uint8_t *tx_type_out,
+                      uint64_t *timestamp_out,
+                      uint8_t *proposer_out) {
+    if (!ctx) return DNAC_ERROR_INVALID_PARAM;
+
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) return DNAC_ERROR_NOT_INITIALIZED;
+
+    nodus_singleton_lock();
+
+    nodus_dnac_block_result_t result;
+    int rc = nodus_client_dnac_block(client, height, &result);
+
+    nodus_singleton_unlock();
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Block query failed: %d", rc);
+        return DNAC_ERROR_NETWORK;
+    }
+
+    if (!result.found) {
+        return DNAC_ERROR_NOT_FOUND;
+    }
+
+    if (tx_hash_out) memcpy(tx_hash_out, result.tx_hash, DNAC_TX_HASH_SIZE);
+    if (tx_type_out) *tx_type_out = result.tx_type;
+    if (timestamp_out) *timestamp_out = result.timestamp;
+    if (proposer_out) memcpy(proposer_out, result.proposer_id, 32);
+
+    QGP_LOG_INFO(LOG_TAG, "Block query: height=%llu, type=%d",
+                 (unsigned long long)height, result.tx_type);
+    return DNAC_SUCCESS;
+}
+
+/* ============================================================================
+ * Block Range Query (v0.10.0 hub/spoke)
+ * ========================================================================== */
+
+int dnac_query_block_range(dnac_context_t *ctx,
+                            uint64_t from_height,
+                            uint64_t to_height,
+                            int *count_out,
+                            uint64_t *total_out) {
+    if (!ctx || !count_out) return DNAC_ERROR_INVALID_PARAM;
+
+    *count_out = 0;
+    if (total_out) *total_out = 0;
+
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) return DNAC_ERROR_NOT_INITIALIZED;
+
+    nodus_singleton_lock();
+
+    nodus_dnac_block_range_result_t result;
+    int rc = nodus_client_dnac_block_range(client, from_height, to_height,
+                                             &result);
+
+    nodus_singleton_unlock();
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Block range query failed: %d", rc);
+        return DNAC_ERROR_NETWORK;
+    }
+
+    *count_out = result.count;
+    if (total_out) *total_out = result.total_blocks;
+
+    nodus_client_free_block_range_result(&result);
+
+    QGP_LOG_INFO(LOG_TAG, "Block range: from=%llu to=%llu returned=%d",
+                 (unsigned long long)from_height,
+                 (unsigned long long)to_height, *count_out);
+    return DNAC_SUCCESS;
+}
+
+/* ============================================================================
+ * UTXO Proof (stub)
+ * ========================================================================== */
 
 int dnac_utxo_get_proof(dnac_context_t *ctx,
                         const uint8_t *commitment,

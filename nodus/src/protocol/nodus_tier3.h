@@ -96,6 +96,7 @@ typedef struct {
     uint64_t        proposal_timestamp;
     uint8_t         proposer_id[NODUS_T3_WITNESS_ID_LEN];
     uint32_t        n_precommits;
+    uint8_t         utxo_checksum[NODUS_KEY_BYTES]; /* UTXO set hash for cross-validation */
 } nodus_t3_commit_t;
 
 /** w_viewchg: Witness requests view change */

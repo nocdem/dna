@@ -77,7 +77,14 @@ typedef enum {
     DNAC_NODUS_MSG_UTXO_PROOF_RSP   = 141,  /**< UTXO proof response */
     /* P0-2 (v0.7.0): Chain sync range queries */
     DNAC_NODUS_MSG_LEDGER_RANGE_QUERY    = 142, /**< Query ledger entry range */
-    DNAC_NODUS_MSG_LEDGER_RANGE_RESPONSE = 143  /**< Ledger range response */
+    DNAC_NODUS_MSG_LEDGER_RANGE_RESPONSE = 143, /**< Ledger range response */
+    /* v0.10.0: Full TX and block queries (hub/spoke) */
+    DNAC_NODUS_MSG_TX_QUERY              = 144, /**< Query full TX by hash */
+    DNAC_NODUS_MSG_TX_RESPONSE           = 145, /**< Full TX data response */
+    DNAC_NODUS_MSG_BLOCK_QUERY           = 146, /**< Query block by height */
+    DNAC_NODUS_MSG_BLOCK_RESPONSE        = 147, /**< Block data response */
+    DNAC_NODUS_MSG_BLOCK_RANGE_QUERY     = 148, /**< Query block range */
+    DNAC_NODUS_MSG_BLOCK_RANGE_RESPONSE  = 149  /**< Block range response */
 } dnac_nodus_msg_type_t;
 
 typedef enum {

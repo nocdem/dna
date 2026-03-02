@@ -9,6 +9,7 @@
 #include "dnac/nodus.h"
 #include "dnac/db.h"
 #include "dnac/ledger.h"
+#include "dnac/commitment.h"
 #include <dna/dna_engine.h>
 #include <stdlib.h>
 #include <string.h>
@@ -354,10 +355,22 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
     size_t *values_len = NULL;
     size_t count = 0;
 
-    int rc = nodus_ops_get_all(inbox_key, 64, &values, &values_len, &count);
-    if (rc != 0 || count == 0) {
+    /* Step 1b: Sync authoritative UTXO state from witnesses.
+     * This recovers change outputs from transactions that committed on the
+     * witness side but whose responses were lost, and marks locally-stale
+     * UTXOs as spent. */
+    int witness_recovered = 0;
+    uint64_t witness_total = 0;
+    int rc = dnac_wallet_recover_from_witnesses(ctx, &witness_recovered, &witness_total);
+    if (rc == DNAC_SUCCESS && witness_recovered > 0) {
+        fprintf(stderr, "[SYNC] Recovered %d UTXOs from witnesses (total: %llu)\n",
+                witness_recovered, (unsigned long long)witness_total);
+    }
+
+    int rc2 = nodus_ops_get_all(inbox_key, 64, &values, &values_len, &count);
+    if (rc2 != 0 || count == 0) {
         /* No payments or error - not fatal */
-        fprintf(stderr, "[SYNC] No payments found (rc=%d, count=%zu)\n", rc, count);
+        fprintf(stderr, "[SYNC] No payments found (rc=%d, count=%zu)\n", rc2, count);
         return DNAC_SUCCESS;
     }
 
@@ -507,6 +520,15 @@ int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count) {
         return rc;
     }
 
+    /* Step 1b: Recover authoritative UTXO state from witnesses */
+    int witness_recovered = 0;
+    uint64_t witness_total = 0;
+    rc = dnac_wallet_recover_from_witnesses(ctx, &witness_recovered, &witness_total);
+    if (rc == DNAC_SUCCESS && witness_recovered > 0) {
+        fprintf(stderr, "[RECOVER] Recovered %d UTXOs from witnesses (total: %llu)\n",
+                witness_recovered, (unsigned long long)witness_total);
+    }
+
     /* Step 2: Build inbox key */
     uint8_t inbox_key[64];
     if (build_inbox_key(ctx->owner_fingerprint, NULL, inbox_key) != 0) {
@@ -654,8 +676,10 @@ int dnac_send(dnac_context_t *ctx,
 int dnac_estimate_fee(dnac_context_t *ctx, uint64_t amount, uint64_t *fee_out) {
     if (!ctx || !fee_out) return DNAC_ERROR_INVALID_PARAM;
 
-    /* Fee: 0.1% (10 basis points) */
-    *fee_out = (amount * 10) / 10000;
+    /* Fee: 0.1% (10 basis points)
+     * Use amount/1000 instead of (amount*10)/10000 to avoid overflow.
+     * For amounts < 1000, this gives 0, so min_fee=1 applies. */
+    *fee_out = amount / 1000;
     if (*fee_out < 1) *fee_out = 1; /* Minimum fee */
 
     return DNAC_SUCCESS;
@@ -697,6 +721,7 @@ const char* dnac_error_string(int error) {
         case DNAC_ERROR_WITNESS_FAILED: return "Witness collection failed";
         case DNAC_ERROR_TIMEOUT: return "Operation timed out";
         case DNAC_ERROR_NOT_FOUND: return "Not found";
+        case DNAC_ERROR_OVERFLOW: return "Integer overflow in amount";
         default: return "Unknown error";
     }
 }

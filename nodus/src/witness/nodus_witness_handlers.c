@@ -551,6 +551,282 @@ static void handle_dnac_roster(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_tx — Query full transaction data by hash
+ *
+ * Request:  "a": {"hash": bstr(64)}
+ * Response: "r": {"found":bool, "hash":bstr, "type":N, "tx":bstr,
+ *                  "len":N, "bh":N, "ts":N}
+ * ════════════════════════════════════════════════════════════════════ */
+
+static void handle_dnac_tx(nodus_witness_t *w,
+                              struct nodus_tcp_conn *conn,
+                              const uint8_t *payload, size_t len,
+                              uint32_t txn_id) {
+    cbor_decoder_t dec;
+    size_t args_count;
+    if (decode_args(payload, len, &dec, &args_count) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                    "missing args map");
+        return;
+    }
+
+    const uint8_t *hash = NULL;
+    size_t hash_len = 0;
+
+    for (size_t i = 0; i < args_count; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key_match(&key, "hash")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_T3_TX_HASH_LEN) {
+                hash = val.bstr.ptr;
+                hash_len = val.bstr.len;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    if (!hash || hash_len != NODUS_T3_TX_HASH_LEN) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                    "missing or invalid tx_hash");
+        return;
+    }
+
+    uint8_t tx_type = 0;
+    uint8_t *tx_data = NULL;
+    uint32_t tx_len = 0;
+    uint64_t block_height = 0;
+    int rc = nodus_witness_tx_get(w, hash, &tx_type, &tx_data,
+                                    &tx_len, &block_height);
+
+    if (rc != 0 || !tx_data) {
+        uint8_t buf[256];
+        cbor_encoder_t enc;
+        cbor_encoder_init(&enc, buf, sizeof(buf));
+        enc_dnac_response(&enc, txn_id, "dnac_tx", 1);
+        cbor_encode_cstr(&enc, "found");
+        cbor_encode_bool(&enc, false);
+        size_t rlen = cbor_encoder_len(&enc);
+        if (rlen > 0) nodus_tcp_send(conn, buf, rlen);
+        return;
+    }
+
+    /* Encode response — variable size due to tx_data */
+    size_t buf_size = 512 + (size_t)tx_len;
+    uint8_t *buf = malloc(buf_size);
+    if (!buf) {
+        free(tx_data);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "allocation failed");
+        return;
+    }
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, buf_size);
+    enc_dnac_response(&enc, txn_id, "dnac_tx", 7);
+
+    cbor_encode_cstr(&enc, "found");
+    cbor_encode_bool(&enc, true);
+    cbor_encode_cstr(&enc, "hash");
+    cbor_encode_bstr(&enc, hash, NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(&enc, "type");
+    cbor_encode_uint(&enc, tx_type);
+    cbor_encode_cstr(&enc, "tx");
+    cbor_encode_bstr(&enc, tx_data, tx_len);
+    cbor_encode_cstr(&enc, "len");
+    cbor_encode_uint(&enc, tx_len);
+    cbor_encode_cstr(&enc, "bh");
+    cbor_encode_uint(&enc, block_height);
+    cbor_encode_cstr(&enc, "ts");
+    cbor_encode_uint(&enc, (uint64_t)time(NULL));
+
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0)
+        nodus_tcp_send(conn, buf, rlen);
+
+    free(buf);
+    free(tx_data);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * dnac_block — Query block by height
+ *
+ * Request:  "a": {"height": uint}
+ * Response: "r": {"found":bool, "height":N, "hash":bstr, "type":N,
+ *                  "ts":N, "proposer":bstr}
+ * ════════════════════════════════════════════════════════════════════ */
+
+static void handle_dnac_block(nodus_witness_t *w,
+                                 struct nodus_tcp_conn *conn,
+                                 const uint8_t *payload, size_t len,
+                                 uint32_t txn_id) {
+    cbor_decoder_t dec;
+    size_t args_count;
+    if (decode_args(payload, len, &dec, &args_count) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                    "missing args map");
+        return;
+    }
+
+    uint64_t height = 0;
+    bool has_height = false;
+
+    for (size_t i = 0; i < args_count; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key_match(&key, "height")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type == CBOR_ITEM_UINT) {
+                height = val.uint_val;
+                has_height = true;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    if (!has_height) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                    "missing height");
+        return;
+    }
+
+    nodus_witness_block_t blk;
+    int rc = nodus_witness_block_get(w, height, &blk);
+
+    uint8_t buf[512];
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+
+    if (rc != 0) {
+        enc_dnac_response(&enc, txn_id, "dnac_block", 1);
+        cbor_encode_cstr(&enc, "found");
+        cbor_encode_bool(&enc, false);
+    } else {
+        enc_dnac_response(&enc, txn_id, "dnac_block", 6);
+        cbor_encode_cstr(&enc, "found");
+        cbor_encode_bool(&enc, true);
+        cbor_encode_cstr(&enc, "height");
+        cbor_encode_uint(&enc, blk.height);
+        cbor_encode_cstr(&enc, "hash");
+        cbor_encode_bstr(&enc, blk.tx_hash, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(&enc, "type");
+        cbor_encode_uint(&enc, blk.tx_type);
+        cbor_encode_cstr(&enc, "ts");
+        cbor_encode_uint(&enc, blk.timestamp);
+        cbor_encode_cstr(&enc, "proposer");
+        cbor_encode_bstr(&enc, blk.proposer_id, NODUS_T3_WITNESS_ID_LEN);
+    }
+
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0)
+        nodus_tcp_send(conn, buf, rlen);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * dnac_block_range — Query range of blocks
+ *
+ * Request:  "a": {"from": uint, "to": uint}
+ * Response: "r": {"total":N, "count":N, "blocks":[{...},...]}
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* Max blocks per range query */
+#define DNAC_MAX_BLOCK_RANGE_RESULTS  100
+
+static void handle_dnac_block_range(nodus_witness_t *w,
+                                       struct nodus_tcp_conn *conn,
+                                       const uint8_t *payload, size_t len,
+                                       uint32_t txn_id) {
+    cbor_decoder_t dec;
+    size_t args_count;
+    if (decode_args(payload, len, &dec, &args_count) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                    "missing args map");
+        return;
+    }
+
+    uint64_t from_h = 0, to_h = 0;
+    bool has_from = false, has_to = false;
+
+    for (size_t i = 0; i < args_count; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key_match(&key, "from")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type == CBOR_ITEM_UINT) {
+                from_h = val.uint_val;
+                has_from = true;
+            }
+        } else if (key_match(&key, "to")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type == CBOR_ITEM_UINT) {
+                to_h = val.uint_val;
+                has_to = true;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    if (!has_from || !has_to) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                    "missing from/to height");
+        return;
+    }
+
+    nodus_witness_block_t blocks[DNAC_MAX_BLOCK_RANGE_RESULTS];
+    int count = 0;
+
+    nodus_witness_block_get_range(w, from_h, to_h,
+                                    blocks, DNAC_MAX_BLOCK_RANGE_RESULTS,
+                                    &count);
+
+    uint64_t total = nodus_witness_block_height(w);
+
+    /* Encode response */
+    size_t buf_size = 512 + ((size_t)count * 256);
+    uint8_t *buf = malloc(buf_size);
+    if (!buf) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "allocation failed");
+        return;
+    }
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, buf_size);
+    enc_dnac_response(&enc, txn_id, "dnac_block_range", 3);
+
+    cbor_encode_cstr(&enc, "total");
+    cbor_encode_uint(&enc, total);
+
+    cbor_encode_cstr(&enc, "count");
+    cbor_encode_uint(&enc, (uint64_t)count);
+
+    cbor_encode_cstr(&enc, "blocks");
+    cbor_encode_array(&enc, (size_t)count);
+
+    for (int i = 0; i < count; i++) {
+        cbor_encode_map(&enc, 5);
+        cbor_encode_cstr(&enc, "height");
+        cbor_encode_uint(&enc, blocks[i].height);
+        cbor_encode_cstr(&enc, "hash");
+        cbor_encode_bstr(&enc, blocks[i].tx_hash, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(&enc, "type");
+        cbor_encode_uint(&enc, blocks[i].tx_type);
+        cbor_encode_cstr(&enc, "ts");
+        cbor_encode_uint(&enc, blocks[i].timestamp);
+        cbor_encode_cstr(&enc, "proposer");
+        cbor_encode_bstr(&enc, blocks[i].proposer_id,
+                          NODUS_T3_WITNESS_ID_LEN);
+    }
+
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0)
+        nodus_tcp_send(conn, buf, rlen);
+
+    free(buf);
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * dnac_spend — Submit TX for BFT consensus
  *
  * Request:  "a": {"tx":bstr, "hash":bstr(64), "pk":bstr(2592),
@@ -907,6 +1183,12 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_ledger_range(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_roster") == 0) {
         handle_dnac_roster(w, conn, txn_id);
+    } else if (strcmp(method, "dnac_tx") == 0) {
+        handle_dnac_tx(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_block") == 0) {
+        handle_dnac_block(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_block_range") == 0) {
+        handle_dnac_block_range(w, conn, payload, len, txn_id);
     } else {
         send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
                     "unknown DNAC method");

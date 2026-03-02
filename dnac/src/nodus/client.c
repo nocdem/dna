@@ -191,8 +191,10 @@ bool dnac_witness_verify(const dnac_witness_sig_t *witness,
 }
 
 uint64_t dnac_witness_calculate_fee(uint64_t amount) {
-    /* 0.1% fee (10 basis points) */
-    uint64_t fee = (amount * DNAC_FEE_RATE_BPS) / 10000;
+    /* 0.1% fee (10 basis points)
+     * Use amount/1000 instead of (amount*10)/10000 to avoid overflow.
+     * For amounts < 1000, this gives 0, so min_fee=1 applies. */
+    uint64_t fee = amount / 1000;
     return fee > 0 ? fee : 1;  /* Minimum 1 unit */
 }
 

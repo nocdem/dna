@@ -24,6 +24,11 @@
 
 #include "nodus_ops.h"
 #include "nodus_init.h"
+#include "dnac/safe_math.h"
+#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DNAC_BUILDER"
 
 struct dnac_tx_builder {
     dnac_context_t *ctx;
@@ -63,7 +68,11 @@ int dnac_tx_builder_add_output(dnac_tx_builder_t *builder,
     }
 
     builder->outputs[builder->output_count++] = *output;
-    builder->total_output_amount += output->amount;
+    if (safe_add_u64(builder->total_output_amount, output->amount,
+                     &builder->total_output_amount) != 0) {
+        builder->output_count--;
+        return DNAC_ERROR_OVERFLOW;
+    }
 
     return DNAC_SUCCESS;
 }
@@ -81,7 +90,10 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
     rc = dnac_estimate_fee(builder->ctx, builder->total_output_amount, &fee);
     if (rc != DNAC_SUCCESS) return rc;
 
-    uint64_t total_needed = builder->total_output_amount + fee;
+    uint64_t total_needed = 0;
+    if (safe_add_u64(builder->total_output_amount, fee, &total_needed) != 0) {
+        return DNAC_ERROR_OVERFLOW;
+    }
 
     /* Select UTXOs */
     dnac_utxo_t *selected = NULL;
@@ -149,12 +161,12 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
         return DNAC_ERROR_CRYPTO;
     }
 
-    /* Compute transaction hash (before signing) */
+    /* Copy public key BEFORE hash (sender_pubkey is part of tx_hash) */
+    memcpy(builder->tx->sender_pubkey, sender_pubkey, DNAC_PUBKEY_SIZE);
+
+    /* Compute transaction hash (includes sender_pubkey) */
     rc = dnac_tx_compute_hash(builder->tx, builder->tx->tx_hash);
     if (rc != DNAC_SUCCESS) return rc;
-
-    /* Copy public key */
-    memcpy(builder->tx->sender_pubkey, sender_pubkey, DNAC_PUBKEY_SIZE);
 
     /* Sign transaction hash with Dilithium5 */
     size_t sig_len = 0;
@@ -302,15 +314,40 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
     if (rc != DNAC_SUCCESS || witness_count < 1) {
         /* Mark pending spends as failed */
         dnac_db_expire_pending_spends(db);
-        return DNAC_ERROR_WITNESS_FAILED;
+
+        /* Double-spend: witnesses already committed these nullifiers.
+         * Mark input UTXOs as spent locally so wallet state stays in sync. */
+        if (rc == DNAC_ERROR_DOUBLE_SPEND) {
+            for (int i = 0; i < tx->input_count; i++) {
+                dnac_db_mark_utxo_spent(db, tx->inputs[i].nullifier,
+                                         tx->tx_hash);
+            }
+        }
+
+        /* Propagate the specific error (double-spend, timeout, etc.)
+         * instead of masking it as generic witness failure. */
+        return (rc != DNAC_SUCCESS) ? rc : DNAC_ERROR_WITNESS_FAILED;
     }
 
-    /* Step 4: Add witnesses to transaction */
+    /* Step 4: Verify and add witnesses to transaction */
     for (int i = 0; i < witness_count; i++) {
-        rc = dnac_tx_add_witness(tx, &witnesses[i]);
-        if (rc != DNAC_SUCCESS) {
-            return rc;
+        /* Verify witness signature before trusting */
+        uint8_t signed_data[DNAC_TX_HASH_SIZE + 32 + 8];
+        memcpy(signed_data, tx->tx_hash, DNAC_TX_HASH_SIZE);
+        memcpy(signed_data + DNAC_TX_HASH_SIZE, witnesses[i].witness_id, 32);
+        for (int j = 0; j < 8; j++)
+            signed_data[DNAC_TX_HASH_SIZE + 32 + j] =
+                (witnesses[i].timestamp >> (j * 8)) & 0xFF;
+
+        if (qgp_dsa87_verify(witnesses[i].signature, DNAC_SIGNATURE_SIZE,
+                              signed_data, sizeof(signed_data),
+                              witnesses[i].server_pubkey) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Witness %d signature verification failed", i);
+            return DNAC_ERROR_WITNESS_FAILED;
         }
+
+        rc = dnac_tx_add_witness(tx, &witnesses[i]);
+        if (rc != DNAC_SUCCESS) return rc;
     }
 
     /* Step 5: Serialize transaction */

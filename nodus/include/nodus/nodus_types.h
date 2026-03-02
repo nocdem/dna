@@ -304,6 +304,34 @@ typedef struct {
     nodus_dnac_roster_entry_t entries[NODUS_T3_MAX_WITNESSES];
 } nodus_dnac_roster_result_t;
 
+/** Full transaction query result (v0.10.0 hub/spoke) */
+typedef struct {
+    bool     found;
+    uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
+    uint8_t  tx_type;
+    uint8_t  *tx_data;      /* Heap-allocated, caller frees */
+    uint32_t tx_len;
+    uint64_t block_height;
+    uint64_t timestamp;
+} nodus_dnac_tx_result_t;
+
+/** Block query result (v0.10.0 hub/spoke) */
+typedef struct {
+    bool     found;
+    uint64_t height;
+    uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
+    uint8_t  tx_type;
+    uint64_t timestamp;
+    uint8_t  proposer_id[NODUS_T3_WITNESS_ID_LEN];
+} nodus_dnac_block_result_t;
+
+/** Block range query result (v0.10.0 hub/spoke) */
+typedef struct {
+    uint64_t total_blocks;
+    int      count;
+    nodus_dnac_block_result_t *blocks;  /* Heap-allocated, caller frees */
+} nodus_dnac_block_range_result_t;
+
 /* ── Utility ─────────────────────────────────────────────────────── */
 
 /** Compare two nodus keys (memcmp wrapper) */

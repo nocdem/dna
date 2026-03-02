@@ -8,6 +8,7 @@
 
 #include "dnac/wallet.h"
 #include "dnac/db.h"
+#include "dnac/safe_math.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -74,7 +75,10 @@ int dnac_wallet_select_utxos(dnac_context_t *ctx,
     /* Calculate total available */
     uint64_t total_available = 0;
     for (int i = 0; i < count; i++) {
-        total_available += utxos[i].amount;
+        if (safe_add_u64(total_available, utxos[i].amount, &total_available) != 0) {
+            free(utxos);
+            return DNAC_ERROR_OVERFLOW;
+        }
     }
 
     if (total_available < target_amount) {
@@ -87,7 +91,10 @@ int dnac_wallet_select_utxos(dnac_context_t *ctx,
     int num_selected = 0;
 
     for (int i = 0; i < count && accumulated < target_amount; i++) {
-        accumulated += utxos[i].amount;
+        if (safe_add_u64(accumulated, utxos[i].amount, &accumulated) != 0) {
+            free(utxos);
+            return DNAC_ERROR_OVERFLOW;
+        }
         num_selected++;
     }
 

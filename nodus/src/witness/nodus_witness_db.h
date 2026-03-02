@@ -38,6 +38,16 @@ int  nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
 int  nodus_witness_utxo_remove(nodus_witness_t *w, const uint8_t *nullifier);
 int  nodus_witness_utxo_count(nodus_witness_t *w, uint64_t *count_out);
 
+/**
+ * Compute SHA3-512 checksum of the entire UTXO set.
+ * Hashes all nullifiers in sorted order for cross-witness validation.
+ *
+ * @param w             Witness context
+ * @param checksum_out  Output 64-byte hash (NODUS_KEY_BYTES)
+ * @return 0 on success, -1 on error
+ */
+int nodus_witness_utxo_checksum(nodus_witness_t *w, uint8_t *checksum_out);
+
 /* Query UTXOs by owner fingerprint */
 typedef struct {
     uint8_t     nullifier[NODUS_T3_NULLIFIER_LEN];
@@ -91,6 +101,10 @@ int  nodus_witness_block_get(nodus_witness_t *w, uint64_t height,
                                nodus_witness_block_t *out);
 int  nodus_witness_block_get_latest(nodus_witness_t *w,
                                       nodus_witness_block_t *out);
+int  nodus_witness_block_get_range(nodus_witness_t *w,
+                                      uint64_t from_height, uint64_t to_height,
+                                      nodus_witness_block_t *out,
+                                      int max_entries, int *count_out);
 uint64_t nodus_witness_block_height(nodus_witness_t *w);
 
 /* ── Genesis state ───────────────────────────────────────────────── */
@@ -121,6 +135,15 @@ int  nodus_witness_supply_init(nodus_witness_t *w, uint64_t total_supply,
                                  const uint8_t *genesis_tx_hash);
 int  nodus_witness_supply_get(nodus_witness_t *w,
                                 nodus_witness_supply_t *out);
+
+/* ── Committed transaction storage ───────────────────────────────── */
+
+int  nodus_witness_tx_store(nodus_witness_t *w, const uint8_t *tx_hash,
+                              uint8_t tx_type, const uint8_t *tx_data,
+                              uint32_t tx_len, uint64_t block_height);
+int  nodus_witness_tx_get(nodus_witness_t *w, const uint8_t *tx_hash,
+                            uint8_t *tx_type_out, uint8_t **tx_data_out,
+                            uint32_t *tx_len_out, uint64_t *block_height_out);
 
 /* ── DB transaction wrappers ─────────────────────────────────────── */
 

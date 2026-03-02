@@ -102,7 +102,7 @@ static void enc_vote_args(cbor_encoder_t *enc, const nodus_t3_vote_t *v) {
 }
 
 static void enc_commit_args(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
-    cbor_encode_map(enc, 8);
+    cbor_encode_map(enc, 9);
     cbor_encode_cstr(enc, "txh");  cbor_encode_bstr(enc, c->tx_hash,
                                                      NODUS_T3_TX_HASH_LEN);
     cbor_encode_cstr(enc, "nlc");  cbor_encode_uint(enc, c->nullifier_count);
@@ -116,6 +116,8 @@ static void enc_commit_args(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
     cbor_encode_cstr(enc, "pid");  cbor_encode_bstr(enc, c->proposer_id,
                                                      NODUS_T3_WITNESS_ID_LEN);
     cbor_encode_cstr(enc, "npc");  cbor_encode_uint(enc, c->n_precommits);
+    cbor_encode_cstr(enc, "uck");  cbor_encode_bstr(enc, c->utxo_checksum,
+                                                     NODUS_KEY_BYTES);
 }
 
 static void enc_viewchg_args(cbor_encoder_t *enc, const nodus_t3_viewchg_t *v) {
@@ -480,6 +482,12 @@ static void dec_commit_args(cbor_decoder_t *dec, size_t count,
         else if (KEY_IS(key, "npc")) {
             cbor_item_t val = cbor_decode_next(dec);
             if (val.type == CBOR_ITEM_UINT) c->n_precommits = (uint32_t)val.uint_val;
+        }
+        else if (KEY_IS(key, "uck")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_KEY_BYTES)
+                memcpy(c->utxo_checksum, val.bstr.ptr, NODUS_KEY_BYTES);
         }
         else {
             cbor_decode_skip(dec);

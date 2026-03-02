@@ -376,6 +376,12 @@ static int do_commit_db(nodus_witness_t *w,
                            tx_data, tx_len);
     }
 
+    /* Store full transaction data for client retrieval */
+    if (!failed && tx_data && tx_len > 0) {
+        uint64_t bh = nodus_witness_block_height(w) + 1;
+        nodus_witness_tx_store(w, tx_hash, tx_type, tx_data, tx_len, bh);
+    }
+
     if (failed) {
         nodus_witness_db_rollback(w);
         return -1;
@@ -803,6 +809,17 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
         fprintf(stderr, "%s: commit to DB failed!\n", LOG_TAG);
     }
 
+    /* Compute UTXO set checksum for cross-witness validation */
+    uint8_t utxo_cksum[NODUS_KEY_BYTES];
+    bool have_cksum = (nodus_witness_utxo_checksum(w, utxo_cksum) == 0);
+    if (have_cksum) {
+        char hex[17];
+        for (int i = 0; i < 8; i++)
+            snprintf(hex + i * 2, 3, "%02x", utxo_cksum[i]);
+        fprintf(stderr, "%s: UTXO checksum after round %llu: %s\n",
+                LOG_TAG, (unsigned long long)w->round_state.round, hex);
+    }
+
     w->last_committed_round = w->round_state.round;
 
     /* Build and broadcast COMMIT */
@@ -823,6 +840,8 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     memcpy(c_msg.commit.proposer_id, w->round_state.proposer_id,
            NODUS_T3_WITNESS_ID_LEN);
     c_msg.commit.n_precommits = w->round_state.precommit_count;
+    if (have_cksum)
+        memcpy(c_msg.commit.utxo_checksum, utxo_cksum, NODUS_KEY_BYTES);
 
     nodus_witness_bft_broadcast(w, &c_msg);
 
@@ -941,6 +960,29 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                        cmt->tx_data, cmt->tx_len) != 0) {
         fprintf(stderr, "%s: remote commit to DB failed!\n", LOG_TAG);
         return -1;
+    }
+
+    /* Compute UTXO set checksum and compare with leader's */
+    {
+        uint8_t utxo_cksum[NODUS_KEY_BYTES];
+        if (nodus_witness_utxo_checksum(w, utxo_cksum) == 0) {
+            char hex[17];
+            for (int i = 0; i < 8; i++)
+                snprintf(hex + i * 2, 3, "%02x", utxo_cksum[i]);
+            fprintf(stderr, "%s: UTXO checksum after remote commit round %llu: %s\n",
+                    LOG_TAG, (unsigned long long)hdr->round, hex);
+
+            /* Compare with leader's checksum (if present) */
+            uint8_t zero_ck[NODUS_KEY_BYTES];
+            memset(zero_ck, 0, NODUS_KEY_BYTES);
+            if (memcmp(cmt->utxo_checksum, zero_ck, NODUS_KEY_BYTES) != 0) {
+                if (memcmp(utxo_cksum, cmt->utxo_checksum, NODUS_KEY_BYTES) != 0) {
+                    fprintf(stderr, "%s: WARNING: UTXO checksum DIVERGED from "
+                            "leader at round %llu!\n",
+                            LOG_TAG, (unsigned long long)hdr->round);
+                }
+            }
+        }
     }
 
     /* Update committed round */

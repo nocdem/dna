@@ -85,6 +85,7 @@ static uint8_t *build_tx_data(uint8_t version, uint8_t type, uint64_t timestamp,
                                 uint64_t *input_amounts,
                                 uint8_t *output_fps, int output_count,
                                 uint64_t *output_amounts,
+                                const uint8_t *sender_pubkey,
                                 uint32_t *out_len) {
     /* Calculate size */
     size_t size = 10 + TX_HASH_LEN;  /* version+type+timestamp+tx_hash */
@@ -136,7 +137,14 @@ static uint8_t *build_tx_data(uint8_t version, uint8_t type, uint64_t timestamp,
 
     /* Now compute the correct tx_hash and embed it */
     uint8_t hash[64];
-    if (nodus_witness_recompute_tx_hash(buf, *out_len, hash) == 0) {
+    /* Use zero pubkey if none provided (for genesis) */
+    uint8_t zero_pk[NODUS_PK_BYTES];
+    const uint8_t *pk = sender_pubkey;
+    if (!pk) {
+        memset(zero_pk, 0, sizeof(zero_pk));
+        pk = zero_pk;
+    }
+    if (nodus_witness_recompute_tx_hash(buf, *out_len, pk, hash) == 0) {
         memcpy(buf + 10, hash, TX_HASH_LEN);
     }
 
@@ -189,7 +197,8 @@ static void test_valid_spend(void) {
     uint32_t tx_len;
     uint8_t *tx_data = build_tx_data(1, 1, 12345678ULL,
                                       nullifier, 1, &in_amt,
-                                      out_fp, 1, &out_amt, &tx_len);
+                                      out_fp, 1, &out_amt,
+                                      sender.pk.bytes, &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     /* Get the embedded hash */
@@ -228,6 +237,11 @@ static void test_tampered_hash(void) {
     nodus_witness_t w;
     if (setup_witness(&w) != 0) { FAIL("db setup"); return; }
 
+    nodus_identity_t sender;
+    uint8_t seed[32];
+    memset(seed, 0x77, sizeof(seed));
+    nodus_identity_from_seed(seed, &sender);
+
     uint8_t nullifier[NULLIFIER_LEN];
     memset(nullifier, 0xCC, NULLIFIER_LEN);
     add_utxo(&w, nullifier, "owner", 1000);
@@ -239,7 +253,8 @@ static void test_tampered_hash(void) {
     uint32_t tx_len;
     uint8_t *tx_data = build_tx_data(1, 1, 100ULL,
                                       nullifier, 1, &in_amt,
-                                      out_fp, 1, &out_amt, &tx_len);
+                                      out_fp, 1, &out_amt,
+                                      sender.pk.bytes, &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     /* Tamper with the hash */
@@ -248,7 +263,8 @@ static void test_tampered_hash(void) {
 
     char reason[256] = {0};
     int rc = nodus_witness_verify_transaction(&w, tx_data, tx_len, bad_hash,
-                  1, nullifier, 1, NULL, NULL, 1, reason, sizeof(reason));
+                  1, nullifier, 1, sender.pk.bytes, NULL, 1,
+                  reason, sizeof(reason));
 
     if (rc == -1 && strstr(reason, "tx_hash mismatch")) {
         PASS();
@@ -286,7 +302,8 @@ static void test_invalid_signature(void) {
     uint32_t tx_len;
     uint8_t *tx_data = build_tx_data(1, 1, 200ULL,
                                       nullifier, 1, &in_amt,
-                                      out_fp, 1, &out_amt, &tx_len);
+                                      out_fp, 1, &out_amt,
+                                      sender.pk.bytes, &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     uint8_t tx_hash[64];
@@ -343,7 +360,8 @@ static void test_insufficient_balance(void) {
     uint32_t tx_len;
     uint8_t *tx_data = build_tx_data(1, 1, 300ULL,
                                       nullifier, 1, &in_amt,
-                                      out_fp, 1, &out_amt, &tx_len);
+                                      out_fp, 1, &out_amt,
+                                      sender.pk.bytes, &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     uint8_t tx_hash[64];
@@ -397,7 +415,8 @@ static void test_fee_too_low(void) {
     uint32_t tx_len;
     uint8_t *tx_data = build_tx_data(1, 1, 400ULL,
                                       nullifier, 1, &in_amt,
-                                      out_fp, 1, &out_amt, &tx_len);
+                                      out_fp, 1, &out_amt,
+                                      sender.pk.bytes, &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     uint8_t tx_hash[64];
@@ -450,7 +469,8 @@ static void test_duplicate_nullifiers(void) {
     uint32_t tx_len;
     uint8_t *tx_data = build_tx_data(1, 1, 500ULL,
                                       nullifiers, 2, in_amts,
-                                      out_fp, 1, &out_amt, &tx_len);
+                                      out_fp, 1, &out_amt,
+                                      NULL, &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     memcpy(tx_hash, tx_data + 10, 64);
@@ -487,7 +507,8 @@ static void test_genesis_skips_checks(void) {
     uint32_t tx_len;
     uint8_t *tx_data = build_tx_data(1, 0 /* GENESIS */, 999ULL,
                                       NULL, 0, NULL,
-                                      out_fp, 1, &out_amt, &tx_len);
+                                      out_fp, 1, &out_amt,
+                                      NULL, &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     uint8_t tx_hash[64];
@@ -570,7 +591,8 @@ static void test_double_spend(void) {
     uint32_t tx_len;
     uint8_t *tx_data = build_tx_data(1, 1, 600ULL,
                                       nullifier, 1, &in_amt,
-                                      out_fp, 1, &out_amt, &tx_len);
+                                      out_fp, 1, &out_amt,
+                                      sender.pk.bytes, &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     uint8_t tx_hash[64];

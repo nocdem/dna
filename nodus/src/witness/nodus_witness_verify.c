@@ -53,12 +53,13 @@
  * ════════════════════════════════════════════════════════════════════ */
 
 int nodus_witness_recompute_tx_hash(const uint8_t *tx_data, uint32_t tx_len,
+                                     const uint8_t *client_pubkey,
                                      uint8_t *hash_out) {
-    if (!tx_data || !hash_out || tx_len < TX_HEADER_SIZE + 1)
+    if (!tx_data || !hash_out || !client_pubkey || tx_len < TX_HEADER_SIZE + 1)
         return -1;
 
-    /* Allocate buffer to assemble hash input (max tx_len is sufficient) */
-    uint8_t *buf = malloc(tx_len);
+    /* Allocate buffer to assemble hash input (tx_len + pubkey) */
+    uint8_t *buf = malloc(tx_len + NODUS_PK_BYTES);
     if (!buf) return -1;
 
     size_t buf_pos = 0;
@@ -71,6 +72,10 @@ int nodus_witness_recompute_tx_hash(const uint8_t *tx_data, uint32_t tx_len,
     buf_pos += 10;
     p += 10;
     remaining -= 10;
+
+    /* Include sender_pubkey in hash (binds TX to sender identity) */
+    memcpy(buf + buf_pos, client_pubkey, NODUS_PK_BYTES);
+    buf_pos += NODUS_PK_BYTES;
 
     /* Skip embedded tx_hash (64 bytes) */
     if (remaining < 64) { free(buf); return -1; }
@@ -167,6 +172,7 @@ static int parse_output_total(const uint8_t *tx_data, uint32_t tx_len,
         /* amount is at offset version(1) + fingerprint(129) = 130 */
         uint64_t amount;
         memcpy(&amount, p + OUTPUT_VERSION_LEN + OUTPUT_FP_LEN, sizeof(uint64_t));
+        if (total + amount < total) return -1;  /* Overflow */
         total += amount;
 
         uint8_t memo_len = p[OUTPUT_FIXED_SIZE - 1];
@@ -223,7 +229,14 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
     }
 
     uint8_t computed_hash[NODUS_KEY_BYTES];
-    if (nodus_witness_recompute_tx_hash(tx_data, tx_len, computed_hash) != 0) {
+    /* Use all-zero pubkey for genesis (no sender), actual pubkey for spends */
+    const uint8_t *hash_pubkey = client_pubkey;
+    uint8_t zero_pk[NODUS_PK_BYTES];
+    if (is_genesis) {
+        memset(zero_pk, 0, NODUS_PK_BYTES);
+        hash_pubkey = zero_pk;
+    }
+    if (nodus_witness_recompute_tx_hash(tx_data, tx_len, hash_pubkey, computed_hash) != 0) {
         snprintf(reject_reason, reason_size, "tx_hash recomputation failed (truncated tx_data)");
         return -1;
     }
@@ -285,6 +298,11 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
                      "input %d: UTXO not found in set", i);
             return -1;
         }
+        if (total_input + utxo_amount < total_input) {
+            snprintf(reject_reason, reason_size,
+                     "input amount overflow at %d", i);
+            return -1;
+        }
         total_input += utxo_amount;
     }
 
@@ -303,7 +321,8 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
 
     /* ── Check 5: Fee ──────────────────────────────────────────── */
     uint64_t actual_fee = total_input - total_output;
-    uint64_t min_fee = (total_output * FEE_RATE_BPS) / 10000;
+    /* Use total_output/1000 instead of (total_output*10)/10000 to avoid overflow */
+    uint64_t min_fee = total_output / 1000;
     if (min_fee == 0) min_fee = 1;
 
     if (actual_fee < min_fee) {

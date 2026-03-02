@@ -25,17 +25,19 @@ extern "C" {
  * Recompute SHA3-512 hash from serialized tx_data.
  *
  * Matches dnac_tx_compute_hash() byte-for-byte:
- * Hashes version(1) + type(1) + timestamp(8), then each input's
- * nullifier(64) + amount(8), then each output's version(1) +
- * fingerprint(129) + amount(8) + seed(32) + memo_len(1) + memo(n).
+ * Hashes version(1) + type(1) + timestamp(8) + sender_pubkey(2592),
+ * then each input's nullifier(64) + amount(8), then each output's
+ * version(1) + fingerprint(129) + amount(8) + seed(32) + memo_len(1) + memo(n).
  * Count bytes and the embedded tx_hash are NOT included.
  *
- * @param tx_data   Serialized transaction bytes
- * @param tx_len    Length of tx_data
- * @param hash_out  Output 64-byte SHA3-512 hash
+ * @param tx_data        Serialized transaction bytes
+ * @param tx_len         Length of tx_data
+ * @param client_pubkey  Sender's public key (NODUS_PK_BYTES, included in hash)
+ * @param hash_out       Output 64-byte SHA3-512 hash
  * @return 0 on success, -1 on error (truncated data, etc.)
  */
 int nodus_witness_recompute_tx_hash(const uint8_t *tx_data, uint32_t tx_len,
+                                     const uint8_t *client_pubkey,
                                      uint8_t *hash_out);
 
 /**

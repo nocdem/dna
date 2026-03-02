@@ -57,6 +57,7 @@ extern "C" {
 #define DNAC_ERROR_NO_GENESIS          -20  /* System not initialized - no genesis */
 #define DNAC_ERROR_INVALID_TX_TYPE     -21  /* Invalid transaction type for current state */
 #define DNAC_ERROR_NOT_IMPLEMENTED     -22  /* Feature not yet implemented */
+#define DNAC_ERROR_OVERFLOW            -23  /* Integer overflow in amount arithmetic */
 
 /* Genesis configuration */
 #define DNAC_GENESIS_WITNESS_REQUIRED  3              /* 3-of-3 (unanimous) for genesis */
@@ -492,6 +493,68 @@ void dnac_free_witness_list(dnac_witness_info_t *servers, int count);
  * @return DNAC_SUCCESS or error code
  */
 int dnac_check_nullifier(dnac_context_t *ctx, const uint8_t *nullifier, bool *is_spent);
+
+/* ============================================================================
+ * Query Functions (v0.10.0 hub/spoke)
+ * ========================================================================== */
+
+/**
+ * @brief Query full transaction data from witnesses
+ *
+ * Returns the complete serialized transaction for the given hash.
+ * Caller must free *tx_data_out when done.
+ *
+ * @param ctx DNAC context
+ * @param tx_hash Transaction hash (DNAC_TX_HASH_SIZE bytes)
+ * @param tx_data_out Output: serialized transaction data (heap-allocated)
+ * @param tx_len_out Output: length of tx_data
+ * @param tx_type_out Output: transaction type (can be NULL)
+ * @param block_height_out Output: block height (can be NULL)
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_query_transaction(dnac_context_t *ctx,
+                            const uint8_t *tx_hash,
+                            uint8_t **tx_data_out,
+                            uint32_t *tx_len_out,
+                            uint8_t *tx_type_out,
+                            uint64_t *block_height_out);
+
+/**
+ * @brief Query block by height from witnesses
+ *
+ * @param ctx DNAC context
+ * @param height Block height to query
+ * @param tx_hash_out Output: transaction hash in block (DNAC_TX_HASH_SIZE bytes)
+ * @param tx_type_out Output: transaction type
+ * @param timestamp_out Output: block timestamp
+ * @param proposer_out Output: proposer witness ID (32 bytes, can be NULL)
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_query_block(dnac_context_t *ctx,
+                      uint64_t height,
+                      uint8_t *tx_hash_out,
+                      uint8_t *tx_type_out,
+                      uint64_t *timestamp_out,
+                      uint8_t *proposer_out);
+
+/**
+ * @brief Query block range from witnesses
+ *
+ * Returns blocks in [from_height, to_height] range.
+ * Caller must free *tx_hashes_out when done.
+ *
+ * @param ctx DNAC context
+ * @param from_height Start height (inclusive)
+ * @param to_height End height (inclusive)
+ * @param count_out Output: number of blocks returned
+ * @param total_out Output: total blocks on witness (can be NULL)
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_query_block_range(dnac_context_t *ctx,
+                            uint64_t from_height,
+                            uint64_t to_height,
+                            int *count_out,
+                            uint64_t *total_out);
 
 /* ============================================================================
  * Utility Functions

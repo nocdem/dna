@@ -76,9 +76,18 @@ static int witness_db_open(nodus_witness_t *witness, const char *data_path) {
         "  commitment BLOB,"
         "  created_at INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
         ");"
+        "CREATE TABLE IF NOT EXISTS committed_transactions ("
+        "  tx_hash BLOB PRIMARY KEY,"
+        "  tx_type INTEGER NOT NULL,"
+        "  tx_data BLOB NOT NULL,"
+        "  tx_len  INTEGER NOT NULL,"
+        "  block_height INTEGER NOT NULL DEFAULT 0,"
+        "  timestamp INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
+        ");"
         "CREATE INDEX IF NOT EXISTS idx_utxo_owner ON utxo_set(owner);"
         "CREATE INDEX IF NOT EXISTS idx_ledger_epoch ON ledger_entries(epoch);"
-        "CREATE INDEX IF NOT EXISTS idx_ledger_tx ON ledger_entries(tx_hash);";
+        "CREATE INDEX IF NOT EXISTS idx_ledger_tx ON ledger_entries(tx_hash);"
+        "CREATE INDEX IF NOT EXISTS idx_ctx_height ON committed_transactions(block_height);";
 
     char *err_msg = NULL;
     rc = sqlite3_exec(witness->db, schema, NULL, NULL, &err_msg);

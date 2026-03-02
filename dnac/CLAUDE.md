@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-02-07 | **Status:** DESIGN | **Version:** v0.10.0
+**Last Updated:** 2026-03-02 | **Status:** DESIGN | **Version:** v0.10.1
 
 ---
 
@@ -193,7 +193,7 @@ OUTPUT:
 **EVERY successful build that will be pushed MUST increment the version.**
 
 **Version File:** `include/dnac/version.h`
-**Current:** v0.9.0
+**Current:** v0.10.1
 
 **Which Number to Bump:**
 - **PATCH** (0.1.X): Bug fixes, small features
@@ -318,6 +318,9 @@ ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/dnac-asan" ./dnac-witness -p 4200
 | `DNAC_SIGNATURE_SIZE` | 4627 | Dilithium5 signature |
 | `DNAC_PUBKEY_SIZE` | 2592 | Dilithium5 public key |
 | `DNAC_WITNESSES_REQUIRED` | 2 | Witnesses needed for valid TX |
+| `DNAC_NODUS_MSG_TX_QUERY` | 144 | Query full TX by hash (hub/spoke) |
+| `DNAC_NODUS_MSG_BLOCK_QUERY` | 146 | Query block by height (hub/spoke) |
+| `DNAC_NODUS_MSG_BLOCK_RANGE_QUERY` | 148 | Query block range (hub/spoke) |
 
 ---
 

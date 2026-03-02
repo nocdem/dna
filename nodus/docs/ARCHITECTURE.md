@@ -32,9 +32,8 @@ built from the ground up for post-quantum security.
 - Client SDK with auto-reconnect, multi-server failover, and real-time push
 - SQLite persistent storage with TTL-based expiry
 
-**Scale:** ~11,200 lines of C (6,500 source + 530 headers + 4,200 tests) across 21 source
-files and 13 test files with 139 test functions. External dependencies: OpenSSL (random
-bytes), SQLite (storage), and json-c (server config parsing).
+**Scale:** ~17,000+ lines of C across 32 source files and 15 test files. External
+dependencies: OpenSSL (random bytes), SQLite (storage), and json-c (server config parsing).
 
 ---
 
@@ -69,6 +68,8 @@ Nodus uses a two-tier protocol architecture:
   PBFT heartbeats (UDP)
 - **Tier 2 (T2)** — Client-to-server: authentication, DHT operations, channel messaging,
   real-time push notifications (all TCP)
+- **Tier 3 (T3)** — DNAC witness: BFT consensus for double-spend prevention, UTXO
+  management, hub/spoke TX/block queries (TCP, authenticated sessions)
 
 ### Directory Structure
 
@@ -102,10 +103,17 @@ nodus/
 │   ├── server/
 │   │   ├── nodus_server.c     # Server event loop + message dispatch
 │   │   └── nodus_auth.c       # Dilithium5 challenge-response auth
-│   └── client/
-│       ├── nodus_client.c     # Client SDK (connect, auth, DHT, channels)
-│       ├── nodus_singleton.c  # Thread-safe global client instance
-│       └── nodus_republish.c  # Migration republish helper
+│   ├── client/
+│   │   ├── nodus_client.c     # Client SDK (connect, auth, DHT, channels, DNAC)
+│   │   ├── nodus_singleton.c  # Thread-safe global client instance
+│   │   └── nodus_republish.c  # Migration republish helper
+│   └── witness/               # DNAC BFT witness module (embedded)
+│       ├── nodus_witness.c          # Witness init, DB schema, lifecycle
+│       ├── nodus_witness_db.c/h     # SQLite ops (nullifiers, ledger, UTXOs, TXs, blocks)
+│       ├── nodus_witness_bft.c/h    # BFT consensus state machine (PBFT)
+│       ├── nodus_witness_peer.c/h   # TCP peer mesh management
+│       ├── nodus_witness_handlers.c/h # DNAC message dispatch (spend, query, block)
+│       └── nodus_witness_verify.c/h # TX verification (hash, sig, balance, fee, nullifiers)
 ├── tests/
 │   ├── test_wire.c            # Wire frame tests
 │   ├── test_cbor.c            # CBOR encoder/decoder tests
@@ -1010,6 +1018,8 @@ to `/usr/local/bin/`, and restarts the systemd service.
 | `test_tcp.c` | TCP transport | ~5 |
 | `test_client.c` | Client SDK | ~8 |
 | `test_server.c` | Server integration | ~7 |
+| `test_tier3.c` | T3 (DNAC BFT) protocol encode/decode | ~10 |
+| `test_witness_verify.c` | TX verification (hash, sig, balance) | ~10 |
 
 ### Integration Tests
 
@@ -1034,3 +1044,133 @@ ctest --output-on-failure
 ./test_wire
 ./test_tier2
 ```
+
+---
+
+## 15. Tier 3 Protocol — DNAC Witness (BFT Consensus)
+
+The DNAC witness module is embedded in the Nodus server as an optional component. When
+enabled via config, it provides UTXO-based digital cash with BFT consensus for
+double-spend prevention.
+
+### Protocol Overview
+
+Tier 3 uses the same CBOR wire format as T1/T2 but with DNAC-specific method names:
+
+| Method | Direction | Description |
+|--------|-----------|-------------|
+| `dnac_spend` | Client→Witness | Submit spend TX for BFT consensus |
+| `dnac_nullifier` | Client→Witness | Check if nullifier is spent |
+| `dnac_supply` | Client→Witness | Query supply state |
+| `dnac_utxo` | Client→Witness | Query UTXOs by owner |
+| `dnac_utxo_proof` | Client→Witness | Query UTXO existence proof |
+| `dnac_ledger` | Client→Witness | Query ledger entry by hash |
+| `dnac_ledger_range` | Client→Witness | Query ledger entries by range |
+| `dnac_tx` | Client→Witness | Query full TX data by hash |
+| `dnac_block` | Client→Witness | Query block by height |
+| `dnac_block_range` | Client→Witness | Query block range |
+
+### BFT Consensus Flow
+
+```
+Client → Any Witness → Forward to Leader → Consensus Round → Response
+
+PROPOSE → PREVOTE → PRECOMMIT → COMMIT
+  │         │          │          │
+  └─ Leader creates proposal with TX data
+            └─ Witnesses verify TX (6 checks) and vote
+                      └─ Quorum (2/3) reached
+                                 └─ Atomic commit: nullifiers + UTXOs + TX storage
+```
+
+**TX Verification (6 checks before PREVOTE):**
+1. tx_hash integrity (recompute SHA3-512)
+2. Sender signature verification (Dilithium5)
+3. UTXO balance validation (sum(inputs) >= sum(outputs))
+4. Fee validation (>= minimum fee rate)
+5. Duplicate nullifier detection
+6. Double-spend check against committed nullifiers
+
+### Witness Database Schema
+
+SQLite tables managed by the witness module (`nodus_witness_db.c`):
+
+| Table | Purpose |
+|-------|---------|
+| `nullifiers` | Spent nullifier tracking (double-spend prevention) |
+| `ledger` | Transaction ledger with Merkle roots |
+| `utxo_set` | Shared UTXO set for balance validation |
+| `blocks` | Block chain (height → tx_hash mapping) |
+| `epochs` | BFT-signed epoch roots |
+| `supply_state` | Genesis supply, burned fees, current supply |
+| `committed_transactions` | Full serialized TX data (hub/spoke queries) |
+
+---
+
+## 16. Hub/Spoke Query Protocol (v0.10.0)
+
+The hub/spoke model allows lightweight clients to trust witnesses and query the full
+blockchain view without local verification.
+
+### Architecture
+
+```
+┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+│   Wallet A  │      │   Wallet B  │      │   Wallet C  │
+│  (client)   │      │  (client)   │      │  (client)   │
+└──────┬──────┘      └──────┬──────┘      └──────┬──────┘
+       │ TCP 4001           │ TCP 4001           │ TCP 4001
+       ▼                    ▼                    ▼
+┌──────────────────────────────────────────────────────────┐
+│                 WITNESS CLUSTER (3 nodes)                 │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐               │
+│  │ witness-1│◄─┤ witness-2│◄─┤ witness-3│               │
+│  │  BFT +   │─►│  BFT +   │─►│  BFT +   │               │
+│  │  TX DB   │  │  TX DB   │  │  TX DB   │               │
+│  └──────────┘  └──────────┘  └──────────┘               │
+│  committed_transactions table stores full tx_data        │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Message Types (CBOR over Nodus Tier 2 TCP)
+
+| Message | ID | CBOR Method | Description |
+|---------|----|-------------|-------------|
+| TX_QUERY | 144 | `dnac_tx` | Query full TX by hash |
+| TX_RESPONSE | 145 | — | Returns tx_data blob, tx_type, block_height, timestamp |
+| BLOCK_QUERY | 146 | `dnac_block` | Query block by height |
+| BLOCK_RESPONSE | 147 | — | Returns tx_hash, tx_type, timestamp, proposer_id |
+| BLOCK_RANGE_QUERY | 148 | `dnac_block_range` | Query block range |
+| BLOCK_RANGE_RESPONSE | 149 | — | Returns array of blocks (max 100) |
+
+### Client SDK Functions
+
+```c
+// Query full transaction by hash (caller frees tx_data)
+int nodus_client_dnac_tx(nodus_client_t *client, const uint8_t *tx_hash,
+                          nodus_dnac_tx_result_t *result);
+void nodus_client_free_tx_result(nodus_dnac_tx_result_t *result);
+
+// Query block by height
+int nodus_client_dnac_block(nodus_client_t *client, uint64_t height,
+                             nodus_dnac_block_result_t *result);
+
+// Query block range (caller frees blocks array)
+int nodus_client_dnac_block_range(nodus_client_t *client,
+                                    uint64_t from_height, uint64_t to_height,
+                                    nodus_dnac_block_range_result_t *result);
+void nodus_client_free_block_range_result(nodus_dnac_block_range_result_t *result);
+```
+
+### TX Storage in BFT Commit
+
+During `do_commit_db()`, after nullifier and UTXO set updates, the full serialized
+`tx_data` is stored in the `committed_transactions` table:
+
+```sql
+INSERT OR IGNORE INTO committed_transactions
+    (tx_hash, tx_type, tx_data, tx_len, block_height) VALUES (?,?,?,?,?);
+```
+
+This ensures every committed transaction is queryable by hash, enabling clients to
+retrieve full transaction details without maintaining a local copy of the blockchain.

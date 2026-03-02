@@ -18,6 +18,7 @@
 /* libdna crypto utilities */
 #include "crypto/utils/qgp_dilithium.h"
 #include "crypto/utils/qgp_random.h"
+#include "dnac/safe_math.h"
 
 /* Forward declarations for verification functions (verify.c) */
 extern int verify_witnesses(const dnac_transaction_t *tx);
@@ -108,10 +109,10 @@ int dnac_tx_finalize(dnac_transaction_t *tx,
         return DNAC_ERROR_INVALID_PROOF;  /* Outputs exceed inputs */
     }
 
-    /* Store sender's public key */
+    /* Store sender's public key BEFORE hash (sender_pubkey is part of tx_hash) */
     memcpy(tx->sender_pubkey, sender_pubkey, DNAC_PUBKEY_SIZE);
 
-    /* Compute transaction hash */
+    /* Compute transaction hash (includes sender_pubkey) */
     int result = dnac_tx_compute_hash(tx, tx->tx_hash);
     if (result != DNAC_SUCCESS) {
         return result;
@@ -205,6 +206,9 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
     EVP_DigestUpdate(ctx, &tx->type, sizeof(tx->type));
     EVP_DigestUpdate(ctx, &tx->timestamp, sizeof(tx->timestamp));
 
+    /* Hash sender public key (binds TX to sender identity) */
+    EVP_DigestUpdate(ctx, tx->sender_pubkey, DNAC_PUBKEY_SIZE);
+
     /* Hash inputs */
     for (int i = 0; i < tx->input_count; i++) {
         EVP_DigestUpdate(ctx, tx->inputs[i].nullifier, DNAC_NULLIFIER_SIZE);
@@ -238,7 +242,9 @@ uint64_t dnac_tx_total_input(const dnac_transaction_t *tx) {
 
     uint64_t total = 0;
     for (int i = 0; i < tx->input_count; i++) {
-        total += tx->inputs[i].amount;
+        if (safe_add_u64(total, tx->inputs[i].amount, &total) != 0) {
+            return UINT64_MAX;  /* Overflow sentinel */
+        }
     }
     return total;
 }
@@ -248,7 +254,9 @@ uint64_t dnac_tx_total_output(const dnac_transaction_t *tx) {
 
     uint64_t total = 0;
     for (int i = 0; i < tx->output_count; i++) {
-        total += tx->outputs[i].amount;
+        if (safe_add_u64(total, tx->outputs[i].amount, &total) != 0) {
+            return UINT64_MAX;  /* Overflow sentinel */
+        }
     }
     return total;
 }
