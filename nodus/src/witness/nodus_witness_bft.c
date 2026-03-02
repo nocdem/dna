@@ -75,11 +75,32 @@ static bool is_replay(const uint8_t *sender_id, uint64_t nonce,
     return false;
 }
 
+/* ── Chain ID validation ─────────────────────────────────────────── */
+
+/**
+ * CRITICAL-2: Verify message chain_id matches our configured chain_id.
+ * Prevents cross-zone replay attacks when multi-zone is enabled.
+ * All-zero chain_id means pre-genesis / default zone — skip check.
+ */
+static bool verify_chain_id(nodus_witness_t *w, const uint8_t *msg_chain_id) {
+    static const uint8_t zero[32] = {0};
+    /* If our chain_id is not set, skip validation (pre-genesis) */
+    if (memcmp(w->chain_id, zero, 32) == 0) return true;
+    /* If message chain_id matches ours, OK */
+    if (memcmp(w->chain_id, msg_chain_id, 32) == 0) return true;
+    fprintf(stderr, "%s: chain_id mismatch — rejecting message\n", LOG_TAG);
+    return false;
+}
+
 /* ── Nonce generation ────────────────────────────────────────────── */
 
 static uint64_t generate_nonce(void) {
     uint64_t nonce;
-    nodus_random((uint8_t *)&nonce, sizeof(nonce));
+    /* CRITICAL-3: Abort on RNG failure — no weak fallback */
+    if (nodus_random((uint8_t *)&nonce, sizeof(nonce)) != 0) {
+        fprintf(stderr, "%s: FATAL: Cannot generate secure nonce\n", LOG_TAG);
+        abort();
+    }
     return nonce;
 }
 
@@ -565,6 +586,10 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
         return -1;
 
+    /* CRITICAL-2: Chain ID validation */
+    if (!verify_chain_id(w, hdr->chain_id))
+        return -1;
+
     /* Check for existing round in progress */
     if (w->round_state.phase != NODUS_W_PHASE_IDLE) {
         fprintf(stderr, "%s: proposal rejected — round in progress (phase=%d)\n",
@@ -676,6 +701,10 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
 
     /* Replay check */
     if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
+        return -1;
+
+    /* CRITICAL-2: Chain ID validation */
+    if (!verify_chain_id(w, hdr->chain_id))
         return -1;
 
     /* Verify round and view match */
@@ -936,6 +965,10 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
     if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
         return -1;
 
+    /* CRITICAL-2: Chain ID validation */
+    if (!verify_chain_id(w, hdr->chain_id))
+        return -1;
+
     /* Skip if we already committed this round */
     if (hdr->round <= w->last_committed_round) {
         fprintf(stderr, "%s: round %lu already committed, skipping\n",
@@ -1094,6 +1127,10 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
     if (is_replay(hdr->sender_id, hdr->nonce, hdr->timestamp))
         return -1;
 
+    /* CRITICAL-2: Chain ID validation */
+    if (!verify_chain_id(w, hdr->chain_id))
+        return -1;
+
     /* Verify sender is in roster */
     int sender_idx = nodus_witness_roster_find(&w->roster, hdr->sender_id);
     if (sender_idx < 0)
@@ -1174,6 +1211,10 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
 
     const nodus_t3_newview_t *nv = &msg->newview;
     const nodus_t3_header_t *hdr = &msg->header;
+
+    /* CRITICAL-2: Chain ID validation */
+    if (!verify_chain_id(w, hdr->chain_id))
+        return -1;
 
     /* Verify sender is expected new leader */
     uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;

@@ -5,7 +5,11 @@
 
 #include "dnac/wallet.h"
 #include "dnac/db.h"
+#include "dnac/safe_math.h"
+#include "crypto/utils/qgp_log.h"
 #include <stdlib.h>
+
+#define LOG_TAG "BALANCE"
 
 int dnac_wallet_calculate_balance(dnac_context_t *ctx, dnac_balance_t *balance) {
     if (!ctx || !balance) return DNAC_ERROR_INVALID_PARAM;
@@ -34,10 +38,21 @@ int dnac_wallet_calculate_balance(dnac_context_t *ctx, dnac_balance_t *balance) 
     for (int i = 0; i < count; i++) {
         switch (utxos[i].status) {
             case DNAC_UTXO_UNSPENT:
-                balance->confirmed += utxos[i].amount;
+                /* HIGH-8: Safe overflow check on balance */
+                if (safe_add_u64(balance->confirmed, utxos[i].amount,
+                                 &balance->confirmed) != 0) {
+                    QGP_LOG_ERROR(LOG_TAG, "Balance overflow at UTXO %d", i);
+                    free(utxos);
+                    return DNAC_ERROR_OVERFLOW;
+                }
                 break;
             case DNAC_UTXO_PENDING:
-                balance->locked += utxos[i].amount;
+                if (safe_add_u64(balance->locked, utxos[i].amount,
+                                 &balance->locked) != 0) {
+                    QGP_LOG_ERROR(LOG_TAG, "Locked balance overflow at UTXO %d", i);
+                    free(utxos);
+                    return DNAC_ERROR_OVERFLOW;
+                }
                 break;
             default:
                 /* SPENT - shouldn't be returned by get_unspent, but ignore */

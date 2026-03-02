@@ -30,6 +30,7 @@
 #include <stdbool.h>
 #include <time.h>
 #include <limits.h>
+#include "dnac/safe_math.h"
 
 #define LOG_TAG "GENESIS"
 
@@ -132,7 +133,11 @@ int dnac_tx_create_genesis(const dnac_genesis_recipient_t *recipients,
             QGP_LOG_ERROR(LOG_TAG, "Recipient %d has empty fingerprint", i);
             return DNAC_ERROR_INVALID_PARAM;
         }
-        total_supply += recipients[i].amount;
+        /* HIGH-3: Safe overflow check on total supply */
+        if (safe_add_u64(total_supply, recipients[i].amount, &total_supply) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Total supply overflow at recipient %d", i);
+            return DNAC_ERROR_OVERFLOW;
+        }
     }
 
     /* Create GENESIS transaction */

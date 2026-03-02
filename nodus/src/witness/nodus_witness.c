@@ -199,6 +199,13 @@ int nodus_witness_init(nodus_witness_t *witness,
     return 0;
 }
 
+void nodus_witness_set_chain_id(nodus_witness_t *witness,
+                                const uint8_t *chain_id) {
+    if (!witness || !chain_id) return;
+    memcpy(witness->chain_id, chain_id, 32);
+    fprintf(stderr, "%s: chain_id set\n", LOG_TAG);
+}
+
 void nodus_witness_tick(nodus_witness_t *witness) {
     if (!witness || !witness->running) return;
 

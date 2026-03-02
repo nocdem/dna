@@ -25,12 +25,17 @@
 /* ── Nullifier operations ────────────────────────────────────────── */
 
 bool nodus_witness_nullifier_exists(nodus_witness_t *w, const uint8_t *nullifier) {
-    if (!w || !w->db || !nullifier) return false;
+    /* HIGH-10: Fail-closed — DB errors assume spent to prevent double-spend */
+    if (!w || !w->db || !nullifier) return true;
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
         "SELECT 1 FROM nullifiers WHERE nullifier = ?", -1, &stmt, NULL);
-    if (rc != SQLITE_OK) return false;
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "%s: nullifier query prepare failed - assuming spent (fail-closed)\n",
+                LOG_TAG);
+        return true;
+    }
 
     sqlite3_bind_blob(stmt, 1, nullifier, NODUS_T3_NULLIFIER_LEN, SQLITE_STATIC);
     bool exists = (sqlite3_step(stmt) == SQLITE_ROW);

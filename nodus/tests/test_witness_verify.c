@@ -180,12 +180,16 @@ static void test_valid_spend(void) {
     memset(seed, 0x42, sizeof(seed));
     nodus_identity_from_seed(seed, &sender);
 
+    /* Compute sender fingerprint for UTXO ownership */
+    char sender_fp[129];
+    nodus_fingerprint_hex(&sender.pk, sender_fp);
+
     /* Create nullifier */
     uint8_t nullifier[NULLIFIER_LEN];
     memset(nullifier, 0xAA, NULLIFIER_LEN);
 
-    /* Add UTXO: 1000 units */
-    add_utxo(&w, nullifier, "test_owner", 1000);
+    /* Add UTXO: 1000 units (owned by sender) */
+    add_utxo(&w, nullifier, sender_fp, 1000);
 
     /* Output: 999 units (fee = 1, min fee for 999 = 1) */
     uint64_t in_amt = 1000;
@@ -346,10 +350,14 @@ static void test_insufficient_balance(void) {
     memset(seed, 0x77, sizeof(seed));
     nodus_identity_from_seed(seed, &sender);
 
+    /* Compute sender fingerprint for UTXO ownership */
+    char sender_fp[129];
+    nodus_fingerprint_hex(&sender.pk, sender_fp);
+
     uint8_t nullifier[NULLIFIER_LEN];
     memset(nullifier, 0x22, NULLIFIER_LEN);
-    /* UTXO has only 100 units */
-    add_utxo(&w, nullifier, "owner", 100);
+    /* UTXO has only 100 units (owned by sender) */
+    add_utxo(&w, nullifier, sender_fp, 100);
 
     /* Try to spend 500 (more than 100) */
     uint64_t in_amt = 500;  /* client claims 500 but UTXO only has 100 */
@@ -401,10 +409,14 @@ static void test_fee_too_low(void) {
     memset(seed, 0x88, sizeof(seed));
     nodus_identity_from_seed(seed, &sender);
 
+    /* Compute sender fingerprint for UTXO ownership */
+    char sender_fp[129];
+    nodus_fingerprint_hex(&sender.pk, sender_fp);
+
     uint8_t nullifier[NULLIFIER_LEN];
     memset(nullifier, 0x44, NULLIFIER_LEN);
-    /* UTXO has 100000 units */
-    add_utxo(&w, nullifier, "owner", 100000);
+    /* UTXO has 100000 units (owned by sender) */
+    add_utxo(&w, nullifier, sender_fp, 100000);
 
     /* Output: 99999 (fee = 1, but min fee for 99999 = 99999*10/10000 = 99) */
     uint64_t in_amt = 100000;
@@ -575,11 +587,15 @@ static void test_double_spend(void) {
     memset(seed, 0x99, sizeof(seed));
     nodus_identity_from_seed(seed, &sender);
 
+    /* Compute sender fingerprint for UTXO ownership */
+    char sender_fp[129];
+    nodus_fingerprint_hex(&sender.pk, sender_fp);
+
     uint8_t nullifier[NULLIFIER_LEN];
     memset(nullifier, 0xBB, NULLIFIER_LEN);
 
-    /* Add UTXO AND mark nullifier as spent */
-    add_utxo(&w, nullifier, "owner", 1000);
+    /* Add UTXO AND mark nullifier as spent (owned by sender) */
+    add_utxo(&w, nullifier, sender_fp, 1000);
     add_nullifier(&w, nullifier);
 
     uint64_t in_amt = 1000;

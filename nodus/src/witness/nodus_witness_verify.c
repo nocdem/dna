@@ -287,6 +287,18 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
         return -1;
     }
 
+    /* Compute sender fingerprint from pubkey for ownership check */
+    char sender_fp[129] = {0};
+    {
+        nodus_pubkey_t sender_pk;
+        memcpy(sender_pk.bytes, client_pubkey, NODUS_PK_BYTES);
+        if (nodus_fingerprint_hex(&sender_pk, sender_fp) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "failed to compute sender fingerprint");
+            return -1;
+        }
+    }
+
     uint64_t total_input = 0;
     for (int i = 0; i < nullifier_count; i++) {
         const uint8_t *nul = nullifiers + i * NODUS_T3_NULLIFIER_LEN;
@@ -298,6 +310,14 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
                      "input %d: UTXO not found in set", i);
             return -1;
         }
+
+        /* CRITICAL-4: Verify UTXO is owned by the sender */
+        if (owner[0] != '\0' && strcmp(owner, sender_fp) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "input %d: UTXO not owned by sender", i);
+            return -1;
+        }
+
         if (total_input + utxo_amount < total_input) {
             snprintf(reject_reason, reason_size,
                      "input amount overflow at %d", i);
