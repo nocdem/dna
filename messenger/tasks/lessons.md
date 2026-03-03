@@ -35,4 +35,4 @@
 ## Process / Self-Discipline
 - **ALWAYS update lessons.md and MEMORY.md after fixing a bug or learning something** — don't wait for user to remind you
 - After every fix: update lessons.md with the pattern, update MEMORY.md with current state
-- GitLab push is required alongside GitHub — always push to both repos
+- **ALWAYS push to BOTH repos in a single command**: `git push origin main && git push gitlab main` — NEVER push to just one
