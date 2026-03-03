@@ -1,8 +1,9 @@
 /**
  * Nodus v5 — TCP Transport
  *
- * Non-blocking TCP with epoll, connection pool, and frame-based I/O.
- * Used for Tier 1 data (Nodus-Nodus) and Tier 2 (Client-Nodus).
+ * Cross-platform non-blocking TCP with connection pool and frame-based I/O.
+ * Linux/Android: uses epoll for server (high-perf multi-connection).
+ * Windows: uses select() (client SDK only — server is Linux-only).
  *
  * @file nodus_tcp.h
  */
@@ -71,7 +72,11 @@ typedef void (*nodus_tcp_event_fn)(nodus_tcp_conn_t *conn, void *ctx);
 
 typedef struct {
     int                 listen_fd;
+#ifdef _WIN32
+    int                 poll_fd;     /* unused on Windows, kept for compat */
+#else
     int                 epoll_fd;
+#endif
     bool                owns_epoll;
 
     nodus_tcp_conn_t   *pool[NODUS_TCP_MAX_CONNS];
@@ -89,11 +94,12 @@ typedef struct {
 
 /**
  * Initialize TCP transport.
- * @param shared_epoll_fd  If >= 0, use this epoll fd. Otherwise creates own.
+ * @param shared_epoll_fd  If >= 0, use this epoll fd (Linux only). Otherwise creates own.
+ *                         Ignored on Windows.
  */
 int nodus_tcp_init(nodus_tcp_t *tcp, int shared_epoll_fd);
 
-/** Start listening for incoming connections. */
+/** Start listening for incoming connections (server only, Linux). */
 int nodus_tcp_listen(nodus_tcp_t *tcp, const char *bind_ip, uint16_t port);
 
 /** Connect to a remote peer (non-blocking). Returns connection or NULL. */
@@ -109,7 +115,7 @@ int nodus_tcp_send(nodus_tcp_conn_t *conn,
 
 /**
  * Poll for events. Returns number of events processed.
- * @param timeout_ms  epoll wait timeout (-1 = block forever)
+ * @param timeout_ms  wait timeout (-1 = block forever)
  */
 int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms);
 
@@ -124,7 +130,7 @@ nodus_tcp_conn_t *nodus_tcp_find_by_id(nodus_tcp_t *tcp,
 nodus_tcp_conn_t *nodus_tcp_find_by_addr(nodus_tcp_t *tcp,
                                           const char *ip, uint16_t port);
 
-/** Get epoll fd (for sharing with UDP transport). */
+/** Get epoll fd (for sharing with UDP transport). Linux only. */
 int nodus_tcp_epoll_fd(const nodus_tcp_t *tcp);
 
 /** Current unix timestamp (seconds). */

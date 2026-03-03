@@ -1,20 +1,50 @@
 /**
  * Nodus v5 — TCP Transport Implementation
  *
- * Non-blocking TCP with epoll, buffered frame I/O, connection pool.
+ * Cross-platform non-blocking TCP with buffered frame I/O, connection pool.
+ * Linux/Android: epoll (high-perf server + client)
+ * Windows: select() (client SDK only)
  */
 
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_wire.h"
 
-#include <sys/epoll.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <errno.h>
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+  #pragma comment(lib, "ws2_32.lib")
+  #define SHUT_RDWR SD_BOTH
+  typedef int ssize_t;
+  #define close(fd) closesocket(fd)
+  #define poll_read(fd, buf, len)  recv(fd, (char*)(buf), (int)(len), 0)
+  #define poll_write(fd, buf, len) send(fd, (const char*)(buf), (int)(len), 0)
+  static int set_nonblocking(int fd) {
+      u_long mode = 1;
+      return ioctlsocket(fd, FIONBIO, &mode);
+  }
+  static int get_socket_error(void) { return WSAGetLastError(); }
+  #define IS_EAGAIN(e) ((e) == WSAEWOULDBLOCK)
+  #define IS_EINPROGRESS(e) ((e) == WSAEWOULDBLOCK)
+#else
+  #include <sys/epoll.h>
+  #include <sys/socket.h>
+  #include <netinet/in.h>
+  #include <netinet/tcp.h>
+  #include <arpa/inet.h>
+  #include <fcntl.h>
+  #include <unistd.h>
+  #include <errno.h>
+  #define poll_read(fd, buf, len)  read(fd, buf, len)
+  #define poll_write(fd, buf, len) write(fd, buf, len)
+  static int set_nonblocking(int fd) {
+      int flags = fcntl(fd, F_GETFL, 0);
+      if (flags < 0) return -1;
+      return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  }
+  static int get_socket_error(void) { return errno; }
+  #define IS_EAGAIN(e) ((e) == EAGAIN || (e) == EWOULDBLOCK)
+  #define IS_EINPROGRESS(e) ((e) == EINPROGRESS)
+#endif
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -23,31 +53,27 @@
 
 /* ── Socket helpers ──────────────────────────────────────────────── */
 
-static int set_nonblocking(int fd) {
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0) return -1;
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-
 static void set_keepalive(int fd) {
     int yes = 1;
-    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (const char *)&yes, sizeof(yes));
+#ifndef _WIN32
     int idle = NODUS_TCP_KEEPIDLE;
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
     int intvl = NODUS_TCP_KEEPINTVL;
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
     int cnt = NODUS_TCP_KEEPCNT;
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
+#endif
 }
 
 static void set_nodelay(int fd) {
     int yes = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&yes, sizeof(yes));
 }
 
 static void set_reuseaddr(int fd) {
     int yes = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof(yes));
 }
 
 /* ── Connection management ───────────────────────────────────────── */
@@ -85,7 +111,9 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     if (!conn) return;
 
     if (conn->fd >= 0) {
+#ifndef _WIN32
         epoll_ctl(tcp->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+#endif
         close(conn->fd);
     }
 
@@ -111,6 +139,7 @@ static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed) {
     return 0;
 }
 
+#ifndef _WIN32
 static void epoll_add(int epoll_fd, int fd, uint32_t events, void *ptr) {
     struct epoll_event ev = { .events = events, .data.ptr = ptr };
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev);
@@ -120,6 +149,7 @@ static void epoll_mod(int epoll_fd, int fd, uint32_t events, void *ptr) {
     struct epoll_event ev = { .events = events, .data.ptr = ptr };
     epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
 }
+#endif
 
 /* ── Frame parsing ───────────────────────────────────────────────── */
 
@@ -152,7 +182,100 @@ static void try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 
 /* ── Event handlers ──────────────────────────────────────────────── */
 
-static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
+static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    for (;;) {
+        if (buf_ensure(&conn->rbuf, &conn->rcap, conn->rlen + 4096) != 0) {
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(conn, tcp->cb_ctx);
+            conn_free(tcp, conn);
+            return;
+        }
+
+        ssize_t n = poll_read(conn->fd, conn->rbuf + conn->rlen,
+                              conn->rcap - conn->rlen);
+        if (n > 0) {
+            conn->rlen += (size_t)n;
+            conn->last_activity = nodus_time_now();
+            continue;
+        }
+        if (n == 0) {
+            /* Peer closed — process any buffered data before disconnect */
+            try_parse_frames(tcp, conn);
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(conn, tcp->cb_ctx);
+            conn_free(tcp, conn);
+            return;
+        }
+        /* n < 0 */
+        if (IS_EAGAIN(get_socket_error()))
+            break;
+        /* Real error */
+        if (tcp->on_disconnect)
+            tcp->on_disconnect(conn, tcp->cb_ctx);
+        conn_free(tcp, conn);
+        return;
+    }
+
+    try_parse_frames(tcp, conn);
+}
+
+static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    while (conn->wpos < conn->wlen) {
+        ssize_t n = poll_write(conn->fd, conn->wbuf + conn->wpos,
+                               conn->wlen - conn->wpos);
+        if (n > 0) {
+            conn->wpos += (size_t)n;
+            continue;
+        }
+        if (n < 0 && IS_EAGAIN(get_socket_error()))
+            break;
+        /* Error */
+        if (tcp->on_disconnect)
+            tcp->on_disconnect(conn, tcp->cb_ctx);
+        conn_free(tcp, conn);
+        return;
+    }
+
+    if (conn->wpos >= conn->wlen) {
+        conn->wpos = 0;
+        conn->wlen = 0;
+#ifndef _WIN32
+        epoll_mod(tcp->epoll_fd, conn->fd, EPOLLIN | EPOLLET, conn);
+#endif
+    }
+}
+
+static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    int err = 0;
+    socklen_t len = sizeof(err);
+    getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (char *)&err, &len);
+
+    if (err != 0) {
+        if (tcp->on_disconnect)
+            tcp->on_disconnect(conn, tcp->cb_ctx);
+        conn_free(tcp, conn);
+        return;
+    }
+
+    conn->state = NODUS_CONN_CONNECTED;
+    conn->connected_at = nodus_time_now();
+    conn->last_activity = conn->connected_at;
+    set_keepalive(conn->fd);
+    set_nodelay(conn->fd);
+
+#ifndef _WIN32
+    /* Switch to read mode */
+    uint32_t events = EPOLLIN | EPOLLET;
+    if (conn->wlen > conn->wpos) events |= EPOLLOUT;
+    epoll_mod(tcp->epoll_fd, conn->fd, events, conn);
+#endif
+
+    if (tcp->on_connect)
+        tcp->on_connect(conn, tcp->cb_ctx);
+}
+
+#ifndef _WIN32
+static void handle_read_fwd(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
 
 static void handle_accept(nodus_tcp_t *tcp) {
     struct sockaddr_in addr;
@@ -186,104 +309,25 @@ static void handle_accept(nodus_tcp_t *tcp) {
 
     /* Edge-triggered: data may already be in buffer before epoll_add.
      * Do an immediate read to avoid missing the initial EPOLLIN edge. */
+    handle_read_fwd(tcp, conn);
+}
+
+/* Forward-declared wrapper to call handle_read from handle_accept */
+static void handle_read_fwd(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     handle_read(tcp, conn);
 }
-
-static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
-    for (;;) {
-        if (buf_ensure(&conn->rbuf, &conn->rcap, conn->rlen + 4096) != 0) {
-            if (tcp->on_disconnect)
-                tcp->on_disconnect(conn, tcp->cb_ctx);
-            conn_free(tcp, conn);
-            return;
-        }
-
-        ssize_t n = read(conn->fd, conn->rbuf + conn->rlen,
-                          conn->rcap - conn->rlen);
-        if (n > 0) {
-            conn->rlen += (size_t)n;
-            conn->last_activity = nodus_time_now();
-            continue;
-        }
-        if (n == 0) {
-            /* Peer closed — process any buffered data before disconnect */
-            try_parse_frames(tcp, conn);
-            if (tcp->on_disconnect)
-                tcp->on_disconnect(conn, tcp->cb_ctx);
-            conn_free(tcp, conn);
-            return;
-        }
-        /* n < 0 */
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
-            break;
-        /* Real error */
-        if (tcp->on_disconnect)
-            tcp->on_disconnect(conn, tcp->cb_ctx);
-        conn_free(tcp, conn);
-        return;
-    }
-
-    try_parse_frames(tcp, conn);
-}
-
-static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
-    while (conn->wpos < conn->wlen) {
-        ssize_t n = write(conn->fd, conn->wbuf + conn->wpos,
-                           conn->wlen - conn->wpos);
-        if (n > 0) {
-            conn->wpos += (size_t)n;
-            continue;
-        }
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
-            break;
-        /* Error */
-        if (tcp->on_disconnect)
-            tcp->on_disconnect(conn, tcp->cb_ctx);
-        conn_free(tcp, conn);
-        return;
-    }
-
-    if (conn->wpos >= conn->wlen) {
-        /* All data sent — compact and disable EPOLLOUT */
-        conn->wpos = 0;
-        conn->wlen = 0;
-        epoll_mod(tcp->epoll_fd, conn->fd, EPOLLIN | EPOLLET, conn);
-    }
-}
-
-static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
-    int err = 0;
-    socklen_t len = sizeof(err);
-    getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, &err, &len);
-
-    if (err != 0) {
-        if (tcp->on_disconnect)
-            tcp->on_disconnect(conn, tcp->cb_ctx);
-        conn_free(tcp, conn);
-        return;
-    }
-
-    conn->state = NODUS_CONN_CONNECTED;
-    conn->connected_at = nodus_time_now();
-    conn->last_activity = conn->connected_at;
-    set_keepalive(conn->fd);
-    set_nodelay(conn->fd);
-
-    /* Switch to read mode */
-    uint32_t events = EPOLLIN | EPOLLET;
-    if (conn->wlen > conn->wpos) events |= EPOLLOUT;
-    epoll_mod(tcp->epoll_fd, conn->fd, events, conn);
-
-    if (tcp->on_connect)
-        tcp->on_connect(conn, tcp->cb_ctx);
-}
+#endif /* !_WIN32 */
 
 /* ── Public API ──────────────────────────────────────────────────── */
 
 uint64_t nodus_time_now(void) {
+#ifdef _WIN32
+    return (uint64_t)time(NULL);
+#else
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return (uint64_t)ts.tv_sec;
+#endif
 }
 
 int nodus_tcp_init(nodus_tcp_t *tcp, int shared_epoll_fd) {
@@ -291,6 +335,18 @@ int nodus_tcp_init(nodus_tcp_t *tcp, int shared_epoll_fd) {
     memset(tcp, 0, sizeof(*tcp));
     tcp->listen_fd = -1;
 
+#ifdef _WIN32
+    /* Initialize Winsock */
+    static int wsa_init = 0;
+    if (!wsa_init) {
+        WSADATA wsa;
+        WSAStartup(MAKEWORD(2, 2), &wsa);
+        wsa_init = 1;
+    }
+    tcp->poll_fd = -1;
+    tcp->owns_epoll = false;
+    (void)shared_epoll_fd;
+#else
     if (shared_epoll_fd >= 0) {
         tcp->epoll_fd = shared_epoll_fd;
         tcp->owns_epoll = false;
@@ -299,10 +355,15 @@ int nodus_tcp_init(nodus_tcp_t *tcp, int shared_epoll_fd) {
         if (tcp->epoll_fd < 0) return -1;
         tcp->owns_epoll = true;
     }
+#endif
     return 0;
 }
 
 int nodus_tcp_listen(nodus_tcp_t *tcp, const char *bind_ip, uint16_t port) {
+#ifdef _WIN32
+    (void)tcp; (void)bind_ip; (void)port;
+    return -1;  /* Server is Linux-only */
+#else
     if (!tcp) return -1;
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -344,13 +405,14 @@ int nodus_tcp_listen(nodus_tcp_t *tcp, const char *bind_ip, uint16_t port) {
     epoll_ctl(tcp->epoll_fd, EPOLL_CTL_ADD, fd, &ev);
 
     return 0;
+#endif
 }
 
 nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
                                      const char *ip, uint16_t port) {
     if (!tcp || !ip) return NULL;
 
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int fd = (int)socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return NULL;
 
     set_nonblocking(fd);
@@ -380,12 +442,16 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
         conn->last_activity = conn->connected_at;
         set_keepalive(fd);
         set_nodelay(fd);
+#ifndef _WIN32
         epoll_add(tcp->epoll_fd, fd, EPOLLIN | EPOLLET, conn);
+#endif
         if (tcp->on_connect)
             tcp->on_connect(conn, tcp->cb_ctx);
-    } else if (errno == EINPROGRESS) {
-        /* Connecting — wait for EPOLLOUT */
+    } else if (IS_EINPROGRESS(get_socket_error())) {
+        /* Connecting — wait for writable */
+#ifndef _WIN32
         epoll_add(tcp->epoll_fd, fd, EPOLLOUT | EPOLLET, conn);
+#endif
     } else {
         conn_free(tcp, conn);
         return NULL;
@@ -411,14 +477,10 @@ int nodus_tcp_send(nodus_tcp_conn_t *conn,
     if (written == 0) return -1;
     conn->wlen += written;
 
-    /* Enable EPOLLOUT to flush */
-    /* Note: caller must have access to the tcp transport for epoll_mod.
-     * We store the data; the next poll() will attempt to write. We need
-     * to re-register EPOLLOUT. To do this without passing tcp, we
-     * always try a direct write first. */
+    /* Try immediate send */
     while (conn->wpos < conn->wlen) {
-        ssize_t n = write(conn->fd, conn->wbuf + conn->wpos,
-                           conn->wlen - conn->wpos);
+        ssize_t n = poll_write(conn->fd, conn->wbuf + conn->wpos,
+                               conn->wlen - conn->wpos);
         if (n > 0) {
             conn->wpos += (size_t)n;
             continue;
@@ -433,6 +495,80 @@ int nodus_tcp_send(nodus_tcp_conn_t *conn,
 
     return 0;
 }
+
+/* ── Poll: platform-specific ─────────────────────────────────────── */
+
+#ifdef _WIN32
+
+int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
+    if (!tcp) return -1;
+
+    fd_set rfds, wfds, efds;
+    FD_ZERO(&rfds);
+    FD_ZERO(&wfds);
+    FD_ZERO(&efds);
+
+    int max_fd = -1;
+
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = tcp->pool[i];
+        if (!c || c->fd < 0) continue;
+
+        if (c->state == NODUS_CONN_CONNECTING) {
+            FD_SET((SOCKET)c->fd, &wfds);
+            FD_SET((SOCKET)c->fd, &efds);
+        } else {
+            FD_SET((SOCKET)c->fd, &rfds);
+            if (c->wlen > c->wpos)
+                FD_SET((SOCKET)c->fd, &wfds);
+        }
+        if (c->fd > max_fd) max_fd = c->fd;
+    }
+
+    if (max_fd < 0) {
+        /* No connections — just sleep */
+        if (timeout_ms > 0) Sleep(timeout_ms);
+        return 0;
+    }
+
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+    int n = select(max_fd + 1, &rfds, &wfds, &efds,
+                   timeout_ms >= 0 ? &tv : NULL);
+    if (n <= 0) return n;
+
+    int events = 0;
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = tcp->pool[i];
+        if (!c || c->fd < 0) continue;
+
+        if (c->state == NODUS_CONN_CONNECTING) {
+            if (FD_ISSET((SOCKET)c->fd, &wfds) || FD_ISSET((SOCKET)c->fd, &efds)) {
+                handle_connect_complete(tcp, c);
+                events++;
+            }
+            continue;
+        }
+
+        if (FD_ISSET((SOCKET)c->fd, &wfds)) {
+            handle_write(tcp, c);
+            events++;
+            /* conn may have been freed */
+            if (tcp->pool[i] == NULL) continue;
+        }
+
+        if (FD_ISSET((SOCKET)c->fd, &rfds)) {
+            handle_read(tcp, c);
+            events++;
+        }
+    }
+
+    return events;
+}
+
+#else /* Linux/Android: epoll */
 
 int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
     if (!tcp) return -1;
@@ -489,6 +625,10 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
     return n;
 }
 
+#endif /* _WIN32 */
+
+/* ── Shared public API ───────────────────────────────────────────── */
+
 void nodus_tcp_disconnect(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     if (!tcp || !conn) return;
     if (tcp->on_disconnect)
@@ -519,7 +659,12 @@ nodus_tcp_conn_t *nodus_tcp_find_by_addr(nodus_tcp_t *tcp,
 }
 
 int nodus_tcp_epoll_fd(const nodus_tcp_t *tcp) {
+#ifdef _WIN32
+    (void)tcp;
+    return -1;
+#else
     return tcp ? tcp->epoll_fd : -1;
+#endif
 }
 
 void nodus_tcp_close(nodus_tcp_t *tcp) {
@@ -531,13 +676,17 @@ void nodus_tcp_close(nodus_tcp_t *tcp) {
     }
 
     if (tcp->listen_fd >= 0) {
+#ifndef _WIN32
         epoll_ctl(tcp->epoll_fd, EPOLL_CTL_DEL, tcp->listen_fd, NULL);
+#endif
         close(tcp->listen_fd);
         tcp->listen_fd = -1;
     }
 
+#ifndef _WIN32
     if (tcp->owns_epoll && tcp->epoll_fd >= 0) {
         close(tcp->epoll_fd);
         tcp->epoll_fd = -1;
     }
+#endif
 }

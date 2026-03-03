@@ -90,11 +90,7 @@ target_include_directories(dht_lib PUBLIC
 )
 
 if(WIN32)
-    if(BUILD_DNA_NODUS)
-        target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa nodus_lib ${SQLite3_LIBRARIES})
-    else()
-        target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa ${SQLite3_LIBRARIES})
-    endif()
+    target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa nodus_lib ${SQLite3_LIBRARIES})
 elseif(ANDROID)
     target_link_libraries(dht_lib
         ${OPENSSL_LIBRARIES}

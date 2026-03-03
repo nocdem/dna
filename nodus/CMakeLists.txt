@@ -60,6 +60,7 @@ if(NODUS_STANDALONE)
 endif()
 
 # ── Nodus library sources ───────────────────────────────────────────
+# Client SDK + protocol + crypto: all platforms (TCP is cross-platform)
 set(NODUS_SOURCES
     # Core
     src/core/nodus_value.c
@@ -73,33 +74,12 @@ set(NODUS_SOURCES
     src/protocol/nodus_tier2.c
     src/protocol/nodus_tier3.c
 
-    # Transport (Linux: epoll)
+    # Transport — TCP is cross-platform (epoll on Linux, select on Windows)
     src/transport/nodus_tcp.c
-    src/transport/nodus_udp.c
 
     # Crypto
     src/crypto/nodus_sign.c
     src/crypto/nodus_identity.c
-
-    # Channel
-    src/channel/nodus_hashring.c
-    src/channel/nodus_channel_store.c
-    src/channel/nodus_replication.c
-
-    # Consensus
-    src/consensus/nodus_pbft.c
-
-    # Server
-    src/server/nodus_server.c
-    src/server/nodus_auth.c
-
-    # Witness (DNAC BFT consensus module)
-    src/witness/nodus_witness.c
-    src/witness/nodus_witness_db.c
-    src/witness/nodus_witness_bft.c
-    src/witness/nodus_witness_verify.c
-    src/witness/nodus_witness_peer.c
-    src/witness/nodus_witness_handlers.c
 
     # Client SDK
     src/client/nodus_client.c
@@ -109,6 +89,25 @@ set(NODUS_SOURCES
     # Shared crypto (standalone only — messenger tree provides these via dht_lib)
     ${SHARED_CRYPTO_SOURCES}
 )
+
+# Server-only sources: Linux only (UDP uses epoll, server/witness are Linux-only)
+if(NOT WIN32)
+    list(APPEND NODUS_SOURCES
+        src/transport/nodus_udp.c
+        src/channel/nodus_hashring.c
+        src/channel/nodus_channel_store.c
+        src/channel/nodus_replication.c
+        src/consensus/nodus_pbft.c
+        src/server/nodus_server.c
+        src/server/nodus_auth.c
+        src/witness/nodus_witness.c
+        src/witness/nodus_witness_db.c
+        src/witness/nodus_witness_bft.c
+        src/witness/nodus_witness_verify.c
+        src/witness/nodus_witness_peer.c
+        src/witness/nodus_witness_handlers.c
+    )
+endif()
 
 # Log shim — only needed standalone (messenger tree has the real qgp_log.c)
 if(NODUS_STANDALONE)
@@ -142,13 +141,15 @@ else()
 endif()
 
 # Security flags
-target_compile_options(nodus_lib PRIVATE
-    -Wall -Wextra -Werror
-    -Wno-unused-parameter
-    -Wno-format-truncation
-    -fstack-protector-strong
-    -D_FORTIFY_SOURCE=2
-)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(nodus_lib PRIVATE
+        -Wall -Wextra -Werror
+        -Wno-unused-parameter
+        -Wno-format-truncation
+        -fstack-protector-strong
+        -D_FORTIFY_SOURCE=2
+    )
+endif()
 
 # ── Tests & Tools (standalone only) ──────────────────────────────────
 # When built within the messenger tree, tests/tools use the standalone

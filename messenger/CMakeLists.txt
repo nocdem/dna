@@ -92,18 +92,9 @@ include(${CMAKE_SOURCE_DIR}/cmake/Secp256k1.cmake)
 # =============================================================================
 # DHT and P2P Transport Layer — Nodus v5
 # =============================================================================
-# Nodus v5 is Linux/Android only (uses epoll). Disabled on Windows.
-if(WIN32)
-    option(BUILD_DNA_NODUS "Build Nodus v5 DHT library" OFF)
-else()
-    option(BUILD_DNA_NODUS "Build Nodus v5 DHT library" ON)
-endif()
-
-if(BUILD_DNA_NODUS)
-    # NODUS_STANDALONE=OFF: shared crypto already compiled in dht_lib, skip duplicates
-    set(NODUS_STANDALONE OFF CACHE BOOL "Nodus built within messenger tree" FORCE)
-    add_subdirectory(${CMAKE_SOURCE_DIR}/../nodus ${CMAKE_BINARY_DIR}/nodus)
-endif()
+# NODUS_STANDALONE=OFF: shared crypto already compiled in dht_lib, skip duplicates
+set(NODUS_STANDALONE OFF CACHE BOOL "Nodus built within messenger tree" FORCE)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../nodus ${CMAKE_BINARY_DIR}/nodus)
 
 add_subdirectory(dht)               # DHT integration (uses Nodus v5 compat shim)
 add_subdirectory(transport)         # Transport layer (DHT-only messaging)
