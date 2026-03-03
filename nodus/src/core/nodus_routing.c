@@ -118,9 +118,6 @@ int nodus_routing_find_closest(const nodus_routing_t *rt,
     if (!rt || !target || !results || max_results <= 0)
         return 0;
 
-    /* Collect all active peers */
-    int total = 0;
-
     /* Temporary array — stack allocated. Max theoretical entries = 512 * 8 = 4096 */
     /* For practical purposes, iterate buckets and use insertion sort into results */
     int found = 0;
@@ -166,8 +163,6 @@ int nodus_routing_find_closest(const nodus_routing_t *rt,
                     results[pos] = *peer;
                 }
             }
-
-            total++;
         }
     }
 

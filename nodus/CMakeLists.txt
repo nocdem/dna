@@ -148,10 +148,14 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(nodus_lib PRIVATE
         -Wall -Wextra -Werror
         -Wno-unused-parameter
-        -Wno-format-truncation
+        -Wno-unused-but-set-variable
         -fstack-protector-strong
         -D_FORTIFY_SOURCE=2
     )
+    # -Wno-format-truncation is GCC-only (Clang doesn't recognize it)
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(nodus_lib PRIVATE -Wno-format-truncation)
+    endif()
 endif()
 
 # ── Tests & Tools (standalone only) ──────────────────────────────────
