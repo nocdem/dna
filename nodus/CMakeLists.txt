@@ -122,11 +122,14 @@ target_include_directories(nodus_lib PUBLIC
     ${SHARED_DIR}
     ${SHARED_DIR}/crypto
 )
-if(NODUS_STANDALONE OR NOT DEFINED NODUS_STANDALONE)
-    target_include_directories(nodus_lib PUBLIC
-        ${OPENSSL_INCLUDE_DIR}
-        ${SQLite3_INCLUDE_DIRS}
-    )
+# OpenSSL and SQLite3 include dirs — needed regardless of standalone mode.
+# When standalone, find_package above sets these. When within messenger tree,
+# the parent CMakeLists.txt already called find_package and vars propagate.
+if(OPENSSL_INCLUDE_DIR)
+    target_include_directories(nodus_lib PUBLIC ${OPENSSL_INCLUDE_DIR})
+endif()
+if(SQLite3_INCLUDE_DIRS)
+    target_include_directories(nodus_lib PUBLIC ${SQLite3_INCLUDE_DIRS})
 endif()
 
 if(NODUS_STANDALONE OR NOT DEFINED NODUS_STANDALONE)

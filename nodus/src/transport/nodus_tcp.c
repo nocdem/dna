@@ -12,9 +12,12 @@
 #ifdef _WIN32
   #include <winsock2.h>
   #include <ws2tcpip.h>
-  #pragma comment(lib, "ws2_32.lib")
+  #ifdef _MSC_VER
+    #pragma comment(lib, "ws2_32.lib")
+    #include <basetsd.h>
+    typedef SSIZE_T ssize_t;
+  #endif
   #define SHUT_RDWR SD_BOTH
-  typedef int ssize_t;
   #define close(fd) closesocket(fd)
   #define poll_read(fd, buf, len)  recv(fd, (char*)(buf), (int)(len), 0)
   #define poll_write(fd, buf, len) send(fd, (const char*)(buf), (int)(len), 0)
