@@ -19,6 +19,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "crypto/utils/qgp_log.h"
+#define LOG_TAG "NODUS_CLIENT"
+
 /* ── Internal state ─────────────────────────────────────────────── */
 
 /* Buffer for building protocol messages */
@@ -224,10 +227,14 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
     nodus_tcp_t *tcp = (nodus_tcp_t *)client->tcp;
     nodus_server_endpoint_t *ep = &client->config.servers[server_idx];
 
+    QGP_LOG_INFO(LOG_TAG, "Connecting to %s:%d ...", ep->ip, ep->port);
     set_state(client, NODUS_CLIENT_CONNECTING);
 
     nodus_tcp_conn_t *conn = nodus_tcp_connect(tcp, ep->ip, ep->port);
-    if (!conn) { return -1; }
+    if (!conn) {
+        QGP_LOG_ERROR(LOG_TAG, "TCP connect failed to %s:%d (socket error)", ep->ip, ep->port);
+        return -1;
+    }
     client->conn = conn;
 
     /* Wait for TCP connection to establish.
@@ -244,6 +251,9 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
     }
 
     if (!client->conn || conn == NULL || conn->state != NODUS_CONN_CONNECTED) {
+        QGP_LOG_ERROR(LOG_TAG, "TCP connect to %s:%d failed after %dms (state=%d)",
+                      ep->ip, ep->port, elapsed,
+                      conn ? (int)conn->state : -1);
         if (client->conn) {
             nodus_tcp_disconnect(tcp, (nodus_tcp_conn_t *)client->conn);
             client->conn = NULL;
@@ -251,9 +261,12 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
         return -1;
     }
 
+    QGP_LOG_INFO(LOG_TAG, "TCP connected to %s:%d, authenticating...", ep->ip, ep->port);
+
     /* Authenticate */
     set_state(client, NODUS_CLIENT_AUTHENTICATING);
     if (do_auth(client) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Auth failed to %s:%d", ep->ip, ep->port);
         if (client->conn) {
             nodus_tcp_disconnect(tcp, (nodus_tcp_conn_t *)client->conn);
             client->conn = NULL;
@@ -276,11 +289,20 @@ static int do_auth(nodus_client_t *client) {
     uint32_t txn = client->next_txn++;
     nodus_t2_hello(txn, &client->identity.pk, &client->identity.node_id,
                     g_proto_buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    if (send_request(client, g_proto_buf, len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Auth: HELLO send failed");
+        return -1;
+    }
 
-    if (!wait_response(client, client->config.connect_timeout_ms)) return -1;
+    if (!wait_response(client, client->config.connect_timeout_ms)) {
+        QGP_LOG_ERROR(LOG_TAG, "Auth: no response to HELLO (timeout %dms)", client->config.connect_timeout_ms);
+        return -1;
+    }
 
-    if (strcmp(resp->method, "challenge") != 0) return -1;
+    if (strcmp(resp->method, "challenge") != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Auth: expected 'challenge', got '%s'", resp->method);
+        return -1;
+    }
 
     /* Step 2: Sign nonce and send AUTH */
     nodus_sig_t sig;
@@ -289,12 +311,22 @@ static int do_auth(nodus_client_t *client) {
     len = 0;
     txn = client->next_txn++;
     nodus_t2_auth(txn, &sig, g_proto_buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    if (send_request(client, g_proto_buf, len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Auth: AUTH send failed");
+        return -1;
+    }
 
-    if (!wait_response(client, client->config.connect_timeout_ms)) return -1;
+    if (!wait_response(client, client->config.connect_timeout_ms)) {
+        QGP_LOG_ERROR(LOG_TAG, "Auth: no response to AUTH (timeout %dms)", client->config.connect_timeout_ms);
+        return -1;
+    }
 
-    if (strcmp(resp->method, "auth_ok") != 0) return -1;
+    if (strcmp(resp->method, "auth_ok") != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Auth: expected 'auth_ok', got '%s'", resp->method);
+        return -1;
+    }
 
+    QGP_LOG_INFO(LOG_TAG, "Auth: success");
     memcpy(client->token, resp->token, NODUS_SESSION_TOKEN_LEN);
     return 0;
 }
