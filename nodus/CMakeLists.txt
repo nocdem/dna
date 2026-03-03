@@ -11,13 +11,17 @@ get_filename_component(MONOREPO_ROOT "${NODUS_DIR}/.." ABSOLUTE)
 set(SHARED_DIR "${MONOREPO_ROOT}/shared")
 
 # ── Dependencies ─────────────────────────────────────────────────────
-find_package(OpenSSL REQUIRED)
-find_package(SQLite3 REQUIRED)
+# When built within the messenger tree (NODUS_STANDALONE=OFF), the parent
+# CMakeLists.txt already found these packages. Only search when standalone.
+if(NODUS_STANDALONE OR NOT DEFINED NODUS_STANDALONE)
+    find_package(OpenSSL REQUIRED)
+    find_package(SQLite3 REQUIRED)
 
-# json-c (for server config)
-find_package(PkgConfig QUIET)
-if(PKG_CONFIG_FOUND)
-    pkg_check_modules(JSONC json-c)
+    # json-c (for server config)
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(JSONC json-c)
+    endif()
 endif()
 
 # ── Crypto sub-libraries (shared/) ───────────────────────────────────
