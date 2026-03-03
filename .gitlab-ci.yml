@@ -1,4 +1,4 @@
-# DNA Messenger CI/CD Pipeline
+# DNA Monorepo CI/CD Pipeline
 # Builds Flutter app for Linux, Windows, Android, macOS
 # Uses instrumentisto/flutter for Android/Linux/Web builds
 
@@ -44,6 +44,7 @@ build:native-linux-x64:
     # Flutter Linux desktop dependencies
     - apt-get install -y -qq libgtk-3-dev libblkid-dev liblzma-dev libsecret-1-dev
   script:
+    - cd messenger
     - mkdir -p build && cd build
     - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF
     - make -j$(nproc) dna_lib
@@ -326,6 +327,7 @@ build:native-android-arm64:
   script:
     - export ANDROID_NDK_HOME="${CI_PROJECT_DIR}/.cache/android-ndk/android-ndk-r${ANDROID_NDK_VERSION}"
     - export HOME="${CI_PROJECT_DIR}/.cache"
+    - cd messenger
     - mkdir -p build-android && cd build-android
     - |
       cmake .. \
@@ -358,7 +360,7 @@ build:flutter-linux:
   cache:
     - key:
         files:
-          - dna_messenger_flutter/pubspec.lock
+          - messenger/dna_messenger_flutter/pubspec.lock
         prefix: flutter-pub-linux-v1
       paths:
         - .pub-cache/
@@ -368,7 +370,7 @@ build:flutter-linux:
     - apt-get update -qq
     - apt-get install -y -qq libgtk-3-dev libblkid-dev liblzma-dev libsecret-1-dev clang llvm lld cmake ninja-build pkg-config libfuse2 file binutils
   script:
-    - cd dna_messenger_flutter
+    - cd messenger/dna_messenger_flutter
     # Copy native library
     - mkdir -p linux/libs
     - cp ${CI_PROJECT_DIR}/native-libs/linux-x64/libdna_lib.so linux/libs/
@@ -383,7 +385,7 @@ build:flutter-linux:
     # Create AppImage
     - cd ${CI_PROJECT_DIR}
     - mkdir -p AppDir/usr/bin AppDir/usr/lib AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
-    - cp -r dna_messenger_flutter/build/linux/x64/release/bundle/* AppDir/usr/bin/
+    - cp -r messenger/dna_messenger_flutter/build/linux/x64/release/bundle/* AppDir/usr/bin/
     - cp native-libs/linux-x64/libdna_lib.so AppDir/usr/lib/
     # Bundle libraries that libdna_lib.so depends on (using ldd)
     # Exclude core system libs (libc, libm, libdl, libpthread, ld-linux) - these must come from the system
@@ -403,9 +405,9 @@ build:flutter-linux:
     - cp AppDir/usr/share/applications/dna-messenger.desktop AppDir/
     # Use app icon or create placeholder
     - |
-      if [ -f dna_messenger_flutter/assets/icon.png ]; then
-        cp dna_messenger_flutter/assets/icon.png AppDir/usr/share/icons/hicolor/256x256/apps/dna-messenger.png
-        cp dna_messenger_flutter/assets/icon.png AppDir/dna-messenger.png
+      if [ -f messenger/dna_messenger_flutter/assets/icon.png ]; then
+        cp messenger/dna_messenger_flutter/assets/icon.png AppDir/usr/share/icons/hicolor/256x256/apps/dna-messenger.png
+        cp messenger/dna_messenger_flutter/assets/icon.png AppDir/dna-messenger.png
       else
         touch AppDir/dna-messenger.png
         touch AppDir/usr/share/icons/hicolor/256x256/apps/dna-messenger.png
@@ -443,14 +445,14 @@ build:flutter-android:
   cache:
     - key:
         files:
-          - dna_messenger_flutter/pubspec.lock
+          - messenger/dna_messenger_flutter/pubspec.lock
         prefix: flutter-pub-android-v1
       paths:
         - .pub-cache/
     - key:
         files:
-          - dna_messenger_flutter/android/build.gradle
-          - dna_messenger_flutter/android/app/build.gradle
+          - messenger/dna_messenger_flutter/android/build.gradle
+          - messenger/dna_messenger_flutter/android/app/build.gradle
         prefix: gradle-v1
       paths:
         - .gradle/
@@ -458,7 +460,7 @@ build:flutter-android:
     GRADLE_USER_HOME: "${CI_PROJECT_DIR}/.gradle"
     PUB_CACHE: "${CI_PROJECT_DIR}/.pub-cache"
   script:
-    - cd dna_messenger_flutter
+    - cd messenger/dna_messenger_flutter
     # Copy native library to jniLibs
     - mkdir -p android/app/src/main/jniLibs/arm64-v8a
     - cp ${CI_PROJECT_DIR}/native-libs/android-arm64/libdna_lib.so android/app/src/main/jniLibs/arm64-v8a/
@@ -489,30 +491,30 @@ build:windows:
     GIT_CONFIG_PARAMETERS: "'core.longPaths=true'"
   before_script:
     # Clean Flutter build to avoid long path issues with cached files
-    - if (Test-Path dna_messenger_flutter\build) { Remove-Item -Recurse -Force dna_messenger_flutter\build -ErrorAction SilentlyContinue }
+    - if (Test-Path messenger\dna_messenger_flutter\build) { Remove-Item -Recurse -Force messenger\dna_messenger_flutter\build -ErrorAction SilentlyContinue }
   script:
     # Build native library with MSYS2/MinGW
     - $env:MSYSTEM = "MINGW64"
-    - C:\tools\msys64\usr\bin\bash.exe -lc "export PATH=/mingw64/bin:/usr/bin:$PATH && cd '$env:CI_PROJECT_DIR' && mkdir -p build-windows && cd build-windows && cmake .. -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF && mingw32-make -j4 dna_lib"
+    - C:\tools\msys64\usr\bin\bash.exe -lc "export PATH=/mingw64/bin:/usr/bin:$PATH && cd '$env:CI_PROJECT_DIR/messenger' && mkdir -p build-windows && cd build-windows && cmake .. -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF && mingw32-make -j4 dna_lib"
     # Copy native library to Flutter
-    - mkdir -p dna_messenger_flutter\windows\libs
-    - copy build-windows\libdna_lib.dll dna_messenger_flutter\windows\libs\dna_lib.dll
+    - mkdir -p messenger\dna_messenger_flutter\windows\libs
+    - copy messenger\build-windows\libdna_lib.dll messenger\dna_messenger_flutter\windows\libs\dna_lib.dll
     # Build Flutter Windows app (requires LongPathsEnabled in registry)
-    - cd dna_messenger_flutter
+    - cd messenger\dna_messenger_flutter
     - flutter pub upgrade
     - flutter pub get
     - flutter build windows --release
     # Package
-    - mkdir -p ..\dist\flutter-windows
-    - xcopy /E /I build\windows\x64\runner\Release ..\dist\flutter-windows
-    - copy windows\libs\dna_lib.dll ..\dist\flutter-windows\
+    - mkdir -p ..\..\dist\flutter-windows
+    - xcopy /E /I build\windows\x64\runner\Release ..\..\dist\flutter-windows
+    - copy windows\libs\dna_lib.dll ..\..\dist\flutter-windows\
     # Bundle MinGW runtime DLLs that dna_lib.dll depends on
-    - cd ..
+    - cd ..\..
     - copy C:\tools\msys64\mingw64\bin\*.dll dist\flutter-windows\
     # Check artifact size
     - powershell -Command "(Get-ChildItem -Path dist\flutter-windows -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB"
     # Build Windows installer with Inno Setup (pre-installed on runner)
-    - '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion="${CI_COMMIT_SHORT_SHA}" scripts\installer.iss'
+    - '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion="${CI_COMMIT_SHORT_SHA}" messenger\scripts\installer.iss'
     - move dist\dna-messenger-setup.exe dist\dna-messenger-setup-${CI_COMMIT_SHORT_SHA}.exe
   artifacts:
     name: "dna-messenger-windows-${CI_COMMIT_SHORT_SHA}"
@@ -535,16 +537,15 @@ build:flutter-macos:
     - brew install flutter || true
     - flutter doctor
   script:
-    - cd dna_messenger_flutter
     # Build native library for macOS first
-    - cd ${CI_PROJECT_DIR}
+    - cd ${CI_PROJECT_DIR}/messenger
     - mkdir -p build-macos && cd build-macos
     - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
     - make -j$(sysctl -n hw.ncpu) dna_lib
     # Copy to Flutter
-    - cd ${CI_PROJECT_DIR}/dna_messenger_flutter
+    - cd ${CI_PROJECT_DIR}/messenger/dna_messenger_flutter
     - mkdir -p macos/Frameworks
-    - cp ${CI_PROJECT_DIR}/build-macos/libdna_lib.dylib macos/Frameworks/
+    - cp ${CI_PROJECT_DIR}/messenger/build-macos/libdna_lib.dylib macos/Frameworks/
     # Build Flutter macOS app
     - flutter pub upgrade
     - flutter pub get
@@ -581,8 +582,8 @@ deploy:artifacts:
       artifacts: true
       optional: true
   script:
-    - chmod +x scripts/deploy-artifacts.sh
-    - sh scripts/deploy-artifacts.sh
+    - chmod +x messenger/scripts/deploy-artifacts.sh
+    - sh messenger/scripts/deploy-artifacts.sh
   rules:
     # Only deploy to website when commit message contains [RELEASE]
     - if: $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_MESSAGE =~ /\[RELEASE\]/
