@@ -495,7 +495,7 @@ build:windows:
   script:
     # Build native library with MSYS2/MinGW
     - $env:MSYSTEM = "MINGW64"
-    - C:\tools\msys64\usr\bin\bash.exe -lc "export PATH=/mingw64/bin:/usr/bin:$PATH && cd '$env:CI_PROJECT_DIR/messenger' && mkdir -p build-windows && cd build-windows && cmake .. -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF && mingw32-make -j4 dna_lib"
+    - C:\tools\msys64\usr\bin\bash.exe -lc "export PATH=/mingw64/bin:/usr/bin:$PATH && cd '$env:CI_PROJECT_DIR/messenger' && mkdir -p build-windows && cd build-windows && cmake .. -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON && mingw32-make -j4 dna_lib"
     # Copy native library to Flutter
     - mkdir -p messenger\dna_messenger_flutter\windows\libs
     - copy messenger\build-windows\libdna_lib.dll messenger\dna_messenger_flutter\windows\libs\dna_lib.dll
@@ -504,23 +504,23 @@ build:windows:
     - flutter pub upgrade
     - flutter pub get
     - flutter build windows --release
-    # Package
-    - mkdir -p ..\..\dist\flutter-windows
-    - xcopy /E /I build\windows\x64\runner\Release ..\..\dist\flutter-windows
-    - copy windows\libs\dna_lib.dll ..\..\dist\flutter-windows\
+    # Package — output to messenger/dist/ (installer.iss expects paths relative to messenger/)
+    - mkdir -p ..\dist\flutter-windows
+    - xcopy /E /I build\windows\x64\runner\Release ..\dist\flutter-windows
+    - copy windows\libs\dna_lib.dll ..\dist\flutter-windows\
     # Bundle MinGW runtime DLLs that dna_lib.dll depends on
-    - cd ..\..
+    - cd ..
     - copy C:\tools\msys64\mingw64\bin\*.dll dist\flutter-windows\
     # Check artifact size
     - powershell -Command "(Get-ChildItem -Path dist\flutter-windows -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB"
     # Build Windows installer with Inno Setup (pre-installed on runner)
-    - '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion="${CI_COMMIT_SHORT_SHA}" messenger\scripts\installer.iss'
+    - '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion="${CI_COMMIT_SHORT_SHA}" scripts\installer.iss'
     - move dist\dna-messenger-setup.exe dist\dna-messenger-setup-${CI_COMMIT_SHORT_SHA}.exe
   artifacts:
     name: "dna-messenger-windows-${CI_COMMIT_SHORT_SHA}"
     paths:
-      - dist/flutter-windows/
-      - dist/dna-messenger-setup-*.exe
+      - messenger/dist/flutter-windows/
+      - messenger/dist/dna-messenger-setup-*.exe
     expire_in: 1 day
   allow_failure: true
   rules:
