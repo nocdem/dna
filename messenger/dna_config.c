@@ -130,7 +130,7 @@ int dna_config_load(dna_config_t *config) {
         config->log_max_files = 3;       // Keep 3 rotated files
     }
 
-    // Default bootstrap nodes if none specified
+    // Default bootstrap nodes if none specified in config
     if (config->bootstrap_count == 0) {
         strcpy(config->bootstrap_nodes[0], "161.97.85.25:4001");
         strcpy(config->bootstrap_nodes[1], "156.67.24.125:4001");

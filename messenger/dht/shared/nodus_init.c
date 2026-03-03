@@ -52,13 +52,22 @@ static void ensure_config(void) {
     }
 }
 
+/* Hardcoded fallback bootstrap nodes (compiled into binary) */
+static const char *g_fallback_nodes[] = {
+    "161.97.85.25:4001",
+    "156.67.24.125:4001",
+    "156.67.25.251:4001",
+};
+static const int g_fallback_count = 3;
+
 /**
- * Parse hardcoded bootstrap nodes from g_config into nconfig.
+ * Parse "ip:port" node list into nconfig server entries.
  */
-static void load_hardcoded_nodes(nodus_client_config_t *nconfig) {
+static void parse_nodes_into(nodus_client_config_t *nconfig,
+                             const char *nodes[], int count) {
     nconfig->server_count = 0;
-    for (int i = 0; i < g_config.bootstrap_count && nconfig->server_count < NODUS_CLIENT_MAX_SERVERS; i++) {
-        const char *node = g_config.bootstrap_nodes[i];
+    for (int i = 0; i < count && nconfig->server_count < NODUS_CLIENT_MAX_SERVERS; i++) {
+        const char *node = nodes[i];
         const char *colon = strrchr(node, ':');
         if (colon) {
             size_t ip_len = (size_t)(colon - node);
@@ -74,6 +83,23 @@ static void load_hardcoded_nodes(nodus_client_config_t *nconfig) {
         }
         nconfig->server_count++;
     }
+}
+
+/**
+ * Load config file bootstrap nodes into nconfig.
+ */
+static void load_config_nodes(nodus_client_config_t *nconfig) {
+    const char *nodes[DNA_MAX_BOOTSTRAP_NODES];
+    for (int i = 0; i < g_config.bootstrap_count; i++)
+        nodes[i] = g_config.bootstrap_nodes[i];
+    parse_nodes_into(nconfig, nodes, g_config.bootstrap_count);
+}
+
+/**
+ * Load hardcoded fallback nodes into nconfig.
+ */
+static void load_fallback_nodes(nodus_client_config_t *nconfig) {
+    parse_nodes_into(nconfig, g_fallback_nodes, g_fallback_count);
 }
 
 /**
@@ -116,7 +142,9 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
     nconfig.on_value_changed = nodus_ops_dispatch;
     nconfig.on_state_change = on_state_change;
 
-    /* Try cached bootstrap nodes first */
+    /* ── Try sources in order: cache → config → hardcoded fallback ── */
+
+    /* Source 1: Cached bootstrap nodes */
     bool used_cache = false;
     bootstrap_cache_entry_t *cached_nodes = NULL;
     size_t cached_count = 0;
@@ -132,15 +160,20 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
         used_cache = true;
     }
 
-    /* Fall back to hardcoded nodes if no cache */
+    /* Source 2: Config file nodes (if no cache) */
     if (nconfig.server_count == 0 && g_config.bootstrap_count > 0) {
-        QGP_LOG_INFO(LOG_TAG, "No cached nodes, using %d hardcoded bootstrap nodes",
-                     g_config.bootstrap_count);
-        load_hardcoded_nodes(&nconfig);
+        QGP_LOG_INFO(LOG_TAG, "Using %d config bootstrap nodes", g_config.bootstrap_count);
+        load_config_nodes(&nconfig);
+    }
+
+    /* Source 3: Hardcoded fallback (if nothing else) */
+    if (nconfig.server_count == 0) {
+        QGP_LOG_INFO(LOG_TAG, "Using %d hardcoded fallback nodes", g_fallback_count);
+        load_fallback_nodes(&nconfig);
     }
 
     if (nconfig.server_count == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "No bootstrap nodes configured");
+        QGP_LOG_ERROR(LOG_TAG, "No bootstrap nodes available");
         return -1;
     }
 
@@ -150,7 +183,8 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
                 i, nconfig.servers[i].ip, nconfig.servers[i].port);
     }
 
-    /* Initialize and connect */
+    /* ── Try connect, fall back on failure ── */
+
     int rc = nodus_singleton_init(&nconfig, &g_stored_identity);
     if (rc != 0) {
         fprintf(stderr, "[NODUS_INIT] Singleton init failed (rc=%d)\n", rc);
@@ -161,31 +195,35 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
     rc = nodus_singleton_connect();
     fprintf(stderr, "[NODUS_INIT] Singleton connect rc=%d\n", rc);
 
-    /* If cached nodes failed, retry with hardcoded nodes */
-    if (rc != 0 && used_cache && g_config.bootstrap_count > 0) {
-        QGP_LOG_WARN(LOG_TAG, "Cached nodes failed, retrying with hardcoded bootstrap nodes");
+    /* If cache/config nodes failed, retry with hardcoded fallback */
+    if (rc != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Connect failed, retrying with hardcoded fallback nodes");
         nodus_singleton_close();
 
-        /* Expire all stale cache entries */
-        bootstrap_cache_expire(0);
+        if (used_cache) bootstrap_cache_expire(0);
 
-        /* Rebuild config with hardcoded nodes */
         memset(&nconfig, 0, sizeof(nconfig));
         nconfig.auto_reconnect = true;
         nconfig.on_value_changed = nodus_ops_dispatch;
         nconfig.on_state_change = on_state_change;
-        load_hardcoded_nodes(&nconfig);
+        load_fallback_nodes(&nconfig);
+
+        for (int i = 0; i < nconfig.server_count; i++) {
+            fprintf(stderr, "[NODUS_INIT] Fallback server %d: %s:%d\n",
+                    i, nconfig.servers[i].ip, nconfig.servers[i].port);
+        }
 
         rc = nodus_singleton_init(&nconfig, &g_stored_identity);
         if (rc != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Singleton init failed (hardcoded fallback)");
+            QGP_LOG_ERROR(LOG_TAG, "Singleton init failed (fallback)");
             return -1;
         }
         rc = nodus_singleton_connect();
+        fprintf(stderr, "[NODUS_INIT] Fallback connect rc=%d\n", rc);
     }
 
     if (rc != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Singleton connect failed");
+        QGP_LOG_ERROR(LOG_TAG, "All bootstrap sources failed");
         nodus_singleton_close();
         return -1;
     }
