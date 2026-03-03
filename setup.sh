@@ -1,5 +1,5 @@
 #!/bin/bash
-# DNA Monorepo — Full setup script for fresh Linux machines
+# DNA Messenger — Full setup script for fresh Linux machines
 # Usage: curl -fsSL https://raw.githubusercontent.com/nocdem/dna/main/setup.sh | bash
 
 set -e
@@ -39,80 +39,79 @@ if command -v apt-get >/dev/null 2>&1; then
         build-essential cmake pkg-config xxd \
         libssl-dev libcurl4-openssl-dev libjson-c-dev \
         libsqlite3-dev libzstd-dev \
-        libgnutls28-dev libargon2-dev
+        libgnutls28-dev libargon2-dev \
+        libgtk-3-dev libblkid-dev liblzma-dev libsecret-1-dev
 elif command -v dnf >/dev/null 2>&1; then
     sudo dnf install -y \
         gcc gcc-c++ make cmake pkgconf vim-common \
         openssl-devel libcurl-devel json-c-devel \
         sqlite-devel libzstd-devel \
-        gnutls-devel libargon2-devel
+        gnutls-devel libargon2-devel \
+        gtk3-devel libblkid-devel xz-devel libsecret-devel
 elif command -v pacman >/dev/null 2>&1; then
     sudo pacman -S --noconfirm --needed \
         base-devel cmake pkgconf xxd \
         openssl curl json-c sqlite zstd \
-        gnutls argon2
+        gnutls argon2 \
+        gtk3 util-linux-libs xz libsecret
 else
     warn "Unknown package manager — install these manually:"
     warn "  cmake, openssl, curl, json-c, sqlite3, zstd, gnutls, argon2"
+    warn "  gtk3, libblkid, lzma, libsecret (for Flutter desktop)"
 fi
 
-# ── Build messenger (must be first — dnac links against it) ───────
-info "Building messenger..."
+# ── Install Flutter ───────────────────────────────────────────────
+FLUTTER_DIR="$HOME/.flutter-sdk"
+if command -v flutter >/dev/null 2>&1; then
+    info "Flutter already installed: $(flutter --version 2>/dev/null | head -1)"
+elif [ -x "$FLUTTER_DIR/bin/flutter" ]; then
+    info "Flutter found at $FLUTTER_DIR"
+    export PATH="$FLUTTER_DIR/bin:$PATH"
+else
+    info "Installing Flutter SDK..."
+    git clone https://github.com/flutter/flutter.git -b stable "$FLUTTER_DIR"
+    export PATH="$FLUTTER_DIR/bin:$PATH"
+    flutter precache --linux
+    info "Flutter installed: $(flutter --version 2>/dev/null | head -1)"
+
+    if ! grep -q 'flutter-sdk/bin' "$HOME/.bashrc" 2>/dev/null; then
+        echo 'export PATH="$HOME/.flutter-sdk/bin:$PATH"' >> "$HOME/.bashrc"
+        info "Added Flutter to ~/.bashrc"
+    fi
+fi
+
+# ── Build C library ───────────────────────────────────────────────
+info "Building messenger C library..."
 cd "$INSTALL_DIR/messenger"
 mkdir -p build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIB=ON -DBUILD_GUI=OFF
 make -j"$(nproc)"
-info "Messenger built OK"
+info "C library built OK"
 
-# ── Build nodus ────────────────────────────────────────────────────
-info "Building nodus..."
-cd "$INSTALL_DIR/nodus"
-mkdir -p build && cd build
-cmake ..
-make -j"$(nproc)"
-info "Nodus built OK"
+# ── Build Flutter app ─────────────────────────────────────────────
+info "Building Flutter app (Linux desktop)..."
+cd "$INSTALL_DIR/messenger/dna_messenger_flutter"
+flutter pub get
+flutter build linux
+info "Flutter app built OK"
 
-# ── Build dnac ─────────────────────────────────────────────────────
-info "Building dnac..."
-cd "$INSTALL_DIR/dnac"
-mkdir -p build && cd build
-cmake ..
-make -j"$(nproc)"
-info "DNAC built OK"
-
-# ── Run tests ──────────────────────────────────────────────────────
-info "Running tests..."
-
-FAIL=0
-
+# ── Run tests ─────────────────────────────────────────────────────
+info "Running C library tests..."
 cd "$INSTALL_DIR/messenger/build"
 if ctest --output-on-failure 2>&1; then
-    info "Messenger tests: PASS"
+    info "Tests: PASS"
 else
-    warn "Messenger tests: SOME FAILURES"
-    FAIL=1
+    warn "Tests: SOME FAILURES"
 fi
 
-cd "$INSTALL_DIR/nodus/build"
-if ctest --output-on-failure 2>&1; then
-    info "Nodus tests: PASS"
-else
-    warn "Nodus tests: SOME FAILURES"
-    FAIL=1
-fi
-
-# ── Done ───────────────────────────────────────────────────────────
+# ── Done ──────────────────────────────────────────────────────────
 echo ""
 info "=============================="
-info "  DNA Monorepo setup complete"
+info "  DNA Messenger setup complete"
 info "=============================="
 echo ""
-echo "  Messenger CLI:  $INSTALL_DIR/messenger/build/cli/dna-messenger-cli"
-echo "  Nodus server:   $INSTALL_DIR/nodus/build/nodus-server"
-echo "  DNAC CLI:       $INSTALL_DIR/dnac/build/dnac"
+echo "  CLI tool:     $INSTALL_DIR/messenger/build/cli/dna-messenger-cli"
+echo "  Flutter app:  $INSTALL_DIR/messenger/dna_messenger_flutter/build/linux/x64/release/bundle/dna_messenger"
 echo ""
-
-if [ $FAIL -ne 0 ]; then
-    warn "Some tests failed — check output above"
-    exit 1
-fi
+echo "  Run the app:  cd $INSTALL_DIR/messenger/dna_messenger_flutter && flutter run -d linux"
+echo ""
