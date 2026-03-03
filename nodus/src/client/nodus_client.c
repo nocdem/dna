@@ -228,11 +228,13 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
     nodus_server_endpoint_t *ep = &client->config.servers[server_idx];
 
     QGP_LOG_INFO(LOG_TAG, "Connecting to %s:%d ...", ep->ip, ep->port);
+    fprintf(stderr, "[NODUS_CLIENT] Connecting to %s:%d ...\n", ep->ip, ep->port);
     set_state(client, NODUS_CLIENT_CONNECTING);
 
     nodus_tcp_conn_t *conn = nodus_tcp_connect(tcp, ep->ip, ep->port);
     if (!conn) {
         QGP_LOG_ERROR(LOG_TAG, "TCP connect failed to %s:%d (socket error)", ep->ip, ep->port);
+        fprintf(stderr, "[NODUS_CLIENT] TCP connect failed to %s:%d (socket error)\n", ep->ip, ep->port);
         return -1;
     }
     client->conn = conn;
@@ -254,6 +256,8 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
         QGP_LOG_ERROR(LOG_TAG, "TCP connect to %s:%d failed after %dms (state=%d)",
                       ep->ip, ep->port, elapsed,
                       conn ? (int)conn->state : -1);
+        fprintf(stderr, "[NODUS_CLIENT] TCP connect to %s:%d FAILED after %dms (state=%d)\n",
+                ep->ip, ep->port, elapsed, conn ? (int)conn->state : -1);
         if (client->conn) {
             nodus_tcp_disconnect(tcp, (nodus_tcp_conn_t *)client->conn);
             client->conn = NULL;
@@ -262,11 +266,13 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
     }
 
     QGP_LOG_INFO(LOG_TAG, "TCP connected to %s:%d, authenticating...", ep->ip, ep->port);
+    fprintf(stderr, "[NODUS_CLIENT] TCP connected to %s:%d, authenticating...\n", ep->ip, ep->port);
 
     /* Authenticate */
     set_state(client, NODUS_CLIENT_AUTHENTICATING);
     if (do_auth(client) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Auth failed to %s:%d", ep->ip, ep->port);
+        fprintf(stderr, "[NODUS_CLIENT] Auth FAILED to %s:%d\n", ep->ip, ep->port);
         if (client->conn) {
             nodus_tcp_disconnect(tcp, (nodus_tcp_conn_t *)client->conn);
             client->conn = NULL;
@@ -291,16 +297,20 @@ static int do_auth(nodus_client_t *client) {
                     g_proto_buf, CLIENT_BUF_SIZE, &len);
     if (send_request(client, g_proto_buf, len) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Auth: HELLO send failed");
+        fprintf(stderr, "[NODUS_CLIENT] Auth: HELLO send failed\n");
         return -1;
     }
 
+    fprintf(stderr, "[NODUS_CLIENT] Auth: HELLO sent, waiting for challenge...\n");
     if (!wait_response(client, client->config.connect_timeout_ms)) {
         QGP_LOG_ERROR(LOG_TAG, "Auth: no response to HELLO (timeout %dms)", client->config.connect_timeout_ms);
+        fprintf(stderr, "[NODUS_CLIENT] Auth: no response to HELLO (timeout %dms)\n", client->config.connect_timeout_ms);
         return -1;
     }
 
     if (strcmp(resp->method, "challenge") != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Auth: expected 'challenge', got '%s'", resp->method);
+        fprintf(stderr, "[NODUS_CLIENT] Auth: expected 'challenge', got '%s'\n", resp->method);
         return -1;
     }
 
@@ -313,16 +323,20 @@ static int do_auth(nodus_client_t *client) {
     nodus_t2_auth(txn, &sig, g_proto_buf, CLIENT_BUF_SIZE, &len);
     if (send_request(client, g_proto_buf, len) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Auth: AUTH send failed");
+        fprintf(stderr, "[NODUS_CLIENT] Auth: AUTH send failed\n");
         return -1;
     }
 
+    fprintf(stderr, "[NODUS_CLIENT] Auth: AUTH sent, waiting for auth_ok...\n");
     if (!wait_response(client, client->config.connect_timeout_ms)) {
         QGP_LOG_ERROR(LOG_TAG, "Auth: no response to AUTH (timeout %dms)", client->config.connect_timeout_ms);
+        fprintf(stderr, "[NODUS_CLIENT] Auth: no response to AUTH (timeout %dms)\n", client->config.connect_timeout_ms);
         return -1;
     }
 
     if (strcmp(resp->method, "auth_ok") != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Auth: expected 'auth_ok', got '%s'", resp->method);
+        fprintf(stderr, "[NODUS_CLIENT] Auth: expected 'auth_ok', got '%s'\n", resp->method);
         return -1;
     }
 

@@ -144,14 +144,22 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
         return -1;
     }
 
+    /* Log servers to stderr for debugging */
+    for (int i = 0; i < nconfig.server_count; i++) {
+        fprintf(stderr, "[NODUS_INIT] Server %d: %s:%d\n",
+                i, nconfig.servers[i].ip, nconfig.servers[i].port);
+    }
+
     /* Initialize and connect */
     int rc = nodus_singleton_init(&nconfig, &g_stored_identity);
     if (rc != 0) {
+        fprintf(stderr, "[NODUS_INIT] Singleton init failed (rc=%d)\n", rc);
         QGP_LOG_ERROR(LOG_TAG, "Singleton init failed");
         return -1;
     }
 
     rc = nodus_singleton_connect();
+    fprintf(stderr, "[NODUS_INIT] Singleton connect rc=%d\n", rc);
 
     /* If cached nodes failed, retry with hardcoded nodes */
     if (rc != 0 && used_cache && g_config.bootstrap_count > 0) {
