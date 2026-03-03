@@ -1,7 +1,7 @@
 # DNAC (DNA Cash) - Comprehensive Audit Documentation
 
-**Version:** 0.10.3
-**Audit Date:** 2026-03-01 | **P0 Fixes Applied:** 2026-03-02 | **Dead Code Cleanup:** 2026-03-02
+**Version:** 0.11.0
+**Audit Date:** 2026-03-01 | **Last Updated:** 2026-03-03
 **Audit Depth:** Exhaustive (all source files verified)
 
 ---
@@ -35,7 +35,7 @@ DNAC (DNA Cash) is a UTXO-based digital cash system with BFT witness consensus, 
 | Public headers | 6 files |
 | Test files | 3 (test_real, test_gaps, test_remote) |
 | Test cases | 17 unit + 6 integration + cross-machine |
-| Version | 0.10.3 |
+| Version | 0.11.0 |
 | Build system | CMake 3.16+ |
 
 ---
@@ -48,7 +48,7 @@ DNAC (DNA Cash) is a UTXO-based digital cash system with BFT witness consensus, 
 ├── README.md                   Main documentation
 ├── include/dnac/               Public headers (6 files)
 │   ├── dnac.h                  Main public API
-│   ├── version.h               Version 0.10.3
+│   ├── version.h               Version 0.10.4
 │   ├── bft.h                   BFT types, serialization, roster
 │   ├── nodus.h                 Nodus client + witness announcements
 │   ├── wallet.h                Wallet internals
@@ -100,7 +100,7 @@ DNAC (DNA Cash) is a UTXO-based digital cash system with BFT witness consensus, 
 | CLI | 2 | ~898 | Command-line tool |
 | **Total** | **~20** | **~6,900** | |
 
-**v0.10.3 cleanup removed ~10K lines:** Old standalone witness server (src/witness/), TCP mesh (bft/tcp.c), peer management (bft/peer.c), consensus state machine (bft/consensus.c), and associated headers (witness.h, tcp.h, zone.h). Witness functionality now lives in Nodus v5 (`nodus/src/witness/`).
+**v0.10.3 cleanup:** Removed ~10K lines of dead code — old standalone witness server (src/witness/), TCP mesh (bft/tcp.c), peer management (bft/peer.c), consensus state machine (bft/consensus.c), and associated headers (witness.h, tcp.h, zone.h). Witness functionality lives in Nodus v5 (`nodus/src/witness/`).
 
 ---
 
@@ -509,47 +509,40 @@ Nodus v5 Server Cluster
 
 ## 14. Known Issues & Status
 
-### Phase Completion
+### Completed Milestones
 
-- Phases 1-24: Complete (v0.10.2)
-- Dead code cleanup: Complete (v0.10.3) — removed ~10K lines of old standalone witness code
-- Phase 4 (PQ Zero-Knowledge): Deferred to v2
+| Version | Milestone |
+|---------|-----------|
+| v0.6.0 | 18 security gaps resolved (BFT signing, overflow, replay, memo) |
+| v0.10.2 | P0 security audit: 4 CRITICAL + 3 HIGH fixes (COMMIT sigs, chain_id, UTXO ownership, nonce, overflow, nullifier fail-closed) |
+| v0.10.3 | ~10K lines dead code removal (standalone witness, TCP mesh, consensus state machine) |
+| v0.10.4 | tx_hash enum mismatch fix, fingerprint validation |
+| v0.11.0 | Security audit P1: COMMIT tx_hash verify, nonce hash table, fprintf→QGP_LOG, leader election fix, code dedup, stack→heap |
+
+### Open Issues
+
+See `docs/SECURITY_AUDIT_2026-03-02.md` for full details. Summary:
+
+| Priority | Count | Key Items |
+|----------|-------|-----------|
+| HIGH | 0 | All resolved (v0.11.0) |
+| ARCH | 4 | Sequential consensus, no state sync, fire-and-forget DHT, Merkle stub |
+| BUG | 0 | All resolved (v0.11.0) |
 
 ### Deferred Features
 
+- Phase 4 (PQ Zero-Knowledge / STARKs): Deferred to v2
 - View change protocol (leader failure recovery)
 - Dynamic witness roster management
-- STARK-based zero-knowledge proofs
 - Fuzz testing for parsing
 - Multi-party tests (Alice -> Bob -> Charlie)
-
-### Completed Security Gaps (v0.6.0)
-
-All 18 security gaps resolved and tested:
-- BFT message signing with real Dilithium5
-- Integer overflow protection
-- Public key validation
-- Replay prevention (nonce/timestamp)
-- Memo support
-
-### P0 Security Audit Fixes (v0.10.2)
-
-6 critical/high vulnerabilities resolved:
-- UTXO ownership verification — sender fingerprint vs UTXO owner (CRITICAL-4)
-- Nullifier fail-closed — DB errors return true/spent (HIGH-10)
-- Chain ID validation — 10 BFT handlers check chain_id (CRITICAL-2)
-- Secure nonce generation — abort() on RNG failure (CRITICAL-3)
-- Overflow protection — safe_add_u64 for genesis supply and balance (HIGH-3, HIGH-8)
-- COMMIT signature verification — Dilithium5 sig check on COMMIT messages (CRITICAL-1)
-
-See `docs/SECURITY_AUDIT_2026-03-02.md` for full audit report and fix details.
 
 ### Quality Assessment
 
 | Aspect | Rating | Evidence |
 |--------|--------|---------|
-| Architecture | EXCELLENT | Modular: wallet, TX, consensus, witness |
-| Security | STRONG | 18 gap tests + 6 P0 audit fixes, real crypto operations |
+| Architecture | EXCELLENT | Modular: wallet, TX, BFT support, witness (Nodus) |
+| Security | STRONG | 18 gap tests + 7 P0 audit fixes, real crypto operations |
 | Atomicity | VERIFIED | Database transactions for multi-nullifier |
 | Determinism | VERIFIED | Identical results across witnesses |
 | Testing | GOOD | Unit + integration + cross-machine |

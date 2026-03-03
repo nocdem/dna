@@ -1,0 +1,19 @@
+#ifndef DNAC_CRYPTO_HELPERS_H
+#define DNAC_CRYPTO_HELPERS_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+/**
+ * Build DHT key for payment inbox
+ * Key: SHA3-512("dnac:inbox:" + [chain_id_hex:] + owner_fingerprint)
+ *
+ * @param owner_fp  Owner fingerprint string (128 hex chars)
+ * @param chain_id  Optional 32-byte chain ID for zone scoping (NULL = default)
+ * @param key_out   Output buffer for 64-byte SHA3-512 key
+ * @return 0 on success, -1 on error
+ */
+int dnac_build_inbox_key(const char *owner_fp, const uint8_t *chain_id,
+                          uint8_t *key_out);
+
+#endif /* DNAC_CRYPTO_HELPERS_H */

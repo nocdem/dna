@@ -30,6 +30,8 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "crypto/utils/qgp_log.h"
+
 #define LOG_TAG "WITNESS-BFT"
 
 /* ── Time helper ─────────────────────────────────────────────────── */
@@ -40,14 +42,45 @@ static uint64_t time_ms(void) {
 
 /* ── Replay prevention ───────────────────────────────────────────── */
 
-#define NONCE_CACHE_SIZE 256
+/* ── Nonce hash table (HIGH-2: replaces linear-scan array) ──────── */
 
-static struct {
+#define NONCE_BUCKET_COUNT  256
+#define NONCE_TTL_SECS      300  /* 5 minutes */
+
+typedef struct nonce_node {
     uint8_t  sender_id[NODUS_T3_WITNESS_ID_LEN];
     uint64_t nonce;
     uint64_t timestamp;
-} nonce_cache[NONCE_CACHE_SIZE];
-static int nonce_cache_idx = 0;
+    struct nonce_node *next;
+} nonce_node_t;
+
+static nonce_node_t *nonce_buckets[NONCE_BUCKET_COUNT];
+
+static uint32_t nonce_hash_fn(const uint8_t *sender_id, uint64_t nonce) {
+    uint32_t h = 0x811c9dc5;
+    for (int i = 0; i < NODUS_T3_WITNESS_ID_LEN; i++) {
+        h ^= sender_id[i];
+        h *= 0x01000193;
+    }
+    for (int i = 0; i < 8; i++) {
+        h ^= (uint8_t)(nonce >> (i * 8));
+        h *= 0x01000193;
+    }
+    return h % NONCE_BUCKET_COUNT;
+}
+
+static void nonce_evict_bucket(uint32_t bucket, uint64_t now) {
+    nonce_node_t **pp = &nonce_buckets[bucket];
+    while (*pp) {
+        if (now - (*pp)->timestamp >= NONCE_TTL_SECS) {
+            nonce_node_t *expired = *pp;
+            *pp = expired->next;
+            free(expired);
+        } else {
+            pp = &(*pp)->next;
+        }
+    }
+}
 
 static bool is_replay(const uint8_t *sender_id, uint64_t nonce,
                        uint64_t timestamp) {
@@ -57,20 +90,27 @@ static bool is_replay(const uint8_t *sender_id, uint64_t nonce,
     if (timestamp > now + 300 || timestamp + 300 < now)
         return true;
 
-    /* Check cache for duplicate (sender_id + nonce) */
-    for (int i = 0; i < NONCE_CACHE_SIZE; i++) {
-        if (nonce_cache[i].nonce == nonce &&
-            memcmp(nonce_cache[i].sender_id, sender_id,
-                   NODUS_T3_WITNESS_ID_LEN) == 0)
+    uint32_t bucket = nonce_hash_fn(sender_id, nonce);
+
+    /* Evict expired entries from this bucket */
+    nonce_evict_bucket(bucket, now);
+
+    /* Check for duplicate */
+    for (nonce_node_t *n = nonce_buckets[bucket]; n; n = n->next) {
+        if (n->nonce == nonce &&
+            memcmp(n->sender_id, sender_id, NODUS_T3_WITNESS_ID_LEN) == 0)
             return true;
     }
 
-    /* Record nonce */
-    memcpy(nonce_cache[nonce_cache_idx].sender_id, sender_id,
-           NODUS_T3_WITNESS_ID_LEN);
-    nonce_cache[nonce_cache_idx].nonce = nonce;
-    nonce_cache[nonce_cache_idx].timestamp = timestamp;
-    nonce_cache_idx = (nonce_cache_idx + 1) % NONCE_CACHE_SIZE;
+    /* Insert new entry at head (no mutex needed — single-threaded epoll) */
+    nonce_node_t *node = malloc(sizeof(nonce_node_t));
+    if (node) {
+        memcpy(node->sender_id, sender_id, NODUS_T3_WITNESS_ID_LEN);
+        node->nonce = nonce;
+        node->timestamp = timestamp;
+        node->next = nonce_buckets[bucket];
+        nonce_buckets[bucket] = node;
+    }
 
     return false;
 }
@@ -973,7 +1013,7 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             if (nodus_t3_encode(&fwd_rsp, &w->server->identity.sk,
                                  fwd_buf, sizeof(fwd_buf), &fwd_len) == 0) {
                 nodus_tcp_send(w->peers[fwd_pi].conn, fwd_buf, fwd_len);
-                fprintf(stderr, "%s: sent w_fwd_rsp to forwarder\n", LOG_TAG);
+                QGP_LOG_DEBUG(LOG_TAG, "sent w_fwd_rsp to forwarder");
             }
         }
     }
@@ -1006,13 +1046,47 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
 
     /* Skip if we already committed this round */
     if (hdr->round <= w->last_committed_round) {
-        fprintf(stderr, "%s: round %lu already committed, skipping\n",
-                LOG_TAG, (unsigned long)hdr->round);
+        QGP_LOG_DEBUG(LOG_TAG, "round %lu already committed, skipping",
+                      (unsigned long)hdr->round);
         return 0;
     }
 
-    fprintf(stderr, "%s: received COMMIT for round %lu (%d nullifiers)\n",
-            LOG_TAG, (unsigned long)hdr->round, cmt->nullifier_count);
+    QGP_LOG_INFO(LOG_TAG, "received COMMIT for round %lu (%d nullifiers)",
+                 (unsigned long)hdr->round, cmt->nullifier_count);
+
+    /* HIGH-1: Verify tx_hash integrity before committing.
+     * Recompute tx_hash from tx_data and compare with the claimed hash. */
+    if (cmt->tx_data && cmt->tx_len > 0) {
+        /* Determine pubkey for hash: use round_state if we participated,
+         * else use all-zeros for genesis (tx_type 0). For spends where
+         * we missed PROPOSE, round_state.client_pubkey will be all-zero
+         * if we didn't participate — skip verification in that case since
+         * the leader already verified during PROPOSE. */
+        const uint8_t *hash_pubkey = w->round_state.client_pubkey;
+        uint8_t zero_pk[NODUS_PK_BYTES];
+        memset(zero_pk, 0, NODUS_PK_BYTES);
+
+        if (cmt->tx_type == NODUS_W_TX_GENESIS) {
+            hash_pubkey = zero_pk;
+        }
+
+        bool have_pubkey = (cmt->tx_type == NODUS_W_TX_GENESIS) ||
+                           (memcmp(hash_pubkey, zero_pk, NODUS_PK_BYTES) != 0);
+
+        if (have_pubkey) {
+            uint8_t computed_hash[NODUS_KEY_BYTES];
+            if (nodus_witness_recompute_tx_hash(cmt->tx_data, cmt->tx_len,
+                    hash_pubkey, computed_hash) != 0 ||
+                memcmp(computed_hash, cmt->tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
+                QGP_LOG_WARN(LOG_TAG, "COMMIT tx_hash mismatch — rejecting round %lu",
+                             (unsigned long)hdr->round);
+                return -1;
+            }
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "COMMIT: no client_pubkey available, "
+                          "skipping tx_hash re-verification (missed PROPOSE)");
+        }
+    }
 
     /* Build nullifier pointer array from T3 message */
     const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
@@ -1026,7 +1100,7 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                        cmt->proposal_timestamp,
                        cmt->proposer_id,
                        cmt->tx_data, cmt->tx_len) != 0) {
-        fprintf(stderr, "%s: remote commit to DB failed!\n", LOG_TAG);
+        QGP_LOG_ERROR(LOG_TAG, "remote commit to DB failed!");
         return -1;
     }
 
@@ -1037,17 +1111,17 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
             char hex[17];
             for (int i = 0; i < 8; i++)
                 snprintf(hex + i * 2, 3, "%02x", utxo_cksum[i]);
-            fprintf(stderr, "%s: UTXO checksum after remote commit round %llu: %s\n",
-                    LOG_TAG, (unsigned long long)hdr->round, hex);
+            QGP_LOG_DEBUG(LOG_TAG, "UTXO checksum after remote commit round %llu: %s",
+                         (unsigned long long)hdr->round, hex);
 
             /* Compare with leader's checksum (if present) */
             uint8_t zero_ck[NODUS_KEY_BYTES];
             memset(zero_ck, 0, NODUS_KEY_BYTES);
             if (memcmp(cmt->utxo_checksum, zero_ck, NODUS_KEY_BYTES) != 0) {
                 if (memcmp(utxo_cksum, cmt->utxo_checksum, NODUS_KEY_BYTES) != 0) {
-                    fprintf(stderr, "%s: WARNING: UTXO checksum DIVERGED from "
-                            "leader at round %llu!\n",
-                            LOG_TAG, (unsigned long long)hdr->round);
+                    QGP_LOG_WARN(LOG_TAG, "UTXO checksum DIVERGED from "
+                                 "leader at round %llu!",
+                                 (unsigned long long)hdr->round);
                 }
             }
         }

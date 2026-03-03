@@ -18,7 +18,10 @@
 /* libdna crypto utilities */
 #include "crypto/utils/qgp_dilithium.h"
 #include "crypto/utils/qgp_random.h"
+#include "crypto/utils/qgp_log.h"
 #include "dnac/safe_math.h"
+
+#define LOG_TAG "DNAC_TX"
 
 /* Forward declarations for verification functions (verify.c) */
 extern int verify_witnesses(const dnac_transaction_t *tx);
@@ -145,7 +148,7 @@ int dnac_tx_verify(const dnac_transaction_t *tx) {
     /* Genesis: 0 inputs, outputs create coins (witness-authorized) */
     if (tx->type == DNAC_TX_GENESIS) {
         if (tx->input_count != 0) {
-            fprintf(stderr, "[VERIFY] FAILED: genesis must have 0 inputs\n");
+            QGP_LOG_ERROR(LOG_TAG, "verify failed: genesis must have 0 inputs");
             return DNAC_ERROR_INVALID_PROOF;
         }
     } else {
@@ -153,27 +156,27 @@ int dnac_tx_verify(const dnac_transaction_t *tx) {
         uint64_t total_in = dnac_tx_total_input(tx);
         uint64_t total_out = dnac_tx_total_output(tx);
 
-        fprintf(stderr, "[VERIFY] total_in=%llu, total_out=%llu\n",
-                (unsigned long long)total_in, (unsigned long long)total_out);
+        QGP_LOG_DEBUG(LOG_TAG, "verify: total_in=%llu, total_out=%llu",
+                      (unsigned long long)total_in, (unsigned long long)total_out);
 
         if (total_in < total_out) {
-            fprintf(stderr, "[VERIFY] FAILED: outputs exceed inputs\n");
+            QGP_LOG_ERROR(LOG_TAG, "verify failed: outputs exceed inputs");
             return DNAC_ERROR_INVALID_PROOF;
         }
     }
 
     /* Verify we have enough witnesses
      * BFT mode: 1 attestation proves consensus (quorum agreement happened internally) */
-    fprintf(stderr, "[VERIFY] witness_count=%d (BFT: 1 sufficient)\n", tx->witness_count);
+    QGP_LOG_DEBUG(LOG_TAG, "verify: witness_count=%d (BFT: 1 sufficient)", tx->witness_count);
     if (tx->witness_count < 1) {
-        fprintf(stderr, "[VERIFY] FAILED: no witnesses\n");
+        QGP_LOG_ERROR(LOG_TAG, "verify failed: no witnesses");
         return DNAC_ERROR_WITNESS_FAILED;
     }
 
     /* Verify witness signatures */
     int rc = verify_witnesses(tx);
     if (rc != DNAC_SUCCESS) {
-        fprintf(stderr, "[VERIFY] FAILED: witness sig verify rc=%d\n", rc);
+        QGP_LOG_ERROR(LOG_TAG, "verify failed: witness sig verify rc=%d", rc);
         return rc;
     }
 
@@ -181,12 +184,12 @@ int dnac_tx_verify(const dnac_transaction_t *tx) {
     if (tx->type != DNAC_TX_GENESIS) {
         rc = verify_sender_signature(tx);
         if (rc != DNAC_SUCCESS) {
-            fprintf(stderr, "[VERIFY] FAILED: sender sig verify rc=%d\n", rc);
+            QGP_LOG_ERROR(LOG_TAG, "verify failed: sender sig verify rc=%d", rc);
             return rc;
         }
     }
 
-    fprintf(stderr, "[VERIFY] OK\n");
+    QGP_LOG_DEBUG(LOG_TAG, "verify OK");
     return DNAC_SUCCESS;
 }
 

@@ -18,6 +18,11 @@
 #include <openssl/evp.h>
 
 #include "nodus_ops.h"
+#include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_sha3.h"
+#include "dnac/crypto_helpers.h"
+
+#define LOG_TAG "DNAC_WALLET"
 
 /* Default database filename */
 #define DNAC_DB_FILENAME "dnac.db"
@@ -44,7 +49,7 @@ dnac_context_t* dnac_init(void *dna_engine) {
     /* Check if identity is loaded */
     const char *fp = dna_engine_get_fingerprint(engine);
     if (!fp) {
-        fprintf(stderr, "DNAC: No identity loaded in DNA engine\n");
+        QGP_LOG_ERROR(LOG_TAG, "No identity loaded in DNA engine");
         return NULL;
     }
 
@@ -66,7 +71,7 @@ dnac_context_t* dnac_init(void *dna_engine) {
 
     int rc = sqlite3_open(db_path, &ctx->db);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "DNAC: Failed to open database: %s\n", sqlite3_errmsg(ctx->db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s", sqlite3_errmsg(ctx->db));
         sqlite3_close(ctx->db);
         free(ctx);
         return NULL;
@@ -75,7 +80,7 @@ dnac_context_t* dnac_init(void *dna_engine) {
     /* Initialize schema */
     rc = dnac_db_init(ctx->db);
     if (rc != DNAC_SUCCESS) {
-        fprintf(stderr, "DNAC: Failed to initialize database schema\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize database schema");
         sqlite3_close(ctx->db);
         free(ctx);
         return NULL;
@@ -116,8 +121,6 @@ void dnac_set_payment_callback(dnac_context_t *ctx,
  * ========================================================================== */
 
 /* Forward declarations for inbox listener */
-static int compute_sha3_512(const uint8_t *data, size_t len, uint8_t *hash_out);
-static int build_inbox_key(const char *owner_fp, const uint8_t *chain_id, uint8_t *key_out);
 static int derive_nullifier(const char *owner_fp, const uint8_t *seed, uint8_t *nullifier_out);
 static bool utxo_exists(sqlite3 *db, const uint8_t *tx_hash, uint32_t output_index);
 
@@ -199,7 +202,7 @@ int dnac_start_listening(dnac_context_t *ctx) {
 
     /* Build inbox key */
     uint8_t inbox_key[64];
-    if (build_inbox_key(ctx->owner_fingerprint, NULL, inbox_key) != 0) {
+    if (dnac_build_inbox_key(ctx->owner_fingerprint, NULL, inbox_key) != 0) {
         return DNAC_ERROR_CRYPTO;
     }
 
@@ -255,54 +258,6 @@ void dnac_free_utxos(dnac_utxo_t *utxos, int count) {
 }
 
 /**
- * Compute SHA3-512 hash of data
- */
-static int compute_sha3_512(const uint8_t *data, size_t len, uint8_t *hash_out) {
-    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
-    if (!mdctx) return -1;
-
-    if (EVP_DigestInit_ex(mdctx, EVP_sha3_512(), NULL) != 1 ||
-        EVP_DigestUpdate(mdctx, data, len) != 1 ||
-        EVP_DigestFinal_ex(mdctx, hash_out, NULL) != 1) {
-        EVP_MD_CTX_free(mdctx);
-        return -1;
-    }
-
-    EVP_MD_CTX_free(mdctx);
-    return 0;
-}
-
-/**
- * Build DHT key for payment inbox
- * Key: SHA3-512("dnac:inbox:" + owner_fingerprint)
- */
-static int build_inbox_key(const char *owner_fp, const uint8_t *chain_id,
-                            uint8_t *key_out) {
-    uint8_t key_data[384];
-    size_t offset = 0;
-
-    const char *prefix = "dnac:inbox:";
-    memcpy(key_data, prefix, strlen(prefix));
-    offset = strlen(prefix);
-
-    /* v0.10.0: Include chain_id hex in key for zone scoping */
-    if (chain_id) {
-        static const char hex[] = "0123456789abcdef";
-        for (int i = 0; i < 32; i++) {
-            key_data[offset++] = hex[(chain_id[i] >> 4) & 0xF];
-            key_data[offset++] = hex[chain_id[i] & 0xF];
-        }
-        key_data[offset++] = ':';
-    }
-
-    size_t fp_len = strlen(owner_fp);
-    memcpy(key_data + offset, owner_fp, fp_len);
-    offset += fp_len;
-
-    return compute_sha3_512(key_data, offset, key_out);
-}
-
-/**
  * Derive nullifier from seed and owner secret
  * nullifier = SHA3-512(owner_fingerprint || nullifier_seed)
  */
@@ -318,7 +273,7 @@ static int derive_nullifier(const char *owner_fp, const uint8_t *seed,
     memcpy(data + offset, seed, 32);
     offset += 32;
 
-    return compute_sha3_512(data, offset, nullifier_out);
+    return qgp_sha3_512(data, offset, nullifier_out);
 }
 
 /**
@@ -346,7 +301,7 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
 
     /* Step 1: Build inbox key */
     uint8_t inbox_key[64];
-    if (build_inbox_key(ctx->owner_fingerprint, NULL, inbox_key) != 0) {
+    if (dnac_build_inbox_key(ctx->owner_fingerprint, NULL, inbox_key) != 0) {
         return DNAC_ERROR_CRYPTO;
     }
 
@@ -363,14 +318,14 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
     uint64_t witness_total = 0;
     int rc = dnac_wallet_recover_from_witnesses(ctx, &witness_recovered, &witness_total);
     if (rc == DNAC_SUCCESS && witness_recovered > 0) {
-        fprintf(stderr, "[SYNC] Recovered %d UTXOs from witnesses (total: %llu)\n",
-                witness_recovered, (unsigned long long)witness_total);
+        QGP_LOG_INFO(LOG_TAG, "sync: recovered %d UTXOs from witnesses (total: %llu)",
+                     witness_recovered, (unsigned long long)witness_total);
     }
 
     int rc2 = nodus_ops_get_all(inbox_key, 64, &values, &values_len, &count);
     if (rc2 != 0 || count == 0) {
         /* No payments or error - not fatal */
-        fprintf(stderr, "[SYNC] No payments found (rc=%d, count=%zu)\n", rc2, count);
+        QGP_LOG_DEBUG(LOG_TAG, "sync: no payments found (rc=%d, count=%zu)", rc2, count);
         return DNAC_SUCCESS;
     }
 
@@ -378,9 +333,9 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
 
     /* Step 3: Process each payment */
     for (size_t i = 0; i < count; i++) {
-        fprintf(stderr, "[SYNC] Processing value %zu: %zu bytes\n", i, values_len[i]);
+        QGP_LOG_DEBUG(LOG_TAG, "sync: processing value %zu: %zu bytes", i, values_len[i]);
         if (!values[i] || values_len[i] == 0) {
-            fprintf(stderr, "[SYNC]   Skipping empty value\n");
+            QGP_LOG_DEBUG(LOG_TAG, "sync:   skipping empty value");
             continue;
         }
 
@@ -388,36 +343,36 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
         dnac_transaction_t *tx = NULL;
         rc = dnac_tx_deserialize(values[i], values_len[i], &tx);
         if (rc != DNAC_SUCCESS || !tx) {
-            fprintf(stderr, "[SYNC]   Deserialize FAILED: rc=%d\n", rc);
+            QGP_LOG_WARN(LOG_TAG, "sync:   deserialize failed: rc=%d", rc);
             continue;
         }
-        fprintf(stderr, "[SYNC]   Deserialized TX: %d inputs, %d outputs\n", tx->input_count, tx->output_count);
+        QGP_LOG_DEBUG(LOG_TAG, "sync:   deserialized TX: %d inputs, %d outputs", tx->input_count, tx->output_count);
 
         /* Verify transaction (optional - trust witnessed transactions) */
         rc = dnac_tx_verify(tx);
         if (rc != DNAC_SUCCESS) {
-            fprintf(stderr, "[SYNC]   Verify FAILED: rc=%d\n", rc);
+            QGP_LOG_WARN(LOG_TAG, "sync:   verify failed: rc=%d", rc);
             dnac_free_transaction(tx);
             continue;
         }
-        fprintf(stderr, "[SYNC]   TX verified OK\n");
+        QGP_LOG_DEBUG(LOG_TAG, "sync:   TX verified OK");
 
         /* v0.9.0: Validate TX exists on current witness ledger.
          * Prevents storing stale UTXOs from old DHT data (previous deployments). */
         dnac_ledger_entry_t ledger_entry;
         rc = dnac_ledger_query_tx(ctx, tx->tx_hash, &ledger_entry, NULL);
         if (rc == DNAC_ERROR_NOT_FOUND) {
-            fprintf(stderr, "[SYNC]   TX not in witness ledger, skipping (stale)\n");
+            QGP_LOG_DEBUG(LOG_TAG, "sync:   TX not in witness ledger, skipping (stale)");
             dnac_free_transaction(tx);
             continue;
         }
         if (rc != DNAC_SUCCESS) {
-            fprintf(stderr, "[SYNC]   Ledger check failed (rc=%d), skipping\n", rc);
+            QGP_LOG_DEBUG(LOG_TAG, "sync:   ledger check failed (rc=%d), skipping", rc);
             dnac_free_transaction(tx);
             continue;
         }
-        fprintf(stderr, "[SYNC]   TX confirmed in witness ledger (seq=%llu)\n",
-                (unsigned long long)ledger_entry.sequence_number);
+        QGP_LOG_DEBUG(LOG_TAG, "sync:   TX confirmed in witness ledger (seq=%llu)",
+                     (unsigned long long)ledger_entry.sequence_number);
 
         /* Track if we stored any outputs from this transaction */
         bool stored_from_this_tx = false;
@@ -426,20 +381,20 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
 
         /* Step 4: Extract outputs addressed to us */
         for (int j = 0; j < tx->output_count; j++) {
-            fprintf(stderr, "[SYNC]   Output %d: owner=%.16s... amount=%llu\n",
-                    j, tx->outputs[j].owner_fingerprint, (unsigned long long)tx->outputs[j].amount);
+            QGP_LOG_DEBUG(LOG_TAG, "sync:   output %d: owner=%.16s... amount=%llu",
+                         j, tx->outputs[j].owner_fingerprint, (unsigned long long)tx->outputs[j].amount);
             /* Check if output is for us */
             if (strcmp(tx->outputs[j].owner_fingerprint, ctx->owner_fingerprint) != 0) {
-                fprintf(stderr, "[SYNC]     Not for us, skipping\n");
+                QGP_LOG_DEBUG(LOG_TAG, "sync:     not for us, skipping");
                 continue;
             }
 
             /* Check if UTXO already exists */
             if (utxo_exists(ctx->db, tx->tx_hash, (uint32_t)j)) {
-                fprintf(stderr, "[SYNC]     Already exists, skipping\n");
+                QGP_LOG_DEBUG(LOG_TAG, "sync:     already exists, skipping");
                 continue;
             }
-            fprintf(stderr, "[SYNC]     NEW UTXO! Storing...\n");
+            QGP_LOG_INFO(LOG_TAG, "sync:     new UTXO, storing...");
 
             /* Create UTXO from output */
             dnac_utxo_t utxo = {0};
@@ -487,14 +442,17 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
             }
 
             /* Serialize transaction for storage */
-            uint8_t tx_buffer[65536];
-            size_t tx_len = 0;
-            rc = dnac_tx_serialize(tx, tx_buffer, sizeof(tx_buffer), &tx_len);
-            if (rc == DNAC_SUCCESS) {
-                /* For received transactions: amount_in = received_amount, amount_out = 0, fee = 0 */
-                dnac_db_store_transaction(ctx->db, tx->tx_hash, tx_buffer, tx_len,
-                                          tx->type, sender_fp,
-                                          received_amount, 0, 0);
+            uint8_t *tx_buffer = malloc(65536);
+            if (tx_buffer) {
+                size_t tx_len = 0;
+                rc = dnac_tx_serialize(tx, tx_buffer, 65536, &tx_len);
+                if (rc == DNAC_SUCCESS) {
+                    /* For received transactions: amount_in = received_amount, amount_out = 0, fee = 0 */
+                    dnac_db_store_transaction(ctx->db, tx->tx_hash, tx_buffer, tx_len,
+                                              tx->type, sender_fp,
+                                              received_amount, 0, 0);
+                }
+                free(tx_buffer);
             }
         }
 
@@ -525,13 +483,13 @@ int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count) {
     uint64_t witness_total = 0;
     rc = dnac_wallet_recover_from_witnesses(ctx, &witness_recovered, &witness_total);
     if (rc == DNAC_SUCCESS && witness_recovered > 0) {
-        fprintf(stderr, "[RECOVER] Recovered %d UTXOs from witnesses (total: %llu)\n",
-                witness_recovered, (unsigned long long)witness_total);
+        QGP_LOG_INFO(LOG_TAG, "recover: recovered %d UTXOs from witnesses (total: %llu)",
+                     witness_recovered, (unsigned long long)witness_total);
     }
 
     /* Step 2: Build inbox key */
     uint8_t inbox_key[64];
-    if (build_inbox_key(ctx->owner_fingerprint, NULL, inbox_key) != 0) {
+    if (dnac_build_inbox_key(ctx->owner_fingerprint, NULL, inbox_key) != 0) {
         return DNAC_ERROR_CRYPTO;
     }
 
@@ -632,13 +590,13 @@ int dnac_send(dnac_context_t *ctx,
     /* Validate fingerprint: must be exactly 128 lowercase hex characters */
     size_t fp_len = strlen(recipient_fingerprint);
     if (fp_len != 128) {
-        fprintf(stderr, "DNAC: invalid recipient fingerprint length: %zu (expected 128)\n", fp_len);
+        QGP_LOG_ERROR(LOG_TAG, "invalid recipient fingerprint length: %zu (expected 128)", fp_len);
         return DNAC_ERROR_INVALID_PARAM;
     }
     for (size_t i = 0; i < 128; i++) {
         char c = recipient_fingerprint[i];
         if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
-            fprintf(stderr, "DNAC: invalid character '%c' at position %zu in fingerprint\n", c, i);
+            QGP_LOG_ERROR(LOG_TAG, "invalid character '%c' at position %zu in fingerprint", c, i);
             return DNAC_ERROR_INVALID_PARAM;
         }
     }

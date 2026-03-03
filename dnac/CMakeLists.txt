@@ -114,6 +114,9 @@ set(DNAC_SOURCES
     src/bft/serialize.c
     src/bft/roster.c
     src/bft/replay.c
+
+    # Utils
+    src/utils/crypto_helpers.c
 )
 
 # ============================================================================

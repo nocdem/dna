@@ -14,6 +14,9 @@
 
 /* libdna crypto utilities */
 #include "crypto/utils/qgp_dilithium.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DNAC_VERIFY"
 
 /**
  * @brief Verify balance (v1: plaintext sum check)
@@ -60,8 +63,8 @@ int verify_witnesses(const dnac_transaction_t *tx) {
     for (int i = 0; i < tx->witness_count; i++) {
         const dnac_witness_sig_t *witness = &tx->witnesses[i];
 
-        fprintf(stderr, "[WITNESS_VERIFY] Witness %d: id=%.8s..., ts=%llu\n",
-                i, (const char*)witness->witness_id, (unsigned long long)witness->timestamp);
+        QGP_LOG_DEBUG(LOG_TAG, "witness %d: id=%.8s..., ts=%llu",
+                     i, (const char*)witness->witness_id, (unsigned long long)witness->timestamp);
 
         /* Gap 12 Fix (v0.6.0): Check if entire pubkey is all zeros (placeholder/invalid)
          * If not zero, always attempt verification - let Dilithium5 validate the key format.
@@ -71,7 +74,7 @@ int verify_witnesses(const dnac_transaction_t *tx) {
             if (witness->server_pubkey[k] != 0) is_all_zeros = false;
         }
         if (is_all_zeros) {
-            fprintf(stderr, "[WITNESS_VERIFY]   Skipping witness with zero pubkey (placeholder)\n");
+            QGP_LOG_DEBUG(LOG_TAG, "  skipping witness with zero pubkey (placeholder)");
             continue;
         }
 
@@ -89,21 +92,21 @@ int verify_witnesses(const dnac_transaction_t *tx) {
         int ret = qgp_dsa87_verify(witness->signature, DNAC_SIGNATURE_SIZE,
                                    signed_data, sizeof(signed_data),
                                    witness->server_pubkey);
-        fprintf(stderr, "[WITNESS_VERIFY]   qgp_dsa87_verify returned: %d\n", ret);
+        QGP_LOG_DEBUG(LOG_TAG, "  qgp_dsa87_verify returned: %d", ret);
 
         if (ret == 0) {
             valid_witnesses++;
-            fprintf(stderr, "[WITNESS_VERIFY]   Valid! (total valid: %d)\n", valid_witnesses);
+            QGP_LOG_DEBUG(LOG_TAG, "  valid! (total valid: %d)", valid_witnesses);
         }
     }
 
     /* BFT mode: require at least 1 valid witness signature */
     if (valid_witnesses >= 1) {
-        fprintf(stderr, "[WITNESS_VERIFY] SUCCESS: %d valid witness(es)\n", valid_witnesses);
+        QGP_LOG_DEBUG(LOG_TAG, "success: %d valid witness(es)", valid_witnesses);
         return DNAC_SUCCESS;
     }
 
-    fprintf(stderr, "[WITNESS_VERIFY] FAILED: no valid witnesses (checked %d)\n", tx->witness_count);
+    QGP_LOG_ERROR(LOG_TAG, "failed: no valid witnesses (checked %d)", tx->witness_count);
     return DNAC_ERROR_WITNESS_FAILED;
 }
 

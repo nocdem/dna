@@ -21,6 +21,8 @@
 #include "dnac/db.h"
 #include "dnac/ledger.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_sha3.h"
+#include "dnac/crypto_helpers.h"
 #include "crypto/utils/qgp_random.h"
 #include "crypto/utils/qgp_dilithium.h"
 #include <dna/dna_engine.h>
@@ -36,53 +38,6 @@
 
 #include "nodus_ops.h"
 #include "nodus_init.h"
-
-/**
- * Compute SHA3-512 hash of data
- */
-static int compute_sha3_512(const uint8_t *data, size_t len, uint8_t *hash_out) {
-    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
-    if (!mdctx) return -1;
-
-    if (EVP_DigestInit_ex(mdctx, EVP_sha3_512(), NULL) != 1 ||
-        EVP_DigestUpdate(mdctx, data, len) != 1 ||
-        EVP_DigestFinal_ex(mdctx, hash_out, NULL) != 1) {
-        EVP_MD_CTX_free(mdctx);
-        return -1;
-    }
-
-    EVP_MD_CTX_free(mdctx);
-    return 0;
-}
-
-/**
- * Build DHT key for payment inbox
- */
-static int build_inbox_key(const char *recipient_fp, const uint8_t *chain_id,
-                            uint8_t *key_out) {
-    uint8_t key_data[384];
-    size_t offset = 0;
-
-    const char *prefix = "dnac:inbox:";
-    memcpy(key_data, prefix, strlen(prefix));
-    offset = strlen(prefix);
-
-    /* v0.10.0: Include chain_id hex in key for zone scoping */
-    if (chain_id) {
-        static const char hex[] = "0123456789abcdef";
-        for (int i = 0; i < 32; i++) {
-            key_data[offset++] = hex[(chain_id[i] >> 4) & 0xF];
-            key_data[offset++] = hex[chain_id[i] & 0xF];
-        }
-        key_data[offset++] = ':';
-    }
-
-    size_t fp_len = strlen(recipient_fp);
-    memcpy(key_data + offset, recipient_fp, fp_len);
-    offset += fp_len;
-
-    return compute_sha3_512(key_data, offset, key_out);
-}
 
 /**
  * Derive value_id from tx_hash for unique payment storage
@@ -111,7 +66,7 @@ static int derive_nullifier_for_genesis(const char *owner_fp, const uint8_t *see
     memcpy(data + offset, seed, 32);
     offset += 32;
 
-    return compute_sha3_512(data, offset, nullifier_out);
+    return qgp_sha3_512(data, offset, nullifier_out);
 }
 
 int dnac_tx_create_genesis(const dnac_genesis_recipient_t *recipients,
@@ -315,10 +270,12 @@ int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
     const char *our_fp = dnac_get_owner_fingerprint(ctx);
 
     /* Serialize transaction */
-    uint8_t tx_buffer[65536];
+    uint8_t *tx_buffer = malloc(65536);
+    if (!tx_buffer) return DNAC_ERROR_OUT_OF_MEMORY;
     size_t tx_len = 0;
-    rc = dnac_tx_serialize(tx, tx_buffer, sizeof(tx_buffer), &tx_len);
+    rc = dnac_tx_serialize(tx, tx_buffer, 65536, &tx_len);
     if (rc != DNAC_SUCCESS) {
+        free(tx_buffer);
         return rc;
     }
 
@@ -331,7 +288,7 @@ int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
 
         /* Build inbox DHT key for recipient */
         uint8_t inbox_key[64];
-        if (build_inbox_key(tx->outputs[i].owner_fingerprint, NULL, inbox_key) != 0) {
+        if (dnac_build_inbox_key(tx->outputs[i].owner_fingerprint, NULL, inbox_key) != 0) {
             continue;
         }
 
@@ -340,6 +297,7 @@ int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
                            0, payment_value_id);
         if (rc != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to send genesis to recipient %d: %d", i, rc);
+            free(tx_buffer);
             return DNAC_ERROR_NETWORK;
         }
 
@@ -382,6 +340,7 @@ int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
     QGP_LOG_INFO(LOG_TAG, "Genesis broadcast complete: %llu total supply to %d recipients",
                  (unsigned long long)total_supply, tx->output_count);
 
+    free(tx_buffer);
     return DNAC_SUCCESS;
 }
 

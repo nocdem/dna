@@ -428,7 +428,22 @@ int dnac_bft_roster_get_leader(const dnac_roster_t *roster,
         return DNAC_BFT_ERROR_INVALID_PARAM;
     }
 
-    int leader_index = dnac_bft_get_leader_index(epoch, view, roster->n_witnesses);
+    /* BUG-3 fix: Select leader from active witnesses only.
+     * Previous code used n_witnesses (total), which could select an
+     * inactive witness as leader, stalling consensus. */
+    int active_indices[DNAC_BFT_MAX_WITNESSES];
+    int active_count = 0;
+    for (uint32_t i = 0; i < roster->n_witnesses; i++) {
+        if (roster->witnesses[i].active)
+            active_indices[active_count++] = (int)i;
+    }
+
+    if (active_count == 0) {
+        return DNAC_BFT_ERROR_NO_QUORUM;
+    }
+
+    int leader_pos = dnac_bft_get_leader_index(epoch, view, active_count);
+    int leader_index = active_indices[leader_pos];
 
     if (entry_out) {
         memcpy(entry_out, &roster->witnesses[leader_index], sizeof(dnac_roster_entry_t));
@@ -526,7 +541,6 @@ int dnac_bft_client_discover_roster(void *dna_engine, dnac_roster_t *roster_out)
     /* Try loading from file first (multiple locations) */
     const char *roster_paths[] = {
         NULL,  /* Will be filled with ~/.dna/roster.txt */
-        "/opt/dnac/build/roster.txt",
         "./roster.txt",
         NULL
     };

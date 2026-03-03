@@ -22,7 +22,7 @@
 #include "dnac/db.h"
 #include "crypto/utils/qgp_random.h"
 #include "crypto/utils/qgp_log.h"
-#include <openssl/evp.h>
+#include "crypto/utils/qgp_sha3.h"
 
 /* Nodus client SDK (public API) */
 #include "nodus/nodus.h"
@@ -38,22 +38,6 @@ extern void nodus_singleton_unlock(void);
 extern dna_engine_t *dnac_get_engine(dnac_context_t *ctx);
 extern const char *dnac_get_owner_fingerprint(dnac_context_t *ctx);
 
-/* Compute SHA3-512 hash */
-static int compute_sha3_512(const uint8_t *data, size_t len,
-                             uint8_t *hash_out) {
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    if (!ctx) return -1;
-
-    if (EVP_DigestInit_ex(ctx, EVP_sha3_512(), NULL) != 1 ||
-        EVP_DigestUpdate(ctx, data, len) != 1 ||
-        EVP_DigestFinal_ex(ctx, hash_out, NULL) != 1) {
-        EVP_MD_CTX_free(ctx);
-        return -1;
-    }
-
-    EVP_MD_CTX_free(ctx);
-    return 0;
-}
 
 /* ============================================================================
  * BFT Witness Request (via Nodus SDK)
@@ -176,7 +160,7 @@ int dnac_bft_discover_witnesses(void *dna_engine,
 
         /* Derive fingerprint from public key: hex(SHA3-512(pubkey)) */
         uint8_t fp_hash[64];
-        if (compute_sha3_512(entry->pubkey, NODUS_PK_BYTES, fp_hash) == 0) {
+        if (qgp_sha3_512(entry->pubkey, NODUS_PK_BYTES, fp_hash) == 0) {
             for (int j = 0; j < 64; j++) {
                 info->fingerprint[j * 2] = hex[(fp_hash[j] >> 4) & 0xF];
                 info->fingerprint[j * 2 + 1] = hex[fp_hash[j] & 0xF];

@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-03-02 | **Status:** DESIGN | **Version:** v0.10.4
+**Last Updated:** 2026-03-03 | **Status:** DESIGN | **Version:** v0.11.0
 
 ---
 
@@ -193,7 +193,7 @@ OUTPUT:
 **EVERY successful build that will be pushed MUST increment the version.**
 
 **Version File:** `include/dnac/version.h`
-**Current:** v0.10.3
+**Current:** v0.11.0
 
 **Which Number to Bump:**
 - **PATCH** (0.1.X): Bug fixes, small features
@@ -389,6 +389,9 @@ Only serialization, roster, and replay prevention remain in `dnac/src/bft/`:
 8. **Secure Nonce** - RNG failure aborts process instead of weak fallback (v0.10.2)
 9. **Overflow Protection** - safe_add_u64 for genesis supply and balance calculations (v0.10.2)
 10. **COMMIT Signatures** - All COMMIT messages require valid Dilithium5 signature (v0.10.2)
+11. **COMMIT TX Integrity** - tx_hash recomputed from tx_data before DB commit (v0.11.0)
+12. **Nonce Hash Table** - O(1) replay prevention with TTL eviction, resistant to cache flooding (v0.11.0)
+13. **Structured Logging** - All fprintf(stderr) replaced with QGP_LOG macros (v0.11.0)
 
 ---
 

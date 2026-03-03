@@ -12,6 +12,9 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "crypto/utils/qgp_log.h"
+#define LOG_TAG "DNAC_DB"
+
 /* Database schema version */
 #define DNAC_DB_VERSION 3
 
@@ -87,7 +90,7 @@ int dnac_db_init(sqlite3 *db) {
     /* Create schema version table first */
     int rc = sqlite3_exec(db, SCHEMA_VERSION_SQL, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "DNAC DB version table error: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "DB version table error: %s", err_msg);
         sqlite3_free(err_msg);
         return DNAC_ERROR_DATABASE;
     }
@@ -99,7 +102,7 @@ int dnac_db_init(sqlite3 *db) {
     if (current_version < 1) {
         rc = sqlite3_exec(db, SCHEMA_SQL, NULL, NULL, &err_msg);
         if (rc != SQLITE_OK) {
-            fprintf(stderr, "DNAC DB init error: %s\n", err_msg);
+            QGP_LOG_ERROR(LOG_TAG, "DB init error: %s", err_msg);
             sqlite3_free(err_msg);
             return DNAC_ERROR_DATABASE;
         }
@@ -115,7 +118,7 @@ int dnac_db_init(sqlite3 *db) {
             ");";
         rc = sqlite3_exec(db, migration_v2, NULL, NULL, &err_msg);
         if (rc != SQLITE_OK) {
-            fprintf(stderr, "DNAC DB migration v2 error: %s\n", err_msg);
+            QGP_LOG_ERROR(LOG_TAG, "DB migration v2 error: %s", err_msg);
             sqlite3_free(err_msg);
             return DNAC_ERROR_DATABASE;
         }
@@ -138,7 +141,7 @@ int dnac_db_init(sqlite3 *db) {
             if (rc != SQLITE_OK) {
                 /* Column might already exist - ignore "duplicate column" errors */
                 if (strstr(err_msg, "duplicate column") == NULL) {
-                    fprintf(stderr, "DNAC DB migration v3 error: %s\n", err_msg);
+                    QGP_LOG_ERROR(LOG_TAG, "DB migration v3 error: %s", err_msg);
                     sqlite3_free(err_msg);
                     return DNAC_ERROR_DATABASE;
                 }
