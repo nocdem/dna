@@ -53,6 +53,30 @@ static void ensure_config(void) {
 }
 
 /**
+ * Parse hardcoded bootstrap nodes from g_config into nconfig.
+ */
+static void load_hardcoded_nodes(nodus_client_config_t *nconfig) {
+    nconfig->server_count = 0;
+    for (int i = 0; i < g_config.bootstrap_count && nconfig->server_count < NODUS_CLIENT_MAX_SERVERS; i++) {
+        const char *node = g_config.bootstrap_nodes[i];
+        const char *colon = strrchr(node, ':');
+        if (colon) {
+            size_t ip_len = (size_t)(colon - node);
+            if (ip_len >= sizeof(nconfig->servers[0].ip))
+                ip_len = sizeof(nconfig->servers[0].ip) - 1;
+            memcpy(nconfig->servers[nconfig->server_count].ip, node, ip_len);
+            nconfig->servers[nconfig->server_count].ip[ip_len] = '\0';
+            nconfig->servers[nconfig->server_count].port = (uint16_t)atoi(colon + 1);
+        } else {
+            strncpy(nconfig->servers[nconfig->server_count].ip, node,
+                    sizeof(nconfig->servers[0].ip) - 1);
+            nconfig->servers[nconfig->server_count].port = NODUS_DEFAULT_TCP_PORT;
+        }
+        nconfig->server_count++;
+    }
+}
+
+/**
  * Nodus client on_state_change callback — fires messenger status callback.
  */
 static void on_state_change(nodus_client_state_t old_state,
@@ -93,6 +117,7 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
     nconfig.on_state_change = on_state_change;
 
     /* Try cached bootstrap nodes first */
+    bool used_cache = false;
     bootstrap_cache_entry_t *cached_nodes = NULL;
     size_t cached_count = 0;
     if (bootstrap_cache_get_best(3, &cached_nodes, &cached_count) == 0 && cached_count > 0) {
@@ -104,25 +129,14 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
             nconfig.server_count++;
         }
         free(cached_nodes);
+        used_cache = true;
     }
 
-    /* Fall back to hardcoded nodes */
+    /* Fall back to hardcoded nodes if no cache */
     if (nconfig.server_count == 0 && g_config.bootstrap_count > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Using hardcoded bootstrap: %s", g_config.bootstrap_nodes[0]);
-        const char *node = g_config.bootstrap_nodes[0];
-        const char *colon = strrchr(node, ':');
-        if (colon) {
-            size_t ip_len = (size_t)(colon - node);
-            if (ip_len >= sizeof(nconfig.servers[0].ip))
-                ip_len = sizeof(nconfig.servers[0].ip) - 1;
-            memcpy(nconfig.servers[0].ip, node, ip_len);
-            nconfig.servers[0].ip[ip_len] = '\0';
-            nconfig.servers[0].port = (uint16_t)atoi(colon + 1);
-        } else {
-            strncpy(nconfig.servers[0].ip, node, sizeof(nconfig.servers[0].ip) - 1);
-            nconfig.servers[0].port = NODUS_DEFAULT_TCP_PORT;
-        }
-        nconfig.server_count = 1;
+        QGP_LOG_INFO(LOG_TAG, "No cached nodes, using %d hardcoded bootstrap nodes",
+                     g_config.bootstrap_count);
+        load_hardcoded_nodes(&nconfig);
     }
 
     if (nconfig.server_count == 0) {
@@ -138,6 +152,30 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
     }
 
     rc = nodus_singleton_connect();
+
+    /* If cached nodes failed, retry with hardcoded nodes */
+    if (rc != 0 && used_cache && g_config.bootstrap_count > 0) {
+        QGP_LOG_WARN(LOG_TAG, "Cached nodes failed, retrying with hardcoded bootstrap nodes");
+        nodus_singleton_close();
+
+        /* Expire all stale cache entries */
+        bootstrap_cache_expire(0);
+
+        /* Rebuild config with hardcoded nodes */
+        memset(&nconfig, 0, sizeof(nconfig));
+        nconfig.auto_reconnect = true;
+        nconfig.on_value_changed = nodus_ops_dispatch;
+        nconfig.on_state_change = on_state_change;
+        load_hardcoded_nodes(&nconfig);
+
+        rc = nodus_singleton_init(&nconfig, &g_stored_identity);
+        if (rc != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Singleton init failed (hardcoded fallback)");
+            return -1;
+        }
+        rc = nodus_singleton_connect();
+    }
+
     if (rc != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Singleton connect failed");
         nodus_singleton_close();
