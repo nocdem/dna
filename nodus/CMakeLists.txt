@@ -122,15 +122,24 @@ target_include_directories(nodus_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${SHARED_DIR}
     ${SHARED_DIR}/crypto
-    ${OPENSSL_INCLUDE_DIR}
-    ${SQLite3_INCLUDE_DIRS}
 )
+if(NODUS_STANDALONE OR NOT DEFINED NODUS_STANDALONE)
+    target_include_directories(nodus_lib PUBLIC
+        ${OPENSSL_INCLUDE_DIR}
+        ${SQLite3_INCLUDE_DIRS}
+    )
+endif()
 
-target_link_libraries(nodus_lib PUBLIC
-    dsa
-    OpenSSL::Crypto
-    ${SQLite3_LIBRARIES}
-)
+if(NODUS_STANDALONE OR NOT DEFINED NODUS_STANDALONE)
+    target_link_libraries(nodus_lib PUBLIC
+        dsa
+        OpenSSL::Crypto
+        ${SQLite3_LIBRARIES}
+    )
+else()
+    # Within messenger tree — messenger handles linking OpenSSL and SQLite3
+    target_link_libraries(nodus_lib PUBLIC dsa)
+endif()
 
 # Security flags
 target_compile_options(nodus_lib PRIVATE

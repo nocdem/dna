@@ -46,7 +46,7 @@ build:native-linux-x64:
   script:
     - cd messenger
     - mkdir -p build && cd build
-    - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF
+    - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON
     - make -j$(nproc) dna_lib
     - mkdir -p ${CI_PROJECT_DIR}/native-libs/linux-x64
     - cp libdna_lib.so ${CI_PROJECT_DIR}/native-libs/linux-x64/
