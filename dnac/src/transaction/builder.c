@@ -87,7 +87,7 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
     int rc;
     *tx_out = NULL;
 
-    /* Calculate fee */
+    /* Estimate fee for initial UTXO selection */
     uint64_t fee = 0;
     rc = dnac_estimate_fee(builder->ctx, builder->total_output_amount, &fee);
     if (rc != DNAC_SUCCESS) return rc;
@@ -104,6 +104,30 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
 
     rc = dnac_wallet_select_utxos(builder->ctx, total_needed,
                                    &selected, &selected_count, &change_amount);
+    if (rc != DNAC_SUCCESS) return rc;
+
+    /* Recalculate fee based on total_input.
+     * Witness checks: actual_fee >= total_output / 1000
+     * where total_output = total_input - fee.
+     * Solving: fee >= (total_input - fee) / 1000
+     *        → 1001 * fee >= total_input
+     *        → fee = ceil(total_input / 1001)
+     */
+    uint64_t total_input = 0;
+    for (int i = 0; i < selected_count; i++) {
+        if (safe_add_u64(total_input, selected[i].amount, &total_input) != 0) {
+            free(selected);
+            return DNAC_ERROR_OVERFLOW;
+        }
+    }
+    fee = (total_input + 1000) / 1001;
+    if (fee < 1) fee = 1;
+
+    if (builder->total_output_amount + fee > total_input) {
+        free(selected);
+        return DNAC_ERROR_INSUFFICIENT_FUNDS;
+    }
+    change_amount = total_input - builder->total_output_amount - fee;
     if (rc != DNAC_SUCCESS) return rc;
 
     /* Add inputs from selected UTXOs */
@@ -241,9 +265,10 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
     }
     request.tx_len = (uint32_t)tx_serialized_len;
 
-    /* Calculate fee */
+    /* Declare actual fee (inputs - outputs) to match witness verification */
     uint64_t total_output = dnac_tx_total_output(tx);
-    request.fee_amount = dnac_witness_calculate_fee(total_output);
+    uint64_t total_input_val = dnac_tx_total_input(tx);
+    request.fee_amount = total_input_val - total_output;
 
     /* Step 2: Store pending spend in database */
     uint64_t expires_at = request.timestamp + 300;  /* 5 minute expiry */
