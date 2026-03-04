@@ -1031,6 +1031,8 @@ int cmd_contacts(dna_engine_t *engine) {
     return 0;
 }
 
+int cmd_request(dna_engine_t *engine, const char *identifier, const char *message);
+
 int cmd_add_contact(dna_engine_t *engine, const char *identifier) {
     if (!engine) {
         printf("Error: Engine not initialized\n");
@@ -1063,6 +1065,11 @@ int cmd_add_contact(dna_engine_t *engine, const char *identifier) {
     }
 
     printf("Contact added successfully!\n");
+
+    /* Also send a contact request so the other side knows about us */
+    printf("Sending contact request...\n");
+    cmd_request(engine, identifier, NULL);
+
     return 0;
 }
 
