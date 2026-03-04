@@ -43,3 +43,13 @@ int nodus_republish_mark_done(const char *data_dir) {
     fclose(f);
     return 0;
 }
+
+int nodus_republish_reset(const char *data_dir) {
+    if (!data_dir) return -1;
+
+    char path[512];
+    int n = snprintf(path, sizeof(path), "%s/%s", data_dir, MIGRATION_FLAG_FILE);
+    if (n < 0 || (size_t)n >= sizeof(path)) return -1;
+
+    return remove(path) == 0 ? 0 : -1;
+}

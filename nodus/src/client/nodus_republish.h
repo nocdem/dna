@@ -23,4 +23,11 @@ int nodus_republish_check_migrated(const char *data_dir);
  */
 int nodus_republish_mark_done(const char *data_dir);
 
+/*
+ * Reset migration flag so it runs again on next startup.
+ * Used when migration was marked done but DHT publish actually failed.
+ * Returns 0 on success, -1 on error.
+ */
+int nodus_republish_reset(const char *data_dir);
+
 #endif /* NODUS_REPUBLISH_H */
