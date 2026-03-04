@@ -284,15 +284,36 @@ static int cmd_servers(void) {
     return 0;
 }
 
-static int cmd_presence(void) {
-    /* Query presence for our own fingerprint + a random one */
-    nodus_key_t fps[2];
-    memcpy(&fps[0], &identity.node_id, sizeof(nodus_key_t));  /* self (should be online) */
-    memset(&fps[1], 0xDE, sizeof(nodus_key_t));                 /* fake (should be offline) */
+static int hex_to_key(const char *hex, nodus_key_t *key) {
+    if (strlen(hex) != 128) return -1;
+    for (int i = 0; i < NODUS_KEY_BYTES; i++) {
+        unsigned int byte;
+        if (sscanf(hex + i * 2, "%2x", &byte) != 1) return -1;
+        key->bytes[i] = (uint8_t)byte;
+    }
+    return 0;
+}
+
+static int cmd_presence(int argc, char **argv, int optind_cmd) {
+    /* Build query: always include self, plus any extra fps from args */
+    nodus_key_t fps[128];
+    int fp_count = 0;
+
+    /* Self */
+    memcpy(&fps[fp_count++], &identity.node_id, sizeof(nodus_key_t));
+
+    /* Extra fingerprints from command line */
+    for (int i = optind_cmd + 1; i < argc && fp_count < 128; i++) {
+        if (hex_to_key(argv[i], &fps[fp_count]) == 0) {
+            fp_count++;
+        } else {
+            fprintf(stderr, "Invalid fingerprint (need 128 hex chars): %s\n", argv[i]);
+        }
+    }
 
     size_t len = 0;
     uint32_t txn = next_txn++;
-    nodus_t2_presence_query(txn, session_token, fps, 2,
+    nodus_t2_presence_query(txn, session_token, fps, fp_count,
                               proto_buf, sizeof(proto_buf), &len);
     nodus_tcp_send(server_conn, proto_buf, len);
 
@@ -307,30 +328,49 @@ static int cmd_presence(void) {
         return 1;
     }
 
-    printf("Presence query result: %d online entries\n", last_response.pq_count);
+    printf("Queried %d fingerprints, %d online:\n", fp_count, last_response.pq_count);
     for (int i = 0; i < last_response.pq_count; i++) {
         char hex[NODUS_KEY_HEX_LEN];
         for (int j = 0; j < NODUS_KEY_BYTES; j++)
             snprintf(hex + j * 2, 3, "%02x", last_response.pq_fps[i].bytes[j]);
-        printf("  [%d] fp=%.32s... peer=%d online=%s\n",
-               i, hex, last_response.pq_peers[i],
-               last_response.pq_online[i] ? "true" : "false");
+        printf("  ONLINE: %.32s... (peer=%d)\n", hex, last_response.pq_peers[i]);
     }
 
-    /* Validate: self should be online */
-    bool self_found = false;
-    for (int i = 0; i < last_response.pq_count; i++) {
-        if (nodus_key_cmp(&last_response.pq_fps[i], &identity.node_id) == 0) {
-            self_found = true;
-            break;
+    /* Check which queried fps are online/offline */
+    for (int q = 0; q < fp_count; q++) {
+        char hex[NODUS_KEY_HEX_LEN];
+        for (int j = 0; j < NODUS_KEY_BYTES; j++)
+            snprintf(hex + j * 2, 3, "%02x", fps[q].bytes[j]);
+
+        bool found = false;
+        for (int i = 0; i < last_response.pq_count; i++) {
+            if (nodus_key_cmp(&last_response.pq_fps[i], &fps[q]) == 0) {
+                found = true;
+                break;
+            }
         }
+        printf("  %s %.32s...\n", found ? "ONLINE " : "OFFLINE", hex);
     }
-    if (self_found)
-        printf("PASS: self presence confirmed online\n");
-    else
-        printf("FAIL: self not found in presence result\n");
 
-    return self_found ? 0 : 1;
+    return 0;
+}
+
+/* Keep connected and print fingerprint, wait for Ctrl+C */
+static int cmd_presence_hold(void) {
+    printf("Identity online: %s\n", identity.fingerprint);
+    printf("Holding connection (Ctrl+C to stop)...\n");
+    fflush(stdout);
+    while (running && server_conn) {
+        /* Send ping every 15s to keep alive */
+        size_t len = 0;
+        uint32_t txn = next_txn++;
+        nodus_t2_ping(txn, session_token, proto_buf, sizeof(proto_buf), &len);
+        nodus_tcp_send(server_conn, proto_buf, len);
+        for (int i = 0; i < 150 && running; i++)
+            nodus_tcp_poll(&transport, 100);
+    }
+    printf("Disconnected.\n");
+    return 0;
 }
 
 static void cmd_whoami(void) {
@@ -352,7 +392,8 @@ static void usage(const char *prog) {
     fprintf(stderr, "  get <key>        Retrieve DHT value\n");
     fprintf(stderr, "  listen <key>     Subscribe to key changes\n");
     fprintf(stderr, "  servers          List cluster servers\n");
-    fprintf(stderr, "  presence         Test presence query (self + fake)\n");
+    fprintf(stderr, "  presence [fp..]  Query presence (self + optional fps)\n");
+    fprintf(stderr, "  hold             Stay connected (test presence visibility)\n");
 }
 
 /* ── Main ────────────────────────────────────────────────────────── */
@@ -365,7 +406,22 @@ int main(int argc, char **argv) {
 
     while ((opt = getopt(argc, argv, "s:p:i:h")) != -1) {
         switch (opt) {
-        case 's': server_ip = optarg; break;
+        case 's': {
+            /* Support host:port format */
+            char *colon = strchr(optarg, ':');
+            if (colon) {
+                static char host_buf[256];
+                size_t hlen = (size_t)(colon - optarg);
+                if (hlen >= sizeof(host_buf)) hlen = sizeof(host_buf) - 1;
+                memcpy(host_buf, optarg, hlen);
+                host_buf[hlen] = '\0';
+                server_ip = host_buf;
+                server_port = (uint16_t)atoi(colon + 1);
+            } else {
+                server_ip = optarg;
+            }
+            break;
+        }
         case 'p': server_port = (uint16_t)atoi(optarg); break;
         case 'i': identity_dir = optarg; break;
         case 'h':
@@ -427,6 +483,7 @@ int main(int argc, char **argv) {
     transport.on_connect = on_connect;
 
     printf("Connecting to %s:%u...\n", server_ip, server_port);
+    fflush(stdout);
     server_conn = nodus_tcp_connect(&transport, server_ip, server_port);
     if (!server_conn) {
         fprintf(stderr, "Failed to connect\n");
@@ -442,14 +499,17 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
     printf("Connected.\n");
+    fflush(stdout);
 
     /* Authenticate */
     printf("Authenticating...\n");
+    fflush(stdout);
     if (do_auth() != 0) {
         fprintf(stderr, "Authentication failed\n");
         goto cleanup;
     }
     printf("Authenticated.\n");
+    fflush(stdout);
 
     /* Dispatch command */
     rc = 0;
@@ -472,7 +532,9 @@ int main(int argc, char **argv) {
             rc = cmd_get(argv[optind + 1]);
         }
     } else if (strcmp(command, "presence") == 0) {
-        rc = cmd_presence();
+        rc = cmd_presence(argc, argv, optind);
+    } else if (strcmp(command, "hold") == 0) {
+        rc = cmd_presence_hold();
     } else if (strcmp(command, "listen") == 0) {
         if (optind + 1 >= argc) {
             fprintf(stderr, "Usage: listen <key>\n");
