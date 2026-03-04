@@ -629,6 +629,96 @@ static void test_ch_nonexistent(void) {
     PASS();
 }
 
+/* ── Presence tests ─────────────────────────────────────────────── */
+
+static void test_presence_query(void) {
+    TEST("pq: authenticated client appears online");
+
+    /* Query our own fingerprint — we're connected & authenticated,
+     * so the server should report us as online (peer_index=0 = local) */
+    size_t len = 0;
+    uint32_t txn = next_txn++;
+    nodus_key_t fps[1];
+    memcpy(&fps[0], &client_id.node_id, sizeof(nodus_key_t));
+
+    nodus_t2_presence_query(txn, session_token, fps, 1,
+                              proto_buf, sizeof(proto_buf), &len);
+    nodus_tcp_send(client_conn, proto_buf, len);
+
+    if (!wait_response(5000)) { FAIL("no pq response"); return; }
+    if (last_resp.type == 'e') {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "pq error: [%d] %s",
+                 last_resp.error_code, last_resp.error_msg);
+        FAIL(buf); return;
+    }
+    if (strcmp(last_resp.method, "pq") != 0) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "expected pq, got %s", last_resp.method);
+        FAIL(buf); return;
+    }
+
+    /* Should have 1 online entry (ourselves) */
+    if (last_resp.pq_count != 1) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "expected 1 online, got %d", last_resp.pq_count);
+        FAIL(buf); return;
+    }
+    if (!last_resp.pq_online[0]) { FAIL("should be online"); return; }
+    if (nodus_key_cmp(&last_resp.pq_fps[0], &client_id.node_id) != 0) {
+        FAIL("fp mismatch"); return;
+    }
+    PASS();
+}
+
+static void test_presence_query_unknown(void) {
+    TEST("pq: unknown fingerprint returns empty");
+
+    /* Query a random fp that's not connected */
+    nodus_key_t fake_fp;
+    memset(&fake_fp, 0xDE, sizeof(fake_fp));
+
+    size_t len = 0;
+    uint32_t txn = next_txn++;
+    nodus_t2_presence_query(txn, session_token, &fake_fp, 1,
+                              proto_buf, sizeof(proto_buf), &len);
+    nodus_tcp_send(client_conn, proto_buf, len);
+
+    if (!wait_response(5000)) { FAIL("no response"); return; }
+    if (last_resp.pq_count != 0) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "expected 0 online, got %d", last_resp.pq_count);
+        FAIL(buf); return;
+    }
+    PASS();
+}
+
+static void test_presence_query_mixed(void) {
+    TEST("pq: mixed query (1 online + 1 offline)");
+
+    nodus_key_t fps[2];
+    memcpy(&fps[0], &client_id.node_id, sizeof(nodus_key_t));  /* online */
+    memset(&fps[1], 0xBB, sizeof(nodus_key_t));                  /* offline */
+
+    size_t len = 0;
+    uint32_t txn = next_txn++;
+    nodus_t2_presence_query(txn, session_token, fps, 2,
+                              proto_buf, sizeof(proto_buf), &len);
+    nodus_tcp_send(client_conn, proto_buf, len);
+
+    if (!wait_response(5000)) { FAIL("no response"); return; }
+    /* Sparse result: only 1 online entry */
+    if (last_resp.pq_count != 1) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "expected 1 online, got %d", last_resp.pq_count);
+        FAIL(buf); return;
+    }
+    if (nodus_key_cmp(&last_resp.pq_fps[0], &client_id.node_id) != 0) {
+        FAIL("wrong fp in result"); return;
+    }
+    PASS();
+}
+
 /* ── Main ───────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -669,6 +759,9 @@ int main(void) {
         test_ch_get_since_seq();
         test_ch_subscribe_notify();
         test_ch_nonexistent();
+        test_presence_query();
+        test_presence_query_unknown();
+        test_presence_query_mixed();
     }
 
     /* Cleanup */
