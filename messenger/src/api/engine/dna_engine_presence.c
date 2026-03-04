@@ -96,6 +96,11 @@ static void* presence_heartbeat_thread(void *arg) {
 
     QGP_LOG_INFO(LOG_TAG, "Presence heartbeat thread started");
 
+    /* v0.9.1: Immediate first batch query so UI doesn't show "Syncing..." for 60s */
+    if (atomic_load(&engine->presence_active) && engine->messenger) {
+        dna_presence_batch_query(engine);
+    }
+
     while (!atomic_load(&engine->shutdown_requested)) {
         /* Sleep in short intervals to respond quickly to shutdown */
         for (int i = 0; i < PRESENCE_HEARTBEAT_INTERVAL_SECONDS; i++) {
