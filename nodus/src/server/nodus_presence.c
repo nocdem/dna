@@ -47,15 +47,24 @@ static int find_inactive(nodus_presence_table_t *tbl, const nodus_key_t *fp) {
 }
 
 static int alloc_slot(nodus_presence_table_t *tbl) {
-    /* Reuse inactive slot */
+    /* Reuse inactive slot that has no last_seen (fully expired/unused) */
     for (int i = 0; i < tbl->count; i++) {
-        if (!tbl->entries[i].active)
+        if (!tbl->entries[i].active && tbl->entries[i].last_seen == 0)
             return i;
     }
     /* Append */
     if (tbl->count < NODUS_PRESENCE_MAX_ENTRIES)
         return tbl->count++;
-    return -1;
+    /* Last resort: reuse oldest inactive slot */
+    int oldest = -1;
+    uint64_t oldest_ts = UINT64_MAX;
+    for (int i = 0; i < tbl->count; i++) {
+        if (!tbl->entries[i].active && tbl->entries[i].last_seen < oldest_ts) {
+            oldest = i;
+            oldest_ts = tbl->entries[i].last_seen;
+        }
+    }
+    return oldest;
 }
 
 /* ── Public API ───────────────────────────────────────────────────── */

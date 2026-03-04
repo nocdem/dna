@@ -1003,6 +1003,13 @@ int cmd_contacts(dna_engine_t *engine) {
         return -1;
     }
 
+    /* Refresh presence before listing contacts */
+    cli_wait_t pw;
+    cli_wait_init(&pw);
+    dna_engine_refresh_presence(engine, on_completion, &pw);
+    cli_wait_for(&pw);
+    cli_wait_destroy(&pw);
+
     cli_wait_t wait;
     cli_wait_init(&wait);
 
@@ -1022,7 +1029,25 @@ int cmd_contacts(dna_engine_t *engine) {
         for (int i = 0; i < wait.contact_count; i++) {
             printf("  %d. %s\n", i + 1, wait.contacts[i].display_name);
             printf("     Fingerprint: %.32s...\n", wait.contacts[i].fingerprint);
-            printf("     Status: %s\n", wait.contacts[i].is_online ? "ONLINE" : "offline");
+            if (wait.contacts[i].is_online) {
+                printf("     Status: ONLINE\n");
+            } else if (wait.contacts[i].last_seen > 0) {
+                time_t ls = (time_t)wait.contacts[i].last_seen;
+                struct tm *tm = localtime(&ls);
+                char tbuf[64];
+                strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S", tm);
+                time_t ago = time(NULL) - ls;
+                if (ago < 60)
+                    printf("     Last seen: %s (%llds ago)\n", tbuf, (long long)ago);
+                else if (ago < 3600)
+                    printf("     Last seen: %s (%lldm ago)\n", tbuf, (long long)(ago / 60));
+                else if (ago < 86400)
+                    printf("     Last seen: %s (%lldh ago)\n", tbuf, (long long)(ago / 3600));
+                else
+                    printf("     Last seen: %s (%lldd ago)\n", tbuf, (long long)(ago / 86400));
+            } else {
+                printf("     Status: offline\n");
+            }
         }
         free(wait.contacts);
         printf("\n");

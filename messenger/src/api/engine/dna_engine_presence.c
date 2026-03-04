@@ -53,9 +53,11 @@ static void dna_presence_batch_query(dna_engine_t *engine) {
     /* Build fingerprint array */
     const char **fps = calloc((size_t)count, sizeof(const char *));
     bool *online = calloc((size_t)count, sizeof(bool));
-    if (!fps || !online) {
+    uint64_t *last_seen = calloc((size_t)count, sizeof(uint64_t));
+    if (!fps || !online || !last_seen) {
         free(fps);
         free(online);
+        free(last_seen);
         contacts_db_free_list(contacts);
         return;
     }
@@ -63,25 +65,31 @@ static void dna_presence_batch_query(dna_engine_t *engine) {
     for (int i = 0; i < count; i++)
         fps[i] = contacts->contacts[i].identity;
 
-    /* Single TCP query (last_seen_out=NULL — cache handles timestamps) */
-    int online_count = nodus_ops_presence_query(fps, count, online, NULL);
+    /* Single TCP query — get real last_seen from server */
+    int online_count = nodus_ops_presence_query(fps, count, online, last_seen);
     if (online_count < 0) {
         QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Batch query failed");
         free(fps);
         free(online);
+        free(last_seen);
         contacts_db_free_list(contacts);
         return;
     }
 
     /* Update presence cache — fires ONLINE/OFFLINE events automatically */
     time_t now = time(NULL);
-    for (int i = 0; i < count; i++)
+    for (int i = 0; i < count; i++) {
         presence_cache_update(fps[i], online[i], now);
+        /* Persist real last_seen from server to contacts DB */
+        if (last_seen[i] > 0)
+            contacts_db_update_last_seen(fps[i], last_seen[i]);
+    }
 
     QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Batch query: %d/%d online", online_count, count);
 
     free(fps);
     free(online);
+    free(last_seen);
     contacts_db_free_list(contacts);
 }
 

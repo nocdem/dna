@@ -119,15 +119,15 @@ void dna_handle_get_contacts(dna_engine_t *engine, dna_task_t *task) {
                          "%.16s...", list->contacts[i].identity);
             }
 
-            /* Check presence cache for online status and last seen */
+            /* Check presence cache for online status */
             contacts[i].is_online = presence_cache_get(list->contacts[i].identity);
 
-            /* Get last_seen: prefer cache (recent activity), fallback to database (persistent) */
-            time_t cache_last_seen = presence_cache_last_seen(list->contacts[i].identity);
-            if (cache_last_seen > 0) {
-                contacts[i].last_seen = (uint64_t)cache_last_seen;
+            /* Get last_seen: use cache only when online (real timestamp),
+             * otherwise use database (persisted real last_seen from server) */
+            if (contacts[i].is_online) {
+                time_t cache_last_seen = presence_cache_last_seen(list->contacts[i].identity);
+                contacts[i].last_seen = cache_last_seen > 0 ? (uint64_t)cache_last_seen : (uint64_t)time(NULL);
             } else {
-                /* Use database value (persisted from previous sessions) */
                 contacts[i].last_seen = list->contacts[i].last_seen;
             }
         }
