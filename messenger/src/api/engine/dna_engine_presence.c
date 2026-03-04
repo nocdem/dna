@@ -99,9 +99,11 @@ static void dna_presence_batch_query(dna_engine_t *engine) {
  * ============================================================================ */
 
 #define PRESENCE_HEARTBEAT_INTERVAL_SECONDS 10  /* 10 seconds */
+#define RETRY_INTERVAL_TICKS 3  /* Retry pending messages every 3 heartbeats (30s) */
 
 static void* presence_heartbeat_thread(void *arg) {
     dna_engine_t *engine = (dna_engine_t*)arg;
+    int retry_tick = 0;
 
     QGP_LOG_INFO(LOG_TAG, "Presence heartbeat thread started");
 
@@ -136,6 +138,15 @@ static void* presence_heartbeat_thread(void *arg) {
         if (atomic_load(&engine->presence_active) && engine->messenger) {
             QGP_LOG_DEBUG(LOG_TAG, "Heartbeat: batch presence query");
             dna_presence_batch_query(engine);
+        }
+
+        /* Retry pending messages every 30s (3 heartbeats).
+         * Only runs when active (not paused) and DHT is connected.
+         * Has internal exponential backoff per-message, so this is cheap
+         * when there are no pending messages (single DB query). */
+        if (atomic_load(&engine->presence_active) && ++retry_tick >= RETRY_INTERVAL_TICKS) {
+            retry_tick = 0;
+            dna_engine_retry_pending_messages(engine);
         }
 
         /* Check for day rotation on group listeners (runs every 1 min, actual
