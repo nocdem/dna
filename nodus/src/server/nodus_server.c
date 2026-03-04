@@ -685,7 +685,9 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             bool *online = calloc((size_t)msg.pq_count, sizeof(bool));
             uint8_t *peers = calloc((size_t)msg.pq_count, sizeof(uint8_t));
             if (online && peers) {
-                nodus_presence_query_batch(srv, msg.pq_fps, msg.pq_count, online, peers);
+                int pq_online = nodus_presence_query_batch(srv, msg.pq_fps, msg.pq_count, online, peers);
+                fprintf(stderr, "PQ: queried %d fps, %d online (table has %d entries)\n",
+                        msg.pq_count, pq_online, srv->presence.count);
                 size_t rlen = 0;
                 nodus_t2_presence_result(msg.txn_id, msg.pq_fps, online, peers,
                                            msg.pq_count, resp_buf, sizeof(resp_buf), &rlen);

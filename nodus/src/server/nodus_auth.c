@@ -13,6 +13,7 @@
 #include "crypto/nodus_sign.h"
 
 #include <string.h>
+#include <stdio.h>
 
 static uint8_t auth_buf[8192];
 
@@ -84,6 +85,13 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
 
     /* Track presence */
     nodus_presence_add_local(srv, &sess->client_fp);
+    {
+        char fp_hex[33];
+        for (int k = 0; k < 16; k++)
+            sprintf(fp_hex + k*2, "%02x", sess->client_fp.bytes[k]);
+        fp_hex[32] = '\0';
+        fprintf(stderr, "AUTH_OK: client %s... authenticated (presence added)\n", fp_hex);
+    }
 
     /* Send AUTH_OK with session token */
     size_t len = 0;
