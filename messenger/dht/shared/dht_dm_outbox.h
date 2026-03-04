@@ -67,6 +67,8 @@ typedef struct {
     size_t listen_token;                /* Token from nodus_ops_listen() */
     nodus_ops_listen_cb_t callback;     /* User callback for new messages */
     void *user_data;                    /* User data for callback */
+    uint8_t salt[32];                   /* Per-contact DHT salt */
+    bool has_salt;                      /* true if salt is set */
 } dht_dm_listen_ctx_t;
 
 /*============================================================================
@@ -88,14 +90,16 @@ uint64_t dht_dm_outbox_get_day_bucket(void);
  * @param sender_fp Sender's fingerprint (128 hex chars)
  * @param recipient_fp Recipient's fingerprint (128 hex chars)
  * @param day_bucket Day bucket (0 = current day)
+ * @param salt Optional 32-byte per-contact DHT salt (NULL for legacy unsalted key)
  * @param key_out Output buffer for key string
- * @param key_out_size Size of output buffer (must be >= 300)
+ * @param key_out_size Size of output buffer (must be >= 370)
  * @return 0 on success, -1 on error
  */
 int dht_dm_outbox_make_key(
     const char *sender_fp,
     const char *recipient_fp,
     uint64_t day_bucket,
+    const uint8_t *salt,
     char *key_out,
     size_t key_out_size
 );
@@ -122,6 +126,7 @@ int dht_dm_outbox_make_key(
  * @param ciphertext_len Length of ciphertext
  * @param seq_num Sequence number (for ordering within day)
  * @param ttl_seconds TTL in seconds (0 = default 7 days)
+ * @param salt Optional 32-byte per-contact DHT salt (NULL for legacy)
  * @return 0 on success, -1 on failure
  */
 int dht_dm_queue_message(
@@ -130,7 +135,8 @@ int dht_dm_queue_message(
     const uint8_t *ciphertext,
     size_t ciphertext_len,
     uint64_t seq_num,
-    uint32_t ttl_seconds
+    uint32_t ttl_seconds,
+    const uint8_t *salt
 );
 
 /*============================================================================
@@ -143,6 +149,7 @@ int dht_dm_queue_message(
  * @param my_fp My fingerprint (recipient)
  * @param contact_fp Contact fingerprint (sender)
  * @param day_bucket Day to sync (0 = current day)
+ * @param salt Optional 32-byte per-contact DHT salt (NULL for legacy)
  * @param messages_out Output array (caller must free with dht_offline_messages_free)
  * @param count_out Output count
  * @return 0 on success, -1 on failure
@@ -151,6 +158,7 @@ int dht_dm_outbox_sync_day(
     const char *my_fp,
     const char *contact_fp,
     uint64_t day_bucket,
+    const uint8_t *salt,
     dht_offline_message_t **messages_out,
     size_t *count_out
 );
@@ -163,6 +171,7 @@ int dht_dm_outbox_sync_day(
  *
  * @param my_fp My fingerprint (recipient)
  * @param contact_fp Contact fingerprint (sender)
+ * @param salt Optional 32-byte per-contact DHT salt (NULL for legacy)
  * @param messages_out Output array (caller must free with dht_offline_messages_free)
  * @param count_out Output count
  * @return 0 on success, -1 on failure
@@ -170,6 +179,7 @@ int dht_dm_outbox_sync_day(
 int dht_dm_outbox_sync_recent(
     const char *my_fp,
     const char *contact_fp,
+    const uint8_t *salt,
     dht_offline_message_t **messages_out,
     size_t *count_out
 );
@@ -182,6 +192,7 @@ int dht_dm_outbox_sync_recent(
  *
  * @param my_fp My fingerprint (recipient)
  * @param contact_fp Contact fingerprint (sender)
+ * @param salt Optional 32-byte per-contact DHT salt (NULL for legacy)
  * @param messages_out Output array (caller must free with dht_offline_messages_free)
  * @param count_out Output count
  * @return 0 on success, -1 on failure
@@ -189,6 +200,7 @@ int dht_dm_outbox_sync_recent(
 int dht_dm_outbox_sync_full(
     const char *my_fp,
     const char *contact_fp,
+    const uint8_t *salt,
     dht_offline_message_t **messages_out,
     size_t *count_out
 );
@@ -202,6 +214,7 @@ int dht_dm_outbox_sync_full(
  * @param my_fp My fingerprint (recipient)
  * @param contact_list Array of contact fingerprints (senders)
  * @param contact_count Number of contacts
+ * @param salt_list Array of 32-byte salts per contact (NULL entries = no salt)
  * @param messages_out Output array (caller must free with dht_offline_messages_free)
  * @param count_out Output count
  * @return 0 on success, -1 on failure
@@ -210,6 +223,7 @@ int dht_dm_outbox_sync_all_contacts_recent(
     const char *my_fp,
     const char **contact_list,
     size_t contact_count,
+    const uint8_t **salt_list,
     dht_offline_message_t **messages_out,
     size_t *count_out
 );
@@ -223,6 +237,7 @@ int dht_dm_outbox_sync_all_contacts_recent(
  * @param my_fp My fingerprint (recipient)
  * @param contact_list Array of contact fingerprints (senders)
  * @param contact_count Number of contacts
+ * @param salt_list Array of 32-byte salts per contact (NULL entries = no salt)
  * @param messages_out Output array (caller must free with dht_offline_messages_free)
  * @param count_out Output count
  * @return 0 on success, -1 on failure
@@ -231,6 +246,7 @@ int dht_dm_outbox_sync_all_contacts_full(
     const char *my_fp,
     const char **contact_list,
     size_t contact_count,
+    const uint8_t **salt_list,
     dht_offline_message_t **messages_out,
     size_t *count_out
 );
@@ -248,6 +264,7 @@ int dht_dm_outbox_sync_all_contacts_full(
  *
  * @param my_fp My fingerprint (recipient)
  * @param contact_fp Contact fingerprint (sender to listen to)
+ * @param salt Optional 32-byte per-contact DHT salt (NULL for legacy)
  * @param callback Callback when new messages arrive
  * @param user_data User data for callback
  * @param listen_ctx_out Output: Listen context (caller must free with unsubscribe)
@@ -256,6 +273,7 @@ int dht_dm_outbox_sync_all_contacts_full(
 int dht_dm_outbox_subscribe(
     const char *my_fp,
     const char *contact_fp,
+    const uint8_t *salt,
     nodus_ops_listen_cb_t callback,
     void *user_data,
     dht_dm_listen_ctx_t **listen_ctx_out

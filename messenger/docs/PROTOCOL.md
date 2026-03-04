@@ -196,29 +196,33 @@ The Spillway Protocol manages offline message delivery using a sender-based outb
   DAILY BUCKET MODEL:
   Each sender maintains daily outboxes per recipient in DHT
 
-  Outbox Key: sender_fp:outbox:recipient_fp:DAY_BUCKET
+  Outbox Key (unsalted): sender_fp:outbox:recipient_fp:DAY_BUCKET
+  Outbox Key (salted):   sender_fp:outbox:recipient_fp:DAY_BUCKET:SALT_HEX
               where DAY_BUCKET = unix_timestamp / 86400
+              SALT_HEX = 64-char hex of 32-byte per-contact salt
 
-  Example (2026-01-23, day 20477):
-    alice_fp:outbox:bob_fp:20477  (today's messages)
-    alice_fp:outbox:bob_fp:20476  (yesterday's messages)
+  Example (2026-01-23, day 20477, salted):
+    alice_fp:outbox:bob_fp:20477:a1b2c3...  (today's messages)
+    alice_fp:outbox:bob_fp:20476:a1b2c3...  (yesterday's messages)
 
   TTL:        7 days (auto-expire, no pruning needed)
   Put Type:   Signed chunked (value_id=1)
   Max:        500 messages per day bucket (DoS prevention)
 
-  WATERMARK (delivery confirmation only):
-  Recipients publish highest seq_num received per sender
+  ACK (v15, delivery confirmation):
+  Recipients publish ACK timestamp per sender
 
-  Watermark Key: SHA3-512(recipient_fp + ":watermark:" + sender_fp)
-  Value:         8-byte seq_num (big-endian)
+  ACK Key (unsalted): SHA3-512(recipient_fp + ":ack:" + sender_fp)
+  ACK Key (salted):   SHA3-512(recipient_fp + ":ack:" + sender_fp + ":" + SALT_HEX)
+  Value:         8-byte Unix timestamp (big-endian)
   TTL:           30 days
-  Purpose:       DELIVERED status notifications (NOT for pruning)
+  Purpose:       RECEIVED status notifications
 
   SEND FLOW:
   +-------------------------------------------------------------------+
   | 1. Alice sends msg to Bob (seq=3)                                  |
-  |    -> Generate today's bucket key: alice:outbox:bob:20477          |
+  |    -> Look up per-contact salt from contacts DB                    |
+  |    -> Generate today's bucket key: alice:outbox:bob:20477:SALT     |
   |    -> Fetch existing bucket from cache/DHT                         |
   |    -> Append new message (seq=3)                                   |
   |    -> Publish updated bucket to DHT                                |
@@ -231,10 +235,10 @@ The Spillway Protocol manages offline message delivery using a sender-based outb
   |    -> Sync last 3-8 days of Alice's buckets (parallel)             |
   |    -> Deduplicate by message hash                                  |
   |    -> Store new messages locally                                   |
-  |    -> Publish watermark: seq=3 (async, for delivery confirmation)  |
+  |    -> Publish ACK timestamp (async, for delivery confirmation)     |
   |                                                                    |
-  | 2. Alice's watermark listener fires                                |
-  |    -> Update message status: PENDING → DELIVERED                   |
+  | 2. Alice's ACK listener fires                                      |
+  |    -> Update message status: SENT → RECEIVED                      |
   |    -> Fire UI event (double checkmark)                             |
   +-------------------------------------------------------------------+
 
@@ -426,8 +430,8 @@ key = SHA3-512(base_string)
 | Data Type | Base String | TTL |
 |-----------|-------------|-----|
 | **Presence** | `{fingerprint}` | 7 days |
-| **Outbox** | `{sender}:outbox:{recipient}` | 7 days |
-| **Watermark** | `{recipient}:watermark:{sender}` | 30 days |
+| **Outbox** | `{sender}:outbox:{recipient}:{day}` or `{sender}:outbox:{recipient}:{day}:{salt}` | 7 days |
+| **ACK** | `{recipient}:ack:{sender}` or `{recipient}:ack:{sender}:{salt}` | 30 days |
 | **Profile** | `{fingerprint}:profile` | 365 days |
 | **Name Lookup** | `{name}:lookup` | 365 days |
 | **Contact Requests** | `{fingerprint}:requests` | 7 days |
@@ -439,11 +443,11 @@ key = SHA3-512(base_string)
 // Presence key for user with fingerprint "abc123..."
 key = SHA3-512("abc123...")
 
-// Outbox key for Alice sending to Bob
-key = SHA3-512("alice_fp:outbox:bob_fp")
+// Outbox key for Alice sending to Bob (salted, v0.8.5+)
+key = "alice_fp:outbox:bob_fp:20477:SALT_HEX"
 
-// Watermark key (Bob's watermark for Alice's messages)
-key = SHA3-512("bob_fp:watermark:alice_fp")
+// ACK key (Bob's ACK for Alice's messages, salted)
+key = SHA3-512("bob_fp:ack:alice_fp:SALT_HEX")
 
 // Profile lookup by fingerprint
 key = SHA3-512("abc123...:profile")
@@ -455,17 +459,11 @@ key = SHA3-512("alice:lookup")
 ### 5.5 C Functions
 
 ```c
-// Generate outbox key (Spillway Protocol)
-void dht_generate_outbox_key(
-    const char *sender,      // 128-char fingerprint
-    const char *recipient,   // 128-char fingerprint
-    uint8_t *key_out         // 64-byte output
-);
-
-// Generate watermark key (Spillway Protocol)
-void dht_generate_watermark_key(
-    const char *recipient,   // Watermark owner
+// Generate ACK key (Spillway Protocol, v15+)
+void dht_generate_ack_key(
+    const char *recipient,   // ACK owner
     const char *sender,      // Message sender
+    const uint8_t *salt,     // 32-byte per-contact salt (NULL = unsalted)
     uint8_t *key_out         // 64-byte output
 );
 ```

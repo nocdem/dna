@@ -19,6 +19,8 @@
 typedef struct {
     char my_identity[129];
     char sender[129];
+    uint8_t salt[32];
+    bool has_salt;
 } ack_task_t;
 
 /* Thread pool task: publish single ACK (v15) */
@@ -27,7 +29,8 @@ static void ack_publish_task(void *arg) {
     if (!task) return;
 
     /* Publish ACK to notify sender we received their messages */
-    dht_publish_ack(task->my_identity, task->sender);
+    dht_publish_ack(task->my_identity, task->sender,
+                    task->has_salt ? task->salt : NULL);
 }
 
 /* 3 days in seconds - threshold for full sync */
@@ -69,13 +72,21 @@ int transport_queue_offline_message(
     QGP_LOG_DEBUG(LOG_TAG, "Calling dht_queue_message (seq=%lu, ttl=%u)\n",
                   (unsigned long)seq_num, ctx->config.offline_ttl_seconds);
 
+    /* Look up per-contact DHT salt */
+    uint8_t salt_buf[32];
+    const uint8_t *salt_ptr = NULL;
+    if (contacts_db_get_salt(recipient, salt_buf) == 0) {
+        salt_ptr = salt_buf;
+    }
+
     int result = dht_queue_message(
         sender,
         recipient,
         message,
         message_len,
         seq_num,
-        ctx->config.offline_ttl_seconds
+        ctx->config.offline_ttl_seconds,
+        salt_ptr
     );
 
     if (result == 0) {
@@ -120,20 +131,34 @@ int transport_check_offline_messages(
         return 0;
     }
 
-    // Build sender fingerprint array
+    // Build sender fingerprint and salt arrays
     const char **sender_fps_array = NULL;
+    const uint8_t **salt_array = NULL;
+    uint8_t *salt_storage = NULL;  /* Backing storage for salt pointers */
     size_t sender_count = 0;
     contact_list_t *contacts = NULL;
 
     if (sender_fp) {
         // Single contact mode - just use the provided fingerprint
         sender_fps_array = (const char**)malloc(sizeof(char*));
-        if (!sender_fps_array) {
+        salt_array = (const uint8_t**)calloc(1, sizeof(uint8_t*));
+        if (!sender_fps_array || !salt_array) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to allocate sender array\n");
+            free(sender_fps_array);
+            free(salt_array);
             if (messages_received) *messages_received = 0;
             return -1;
         }
         sender_fps_array[0] = sender_fp;
+        /* Look up salt for single contact */
+        salt_storage = (uint8_t*)malloc(32);
+        if (salt_storage && contacts_db_get_salt(sender_fp, salt_storage) == 0) {
+            salt_array[0] = salt_storage;
+        } else {
+            salt_array[0] = NULL;
+            free(salt_storage);
+            salt_storage = NULL;
+        }
         sender_count = 1;
         QGP_LOG_DEBUG(LOG_TAG, "Single contact fetch: %.20s...\n", sender_fp);
     } else {
@@ -148,15 +173,27 @@ int transport_check_offline_messages(
         QGP_LOG_DEBUG(LOG_TAG, "Checking %zu contact outboxes\n", contacts->count);
 
         sender_fps_array = (const char**)malloc(contacts->count * sizeof(char*));
-        if (!sender_fps_array) {
+        salt_array = (const uint8_t**)calloc(contacts->count, sizeof(uint8_t*));
+        /* One contiguous block for all salts */
+        salt_storage = (uint8_t*)calloc(contacts->count, 32);
+        if (!sender_fps_array || !salt_array || !salt_storage) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to allocate sender fingerprint array\n");
             contacts_db_free_list(contacts);
+            free(sender_fps_array);
+            free(salt_array);
+            free(salt_storage);
             if (messages_received) *messages_received = 0;
             return -1;
         }
 
         for (size_t i = 0; i < contacts->count; i++) {
             sender_fps_array[i] = contacts->contacts[i].identity;
+            if (contacts->contacts[i].has_dht_salt) {
+                memcpy(salt_storage + (i * 32), contacts->contacts[i].dht_salt, 32);
+                salt_array[i] = salt_storage + (i * 32);
+            } else {
+                salt_array[i] = NULL;
+            }
         }
         sender_count = contacts->count;
     }
@@ -200,6 +237,7 @@ int transport_check_offline_messages(
             ctx->config.identity,
             (const char **)sender_fps_array,
             sender_count,
+            salt_array,
             &messages,
             &count
         );
@@ -209,6 +247,7 @@ int transport_check_offline_messages(
             ctx->config.identity,
             (const char **)sender_fps_array,
             sender_count,
+            salt_array,
             &messages,
             &count
         );
@@ -225,6 +264,8 @@ int transport_check_offline_messages(
                  result, count, sender_count, need_full_sync ? "full" : "recent");
 
     free(sender_fps_array);
+    free(salt_array);
+    free(salt_storage);
     if (contacts) contacts_db_free_list(contacts);
 
     if (result != 0) {
@@ -304,6 +345,10 @@ int transport_check_offline_messages(
             for (size_t i = 0; i < ack_count; i++) {
                 strncpy(tasks[i].my_identity, ctx->config.identity, sizeof(tasks[i].my_identity) - 1);
                 strncpy(tasks[i].sender, acks[i].sender, sizeof(tasks[i].sender) - 1);
+                /* Look up per-contact salt for ACK key derivation */
+                if (contacts_db_get_salt(acks[i].sender, tasks[i].salt) == 0) {
+                    tasks[i].has_salt = true;
+                }
                 task_args[i] = &tasks[i];
             }
 

@@ -33,6 +33,7 @@
 typedef struct {
     const char *my_fp;
     const char *contact_fp;
+    const uint8_t *salt;             /* Per-contact DHT salt (NULL = legacy) */
     bool use_full_sync;              /* true = 8-day full, false = 3-day recent */
     dht_offline_message_t *messages; /* Output: fetched messages (owned by worker) */
     size_t count;                    /* Output: message count */
@@ -52,9 +53,11 @@ static void dm_fetch_worker(void *arg) {
 
     if (wctx->use_full_sync) {
         wctx->result = dht_dm_outbox_sync_full(wctx->my_fp, wctx->contact_fp,
+                                                wctx->salt,
                                                 &wctx->messages, &wctx->count);
     } else {
         wctx->result = dht_dm_outbox_sync_recent(wctx->my_fp, wctx->contact_fp,
+                                                   wctx->salt,
                                                    &wctx->messages, &wctx->count);
     }
 }
@@ -169,6 +172,7 @@ int dht_dm_outbox_make_key(
     const char *sender_fp,
     const char *recipient_fp,
     uint64_t day_bucket,
+    const uint8_t *salt,
     char *key_out,
     size_t key_out_size
 ) {
@@ -181,12 +185,26 @@ int dht_dm_outbox_make_key(
         day_bucket = dht_dm_outbox_get_day_bucket();
     }
 
-    /* Key format: sender_fp:outbox:recipient_fp:day_bucket */
-    int written = snprintf(key_out, key_out_size, "%s:outbox:%s:%lu",
-                           sender_fp, recipient_fp, (unsigned long)day_bucket);
+    if (salt) {
+        /* Salted key format: sender_fp:outbox:recipient_fp:day_bucket:SALT_HEX */
+        char salt_hex[65];
+        for (int i = 0; i < 32; i++) {
+            snprintf(salt_hex + (i * 2), 3, "%02x", salt[i]);
+        }
+        salt_hex[64] = '\0';
 
-    if (written < 0 || (size_t)written >= key_out_size) {
-        return -1;
+        int written = snprintf(key_out, key_out_size, "%s:outbox:%s:%lu:%s",
+                               sender_fp, recipient_fp, (unsigned long)day_bucket, salt_hex);
+        if (written < 0 || (size_t)written >= key_out_size) {
+            return -1;
+        }
+    } else {
+        /* Legacy unsalted key format: sender_fp:outbox:recipient_fp:day_bucket */
+        int written = snprintf(key_out, key_out_size, "%s:outbox:%s:%lu",
+                               sender_fp, recipient_fp, (unsigned long)day_bucket);
+        if (written < 0 || (size_t)written >= key_out_size) {
+            return -1;
+        }
     }
 
     return 0;
@@ -202,7 +220,8 @@ int dht_dm_queue_message(
     const uint8_t *ciphertext,
     size_t ciphertext_len,
     uint64_t seq_num,
-    uint32_t ttl_seconds
+    uint32_t ttl_seconds,
+    const uint8_t *salt
 ) {
     if (!sender || !recipient || !ciphertext || ciphertext_len == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for queue message");
@@ -217,7 +236,7 @@ int dht_dm_queue_message(
     /* Generate today's bucket key */
     uint64_t today = dht_dm_outbox_get_day_bucket();
     char base_key[512];
-    if (dht_dm_outbox_make_key(sender, recipient, today, base_key, sizeof(base_key)) != 0) {
+    if (dht_dm_outbox_make_key(sender, recipient, today, salt, base_key, sizeof(base_key)) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to generate bucket key");
         return -1;
     }
@@ -391,6 +410,7 @@ int dht_dm_outbox_sync_day(
     const char *my_fp,
     const char *contact_fp,
     uint64_t day_bucket,
+    const uint8_t *salt,
     dht_offline_message_t **messages_out,
     size_t *count_out
 ) {
@@ -408,7 +428,7 @@ int dht_dm_outbox_sync_day(
 
     /* Generate key: contact is sender, I am recipient */
     char base_key[512];
-    if (dht_dm_outbox_make_key(contact_fp, my_fp, day_bucket, base_key, sizeof(base_key)) != 0) {
+    if (dht_dm_outbox_make_key(contact_fp, my_fp, day_bucket, salt, base_key, sizeof(base_key)) != 0) {
         return -1;
     }
 
@@ -439,6 +459,7 @@ int dht_dm_outbox_sync_day(
 int dht_dm_outbox_sync_recent(
     const char *my_fp,
     const char *contact_fp,
+    const uint8_t *salt,
     dht_offline_message_t **messages_out,
     size_t *count_out
 ) {
@@ -463,7 +484,7 @@ int dht_dm_outbox_sync_recent(
         dht_offline_message_t *day_messages = NULL;
         size_t day_count = 0;
 
-        if (dht_dm_outbox_sync_day(my_fp, contact_fp, days[i], &day_messages, &day_count) == 0 &&
+        if (dht_dm_outbox_sync_day(my_fp, contact_fp, days[i], salt, &day_messages, &day_count) == 0 &&
             day_messages && day_count > 0) {
 
             /* Append to combined array */
@@ -491,6 +512,7 @@ int dht_dm_outbox_sync_recent(
 int dht_dm_outbox_sync_full(
     const char *my_fp,
     const char *contact_fp,
+    const uint8_t *salt,
     dht_offline_message_t **messages_out,
     size_t *count_out
 ) {
@@ -514,7 +536,7 @@ int dht_dm_outbox_sync_full(
         dht_offline_message_t *day_messages = NULL;
         size_t day_count = 0;
 
-        if (dht_dm_outbox_sync_day(my_fp, contact_fp, day, &day_messages, &day_count) == 0 &&
+        if (dht_dm_outbox_sync_day(my_fp, contact_fp, day, salt, &day_messages, &day_count) == 0 &&
             day_messages && day_count > 0) {
 
             /* Append to combined array */
@@ -543,6 +565,7 @@ int dht_dm_outbox_sync_all_contacts_recent(
     const char *my_fp,
     const char **contact_list,
     size_t contact_count,
+    const uint8_t **salt_list,
     dht_offline_message_t **messages_out,
     size_t *count_out
 ) {
@@ -573,6 +596,7 @@ int dht_dm_outbox_sync_all_contacts_recent(
     for (size_t i = 0; i < contact_count; i++) {
         workers[i].my_fp = my_fp;
         workers[i].contact_fp = contact_list[i];
+        workers[i].salt = salt_list ? salt_list[i] : NULL;
         workers[i].use_full_sync = false;  /* Recent sync */
         workers[i].messages = NULL;
         workers[i].count = 0;
@@ -623,6 +647,7 @@ int dht_dm_outbox_sync_all_contacts_full(
     const char *my_fp,
     const char **contact_list,
     size_t contact_count,
+    const uint8_t **salt_list,
     dht_offline_message_t **messages_out,
     size_t *count_out
 ) {
@@ -653,6 +678,7 @@ int dht_dm_outbox_sync_all_contacts_full(
     for (size_t i = 0; i < contact_count; i++) {
         workers[i].my_fp = my_fp;
         workers[i].contact_fp = contact_list[i];
+        workers[i].salt = salt_list ? salt_list[i] : NULL;
         workers[i].use_full_sync = true;  /* Full 8-day sync */
         workers[i].messages = NULL;
         workers[i].count = 0;
@@ -724,7 +750,9 @@ static int dm_subscribe_to_day(dht_dm_listen_ctx_t *listen_ctx) {
     /* Generate key for today's bucket: contact (sender) -> me (recipient) */
     char base_key[512];
     if (dht_dm_outbox_make_key(listen_ctx->contact_fp, listen_ctx->my_fp,
-                               listen_ctx->current_day, base_key, sizeof(base_key)) != 0) {
+                               listen_ctx->current_day,
+                               listen_ctx->has_salt ? listen_ctx->salt : NULL,
+                               base_key, sizeof(base_key)) != 0) {
         return -1;
     }
 
@@ -751,6 +779,7 @@ static int dm_subscribe_to_day(dht_dm_listen_ctx_t *listen_ctx) {
 int dht_dm_outbox_subscribe(
     const char *my_fp,
     const char *contact_fp,
+    const uint8_t *salt,
     nodus_ops_listen_cb_t callback,
     void *user_data,
     dht_dm_listen_ctx_t **listen_ctx_out
@@ -771,6 +800,13 @@ int dht_dm_outbox_subscribe(
     listen_ctx->callback = callback;
     listen_ctx->user_data = user_data;
     listen_ctx->listen_token = 0;
+    if (salt) {
+        memcpy(listen_ctx->salt, salt, 32);
+        listen_ctx->has_salt = true;
+    } else {
+        memset(listen_ctx->salt, 0, 32);
+        listen_ctx->has_salt = false;
+    }
 
     /* Subscribe to today's bucket */
     if (dm_subscribe_to_day(listen_ctx) != 0) {

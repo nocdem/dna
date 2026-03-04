@@ -1,14 +1,15 @@
-> **⚠️ DESIGN PROPOSAL — NOT IMPLEMENTED**
-> The vulnerability described in Section 2 is real and accurately documented. However, the proposed fix (per-contact DHT salt, Sections 3+) has NOT been implemented. No salt exchange, database migrations, or API changes described below exist in code. Current DHT key derivation still uses deterministic SHA3-512.
+> **✅ IMPLEMENTED** (v0.8.5)
+> Per-contact DHT salt is fully implemented. Salt is exchanged during contact request handshake (v2 wire format), stored in contacts DB, included in DHT backup, and used in all key derivation (outbox + ACK keys). Existing contacts without salt continue using legacy unsalted keys. New contacts between updated clients automatically use salted keys.
 
 ---
 
 # DHT Key Derivation Privacy Analysis
 
 **Date:** 2026-01-11
-**Status:** VULNERABILITY IDENTIFIED - Fix Planned
-**Severity:** MEDIUM (Metadata Leak)
-**Affects:** All versions through v0.4.28
+**Updated:** 2026-03-04 (v0.8.5 — Implemented)
+**Status:** IMPLEMENTED
+**Severity:** MEDIUM (Metadata Leak) — MITIGATED for new contacts
+**Affects:** All versions through v0.8.4 (fixed in v0.8.5)
 
 ---
 
@@ -375,19 +376,22 @@ typedef struct {
 
 ## Appendix: Key Derivation Comparison
 
-### Current (Vulnerable)
+### Legacy (Vulnerable — contacts without salt)
 ```
-Alice→Bob outbox:  SHA3-512("alice_fp:outbox:bob_fp")
-Bob→Alice outbox:  SHA3-512("bob_fp:outbox:alice_fp")
+Alice→Bob outbox:  alice_fp:outbox:bob_fp:DAY_BUCKET
+Bob→Alice outbox:  bob_fp:outbox:alice_fp:DAY_BUCKET
+ACK key:           SHA3-512(recipient_fp:ack:sender_fp)
 ```
 
 Third party who knows both fingerprints can calculate both keys.
 
-### Proposed (Fixed)
+### Salted (Fixed — v0.8.5+, new contacts)
 ```
-salt = random 32 bytes (exchanged during contact setup)
-Alice→Bob outbox:  SHA3-512(hex(salt) + ":alice_fp:outbox:bob_fp")
-Bob→Alice outbox:  SHA3-512(hex(salt) + ":bob_fp:outbox:alice_fp")
+salt = random 32 bytes (exchanged during contact request handshake)
+Alice→Bob outbox:  alice_fp:outbox:bob_fp:DAY_BUCKET:SALT_HEX
+Bob→Alice outbox:  bob_fp:outbox:alice_fp:DAY_BUCKET:SALT_HEX
+ACK key:           SHA3-512(recipient_fp:ack:sender_fp:SALT_HEX)
 ```
 
 Third party cannot calculate keys without knowing the salt.
+Salt is stored in contacts DB and included in encrypted DHT contact list backup.

@@ -677,7 +677,9 @@ Sender-based outbox for offline message delivery (Spillway Protocol).
 
 #### Architecture (Current: Daily Buckets)
 
-- **Storage Key**: `sender:outbox:recipient:DAY_BUCKET` (where DAY_BUCKET = unix_time / 86400)
+- **Storage Key**: `sender:outbox:recipient:DAY_BUCKET` (unsalted, legacy) or `sender:outbox:recipient:DAY_BUCKET:SALT_HEX` (salted, v0.8.5+)
+  - `DAY_BUCKET` = unix_time / 86400
+  - `SALT_HEX` = 64-char hex of 32-byte per-contact salt (exchanged during contact request)
 - **TTL**: 7 days (auto-expire, **no pruning needed**)
 - **Put Type**: Signed chunked with `value_id=1`
 - **Max**: 500 messages per day bucket (DoS prevention)
@@ -687,7 +689,7 @@ Sender-based outbox for offline message delivery (Spillway Protocol).
 
 Simple per-contact ACK timestamps for delivery confirmation.
 
-- **ACK Key**: `SHA3-512(recipient + ":ack:" + sender)`
+- **ACK Key**: `SHA3-512(recipient + ":ack:" + sender)` (unsalted) or `SHA3-512(recipient + ":ack:" + sender + ":" + SALT_HEX)` (salted, v0.8.5+)
 - **ACK TTL**: 30 days
 - **Value**: 8-byte big-endian Unix timestamp (when recipient last synced)
 - **Purpose**: Update message status from SENT → RECEIVED
@@ -729,19 +731,21 @@ Note: `seq_num` is monotonic per sender-recipient pair (for ordering and deliver
 ```c
 // Queue message in sender's outbox (redirects to daily bucket API)
 int dht_queue_message(
-    dht_context_t *ctx,
     const char *sender,           // 128-char fingerprint
     const char *recipient,        // 128-char fingerprint
     const uint8_t *ciphertext,    // Encrypted message
     size_t ciphertext_len,
     uint64_t seq_num,             // From message_backup_get_next_seq()
-    uint32_t ttl_seconds          // 0 = default 7 days
+    uint32_t ttl_seconds,         // 0 = default 7 days
+    const uint8_t *salt           // 32-byte per-contact salt (NULL = unsalted)
 );
 
-// ACK API (v15)
-void dht_generate_ack_key(const char *recipient, const char *sender, uint8_t *key_out);
-int dht_publish_ack(dht_context_t *ctx, const char *my_fp, const char *sender_fp);
-size_t dht_listen_ack(dht_context_t *ctx, const char *my_fp, const char *recipient_fp,
+// ACK API (v15, salt-aware v0.8.5+)
+void dht_generate_ack_key(const char *recipient, const char *sender,
+                          const uint8_t *salt, uint8_t *key_out);
+int dht_publish_ack(const char *my_fp, const char *sender_fp, const uint8_t *salt);
+size_t dht_listen_ack(const char *my_fp, const char *recipient_fp,
+                      const uint8_t *salt,
                       dht_ack_callback_t callback, void *user_data);
 void dht_cancel_ack_listener(dht_context_t *ctx, size_t token);
 
@@ -1203,8 +1207,8 @@ ssh root@<IP> 'journalctl -u nodus-v5 -f'
 | Data Type | TTL | DHT Key Format | Persisted | Notes |
 |-----------|-----|----------------|-----------|-------|
 | **Presence** | 7 days | `SHA3-512(public_key)` = fingerprint | No | IP:port:timestamp |
-| Offline Messages | 7 days | `SHA3-512(sender:outbox:recipient)` | No | Spillway outbox |
-| **ACK (v15)** | 30 days | `SHA3-512(recipient:ack:sender)` | No | Delivery ack (8-byte timestamp) |
+| Offline Messages | 7 days | `sender:outbox:recipient:DAY:SALT_HEX` | No | Spillway outbox (salt optional) |
+| **ACK (v15)** | 30 days | `SHA3-512(recipient:ack:sender:SALT_HEX)` | No | Delivery ack (salt optional) |
 | Contact Lists | 7 days | `SHA3-512(identity:contactlist)` | No | Self-encrypted |
 | **Message Backup** | 7 days | `SHA3-512(fingerprint:message_backup)` | No | Self-encrypted, manual sync |
 | **Contact Requests** | 7 days | `SHA3-512(fingerprint:requests)` | No | ICQ-style contact request inbox |
@@ -1262,29 +1266,39 @@ ICQ-style mutual contact request system. Requests are stored in recipient's DHT 
 
 **DHT Key:** `SHA3-512(recipient_fingerprint + ":requests")` (binary, 64 bytes)
 
-**Request Structure:**
+**Request Structure (v2 — with DHT salt):**
 ```c
 typedef struct {
     uint32_t magic;                      // 0x444E4152 ("DNAR")
-    uint8_t version;                     // 1
+    uint8_t version;                     // 1 (legacy) or 2 (with salt)
     uint64_t timestamp;                  // Unix timestamp
     uint64_t expiry;                     // timestamp + 7 days
     char sender_fingerprint[129];        // Sender's fingerprint
-    char sender_name[64];                // Sender's display name
+    char sender_name[64];               // Sender's display name
     uint8_t sender_dilithium_pubkey[2592]; // Sender's Dilithium5 public key
     char message[256];                   // Optional "Hey, add me!"
-    uint8_t signature[4627];             // Dilithium5 signature
+    uint8_t dht_salt[32];               // v2: per-contact DHT key salt
+    bool has_dht_salt;                   // true for v2 requests
+    uint8_t signature[4627];             // Dilithium5 signature (includes salt for v2)
     size_t signature_len;
 } dht_contact_request_t;
 ```
 
+**Salt Exchange Flow:**
+1. Alice generates 32 random bytes → sends v2 request to Bob (includes salt)
+2. Bob receives → stores Alice's salt in `contact_requests` table
+3. Bob approves → moves salt to `contacts` table, sends reciprocal v2 with same salt
+4. Alice receives reciprocal → stores salt in `contacts` table
+5. Both have identical salt → salted DHT keys work for outbox + ACK
+
 **C API:**
 ```c
-// Send a contact request
-int dht_send_contact_request(dht_context_t *ctx,
+// Send a contact request (v2 with salt)
+int dht_send_contact_request(
     const char *sender_fingerprint, const char *sender_name,
     const uint8_t *sender_dilithium_pubkey, const uint8_t *sender_dilithium_privkey,
-    const char *recipient_fingerprint, const char *optional_message);
+    const char *recipient_fingerprint, const char *optional_message,
+    const uint8_t *dht_salt);  // 32-byte salt (NULL for v1 legacy)
 
 // Fetch all requests from my inbox
 int dht_fetch_contact_requests(dht_context_t *ctx,

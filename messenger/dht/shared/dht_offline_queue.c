@@ -488,12 +488,13 @@ int dht_queue_message(
     const uint8_t *ciphertext,
     size_t ciphertext_len,
     uint64_t seq_num,
-    uint32_t ttl_seconds)
+    uint32_t ttl_seconds,
+    const uint8_t *salt)
 {
     /* v0.4.81: Redirect to daily bucket API */
     QGP_LOG_DEBUG(LOG_TAG, "Redirecting to daily bucket API (v0.4.81+)");
     return dht_dm_queue_message(sender, recipient, ciphertext,
-                                 ciphertext_len, seq_num, ttl_seconds);
+                                 ciphertext_len, seq_num, ttl_seconds, salt);
 }
 
 /**
@@ -777,17 +778,27 @@ int dht_retrieve_queued_messages_from_contacts_parallel(
  * Key format: recipient + ":ack:" + sender
  */
 static void make_ack_base_key(const char *recipient, const char *sender,
+                               const uint8_t *salt,
                                char *key_out, size_t key_out_size) {
-    snprintf(key_out, key_out_size, "%s:ack:%s", recipient, sender);
+    if (salt) {
+        char salt_hex[65];
+        for (int i = 0; i < 32; i++) {
+            snprintf(salt_hex + (i * 2), 3, "%02x", salt[i]);
+        }
+        salt_hex[64] = '\0';
+        snprintf(key_out, key_out_size, "%s:ack:%s:%s", recipient, sender, salt_hex);
+    } else {
+        snprintf(key_out, key_out_size, "%s:ack:%s", recipient, sender);
+    }
 }
 
 /**
  * Generate DHT key for ACK storage (SHA3-512 hash of base key)
  */
 void dht_generate_ack_key(const char *recipient, const char *sender,
-                           uint8_t *key_out) {
+                           const uint8_t *salt, uint8_t *key_out) {
     char base_key[512];
-    make_ack_base_key(recipient, sender, base_key, sizeof(base_key));
+    make_ack_base_key(recipient, sender, salt, base_key, sizeof(base_key));
     qgp_sha3_512((const uint8_t*)base_key, strlen(base_key), key_out);
 }
 
@@ -803,14 +814,15 @@ void dht_generate_ack_key(const char *recipient, const char *sender,
  * @return 0 on success, -1 on failure
  */
 int dht_publish_ack(const char *my_fp,
-                    const char *sender_fp) {
+                    const char *sender_fp,
+                    const uint8_t *salt) {
     if (!my_fp || !sender_fp) {
         return -1;
     }
 
     // Generate ACK key
     uint8_t key[64];
-    dht_generate_ack_key(my_fp, sender_fp, key);
+    dht_generate_ack_key(my_fp, sender_fp, salt, key);
 
     // Get current timestamp
     uint64_t timestamp = (uint64_t)time(NULL);
@@ -935,6 +947,7 @@ static void ack_listener_cleanup(void *user_data) {
 size_t dht_listen_ack(
     const char *my_fp,
     const char *recipient_fp,
+    const uint8_t *salt,
     dht_ack_callback_t callback,
     void *user_data
 ) {
@@ -968,7 +981,7 @@ size_t dht_listen_ack(
 
     // Generate ACK key: SHA3-512(recipient + ":ack:" + sender)
     uint8_t key[64];
-    dht_generate_ack_key(recipient_fp, my_fp, key);
+    dht_generate_ack_key(recipient_fp, my_fp, salt, key);
 
     QGP_LOG_INFO(LOG_TAG, "[ACK] Starting listener: %.20s... -> %.20s...\n",
            recipient_fp, my_fp);

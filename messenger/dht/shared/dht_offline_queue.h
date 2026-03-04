@@ -82,6 +82,7 @@ typedef struct {
  * @param ciphertext_len Length of ciphertext
  * @param seq_num Monotonic sequence number for this message (from message_backup_get_next_seq)
  * @param ttl_seconds Time-to-live in seconds (0 = use default 7 days)
+ * @param salt Optional 32-byte per-contact DHT salt (NULL for legacy)
  * @return 0 on success, -1 on failure
  */
 int dht_queue_message(
@@ -90,7 +91,8 @@ int dht_queue_message(
     const uint8_t *ciphertext,
     size_t ciphertext_len,
     uint64_t seq_num,
-    uint32_t ttl_seconds
+    uint32_t ttl_seconds,
+    const uint8_t *salt
 );
 
 /**
@@ -259,11 +261,13 @@ void dht_generate_outbox_key(
  *
  * @param recipient Recipient fingerprint (ACK owner)
  * @param sender Sender fingerprint (whose messages were fetched)
+ * @param salt Optional 32-byte per-contact DHT salt (NULL for legacy)
  * @param key_out Output buffer (64 bytes for SHA3-512)
  */
 void dht_generate_ack_key(
     const char *recipient,
     const char *sender,
+    const uint8_t *salt,
     uint8_t *key_out
 );
 
@@ -275,11 +279,13 @@ void dht_generate_ack_key(
  *
  * @param my_fp My fingerprint (ACK owner - the recipient)
  * @param sender_fp Sender fingerprint (whose messages I fetched)
+ * @param salt Optional 32-byte per-contact DHT salt (NULL for legacy)
  * @return 0 on success, -1 on failure
  */
 int dht_publish_ack(
     const char *my_fp,
-    const char *sender_fp
+    const char *sender_fp,
+    const uint8_t *salt
 );
 
 /**
@@ -305,6 +311,7 @@ typedef void (*dht_ack_callback_t)(
  *
  * @param my_fp My fingerprint (I'm the sender)
  * @param recipient_fp Contact fingerprint (they're the recipient)
+ * @param salt Optional 32-byte per-contact DHT salt (NULL for legacy)
  * @param callback Function to invoke when ACK updates
  * @param user_data Context pointer passed to callback
  *
@@ -313,6 +320,7 @@ typedef void (*dht_ack_callback_t)(
 size_t dht_listen_ack(
     const char *my_fp,
     const char *recipient_fp,
+    const uint8_t *salt,
     dht_ack_callback_t callback,
     void *user_data
 );

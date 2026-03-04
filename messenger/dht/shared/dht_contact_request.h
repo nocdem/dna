@@ -38,9 +38,13 @@ extern "C" {
 /* Magic bytes for request format validation */
 #define DHT_CONTACT_REQUEST_MAGIC 0x444E4152  /* "DNAR" (DNA Request) */
 #define DHT_CONTACT_REQUEST_VERSION 1
+#define DHT_CONTACT_REQUEST_VERSION_SALT 2  /* v2: includes 32-byte DHT salt */
 
 /* Default TTL: 7 days */
 #define DHT_CONTACT_REQUEST_DEFAULT_TTL 604800
+
+/* DHT salt size for per-contact key derivation */
+#define DHT_CONTACT_SALT_SIZE_CR 32
 
 /* Dilithium5 key sizes */
 #define DHT_DILITHIUM5_PUBKEY_SIZE 2592
@@ -58,6 +62,8 @@ typedef struct {
     char sender_name[64];                             /* Display name (if registered) */
     uint8_t sender_dilithium_pubkey[DHT_DILITHIUM5_PUBKEY_SIZE]; /* For verification */
     char message[256];                                /* Optional "Hey, add me!" message */
+    uint8_t dht_salt[DHT_CONTACT_SALT_SIZE_CR];       /* v2: Per-contact DHT key salt (32 bytes) */
+    bool has_dht_salt;                                /* true if salt is set (v2 request) */
     uint8_t signature[DHT_DILITHIUM5_SIG_MAX_SIZE];   /* Dilithium5 signature over all above */
     size_t signature_len;                             /* Actual signature length */
 } dht_contact_request_t;
@@ -100,6 +106,7 @@ void dht_generate_requests_inbox_key(
  * @param sender_dilithium_privkey Sender's Dilithium5 private key for signing
  * @param recipient_fingerprint Recipient's fingerprint (128 hex chars)
  * @param optional_message Optional message (can be NULL, max 255 chars)
+ * @param dht_salt Optional 32-byte per-contact DHT salt (NULL for v1 request)
  * @return 0 on success, -1 on failure
  */
 int dht_send_contact_request(
@@ -108,7 +115,8 @@ int dht_send_contact_request(
     const uint8_t *sender_dilithium_pubkey,
     const uint8_t *sender_dilithium_privkey,
     const char *recipient_fingerprint,
-    const char *optional_message
+    const char *optional_message,
+    const uint8_t *dht_salt
 );
 
 /**
@@ -170,7 +178,7 @@ int dht_cancel_contact_request(
  * Format:
  * [4-byte magic][1-byte version][8-byte timestamp][8-byte expiry]
  * [129-byte sender_fp][64-byte sender_name][2592-byte pubkey]
- * [256-byte message][2-byte sig_len][signature bytes]
+ * [256-byte message][32-byte dht_salt (v2 only)][2-byte sig_len][signature bytes]
  *
  * @param request Request to serialize
  * @param out Output buffer (caller must free)

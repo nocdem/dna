@@ -110,6 +110,7 @@ int dht_serialize_contact_request(
         64 +                                  /* sender_name */
         DHT_DILITHIUM5_PUBKEY_SIZE +          /* sender_dilithium_pubkey */
         256 +                                 /* message */
+        (request->version >= DHT_CONTACT_REQUEST_VERSION_SALT ? DHT_CONTACT_SALT_SIZE_CR : 0) + /* v2: dht_salt */
         sizeof(uint16_t) +                    /* signature_len */
         request->signature_len;               /* signature */
 
@@ -164,6 +165,12 @@ int dht_serialize_contact_request(
     memset(ptr, 0, 256);
     strncpy((char *)ptr, request->message, 255);
     ptr += 256;
+
+    /* Write dht_salt (v2 only: 32 bytes) */
+    if (request->version >= DHT_CONTACT_REQUEST_VERSION_SALT) {
+        memcpy(ptr, request->dht_salt, DHT_CONTACT_SALT_SIZE_CR);
+        ptr += DHT_CONTACT_SALT_SIZE_CR;
+    }
 
     /* Write signature_len (network order) */
     uint16_t sig_len_network = htons((uint16_t)request->signature_len);
@@ -264,6 +271,20 @@ int dht_deserialize_contact_request(
     request_out->message[255] = '\0';  /* Ensure null-terminated */
     ptr += 256;
 
+    /* Read dht_salt (v2 only: 32 bytes) */
+    if (request_out->version >= DHT_CONTACT_REQUEST_VERSION_SALT) {
+        if (ptr + DHT_CONTACT_SALT_SIZE_CR > end) {
+            QGP_LOG_ERROR(LOG_TAG, "Truncated salt data in v2 request\n");
+            return -1;
+        }
+        memcpy(request_out->dht_salt, ptr, DHT_CONTACT_SALT_SIZE_CR);
+        request_out->has_dht_salt = true;
+        ptr += DHT_CONTACT_SALT_SIZE_CR;
+    } else {
+        memset(request_out->dht_salt, 0, DHT_CONTACT_SALT_SIZE_CR);
+        request_out->has_dht_salt = false;
+    }
+
     /* Read signature_len (network order) */
     uint16_t sig_len_network;
     memcpy(&sig_len_network, ptr, sizeof(uint16_t));
@@ -303,8 +324,9 @@ int dht_verify_contact_request(const dht_contact_request_t *request) {
         return -1;
     }
 
-    /* Check version */
-    if (request->version != DHT_CONTACT_REQUEST_VERSION) {
+    /* Check version (accept v1 and v2) */
+    if (request->version < DHT_CONTACT_REQUEST_VERSION ||
+        request->version > DHT_CONTACT_REQUEST_VERSION_SALT) {
         QGP_LOG_ERROR(LOG_TAG, "Unsupported version: %u\n", request->version);
         return -1;
     }
@@ -344,7 +366,8 @@ int dht_verify_contact_request(const dht_contact_request_t *request) {
         129 +                                 /* sender_fingerprint */
         64 +                                  /* sender_name */
         DHT_DILITHIUM5_PUBKEY_SIZE +          /* sender_dilithium_pubkey */
-        256;                                  /* message */
+        256 +                                 /* message */
+        (request->version >= DHT_CONTACT_REQUEST_VERSION_SALT ? DHT_CONTACT_SALT_SIZE_CR : 0); /* v2: salt */
 
     uint8_t *signed_data = (uint8_t *)malloc(signed_data_len);
     if (!signed_data) {
@@ -390,6 +413,12 @@ int dht_verify_contact_request(const dht_contact_request_t *request) {
     strncpy((char *)ptr, request->message, 255);
     ptr += 256;
 
+    /* v2: include salt in signed data */
+    if (request->version >= DHT_CONTACT_REQUEST_VERSION_SALT) {
+        memcpy(ptr, request->dht_salt, DHT_CONTACT_SALT_SIZE_CR);
+        ptr += DHT_CONTACT_SALT_SIZE_CR;
+    }
+
     /* Verify Dilithium5 signature */
     int verify_result = qgp_dsa87_verify(
         request->signature,
@@ -419,7 +448,8 @@ int dht_send_contact_request(
     const uint8_t *sender_dilithium_pubkey,
     const uint8_t *sender_dilithium_privkey,
     const char *recipient_fingerprint,
-    const char *optional_message)
+    const char *optional_message,
+    const uint8_t *dht_salt)
 {
     if (!sender_fingerprint || !sender_dilithium_pubkey ||
         !sender_dilithium_privkey || !recipient_fingerprint) {
@@ -435,9 +465,19 @@ int dht_send_contact_request(
     memset(&request, 0, sizeof(request));
 
     request.magic = DHT_CONTACT_REQUEST_MAGIC;
-    request.version = DHT_CONTACT_REQUEST_VERSION;
     request.timestamp = (uint64_t)time(NULL);
     request.expiry = request.timestamp + DHT_CONTACT_REQUEST_DEFAULT_TTL;
+
+    /* Set version based on salt presence */
+    if (dht_salt) {
+        request.version = DHT_CONTACT_REQUEST_VERSION_SALT;
+        memcpy(request.dht_salt, dht_salt, DHT_CONTACT_SALT_SIZE_CR);
+        request.has_dht_salt = true;
+    } else {
+        request.version = DHT_CONTACT_REQUEST_VERSION;
+        memset(request.dht_salt, 0, DHT_CONTACT_SALT_SIZE_CR);
+        request.has_dht_salt = false;
+    }
 
     strncpy(request.sender_fingerprint, sender_fingerprint, 128);
     request.sender_fingerprint[128] = '\0';
@@ -467,7 +507,8 @@ int dht_send_contact_request(
         129 +                                 /* sender_fingerprint */
         64 +                                  /* sender_name */
         DHT_DILITHIUM5_PUBKEY_SIZE +          /* sender_dilithium_pubkey */
-        256;                                  /* message */
+        256 +                                 /* message */
+        (request.has_dht_salt ? DHT_CONTACT_SALT_SIZE_CR : 0); /* v2: salt */
 
     uint8_t *signed_data = (uint8_t *)malloc(signed_data_len);
     if (!signed_data) {
@@ -512,6 +553,12 @@ int dht_send_contact_request(
     memset(ptr, 0, 256);
     strncpy((char *)ptr, request.message, 255);
     ptr += 256;
+
+    /* v2: include salt in signed data */
+    if (request.has_dht_salt) {
+        memcpy(ptr, request.dht_salt, DHT_CONTACT_SALT_SIZE_CR);
+        ptr += DHT_CONTACT_SALT_SIZE_CR;
+    }
 
     /* Sign with Dilithium5 */
     size_t sig_len = DHT_DILITHIUM5_SIG_MAX_SIZE;

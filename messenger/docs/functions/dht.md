@@ -118,14 +118,14 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 | Function | Description |
 |----------|-------------|
 | `uint64_t dht_dm_outbox_get_day_bucket(void)` | Get current day bucket (timestamp/86400) |
-| `int dht_dm_outbox_make_key(...)` | Generate DHT key for day bucket |
-| `int dht_dm_queue_message(...)` | Queue message to daily bucket (chunked storage) |
-| `int dht_dm_outbox_sync_day(...)` | Sync messages from specific day |
-| `int dht_dm_outbox_sync_recent(...)` | Sync 3 days (yesterday, today, tomorrow) |
-| `int dht_dm_outbox_sync_full(...)` | Sync last 8 days |
-| `int dht_dm_outbox_sync_all_contacts_recent(...)` | Sync 3 days from all contacts (parallel) |
-| `int dht_dm_outbox_sync_all_contacts_full(...)` | Sync 8 days from all contacts (v0.5.22+, for smart sync) |
-| `int dht_dm_outbox_subscribe(...)` | Subscribe with day rotation support |
+| `int dht_dm_outbox_make_key(..., const uint8_t *salt)` | Generate DHT key for day bucket (salt-aware) |
+| `int dht_dm_queue_message(..., const uint8_t *salt)` | Queue message to daily bucket (salt-aware) |
+| `int dht_dm_outbox_sync_day(..., const uint8_t *salt)` | Sync messages from specific day (salt-aware) |
+| `int dht_dm_outbox_sync_recent(..., const uint8_t *salt)` | Sync 3 days (salt-aware) |
+| `int dht_dm_outbox_sync_full(..., const uint8_t *salt)` | Sync last 8 days (salt-aware) |
+| `int dht_dm_outbox_sync_all_contacts_recent(..., const uint8_t **salt_list)` | Sync 3 days from all contacts (parallel, salt array) |
+| `int dht_dm_outbox_sync_all_contacts_full(..., const uint8_t **salt_list)` | Sync 8 days from all contacts (salt array) |
+| `int dht_dm_outbox_subscribe(..., const uint8_t *salt)` | Subscribe with day rotation (salt-aware) |
 | `void dht_dm_outbox_unsubscribe(...)` | Unsubscribe from contact's outbox |
 | `int dht_dm_outbox_check_day_rotation(...)` | Check/rotate listener at midnight |
 | `void dht_dm_outbox_cache_clear(void)` | Clear local outbox cache |
@@ -137,7 +137,7 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 
 | Function | Description |
 |----------|-------------|
-| `int dht_queue_message(...)` | Store message (redirects to daily bucket API) |
+| `int dht_queue_message(..., const uint8_t *salt)` | Store message (redirects to daily bucket API, salt-aware) |
 | `int dht_retrieve_queued_messages_from_contacts(...)` | Retrieve messages from contacts (sequential) |
 | `int dht_retrieve_queued_messages_from_contacts_parallel(...)` | Retrieve messages (parallel, 10-100× faster) |
 | `void dht_offline_message_free(dht_offline_message_t*)` | Free single message |
@@ -152,9 +152,9 @@ Simple per-contact ACK timestamps for delivery confirmation. When recipient sync
 
 | Function | Description |
 |----------|-------------|
-| `void dht_generate_ack_key(const char*, const char*, uint8_t*)` | Generate ACK DHT key: SHA3-512(recipient + ":ack:" + sender) |
-| `int dht_publish_ack(dht_context_t*, const char*, const char*)` | Publish ACK timestamp (blocking) |
-| `size_t dht_listen_ack(dht_context_t*, const char*, const char*, dht_ack_callback_t, void*)` | Listen for ACK updates |
+| `void dht_generate_ack_key(const char*, const char*, const uint8_t *salt, uint8_t*)` | Generate ACK DHT key (salt-aware) |
+| `int dht_publish_ack(const char*, const char*, const uint8_t *salt)` | Publish ACK timestamp (salt-aware) |
+| `size_t dht_listen_ack(const char*, const char*, const uint8_t *salt, dht_ack_callback_t, void*)` | Listen for ACK updates (salt-aware) |
 | `void dht_cancel_ack_listener(dht_context_t*, size_t)` | Cancel ACK listener |
 
 **v15 Changes:** Removed watermark seq_num tracking. ACK uses simple timestamp (8 bytes). Per-contact, not per-message.
@@ -184,7 +184,7 @@ Simple per-contact ACK timestamps for delivery confirmation. When recipient sync
 | Function | Description |
 |----------|-------------|
 | `void dht_generate_requests_inbox_key(const char*, uint8_t*)` | Generate requests inbox key |
-| `int dht_send_contact_request(...)` | Send contact request |
+| `int dht_send_contact_request(..., const uint8_t *dht_salt)` | Send contact request (v2 with salt) |
 | `int dht_fetch_contact_requests(dht_context_t*, const char*, dht_contact_request_t**, size_t*)` | Fetch pending requests |
 | `int dht_verify_contact_request(const dht_contact_request_t*)` | Verify request signature |
 | `int dht_cancel_contact_request(dht_context_t*, const char*, const char*)` | Cancel sent request |
@@ -343,9 +343,10 @@ Files removed:
 |----------|-------------|
 | `int dht_contactlist_init(void)` | Initialize contact list subsystem |
 | `void dht_contactlist_cleanup(void)` | Cleanup contact list subsystem |
-| `int dht_contactlist_publish(dht_context_t*, const char*, const char**, size_t, ...)` | Publish encrypted contact list |
-| `int dht_contactlist_fetch(dht_context_t*, const char*, char***, size_t*, ...)` | Fetch and decrypt contact list |
+| `int dht_contactlist_publish(const char*, const char**, size_t, const uint8_t**, ...)` | Publish encrypted contact list (v2 with salts) |
+| `int dht_contactlist_fetch(const char*, char***, size_t*, uint8_t***, ...)` | Fetch and decrypt contact list (v2 returns salts) |
 | `void dht_contactlist_free_contacts(char**, size_t)` | Free contacts array |
+| `void dht_contactlist_free_salts(uint8_t**, size_t)` | Free salts array from fetch |
 | `void dht_contactlist_free(dht_contactlist_t*)` | Free contact list structure |
 | `bool dht_contactlist_exists(dht_context_t*, const char*)` | Check if contact list exists |
 | `int dht_contactlist_get_timestamp(dht_context_t*, const char*, uint64_t*)` | Get contact list timestamp |

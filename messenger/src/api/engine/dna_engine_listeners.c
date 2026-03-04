@@ -200,10 +200,18 @@ size_t dna_engine_listen_outbox(
      */
     QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Calling dht_dm_outbox_subscribe() for daily bucket...");
 
+    /* Look up per-contact DHT salt */
+    uint8_t salt_buf[32];
+    const uint8_t *salt_ptr = NULL;
+    if (contacts_db_get_salt(contact_fingerprint, salt_buf) == 0) {
+        salt_ptr = salt_buf;
+    }
+
     dht_dm_listen_ctx_t *dm_listen_ctx = NULL;
     int result = dht_dm_outbox_subscribe(
                                           engine->fingerprint,      /* my_fp (recipient) */
                                           contact_fingerprint,      /* contact_fp (sender) */
+                                          salt_ptr,                 /* per-contact DHT salt */
                                           outbox_listen_callback,
                                           ctx,
                                           &dm_listen_ctx);
@@ -1098,10 +1106,18 @@ size_t dna_engine_start_ack_listener(
 
     /* Phase 2: DHT operations WITHOUT holding mutex (prevents ABBA deadlock) */
 
+    /* Look up per-contact DHT salt for ACK key */
+    uint8_t ack_salt_buf[32];
+    const uint8_t *ack_salt_ptr = NULL;
+    if (contacts_db_get_salt(fp_copy, ack_salt_buf) == 0) {
+        ack_salt_ptr = ack_salt_buf;
+    }
+
     /* Start DHT ACK listener */
     size_t token = dht_listen_ack(
                                    engine->fingerprint,
                                    fp_copy,
+                                   ack_salt_ptr,
                                    ack_listener_callback,
                                    engine);
     if (token == 0) {

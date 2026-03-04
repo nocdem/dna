@@ -13,12 +13,10 @@
  * SHA3-512(identity + ":contactlist") → 64-byte DHT storage key
  *
  * Data Format (before encryption):
- * {
- *   "identity": "alice",
- *   "version": 1,
- *   "timestamp": 1730742000,
- *   "contacts": ["bob", "charlie", "diana"]
- * }
+ * v1: { "identity": "alice", "version": 1, "timestamp": 1730742000,
+ *       "contacts": ["bob", "charlie"] }
+ * v2: { "identity": "alice", "version": 2, "timestamp": 1730742000,
+ *       "contacts": [{"fp":"bob","salt":"hex64"}, {"fp":"charlie"}] }
  *
  * Encrypted Format (stored in DHT):
  * [4-byte magic "CLST"][1-byte version][8-byte timestamp]
@@ -47,7 +45,8 @@ extern "C" {
 
 // Magic bytes for contact list format validation
 #define DHT_CONTACTLIST_MAGIC 0x434C5354  // "CLST"
-#define DHT_CONTACTLIST_VERSION 1
+#define DHT_CONTACTLIST_VERSION 2
+#define DHT_CONTACTLIST_SALT_SIZE 32
 
 // Default TTL: 7 days (604,800 seconds)
 #define DHT_CONTACTLIST_DEFAULT_TTL 604800
@@ -98,6 +97,8 @@ void dht_contactlist_cleanup(void);
  * @param identity Owner identity (e.g., "alice")
  * @param contacts Array of contact identities
  * @param contact_count Number of contacts
+ * @param salts Array of 32-byte salt pointers (one per contact, NULL entries = no salt)
+ *              Pass NULL to skip salts entirely (backward compat)
  * @param kyber_pubkey Owner's Kyber1024 public key (1568 bytes)
  * @param kyber_privkey Owner's Kyber1024 private key (3168 bytes) - for decryption test
  * @param dilithium_pubkey Owner's Dilithium5 public key (2592 bytes) - for encryption
@@ -109,6 +110,7 @@ int dht_contactlist_publish(
     const char *identity,
     const char **contacts,
     size_t contact_count,
+    const uint8_t **salts,
     const uint8_t *kyber_pubkey,
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey,
@@ -129,6 +131,8 @@ int dht_contactlist_publish(
  * @param identity Owner identity
  * @param contacts_out Output array of contact identities (caller must free)
  * @param count_out Output number of contacts
+ * @param salts_out Output array of 32-byte salts (one per contact, caller must free)
+ *                  NULL entries = no salt for that contact. Pass NULL to skip.
  * @param kyber_privkey Owner's Kyber1024 private key (for decryption)
  * @param dilithium_pubkey Owner's Dilithium5 public key (for signature verification)
  * @return 0 on success, -1 on error, -2 if not found
@@ -137,6 +141,7 @@ int dht_contactlist_fetch(
     const char *identity,
     char ***contacts_out,
     size_t *count_out,
+    uint8_t ***salts_out,
     const uint8_t *kyber_privkey,
     const uint8_t *dilithium_pubkey
 );
@@ -148,6 +153,14 @@ int dht_contactlist_fetch(
  * @param count Number of contacts
  */
 void dht_contactlist_free_contacts(char **contacts, size_t count);
+
+/**
+ * Free salt array returned by dht_contactlist_fetch
+ *
+ * @param salts Array of salt pointers
+ * @param count Number of entries
+ */
+void dht_contactlist_free_salts(uint8_t **salts, size_t count);
 
 /**
  * Free contact list structure

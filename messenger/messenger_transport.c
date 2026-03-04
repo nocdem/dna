@@ -520,13 +520,21 @@ int messenger_queue_to_dht(
         return -1;
     }
 
+    /* Look up per-contact DHT salt */
+    uint8_t msg_salt_buf[32];
+    const uint8_t *msg_salt_ptr = NULL;
+    if (contacts_db_get_salt(recipient_fingerprint, msg_salt_buf) == 0) {
+        msg_salt_ptr = msg_salt_buf;
+    }
+
     int queue_result = dht_queue_message(
         ctx->identity,
         recipient_fingerprint,
         encrypted_message,
         encrypted_len,
         seq_num,
-        604800
+        604800,
+        msg_salt_ptr
     );
 
     if (queue_result == 0) {

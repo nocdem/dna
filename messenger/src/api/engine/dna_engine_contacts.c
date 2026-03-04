@@ -20,6 +20,7 @@
 
 #define DNA_ENGINE_CONTACTS_IMPL
 #include "engine_includes.h"
+#include "crypto/utils/qgp_random.h"
 
 /* Message used for reciprocal contact request auto-approval */
 #define CONTACT_ACCEPTED_MSG "Contact request accepted"
@@ -315,20 +316,34 @@ void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task) {
         display_name = display_name_buf;
     }
 
-    /* Send the contact request via DHT */
+    /* Generate per-contact DHT salt (32 random bytes) */
+    uint8_t dht_salt[DHT_CONTACT_SALT_SIZE];
+    if (qgp_randombytes(dht_salt, DHT_CONTACT_SALT_SIZE) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate DHT salt");
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    /* Send the contact request via DHT (v2 with salt) */
     int rc = dht_send_contact_request(
         engine->fingerprint,
         display_name,
         privkey->public_key,
         privkey->private_key,
         task->params.send_contact_request.recipient,
-        task->params.send_contact_request.message[0] ? task->params.send_contact_request.message : NULL
+        task->params.send_contact_request.message[0] ? task->params.send_contact_request.message : NULL,
+        dht_salt
     );
 
     if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
+    } else {
+        /* Store salt for this outgoing request so we can retrieve it when the
+         * reciprocal approval comes back. We store it against the recipient's
+         * fingerprint in the contacts table as a pending_outgoing contact. */
+        contacts_db_init(engine->fingerprint);
+        contacts_db_set_salt(task->params.send_contact_request.recipient, dht_salt);
     }
-    /* Contact will be added when the recipient approves and we approve their reciprocal request */
 
 done:
     if (privkey) {
@@ -400,6 +415,12 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                         dht_requests[i].sender_fingerprint,
                         sender_name
                     );
+                    /* Store DHT salt from reciprocal request */
+                    if (dht_requests[i].has_dht_salt) {
+                        contacts_db_set_salt(dht_requests[i].sender_fingerprint,
+                                             dht_requests[i].dht_salt);
+                        QGP_LOG_INFO(LOG_TAG, "Stored DHT salt from reciprocal request");
+                    }
                     contacts_changed = true;  /* Mark for sync AFTER loop */
                 } else {
                     /* Regular request - add to pending */
@@ -409,6 +430,11 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                         dht_requests[i].message,
                         dht_requests[i].timestamp
                     );
+                    /* Store DHT salt from request in contact_requests table */
+                    if (dht_requests[i].has_dht_salt) {
+                        contacts_db_set_request_salt(dht_requests[i].sender_fingerprint,
+                                                     dht_requests[i].dht_salt);
+                    }
                 }
 
                 /* Free looked up name if allocated */
@@ -534,7 +560,16 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
     dna_engine_start_presence_listener(engine, task->params.contact_request.fingerprint);
     dna_engine_start_ack_listener(engine, task->params.contact_request.fingerprint);
 
-    /* Send a reciprocal request so they know we approved */
+    /* Read salt from the approved request (stored during receive) */
+    uint8_t approved_salt[DHT_CONTACT_SALT_SIZE];
+    const uint8_t *salt_ptr = NULL;
+    int salt_rc = contacts_db_get_salt(task->params.contact_request.fingerprint, approved_salt);
+    if (salt_rc == 0) {
+        salt_ptr = approved_salt;
+        QGP_LOG_INFO(LOG_TAG, "Using DHT salt from approved contact for reciprocal request");
+    }
+
+    /* Send a reciprocal request so they know we approved (echo same salt) */
     {
         qgp_key_t *privkey = dna_load_private_key(engine);
         if (privkey) {
@@ -552,7 +587,8 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
                 privkey->public_key,
                 privkey->private_key,
                 task->params.contact_request.fingerprint,
-                CONTACT_ACCEPTED_MSG
+                CONTACT_ACCEPTED_MSG,
+                salt_ptr  /* Echo same salt back to requester */
             );
             qgp_key_free(privkey);
         }

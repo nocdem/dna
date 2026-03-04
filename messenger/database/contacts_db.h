@@ -16,7 +16,8 @@
  *     notes TEXT,
  *     status INTEGER DEFAULT 0,  -- 0=mutual, 1=pending_outgoing
  *     last_seen INTEGER DEFAULT 0,
- *     nickname TEXT DEFAULT NULL -- Local nickname override
+ *     nickname TEXT DEFAULT NULL, -- Local nickname override
+ *     dht_salt BLOB DEFAULT NULL  -- 32-byte per-contact DHT key salt
  * );
  *
  * CREATE TABLE contact_requests (
@@ -24,7 +25,8 @@
  *     display_name TEXT,
  *     message TEXT,
  *     requested_at INTEGER,
- *     status INTEGER DEFAULT 0   -- 0=pending, 1=approved, 2=denied
+ *     status INTEGER DEFAULT 0,  -- 0=pending, 1=approved, 2=denied
+ *     dht_salt BLOB DEFAULT NULL  -- 32-byte DHT key salt from requester
  * );
  *
  * CREATE TABLE blocked_users (
@@ -63,6 +65,11 @@ typedef enum {
 } request_status_t;
 
 /**
+ * DHT salt size for per-contact key derivation privacy
+ */
+#define DHT_CONTACT_SALT_SIZE 32
+
+/**
  * Contact entry
  */
 typedef struct {
@@ -72,6 +79,8 @@ typedef struct {
     int status;                /* contact_status_t: 0=mutual, 1=pending_outgoing */
     uint64_t last_seen;        /* Last seen timestamp (0 = never seen) */
     char nickname[64];         /* Local nickname override (empty = use DHT name) */
+    uint8_t dht_salt[DHT_CONTACT_SALT_SIZE]; /* Per-contact DHT key salt */
+    bool has_dht_salt;         /* true if dht_salt is set (not zero) */
 } contact_entry_t;
 
 /**
@@ -83,6 +92,8 @@ typedef struct {
     char message[256];         /* Optional request message */
     uint64_t requested_at;     /* When request was received */
     int status;                /* request_status_t: 0=pending, 1=approved, 2=denied */
+    uint8_t dht_salt[DHT_CONTACT_SALT_SIZE]; /* DHT key salt from contact request */
+    bool has_dht_salt;         /* true if dht_salt is set */
 } incoming_request_t;
 
 /**
@@ -192,6 +203,42 @@ int contacts_db_update_last_seen(const char *identity, uint64_t last_seen);
  * @return: 0 on success, -1 on error
  */
 int contacts_db_update_nickname(const char *identity, const char *nickname);
+
+/**
+ * Set DHT salt for a contact
+ *
+ * @param identity: Contact fingerprint (128 hex chars)
+ * @param salt: 32-byte salt (NULL to clear)
+ * @return: 0 on success, -1 on error
+ */
+int contacts_db_set_salt(const char *identity, const uint8_t *salt);
+
+/**
+ * Get DHT salt for a contact
+ *
+ * @param identity: Contact fingerprint (128 hex chars)
+ * @param salt_out: Output buffer (32 bytes)
+ * @return: 0 on success (salt found), -1 on error, -2 if no salt
+ */
+int contacts_db_get_salt(const char *identity, uint8_t *salt_out);
+
+/**
+ * Set DHT salt for a contact request
+ *
+ * @param fingerprint: Requester's fingerprint (128 hex chars)
+ * @param salt: 32-byte salt (NULL to clear)
+ * @return: 0 on success, -1 on error
+ */
+int contacts_db_set_request_salt(const char *fingerprint, const uint8_t *salt);
+
+/**
+ * Get DHT salt for a contact request
+ *
+ * @param fingerprint: Requester's fingerprint (128 hex chars)
+ * @param salt_out: Output buffer (32 bytes)
+ * @return: 0 on success (salt found), -1 on error, -2 if no salt
+ */
+int contacts_db_get_request_salt(const char *fingerprint, uint8_t *salt_out);
 
 /**
  * Get DM sync timestamp for a contact

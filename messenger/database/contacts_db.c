@@ -305,6 +305,24 @@ int contacts_db_init(const char *owner_identity) {
         sqlite3_free(err_msg);
     }
 
+    // Add dht_salt column to contacts table (migration v0.8.5 - per-contact DHT key privacy)
+    const char *sql_add_salt =
+        "ALTER TABLE contacts ADD COLUMN dht_salt BLOB DEFAULT NULL;";
+    rc = sqlite3_exec(g_db, sql_add_salt, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        /* Ignore error - column may already exist */
+        sqlite3_free(err_msg);
+    }
+
+    // Add dht_salt column to contact_requests table (migration v0.8.5)
+    const char *sql_add_request_salt =
+        "ALTER TABLE contact_requests ADD COLUMN dht_salt BLOB DEFAULT NULL;";
+    rc = sqlite3_exec(g_db, sql_add_request_salt, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        /* Ignore error - column may already exist */
+        sqlite3_free(err_msg);
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Initialized for identity '%s': %s\n", owner_identity, db_path);
     pthread_mutex_unlock(&g_db_mutex);
     return 0;
@@ -495,8 +513,8 @@ int contacts_db_list(contact_list_t **list_out) {
         return -1;
     }
 
-    // Query contacts (including last_seen and nickname from database)
-    const char *sql = "SELECT identity, added_timestamp, notes, last_seen, nickname FROM contacts ORDER BY identity;";
+    // Query contacts (including last_seen, nickname, and dht_salt from database)
+    const char *sql = "SELECT identity, added_timestamp, notes, last_seen, nickname, dht_salt FROM contacts ORDER BY identity;";
     sqlite3_stmt *stmt = NULL;
 
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
@@ -537,6 +555,17 @@ int contacts_db_list(contact_list_t **list_out) {
             list->contacts[i].nickname[sizeof(list->contacts[i].nickname) - 1] = '\0';
         } else {
             list->contacts[i].nickname[0] = '\0';
+        }
+
+        /* Read dht_salt (BLOB column, may be NULL) */
+        const void *salt_blob = sqlite3_column_blob(stmt, 5);
+        int salt_len = sqlite3_column_bytes(stmt, 5);
+        if (salt_blob && salt_len == DHT_CONTACT_SALT_SIZE) {
+            memcpy(list->contacts[i].dht_salt, salt_blob, DHT_CONTACT_SALT_SIZE);
+            list->contacts[i].has_dht_salt = true;
+        } else {
+            memset(list->contacts[i].dht_salt, 0, DHT_CONTACT_SALT_SIZE);
+            list->contacts[i].has_dht_salt = false;
         }
 
         i++;
@@ -741,6 +770,132 @@ int contacts_db_set_dm_sync_timestamp(const char *identity, uint64_t timestamp) 
     }
 
     return 0;
+}
+
+/* ============================================================================
+ * DHT SALT FUNCTIONS (per-contact key derivation privacy)
+ * ============================================================================ */
+
+int contacts_db_set_salt(const char *identity, const uint8_t *salt) {
+    if (!g_db || !identity) {
+        return -1;
+    }
+
+    const char *sql = "UPDATE contacts SET dht_salt = ? WHERE identity = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare salt update: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    if (salt) {
+        sqlite3_bind_blob(stmt, 1, salt, DHT_CONTACT_SALT_SIZE, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, 1);
+    }
+    sqlite3_bind_text(stmt, 2, identity, -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update salt: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    return 0;
+}
+
+int contacts_db_get_salt(const char *identity, uint8_t *salt_out) {
+    if (!g_db || !identity || !salt_out) {
+        return -1;
+    }
+
+    const char *sql = "SELECT dht_salt FROM contacts WHERE identity = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, identity, -1, SQLITE_TRANSIENT);
+
+    int result = -2;  /* No salt */
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(stmt, 0);
+        int blob_len = sqlite3_column_bytes(stmt, 0);
+        if (blob && blob_len == DHT_CONTACT_SALT_SIZE) {
+            memcpy(salt_out, blob, DHT_CONTACT_SALT_SIZE);
+            result = 0;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+int contacts_db_set_request_salt(const char *fingerprint, const uint8_t *salt) {
+    if (!g_db || !fingerprint) {
+        return -1;
+    }
+
+    const char *sql = "UPDATE contact_requests SET dht_salt = ? WHERE fingerprint = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare request salt update: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    if (salt) {
+        sqlite3_bind_blob(stmt, 1, salt, DHT_CONTACT_SALT_SIZE, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, 1);
+    }
+    sqlite3_bind_text(stmt, 2, fingerprint, -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update request salt: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    return 0;
+}
+
+int contacts_db_get_request_salt(const char *fingerprint, uint8_t *salt_out) {
+    if (!g_db || !fingerprint || !salt_out) {
+        return -1;
+    }
+
+    const char *sql = "SELECT dht_salt FROM contact_requests WHERE fingerprint = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_TRANSIENT);
+
+    int result = -2;  /* No salt */
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(stmt, 0);
+        int blob_len = sqlite3_column_bytes(stmt, 0);
+        if (blob && blob_len == DHT_CONTACT_SALT_SIZE) {
+            memcpy(salt_out, blob, DHT_CONTACT_SALT_SIZE);
+            result = 0;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+    return result;
 }
 
 /* Internal close - caller must hold g_db_mutex (v0.6.43) */
@@ -1096,10 +1251,12 @@ int contacts_db_approve_request(const char *fingerprint) {
         return -1;
     }
 
-    // Get request details first
-    const char *sql_get = "SELECT display_name FROM contact_requests WHERE fingerprint = ?;";
+    // Get request details first (including salt)
+    const char *sql_get = "SELECT display_name, dht_salt FROM contact_requests WHERE fingerprint = ?;";
     sqlite3_stmt *stmt = NULL;
     char display_name[64] = {0};
+    uint8_t request_salt[DHT_CONTACT_SALT_SIZE] = {0};
+    bool has_salt = false;
 
     int rc = sqlite3_prepare_v2(g_db, sql_get, -1, &stmt, NULL);
     if (rc == SQLITE_OK) {
@@ -1108,6 +1265,12 @@ int contacts_db_approve_request(const char *fingerprint) {
             const char *name = (const char*)sqlite3_column_text(stmt, 0);
             if (name) {
                 strncpy(display_name, name, 63);
+            }
+            const void *salt_blob = sqlite3_column_blob(stmt, 1);
+            int salt_len = sqlite3_column_bytes(stmt, 1);
+            if (salt_blob && salt_len == DHT_CONTACT_SALT_SIZE) {
+                memcpy(request_salt, salt_blob, DHT_CONTACT_SALT_SIZE);
+                has_salt = true;
             }
         }
         sqlite3_finalize(stmt);
@@ -1130,9 +1293,9 @@ int contacts_db_approve_request(const char *fingerprint) {
         return -1;
     }
 
-    // Add to contacts as mutual
-    const char *sql_insert = "INSERT OR REPLACE INTO contacts (identity, added_timestamp, notes, status) "
-                             "VALUES (?, ?, ?, 0);";
+    // Add to contacts as mutual (include salt if present)
+    const char *sql_insert = "INSERT OR REPLACE INTO contacts (identity, added_timestamp, notes, status, dht_salt) "
+                             "VALUES (?, ?, ?, 0, ?);";
     rc = sqlite3_prepare_v2(g_db, sql_insert, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to prepare insert statement: %s\n", sqlite3_errmsg(g_db));
@@ -1142,6 +1305,11 @@ int contacts_db_approve_request(const char *fingerprint) {
     sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 2, time(NULL));
     sqlite3_bind_text(stmt, 3, display_name[0] ? display_name : NULL, -1, SQLITE_TRANSIENT);
+    if (has_salt) {
+        sqlite3_bind_blob(stmt, 4, request_salt, DHT_CONTACT_SALT_SIZE, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, 4);
+    }
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);

@@ -88,12 +88,19 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
         return -1;
     }
 
-    // Convert to const char** array
+    // Convert to const char** and salt arrays
     const char **contacts = NULL;
+    const uint8_t **salts = NULL;
+    uint8_t *salt_storage = NULL;
     if (list->count > 0) {
         contacts = malloc(list->count * sizeof(char*));
-        if (!contacts) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to allocate contacts array\n");
+        salts = (const uint8_t **)calloc(list->count, sizeof(uint8_t*));
+        salt_storage = calloc(list->count, 32);
+        if (!contacts || !salts || !salt_storage) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to allocate contacts/salts arrays\n");
+            free(contacts);
+            free(salts);
+            free(salt_storage);
             contacts_db_free_list(list);
             qgp_key_free(kyber_key);
             qgp_key_free(dilithium_key);
@@ -103,7 +110,16 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
         size_t valid_count = 0;
         for (size_t i = 0; i < list->count; i++) {
             if (is_valid_fingerprint(list->contacts[i].identity)) {
-                contacts[valid_count++] = list->contacts[i].identity;
+                contacts[valid_count] = list->contacts[i].identity;
+                /* Copy salt from contact entry if present */
+                if (list->contacts[i].has_dht_salt) {
+                    memcpy(salt_storage + (valid_count * 32),
+                           list->contacts[i].dht_salt, 32);
+                    salts[valid_count] = salt_storage + (valid_count * 32);
+                } else {
+                    salts[valid_count] = NULL;
+                }
+                valid_count++;
             } else {
                 QGP_LOG_WARN(LOG_TAG, "Skipping invalid fingerprint in local DB (len=%zu)\n",
                              strlen(list->contacts[i].identity));
@@ -113,11 +129,12 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
         list->count = valid_count;
     }
 
-    // Publish to DHT
+    // Publish to DHT (v2 with salts)
     int result = dht_contactlist_publish(
         ctx->identity,
         contacts,
         list->count,
+        salts,
         kyber_key->public_key,
         kyber_key->private_key,
         dilithium_key->public_key,
@@ -129,7 +146,9 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
     size_t contact_count = list->count;
 
     // Cleanup
-    if (contacts) free(contacts);
+    free(contacts);
+    free(salts);
+    free(salt_storage);
     contacts_db_free_list(list);
     qgp_key_free(kyber_key);
     qgp_key_free(dilithium_key);
@@ -200,14 +219,16 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
         }
     }
 
-    // Fetch from DHT
+    // Fetch from DHT (v2 returns salts alongside fingerprints)
     char **contacts = NULL;
+    uint8_t **salts = NULL;
     size_t count = 0;
 
     int result = dht_contactlist_fetch(
         ctx->identity,
         &contacts,
         &count,
+        &salts,
         kyber_key->private_key,
         dilithium_key->public_key
     );
@@ -240,6 +261,7 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     if (local_count < 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to get local contact count\n");
         dht_contactlist_free_contacts(contacts, count);
+        dht_contactlist_free_salts(salts, count);
         return -1;
     }
 
@@ -248,6 +270,7 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     if (count == 0 && local_count > 0) {
         QGP_LOG_WARN(LOG_TAG, "[SYNC] DHT returned 0 contacts but local has %d — publishing local to DHT\n", local_count);
         dht_contactlist_free_contacts(contacts, count);
+        dht_contactlist_free_salts(salts, count);
         return messenger_sync_contacts_to_dht(ctx);
     }
 
@@ -261,12 +284,14 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     if (contacts_db_clear_all() != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to clear local contacts\n");
         dht_contactlist_free_contacts(contacts, count);
+        dht_contactlist_free_salts(salts, count);
         if (local_list) contacts_db_free_list(local_list);
         return -1;
     }
 
-    // Add contacts from DHT
+    // Add contacts from DHT and restore salts
     size_t added = 0;
+    size_t salts_restored = 0;
     for (size_t i = 0; i < count; i++) {
         if (!is_valid_fingerprint(contacts[i])) {
             QGP_LOG_WARN(LOG_TAG, "REPLACE: Skipping invalid fingerprint from DHT (len=%zu)\n",
@@ -275,9 +300,18 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
         }
         if (contacts_db_add(contacts[i], NULL) == 0) {
             added++;
+            /* Restore DHT salt from backup if present */
+            if (salts && salts[i]) {
+                if (contacts_db_set_salt(contacts[i], salts[i]) == 0) {
+                    salts_restored++;
+                }
+            }
         } else {
             QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to add contact '%s'\n", contacts[i]);
         }
+    }
+    if (salts_restored > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Restored %zu DHT salts from backup\n", salts_restored);
     }
 
     // RESTORE NICKNAMES: Re-apply saved nicknames to re-added contacts
@@ -302,9 +336,10 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     if (local_list) contacts_db_free_list(local_list);
 
     dht_contactlist_free_contacts(contacts, count);
+    dht_contactlist_free_salts(salts, count);
 
-    QGP_LOG_INFO(LOG_TAG, "REPLACE sync complete: %zu contacts from DHT (was %d local)\n",
-           added, local_count);
+    QGP_LOG_INFO(LOG_TAG, "REPLACE sync complete: %zu contacts from DHT (was %d local, %zu salts restored)\n",
+           added, local_count, salts_restored);
     return 0;
 }
 
