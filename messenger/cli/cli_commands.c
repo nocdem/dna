@@ -15,6 +15,7 @@
 #include "dht/shared/nodus_init.h"
 #include "dht/shared/dht_gek_storage.h"
 #include "dht/shared/dht_groups.h"
+#include "dht/shared/dht_contact_request.h"
 #include "transport/internal/transport_core.h"
 /* ICE/TURN removed in v0.4.61 for privacy */
 #include "messenger.h"
@@ -1210,6 +1211,49 @@ int cmd_requests(dna_engine_t *engine) {
     }
 
     cli_wait_destroy(&wait);
+    return 0;
+}
+
+int cmd_check_inbox(dna_engine_t *engine, const char *identifier) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    /* Resolve name to fingerprint if needed */
+    char resolved_fp[129] = {0};
+    if (strlen(identifier) == 128) {
+        strncpy(resolved_fp, identifier, 128);
+    } else {
+        printf("Resolving name '%s'...\n", identifier);
+        cli_wait_t lookup_wait;
+        cli_wait_init(&lookup_wait);
+        dna_engine_lookup_name(engine, identifier, on_display_name, &lookup_wait);
+        int lr = cli_wait_for(&lookup_wait);
+        if (lr != 0 || strlen(lookup_wait.display_name) == 0) {
+            printf("Error: Name '%s' not found\n", identifier);
+            cli_wait_destroy(&lookup_wait);
+            return -1;
+        }
+        strncpy(resolved_fp, lookup_wait.display_name, 128);
+        cli_wait_destroy(&lookup_wait);
+        printf("Resolved to: %.16s...\n", resolved_fp);
+    }
+
+    /* Directly call dht_fetch_contact_requests with this fingerprint */
+    printf("Checking inbox for %.16s...\n", resolved_fp);
+    dht_contact_request_t *requests = NULL;
+    size_t count = 0;
+    int rc = dht_fetch_contact_requests(resolved_fp, &requests, &count);
+    printf("dht_fetch_contact_requests: rc=%d count=%zu\n", rc, count);
+
+    for (size_t i = 0; i < count; i++) {
+        printf("  [%zu] from: %.32s... name='%s' msg='%s'\n",
+               i, requests[i].sender_fingerprint,
+               requests[i].sender_name, requests[i].message);
+    }
+
+    if (requests) free(requests);
     return 0;
 }
 
@@ -4515,6 +4559,14 @@ bool execute_command(dna_engine_t *engine, const char *line) {
     }
     else if (strcmp(cmd, "requests") == 0) {
         cmd_requests(engine);
+    }
+    else if (strcmp(cmd, "check-inbox") == 0) {
+        char *id = strtok(NULL, " \t");
+        if (!id) {
+            printf("Usage: check-inbox <name|fingerprint>\n");
+        } else {
+            cmd_check_inbox(engine, id);
+        }
     }
     else if (strcmp(cmd, "approve") == 0) {
         char *fp = strtok(NULL, " \t");

@@ -501,6 +501,14 @@ int main(int argc, char *argv[]) {
     else if (strcmp(command, "requests") == 0) {
         result = cmd_requests(g_engine);
     }
+    else if (strcmp(command, "check-inbox") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'check-inbox' requires <name|fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_check_inbox(g_engine, argv[optind + 1]);
+        }
+    }
     else if (strcmp(command, "approve") == 0) {
         if (optind + 1 >= argc) {
             fprintf(stderr, "Error: 'approve' requires <fingerprint> argument\n");

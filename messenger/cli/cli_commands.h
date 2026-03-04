@@ -182,6 +182,7 @@ int cmd_request(dna_engine_t *engine, const char *fingerprint, const char *messa
  * @return 0 on success, negative on error
  */
 int cmd_requests(dna_engine_t *engine);
+int cmd_check_inbox(dna_engine_t *engine, const char *identifier);
 
 /**
  * Approve a contact request
