@@ -284,6 +284,55 @@ static int cmd_servers(void) {
     return 0;
 }
 
+static int cmd_presence(void) {
+    /* Query presence for our own fingerprint + a random one */
+    nodus_key_t fps[2];
+    memcpy(&fps[0], &identity.node_id, sizeof(nodus_key_t));  /* self (should be online) */
+    memset(&fps[1], 0xDE, sizeof(nodus_key_t));                 /* fake (should be offline) */
+
+    size_t len = 0;
+    uint32_t txn = next_txn++;
+    nodus_t2_presence_query(txn, session_token, fps, 2,
+                              proto_buf, sizeof(proto_buf), &len);
+    nodus_tcp_send(server_conn, proto_buf, len);
+
+    if (!wait_response(5000)) {
+        fprintf(stderr, "No response to presence query\n");
+        return 1;
+    }
+
+    if (last_response.type == 'e') {
+        fprintf(stderr, "pq error: [%d] %s\n",
+                last_response.error_code, last_response.error_msg);
+        return 1;
+    }
+
+    printf("Presence query result: %d online entries\n", last_response.pq_count);
+    for (int i = 0; i < last_response.pq_count; i++) {
+        char hex[NODUS_KEY_HEX_LEN];
+        for (int j = 0; j < NODUS_KEY_BYTES; j++)
+            snprintf(hex + j * 2, 3, "%02x", last_response.pq_fps[i].bytes[j]);
+        printf("  [%d] fp=%.32s... peer=%d online=%s\n",
+               i, hex, last_response.pq_peers[i],
+               last_response.pq_online[i] ? "true" : "false");
+    }
+
+    /* Validate: self should be online */
+    bool self_found = false;
+    for (int i = 0; i < last_response.pq_count; i++) {
+        if (nodus_key_cmp(&last_response.pq_fps[i], &identity.node_id) == 0) {
+            self_found = true;
+            break;
+        }
+    }
+    if (self_found)
+        printf("PASS: self presence confirmed online\n");
+    else
+        printf("FAIL: self not found in presence result\n");
+
+    return self_found ? 0 : 1;
+}
+
 static void cmd_whoami(void) {
     printf("Fingerprint: %s\n", identity.fingerprint);
     printf("Node ID:     ");
@@ -303,6 +352,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  get <key>        Retrieve DHT value\n");
     fprintf(stderr, "  listen <key>     Subscribe to key changes\n");
     fprintf(stderr, "  servers          List cluster servers\n");
+    fprintf(stderr, "  presence         Test presence query (self + fake)\n");
 }
 
 /* ── Main ────────────────────────────────────────────────────────── */
@@ -421,6 +471,8 @@ int main(int argc, char **argv) {
         } else {
             rc = cmd_get(argv[optind + 1]);
         }
+    } else if (strcmp(command, "presence") == 0) {
+        rc = cmd_presence();
     } else if (strcmp(command, "listen") == 0) {
         if (optind + 1 >= argc) {
             fprintf(stderr, "Usage: listen <key>\n");
