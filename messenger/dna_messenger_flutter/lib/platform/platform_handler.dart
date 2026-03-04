@@ -23,25 +23,16 @@ abstract class PlatformHandler {
     return _instance!;
   }
 
-  /// Called BEFORE creating engine when app comes to foreground
-  ///
-  /// Android: Notify service to release its engine (releases DHT lock)
-  /// Desktop: No-op
-  Future<void> onResumePreEngine();
-
   /// Called when app comes to foreground (resumed)
   ///
-  /// Android: Re-attach Flutter event callback, fetch offline messages
+  /// Android: Re-attach Flutter event callback, clear notifications, fetch offline messages
   /// Desktop: No-op (callback stays attached)
   Future<void> onResume(DnaEngine engine);
 
-  /// Called AFTER engine is disposed when app goes to background (paused)
+  /// Called AFTER engine is paused when app goes to background
   ///
-  /// Android: Notify service that Flutter is paused (service takes over)
+  /// Android: Notify service that Flutter is paused (service is keep-alive only)
   /// Desktop: No-op
-  ///
-  /// v0.100.83+: Changed from onPause(engine) to onPauseComplete() - called
-  /// AFTER engine dispose to ensure DHT lock is released before service starts.
   void onPauseComplete();
 
   /// Called when outbox has new messages from specific contacts

@@ -1,6 +1,6 @@
 // Android Platform Handler - Android-specific behavior
-// Phase 14: DHT-only messaging with ForegroundService
-// v0.100.82+: Engine destroyed on pause, fresh engine created on resume (mobile only)
+// v0.101.25+: Engine stays alive in background (pause/resume pattern)
+// ForegroundService is just a process keep-alive — no engine management
 
 import '../../ffi/dna_engine.dart';
 import '../platform_handler.dart';
@@ -8,40 +8,31 @@ import 'foreground_service.dart';
 
 /// Android-specific platform handler
 ///
-/// Android differences from Desktop:
-/// - ForegroundService takes over when Flutter is backgrounded (has its own minimal engine)
-/// - JNI notification helper handles background notifications
-/// - v0.100.82+: Engine destroyed on pause, fresh engine created on resume
-///   (lifecycle_observer handles destroy/create, this handler does service coordination)
+/// v0.101.25+: Engine stays alive when backgrounded (pause/resume).
+/// ForegroundService keeps the process alive but does NOT manage its own engine.
+/// Background notifications come via JNI callback (g_android_notification_cb).
 class AndroidPlatformHandler implements PlatformHandler {
   @override
-  Future<void> onResumePreEngine() async {
-    // Tell service Flutter is active BEFORE creating engine
-    // Service releases its engine (and DHT lock) so Flutter can create new one
-    await ForegroundServiceManager.setFlutterActive(true);
-  }
-
-  @override
   Future<void> onResume(DnaEngine engine) async {
-    // Attach callback (engine is freshly created)
+    // Clear background notifications when user opens the app
+    await ForegroundServiceManager.clearNotifications();
+
+    // Attach Dart event callback (replaces JNI notification routing)
     engine.attachEventCallback();
 
-    // Fetch any messages that arrived while backgrounded
+    // Fetch any messages that arrived between pause and listener re-registration
     await engine.checkOfflineMessages();
   }
 
   @override
   void onPauseComplete() {
-    // v0.100.83+: Called AFTER engine dispose (DHT lock released)
-    // Tell service to take over (handles notifications while Flutter is paused)
-    // Service loads identity in minimal mode (polling only, no listeners)
-    ForegroundServiceManager.setFlutterActive(false);
+    // Signal service that Flutter is paused (for notification clearing logic only)
+    ForegroundServiceManager.setFlutterPaused(true);
   }
 
   @override
   Future<void> onOutboxUpdated(DnaEngine engine, Set<String> contactFingerprints) async {
     // Fetch messages only from contacts whose outboxes triggered the event.
-    // Much faster than checkOfflineMessages() which checks ALL contacts.
     for (final fp in contactFingerprints) {
       await engine.checkOfflineMessagesFrom(fp);
     }

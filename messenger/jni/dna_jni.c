@@ -871,60 +871,6 @@ static void jni_contact_request_callback(const char *user_fingerprint, const cha
  * Called when DHT reconnects after network change (for foreground service)
  * ============================================================================ */
 
-/* g_reconnect_helper declared in GLOBAL STATE section at top of file */
-
-/**
- * Native callback invoked by dna_engine when DHT reconnects after network change.
- * Calls the Java DnaMessengerService.onDhtReconnected() method.
- *
- * This allows the foreground service to recreate MINIMAL listeners after
- * network changes, instead of having the engine create FULL listeners.
- */
-static void jni_reconnect_callback(void *user_data) {
-    (void)user_data;
-
-    /* CRITICAL: Check g_jvm first - if NULL, JVM is shutting down */
-    if (!g_jvm) {
-        return;  /* Silent return - JVM shutdown in progress */
-    }
-
-    if (!g_reconnect_helper) {
-        LOGD("Reconnect callback: no helper registered");
-        return;
-    }
-
-    int did_attach = 0;
-    JNIEnv *env = get_env(&did_attach);
-    if (!env) {
-        LOGE("Failed to get JNIEnv for reconnect callback");
-        return;
-    }
-
-    LOGI("[RECONNECT] Calling Java DnaMessengerService.onDhtReconnected()");
-
-    jclass cls = (*env)->GetObjectClass(env, g_reconnect_helper);
-    if (!cls) {
-        LOGE("Failed to get reconnect helper class");
-        release_env(did_attach);
-        return;
-    }
-
-    jmethodID method = (*env)->GetMethodID(env, cls, "onDhtReconnected", "()V");
-    if (!method) {
-        (*env)->ExceptionClear(env);
-        LOGE("Failed to get onDhtReconnected method");
-        (*env)->DeleteLocalRef(env, cls);
-        release_env(did_attach);
-        return;
-    }
-
-    (*env)->CallVoidMethod(env, g_reconnect_helper, method);
-    (*env)->DeleteLocalRef(env, cls);
-
-    LOGI("[RECONNECT] Java helper called successfully");
-    release_env(did_attach);
-}
-
 /* ============================================================================
  * JNI NATIVE METHODS
  * ============================================================================ */
@@ -1427,23 +1373,15 @@ Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReinitDht(JNIEnv *env, jo
 }
 
 /**
- * Check if DHT is healthy (initialized, connected, and has active listeners).
- * Used by foreground service for periodic health checks.
+ * Check if Flutter's engine is alive (g_engine != NULL).
+ * Used by service to detect if OS killed the process and engine is gone.
  */
 JNIEXPORT jboolean JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeIsDhtHealthy(JNIEnv *env, jobject thiz) {
-    if (!nodus_messenger_is_initialized()) {
-        return JNI_FALSE;
-    }
-    if (!nodus_messenger_is_ready()) {
-        return JNI_FALSE;
-    }
-
-    /* Also check if we have active listeners */
-    size_t active = nodus_ops_listen_count();
-    LOGD("Nodus health: ready=true, active_listeners=%zu", active);
-
-    return JNI_TRUE;
+Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeIsEngineAlive(JNIEnv *env, jobject thiz) {
+    pthread_mutex_lock(&g_engine_mutex);
+    jboolean alive = g_engine ? JNI_TRUE : JNI_FALSE;
+    pthread_mutex_unlock(&g_engine_mutex);
+    return alive;
 }
 
 /**
@@ -1503,266 +1441,75 @@ static void sync_load_callback(dna_request_id_t id, int error, void *user_data) 
 }
 
 /**
- * Load identity with minimal initialization - synchronous version (v0.5.24+)
- * Used by DnaMessengerService when it starts without Flutter.
- * Performs minimal initialization (DHT + listeners only) to save resources.
- * Skips: transport, presence heartbeat, wallet creation, pending message retry.
+ * Load identity with FULL initialization - synchronous version (v0.101.25+)
+ * Used by DnaMessengerService fallback when OS kills the process.
+ * Full load sets up TCP listeners + presence so the engine gets instant push
+ * notifications via the JNI notification callback (g_android_notification_cb).
  * Returns: 0 on success, negative on error
  */
 JNIEXPORT jint JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeLoadIdentityMinimalSync(JNIEnv *env, jobject thiz, jstring fingerprint) {
+Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeLoadIdentitySync(JNIEnv *env, jobject thiz, jstring fingerprint) {
     if (!g_engine || !fingerprint) {
-        LOGE("nativeLoadIdentityMinimalSync: engine or fingerprint is NULL");
+        LOGE("nativeLoadIdentitySync: engine or fingerprint is NULL");
         return -1;
     }
 
     const char *fp = (*env)->GetStringUTFChars(env, fingerprint, NULL);
     if (!fp) {
-        LOGE("nativeLoadIdentityMinimalSync: failed to get fingerprint string");
+        LOGE("nativeLoadIdentitySync: failed to get fingerprint string");
         return -2;
     }
 
-    LOGI("nativeLoadIdentityMinimalSync: Loading identity (minimal): %.16s...", fp);
+    LOGI("nativeLoadIdentitySync: Loading identity (full): %.16s...", fp);
 
     /* Synchronous wrapper using callback context */
     sync_load_ctx_t ctx = { .result = -100, .done = false };
 
-    dna_request_id_t req_id = dna_engine_load_identity_minimal(
+    /* Full load (not minimal) — sets up TCP listeners for instant push */
+    dna_request_id_t req_id = dna_engine_load_identity(
         g_engine, fp, NULL, sync_load_callback, &ctx);
 
     (*env)->ReleaseStringUTFChars(env, fingerprint, fp);
 
     if (req_id == 0) {
-        LOGE("nativeLoadIdentityMinimalSync: Failed to submit request");
+        LOGE("nativeLoadIdentitySync: Failed to submit request");
         return -3;
     }
 
-    /* Wait for completion (with timeout)
-     * v0.6.116: Also check shutdown_requested so we abort quickly when Flutter resumes */
+    /* Wait for completion (30s timeout) */
     int wait_count = 0;
-    int shutdown = 0;
     while (!ctx.done && wait_count < 300) {  /* 30 second timeout */
         usleep(100000);  /* 100ms */
         wait_count++;
-
-        /* Check if shutdown was requested (Flutter taking over) */
-        pthread_mutex_lock(&g_engine_mutex);
-        if (g_engine && dna_engine_is_shutdown_requested(g_engine)) {
-            shutdown = 1;
-        }
-        pthread_mutex_unlock(&g_engine_mutex);
-        if (shutdown) {
-            LOGI("nativeLoadIdentityMinimalSync: Aborting - shutdown requested");
-            break;
-        }
-    }
-
-    if (shutdown) {
-        return -5;  /* Aborted due to shutdown */
     }
 
     if (!ctx.done) {
-        LOGE("nativeLoadIdentityMinimalSync: Timeout waiting for identity load");
+        LOGE("nativeLoadIdentitySync: Timeout waiting for identity load");
         return -4;
     }
 
     if (ctx.result == 0) {
-        LOGI("nativeLoadIdentityMinimalSync: Identity loaded (minimal mode) - notifications active");
+        LOGI("nativeLoadIdentitySync: Identity loaded (full mode) - TCP listeners active");
     } else {
-        LOGE("nativeLoadIdentityMinimalSync: Identity load failed: %d", ctx.result);
+        LOGE("nativeLoadIdentitySync: Identity load failed: %d", ctx.result);
     }
 
     return ctx.result;
 }
 
-/* ============================================================================
- * v0.6.0+: IDENTITY LOCK / SERVICE ENGINE MANAGEMENT
- * ============================================================================ */
-
 /**
- * Check if identity lock is held by another process (v0.6.0+)
- *
- * The identity lock prevents both Flutter and Service from loading identity
- * simultaneously. Service can use this to check if Flutter has the lock.
- *
- * Returns: JNI_TRUE if lock is held (don't try to load), JNI_FALSE if available
- */
-JNIEXPORT jboolean JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeIsIdentityLocked(JNIEnv *env, jobject thiz, jstring data_dir) {
-    if (!data_dir) {
-        LOGE("nativeIsIdentityLocked: data_dir is NULL");
-        return JNI_FALSE;
-    }
-
-    const char *dir = (*env)->GetStringUTFChars(env, data_dir, NULL);
-    if (!dir) {
-        return JNI_FALSE;
-    }
-
-    int is_locked = qgp_platform_is_identity_locked(dir);
-    (*env)->ReleaseStringUTFChars(env, data_dir, dir);
-
-    LOGI("nativeIsIdentityLocked: %s", is_locked ? "YES (Flutter has lock)" : "NO (available)");
-    return is_locked ? JNI_TRUE : JNI_FALSE;
-}
-
-/**
- * Check if DHT is ready (has at least 1 peer in routing table).
- * Same check as CLI's wait_for_dht() uses.
- * Returns: JNI_TRUE if DHT is connected and ready, JNI_FALSE otherwise.
- */
-JNIEXPORT jboolean JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeDhtIsReady(JNIEnv *env, jobject thiz) {
-    return nodus_messenger_is_ready() ? JNI_TRUE : JNI_FALSE;
-}
-
-/**
- * Release service's engine (v0.6.0+)
- *
- * Called when Flutter becomes active and wants to take over.
- * Service should call this to release its engine and identity lock.
+ * Pause the engine (v0.101.25+)
+ * Stops presence heartbeat but keeps TCP + listeners alive.
+ * Used by fallback restore so user doesn't appear "online" after swipe.
  */
 JNIEXPORT void JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReleaseEngine(JNIEnv *env, jobject thiz) {
-    /* v0.6.40: mutex-protected g_engine access */
+Java_io_cpunk_dna_1messenger_DnaMessengerService_nativePauseEngine(JNIEnv *env, jobject thiz) {
     pthread_mutex_lock(&g_engine_mutex);
     if (g_engine) {
-        dna_engine_t *engine = g_engine;
-        g_engine = NULL;  /* Clear first to prevent use during destroy */
-        pthread_mutex_unlock(&g_engine_mutex);
-        LOGI("nativeReleaseEngine: Releasing service engine for Flutter takeover");
-        dna_engine_destroy(engine);
-        LOGI("nativeReleaseEngine: Engine released, identity lock freed");
-    } else {
-        pthread_mutex_unlock(&g_engine_mutex);
-        LOGI("nativeReleaseEngine: No engine to release");
-    }
-}
-
-/**
- * Request engine shutdown without destroying (v0.6.115+)
- *
- * Sets the shutdown_requested flag to make ongoing operations abort early.
- * Call this BEFORE acquiring engineLock so that nativeCheckOfflineMessages()
- * aborts quickly and releases the lock.
- *
- * This is the CORE fix for the freeze/crash on app resume issue.
- * Previously, setFlutterActive(true) would wait for ongoing DHT operations
- * to complete (2-5+ seconds). Now they abort immediately.
- */
-JNIEXPORT void JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeRequestShutdown(JNIEnv *env, jobject thiz) {
-    pthread_mutex_lock(&g_engine_mutex);
-    if (g_engine) {
-        LOGI("nativeRequestShutdown: Signaling ongoing operations to abort");
-        dna_engine_request_shutdown(g_engine);
-    } else {
-        LOGI("nativeRequestShutdown: No engine to signal");
+        dna_engine_pause(g_engine);
+        LOGI("nativePauseEngine: Engine paused (presence stopped, listeners active)");
     }
     pthread_mutex_unlock(&g_engine_mutex);
-}
-
-/**
- * Set the DHT reconnect helper (v0.6.8+)
- *
- * The helper object must implement onDhtReconnected().
- * This is called when DHT reconnects after network change, allowing the
- * foreground service to trigger an immediate message poll.
- *
- * @param helper The helper object (typically DnaMessengerService), or NULL to disable
- */
-JNIEXPORT void JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeSetReconnectHelper(JNIEnv *env, jobject thiz, jobject helper) {
-    LOGI("Setting reconnect helper: %p", helper);
-
-    /* Clear existing helper */
-    if (g_reconnect_helper) {
-        (*env)->DeleteGlobalRef(env, g_reconnect_helper);
-        g_reconnect_helper = NULL;
-        dna_engine_set_android_reconnect_callback(NULL, NULL);
-    }
-
-    /* Set new helper */
-    if (helper) {
-        g_reconnect_helper = (*env)->NewGlobalRef(env, helper);
-        dna_engine_set_android_reconnect_callback(jni_reconnect_callback, NULL);
-        LOGI("Reconnect helper registered - service will handle DHT reconnection");
-    } else {
-        LOGI("Reconnect helper cleared - engine will handle DHT reconnection");
-    }
-}
-
-/**
- * Check all contacts' outboxes for offline messages (v0.100.20+)
- *
- * Synchronous polling function for battery-optimized background service.
- * Replaces continuous DHT listeners with periodic polling every 5 minutes.
- *
- * @return Number of new messages fetched, or negative on error
- */
-JNIEXPORT jint JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeCheckOfflineMessages(JNIEnv *env, jobject thiz) {
-    if (!g_engine) {
-        LOGE("nativeCheckOfflineMessages: No engine available");
-        return -1;
-    }
-
-    if (!dna_engine_is_identity_loaded(g_engine)) {
-        LOGE("nativeCheckOfflineMessages: Identity not loaded");
-        return -2;
-    }
-
-    LOGI("nativeCheckOfflineMessages: Caching messages from all contacts (no watermarks)...");
-
-    /* Synchronous wrapper using callback context.
-     * Use _cached variant: messages are being cached by background service,
-     * NOT read by user yet. Watermarks would incorrectly mark as "delivered". */
-    sync_load_ctx_t ctx = { .result = -100, .done = false };
-
-    dna_request_id_t req_id = dna_engine_check_offline_messages_cached(
-        g_engine, sync_load_callback, &ctx);
-
-    if (req_id == 0) {
-        LOGE("nativeCheckOfflineMessages: Failed to submit request");
-        return -3;
-    }
-
-    /* Wait for completion (with timeout)
-     * v0.6.116: Also check shutdown_requested so we abort quickly when Flutter resumes */
-    int wait_count = 0;
-    int shutdown = 0;
-    while (!ctx.done && wait_count < 300) {  /* 30 second timeout */
-        usleep(100000);  /* 100ms */
-        wait_count++;
-
-        /* Check if shutdown was requested (Flutter taking over) */
-        pthread_mutex_lock(&g_engine_mutex);
-        if (g_engine && dna_engine_is_shutdown_requested(g_engine)) {
-            shutdown = 1;
-        }
-        pthread_mutex_unlock(&g_engine_mutex);
-        if (shutdown) {
-            LOGI("nativeCheckOfflineMessages: Aborting - shutdown requested");
-            break;
-        }
-    }
-
-    if (shutdown) {
-        return -5;  /* Aborted due to shutdown */
-    }
-
-    if (!ctx.done) {
-        LOGE("nativeCheckOfflineMessages: Timeout waiting for check");
-        return -4;
-    }
-
-    if (ctx.result == 0) {
-        LOGI("nativeCheckOfflineMessages: Caching completed (watermarks deferred until user reads)");
-    } else {
-        LOGE("nativeCheckOfflineMessages: Caching failed: %d", ctx.result);
-    }
-
-    return ctx.result;
 }
 
 /**

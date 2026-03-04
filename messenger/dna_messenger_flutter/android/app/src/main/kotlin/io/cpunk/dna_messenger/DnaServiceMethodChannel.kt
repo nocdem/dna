@@ -2,7 +2,6 @@ package io.cpunk.dna_messenger
 
 import android.Manifest
 import android.app.Activity
-import android.app.AlarmManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -15,14 +14,8 @@ import io.flutter.plugin.common.MethodChannel
 /**
  * MethodChannel handler for DNA Messenger ForegroundService
  *
- * Provides Flutter communication with the native service:
- * - startService: Start the foreground service
- * - stopService: Stop the foreground service
- * - isServiceRunning: Check if service is running
- * - pollNow: Trigger immediate offline message poll
- * - setPollInterval: Set poll interval in minutes (v0.100.64+)
- *
- * Phase 14: Android background execution for reliable DHT-only messaging.
+ * v0.101.25+: Simplified — service is process keep-alive only.
+ * No polling, no engine management. Notifications via JNI callback.
  */
 class DnaServiceMethodChannel(
     private val activity: Activity,
@@ -53,31 +46,19 @@ class DnaServiceMethodChannel(
                 "isServiceRunning" -> {
                     result.success(DnaMessengerService.isServiceRunning())
                 }
-                "pollNow" -> {
-                    pollNow()
-                    result.success(true)
-                }
                 "requestNotificationPermission" -> {
                     requestNotificationPermission(result)
                 }
                 "hasNotificationPermission" -> {
                     result.success(hasNotificationPermission())
                 }
-                "setFlutterActive" -> {
-                    val active = call.argument<Boolean>("active") ?: false
-                    setFlutterActive(active)
+                "clearNotifications" -> {
+                    MainActivity.notificationHelper?.clearNotifications()
                     result.success(null)
                 }
-                "canScheduleExactAlarms" -> {
-                    result.success(canScheduleExactAlarms())
-                }
-                "requestExactAlarmPermission" -> {
-                    requestExactAlarmPermission()
-                    result.success(null)
-                }
-                "setPollInterval" -> {
-                    val minutes = call.argument<Int>("minutes") ?: 5
-                    setPollInterval(minutes)
+                "setFlutterPaused" -> {
+                    val paused = call.argument<Boolean>("paused") ?: false
+                    DnaMessengerService.setFlutterPaused(paused)
                     result.success(null)
                 }
                 else -> {
@@ -97,7 +78,6 @@ class DnaServiceMethodChannel(
                 Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
         } else {
-            // Pre-Android 13 doesn't need explicit permission
             true
         }
     }
@@ -118,7 +98,6 @@ class DnaServiceMethodChannel(
                 )
             }
         } else {
-            // Pre-Android 13 doesn't need explicit permission
             result.success(true)
         }
     }
@@ -154,75 +133,11 @@ class DnaServiceMethodChannel(
         context.startService(intent)
     }
 
-    private fun pollNow() {
-        android.util.Log.i(TAG, "Requesting immediate poll")
-        val intent = Intent(context, DnaMessengerService::class.java).apply {
-            action = "POLL_NOW"
-        }
-        context.startService(intent)
-    }
-
-    private fun setFlutterActive(active: Boolean) {
-        android.util.Log.i(TAG, "Setting Flutter active: $active")
-        DnaMessengerService.setFlutterActive(active)
-    }
-
-    /**
-     * Set poll interval in minutes (v0.100.64+)
-     */
-    private fun setPollInterval(minutes: Int) {
-        android.util.Log.i(TAG, "Setting poll interval: $minutes minutes")
-        DnaMessengerService.setPollInterval(minutes)
-    }
-
-    /**
-     * Check if exact alarms can be scheduled (Android 12+)
-     * Returns true on older Android versions or if permission is granted
-     */
-    private fun canScheduleExactAlarms(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            alarmManager.canScheduleExactAlarms()
-        } else {
-            true
-        }
-    }
-
-    /**
-     * Request exact alarm permission (Android 12+)
-     * Opens system settings - user must manually enable
-     */
-    private fun requestExactAlarmPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            try {
-                val intent = Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                context.startActivity(intent)
-            } catch (e: Exception) {
-                android.util.Log.w(TAG, "Could not open alarm settings: ${e.message}")
-            }
-        }
-    }
-
-    /**
-     * Notify Flutter about new messages received in background
-     * Call this from service when messages are detected
-     */
-    fun notifyNewMessages(count: Int, senderName: String?) {
-        android.util.Log.i(TAG, "Notifying Flutter: $count new messages from $senderName")
-        channel.invokeMethod("onNewMessages", mapOf(
-            "count" to count,
-            "senderName" to senderName
-        ))
-    }
-
     /**
      * Notify Flutter about network connectivity change
-     * Call this when network changes (WiFi <-> Cellular) to trigger DHT reinit
      */
     fun notifyNetworkChanged() {
-        android.util.Log.i(TAG, "Notifying Flutter: network changed, DHT reinit needed")
+        android.util.Log.i(TAG, "Notifying Flutter: network changed")
         channel.invokeMethod("onNetworkChanged", null)
     }
 }
