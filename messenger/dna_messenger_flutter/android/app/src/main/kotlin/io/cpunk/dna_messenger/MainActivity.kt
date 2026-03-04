@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -64,15 +65,6 @@ class MainActivity : FlutterFragmentActivity() {
 
     private var serviceChannel: DnaServiceMethodChannel? = null
 
-    // Broadcast receiver for service poll requests
-    private val messageReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            android.util.Log.d("MainActivity", "Received poll broadcast from service")
-            // The service is requesting a poll - Flutter handles this via MethodChannel callback
-            serviceChannel?.notifyNewMessages(0, null) // Trigger refresh
-        }
-    }
-
     // Broadcast receiver for network change notifications
     private val networkReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -85,11 +77,8 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // CRITICAL: Tell service Flutter is active IMMEDIATELY
-        // This prevents the service from loading identity before Flutter registers its callback.
-        // Without this, the service owns the DHT context and all events go to /dev/null.
-        DnaMessengerService.setFlutterActive(true)
-        android.util.Log.i(TAG, "Flutter active set to true (prevents service from stealing DHT)")
+        // Tell service Flutter is not paused (it's starting up)
+        DnaMessengerService.setFlutterPaused(false)
 
         // Initialize notification helper EARLY - before DHT connects
         // This ensures we catch all DHT events from the very beginning
@@ -106,15 +95,12 @@ class MainActivity : FlutterFragmentActivity() {
         // Ask early so user doesn't get interrupted when opening QR tab
         requestCameraPermissionIfNeeded()
 
-        // Register broadcast receiver for service messages
-        val pollFilter = IntentFilter("io.cpunk.dna_messenger.POLL_MESSAGES")
+        // Register broadcast receiver for network change notifications
         val networkFilter = IntentFilter("io.cpunk.dna_messenger.NETWORK_CHANGED")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(messageReceiver, pollFilter, Context.RECEIVER_NOT_EXPORTED)
             registerReceiver(networkReceiver, networkFilter, Context.RECEIVER_NOT_EXPORTED)
         } else {
-            registerReceiver(messageReceiver, pollFilter)
             registerReceiver(networkReceiver, networkFilter)
         }
     }
@@ -197,9 +183,8 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onDestroy() {
         android.util.Log.i(TAG, "onDestroy: cleaning up")
 
-        // Tell service Flutter is no longer active - service should take over DHT
-        DnaMessengerService.setFlutterActive(false)
-        android.util.Log.i(TAG, "Flutter active set to false - service can take over")
+        // Tell service Flutter is paused
+        DnaMessengerService.setFlutterPaused(true)
 
         // Only clean up notification helper if the background service is NOT running.
         // The service needs the JNI notification callback (g_android_notification_cb)
@@ -212,10 +197,9 @@ class MainActivity : FlutterFragmentActivity() {
         }
 
         try {
-            unregisterReceiver(messageReceiver)
             unregisterReceiver(networkReceiver)
         } catch (e: Exception) {
-            // Receivers may not be registered
+            // Receiver may not be registered
         }
         super.onDestroy()
     }
