@@ -251,60 +251,28 @@ int messenger_generate_keys_from_seeds(
     }
     memcpy(kyber_pubkey_copy, enc_key->public_key, enc_key->public_key_size);
 
-    // Create DHT identity from master seed (deterministic - same seed = same DHT identity)
-    // This eliminates the need for DHT identity backup - just derive from BIP39 seed
-    if (master_seed) {
-        printf("[DHT Identity] Deriving deterministic DHT identity from master seed...\n");
-
-        // Derive dht_seed = SHA3-512(master_seed + "dht_identity")[0:32]
-        // Use SHA3-512 truncated to 32 bytes (cryptographically sound)
-        uint8_t dht_seed[32];
-        uint8_t full_hash[64];
-        uint8_t seed_input[64 + 12];  // 64-byte master_seed + "dht_identity" (12 bytes)
-        memcpy(seed_input, master_seed, 64);
-        memcpy(seed_input + 64, "dht_identity", 12);
-
-        if (qgp_sha3_512(seed_input, sizeof(seed_input), full_hash) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to derive DHT seed from master seed");
+    // Create nodus identity from signing_seed (same key as messenger identity)
+    {
+        nodus_identity_t nid;
+        if (nodus_identity_from_seed(signing_seed, &nid) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "Failed to create nodus identity");
         } else {
-            // Truncate to 32 bytes for DHT seed
-            memcpy(dht_seed, full_hash, 32);
-            qgp_secure_memzero(full_hash, sizeof(full_hash));
-
-            // Generate DHT identity deterministically from derived seed
-            nodus_identity_t nid;
-            if (nodus_identity_from_seed(dht_seed, &nid) != 0) {
-                QGP_LOG_WARN(LOG_TAG, "Failed to create deterministic DHT identity");
-            } else {
-                printf("[DHT Identity] ✓ Deterministic DHT identity derived from master seed\n");
-                printf("[DHT Identity] ✓ Same seed will always produce same DHT identity\n");
-
-                // Export and save DHT identity locally for faster loading
-                // v0.3.0: Flat structure - dht_identity.bin in root data dir
-                uint8_t *dht_id_buffer = NULL;
-                size_t dht_id_size = 0;
-                if (nodus_identity_export(&nid, &dht_id_buffer, &dht_id_size) == 0) {
-                    char dht_id_path[512];
-                    snprintf(dht_id_path, sizeof(dht_id_path), "%s/dht_identity.bin", data_dir);
-                    FILE *f = fopen(dht_id_path, "wb");
-                    if (f) {
-                        fwrite(dht_id_buffer, 1, dht_id_size, f);
-                        fclose(f);
-                        QGP_LOG_INFO(LOG_TAG, "DHT identity saved to %s", dht_id_path);
-                    }
-                    free(dht_id_buffer);
+            // Export and save for faster loading on next startup
+            uint8_t *dht_id_buffer = NULL;
+            size_t dht_id_size = 0;
+            if (nodus_identity_export(&nid, &dht_id_buffer, &dht_id_size) == 0) {
+                char dht_id_path[512];
+                snprintf(dht_id_path, sizeof(dht_id_path), "%s/dht_identity.bin", data_dir);
+                FILE *f = fopen(dht_id_path, "wb");
+                if (f) {
+                    fwrite(dht_id_buffer, 1, dht_id_size, f);
+                    fclose(f);
+                    QGP_LOG_INFO(LOG_TAG, "Nodus identity saved to %s", dht_id_path);
                 }
-
-                nodus_identity_clear(&nid);
+                free(dht_id_buffer);
             }
-
-            // Securely wipe seed data
-            qgp_secure_memzero(dht_seed, sizeof(dht_seed));
-            qgp_secure_memzero(seed_input, sizeof(seed_input));
+            nodus_identity_clear(&nid);
         }
-    } else {
-        QGP_LOG_WARN(LOG_TAG, "No master_seed provided - DHT identity not created");
-        QGP_LOG_WARN(LOG_TAG, "DHT operations will use random identity (not recoverable)");
     }
 
     // NOTE: DHT publishing is now done via dht_keyserver_publish() with a name

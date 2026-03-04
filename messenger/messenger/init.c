@@ -115,41 +115,23 @@ int messenger_prepare_dht_from_mnemonic(const char *mnemonic) {
 
     QGP_LOG_INFO(LOG_TAG_DHT, "Preparing DHT connection from mnemonic...");
 
-    // Convert mnemonic to master seed
-    uint8_t master_seed[64];
-    if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
-        QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to convert mnemonic to master seed");
+    // Derive signing_seed from mnemonic (same seed as messenger identity)
+    uint8_t signing_seed[32];
+    uint8_t encryption_seed[32];
+    if (qgp_derive_seeds_from_mnemonic(mnemonic, "", signing_seed, encryption_seed) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to derive signing seed from mnemonic");
         return -1;
     }
+    qgp_secure_memzero(encryption_seed, sizeof(encryption_seed));
 
-    // Derive dht_seed = SHA3-512(master_seed + "dht_identity")[0:32]
-    uint8_t dht_seed[32];
-    uint8_t full_hash[64];
-    uint8_t seed_input[64 + 12];
-    memcpy(seed_input, master_seed, 64);
-    memcpy(seed_input + 64, "dht_identity", 12);
-    qgp_secure_memzero(master_seed, sizeof(master_seed));
-
-    if (qgp_sha3_512(seed_input, sizeof(seed_input), full_hash) != 0) {
-        QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to derive DHT seed");
-        qgp_secure_memzero(seed_input, sizeof(seed_input));
-        return -1;
-    }
-    qgp_secure_memzero(seed_input, sizeof(seed_input));
-
-    memcpy(dht_seed, full_hash, 32);
-    qgp_secure_memzero(full_hash, sizeof(full_hash));
-
-    // Generate DHT identity from derived seed
+    // Nodus identity = messenger identity (same signing seed)
     nodus_identity_t nid;
-    if (nodus_identity_from_seed(dht_seed, &nid) != 0) {
-        QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to generate DHT identity from seed");
-        qgp_secure_memzero(dht_seed, sizeof(dht_seed));
+    if (nodus_identity_from_seed(signing_seed, &nid) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to generate nodus identity from signing seed");
+        qgp_secure_memzero(signing_seed, sizeof(signing_seed));
         return -1;
     }
-    qgp_secure_memzero(dht_seed, sizeof(dht_seed));
-
-    QGP_LOG_INFO(LOG_TAG_DHT, "Derived DHT identity from mnemonic (early preparation)");
+    qgp_secure_memzero(signing_seed, sizeof(signing_seed));
 
     // Cleanup any existing connection
     nodus_messenger_close();
@@ -418,8 +400,15 @@ int messenger_load_dht_identity(const char *fingerprint) {
         uint8_t *buffer = malloc(file_size);
         if (buffer && fread(buffer, 1, file_size, f) == file_size) {
             if (nodus_identity_import(buffer, file_size, &nid) == 0) {
-                QGP_LOG_INFO(LOG_TAG_DHT, "Loaded from cached dht_identity.bin");
-                nid_loaded = true;
+                // Verify cached identity matches messenger fingerprint
+                if (fingerprint && strncmp(nid.fingerprint, fingerprint, 128) != 0) {
+                    QGP_LOG_WARN(LOG_TAG_DHT, "Cached identity mismatch, regenerating");
+                    nodus_identity_clear(&nid);
+                    remove(dht_id_path);
+                } else {
+                    QGP_LOG_INFO(LOG_TAG_DHT, "Loaded from cached dht_identity.bin");
+                    nid_loaded = true;
+                }
             }
             free(buffer);
         }
@@ -454,45 +443,25 @@ int messenger_load_dht_identity(const char *fingerprint) {
 
         qgp_key_free(kyber_key);
 
-        // Convert mnemonic to master seed
-        uint8_t master_seed[64];
-        if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
-            QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to convert mnemonic to master seed");
+        // Derive signing_seed from mnemonic (same seed as messenger identity)
+        uint8_t signing_seed[32];
+        uint8_t encryption_seed[32];
+        if (qgp_derive_seeds_from_mnemonic(mnemonic, "", signing_seed, encryption_seed) != 0) {
+            QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to derive signing seed from mnemonic");
             qgp_secure_memzero(mnemonic, sizeof(mnemonic));
             return -1;
         }
         qgp_secure_memzero(mnemonic, sizeof(mnemonic));
+        qgp_secure_memzero(encryption_seed, sizeof(encryption_seed));
 
-        // Derive dht_seed = SHA3-512(master_seed + "dht_identity")[0:32]
-        // Use SHA3-512 truncated to 32 bytes (cryptographically sound)
-        uint8_t dht_seed[32];
-        uint8_t full_hash[64];
-        uint8_t seed_input[64 + 12];  // 64-byte master_seed + "dht_identity" (12 bytes)
-        memcpy(seed_input, master_seed, 64);
-        memcpy(seed_input + 64, "dht_identity", 12);
-        qgp_secure_memzero(master_seed, sizeof(master_seed));
-
-        if (qgp_sha3_512(seed_input, sizeof(seed_input), full_hash) != 0) {
-            QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to derive DHT seed");
-            qgp_secure_memzero(seed_input, sizeof(seed_input));
+        // Nodus identity = messenger identity (same signing seed)
+        if (nodus_identity_from_seed(signing_seed, &nid) != 0) {
+            QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to generate nodus identity from signing seed");
+            qgp_secure_memzero(signing_seed, sizeof(signing_seed));
             return -1;
         }
-        qgp_secure_memzero(seed_input, sizeof(seed_input));
-
-        // Truncate to 32 bytes for DHT seed
-        memcpy(dht_seed, full_hash, 32);
-        qgp_secure_memzero(full_hash, sizeof(full_hash));
-
-        // Generate DHT identity from derived seed
-        if (nodus_identity_from_seed(dht_seed, &nid) != 0) {
-            QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to generate DHT identity from seed");
-            qgp_secure_memzero(dht_seed, sizeof(dht_seed));
-            return -1;
-        }
-        qgp_secure_memzero(dht_seed, sizeof(dht_seed));
+        qgp_secure_memzero(signing_seed, sizeof(signing_seed));
         nid_loaded = true;
-
-        QGP_LOG_INFO(LOG_TAG_DHT, "Derived DHT identity from mnemonic (deterministic)");
 
         // Cache for next time
         uint8_t *dht_id_buffer = NULL;
