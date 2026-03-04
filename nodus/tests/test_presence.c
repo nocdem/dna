@@ -95,7 +95,7 @@ static void test_query_batch(void) {
     bool online[4] = {false, false, false, false};
     uint8_t peers[4] = {255, 255, 255, 255};
 
-    int count = nodus_presence_query_batch(&srv, query, 4, online, peers);
+    int count = nodus_presence_query_batch(&srv, query, 4, online, peers, NULL);
     if (count != 3) { FAIL("expected 3 online"); return; }
     if (!online[0] || online[1] || !online[2] || !online[3]) {
         FAIL("wrong online flags"); return;
@@ -266,7 +266,7 @@ static void test_pq_result_sparse(void) {
     uint8_t peers[5] = {0, 0, 0, 2, 0};
 
     size_t len = 0;
-    int rc = nodus_t2_presence_result(100, fps, online, peers, 5,
+    int rc = nodus_t2_presence_result(100, fps, online, peers, NULL, 5,
                                         msgbuf, sizeof(msgbuf), &len);
     if (rc != 0) { FAIL("encode"); return; }
 
@@ -345,7 +345,7 @@ static void test_pq_empty_result(void) {
     uint8_t peers[3] = {0, 0, 0};
 
     size_t len = 0;
-    int rc = nodus_t2_presence_result(101, fps, online, peers, 3,
+    int rc = nodus_t2_presence_result(101, fps, online, peers, NULL, 3,
                                         msgbuf, sizeof(msgbuf), &len);
     if (rc != 0) { FAIL("encode"); return; }
 

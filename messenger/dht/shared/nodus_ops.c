@@ -385,13 +385,15 @@ bool nodus_ops_is_listener_active(size_t token) {
 /* ── Presence ──────────────────────────────────────────────────── */
 
 int nodus_ops_presence_query(const char **fingerprints, int count,
-                               bool *online_out) {
+                               bool *online_out, uint64_t *last_seen_out) {
     if (!fingerprints || !online_out || count <= 0)
         return -1;
 
     /* Initialize all to offline */
-    for (int i = 0; i < count; i++)
+    for (int i = 0; i < count; i++) {
         online_out[i] = false;
+        if (last_seen_out) last_seen_out[i] = 0;
+    }
 
     nodus_client_t *client = nodus_singleton_get();
     if (!client || !nodus_client_is_ready(client))
@@ -431,12 +433,26 @@ int nodus_ops_presence_query(const char **fingerprints, int count,
         return -1;
     }
 
-    /* Map results back: match by fingerprint */
+    /* Map online results back: match by fingerprint */
     for (int i = 0; i < result.online_count; i++) {
         for (int j = 0; j < count; j++) {
             if (nodus_key_cmp(&result.entries[i].fp, &fps[j]) == 0) {
                 online_out[j] = true;
+                if (last_seen_out)
+                    last_seen_out[j] = result.entries[i].last_seen;
                 break;
+            }
+        }
+    }
+
+    /* Map offline-seen results back */
+    if (last_seen_out) {
+        for (int i = 0; i < result.offline_seen_count; i++) {
+            for (int j = 0; j < count; j++) {
+                if (nodus_key_cmp(&result.offline_seen[i].fp, &fps[j]) == 0) {
+                    last_seen_out[j] = result.offline_seen[i].last_seen;
+                    break;
+                }
             }
         }
     }

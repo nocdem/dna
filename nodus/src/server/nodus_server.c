@@ -684,21 +684,24 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         if (msg.pq_fps && msg.pq_count > 0) {
             bool *online = calloc((size_t)msg.pq_count, sizeof(bool));
             uint8_t *peers = calloc((size_t)msg.pq_count, sizeof(uint8_t));
-            if (online && peers) {
-                int pq_online = nodus_presence_query_batch(srv, msg.pq_fps, msg.pq_count, online, peers);
+            uint64_t *last_seen = calloc((size_t)msg.pq_count, sizeof(uint64_t));
+            if (online && peers && last_seen) {
+                int pq_online = nodus_presence_query_batch(srv, msg.pq_fps, msg.pq_count,
+                                                             online, peers, last_seen);
                 fprintf(stderr, "PQ: queried %d fps, %d online (table has %d entries)\n",
                         msg.pq_count, pq_online, srv->presence.count);
                 size_t rlen = 0;
-                nodus_t2_presence_result(msg.txn_id, msg.pq_fps, online, peers,
+                nodus_t2_presence_result(msg.txn_id, msg.pq_fps, online, peers, last_seen,
                                            msg.pq_count, resp_buf, sizeof(resp_buf), &rlen);
                 nodus_tcp_send(sess->conn, resp_buf, rlen);
             }
             free(online);
             free(peers);
+            free(last_seen);
         } else {
             /* Empty query → empty result */
             size_t rlen = 0;
-            nodus_t2_presence_result(msg.txn_id, NULL, NULL, NULL, 0,
+            nodus_t2_presence_result(msg.txn_id, NULL, NULL, NULL, NULL, 0,
                                        resp_buf, sizeof(resp_buf), &rlen);
             nodus_tcp_send(sess->conn, resp_buf, rlen);
         }

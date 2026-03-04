@@ -53,9 +53,10 @@ void nodus_presence_merge_remote(struct nodus_server *srv, const nodus_key_t *fp
 bool nodus_presence_is_online(struct nodus_server *srv, const nodus_key_t *fp,
                                 uint8_t *peer_index_out);
 
-/** Batch query: check online status for N fingerprints. */
+/** Batch query: check online status + last_seen for N fingerprints. */
 int nodus_presence_query_batch(struct nodus_server *srv, const nodus_key_t *fps,
-                                 int fp_count, bool *online_out, uint8_t *peers_out);
+                                 int fp_count, bool *online_out, uint8_t *peers_out,
+                                 uint64_t *last_seen_out);
 
 /** Expire stale remote entries. */
 void nodus_presence_expire(struct nodus_server *srv, uint64_t now);

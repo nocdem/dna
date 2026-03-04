@@ -295,12 +295,15 @@ typedef struct {
     nodus_key_t fp;
     bool        online;
     uint8_t     peer_index;
+    uint64_t    last_seen;
 } nodus_presence_entry_result_t;
 
 typedef struct {
     int total_queried;
     int online_count;
-    nodus_presence_entry_result_t *entries;  /* heap, only online entries */
+    nodus_presence_entry_result_t *entries;       /* heap, online entries */
+    int offline_seen_count;
+    nodus_presence_entry_result_t *offline_seen;  /* heap, recently disconnected */
 } nodus_presence_result_t;
 
 /**

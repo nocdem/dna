@@ -156,10 +156,11 @@ int nodus_t2_presence_query(uint32_t txn, const uint8_t *token,
                               const nodus_key_t *fps, int count,
                               uint8_t *buf, size_t cap, size_t *out_len);
 
-/** Nodus → Client: presence query result (sparse — only online entries). */
+/** Nodus → Client: presence query result (online entries + offline last_seen). */
 int nodus_t2_presence_result(uint32_t txn,
                                const nodus_key_t *fps, const bool *online,
-                               const uint8_t *peers, int count,
+                               const uint8_t *peers, const uint64_t *last_seen,
+                               int count,
                                uint8_t *buf, size_t cap, size_t *out_len);
 
 /** Nodus → Nodus: inter-node presence sync (no auth). */
@@ -223,6 +224,12 @@ typedef struct {
     int             pq_count;       /* FP count */
     bool           *pq_online;      /* Result: online status per FP (heap) */
     uint8_t        *pq_peers;       /* Result: peer index per FP (heap) */
+    uint64_t       *pq_last_seen;   /* Result: last_seen timestamp per FP (heap) */
+
+    /* Offline-seen entries (recently disconnected) */
+    nodus_key_t    *os_fps;         /* FP array (heap) */
+    uint64_t       *os_last_seen;   /* Last seen timestamps (heap) */
+    int             os_count;
 
     /* Error */
     int             error_code;

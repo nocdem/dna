@@ -37,6 +37,15 @@ static int find_any(nodus_presence_table_t *tbl, const nodus_key_t *fp) {
     return -1;
 }
 
+static int find_inactive(nodus_presence_table_t *tbl, const nodus_key_t *fp) {
+    for (int i = 0; i < tbl->count; i++) {
+        if (!tbl->entries[i].active && tbl->entries[i].last_seen > 0 &&
+            nodus_key_cmp(&tbl->entries[i].client_fp, fp) == 0)
+            return i;
+    }
+    return -1;
+}
+
 static int alloc_slot(nodus_presence_table_t *tbl) {
     /* Reuse inactive slot */
     for (int i = 0; i < tbl->count; i++) {
@@ -76,8 +85,10 @@ void nodus_presence_remove_local(struct nodus_server *srv, const nodus_key_t *fp
     nodus_presence_table_t *tbl = &srv->presence;
 
     int idx = find_entry(tbl, fp, 0);
-    if (idx >= 0)
+    if (idx >= 0) {
+        tbl->entries[idx].last_seen = nodus_time_now();
         tbl->entries[idx].active = false;
+    }
 }
 
 void nodus_presence_merge_remote(struct nodus_server *srv, const nodus_key_t *fps,
@@ -114,7 +125,8 @@ bool nodus_presence_is_online(struct nodus_server *srv, const nodus_key_t *fp,
 }
 
 int nodus_presence_query_batch(struct nodus_server *srv, const nodus_key_t *fps,
-                                 int fp_count, bool *online_out, uint8_t *peers_out) {
+                                 int fp_count, bool *online_out, uint8_t *peers_out,
+                                 uint64_t *last_seen_out) {
     if (!srv || !fps || !online_out) return -1;
 
     int online_count = 0;
@@ -123,8 +135,16 @@ int nodus_presence_query_batch(struct nodus_server *srv, const nodus_key_t *fps,
         online_out[i] = nodus_presence_is_online(srv, &fps[i], &pi);
         if (peers_out)
             peers_out[i] = pi;
-        if (online_out[i])
+        if (online_out[i]) {
             online_count++;
+            if (last_seen_out) {
+                int idx = find_any(&srv->presence, &fps[i]);
+                last_seen_out[i] = (idx >= 0) ? srv->presence.entries[idx].last_seen : 0;
+            }
+        } else if (last_seen_out) {
+            int idx = find_inactive(&srv->presence, &fps[i]);
+            last_seen_out[i] = (idx >= 0) ? srv->presence.entries[idx].last_seen : 0;
+        }
     }
     return online_count;
 }

@@ -160,10 +160,11 @@ bool nodus_ops_is_listener_active(size_t token);
  * @param fingerprints  Array of hex fingerprint strings (128 chars each)
  * @param count         Number of fingerprints
  * @param online_out    Output: true/false per fingerprint (caller provides)
+ * @param last_seen_out Output (optional): Unix timestamp per fingerprint
  * @return Number of online contacts, or -1 on error
  */
 int nodus_ops_presence_query(const char **fingerprints, int count,
-                               bool *online_out);
+                               bool *online_out, uint64_t *last_seen_out);
 
 /* ── Utility ───────────────────────────────────────────────────── */
 

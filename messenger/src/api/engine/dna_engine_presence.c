@@ -63,8 +63,8 @@ static void dna_presence_batch_query(dna_engine_t *engine) {
     for (int i = 0; i < count; i++)
         fps[i] = contacts->contacts[i].identity;
 
-    /* Single TCP query */
-    int online_count = nodus_ops_presence_query(fps, count, online);
+    /* Single TCP query (last_seen_out=NULL — cache handles timestamps) */
+    int online_count = nodus_ops_presence_query(fps, count, online, NULL);
     if (online_count < 0) {
         QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Batch query failed");
         free(fps);
@@ -89,7 +89,7 @@ static void dna_presence_batch_query(dna_engine_t *engine) {
  * PRESENCE HEARTBEAT (batch query every 60 seconds)
  * ============================================================================ */
 
-#define PRESENCE_HEARTBEAT_INTERVAL_SECONDS 60  /* 1 minute */
+#define PRESENCE_HEARTBEAT_INTERVAL_SECONDS 10  /* 10 seconds */
 
 static void* presence_heartbeat_thread(void *arg) {
     dna_engine_t *engine = (dna_engine_t*)arg;

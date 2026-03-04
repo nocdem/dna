@@ -793,6 +793,21 @@ int nodus_client_presence_query(nodus_client_t *client,
                 result->entries[i].fp = resp->pq_fps[i];
                 result->entries[i].online = resp->pq_online ? resp->pq_online[i] : true;
                 result->entries[i].peer_index = resp->pq_peers ? resp->pq_peers[i] : 0;
+                result->entries[i].last_seen = resp->pq_last_seen ? resp->pq_last_seen[i] : 0;
+            }
+        }
+    }
+
+    /* Parse offline-seen entries */
+    if (resp->os_fps && resp->os_count > 0) {
+        result->offline_seen_count = resp->os_count;
+        result->offline_seen = calloc((size_t)resp->os_count,
+                                        sizeof(nodus_presence_entry_result_t));
+        if (result->offline_seen) {
+            for (int i = 0; i < resp->os_count; i++) {
+                result->offline_seen[i].fp = resp->os_fps[i];
+                result->offline_seen[i].online = false;
+                result->offline_seen[i].last_seen = resp->os_last_seen ? resp->os_last_seen[i] : 0;
             }
         }
     }
@@ -805,6 +820,9 @@ void nodus_client_free_presence_result(nodus_presence_result_t *result) {
     free(result->entries);
     result->entries = NULL;
     result->online_count = 0;
+    free(result->offline_seen);
+    result->offline_seen = NULL;
+    result->offline_seen_count = 0;
 }
 
 /* ── DNAC Operations ─────────────────────────────────────────────── */
