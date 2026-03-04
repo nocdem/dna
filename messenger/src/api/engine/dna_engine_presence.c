@@ -123,6 +123,15 @@ static void* presence_heartbeat_thread(void *arg) {
             break;
         }
 
+        /* Always poll Nodus TCP — even when paused.
+         * This serves three purposes:
+         * 1. Detects TCP disconnect so auto-reconnect kicks in
+         * 2. Processes incoming listener notifications (background push)
+         * 3. Keeps the connection alive (prevents server idle timeout)
+         * Without this, pause mode has no TCP poll → disconnect goes
+         * undetected → resume finds a dead socket → messages stay pending. */
+        nodus_messenger_poll(100);
+
         /* Nodus-native presence: batch query all contacts (v0.9.0) */
         if (atomic_load(&engine->presence_active) && engine->messenger) {
             QGP_LOG_DEBUG(LOG_TAG, "Heartbeat: batch presence query");

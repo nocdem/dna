@@ -29,6 +29,17 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
+    /* Ensure Nodus connection is alive before sending.
+     * After pause/resume or network change, TCP may be disconnected.
+     * Poll once to detect dead socket, then reconnect if needed. */
+    if (!nodus_messenger_is_ready()) {
+        QGP_LOG_WARN(LOG_TAG, "[SEND] Nodus not ready, attempting reconnect...");
+        nodus_messenger_reinit();
+        if (!nodus_messenger_wait_for_ready(5000)) {
+            QGP_LOG_WARN(LOG_TAG, "[SEND] Nodus reconnect failed — message will be retried");
+        }
+    }
+
     const char *recipients[1] = { task->params.send_message.recipient };
 
     int rc = messenger_send_message(

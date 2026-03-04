@@ -307,6 +307,11 @@ void nodus_messenger_set_status_callback(nodus_messenger_status_cb_t cb, void *u
     }
 }
 
+int nodus_messenger_poll(int timeout_ms) {
+    if (!g_initialized) return -1;
+    return nodus_singleton_poll(timeout_ms);
+}
+
 bool nodus_messenger_wait_for_ready(int timeout_ms) {
     int elapsed = 0;
     while (!nodus_messenger_is_ready() && elapsed < timeout_ms) {

@@ -61,6 +61,15 @@ bool nodus_messenger_is_initialized(void);
 void nodus_messenger_set_status_callback(nodus_messenger_status_cb_t cb, void *user_data);
 
 /**
+ * Poll the Nodus TCP connection for events.
+ * Processes incoming frames (listener notifications, responses) and
+ * handles auto-reconnect if the connection was lost.
+ * @param timeout_ms  Maximum time to block in epoll/select
+ * @return Number of events processed, or -1 on error
+ */
+int nodus_messenger_poll(int timeout_ms);
+
+/**
  * Wait for the singleton to become ready (polling).
  * @param timeout_ms  Maximum wait time in milliseconds
  * @return true if ready, false if timed out
