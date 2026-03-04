@@ -185,7 +185,20 @@ int dna_engine_resume(dna_engine_t *engine) {
     engine->state = DNA_ENGINE_STATE_ACTIVE;
     pthread_mutex_unlock(&engine->state_mutex);
 
-    /* 2. Resume presence heartbeat IMMEDIATELY (marks us as online) */
+    /* 2. Check Nodus connection — if dropped during background, reconnect */
+    if (!nodus_messenger_is_ready()) {
+        QGP_LOG_WARN(LOG_TAG, "[RESUME] Nodus disconnected, reinitializing...");
+        nodus_messenger_reinit();
+        /* Wait briefly for reconnection */
+        nodus_messenger_wait_for_ready(3000);
+        if (nodus_messenger_is_ready()) {
+            QGP_LOG_INFO(LOG_TAG, "[RESUME] Nodus reconnected");
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "[RESUME] Nodus reconnect pending (will retry in background)");
+        }
+    }
+
+    /* 3. Resume presence heartbeat IMMEDIATELY (marks us as online) */
     dna_engine_resume_presence(engine);
 
     /* 3. Spawn background thread for the heavy lifting (DHT resubscription)
