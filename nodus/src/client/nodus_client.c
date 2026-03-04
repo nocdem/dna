@@ -754,6 +754,59 @@ void nodus_client_free_posts(nodus_channel_post_t *posts, size_t count) {
     free(posts);
 }
 
+/* ── Presence Operations ─────────────────────────────────────────── */
+
+int nodus_client_presence_query(nodus_client_t *client,
+                                  const nodus_key_t *fps, int count,
+                                  nodus_presence_result_t *result) {
+    if (!nodus_client_is_ready(client) || !fps || !result || count <= 0)
+        return -1;
+    if (count > NODUS_PRESENCE_MAX_QUERY)
+        count = NODUS_PRESENCE_MAX_QUERY;
+
+    memset(result, 0, sizeof(*result));
+    result->total_queried = count;
+
+    /* Encode pq request using T2 encoder */
+    uint8_t *buf = g_proto_buf;
+    size_t buf_len = 0;
+    if (nodus_t2_presence_query(client->next_txn++, client->token,
+                                  fps, count, buf, CLIENT_BUF_SIZE, &buf_len) != 0)
+        return -1;
+
+    if (send_request(client, buf, buf_len) != 0)
+        return -1;
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
+    if (!wait_response(client, 10000))
+        return NODUS_ERR_TIMEOUT;
+    if (resp->type == 'e')
+        return resp->error_code;
+
+    /* Parse result from T2-decoded fields */
+    if (resp->pq_fps && resp->pq_count > 0) {
+        result->online_count = resp->pq_count;
+        result->entries = calloc((size_t)resp->pq_count,
+                                   sizeof(nodus_presence_entry_result_t));
+        if (result->entries) {
+            for (int i = 0; i < resp->pq_count; i++) {
+                result->entries[i].fp = resp->pq_fps[i];
+                result->entries[i].online = resp->pq_online ? resp->pq_online[i] : true;
+                result->entries[i].peer_index = resp->pq_peers ? resp->pq_peers[i] : 0;
+            }
+        }
+    }
+
+    return 0;
+}
+
+void nodus_client_free_presence_result(nodus_presence_result_t *result) {
+    if (!result) return;
+    free(result->entries);
+    result->entries = NULL;
+    result->online_count = 0;
+}
+
 /* ── DNAC Operations ─────────────────────────────────────────────── */
 
 /**

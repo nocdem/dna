@@ -381,6 +381,71 @@ bool nodus_ops_is_listener_active(size_t token) {
     return false;
 }
 
+/* ── Presence ──────────────────────────────────────────────────── */
+
+int nodus_ops_presence_query(const char **fingerprints, int count,
+                               bool *online_out) {
+    if (!fingerprints || !online_out || count <= 0)
+        return -1;
+
+    /* Initialize all to offline */
+    for (int i = 0; i < count; i++)
+        online_out[i] = false;
+
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client || !nodus_client_is_ready(client))
+        return -1;
+
+    /* Cap to max query size */
+    if (count > NODUS_PRESENCE_MAX_QUERY)
+        count = NODUS_PRESENCE_MAX_QUERY;
+
+    /* Convert hex fingerprints to binary keys */
+    nodus_key_t *fps = calloc((size_t)count, sizeof(nodus_key_t));
+    if (!fps) return -1;
+
+    for (int i = 0; i < count; i++) {
+        if (!fingerprints[i] || strlen(fingerprints[i]) != 128) {
+            free(fps);
+            return -1;
+        }
+        for (int j = 0; j < 64; j++) {
+            unsigned int byte;
+            if (sscanf(fingerprints[i] + (j * 2), "%02x", &byte) != 1) {
+                free(fps);
+                return -1;
+            }
+            fps[i].bytes[j] = (uint8_t)byte;
+        }
+    }
+
+    /* Query server */
+    nodus_presence_result_t result;
+    nodus_singleton_lock();
+    int rc = nodus_client_presence_query(client, fps, count, &result);
+    nodus_singleton_unlock();
+
+    if (rc != 0) {
+        free(fps);
+        return -1;
+    }
+
+    /* Map results back: match by fingerprint */
+    for (int i = 0; i < result.online_count; i++) {
+        for (int j = 0; j < count; j++) {
+            if (nodus_key_cmp(&result.entries[i].fp, &fps[j]) == 0) {
+                online_out[j] = true;
+                break;
+            }
+        }
+    }
+
+    int online_count = result.online_count;
+    nodus_client_free_presence_result(&result);
+    free(fps);
+    return online_count;
+}
+
 /* ── Utility ───────────────────────────────────────────────────── */
 
 bool nodus_ops_is_ready(void) {

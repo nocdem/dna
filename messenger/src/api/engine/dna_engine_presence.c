@@ -1,10 +1,14 @@
 /*
  * DNA Engine - Presence Module
  *
- * Presence management: heartbeat, refresh, lookup, network changes.
+ * Presence management: heartbeat, batch query, lookup, network changes.
+ *
+ * v0.9.0: Nodus-native presence — batch query replaces per-contact DHT listeners.
+ * Zero DHT PUT/GET for presence. Single TCP query every 60s.
  *
  * Functions:
- *   - presence_heartbeat_thread()        // Background presence announcer (4 min)
+ *   - dna_presence_batch_query()         // Batch query all contacts
+ *   - presence_heartbeat_thread()        // Background presence loop (60s)
  *   - dna_start_presence_heartbeat()     // Start heartbeat thread
  *   - dna_stop_presence_heartbeat()      // Stop heartbeat thread
  *   - dna_engine_network_changed()       // Handle network change (DHT reinit)
@@ -20,7 +24,69 @@
 #include <stdatomic.h>
 
 /* ============================================================================
- * PRESENCE HEARTBEAT (announces our presence every 4 minutes)
+ * NODUS-NATIVE BATCH PRESENCE QUERY (v0.9.0)
+ *
+ * Replaces per-contact DHT listeners with a single TCP query every 60s.
+ * Zero DHT PUT, zero listeners, minimal bandwidth.
+ * ============================================================================ */
+
+static void dna_presence_batch_query(dna_engine_t *engine) {
+    if (!engine || !engine->messenger || !engine->identity_loaded)
+        return;
+
+    if (!nodus_ops_is_ready()) {
+        QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Nodus not ready, skipping batch query");
+        return;
+    }
+
+    /* Get all contacts */
+    contact_list_t *contacts = NULL;
+    if (contacts_db_list(&contacts) != 0 || !contacts || contacts->count == 0) {
+        if (contacts) contacts_db_free_list(contacts);
+        return;
+    }
+
+    int count = (int)contacts->count;
+    if (count > NODUS_PRESENCE_MAX_QUERY)
+        count = NODUS_PRESENCE_MAX_QUERY;
+
+    /* Build fingerprint array */
+    const char **fps = calloc((size_t)count, sizeof(const char *));
+    bool *online = calloc((size_t)count, sizeof(bool));
+    if (!fps || !online) {
+        free(fps);
+        free(online);
+        contacts_db_free_list(contacts);
+        return;
+    }
+
+    for (int i = 0; i < count; i++)
+        fps[i] = contacts->contacts[i].identity;
+
+    /* Single TCP query */
+    int online_count = nodus_ops_presence_query(fps, count, online);
+    if (online_count < 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Batch query failed");
+        free(fps);
+        free(online);
+        contacts_db_free_list(contacts);
+        return;
+    }
+
+    /* Update presence cache — fires ONLINE/OFFLINE events automatically */
+    time_t now = time(NULL);
+    for (int i = 0; i < count; i++)
+        presence_cache_update(fps[i], online[i], now);
+
+    QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Batch query: %d/%d online", online_count, count);
+
+    free(fps);
+    free(online);
+    contacts_db_free_list(contacts);
+}
+
+/* ============================================================================
+ * PRESENCE HEARTBEAT (batch query every 60 seconds)
  * ============================================================================ */
 
 #define PRESENCE_HEARTBEAT_INTERVAL_SECONDS 60  /* 1 minute */
@@ -43,10 +109,10 @@ static void* presence_heartbeat_thread(void *arg) {
             break;
         }
 
-        /* Only announce presence if active (foreground) */
+        /* Nodus-native presence: batch query all contacts (v0.9.0) */
         if (atomic_load(&engine->presence_active) && engine->messenger) {
-            QGP_LOG_DEBUG(LOG_TAG, "Heartbeat: refreshing presence");
-            messenger_transport_refresh_presence(engine->messenger);
+            QGP_LOG_DEBUG(LOG_TAG, "Heartbeat: batch presence query");
+            dna_presence_batch_query(engine);
         }
 
         /* Check for day rotation on group listeners (runs every 1 min, actual
@@ -100,7 +166,7 @@ int dna_engine_network_changed(dna_engine_t *engine) {
     if (engine->identity_loaded) {
         QGP_LOG_INFO(LOG_TAG, "Cancelling listeners before DHT reinit");
         dna_engine_cancel_all_outbox_listeners(engine);
-        dna_engine_cancel_all_presence_listeners(engine);
+        /* v0.9.0: Presence listeners removed — batch query via Nodus server */
         dna_engine_cancel_contact_request_listener(engine);
     }
 
@@ -122,7 +188,7 @@ void dna_handle_refresh_presence(dna_engine_t *engine, dna_task_t *task) {
 
     int error = DNA_OK;
 
-    /* Don't announce presence if app is in background (defense in depth) */
+    /* Don't query presence if app is in background (defense in depth) */
     if (!atomic_load(&engine->presence_active)) {
         QGP_LOG_DEBUG(LOG_TAG, "Skipping presence refresh - app in background");
         if (task->callback.completion) {
@@ -134,9 +200,8 @@ void dna_handle_refresh_presence(dna_engine_t *engine, dna_task_t *task) {
     if (!engine->messenger) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
-        if (messenger_transport_refresh_presence(engine->messenger) != 0) {
-            error = DNA_ENGINE_ERROR_NETWORK;
-        }
+        /* v0.9.0: Nodus-native batch query instead of DHT PUT */
+        dna_presence_batch_query(engine);
     }
 
     if (task->callback.completion) {
@@ -153,14 +218,11 @@ void dna_handle_lookup_presence(dna_engine_t *engine, dna_task_t *task) {
     if (!engine->messenger) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
-        if (messenger_transport_lookup_presence(engine->messenger,
-                task->params.lookup_presence.fingerprint,
-                &last_seen) == 0 && last_seen > 0) {
-            /* Update presence cache with DHT result */
-            time_t now = time(NULL);
-            bool is_online = (now - (time_t)last_seen) < 300; /* 5 min TTL */
-            presence_cache_update(task->params.lookup_presence.fingerprint,
-                                  is_online, (time_t)last_seen);
+        /* v0.9.0: Read from presence cache (populated by batch query) */
+        const char *fp = task->params.lookup_presence.fingerprint;
+        time_t ts = presence_cache_last_seen(fp);
+        if (ts > 0) {
+            last_seen = (uint64_t)ts;
         }
         /* Not found is not an error - just return 0 timestamp */
     }

@@ -30,7 +30,7 @@
 
 #define DNA_ENGINE_LISTENERS_IMPL
 #include "engine_includes.h"
-#include "transport/internal/transport_core.h"  /* For parse_presence_json */
+/* v0.9.0: transport_core.h no longer needed (presence listeners removed) */
 #include "dht/client/dna_wall.h"
 #include "dht/client/dna_channels.h"  /* For dna_channel_make_posts_key */
 #include "database/channel_subscriptions_db.h"  /* For dna_engine_listen_all_channels */
@@ -58,7 +58,7 @@ static void parallel_listener_worker(void *arg) {
     if (!ctx || !ctx->engine) return;
 
     dna_engine_listen_outbox(ctx->engine, ctx->fingerprint);
-    dna_engine_start_presence_listener(ctx->engine, ctx->fingerprint);
+    /* v0.9.0: Presence listeners removed — batch query via Nodus server */
     dna_engine_start_ack_listener(ctx->engine, ctx->fingerprint);
     dna_engine_start_wall_listener(ctx->engine, ctx->fingerprint);
 }
@@ -546,228 +546,32 @@ void dna_engine_cancel_all_outbox_listeners(dna_engine_t *engine)
 }
 
 /* ============================================================================
- * PRESENCE LISTENERS (Real-time contact online status)
+ * PRESENCE LISTENERS — REMOVED (v0.9.0)
+ *
+ * Nodus-native presence: batch query replaces per-contact DHT listeners.
+ * These stubs exist for callers that haven't been updated yet.
  * ============================================================================ */
 
-/**
- * Context passed to DHT presence listen callback
- */
-typedef struct {
-    dna_engine_t *engine;
-    char contact_fingerprint[129];
-} presence_listener_ctx_t;
-
-/**
- * Cleanup callback for presence listeners - frees the context when listener cancelled
- */
-static void presence_listener_cleanup(void *user_data) {
-    presence_listener_ctx_t *ctx = (presence_listener_ctx_t *)user_data;
-    if (ctx) {
-        QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Cleanup: freeing presence listener ctx for %.16s...",
-                      ctx->contact_fingerprint);
-        free(ctx);
-    }
-}
-
-/**
- * DHT listen callback for presence - fires when contact publishes their presence
- */
-static bool presence_listen_callback(
-    const uint8_t *value,
-    size_t value_len,
-    bool expired,
-    void *user_data)
-{
-    presence_listener_ctx_t *ctx = (presence_listener_ctx_t *)user_data;
-    if (!ctx || !ctx->engine) {
-        return false;  /* Stop listening */
-    }
-
-    if (expired || !value || value_len == 0) {
-        /* Presence expired - mark contact as offline */
-        presence_cache_update(ctx->contact_fingerprint, false, time(NULL));
-        QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Contact %.16s... went offline (expired)",
-                      ctx->contact_fingerprint);
-        return true;  /* Keep listening */
-    }
-
-    /* Parse presence JSON to get actual timestamp */
-    /* Format: {"ips":"...","port":...,"timestamp":1234567890} */
-    char json_buf[512];
-    size_t copy_len = value_len < sizeof(json_buf) - 1 ? value_len : sizeof(json_buf) - 1;
-    memcpy(json_buf, value, copy_len);
-    json_buf[copy_len] = '\0';
-
-    /* v0.4.61: timestamp-only presence (privacy - no IP disclosure) */
-    uint64_t last_seen = 0;
-    time_t presence_timestamp = time(NULL);  /* Fallback to now if parse fails */
-    if (parse_presence_json(json_buf, &last_seen) == 0 && last_seen > 0) {
-        presence_timestamp = (time_t)last_seen;
-    }
-
-    /* Update cache with actual timestamp from presence data */
-    presence_cache_update(ctx->contact_fingerprint, true, presence_timestamp);
-    QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Contact %.16s... is online (timestamp=%lld)",
-                  ctx->contact_fingerprint, (long long)presence_timestamp);
-
-    return true;  /* Keep listening */
-}
-
-/**
- * Start listening for a contact's presence updates
- */
 size_t dna_engine_start_presence_listener(
     dna_engine_t *engine,
     const char *contact_fingerprint)
 {
-    if (!engine || !contact_fingerprint) {
-        return 0;
-    }
-
-    size_t fp_len = strlen(contact_fingerprint);
-    if (fp_len != 128) {
-        QGP_LOG_ERROR(LOG_TAG, "[PRESENCE] Invalid fingerprint length: %zu", fp_len);
-        return 0;
-    }
-
-    if (!nodus_ops_is_ready()) {
-        QGP_LOG_ERROR(LOG_TAG, "[PRESENCE] Nodus not available");
-        return 0;
-    }
-
-    pthread_mutex_lock(&engine->presence_listeners_mutex);
-
-    /* Check if already listening to this contact */
-    for (int i = 0; i < engine->presence_listener_count; i++) {
-        if (engine->presence_listeners[i].active &&
-            strcmp(engine->presence_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
-            /* Verify listener is actually active in nodus layer */
-            if (nodus_ops_is_listener_active(engine->presence_listeners[i].dht_token)) {
-                QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Already listening (token=%zu verified active)",
-                             engine->presence_listeners[i].dht_token);
-                pthread_mutex_unlock(&engine->presence_listeners_mutex);
-                return engine->presence_listeners[i].dht_token;
-            } else {
-                /* Stale entry - listener was cancelled but engine not updated */
-                QGP_LOG_WARN(LOG_TAG, "[PRESENCE] Stale entry (token=%zu inactive), recreating",
-                             engine->presence_listeners[i].dht_token);
-                engine->presence_listeners[i].active = false;
-                /* Don't return - continue to create new listener */
-                break;
-            }
-        }
-    }
-
-    /* Check capacity */
-    if (engine->presence_listener_count >= DNA_MAX_PRESENCE_LISTENERS) {
-        QGP_LOG_ERROR(LOG_TAG, "[PRESENCE] Max listeners reached (%d)", DNA_MAX_PRESENCE_LISTENERS);
-        pthread_mutex_unlock(&engine->presence_listeners_mutex);
-        return 0;
-    }
-
-    /* Convert hex fingerprint to binary DHT key (64 bytes) */
-    uint8_t presence_key[64];
-    for (int i = 0; i < 64; i++) {
-        unsigned int byte;
-        if (sscanf(contact_fingerprint + (i * 2), "%02x", &byte) != 1) {
-            QGP_LOG_ERROR(LOG_TAG, "[PRESENCE] Invalid fingerprint hex");
-            pthread_mutex_unlock(&engine->presence_listeners_mutex);
-            return 0;
-        }
-        presence_key[i] = (uint8_t)byte;
-    }
-
-    /* Create callback context */
-    presence_listener_ctx_t *ctx = malloc(sizeof(presence_listener_ctx_t));
-    if (!ctx) {
-        pthread_mutex_unlock(&engine->presence_listeners_mutex);
-        return 0;
-    }
-    ctx->engine = engine;
-    strncpy(ctx->contact_fingerprint, contact_fingerprint, sizeof(ctx->contact_fingerprint) - 1);
-    ctx->contact_fingerprint[sizeof(ctx->contact_fingerprint) - 1] = '\0';
-
-    /* Start listening on presence key */
-    size_t token = nodus_ops_listen(presence_key, 64,
-                                     presence_listen_callback, ctx, presence_listener_cleanup);
-    if (token == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "[PRESENCE] nodus_ops_listen() failed for %.16s...", contact_fingerprint);
-        free(ctx);  /* Cleanup not called on failure, free manually */
-        pthread_mutex_unlock(&engine->presence_listeners_mutex);
-        return 0;
-    }
-
-    /* Store listener info */
-    int idx = engine->presence_listener_count++;
-    strncpy(engine->presence_listeners[idx].contact_fingerprint, contact_fingerprint,
-            sizeof(engine->presence_listeners[idx].contact_fingerprint) - 1);
-    engine->presence_listeners[idx].contact_fingerprint[
-        sizeof(engine->presence_listeners[idx].contact_fingerprint) - 1] = '\0';
-    engine->presence_listeners[idx].dht_token = token;
-    engine->presence_listeners[idx].active = true;
-
-    QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Listener started for %.16s... (token=%zu)",
-                  contact_fingerprint, token);
-
-    pthread_mutex_unlock(&engine->presence_listeners_mutex);
-    return token;
+    (void)engine;
+    (void)contact_fingerprint;
+    return 0;  /* No-op: presence handled by batch query */
 }
 
-/**
- * Cancel presence listener for a specific contact
- */
 void dna_engine_cancel_presence_listener(
     dna_engine_t *engine,
     const char *contact_fingerprint)
 {
-    if (!engine || !contact_fingerprint) {
-        return;
-    }
-
-    pthread_mutex_lock(&engine->presence_listeners_mutex);
-
-    for (int i = 0; i < engine->presence_listener_count; i++) {
-        if (engine->presence_listeners[i].active &&
-            strcmp(engine->presence_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
-
-            nodus_ops_cancel_listen(engine->presence_listeners[i].dht_token);
-
-            engine->presence_listeners[i].active = false;
-
-            /* Compact array */
-            if (i < engine->presence_listener_count - 1) {
-                engine->presence_listeners[i] = engine->presence_listeners[engine->presence_listener_count - 1];
-            }
-            engine->presence_listener_count--;
-            break;
-        }
-    }
-
-    pthread_mutex_unlock(&engine->presence_listeners_mutex);
+    (void)engine;
+    (void)contact_fingerprint;
 }
 
-/**
- * Cancel all presence listeners
- */
 void dna_engine_cancel_all_presence_listeners(dna_engine_t *engine)
 {
-    if (!engine) {
-        return;
-    }
-
-    pthread_mutex_lock(&engine->presence_listeners_mutex);
-
-    for (int i = 0; i < engine->presence_listener_count; i++) {
-        if (engine->presence_listeners[i].active) {
-            nodus_ops_cancel_listen(engine->presence_listeners[i].dht_token);
-        }
-        engine->presence_listeners[i].active = false;
-    }
-
-    engine->presence_listener_count = 0;
-    QGP_LOG_INFO(LOG_TAG, "Cancelled all presence listeners");
-
-    pthread_mutex_unlock(&engine->presence_listeners_mutex);
+    (void)engine;
 }
 
 /**

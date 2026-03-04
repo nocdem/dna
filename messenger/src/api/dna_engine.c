@@ -1325,10 +1325,7 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     engine->outbox_listener_count = 0;
     memset(engine->outbox_listeners, 0, sizeof(engine->outbox_listeners));
 
-    /* Initialize presence listeners */
-    pthread_mutex_init(&engine->presence_listeners_mutex, NULL);
-    engine->presence_listener_count = 0;
-    memset(engine->presence_listeners, 0, sizeof(engine->presence_listeners));
+    /* v0.9.0: Presence listeners removed — batch query via Nodus server */
 
     /* Initialize contact request listener */
     pthread_mutex_init(&engine->contact_request_listener_mutex, NULL);
@@ -1753,8 +1750,7 @@ void dna_engine_destroy(dna_engine_t *engine) {
     pthread_mutex_destroy(&engine->outbox_listeners_mutex);
 
     /* Cancel all presence listeners */
-    dna_engine_cancel_all_presence_listeners(engine);
-    pthread_mutex_destroy(&engine->presence_listeners_mutex);
+    /* v0.9.0: Presence listeners removed — batch query via Nodus server */
 
     /* Cancel contact request listener */
     dna_engine_cancel_contact_request_listener(engine);

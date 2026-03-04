@@ -501,16 +501,8 @@ typedef struct {
     dht_dm_listen_ctx_t *dm_listen_ctx; /* Daily bucket context (v0.4.81+, day rotation) */
 } dna_outbox_listener_t;
 
-/**
- * Presence listener entry (for real-time contact online status)
- */
-#define DNA_MAX_PRESENCE_LISTENERS 128
-
-typedef struct {
-    char contact_fingerprint[129];  /* Contact we're listening to */
-    size_t dht_token;               /* Token from dht_listen() */
-    bool active;                    /* True if listener is active */
-} dna_presence_listener_t;
+/* v0.9.0: Presence listeners removed — batch query via Nodus server.
+ * dna_presence_listener_t and DNA_MAX_PRESENCE_LISTENERS deleted. */
 
 /**
  * Contact request listener (for real-time contact request notifications)
@@ -604,10 +596,7 @@ struct dna_engine {
     int outbox_listener_count;
     pthread_mutex_t outbox_listeners_mutex;
 
-    /* Presence listeners (for real-time contact online status) */
-    dna_presence_listener_t presence_listeners[DNA_MAX_PRESENCE_LISTENERS];
-    int presence_listener_count;
-    pthread_mutex_t presence_listeners_mutex;
+    /* v0.9.0: Presence listeners removed — batch query via Nodus server */
 
     /* Contact request listener (for real-time contact request notifications) */
     dna_contact_request_listener_t contact_request_listener;

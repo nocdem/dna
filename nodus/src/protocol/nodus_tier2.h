@@ -149,6 +149,23 @@ int nodus_t2_servers_result(uint32_t txn,
                              int server_count,
                              uint8_t *buf, size_t cap, size_t *out_len);
 
+/* ── Presence protocol ────────────────────────────────────────────── */
+
+/** Client → Nodus: batch presence query (post-auth). */
+int nodus_t2_presence_query(uint32_t txn, const uint8_t *token,
+                              const nodus_key_t *fps, int count,
+                              uint8_t *buf, size_t cap, size_t *out_len);
+
+/** Nodus → Client: presence query result (sparse — only online entries). */
+int nodus_t2_presence_result(uint32_t txn,
+                               const nodus_key_t *fps, const bool *online,
+                               const uint8_t *peers, int count,
+                               uint8_t *buf, size_t cap, size_t *out_len);
+
+/** Nodus → Nodus: inter-node presence sync (no auth). */
+int nodus_t2_presence_sync(uint32_t txn, const nodus_key_t *fps, int count,
+                             uint8_t *buf, size_t cap, size_t *out_len);
+
 /* ── Inter-Nodus replication ──────────────────────────────────────── */
 
 /** Encode a channel replication message (Nodus → Nodus, no auth). */
@@ -200,6 +217,12 @@ typedef struct {
         uint16_t    tcp_port;
     } servers[17];  /* NODUS_PBFT_MAX_PEERS(16) + 1 for self */
     int             server_count;
+
+    /* Presence query/sync */
+    nodus_key_t    *pq_fps;         /* FP array (heap) */
+    int             pq_count;       /* FP count */
+    bool           *pq_online;      /* Result: online status per FP (heap) */
+    uint8_t        *pq_peers;       /* Result: peer index per FP (heap) */
 
     /* Error */
     int             error_code;

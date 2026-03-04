@@ -590,6 +590,24 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             nodus_t1_msg_free(&t1msg);
             nodus_t2_msg_free(&msg);
             return;
+        } else if (strcmp(msg.method, "p_sync") == 0) {
+            /* Inter-nodus presence sync (no auth required) */
+            if (msg.pq_fps && msg.pq_count > 0) {
+                /* Determine peer_index from source IP */
+                uint8_t pi = 0;
+                if (sess->conn) {
+                    for (int p = 0; p < srv->pbft.peer_count; p++) {
+                        if (strcmp(srv->pbft.peers[p].ip, sess->conn->ip) == 0) {
+                            pi = (uint8_t)(p + 1);
+                            break;
+                        }
+                    }
+                }
+                if (pi > 0)
+                    nodus_presence_merge_remote(srv, msg.pq_fps, msg.pq_count, pi);
+            }
+            nodus_t2_msg_free(&msg);
+            return;
         } else if (strcmp(msg.method, "ch_rep") == 0) {
             /* Inter-nodus channel replication (no auth required) */
             nodus_channel_post_t post;
@@ -655,6 +673,31 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
                             "witness module not enabled",
                             resp_buf, sizeof(resp_buf), &rlen);
+            nodus_tcp_send(sess->conn, resp_buf, rlen);
+        }
+        nodus_t2_msg_free(&msg);
+        return;
+    }
+
+    /* Presence query (post-auth) */
+    if (strcmp(msg.method, "pq") == 0) {
+        if (msg.pq_fps && msg.pq_count > 0) {
+            bool *online = calloc((size_t)msg.pq_count, sizeof(bool));
+            uint8_t *peers = calloc((size_t)msg.pq_count, sizeof(uint8_t));
+            if (online && peers) {
+                nodus_presence_query_batch(srv, msg.pq_fps, msg.pq_count, online, peers);
+                size_t rlen = 0;
+                nodus_t2_presence_result(msg.txn_id, msg.pq_fps, online, peers,
+                                           msg.pq_count, resp_buf, sizeof(resp_buf), &rlen);
+                nodus_tcp_send(sess->conn, resp_buf, rlen);
+            }
+            free(online);
+            free(peers);
+        } else {
+            /* Empty query → empty result */
+            size_t rlen = 0;
+            nodus_t2_presence_result(msg.txn_id, NULL, NULL, NULL, 0,
+                                       resp_buf, sizeof(resp_buf), &rlen);
             nodus_tcp_send(sess->conn, resp_buf, rlen);
         }
         nodus_t2_msg_free(&msg);
@@ -818,8 +861,11 @@ static void on_tcp_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
 static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
     nodus_session_t *sess = session_for_conn(srv, conn);
-    if (sess)
+    if (sess) {
+        if (sess->authenticated)
+            nodus_presence_remove_local(srv, &sess->client_fp);
         session_clear(sess);
+    }
 
     /* Clear any witness peer references before conn is freed */
     if (srv->witness)
@@ -960,6 +1006,9 @@ int nodus_server_run(nodus_server_t *srv) {
 
         /* Retry hinted handoff (runs at most every NODUS_HINTED_RETRY_SEC) */
         nodus_replication_retry(&srv->replication);
+
+        /* Presence: expire stale entries + broadcast local list to peers */
+        nodus_presence_tick(srv);
     }
 
     return 0;

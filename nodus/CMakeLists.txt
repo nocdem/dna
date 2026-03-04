@@ -100,6 +100,7 @@ if(NOT WIN32)
         src/consensus/nodus_pbft.c
         src/server/nodus_server.c
         src/server/nodus_auth.c
+        src/server/nodus_presence.c
         src/witness/nodus_witness.c
         src/witness/nodus_witness_db.c
         src/witness/nodus_witness_bft.c

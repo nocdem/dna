@@ -21,6 +21,7 @@
 #include "consensus/nodus_pbft.h"
 #include "crypto/nodus_identity.h"
 #include "witness/nodus_witness.h"
+#include "server/nodus_presence.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -99,6 +100,9 @@ typedef struct nodus_server {
 
     /* Witness module (NULL when disabled) */
     nodus_witness_t        *witness;
+
+    /* Presence tracking (connected clients, cluster-wide) */
+    nodus_presence_table_t  presence;
 
     /* Sessions (indexed by conn->slot) */
     nodus_session_t         sessions[NODUS_MAX_SESSIONS];

@@ -766,41 +766,10 @@ int messenger_transport_list_online_peers(
 
 int messenger_transport_refresh_presence(messenger_context_t *ctx)
 {
-    if (!ctx) {
-        return -1;
-    }
-
-    QGP_LOG_DEBUG(LOG_TAG, "Refreshing presence in DHT for %s", ctx->identity);
-
-    uint8_t *pubkey = NULL;
-    size_t pubkey_len = 0;
-    if (load_my_dilithium_pubkey(ctx, &pubkey, &pubkey_len) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load public key for presence refresh");
-        return -1;
-    }
-
-    char presence_data[512];
-    if (create_presence_json(presence_data, sizeof(presence_data)) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to create presence JSON");
-        free(pubkey);
-        return -1;
-    }
-
-    uint8_t dht_key[64];
-    sha3_512_hash(pubkey, pubkey_len, dht_key);
-    free(pubkey);
-
-    unsigned int ttl_7days = 7 * 24 * 3600;
-    int result = nodus_ops_put(dht_key, sizeof(dht_key),
-                               (const uint8_t*)presence_data, strlen(presence_data),
-                               ttl_7days, 1);
-
-    if (result != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to register presence in DHT");
-        return -1;
-    }
-
-    QGP_LOG_DEBUG(LOG_TAG, "Presence refreshed successfully");
+    /* v0.9.0: Nodus-native presence — no DHT PUT needed.
+     * Presence is tracked server-side when client connects.
+     * Batch queries handled by dna_presence_batch_query(). */
+    (void)ctx;
     return 0;
 }
 
@@ -809,42 +778,18 @@ int messenger_transport_lookup_presence(
     const char *fingerprint,
     uint64_t *last_seen_out)
 {
-    if (!ctx || !fingerprint || !last_seen_out) {
+    /* v0.9.0: Read from presence cache (populated by Nodus batch query) */
+    (void)ctx;
+    if (!fingerprint || !last_seen_out)
         return -1;
-    }
-
     *last_seen_out = 0;
 
-    size_t fp_len = strlen(fingerprint);
-    if (fp_len != 128) {
-        return -1;
+    time_t ts = presence_cache_last_seen(fingerprint);
+    if (ts > 0) {
+        *last_seen_out = (uint64_t)ts;
+        return 0;
     }
-
-    uint8_t dht_key[64];
-    for (int i = 0; i < 64; i++) {
-        unsigned int byte;
-        if (sscanf(fingerprint + (i * 2), "%02x", &byte) != 1) {
-            return -1;
-        }
-        dht_key[i] = (uint8_t)byte;
-    }
-
-    uint8_t *value = NULL;
-    size_t value_len = 0;
-
-    if (nodus_ops_get(dht_key, sizeof(dht_key), &value, &value_len) != 0 || !value) {
-        return -1;
-    }
-
-    uint64_t last_seen = 0;
-    if (parse_presence_json((const char*)value, &last_seen) != 0) {
-        free(value);
-        return -1;
-    }
-
-    *last_seen_out = last_seen;
-    free(value);
-    return 0;
+    return -1;
 }
 
 // ============================================================================

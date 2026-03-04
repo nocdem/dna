@@ -525,6 +525,71 @@ int nodus_t2_servers_result(uint32_t txn,
     return finish(&enc, out_len);
 }
 
+/* ── Presence protocol ────────────────────────────────────────────── */
+
+int nodus_t2_presence_query(uint32_t txn, const uint8_t *token,
+                              const nodus_key_t *fps, int count,
+                              uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "pq");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "fps");
+    cbor_encode_array(&enc, (size_t)count);
+    for (int i = 0; i < count; i++)
+        cbor_encode_bstr(&enc, fps[i].bytes, NODUS_KEY_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_presence_result(uint32_t txn,
+                               const nodus_key_t *fps, const bool *online,
+                               const uint8_t *peers, int count,
+                               uint8_t *buf, size_t cap, size_t *out_len) {
+    /* Count online entries for sparse encoding */
+    int online_count = 0;
+    if (fps && online) {
+        for (int i = 0; i < count; i++)
+            if (online[i]) online_count++;
+    }
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "pq");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "ps");
+    cbor_encode_array(&enc, (size_t)online_count);
+
+    if (fps && online) {
+        for (int i = 0; i < count; i++) {
+            if (!online[i]) continue;
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, "fp");
+            cbor_encode_bstr(&enc, fps[i].bytes, NODUS_KEY_BYTES);
+            cbor_encode_cstr(&enc, "pi");
+            cbor_encode_uint(&enc, peers ? peers[i] : 0);
+        }
+    }
+
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_presence_sync(uint32_t txn, const nodus_key_t *fps, int count,
+                             uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "p_sync");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "fps");
+    cbor_encode_array(&enc, (size_t)count);
+    for (int i = 0; i < count; i++)
+        cbor_encode_bstr(&enc, fps[i].bytes, NODUS_KEY_BYTES);
+    return finish(&enc, out_len);
+}
+
 /* ── Inter-Nodus replication ──────────────────────────────────────── */
 
 int nodus_t2_ch_replicate(uint32_t txn,
@@ -718,6 +783,25 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
                         memcpy(msg->fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
                 }
+                /* fps (presence query/sync: array of fingerprints) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "fps", 3) == 0) {
+                    cbor_item_t arr = cbor_decode_next(&dec);
+                    if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        msg->pq_fps = calloc(arr.count, sizeof(nodus_key_t));
+                        if (msg->pq_fps) {
+                            msg->pq_count = 0;
+                            for (size_t k = 0; k < arr.count; k++) {
+                                cbor_item_t vi = cbor_decode_next(&dec);
+                                if (vi.type == CBOR_ITEM_BSTR &&
+                                    vi.bstr.len == NODUS_KEY_BYTES) {
+                                    memcpy(msg->pq_fps[msg->pq_count].bytes,
+                                           vi.bstr.ptr, NODUS_KEY_BYTES);
+                                    msg->pq_count++;
+                                }
+                            }
+                        }
+                    }
+                }
                 else {
                     cbor_decode_skip(&dec);
                 }
@@ -835,6 +919,44 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                         }
                     }
                 }
+                /* ps (presence result: sparse array of online entries) */
+                else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "ps", 2) == 0) {
+                    cbor_item_t arr = cbor_decode_next(&dec);
+                    if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        msg->pq_fps = calloc(arr.count, sizeof(nodus_key_t));
+                        msg->pq_online = calloc(arr.count, sizeof(bool));
+                        msg->pq_peers = calloc(arr.count, sizeof(uint8_t));
+                        if (msg->pq_fps && msg->pq_online && msg->pq_peers) {
+                            msg->pq_count = 0;
+                            for (size_t k = 0; k < arr.count; k++) {
+                                cbor_item_t emap = cbor_decode_next(&dec);
+                                if (emap.type != CBOR_ITEM_MAP) continue;
+                                int ci = msg->pq_count;
+                                msg->pq_online[ci] = true;
+                                for (size_t m = 0; m < emap.count; m++) {
+                                    cbor_item_t ek = cbor_decode_next(&dec);
+                                    if (ek.type != CBOR_ITEM_TSTR) {
+                                        cbor_decode_skip(&dec); continue;
+                                    }
+                                    if (ek.tstr.len == 2 && memcmp(ek.tstr.ptr, "fp", 2) == 0) {
+                                        cbor_item_t ev = cbor_decode_next(&dec);
+                                        if (ev.type == CBOR_ITEM_BSTR &&
+                                            ev.bstr.len == NODUS_KEY_BYTES)
+                                            memcpy(msg->pq_fps[ci].bytes,
+                                                   ev.bstr.ptr, NODUS_KEY_BYTES);
+                                    } else if (ek.tstr.len == 2 && memcmp(ek.tstr.ptr, "pi", 2) == 0) {
+                                        cbor_item_t ev = cbor_decode_next(&dec);
+                                        if (ev.type == CBOR_ITEM_UINT)
+                                            msg->pq_peers[ci] = (uint8_t)ev.uint_val;
+                                    } else {
+                                        cbor_decode_skip(&dec);
+                                    }
+                                }
+                                msg->pq_count++;
+                            }
+                        }
+                    }
+                }
                 /* srvs (servers list) */
                 else if (rkey.tstr.len == 4 && memcmp(rkey.tstr.ptr, "srvs", 4) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
@@ -919,4 +1041,10 @@ void nodus_t2_msg_free(nodus_tier2_msg_t *msg) {
         free(msg->ch_posts);
         msg->ch_posts = NULL;
     }
+    free(msg->pq_fps);
+    msg->pq_fps = NULL;
+    free(msg->pq_online);
+    msg->pq_online = NULL;
+    free(msg->pq_peers);
+    msg->pq_peers = NULL;
 }

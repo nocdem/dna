@@ -287,6 +287,38 @@ int nodus_client_ch_subscribe(nodus_client_t *client,
 int nodus_client_ch_unsubscribe(nodus_client_t *client,
                                  const uint8_t uuid[NODUS_UUID_BYTES]);
 
+/* ── Presence Operations ─────────────────────────────────────────── */
+
+#define NODUS_PRESENCE_MAX_QUERY  128
+
+typedef struct {
+    nodus_key_t fp;
+    bool        online;
+    uint8_t     peer_index;
+} nodus_presence_entry_result_t;
+
+typedef struct {
+    int total_queried;
+    int online_count;
+    nodus_presence_entry_result_t *entries;  /* heap, only online entries */
+} nodus_presence_result_t;
+
+/**
+ * Batch presence query: check online status for up to 128 fingerprints.
+ * Result contains only online entries (sparse).
+ * Caller must free result with nodus_client_free_presence_result().
+ *
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_presence_query(nodus_client_t *client,
+                                  const nodus_key_t *fps, int count,
+                                  nodus_presence_result_t *result);
+
+/**
+ * Free a presence result.
+ */
+void nodus_client_free_presence_result(nodus_presence_result_t *result);
+
 /* ── DNAC Operations ─────────────────────────────────────────────── */
 
 /**

@@ -82,6 +82,9 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
     sess->conn->peer_pk = sess->client_pk;
     sess->conn->peer_id_set = true;
 
+    /* Track presence */
+    nodus_presence_add_local(srv, &sess->client_fp);
+
     /* Send AUTH_OK with session token */
     size_t len = 0;
     nodus_t2_auth_ok(txn_id, sess->token,

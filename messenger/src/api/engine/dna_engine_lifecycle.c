@@ -32,11 +32,7 @@ void dna_engine_resume_presence(dna_engine_t *engine) {
     if (!engine) return;
     atomic_store(&engine->presence_active, true);
     QGP_LOG_INFO(LOG_TAG, "Presence heartbeat resumed (app in foreground)");
-
-    /* Immediately refresh presence on resume */
-    if (engine->messenger) {
-        messenger_transport_refresh_presence(engine->messenger);
-    }
+    /* v0.9.0: No DHT PUT needed — presence tracked by Nodus server connection */
 }
 
 /* ============================================================================
