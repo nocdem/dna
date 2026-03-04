@@ -76,10 +76,11 @@ static void dna_presence_batch_query(dna_engine_t *engine) {
         return;
     }
 
-    /* Update presence cache — fires ONLINE/OFFLINE events automatically */
+    /* Update presence cache with real timestamps from server */
     time_t now = time(NULL);
     for (int i = 0; i < count; i++) {
-        presence_cache_update(fps[i], online[i], now);
+        time_t ts = online[i] ? now : (last_seen[i] > 0 ? (time_t)last_seen[i] : now);
+        presence_cache_update(fps[i], online[i], ts);
         /* Persist real last_seen from server to contacts DB */
         if (last_seen[i] > 0)
             contacts_db_update_last_seen(fps[i], last_seen[i]);

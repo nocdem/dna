@@ -7,7 +7,7 @@
  * - P2P disconnection → Peer offline
  * - Fires events on status transitions
  *
- * Online = lastSeen within 5 minutes (derived, not stored)
+ * Online status stored explicitly from server response (not derived from timestamp)
  *
  * @file presence_cache.h
  */
@@ -28,7 +28,8 @@ extern "C" {
  */
 typedef struct {
     char fingerprint[129];    // 128 hex chars + null
-    time_t last_seen;         // Last time we saw them (message/connection)
+    time_t last_seen;         // Last time we saw them (real server timestamp)
+    bool is_online;           // Online status from server (not derived from timestamp)
 } presence_entry_t;
 
 /**
@@ -58,11 +59,10 @@ void presence_cache_update(const char *fingerprint, bool is_online, time_t times
 /**
  * Get cached presence status
  *
- * Online = lastSeen within last 5 minutes
- * NO DHT queries (fast O(1) lookup!)
+ * Returns the is_online flag set by the server (fast O(1) lookup)
  *
  * @param fingerprint Contact fingerprint
- * @return true if online (seen < 5 min ago), false if offline/unknown
+ * @return true if online, false if offline/unknown
  */
 bool presence_cache_get(const char *fingerprint);
 

@@ -2,7 +2,7 @@
  * Local Presence Cache Implementation
  *
  * Fast O(1) lookup with hash map
- * Online status derived from lastSeen timestamp
+ * Online status stored explicitly from server response
  * Fires events on status transitions
  */
 
@@ -18,7 +18,6 @@
 #define LOG_TAG "DB_PRESENCE"
 
 #define PRESENCE_CACHE_SIZE 1024
-#define PRESENCE_TTL_SECONDS 300  // 5 minutes
 
 /**
  * Hash map entry (linked list for collisions)
@@ -47,15 +46,6 @@ static unsigned int hash_fingerprint(const char *fingerprint) {
     }
 
     return hash % PRESENCE_CACHE_SIZE;
-}
-
-/**
- * Check if timestamp is within TTL (internal helper)
- */
-static bool is_within_ttl(time_t last_seen) {
-    if (last_seen == 0) return false;
-    time_t now = time(NULL);
-    return (now - last_seen) < PRESENCE_TTL_SECONDS;
 }
 
 /**
@@ -96,7 +86,7 @@ int presence_cache_init(void) {
 
     pthread_mutex_unlock(&cache_mutex);
 
-    QGP_LOG_INFO(LOG_TAG, "Cache initialized (TTL=%d seconds)", PRESENCE_TTL_SECONDS);
+    QGP_LOG_INFO(LOG_TAG, "Cache initialized");
     return 0;
 }
 
@@ -121,18 +111,13 @@ void presence_cache_update(const char *fingerprint, bool is_online, time_t times
     while (node) {
         if (strcmp(node->entry.fingerprint, fingerprint) == 0) {
             // Check old status before update
-            bool was_online = is_within_ttl(node->entry.last_seen);
+            bool was_online = node->entry.is_online;
 
-            // Update entry
-            if (is_online) {
-                // Positive evidence: update last_seen to now
-                node->entry.last_seen = timestamp;
-            } else {
-                // Negative evidence (disconnect): set last_seen to past for immediate offline
-                node->entry.last_seen = timestamp - PRESENCE_TTL_SECONDS - 1;
-            }
+            // Update entry — store real timestamp and explicit online flag
+            node->entry.last_seen = timestamp;
+            node->entry.is_online = is_online;
 
-            bool now_online = is_within_ttl(node->entry.last_seen);
+            bool now_online = is_online;
 
             pthread_mutex_unlock(&cache_mutex);
 
@@ -163,17 +148,13 @@ void presence_cache_update(const char *fingerprint, bool is_online, time_t times
 
     strncpy(new_node->entry.fingerprint, fingerprint, 128);
     new_node->entry.fingerprint[128] = '\0';
-
-    if (is_online) {
-        new_node->entry.last_seen = timestamp;
-    } else {
-        new_node->entry.last_seen = timestamp - PRESENCE_TTL_SECONDS - 1;
-    }
+    new_node->entry.last_seen = timestamp;
+    new_node->entry.is_online = is_online;
 
     new_node->next = presence_map[index];
     presence_map[index] = new_node;
 
-    bool now_online = is_within_ttl(new_node->entry.last_seen);
+    bool now_online = is_online;
 
     pthread_mutex_unlock(&cache_mutex);
 
@@ -212,9 +193,9 @@ bool presence_cache_get(const char *fingerprint) {
     // Search for entry
     while (node) {
         if (strcmp(node->entry.fingerprint, fingerprint) == 0) {
-            bool is_online = is_within_ttl(node->entry.last_seen);
+            bool online = node->entry.is_online;
             pthread_mutex_unlock(&cache_mutex);
-            return is_online;
+            return online;
         }
         node = node->next;
     }
@@ -240,10 +221,6 @@ time_t presence_cache_last_seen(const char *fingerprint) {
         if (strcmp(node->entry.fingerprint, fingerprint) == 0) {
             time_t last_seen = node->entry.last_seen;
             pthread_mutex_unlock(&cache_mutex);
-            // Don't return artificial "past" timestamps from offline marking
-            if (last_seen < 0 || (time(NULL) - last_seen) > PRESENCE_TTL_SECONDS * 2) {
-                return 0;
-            }
             return last_seen;
         }
         node = node->next;

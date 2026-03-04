@@ -801,14 +801,6 @@ int main(int argc, char *argv[]) {
     else if (strcmp(command, "refresh-presence") == 0) {
         result = cmd_refresh_presence(g_engine);
     }
-    else if (strcmp(command, "presence") == 0) {
-        if (optind + 1 >= argc) {
-            fprintf(stderr, "Error: 'presence' requires <name|fingerprint> argument\n");
-            result = 1;
-        } else {
-            result = cmd_presence(g_engine, argv[optind + 1]);
-        }
-    }
 
     /* ====== PHASE 5: DEBUG LOGGING ====== */
     else if (strcmp(command, "log-level") == 0) {

@@ -418,7 +418,6 @@ int cmd_sync_groups(dna_engine_t *engine);
 int cmd_sync_groups_up(dna_engine_t *engine);
 int cmd_sync_groups_down(dna_engine_t *engine);
 int cmd_refresh_presence(dna_engine_t *engine);
-int cmd_presence(dna_engine_t *engine, const char *identifier);
 
 /* ============================================================================
  * PHASE 5: DEBUG LOGGING (7 commands)
