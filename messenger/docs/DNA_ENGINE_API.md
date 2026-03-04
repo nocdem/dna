@@ -160,7 +160,7 @@ if (bindings.dna_engine_has_identity(engine, dataDir.toNativeUtf8())) {
 | [Feeds v2](#5a-feeds-v2) | 7 | Topic-based public feeds with categories |
 | [Wall](#5b-wall) | 7 | User wall posts, images, comments, timeline |
 | [Wallet](#6-wallet) | 4 | Cellframe wallet operations |
-| [P2P & Presence](#7-p2p--presence) | 7 | Online status, DHT sync |
+| [P2P & Presence](#7-p2p--presence) | 7 | Online status (Nodus-native), DHT sync |
 | [Backward Compat](#8-backward-compatibility) | 2 | Access raw contexts |
 | [Memory](#9-memory-management) | 9 | Free callback data |
 
@@ -454,7 +454,7 @@ Loads and activates an identity.
 5. Initializes contacts database, profile cache, and profile manager
 6. **Syncs contacts from DHT** (restores contact list on new device, v0.2.14+)
 7. Initializes P2P transport
-8. Registers presence in DHT (announces user is online)
+8. Registers presence with Nodus server (server tracks connected clients natively)
 9. Subscribes to contacts for push notifications
 10. Checks for offline messages from contacts' DHT outboxes
 11. Dispatches `DNA_EVENT_IDENTITY_LOADED` event
@@ -540,10 +540,10 @@ dna_request_id_t dna_engine_load_identity_minimal(
 ```
 
 Lightweight version for background services. Initializes DHT connection and
-transport for polling-based message retrieval. No listeners, no presence.
+transport for polling-based message retrieval. No listeners, no presence queries.
 
 **Skips (to save resources when app is closed):**
-- Presence registration and heartbeat
+- Presence batch query and heartbeat
 - DHT listeners (uses polling instead, v0.6.15+)
 - Contact sync from DHT
 - Pending message retry
@@ -1995,6 +1995,8 @@ void on_send_complete(dna_request_id_t id, int error, void* ud) {
 
 ## 7. P2P & Presence
 
+> **v0.9.0:** Presence is now tracked natively by the Nodus server. Connected clients are tracked server-side via `nodus_presence_add_local`/`remove_local`. Presence queries use a single batch TCP call (`pq` protocol) instead of per-contact DHT GET. Inter-node presence is broadcast via `p_sync`. The heartbeat thread still runs every 60s but calls `dna_presence_batch_query()` instead of DHT PUT.
+
 ### dna_engine_refresh_presence
 
 ```c
@@ -2005,7 +2007,7 @@ dna_request_id_t dna_engine_refresh_presence(
 );
 ```
 
-Announces presence in DHT. Call periodically (~5 min) to stay visible.
+Triggers a batch presence query for all contacts via a single TCP call to the Nodus server. Updates the local presence cache with results. Replaces the old DHT PUT presence announcement (v0.9.0+).
 
 ---
 

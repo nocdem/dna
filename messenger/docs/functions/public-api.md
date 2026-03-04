@@ -120,9 +120,9 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 
 | Function | Description |
 |----------|-------------|
-| `dna_request_id_t dna_engine_refresh_presence(...)` | Refresh presence in DHT |
-| `bool dna_engine_is_peer_online(dna_engine_t*, const char*)` | Check if peer is online |
-| `dna_request_id_t dna_engine_lookup_presence(...)` | Lookup peer presence from DHT |
+| `dna_request_id_t dna_engine_refresh_presence(...)` | Trigger batch presence query via Nodus server TCP (v0.9.0+, replaces DHT PUT) |
+| `bool dna_engine_is_peer_online(dna_engine_t*, const char*)` | Check if peer is online (from presence cache) |
+| `dna_request_id_t dna_engine_lookup_presence(...)` | Read peer presence from local cache (populated by batch TCP query, v0.9.0+) |
 | `dna_request_id_t dna_engine_sync_contacts_to_dht(...)` | Sync contacts to DHT |
 | `dna_request_id_t dna_engine_sync_contacts_from_dht(...)` | Sync contacts from DHT |
 | `dna_request_id_t dna_engine_sync_groups(...)` | Sync groups from DHT |
@@ -143,7 +143,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 |----------|-------------|
 | `size_t dna_engine_listen_outbox(dna_engine_t*, const char*)` | Start listening for updates to contact's outbox |
 | `void dna_engine_cancel_outbox_listener(dna_engine_t*, const char*)` | Cancel outbox listener |
-| `int dna_engine_listen_all_contacts(dna_engine_t*)` | Start all listeners (outbox + presence + watermark), waits for DHT ready |
+| `int dna_engine_listen_all_contacts(dna_engine_t*)` | Start all listeners (outbox + watermark), waits for DHT ready. Presence listeners removed (v0.9.0+, Nodus-native). |
 | `void dna_engine_cancel_all_outbox_listeners(dna_engine_t*)` | Cancel all outbox listeners |
 | `int dna_engine_refresh_listeners(dna_engine_t*)` | Refresh all DHT listeners |
 

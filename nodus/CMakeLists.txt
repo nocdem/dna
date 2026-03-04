@@ -238,6 +238,11 @@ add_executable(test_client tests/test_client.c)
 target_link_libraries(test_client nodus_lib dsa nodus_lib pthread)
 add_test(NAME test_client COMMAND test_client)
 
+# Presence table + protocol test
+add_executable(test_presence tests/test_presence.c)
+target_link_libraries(test_presence nodus_lib dsa nodus_lib)
+add_test(NAME test_presence COMMAND test_presence)
+
 # Witness transaction verification test
 add_executable(test_witness_verify tests/test_witness_verify.c)
 target_link_libraries(test_witness_verify nodus_lib dsa nodus_lib)

@@ -528,3 +528,15 @@ Each commenter stores their own value_id slot, allowing concurrent writers witho
 | `int dht_message_backup_restore(dht_context_t*, message_backup_context_t*, const char*, ...)` | Restore messages from DHT |
 | `bool dht_message_backup_exists(dht_context_t*, const char*)` | Check if backup exists |
 | `int dht_message_backup_get_info(dht_context_t*, const char*, uint64_t*, int*)` | Get backup info |
+
+---
+
+## 12. Nodus Ops (`dht/shared/nodus_ops.h`)
+
+Convenience wrappers around the Nodus singleton for DHT operations and presence.
+
+### 12.1 Presence (v0.9.0+)
+
+| Function | Description |
+|----------|-------------|
+| `int nodus_ops_presence_query(const char **fingerprints, size_t count, bool *results)` | Batch-query presence for multiple contacts via single TCP call to Nodus server. Returns online/offline status per fingerprint in `results` array. |

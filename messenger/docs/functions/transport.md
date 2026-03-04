@@ -2,7 +2,7 @@
 
 **Directory:** `transport/`
 
-Transport layer providing DHT-based presence system and offline message queue.
+Transport layer providing offline message queue. Presence is handled natively by Nodus server (v0.9.0+).
 
 > **Phase 14 (v0.3.154):** Direct P2P messaging removed - all messaging now uses DHT-only path.
 > **v0.4.61:** ICE/STUN/TURN removed for privacy. Future voice/video will use alternative transport.
@@ -26,7 +26,7 @@ Transport layer providing DHT-based presence system and offline message queue.
 
 | Function | Description |
 |----------|-------------|
-| `int transport_register_presence(transport_t*)` | Register presence timestamp in DHT |
+| `int transport_register_presence(transport_t*)` | **No-op (v0.9.0+).** Presence is tracked natively by Nodus server. Kept for API compatibility. |
 
 ### DHT Offline Queue
 
@@ -57,10 +57,10 @@ Transport layer providing DHT-based presence system and offline message queue.
 
 | Function | Description |
 |----------|-------------|
-| `bool messenger_transport_peer_online(messenger_context_t*, const char*)` | Check if peer is online via DHT |
+| `bool messenger_transport_peer_online(messenger_context_t*, const char*)` | Check if peer is online (reads from presence cache) |
 | `int messenger_transport_list_online_peers(messenger_context_t*, char***, int*)` | Get list of online peers |
-| `int messenger_transport_refresh_presence(messenger_context_t*)` | Re-announce presence (5-minute interval) |
-| `int messenger_transport_lookup_presence(messenger_context_t*, const char*, uint64_t*)` | Lookup peer's last-seen timestamp from DHT |
+| `int messenger_transport_refresh_presence(messenger_context_t*)` | **No-op (v0.9.0+).** Presence is tracked natively by Nodus server. |
+| `int messenger_transport_lookup_presence(messenger_context_t*, const char*, uint64_t*)` | Lookup peer's last-seen timestamp from local presence cache (populated by batch TCP query) |
 
 ### Offline Messages
 

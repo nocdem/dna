@@ -71,7 +71,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 
 - **E2E Encryption**: Per-message Kyber1024 encapsulation + AES-256-GCM
 - **GEK Groups**: Group Symmetric Key for 200x faster group encryption
-- **DHT-based**: Decentralized key storage, presence, offline queuing
+- **DHT-based**: Decentralized key storage, offline queuing, Nodus-native presence
 - **P2P Messaging**: Direct TCP with DHT fallback
 - **Fingerprint Identity**: SHA3-512(Dilithium_pubkey) = 128 hex chars
 - **BIP39 Recovery**: Deterministic key generation from mnemonic
@@ -108,7 +108,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 │   └── shared/               # Groups, offline queue, GEK storage
 │
 ├── transport/                      # Peer-to-peer transport
-│   └── transport/            # TCP connections, DHT presence
+│   └── transport/            # TCP connections, offline messaging
 │
 ├── messenger/                # Messaging core
 │   ├── identity.c            # Identity management
@@ -693,7 +693,7 @@ typedef struct {
 } peer_info_t;
 ```
 
-> **Note (v0.4.62):** No IP/port fields - privacy-preserving presence system.
+> **Note (v0.9.0):** Presence is now tracked natively by Nodus server. No DHT PUT for presence. Connected clients are tracked server-side and queried via batch TCP call.
 
 ### 6.4 Core Operations
 
@@ -713,8 +713,8 @@ int transport_start(transport_t *ctx);
 void transport_stop(transport_t *ctx);
 void transport_free(transport_t *ctx);
 
-// Discovery (DHT presence)
-int transport_register_presence(transport_t *ctx);  // Periodic (5 min)
+// Presence (Nodus-native, v0.9.0+)
+int transport_register_presence(transport_t *ctx);  // No-op (presence tracked by Nodus server)
 
 // Offline messaging (DHT Spillway)
 int transport_check_offline_messages(transport_t *ctx, const char *sender_fp,
@@ -1004,6 +1004,7 @@ int contacts_db_clear_all(void);
 **Presence Cache** (`database/presence_cache.h`):
 - O(1) online status lookup
 - In-memory with periodic persistence
+- Populated by batch TCP presence query to Nodus server (v0.9.0+)
 
 ---
 
@@ -1286,8 +1287,9 @@ dna_request_id_t dna_engine_register_name(engine, name, callback, user_data);
 dna_request_id_t dna_engine_get_display_name(engine, fingerprint, callback, user_data);
 ```
 
-> **Note:** `dna_engine_load_identity()` automatically initializes P2P, registers presence,
-> subscribes to contacts for push notifications, and checks for offline messages.
+> **Note:** `dna_engine_load_identity()` automatically initializes transport, starts presence
+> heartbeat (batch TCP query to Nodus server), subscribes to contacts for push notifications,
+> and checks for offline messages.
 
 **Contacts (3 async functions):**
 ```c
@@ -1321,9 +1323,9 @@ dna_request_id_t dna_engine_send_tokens(engine, wallet_index, recipient_address,
 dna_request_id_t dna_engine_get_transactions(engine, wallet_index, network, callback, user_data);
 ```
 
-**P2P & Presence (6 async functions):**
+**P2P & Presence (6 async functions, Nodus-native v0.9.0+):**
 ```c
-dna_request_id_t dna_engine_refresh_presence(engine, callback, user_data);
+dna_request_id_t dna_engine_refresh_presence(engine, callback, user_data);  // batch TCP query
 bool dna_engine_is_peer_online(engine, fingerprint);
 dna_request_id_t dna_engine_sync_contacts_to_dht(engine, callback, user_data);
 dna_request_id_t dna_engine_sync_contacts_from_dht(engine, callback, user_data);

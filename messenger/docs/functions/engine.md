@@ -97,8 +97,9 @@ Internal DNA engine implementation with async task queue.
 
 | Function | Description |
 |----------|-------------|
-| `void dna_handle_refresh_presence(dna_engine_t*, dna_task_t*)` | Handle refresh presence |
-| `void dna_handle_lookup_presence(dna_engine_t*, dna_task_t*)` | Handle lookup presence |
+| `void dna_handle_refresh_presence(dna_engine_t*, dna_task_t*)` | Handle refresh presence (triggers batch TCP query via Nodus server, v0.9.0+) |
+| `void dna_handle_lookup_presence(dna_engine_t*, dna_task_t*)` | Handle lookup presence (reads from local cache populated by batch query) |
+| `void dna_presence_batch_query(dna_engine_t*)` | Internal: batch-query all contacts' presence via single TCP call to Nodus server, updates local presence cache |
 | `void dna_handle_sync_contacts_to_dht(dna_engine_t*, dna_task_t*)` | Handle sync to DHT |
 | `void dna_handle_sync_contacts_from_dht(dna_engine_t*, dna_task_t*)` | Handle sync from DHT |
 | `void dna_handle_sync_groups(dna_engine_t*, dna_task_t*)` | Handle sync groups |

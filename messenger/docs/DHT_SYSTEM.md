@@ -1206,7 +1206,7 @@ ssh root@<IP> 'journalctl -u nodus-v5 -f'
 
 | Data Type | TTL | DHT Key Format | Persisted | Notes |
 |-----------|-----|----------------|-----------|-------|
-| **Presence** | 7 days | `SHA3-512(public_key)` = fingerprint | No | IP:port:timestamp |
+| **Presence** | N/A | N/A (Nodus-native, v0.9.0+) | No | Server-side tracking, batch TCP query |
 | Offline Messages | 7 days | `sender:outbox:recipient:DAY:SALT_HEX` | No | Spillway outbox (salt optional) |
 | **ACK (v15)** | 30 days | `SHA3-512(recipient:ack:sender:SALT_HEX)` | No | Delivery ack (salt optional) |
 | Contact Lists | 7 days | `SHA3-512(identity:contactlist)` | No | Self-encrypted |
@@ -1219,33 +1219,21 @@ ssh root@<IP> 'journalctl -u nodus-v5 -f'
 | Message Wall | 30 days | `SHA3-512(fingerprint:message_wall)` | Yes | DNA Board |
 | Bootstrap Registry | 7 days | `SHA3-512("dna:bootstrap:registry")` | Special | Self-healing |
 
-### 8.1 Presence Data
+### 8.1 Presence Data (Nodus-Native, v0.9.0+)
 
-Presence records are published when a user comes online and refreshed periodically.
+Presence is tracked natively by the Nodus server. Connected clients are registered server-side via `nodus_presence_add_local`/`nodus_presence_remove_local`. Presence is broadcast between Nodus nodes via the `p_sync` protocol.
 
-**DHT Key:** `SHA3-512(Dilithium5_public_key)` = user's fingerprint (binary, 64 bytes)
+**No DHT PUT/GET for presence.** The old DHT-based presence system (publishing IP:port:timestamp to DHT key = fingerprint) has been removed.
 
-**Value Format (JSON):**
-```json
-{"ips":"192.168.1.5,83.x.x.x","port":4001,"timestamp":1733234567}
-```
-
-| Field | Description |
-|-------|-------------|
-| `ips` | Comma-separated local + public IPs |
-| `port` | TCP listen port (default 4001) |
-| `timestamp` | Unix timestamp when presence was registered |
+**How it works:**
+1. When a client connects to a Nodus server, the server tracks it as "present"
+2. The heartbeat thread runs every 60s, calling `dna_presence_batch_query()` which sends a single `pq` (presence query) TCP message to the Nodus server with all contact fingerprints
+3. The server responds with online/offline status for each queried fingerprint
+4. Results are stored in the local `presence_cache` (same API, same events as before)
 
 **Lookup API:**
 ```c
-// C API - lookup presence by fingerprint
-int p2p_lookup_presence_by_fingerprint(
-    transport_t *ctx,
-    const char *fingerprint,      // 128 hex chars
-    uint64_t *last_seen_out       // Unix timestamp output
-);
-
-// High-level API
+// High-level API (reads from local cache, populated by batch query)
 int dna_engine_lookup_presence(
     dna_engine_t *engine,
     const char *fingerprint,
@@ -1257,7 +1245,7 @@ int dna_engine_lookup_presence(
 **Flutter Usage:**
 ```dart
 final lastSeen = await engine.lookupPresence(contact.fingerprint);
-// Returns DateTime when peer last registered presence
+// Returns DateTime from presence cache (updated every 60s via batch TCP query)
 ```
 
 ### 8.2 Contact Requests
