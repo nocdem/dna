@@ -994,6 +994,18 @@ size_t dht_listen_ack(
         return 0;
     }
 
+    /* v0.9.1: Initial pull — fetch existing ACK value from DHT.
+     * The listener only catches NEW puts after registration. */
+    {
+        uint8_t *ack_data = NULL;
+        size_t ack_len = 0;
+        if (nodus_ops_get(key, 64, &ack_data, &ack_len) == 0 && ack_data && ack_len == 8) {
+            QGP_LOG_INFO(LOG_TAG, "[ACK] Initial pull: found existing ACK for %.20s...\n", recipient_fp);
+            ack_listen_callback(ack_data, ack_len, false, actx);
+        }
+        if (ack_data) free(ack_data);
+    }
+
     return token;
 }
 

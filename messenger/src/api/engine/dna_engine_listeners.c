@@ -1416,6 +1416,18 @@ size_t dna_engine_start_wall_listener(dna_engine_t *engine, const char *contact_
 
     pthread_mutex_unlock(&engine->wall_listeners_mutex);
 
+    /* v0.9.1: Initial pull — fetch existing wall data from DHT.
+     * The listener only catches NEW puts after registration. */
+    {
+        uint8_t *wall_data = NULL;
+        size_t wall_len = 0;
+        if (nodus_ops_get(wall_key, 64, &wall_data, &wall_len) == 0
+            && wall_data && wall_len > 0) {
+            wall_listen_callback(wall_data, wall_len, false, ctx);
+        }
+        if (wall_data) free(wall_data);
+    }
+
     QGP_LOG_DEBUG(LOG_TAG, "[WALL_LISTEN] Started wall listener for %.16s... (token=%zu)",
                   contact_fingerprint, token);
     return token;
@@ -1613,6 +1625,18 @@ int dna_engine_start_channel_listener(dna_engine_t *engine, const char *channel_
     engine->channel_listener_count++;
 
     pthread_mutex_unlock(&engine->channel_listeners_mutex);
+
+    /* v0.9.1: Initial pull — fetch existing channel posts from DHT.
+     * The listener only catches NEW puts after registration. */
+    {
+        uint8_t *ch_data = NULL;
+        size_t ch_len = 0;
+        if (nodus_ops_get(key, key_len, &ch_data, &ch_len) == 0
+            && ch_data && ch_len > 0) {
+            channel_post_listen_callback(ch_data, ch_len, false, ctx);
+        }
+        if (ch_data) free(ch_data);
+    }
 
     QGP_LOG_INFO(LOG_TAG, "[CHAN_LISTEN] Started channel listener for %.8s... (token=%zu)",
                  channel_uuid, token);
