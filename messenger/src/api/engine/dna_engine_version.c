@@ -148,9 +148,17 @@ int dna_engine_check_version_dht(
         return -2;  /* Not found */
     }
 
+    /* Null-terminate for JSON parser (nodus_ops_get returns raw bytes) */
+    uint8_t *json_str = realloc(value, value_len + 1);
+    if (!json_str) {
+        free(value);
+        return -1;
+    }
+    json_str[value_len] = '\0';
+
     /* Parse JSON */
-    json_object *root = json_tokener_parse((const char *)value);
-    free(value);
+    json_object *root = json_tokener_parse((const char *)json_str);
+    free(json_str);
 
     if (!root) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to parse version JSON from DHT");
