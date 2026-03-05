@@ -128,7 +128,7 @@ class EventHandler {
   final Ref _ref;
   StreamSubscription<DnaEvent>? _subscription;
   Timer? _refreshTimer;
-  Timer? _presenceTimer;
+
   Timer? _outboxDebounceTimer;
   final Set<String> _pendingOutboxFingerprints = {};
 
@@ -149,8 +149,7 @@ class EventHandler {
         _ref.read(dhtConnectionStateProvider.notifier).state =
             DhtConnectionState.connected;
         // DHT listeners are started by C engine on DHT connect (dna_engine.c:195)
-        // Start presence polling since we're connected
-        _startPresencePolling();
+
         // Refresh identity profiles (display names/avatars) now that DHT is connected
         _refreshIdentityProfiles();
       });
@@ -175,15 +174,12 @@ class EventHandler {
         // Refresh contact profiles (avatars) from DHT on reconnect
         // Bypasses C-side cache to get fresh data after connection restored
         _refreshContactProfiles();
-        // Start periodic presence refresh (every 30 seconds)
-        _startPresencePolling();
+
 
       case DhtDisconnectedEvent():
         _ref.read(dhtConnectionStateProvider.notifier).state =
             DhtConnectionState.disconnected;
-        // Stop polling when disconnected
-        _presenceTimer?.cancel();
-        _presenceTimer = null;
+
 
       case ContactOnlineEvent(fingerprint: final fp):
         _ref.read(contactsProvider.notifier).updateContactStatus(fp, true);
@@ -457,39 +453,6 @@ class EventHandler {
 
   /// Poll ALL contacts' presence in background (every 1 minute)
   /// C heartbeat handles announcing OUR presence, this polls contacts' presence
-  void _startPresencePolling() {
-    _presenceTimer?.cancel();
-    _presenceTimer = Timer.periodic(const Duration(minutes: 1), (_) {
-      _pollAllContactsPresence();
-    });
-    // Also poll immediately on start
-    _pollAllContactsPresence();
-  }
-
-  /// Poll presence for all contacts and update UI
-  Future<void> _pollAllContactsPresence() async {
-    final engine = _ref.read(engineProvider).valueOrNull;
-    if (engine == null) return;
-
-    final contacts = _ref.read(contactsProvider).valueOrNull;
-    if (contacts == null || contacts.isEmpty) return;
-
-    for (final contact in contacts) {
-      try {
-        final lastSeen = await engine.lookupPresence(contact.fingerprint);
-        final isOnline = DateTime.now().difference(lastSeen).inMinutes < 2;
-
-        // Update contact status if changed
-        if (contact.isOnline != isOnline) {
-          _ref.read(contactsProvider.notifier).updateContactStatus(
-            contact.fingerprint, isOnline);
-        }
-      } catch (_) {
-        // Silently ignore individual failures
-      }
-    }
-  }
-
   /// Pause all polling timers (call when app goes to background)
   ///
   /// Prevents network calls while app is not active, avoiding:
@@ -500,8 +463,6 @@ class EventHandler {
     _subscription?.cancel();
     _subscription = null;
 
-    _presenceTimer?.cancel();
-    _presenceTimer = null;
     _refreshTimer?.cancel();
     _refreshTimer = null;
     _outboxDebounceTimer?.cancel();
@@ -514,10 +475,8 @@ class EventHandler {
   /// Restarts periodic polling if DHT is connected.
   /// Note: Immediate presence refresh is handled by C-side resumePresence().
   void resumePolling() {
-    final dhtState = _ref.read(dhtConnectionStateProvider);
-    if (dhtState == DhtConnectionState.connected) {
-      _startPresencePolling();
-    }
+    // Presence polling handled by C heartbeat (10s batch query + events).
+    // No Dart-side polling needed.
   }
 
   /// Re-attach the event callback to a resumed engine
@@ -596,7 +555,6 @@ class EventHandler {
   void dispose() {
     _subscription?.cancel();
     _refreshTimer?.cancel();
-    _presenceTimer?.cancel();
     _outboxDebounceTimer?.cancel();
   }
 }

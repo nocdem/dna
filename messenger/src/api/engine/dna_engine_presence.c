@@ -79,11 +79,18 @@ static void dna_presence_batch_query(dna_engine_t *engine) {
     /* Update presence cache with real timestamps from server */
     time_t now = time(NULL);
     for (int i = 0; i < count; i++) {
-        time_t ts = online[i] ? now : (last_seen[i] > 0 ? (time_t)last_seen[i] : now);
-        presence_cache_update(fps[i], online[i], ts);
-        /* Persist real last_seen from server to contacts DB */
-        if (last_seen[i] > 0)
+        if (online[i]) {
+            presence_cache_update(fps[i], true, now);
+        } else if (last_seen[i] > 0) {
+            presence_cache_update(fps[i], false, (time_t)last_seen[i]);
             contacts_db_update_last_seen(fps[i], last_seen[i]);
+        } else {
+            /* Server has no data — mark offline, preserve existing timestamp */
+            time_t existing = presence_cache_last_seen(fps[i]);
+            if (existing > 0)
+                presence_cache_update(fps[i], false, existing);
+            /* No cached data either: leave unknown (no cache entry created) */
+        }
     }
 
     QGP_LOG_DEBUG(LOG_TAG, "[PRESENCE] Batch query: %d/%d online", online_count, count);
