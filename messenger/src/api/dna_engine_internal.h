@@ -640,6 +640,7 @@ struct dna_engine {
     pthread_t presence_heartbeat_thread;
     bool presence_heartbeat_started;  /* v0.6.0+: Track if thread was started */
     atomic_bool presence_active;  /* false when app in background (Android) */
+    atomic_bool presence_resume_pending;  /* true when resuming from background — triggers immediate query */
 
     /* Background task threads (v0.6.0+: tracked for clean shutdown) */
     pthread_t setup_listeners_thread;      /* Listener setup thread handle */

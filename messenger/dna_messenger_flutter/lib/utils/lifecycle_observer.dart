@@ -1,9 +1,11 @@
 // App Lifecycle Observer - handles app state changes
-// v0.9.7+: No pause/resume engine lifecycle. Just tracks foreground state.
+// v0.9.8+: Pauses/resumes presence heartbeat on mobile (battery optimization).
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'logger.dart';
+import 'platform_utils.dart';
+import '../providers/engine_provider.dart';
 
 /// Provider that tracks whether the app is currently in foreground (resumed)
 /// Used by event_handler to determine whether to show notifications
@@ -11,8 +13,9 @@ final appInForegroundProvider = StateProvider<bool>((ref) => true);
 
 /// Observer for app lifecycle state changes
 ///
-/// v0.9.7+: Engine stays active at all times (no pause/resume).
-/// This observer only tracks foreground/background for notification badge logic.
+/// Mobile: pauses presence heartbeat in background (30s→60s interval, skips
+/// DB query + TCP presence). Resumes with immediate batch query on foreground.
+/// Desktop: no-op (presence_active stays true).
 class AppLifecycleObserver extends WidgetsBindingObserver {
   final WidgetRef ref;
 
@@ -24,10 +27,16 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       case AppLifecycleState.resumed:
         ref.read(appInForegroundProvider.notifier).state = true;
         log('LIFECYCLE', 'App resumed (foreground)');
+        if (PlatformUtils.isMobile) {
+          ref.read(engineProvider).valueOrNull?.resumePresence();
+        }
         break;
       case AppLifecycleState.paused:
         ref.read(appInForegroundProvider.notifier).state = false;
         log('LIFECYCLE', 'App paused (background)');
+        if (PlatformUtils.isMobile) {
+          ref.read(engineProvider).valueOrNull?.pausePresence();
+        }
         break;
       case AppLifecycleState.detached:
       case AppLifecycleState.inactive:
