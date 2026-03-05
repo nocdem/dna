@@ -183,9 +183,10 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 |---------------|----------------|---------|
 | Messenger C code (src/, dht/, messenger/, transport/, crypto/, include/) | C Library | `cd messenger/build && cmake .. && make -j$(nproc)` |
 | Flutter/Dart code (lib/, assets/) | Flutter Linux | `cd messenger/dna_messenger_flutter && flutter build linux` |
+| Flutter/Dart code (lib/, assets/) | Flutter Android | `cd messenger/dna_messenger_flutter && flutter build apk --debug` |
 | Nodus code (nodus/) | Nodus | `cd nodus/build && cmake .. && make -j$(nproc)` |
 | DNAC code (dnac/) | DNAC | `cd dnac/build && cmake .. && make -j$(nproc)` |
-| Both C and Flutter | Both builds | Run both commands above |
+| Both C and Flutter | All 3 builds | Run C, Flutter Linux, and Flutter Android commands above |
 
 **CRITICAL:**
 - **ALL warnings and errors MUST be fixed** before pushing

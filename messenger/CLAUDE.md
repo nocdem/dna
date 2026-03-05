@@ -185,7 +185,8 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 |---------------|----------------|---------|
 | C code (src/, dht/, messenger/, transport/, crypto/, include/) | C Library | `cd build && cmake .. && make -j$(nproc)` |
 | Flutter/Dart code (lib/, assets/) | Flutter Linux | `cd dna_messenger_flutter && flutter build linux` |
-| Both C and Flutter | Both builds | Run both commands above |
+| Flutter/Dart code (lib/, assets/) | Flutter Android | `cd dna_messenger_flutter && flutter build apk --debug` |
+| Both C and Flutter | All 3 builds | Run C, Flutter Linux, and Flutter Android commands above |
 
 **CRITICAL:**
 - **ALL warnings and errors MUST be fixed** before pushing

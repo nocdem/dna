@@ -105,12 +105,16 @@ static void dna_presence_batch_query(dna_engine_t *engine) {
  * PRESENCE HEARTBEAT (batch query every 60 seconds)
  * ============================================================================ */
 
-#define PRESENCE_HEARTBEAT_INTERVAL_SECONDS 10  /* 10 seconds */
-#define RETRY_INTERVAL_TICKS 3  /* Retry pending messages every 3 heartbeats (30s) */
+#define PRESENCE_HEARTBEAT_INTERVAL_SECONDS 60  /* 60 seconds */
+#define RETRY_INTERVAL_TICKS 3  /* Retry pending messages every 3 heartbeats (180s) */
+#define BG_POLL_INTERVAL_TICKS 5  /* Background: TCP poll every 5 ticks (5×60s = 300s) */
+#define DAY_ROTATION_TICKS 10    /* Day rotation every 10 heartbeats (10×60s = 600s) */
 
 static void* presence_heartbeat_thread(void *arg) {
     dna_engine_t *engine = (dna_engine_t*)arg;
     int retry_tick = 0;
+    int day_rotation_tick = 0;
+    int bg_poll_tick = 0;
 
     QGP_LOG_INFO(LOG_TAG, "Presence heartbeat thread started");
 
@@ -120,8 +124,12 @@ static void* presence_heartbeat_thread(void *arg) {
     }
 
     while (!atomic_load(&engine->shutdown_requested)) {
-        /* Sleep in short intervals to respond quickly to shutdown */
-        for (int i = 0; i < PRESENCE_HEARTBEAT_INTERVAL_SECONDS; i++) {
+        bool active = atomic_load(&engine->presence_active);
+
+        /* Sleep interval: 1s when active (responsive shutdown), 60s when background
+         * (battery saving — fewer CPU wakes). */
+        int sleep_seconds = active ? PRESENCE_HEARTBEAT_INTERVAL_SECONDS : 60;
+        for (int i = 0; i < sleep_seconds; i++) {
             if (atomic_load(&engine->shutdown_requested)) {
                 break;
             }
@@ -132,39 +140,46 @@ static void* presence_heartbeat_thread(void *arg) {
             break;
         }
 
-        /* Always poll Nodus TCP — even when paused.
-         * This serves three purposes:
-         * 1. Detects TCP disconnect so auto-reconnect kicks in
-         * 2. Processes incoming listener notifications (background push)
-         * 3. Keeps the connection alive (prevents server idle timeout)
-         * Without this, pause mode has no TCP poll → disconnect goes
-         * undetected → resume finds a dead socket → messages stay pending. */
-        nodus_messenger_poll(100);
+        /* Re-read after sleep (may have changed during sleep) */
+        active = atomic_load(&engine->presence_active);
 
-        /* Nodus-native presence: batch query all contacts (v0.9.0) */
-        if (atomic_load(&engine->presence_active) && engine->messenger) {
-            QGP_LOG_DEBUG(LOG_TAG, "Heartbeat: batch presence query");
-            dna_presence_batch_query(engine);
-        }
+        if (active) {
+            /* FOREGROUND: Poll Nodus TCP every heartbeat (60s).
+             * Detects disconnect, processes listener notifications,
+             * keeps connection alive. */
+            nodus_messenger_poll(100);
 
-        /* Retry pending messages every 30s (3 heartbeats).
-         * Only runs when active (not paused) and DHT is connected.
-         * Has internal exponential backoff per-message, so this is cheap
-         * when there are no pending messages (single DB query). */
-        if (atomic_load(&engine->presence_active) && ++retry_tick >= RETRY_INTERVAL_TICKS) {
+            /* Nodus-native presence: batch query all contacts */
+            if (engine->messenger) {
+                QGP_LOG_DEBUG(LOG_TAG, "Heartbeat: batch presence query");
+                dna_presence_batch_query(engine);
+            }
+
+            /* Retry pending messages every 180s (3 heartbeats) */
+            if (++retry_tick >= RETRY_INTERVAL_TICKS) {
+                retry_tick = 0;
+                dna_engine_retry_pending_messages(engine);
+            }
+
+            /* Day rotation every 600s (10 heartbeats) — only matters at midnight */
+            if (++day_rotation_tick >= DAY_ROTATION_TICKS) {
+                day_rotation_tick = 0;
+                dna_engine_check_group_day_rotation(engine);
+                dna_engine_check_outbox_day_rotation(engine);
+                dna_engine_check_channel_day_rotation(engine);
+            }
+        } else {
+            /* BACKGROUND: Minimal activity for battery saving.
+             * Only poll TCP every 300s to keep connection alive. */
+            if (++bg_poll_tick >= BG_POLL_INTERVAL_TICKS) {
+                bg_poll_tick = 0;
+                nodus_messenger_poll(100);
+                QGP_LOG_DEBUG(LOG_TAG, "Background: TCP keepalive poll");
+            }
+            /* Reset foreground counters so they start fresh on resume */
             retry_tick = 0;
-            dna_engine_retry_pending_messages(engine);
+            day_rotation_tick = 0;
         }
-
-        /* Check for day rotation on group listeners (runs every 1 min, actual
-         * rotation only happens at midnight UTC when day bucket changes) */
-        dna_engine_check_group_day_rotation(engine);
-
-        /* Check for day rotation on 1-1 DM outbox listeners (v0.4.81+) */
-        dna_engine_check_outbox_day_rotation(engine);
-
-        /* Check for day rotation on channel post listeners */
-        dna_engine_check_channel_day_rotation(engine);
     }
 
     QGP_LOG_INFO(LOG_TAG, "Presence heartbeat thread stopped");

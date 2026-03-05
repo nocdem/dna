@@ -1,8 +1,9 @@
 // App Lifecycle Observer - handles app state changes
-// v0.9.7+: No pause/resume engine lifecycle. Just tracks foreground state.
+// v0.9.11: Pause/resume presence on background/foreground for battery optimization.
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../providers/engine_provider.dart';
 import 'logger.dart';
 
 /// Provider that tracks whether the app is currently in foreground (resumed)
@@ -11,8 +12,8 @@ final appInForegroundProvider = StateProvider<bool>((ref) => true);
 
 /// Observer for app lifecycle state changes
 ///
-/// v0.9.7+: Engine stays active at all times (no pause/resume).
-/// This observer only tracks foreground/background for notification badge logic.
+/// Tracks foreground/background state and pauses/resumes C-side presence
+/// heartbeat for battery optimization on mobile.
 class AppLifecycleObserver extends WidgetsBindingObserver {
   final WidgetRef ref;
 
@@ -24,15 +25,31 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       case AppLifecycleState.resumed:
         ref.read(appInForegroundProvider.notifier).state = true;
         log('LIFECYCLE', 'App resumed (foreground)');
+        _resumePresence();
         break;
       case AppLifecycleState.paused:
         ref.read(appInForegroundProvider.notifier).state = false;
         log('LIFECYCLE', 'App paused (background)');
+        _pausePresence();
         break;
       case AppLifecycleState.detached:
       case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:
         break;
+    }
+  }
+
+  void _pausePresence() {
+    final engine = ref.read(engineProvider).valueOrNull;
+    if (engine != null) {
+      engine.pausePresence();
+    }
+  }
+
+  void _resumePresence() {
+    final engine = ref.read(engineProvider).valueOrNull;
+    if (engine != null) {
+      engine.resumePresence();
     }
   }
 }
