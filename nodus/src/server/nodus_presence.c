@@ -38,12 +38,18 @@ static int find_any(nodus_presence_table_t *tbl, const nodus_key_t *fp) {
 }
 
 static int find_inactive(nodus_presence_table_t *tbl, const nodus_key_t *fp) {
+    int best = -1;
+    uint64_t best_ts = 0;
     for (int i = 0; i < tbl->count; i++) {
         if (!tbl->entries[i].active && tbl->entries[i].last_seen > 0 &&
-            nodus_key_cmp(&tbl->entries[i].client_fp, fp) == 0)
-            return i;
+            nodus_key_cmp(&tbl->entries[i].client_fp, fp) == 0) {
+            if (tbl->entries[i].last_seen > best_ts) {
+                best = i;
+                best_ts = tbl->entries[i].last_seen;
+            }
+        }
     }
-    return -1;
+    return best;
 }
 
 static int alloc_slot(nodus_presence_table_t *tbl) {
@@ -73,14 +79,17 @@ void nodus_presence_add_local(struct nodus_server *srv, const nodus_key_t *fp) {
     if (!srv || !fp) return;
     nodus_presence_table_t *tbl = &srv->presence;
 
-    /* Already exists as local? Just update timestamp */
+    /* Already exists as local active? Just update timestamp */
     int idx = find_entry(tbl, fp, 0);
     if (idx >= 0) {
         tbl->entries[idx].last_seen = nodus_time_now();
         return;
     }
 
-    idx = alloc_slot(tbl);
+    /* Reuse inactive entry for same fingerprint (reconnect scenario) */
+    idx = find_inactive(tbl, fp);
+    if (idx < 0)
+        idx = alloc_slot(tbl);
     if (idx < 0) return;  /* Table full */
 
     tbl->entries[idx].client_fp = *fp;
