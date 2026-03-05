@@ -94,7 +94,7 @@ dna_messenger_flutter/
 │   │   ├── wallet_provider.dart    # ✅ Send/transactions
 │   │   ├── profile_provider.dart   # ✅ User profile
 │   │   ├── theme_provider.dart
-│   │   ├── event_handler.dart      # ✅ Real-time event handling
+│   │   ├── event_handler.dart      # ✅ Real-time event handling + local notifications
 │   │   ├── background_tasks_provider.dart  # ✅ DHT offline message polling
 │   │   ├── channel_provider.dart    # ✅ Channel subscriptions, posts, discovery
 │   │   └── wall_provider.dart      # ✅ Wall timeline + per-post comments (v0.7.0+)
@@ -224,6 +224,8 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
 - `EventHandler`: Listens to engine event stream, updates providers
 - Contact online/offline status updates in real-time
 - New messages added to conversations automatically
+- Local notifications with sound for incoming messages (background + foreground when chat not open)
+- `NotificationService` (singleton): `flutter_local_notifications` — Android (NotificationChannel), Linux (libnotify/D-Bus)
 - DHT connection state tracked and displayed
 
 **Presence (Online/Offline Status):**

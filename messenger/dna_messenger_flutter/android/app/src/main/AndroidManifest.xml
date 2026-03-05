@@ -11,6 +11,10 @@
     <!-- Biometric authentication for app lock -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
+    <!-- Local notifications (Android 13+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <application
         android:label="DNA Messenger"
         android:name="${applicationName}"

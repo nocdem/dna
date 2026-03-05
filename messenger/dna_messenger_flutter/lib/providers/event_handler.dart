@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
 import '../platform/platform_handler.dart';
+import '../services/notification_service.dart';
 import '../utils/lifecycle_observer.dart';
 import '../utils/logger.dart';
 import 'engine_provider.dart';
@@ -544,12 +545,33 @@ class EventHandler {
     }
   }
 
-  /// Show notification for incoming message
-  /// TODO: Add native notifications for Linux (libnotify) and Windows (Win32 Toast)
+  /// Show local notification + sound for incoming message
   void _showMessageNotification(String contactFingerprint, String messageText) {
-    // Notifications not yet implemented
-    // Future: Add libnotify (Linux) and Win32 Toast (Windows) in C code
-    return;
+    // Get contact display name from contacts list
+    final contacts = _ref.read(contactsProvider).valueOrNull;
+    String senderName = 'New message';
+    if (contacts != null) {
+      final contact = contacts.where((c) => c.fingerprint == contactFingerprint).firstOrNull;
+      if (contact != null) {
+        senderName = contact.nickname.isNotEmpty
+            ? contact.nickname
+            : contact.displayName.isNotEmpty
+                ? contact.displayName
+                : contactFingerprint.substring(0, 16);
+      }
+    }
+
+    // Truncate message preview
+    final preview = messageText.length > 100
+        ? '${messageText.substring(0, 100)}...'
+        : messageText;
+
+    // Use hash of fingerprint as notification ID so each contact has its own
+    NotificationService.instance.showMessageNotification(
+      senderName: senderName,
+      messagePreview: preview,
+      id: contactFingerprint.hashCode.abs() % 100000,
+    );
   }
 
   void dispose() {

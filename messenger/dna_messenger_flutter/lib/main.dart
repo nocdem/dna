@@ -12,6 +12,7 @@ import 'screens/screens.dart';
 import 'screens/lock/lock_screen.dart';
 import 'design_system/theme/dna_colors.dart';
 import 'design_system/theme/dna_theme.dart';
+import 'services/notification_service.dart';
 import 'utils/window_state.dart';
 import 'utils/lifecycle_observer.dart';
 import 'utils/logger.dart';
@@ -39,6 +40,9 @@ void main() {
     if (WindowStateManager.isDesktop) {
       await windowStateManager.init();
     }
+
+    // Initialize local notification service
+    await NotificationService.instance.init();
 
     runApp(
       const ProviderScope(
