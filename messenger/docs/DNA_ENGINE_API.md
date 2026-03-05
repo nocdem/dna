@@ -1995,7 +1995,7 @@ void on_send_complete(dna_request_id_t id, int error, void* ud) {
 
 ## 7. P2P & Presence
 
-> **v0.9.0:** Presence is now tracked natively by the Nodus server. Connected clients are tracked server-side via `nodus_presence_add_local`/`remove_local`. Presence queries use a single batch TCP call (`pq` protocol) instead of per-contact DHT GET. Inter-node presence is broadcast via `p_sync`. The heartbeat thread still runs every 60s but calls `dna_presence_batch_query()` instead of DHT PUT.
+> **v0.9.0:** Presence is now tracked natively by the Nodus server. Connected clients are tracked server-side via `nodus_presence_add_local`/`remove_local`. Presence queries use a single batch TCP call (`pq` protocol) instead of per-contact DHT GET. Inter-node presence is broadcast via `p_sync`. The C heartbeat thread runs every 10s calling `dna_presence_batch_query()`. Status transitions fire `DNA_EVENT_CONTACT_ONLINE`/`DNA_EVENT_CONTACT_OFFLINE` events directly to Flutter — no Dart-side polling (v0.9.10+).
 
 ### dna_engine_refresh_presence
 

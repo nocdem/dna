@@ -1227,9 +1227,15 @@ Presence is tracked natively by the Nodus server. Connected clients are register
 
 **How it works:**
 1. When a client connects to a Nodus server, the server tracks it as "present"
-2. The heartbeat thread runs every 60s, calling `dna_presence_batch_query()` which sends a single `pq` (presence query) TCP message to the Nodus server with all contact fingerprints
-3. The server responds with online/offline status for each queried fingerprint
-4. Results are stored in the local `presence_cache` (same API, same events as before)
+2. The C heartbeat thread runs every 10s, calling `dna_presence_batch_query()` which sends a single `pq` (presence query) TCP message to the Nodus server with all contact fingerprints
+3. The server responds with online/offline status + last_seen timestamps for each queried fingerprint
+4. Results are stored in the local `presence_cache`; status transitions fire `DNA_EVENT_CONTACT_ONLINE`/`DNA_EVENT_CONTACT_OFFLINE` events
+5. Flutter UI receives these events directly — no Dart-side polling needed (v0.101.29+)
+
+**Cache update rules (v0.9.10+):**
+- Online contacts: cache updated with current time
+- Offline contacts with server last_seen: cache updated with server timestamp
+- Offline contacts with no server data (last_seen=0): existing cached timestamp preserved (not overwritten with `now`)
 
 **Lookup API:**
 ```c
@@ -1244,8 +1250,8 @@ int dna_engine_lookup_presence(
 
 **Flutter Usage:**
 ```dart
-final lastSeen = await engine.lookupPresence(contact.fingerprint);
-// Returns DateTime from presence cache (updated every 60s via batch TCP query)
+// Online/offline status driven by C events (CONTACT_ONLINE/CONTACT_OFFLINE)
+// No Dart-side polling — C heartbeat handles everything (10s interval)
 ```
 
 ### 8.2 Contact Requests

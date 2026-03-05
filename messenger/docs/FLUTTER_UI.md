@@ -226,30 +226,12 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
 - New messages added to conversations automatically
 - DHT connection state tracked and displayed
 
-**Presence Lookup (Last Seen):**
-- On contacts load/refresh, queries DHT for each contact's presence
-- `engine.lookupPresence(fingerprint)` returns DateTime when contact was last online
-- Contacts sorted by most recently seen first
-- 5-second timeout per lookup to avoid blocking UI
-- Falls back to local data if DHT query fails
-
-```dart
-// ContactsNotifier queries DHT presence for each contact
-Future<List<Contact>> _updateContactsPresence(DnaEngine engine, List<Contact> contacts) async {
-  final futures = contacts.map((contact) async {
-    try {
-      final lastSeen = await engine
-          .lookupPresence(contact.fingerprint)
-          .timeout(const Duration(seconds: 5));
-      if (lastSeen.millisecondsSinceEpoch > 0) {
-        return Contact(..., lastSeen: lastSeen);
-      }
-    } catch (e) { /* timeout or error */ }
-    return contact;
-  });
-  return Future.wait(futures);
-}
-```
+**Presence (Online/Offline Status):**
+- C heartbeat thread (10s) queries Nodus server for all contacts' presence
+- Status transitions fire `DNA_EVENT_CONTACT_ONLINE`/`DNA_EVENT_CONTACT_OFFLINE` events
+- Flutter `EventHandler` receives events and calls `updateContactStatus()` on `contactsProvider`
+- No Dart-side polling — all presence logic is in C (v0.9.10+)
+- Initial presence loaded on contacts fetch via `lookupPresence()` (one-time, from cache)
 
 ---
 

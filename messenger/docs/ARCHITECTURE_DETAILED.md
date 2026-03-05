@@ -693,7 +693,7 @@ typedef struct {
 } peer_info_t;
 ```
 
-> **Note (v0.9.0):** Presence is now tracked natively by Nodus server. No DHT PUT for presence. Connected clients are tracked server-side and queried via batch TCP call.
+> **Note (v0.9.0+):** Presence is tracked natively by Nodus server. No DHT PUT for presence. Connected clients are tracked server-side and queried via batch TCP call (10s heartbeat). Status transitions fire C events (`DNA_EVENT_CONTACT_ONLINE`/`OFFLINE`) directly to Flutter — no Dart-side polling (v0.9.10+).
 
 ### 6.4 Core Operations
 
@@ -1003,8 +1003,9 @@ int contacts_db_clear_all(void);
 
 **Presence Cache** (`database/presence_cache.h`):
 - O(1) online status lookup
-- In-memory with periodic persistence
-- Populated by batch TCP presence query to Nodus server (v0.9.0+)
+- In-memory hash map, fires `DNA_EVENT_CONTACT_ONLINE`/`OFFLINE` on transitions
+- Populated by C heartbeat batch TCP query every 10s (v0.9.10+)
+- When server has no data for a contact, existing cached timestamp is preserved
 
 ---
 
