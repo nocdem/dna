@@ -47,6 +47,76 @@ static int  send_request(nodus_client_t *client, const uint8_t *payload, size_t 
 static int  resubscribe_all(nodus_client_t *client);
 static int  try_reconnect(nodus_client_t *client);
 
+/* ── Cross-platform millisecond sleep ──────────────────────────── */
+
+static void sleep_ms(int ms) {
+#ifdef _WIN32
+    Sleep(ms);
+#else
+    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+#endif
+}
+
+/* ── Internal read thread ──────────────────────────────────────── */
+
+static void *read_thread_fn(void *arg) {
+    nodus_client_t *client = (nodus_client_t *)arg;
+    QGP_LOG_INFO(LOG_TAG, "Read thread started");
+
+    while (!atomic_load(&client->read_thread_stop)) {
+        pthread_mutex_lock(&client->poll_mutex);
+
+        /* Handle reconnect */
+        if (client->state == NODUS_CLIENT_RECONNECTING) {
+            try_reconnect(client);
+            if (client->state != NODUS_CLIENT_READY && client->tcp) {
+                nodus_tcp_t *tcp = (nodus_tcp_t *)client->tcp;
+                nodus_tcp_poll(tcp, 100);
+            }
+            pthread_mutex_unlock(&client->poll_mutex);
+            continue;
+        }
+
+        if (!client->conn || !client->tcp) {
+            pthread_mutex_unlock(&client->poll_mutex);
+            sleep_ms(100);
+            continue;
+        }
+
+        nodus_tcp_t *tcp = (nodus_tcp_t *)client->tcp;
+        int rc = nodus_tcp_poll(tcp, 100);
+        pthread_mutex_unlock(&client->poll_mutex);
+
+        if (rc < 0 && atomic_load(&client->read_thread_stop))
+            break;
+        if (client->state == NODUS_CLIENT_DISCONNECTED)
+            sleep_ms(100);
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Read thread stopped");
+    return NULL;
+}
+
+static void start_read_thread(nodus_client_t *client) {
+    if (atomic_load(&client->read_thread_running)) return;
+    atomic_store(&client->read_thread_stop, false);
+    if (pthread_create(&client->read_thread, NULL, read_thread_fn, client) == 0) {
+        atomic_store(&client->read_thread_running, true);
+        QGP_LOG_INFO(LOG_TAG, "Read thread launched");
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create read thread");
+    }
+}
+
+static void stop_read_thread(nodus_client_t *client) {
+    if (!atomic_load(&client->read_thread_running)) return;
+    atomic_store(&client->read_thread_stop, true);
+    pthread_join(client->read_thread, NULL);
+    atomic_store(&client->read_thread_running, false);
+    QGP_LOG_INFO(LOG_TAG, "Read thread joined");
+}
+
 /* ── Helpers ────────────────────────────────────────────────────── */
 
 static uint64_t now_ms(void) {
@@ -103,16 +173,23 @@ static void free_pending(nodus_client_t *client, nodus_pending_t *p) {
 }
 
 static bool wait_response(nodus_client_t *client, nodus_pending_t *req, int timeout_ms) {
-    nodus_tcp_t *tcp = (nodus_tcp_t *)client->tcp;
     int elapsed = 0;
-    while (!req->ready && elapsed < timeout_ms) {
-        pthread_mutex_lock(&client->poll_mutex);
-        nodus_tcp_poll(tcp, 50);
-        pthread_mutex_unlock(&client->poll_mutex);
-        if (!client->conn) return false;  /* Disconnected */
-        elapsed += 50;
+
+    while (!atomic_load(&req->ready) && elapsed < timeout_ms) {
+        if (!client->conn && client->state != NODUS_CLIENT_RECONNECTING)
+            return false;
+
+        if (atomic_load(&client->read_thread_running)) {
+            /* Read thread handles TCP — just wait for ready flag */
+            sleep_ms(10);
+            elapsed += 10;
+        } else {
+            /* No read thread yet (during connect/auth) — poll directly */
+            nodus_client_poll(client, 50);
+            elapsed += 50;
+        }
     }
-    return req->ready;
+    return atomic_load(&req->ready);
 }
 
 /* ── TCP Callbacks ──────────────────────────────────────────────── */
@@ -247,6 +324,8 @@ int nodus_client_init(nodus_client_t *client,
     pthread_mutex_init(&client->pending_mutex, NULL);
     pthread_mutex_init(&client->send_mutex, NULL);
     pthread_mutex_init(&client->poll_mutex, NULL);
+    atomic_store(&client->read_thread_running, false);
+    atomic_store(&client->read_thread_stop, false);
 
     /* Initialize TCP transport */
     nodus_tcp_t *tcp = calloc(1, sizeof(nodus_tcp_t));
@@ -275,6 +354,8 @@ int nodus_client_connect(nodus_client_t *client) {
         if (do_connect_one(client, idx) == 0) {
             client->server_idx = idx;
             client->backoff_ms = client->config.reconnect_min_ms;
+            /* Start internal read thread for continuous TCP reading */
+            start_read_thread(client);
             return 0;
         }
     }
@@ -487,20 +568,32 @@ static int try_reconnect(nodus_client_t *client) {
 int nodus_client_poll(nodus_client_t *client, int timeout_ms) {
     if (!client || !client->tcp) return -1;
 
+    /* Read thread handles all TCP reading — external callers are no-ops */
+    if (atomic_load(&client->read_thread_running))
+        return 0;
+
+    pthread_mutex_lock(&client->poll_mutex);
+
     /* Handle reconnect */
     if (client->state == NODUS_CLIENT_RECONNECTING) {
         try_reconnect(client);
         if (client->state != NODUS_CLIENT_READY) {
-            /* Still reconnecting — short sleep to avoid busy-wait */
             nodus_tcp_t *tcp = (nodus_tcp_t *)client->tcp;
-            return nodus_tcp_poll(tcp, timeout_ms < 100 ? timeout_ms : 100);
+            int rc = nodus_tcp_poll(tcp, timeout_ms < 100 ? timeout_ms : 100);
+            pthread_mutex_unlock(&client->poll_mutex);
+            return rc;
         }
     }
 
-    if (!client->conn) return 0;
+    if (!client->conn) {
+        pthread_mutex_unlock(&client->poll_mutex);
+        return 0;
+    }
 
     nodus_tcp_t *tcp = (nodus_tcp_t *)client->tcp;
-    return nodus_tcp_poll(tcp, timeout_ms);
+    int rc = nodus_tcp_poll(tcp, timeout_ms);
+    pthread_mutex_unlock(&client->poll_mutex);
+    return rc;
 }
 
 bool nodus_client_is_ready(const nodus_client_t *client) {
@@ -512,24 +605,34 @@ nodus_client_state_t nodus_client_state(const nodus_client_t *client) {
 }
 
 void nodus_client_force_disconnect(nodus_client_t *client) {
-    if (!client || !client->conn) return;
-    nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)client->conn;
-    if (conn->fd >= 0) {
+    if (!client) return;
+    /* Signal read thread to stop */
+    atomic_store(&client->read_thread_stop, true);
+    /* Close socket FIRST — breaks epoll_wait so read thread exits quickly */
+    if (client->conn) {
+        nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)client->conn;
+        if (conn->fd >= 0) {
 #ifdef _WIN32
-        shutdown(conn->fd, SD_BOTH);
-        closesocket(conn->fd);
+            shutdown(conn->fd, SD_BOTH);
+            closesocket(conn->fd);
 #else
-        shutdown(conn->fd, SHUT_RDWR);
-        close(conn->fd);
+            shutdown(conn->fd, SHUT_RDWR);
+            close(conn->fd);
 #endif
-        conn->fd = -1;
+            conn->fd = -1;
+        }
+        client->conn = NULL;
     }
-    client->conn = NULL;
     client->state = NODUS_CLIENT_DISCONNECTED;
+    /* Now join the read thread (it should exit fast since socket is closed) */
+    stop_read_thread(client);
 }
 
 void nodus_client_close(nodus_client_t *client) {
     if (!client) return;
+
+    /* Stop read thread before tearing down TCP */
+    stop_read_thread(client);
 
     if (client->conn && client->tcp) {
         nodus_tcp_disconnect((nodus_tcp_t *)client->tcp,

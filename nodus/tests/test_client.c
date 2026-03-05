@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <pthread.h>
 
 static int tests_run = 0;
@@ -212,15 +213,18 @@ static void test_listen(void) {
                         NODUS_VALUE_EPHEMERAL, NODUS_DEFAULT_TTL,
                         1, 0, &id2.pk, &val);
     nodus_value_sign(val, &id2.sk);
+    /* Reset flag BEFORE PUT — read thread may deliver notification instantly */
+    got_value_changed = false;
     nodus_client_put(&client2, &key, (const uint8_t *)data, strlen(data),
                       NODUS_VALUE_EPHEMERAL, NODUS_DEFAULT_TTL,
                       1, 0, &val->signature);
     nodus_value_free(val);
 
-    /* Poll client1 for the notification */
-    got_value_changed = false;
-    for (int i = 0; i < 100 && !got_value_changed; i++)
-        nodus_client_poll(&client, 50);
+    /* Wait for the read thread to deliver the notification */
+    for (int i = 0; i < 500 && !got_value_changed; i++) {
+        struct timespec ts = { 0, 10000000L }; /* 10ms */
+        nanosleep(&ts, NULL);
+    }
 
     if (got_value_changed) PASS();
     else FAIL("no value_changed notification");
@@ -328,13 +332,16 @@ static void test_ch_subscribe_notify(void) {
     nodus_sig_t sig;
     nodus_sign(&sig, sign_buf, slen, &id2.sk);
 
+    /* Reset flag BEFORE post — read thread may deliver notification instantly */
+    got_ch_post_notify = false;
     nodus_client_ch_post(&client2, test_ch_uuid, post_uuid,
                           (const uint8_t *)body, strlen(body), ts, &sig, NULL);
 
-    /* Poll for notification */
-    got_ch_post_notify = false;
-    for (int i = 0; i < 100 && !got_ch_post_notify; i++)
-        nodus_client_poll(&client, 50);
+    /* Wait for the read thread to deliver the notification */
+    for (int i = 0; i < 500 && !got_ch_post_notify; i++) {
+        struct timespec ts = { 0, 10000000L }; /* 10ms */
+        nanosleep(&ts, NULL);
+    }
 
     if (got_ch_post_notify) PASS();
     else FAIL("no ch_post notification");

@@ -107,14 +107,12 @@ static void dna_presence_batch_query(dna_engine_t *engine) {
 
 #define PRESENCE_HEARTBEAT_INTERVAL_SECONDS 60  /* 60 seconds */
 #define RETRY_INTERVAL_TICKS 3  /* Retry pending messages every 3 heartbeats (180s) */
-#define BG_POLL_INTERVAL_TICKS 5  /* Background: TCP poll every 5 ticks (5×60s = 300s) */
 #define DAY_ROTATION_TICKS 10    /* Day rotation every 10 heartbeats (10×60s = 600s) */
 
 static void* presence_heartbeat_thread(void *arg) {
     dna_engine_t *engine = (dna_engine_t*)arg;
     int retry_tick = 0;
     int day_rotation_tick = 0;
-    int bg_poll_tick = 0;
 
     QGP_LOG_INFO(LOG_TAG, "Presence heartbeat thread started");
 
@@ -144,10 +142,8 @@ static void* presence_heartbeat_thread(void *arg) {
         active = atomic_load(&engine->presence_active);
 
         if (active) {
-            /* FOREGROUND: Poll Nodus TCP every heartbeat (60s).
-             * Detects disconnect, processes listener notifications,
-             * keeps connection alive. */
-            nodus_messenger_poll(100);
+            /* TCP reading is handled by nodus client internal read thread.
+             * No manual poll needed — push notifications arrive instantly. */
 
             /* Nodus-native presence: batch query all contacts */
             if (engine->messenger) {
@@ -169,13 +165,8 @@ static void* presence_heartbeat_thread(void *arg) {
                 dna_engine_check_channel_day_rotation(engine);
             }
         } else {
-            /* BACKGROUND: Minimal activity for battery saving.
-             * Only poll TCP every 300s to keep connection alive. */
-            if (++bg_poll_tick >= BG_POLL_INTERVAL_TICKS) {
-                bg_poll_tick = 0;
-                nodus_messenger_poll(100);
-                QGP_LOG_DEBUG(LOG_TAG, "Background: TCP keepalive poll");
-            }
+            /* BACKGROUND: TCP reading handled by nodus read thread.
+             * No manual poll needed. */
             /* Reset foreground counters so they start fresh on resume */
             retry_tick = 0;
             day_rotation_tick = 0;

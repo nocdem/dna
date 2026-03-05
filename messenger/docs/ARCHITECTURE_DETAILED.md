@@ -693,7 +693,9 @@ typedef struct {
 } peer_info_t;
 ```
 
-> **Note (v0.9.0+):** Presence is tracked natively by Nodus server. No DHT PUT for presence. Connected clients are tracked server-side and queried via batch TCP call (10s heartbeat). Status transitions fire C events (`DNA_EVENT_CONTACT_ONLINE`/`OFFLINE`) directly to Flutter — no Dart-side polling (v0.9.10+).
+> **Note (v0.9.0+):** Presence is tracked natively by Nodus server. No DHT PUT for presence. Connected clients are tracked server-side and queried via batch TCP call (60s heartbeat). Status transitions fire C events (`DNA_EVENT_CONTACT_ONLINE`/`OFFLINE`) directly to Flutter -- no Dart-side polling (v0.9.10+).
+>
+> **Note (v0.5.6 / v0.9.12):** Nodus client SDK now runs an internal read thread that handles all TCP reading via blocking `epoll_wait`. Push notifications (value_changed, ch_ntf, offline messages) are delivered instantly via callbacks. `nodus_client_poll()` is a no-op when the read thread is running. Zero battery impact (kernel wait queue, no CPU spin).
 
 ### 6.4 Core Operations
 
@@ -1004,7 +1006,7 @@ int contacts_db_clear_all(void);
 **Presence Cache** (`database/presence_cache.h`):
 - O(1) online status lookup
 - In-memory hash map, fires `DNA_EVENT_CONTACT_ONLINE`/`OFFLINE` on transitions
-- Populated by C heartbeat batch TCP query every 10s (v0.9.10+)
+- Populated by C heartbeat batch TCP query every 60s (v0.9.11+), push updates via read thread (v0.5.6+)
 - When server has no data for a contact, existing cached timestamp is preserved
 
 ---
@@ -1289,8 +1291,9 @@ dna_request_id_t dna_engine_get_display_name(engine, fingerprint, callback, user
 ```
 
 > **Note:** `dna_engine_load_identity()` automatically initializes transport, starts presence
-> heartbeat (batch TCP query to Nodus server), subscribes to contacts for push notifications,
-> and checks for offline messages.
+> heartbeat (batch TCP query to Nodus server, 60s interval), subscribes to contacts for push notifications,
+> and checks for offline messages. The Nodus client SDK's internal read thread (v0.5.6+) delivers
+> push notifications instantly via callbacks -- no manual polling required.
 
 **Contacts (3 async functions):**
 ```c

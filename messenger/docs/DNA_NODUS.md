@@ -1,6 +1,6 @@
 # DNA Nodus - Post-Quantum DHT Network
 
-**Current Version:** Nodus v5 (v0.5.0)
+**Current Version:** Nodus v5 (v0.5.6)
 **Security:** FIPS 204 / ML-DSA-87 (Dilithium5) - NIST Category 5
 
 ## Overview
@@ -73,9 +73,11 @@ The messenger integrates directly with Nodus v5 -- no compatibility layer, no Op
 - `nodus/include/nodus/nodus.h` - Client SDK public API
 - `nodus/include/nodus/nodus_types.h` - Constants, version, crypto sizes
 
+**Internal Read Thread (v0.5.6+):** The Nodus client SDK runs an internal read thread after `nodus_client_connect()` that continuously reads TCP via blocking `epoll_wait`. Push notifications (value_changed, ch_ntf, offline messages) are delivered instantly via callbacks. `nodus_client_poll()` is a no-op when the read thread is running. This replaces the old model where the heartbeat thread polled every 60s. Zero battery impact (kernel wait queue, no CPU spin).
+
 ## Nodus v5 Test Cluster
 
-Three nodes running v0.5.0 with PBFT ring formed and cross-node replication verified.
+Three nodes running v0.5.6 with PBFT ring formed and cross-node replication verified.
 
 | Node | IP | UDP Port | TCP Port |
 |------|-----|----------|----------|
@@ -202,6 +204,12 @@ ssh root@<IP> 'systemctl status dna-nodus'
 ## Version History
 
 ### Nodus v5 (Pure C rewrite)
+- **v0.5.6** - Internal read thread for instant push notification delivery
+  - Client SDK spawns read thread after connect (blocking epoll_wait, zero CPU)
+  - Push notifications (value_changed, ch_ntf) delivered instantly via callbacks
+  - `nodus_client_poll()` is no-op when read thread is running
+  - `nodus_pending_t.ready` changed to `_Atomic bool` for cross-thread visibility
+  - Thread safety: poll_mutex (reads), send_mutex (writes), pending_mutex (slots)
 - **v0.5.0** - Production-ready Nodus v5: Kademlia DHT + PBFT consensus + TCP client SDK
   - Pure C implementation (no C++ dependencies)
   - CBOR wire protocol with 7-byte frame header

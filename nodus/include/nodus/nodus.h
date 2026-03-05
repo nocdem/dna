@@ -96,7 +96,7 @@ typedef struct {
     void       *response;       /* nodus_tier2_msg_t* */
     uint8_t    *raw_response;
     size_t      raw_response_len;
-    bool        ready;
+    _Atomic bool ready;
     bool        in_use;
 } nodus_pending_t;
 
@@ -137,6 +137,11 @@ typedef struct {
     pthread_mutex_t        pending_mutex;  /* protects pending[] slots */
     pthread_mutex_t        send_mutex;     /* serializes TCP send */
     pthread_mutex_t        poll_mutex;     /* serializes TCP poll */
+
+    /* Internal read thread — continuously reads TCP for push notifications */
+    pthread_t              read_thread;
+    _Atomic bool           read_thread_running;
+    _Atomic bool           read_thread_stop;
 } nodus_client_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */
