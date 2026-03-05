@@ -586,12 +586,9 @@ class EventHandler {
   }
 
   /// Show notification for incoming message
-  /// NOTE: On Android, notifications are handled by native JNI service (DnaMessengerService)
   /// TODO: Add native notifications for Linux (libnotify) and Windows (Win32 Toast)
-  /// For now, desktop notifications are disabled until native support is added
   void _showMessageNotification(String contactFingerprint, String messageText) {
-    // Android: JNI handles notifications natively via DnaNotificationHelper
-    // Desktop: Disabled for now - Flutter notifications don't work when app unfocused
+    // Notifications not yet implemented
     // Future: Add libnotify (Linux) and Win32 Toast (Windows) in C code
     return;
   }

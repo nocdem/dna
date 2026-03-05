@@ -57,8 +57,7 @@ static pthread_mutex_t g_engine_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* Global refs for callbacks - declared here for JNI_OnLoad/OnUnload access.
  * These are set later by nativeSetEventListener, nativeSetNotificationHelper, etc. */
 static jobject g_event_listener = NULL;
-static jobject g_notification_helper = NULL;
-static jobject g_reconnect_helper = NULL;
+/* g_notification_helper and g_reconnect_helper removed in v0.9.7 */
 
 /* ============================================================================
  * JNI LIFECYCLE
@@ -80,8 +79,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
      * Global refs (g_event_listener, etc.) point to Java objects from the OLD
      * JVM process and will crash if used.
      */
-    if (g_engine != NULL || g_event_listener != NULL ||
-        g_notification_helper != NULL || g_reconnect_helper != NULL) {
+    if (g_engine != NULL || g_event_listener != NULL) {
         LOGW("JNI_OnLoad: Detected stale state from previous process - clearing");
 
         /* DO NOT call dna_engine_destroy() - the memory is already freed.
@@ -91,8 +89,6 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
         /* Global refs are invalid - the old JVM is gone. Just NULL them.
          * DO NOT call DeleteGlobalRef - that would crash on invalid refs. */
         g_event_listener = NULL;
-        g_notification_helper = NULL;
-        g_reconnect_helper = NULL;
 
         LOGI("JNI_OnLoad: Stale state cleared - clean start");
     }
@@ -126,20 +122,10 @@ JNIEXPORT void JNI_OnUnload(JavaVM *vm, void *reserved) {
             (*env)->DeleteGlobalRef(env, g_event_listener);
             g_event_listener = NULL;
         }
-        if (g_notification_helper) {
-            (*env)->DeleteGlobalRef(env, g_notification_helper);
-            g_notification_helper = NULL;
-        }
-        if (g_reconnect_helper) {
-            (*env)->DeleteGlobalRef(env, g_reconnect_helper);
-            g_reconnect_helper = NULL;
-        }
         LOGI("Global refs cleaned in JNI_OnUnload");
     } else {
         /* Can't get env - just NULL the pointers (memory leak is acceptable on unload) */
         g_event_listener = NULL;
-        g_notification_helper = NULL;
-        g_reconnect_helper = NULL;
         LOGW("JNI_OnUnload: Couldn't get JNIEnv, refs nulled without delete");
     }
 
@@ -707,169 +693,7 @@ static void jni_event_callback(const dna_event_t *event, void *user_data) {
     release_env(did_attach);
 }
 
-/* ============================================================================
- * ANDROID NOTIFICATION CALLBACK
- * Called when contact's outbox has new messages (for background notifications)
- * ============================================================================ */
-
-/* g_notification_helper declared in GLOBAL STATE section at top of file */
-
-/**
- * Native callback invoked by dna_engine when DNA_EVENT_OUTBOX_UPDATED fires.
- * Calls the Java NotificationHelper.onOutboxUpdated() method.
- *
- * Note: Message fetching is already handled by dna_engine's auto-fetch in
- * dna_dispatch_event() which spawns background_fetch_thread on OUTBOX_UPDATED.
- */
-static void jni_android_notification_callback(const char *contact_fingerprint, const char *display_name, void *user_data) {
-    (void)user_data;
-
-    /* CRITICAL: Check g_jvm first - if NULL, JVM is shutting down */
-    if (!g_jvm) {
-        return;  /* Silent return - JVM shutdown in progress */
-    }
-
-    if (!g_notification_helper || !contact_fingerprint) {
-        LOGD("Android notification callback: no helper or fingerprint");
-        return;
-    }
-
-    int did_attach = 0;
-    JNIEnv *env = get_env(&did_attach);
-    if (!env) {
-        LOGE("Failed to get JNIEnv for notification callback");
-        return;
-    }
-
-    LOGI("[NOTIFY] Calling Java notification helper for %.16s... (name=%s)",
-         contact_fingerprint, display_name ? display_name : "(null)");
-
-    jclass cls = (*env)->GetObjectClass(env, g_notification_helper);
-    if (!cls) {
-        LOGE("Failed to get notification helper class");
-        release_env(did_attach);
-        return;
-    }
-
-    jmethodID method = (*env)->GetMethodID(env, cls, "onOutboxUpdated", "(Ljava/lang/String;Ljava/lang/String;)V");
-    if (!method) {
-        /* IMPORTANT: Clear pending exception from GetMethodID failure */
-        (*env)->ExceptionClear(env);
-        LOGE("Failed to get onOutboxUpdated method");
-        (*env)->DeleteLocalRef(env, cls);
-        release_env(did_attach);
-        return;
-    }
-
-    jstring fp_str = (*env)->NewStringUTF(env, contact_fingerprint);
-    jstring name_str = display_name ? (*env)->NewStringUTF(env, display_name) : NULL;
-
-    if (fp_str) {
-        (*env)->CallVoidMethod(env, g_notification_helper, method, fp_str, name_str);
-
-        /* Check for Java exceptions thrown by onOutboxUpdated() */
-        if ((*env)->ExceptionCheck(env)) {
-            jthrowable exc = (*env)->ExceptionOccurred(env);
-            (*env)->ExceptionClear(env);
-            if (exc) {
-                jclass exc_cls = (*env)->GetObjectClass(env, exc);
-                jmethodID get_msg = (*env)->GetMethodID(env, exc_cls, "getMessage", "()Ljava/lang/String;");
-                if (get_msg) {
-                    jstring jmsg = (jstring)(*env)->CallObjectMethod(env, exc, get_msg);
-                    if (jmsg) {
-                        const char *msg = (*env)->GetStringUTFChars(env, jmsg, NULL);
-                        LOGE("[NOTIFY] Java exception in onOutboxUpdated: %s", msg ? msg : "(null)");
-                        if (msg) (*env)->ReleaseStringUTFChars(env, jmsg, msg);
-                        (*env)->DeleteLocalRef(env, jmsg);
-                    }
-                }
-                (*env)->DeleteLocalRef(env, exc_cls);
-                (*env)->DeleteLocalRef(env, exc);
-            } else {
-                LOGE("[NOTIFY] Java exception in onOutboxUpdated (no details)");
-            }
-        } else {
-            LOGI("[NOTIFY] Java notification helper called successfully");
-        }
-
-        (*env)->DeleteLocalRef(env, fp_str);
-    }
-    if (name_str) {
-        (*env)->DeleteLocalRef(env, name_str);
-    }
-    (*env)->DeleteLocalRef(env, cls);
-
-    release_env(did_attach);
-}
-
-/* ============================================================================
- * ANDROID CONTACT REQUEST CALLBACK
- * Called when a new contact request is received via DHT listener
- * ============================================================================ */
-
-/**
- * Native callback invoked by dna_engine when DNA_EVENT_CONTACT_REQUEST_RECEIVED fires.
- * Calls the Java NotificationHelper.onContactRequestReceived() method.
- */
-static void jni_contact_request_callback(const char *user_fingerprint, const char *user_display_name, void *user_data) {
-    (void)user_data;
-
-    /* CRITICAL: Check g_jvm first - if NULL, JVM is shutting down */
-    if (!g_jvm) {
-        return;  /* Silent return - JVM shutdown in progress */
-    }
-
-    if (!g_notification_helper || !user_fingerprint) {
-        LOGD("Contact request callback: no helper or fingerprint");
-        return;
-    }
-
-    int did_attach = 0;
-    JNIEnv *env = get_env(&did_attach);
-    if (!env) {
-        LOGE("Failed to get JNIEnv for contact request callback");
-        return;
-    }
-
-    LOGI("[CONTACT-REQ] Calling Java helper for %.16s... (name=%s)",
-         user_fingerprint, user_display_name ? user_display_name : "(null)");
-
-    jclass cls = (*env)->GetObjectClass(env, g_notification_helper);
-    if (!cls) {
-        LOGE("Failed to get notification helper class");
-        release_env(did_attach);
-        return;
-    }
-
-    jmethodID method = (*env)->GetMethodID(env, cls, "onContactRequestReceived", "(Ljava/lang/String;Ljava/lang/String;)V");
-    if (!method) {
-        (*env)->ExceptionClear(env);
-        LOGE("Failed to get onContactRequestReceived method");
-        (*env)->DeleteLocalRef(env, cls);
-        release_env(did_attach);
-        return;
-    }
-
-    jstring jni_fingerprint = (*env)->NewStringUTF(env, user_fingerprint);
-    jstring jni_display_name = user_display_name ? (*env)->NewStringUTF(env, user_display_name) : NULL;
-
-    if (jni_fingerprint) {
-        (*env)->CallVoidMethod(env, g_notification_helper, method, jni_fingerprint, jni_display_name);
-        (*env)->DeleteLocalRef(env, jni_fingerprint);
-    }
-    if (jni_display_name) {
-        (*env)->DeleteLocalRef(env, jni_display_name);
-    }
-    (*env)->DeleteLocalRef(env, cls);
-
-    LOGI("[CONTACT-REQ] Java helper called successfully");
-    release_env(did_attach);
-}
-
-/* ============================================================================
- * ANDROID DHT RECONNECT CALLBACK
- * Called when DHT reconnects after network change (for foreground service)
- * ============================================================================ */
+/* Android notification/contact request/reconnect callbacks removed in v0.9.7 */
 
 /* ============================================================================
  * JNI NATIVE METHODS
@@ -922,14 +746,6 @@ Java_io_cpunk_dna_DNAEngine_nativeDestroy(JNIEnv *env, jobject thiz) {
         (*env)->DeleteGlobalRef(env, g_event_listener);
         g_event_listener = NULL;
     }
-    if (g_notification_helper) {
-        (*env)->DeleteGlobalRef(env, g_notification_helper);
-        g_notification_helper = NULL;
-    }
-    if (g_reconnect_helper) {
-        (*env)->DeleteGlobalRef(env, g_reconnect_helper);
-        g_reconnect_helper = NULL;
-    }
 }
 
 JNIEXPORT void JNICALL
@@ -947,65 +763,7 @@ Java_io_cpunk_dna_DNAEngine_nativeSetEventListener(JNIEnv *env, jobject thiz, jo
     }
 }
 
-/**
- * Set the Android notification helper
- *
- * The helper object must implement onOutboxUpdated(String contactFingerprint).
- * This is called when a contact's outbox has new messages, allowing Android
- * to show native notifications even when Flutter's event callback is detached.
- *
- * This is separate from the event listener and is NOT cleared when Flutter
- * backgrounds - it persists as long as the native library is loaded.
- */
-JNIEXPORT void JNICALL
-Java_io_cpunk_dna_DNAEngine_nativeSetNotificationHelper(JNIEnv *env, jobject thiz, jobject helper) {
-    LOGI("Setting notification helper: %p", helper);
-
-    /* Clear existing helper */
-    if (g_notification_helper) {
-        (*env)->DeleteGlobalRef(env, g_notification_helper);
-        g_notification_helper = NULL;
-        dna_engine_set_android_notification_callback(NULL, NULL);
-        dna_engine_set_android_contact_request_callback(NULL, NULL);
-    }
-
-    /* Set new helper */
-    if (helper) {
-        g_notification_helper = (*env)->NewGlobalRef(env, helper);
-        dna_engine_set_android_notification_callback(jni_android_notification_callback, NULL);
-        dna_engine_set_android_contact_request_callback(jni_contact_request_callback, NULL);
-        LOGI("Notification helper registered successfully");
-    } else {
-        LOGI("Notification helper cleared");
-    }
-}
-
-/**
- * Flutter app version - package io.cpunk.dna_messenger
- * Note: underscore in package name becomes _1 in JNI naming
- */
-JNIEXPORT void JNICALL
-Java_io_cpunk_dna_1messenger_DnaNotificationHelper_nativeSetNotificationHelper(JNIEnv *env, jobject thiz, jobject helper) {
-    LOGI("Flutter: Setting notification helper: %p", helper);
-
-    /* Clear existing helper */
-    if (g_notification_helper) {
-        (*env)->DeleteGlobalRef(env, g_notification_helper);
-        g_notification_helper = NULL;
-        dna_engine_set_android_notification_callback(NULL, NULL);
-        dna_engine_set_android_contact_request_callback(NULL, NULL);
-    }
-
-    /* Set new helper */
-    if (helper) {
-        g_notification_helper = (*env)->NewGlobalRef(env, helper);
-        dna_engine_set_android_notification_callback(jni_android_notification_callback, NULL);
-        dna_engine_set_android_contact_request_callback(jni_contact_request_callback, NULL);
-        LOGI("Flutter: Notification helper registered successfully");
-    } else {
-        LOGI("Flutter: Notification helper cleared");
-    }
-}
+/* nativeSetNotificationHelper removed in v0.9.7 (service/notification system removed) */
 
 JNIEXPORT jstring JNICALL
 Java_io_cpunk_dna_DNAEngine_nativeGetFingerprint(JNIEnv *env, jobject thiz) {
@@ -1334,208 +1092,4 @@ Java_io_cpunk_dna_DNAEngine_nativeNetworkChanged(JNIEnv *env, jobject thiz) {
     return dna_engine_network_changed(g_engine);
 }
 
-/**
- * Direct DHT reinit for DnaMessengerService (foreground service).
- * Called when network changes while app is backgrounded.
- *
- * If engine is available with identity loaded, uses dna_engine_network_changed()
- * which properly cancels existing listeners before reinit.
- *
- * Otherwise falls back to direct dht_singleton_reinit() (no listeners to cancel).
- *
- * Returns: 0 on success, -1 if DHT not initialized, -2 on reinit failure
- */
-JNIEXPORT jint JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeReinitDht(JNIEnv *env, jobject thiz) {
-    /* If engine is ready (identity loaded), use the full network_changed path.
-     * This properly cancels listeners before reinit and lets the status callback
-     * restart them on the new DHT context. */
-    if (g_engine && dna_engine_get_fingerprint(g_engine) != NULL) {
-        LOGI("nativeReinitDht: Using engine network_changed path");
-        return dna_engine_network_changed(g_engine);
-    }
-
-    /* Fallback: DHT-only reinit when engine/identity not available */
-    if (!nodus_messenger_is_initialized()) {
-        LOGD("nativeReinitDht: Nodus not initialized, skipping");
-        return -1;
-    }
-
-    LOGI("nativeReinitDht: Network change - reinitializing nodus (no engine)");
-    int result = nodus_messenger_reinit();
-    if (result != 0) {
-        LOGE("nativeReinitDht: Nodus reinit failed");
-        return -2;
-    }
-
-    LOGI("nativeReinitDht: Nodus reinit successful");
-    return 0;
-}
-
-/**
- * Check if Flutter's engine is alive (g_engine != NULL).
- * Used by service to detect if OS killed the process and engine is gone.
- */
-JNIEXPORT jboolean JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeIsEngineAlive(JNIEnv *env, jobject thiz) {
-    pthread_mutex_lock(&g_engine_mutex);
-    jboolean alive = g_engine ? JNI_TRUE : JNI_FALSE;
-    pthread_mutex_unlock(&g_engine_mutex);
-    return alive;
-}
-
-/**
- * Ensure engine is initialized (v0.6.0+)
- * Called by DnaMessengerService when it starts fresh after process killed.
- * v0.6.0: No global sharing - Service owns its own engine, coordinated via identity lock.
- */
-JNIEXPORT jboolean JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeEnsureEngine(JNIEnv *env, jobject thiz, jstring data_dir) {
-    /* Check if engine already exists (v0.6.40: mutex-protected) */
-    pthread_mutex_lock(&g_engine_mutex);
-    if (g_engine) {
-        pthread_mutex_unlock(&g_engine_mutex);
-        LOGI("nativeEnsureEngine: Engine already exists");
-        return JNI_TRUE;
-    }
-
-    /* Create new engine - Service owns its own, doesn't share with Flutter */
-    const char *dir = data_dir ? (*env)->GetStringUTFChars(env, data_dir, NULL) : NULL;
-    g_engine = dna_engine_create(dir);
-    if (dir) (*env)->ReleaseStringUTFChars(env, data_dir, dir);
-
-    if (!g_engine) {
-        pthread_mutex_unlock(&g_engine_mutex);
-        LOGE("nativeEnsureEngine: Failed to create engine");
-        return JNI_FALSE;
-    }
-    pthread_mutex_unlock(&g_engine_mutex);
-
-    LOGI("nativeEnsureEngine: Engine created (Service-owned)");
-    return JNI_TRUE;
-}
-
-/**
- * Check if identity is loaded (v0.5.5+)
- */
-JNIEXPORT jboolean JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeIsIdentityLoaded(JNIEnv *env, jobject thiz) {
-    if (!g_engine) {
-        return JNI_FALSE;
-    }
-    return dna_engine_is_identity_loaded(g_engine) ? JNI_TRUE : JNI_FALSE;
-}
-
-/* Sync callback context for nativeLoadIdentityBackgroundSync */
-typedef struct {
-    volatile int result;
-    volatile bool done;
-} sync_load_ctx_t;
-
-static void sync_load_callback(dna_request_id_t id, int error, void *user_data) {
-    sync_load_ctx_t *ctx = (sync_load_ctx_t*)user_data;
-    if (ctx) {
-        ctx->result = error;
-        ctx->done = true;
-    }
-}
-
-/**
- * Load identity with FULL initialization - synchronous version (v0.101.25+)
- * Used by DnaMessengerService fallback when OS kills the process.
- * Full load sets up TCP listeners + presence so the engine gets instant push
- * notifications via the JNI notification callback (g_android_notification_cb).
- * Returns: 0 on success, negative on error
- */
-JNIEXPORT jint JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeLoadIdentitySync(JNIEnv *env, jobject thiz, jstring fingerprint) {
-    if (!g_engine || !fingerprint) {
-        LOGE("nativeLoadIdentitySync: engine or fingerprint is NULL");
-        return -1;
-    }
-
-    const char *fp = (*env)->GetStringUTFChars(env, fingerprint, NULL);
-    if (!fp) {
-        LOGE("nativeLoadIdentitySync: failed to get fingerprint string");
-        return -2;
-    }
-
-    LOGI("nativeLoadIdentitySync: Loading identity (full): %.16s...", fp);
-
-    /* Synchronous wrapper using callback context */
-    sync_load_ctx_t ctx = { .result = -100, .done = false };
-
-    /* Full load (not minimal) — sets up TCP listeners for instant push */
-    dna_request_id_t req_id = dna_engine_load_identity(
-        g_engine, fp, NULL, sync_load_callback, &ctx);
-
-    (*env)->ReleaseStringUTFChars(env, fingerprint, fp);
-
-    if (req_id == 0) {
-        LOGE("nativeLoadIdentitySync: Failed to submit request");
-        return -3;
-    }
-
-    /* Wait for completion (30s timeout) */
-    int wait_count = 0;
-    while (!ctx.done && wait_count < 300) {  /* 30 second timeout */
-        usleep(100000);  /* 100ms */
-        wait_count++;
-    }
-
-    if (!ctx.done) {
-        LOGE("nativeLoadIdentitySync: Timeout waiting for identity load");
-        return -4;
-    }
-
-    if (ctx.result == 0) {
-        LOGI("nativeLoadIdentitySync: Identity loaded (full mode) - TCP listeners active");
-    } else {
-        LOGE("nativeLoadIdentitySync: Identity load failed: %d", ctx.result);
-    }
-
-    return ctx.result;
-}
-
-/**
- * Pause the engine (v0.101.25+)
- * Stops presence heartbeat but keeps TCP + listeners alive.
- * Used by fallback restore so user doesn't appear "online" after swipe.
- */
-JNIEXPORT void JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativePauseEngine(JNIEnv *env, jobject thiz) {
-    pthread_mutex_lock(&g_engine_mutex);
-    if (g_engine) {
-        dna_engine_pause(g_engine);
-        LOGI("nativePauseEngine: Engine paused (presence stopped, listeners active)");
-    }
-    pthread_mutex_unlock(&g_engine_mutex);
-}
-
-/**
- * Service log bridge (v0.7.9)
- * Allows Kotlin DnaMessengerService to write logs to dna.log + ring buffer.
- * Visible in Settings > Debug Log.
- */
-JNIEXPORT void JNICALL
-Java_io_cpunk_dna_1messenger_DnaMessengerService_nativeServiceLog(JNIEnv *env, jobject thiz, jstring message) {
-    if (!message) return;
-    const char *msg = (*env)->GetStringUTFChars(env, message, NULL);
-    if (msg) {
-        LOGI("[SVC] %s", msg);
-        (*env)->ReleaseStringUTFChars(env, message, msg);
-    }
-}
-
-/**
- * Log from DnaNotificationHelper to dna.log
- */
-JNIEXPORT void JNICALL
-Java_io_cpunk_dna_1messenger_DnaNotificationHelper_nativeLogToDna(JNIEnv *env, jobject thiz, jstring message) {
-    if (!message) return;
-    const char *msg = (*env)->GetStringUTFChars(env, message, NULL);
-    if (msg) {
-        LOGI("[NOTIF] %s", msg);
-        (*env)->ReleaseStringUTFChars(env, message, msg);
-    }
-}
+/* DnaMessengerService and DnaNotificationHelper JNI functions removed in v0.9.7 */

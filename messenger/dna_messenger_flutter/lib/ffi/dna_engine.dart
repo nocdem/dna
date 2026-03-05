@@ -3960,8 +3960,6 @@ class DnaEngine {
   /// Handle network connectivity change
   ///
   /// Reinitializes the DHT connection when network changes (e.g., WiFi to cellular).
-  /// This is called automatically by the Android ForegroundService when
-  /// ConnectivityManager detects a network change.
   ///
   /// Returns 0 on success, -1 on error.
   int networkChanged() {
@@ -5674,8 +5672,7 @@ class DnaEngine {
   }
 
   /// Detach the event callback (call when app goes to background)
-  /// This prevents crashes when native code tries to invoke a deleted Dart callback
-  /// after Flutter is killed but ForegroundService continues running.
+  /// This prevents crashes when native code tries to invoke a deleted Dart callback.
   void detachEventCallback() {
     if (_isDisposed) return;
     _bindings.dna_engine_set_event_callback(_engine, nullptr, nullptr);
@@ -5692,11 +5689,6 @@ class DnaEngine {
   }
 
   /// Dispose the engine and release all resources
-  ///
-  /// On Android, the C code releases the identity lock FIRST before any cleanup
-  /// that might crash due to DHT callback races. This allows ForegroundService
-  /// to take over immediately. Any crash after lock release doesn't matter -
-  /// the process will die anyway and OS cleans up memory.
   void dispose() {
     _debugLog('[DART-DISPOSE] dispose() called, _isDisposed=$_isDisposed');
     if (_isDisposed) {
@@ -5733,9 +5725,7 @@ class DnaEngine {
     _eventController.close();
     _debugLog('[DART-DISPOSE] Event controller closed');
 
-    // Call destroy - on Android, the C code releases the identity lock FIRST
-    // before any cleanup that might crash. Even if a crash occurs later,
-    // the lock is already free and ForegroundService can take over.
+    // Call destroy - releases identity lock and cleans up all resources.
     _debugLog('[DART-DISPOSE] Calling dna_engine_destroy()...');
     _bindings.dna_engine_destroy(_engine);
     _debugLog('[DART-DISPOSE] dna_engine_destroy() returned');

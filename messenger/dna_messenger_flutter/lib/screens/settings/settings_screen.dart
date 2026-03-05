@@ -11,11 +11,9 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
-import '../../platform/android/notification_settings.dart';
 import '../../providers/providers.dart';
 import '../../providers/version_check_provider.dart';
 import '../../design_system/design_system.dart';
-import '../../utils/platform_utils.dart';
 import '../profile/profile_editor_screen.dart';
 import 'app_lock_settings_screen.dart';
 
@@ -247,25 +245,13 @@ class _AppearanceSection extends ConsumerWidget {
   }
 }
 
-/// Notifications section - Android only
-/// Desktop notifications not yet implemented (see MISSING_FEATURES.md)
+/// Notifications section - removed in v0.9.7 (service/notification system removed)
 class _NotificationsSection extends StatelessWidget {
   const _NotificationsSection();
 
   @override
   Widget build(BuildContext context) {
-    // Only show on Android - Desktop notifications not implemented yet
-    if (!PlatformUtils.isAndroid) {
-      return const SizedBox.shrink();
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: const [
-        _SectionHeader('Notifications'),
-        AndroidNotificationSettings(),
-      ],
-    );
+    return const SizedBox.shrink();
   }
 }
 

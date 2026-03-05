@@ -191,30 +191,7 @@ size_t dna_engine_start_presence_listener(dna_engine_t *engine, const char *cont
 static dna_engine_t *g_dht_callback_engine = NULL;
 static pthread_mutex_t g_engine_global_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-/* Android notification callback - separate from Flutter's event callback.
- * This is called when DNA_EVENT_MESSAGE_RECEIVED fires for incoming messages,
- * allowing Android to show native notifications even when Flutter is detached. */
-static dna_android_notification_cb g_android_notification_cb = NULL;
-static void *g_android_notification_data = NULL;
-
-/* Android group message notification callback.
- * Called when new group messages arrive via DHT listen. */
-static dna_android_group_message_cb g_android_group_message_cb = NULL;
-static void *g_android_group_message_data = NULL;
-
-/* Android contact request notification callback.
- * Called when new contact requests arrive via DHT listen. */
-static dna_android_contact_request_cb g_android_contact_request_cb = NULL;
-static void *g_android_contact_request_data = NULL;
-
-/* Android DHT reconnection callback.
- * Called when DHT reconnects after network change. Used by foreground service
- * to recreate MINIMAL listeners. When set, engine skips automatic listener setup. */
-static dna_android_reconnect_cb g_android_reconnect_cb = NULL;
-static void *g_android_reconnect_data = NULL;
-
-/* Mutex to protect Android callback globals during set/invoke (v0.6.40 race fix) */
-static pthread_mutex_t g_android_callback_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* Android notification/service callbacks removed in v0.9.7 */
 
 /* Global engine accessors (for messenger layer event dispatch)
  * Thread-safe via g_engine_global_mutex (v0.6.43 race fix). */
@@ -609,42 +586,27 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
          * IMPORTANT: Run listener setup on a background thread!
          * This callback runs on the Nodus callback thread. If we block here
          * we deadlock (Nodus needs this thread for dispatch). */
-        QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT connected, identity_loaded=%d reconnect_cb=%p",
-                     engine->identity_loaded, (void*)g_android_reconnect_cb);
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT connected, identity_loaded=%d",
+                     engine->identity_loaded);
         if (engine->identity_loaded) {
-            /* v0.6.8+: If Android reconnect callback is registered, let the service
-             * handle listener recreation. This allows the foreground service to
-             * create MINIMAL listeners instead of FULL listeners. */
-            /* v0.6.47: Copy callback under mutex to avoid race with setter (security fix) */
-            pthread_mutex_lock(&g_android_callback_mutex);
-            dna_android_reconnect_cb reconnect_cb = g_android_reconnect_cb;
-            void *reconnect_data = g_android_reconnect_data;
-            pthread_mutex_unlock(&g_android_callback_mutex);
-
-            if (reconnect_cb) {
-                QGP_LOG_INFO(LOG_TAG, "[LISTEN] Calling Android reconnect callback (service mode)");
-                reconnect_cb(reconnect_data);
+            /* Spawn listener setup thread for FULL listeners */
+            pthread_mutex_lock(&engine->background_threads_mutex);
+            if (engine->setup_listeners_running) {
+                /* Previous thread still running - skip (it will handle everything) */
+                pthread_mutex_unlock(&engine->background_threads_mutex);
+                QGP_LOG_INFO(LOG_TAG, "[LISTEN] Listener setup thread already running, skipping");
             } else {
-                /* Default: spawn listener setup thread for FULL listeners */
-                /* v0.6.0+: Track thread for clean shutdown (no detach) */
-                pthread_mutex_lock(&engine->background_threads_mutex);
-                if (engine->setup_listeners_running) {
-                    /* Previous thread still running - skip (it will handle everything) */
-                    pthread_mutex_unlock(&engine->background_threads_mutex);
-                    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Listener setup thread already running, skipping");
+                /* Spawn new thread and track it */
+                engine->setup_listeners_running = true;
+                pthread_mutex_unlock(&engine->background_threads_mutex);
+                if (pthread_create(&engine->setup_listeners_thread, NULL,
+                                   dna_engine_setup_listeners_thread, engine) == 0) {
+                    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Spawned background thread for listener setup");
                 } else {
-                    /* Spawn new thread and track it */
-                    engine->setup_listeners_running = true;
+                    pthread_mutex_lock(&engine->background_threads_mutex);
+                    engine->setup_listeners_running = false;
                     pthread_mutex_unlock(&engine->background_threads_mutex);
-                    if (pthread_create(&engine->setup_listeners_thread, NULL,
-                                       dna_engine_setup_listeners_thread, engine) == 0) {
-                        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Spawned background thread for listener setup");
-                    } else {
-                        pthread_mutex_lock(&engine->background_threads_mutex);
-                        engine->setup_listeners_running = false;
-                        pthread_mutex_unlock(&engine->background_threads_mutex);
-                        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to spawn listener setup thread");
-                    }
+                    QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to spawn listener setup thread");
                 }
             }
         } else {
@@ -942,86 +904,7 @@ void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event) {
         }
     }
 
-    /* v0.6.40: Copy Android callbacks under mutex to avoid race with setter */
-    pthread_mutex_lock(&g_android_callback_mutex);
-    dna_android_notification_cb notify_cb = g_android_notification_cb;
-    void *notify_data = g_android_notification_data;
-#ifdef __ANDROID__
-    dna_android_contact_request_cb contact_req_cb = g_android_contact_request_cb;
-    void *contact_req_data = g_android_contact_request_data;
-#endif
-    pthread_mutex_unlock(&g_android_callback_mutex);
-
-#ifdef __ANDROID__
-    /* Android: When OUTBOX_UPDATED fires and Flutter is NOT attached, just show notification.
-     * Don't fetch - let Flutter handle fetching when user opens app.
-     * This avoids race conditions between C auto-fetch and Flutter fetch. */
-    if (event->type == DNA_EVENT_OUTBOX_UPDATED) {
-        QGP_LOG_INFO(LOG_TAG, "[ANDROID-NOTIFY] OUTBOX_UPDATED: cb=%p flutter_attached=%d",
-                     (void*)notify_cb, flutter_attached);
-    }
-    if (event->type == DNA_EVENT_OUTBOX_UPDATED && notify_cb && !flutter_attached) {
-        const char *contact_fp = event->data.outbox_updated.contact_fingerprint;
-        const char *display_name = NULL;
-        char name_buf[256] = {0};
-
-        /* Try to get registered name from profile cache */
-        dna_unified_identity_t *cached = NULL;
-        uint64_t cached_at = 0;
-        if (profile_cache_get(contact_fp, &cached, &cached_at) == 0 && cached) {
-            if (cached->registered_name[0]) {
-                strncpy(name_buf, cached->registered_name, sizeof(name_buf) - 1);
-                display_name = name_buf;
-            }
-            dna_identity_free(cached);
-        }
-
-        QGP_LOG_INFO(LOG_TAG, "[ANDROID-NOTIFY] Flutter detached, notifying: fp=%.16s... name=%s",
-                     contact_fp, display_name ? display_name : "(unknown)");
-        notify_cb(contact_fp, display_name, notify_data);
-    }
-#endif
-
-    /* Android notification callback - called for MESSAGE_RECEIVED events
-     * (incoming messages only). This allows Android to show native
-     * notifications when app is backgrounded. */
-    if (event->type == DNA_EVENT_MESSAGE_RECEIVED && notify_cb) {
-        /* Only notify for incoming messages, not our own sent messages */
-        if (!event->data.message_received.message.is_outgoing) {
-            const char *fp = event->data.message_received.message.sender;
-            const char *display_name = NULL;
-            char name_buf[256] = {0};
-
-            /* Try to get registered name from profile cache */
-            dna_unified_identity_t *cached = NULL;
-            uint64_t cached_at = 0;
-            if (profile_cache_get(fp, &cached, &cached_at) == 0 && cached) {
-                if (cached->registered_name[0]) {
-                    strncpy(name_buf, cached->registered_name, sizeof(name_buf) - 1);
-                    display_name = name_buf;
-                }
-                dna_identity_free(cached);
-            }
-
-            QGP_LOG_INFO(LOG_TAG, "[ANDROID-NOTIFY] Calling callback: fp=%.16s... name=%s",
-                         fp, display_name ? display_name : "(unknown)");
-            notify_cb(fp, display_name, notify_data);
-        }
-    }
-
-#ifdef __ANDROID__
-    /* Android: Contact request notification - show notification when request arrives */
-    if (event->type == DNA_EVENT_CONTACT_REQUEST_RECEIVED && contact_req_cb) {
-        const char *user_fingerprint = event->data.contact_request_received.request.fingerprint;
-        const char *user_display_name = event->data.contact_request_received.request.display_name;
-
-        QGP_LOG_INFO(LOG_TAG, "[ANDROID-CONTACT-REQ] Contact request from %.16s... name=%s",
-                     user_fingerprint, user_display_name[0] ? user_display_name : "(unknown)");
-        contact_req_cb(user_fingerprint,
-                       user_display_name[0] ? user_display_name : NULL,
-                       contact_req_data);
-    }
-#endif
+    /* Android notification callbacks removed in v0.9.7 */
 }
 
 void dna_free_event(dna_event_t *event) {
@@ -1360,9 +1243,6 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
 
     /* v0.6.107+: Initialize state synchronization */
     pthread_mutex_init(&engine->state_mutex, NULL);
-    pthread_cond_init(&engine->resume_thread_exit_cond, NULL);  /* v0.6.113: For efficient thread join */
-    engine->resume_thread_running = false;
-    memset(&engine->resume_thread, 0, sizeof(engine->resume_thread));  /* v0.6.108: Init to zero */
 
     /* Initialize task queue */
     dna_task_queue_init(&engine->task_queue);
@@ -1510,75 +1390,7 @@ void dna_engine_set_event_callback(
     pthread_mutex_unlock(&engine->event_mutex);
 }
 
-void dna_engine_set_android_notification_callback(
-    dna_android_notification_cb callback,
-    void *user_data
-) {
-    pthread_mutex_lock(&g_android_callback_mutex);
-    g_android_notification_cb = callback;
-    g_android_notification_data = user_data;
-    pthread_mutex_unlock(&g_android_callback_mutex);
-    QGP_LOG_INFO(LOG_TAG, "Android notification callback %s",
-                 callback ? "registered" : "cleared");
-}
-
-void dna_engine_set_android_group_message_callback(
-    dna_android_group_message_cb callback,
-    void *user_data
-) {
-    pthread_mutex_lock(&g_android_callback_mutex);
-    g_android_group_message_cb = callback;
-    g_android_group_message_data = user_data;
-    pthread_mutex_unlock(&g_android_callback_mutex);
-    QGP_LOG_INFO(LOG_TAG, "Android group message callback %s",
-                 callback ? "registered" : "cleared");
-}
-
-void dna_engine_set_android_contact_request_callback(
-    dna_android_contact_request_cb callback,
-    void *user_data
-) {
-    pthread_mutex_lock(&g_android_callback_mutex);
-    g_android_contact_request_cb = callback;
-    g_android_contact_request_data = user_data;
-    pthread_mutex_unlock(&g_android_callback_mutex);
-    QGP_LOG_INFO(LOG_TAG, "Android contact request callback %s",
-                 callback ? "registered" : "cleared");
-}
-
-void dna_engine_set_android_reconnect_callback(
-    dna_android_reconnect_cb callback,
-    void *user_data
-) {
-    pthread_mutex_lock(&g_android_callback_mutex);
-    g_android_reconnect_cb = callback;
-    g_android_reconnect_data = user_data;
-    pthread_mutex_unlock(&g_android_callback_mutex);
-    QGP_LOG_INFO(LOG_TAG, "Android reconnect callback %s",
-                 callback ? "registered" : "cleared");
-}
-
-/* Internal helper to fire Android group message callback.
- * Called from group outbox subscribe on_new_message callback. */
-void dna_engine_fire_group_message_callback(
-    const char *group_uuid,
-    const char *group_name,
-    size_t new_count
-) {
-    /* Copy callback under mutex to avoid race with setter (v0.6.40) */
-    pthread_mutex_lock(&g_android_callback_mutex);
-    dna_android_group_message_cb cb = g_android_group_message_cb;
-    void *data = g_android_group_message_data;
-    pthread_mutex_unlock(&g_android_callback_mutex);
-
-    if (cb && new_count > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Firing group message callback: group=%s count=%zu",
-                     group_uuid, new_count);
-        cb(group_uuid, group_name, new_count, data);
-    }
-}
-
-/* Group listeners and day rotation moved to src/api/engine/dna_engine_listeners.c */
+/* Android notification/service callback setters removed in v0.9.7 */
 
 /* v0.6.115: Request shutdown without destroying engine.
  * Sets shutdown_requested flag so ongoing operations abort early.
@@ -1705,39 +1517,6 @@ void dna_engine_destroy(dna_engine_t *engine) {
     pthread_cond_destroy(&engine->background_thread_exit_cond);
     pthread_mutex_destroy(&engine->background_threads_mutex);
 
-    /* v0.6.113: Wait for resume thread with condition variable (replaces polling) */
-    pthread_mutex_lock(&engine->state_mutex);
-    bool join_resume = engine->resume_thread_running;
-    pthread_t resume_tid = engine->resume_thread;
-
-    if (join_resume) {
-        QGP_LOG_INFO(LOG_TAG, "Waiting for resume thread to exit...");
-
-        /* Calculate absolute timeout (10 seconds from now) - v0.6.114 */
-        struct timespec timeout;
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 10;
-
-        while (engine->resume_thread_running) {
-            int rc = pthread_cond_timedwait(&engine->resume_thread_exit_cond,
-                                            &engine->state_mutex, &timeout);
-            if (rc == ETIMEDOUT) {
-                QGP_LOG_WARN(LOG_TAG, "Resume thread join timeout, detaching");
-                pthread_detach(resume_tid);
-                join_resume = false;  /* Skip pthread_join below */
-                break;
-            }
-        }
-        engine->resume_thread_running = false;
-    }
-    pthread_mutex_unlock(&engine->state_mutex);
-
-    /* Join thread outside mutex (pthread_join can block) */
-    if (join_resume) {
-        pthread_join(resume_tid, NULL);
-        QGP_LOG_INFO(LOG_TAG, "Resume thread exited");
-    }
-
     /* Stop presence heartbeat thread */
     dna_stop_presence_heartbeat(engine);
 
@@ -1800,8 +1579,7 @@ void dna_engine_destroy(dna_engine_t *engine) {
     pthread_mutex_destroy(&engine->name_cache_mutex);
     pthread_cond_destroy(&engine->task_cond);
 
-    /* v0.6.107+: Cleanup state mutex and condition variable */
-    pthread_cond_destroy(&engine->resume_thread_exit_cond);
+    /* v0.6.107+: Cleanup state mutex */
     pthread_mutex_destroy(&engine->state_mutex);
 
     /* Global caches (profile_manager, keyserver_cache) intentionally NOT closed.

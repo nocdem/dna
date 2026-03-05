@@ -11,7 +11,6 @@ import 'desktop/desktop_platform_handler.dart';
 /// Android and Desktop have different requirements for:
 /// - Lifecycle handling (callback attach/detach)
 /// - Background message fetching
-/// - Notification handling
 abstract class PlatformHandler {
   /// Singleton instance - returns Android or Desktop handler based on platform
   static PlatformHandler? _instance;
@@ -25,27 +24,15 @@ abstract class PlatformHandler {
 
   /// Called when app comes to foreground (resumed)
   ///
-  /// Android: Re-attach Flutter event callback, clear notifications, fetch offline messages
+  /// Android: Re-attach Flutter event callback, fetch offline messages
   /// Desktop: No-op (callback stays attached)
   Future<void> onResume(DnaEngine engine);
-
-  /// Called AFTER engine is paused when app goes to background
-  ///
-  /// Android: Notify service that Flutter is paused (service is keep-alive only)
-  /// Desktop: No-op
-  void onPauseComplete();
 
   /// Called when outbox has new messages from specific contacts
   ///
   /// [contactFingerprints] - Set of contact fingerprints whose outboxes have updates.
   /// Fetches messages only from these specific contacts instead of ALL contacts.
   Future<void> onOutboxUpdated(DnaEngine engine, Set<String> contactFingerprints);
-
-  /// Whether this platform supports foreground service
-  bool get supportsForegroundService;
-
-  /// Whether this platform supports native notifications
-  bool get supportsNativeNotifications;
 
   /// Whether this platform supports camera access (QR scanner, selfie, etc.)
   bool get supportsCamera;

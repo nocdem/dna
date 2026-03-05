@@ -10,8 +10,7 @@
 - `winsock2.h` MUST be included before `windows.h` on Windows
 
 ## Android / Mobile
-- Android lifecycle is complex: engine destroy/create is safer than pause/resume
-- ForegroundService type must be `remoteMessaging`, not `dataSync`
+- v0.9.7+: Android service/notification system removed — engine runs while app is open, destroyed on close (same as desktop)
 - JNI sync calls must check shutdown flag to prevent hangs
 - Never use `pthread_timedjoin_np` - not portable (use `nanosleep` polling instead)
 

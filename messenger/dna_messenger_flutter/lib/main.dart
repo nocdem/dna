@@ -188,7 +188,6 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           // Only activate providers AFTER identity is loaded
           ref.watch(eventHandlerActiveProvider);
           ref.watch(backgroundTasksActiveProvider);
-          ref.watch(foregroundServiceProvider);
           return const HomeScreen();
         } else {
           return const IdentitySelectionScreen();

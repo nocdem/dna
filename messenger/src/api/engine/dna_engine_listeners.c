@@ -1079,19 +1079,6 @@ static void on_group_new_message(const char *group_uuid, size_t new_count, void 
     (void)user_data;
     QGP_LOG_INFO(LOG_TAG, "[GROUP] New messages: group=%s count=%zu", group_uuid, new_count);
 
-    /* Get group name from DHT cache for notification
-     * Note: groups_get_info() reads from empty 'groups' table, use DHT cache instead */
-    char group_name[256] = "";
-    dht_group_cache_entry_t *cache_entry = NULL;
-    if (dht_groups_get_cache_entry(group_uuid, &cache_entry) == 0 && cache_entry) {
-        strncpy(group_name, cache_entry->name, sizeof(group_name) - 1);
-        free(cache_entry);
-    }
-
-    /* Fire Android callback */
-    dna_engine_fire_group_message_callback(group_uuid,
-        group_name[0] ? group_name : NULL, new_count);
-
     /* Fire DNA event */
     dna_engine_t *engine = dna_engine_get_global();
     if (engine) {

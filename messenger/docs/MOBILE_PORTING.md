@@ -273,12 +273,11 @@ engine.sendMessage(recipientFingerprint, "Hello!", callback);
 engine.shutdown();
 ```
 
-### Phase 14: DHT-Only Messaging + ForegroundService ✅
+### Phase 14: DHT-Only Messaging ✅
 
-**Status:** Complete (2025-12-24)
+**Status:** Complete (2025-12-24), updated v0.9.7 (2026-03-05)
 
 Phase 14 changed the messaging architecture to use DHT-only delivery (no P2P attempts).
-This required adding a ForegroundService for Android to ensure reliable background operation.
 
 **Why DHT-Only?**
 - Mobile platforms have strict background execution restrictions
@@ -286,62 +285,15 @@ This required adding a ForegroundService for Android to ensure reliable backgrou
 - DHT queue provides reliable, consistent delivery across all platforms
 - P2P infrastructure preserved for future audio/video calls
 
-#### Android ForegroundService
+**v0.9.7: Android Service Removed**
 
-**File:** `dna_messenger_flutter/android/app/src/main/kotlin/io/cpunk/dna_messenger/DnaMessengerService.kt`
+The Android ForegroundService, notification system, and engine pause/resume lifecycle
+were completely removed. Android now behaves identically to desktop:
+- Engine runs while app is open, destroyed when app closes
+- No background service, no offline notifications
+- No pause/resume engine state — `dna_engine_pause()`/`dna_engine_resume()` are no-op stubs (ABI compat)
 
-**Features:**
-- Keeps DHT connection alive when app is backgrounded
-- Polls for offline messages every 60 seconds
-- Uses `PARTIAL_WAKE_LOCK` to prevent CPU sleep during poll
-- Displays low-priority notification (required for Android 8+)
-- Supports START, STOP, and POLL_NOW actions
-
-**Service Configuration:**
-```kotlin
-companion object {
-    private const val NOTIFICATION_ID = 1001
-    private const val CHANNEL_ID = "dna_messenger_service"
-    private const val POLL_INTERVAL_MS = 60_000L  // 60 seconds
-}
-```
-
-**AndroidManifest.xml Permissions Required:**
-```xml
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-<uses-permission android:name="android.permission.WAKE_LOCK" />
-
-<service
-    android:name=".DnaMessengerService"
-    android:enabled="true"
-    android:exported="false"
-    android:foregroundServiceType="remoteMessaging" />
-```
-
-**Flutter Integration:**
-
-```dart
-// Start service when app goes to background
-void startBackgroundService() {
-  if (Platform.isAndroid) {
-    const platform = MethodChannel('io.cpunk.dna_messenger/service');
-    platform.invokeMethod('startService');
-  }
-}
-
-// Stop service when app comes to foreground
-void stopBackgroundService() {
-  if (Platform.isAndroid) {
-    const platform = MethodChannel('io.cpunk.dna_messenger/service');
-    platform.invokeMethod('stopService');
-  }
-}
-```
-
-**DHT Listen API Extensions (Phase 14):**
-
-The DHT listen API was extended to support reliable Android background operation:
+**DHT Listen API:**
 
 ```c
 // Maximum simultaneous listeners (prevents resource exhaustion)
@@ -359,21 +311,7 @@ size_t dht_resubscribe_all_listeners(ctx);
 
 **Network Change Handling (v0.3.93+):**
 
-When network connectivity changes (WiFi ↔ Cellular), the DHT UDP socket becomes invalid.
-The ForegroundService monitors network changes and triggers DHT reinitialization:
-
-```kotlin
-// DnaMessengerService.kt - Network monitoring
-private val networkCallback = object : ConnectivityManager.NetworkCallback() {
-    override fun onAvailable(network: Network) {
-        if (currentNetworkId != null && currentNetworkId != network.toString()) {
-            // Network switched - notify Flutter to reinit DHT
-            sendBroadcast(Intent("io.cpunk.dna_messenger.NETWORK_CHANGED"))
-        }
-        currentNetworkId = network.toString()
-    }
-}
-```
+When network connectivity changes (WiFi to Cellular), the DHT UDP socket becomes invalid:
 
 ```c
 // C Layer - DHT Reinit
@@ -381,85 +319,10 @@ int dht_singleton_reinit(void);       // Restart DHT with stored identity
 int dna_engine_network_changed(engine); // High-level API for network change
 ```
 
-```dart
-// Flutter - Handle network change
-void _handleNetworkChange() async {
-  final result = engine.networkChanged();
-  if (result == 0) {
-    await _pollOfflineMessages();  // Check for messages during switch
-  }
-}
-```
+#### Identity Lock (v0.6.0+)
 
-#### Single-Owner Model with Identity Lock (v0.6.0+)
+File-based identity lock prevents concurrent engine access:
 
-**Each owner (Flutter/Service) creates and destroys its own engine with file-based mutex.**
-
-v0.6.0 introduces an identity lock mechanism that prevents race conditions between
-Flutter and ForegroundService. When identity is loaded, the engine acquires a file lock.
-Only one process can hold the lock at a time.
-
-**Architecture:**
-```
-┌─────────────────────────────────────────────────────────────┐
-│               IDENTITY (persistent storage)                  │
-│  - fingerprint (SharedPreferences)                          │
-│  - mnemonic → derives DHT keys on demand                    │
-└───────────────────────────┬─────────────────────────────────┘
-                            │
-            ┌───────────────┴───────────────┐
-            ▼                               ▼
-┌───────────────────────┐       ┌───────────────────────┐
-│   FLUTTER (foreground)│       │   SERVICE (background)│
-│                       │       │                       │
-│   engine->dht_ctx     │       │   engine->dht_ctx     │
-│   (engine-owned)      │       │   (engine-owned)      │
-│                       │       │                       │
-│   identity_lock_fd    │       │   identity_lock_fd    │
-│   (file-based mutex)  │       │   (file-based mutex)  │
-└───────────────────────┘       └───────────────────────┘
-
-         ▲                               ▲
-         │         FILE LOCK             │
-         └───────────── ⚡ ───────────────┘
-
-    Only ONE can hold the identity lock at a time.
-```
-
-**Lifecycle Flow:**
-
-1. **App Opens:**
-   - Service checks lock: `nativeIsIdentityLocked(dataDir)` → returns true if Flutter holds it
-   - Flutter creates engine with `dna_engine_create()`
-   - Flutter loads identity → acquires identity lock + creates engine-owned DHT
-   - Service releases its engine when `flutterActive=true`
-
-2. **App Closes:**
-   - Flutter destroys engine → releases identity lock
-   - Service waits, then creates new engine
-   - Service loads identity (minimal mode) → acquires lock + creates DHT
-   - DHT reconnects in ~2-3 seconds
-
-**Trade-off:** 2-3 second DHT reconnect when switching between Flutter and Service.
-
-**Benefit:** File-based lock guarantees no race conditions. Engine owns its DHT context.
-
-**C API:**
-```c
-// Full initialization (Flutter uses this)
-dna_request_id_t dna_engine_load_identity(engine, fingerprint, password, callback, user_data);
-
-// Minimal initialization - DHT + listeners only (Service uses this)
-dna_request_id_t dna_engine_load_identity_minimal(engine, fingerprint, password, callback, user_data);
-
-// Check if identity is loaded
-bool dna_engine_is_identity_loaded(dna_engine_t *engine);
-
-// Check if transport layer is ready
-bool dna_engine_is_transport_ready(dna_engine_t *engine);
-```
-
-**Platform Abstraction (identity lock):**
 ```c
 // qgp_platform.h
 int qgp_platform_acquire_identity_lock(const char *data_dir);  // Returns fd or -1
@@ -467,48 +330,15 @@ void qgp_platform_release_identity_lock(int lock_fd);
 int qgp_platform_is_identity_locked(const char *data_dir);     // Returns 1 if locked
 ```
 
-**JNI API:**
-```c
-// Service uses synchronous minimal load (blocking, for simplicity)
-int nativeLoadIdentityMinimalSync(fingerprint);  // Returns 0 on success, -117 if locked
-
-// Check if identity locked by Flutter
-bool nativeIsIdentityLocked(dataDir);
-
-// Release service's engine (when Flutter takes over)
-void nativeReleaseEngine();
-
-// Check if identity loaded
-bool nativeIsIdentityLoaded();
-```
-
-**What minimal mode skips:**
-- P2P transport layer
-- Presence heartbeat
-- Contact sync from DHT
-- Pending message retry
-- Wallet creation
-
-**What minimal mode keeps:**
-- DHT connection (engine-owned context)
-- DHT listeners (for message notifications)
-
 #### Engine-Owned DHT Context (v0.6.0+)
 
-Each engine now owns its own DHT context (no global singleton):
+Each engine owns its own DHT context:
 
 ```c
 struct dna_engine {
     dht_context_t *dht_ctx;      // Engine owns this
     int identity_lock_fd;         // File lock (-1 if not held)
-
-    // v0.6.1+: Background thread tracking for clean shutdown
-    pthread_t setup_listeners_thread;
-    pthread_t stabilization_retry_thread;
-    bool setup_listeners_running;
-    bool stabilization_retry_running;
-    pthread_mutex_t background_threads_mutex;
-    // ... other fields
+    // ...
 };
 ```
 
@@ -520,64 +350,12 @@ The singleton pattern is kept for backwards compatibility using "borrowed contex
 
 #### Background Thread Tracking (v0.6.1+)
 
-Background threads are now tracked and joined on shutdown to prevent use-after-free crashes:
+Background threads are tracked and joined on shutdown to prevent use-after-free crashes:
 
 1. **Listener setup thread** - spawned on DHT connect to setup listeners
 2. **Stabilization retry thread** - spawned on identity load, waits 15s then retries messages
 
-Previously these were detached (`pthread_detach`), which caused crashes when the engine was destroyed while threads were still running. Now:
-- Threads check `shutdown_requested` flag after sleeps
-- Engine tracks thread handles and running state
-- `dna_engine_destroy()` joins threads before freeing resources
-
-#### Coordination Summary (v0.6.0+)
-
-Flutter and ForegroundService coordination:
-
-1. **When Flutter opens:** Flutter acquires lock, service detects lock and releases its engine
-2. **When Flutter closes:** Flutter releases lock, service acquires lock with minimal mode
-
-**Auto-Upgrade from Minimal to Full Mode (v0.5.26+):**
-
-If ForegroundService loads identity in minimal mode before Flutter opens:
-1. Flutter's `loadIdentity()` detects transport is not ready via `isTransportReady()`
-2. Flutter proceeds to call C `dna_engine_load_identity()` (full mode)
-3. C code frees existing messenger and reinitializes with transport
-
-**Platform Handler (Flutter side):**
-```dart
-// lib/platform/android/android_platform_handler.dart
-
-@override
-Future<void> onResume(DnaEngine engine) async {
-  // Tell service to stop DHT operations - Flutter is taking over
-  await ForegroundServiceManager.setFlutterActive(true);
-
-  // Reattach event callback (was detached in onPause)
-  engine.attachEventCallback();
-
-  // Fetch any messages that arrived while app was backgrounded
-  await engine.checkOfflineMessages();
-}
-
-@override
-void onPause(DnaEngine engine) {
-  // Detach callback BEFORE Flutter is destroyed to prevent crash
-  engine.detachEventCallback();
-
-  // Tell service it can take over DHT operations
-  ForegroundServiceManager.setFlutterActive(false);
-}
-```
-
-**Service Side (Kotlin):**
-```kotlin
-// When flutterActive=true, service skips:
-// - DHT health checks
-// - DHT reinitializations
-// - Listen renewal timer
-// - Identity loading
-```
+Threads check `shutdown_requested` flag after sleeps. Engine tracks thread handles and running state. `dna_engine_destroy()` joins threads before freeing resources.
 
 ---
 
@@ -585,17 +363,7 @@ void onPause(DnaEngine engine) {
 
 ### Phase 7: Android UI
 
-**Options:**
-
-1. **Native Kotlin + Jetpack Compose** (Recommended)
-   - Best UX and performance
-   - Full platform integration
-   - Effort: 4-6 weeks
-
-2. **Flutter**
-   - Single codebase (iOS + Android)
-   - Dart FFI to C library
-   - Effort: 4-5 weeks
+Flutter is the chosen UI framework (single codebase for all platforms).
 
 3. **React Native**
    - JavaScript codebase

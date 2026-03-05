@@ -228,9 +228,9 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     ref.read(identityReadyProvider.notifier).state = false;
 
     // v0.100.94: Retry on identity lock errors (code -117).
-    // The Android ForegroundService may still hold the lock briefly after
-    // shutdown is signaled. The C-side retries for 5s, but if that's not
-    // enough we retry the full loadIdentity call with a delay.
+    // The lock may still be held briefly during cleanup.
+    // The C-side retries for 5s, but if that's not enough
+    // we retry the full loadIdentity call with a delay.
     const maxRetries = 3;
     const retryDelay = Duration(seconds: 2);
 

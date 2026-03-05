@@ -358,13 +358,13 @@ Singleton pattern. One Nodus client per engine. Connected to configured cluster.
 
 ### State Providers (20+)
 
-engine_provider, identity_provider, contacts_provider, messages_provider, groups_provider, channel_provider, profile_provider, wallet_provider, notification_settings_provider, app_lock_provider, foreground_service_provider, starred_messages_provider, event_handler, name_resolver_provider, price_provider
+engine_provider, identity_provider, contacts_provider, messages_provider, groups_provider, channel_provider, profile_provider, wallet_provider, app_lock_provider, starred_messages_provider, event_handler, name_resolver_provider, price_provider
 
 ### Platform Support
 
 | Platform | Status |
 |----------|--------|
-| Android | Fully functional (foreground service, biometric lock) |
+| Android | Fully functional (biometric lock) |
 | Linux | Fully functional |
 | Windows | Supported |
 | macOS | Planned |

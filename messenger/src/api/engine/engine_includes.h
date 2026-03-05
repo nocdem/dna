@@ -239,15 +239,6 @@ int dna_engine_check_channel_day_rotation(dna_engine_t *engine);
 extern dna_engine_t *g_dht_callback_engine;
 extern pthread_mutex_t g_engine_global_mutex;
 
-/* Android callbacks */
-extern dna_android_notification_cb g_android_notification_cb;
-extern void *g_android_notification_data;
-extern dna_android_group_message_cb g_android_group_message_cb;
-extern void *g_android_group_message_data;
-extern dna_android_contact_request_cb g_android_contact_request_cb;
-extern void *g_android_contact_request_data;
-extern dna_android_reconnect_cb g_android_reconnect_cb;
-extern void *g_android_reconnect_data;
-extern pthread_mutex_t g_android_callback_mutex;
+/* Android notification/service callbacks removed in v0.9.7 */
 
 #endif /* DNA_ENGINE_INCLUDES_H */

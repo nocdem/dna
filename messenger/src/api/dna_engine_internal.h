@@ -52,8 +52,7 @@ extern "C" {
  */
 typedef enum {
     DNA_ENGINE_STATE_UNLOADED,  /* No identity loaded */
-    DNA_ENGINE_STATE_ACTIVE,    /* Full mode, all listeners active */
-    DNA_ENGINE_STATE_PAUSED     /* Background mode, listeners suspended */
+    DNA_ENGINE_STATE_ACTIVE     /* Full mode, all listeners active */
 } dna_engine_state_t;
 
 /* ============================================================================
@@ -650,13 +649,8 @@ struct dna_engine {
     pthread_mutex_t background_threads_mutex;  /* Protects running flags */
     pthread_cond_t background_thread_exit_cond;  /* v0.6.113: Signaled when background thread exits */
 
-    /* v0.6.107+: Resume thread tracking (for clean shutdown) */
-    pthread_t resume_thread;               /* Resume thread handle */
-    bool resume_thread_running;            /* True while resume thread is active */
-
     /* v0.6.107+: State synchronization */
     pthread_mutex_t state_mutex;           /* Protects engine state transitions */
-    pthread_cond_t resume_thread_exit_cond;  /* v0.6.113: Signaled when resume thread exits */
 
     /* Request ID generation */
     atomic_uint_fast64_t next_request_id;
@@ -846,20 +840,6 @@ void dna_free_task_params(dna_task_t *task);
 /* ============================================================================
  * INTERNAL FUNCTIONS - Group Messaging
  * ============================================================================ */
-
-/**
- * Fire Android callback for group messages (internal helper)
- * Called from group outbox subscribe callback when new messages arrive.
- *
- * @param group_uuid    UUID of the group
- * @param group_name    Display name of the group (may be NULL)
- * @param new_count     Number of new messages
- */
-void dna_engine_fire_group_message_callback(
-    const char *group_uuid,
-    const char *group_name,
-    size_t new_count
-);
 
 /**
  * Subscribe to all groups (internal)
