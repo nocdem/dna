@@ -98,13 +98,12 @@ static void dna_presence_batch_query(dna_engine_t *engine) {
  * PRESENCE HEARTBEAT (batch query every 60 seconds)
  * ============================================================================ */
 
-#define PRESENCE_FOREGROUND_INTERVAL 30  /* 30 seconds when active */
-#define PRESENCE_BACKGROUND_INTERVAL 60  /* 60 seconds when paused */
-#define RETRY_INTERVAL_SECONDS 60  /* Retry pending messages every 60s */
+#define PRESENCE_HEARTBEAT_INTERVAL_SECONDS 10  /* 10 seconds */
+#define RETRY_INTERVAL_TICKS 3  /* Retry pending messages every 3 heartbeats (30s) */
 
 static void* presence_heartbeat_thread(void *arg) {
     dna_engine_t *engine = (dna_engine_t*)arg;
-    int retry_elapsed = 0;
+    int retry_tick = 0;
 
     QGP_LOG_INFO(LOG_TAG, "Presence heartbeat thread started");
 
@@ -114,16 +113,11 @@ static void* presence_heartbeat_thread(void *arg) {
     }
 
     while (!atomic_load(&engine->shutdown_requested)) {
-        /* Dynamic interval: shorter when foreground, longer when background */
-        int interval = atomic_load(&engine->presence_active)
-            ? PRESENCE_FOREGROUND_INTERVAL : PRESENCE_BACKGROUND_INTERVAL;
-
-        /* Sleep in 1-second increments for quick shutdown + resume-pending response */
-        for (int i = 0; i < interval; i++) {
-            if (atomic_load(&engine->shutdown_requested))
+        /* Sleep in short intervals to respond quickly to shutdown */
+        for (int i = 0; i < PRESENCE_HEARTBEAT_INTERVAL_SECONDS; i++) {
+            if (atomic_load(&engine->shutdown_requested)) {
                 break;
-            if (atomic_load(&engine->presence_resume_pending))
-                break;
+            }
             qgp_platform_sleep(1);
         }
 
@@ -140,29 +134,22 @@ static void* presence_heartbeat_thread(void *arg) {
          * undetected → resume finds a dead socket → messages stay pending. */
         nodus_messenger_poll(100);
 
-        /* Resume-pending: app just came to foreground, run immediate batch query */
-        if (atomic_load(&engine->presence_resume_pending)) {
-            atomic_store(&engine->presence_resume_pending, false);
-            if (engine->messenger) {
-                QGP_LOG_INFO(LOG_TAG, "Heartbeat: resume — immediate batch query");
-                dna_presence_batch_query(engine);
-            }
-        } else if (atomic_load(&engine->presence_active) && engine->messenger) {
-            /* Normal foreground tick: batch query all contacts */
+        /* Nodus-native presence: batch query all contacts (v0.9.0) */
+        if (atomic_load(&engine->presence_active) && engine->messenger) {
             QGP_LOG_DEBUG(LOG_TAG, "Heartbeat: batch presence query");
             dna_presence_batch_query(engine);
         }
 
-        /* Retry pending messages every ~60s when active.
+        /* Retry pending messages every 30s (3 heartbeats).
+         * Only runs when active (not paused) and DHT is connected.
          * Has internal exponential backoff per-message, so this is cheap
          * when there are no pending messages (single DB query). */
-        retry_elapsed += interval;
-        if (atomic_load(&engine->presence_active) && retry_elapsed >= RETRY_INTERVAL_SECONDS) {
-            retry_elapsed = 0;
+        if (atomic_load(&engine->presence_active) && ++retry_tick >= RETRY_INTERVAL_TICKS) {
+            retry_tick = 0;
             dna_engine_retry_pending_messages(engine);
         }
 
-        /* Check for day rotation on group listeners (actual
+        /* Check for day rotation on group listeners (runs every 1 min, actual
          * rotation only happens at midnight UTC when day bucket changes) */
         dna_engine_check_group_day_rotation(engine);
 

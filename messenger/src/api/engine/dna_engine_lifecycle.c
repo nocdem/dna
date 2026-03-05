@@ -24,7 +24,6 @@ void dna_engine_pause_presence(dna_engine_t *engine) {
 void dna_engine_resume_presence(dna_engine_t *engine) {
     if (!engine) return;
     atomic_store(&engine->presence_active, true);
-    atomic_store(&engine->presence_resume_pending, true);
     QGP_LOG_INFO(LOG_TAG, "Presence heartbeat resumed (app in foreground)");
 }
 

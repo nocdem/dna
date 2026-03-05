@@ -1252,7 +1252,6 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
 
     /* Initialize presence heartbeat as active (will start thread after identity load) */
     atomic_store(&engine->presence_active, true);
-    atomic_store(&engine->presence_resume_pending, false);
 
     /* Nodus is NOT initialized here - only after identity is created/restored
      * via nodus_messenger_init() in messenger/init.c */
