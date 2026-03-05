@@ -20,6 +20,8 @@
 #define NODUS_H
 
 #include "nodus/nodus_types.h"
+#include <pthread.h>
+#include <stdatomic.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -85,6 +87,19 @@ typedef struct {
     void                       *callback_data;
 } nodus_client_config_t;
 
+/* ── Concurrent request slot ────────────────────────────────────── */
+
+#define NODUS_MAX_PENDING  16
+
+typedef struct {
+    uint32_t    txn;
+    void       *response;       /* nodus_tier2_msg_t* */
+    uint8_t    *raw_response;
+    size_t      raw_response_len;
+    bool        ready;
+    bool        in_use;
+} nodus_pending_t;
+
 /* ── Client ─────────────────────────────────────────────────────── */
 
 /* Forward declarations for internal types */
@@ -102,7 +117,7 @@ typedef struct {
 
     /* Session */
     uint8_t                token[NODUS_SESSION_TOKEN_LEN];
-    uint32_t               next_txn;
+    _Atomic uint32_t       next_txn;
 
     /* Current server index for failover */
     int                    server_idx;
@@ -117,13 +132,11 @@ typedef struct {
     uint8_t                ch_subs[NODUS_CLIENT_MAX_CH_SUBS][NODUS_UUID_BYTES];
     int                    ch_sub_count;
 
-    /* Synchronous response handling */
-    void                  *pending_response;  /* nodus_tier2_msg_t* */
-    bool                   response_ready;
-
-    /* Raw response payload (for DNAC-specific CBOR decoding) */
-    uint8_t               *raw_response;
-    size_t                 raw_response_len;
+    /* Concurrent request handling */
+    nodus_pending_t        pending[NODUS_MAX_PENDING];
+    pthread_mutex_t        pending_mutex;  /* protects pending[] slots */
+    pthread_mutex_t        send_mutex;     /* serializes TCP send */
+    pthread_mutex_t        poll_mutex;     /* serializes TCP poll */
 } nodus_client_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */

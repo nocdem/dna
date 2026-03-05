@@ -4,8 +4,8 @@
  * Direct wrapper around nodus_singleton for DHT operations.
  * Handles key hashing, value creation, signing, and listener dispatch.
  *
- * All operations that touch nodus_client are serialized via
- * nodus_singleton_lock/unlock — the client is single-threaded.
+ * The nodus client supports concurrent requests internally —
+ * no external serialization needed.
  *
  * @file nodus_ops.c
  */
@@ -71,10 +71,8 @@ static int do_put(const nodus_key_t *k,
         return -1;
     }
 
-    nodus_singleton_lock();
     int rc = nodus_client_put(c, k, data, data_len,
                                type, ttl, vid, 0, &val->signature);
-    nodus_singleton_unlock();
     nodus_value_free(val);
     return rc;
 }
@@ -130,9 +128,7 @@ int nodus_ops_get(const uint8_t *key, size_t key_len,
     hash_key(key, key_len, &k);
 
     nodus_value_t *val = NULL;
-    nodus_singleton_lock();
     int rc = nodus_client_get(c, &k, &val);
-    nodus_singleton_unlock();
     if (rc != 0 || !val) return -1;
 
     *data_out = malloc(val->data_len);
@@ -156,9 +152,7 @@ int nodus_ops_get_str(const char *str_key,
     hash_str(str_key, &k);
 
     nodus_value_t *val = NULL;
-    nodus_singleton_lock();
     int rc = nodus_client_get(c, &k, &val);
-    nodus_singleton_unlock();
     if (rc != 0 || !val) return -1;
 
     *data_out = malloc(val->data_len);
@@ -185,9 +179,7 @@ int nodus_ops_get_all(const uint8_t *key, size_t key_len,
 
     nodus_value_t **vals = NULL;
     size_t count = 0;
-    nodus_singleton_lock();
     int rc = nodus_client_get_all(c, &k, &vals, &count);
-    nodus_singleton_unlock();
     if (rc != 0 || count == 0) return (rc == 0) ? 0 : -1;
 
     *values_out = calloc(count, sizeof(uint8_t *));
@@ -230,9 +222,7 @@ int nodus_ops_get_all_with_ids(const uint8_t *key, size_t key_len,
 
     nodus_value_t **vals = NULL;
     size_t count = 0;
-    nodus_singleton_lock();
     int rc = nodus_client_get_all(c, &k, &vals, &count);
-    nodus_singleton_unlock();
     if (rc != 0 || count == 0) {
         *count_out = 0;
         return (rc == 0) ? 0 : -1;
@@ -314,9 +304,7 @@ size_t nodus_ops_listen(const uint8_t *key, size_t key_len,
     hash_key(key, key_len, &k);
 
     /* Register LISTEN on the server */
-    nodus_singleton_lock();
     int rc = nodus_client_listen(c, &k);
-    nodus_singleton_unlock();
     if (rc != 0) return 0;
 
     /* Track locally for callback dispatch */
@@ -339,9 +327,7 @@ void nodus_ops_cancel_listen(size_t token) {
         if (g_listeners[i].active && g_listeners[i].token == token) {
             nodus_client_t *c = nodus_singleton_get();
             if (c && nodus_client_is_ready(c)) {
-                nodus_singleton_lock();
                 nodus_client_unlisten(c, &g_listeners[i].key);
-                nodus_singleton_unlock();
             }
             g_listeners[i].active = false;
             if (g_listeners[i].cleanup)
@@ -356,9 +342,7 @@ void nodus_ops_cancel_all(void) {
         if (g_listeners[i].active) {
             nodus_client_t *c = nodus_singleton_get();
             if (c && nodus_client_is_ready(c)) {
-                nodus_singleton_lock();
                 nodus_client_unlisten(c, &g_listeners[i].key);
-                nodus_singleton_unlock();
             }
             g_listeners[i].active = false;
             if (g_listeners[i].cleanup)
@@ -424,9 +408,7 @@ int nodus_ops_presence_query(const char **fingerprints, int count,
 
     /* Query server */
     nodus_presence_result_t result;
-    nodus_singleton_lock();
     int rc = nodus_client_presence_query(client, fps, count, &result);
-    nodus_singleton_unlock();
 
     if (rc != 0) {
         free(fps);

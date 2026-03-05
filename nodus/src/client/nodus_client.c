@@ -30,9 +30,8 @@
 
 /* ── Internal state ─────────────────────────────────────────────── */
 
-/* Buffer for building protocol messages */
+/* Buffer size for building protocol messages */
 #define CLIENT_BUF_SIZE (256 * 1024)   /* 256KB — enough for max Nodus value (1MB) + CBOR + sig */
-static uint8_t g_proto_buf[CLIENT_BUF_SIZE];
 
 /* ── Forward declarations ───────────────────────────────────────── */
 
@@ -43,7 +42,7 @@ static void client_on_connect(nodus_tcp_conn_t *conn, void *ctx);
 static void set_state(nodus_client_t *client, nodus_client_state_t new_state);
 static int  do_connect_one(nodus_client_t *client, int server_idx);
 static int  do_auth(nodus_client_t *client);
-static bool wait_response(nodus_client_t *client, int timeout_ms);
+static bool wait_response(nodus_client_t *client, nodus_pending_t *req, int timeout_ms);
 static int  send_request(nodus_client_t *client, const uint8_t *payload, size_t len);
 static int  resubscribe_all(nodus_client_t *client);
 static int  try_reconnect(nodus_client_t *client);
@@ -65,19 +64,55 @@ static void set_state(nodus_client_t *client, nodus_client_state_t new_state) {
 static int send_request(nodus_client_t *client, const uint8_t *payload, size_t len) {
     nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)client->conn;
     if (!conn) return -1;
-    return nodus_tcp_send(conn, payload, len);
+    pthread_mutex_lock(&client->send_mutex);
+    int rc = nodus_tcp_send(conn, payload, len);
+    pthread_mutex_unlock(&client->send_mutex);
+    return rc;
 }
 
-static bool wait_response(nodus_client_t *client, int timeout_ms) {
+/* ── Pending slot management ───────────────────────────────────── */
+
+static nodus_pending_t *alloc_pending(nodus_client_t *client, uint32_t txn) {
+    pthread_mutex_lock(&client->pending_mutex);
+    for (int i = 0; i < NODUS_MAX_PENDING; i++) {
+        if (!client->pending[i].in_use) {
+            nodus_pending_t *p = &client->pending[i];
+            memset(p, 0, sizeof(*p));
+            p->txn = txn;
+            p->response = calloc(1, sizeof(nodus_tier2_msg_t));
+            p->in_use = true;
+            pthread_mutex_unlock(&client->pending_mutex);
+            return p;
+        }
+    }
+    pthread_mutex_unlock(&client->pending_mutex);
+    QGP_LOG_ERROR(LOG_TAG, "No pending slots available (max %d)", NODUS_MAX_PENDING);
+    return NULL;
+}
+
+static void free_pending(nodus_client_t *client, nodus_pending_t *p) {
+    if (!p) return;
+    pthread_mutex_lock(&client->pending_mutex);
+    if (p->response) {
+        nodus_t2_msg_free((nodus_tier2_msg_t *)p->response);
+        free(p->response);
+    }
+    free(p->raw_response);
+    p->in_use = false;
+    pthread_mutex_unlock(&client->pending_mutex);
+}
+
+static bool wait_response(nodus_client_t *client, nodus_pending_t *req, int timeout_ms) {
     nodus_tcp_t *tcp = (nodus_tcp_t *)client->tcp;
-    client->response_ready = false;
     int elapsed = 0;
-    while (!client->response_ready && elapsed < timeout_ms) {
+    while (!req->ready && elapsed < timeout_ms) {
+        pthread_mutex_lock(&client->poll_mutex);
         nodus_tcp_poll(tcp, 50);
+        pthread_mutex_unlock(&client->poll_mutex);
         if (!client->conn) return false;  /* Disconnected */
         elapsed += 50;
     }
-    return client->response_ready;
+    return req->ready;
 }
 
 /* ── TCP Callbacks ──────────────────────────────────────────────── */
@@ -126,21 +161,38 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         return;
     }
 
-    /* Save raw payload for DNAC-specific CBOR decoding */
-    free(client->raw_response);
-    client->raw_response = malloc(len);
-    if (client->raw_response) {
-        memcpy(client->raw_response, payload, len);
-        client->raw_response_len = len;
-    } else {
-        client->raw_response_len = 0;
+    /* Find pending slot by txn ID */
+    pthread_mutex_lock(&client->pending_mutex);
+    nodus_pending_t *slot = NULL;
+    for (int i = 0; i < NODUS_MAX_PENDING; i++) {
+        if (client->pending[i].in_use && client->pending[i].txn == tmp.txn_id) {
+            slot = &client->pending[i];
+            break;
+        }
+    }
+    if (!slot) {
+        pthread_mutex_unlock(&client->pending_mutex);
+        QGP_LOG_WARN(LOG_TAG, "Response for unknown txn %u (no pending slot)", tmp.txn_id);
+        nodus_t2_msg_free(&tmp);
+        return;
     }
 
-    /* Synchronous response — move into pending_response */
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
+    /* Save raw payload for DNAC-specific CBOR decoding */
+    free(slot->raw_response);
+    slot->raw_response = malloc(len);
+    if (slot->raw_response) {
+        memcpy(slot->raw_response, payload, len);
+        slot->raw_response_len = len;
+    } else {
+        slot->raw_response_len = 0;
+    }
+
+    /* Move decoded response into slot */
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)slot->response;
     nodus_t2_msg_free(resp);
     *resp = tmp;  /* Transfer ownership (shallow copy, no double-free) */
-    client->response_ready = true;
+    slot->ready = true;
+    pthread_mutex_unlock(&client->pending_mutex);
 }
 
 static void client_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
@@ -177,7 +229,7 @@ int nodus_client_init(nodus_client_t *client,
     client->config = *config;
     client->identity = *identity;
     client->state = NODUS_CLIENT_DISCONNECTED;
-    client->next_txn = 1;
+    atomic_store(&client->next_txn, 1);
     client->server_idx = 0;
 
     /* Apply defaults */
@@ -191,15 +243,17 @@ int nodus_client_init(nodus_client_t *client,
         client->config.reconnect_max_ms = 30000;
     /* auto_reconnect defaults to false since memset zeroed it — caller must opt in */
 
-    /* Allocate response structure */
-    client->pending_response = calloc(1, sizeof(nodus_tier2_msg_t));
-    if (!client->pending_response) return -1;
+    /* Initialize concurrency primitives */
+    pthread_mutex_init(&client->pending_mutex, NULL);
+    pthread_mutex_init(&client->send_mutex, NULL);
+    pthread_mutex_init(&client->poll_mutex, NULL);
 
     /* Initialize TCP transport */
     nodus_tcp_t *tcp = calloc(1, sizeof(nodus_tcp_t));
     if (!tcp) {
-        free(client->pending_response);
-        client->pending_response = NULL;
+        pthread_mutex_destroy(&client->pending_mutex);
+        pthread_mutex_destroy(&client->send_mutex);
+        pthread_mutex_destroy(&client->poll_mutex);
         return -1;
     }
     nodus_tcp_init(tcp, -1);
@@ -294,90 +348,114 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
 }
 
 static int do_auth(nodus_client_t *client) {
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    int result = -1;
 
     /* Step 1: HELLO */
     size_t len = 0;
-    uint32_t txn = client->next_txn++;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
     nodus_t2_hello(txn, &client->identity.pk, &client->identity.node_id,
-                    g_proto_buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, g_proto_buf, len) != 0) {
+                    buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Auth: HELLO send failed");
-        fprintf(stderr, "[NODUS_CLIENT] Auth: HELLO send failed\n");
+        free_pending(client, req);
+        free(buf);
         return -1;
     }
 
-    fprintf(stderr, "[NODUS_CLIENT] Auth: HELLO sent, waiting for challenge...\n");
-    if (!wait_response(client, client->config.connect_timeout_ms)) {
+    if (!wait_response(client, req, client->config.connect_timeout_ms)) {
         QGP_LOG_ERROR(LOG_TAG, "Auth: no response to HELLO (timeout %dms)", client->config.connect_timeout_ms);
-        fprintf(stderr, "[NODUS_CLIENT] Auth: no response to HELLO (timeout %dms)\n", client->config.connect_timeout_ms);
+        free_pending(client, req);
+        free(buf);
         return -1;
     }
 
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (strcmp(resp->method, "challenge") != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Auth: expected 'challenge', got '%s'", resp->method);
-        fprintf(stderr, "[NODUS_CLIENT] Auth: expected 'challenge', got '%s'\n", resp->method);
+        free_pending(client, req);
+        free(buf);
         return -1;
     }
 
     /* Step 2: Sign nonce and send AUTH */
     nodus_sig_t sig;
     nodus_sign(&sig, resp->nonce, NODUS_NONCE_LEN, &client->identity.sk);
+    free_pending(client, req);
 
     len = 0;
-    txn = client->next_txn++;
-    nodus_t2_auth(txn, &sig, g_proto_buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, g_proto_buf, len) != 0) {
+    txn = atomic_fetch_add(&client->next_txn, 1);
+    req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    nodus_t2_auth(txn, &sig, buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Auth: AUTH send failed");
-        fprintf(stderr, "[NODUS_CLIENT] Auth: AUTH send failed\n");
+        free_pending(client, req);
+        free(buf);
         return -1;
     }
 
-    fprintf(stderr, "[NODUS_CLIENT] Auth: AUTH sent, waiting for auth_ok...\n");
-    if (!wait_response(client, client->config.connect_timeout_ms)) {
+    if (!wait_response(client, req, client->config.connect_timeout_ms)) {
         QGP_LOG_ERROR(LOG_TAG, "Auth: no response to AUTH (timeout %dms)", client->config.connect_timeout_ms);
-        fprintf(stderr, "[NODUS_CLIENT] Auth: no response to AUTH (timeout %dms)\n", client->config.connect_timeout_ms);
+        free_pending(client, req);
+        free(buf);
         return -1;
     }
 
+    resp = (nodus_tier2_msg_t *)req->response;
     if (strcmp(resp->method, "auth_ok") != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Auth: expected 'auth_ok', got '%s'", resp->method);
-        fprintf(stderr, "[NODUS_CLIENT] Auth: expected 'auth_ok', got '%s'\n", resp->method);
+        free_pending(client, req);
+        free(buf);
         return -1;
     }
 
     QGP_LOG_INFO(LOG_TAG, "Auth: success");
     memcpy(client->token, resp->token, NODUS_SESSION_TOKEN_LEN);
-    return 0;
+    result = 0;
+
+    free_pending(client, req);
+    free(buf);
+    return result;
 }
 
 static int resubscribe_all(nodus_client_t *client) {
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    size_t len;
-    uint32_t txn;
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
 
     /* Re-subscribe DHT listeners */
     for (int i = 0; i < client->listen_count; i++) {
-        len = 0;
-        txn = client->next_txn++;
+        size_t len = 0;
+        uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+        nodus_pending_t *req = alloc_pending(client, txn);
+        if (!req) continue;
         nodus_t2_listen(txn, client->token, &client->listen_keys[i],
-                         g_proto_buf, CLIENT_BUF_SIZE, &len);
-        send_request(client, g_proto_buf, len);
-        wait_response(client, 2000);
+                         buf, CLIENT_BUF_SIZE, &len);
+        send_request(client, buf, len);
+        wait_response(client, req, 2000);
+        free_pending(client, req);
         /* Best-effort — don't fail reconnect if a re-sub fails */
     }
 
     /* Re-subscribe channels */
     for (int i = 0; i < client->ch_sub_count; i++) {
-        len = 0;
-        txn = client->next_txn++;
+        size_t len = 0;
+        uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+        nodus_pending_t *req = alloc_pending(client, txn);
+        if (!req) continue;
         nodus_t2_ch_subscribe(txn, client->token, client->ch_subs[i],
-                               g_proto_buf, CLIENT_BUF_SIZE, &len);
-        send_request(client, g_proto_buf, len);
-        wait_response(client, 2000);
+                               buf, CLIENT_BUF_SIZE, &len);
+        send_request(client, buf, len);
+        wait_response(client, req, 2000);
+        free_pending(client, req);
     }
 
-    (void)resp;
+    free(buf);
     return 0;
 }
 
@@ -465,15 +543,22 @@ void nodus_client_close(nodus_client_t *client) {
         client->tcp = NULL;
     }
 
-    if (client->pending_response) {
-        nodus_t2_msg_free((nodus_tier2_msg_t *)client->pending_response);
-        free(client->pending_response);
-        client->pending_response = NULL;
+    /* Free all pending slots */
+    for (int i = 0; i < NODUS_MAX_PENDING; i++) {
+        nodus_pending_t *p = &client->pending[i];
+        if (p->in_use) {
+            if (p->response) {
+                nodus_t2_msg_free((nodus_tier2_msg_t *)p->response);
+                free(p->response);
+            }
+            free(p->raw_response);
+            p->in_use = false;
+        }
     }
 
-    free(client->raw_response);
-    client->raw_response = NULL;
-    client->raw_response_len = 0;
+    pthread_mutex_destroy(&client->pending_mutex);
+    pthread_mutex_destroy(&client->send_mutex);
+    pthread_mutex_destroy(&client->poll_mutex);
 
     client->state = NODUS_CLIENT_DISCONNECTED;
     client->listen_count = 0;
@@ -491,17 +576,24 @@ int nodus_client_put(nodus_client_t *client,
                       const nodus_sig_t *sig) {
     if (!nodus_client_is_ready(client)) return -1;
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     size_t len = 0;
-    uint32_t txn = client->next_txn++;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
     nodus_t2_put(txn, client->token, key, data, data_len,
                   type, ttl, vid, seq, sig,
-                  g_proto_buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+                  buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms)) return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
-    return 0;
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    int rc = (resp->type == 'e') ? resp->error_code : 0;
+    free_pending(client, req);
+    return rc;
 }
 
 int nodus_client_get(nodus_client_t *client,
@@ -510,23 +602,30 @@ int nodus_client_get(nodus_client_t *client,
     if (!nodus_client_is_ready(client) || !val_out) return -1;
     *val_out = NULL;
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     size_t len = 0;
-    uint32_t txn = client->next_txn++;
-    nodus_t2_get(txn, client->token, key,
-                  g_proto_buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms)) return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_t2_get(txn, client->token, key,
+                  buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     if (resp->value) {
-        /* Transfer ownership to caller */
         *val_out = resp->value;
         resp->value = NULL;
     } else {
+        free_pending(client, req);
         return NODUS_ERR_NOT_FOUND;
     }
+    free_pending(client, req);
     return 0;
 }
 
@@ -538,15 +637,21 @@ int nodus_client_get_all(nodus_client_t *client,
     *vals_out = NULL;
     *count_out = 0;
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     size_t len = 0;
-    uint32_t txn = client->next_txn++;
-    nodus_t2_get_all(txn, client->token, key,
-                      g_proto_buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms)) return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_t2_get_all(txn, client->token, key,
+                      buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     if (resp->values && resp->value_count > 0) {
         /* Transfer ownership */
@@ -555,21 +660,28 @@ int nodus_client_get_all(nodus_client_t *client,
         resp->values = NULL;
         resp->value_count = 0;
     }
+    free_pending(client, req);
     return 0;
 }
 
 int nodus_client_listen(nodus_client_t *client, const nodus_key_t *key) {
     if (!nodus_client_is_ready(client) || !key) return -1;
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     size_t len = 0;
-    uint32_t txn = client->next_txn++;
-    nodus_t2_listen(txn, client->token, key,
-                     g_proto_buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms)) return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_t2_listen(txn, client->token, key,
+                     buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     /* Track subscription for re-subscribe on reconnect */
     if (client->listen_count < NODUS_CLIENT_MAX_LISTENS) {
@@ -584,21 +696,28 @@ int nodus_client_listen(nodus_client_t *client, const nodus_key_t *key) {
         if (!found)
             client->listen_keys[client->listen_count++] = *key;
     }
+    free_pending(client, req);
     return 0;
 }
 
 int nodus_client_unlisten(nodus_client_t *client, const nodus_key_t *key) {
     if (!nodus_client_is_ready(client) || !key) return -1;
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     size_t len = 0;
-    uint32_t txn = client->next_txn++;
-    nodus_t2_unlisten(txn, client->token, key,
-                       g_proto_buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms)) return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_t2_unlisten(txn, client->token, key,
+                       buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     /* Remove from tracking */
     for (int i = 0; i < client->listen_count; i++) {
@@ -607,6 +726,7 @@ int nodus_client_unlisten(nodus_client_t *client, const nodus_key_t *key) {
             break;
         }
     }
+    free_pending(client, req);
     return 0;
 }
 
@@ -616,15 +736,21 @@ int nodus_client_get_servers(nodus_client_t *client,
     if (!nodus_client_is_ready(client) || !endpoints_out || !count_out) return -1;
     *count_out = 0;
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     size_t len = 0;
-    uint32_t txn = client->next_txn++;
-    nodus_t2_servers(txn, client->token,
-                      g_proto_buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms)) return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_t2_servers(txn, client->token,
+                      buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     int n = resp->server_count < max_count ? resp->server_count : max_count;
     for (int i = 0; i < n; i++) {
@@ -634,6 +760,7 @@ int nodus_client_get_servers(nodus_client_t *client,
         endpoints_out[i].port = resp->servers[i].tcp_port;
     }
     *count_out = n;
+    free_pending(client, req);
     return 0;
 }
 
@@ -643,15 +770,22 @@ int nodus_client_ch_create(nodus_client_t *client,
                             const uint8_t uuid[NODUS_UUID_BYTES]) {
     if (!nodus_client_is_ready(client) || !uuid) return -1;
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     size_t len = 0;
-    uint32_t txn = client->next_txn++;
-    nodus_t2_ch_create(txn, client->token, uuid,
-                        g_proto_buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms)) return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_t2_ch_create(txn, client->token, uuid,
+                        buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    free_pending(client, req);
     return 0;
 }
 
@@ -663,18 +797,25 @@ int nodus_client_ch_post(nodus_client_t *client,
                           uint32_t *seq_out) {
     if (!nodus_client_is_ready(client) || !ch_uuid || !body) return -1;
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     size_t len = 0;
-    uint32_t txn = client->next_txn++;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
     nodus_t2_ch_post(txn, client->token, ch_uuid, post_uuid,
                       body, body_len, timestamp, sig,
-                      g_proto_buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+                      buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms)) return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     if (seq_out) *seq_out = resp->ch_seq_id;
+    free_pending(client, req);
     return 0;
 }
 
@@ -688,15 +829,21 @@ int nodus_client_ch_get_posts(nodus_client_t *client,
     *posts_out = NULL;
     *count_out = 0;
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     size_t len = 0;
-    uint32_t txn = client->next_txn++;
-    nodus_t2_ch_get_posts(txn, client->token, uuid, since_seq, max_count,
-                           g_proto_buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms)) return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_t2_ch_get_posts(txn, client->token, uuid, since_seq, max_count,
+                           buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     if (resp->ch_posts && resp->ch_post_count > 0) {
         /* Transfer ownership */
@@ -705,6 +852,7 @@ int nodus_client_ch_get_posts(nodus_client_t *client,
         resp->ch_posts = NULL;
         resp->ch_post_count = 0;
     }
+    free_pending(client, req);
     return 0;
 }
 
@@ -712,15 +860,21 @@ int nodus_client_ch_subscribe(nodus_client_t *client,
                                const uint8_t uuid[NODUS_UUID_BYTES]) {
     if (!nodus_client_is_ready(client) || !uuid) return -1;
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     size_t len = 0;
-    uint32_t txn = client->next_txn++;
-    nodus_t2_ch_subscribe(txn, client->token, uuid,
-                           g_proto_buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms)) return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_t2_ch_subscribe(txn, client->token, uuid,
+                           buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     /* Track for re-subscribe on reconnect */
     if (client->ch_sub_count < NODUS_CLIENT_MAX_CH_SUBS) {
@@ -736,6 +890,7 @@ int nodus_client_ch_subscribe(nodus_client_t *client,
             client->ch_sub_count++;
         }
     }
+    free_pending(client, req);
     return 0;
 }
 
@@ -743,15 +898,21 @@ int nodus_client_ch_unsubscribe(nodus_client_t *client,
                                  const uint8_t uuid[NODUS_UUID_BYTES]) {
     if (!nodus_client_is_ready(client) || !uuid) return -1;
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     size_t len = 0;
-    uint32_t txn = client->next_txn++;
-    nodus_t2_ch_unsubscribe(txn, client->token, uuid,
-                              g_proto_buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms)) return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_t2_ch_unsubscribe(txn, client->token, uuid,
+                              buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     /* Remove from tracking */
     for (int i = 0; i < client->ch_sub_count; i++) {
@@ -761,6 +922,7 @@ int nodus_client_ch_unsubscribe(nodus_client_t *client,
             break;
         }
     }
+    free_pending(client, req);
     return 0;
 }
 
@@ -791,20 +953,26 @@ int nodus_client_presence_query(nodus_client_t *client,
     result->total_queried = count;
 
     /* Encode pq request using T2 encoder */
-    uint8_t *buf = g_proto_buf;
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     size_t buf_len = 0;
-    if (nodus_t2_presence_query(client->next_txn++, client->token,
-                                  fps, count, buf, CLIENT_BUF_SIZE, &buf_len) != 0)
-        return -1;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
 
-    if (send_request(client, buf, buf_len) != 0)
-        return -1;
+    if (nodus_t2_presence_query(txn, client->token,
+                                  fps, count, buf, CLIENT_BUF_SIZE, &buf_len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, 10000))
-        return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e')
-        return resp->error_code;
+    if (send_request(client, buf, buf_len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, 10000)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     /* Parse result from T2-decoded fields */
     if (resp->pq_fps && resp->pq_count > 0) {
@@ -835,6 +1003,7 @@ int nodus_client_presence_query(nodus_client_t *client,
         }
     }
 
+    free_pending(client, req);
     return 0;
 }
 
@@ -900,9 +1069,14 @@ int nodus_client_dnac_spend(nodus_client_t *client,
 
     memset(result_out, 0, sizeof(*result_out));
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     cbor_encoder_t enc;
-    cbor_encoder_init(&enc, g_proto_buf, CLIENT_BUF_SIZE);
-    uint32_t txn = client->next_txn++;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
     enc_dnac_query(&enc, txn, client->token, "dnac_spend", 5);
 
     cbor_encode_cstr(&enc, "tx");
@@ -917,20 +1091,23 @@ int nodus_client_dnac_spend(nodus_client_t *client,
     cbor_encode_uint(&enc, fee);
 
     size_t len = cbor_encoder_len(&enc);
-    if (len == 0) return -1;
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
 
     /* BFT consensus can take up to 30s */
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, 30000)) return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, 30000)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     /* Decode spend result from raw response */
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(client->raw_response, client->raw_response_len,
-                           &dec, &mc) != 0)
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
         return NODUS_ERR_PROTOCOL_ERROR;
+    }
 
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
@@ -961,6 +1138,7 @@ int nodus_client_dnac_spend(nodus_client_t *client,
         }
     }
 
+    free_pending(client, req);
     return 0;
 }
 
@@ -972,28 +1150,35 @@ int nodus_client_dnac_nullifier(nodus_client_t *client,
 
     memset(result_out, 0, sizeof(*result_out));
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     cbor_encoder_t enc;
-    cbor_encoder_init(&enc, g_proto_buf, CLIENT_BUF_SIZE);
-    uint32_t txn = client->next_txn++;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
     enc_dnac_query(&enc, txn, client->token, "dnac_nullifier", 1);
 
     cbor_encode_cstr(&enc, "nullifier");
     cbor_encode_bstr(&enc, nullifier, NODUS_T3_NULLIFIER_LEN);
 
     size_t len = cbor_encoder_len(&enc);
-    if (len == 0) return -1;
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms))
-        return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(client->raw_response, client->raw_response_len,
-                           &dec, &mc) != 0)
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
         return NODUS_ERR_PROTOCOL_ERROR;
+    }
 
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
@@ -1008,6 +1193,7 @@ int nodus_client_dnac_nullifier(nodus_client_t *client,
         }
     }
 
+    free_pending(client, req);
     return 0;
 }
 
@@ -1019,28 +1205,35 @@ int nodus_client_dnac_ledger(nodus_client_t *client,
 
     memset(result_out, 0, sizeof(*result_out));
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     cbor_encoder_t enc;
-    cbor_encoder_init(&enc, g_proto_buf, CLIENT_BUF_SIZE);
-    uint32_t txn = client->next_txn++;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
     enc_dnac_query(&enc, txn, client->token, "dnac_ledger", 1);
 
     cbor_encode_cstr(&enc, "hash");
     cbor_encode_bstr(&enc, tx_hash, NODUS_T3_TX_HASH_LEN);
 
     size_t len = cbor_encoder_len(&enc);
-    if (len == 0) return -1;
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms))
-        return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(client->raw_response, client->raw_response_len,
-                           &dec, &mc) != 0)
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
         return NODUS_ERR_PROTOCOL_ERROR;
+    }
 
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
@@ -1079,6 +1272,7 @@ int nodus_client_dnac_ledger(nodus_client_t *client,
         }
     }
 
+    free_pending(client, req);
     return 0;
 }
 
@@ -1089,25 +1283,32 @@ int nodus_client_dnac_supply(nodus_client_t *client,
 
     memset(result_out, 0, sizeof(*result_out));
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     cbor_encoder_t enc;
-    cbor_encoder_init(&enc, g_proto_buf, CLIENT_BUF_SIZE);
-    uint32_t txn = client->next_txn++;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
     enc_dnac_query(&enc, txn, client->token, "dnac_supply", 0);
 
     size_t len = cbor_encoder_len(&enc);
-    if (len == 0) return -1;
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms))
-        return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(client->raw_response, client->raw_response_len,
-                           &dec, &mc) != 0)
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
         return NODUS_ERR_PROTOCOL_ERROR;
+    }
 
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
@@ -1134,6 +1335,7 @@ int nodus_client_dnac_supply(nodus_client_t *client,
         }
     }
 
+    free_pending(client, req);
     return 0;
 }
 
@@ -1149,9 +1351,14 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
     if (max_results > NODUS_DNAC_MAX_UTXO_RESULTS)
         max_results = NODUS_DNAC_MAX_UTXO_RESULTS;
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     cbor_encoder_t enc;
-    cbor_encoder_init(&enc, g_proto_buf, CLIENT_BUF_SIZE);
-    uint32_t txn = client->next_txn++;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
     enc_dnac_query(&enc, txn, client->token, "dnac_utxo", 2);
 
     cbor_encode_cstr(&enc, "owner");
@@ -1160,19 +1367,21 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
     cbor_encode_uint(&enc, (uint64_t)max_results);
 
     size_t len = cbor_encoder_len(&enc);
-    if (len == 0) return -1;
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms))
-        return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(client->raw_response, client->raw_response_len,
-                           &dec, &mc) != 0)
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
         return NODUS_ERR_PROTOCOL_ERROR;
+    }
 
     int count = 0;
     for (size_t i = 0; i < mc; i++) {
@@ -1190,7 +1399,7 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
             if (arr.count > 0) {
                 result_out->entries = calloc(arr.count,
                                               sizeof(nodus_dnac_utxo_entry_t));
-                if (!result_out->entries) return NODUS_ERR_INTERNAL_ERROR;
+                if (!result_out->entries) { free_pending(client, req); return NODUS_ERR_INTERNAL_ERROR; }
             }
 
             for (size_t j = 0; j < arr.count; j++) {
@@ -1256,6 +1465,7 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
     }
 
     (void)count;  /* Server count for cross-check, not used */
+    free_pending(client, req);
     return 0;
 }
 
@@ -1267,9 +1477,14 @@ int nodus_client_dnac_ledger_range(nodus_client_t *client,
 
     memset(result_out, 0, sizeof(*result_out));
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     cbor_encoder_t enc;
-    cbor_encoder_init(&enc, g_proto_buf, CLIENT_BUF_SIZE);
-    uint32_t txn = client->next_txn++;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
     enc_dnac_query(&enc, txn, client->token, "dnac_ledger_range", 2);
 
     cbor_encode_cstr(&enc, "from");
@@ -1278,19 +1493,21 @@ int nodus_client_dnac_ledger_range(nodus_client_t *client,
     cbor_encode_uint(&enc, to_seq);
 
     size_t len = cbor_encoder_len(&enc);
-    if (len == 0) return -1;
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms))
-        return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(client->raw_response, client->raw_response_len,
-                           &dec, &mc) != 0)
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
         return NODUS_ERR_PROTOCOL_ERROR;
+    }
 
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
@@ -1312,7 +1529,7 @@ int nodus_client_dnac_ledger_range(nodus_client_t *client,
             if (arr.count > 0) {
                 result_out->entries = calloc(arr.count,
                                               sizeof(nodus_dnac_range_entry_t));
-                if (!result_out->entries) return NODUS_ERR_INTERNAL_ERROR;
+                if (!result_out->entries) { free_pending(client, req); return NODUS_ERR_INTERNAL_ERROR; }
                 result_out->count = 0;
             }
 
@@ -1373,6 +1590,7 @@ int nodus_client_dnac_ledger_range(nodus_client_t *client,
         }
     }
 
+    free_pending(client, req);
     return 0;
 }
 
@@ -1383,25 +1601,32 @@ int nodus_client_dnac_roster(nodus_client_t *client,
 
     memset(result_out, 0, sizeof(*result_out));
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     cbor_encoder_t enc;
-    cbor_encoder_init(&enc, g_proto_buf, CLIENT_BUF_SIZE);
-    uint32_t txn = client->next_txn++;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
     enc_dnac_query(&enc, txn, client->token, "dnac_roster", 0);
 
     size_t len = cbor_encoder_len(&enc);
-    if (len == 0) return -1;
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, client->config.request_timeout_ms))
-        return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(client->raw_response, client->raw_response_len,
-                           &dec, &mc) != 0)
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
         return NODUS_ERR_PROTOCOL_ERROR;
+    }
 
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
@@ -1476,6 +1701,7 @@ int nodus_client_dnac_roster(nodus_client_t *client,
         }
     }
 
+    free_pending(client, req);
     return 0;
 }
 
@@ -1503,27 +1729,35 @@ int nodus_client_dnac_tx(nodus_client_t *client,
 
     memset(result_out, 0, sizeof(*result_out));
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     cbor_encoder_t enc;
-    cbor_encoder_init(&enc, g_proto_buf, CLIENT_BUF_SIZE);
-    uint32_t txn = client->next_txn++;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
     enc_dnac_query(&enc, txn, client->token, "dnac_tx", 1);
 
     cbor_encode_cstr(&enc, "hash");
     cbor_encode_bstr(&enc, tx_hash, NODUS_T3_TX_HASH_LEN);
 
     size_t len = cbor_encoder_len(&enc);
-    if (len == 0) return -1;
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, 10000)) return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, 10000)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(client->raw_response, client->raw_response_len,
-                           &dec, &mc) != 0)
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
         return NODUS_ERR_PROTOCOL_ERROR;
+    }
 
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
@@ -1567,6 +1801,7 @@ int nodus_client_dnac_tx(nodus_client_t *client,
         }
     }
 
+    free_pending(client, req);
     return 0;
 }
 
@@ -1587,27 +1822,35 @@ int nodus_client_dnac_block(nodus_client_t *client,
 
     memset(result_out, 0, sizeof(*result_out));
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     cbor_encoder_t enc;
-    cbor_encoder_init(&enc, g_proto_buf, CLIENT_BUF_SIZE);
-    uint32_t txn = client->next_txn++;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
     enc_dnac_query(&enc, txn, client->token, "dnac_block", 1);
 
     cbor_encode_cstr(&enc, "height");
     cbor_encode_uint(&enc, height);
 
     size_t len = cbor_encoder_len(&enc);
-    if (len == 0) return -1;
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, 10000)) return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, 10000)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(client->raw_response, client->raw_response_len,
-                           &dec, &mc) != 0)
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
         return NODUS_ERR_PROTOCOL_ERROR;
+    }
 
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
@@ -1642,6 +1885,7 @@ int nodus_client_dnac_block(nodus_client_t *client,
         }
     }
 
+    free_pending(client, req);
     return 0;
 }
 
@@ -1655,9 +1899,14 @@ int nodus_client_dnac_block_range(nodus_client_t *client,
 
     memset(result_out, 0, sizeof(*result_out));
 
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
     cbor_encoder_t enc;
-    cbor_encoder_init(&enc, g_proto_buf, CLIENT_BUF_SIZE);
-    uint32_t txn = client->next_txn++;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
     enc_dnac_query(&enc, txn, client->token, "dnac_block_range", 2);
 
     cbor_encode_cstr(&enc, "from");
@@ -1666,18 +1915,21 @@ int nodus_client_dnac_block_range(nodus_client_t *client,
     cbor_encode_uint(&enc, to_height);
 
     size_t len = cbor_encoder_len(&enc);
-    if (len == 0) return -1;
-    if (send_request(client, g_proto_buf, len) != 0) return -1;
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
 
-    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)client->pending_response;
-    if (!wait_response(client, 10000)) return NODUS_ERR_TIMEOUT;
-    if (resp->type == 'e') return resp->error_code;
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, 10000)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(client->raw_response, client->raw_response_len,
-                           &dec, &mc) != 0)
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
         return NODUS_ERR_PROTOCOL_ERROR;
+    }
 
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
@@ -1748,6 +2000,7 @@ int nodus_client_dnac_block_range(nodus_client_t *client,
         }
     }
 
+    free_pending(client, req);
     return 0;
 }
 
