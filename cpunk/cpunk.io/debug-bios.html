@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Debug Bios</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .test { border: 2px solid red; padding: 20px; margin: 20px; }
+        .name { font-size: 24px; font-weight: bold; margin: 10px 0; }
+        .secondary { font-size: 18px; color: #666; margin: 5px 0; }
+    </style>
+</head>
+<body>
+    <h1>Debug Bios Profile Test</h1>
+    <div class="test">
+        <h2>Test 1: Manual HTML</h2>
+        <div class="name">bios</div>
+        <div class="secondary">drago</div>
+        <div class="secondary">105</div>
+        <div>DNA: bios, drago, 105</div>
+    </div>
+    
+    <div class="test">
+        <h2>Test 2: JavaScript Generated</h2>
+        <div id="js-result">Loading...</div>
+    </div>
+    
+    <div class="test">
+        <h2>Test 3: API Response</h2>
+        <div id="api-result">Loading...</div>
+    </div>
+
+    <script>
+        console.log('Debug script starting...');
+        
+        // Test 2: Simple JS
+        document.getElementById('js-result').innerHTML = `
+            <div class="name">bios (JS generated)</div>
+            <div class="secondary">drago (JS generated)</div>
+            <div class="secondary">105 (JS generated)</div>
+            <div>DNA: bios, drago, 105 (JS generated)</div>
+        `;
+        
+        // Test 3: API call
+        fetch('dna-proxy.php?lookup=bios')
+            .then(r => r.text())
+            .then(text => {
+                console.log('Raw API response:', text);
+                const data = JSON.parse(text);
+                console.log('Parsed API data:', data);
+                
+                const names = Object.keys(data.response_data.registered_names || {});
+                console.log('Extracted names:', names);
+                
+                let html = '<h3>From API:</h3>';
+                names.forEach((name, i) => {
+                    html += `<div class="${i === 0 ? 'name' : 'secondary'}">${name} (from API)</div>`;
+                });
+                html += `<div>DNA: ${names.join(', ')} (from API)</div>`;
+                
+                document.getElementById('api-result').innerHTML = html;
+            })
+            .catch(err => {
+                console.error('API Error:', err);
+                document.getElementById('api-result').innerHTML = 'API Error: ' + err.message;
+            });
+    </script>
+</body>
+</html>

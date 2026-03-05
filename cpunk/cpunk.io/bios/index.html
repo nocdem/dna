@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPUNK - bios Profile</title>
+    <meta name="description" content="CPUNK DNA Identity Profile for bios - View bio, social links, and identity information on the post-quantum identity protocol.">
+    <link rel="canonical" href="https://cpunk.io/bios/">
+    
+    <!-- Open Graph -->
+    <meta property="og:type" content="profile">
+    <meta property="og:url" content="https://cpunk.io/bios/">
+    <meta property="og:title" content="CPUNK - bios DNA Profile">
+    <meta property="og:description" content="View bios DNA identity profile on CPUNK's post-quantum blockchain protocol.">
+    <meta property="og:image" content="https://cpunk.io/images/cpunk-logo.png">
+    
+    <!-- Security Headers -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com https://cpunk.club;">
+    <meta http-equiv="X-Frame-Options" content="SAMEORIGIN">
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="stylesheet" href="/styles.css">
+    
+    <style>
+        /* Profile container styles */
+        .lookup-container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 2rem;
+            margin-top: 100px;
+        }
+        
+        .loading {
+            text-align: center;
+            color: var(--accent-primary);
+            margin: 2rem 0;
+            font-size: 1.1rem;
+            display: block;
+        }
+        
+        .loading::after {
+            content: "";
+            animation: dots 1.5s infinite;
+        }
+        
+        @keyframes dots {
+            0%, 20% { content: "."; }
+            40% { content: ".."; }
+            60%, 100% { content: "..."; }
+        }
+        
+        .result {
+            margin-top: 2rem;
+            display: none;
+        }
+        
+        .result.success {
+            animation: fadeInUp 0.8s ease-out;
+            display: block;
+        }
+        
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        /* Copy all the lookup page styles for comprehensive DNA display */
+        .highlight-box {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            transition: all 0.3s ease;
+        }
+        
+        .profile-header {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        
+        .avatar {
+            width: 80px;
+            height: 80px;
+            background: var(--accent-primary);
+            color: var(--bg-primary);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.5rem;
+            font-weight: 900;
+            font-family: 'Orbitron', monospace;
+        }
+        
+        .profile-info {
+            flex: 1;
+        }
+        
+        .profile-nickname {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+            font-family: 'Orbitron', monospace;
+        }
+        
+        .profile-id {
+            color: var(--text-secondary);
+            font-size: 1rem;
+        }
+        
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin: 2rem 0;
+        }
+        
+        .info-item {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 1.5rem;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+        
+        .info-item:hover {
+            border-color: var(--accent-primary);
+            box-shadow: 0 8px 32px var(--accent-glow);
+            transform: translateY(-5px);
+        }
+        
+        .info-item h3 {
+            color: var(--accent-primary);
+            margin-bottom: 1rem;
+            font-size: 1rem;
+        }
+        
+        .stat-value {
+            font-size: 2rem;
+            color: var(--text-primary);
+            font-weight: 900;
+            font-family: 'Orbitron', monospace;
+        }
+        
+        .section-title {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        
+        .section-title-text {
+            color: var(--accent-primary);
+            font-size: 1.5rem;
+            font-weight: 700;
+            font-family: 'Orbitron', monospace;
+        }
+        
+        .toggle-button {
+            background: var(--bg-primary);
+            color: var(--accent-primary);
+            border: 1px solid var(--accent-primary);
+            border-radius: 50%;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 700;
+        }
+        
+        .toggle-button:hover {
+            background: var(--accent-primary);
+            color: var(--bg-primary);
+            transform: rotate(90deg);
+        }
+        
+        .section-content {
+            transition: all 0.5s ease;
+            max-height: 5000px;
+            opacity: 1;
+            overflow: hidden;
+        }
+        
+        .section-content.collapsed {
+            max-height: 0;
+            opacity: 0;
+            padding: 0;
+        }
+        
+        .network-card {
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+            transition: all 0.3s ease;
+        }
+        
+        .network-card:hover {
+            border-color: var(--accent-primary);
+            box-shadow: 0 8px 32px var(--accent-glow);
+            transform: translateY(-3px);
+        }
+        
+        .network-name {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            color: var(--accent-primary);
+            font-weight: 600;
+            font-family: 'Orbitron', monospace;
+        }
+        
+        .address-display {
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+            word-break: break-all;
+            color: var(--text-secondary);
+            background: rgba(0, 0, 0, 0.3);
+            padding: 1rem;
+            border-radius: 5px;
+            line-height: 1.6;
+        }
+        
+        .address-segment {
+            background: rgba(0, 255, 204, 0.1);
+            padding: 2px 4px;
+            border-radius: 3px;
+            margin-right: 2px;
+        }
+        
+        .copy-button {
+            background: rgba(0, 255, 204, 0.1);
+            color: var(--accent-primary);
+            border: 1px solid var(--accent-primary);
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .copy-button:hover {
+            background: var(--accent-primary);
+            color: var(--bg-primary);
+            transform: translateY(-2px);
+        }
+        
+        .verification-badge {
+            display: inline-flex;
+            align-items: center;
+            margin-left: 1rem;
+            background: rgba(0, 255, 204, 0.1);
+            color: var(--accent-primary);
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        
+        .verification-badge::before {
+            content: "✓";
+            margin-right: 0.5rem;
+        }
+        
+        /* Styles for multiple DNA names */
+        .secondary-nickname {
+            font-size: 1.5rem !important;
+            color: var(--text-secondary) !important;
+            margin-top: 0.5rem;
+        }
+        
+        .no-data-message {
+            color: var(--text-muted);
+            text-align: center;
+            font-style: italic;
+            padding: 2rem;
+            background: var(--bg-primary);
+            border: 1px dashed var(--border-color);
+            border-radius: 10px;
+            margin: 1rem 0;
+        }
+        
+        .external-wallets {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1rem;
+        }
+        
+        .external-wallet-card {
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+            transition: all 0.3s ease;
+        }
+        
+        .external-wallet-header {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+        
+        .external-wallet-icon {
+            font-size: 1.5rem;
+            color: var(--accent-primary);
+        }
+        
+        .external-wallet-name {
+            font-weight: 600;
+            color: var(--accent-primary);
+            font-family: 'Orbitron', monospace;
+        }
+        
+        .external-wallet-address {
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+            word-break: break-all;
+            color: var(--text-secondary);
+            background: rgba(0, 0, 0, 0.3);
+            padding: 1rem;
+            border-radius: 5px;
+            margin-bottom: 1rem;
+            line-height: 1.6;
+        }
+        
+        .pubkey-container {
+            margin: 1rem 0;
+        }
+        
+        .pubkey-display {
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 5px;
+            padding: 1rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+            word-break: break-all;
+            color: var(--text-secondary);
+            margin-bottom: 1rem;
+            line-height: 1.6;
+        }
+        
+        .social-links-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1rem;
+        }
+        
+        .social-link {
+            display: flex;
+            align-items: center;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            padding: 1rem;
+            border-radius: 10px;
+            text-decoration: none;
+            color: var(--text-primary);
+            transition: all 0.3s ease;
+        }
+        
+        .social-link:hover {
+            border-color: var(--accent-primary);
+            box-shadow: 0 8px 32px var(--accent-glow);
+            transform: translateY(-3px);
+            color: var(--text-primary);
+        }
+        
+        .social-icon {
+            margin-right: 1rem;
+            font-size: 1.5rem;
+        }
+        
+        .social-platform {
+            color: var(--accent-primary);
+            margin-right: 0.5rem;
+            font-weight: 600;
+        }
+        
+        .social-handle {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="/" class="logo">CPUNK.IO</a>
+            <ul class="nav-menu">
+                <li class="nav-item"><a href="/" class="nav-link">Home</a></li>
+                <li class="nav-item dropdown">
+                    <a href="#" class="nav-link">Services ▼</a>
+                    <div class="dropdown-content">
+                        <a href="/services/dna.html">DNA Identity</a>
+                        <a href="/dna-lookup.html">DNA Lookup</a>
+                        <a href="/register.html">Register DNA</a>
+                        <a href="/services/network-stats.html">Network Stats</a>
+                    </div>
+                </li>
+                <li class="nav-item"><a href="/register.html" class="nav-link">Register DNA</a></li>
+                <li class="nav-item"><a href="/whitepaper.html" class="nav-link">Whitepaper</a></li>
+                <li class="nav-item"><a href="/team.html" class="nav-link">Team</a></li>
+                <li class="nav-item"><a href="/contact.html" class="nav-link">Contact</a></li>
+            </ul>
+            <button class="mobile-menu-toggle">☰</button>
+        </div>
+    </nav>
+
+    <div class="lookup-container">
+        <!-- Loading Indicator -->
+        <div id="loading" class="loading">Loading DNA profile for bios</div>
+
+        <!-- Results Container -->
+        <div id="result" class="result">
+            <!-- Results will be displayed here -->
+        </div>
+    </div>
+
+    <script src="/js/cpunk-utils.js"></script>
+    <script>
+        console.log('BIOS PROFILE SCRIPT LOADING...');
+        // Set the username for this profile page
+        const PROFILE_USERNAME = 'bios';
+        
+        // Create hidden search input that lookup.js expects
+        const searchInput = document.createElement('input');
+        searchInput.id = 'searchInput';
+        searchInput.value = PROFILE_USERNAME;
+        searchInput.style.display = 'none';
+        document.body.appendChild(searchInput);
+        
+        // Override displayStructuredResult to show all DNA names in header
+        function displayStructuredResult(data, query) {
+            console.log('=== displayStructuredResult called ===');
+            console.log('Full data object:', data);
+            
+            const resultContainer = document.getElementById('result');
+            
+            // Get registered names
+            const registeredNames = data.registered_names || {};
+            const nicknames = Object.keys(registeredNames);
+            const primaryNickname = nicknames.length > 0 ? nicknames[0] : 'Unknown';
+            
+            // DEBUG: Log the registered names data
+            console.log('Registered names data:', registeredNames);
+            console.log('Nicknames array:', nicknames);
+            console.log('Primary nickname:', primaryNickname);
+            console.log('Number of nicknames:', nicknames.length);
+            
+            // Get wallet addresses
+            const walletAddresses = data.wallet_addresses || {};
+            
+            // Get public key
+            const publicKey = data.public_hash || data.public_key || '';
+            
+            // Get social media accounts
+            const socials = data.socials || {};
+            
+            // Get external wallets
+            const externalWallets = data.dinosaur_wallets || {};
+            
+            // Generate unique section IDs
+            const walletSectionId = `wallet-addresses-${Date.now()}`;
+            const externalWalletSectionId = `external-wallets-${Date.now()}`;
+            const publickeysSectionId = `pubkey-section-${Date.now()}`;
+            const socialsSectionId = `social-section-${Date.now()}`;
+            
+            // Build the result HTML with ALL DNA names in the header
+            let html = `
+                <div class="highlight-box">
+                    <div class="profile-header">
+                        <div class="avatar">${primaryNickname.charAt(0).toUpperCase()}</div>
+                        <div class="profile-info">
+            `;
+            
+            // Display ALL registered DNA names, not just the primary one
+            if (nicknames.length > 0) {
+                nicknames.forEach((nickname, index) => {
+                    const isPrimary = index === 0;
+                    console.log(`Adding nickname ${index}: ${nickname} (isPrimary: ${isPrimary})`);
+                    html += `<div class="profile-nickname${isPrimary ? '' : ' secondary-nickname'}">${nickname}</div>`;
+                });
+            } else {
+                html += `<div class="profile-nickname">Unknown</div>`;
+            }
+            
+            // Add verification badge if this is an official account
+            if (primaryNickname === 'cpunk' || primaryNickname === 'cellframe') {
+                html += `<span class="verification-badge">Official</span>`;
+            }
+            
+            // Show DNA info for all names
+            const dnaText = nicknames.length === 1 ? `DNA: ${nicknames[0]}` : `DNA: ${nicknames.join(', ')}`;
+            console.log('DNA text:', dnaText);
+            html += `
+                        <div class="profile-id">${dnaText}</div>
+                    </div>
+                </div>
+            `;
+            
+            // Add profile description if available
+            if (data.profile && data.profile.description) {
+                html += `
+                    <div class="profile-description">
+                        ${data.profile.description}
+                    </div>
+                `;
+            }
+            
+            html += `</div>`;
+            
+            // Stats section
+            html += `
+                <div class="info-grid">
+                    <div class="info-item">
+                        <h3>DNA Nicknames</h3>
+                        <div class="stat-value">${nicknames ? nicknames.length : 1}</div>
+                    </div>
+                    <div class="info-item">
+                        <h3>Networks</h3>
+                        <div class="stat-value">${Object.keys(walletAddresses).length}</div>
+                    </div>
+                    <div class="info-item">
+                        <h3>External Wallets</h3>
+                        <div class="stat-value">${Object.keys(externalWallets).filter(key => externalWallets[key]).length}</div>
+                    </div>
+                </div>
+            `;
+            
+            // Add wallet addresses
+            if (Object.keys(walletAddresses).length > 0) {
+                html += `
+                    <div class="highlight-box">
+                        <div class="section-title">
+                            <div class="section-title-text">Cellframe Wallet Addresses</div>
+                            <button class="toggle-button" data-toggle="${walletSectionId}" onclick="toggleSection('${walletSectionId}')" title="Expand section">+</button>
+                        </div>
+                        <div id="${walletSectionId}" class="section-content collapsed">
+                `;
+                
+                Object.entries(walletAddresses).forEach(([network, address]) => {
+                    // Format the address with spaces for better readability
+                    let formattedAddress = formatLongAddress(address);
+                    
+                    html += `
+                        <div class="network-card">
+                            <div class="network-name">
+                                ${network}
+                                <button class="copy-button" onclick="copyToClipboard('${address}', this)">Copy Address</button>
+                            </div>
+                            <div class="address-display">${formattedAddress}</div>
+                        </div>
+                    `;
+                });
+                
+                html += `</div></div>`;
+            }
+            
+            // Add external wallets if any
+            const hasExternalWallets = Object.values(externalWallets).some(wallet => wallet && wallet.trim() !== '');
+            if (hasExternalWallets) {
+                html += `
+                    <div class="highlight-box">
+                        <div class="section-title">
+                            <div class="section-title-text">External Blockchain Wallets</div>
+                            <button class="toggle-button" data-toggle="${externalWalletSectionId}" onclick="toggleSection('${externalWalletSectionId}')" title="Expand section">+</button>
+                        </div>
+                        <div id="${externalWalletSectionId}" class="section-content collapsed">
+                            <div class="external-wallets">
+                `;
+                
+                Object.entries(externalWallets).forEach(([chain, address]) => {
+                    if (address && address.trim() !== '') {
+                        const icon = getCryptoIcon(chain);
+                        const formattedAddress = formatLongAddress(address);
+                        
+                        html += `
+                            <div class="external-wallet-card">
+                                <div class="external-wallet-header">
+                                    <div class="external-wallet-icon">${icon}</div>
+                                    <div class="external-wallet-name">${chain}</div>
+                                </div>
+                                <div class="external-wallet-address">${formattedAddress}</div>
+                                <button class="copy-button" onclick="copyToClipboard('${address}', this)">Copy Address</button>
+                            </div>
+                        `;
+                    }
+                });
+                
+                html += `</div></div></div>`;
+            }
+            
+            // Add public key if available
+            if (publicKey) {
+                html += `
+                    <div class="highlight-box">
+                        <div class="section-title">
+                            <div class="section-title-text">Public Key</div>
+                            <button class="toggle-button" data-toggle="${publickeysSectionId}" onclick="toggleSection('${publickeysSectionId}')" title="Expand section">+</button>
+                        </div>
+                        <div id="${publickeysSectionId}" class="section-content collapsed">
+                            <div class="pubkey-container">
+                                <div class="pubkey-display">${formatLongAddress(publicKey)}</div>
+                                <button class="copy-button" onclick="copyToClipboard('${publicKey}', this)">Copy Public Key</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Add social media links if any
+            const hasSocials = Object.values(socials).some(social => social && social.profile && social.profile.trim() !== '');
+            if (hasSocials) {
+                html += `
+                    <div class="highlight-box">
+                        <div class="section-title">
+                            <div class="section-title-text">Social Media</div>
+                            <button class="toggle-button" data-toggle="${socialsSectionId}" onclick="toggleSection('${socialsSectionId}')" title="Expand section">+</button>
+                        </div>
+                        <div id="${socialsSectionId}" class="section-content collapsed">
+                            <div class="social-links-grid">
+                `;
+                
+                Object.entries(socials).forEach(([platform, data]) => {
+                    if (data && data.profile && data.profile.trim() !== '') {
+                        const handle = data.profile;
+                        const atPlatforms = ['twitter', 'x', 'instagram', 'telegram', 'tiktok', 'reddit', 'discord'];
+                        const lowerPlatform = platform.toLowerCase();
+                        const displayHandle = handle.startsWith('@') ? handle :
+                            (atPlatforms.includes(lowerPlatform) ? '@' + handle : handle);
+                        const icon = getSocialIcon(platform);
+                        const url = formatSocialUrl(platform, handle);
+                        
+                        html += `
+                            <a href="${url}" target="_blank" class="social-link">
+                                <span class="social-icon">${icon}</span>
+                                <span class="social-platform">${capitalizeFirstLetter(platform)}</span>
+                                <span class="social-handle">${displayHandle}</span>
+                            </a>
+                        `;
+                    }
+                });
+                
+                html += `</div></div></div>`;
+            } else {
+                html += `
+                    <div class="highlight-box">
+                        <div class="section-title">
+                            <div class="section-title-text">Social Media</div>
+                            <button class="toggle-button" data-toggle="${socialsSectionId}" onclick="toggleSection('${socialsSectionId}')" title="Expand section">+</button>
+                        </div>
+                        <div id="${socialsSectionId}" class="section-content collapsed">
+                            <div class="no-data-message">
+                                No social media accounts linked to this profile.
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Set the result content and show it
+            resultContainer.className = 'result success';
+            resultContainer.innerHTML = html;
+            resultContainer.style.display = 'block';
+        }
+
+        // Create a simple, direct display function that definitely works
+        async function handleSearch(e) {
+            if (e) e.preventDefault();
+            
+            console.log('=== handleSearch called ===');
+            const query = PROFILE_USERNAME;
+            const loadingIndicator = document.getElementById('loading');
+            const resultContainer = document.getElementById('result');
+            
+            // Show loading indicator
+            loadingIndicator.style.display = 'block';
+            resultContainer.style.display = 'none';
+            
+            try {
+                const apiUrl = '/dna-proxy.php';
+                const response = await fetch(`${apiUrl}?lookup=${encodeURIComponent(query)}`);
+                const text = await response.text();
+                console.log('API Response text:', text);
+                
+                const data = JSON.parse(text);
+                console.log('Parsed JSON data:', data);
+                
+                if (data.status_code === 0 && data.response_data) {
+                    console.log('Processing structured result...');
+                    
+                    // Get all registered names
+                    const registeredNames = data.response_data.registered_names || {};
+                    const nicknames = Object.keys(registeredNames);
+                    console.log('All nicknames found:', nicknames);
+                    
+                    // Build simple HTML directly here instead of calling a function
+                    let html = `
+                        <div class="highlight-box">
+                            <div class="profile-header">
+                                <div class="avatar">${nicknames[0] ? nicknames[0].charAt(0).toUpperCase() : 'B'}</div>
+                                <div class="profile-info">
+                    `;
+                    
+                    // Add ALL DNA names directly
+                    nicknames.forEach((nickname, index) => {
+                        const isPrimary = index === 0;
+                        console.log(`Adding DNA name ${index + 1}: ${nickname}`);
+                        html += `<div class="profile-nickname${isPrimary ? '' : ' secondary-nickname'}">${nickname}</div>`;
+                    });
+                    
+                    // Add DNA info showing all names
+                    const dnaText = nicknames.length === 1 ? `DNA: ${nicknames[0]}` : `DNA: ${nicknames.join(', ')}`;
+                    console.log('Final DNA text:', dnaText);
+                    html += `
+                                <div class="profile-id">${dnaText}</div>
+                            </div>
+                        </div>
+                    </div>`;
+                    
+                    // Add stats section
+                    const walletAddresses = data.response_data.wallet_addresses || {};
+                    const externalWallets = data.response_data.dinosaur_wallets || {};
+                    html += `
+                        <div class="info-grid">
+                            <div class="info-item">
+                                <h3>DNA Nicknames</h3>
+                                <div class="stat-value">${nicknames.length}</div>
+                            </div>
+                            <div class="info-item">
+                                <h3>Networks</h3>
+                                <div class="stat-value">${Object.keys(walletAddresses).length}</div>
+                            </div>
+                            <div class="info-item">
+                                <h3>External Wallets</h3>
+                                <div class="stat-value">${Object.keys(externalWallets).filter(key => externalWallets[key]).length}</div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    console.log('Setting result HTML...');
+                    resultContainer.className = 'result success';
+                    resultContainer.innerHTML = html;
+                    resultContainer.style.display = 'block';
+                    
+                } else {
+                    console.log('No valid data found');
+                    displayError('No valid data found.');
+                }
+                
+            } catch (error) {
+                console.error('Error in handleSearch:', error);
+                displayError(`Error: ${error.message}`);
+            } finally {
+                loadingIndicator.style.display = 'none';
+            }
+        }
+        
+        function displayError(message) {
+            const resultContainer = document.getElementById('result');
+            resultContainer.className = 'result error';
+            resultContainer.innerHTML = `
+                <div class="highlight-box">
+                    <div style="text-align: center; padding: 2rem;">
+                        <div style="font-size: 3rem; color: #ff6b6b; margin-bottom: 1rem;">⚠️</div>
+                        <div style="font-size: 1.5rem; margin-bottom: 1rem; color: #ff6b6b;">Error</div>
+                        <div style="color: var(--text-secondary); line-height: 1.6;">${message}</div>
+                    </div>
+                </div>
+            `;
+            resultContainer.style.display = 'block';
+        }
+        
+        // Auto-load profile on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            // Mobile menu toggle
+            const mobileToggle = document.querySelector('.mobile-menu-toggle');
+            const navMenu = document.querySelector('.nav-menu');
+            
+            if (mobileToggle && navMenu) {
+                mobileToggle.addEventListener('click', function() {
+                    navMenu.classList.toggle('active');
+                });
+            }
+            
+            // Wait for lookup.js to load, then override the function
+            setTimeout(function() {
+                // Override the function AFTER lookup.js loads
+                window.originalDisplayStructuredResult = window.displayStructuredResult;
+                
+                // Auto-trigger the lookup
+                handleSearch();
+            }, 1000);
+        });
+        
+        // Add missing utility functions that the profile display needs
+        
+        // Toggle section visibility
+        function toggleSection(sectionId) {
+            const sectionContent = document.getElementById(sectionId);
+            const toggleButton = document.querySelector(`[data-toggle="${sectionId}"]`);
+            
+            if (sectionContent.classList.contains('collapsed')) {
+                sectionContent.classList.remove('collapsed');
+                toggleButton.textContent = '−'; // Minus sign
+                toggleButton.setAttribute('title', 'Collapse section');
+            } else {
+                sectionContent.classList.add('collapsed');
+                toggleButton.textContent = '+'; // Plus sign
+                toggleButton.setAttribute('title', 'Expand section');
+            }
+        }
+
+        // Utility function to copy text to clipboard
+        function copyToClipboard(text, buttonElement) {
+            navigator.clipboard.writeText(text).then(() => {
+                const originalText = buttonElement.textContent;
+                buttonElement.textContent = 'Copied!';
+                setTimeout(() => {
+                    buttonElement.textContent = originalText;
+                }, 2000);
+            }).catch(err => {
+                console.error('Could not copy text: ', err);
+            });
+        }
+
+        // Get cryptocurrency icon
+        function getCryptoIcon(chain) {
+            const icons = {
+                'BTC': '₿',
+                'ETH': 'Ξ',
+                'SOL': '◎',
+                'BNB': 'B',
+                'DOT': '●',
+                'ADA': 'A',
+                'XRP': 'X',
+                'DOGE': 'D',
+                'SHIB': 'S',
+                'AVAX': 'A',
+                'MATIC': 'M',
+                'TRX': 'T',
+                'QEVM': 'Q'
+            };
+            
+            return icons[chain] || '🪙';
+        }
+
+        // Get social media icon
+        function getSocialIcon(platform) {
+            const icons = {
+                'telegram': '📱',
+                'x': '🐦',
+                'twitter': '🐦',
+                'instagram': '📸',
+                'facebook': '👥',
+                'github': '💻',
+                'reddit': '🔴',
+                'discord': '🎮',
+                'linkedin': '🔗',
+                'youtube': '▶️',
+                'tiktok': '📱'
+            };
+            
+            return icons[platform.toLowerCase()] || '🌐';
+        }
+
+        // Format social media URL
+        function formatSocialUrl(platform, handle) {
+            if (!handle) return '#';
+            
+            const baseUrls = {
+                'telegram': 'https://t.me/',
+                'x': 'https://x.com/',
+                'twitter': 'https://twitter.com/',
+                'instagram': 'https://instagram.com/',
+                'facebook': 'https://facebook.com/',
+                'github': 'https://github.com/',
+                'reddit': 'https://reddit.com/user/',
+                'discord': '#', // Discord doesn't have profile URLs
+                'linkedin': 'https://linkedin.com/in/',
+                'youtube': 'https://youtube.com/@',
+                'tiktok': 'https://tiktok.com/@'
+            };
+            
+            // If handle already includes http, return as is
+            if (handle.startsWith('http')) {
+                return handle;
+            }
+            
+            // Remove @ symbol if present
+            const cleanHandle = handle.startsWith('@') ? handle.substring(1) : handle;
+            
+            // Return formatted URL
+            return (baseUrls[platform.toLowerCase()] || '#') + cleanHandle;
+        }
+
+        // Capitalize first letter of a string
+        function capitalizeFirstLetter(string) {
+            return string.charAt(0).toUpperCase() + string.slice(1);
+        }
+
+        // Format long addresses for better readability
+        function formatLongAddress(address) {
+            if (!address) return '';
+            
+            // For addresses longer than 30 characters, add some formatting
+            if (address.length <= 30) return address;
+            
+            // For very long addresses, show beginning, middle with ellipsis, and end
+            if (address.length > 60) {
+                const start = address.substring(0, 20);
+                const middle = '...';
+                const end = address.substring(address.length - 20);
+                return `<span class="address-segment">${start}</span>${middle}<span class="address-segment">${end}</span>`;
+            }
+            
+            // For moderately long addresses, just add some spacing
+            const segments = [];
+            for (let i = 0; i < address.length; i += 15) {
+                segments.push(address.substring(i, Math.min(i + 15, address.length)));
+            }
+            
+            return segments.map(seg => `<span class="address-segment">${seg}</span>`).join('');
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+/* CPUNK.IO - Quantum-Safe Identity Platform Styles */
+/* Using modular CSS architecture with shared navigation system */
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@300;400;500;600&display=swap');
+@import url('./css/main.css');
+
+/* All styles now handled by modular CSS system - no overrides */

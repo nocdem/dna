@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPUNK Transaction Test</title>
+    <style>
+        body { 
+            background: #0a0a0a; 
+            color: #ffffff; 
+            font-family: Arial, sans-serif; 
+            margin: 0; 
+            padding: 20px; 
+        }
+        .container { 
+            max-width: 800px; 
+            margin: 0 auto; 
+            background: #1a1a1a; 
+            padding: 20px; 
+            border-radius: 8px; 
+        }
+        .section { 
+            margin: 20px 0; 
+            padding: 15px; 
+            background: #2a2a2a; 
+            border-radius: 6px; 
+        }
+        .button { 
+            background: #00ffff; 
+            color: #000; 
+            border: none; 
+            padding: 12px 24px; 
+            border-radius: 6px; 
+            cursor: pointer; 
+            font-size: 16px; 
+            margin: 10px 5px;
+        }
+        .button:disabled { 
+            background: #555; 
+            cursor: not-allowed; 
+        }
+        .wallet-card { 
+            background: #1a1a1a; 
+            border: 2px solid transparent; 
+            padding: 15px; 
+            margin: 10px 0; 
+            border-radius: 6px; 
+            cursor: pointer; 
+        }
+        .wallet-card:hover, .wallet-card.selected { 
+            border-color: #00ffff; 
+        }
+        .status-connected { 
+            background: rgba(34, 197, 94, 0.2); 
+            color: #22c55e; 
+            padding: 8px 16px; 
+            border-radius: 20px; 
+        }
+        .status-disconnected { 
+            background: rgba(255, 68, 68, 0.2); 
+            color: #ff4444; 
+            padding: 8px 16px; 
+            border-radius: 20px; 
+        }
+        .debug { 
+            background: #000; 
+            border: 1px solid #333; 
+            padding: 15px; 
+            font-family: monospace; 
+            font-size: 12px; 
+            height: 200px; 
+            overflow-y: auto; 
+            white-space: pre-wrap; 
+        }
+        .hidden { display: none; }
+        .error { color: #ff4444; }
+        .success { color: #22c55e; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>CPUNK Transaction Test</h1>
+        
+        <!-- Connection -->
+        <div class="section">
+            <h2>Dashboard Connection</h2>
+            <div id="status" class="status-disconnected">Disconnected</div>
+            <button id="connectBtn" class="button">Connect</button>
+        </div>
+        
+        <!-- Wallets -->
+        <div id="walletsSection" class="section hidden">
+            <h2>Select Wallet</h2>
+            <div id="walletsList"></div>
+        </div>
+        
+        <!-- Transaction -->
+        <div id="txSection" class="section hidden">
+            <h2>Send Transaction</h2>
+            <div id="selectedWallet">No wallet selected</div>
+            <button id="sendBtn" class="button" disabled>Send 1 CPUNK</button>
+            <div id="txResult"></div>
+        </div>
+        
+        <!-- Debug -->
+        <div class="section">
+            <h3>Debug Log</h3>
+            <div id="debug" class="debug">Ready...</div>
+        </div>
+    </div>
+
+    <script>
+        const TREASURY_ADDRESS = 'Rj7J7MiX2bWy8sNyZcoLqkZuNznvU4KbK6RHgqrGj9iqwKPhoVKE1xNrEMmgtVsnyTZtFhftMPAJbaswuSLp7UeBS7jiRmE5uvuUJaKA';
+        
+        let sessionId = null;
+        let selectedWallet = null;
+        let debugLog = [];
+        
+        // Elements
+        const status = document.getElementById('status');
+        const connectBtn = document.getElementById('connectBtn');
+        const walletsSection = document.getElementById('walletsSection');
+        const walletsList = document.getElementById('walletsList');
+        const txSection = document.getElementById('txSection');
+        const selectedWalletDiv = document.getElementById('selectedWallet');
+        const sendBtn = document.getElementById('sendBtn');
+        const txResult = document.getElementById('txResult');
+        const debug = document.getElementById('debug');
+        
+        // Debug logging
+        function log(message) {
+            const entry = '[' + new Date().toLocaleTimeString() + '] ' + message;
+            debugLog.push(entry);
+            console.log(entry);
+            debug.textContent = debugLog.slice(-20).join('\n');
+            debug.scrollTop = debug.scrollHeight;
+        }
+        
+        // API call to localhost:8045
+        async function apiCall(method, params = {}) {
+            const url = new URL('http://localhost:8045/');
+            url.searchParams.append('method', method);
+            for (const [key, value] of Object.entries(params)) {
+                url.searchParams.append(key, value);
+            }
+            
+            try {
+                log('API Call: ' + method);
+                const response = await fetch(url.toString());
+                const data = await response.json();
+                log('API Response: ' + data.status);
+                return data;
+            } catch (error) {
+                log('API Error: ' + error.message);
+                throw error;
+            }
+        }
+        
+        // Connect to dashboard
+        async function connect() {
+            try {
+                status.textContent = 'Connecting...';
+                connectBtn.disabled = true;
+                
+                const response = await apiCall('Connect');
+                if (response.status === 'ok' && response.data && response.data.id) {
+                    sessionId = response.data.id;
+                    status.innerHTML = `Connected<br><small>${sessionId.substring(0,16)}...</small>`;
+                    status.className = 'status-connected';
+                    connectBtn.textContent = 'Connected';
+                    
+                    log('Connected: ' + sessionId);
+                    loadWallets();
+                } else {
+                    throw new Error('Connection failed');
+                }
+            } catch (error) {
+                log('Connection error: ' + error.message);
+                status.textContent = 'Connection Failed';
+                status.className = 'status-disconnected';
+                connectBtn.disabled = false;
+            }
+        }
+        
+        // Load wallets
+        async function loadWallets() {
+            try {
+                const response = await apiCall('GetWallets', { id: sessionId });
+                if (response.status === 'ok' && response.data) {
+                    walletsList.innerHTML = '';
+                    
+                    for (const wallet of response.data) {
+                        const walletData = await apiCall('GetDataWallet', { 
+                            id: sessionId, 
+                            walletName: wallet.name 
+                        });
+                        
+                        let cpunkBalance = 0;
+                        let address = '';
+                        
+                        if (walletData.data) {
+                            const backboneNet = walletData.data.find(net => net.network === 'Backbone');
+                            if (backboneNet) {
+                                address = backboneNet.address;
+                                const cpunkToken = backboneNet.tokens?.find(t => t.tokenName === 'CPUNK');
+                                cpunkBalance = parseFloat(cpunkToken?.balance || 0);
+                            }
+                        }
+                        
+                        const card = document.createElement('div');
+                        card.className = 'wallet-card';
+                        card.innerHTML = `
+                            <div><strong>${wallet.name}</strong></div>
+                            <div style="font-size:0.8em;color:#aaa;">${address}</div>
+                            <div>CPUNK: ${cpunkBalance.toLocaleString()}</div>
+                        `;
+                        
+                        card.addEventListener('click', () => selectWallet(wallet.name, address, cpunkBalance, card));
+                        walletsList.appendChild(card);
+                    }
+                    
+                    walletsSection.classList.remove('hidden');
+                    log('Loaded ' + response.data.length + ' wallets');
+                } else {
+                    throw new Error('Failed to load wallets');
+                }
+            } catch (error) {
+                log('Wallet loading error: ' + error.message);
+            }
+        }
+        
+        // Select wallet
+        function selectWallet(name, address, balance, cardElement) {
+            // Remove previous selection
+            document.querySelectorAll('.wallet-card').forEach(c => c.classList.remove('selected'));
+            cardElement.classList.add('selected');
+            
+            selectedWallet = { name, address, balance };
+            selectedWalletDiv.innerHTML = `
+                <strong>Selected:</strong> ${name}<br>
+                <strong>Balance:</strong> ${balance.toLocaleString()} CPUNK
+            `;
+            
+            sendBtn.disabled = balance < 1;
+            sendBtn.textContent = balance < 1 ? 'Insufficient Balance' : 'Send 1 CPUNK';
+            
+            txSection.classList.remove('hidden');
+            log('Selected wallet: ' + name + ' (' + balance + ' CPUNK)');
+        }
+        
+        // Send transaction
+        async function sendTransaction() {
+            if (!selectedWallet) return;
+            
+            try {
+                sendBtn.disabled = true;
+                txResult.innerHTML = '<div>Sending transaction...</div>';
+                
+                const paymentAmount = '1.0e+18';
+                const fullUrl = `http://localhost:8045/?method=SendTransaction&id=${encodeURIComponent(sessionId)}&net=Backbone&walletName=${encodeURIComponent(selectedWallet.name)}&toAddr=${encodeURIComponent(TREASURY_ADDRESS)}&tokenName=CPUNK&value=${encodeURIComponent(paymentAmount)}`;
+                
+                console.log('=== TRANSACTION INFO FOR SUPPORT ===');
+                console.log('SESSION ID:', sessionId);
+                console.log('WALLET:', selectedWallet.name, '(' + selectedWallet.address + ')');
+                console.log('TO ADDRESS:', TREASURY_ADDRESS);
+                console.log('AMOUNT:', paymentAmount);
+                console.log('FULL QUERY URL:', fullUrl);
+                console.log('====================================');
+                
+                const response = await apiCall('SendTransaction', {
+                    id: sessionId,
+                    net: 'Backbone',
+                    walletName: selectedWallet.name,
+                    toAddr: TREASURY_ADDRESS,
+                    tokenName: 'CPUNK',
+                    value: paymentAmount
+                });
+                
+                if (response.status === 'ok' && response.data && response.data.success) {
+                    const txHash = response.data.tx_hash || response.data.idQueue || 'Transaction Submitted';
+                    txResult.innerHTML = `
+                        <div class="success">Transaction sent successfully!</div>
+                        <div style="margin-top:10px;"><strong>Hash:</strong></div>
+                        <div style="font-family:monospace;word-break:break-all;background:#000;padding:10px;border-radius:4px;">${txHash}</div>
+                    `;
+                    log('Transaction sent: ' + txHash);
+                } else {
+                    const errorMsg = response.data?.message || response.errorMsg || 'Unknown error';
+                    console.error('TRANSACTION FAILED - RAW API RESPONSE:', JSON.stringify(response, null, 2));
+                    throw new Error(errorMsg);
+                }
+            } catch (error) {
+                log('Transaction error: ' + error.message);
+                txResult.innerHTML = `<div class="error">Transaction failed: ${error.message}</div>`;
+            } finally {
+                sendBtn.disabled = false;
+            }
+        }
+        
+        // Event listeners
+        connectBtn.addEventListener('click', connect);
+        sendBtn.addEventListener('click', sendTransaction);
+        
+        log('Page ready');
+    </script>
+</body>
+</html>

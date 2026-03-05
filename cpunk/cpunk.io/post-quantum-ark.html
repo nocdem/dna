@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Post-Quantum Ark | Istanbul 2025 - CPUNK Protocol</title>
+    <meta name="description" content="The Post-Quantum Ark event in Istanbul - July 12, 2025. Celebrating Cellframe's mainnet birthday and the future of quantum-resistant blockchain technology.">
+    <meta name="keywords" content="CPUNK, Post-Quantum Ark, Istanbul, Cellframe, blockchain, quantum-safe, event, DNA identity">
+    <link rel="canonical" href="https://cpunk.io/post-quantum-ark.html">
+    
+    <!-- Open Graph -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://cpunk.io/post-quantum-ark.html">
+    <meta property="og:title" content="Post-Quantum Ark Istanbul 2025 - CPUNK Protocol">
+    <meta property="og:description" content="The Post-Quantum Ark event - Celebrating Cellframe's mainnet birthday and quantum-resistant blockchain future on the CPUNK identity protocol platform.">
+    <meta property="og:image" content="https://cpunk.io/images/cpunk-logo.png">
+    
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Post-Quantum Ark Istanbul 2025 - CPUNK Protocol">
+    <meta name="twitter:description" content="The Post-Quantum Ark event - Celebrating quantum-resistant blockchain future and DNA identity protocol.">
+    <meta name="twitter:image" content="https://cpunk.io/images/cpunk-logo.png">
+    
+    <!-- Security Headers -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com https://cpunk.club;">
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="preload" href="styles.css" as="style">
+    <link rel="stylesheet" href="styles.css">
+    
+    <style>
+        /* Event Gallery Styles */
+        .gallery-main {
+            position: relative;
+            margin-bottom: 2rem;
+        }
+        
+        .gallery-image-container {
+            width: 100%;
+            height: 500px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-primary);
+            border-radius: var(--radius-xl);
+            overflow: hidden;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .gallery-nav {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(0, 0, 0, 0.7);
+            color: var(--accent-primary);
+            border: 1px solid var(--border-primary);
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            font-size: 20px;
+            cursor: pointer;
+            z-index: 10;
+            transition: all 0.3s ease;
+        }
+        
+        .gallery-nav:hover {
+            background: rgba(0, 255, 204, 0.2);
+            border-color: var(--accent-primary);
+            transform: translateY(-50%) scale(1.1);
+        }
+        
+        .gallery-prev {
+            left: 20px;
+        }
+        
+        .gallery-next {
+            right: 20px;
+        }
+        
+        .gallery-counter {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: var(--accent-primary);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-family: 'Orbitron', monospace;
+        }
+        
+        .thumbnail-nav {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(0, 0, 0, 0.7);
+            color: var(--accent-primary);
+            border: 1px solid var(--border-primary);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            font-size: 16px;
+            cursor: pointer;
+            z-index: 10;
+            transition: all 0.3s ease;
+        }
+        
+        .thumbnail-nav:hover {
+            background: rgba(0, 255, 204, 0.2);
+            border-color: var(--accent-primary);
+            transform: translateY(-50%) scale(1.1);
+        }
+        
+        .thumbnail-prev {
+            left: -60px;
+        }
+        
+        .thumbnail-next {
+            right: -60px;
+        }
+        
+        .gallery-thumbnails {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            max-width: 500px;
+            margin: 0 auto;
+        }
+        
+        .thumbnail {
+            width: 100%;
+            height: 100px;
+            background: var(--bg-secondary);
+            border-radius: var(--radius-md);
+            cursor: pointer;
+            overflow: hidden;
+            border: 3px solid transparent;
+            transition: border-color 0.3s ease;
+        }
+        
+        .thumbnail:hover {
+            border-color: rgba(0, 255, 204, 0.5);
+        }
+        
+        /* Speakers Section */
+        .speaker-item {
+            margin: 2rem 0;
+            font-size: 1.4em;
+            text-align: center;
+        }
+        
+        .speaker-name {
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+        
+        .speaker-company {
+            color: var(--accent-primary);
+            font-weight: bold;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        @media (max-width: 768px) {
+            .gallery-image-container {
+                height: 300px;
+            }
+            
+            .gallery-nav {
+                width: 40px;
+                height: 40px;
+                font-size: 16px;
+            }
+            
+            .thumbnail-nav {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="/" class="logo">CPUNK.IO</a>
+            <ul class="nav-menu">
+                <li class="nav-item"><a href="/" class="nav-link">Home</a></li>
+                <li class="nav-item dropdown">
+                    <a href="#" class="nav-link">Services ▼</a>
+                    <div class="dropdown-content">
+                        <a href="/services/dna.html">DNA Identity</a>
+                        <a href="/dna-lookup.html">DNA Lookup</a>
+                        <a href="/delegation.html">Delegation</a>
+                        <a href="/delegation-stats.html">Delegation Stats</a>
+                        <a href="/services/network-stats.html">Network Stats</a>
+                    </div>
+                </li>
+                <li class="nav-item dropdown">
+                    <a href="#" class="nav-link">Events ▼</a>
+                    <div class="dropdown-content">
+                        <a href="/post-quantum-ark.html">Post-Quantum Ark</a>
+                    </div>
+                </li>
+                <li class="nav-item"><a href="/whitepaper.html" class="nav-link">Whitepaper</a></li>
+                <li class="nav-item"><a href="/team.html" class="nav-link">Team</a></li>
+                <li class="nav-item"><a href="/contact.html" class="nav-link">Contact</a></li>
+            </ul>
+            <button class="mobile-menu-toggle">☰</button>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="hero-content">
+            <h1>The Post-Quantum Ark</h1>
+            <p style="font-size: 1.3rem; margin-bottom: 1rem;"><strong>Istanbul • July 12, 2025:</strong> A historic gathering aboard the Bosphorus celebrating <em>quantum-resistant blockchain technology</em> and the future of decentralized identity.</p>
+            <p style="font-size: 1.1rem; color: var(--accent-primary); margin-top: 1rem;"><strong>"An absolute triumph! Strengthening bonds and igniting conversations."</strong></p>
+            <div style="margin-top: 2rem;">
+                <a href="#event-overview" class="btn btn-outline btn-cpunk-io-outline" style="margin-right: 1rem;">Event Overview</a>
+                <a href="#gallery" class="btn btn-outline btn-cpunk-io-outline">View Gallery</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Event Overview Section -->
+    <section class="section" id="event-overview">
+        <div class="section-title">
+            <h2>Event Overview</h2>
+            <p>A historic gathering of the <strong>quantum-resistant blockchain community</strong> celebrating innovation and building the decentralized future</p>
+        </div>
+        <div class="grid grid-3">
+            <div class="card fade-in" style="animation-delay: 0.1s;">
+                <div class="card-icon" style="font-size: 3rem; margin-bottom: 1rem; background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 10px rgba(0, 255, 204, 0.3));">🤝</div>
+                <h3>Strengthening Bonds</h3>
+                <p>An incredible gathering that brought together <strong>visionaries from around the globe</strong>, creating lasting connections in the quantum-safe blockchain community and DNA identity protocol ecosystem.</p>
+            </div>
+            <div class="card fade-in" style="animation-delay: 0.2s;">
+                <div class="card-icon" style="font-size: 3rem; margin-bottom: 1rem; background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 10px rgba(0, 255, 204, 0.3));">💡</div>
+                <h3>Igniting Conversations</h3>
+                <p>Insightful discussions and shared laughs as <strong>brilliant minds explored the future</strong> of post-quantum cryptography, decentralized innovation, and quantum-safe identity systems.</p>
+            </div>
+            <div class="card fade-in" style="animation-delay: 0.3s;">
+                <div class="card-icon" style="font-size: 3rem; margin-bottom: 1rem; background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 10px rgba(0, 255, 204, 0.3));">🌟</div>
+                <h3>Celebrating Milestones</h3>
+                <p>A triumphant celebration marking <strong>new achievements in quantum-resistant technology</strong> and the consolidation of a stronger, more unified blockchain ecosystem.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Speakers Section -->
+    <section class="section">
+        <div class="section-title">
+            <h2>Special Guests & Partners</h2>
+            <p>Industry leaders who shaped the event and <strong>quantum-safe blockchain future</strong></p>
+        </div>
+        
+        <div style="text-align: center; max-width: 700px; margin: 0 auto;">
+            <div class="speaker-item">
+                <div class="speaker-name">Cenk and Bios</div>
+                <div class="speaker-company">CPUNK</div>
+            </div>
+            
+            <div class="speaker-item">
+                <div class="speaker-name">Dmitriy Gerasimov</div>
+                <div class="speaker-company">CEO CELLFRAME</div>
+            </div>
+            
+            <div class="speaker-item">
+                <div class="speaker-name">Ian Smith</div>
+                <div class="speaker-company">CEO QEVM</div>
+            </div>
+            
+            <div class="speaker-item">
+                <div class="speaker-name">Andrey and Andy</div>
+                <div class="speaker-company">NODEsys</div>
+            </div>
+            
+            <div class="speaker-item">
+                <div class="speaker-name">Nikita</div>
+                <div class="speaker-company">MM</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Istanbul Experience Section -->
+    <section class="section" style="background: linear-gradient(135deg, rgba(0, 255, 204, 0.02), rgba(0, 136, 255, 0.02)); border-top: 1px solid var(--border-color); border-bottom: 1px solid var(--border-color);">
+        <div class="section-title">
+            <h2>The Istanbul Experience</h2>
+            <p>Where <strong>East meets West, tradition meets innovation</strong> - the perfect setting for quantum-safe blockchain advancement</p>
+        </div>
+        
+        <!-- Why Istanbul Card -->
+        <div style="max-width: 900px; margin: 0 auto 3rem auto;">
+            <div class="card" style="padding: 2.5rem; text-align: center;">
+                <h3 style="font-size: 1.8em; margin-bottom: 1.5rem;">Why Istanbul?</h3>
+                <p style="font-size: 1.2em; line-height: 1.6;">
+                    Istanbul proved to be the perfect backdrop for our <strong>quantum leap forward</strong>. The city that bridges continents also bridged the gap between traditional blockchain and quantum-resistant future.
+                </p>
+            </div>
+        </div>
+        
+        <!-- Features Grid -->
+        <div class="grid grid-3" style="margin-bottom: 3rem;">
+            <div class="card fade-in" style="animation-delay: 0.1s; text-align: center; padding: 2rem;">
+                <div style="font-size: 3rem; margin-bottom: 1rem;">🌉</div>
+                <h3 style="margin-bottom: 1rem;">Historical Significance</h3>
+                <p>Where ancient civilizations met and cultures merged, creating the perfect metaphor for our <strong>quantum-blockchain convergence</strong>.</p>
+            </div>
+            <div class="card fade-in" style="animation-delay: 0.2s; text-align: center; padding: 2rem;">
+                <div style="font-size: 3rem; margin-bottom: 1rem;">💻</div>
+                <h3 style="margin-bottom: 1rem;">Growing Tech Hub</h3>
+                <p>A rapidly emerging technology center attracting <strong>innovative startups and blockchain pioneers</strong> from across the globe.</p>
+            </div>
+            <div class="card fade-in" style="animation-delay: 0.3s; text-align: center; padding: 2rem;">
+                <div style="font-size: 3rem; margin-bottom: 1rem;">🌍</div>
+                <h3 style="margin-bottom: 1rem;">Strategic Location</h3>
+                <p>Perfectly positioned to bring together global communities, making it accessible to participants from <strong>Europe, Asia, and beyond</strong>.</p>
+            </div>
+        </div>
+        
+        <!-- Venue Highlight -->
+        <div style="max-width: 800px; margin: 0 auto;">
+            <div class="card" style="text-align: center; padding: 2rem;">
+                <h3>⛵ Venue Highlights</h3>
+                <div style="margin-top: 1.5rem;">
+                    <p style="font-size: 1.1em; line-height: 1.7; color: var(--text-primary);">
+                        The event was hosted aboard a magnificent boat cruising the <strong>Bosphorus</strong>! Nothing could be more symbolic than literally sailing toward the quantum-safe future while leaving the shores of standard cryptography behind, navigating new waters of innovation.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Gallery Section -->
+    <section class="section" id="gallery">
+        <div class="section-title">
+            <h2>Event Gallery</h2>
+            <p>Moments from the <strong>Post-Quantum Ark</strong> - capturing the future of quantum-safe blockchain technology</p>
+        </div>
+        
+        <!-- Image Gallery Container -->
+        <div style="max-width: 1200px; margin: 0 auto;">
+            <!-- Main Gallery Display -->
+            <div class="gallery-main">
+                <div class="gallery-image-container">
+                    <img id="gallery-main-image" src="https://cpunk.club/img/gallery/event-1.jpg" alt="Event Photo" style="width: 100%; height: 100%; object-fit: contain; display: none;">
+                    <div id="gallery-placeholder" style="text-align: center; color: var(--text-muted);">
+                        <div style="font-size: 4rem; margin-bottom: 1rem;">📸</div>
+                        <h3>Post-Quantum Ark Gallery</h3>
+                        <p>81 photos from the Istanbul event</p>
+                    </div>
+                </div>
+                
+                <!-- Navigation Arrows -->
+                <button class="gallery-nav gallery-prev" onclick="galleryPrev()">‹</button>
+                <button class="gallery-nav gallery-next" onclick="galleryNext()">›</button>
+                
+                <!-- Image Counter -->
+                <div class="gallery-counter">
+                    <span id="gallery-current">1</span> / <span id="gallery-total">81</span>
+                </div>
+            </div>
+            
+            <!-- Thumbnail Navigation Container -->
+            <div style="position: relative; max-width: 600px; margin: 0 auto;">
+                <!-- Thumbnail Navigation Arrows -->
+                <button class="thumbnail-nav thumbnail-prev" onclick="thumbnailPrev()">‹</button>
+                <button class="thumbnail-nav thumbnail-next" onclick="thumbnailNext()">›</button>
+                
+                <!-- 3 Visible Thumbnails -->
+                <div class="gallery-thumbnails" id="thumbnails-container">
+                    <!-- Thumbnails will be populated by JavaScript -->
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Thank You Section -->
+    <section class="section">
+        <div class="section-title">
+            <h2>Thank You!</h2>
+            <p>To everyone who joined us in <strong>Istanbul for this quantum leap forward</strong></p>
+        </div>
+        
+        <div style="max-width: 800px; margin: 0 auto; text-align: center;">
+            <!-- Main Message Card -->
+            <div class="card" style="padding: 2.5rem; margin-bottom: 2rem;">
+                <p style="font-size: 1.3em; line-height: 1.6; color: var(--text-primary); margin-bottom: 0;">
+                    Together, we're building a <strong>quantum-safe future</strong> that's secure against tomorrow's threats through decentralized identity and post-quantum cryptography.
+                </p>
+            </div>
+            
+            <!-- Community Links -->
+            <div class="grid grid-2" style="gap: 1.5rem; margin-bottom: 2rem;">
+                <div class="card" style="padding: 1.5rem; text-align: center;">
+                    <h4>Join the Community</h4>
+                    <p style="margin-bottom: 1rem;">Continue the conversation and stay updated with quantum-safe developments</p>
+                    <a href="https://t.me/cpunk_community" class="btn btn-outline btn-cpunk-io-outline" target="_blank" rel="noopener noreferrer">Telegram Community</a>
+                </div>
+                <div class="card" style="padding: 1.5rem; text-align: center;">
+                    <h4>Get Your DNA Identity</h4>
+                    <p style="margin-bottom: 1rem;">Register your quantum-safe digital identity on the CPUNK protocol</p>
+                    <a href="/register.html" class="btn btn-outline btn-cpunk-io-outline">Register DNA</a>
+                </div>
+            </div>
+            
+            <!-- Visit Community Platform -->
+            <div style="margin-top: 2rem;">
+                <a href="https://cpunk.club" class="btn btn-outline btn-cpunk-club-outline" target="_blank" rel="noopener noreferrer">
+                    🎭 Visit CPUNK.CLUB Community Platform
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="footer-content">
+            <div class="footer-links">
+                <a href="/">Home</a>
+                <a href="/whitepaper.html">Whitepaper</a>
+                <a href="/team.html">Team</a>
+                <a href="/contact.html">Contact</a>
+                <a href="/services/dna.html">DNA Identity</a>
+                <a href="/dna-lookup.html">DNA Lookup</a>
+                <a href="/delegation.html">Delegation</a>
+                <a href="/delegation-stats.html">Delegation Stats</a>
+                <a href="/services/network-stats.html">Network Stats</a>
+            </div>
+            <a href="https://cpunk.club" class="btn btn-outline btn-cpunk-club-outline" target="_blank" rel="noopener noreferrer">
+                🎭 Visit CPUNK.CLUB Platform
+            </a>
+            <p style="color: var(--text-muted); margin-top: 2rem;">
+                © 2025 CPUNK Protocol. Built on Cellframe blockchain.
+            </p>
+        </div>
+    </footer>
+
+    <script>
+        // Gallery JavaScript
+        let currentGalleryIndex = 0;
+        let currentThumbnailStart = 0;
+        const galleryImages = [
+            { src: 'https://cpunk.club/img/gallery/0K5A3889.JPG', alt: 'Networking and Conversations', icon: '🤝' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3904.JPG', alt: 'Quantum-Safe Blockchain Discussion', icon: '💻' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3911.JPG', alt: 'Industry Leaders Meeting', icon: '🎤' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3914.JPG', alt: 'CPUNK Community Connection', icon: '🌐' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3920.JPG', alt: 'Istanbul Event Atmosphere', icon: '🌆' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3926.JPG', alt: 'Blockchain Innovation Showcase', icon: '🚀' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3929.JPG', alt: 'Post-Quantum Technology Focus', icon: '🔬' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3935.JPG', alt: 'Cellframe Community Celebration', icon: '🎉' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3936.JPG', alt: 'Partnership Announcements', icon: '🤝' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3937.JPG', alt: 'Future of Quantum-Safe Crypto', icon: '🛡️' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3946.JPG', alt: 'Event Documentation', icon: '📝' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3952.JPG', alt: 'Global Community Gathering', icon: '🌍' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3957.JPG', alt: 'Innovation Presentations', icon: '💡' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3970.JPG', alt: 'Quantum Ark Experience', icon: '⛵' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3972.JPG', alt: 'Bosphorus Boat Event', icon: '🚤' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3977.JPG', alt: 'Istanbul Skyline Views', icon: '🏙️' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3991.JPG', alt: 'Technical Discussions', icon: '⚙️' },
+            { src: 'https://cpunk.club/img/gallery/0K5A3993.JPG', alt: 'Community Building', icon: '🏗️' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4000.JPG', alt: 'Event Highlights', icon: '⭐' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4007.JPG', alt: 'Quantum Security Focus', icon: '🛡️' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4010.JPG', alt: 'Team Collaboration', icon: '👥' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4014.JPG', alt: 'Istanbul Event Success', icon: '✨' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4016.JPG', alt: 'Blockchain Evolution Discussion', icon: '🔄' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4018.JPG', alt: 'Post-Quantum Future Vision', icon: '🔮' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4021.JPG', alt: 'Community Connections', icon: '🔗' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4035.JPG', alt: 'Event Atmosphere', icon: '🎪' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4057.JPG', alt: 'Quantum-Safe Innovation', icon: '🧬' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4062.JPG', alt: 'Technology Advancement', icon: '📈' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4083.JPG', alt: 'Global Participation', icon: '🌏' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4104.JPG', alt: 'Event Collaboration', icon: '🤲' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4108.JPG', alt: 'Quantum Ark Journey', icon: '🚢' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4114.JPG', alt: 'Istanbul Maritime Setting', icon: '⚓' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4119.JPG', alt: 'Event Documentation', icon: '📷' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4128.JPG', alt: 'Community Engagement', icon: '💬' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4137.JPG', alt: 'Quantum-Resistant Technology', icon: '🔒' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4139.JPG', alt: 'Event Networking', icon: '🌐' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4141.JPG', alt: 'Innovation Celebration', icon: '🎊' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4150.JPG', alt: 'Post-Quantum Milestone', icon: '🏆' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4151.JPG', alt: 'Team Achievement', icon: '🥇' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4173.JPG', alt: 'Event Success Story', icon: '📚' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4177.JPG', alt: 'Quantum Future Planning', icon: '📋' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4191.JPG', alt: 'Community Unity', icon: '🤝' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4192.JPG', alt: 'Event Conclusion', icon: '🎯' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4193.JPG', alt: 'Istanbul Memories', icon: '💭' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4196.JPG', alt: 'Quantum-Safe Vision', icon: '👁️' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4198.JPG', alt: 'Event Participants', icon: '👤' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4202.JPG', alt: 'Technology Showcase', icon: '💻' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4203.JPG', alt: 'Innovation Demo', icon: '🔬' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4210.JPG', alt: 'Event Highlights', icon: '⚡' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4217.JPG', alt: 'Quantum Ark Experience', icon: '🛸' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4223.JPG', alt: 'Community Building', icon: '🏛️' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4235.JPG', alt: 'Event Success', icon: '✅' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4239.JPG', alt: 'Istanbul Event Views', icon: '🌅' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4245.JPG', alt: 'Post-Quantum Achievement', icon: '🎖️' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4259.JPG', alt: 'Event Coordination', icon: '🎛️' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4282.JPG', alt: 'Community Celebration', icon: '🥳' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4295.JPG', alt: 'Event Photography', icon: '📸' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4298.JPG', alt: 'Quantum Technology Focus', icon: '🔬' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4305.JPG', alt: 'Istanbul Maritime Event', icon: '🌊' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4312.JPG', alt: 'Event Team Work', icon: '👥' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4342.JPG', alt: 'Post-Quantum Innovation', icon: '💡' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4379.JPG', alt: 'Event Networking', icon: '🔗' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4383.JPG', alt: 'Community Interaction', icon: '💬' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4409.JPG', alt: 'Event Documentation', icon: '📹' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4412.JPG', alt: 'Quantum-Safe Future', icon: '🔮' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4415.JPG', alt: 'Istanbul Event Atmosphere', icon: '🌟' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4434.JPG', alt: 'Event Collaboration', icon: '🤝' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4442.JPG', alt: 'Post-Quantum Milestone', icon: '🎯' },
+            { src: 'https://cpunk.club/img/gallery/0K5A4446.JPG', alt: 'Event Conclusion', icon: '🏁' },
+            { src: 'https://cpunk.club/img/gallery/20250712_192519.jpg', alt: 'Evening Event Begin', icon: '🌆' },
+            { src: 'https://cpunk.club/img/gallery/20250712_192849.jpg', alt: 'Event Setup', icon: '⚙️' },
+            { src: 'https://cpunk.club/img/gallery/20250712_192857.jpg', alt: 'Evening Preparations', icon: '🌙' },
+            { src: 'https://cpunk.club/img/gallery/20250712_192904.jpg', alt: 'Event Coordination', icon: '📋' },
+            { src: 'https://cpunk.club/img/gallery/20250712_192920.jpg', alt: 'Evening Setup', icon: '🔧' },
+            { src: 'https://cpunk.club/img/gallery/20250712_194542.jpg', alt: 'Event in Progress', icon: '▶️' },
+            { src: 'https://cpunk.club/img/gallery/20250712_200447.jpg', alt: 'Evening Networking', icon: '🌃' },
+            { src: 'https://cpunk.club/img/gallery/20250712_211337.jpg', alt: 'Late Evening Event', icon: '🌙' },
+            { src: 'https://cpunk.club/img/gallery/20250712_221154.jpg', alt: 'Night Event Activities', icon: '✨' },
+            { src: 'https://cpunk.club/img/gallery/20250712_223329.jpg', alt: 'Evening Celebration', icon: '🎉' },
+            { src: 'https://cpunk.club/img/gallery/TONY3877.JPG', alt: 'Special Event Moment', icon: '⭐' }
+        ];
+        
+        function createThumbnail(index) {
+            const thumb = document.createElement('div');
+            thumb.className = 'thumbnail';
+            thumb.setAttribute('data-index', index);
+            thumb.onclick = () => showGalleryImage(index);
+            
+            const img = document.createElement('img');
+            img.src = galleryImages[index].src;
+            img.alt = galleryImages[index].alt;
+            img.style.cssText = 'width: 100%; height: 100%; object-fit: contain; display: none;';
+            img.onerror = function() {
+                this.style.display = 'none';
+                this.nextElementSibling.style.display = 'flex';
+            };
+            img.onload = function() {
+                this.nextElementSibling.style.display = 'none';
+                this.style.display = 'block';
+            };
+            
+            const placeholder = document.createElement('div');
+            placeholder.style.cssText = 'width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; font-size: 0.8em; color: var(--text-muted);';
+            placeholder.innerHTML = `
+                <div style="font-size: 2em; margin-bottom: 5px;">${galleryImages[index].icon}</div>
+                <div>${galleryImages[index].alt}</div>
+            `;
+            
+            thumb.appendChild(img);
+            thumb.appendChild(placeholder);
+            return thumb;
+        }
+        
+        function updateThumbnails() {
+            const container = document.getElementById('thumbnails-container');
+            container.innerHTML = '';
+            
+            for (let i = 0; i < 3; i++) {
+                const imageIndex = (currentThumbnailStart + i) % galleryImages.length;
+                container.appendChild(createThumbnail(imageIndex));
+            }
+            
+            updateThumbnailSelection();
+        }
+        
+        function updateThumbnailSelection() {
+            document.querySelectorAll('.thumbnail').forEach((thumb) => {
+                const thumbIndex = parseInt(thumb.getAttribute('data-index'));
+                thumb.style.borderColor = thumbIndex === currentGalleryIndex ? 'var(--accent-primary)' : 'transparent';
+            });
+        }
+        
+        function showGalleryImage(index) {
+            currentGalleryIndex = index;
+            const mainImage = document.getElementById('gallery-main-image');
+            const placeholder = document.getElementById('gallery-placeholder');
+            const counter = document.getElementById('gallery-current');
+            
+            // Update main image
+            mainImage.src = galleryImages[index].src;
+            mainImage.alt = galleryImages[index].alt;
+            
+            // Try to load the image
+            mainImage.onload = function() {
+                placeholder.style.display = 'none';
+                mainImage.style.display = 'block';
+            };
+            
+            mainImage.onerror = function() {
+                placeholder.style.display = 'block';
+                mainImage.style.display = 'none';
+            };
+            
+            // Update counter
+            counter.textContent = index + 1;
+            
+            // Update thumbnails if current image is not visible
+            const visibleIndices = [];
+            for (let i = 0; i < 3; i++) {
+                visibleIndices.push((currentThumbnailStart + i) % galleryImages.length);
+            }
+            
+            if (!visibleIndices.includes(index)) {
+                currentThumbnailStart = Math.max(0, index - 1);
+                updateThumbnails();
+            } else {
+                updateThumbnailSelection();
+            }
+        }
+        
+        function galleryNext() {
+            const nextIndex = (currentGalleryIndex + 1) % galleryImages.length;
+            showGalleryImage(nextIndex);
+        }
+        
+        function galleryPrev() {
+            const prevIndex = (currentGalleryIndex - 1 + galleryImages.length) % galleryImages.length;
+            showGalleryImage(prevIndex);
+        }
+        
+        function thumbnailNext() {
+            currentThumbnailStart = (currentThumbnailStart + 3) % galleryImages.length;
+            updateThumbnails();
+        }
+        
+        function thumbnailPrev() {
+            currentThumbnailStart = (currentThumbnailStart - 3 + galleryImages.length) % galleryImages.length;
+            updateThumbnails();
+        }
+        
+        // Mobile menu toggle
+        document.querySelector('.mobile-menu-toggle').addEventListener('click', function() {
+            document.querySelector('.nav-menu').classList.toggle('active');
+        });
+        
+        // Initialize gallery
+        document.addEventListener('DOMContentLoaded', function() {
+            updateThumbnails();
+            showGalleryImage(0);
+            
+            // Keyboard navigation
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'ArrowRight') galleryNext();
+                if (e.key === 'ArrowLeft') galleryPrev();
+            });
+        });
+    </script>
+</body>
+</html>

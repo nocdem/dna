@@ -1,0 +1,1125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Legal & Compliance Framework – DNA-Messenger | CPUNK.IO</title>
+
+  <!-- Basic meta -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta
+    name="description"
+    content="Legal and compliance architecture of DNA-Messenger: decentralized user-controlled encrypted custody, jurisdictional independence, post-quantum encryption and regulatory alignment for enterprises and sovereign deployments."
+  />
+  <meta
+    name="keywords"
+    content="CPUNK, DNA-Messenger, legal, compliance, GDPR, ISO 27001, SOC 2, HIPAA, PCI-DSS, zero data custody, post-quantum messaging"
+  />
+  <meta name="author" content="CPUNK Protocol" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://cpunk.io/legal.html" />
+
+  <!-- Open Graph / Social -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://cpunk.io/">
+  <meta property="og:title" content="CPUNK — Post-Quantum Identity & Communication">
+  <meta property="og:description" content="Post-quantum identity and messaging protocol. DNA-Messenger: peer-to-peer, no metadata, NIST-standardized encryption (ML-KEM-1024, ML-DSA-87). Your keys, your identity.">
+  <meta property="og:image" content="https://cpunk.io/images/cpunk_card.jpg">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="https://cpunk.io/">
+  <meta name="twitter:title" content="CPUNK — Post-Quantum Identity & Communication">
+  <meta name="twitter:description" content="Post-quantum identity and messaging protocol. DNA-Messenger: peer-to-peer, no metadata, NIST-standardized encryption. Your keys, your identity.">
+  <meta name="twitter:image" content="https://cpunk.io/images/cpunk_card.jpg">
+  <meta name="twitter:site" content="@OfficialCpunk">
+
+  <!-- Optional Google Font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+
+  <style>
+    :root {
+      --bg: #050712;
+      --bg-alt: #090c1a;
+      --panel: #111426;
+      --panel-alt: #151832;
+      --accent: #00f0ff;
+      --accent-soft: rgba(0, 240, 255, 0.08);
+      --accent-strong: #ff2cd8;
+      --text-main: #f5f7ff;
+      --text-muted: #9aa4d4;
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.5);
+      --radius-lg: 20px;
+      --radius-xl: 28px;
+      --radius-pill: 999px;
+      --transition-fast: 150ms ease-out;
+      --nav-height: 72px;
+      --max-width: 1120px;
+
+      /* For possible inline styles from your holders script */
+      --space-3: 0.6rem;
+      --fw-bold: 700;
+      --fw-semibold: 600;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+        "Liberation Mono", "Courier New", monospace;
+      --fs-sm: 0.8rem;
+      --text-secondary: var(--text-muted);
+      --text-primary: var(--text-main);
+      --accent-primary: var(--accent);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html,
+    body {
+      height: 100%;
+      scroll-behavior: smooth;
+      max-width: 100%;
+      overflow-x: hidden;
+    }
+
+    body {
+      font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top left, #151734 0, #050712 60%);
+      color: var(--text-main);
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .page {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .wrap {
+      width: 100%;
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 0 1.25rem;
+    }
+
+    /* Header / nav */
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(12px);
+      background: linear-gradient(
+          to bottom,
+          rgba(5, 7, 18, 0.96),
+          rgba(5, 7, 18, 0.88),
+          transparent
+        );
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .nav {
+      height: var(--nav-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1.5rem;
+      position: relative;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    /* BRAND LOGO */
+    .brand-icon.q-core {
+      width: 48px;
+      height: 28px;
+      border-radius: 12px;
+      background:
+        linear-gradient(180deg, #111, #050712),
+        repeating-linear-gradient(45deg,
+          rgba(0,240,255,.15),
+          rgba(0,240,255,.15) 3px,
+          transparent 6px
+        );
+      box-shadow:
+        inset 0 0 10px rgba(0,240,255,.4),
+        0 0 16px #00f0ff88;
+      color: #00ffd5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+    }
+
+    .brand-text {
+      display: flex;
+      flex-direction: column;
+      line-height: 1.1;
+    }
+
+    .brand-name {
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      font-size: 0.95rem;
+      text-transform: uppercase;
+    }
+
+    .brand-tag {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .nav-menu {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      font-size: 0.9rem;
+    }
+
+    .nav-links a {
+      color: var(--text-muted);
+      padding-bottom: 2px;
+      border-bottom: 1px solid transparent;
+      transition: color var(--transition-fast),
+        border-bottom-color var(--transition-fast);
+    }
+
+    .nav-links a.active {
+      color: var(--text-main);
+      border-bottom-color: rgba(0, 240, 255, 0.9);
+    }
+
+    .dropdown a.active {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-main);
+    }
+
+    .nav-links a:hover {
+      color: var(--text-main);
+      border-bottom-color: rgba(0, 240, 255, 0.6);
+    }
+
+    .nav-cta {
+      display: flex;
+      align-items: center;
+      gap: 0.8rem;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.45rem;
+      padding: 0.5rem 1.2rem;
+      border-radius: var(--radius-pill);
+      border: 1px solid transparent;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      background: transparent;
+      color: var(--text-main);
+      transition: background var(--transition-fast), border var(--transition-fast),
+        transform var(--transition-fast), box-shadow var(--transition-fast),
+        color var(--transition-fast);
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: linear-gradient(
+        135deg,
+        var(--accent),
+        var(--accent-strong)
+      );
+      border-color: rgba(0, 240, 255, 0.7);
+      box-shadow: 0 12px 30px rgba(0, 240, 255, 0.3);
+      color: #050712;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 16px 40px rgba(0, 240, 255, 0.35);
+    }
+
+    .btn-ghost {
+      border-color: rgba(154, 164, 212, 0.7);
+      background: rgba(10, 12, 30, 0.7);
+    }
+
+    .btn-ghost:hover {
+      background: rgba(20, 24, 60, 0.9);
+      border-color: rgba(0, 240, 255, 0.7);
+    }
+
+    .mobile-menu-toggle {
+      display: none;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: rgba(7, 9, 25, 0.9);
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+
+    .mobile-menu-toggle span {
+      display: block;
+      width: 16px;
+      height: 2px;
+      border-radius: 999px;
+      background: #fff;
+      position: relative;
+    }
+
+    .mobile-menu-toggle span::before,
+    .mobile-menu-toggle span::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      width: 16px;
+      height: 2px;
+      border-radius: inherit;
+      background: inherit;
+    }
+
+    .mobile-menu-toggle span::before {
+      top: -5px;
+    }
+
+    .mobile-menu-toggle span::after {
+      top: 5px;
+    }
+
+    /* Dropdown */
+
+    .nav-item {
+      position: relative;
+    }
+
+    .nav-item > a {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+    }
+
+    .nav-item-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      cursor: pointer;
+      color: var(--text-muted);
+    }
+
+    .nav-item:hover .nav-item-label {
+      color: var(--text-main);
+    }
+
+    .nav-item .caret {
+      border: 4px solid transparent;
+      border-top-color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .dropdown {
+      position: absolute;
+      top: 110%;
+      left: 0;
+      min-width: 190px;
+      background: rgba(5, 7, 18, 0.98);
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 14px 30px rgba(0, 0, 0, 0.6);
+      padding: 0.4rem 0;
+      display: none;
+      z-index: 30;
+    }
+
+    .dropdown a {
+      display: block;
+      padding: 0.4rem 0.9rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .dropdown a:hover {
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-main);
+    }
+
+    .nav-item:hover .dropdown {
+      display: block;
+    }
+
+    /* Sections / layout */
+
+    main {
+      padding-bottom: 3rem;
+    }
+
+    section {
+      padding: 2.75rem 0;
+    }
+
+    /* Legal hero */
+
+    .hero {
+      padding: 3.2rem 0 2.2rem;
+    }
+
+    .hero-inner {
+      max-width: 720px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      padding: 0.15rem 0.55rem 0.15rem 0.2rem;
+      border-radius: var(--radius-pill);
+      background: radial-gradient(
+        circle at left,
+        rgba(0, 240, 255, 0.4),
+        transparent
+      );
+      border: 1px solid rgba(0, 240, 255, 0.35);
+      margin-bottom: 1rem;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .eyebrow-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 10px rgba(0, 240, 255, 0.9);
+    }
+
+    .eyebrow-label {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    .hero-title {
+      font-size: clamp(2rem, 3vw, 2.6rem);
+      line-height: 1.1;
+      margin-bottom: 0.8rem;
+      background: linear-gradient(130deg, #ffffff, #80f5ff, #ff9ce9);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .hero-subtitle {
+      font-size: 0.98rem;
+      color: var(--text-muted);
+      max-width: 40rem;
+    }
+
+    .hero-subtitle strong {
+      color: var(--text-main);
+      font-weight: 500;
+    }
+
+    /* Legal doc layout */
+
+    .doc-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(0, 1.1fr);
+      gap: 1.6rem;
+    }
+
+    .doc-main {
+      display: grid;
+      gap: 1rem;
+    }
+
+    .doc-section {
+      border-radius: var(--radius-lg);
+      background: radial-gradient(
+          circle at top left,
+          rgba(0, 240, 255, 0.06),
+          transparent 55%
+        ),
+        var(--panel);
+      border: 1px solid var(--border-subtle);
+      padding: 1.1rem 1rem;
+    }
+
+    .doc-section h2 {
+      font-size: 1rem;
+      margin-bottom: 0.4rem;
+      color: var(--accent);
+    }
+
+    .doc-section p {
+      font-size: 0.86rem;
+      color: var(--text-muted);
+      margin-bottom: 0.4rem;
+    }
+
+    .doc-section ul {
+      margin-left: 1.1rem;
+      margin-top: 0.2rem;
+      font-size: 0.84rem;
+      color: var(--text-muted);
+    }
+
+    .doc-section ul li {
+      margin-bottom: 0.18rem;
+    }
+
+    .doc-section ul li::marker {
+      color: var(--accent);
+    }
+
+    .doc-section.highlight {
+      background: radial-gradient(
+          circle at top right,
+          rgba(255, 44, 216, 0.12),
+          transparent 55%
+        ),
+        #0b0e23;
+      border-color: rgba(255, 255, 255, 0.16);
+    }
+
+    .doc-section.highlight h2 {
+      color: #ffffff;
+    }
+
+    .doc-secondary {
+      display: grid;
+      gap: 1rem;
+      align-content: flex-start;
+    }
+
+    .pill-card {
+      border-radius: var(--radius-xl);
+      background: radial-gradient(
+          circle at top,
+          rgba(128, 245, 255, 0.18),
+          transparent 60%
+        ),
+        rgba(5, 7, 18, 0.96);
+      border: 1px solid var(--border-subtle);
+      padding: 1rem 0.95rem;
+      box-shadow: var(--shadow-soft);
+      font-size: 0.84rem;
+      color: var(--text-muted);
+    }
+
+    .pill-label {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      color: var(--text-muted);
+      margin-bottom: 0.4rem;
+    }
+
+    .pill-title {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 0.3rem;
+    }
+
+    .pill-list {
+      list-style: none;
+      margin-top: 0.4rem;
+      display: grid;
+      gap: 0.25rem;
+    }
+
+    .pill-list li::before {
+      content: "▹";
+      margin-right: 0.35rem;
+      color: var(--accent);
+      font-size: 0.8rem;
+    }
+
+    .exec-quote {
+      font-size: 0.9rem;
+      color: var(--text-main);
+      margin-bottom: 0.2rem;
+    }
+
+    .exec-meta {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    /* CTA */
+
+    .cta {
+      border-radius: var(--radius-xl);
+      background: radial-gradient(circle at top, #292f7d, #050712);
+      border: 1px solid rgba(0, 240, 255, 0.25);
+      padding: 1.5rem 1.3rem;
+      display: grid;
+      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+      gap: 1.4rem;
+      align-items: center;
+      box-shadow: var(--shadow-soft);
+    }
+
+    .cta-title {
+      font-size: 1.1rem;
+      margin-bottom: 0.35rem;
+    }
+
+    .cta-text {
+      font-size: 0.86rem;
+      color: var(--text-muted);
+      max-width: 30rem;
+    }
+
+    .cta-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      justify-content: flex-end;
+    }
+
+    /* Footer */
+
+    footer {
+      padding: 1.8rem 0 2.2rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .footer-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: end;
+    }
+
+    .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.9rem;
+    }
+
+    .footer-links a {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+    }
+
+    .footer-links a:hover {
+      color: var(--accent);
+    }
+
+    /* Responsive */
+
+    @media (max-width: 900px) {
+      .doc-layout,
+      .cta {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .cta-actions {
+        justify-content: flex-start;
+      }
+    }
+
+    @media (max-width: 768px) {
+      .nav-menu {
+        display: none;
+        position: absolute;
+        top: var(--nav-height);
+        right: 0;
+        left: 0;
+        padding: 0.9rem 1rem 1rem;
+        border-radius: 14px;
+        background: rgba(5, 7, 18, 0.98);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.7rem;
+        z-index: 15;
+      }
+
+      .nav-menu.active {
+        display: flex;
+      }
+
+      .nav {
+        align-items: flex-start;
+      }
+
+      .nav-links {
+        flex-direction: column;
+        align-items: flex-start;
+        width: 100%;
+        gap: 0.75rem;
+      }
+
+      .nav-links a {
+        width: 100%;
+        padding: 0.25rem 0;
+      }
+
+      .nav-cta {
+        width: 100%;
+        justify-content: flex-start;
+        margin-top: 0.4rem;
+      }
+
+      .mobile-menu-toggle {
+        display: inline-flex;
+      }
+
+      .hero {
+        padding-top: 2.2rem;
+      }
+
+      .cta {
+        padding: 1.2rem 1rem;
+      }
+
+      .dropdown {
+        position: static;
+        box-shadow: none;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        margin-top: 0.3rem;
+      }
+
+      .nav-item:hover .dropdown {
+        display: none; /* On mobile we only show on click via the parent */
+      }
+
+      .nav-item.open .dropdown {
+        display: block;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .hero-title {
+        font-size: 1.8rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <!-- Header / nav -->
+    <header>
+      <div class="wrap">
+        <div class="nav">
+          <!-- Brand / Logo -->
+          <a href="/index.html" class="brand">
+            <div class="brand-icon q-core">DNA</div>
+            <div class="brand-text">
+              <span class="brand-name">CPUNK.IO</span>
+              <span class="brand-tag">Post-Quantum Identity & Messaging</span>
+            </div>
+          </a>
+
+          <!-- Mobile menu button -->
+          <button
+            class="mobile-menu-toggle"
+            aria-label="Toggle navigation"
+          >
+            <span></span>
+          </button>
+
+          <!-- Main navigation -->
+          <div class="nav-menu">
+            <nav class="nav-links">
+              <a href="/index.html">Home</a>
+
+              <!-- Products dropdown -->
+              <div class="nav-item" data-dropdown="products">
+                <div class="nav-item-label">
+                  <span>Products</span>
+                  <span class="caret"></span>
+                </div>
+                <div class="dropdown">
+                  <a href="/services/dna.html">DNA Identity</a>
+                  <a href="/products/dna-messenger.html">DNA-Messenger</a>
+                  <a href="/products/dht.html">DHT &amp; Bootstrap Nodes</a>
+                </div>
+              </div>
+
+              <a href="/whitepaper.html">Whitepaper</a>
+              <a href="/roadmap.html">Roadmap</a>
+
+              <!-- About dropdown -->
+              <div class="nav-item" data-dropdown="about">
+                <div class="nav-item-label">
+                  <span>About</span>
+                  <span class="caret"></span>
+                </div>
+                <div class="dropdown">
+                  <a href="/about.html">About CPUNK</a>
+                  <a href="/team.html">Team</a>
+                  <a href="/contact.html">Contact</a>
+                  <a href="/legal.html" class="active">Legal</a>
+                </div>
+              </div>
+            </nav>
+
+            <!-- Right-side CTA buttons -->
+            <div class="nav-cta">
+              <a
+                href="https://cpunk.club"
+                target="_blank"
+                rel="noreferrer"
+                class="btn btn-primary"
+              >
+                Open CPUNK.CLUB
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main id="top">
+      <!-- Hero -->
+      <section class="hero">
+        <div class="wrap">
+          <div class="hero-inner">
+            <div class="eyebrow">
+              <span class="eyebrow-dot"></span>
+              <span class="eyebrow-label">Legal & Compliance</span>
+              <span>Architecture-level positioning</span>
+            </div>
+            <h1 class="hero-title">Legal &amp; Compliance Framework for DNA-Messenger</h1>
+            <p class="hero-subtitle">
+              DNA-Messenger is <strong>cryptographic infrastructure</strong>, not a cloud messaging
+              service. It operates with zero centralized custody, no data harvesting and
+              post-quantum security, reducing regulatory exposure for enterprises,
+              governments and defense contractors.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Legal content -->
+      <section>
+        <div class="wrap">
+          <div class="doc-layout">
+            <!-- Main legal sections -->
+            <div class="doc-main">
+              <article class="doc-section">
+                <h2>1. Legal Classification</h2>
+                <p>
+                  DNA-Messenger is a communications protocol and cryptographic software system.
+                  It is not a telecommunications provider, cloud messaging platform or managed data service.
+                </p>
+                <p>
+                  The protocol operates as:
+                </p>
+                <ul>
+                  <li>Peer-to-peer software layer</li>
+                  <li>Cryptographic identity infrastructure</li>
+                  <li>Post-quantum secure messaging protocol</li>
+                  <li>Decentralized routing architecture</li>
+                </ul>
+                <p>
+                  No centralized message processing, content inspection or metadata indexing is performed.
+                </p>
+              </article>
+
+              <article class="doc-section">
+                <h2>2. Decentralized User-Controlled Custody</h2>
+                <p>
+                  DNA-Messenger is designed around a <strong>decentralized user-controlled encrypted custody model</strong>:
+                </p>
+                <ul>
+                  <li>No centralized message storage</li>
+                  <li>No server-side archives or logs</li>
+                  <li>Decentralized public key directory – all user data (contacts, settings) encrypted with AES-AEAD (keys derived via KEM)</li>
+                  <li>No metadata aggregation or analytics pipeline</li>
+                </ul>
+                <p>
+                  Data storage model:
+                </p>
+                <ul>
+                  <li>All data encrypted with AES-AEAD (keys derived via KEM) before storage</li>
+                  <li>Stored on decentralized DHT for multi-device sync</li>
+                  <li>Only the user can decrypt their own data</li>
+                  <li>No protocol-level visibility of content or identity</li>
+                </ul>
+              </article>
+
+              <article class="doc-section">
+                <h2>3. Privacy by Design</h2>
+                <p>
+                  DNA-Messenger enforces privacy through cryptography instead of policy documents.
+                  There are no hidden analytics or tracking systems inside the protocol.
+                </p>
+                <ul>
+                  <li>No phone numbers or emails required for identity</li>
+                  <li>No advertising IDs, fingerprinting or profiling</li>
+                  <li>No telemetry or background analytics</li>
+                  <li>No passive collection of behavioral data</li>
+                </ul>
+              </article>
+
+              <article class="doc-section">
+                <h2>4. Regulatory Exposure Reduction</h2>
+                <p>
+                  By removing centralized custody, DNA-Messenger reduces the regulatory burden under:
+                </p>
+                <ul>
+                  <li>GDPR (EU data protection and privacy)</li>
+                  <li>ISO/IEC 27001 (information security management)</li>
+                  <li>SOC 2 (security and confidentiality)</li>
+                  <li>HIPAA (healthcare data security)</li>
+                  <li>PCI-DSS (payment card industry data security)</li>
+                  <li>Financial communication and record-keeping obligations</li>
+                </ul>
+                <p>
+                  There is no central breach domain, no cloud audit scope and no third-party data processing exposure at the protocol level.
+                </p>
+              </article>
+
+              <article class="doc-section">
+                <h2>5. Jurisdictional Independence</h2>
+                <p>
+                  DNA-Messenger does not operate data centers, managed servers or cloud-hosted infrastructure.
+                  There is no fixed geographical location for message handling.
+                </p>
+                <ul>
+                  <li>No protocol-owned servers to subpoena, seize or compromise</li>
+                  <li>No cross-border data transfers performed by the protocol itself</li>
+                  <li>Routing is dynamic, peer-selected and operator-controlled</li>
+                </ul>
+              </article>
+
+              <article class="doc-section">
+                <h2>6. Encryption &amp; Lawful Access</h2>
+                <p>
+                  All DNA-Messenger traffic is end-to-end encrypted using post-quantum resistant cryptography.
+                </p>
+                <ul>
+                  <li>No master decryption keys</li>
+                  <li>No key escrow or recovery backdoors</li>
+                  <li>No administrator access to message content</li>
+                  <li>No protocol-level lawful intercept interface</li>
+                </ul>
+                <p>
+                  Lawful access, where required by domestic law, can only occur at the endpoint level under the control of the deploying organization or user.
+                </p>
+              </article>
+
+              <article class="doc-section">
+                <h2>7. Export Control Notice</h2>
+                <p>
+                  DNA-Messenger includes cryptographic functionality that may fall under national export control regimes.
+                  The protocol itself does not ship as a cloud service or managed product.
+                </p>
+                <p>
+                  Organizations deploying enterprise or white-label editions are responsible for:
+                </p>
+                <ul>
+                  <li>Export classification and licensing</li>
+                  <li>National cryptography registrations (where applicable)</li>
+                  <li>Compliance with regional regulations on strong encryption</li>
+                </ul>
+              </article>
+
+              <article class="doc-section">
+                <h2>8. Liability Model</h2>
+                <p>
+                  DNA-Messenger is provided as protocol software and reference implementation.
+                  The protocol authors:
+                </p>
+                <ul>
+                  <li>Do not operate live networks or messaging services</li>
+                  <li>Do not host, store or process user data</li>
+                  <li>Do not act as identity authorities for end-users</li>
+                </ul>
+                <p>
+                  Deploying organizations retain full responsibility for operational security, governance, compliance configuration and lawful use.
+                </p>
+              </article>
+
+              <article class="doc-section">
+                <h2>9. Intellectual Property</h2>
+                <p>
+                  DNA-Messenger consists of a protocol specification, software implementation and cryptographic integration framework.
+                </p>
+                <p>
+                  White-label and enterprise partners receive contractual rights to:
+                </p>
+                <ul>
+                  <li>Deploy and operate their own networks and bootstrap nodes</li>
+                  <li>Integrate the protocol into products and platforms</li>
+                  <li>Apply custom branding and identity namespaces</li>
+                </ul>
+              </article>
+
+              <article class="doc-section">
+                <h2>10. Neutrality Position</h2>
+                <p>
+                  DNA-Messenger is politically neutral and jurisdiction-agnostic. It does not embed policy, censorship or moderation logic into the protocol layer.
+                </p>
+                <ul>
+                  <li>No hard-coded content filters</li>
+                  <li>No geopolitical routing controls</li>
+                  <li>No opinionated governance decisions embedded in the stack</li>
+                </ul>
+                <p>
+                  Usage governance is handled by the organizations that deploy and operate DNA-Messenger-based networks.
+                </p>
+              </article>
+
+              <article class="doc-section highlight">
+                <h2>11. Disclaimer &amp; Executive Summary</h2>
+                <p class="exec-quote">
+                  DNA-Messenger is not a service provider – it is cryptographic infrastructure.
+                </p>
+                <p>
+                  There is no central authority that controls, stores or processes user messages.
+                  Enterprises and sovereign operators retain full custody of identities, keys and network topology.
+                </p>
+                <p>
+                  This legal and technical posture is designed to <strong>minimize regulatory exposure</strong> while maximizing
+                  control, sovereignty and post-quantum security for operators and their customers.
+                </p>
+              </article>
+            </div>
+
+            <!-- Side summary / enterprise framing -->
+            <aside class="doc-secondary" aria-label="Compliance summary and enterprise framing">
+              <div class="pill-card">
+                <div class="pill-label">Compliance Snapshot</div>
+                <div class="pill-title">Designed to reduce audit scope</div>
+                <p>
+                  DNA-Messenger can help organizations simplify their security and compliance posture by removing entire categories
+                  of central infrastructure from the risk surface.
+                </p>
+                <ul class="pill-list">
+                  <li>No cloud message stores to audit</li>
+                  <li>No vendor access to confidential communications</li>
+                  <li>No third-party analytics or telemetry feeds</li>
+                  <li>Cryptographic guarantees instead of policy-only promises</li>
+                </ul>
+              </div>
+
+              <div class="pill-card">
+                <div class="pill-label">Who Is This For?</div>
+                <div class="pill-title">Enterprise, Government &amp; Defense</div>
+                <p>
+                  This framework is intended for compliance teams, regulators, procurement officers and legal counsel evaluating
+                  DNA-Messenger for:
+                </p>
+                <ul class="pill-list">
+                  <li>Financial institutions and critical infrastructure</li>
+                  <li>Healthcare and regulated industries</li>
+                  <li>Government agencies and defense contractors</li>
+                  <li>Sovereign and white-label deployments</li>
+                </ul>
+              </div>
+
+              <div class="pill-card">
+                <div class="pill-label">Positioning</div>
+                <p class="exec-quote">
+                  “We do not outsource trust to third-party clouds. We operate our own cryptographic infrastructure.”
+                </p>
+                <p class="exec-meta">
+                  Recommended positioning for enterprises adopting DNA-Messenger as a strategic communications layer.
+                </p>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <!-- CTA -->
+      <section>
+        <div class="wrap">
+          <div class="cta">
+            <div>
+              <h2 class="cta-title">Need a deeper legal or compliance review?</h2>
+              <p class="cta-text">
+                The DNA-Messenger team can provide additional documentation for enterprise, government and defense evaluations –
+                including DPIA support, SOC/ISO mapping and white-label legal appendices.
+              </p>
+            </div>
+            <div class="cta-actions">
+              <a href="/whitepaper.html" class="btn btn-ghost">Read the Technical Whitepaper</a>
+              <a href="/contact.html" class="btn btn-primary">Contact for Enterprise Use</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer>
+      <div class="wrap">
+        <div class="footer-row">
+          <div>
+            © 2026 CPUNK Protocol – Quantum-safe, Decentralized, Community-driven.
+          </div>
+          <div class="footer-links">
+            <a href="/">Home</a>
+            <a href="/whitepaper.html">Whitepaper</a>
+            <a href="/roadmap.html">Roadmap</a>
+            <a href="/legal.html">Legal &amp; Compliance</a>
+            <a href="/team.html">Team</a>
+            <a href="/contact.html">Contact</a>
+            <a href="https://cpunk.club" target="_blank" rel="noreferrer">CPUNK.CLUB</a>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Core JavaScript (same pattern as other pages, just nav logic here) -->
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      const mobileToggle = document.querySelector('.mobile-menu-toggle');
+      const navMenu = document.querySelector('.nav-menu');
+
+      if (mobileToggle && navMenu) {
+        mobileToggle.addEventListener('click', function() {
+          navMenu.classList.toggle('active');
+        });
+      }
+
+      // On mobile, allow opening dropdowns by tapping label
+      document.querySelectorAll('.nav-item').forEach(function(item) {
+        const label = item.querySelector('.nav-item-label');
+        if (!label) return;
+
+        label.addEventListener('click', function(e) {
+          if (window.innerWidth <= 768) {
+            e.stopPropagation();
+            item.classList.toggle('open');
+          }
+        });
+      });
+    });
+  </script>
+</body>
+</html>

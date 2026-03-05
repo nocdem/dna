@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>CPUNK Whitepaper v1.0 – Historical Archive | CPUNK.IO</title>
+
+  <!-- Basic meta -->
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description"
+    content="CPUNK Whitepaper v1.0 (Historical Archive) – The world's first Quantum-Safe MEME Coin built on Cellframe blockchain with 100% community ownership."
+  />
+  <meta name="keywords"
+    content="CPUNK, whitepaper v1.0, quantum-safe, meme coin, community, tokenomics, historical"
+  />
+  <meta name="author" content="CPUNK Protocol" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://cpunk.io/whitepaper-v1.html" />
+
+  <!-- Open Graph / Social -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://cpunk.io/">
+  <meta property="og:title" content="CPUNK — Post-Quantum Identity & Communication">
+  <meta property="og:description" content="Post-quantum identity and messaging protocol. DNA-Messenger: peer-to-peer, no metadata, NIST-standardized encryption (ML-KEM-1024, ML-DSA-87). Your keys, your identity.">
+  <meta property="og:image" content="https://cpunk.io/images/cpunk_card.jpg">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="https://cpunk.io/">
+  <meta name="twitter:title" content="CPUNK — Post-Quantum Identity & Communication">
+  <meta name="twitter:description" content="Post-quantum identity and messaging protocol. DNA-Messenger: peer-to-peer, no metadata, NIST-standardized encryption. Your keys, your identity.">
+  <meta name="twitter:image" content="https://cpunk.io/images/cpunk_card.jpg">
+  <meta name="twitter:site" content="@OfficialCpunk">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+
+  <style>
+    :root {
+      --bg: #050712;
+      --bg-alt: #090c1a;
+      --panel: #111426;
+      --panel-alt: #171b36;
+      --accent: #00f0ff;
+      --accent-soft: rgba(0, 240, 255, 0.08);
+      --accent-strong: #ff2cd8;
+      --text-main: #f5f7ff;
+      --text-muted: #9aa4d4;
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.5);
+      --radius-lg: 18px;
+      --radius-xl: 26px;
+      --radius-pill: 999px;
+      --transition-fast: 150ms ease-out;
+      --nav-height: 72px;
+      --max-width: 1120px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html,
+    body {
+      height: 100%;
+      scroll-behavior: smooth;
+      max-width: 100%;
+      overflow-x: hidden;
+    }
+
+    body {
+      font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, #1a1d46 0, transparent 55%),
+        radial-gradient(circle at bottom right, #0d1025 0, #050712 55%);
+      color: var(--text-main);
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .page {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .wrap {
+      width: 100%;
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 0 1.25rem;
+    }
+
+    /* Header / nav */
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(12px);
+      background: linear-gradient(
+          to bottom,
+          rgba(5, 7, 18, 0.96),
+          rgba(5, 7, 18, 0.88),
+          transparent
+        );
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .nav {
+      height: var(--nav-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1.5rem;
+      position: relative;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .brand-icon.q-core {
+      width: 48px;
+      height: 28px;
+      border-radius: 12px;
+      background:
+        linear-gradient(180deg, #111, #050712),
+        repeating-linear-gradient(45deg,
+          rgba(0,240,255,.15),
+          rgba(0,240,255,.15) 3px,
+          transparent 6px
+        );
+      box-shadow:
+        inset 0 0 10px rgba(0,240,255,.4),
+        0 0 16px #00f0ff88;
+      color: #00ffd5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+    }
+
+    .brand-text {
+      display: flex;
+      flex-direction: column;
+      line-height: 1.1;
+    }
+
+    .brand-name {
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      font-size: 0.95rem;
+      text-transform: uppercase;
+    }
+
+    .brand-tag {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .nav-menu {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      font-size: 0.9rem;
+    }
+
+    .nav-links a {
+      color: var(--text-muted);
+      padding-bottom: 2px;
+      border-bottom: 1px solid transparent;
+      transition: color var(--transition-fast),
+        border-bottom-color var(--transition-fast);
+    }
+
+    .nav-links a:hover {
+      color: var(--text-main);
+      border-bottom-color: rgba(0, 240, 255, 0.6);
+    }
+
+    .nav-links a.active {
+      color: var(--text-main);
+      border-bottom-color: rgba(0, 240, 255, 0.9);
+    }
+
+    .dropdown a.active {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-main);
+    }
+
+    .nav-item {
+      position: relative;
+    }
+
+    .nav-item-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      cursor: pointer;
+      color: var(--text-muted);
+    }
+
+    .nav-item:hover .nav-item-label {
+      color: var(--text-main);
+    }
+
+    .caret {
+      border: 4px solid transparent;
+      border-top-color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .dropdown {
+      position: absolute;
+      top: 110%;
+      left: 0;
+      min-width: 190px;
+      background: rgba(5, 7, 18, 0.98);
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 14px 30px rgba(0, 0, 0, 0.6);
+      padding: 0.4rem 0;
+      display: none;
+      z-index: 30;
+    }
+
+    .dropdown a {
+      display: block;
+      padding: 0.4rem 0.9rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .dropdown a:hover {
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-main);
+    }
+
+    .nav-item:hover .dropdown {
+      display: block;
+    }
+
+    .nav-cta {
+      display: flex;
+      align-items: center;
+      gap: 0.8rem;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.45rem;
+      padding: 0.5rem 1.2rem;
+      border-radius: var(--radius-pill);
+      border: 1px solid transparent;
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      background: transparent;
+      color: var(--text-main);
+      transition: background var(--transition-fast), border var(--transition-fast),
+        transform var(--transition-fast), box-shadow var(--transition-fast),
+        color var(--transition-fast);
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: linear-gradient(
+        135deg,
+        var(--accent),
+        var(--accent-strong)
+      );
+      border-color: rgba(0, 240, 255, 0.7);
+      box-shadow: 0 10px 28px rgba(0, 240, 255, 0.3);
+      color: #050712;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 16px 38px rgba(0, 240, 255, 0.35);
+    }
+
+    .btn-ghost {
+      border-color: rgba(154, 164, 212, 0.7);
+      background: rgba(10, 12, 30, 0.7);
+    }
+
+    .btn-ghost:hover {
+      background: rgba(20, 24, 60, 0.9);
+      border-color: rgba(0, 240, 255, 0.7);
+    }
+
+    .mobile-menu-toggle {
+      display: none;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: rgba(7, 9, 25, 0.9);
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+
+    .mobile-menu-toggle span {
+      display: block;
+      width: 16px;
+      height: 2px;
+      border-radius: 999px;
+      background: #fff;
+      position: relative;
+    }
+
+    .mobile-menu-toggle span::before,
+    .mobile-menu-toggle span::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      width: 16px;
+      height: 2px;
+      border-radius: inherit;
+      background: inherit;
+    }
+
+    .mobile-menu-toggle span::before {
+      top: -5px;
+    }
+
+    .mobile-menu-toggle span::after {
+      top: 5px;
+    }
+
+    /* Hero */
+
+    .hero {
+      padding: 3.2rem 0 2.6rem;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.1fr);
+      gap: 2.4rem;
+      align-items: center;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      padding: 0.18rem 0.6rem 0.18rem 0.25rem;
+      border-radius: var(--radius-pill);
+      background: radial-gradient(
+        circle at left,
+        rgba(255, 44, 216, 0.4),
+        transparent
+      );
+      border: 1px solid rgba(255, 44, 216, 0.35);
+      margin-bottom: 1rem;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .eyebrow-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-strong);
+      box-shadow: 0 0 10px rgba(255, 44, 216, 0.9);
+    }
+
+    .eyebrow-label {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-weight: 600;
+      color: var(--text-main);
+      font-size: 0.74rem;
+    }
+
+    .hero h1 {
+      font-size: clamp(2.1rem, 3.3vw, 2.8rem);
+      line-height: 1.1;
+      margin-bottom: 0.8rem;
+    }
+
+    .hero-gradient {
+      background: linear-gradient(130deg, #ffffff, #80f5ff, #ff9ce9);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .hero-subtitle {
+      font-size: 0.98rem;
+      color: var(--text-muted);
+      max-width: 38rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .hero-subtitle strong {
+      color: var(--text-main);
+      font-weight: 500;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-bottom: 1.1rem;
+    }
+
+    .hero-panel {
+      border-radius: var(--radius-xl);
+      background: radial-gradient(circle at top, #262b69 0, #080a1a 45%);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: var(--shadow-soft);
+      padding: 1.3rem 1.2rem 1.4rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero-panel::before {
+      content: "";
+      position: absolute;
+      inset: -40%;
+      opacity: 0.08;
+      background-image: radial-gradient(
+        circle at top,
+        rgba(255, 44, 216, 1),
+        transparent 60%
+      );
+      mix-blend-mode: screen;
+      pointer-events: none;
+    }
+
+    .hero-panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.9rem;
+    }
+
+    .hero-chip {
+      padding: 0.18rem 0.6rem;
+      border-radius: var(--radius-pill);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: rgba(7, 10, 28, 0.9);
+    }
+
+    .hero-chip span {
+      font-weight: 600;
+      color: var(--accent-strong);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-size: 0.72rem;
+    }
+
+    .hero-panel-body {
+      font-size: 0.86rem;
+      color: var(--text-muted);
+    }
+
+    .hero-panel-body p + p {
+      margin-top: 0.4rem;
+    }
+
+    /* Sections */
+
+    section {
+      padding: 2.6rem 0;
+    }
+
+    section + section {
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .section-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 1.6rem;
+    }
+
+    .section-title {
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+
+    .section-kicker {
+      font-size: 0.78rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .section-description {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      max-width: 34rem;
+    }
+
+    .text-block {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      max-width: 50rem;
+      line-height: 1.7;
+    }
+
+    .text-block p + p {
+      margin-top: 0.8rem;
+    }
+
+    .text-block h3 {
+      font-size: 1.05rem;
+      color: var(--text-main);
+      margin: 1.5rem 0 0.6rem 0;
+    }
+
+    /* Cards / grids */
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1.1rem;
+    }
+
+    .card {
+      border-radius: var(--radius-lg);
+      background: radial-gradient(
+          circle at top,
+          rgba(0, 240, 255, 0.06),
+          transparent
+        ),
+        var(--panel);
+      border: 1px solid var(--border-subtle);
+      padding: 0.9rem;
+      font-size: 0.86rem;
+      color: var(--text-muted);
+    }
+
+    .card h3 {
+      font-size: 0.96rem;
+      margin-bottom: 0.15rem;
+      color: var(--text-main);
+    }
+
+    .card-sub {
+      font-size: 0.76rem;
+      color: rgba(154, 164, 212, 0.9);
+      margin-bottom: 0.4rem;
+    }
+
+    .card p {
+      font-size: 0.86rem;
+      line-height: 1.5;
+    }
+
+    .token-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 0.6rem;
+      margin: 1rem 0;
+    }
+
+    .token-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.6rem 0.8rem;
+      background: rgba(0, 240, 255, 0.06);
+      border-radius: 8px;
+      border: 1px solid rgba(0, 240, 255, 0.15);
+    }
+
+    .token-label {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+    }
+
+    .token-value {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    /* CTA */
+
+    .cta {
+      border-radius: var(--radius-xl);
+      background: radial-gradient(circle at top, #292f7d, #050712);
+      border: 1px solid rgba(0, 240, 255, 0.25);
+      padding: 1.5rem 1.3rem;
+      display: grid;
+      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+      gap: 1.4rem;
+      align-items: center;
+      box-shadow: var(--shadow-soft);
+      font-size: 0.9rem;
+    }
+
+    .cta-title {
+      font-size: 1.15rem;
+      margin-bottom: 0.4rem;
+    }
+
+    .cta-text {
+      font-size: 0.87rem;
+      color: var(--text-muted);
+      max-width: 30rem;
+    }
+
+    .cta-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      justify-content: flex-end;
+    }
+
+    /* Footer */
+
+    footer {
+      padding: 1.7rem 0 2.2rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .footer-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: center;
+    }
+
+    .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.9rem;
+    }
+
+    .footer-links a {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+    }
+
+    .footer-links a:hover {
+      color: var(--accent);
+    }
+
+    /* Responsive */
+
+    @media (max-width: 900px) {
+      .hero-grid,
+      .cta,
+      .cards {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .cta-actions {
+        justify-content: flex-start;
+      }
+    }
+
+    @media (max-width: 768px) {
+      .nav {
+        align-items: flex-start;
+      }
+
+      .nav-menu {
+        display: none;
+        position: absolute;
+        top: var(--nav-height);
+        right: 0;
+        left: 0;
+        padding: 0.9rem 1rem 1rem;
+        border-radius: 14px;
+        background: rgba(5, 7, 18, 0.98);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.7rem;
+        z-index: 15;
+      }
+
+      .nav-menu.active {
+        display: flex;
+      }
+
+      .nav-links {
+        flex-direction: column;
+        align-items: flex-start;
+        width: 100%;
+        gap: 0.75rem;
+      }
+
+      .nav-links a {
+        width: 100%;
+        padding: 0.25rem 0;
+      }
+
+      .nav-cta {
+        width: 100%;
+        justify-content: flex-start;
+        margin-top: 0.4rem;
+      }
+
+      .mobile-menu-toggle {
+        display: inline-flex;
+      }
+
+      .hero {
+        padding-top: 2.1rem;
+      }
+
+      .dropdown {
+        position: static;
+        box-shadow: none;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        margin-top: 0.3rem;
+      }
+
+      .nav-item:hover .dropdown {
+        display: none;
+      }
+
+      .nav-item.open .dropdown {
+        display: block;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .hero h1 {
+        font-size: 1.9rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <!-- Header / nav -->
+    <header>
+      <div class="wrap">
+        <div class="nav">
+          <!-- Brand / Logo -->
+          <a href="/index.html" class="brand">
+            <div class="brand-icon q-core">DNA</div>
+            <div class="brand-text">
+              <span class="brand-name">CPUNK.IO</span>
+              <span class="brand-tag">Post-Quantum Identity &amp; Messaging</span>
+            </div>
+          </a>
+
+          <!-- Mobile menu button -->
+          <button
+            class="mobile-menu-toggle"
+            aria-label="Toggle navigation"
+          >
+            <span></span>
+          </button>
+
+          <!-- Main navigation -->
+          <div class="nav-menu">
+            <nav class="nav-links">
+              <a href="/index.html">Home</a>
+
+              <!-- Products dropdown -->
+              <div class="nav-item" data-dropdown="products">
+                <div class="nav-item-label">
+                  <span>Products</span>
+                  <span class="caret"></span>
+                </div>
+                <div class="dropdown">
+                  <a href="/services/dna.html">DNA Identity</a>
+                  <a href="/products/dna-messenger.html">DNA-Messenger</a>
+                  <a href="/products/dht.html">DHT &amp; Bootstrap Nodes</a>
+                </div>
+              </div>
+
+              <a href="/whitepaper.html">Whitepaper</a>
+              <a href="/roadmap.html">Roadmap</a>
+
+              <!-- About dropdown -->
+              <div class="nav-item" data-dropdown="about">
+                <div class="nav-item-label">
+                  <span>About</span>
+                  <span class="caret"></span>
+                </div>
+                <div class="dropdown">
+                  <a href="/about.html">About CPUNK</a>
+                  <a href="/team.html">Team</a>
+                  <a href="/contact.html">Contact</a>
+                  <a href="/legal.html">Legal</a>
+                </div>
+              </div>
+            </nav>
+
+            <!-- Right-side CTA buttons -->
+            <div class="nav-cta">
+              <a
+                href="https://cpunk.club"
+                target="_blank"
+                rel="noreferrer"
+                class="btn btn-primary"
+              >
+                Open CPUNK.CLUB
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main id="top">
+      <!-- Hero / intro -->
+      <section class="hero">
+        <div class="wrap">
+          <div class="hero-grid">
+            <div>
+              <div class="eyebrow">
+                <span class="eyebrow-dot"></span>
+                <span class="eyebrow-label">Historical Archive</span>
+                <span>Whitepaper v1.0</span>
+              </div>
+
+              <h1>
+                <span class="hero-gradient">CPUNK Whitepaper v1.0</span>
+              </h1>
+
+              <p class="hero-subtitle">
+                The <strong>original whitepaper</strong> for CPUNK – the world's first
+                Quantum-Safe MEME Coin built on Cellframe blockchain with
+                <strong>100% community ownership</strong>. This document is preserved
+                as a historical archive.
+              </p>
+
+              <div class="hero-actions">
+                <a href="/whitepaper.html" class="btn btn-primary">
+                  View current Whitepaper v2.x
+                </a>
+                <a href="#introduction" class="btn btn-ghost">
+                  Read v1.0 below
+                </a>
+              </div>
+            </div>
+
+            <aside class="hero-panel" aria-label="Archive notice">
+              <div class="hero-panel-header">
+                <div class="hero-chip">
+                  <span>Archive</span>
+                  Historical document
+                </div>
+              </div>
+
+              <div class="hero-panel-body">
+                <p>
+                  This is the <strong>original v1.0 whitepaper</strong> from CPUNK's
+                  launch as a meme coin. The project has since evolved into a
+                  comprehensive <strong>post-quantum identity protocol</strong>.
+                </p>
+                <p style="margin-top:0.6rem;">
+                  For current protocol specifications, see
+                  <a href="/whitepaper.html" style="color:var(--accent);">Whitepaper v2.x</a>.
+                </p>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <!-- Introduction -->
+      <section id="introduction">
+        <div class="wrap">
+          <div class="section-header">
+            <div>
+              <div class="section-kicker">Section 1</div>
+              <h2 class="section-title">Introduction</h2>
+            </div>
+          </div>
+
+          <div class="text-block">
+            <h3>1.1 The Need for Community-Centric Projects</h3>
+            <p>
+              ChipPunk (CPUNK) is a community-driven meme token built on the Cellframe
+              blockchain. It addresses common concerns of early-stage blockchain
+              projects—inequitable token distribution, stealth development funds, and
+              large investor dominance—by ensuring <strong>100% community ownership</strong>.
+              All CPUNK tokens enter the market transparently, without any developer or
+              VC allocations.
+            </p>
+            <p>
+              This approach fosters organic growth and trust by allowing community members
+              to shape the project's direction through open governance and a fair token
+              release schedule. By operating on Cellframe's quantum-safe network, CPUNK
+              aligns community-driven principles with cutting-edge blockchain infrastructure.
+            </p>
+
+            <h3>1.2 Why Cellframe?</h3>
+            <p>
+              Cellframe offers a quantum-resistant architecture designed to thwart emerging
+              threats posed by quantum computing. Its scalable Global Database (GDB)
+              underpins CPUNK's token economy and ensures users can transact, vote, and
+              interact securely well into the quantum era. CPUNK takes advantage of
+              Cellframe's DEX for transparent price discovery and seamless token trades.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tokenomics -->
+      <section id="tokenomics">
+        <div class="wrap">
+          <div class="section-header">
+            <div>
+              <div class="section-kicker">Section 2</div>
+              <h2 class="section-title">Tokenomics &amp; Distribution</h2>
+            </div>
+          </div>
+
+          <div class="text-block">
+            <h3>2.1 Token Supply and Allocation</h3>
+          </div>
+
+          <div class="token-grid" style="margin-bottom:1.5rem;">
+            <div class="token-item">
+              <span class="token-label">Total Supply</span>
+              <span class="token-value">1,000,000,000 CPUNK</span>
+            </div>
+            <div class="token-item">
+              <span class="token-label">Max Supply</span>
+              <span class="token-value">1,000,000,000 CPUNK</span>
+            </div>
+            <div class="token-item">
+              <span class="token-label">Inflation</span>
+              <span class="token-value">None – Fixed Supply</span>
+            </div>
+            <div class="token-item">
+              <span class="token-label">Community</span>
+              <span class="token-value">100%</span>
+            </div>
+            <div class="token-item">
+              <span class="token-label">Team/Founders</span>
+              <span class="token-value">0%</span>
+            </div>
+            <div class="token-item">
+              <span class="token-label">Investors</span>
+              <span class="token-value">0%</span>
+            </div>
+          </div>
+
+          <div class="text-block">
+            <h3>2.2 Distribution Model</h3>
+            <p>
+              CPUNK launched on the Cellframe DEX in 10 distinct orders, each representing
+              10% of the total supply (100M tokens/order). The initial order was set at
+              1 CPUNK = 0.0001 CELL, with subsequent orders priced 10% higher than the previous.
+            </p>
+            <p>
+              By releasing two orders per week over five weeks, the entire 1B supply was
+              distributed, ensuring a fair entry for early participants, transparent
+              incremental price discovery, and a steady flow of tokens to the market.
+            </p>
+
+            <h3>2.3 Use of Funds</h3>
+            <p>
+              A significant portion of proceeds from CPUNK's token distribution funded the
+              first Cellframe community party on July 12, 2025—celebrating the Cellframe
+              mainnet's birthday. The event was capped at 1,000 attendees, each required to
+              hold at least 1 million CPUNK to participate, with free entrance, food, and drinks.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Governance -->
+      <section id="governance">
+        <div class="wrap">
+          <div class="section-header">
+            <div>
+              <div class="section-kicker">Section 3</div>
+              <h2 class="section-title">Governance Model</h2>
+            </div>
+          </div>
+
+          <div class="text-block">
+            <h3>3.1 Community Proposals</h3>
+            <p>
+              CPUNK embraces decentralized decision-making with a system wherein any holder
+              above a set threshold can submit proposals. During the defined voting window,
+              token holders vote in proportion to their holdings. Proposals that pass are
+              executed on-chain, ensuring trustless implementation.
+            </p>
+
+            <h3>3.2 Transparency &amp; Accountability</h3>
+            <p>
+              All critical financial and developmental decisions reside on-chain, tied to
+              immutable records. CPUNK's open-source codebase welcomes ongoing review and
+              collaboration from the community, reinforcing its commitment to accountability
+              and collective governance.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Conclusion -->
+      <section id="conclusion">
+        <div class="wrap">
+          <div class="section-header">
+            <div>
+              <div class="section-kicker">Section 4</div>
+              <h2 class="section-title">Conclusion</h2>
+            </div>
+          </div>
+
+          <div class="text-block">
+            <p>
+              ChipPunk (CPUNK) demonstrated the power of a wholly community-driven token
+              in a rapidly advancing blockchain ecosystem. By aligning fair, transparent
+              distribution with quantum-resistant security, CPUNK exemplified best practices
+              in decentralized finance and community building.
+            </p>
+            <p>
+              The project has since evolved beyond a meme coin into a comprehensive
+              <strong>post-quantum identity and messaging protocol</strong>. See the
+              current <a href="/whitepaper.html" style="color:var(--accent);">Whitepaper v2.x</a>
+              for the latest protocol specifications.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- CTA to v2 -->
+      <section id="upgrade">
+        <div class="wrap">
+          <div class="cta">
+            <div>
+              <h2 class="cta-title">CPUNK has evolved</h2>
+              <p class="cta-text">
+                From meme coin to post-quantum identity protocol. The v2.x whitepaper
+                covers DNA identities, DNA-Messenger, Proof of Humanity, and the full
+                protocol stack.
+              </p>
+            </div>
+            <div class="cta-actions">
+              <a href="/whitepaper.html" class="btn btn-primary">
+                Read Whitepaper v2.x
+              </a>
+              <a href="/products/dna-messenger.html" class="btn btn-ghost">
+                Download DNA-Messenger
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer>
+      <div class="wrap">
+        <div class="footer-row">
+          <div>
+            &copy; 2026 CPUNK Protocol – Quantum-safe, Decentralized, Community-driven.
+          </div>
+          <div class="footer-links">
+            <a href="/">Home</a>
+            <a href="/whitepaper.html">Whitepaper v2.x</a>
+            <a href="/whitepaper-v1.html">Whitepaper v1.0</a>
+            <a href="/roadmap.html">Roadmap</a>
+            <a href="/legal.html">Legal &amp; Compliance</a>
+            <a href="/team.html">Team</a>
+            <a href="/contact.html">Contact</a>
+            <a href="https://cpunk.club" target="_blank" rel="noreferrer">CPUNK.CLUB</a>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Minimal JS for mobile nav + dropdowns -->
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const mobileToggle = document.querySelector('.mobile-menu-toggle');
+      const navMenu = document.querySelector('.nav-menu');
+
+      if (mobileToggle && navMenu) {
+        mobileToggle.addEventListener('click', function () {
+          navMenu.classList.toggle('active');
+        });
+      }
+
+      // Mobile dropdown handling
+      const dropdownItems = document.querySelectorAll('.nav-item');
+
+      dropdownItems.forEach(item => {
+        const label = item.querySelector('.nav-item-label');
+        if (!label) return;
+
+        label.addEventListener('click', function (e) {
+          if (window.innerWidth <= 768) {
+            e.stopPropagation();
+            item.classList.toggle('open');
+          }
+        });
+      });
+    });
+  </script>
+</body>
+</html>

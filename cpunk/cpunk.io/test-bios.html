@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test - bios Profile</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .profile-container {
+            max-width: 1000px;
+            margin: 100px auto 0;
+            padding: 2rem;
+        }
+        
+        .profile-nickname {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+            font-family: 'Orbitron', monospace;
+        }
+        
+        .secondary-nickname {
+            font-size: 1.5rem !important;
+            color: var(--text-secondary) !important;
+            margin-top: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="profile-container">
+        <h1>Test Page</h1>
+        <div id="test-output">Loading...</div>
+    </div>
+
+    <script>
+        async function testBiosData() {
+            const output = document.getElementById('test-output');
+            output.innerHTML = 'Fetching data...';
+            
+            try {
+                const response = await fetch('dna-proxy.php?lookup=bios');
+                const text = await response.text();
+                console.log('Raw response:', text);
+                
+                const data = JSON.parse(text);
+                console.log('Parsed data:', data);
+                
+                if (data.status_code === 0 && data.response_data) {
+                    const registeredNames = data.response_data.registered_names || {};
+                    const nicknames = Object.keys(registeredNames);
+                    
+                    console.log('Registered names:', registeredNames);
+                    console.log('Nicknames array:', nicknames);
+                    
+                    let html = '<h2>Found ' + nicknames.length + ' DNA names:</h2>';
+                    
+                    nicknames.forEach((nickname, index) => {
+                        const isPrimary = index === 0;
+                        html += `<div class="profile-nickname${isPrimary ? '' : ' secondary-nickname'}">${nickname}</div>`;
+                        console.log(`Added nickname: ${nickname} (primary: ${isPrimary})`);
+                    });
+                    
+                    html += '<h3>Raw data:</h3><pre>' + JSON.stringify(registeredNames, null, 2) + '</pre>';
+                    
+                    output.innerHTML = html;
+                } else {
+                    output.innerHTML = 'Error: ' + JSON.stringify(data);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                output.innerHTML = 'Error: ' + error.message;
+            }
+        }
+        
+        document.addEventListener('DOMContentLoaded', testBiosData);
+    </script>
+</body>
+</html>
