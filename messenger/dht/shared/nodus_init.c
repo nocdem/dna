@@ -312,6 +312,11 @@ int nodus_messenger_poll(int timeout_ms) {
     return nodus_singleton_poll(timeout_ms);
 }
 
+void nodus_messenger_force_disconnect(void) {
+    if (!g_initialized) return;
+    nodus_singleton_force_disconnect();
+}
+
 bool nodus_messenger_wait_for_ready(int timeout_ms) {
     int elapsed = 0;
     while (!nodus_messenger_is_ready() && elapsed < timeout_ms) {

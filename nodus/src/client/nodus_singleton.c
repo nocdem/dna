@@ -58,6 +58,11 @@ void nodus_singleton_close(void) {
     g_initialized = false;
 }
 
+void nodus_singleton_force_disconnect(void) {
+    if (!g_initialized) return;
+    nodus_client_force_disconnect(&g_client);
+}
+
 void nodus_singleton_lock(void) {
 #ifdef _WIN32
     ensure_cs();

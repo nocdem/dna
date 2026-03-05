@@ -1436,9 +1436,13 @@ void dna_engine_destroy(dna_engine_t *engine) {
     }
     pthread_mutex_unlock(&g_engine_global_mutex);
 
-    /* v0.6.111: Memory barrier - allow in-flight DHT callbacks to complete.
-     * DHT callbacks run on the Nodus callback thread and check shutdown_requested.
-     * 20ms is enough for callbacks to see the flag and exit cleanly. */
+    /* v0.9.7: Force-disconnect TCP to interrupt any blocking nodus operations.
+     * Background threads (setup_listeners, stabilization_retry, heartbeat) may be
+     * blocked inside nodus_ops calls (wait_response → epoll_wait). Closing the
+     * socket makes these return immediately, so thread joins complete quickly. */
+    nodus_messenger_force_disconnect();
+
+    /* Brief barrier to let in-flight callbacks see shutdown_requested. */
     struct timespec barrier_sleep = { 0, 20 * 1000000L };  /* 20ms */
     nanosleep(&barrier_sleep, NULL);
 
@@ -1480,9 +1484,7 @@ void dna_engine_destroy(dna_engine_t *engine) {
                 int rc = pthread_cond_timedwait(&engine->background_thread_exit_cond,
                                                 &engine->background_threads_mutex, &timeout);
                 if (rc == ETIMEDOUT) {
-                    QGP_LOG_WARN(LOG_TAG, "setup_listeners thread join timeout, detaching");
-                    pthread_detach(engine->setup_listeners_thread);
-                    join_setup = false;  /* Skip pthread_join below */
+                    QGP_LOG_WARN(LOG_TAG, "setup_listeners thread join timeout");
                     break;
                 }
             }
@@ -1494,9 +1496,7 @@ void dna_engine_destroy(dna_engine_t *engine) {
                 int rc = pthread_cond_timedwait(&engine->background_thread_exit_cond,
                                                 &engine->background_threads_mutex, &timeout);
                 if (rc == ETIMEDOUT) {
-                    QGP_LOG_WARN(LOG_TAG, "stabilization_retry thread join timeout, detaching");
-                    pthread_detach(engine->stabilization_retry_thread);
-                    join_stab = false;  /* Skip pthread_join below */
+                    QGP_LOG_WARN(LOG_TAG, "stabilization_retry thread join timeout");
                     break;
                 }
             }

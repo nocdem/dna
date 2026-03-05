@@ -70,6 +70,13 @@ void nodus_messenger_set_status_callback(nodus_messenger_status_cb_t cb, void *u
 int nodus_messenger_poll(int timeout_ms);
 
 /**
+ * Force-disconnect TCP to interrupt blocking nodus operations.
+ * Call before joining threads that may be blocked on nodus ops.
+ * Does not free memory — call nodus_messenger_close() later for cleanup.
+ */
+void nodus_messenger_force_disconnect(void);
+
+/**
  * Wait for the singleton to become ready (polling).
  * @param timeout_ms  Maximum wait time in milliseconds
  * @return true if ready, false if timed out

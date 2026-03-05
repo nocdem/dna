@@ -169,6 +169,13 @@ nodus_client_state_t nodus_client_state(const nodus_client_t *client);
  */
 void nodus_client_close(nodus_client_t *client);
 
+/**
+ * Force-disconnect the TCP socket to interrupt blocking operations.
+ * Closes the socket fd but does NOT free any memory.
+ * Use before joining threads that may be blocked on nodus ops.
+ */
+void nodus_client_force_disconnect(nodus_client_t *client);
+
 /* ── DHT Operations ─────────────────────────────────────────────── */
 
 /**

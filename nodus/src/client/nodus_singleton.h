@@ -61,6 +61,12 @@ const nodus_identity_t *nodus_singleton_identity(void);
 void nodus_singleton_close(void);
 
 /**
+ * Force-disconnect TCP to interrupt blocking operations.
+ * Does not free memory. Use before joining threads that may be blocked.
+ */
+void nodus_singleton_force_disconnect(void);
+
+/**
  * Lock/unlock the singleton mutex.
  * Must be held around any sequence of nodus_client_* calls
  * (send request + wait response) to prevent concurrent access.

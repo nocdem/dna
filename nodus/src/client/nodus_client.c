@@ -18,6 +18,12 @@
 
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+  #include <winsock2.h>
+#else
+  #include <unistd.h>
+  #include <sys/socket.h>
+#endif
 
 #include "crypto/utils/qgp_log.h"
 #define LOG_TAG "NODUS_CLIENT"
@@ -425,6 +431,23 @@ bool nodus_client_is_ready(const nodus_client_t *client) {
 
 nodus_client_state_t nodus_client_state(const nodus_client_t *client) {
     return client ? client->state : NODUS_CLIENT_DISCONNECTED;
+}
+
+void nodus_client_force_disconnect(nodus_client_t *client) {
+    if (!client || !client->conn) return;
+    nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)client->conn;
+    if (conn->fd >= 0) {
+#ifdef _WIN32
+        shutdown(conn->fd, SD_BOTH);
+        closesocket(conn->fd);
+#else
+        shutdown(conn->fd, SHUT_RDWR);
+        close(conn->fd);
+#endif
+        conn->fd = -1;
+    }
+    client->conn = NULL;
+    client->state = NODUS_CLIENT_DISCONNECTED;
 }
 
 void nodus_client_close(nodus_client_t *client) {
