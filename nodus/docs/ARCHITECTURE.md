@@ -858,15 +858,31 @@ nodus_client_t *nodus_singleton_get(void);
 bool nodus_singleton_is_ready(void);
 int  nodus_singleton_poll(int timeout_ms);
 void nodus_singleton_close(void);
-void nodus_singleton_lock(void);    // pthread_mutex_lock
-void nodus_singleton_unlock(void);  // pthread_mutex_unlock
 ```
 
-### Protocol Buffer
+### Concurrent Request Model (v0.5.5+)
 
-The client uses a 256 KB static buffer (`g_proto_buf`) for building protocol messages.
-This is sufficient for the maximum value payload (1 MB) plus CBOR encoding and Dilithium5
-signature overhead.
+The client supports up to 16 concurrent in-flight requests on a single TCP connection.
+Each request is dispatched by transaction ID (`txn_id`) and uses per-request malloc'd
+buffers instead of a shared static buffer.
+
+**Internal concurrency primitives:**
+- `nodus_pending_t pending[16]` — per-request response slots matched by `txn_id`
+- `pending_mutex` — protects slot allocation/deallocation
+- `send_mutex` — serializes TCP writes (wbuf is not thread-safe)
+- `poll_mutex` — serializes `epoll_wait` calls
+- `_Atomic uint32_t next_txn` — lock-free transaction ID generation
+
+**Request flow:**
+1. Caller allocates buffer (`malloc(CLIENT_BUF_SIZE)`) and pending slot (`alloc_pending`)
+2. Encodes CBOR request into buffer with unique `txn_id`
+3. Sends via `send_request()` (mutex-protected TCP write)
+4. Calls `wait_response(client, req, timeout)` — polls for this specific slot's `ready` flag
+5. `client_on_frame()` dispatches incoming responses to matching pending slot by `txn_id`
+6. Caller extracts result and frees slot (`free_pending`)
+
+This eliminates the serialization bottleneck where message sends would queue behind
+startup sync operations (previously 9-31s delay on Android).
 
 ---
 
@@ -880,7 +896,8 @@ messenger's application-level concepts to the raw client SDK.
 **Source:** `messenger/dht/shared/nodus_ops.c`
 
 Provides a simplified API that handles key hashing, value creation, signing, and listener
-dispatch. All operations are serialized via `nodus_singleton_lock/unlock`.
+dispatch. Operations are thread-safe — the underlying nodus client supports concurrent
+requests internally (up to 16 in-flight on a single TCP connection).
 
 **Key functions:**
 

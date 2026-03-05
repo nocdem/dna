@@ -102,7 +102,7 @@ Three production bootstrap servers run `dna-nodus`:
 
 ### 3.1 Nodus Operations (nodus_ops.h/c)
 
-The DHT interface layer wrapping the Nodus v5 client singleton. All functions use the nodus singleton internally -- no explicit context parameter needed.
+The DHT interface layer wrapping the Nodus v5 client singleton. All functions use the nodus singleton internally — no explicit context parameter needed. The client supports concurrent requests (up to 16 in-flight), so multiple threads can call nodus_ops functions simultaneously without external locking.
 
 #### Callback Types
 
