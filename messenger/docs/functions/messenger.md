@@ -181,7 +181,7 @@ Database-level encryption (SQLCipher) planned for future.
 | Function | Description |
 |----------|-------------|
 | `int message_backup_save(ctx, sender, recipient, plaintext, sender_fp, timestamp, is_outgoing, group_id, message_type, offline_seq)` | Save plaintext message to local backup (v14) |
-| `bool message_backup_exists(ctx, sender_fp, recipient, timestamp)` | Check if message exists (v14: by sender_fp+recipient+timestamp) |
+| `bool message_backup_exists(ctx, content_hash)` | Check if message exists (v16: by SHA3-256 content hash) |
 | `int message_backup_delete(message_backup_context_t*, int)` | Delete message by ID |
 | `void message_backup_free_messages(backup_message_t*, int)` | Free message array |
 

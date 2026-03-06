@@ -16,6 +16,7 @@
 #include <errno.h>
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_sha3.h"
 
 #define LOG_TAG "MSG_BACKUP"
 
@@ -29,10 +30,11 @@ struct message_backup_context {
 };
 
 /**
- * Database Schema (v15)
+ * Database Schema (v16)
  *
  * v14: PLAINTEXT storage - decryption happens at receive/send time
  * v15: Simplified 4-state status, removed offline_seq table (no watermarks)
+ * v16: Content hash dedup (SHA3-256 of sender+recipient+plaintext+timestamp)
  *
  * This database contains ONLY direct messages between users.
  * Group data (groups, members, GEKs, group messages) is in groups.db.
@@ -67,7 +69,8 @@ static const char *SCHEMA_SQL =
     "  group_id INTEGER DEFAULT 0,"       // 0=direct message, >0=group ID (Phase 5.2)
     "  message_type INTEGER DEFAULT 0,"   // 0=chat, 1=group_invitation (Phase 6.2)
     "  invitation_status INTEGER DEFAULT 0,"  // 0=pending, 1=accepted, 2=declined (Phase 6.2)
-    "  retry_count INTEGER DEFAULT 0"     // Send retry attempts
+    "  retry_count INTEGER DEFAULT 0,"    // Send retry attempts
+    "  content_hash TEXT"                 // v16: SHA3-256 dedup hash (64 hex chars)
     ");"
     ""
     "CREATE INDEX IF NOT EXISTS idx_sender ON messages(sender);"
@@ -80,7 +83,7 @@ static const char *SCHEMA_SQL =
     "  value TEXT"
     ");"
     ""
-    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '15');";
+    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '16');";
 
 /**
  * Get database path
@@ -110,6 +113,49 @@ static int get_db_path(const char *identity, char *path_out, size_t path_len) {
     // v0.3.0: Database path: <data_dir>/db/messages.db (flat structure)
     snprintf(path_out, path_len, "%s/messages.db", db_dir);
     return 0;
+}
+
+/**
+ * Compute content hash for dedup (SHA3-256 of sender_fp + recipient + plaintext + timestamp)
+ */
+static void compute_content_hash(const char *sender_fp, const char *recipient,
+                                  const char *plaintext, time_t timestamp,
+                                  char hex_out[QGP_SHA3_256_HEX_LENGTH]) {
+    char ts_str[32];
+    snprintf(ts_str, sizeof(ts_str), "%lld", (long long)timestamp);
+
+    size_t sf_len = sender_fp ? strlen(sender_fp) : 0;
+    size_t r_len  = recipient ? strlen(recipient) : 0;
+    size_t p_len  = plaintext ? strlen(plaintext) : 0;
+    size_t t_len  = strlen(ts_str);
+    size_t total  = sf_len + r_len + p_len + t_len;
+
+    uint8_t *buf = malloc(total);
+    if (!buf) {
+        memset(hex_out, '0', 64);
+        hex_out[64] = '\0';
+        return;
+    }
+
+    size_t off = 0;
+    if (sf_len) { memcpy(buf + off, sender_fp, sf_len); off += sf_len; }
+    if (r_len)  { memcpy(buf + off, recipient, r_len);  off += r_len; }
+    if (p_len)  { memcpy(buf + off, plaintext, p_len);  off += p_len; }
+    memcpy(buf + off, ts_str, t_len); off += t_len;
+
+    uint8_t hash[QGP_SHA3_256_DIGEST_LENGTH];
+    if (qgp_sha3_256(buf, off, hash) != 0) {
+        memset(hex_out, '0', 64);
+        hex_out[64] = '\0';
+        free(buf);
+        return;
+    }
+    free(buf);
+
+    for (int i = 0; i < QGP_SHA3_256_DIGEST_LENGTH; i++) {
+        snprintf(hex_out + (i * 2), 3, "%02x", hash[i]);
+    }
+    hex_out[64] = '\0';
 }
 
 /**
@@ -421,23 +467,44 @@ message_backup_context_t* message_backup_init(const char *identity) {
     const char *ver_update_v15 = "UPDATE metadata SET value = '15' WHERE key = 'version'";
     sqlite3_exec(ctx->db, ver_update_v15, NULL, NULL, NULL);
 
-    QGP_LOG_INFO(LOG_TAG, "Initialized successfully for identity: %s (PLAINTEXT STORAGE, v15)\n", identity);
+    // Migration v16: Content hash dedup column
+    const char *migration_sql_v16_col =
+        "ALTER TABLE messages ADD COLUMN content_hash TEXT";
+
+    rc = sqlite3_exec(ctx->db, migration_sql_v16_col, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_DEBUG(LOG_TAG, "v16 content_hash column note: %s\n", err_msg);
+        sqlite3_free(err_msg);
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "v16: Added content_hash column\n");
+    }
+
+    const char *migration_sql_v16_idx =
+        "CREATE INDEX IF NOT EXISTS idx_content_hash ON messages(content_hash)";
+
+    rc = sqlite3_exec(ctx->db, migration_sql_v16_idx, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_DEBUG(LOG_TAG, "v16 content_hash index note: %s\n", err_msg);
+        sqlite3_free(err_msg);
+    }
+
+    const char *ver_update_v16 = "UPDATE metadata SET value = '16' WHERE key = 'version'";
+    sqlite3_exec(ctx->db, ver_update_v16, NULL, NULL, NULL);
+
+    QGP_LOG_INFO(LOG_TAG, "Initialized successfully for identity: %s (PLAINTEXT STORAGE, v16)\n", identity);
     return ctx;
 }
 
 /**
- * Check if message already exists (duplicate check by sender + recipient + timestamp)
+ * Check if message already exists (v16: by content hash)
  */
 bool message_backup_exists(message_backup_context_t *ctx,
-                           const char *sender_fp,
-                           const char *recipient,
-                           time_t timestamp) {
-    if (!ctx || !ctx->db || !sender_fp || !recipient) {
+                           const char *content_hash) {
+    if (!ctx || !ctx->db || !content_hash) {
         return false;
     }
 
-    // Check by sender fingerprint + recipient + timestamp (within 1 second tolerance)
-    const char *sql = "SELECT COUNT(*) FROM messages WHERE sender_fingerprint = ? AND recipient = ? AND ABS(timestamp - ?) < 2";
+    const char *sql = "SELECT COUNT(*) FROM messages WHERE content_hash = ?";
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
@@ -446,9 +513,7 @@ bool message_backup_exists(message_backup_context_t *ctx,
         return false;
     }
 
-    sqlite3_bind_text(stmt, 1, sender_fp, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, recipient, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 3, (sqlite3_int64)timestamp);
+    sqlite3_bind_text(stmt, 1, content_hash, -1, SQLITE_TRANSIENT);
 
     bool exists = false;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -475,16 +540,21 @@ int message_backup_save(message_backup_context_t *ctx,
     if (!ctx || !ctx->db) return -1;
     if (!sender || !recipient || !plaintext) return -1;
 
-    // Check for duplicate (Spillway: same message may be in multiple contacts' outboxes)
-    if (sender_fingerprint && message_backup_exists(ctx, sender_fingerprint, recipient, timestamp)) {
-        QGP_LOG_INFO(LOG_TAG, "Skipping duplicate message: %s -> %s (already exists)\n",
+    // v16: Compute content hash for dedup
+    char hash[QGP_SHA3_256_HEX_LENGTH];
+    compute_content_hash(sender_fingerprint ? sender_fingerprint : sender,
+                         recipient, plaintext, timestamp, hash);
+
+    // Check for duplicate by content hash
+    if (message_backup_exists(ctx, hash)) {
+        QGP_LOG_INFO(LOG_TAG, "Skipping duplicate message: %s -> %s (hash match)\n",
                sender, recipient);
         return 1;  // Return 1 to indicate duplicate (not an error)
     }
 
     const char *sql =
-        "INSERT INTO messages (sender, recipient, plaintext, sender_fingerprint, timestamp, is_outgoing, delivered, read, status, group_id, message_type) "
-        "VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)";  // delivered=0 until ACK confirms
+        "INSERT INTO messages (sender, recipient, plaintext, sender_fingerprint, timestamp, is_outgoing, delivered, read, status, group_id, message_type, content_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)";
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
@@ -502,6 +572,7 @@ int message_backup_save(message_backup_context_t *ctx,
     sqlite3_bind_int(stmt, 7, 0);  // status = 0 (PENDING) - will be SENT after DHT PUT
     sqlite3_bind_int(stmt, 8, group_id);  // Phase 5.2: group ID
     sqlite3_bind_int(stmt, 9, message_type);  // Phase 6.2: message type
+    sqlite3_bind_text(stmt, 10, hash, -1, SQLITE_TRANSIENT);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);

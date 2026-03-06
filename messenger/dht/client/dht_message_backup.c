@@ -228,14 +228,7 @@ static int deserialize_and_import_messages(
         int message_type = message_type_obj ? json_object_get_int(message_type_obj) : 0;
         const char *sender_fp = sender_fp_obj ? json_object_get_string(sender_fp_obj) : sender;
 
-        // Check if message already exists (v3: use sender_fp + recipient + timestamp)
-        if (message_backup_exists(msg_ctx, sender_fp, recipient, timestamp)) {
-            QGP_LOG_DEBUG(LOG_TAG, "Skipping message %zu: duplicate", i);
-            skipped++;
-            continue;
-        }
-
-        // Import message to SQLite (v3 format: plaintext, v15: no offline_seq)
+        // Import message to SQLite (dedup handled by message_backup_save via content hash)
         int result = message_backup_save(
             msg_ctx,
             sender,

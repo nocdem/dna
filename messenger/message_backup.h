@@ -95,20 +95,16 @@ typedef struct {
 message_backup_context_t* message_backup_init(const char *identity);
 
 /**
- * Check if message already exists in database (by sender + recipient + timestamp)
+ * Check if message already exists in database (v16: by content hash)
  *
  * Prevents duplicate messages from being stored (e.g., when polling DHT offline queue).
  *
  * @param ctx Backup context
- * @param sender_fp Sender fingerprint (hex string)
- * @param recipient Recipient identity
- * @param timestamp Message timestamp
+ * @param content_hash SHA3-256 hex string (64 chars) of sender+recipient+plaintext+timestamp
  * @return true if message exists, false otherwise
  */
 bool message_backup_exists(message_backup_context_t *ctx,
-                           const char *sender_fp,
-                           const char *recipient,
-                           time_t timestamp);
+                           const char *content_hash);
 
 /**
  * Save a message to local backup (PLAINTEXT)
