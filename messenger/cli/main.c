@@ -279,10 +279,8 @@ static int auto_load_identity(dna_engine_t *engine, const char *identity_hint, i
         return -1;
     }
 
-    /* Load the single identity (fingerprint computed internally) */
-    if (!quiet) {
-        fprintf(stderr, "Loading identity...\n");
-    }
+    /* Load the single identity (fingerprint computed internally).
+     * cmd_load() already prints "Loading identity..." to stdout. */
     return cmd_load(engine, NULL);  /* NULL = auto-compute fingerprint */
 }
 
@@ -1073,10 +1071,9 @@ int main(int argc, char *argv[]) {
         result = 1;
     }
 
-    /* Cleanup */
-    if (!quiet) {
-        fprintf(stderr, "Shutting down...\n");
-    }
+    /* Cleanup — flush stdout before destroy so command output appears before any
+     * stderr noise from engine teardown */
+    fflush(stdout);
     dna_engine_destroy(g_engine);
     g_engine = NULL;
 
