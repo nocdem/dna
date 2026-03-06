@@ -30,8 +30,12 @@
 
 /* ── Internal state ─────────────────────────────────────────────── */
 
-/* Buffer size for building protocol messages */
-#define CLIENT_BUF_SIZE (256 * 1024)   /* 256KB — enough for max Nodus value (1MB) + CBOR + sig */
+/* Buffer sizes for building protocol messages.
+ * CLIENT_BUF_SIZE: used for most operations (auth, get, listen, etc.)
+ * CLIENT_BUF_SIZE_PUT: used for PUT — must accommodate max value (1MB) + sig + CBOR.
+ * Previous 256KB CLIENT_BUF_SIZE was too small for PUT with >245KB data. */
+#define CLIENT_BUF_SIZE       (256 * 1024)
+#define CLIENT_BUF_SIZE_PUT   (NODUS_MAX_VALUE_SIZE + 65536)
 
 /* ── Forward declarations ───────────────────────────────────────── */
 
@@ -679,16 +683,19 @@ int nodus_client_put(nodus_client_t *client,
                       const nodus_sig_t *sig) {
     if (!nodus_client_is_ready(client)) return -1;
 
-    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE_PUT);
     if (!buf) return -1;
     size_t len = 0;
     uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
     nodus_pending_t *req = alloc_pending(client, txn);
     if (!req) { free(buf); return -1; }
 
-    nodus_t2_put(txn, client->token, key, data, data_len,
-                  type, ttl, vid, seq, sig,
-                  buf, CLIENT_BUF_SIZE, &len);
+    if (nodus_t2_put(txn, client->token, key, data, data_len,
+                      type, ttl, vid, seq, sig,
+                      buf, CLIENT_BUF_SIZE_PUT, &len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "PUT encode failed (data_len=%zu, buf=%d)", data_len, CLIENT_BUF_SIZE_PUT);
+        free_pending(client, req); free(buf); return -1;
+    }
     if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
     free(buf);
 
