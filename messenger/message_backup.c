@@ -1052,6 +1052,76 @@ int message_backup_get_pending_messages(message_backup_context_t *ctx,
     return 0;
 }
 
+int message_backup_get_pending_for_recipient(message_backup_context_t *ctx,
+                                              const char *recipient,
+                                              backup_message_t **messages_out,
+                                              int *count_out) {
+    if (!ctx || !ctx->db || !recipient || !messages_out || !count_out) return -1;
+
+    *messages_out = NULL;
+    *count_out = 0;
+
+    const char *sql =
+        "SELECT id, sender, recipient, plaintext, sender_fingerprint, "
+        "       timestamp, delivered, read, status, group_id, message_type, retry_count "
+        "FROM messages "
+        "WHERE is_outgoing = 1 AND status != 2 AND recipient = ? "
+        "ORDER BY timestamp ASC";
+
+    sqlite3_stmt *stmt;
+    if (sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare pending-for-recipient query: %s\n",
+                      sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, recipient, -1, SQLITE_STATIC);
+
+    /* Count results */
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) count++;
+    sqlite3_reset(stmt);
+
+    if (count == 0) {
+        sqlite3_finalize(stmt);
+        return 0;
+    }
+
+    backup_message_t *messages = calloc(count, sizeof(backup_message_t));
+    if (!messages) { sqlite3_finalize(stmt); return -1; }
+
+    int idx = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && idx < count) {
+        messages[idx].id = sqlite3_column_int(stmt, 0);
+        strncpy(messages[idx].sender, (const char*)sqlite3_column_text(stmt, 1), 255);
+        strncpy(messages[idx].recipient, (const char*)sqlite3_column_text(stmt, 2), 255);
+
+        const char *text = (const char*)sqlite3_column_text(stmt, 3);
+        messages[idx].plaintext = text ? strdup(text) : strdup("");
+
+        const char *fp = (const char*)sqlite3_column_text(stmt, 4);
+        if (fp) strncpy(messages[idx].sender_fingerprint, fp, 128);
+
+        messages[idx].timestamp = (time_t)sqlite3_column_int64(stmt, 5);
+        messages[idx].delivered = sqlite3_column_int(stmt, 6) != 0;
+        messages[idx].read = sqlite3_column_int(stmt, 7) != 0;
+        messages[idx].status = sqlite3_column_int(stmt, 8);
+        messages[idx].group_id = sqlite3_column_int(stmt, 9);
+        messages[idx].message_type = sqlite3_column_int(stmt, 10);
+        messages[idx].retry_count = sqlite3_column_int(stmt, 11);
+        messages[idx].is_outgoing = true;
+        idx++;
+    }
+
+    sqlite3_finalize(stmt);
+
+    *messages_out = messages;
+    *count_out = idx;
+
+    QGP_LOG_INFO(LOG_TAG, "Found %d pending messages for recipient %.20s...\n", idx, recipient);
+    return 0;
+}
+
 /**
  * Update message status by sender/recipient/timestamp
  * Useful when message ID is not known (e.g., after async send)

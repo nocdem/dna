@@ -290,17 +290,11 @@ int dht_dm_queue_message(
             }
         }
     } else {
-        /* Cache miss - fetch from DHT */
-        QGP_LOG_DEBUG(LOG_TAG, "Cache miss, fetching from DHT");
-        uint8_t *existing_data = NULL;
-        size_t existing_len = 0;
-
-        int fetch_result = nodus_ops_get_str(base_key, &existing_data, &existing_len);
-        if (fetch_result == 0 && existing_data && existing_len > 0) {
-            dht_deserialize_messages(existing_data, existing_len, &existing_messages, &existing_count);
-            free(existing_data);
-            QGP_LOG_DEBUG(LOG_TAG, "Fetched %zu existing messages from DHT", existing_count);
-        }
+        /* Cache miss — do NOT fetch from DHT (eliminates read-modify-write race).
+         * messenger_flush_recipient_outbox() rebuilds the complete blob from
+         * messages.db after each send, so the per-message PUT here only needs
+         * to include the new message. The flush overwrites it immediately. */
+        QGP_LOG_DEBUG(LOG_TAG, "Cache miss, skipping DHT GET (flush will rebuild)");
     }
 
     /* DoS prevention: limit messages per bucket */

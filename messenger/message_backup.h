@@ -208,6 +208,24 @@ int message_backup_get_pending_messages(message_backup_context_t *ctx,
                                          int *count_out);
 
 /**
+ * Get all undelivered outgoing messages for a specific recipient.
+ *
+ * Returns PENDING(0), SENT(1), and FAILED(3) messages — everything
+ * except RECEIVED(2). Used by outbox flush to build complete DHT blob
+ * from local state, eliminating the GET→append→PUT race condition.
+ *
+ * @param ctx Backup context
+ * @param recipient Recipient identity (fingerprint or name)
+ * @param messages_out Array of messages (caller must free with message_backup_free_messages)
+ * @param count_out Number of messages returned
+ * @return 0 on success, -1 on error
+ */
+int message_backup_get_pending_for_recipient(message_backup_context_t *ctx,
+                                              const char *recipient,
+                                              backup_message_t **messages_out,
+                                              int *count_out);
+
+/**
  * Update message status by sender/recipient/timestamp
  *
  * Useful when message ID is not known (e.g., after async send)

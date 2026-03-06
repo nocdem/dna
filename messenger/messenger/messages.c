@@ -37,6 +37,10 @@
 #include "../message_backup.h"
 #include "../messenger_transport.h"
 #include "../transport/transport.h"
+#include "../dht/shared/dht_dm_outbox.h"
+#include "../dht/shared/dht_offline_queue.h"
+#include "../dht/shared/nodus_ops.h"
+#include "../database/contacts_db.h"
 #include "keys.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -498,46 +502,35 @@ int messenger_send_message(
         }
     }
 
-    // Phase 14: DHT-only messaging - queue directly to DHT (Spillway)
-    // P2P transport is NOT required - messenger_queue_to_dht uses DHT singleton
-    // This is more reliable on mobile platforms with background execution restrictions
+    // Outbox flush: build complete blob from messages.db for each recipient.
+    // This is the ONLY DHT PUT — no per-message PUT to avoid races between
+    // concurrent CLI processes. The flush always builds the complete blob
+    // from messages.db (the single source of truth), so even if two processes
+    // race, the later one's blob contains ALL messages.
     //
     // Message status flow (v15):
     // 1. PENDING (0) - message saved, clock icon
-    // 2. SENT (1) - DHT PUT succeeded, single tick
+    // 2. SENT (1) - DHT PUT succeeded (flush), single tick
     // 3. RECEIVED (2) - ACK from recipient, double tick
     size_t dht_success = 0;
     for (size_t i = 0; i < recipient_count; i++) {
-        // v0.5.33: Skip DHT queue for duplicates - already queued previously
-        // This prevents massive chunk re-uploads during retry storms
         if (message_ids[i] == 0) {
-            QGP_LOG_INFO(LOG_TAG, "[SEND] Skipping DHT queue for duplicate to %.20s... (already queued)",
-                         recipients[i]);
-            dht_success++;  // Count as success since original was queued
+            QGP_LOG_INFO(LOG_TAG, "[SEND] Skipping flush for duplicate to %.20s...", recipients[i]);
+            dht_success++;
             continue;
         }
 
-        // Queue directly to DHT - no P2P attempt for messaging
-        // v0.6.45: Use message_id as seq_num for deduplication (fixes v0.6.33 bug)
-        // v15 (v0.6.33) incorrectly used seq_num=0 causing ALL subsequent messages to be
-        // detected as duplicates and silently skipped. Using unique message_id fixes this.
-        uint64_t seq_num = (uint64_t)message_ids[i];
-        if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len, seq_num) == 0) {
+        int flush_rc = messenger_flush_recipient_outbox(ctx, recipients[i]);
+        if (flush_rc > 0) {
+            QGP_LOG_INFO(LOG_TAG, "[SEND] Flush OK: %d messages in blob for %.20s...",
+                         flush_rc, recipients[i]);
             dht_success++;
-            // Update status to SENT (1) - DHT PUT succeeded, single tick in UI
-            // Will become RECEIVED (2) via ACK confirmation -> double tick
-            if (message_ids[i] > 0) {
-                int update_rc = message_backup_update_status(ctx->backup_ctx, message_ids[i], 1);
-                QGP_LOG_WARN(LOG_TAG, "[SEND] DHT PUT OK, updated msg %d to SENT(1), rc=%d",
-                             message_ids[i], update_rc);
-            } else {
-                QGP_LOG_WARN(LOG_TAG, "[SEND] DHT PUT OK but message_id=%d invalid, cannot update status",
-                             message_ids[i]);
-            }
+        } else if (flush_rc == 0) {
+            QGP_LOG_WARN(LOG_TAG, "[SEND] Flush empty for %.20s...", recipients[i]);
         } else {
-            // Update status to FAILED (3) - DHT queue failed (key unavailable, etc.)
+            QGP_LOG_WARN(LOG_TAG, "[SEND] Flush failed for %.20s..., marking FAILED", recipients[i]);
             if (message_ids[i] > 0) {
-                message_backup_update_status(ctx->backup_ctx, message_ids[i], 3);
+                message_backup_update_status(ctx->backup_ctx, message_ids[i], MESSAGE_STATUS_FAILED);
             }
         }
     }
@@ -546,14 +539,206 @@ int messenger_send_message(
     free(recipient_fps);
     free(ciphertext);
 
-    // Return -1 if ALL DHT queues failed, 0 if at least one succeeded
-    // This allows UI to show FAILED status when offline
     if (dht_success == 0) {
-        QGP_LOG_WARN(LOG_TAG, "All DHT queues failed - message saved with FAILED status");
+        QGP_LOG_WARN(LOG_TAG, "All flushes failed - messages saved with FAILED status");
         return -1;
     }
 
     return 0;
+}
+
+/* ============================================================================
+ * OUTBOX FLUSH — Build complete blob from messages.db, PUT to DHT
+ *
+ * Eliminates GET→append→PUT race condition. On each call, reads ALL PENDING
+ * outgoing messages for the recipient from messages.db, re-encrypts each one,
+ * serializes into a single blob, and PUTs. The blob always reflects the
+ * complete set of pending messages — no stale reads possible.
+ * ============================================================================ */
+
+int messenger_flush_recipient_outbox(messenger_context_t *ctx, const char *recipient) {
+    if (!ctx || !recipient) return -1;
+
+    /* 1. Resolve recipient to fingerprint */
+    char recipient_fp[129];
+    {
+        uint8_t *spk = NULL, *epk = NULL;
+        size_t slen = 0, elen = 0;
+        if (messenger_load_pubkey(ctx, recipient, &spk, &slen, &epk, &elen, recipient_fp) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "[FLUSH] Cannot resolve recipient '%s'", recipient);
+            return -1;
+        }
+        free(spk);
+        free(epk);
+    }
+
+    /* 2. Get ALL pending outgoing messages for this recipient */
+    backup_message_t *pending = NULL;
+    int pending_count = 0;
+    if (message_backup_get_pending_for_recipient(ctx->backup_ctx, recipient,
+                                                   &pending, &pending_count) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[FLUSH] Failed to query pending messages for %.20s...", recipient);
+        return -1;
+    }
+
+    if (pending_count == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "[FLUSH] No pending messages for %.20s...", recipient);
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[FLUSH] Building outbox blob: %d pending messages for %.20s...",
+                 pending_count, recipient);
+
+    /* 3. Load sender signing key (needed for re-encryption) */
+    const char *data_dir = qgp_platform_app_data_dir();
+    char dilithium_path[512];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
+
+    qgp_key_t *sender_sign_key = NULL;
+    if (qgp_key_load(dilithium_path, &sender_sign_key) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[FLUSH] Cannot load sender signing key");
+        message_backup_free_messages(pending, pending_count);
+        return -1;
+    }
+
+    /* 4. Load recipient + sender encryption pubkeys (for multi-recipient encrypt) */
+    uint8_t *sender_enc_pk = NULL, *recip_enc_pk = NULL;
+    size_t sender_enc_len = 0, recip_enc_len = 0;
+    {
+        uint8_t *spk = NULL;
+        size_t slen = 0;
+        if (messenger_load_pubkey(ctx, ctx->identity, &spk, &slen,
+                                   &sender_enc_pk, &sender_enc_len, NULL) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "[FLUSH] Cannot load sender enc pubkey");
+            qgp_key_free(sender_sign_key);
+            message_backup_free_messages(pending, pending_count);
+            return -1;
+        }
+        free(spk);
+    }
+    {
+        uint8_t *spk = NULL;
+        size_t slen = 0;
+        if (messenger_load_pubkey(ctx, recipient, &spk, &slen,
+                                   &recip_enc_pk, &recip_enc_len, NULL) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "[FLUSH] Cannot load recipient enc pubkey");
+            free(sender_enc_pk);
+            qgp_key_free(sender_sign_key);
+            message_backup_free_messages(pending, pending_count);
+            return -1;
+        }
+        free(spk);
+    }
+
+    /* Two recipients for multi-recipient encrypt: sender (index 0) + recipient (index 1) */
+    uint8_t *enc_pubkeys[2] = { sender_enc_pk, recip_enc_pk };
+
+    /* 5. Re-encrypt each pending message and build offline message array */
+    dht_offline_message_t *offline_msgs = calloc(pending_count, sizeof(dht_offline_message_t));
+    if (!offline_msgs) {
+        free(sender_enc_pk);
+        free(recip_enc_pk);
+        qgp_key_free(sender_sign_key);
+        message_backup_free_messages(pending, pending_count);
+        return -1;
+    }
+
+    int built_count = 0;
+    for (int i = 0; i < pending_count; i++) {
+        uint8_t *ciphertext = NULL;
+        size_t ciphertext_len = 0;
+        uint64_t send_ts = (uint64_t)pending[i].timestamp;
+
+        int enc_rc = messenger_encrypt_multi_recipient(
+            pending[i].plaintext, strlen(pending[i].plaintext),
+            enc_pubkeys, 2,
+            sender_sign_key,
+            send_ts,
+            &ciphertext, &ciphertext_len
+        );
+
+        if (enc_rc != 0) {
+            QGP_LOG_WARN(LOG_TAG, "[FLUSH] Re-encrypt failed for msg id=%d, skipping", pending[i].id);
+            continue;
+        }
+
+        offline_msgs[built_count].seq_num = (uint64_t)pending[i].id;
+        offline_msgs[built_count].timestamp = (uint64_t)pending[i].timestamp;
+        offline_msgs[built_count].expiry = (uint64_t)pending[i].timestamp + DNA_DM_OUTBOX_TTL;
+        offline_msgs[built_count].sender = strdup(ctx->identity);
+        offline_msgs[built_count].recipient = strdup(recipient_fp);
+        offline_msgs[built_count].ciphertext = ciphertext;
+        offline_msgs[built_count].ciphertext_len = ciphertext_len;
+        built_count++;
+    }
+
+    free(sender_enc_pk);
+    free(recip_enc_pk);
+    qgp_key_free(sender_sign_key);
+
+    if (built_count == 0) {
+        QGP_LOG_WARN(LOG_TAG, "[FLUSH] All re-encryptions failed");
+        free(offline_msgs);
+        message_backup_free_messages(pending, pending_count);
+        return -1;
+    }
+
+    /* 6. Serialize into blob */
+    uint8_t *serialized = NULL;
+    size_t serialized_len = 0;
+    if (dht_serialize_messages(offline_msgs, built_count, &serialized, &serialized_len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[FLUSH] Serialize failed");
+        dht_offline_messages_free(offline_msgs, built_count);
+        message_backup_free_messages(pending, pending_count);
+        return -1;
+    }
+
+    /* 7. Generate bucket key */
+    uint64_t today = dht_dm_outbox_get_day_bucket();
+    char base_key[512];
+
+    uint8_t salt_buf[32];
+    const uint8_t *salt_ptr = NULL;
+    if (contacts_db_get_salt(recipient_fp, salt_buf) == 0) {
+        salt_ptr = salt_buf;
+    }
+
+    if (dht_dm_outbox_make_key(ctx->identity, recipient_fp, today, salt_ptr,
+                                base_key, sizeof(base_key)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[FLUSH] Failed to generate bucket key");
+        free(serialized);
+        dht_offline_messages_free(offline_msgs, built_count);
+        message_backup_free_messages(pending, pending_count);
+        return -1;
+    }
+
+    /* 8. PUT to DHT */
+    QGP_LOG_INFO(LOG_TAG, "[FLUSH] PUT %d msgs, blob=%zu bytes", built_count, serialized_len);
+    int put_rc = nodus_ops_put_str(base_key, serialized, serialized_len,
+                                    DNA_DM_OUTBOX_TTL, nodus_ops_value_id());
+    free(serialized);
+    dht_offline_messages_free(offline_msgs, built_count);
+
+    if (put_rc != 0) {
+        QGP_LOG_WARN(LOG_TAG, "[FLUSH] DHT PUT failed for %.20s...", recipient);
+        message_backup_free_messages(pending, pending_count);
+        return -1;
+    }
+
+    /* 9. Update PENDING/FAILED messages to SENT (1) — skip already-SENT */
+    int updated = 0;
+    for (int i = 0; i < pending_count; i++) {
+        if (pending[i].id > 0 && pending[i].status != MESSAGE_STATUS_SENT) {
+            message_backup_update_status(ctx->backup_ctx, pending[i].id, MESSAGE_STATUS_SENT);
+            updated++;
+        }
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "[FLUSH] OK: %d messages in blob, %d updated to SENT for %.20s...",
+                 built_count, updated, recipient);
+
+    message_backup_free_messages(pending, pending_count);
+    return built_count;
 }
 
 int messenger_list_messages(messenger_context_t *ctx) {

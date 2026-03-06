@@ -355,6 +355,19 @@ int messenger_send_message(
 );
 
 /**
+ * Flush all pending outgoing messages for a recipient to DHT.
+ *
+ * Reads ALL PENDING messages from messages.db for this recipient,
+ * re-encrypts each, serializes into a single blob, and PUTs to DHT.
+ * Eliminates the GET→append→PUT race condition.
+ *
+ * @param ctx Messenger context
+ * @param recipient Recipient identity (name or fingerprint)
+ * @return Number of messages in blob (>= 0), or -1 on error
+ */
+int messenger_flush_recipient_outbox(messenger_context_t *ctx, const char *recipient);
+
+/**
  * List messages for current user
  *
  * Shows messages where recipient = current identity

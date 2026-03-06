@@ -25,9 +25,11 @@
 #include <fcntl.h>
 #include <errno.h>
 
-/* Response buffer (shared, single-threaded) — 64KB covers multi-value results.
- * Each serialized NodusValue is ~7.3KB (Dilithium5 pk+sig overhead). */
-static uint8_t resp_buf[65536];
+/* Response buffer (shared, single-threaded).
+ * Must accommodate max value (1MB data) + Dilithium5 pk(2592) + sig(4627) + CBOR.
+ * Previous 64KB was too small — values >55KB data caused silent GET failures. */
+#define RESP_BUF_SIZE (NODUS_MAX_VALUE_SIZE + 65536)
+static uint8_t resp_buf[RESP_BUF_SIZE];
 
 /* ── Session management ──────────────────────────────────────────── */
 
@@ -220,10 +222,10 @@ static int send_frame_to_peer(const char *peer_ip, uint16_t peer_tcp_port,
 
 static void replicate_value(nodus_server_t *srv, const nodus_value_t *val) {
     /* Encode T1 STORE_VALUE once for all peers */
-    uint8_t *cbor_buf = malloc(65536);
+    uint8_t *cbor_buf = malloc(RESP_BUF_SIZE);
     if (!cbor_buf) return;
     size_t clen = 0;
-    if (nodus_t1_store_value(0, val, cbor_buf, 65536, &clen) != 0) {
+    if (nodus_t1_store_value(0, val, cbor_buf, RESP_BUF_SIZE, &clen) != 0) {
         free(cbor_buf);
         return;
     }
@@ -364,8 +366,14 @@ static void handle_t2_get(nodus_server_t *srv, nodus_session_t *sess,
 
     if (rc == 0 && val) {
         size_t len = 0;
-        nodus_t2_result(msg->txn_id, val, resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        if (nodus_t2_result(msg->txn_id, val, resp_buf, sizeof(resp_buf), &len) == 0) {
+            nodus_tcp_send(sess->conn, resp_buf, len);
+        } else {
+            fprintf(stderr, "NODUS_SRV: GET result encode failed (value too large?)\n");
+            nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                            "value encode failed", resp_buf, sizeof(resp_buf), &len);
+            nodus_tcp_send(sess->conn, resp_buf, len);
+        }
         nodus_value_free(val);
     } else {
         size_t len = 0;
@@ -382,9 +390,15 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
 
     if (rc == 0 && count > 0) {
         size_t len = 0;
-        nodus_t2_result_multi(msg->txn_id, vals, count,
-                               resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        if (nodus_t2_result_multi(msg->txn_id, vals, count,
+                                   resp_buf, sizeof(resp_buf), &len) == 0) {
+            nodus_tcp_send(sess->conn, resp_buf, len);
+        } else {
+            fprintf(stderr, "NODUS_SRV: GET_ALL result encode failed (values too large?)\n");
+            nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                            "value encode failed", resp_buf, sizeof(resp_buf), &len);
+            nodus_tcp_send(sess->conn, resp_buf, len);
+        }
 
         for (size_t i = 0; i < count; i++)
             nodus_value_free(vals[i]);
