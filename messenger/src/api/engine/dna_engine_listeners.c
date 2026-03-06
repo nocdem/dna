@@ -92,43 +92,39 @@ static bool outbox_listen_callback(
     bool expired,
     void *user_data)
 {
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] >>> CALLBACK FIRED! value=%p, len=%zu, expired=%d",
+                 (void*)value, value_len, expired);
+
     outbox_listener_ctx_t *ctx = (outbox_listener_ctx_t *)user_data;
     if (!ctx || !ctx->engine) {
         QGP_LOG_ERROR(LOG_TAG, "[LISTEN-CB] Invalid context, stopping listener");
         return false;  /* Stop listening */
     }
 
-    /* Only process new/updated values, not expirations */
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Contact: %.32s...", ctx->contact_fingerprint);
+
+    /* Only fire event for new/updated values, not expirations */
     if (!expired && value && value_len > 0) {
-        /* Copy value data — callback runs on nodus read thread, must not block */
-        uint8_t *value_copy = malloc(value_len);
-        if (!value_copy) {
-            QGP_LOG_ERROR(LOG_TAG, "[LISTEN-CB] malloc failed (%zu bytes)", value_len);
-            return true;
-        }
-        memcpy(value_copy, value, value_len);
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] ✓ NEW VALUE! Firing DNA_EVENT_OUTBOX_UPDATED");
 
-        /* Submit inline delivery task to worker thread */
-        dna_task_params_t params = {0};
-        params.process_outbox_value.value_data = value_copy;
-        params.process_outbox_value.value_len = value_len;
-        strncpy(params.process_outbox_value.contact_fingerprint,
+        /* Fire DNA_EVENT_OUTBOX_UPDATED event */
+        dna_event_t event = {0};
+        event.type = DNA_EVENT_OUTBOX_UPDATED;
+        strncpy(event.data.outbox_updated.contact_fingerprint,
                 ctx->contact_fingerprint,
-                sizeof(params.process_outbox_value.contact_fingerprint) - 1);
+                sizeof(event.data.outbox_updated.contact_fingerprint) - 1);
 
-        dna_task_callback_t cb = {0};
-        dna_request_id_t rid = dna_submit_task(ctx->engine,
-            TASK_PROCESS_OUTBOX_VALUE, &params, cb, NULL);
-
-        if (rid == 0) {
-            QGP_LOG_ERROR(LOG_TAG, "[LISTEN-CB] Failed to submit inline delivery task");
-            free(value_copy);
-        } else {
-            QGP_LOG_INFO(LOG_TAG, "[LISTEN-CB] Inline delivery submitted (%.32s..., %zu bytes)",
-                         ctx->contact_fingerprint, value_len);
-        }
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Dispatching event to Flutter...");
+        dna_dispatch_event(ctx->engine, &event);
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Event dispatched successfully");
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] >>> About to return true (continue listening)");
+    } else if (expired) {
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Value expired (ignoring)");
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Empty value received (ignoring)");
     }
 
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] >>> CALLBACK RETURNING TRUE <<<");
     return true;  /* Continue listening */
 }
 
