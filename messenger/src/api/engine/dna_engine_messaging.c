@@ -888,6 +888,38 @@ done:
     task->callback.completion(task->request_id, error, task->user_data);
 }
 
+void dna_handle_process_outbox_value(dna_engine_t *engine, dna_task_t *task) {
+    uint8_t *value_data = task->params.process_outbox_value.value_data;
+    size_t value_len = task->params.process_outbox_value.value_len;
+    const char *contact_fp = task->params.process_outbox_value.contact_fingerprint;
+
+    if (!engine->identity_loaded || !engine->messenger || !value_data || value_len == 0) {
+        QGP_LOG_WARN(LOG_TAG, "[INLINE] Cannot deliver: identity=%d, messenger=%p, data=%p",
+                     engine->identity_loaded, (void*)engine->messenger, (void*)value_data);
+        free(value_data);
+        task->params.process_outbox_value.value_data = NULL;
+        return;
+    }
+
+    int delivered = messenger_transport_deliver_from_value(
+        engine->messenger, value_data, value_len, contact_fp);
+
+    free(value_data);
+    task->params.process_outbox_value.value_data = NULL;
+
+    if (delivered > 0) {
+        QGP_LOG_INFO(LOG_TAG, "[INLINE] Delivered %d messages from %.32s...", delivered, contact_fp);
+
+        /* Notify Flutter that new messages arrived */
+        dna_event_t event = {0};
+        event.type = DNA_EVENT_OUTBOX_UPDATED;
+        strncpy(event.data.outbox_updated.contact_fingerprint,
+                contact_fp,
+                sizeof(event.data.outbox_updated.contact_fingerprint) - 1);
+        dna_dispatch_event(engine, &event);
+    }
+}
+
 int dna_engine_get_unread_count(
     dna_engine_t *engine,
     const char *contact_fingerprint

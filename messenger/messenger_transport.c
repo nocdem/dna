@@ -740,6 +740,64 @@ void messenger_transport_message_callback(
 }
 
 // ============================================================================
+// INLINE MESSAGE DELIVERY (from listener callback value)
+// ============================================================================
+
+int messenger_transport_deliver_from_value(
+    messenger_context_t *ctx,
+    const uint8_t *value_data,
+    size_t value_len,
+    const char *contact_fingerprint)
+{
+    if (!ctx || !value_data || value_len == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "deliver_from_value: invalid params");
+        return -1;
+    }
+
+    /* Deserialize the raw DHT value into individual messages */
+    dht_offline_message_t *messages = NULL;
+    size_t count = 0;
+    int rc = dht_deserialize_messages(value_data, value_len, &messages, &count);
+    if (rc != 0 || count == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "deliver_from_value: no messages (rc=%d, count=%zu)", rc, count);
+        if (messages) dht_offline_messages_free(messages, count);
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "deliver_from_value: %zu messages from %.32s...",
+                 count, contact_fingerprint ? contact_fingerprint : "?");
+
+    /* Deliver each message through the same callback as offline retrieval */
+    int delivered = 0;
+    for (size_t i = 0; i < count; i++) {
+        dht_offline_message_t *msg = &messages[i];
+        if (msg->ciphertext && msg->ciphertext_len > 0) {
+            transport_message_received_internal(
+                NULL,                    /* peer_pubkey (unknown for DHT) */
+                msg->sender,             /* sender fingerprint */
+                msg->ciphertext,
+                msg->ciphertext_len,
+                ctx                      /* messenger_context_t* */
+            );
+            delivered++;
+        }
+    }
+
+    /* Publish ACK to sender so they know we received */
+    if (delivered > 0 && contact_fingerprint) {
+        uint8_t salt[32];
+        const uint8_t *salt_ptr = NULL;
+        if (contacts_db_get_salt(contact_fingerprint, salt) == 0) {
+            salt_ptr = salt;
+        }
+        dht_publish_ack(ctx->identity, contact_fingerprint, salt_ptr);
+    }
+
+    dht_offline_messages_free(messages, count);
+    return delivered;
+}
+
+// ============================================================================
 // PRESENCE & PEER DISCOVERY
 // ============================================================================
 

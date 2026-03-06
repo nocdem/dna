@@ -164,6 +164,26 @@ int messenger_transport_lookup_presence(
 // ============================================================================
 
 /**
+ * Deliver messages from raw DHT value data (inline from listener callback)
+ *
+ * Deserializes the value and delivers each message via the receive callback,
+ * bypassing the DHT GET round-trip. Used for instant message delivery when
+ * the listener callback already has the value data.
+ *
+ * @param ctx Messenger context
+ * @param value_data Raw serialized outbox data from DHT
+ * @param value_len Length of value data
+ * @param contact_fingerprint Sender fingerprint (for ACK publishing)
+ * @return Number of messages delivered, or -1 on error
+ */
+int messenger_transport_deliver_from_value(
+    messenger_context_t *ctx,
+    const uint8_t *value_data,
+    size_t value_len,
+    const char *contact_fingerprint
+);
+
+/**
  * Check for offline messages in DHT
  *
  * Retrieves messages that were queued in DHT while recipient was offline.

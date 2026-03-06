@@ -791,6 +791,9 @@ void dna_free_task_params(dna_task_t *task) {
         case TASK_CHANNEL_POST:
             free(task->params.channel_post.body);
             break;
+        case TASK_PROCESS_OUTBOX_VALUE:
+            free(task->params.process_outbox_value.value_data);
+            break;
         default:
             break;
     }
@@ -1005,6 +1008,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_CHECK_OFFLINE_MESSAGES_FROM:
             dna_handle_check_offline_messages_from(engine, task);
+            break;
+        case TASK_PROCESS_OUTBOX_VALUE:
+            dna_handle_process_outbox_value(engine, task);
             break;
 
         /* Groups */

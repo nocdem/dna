@@ -412,9 +412,9 @@ class EventHandler {
     // Collect fingerprints during debounce window
     _pendingOutboxFingerprints.add(contactFp);
 
-    // Reset debounce timer
+    // Reset debounce timer — short debounce since inline delivery already stored messages
     _outboxDebounceTimer?.cancel();
-    _outboxDebounceTimer = Timer(const Duration(milliseconds: 400), () {
+    _outboxDebounceTimer = Timer(const Duration(milliseconds: 100), () {
       // Capture fingerprints and clear pending set
       final fingerprints = Set<String>.from(_pendingOutboxFingerprints);
       _pendingOutboxFingerprints.clear();
@@ -424,30 +424,34 @@ class EventHandler {
       final openChatFp = selectedContact?.fingerprint;
 
       _ref.read(engineProvider).whenData((engine) async {
-        // Fetch messages only from contacts whose outboxes triggered the event.
-        // Much faster than checkOfflineMessages() which checks ALL contacts.
-        await PlatformHandler.instance.onOutboxUpdated(engine, fingerprints);
-
-        // Process each contact that had updates
+        // Refresh UI immediately — inline delivery already stored messages in SQLite.
+        // The DHT GET below is a safety net, not the primary delivery path.
         for (final fp in fingerprints) {
-          // If chat is open for this contact, mark as read
           if (openChatFp == fp) {
             await engine.markConversationRead(fp);
             _ref.read(unreadCountsProvider.notifier).clearCount(fp);
           } else {
-            // Sync unread count from database
             final dbCount = engine.getUnreadCount(fp);
             if (dbCount > 0) {
               _ref.read(unreadCountsProvider.notifier).setCount(fp, dbCount);
             }
           }
-
-          // Refresh conversation UI for this contact
           _ref.invalidate(conversationProvider(fp));
         }
 
         // Single refresh trigger increment after all processing
         _ref.read(conversationRefreshTriggerProvider.notifier).state++;
+
+        // Background safety net: DHT GET catches any messages inline delivery missed.
+        // This runs AFTER UI is already updated, so user sees messages instantly.
+        // ignore: unawaited_futures
+        PlatformHandler.instance.onOutboxUpdated(engine, fingerprints).then((_) {
+          // Refresh again in case safety net found additional messages
+          for (final fp in fingerprints) {
+            _ref.invalidate(conversationProvider(fp));
+          }
+          _ref.read(conversationRefreshTriggerProvider.notifier).state++;
+        });
       });
     });
   }

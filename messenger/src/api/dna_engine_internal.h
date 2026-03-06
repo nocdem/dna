@@ -92,6 +92,7 @@ typedef enum {
     TASK_GET_CONVERSATION_PAGE,
     TASK_CHECK_OFFLINE_MESSAGES,
     TASK_CHECK_OFFLINE_MESSAGES_FROM,
+    TASK_PROCESS_OUTBOX_VALUE,        /* Inline message delivery from listener */
 
     /* Groups */
     TASK_GET_GROUPS,
@@ -257,6 +258,13 @@ typedef union {
     struct {
         char contact_fingerprint[129];
     } check_offline_messages_from;
+
+    /* Process outbox value inline (from listener callback) */
+    struct {
+        uint8_t *value_data;       /* Heap-allocated copy, handler frees */
+        size_t   value_len;
+        char     contact_fingerprint[129];
+    } process_outbox_value;
 
     /* Create group */
     struct {
@@ -771,6 +779,7 @@ void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_conversation_page(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_check_offline_messages_from(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_process_outbox_value(dna_engine_t *engine, dna_task_t *task);
 
 /* Groups */
 void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task);
