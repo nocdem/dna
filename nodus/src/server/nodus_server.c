@@ -150,12 +150,19 @@ static void notify_ch_subscribers(nodus_server_t *srv,
     }
 }
 
-/* ── Server-to-server TCP STORE (fire-and-forget replication) ──── */
+/* ── Server-to-server TCP STORE (with hinted handoff on failure) ── */
 
-static void replicate_to_peer(const nodus_value_t *val,
-                                const char *peer_ip, uint16_t peer_tcp_port) {
+/**
+ * Send a pre-encoded wire frame to a peer. Returns 0 on success, -1 on failure.
+ */
+static int send_frame_to_peer(const char *peer_ip, uint16_t peer_tcp_port,
+                               const uint8_t *frame, size_t flen) {
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-    if (fd < 0) return;
+    if (fd < 0) {
+        fprintf(stderr, "DHT-REPL: socket() failed for %s:%d: %s\n",
+                peer_ip, peer_tcp_port, strerror(errno));
+        return -1;
+    }
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -165,62 +172,124 @@ static void replicate_to_peer(const nodus_value_t *val,
 
     int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
     if (rc < 0 && errno != EINPROGRESS) {
+        fprintf(stderr, "DHT-REPL: connect %s:%d failed: %s\n",
+                peer_ip, peer_tcp_port, strerror(errno));
         close(fd);
-        return;
+        return -1;
     }
 
-    /* Wait for connect (2s timeout — cross-DC may be slow) */
+    /* Wait for connect (2s timeout) */
     fd_set wfds;
     FD_ZERO(&wfds);
     FD_SET(fd, &wfds);
     struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
     rc = select(fd + 1, NULL, &wfds, NULL, &tv);
     if (rc <= 0) {
+        fprintf(stderr, "DHT-REPL: connect timeout %s:%d\n", peer_ip, peer_tcp_port);
         close(fd);
-        return;
+        return -1;
     }
 
-    /* Check for connect error */
     int err = 0;
     socklen_t errlen = sizeof(err);
     getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen);
     if (err != 0) {
+        fprintf(stderr, "DHT-REPL: connect error %s:%d: %s\n",
+                peer_ip, peer_tcp_port, strerror(err));
         close(fd);
-        return;
+        return -1;
     }
 
-    /* Encode T1 STORE_VALUE */
+    /* Blocking send with 2s timeout */
+    int flags_save = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags_save & ~O_NONBLOCK);
+    struct timeval stv = { .tv_sec = 2 };
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &stv, sizeof(stv));
+
+    ssize_t sent = send(fd, frame, flen, MSG_NOSIGNAL);
+    close(fd);
+
+    if (sent < 0 || (size_t)sent != flen) {
+        fprintf(stderr, "DHT-REPL: send failed %s:%d: sent=%zd/%zu: %s\n",
+                peer_ip, peer_tcp_port, sent, flen, strerror(errno));
+        return -1;
+    }
+
+    return 0;
+}
+
+static void replicate_value(nodus_server_t *srv, const nodus_value_t *val) {
+    /* Encode T1 STORE_VALUE once for all peers */
     uint8_t *cbor_buf = malloc(65536);
-    if (!cbor_buf) { close(fd); return; }
+    if (!cbor_buf) return;
     size_t clen = 0;
     if (nodus_t1_store_value(0, val, cbor_buf, 65536, &clen) != 0) {
         free(cbor_buf);
-        close(fd);
         return;
     }
 
     /* Wire-frame it */
     uint8_t *frame = malloc(clen + 16);
-    if (!frame) { free(cbor_buf); close(fd); return; }
+    if (!frame) { free(cbor_buf); return; }
     size_t flen = nodus_frame_encode(frame, clen + 16, cbor_buf, (uint32_t)clen);
     free(cbor_buf);
+    if (flen == 0) { free(frame); return; }
 
-    if (flen > 0) {
-        /* Blocking send (small payload, should complete quickly) */
-        int flags_save = fcntl(fd, F_GETFL, 0);
-        fcntl(fd, F_SETFL, flags_save & ~O_NONBLOCK);
-        send(fd, frame, flen, MSG_NOSIGNAL);
-    }
-    free(frame);
-    close(fd);
-}
-
-static void replicate_value(nodus_server_t *srv, const nodus_value_t *val) {
     for (int i = 0; i < srv->pbft.peer_count; i++) {
         nodus_cluster_peer_t *peer = &srv->pbft.peers[i];
         if (peer->state != NODUS_NODE_ALIVE)
             continue;
-        replicate_to_peer(val, peer->ip, peer->tcp_port);
+
+        int rc = send_frame_to_peer(peer->ip, peer->tcp_port, frame, flen);
+        if (rc != 0) {
+            /* Queue to hinted handoff for retry */
+            nodus_storage_hinted_insert(&srv->storage,
+                                         peer->ip, peer->tcp_port,
+                                         frame, flen);
+        }
+    }
+
+    free(frame);
+}
+
+/**
+ * Retry DHT hinted handoff entries every NODUS_HINTED_RETRY_SEC seconds.
+ * For each ALIVE PBFT peer, query pending hints, attempt send, delete on success.
+ */
+static void dht_hinted_retry(nodus_server_t *srv) {
+    static uint64_t last_retry = 0;
+    uint64_t now = nodus_time_now();
+
+    if (now - last_retry < NODUS_HINTED_RETRY_SEC)
+        return;
+    last_retry = now;
+
+    /* Cleanup expired entries first */
+    nodus_storage_hinted_cleanup(&srv->storage);
+
+    /* Try to deliver pending hints to each ALIVE peer */
+    for (int i = 0; i < srv->pbft.peer_count; i++) {
+        nodus_cluster_peer_t *peer = &srv->pbft.peers[i];
+        if (peer->state != NODUS_NODE_ALIVE)
+            continue;
+
+        nodus_dht_hint_t *entries = NULL;
+        size_t count = 0;
+        if (nodus_storage_hinted_get(&srv->storage,
+                                       peer->ip, peer->tcp_port,
+                                       100, &entries, &count) != 0 || count == 0)
+            continue;
+
+        for (size_t j = 0; j < count; j++) {
+            int rc = send_frame_to_peer(peer->ip, peer->tcp_port,
+                                         entries[j].frame_data,
+                                         entries[j].frame_len);
+            if (rc == 0) {
+                nodus_storage_hinted_delete(&srv->storage, entries[j].id);
+            }
+        }
+
+        nodus_storage_hinted_free(entries, count);
     }
 }
 
@@ -1014,6 +1083,9 @@ int nodus_server_run(nodus_server_t *srv) {
 
         /* Presence: expire stale entries + broadcast local list to peers */
         nodus_presence_tick(srv);
+
+        /* Retry DHT hinted handoff (failed replication, every 30s) */
+        dht_hinted_retry(srv);
     }
 
     return 0;

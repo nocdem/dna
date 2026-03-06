@@ -18,6 +18,18 @@
 extern "C" {
 #endif
 
+/** DHT hinted handoff entry (failed replication, pending retry) */
+typedef struct {
+    int64_t     id;
+    char        peer_ip[64];
+    uint16_t    peer_port;
+    uint8_t    *frame_data;
+    size_t      frame_len;
+    uint64_t    created_at;
+    uint64_t    expires_at;
+    int         retry_count;
+} nodus_dht_hint_t;
+
 /** DHT storage handle */
 typedef struct {
     sqlite3 *db;
@@ -27,6 +39,12 @@ typedef struct {
     sqlite3_stmt *stmt_delete;
     sqlite3_stmt *stmt_cleanup;
     sqlite3_stmt *stmt_count;
+    /* Hinted handoff for DHT replication */
+    sqlite3_stmt *stmt_hint_insert;
+    sqlite3_stmt *stmt_hint_get;
+    sqlite3_stmt *stmt_hint_delete;
+    sqlite3_stmt *stmt_hint_cleanup;
+    sqlite3_stmt *stmt_hint_count;
 } nodus_storage_t;
 
 /**
@@ -105,6 +123,38 @@ int nodus_storage_cleanup(nodus_storage_t *store);
  * Get total number of stored values.
  */
 int nodus_storage_count(nodus_storage_t *store);
+
+/* ── DHT Hinted Handoff ─────────────────────────────────────────── */
+
+/**
+ * Insert a hinted handoff entry (failed DHT replication).
+ * Cap: 1000 entries. TTL: 24 hours.
+ */
+int nodus_storage_hinted_insert(nodus_storage_t *store,
+                                 const char *peer_ip, uint16_t peer_port,
+                                 const uint8_t *frame_data, size_t frame_len);
+
+/**
+ * Get pending hints for a peer (up to limit).
+ * Caller must free entries with nodus_storage_hinted_free().
+ */
+int nodus_storage_hinted_get(nodus_storage_t *store,
+                              const char *peer_ip, uint16_t peer_port,
+                              int limit,
+                              nodus_dht_hint_t **entries_out,
+                              size_t *count_out);
+
+/** Delete a hint by ID (on successful delivery). */
+int nodus_storage_hinted_delete(nodus_storage_t *store, int64_t id);
+
+/** Delete expired hinted handoff entries. Returns count deleted. */
+int nodus_storage_hinted_cleanup(nodus_storage_t *store);
+
+/** Get count of pending hints. */
+int nodus_storage_hinted_count(nodus_storage_t *store);
+
+/** Free hint entries returned by hinted_get. */
+void nodus_storage_hinted_free(nodus_dht_hint_t *entries, size_t count);
 
 #ifdef __cplusplus
 }

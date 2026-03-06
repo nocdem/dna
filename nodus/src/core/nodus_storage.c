@@ -7,6 +7,7 @@
  */
 
 #include "core/nodus_storage.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -52,6 +53,42 @@ static const char *CLEANUP_SQL =
 
 static const char *COUNT_SQL =
     "SELECT COUNT(*) FROM nodus_values";
+
+/* ── DHT Hinted Handoff SQL ──────────────────────────────────────── */
+
+static const char *HINT_SCHEMA_SQL =
+    "CREATE TABLE IF NOT EXISTS dht_hinted_handoff ("
+    "  id          INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  peer_ip     TEXT NOT NULL,"
+    "  peer_port   INTEGER NOT NULL,"
+    "  frame_data  BLOB NOT NULL,"
+    "  created_at  INTEGER NOT NULL,"
+    "  expires_at  INTEGER NOT NULL,"
+    "  retry_count INTEGER DEFAULT 0"
+    ");"
+    "CREATE INDEX IF NOT EXISTS idx_dht_hint_peer ON dht_hinted_handoff(peer_ip, peer_port);"
+    "CREATE INDEX IF NOT EXISTS idx_dht_hint_expires ON dht_hinted_handoff(expires_at);";
+
+static const char *HINT_INSERT_SQL =
+    "INSERT INTO dht_hinted_handoff (peer_ip, peer_port, frame_data, created_at, expires_at) "
+    "VALUES (?, ?, ?, ?, ?)";
+
+static const char *HINT_GET_SQL =
+    "SELECT id, peer_ip, peer_port, frame_data, created_at, expires_at, retry_count "
+    "FROM dht_hinted_handoff WHERE peer_ip = ? AND peer_port = ? "
+    "ORDER BY created_at ASC LIMIT ?";
+
+static const char *HINT_DELETE_SQL =
+    "DELETE FROM dht_hinted_handoff WHERE id = ?";
+
+static const char *HINT_CLEANUP_SQL =
+    "DELETE FROM dht_hinted_handoff WHERE expires_at <= ?";
+
+static const char *HINT_COUNT_SQL =
+    "SELECT COUNT(*) FROM dht_hinted_handoff";
+
+#define DHT_HINT_TTL_SEC    (24 * 3600)   /* 24 hours */
+#define DHT_HINT_MAX_ENTRIES 1000
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
 
@@ -135,6 +172,16 @@ int nodus_storage_open(const char *path, nodus_storage_t *store) {
         return -1;
     }
 
+    /* Hinted handoff schema */
+    rc = sqlite3_exec(store->db, HINT_SCHEMA_SQL, NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "nodus_storage: hint schema failed: %s\n", err);
+        sqlite3_free(err);
+        sqlite3_close(store->db);
+        store->db = NULL;
+        return -1;
+    }
+
     /* WAL mode for better concurrency */
     sqlite3_exec(store->db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
     sqlite3_exec(store->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
@@ -145,7 +192,12 @@ int nodus_storage_open(const char *path, nodus_storage_t *store) {
         sqlite3_prepare_v2(store->db, GET_ALL_SQL, -1, &store->stmt_get_all, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, DELETE_SQL, -1, &store->stmt_delete, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, CLEANUP_SQL, -1, &store->stmt_cleanup, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(store->db, COUNT_SQL, -1, &store->stmt_count, NULL) != SQLITE_OK) {
+        sqlite3_prepare_v2(store->db, COUNT_SQL, -1, &store->stmt_count, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(store->db, HINT_INSERT_SQL, -1, &store->stmt_hint_insert, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(store->db, HINT_GET_SQL, -1, &store->stmt_hint_get, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(store->db, HINT_DELETE_SQL, -1, &store->stmt_hint_delete, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(store->db, HINT_CLEANUP_SQL, -1, &store->stmt_hint_cleanup, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(store->db, HINT_COUNT_SQL, -1, &store->stmt_hint_count, NULL) != SQLITE_OK) {
         nodus_storage_close(store);
         return -1;
     }
@@ -161,6 +213,11 @@ void nodus_storage_close(nodus_storage_t *store) {
     if (store->stmt_delete) sqlite3_finalize(store->stmt_delete);
     if (store->stmt_cleanup) sqlite3_finalize(store->stmt_cleanup);
     if (store->stmt_count) sqlite3_finalize(store->stmt_count);
+    if (store->stmt_hint_insert) sqlite3_finalize(store->stmt_hint_insert);
+    if (store->stmt_hint_get) sqlite3_finalize(store->stmt_hint_get);
+    if (store->stmt_hint_delete) sqlite3_finalize(store->stmt_hint_delete);
+    if (store->stmt_hint_cleanup) sqlite3_finalize(store->stmt_hint_cleanup);
+    if (store->stmt_hint_count) sqlite3_finalize(store->stmt_hint_count);
     if (store->db) sqlite3_close(store->db);
     memset(store, 0, sizeof(*store));
 }
@@ -294,4 +351,151 @@ int nodus_storage_count(nodus_storage_t *store) {
         return sqlite3_column_int(s, 0);
 
     return -1;
+}
+
+/* ── DHT Hinted Handoff ─────────────────────────────────────────── */
+
+int nodus_storage_hinted_insert(nodus_storage_t *store,
+                                 const char *peer_ip, uint16_t peer_port,
+                                 const uint8_t *frame_data, size_t frame_len) {
+    if (!store || !store->db || !peer_ip || !frame_data) return -1;
+
+    /* Cap at max entries */
+    int count = nodus_storage_hinted_count(store);
+    if (count >= DHT_HINT_MAX_ENTRIES) {
+        fprintf(stderr, "DHT-HINT: max entries reached (%d), dropping\n", count);
+        return -1;
+    }
+
+    uint64_t now = (uint64_t)time(NULL);
+    uint64_t expires = now + DHT_HINT_TTL_SEC;
+
+    sqlite3_stmt *s = store->stmt_hint_insert;
+    sqlite3_reset(s);
+
+    sqlite3_bind_text(s, 1, peer_ip, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(s, 2, peer_port);
+    sqlite3_bind_blob(s, 3, frame_data, (int)frame_len, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(s, 4, (sqlite3_int64)now);
+    sqlite3_bind_int64(s, 5, (sqlite3_int64)expires);
+
+    int rc = sqlite3_step(s);
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr, "DHT-HINT: insert failed: %s\n", sqlite3_errmsg(store->db));
+        return -1;
+    }
+
+    fprintf(stderr, "DHT-HINT: queued for %s:%d (%zu bytes)\n",
+            peer_ip, peer_port, frame_len);
+    return 0;
+}
+
+int nodus_storage_hinted_get(nodus_storage_t *store,
+                              const char *peer_ip, uint16_t peer_port,
+                              int limit,
+                              nodus_dht_hint_t **entries_out,
+                              size_t *count_out) {
+    if (!store || !store->db || !peer_ip || !entries_out || !count_out) return -1;
+
+    sqlite3_stmt *s = store->stmt_hint_get;
+    sqlite3_reset(s);
+
+    sqlite3_bind_text(s, 1, peer_ip, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(s, 2, peer_port);
+    sqlite3_bind_int(s, 3, limit);
+
+    size_t cap = 16;
+    size_t count = 0;
+    nodus_dht_hint_t *entries = calloc(cap, sizeof(nodus_dht_hint_t));
+    if (!entries) return -1;
+
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        if (count >= cap) {
+            cap *= 2;
+            nodus_dht_hint_t *new_e = realloc(entries, cap * sizeof(nodus_dht_hint_t));
+            if (!new_e) { nodus_storage_hinted_free(entries, count); return -1; }
+            entries = new_e;
+        }
+
+        nodus_dht_hint_t *e = &entries[count];
+        e->id = sqlite3_column_int64(s, 0);
+        const char *ip = (const char *)sqlite3_column_text(s, 1);
+        if (ip) strncpy(e->peer_ip, ip, sizeof(e->peer_ip) - 1);
+        e->peer_port = (uint16_t)sqlite3_column_int(s, 2);
+
+        const void *blob = sqlite3_column_blob(s, 3);
+        int blob_len = sqlite3_column_bytes(s, 3);
+        if (blob && blob_len > 0) {
+            e->frame_data = malloc((size_t)blob_len);
+            if (e->frame_data) {
+                memcpy(e->frame_data, blob, (size_t)blob_len);
+                e->frame_len = (size_t)blob_len;
+            }
+        }
+
+        e->created_at = (uint64_t)sqlite3_column_int64(s, 4);
+        e->expires_at = (uint64_t)sqlite3_column_int64(s, 5);
+        e->retry_count = sqlite3_column_int(s, 6);
+        count++;
+    }
+
+    if (count == 0) {
+        free(entries);
+        *entries_out = NULL;
+        *count_out = 0;
+        return -1;
+    }
+
+    *entries_out = entries;
+    *count_out = count;
+    return 0;
+}
+
+int nodus_storage_hinted_delete(nodus_storage_t *store, int64_t id) {
+    if (!store || !store->db) return -1;
+
+    sqlite3_stmt *s = store->stmt_hint_delete;
+    sqlite3_reset(s);
+    sqlite3_bind_int64(s, 1, (sqlite3_int64)id);
+
+    int rc = sqlite3_step(s);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int nodus_storage_hinted_cleanup(nodus_storage_t *store) {
+    if (!store || !store->db) return -1;
+
+    sqlite3_stmt *s = store->stmt_hint_cleanup;
+    sqlite3_reset(s);
+
+    uint64_t now = (uint64_t)time(NULL);
+    sqlite3_bind_int64(s, 1, (sqlite3_int64)now);
+
+    int rc = sqlite3_step(s);
+    if (rc != SQLITE_DONE) return -1;
+
+    int cleaned = sqlite3_changes(store->db);
+    if (cleaned > 0)
+        fprintf(stderr, "DHT-HINT: cleaned %d expired entries\n", cleaned);
+    return cleaned;
+}
+
+int nodus_storage_hinted_count(nodus_storage_t *store) {
+    if (!store || !store->db) return -1;
+
+    sqlite3_stmt *s = store->stmt_hint_count;
+    sqlite3_reset(s);
+
+    if (sqlite3_step(s) == SQLITE_ROW)
+        return sqlite3_column_int(s, 0);
+
+    return -1;
+}
+
+void nodus_storage_hinted_free(nodus_dht_hint_t *entries, size_t count) {
+    if (!entries) return;
+    for (size_t i = 0; i < count; i++) {
+        free(entries[i].frame_data);
+    }
+    free(entries);
 }
