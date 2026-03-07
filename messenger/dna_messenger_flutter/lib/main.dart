@@ -12,6 +12,7 @@ import 'screens/screens.dart';
 import 'screens/lock/lock_screen.dart';
 import 'design_system/theme/dna_colors.dart';
 import 'design_system/theme/dna_theme.dart';
+import 'services/cache_database.dart';
 import 'services/notification_service.dart';
 import 'utils/window_state.dart';
 import 'utils/lifecycle_observer.dart';
@@ -84,6 +85,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
   AppLifecycleObserver? _lifecycleObserver;
   bool _autoLoadStarted = false;
   bool _autoLoadComplete = false;
+  bool _registrationIncomplete = false;
 
   @override
   void initState() {
@@ -138,6 +140,18 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           engine.debugLog('STARTUP', 'v0.3.0: Identity exists, auto-loading...');
           await ref.read(identitiesProvider.notifier).loadIdentity();
           engine.debugLog('STARTUP', 'v0.3.0: Identity auto-loaded');
+
+          // v0.101.38: Check if registration was completed (user has a registered name)
+          // If app was closed mid-registration, keys exist but no name was registered.
+          // Check local profile cache (SQLite) — does not require network.
+          final fp = ref.read(currentFingerprintProvider);
+          if (fp != null) {
+            final cached = await CacheDatabase.instance.getIdentity(fp);
+            if (cached == null || cached.displayName.isEmpty) {
+              engine.debugLog('STARTUP', 'v0.101.38: No cached name for $fp — registration incomplete');
+              _registrationIncomplete = true;
+            }
+          }
         } else {
           engine.debugLog('STARTUP', 'v0.3.0: No identity, showing onboarding');
         }
@@ -194,6 +208,18 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
         // v0.3.0: Route based on whether identity is loaded (reactive)
         // currentFingerprint is non-null when identity is loaded
         if (currentFingerprint != null) {
+          // v0.101.38: Check if registration was completed (user has a registered name).
+          // Watch the profile cache reactively — when registerName() updates it,
+          // this rebuilds and routes to HomeScreen automatically.
+          final profileCache = ref.watch(identityProfileCacheProvider);
+          final cached = profileCache[currentFingerprint];
+          final hasName = cached != null && cached.displayName.isNotEmpty;
+
+          if (!hasName && _registrationIncomplete) {
+            // Keys exist but no registered name — send back to registration
+            return IdentitySelectionScreen(resumeFingerprint: currentFingerprint);
+          }
+
           // Trigger contacts provider to start presence lookups in background
           // (presence data will update progressively via _updatePresenceInBackground)
           ref.watch(contactsProvider);

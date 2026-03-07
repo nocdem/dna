@@ -15,12 +15,15 @@ import '../../utils/logger.dart' show log, logError;
 
 /// Entry point for onboarding - in v0.3.0 single-user model, this just shows the unified flow
 class IdentitySelectionScreen extends ConsumerWidget {
-  const IdentitySelectionScreen({super.key});
+  /// v0.101.38: If non-null, identity exists but has no registered name.
+  /// Skip seed steps and go directly to nickname registration.
+  final String? resumeFingerprint;
+
+  const IdentitySelectionScreen({super.key, this.resumeFingerprint});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // v0.3.0: Always show unified onboarding (no identity list needed)
-    return const OnboardingScreen();
+    return OnboardingScreen(resumeFingerprint: resumeFingerprint);
   }
 }
 
@@ -37,7 +40,9 @@ enum _OnboardingStep {
 }
 
 class OnboardingScreen extends ConsumerStatefulWidget {
-  const OnboardingScreen({super.key});
+  final String? resumeFingerprint;
+
+  const OnboardingScreen({super.key, this.resumeFingerprint});
 
   @override
   ConsumerState<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -75,6 +80,13 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       _wordControllers.add(TextEditingController());
       _focusNodes.add(FocusNode());
     }
+
+    // v0.101.38: Resume incomplete registration — skip seed steps,
+    // go directly to nickname entry
+    if (widget.resumeFingerprint != null) {
+      _fingerprint = widget.resumeFingerprint;
+      _step = _OnboardingStep.enterNickname;
+    }
   }
 
   @override
@@ -92,12 +104,17 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // v0.101.38: In resume mode (no seed steps), hide back button on nickname step
+    final showBackButton = _step != _OnboardingStep.welcome &&
+        !(widget.resumeFingerprint != null && _step == _OnboardingStep.enterNickname);
+
     return Scaffold(
       appBar: _step != _OnboardingStep.welcome ? AppBar(
-        leading: IconButton(
+        leading: showBackButton ? IconButton(
           icon: const FaIcon(FontAwesomeIcons.arrowLeft),
           onPressed: _handleBack,
-        ),
+        ) : null,
+        automaticallyImplyLeading: false,
         title: Text(_getStepTitle()),
       ) : null,
       body: SafeArea(
