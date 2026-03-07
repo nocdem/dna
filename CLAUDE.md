@@ -152,17 +152,17 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 **Documentation Files & Topics:**
 | Topic | Documentation File | Update When... |
 |-------|-------------------|----------------|
-| Architecture | `docs/ARCHITECTURE_DETAILED.md` | Directory structure, components, build system, data flow changes |
-| DHT System | `docs/DHT_SYSTEM.md` | DHT operations, bootstrap nodes, offline queue, key derivation changes |
-| DNA Engine API | `docs/DNA_ENGINE_API.md` | Public API functions, data types, callbacks, error codes changes |
-| DNA Nodus | `docs/DNA_NODUS.md` | Bootstrap server, config, deployment changes |
-| Flutter UI | `docs/FLUTTER_UI.md` | Screens, FFI bindings, providers, widgets changes |
-| Function Reference | `docs/functions/` | Adding, modifying, or removing any function signatures |
-| Git Workflow | `docs/GIT_WORKFLOW.md` | Commit guidelines, branch strategy, repo procedures changes |
-| Message System | `docs/MESSAGE_SYSTEM.md` | Message format, encryption, GEK, database schema changes |
-| Mobile Porting | `docs/MOBILE_PORTING.md` | Android SDK, JNI, iOS, platform abstraction changes |
-| Transport Layer | `docs/P2P_ARCHITECTURE.md` | DHT transport, presence, peer discovery changes |
-| Security | `docs/SECURITY_AUDIT.md` | Crypto primitives, vulnerabilities, security fixes |
+| Architecture | `messenger/docs/ARCHITECTURE_DETAILED.md` | Directory structure, components, build system, data flow changes |
+| DHT System | `messenger/docs/DHT_SYSTEM.md` | DHT operations, bootstrap nodes, offline queue, key derivation changes |
+| DNA Engine API | `messenger/docs/DNA_ENGINE_API.md` | Public API functions, data types, callbacks, error codes changes |
+| DNA Nodus | `messenger/docs/DNA_NODUS.md` | Bootstrap server, config, deployment changes |
+| Flutter UI | `messenger/docs/FLUTTER_UI.md` | Screens, FFI bindings, providers, widgets changes |
+| Function Reference | `messenger/docs/functions/` | Adding, modifying, or removing any function signatures |
+| Git Workflow | `messenger/docs/GIT_WORKFLOW.md` | Commit guidelines, branch strategy, repo procedures changes |
+| Message System | `messenger/docs/MESSAGE_SYSTEM.md` | Message format, encryption, GEK, database schema changes |
+| Mobile Porting | `messenger/docs/MOBILE_PORTING.md` | Android SDK, JNI, iOS, platform abstraction changes |
+| Transport Layer | `messenger/docs/P2P_ARCHITECTURE.md` | DHT transport, presence, peer discovery changes |
+| Security | `messenger/docs/SECURITY_AUDIT.md` | Crypto primitives, vulnerabilities, security fixes |
 
 **Procedure:**
 1. **IDENTIFY** which documentation files are affected by the changes
@@ -340,12 +340,32 @@ All C projects use CMake. Build from each project's `build/` directory.
 
 | Project | Unit Tests | Integration Tests |
 |---------|-----------|-------------------|
-| Nodus | `cd nodus/build && ctest` (13 tests) | `bash nodus/tests/integration_test.sh` (SSH to 3-node cluster) |
+| Nodus | `cd nodus/build && ctest` (16 tests) | `bash nodus/tests/integration_test.sh` (SSH to 3-node cluster) |
 | Messenger | `cd messenger/build && ctest` | CLI tool: `messenger/build/cli/dna-messenger-cli` |
 | DNAC | `cd dnac/build && ./test_real`, `./test_gaps` (18 cases) | `./test_remote` (cross-machine) |
 
 Run a single nodus test: `cd nodus/build && ./test_cbor` (or any `test_*` binary).
 Run a single messenger test: `cd messenger/build && ./tests/test_kyber1024` (or any `test_*` binary).
+
+### TEST REQUIREMENTS (MANDATORY)
+
+**When adding new features or modifying existing behavior:**
+1. **ALL existing tests MUST pass** — run `ctest` for the affected project(s) before committing
+2. **Zero warnings, zero errors** — builds must be completely clean
+3. **Add tests for new features** — if you add a new feature, add corresponding unit tests
+4. **Update existing tests** — if behavior changes, update tests to match
+
+**When tests fail after your changes:**
+- Fix the root cause, do NOT skip or disable tests
+- If a test needs updating due to intentional behavior change, update the test
+- Run the full test suite, not just the test you changed
+
+**Test commands (run before every commit):**
+```bash
+cd nodus/build && ctest --output-on-failure    # Nodus (16 tests)
+cd messenger/build && ctest --output-on-failure # Messenger
+cd dnac/build && ctest --output-on-failure      # DNAC (if changed)
+```
 
 ## Git Identity
 
@@ -376,7 +396,8 @@ git push origin main    # GitHub second (mirror)
 ├── messenger/         # DNA Messenger - C library + Flutter app
 ├── nodus/             # Nodus v5 - DHT server + client SDK (pure C)
 ├── dnac/              # DNA Cash - UTXO digital cash over DHT
-└── cpunk/             # cpunk.io website
+├── cpunk/             # cpunk.io + cpunk.club websites + backend API
+└── docs/              # Top-level project docs (readiness reports)
 ```
 
 ### How Projects Relate
@@ -389,7 +410,7 @@ git push origin main    # GitHub second (mirror)
            │ FFI (dart:ffi)
 ┌──────────▼───────────────────────────────────────────┐
 │  DNA Engine (C) - messenger/src/api/                 │
-│  16 modular handlers + async task queue              │
+│  17 modular handlers + async task queue              │
 ├──────────────────────────────────────────────────────┤
 │  Domain layers:                                      │
 │  messenger/  dht/  transport/  database/  blockchain/│
@@ -410,22 +431,43 @@ git push origin main    # GitHub second (mirror)
 
 ### Messenger C Library Architecture
 
-The DNA Engine (`messenger/src/api/dna_engine.c`) is a modular async C library with 16 domain modules in `messenger/src/api/engine/`:
+The DNA Engine (`messenger/src/api/dna_engine.c`) is a modular async C library with 17 domain modules in `messenger/src/api/engine/`:
 
 | Module | Domain |
 |--------|--------|
-| `dna_engine_messaging.c` | Send/receive, conversations, retry |
+| `dna_engine_addressbook.c` | Address book management |
+| `dna_engine_backup.c` | DHT sync for all data types |
+| `dna_engine_channels.c` | Channel CRUD, posts, subscriptions |
 | `dna_engine_contacts.c` | Contact requests, blocking |
 | `dna_engine_groups.c` | Group CRUD, GEK encryption, invitations |
+| `dna_engine_helpers.c` | Shared utility functions |
 | `dna_engine_identity.c` | Identity create/load, profiles |
-| `dna_engine_presence.c` | Heartbeat, presence lookup |
-| `dna_engine_wallet.c` | Multi-chain wallet (Cellframe, ETH, SOL, TRON) |
-| `dna_engine_backup.c` | DHT sync for all data types |
 | `dna_engine_lifecycle.c` | Engine pause/resume (mobile) |
 | `dna_engine_listeners.c` | DHT key subscriptions |
+| `dna_engine_logging.c` | Debug log control |
+| `dna_engine_messaging.c` | Send/receive, conversations, retry |
+| `dna_engine_presence.c` | Heartbeat, presence lookup |
+| `dna_engine_signing.c` | Data signing operations |
+| `dna_engine_version.c` | Version info and checking |
+| `dna_engine_wall.c` | Personal wall posts |
+| `dna_engine_wallet.c` | Multi-chain wallet (Cellframe, ETH, SOL, TRON) |
 | `dna_engine_workers.c` | Background thread pool |
 
 Public API: `messenger/include/dna/dna_engine.h` (async callbacks, opaque `dna_engine_t`).
+
+**Messenger directory layout:**
+- `messenger/src/api/` — DNA Engine core + `engine/` modules
+- `messenger/messenger/` — Messaging core (identity, keys, contacts)
+- `messenger/dht/` — DHT operations (`core/`, `client/`, `shared/`, `keyserver/`)
+- `messenger/transport/` — P2P transport layer
+- `messenger/database/` — SQLite persistence and caching
+- `messenger/blockchain/` — Multi-chain wallet (`cellframe/`, `ethereum/`, `solana/`, `tron/`)
+- `messenger/cli/` — CLI tool (`dna-messenger-cli`)
+- `messenger/jni/` — Android JNI bindings
+- `messenger/dna_messenger_flutter/` — Flutter app (Dart)
+- `messenger/include/` — Public C headers
+- `messenger/tests/` — Unit tests
+- `messenger/web/` — WebAssembly target (planned)
 
 New features follow the module pattern: add task type in `dna_engine_internal.h`, implement handler in module, add dispatch case in `dna_engine.c`, declare in `dna_engine.h`. See `messenger/src/api/engine/README.md`.
 
@@ -461,7 +503,7 @@ dna_request_id_t dna_engine_xxx(dna_engine_t *engine, ...) {
 
 Flutter connects to the C library via `dart:ffi`:
 - **Binding generator config:** `messenger/dna_messenger_flutter/ffigen.yaml`
-- **Generated bindings:** `lib/ffi/dna_bindings_generated.dart` (auto-generated, do not edit)
+- **FFI bindings:** `lib/ffi/dna_bindings.dart` (hand-written FFI bindings)
 - **Dart wrapper:** `lib/ffi/dna_engine.dart` (converts C callbacks to Dart Futures/Streams)
 - **State management:** Riverpod providers in `lib/providers/`
 
@@ -473,12 +515,18 @@ Nodus is a post-quantum Kademlia DHT with PBFT consensus. Pure C, no C++ depende
 **Protocol:** CBOR over wire frames (7-byte header: magic `0x4E44` + version + length)
 **Two protocol tiers:** Tier 1 (Kademlia: ping/find_node/put/get) and Tier 2 (Client: auth/dht_put/dht_get/listen/channels)
 
-**Key source files:**
+**Source layout:**
+- `nodus/src/server/` — Server event loop (epoll), `nodus_server.c`
+- `nodus/src/client/` — Client SDK, `nodus_client.c`
+- `nodus/src/protocol/` — Wire protocol, Tier 1 + Tier 2 dispatch
+- `nodus/src/core/` — Kademlia routing, storage
+- `nodus/src/transport/` — UDP/TCP transport
+- `nodus/src/channel/` — Channel/subscription system
+- `nodus/src/consensus/` — PBFT consensus
+- `nodus/src/crypto/` — Nodus-specific crypto helpers
+- `nodus/src/witness/` — DNAC witness server (embedded in nodus-server)
 - `nodus/include/nodus/nodus.h` — Client SDK public API
-- `nodus/include/nodus/nodus_types.h` — Constants (512-bit keyspace, k=8, 7-day TTL, crypto sizes)
-- `nodus/src/server/nodus_server.c` — Server event loop (epoll)
-- `nodus/src/client/nodus_client.c` — Client SDK implementation
-- `nodus/src/protocol/nodus_tier2.c` — Client protocol message dispatch
+- `nodus/include/nodus/nodus_types.h` — Constants (512-bit keyspace, k=8, 7-day TTL)
 
 **Messenger integration:** `messenger/dht/shared/nodus_ops.c` wraps the nodus singleton with convenience functions (`nodus_ops_put`, `nodus_ops_get`, `nodus_ops_listen`). Lifecycle managed by `nodus_init.c`.
 
@@ -489,6 +537,9 @@ UTXO-based digital cash with BFT witness consensus:
 - `dnac/src/transaction/` — TX building, verification, nullifiers, genesis
 - `dnac/src/bft/` — BFT serialization, roster management, replay prevention
 - `dnac/src/nodus/` — Witness client (Nodus SDK), discovery, attestation
+- `dnac/src/cli/` — CLI tool for wallet operations
+- `dnac/src/db/` — Database layer
+- `dnac/src/utils/` — Crypto helpers, utilities
 - Witness server logic lives in `nodus/src/witness/` (embedded in nodus-server)
 - Public API: `dnac/include/dnac/dnac.h`
 
@@ -607,16 +658,11 @@ This is a multiplatform project targeting Linux, Windows, and Android (iOS plann
 - Changing function signatures
 - Removing functions
 
-## FUZZ TESTING REQUIREMENT
-When implementing **new methods in dna_engine or dna_api** that parse external input (network data, user input, file formats), you **MUST** add a corresponding fuzz test.
-
-**Documentation:** `messenger/docs/FUZZING.md`
-
 ---
 
 ## Infrastructure
 
-### Nodus v5 Test Cluster (running v0.5.0)
+### Nodus v5 Test Cluster (running v0.5.6)
 | Node | IP | Ports |
 |------|-----|-------|
 | nodus-01 | 161.97.85.25 | UDP 4000, TCP 4001 |
