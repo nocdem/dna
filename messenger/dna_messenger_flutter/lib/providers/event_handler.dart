@@ -9,7 +9,6 @@ import '../utils/logger.dart';
 import 'engine_provider.dart';
 import 'contacts_provider.dart';
 import 'messages_provider.dart';
-import 'groups_provider.dart';
 import 'contact_requests_provider.dart';
 import 'identity_provider.dart';
 import 'identity_profile_cache_provider.dart';
@@ -193,9 +192,8 @@ class EventHandler {
         _updateSelectedContactPresence(fp, false);
 
       case MessageReceivedEvent(message: final msg):
-        // Check if this is a group invitation - handle separately
+        // Groups UI disabled — skip group invitation messages
         if (msg.type == MessageType.groupInvitation) {
-          _ref.invalidate(invitationsProvider);
           break;
         }
 
@@ -261,21 +259,14 @@ class EventHandler {
         break;
 
       case GroupInvitationReceivedEvent():
-        // Refresh invitations list when new invitation received
-        _ref.invalidate(invitationsProvider);
-        break;
-
       case GroupMemberJoinedEvent():
       case GroupMemberLeftEvent():
-        // Refresh groups to update member counts
-        _ref.invalidate(groupsProvider);
+        // Groups UI disabled — skip group event processing
         break;
 
       case IdentityLoadedEvent():
         // Identity loaded - refresh all data (seamless update for contacts)
         _ref.read(contactsProvider.notifier).refresh();
-        _ref.invalidate(groupsProvider);
-        _ref.invalidate(invitationsProvider);
         _ref.invalidate(contactRequestsProvider);
         break;
 
@@ -296,47 +287,12 @@ class EventHandler {
         });
         break;
 
-      case GroupMessageReceivedEvent(groupUuid: final uuid, newCount: final count):
-        // New group messages received via DHT listener
-        // IMPORTANT: Callback fires immediately without fetching (to avoid DHT thread deadlock)
-        // So we must sync messages from DHT here before refreshing the UI
-
-        // Check if this group chat is currently open
-        final openGroupUuid = _ref.read(openGroupUuidProvider);
-        final isGroupChatOpen = openGroupUuid == uuid;
-
-        // Debug logging for group badge issue investigation
-        final engineForLog = _ref.read(engineProvider).valueOrNull;
-        engineForLog?.debugLog('EVENT', 'GROUP_MESSAGE_RECEIVED: uuid=${uuid.length > 8 ? uuid.substring(0, 8) : uuid}..., count=$count, openGroupUuid=${openGroupUuid ?? "null"}, isGroupChatOpen=$isGroupChatOpen');
-
-        _ref.read(engineProvider).whenData((engine) async {
-          engine.debugLog('EVENT', 'GROUP_MESSAGE_RECEIVED: whenData callback started for ${uuid.length > 8 ? uuid.substring(0, 8) : uuid}');
-          // Sync messages from DHT to local DB (runs on worker thread, not DHT callback thread)
-          await engine.syncGroupByUuid(uuid);
-          // Now refresh the conversation from local DB
-          _ref.invalidate(groupConversationProvider(uuid));
-          // Force UI rebuild via refresh trigger
-          _ref.read(groupConversationRefreshTriggerProvider.notifier).state++;
-          // Also refresh groups list to update any preview/badge
-          _ref.invalidate(groupsProvider);
-
-          // Increment unread count if chat is not open
-          if (!isGroupChatOpen && count > 0) {
-            _ref.read(groupUnreadCountsProvider.notifier).incrementCount(uuid, count);
-            engine.debugLog('EVENT', 'GROUP_MESSAGE_RECEIVED: Incremented unread count for ${uuid.length > 8 ? uuid.substring(0, 8) : uuid} by $count');
-          } else {
-            engine.debugLog('EVENT', 'GROUP_MESSAGE_RECEIVED: Skipped unread increment (isGroupChatOpen=$isGroupChatOpen, count=$count)');
-          }
-        });
+      case GroupMessageReceivedEvent():
+        // Groups UI disabled — skip group message processing
         break;
 
-      case GroupsSyncedEvent(groupsRestored: final count):
-        // Groups restored from DHT on new device - refresh groups UI
-        logPrint('[DART-HANDLER] GroupsSyncedEvent: $count groups restored from DHT');
-        if (count > 0) {
-          _ref.invalidate(groupsProvider);
-          _ref.invalidate(invitationsProvider);
-        }
+      case GroupsSyncedEvent():
+        // Groups UI disabled — skip group sync processing
         break;
 
       case ContactsSyncedEvent(contactsSynced: final count):

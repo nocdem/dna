@@ -32,10 +32,8 @@ class _MainNavigation extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final currentTab = ref.watch(currentTabProvider);
 
-    // Combined unread count for Chats tab badge
-    final chatUnreadCount = ref.watch(totalUnreadCountProvider);
-    final groupUnreadCount = ref.watch(totalGroupUnreadCountProvider);
-    final totalMsgUnread = chatUnreadCount + groupUnreadCount;
+    // Unread count for Chats tab badge
+    final totalMsgUnread = ref.watch(totalUnreadCountProvider);
 
     return Scaffold(
       body: IndexedStack(
