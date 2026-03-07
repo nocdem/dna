@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  5
-#define NODUS_VERSION_PATCH  9
-#define NODUS_VERSION_STRING "0.5.9"
+#define NODUS_VERSION_PATCH  10
+#define NODUS_VERSION_STRING "0.5.10"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -95,6 +95,10 @@ extern "C" {
 #define NODUS_TCP_KEEPIDLE       30
 #define NODUS_TCP_KEEPINTVL      10
 #define NODUS_TCP_KEEPCNT        3
+
+/* Client application-level ping (keeps connection alive through NAT/Android Doze) */
+#define NODUS_CLIENT_PING_INTERVAL_MS  60000   /* Send ping every 60s */
+#define NODUS_CLIENT_PING_TIMEOUT_MS   10000   /* Force disconnect if no pong within 10s */
 
 /* ── Core types ──────────────────────────────────────────────────── */
 

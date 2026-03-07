@@ -142,6 +142,11 @@ typedef struct {
     pthread_t              read_thread;
     _Atomic bool           read_thread_running;
     _Atomic bool           read_thread_stop;
+
+    /* Application-level ping (detects dead connections through NAT/Android Doze) */
+    uint64_t               last_ping_sent;      /* ms timestamp of last ping sent */
+    uint64_t               last_pong_received;   /* ms timestamp of last pong received */
+    uint32_t               ping_txn;             /* txn ID of outstanding ping (0 = none) */
 } nodus_client_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */
