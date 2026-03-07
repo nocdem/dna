@@ -266,13 +266,15 @@ static bool wait_response(nodus_client_t *client, nodus_pending_t *req, int time
         if (!client->conn && client->state != NODUS_CLIENT_RECONNECTING)
             return false;
 
-        if (atomic_load(&client->read_thread_running)) {
+        if (atomic_load(&client->read_thread_running) &&
+            !pthread_equal(pthread_self(), client->read_thread)) {
             /* Read thread handles TCP — just wait for ready flag */
             sleep_ms(10);
             elapsed += 10;
         } else {
-            /* No read thread yet (during connect/auth) — poll directly */
-            nodus_client_poll(client, 50);
+            /* We ARE the read thread (reconnect path), or no thread — poll directly */
+            nodus_tcp_t *tcp = (nodus_tcp_t *)client->tcp;
+            if (tcp) nodus_tcp_poll(tcp, 50);
             elapsed += 50;
         }
     }
