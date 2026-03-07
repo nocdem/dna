@@ -93,73 +93,11 @@ int trx_wallet_generate(
 );
 
 /**
- * Create TRON wallet from seed and save to file
- *
- * @param seed          64-byte BIP39 master seed
- * @param seed_len      Length of seed
- * @param name          Wallet name (used for filename)
- * @param wallet_dir    Directory to save wallet
- * @param address_out   Output: Base58Check address string
- * @return              0 on success, -1 on error
- */
-int trx_wallet_create_from_seed(
-    const uint8_t *seed,
-    size_t seed_len,
-    const char *name,
-    const char *wallet_dir,
-    char *address_out
-);
-
-/**
  * Clear wallet from memory securely
  *
  * @param wallet        Wallet to clear
  */
 void trx_wallet_clear(trx_wallet_t *wallet);
-
-/* ============================================================================
- * WALLET STORAGE
- * ============================================================================ */
-
-/**
- * Save wallet to JSON file
- *
- * @param wallet        Wallet to save
- * @param name          Wallet name
- * @param wallet_dir    Directory to save to
- * @return              0 on success, -1 on error
- */
-int trx_wallet_save(
-    const trx_wallet_t *wallet,
-    const char *name,
-    const char *wallet_dir
-);
-
-/**
- * Load wallet from JSON file
- *
- * @param file_path     Path to wallet file
- * @param wallet_out    Output: loaded wallet
- * @return              0 on success, -1 on error
- */
-int trx_wallet_load(
-    const char *file_path,
-    trx_wallet_t *wallet_out
-);
-
-/**
- * Get address from wallet file without loading private key
- *
- * @param file_path     Path to wallet file
- * @param address_out   Output: address string
- * @param address_size  Size of address_out buffer
- * @return              0 on success, -1 on error
- */
-int trx_wallet_get_address(
-    const char *file_path,
-    char *address_out,
-    size_t address_size
-);
 
 /* ============================================================================
  * ADDRESS UTILITIES

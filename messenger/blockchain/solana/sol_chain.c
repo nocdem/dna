@@ -198,54 +198,6 @@ static int sol_chain_send(
     return ret;
 }
 
-static int sol_chain_send_from_wallet(
-    const char *wallet_path,
-    const char *to_address,
-    const char *amount,
-    const char *token,
-    const char *network,
-    blockchain_fee_speed_t fee_speed,
-    char *txhash_out,
-    size_t txhash_out_size
-) {
-    (void)network;   /* Mainnet only for now */
-    (void)fee_speed; /* Solana has fixed fees */
-
-    if (!wallet_path || !to_address || !amount) {
-        return -1;
-    }
-
-    /* Only native SOL supported */
-    if (!is_native_sol(token)) {
-        QGP_LOG_ERROR(LOG_TAG, "SPL tokens not yet supported: %s", token);
-        return -1;
-    }
-
-    /* Load wallet */
-    sol_wallet_t wallet;
-    if (sol_wallet_load(wallet_path, &wallet) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load wallet: %s", wallet_path);
-        return -1;
-    }
-
-    /* Parse amount (in SOL) to lamports — string-based, no float */
-    uint64_t lamports;
-    if (sol_parse_amount_to_lamports(amount, &lamports) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid SOL amount: %s", amount);
-        sol_wallet_clear(&wallet);
-        return -1;
-    }
-
-    /* Send transaction */
-    int ret = sol_tx_send_lamports(&wallet, to_address, lamports,
-                                    txhash_out, txhash_out_size);
-
-    /* Clear wallet */
-    sol_wallet_clear(&wallet);
-
-    return ret;
-}
-
 static int sol_chain_get_tx_status(
     const char *txhash,
     blockchain_tx_status_t *status_out
@@ -363,7 +315,6 @@ static const blockchain_ops_t sol_ops = {
     .get_balance = sol_chain_get_balance,
     .estimate_fee = sol_chain_estimate_fee,
     .send = sol_chain_send,
-    .send_from_wallet = sol_chain_send_from_wallet,
     .get_tx_status = sol_chain_get_tx_status,
     .validate_address = sol_chain_validate_address,
     .get_transactions = sol_chain_get_transactions,

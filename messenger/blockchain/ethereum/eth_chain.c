@@ -153,89 +153,6 @@ static int eth_chain_send(
     return ret;
 }
 
-static int eth_chain_send_from_wallet(
-    const char *wallet_path,
-    const char *to_address,
-    const char *amount,
-    const char *token,
-    const char *network,
-    blockchain_fee_speed_t fee_speed,
-    char *txhash_out,
-    size_t txhash_out_size
-) {
-    (void)network; /* ETH mainnet only */
-
-    if (!wallet_path || !to_address || !amount) {
-        return -1;
-    }
-
-    /* Validate ERC-20 token if specified */
-    if (token != NULL && strlen(token) > 0 && strcasecmp(token, "ETH") != 0) {
-        if (!eth_erc20_is_supported(token)) {
-            QGP_LOG_ERROR(LOG_TAG, "Unsupported token: %s", token);
-            return -1;
-        }
-    }
-
-    /* Load wallet */
-    eth_wallet_t wallet;
-    if (eth_wallet_load(wallet_path, &wallet) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load wallet: %s", wallet_path);
-        return -1;
-    }
-
-    /* Map fee speed */
-    int gas_speed;
-    switch (fee_speed) {
-        case BLOCKCHAIN_FEE_SLOW:
-            gas_speed = ETH_GAS_SLOW;
-            break;
-        case BLOCKCHAIN_FEE_FAST:
-            gas_speed = ETH_GAS_FAST;
-            break;
-        default:
-            gas_speed = ETH_GAS_NORMAL;
-            break;
-    }
-
-    char tx_hash[67];
-    int ret;
-
-    /* Check if ERC-20 token or native ETH */
-    if (token != NULL && strlen(token) > 0 && strcasecmp(token, "ETH") != 0) {
-        /* ERC-20 token transfer */
-        ret = eth_erc20_send_by_symbol(
-            wallet.private_key,
-            wallet.address_hex,
-            to_address,
-            amount,
-            token,
-            gas_speed,
-            tx_hash
-        );
-    } else {
-        /* Native ETH transfer */
-        ret = eth_send_eth_with_gas(
-            wallet.private_key,
-            wallet.address_hex,
-            to_address,
-            amount,
-            gas_speed,
-            tx_hash
-        );
-    }
-
-    /* Clear sensitive data */
-    eth_wallet_clear(&wallet);
-
-    if (ret == 0 && txhash_out && txhash_out_size > 0) {
-        strncpy(txhash_out, tx_hash, txhash_out_size - 1);
-        txhash_out[txhash_out_size - 1] = '\0';
-    }
-
-    return ret;
-}
-
 static int eth_chain_get_tx_status(
     const char *txhash,
     blockchain_tx_status_t *status_out
@@ -348,7 +265,6 @@ static const blockchain_ops_t eth_ops = {
     .get_balance = eth_chain_get_balance,
     .estimate_fee = eth_chain_estimate_fee,
     .send = eth_chain_send,
-    .send_from_wallet = eth_chain_send_from_wallet,
     .get_tx_status = eth_chain_get_tx_status,
     .validate_address = eth_chain_validate_address,
     .get_transactions = eth_chain_get_transactions,

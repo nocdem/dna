@@ -11,7 +11,7 @@ else()
     option(BUILD_SHARED_LIB "Build dna_lib as shared library (for Flutter)" OFF)
 endif()
 
-option(BUILD_DNA_SEND "Build dna-send CLI tool" OFF)
+
 
 # Shared libs need PIC; harmless to enable globally and avoids PIC linker surprises
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -220,8 +220,7 @@ if(BUILD_SHARED_LIB)
         database/profile_manager.c  # Smart profile fetching (cache + DHT)
         database/cache_manager.c    # Unified cache lifecycle manager
         database/group_invitations.c # Group invitation tracking database
-        blockchain/cellframe/cellframe_wallet.c        # Cellframe wallet integration
-        blockchain/cellframe/cellframe_wallet_create.c # Cellframe wallet creation from seed
+        blockchain/cellframe/cellframe_wallet_create.c # Cellframe wallet derivation (seed-based)
         blockchain/cellframe/cellframe_rpc.c           # Blockchain RPC client
         blockchain/cellframe/cellframe_addr.c          # Blockchain address utilities
         blockchain/blockchain_wallet.c                 # Generic multi-chain wallet interface
@@ -301,8 +300,7 @@ else()
         database/profile_manager.c  # Smart profile fetching (cache + DHT)
         database/cache_manager.c    # Unified cache lifecycle manager
         database/group_invitations.c # Group invitation tracking database
-        blockchain/cellframe/cellframe_wallet.c        # Cellframe wallet integration
-        blockchain/cellframe/cellframe_wallet_create.c # Cellframe wallet creation from seed
+        blockchain/cellframe/cellframe_wallet_create.c # Cellframe wallet derivation (seed-based)
         blockchain/cellframe/cellframe_rpc.c           # Blockchain RPC client
         blockchain/cellframe/cellframe_addr.c          # Blockchain address utilities
         blockchain/blockchain_wallet.c                 # Generic multi-chain wallet interface
@@ -445,77 +443,6 @@ else()
         set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
     endif()
     message(STATUS "Release build enabled")
-endif()
-
-# =============================================================================
-# Optional: DNA-Send CLI Tool
-# =============================================================================
-if(BUILD_DNA_SEND)
-    add_executable(dna-send
-        blockchain/cellframe/cellframe_send.c
-        blockchain/cellframe/cellframe_wallet.c
-        blockchain/cellframe/cellframe_wallet_create.c
-        blockchain/cellframe/cellframe_addr.c
-        blockchain/cellframe/cellframe_rpc.c
-        ${SHARED_DIR}/crypto/utils/base58.c
-        ${SHARED_DIR}/crypto/utils/qgp_platform_linux.c
-    )
-
-    # For static CURL on Windows, define CURL_STATICLIB
-    if(WIN32)
-        target_compile_definitions(dna-send PRIVATE CURL_STATICLIB)
-    endif()
-
-    target_link_libraries(dna-send
-        cellframe_minimal
-        cellframe_dilithium
-        ${JSONC_LIBRARIES}
-    )
-
-    # Link CURL and OpenSSL (order matters for static linking)
-    if(WIN32)
-        # For Windows static builds, CURL needs OpenSSL before and after
-        if(TARGET CURL::libcurl)
-            target_link_libraries(dna-send CURL::libcurl)
-        else()
-            target_link_libraries(dna-send ${CURL_LIBRARIES})
-        endif()
-
-        # Static CURL requires OpenSSL and zlib
-        target_link_libraries(dna-send
-            OpenSSL::SSL
-            OpenSSL::Crypto
-            z  # zlib
-        )
-
-        # CURL dependencies (static linking requires all)
-        target_link_libraries(dna-send
-            nghttp2     # HTTP/2 support
-            ssh2        # SSH/SFTP support
-            psl         # Public Suffix List
-            idn2        # Internationalized Domain Names
-            unistring   # Unicode string library (required by psl and idn2)
-            iconv       # Character encoding conversion (required by unistring)
-            zstd        # ZSTD compression
-            brotlidec   # Brotli decompression
-            brotlicommon # Brotli common functions
-        )
-
-        # Windows system libraries (required by OpenSSL and CURL)
-        target_link_libraries(dna-send
-            bcrypt      # Windows Cryptography API
-            ws2_32      # Windows Sockets
-            crypt32     # Cryptography
-            secur32     # Security functions (SSPI)
-            wldap32     # LDAP support
-            normaliz    # Internationalization (CURL)
-        )
-    else()
-        # Linux: simple CURL and OpenSSL linking
-        target_link_libraries(dna-send ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} m)
-    endif()
-
-    target_include_directories(dna-send PRIVATE ${CMAKE_SOURCE_DIR})
 endif()
 
 # =============================================================================

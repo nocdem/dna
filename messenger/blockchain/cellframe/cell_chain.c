@@ -255,9 +255,8 @@ static int cell_chain_send(
     (void)txhash_out;
     (void)txhash_out_size;
 
-    /* Cellframe requires wallet file for Dilithium keys */
-    /* Use send_from_wallet instead */
-    QGP_LOG_ERROR(LOG_TAG, "Use send_from_wallet for Cellframe");
+    /* Cellframe uses seed-based derivation — use blockchain_send_tokens_with_seed() */
+    QGP_LOG_ERROR(LOG_TAG, "Direct send not supported for Cellframe — use seed-based path");
     return -1;
 }
 
@@ -575,36 +574,6 @@ done:
     return ret;
 }
 
-/* Wrapper that loads wallet from file */
-static int cell_chain_send_from_wallet(
-    const char *wallet_path,
-    const char *to_address,
-    const char *amount_str,
-    const char *token,
-    const char *network,
-    blockchain_fee_speed_t fee_speed,
-    char *txhash_out,
-    size_t txhash_out_size
-) {
-    (void)fee_speed; /* Cellframe has fixed fees */
-
-    if (!wallet_path) {
-        return -1;
-    }
-
-    cellframe_wallet_t *wallet = NULL;
-    if (wallet_read_cellframe_path(wallet_path, &wallet) != 0 || !wallet) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load wallet: %s", wallet_path);
-        return -1;
-    }
-
-    int ret = cell_chain_send_with_wallet_core(
-        wallet, to_address, amount_str, token, network, txhash_out, txhash_out_size);
-
-    wallet_free(wallet);
-    return ret;
-}
-
 /* Exported function for on-demand derived wallets */
 int cellframe_send_with_wallet(
     cellframe_wallet_t *wallet,
@@ -809,7 +778,6 @@ static const blockchain_ops_t cell_ops = {
     .get_balance = cell_chain_get_balance,
     .estimate_fee = cell_chain_estimate_fee,
     .send = cell_chain_send,
-    .send_from_wallet = cell_chain_send_from_wallet,
     .get_tx_status = cell_chain_get_tx_status,
     .validate_address = cell_chain_validate_address,
     .get_transactions = cell_chain_get_transactions,

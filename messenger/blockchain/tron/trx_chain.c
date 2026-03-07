@@ -147,74 +147,6 @@ static int trx_chain_send(
     return ret;
 }
 
-static int trx_chain_send_from_wallet(
-    const char *wallet_path,
-    const char *to_address,
-    const char *amount,
-    const char *token,
-    const char *network,
-    blockchain_fee_speed_t fee_speed,
-    char *txhash_out,
-    size_t txhash_out_size
-) {
-    (void)network;  /* TRX mainnet only */
-    (void)fee_speed;
-
-    if (!wallet_path || !to_address || !amount) {
-        return -1;
-    }
-
-    /* Validate TRC-20 token if specified */
-    if (token != NULL && strlen(token) > 0 && strcasecmp(token, "TRX") != 0) {
-        if (!trx_trc20_is_supported(token)) {
-            QGP_LOG_ERROR(LOG_TAG, "Unsupported token: %s", token);
-            return -1;
-        }
-    }
-
-    /* Load wallet */
-    trx_wallet_t wallet;
-    if (trx_wallet_load(wallet_path, &wallet) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load wallet: %s", wallet_path);
-        return -1;
-    }
-
-    char tx_id[65];
-    int ret;
-
-    /* Check if TRC-20 token or native TRX */
-    if (token != NULL && strlen(token) > 0 && strcasecmp(token, "TRX") != 0) {
-        /* TRC-20 token transfer */
-        ret = trx_trc20_send_by_symbol(
-            wallet.private_key,
-            wallet.address,
-            to_address,
-            amount,
-            token,
-            tx_id
-        );
-    } else {
-        /* Native TRX transfer */
-        ret = trx_send_trx(
-            wallet.private_key,
-            wallet.address,
-            to_address,
-            amount,
-            tx_id
-        );
-    }
-
-    /* Clear sensitive data */
-    trx_wallet_clear(&wallet);
-
-    if (ret == 0 && txhash_out && txhash_out_size > 0) {
-        strncpy(txhash_out, tx_id, txhash_out_size - 1);
-        txhash_out[txhash_out_size - 1] = '\0';
-    }
-
-    return ret;
-}
-
 static int trx_chain_get_tx_status(
     const char *txhash,
     blockchain_tx_status_t *status_out
@@ -315,7 +247,6 @@ static const blockchain_ops_t trx_ops = {
     .get_balance = trx_chain_get_balance,
     .estimate_fee = trx_chain_estimate_fee,
     .send = trx_chain_send,
-    .send_from_wallet = trx_chain_send_from_wallet,
     .get_tx_status = trx_chain_get_tx_status,
     .validate_address = trx_chain_validate_address,
     .get_transactions = trx_chain_get_transactions,

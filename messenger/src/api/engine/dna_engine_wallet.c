@@ -29,49 +29,34 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
         engine->blockchain_wallets = NULL;
     }
 
-    /* Try to load wallets from wallet files first */
-    int rc = blockchain_list_wallets(engine->fingerprint, &engine->blockchain_wallets);
+    /* Derive wallets on-demand from mnemonic (seed-based only, no wallet files) */
+    char mnemonic[512] = {0};
+    if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) != DNA_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get mnemonic for wallet derivation");
+        error = DNA_ERROR_CRYPTO;
+        goto done;
+    }
 
-    /* If no wallet files found, derive wallets on-demand from mnemonic */
-    if (rc == 0 && engine->blockchain_wallets && engine->blockchain_wallets->count == 0) {
-        QGP_LOG_INFO(LOG_TAG, "No wallet files found, deriving wallets on-demand from mnemonic");
-
-        /* Free the empty list */
-        blockchain_wallet_list_free(engine->blockchain_wallets);
-        engine->blockchain_wallets = NULL;
-
-        /* Load and decrypt mnemonic */
-        char mnemonic[512] = {0};
-        if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) != DNA_OK) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to get mnemonic for wallet derivation");
-            error = DNA_ERROR_CRYPTO;
-            goto done;
-        }
-
-        /* Convert mnemonic to 64-byte master seed */
-        uint8_t master_seed[64];
-        if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to derive master seed from mnemonic");
-            qgp_secure_memzero(mnemonic, sizeof(mnemonic));
-            error = DNA_ERROR_CRYPTO;
-            goto done;
-        }
-
-        /* Derive wallet addresses from master seed and mnemonic
-         * Note: Cellframe needs the mnemonic (SHA3-256 hash), ETH/SOL/TRX use master seed
-         */
-        rc = blockchain_derive_wallets_from_seed(master_seed, mnemonic, engine->fingerprint, &engine->blockchain_wallets);
-
-        /* Clear sensitive data from memory */
+    /* Convert mnemonic to 64-byte master seed */
+    uint8_t master_seed[64];
+    if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to derive master seed from mnemonic");
         qgp_secure_memzero(mnemonic, sizeof(mnemonic));
-        qgp_secure_memzero(master_seed, sizeof(master_seed));
+        error = DNA_ERROR_CRYPTO;
+        goto done;
+    }
 
-        if (rc != 0 || !engine->blockchain_wallets) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to derive wallets from seed");
-            error = DNA_ENGINE_ERROR_DATABASE;
-            goto done;
-        }
-    } else if (rc != 0 || !engine->blockchain_wallets) {
+    /* Derive wallet addresses from master seed and mnemonic
+     * Note: Cellframe needs the mnemonic (SHA3-256 hash), ETH/SOL/TRX use master seed
+     */
+    int rc = blockchain_derive_wallets_from_seed(master_seed, mnemonic, engine->fingerprint, &engine->blockchain_wallets);
+
+    /* Clear sensitive data from memory */
+    qgp_secure_memzero(mnemonic, sizeof(mnemonic));
+    qgp_secure_memzero(master_seed, sizeof(master_seed));
+
+    if (rc != 0 || !engine->blockchain_wallets) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to derive wallets from seed");
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }
@@ -405,34 +390,8 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     QGP_LOG_INFO(LOG_TAG, "Sending %s: %s %s to %s (gas_speed=%d)",
                  chain_name, amount_str, token ? token : "(native)", recipient, gas_speed);
 
-    /* Check if wallet has a file (legacy) or needs on-demand derivation */
-    if (bc_wallet_info->file_path[0] != '\0') {
-        /* Legacy: use wallet file */
-        int send_rc = blockchain_send_tokens(
-                bc_type,
-                bc_wallet_info->file_path,
-                recipient,
-                amount_str,
-                token,
-                gas_speed,
-                tx_hash);
-        if (send_rc != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s send failed (wallet file), rc=%d", chain_name, send_rc);
-            /* Map blockchain error codes to engine errors */
-            if (send_rc == -2) {
-                error = DNA_ENGINE_ERROR_INSUFFICIENT_BALANCE;
-            } else if (send_rc == -3) {
-                error = DNA_ENGINE_ERROR_RENT_MINIMUM;
-            } else {
-                error = DNA_ENGINE_ERROR_NETWORK;
-            }
-            goto done;
-        }
-    } else {
-        /* On-demand derivation: derive wallet from mnemonic */
-        QGP_LOG_INFO(LOG_TAG, "Using on-demand wallet derivation for %s", chain_name);
-
-        /* Load and decrypt mnemonic */
+    /* Derive wallet from mnemonic and send (seed-based only, no wallet files) */
+    {
         char mnemonic[512] = {0};
         if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) != DNA_OK) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to get mnemonic for send operation");
@@ -440,7 +399,6 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
             goto done;
         }
 
-        /* Convert mnemonic to 64-byte master seed */
         uint8_t master_seed[64];
         if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to derive master seed from mnemonic");
@@ -449,13 +407,10 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
             goto done;
         }
 
-        /* Send using on-demand derived wallet
-         * Note: mnemonic is passed for Cellframe (which uses SHA3-256 hash of mnemonic)
-         * It will be cleared after this call completes */
         int send_rc = blockchain_send_tokens_with_seed(
             bc_type,
             master_seed,
-            mnemonic,  /* For Cellframe - uses SHA3-256(mnemonic) instead of BIP39 seed */
+            mnemonic,
             recipient,
             amount_str,
             token,
@@ -463,13 +418,11 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
             tx_hash
         );
 
-        /* Clear sensitive data from memory */
         qgp_secure_memzero(mnemonic, sizeof(mnemonic));
         qgp_secure_memzero(master_seed, sizeof(master_seed));
 
         if (send_rc != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s send failed (on-demand), rc=%d", chain_name, send_rc);
-            /* Map blockchain error codes to engine errors */
+            QGP_LOG_ERROR(LOG_TAG, "%s send failed, rc=%d", chain_name, send_rc);
             if (send_rc == -2) {
                 error = DNA_ENGINE_ERROR_INSUFFICIENT_BALANCE;
             } else if (send_rc == -3) {

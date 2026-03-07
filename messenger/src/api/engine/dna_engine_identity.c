@@ -480,11 +480,24 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
     dna_identity_free(identity);
 
 populate_wallets:
-    /* Auto-populate empty wallet fields from actual wallet files */
+    /* Auto-populate empty wallet fields from seed-derived addresses */
     {
         bool wallets_changed = false;
         blockchain_wallet_list_t *bc_wallets = NULL;
-        if (blockchain_list_wallets(engine->fingerprint, &bc_wallets) == 0 && bc_wallets) {
+
+        /* Derive wallet addresses from mnemonic */
+        char mnemonic[512] = {0};
+        if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) == DNA_OK) {
+            uint8_t master_seed[64];
+            if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) == 0) {
+                blockchain_derive_wallets_from_seed(master_seed, mnemonic,
+                    engine->fingerprint, &bc_wallets);
+                qgp_secure_memzero(master_seed, sizeof(master_seed));
+            }
+            qgp_secure_memzero(mnemonic, sizeof(mnemonic));
+        }
+
+        if (bc_wallets) {
             for (size_t i = 0; i < bc_wallets->count; i++) {
                 blockchain_wallet_info_t *w = &bc_wallets->wallets[i];
                 switch (w->type) {

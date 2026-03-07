@@ -70,27 +70,6 @@ typedef struct {
  * ============================================================================ */
 
 /**
- * Create Ethereum wallet from BIP39 seed
- *
- * Derives the Ethereum key using BIP-44 path: m/44'/60'/0'/0/0
- * Saves wallet to JSON keystore file.
- *
- * @param seed          64-byte BIP39 master seed
- * @param seed_len      Length of seed (should be 64)
- * @param name          Wallet name (used for filename)
- * @param wallet_dir    Directory to save wallet file
- * @param address_out   Output: checksummed address (ETH_ADDRESS_HEX_SIZE)
- * @return              0 on success, -1 on error
- */
-int eth_wallet_create_from_seed(
-    const uint8_t *seed,
-    size_t seed_len,
-    const char *name,
-    const char *wallet_dir,
-    char *address_out
-);
-
-/**
  * Generate Ethereum wallet in memory (no file)
  *
  * Creates wallet structure from seed without saving to file.
@@ -114,58 +93,6 @@ int eth_wallet_generate(
  * @param wallet    Wallet to clear
  */
 void eth_wallet_clear(eth_wallet_t *wallet);
-
-/* ============================================================================
- * WALLET STORAGE (JSON Keystore)
- * ============================================================================ */
-
-/**
- * Save wallet to JSON keystore file (unencrypted)
- *
- * File format:
- * {
- *   "version": 1,
- *   "address": "0x...",
- *   "private_key": "...",
- *   "created_at": 1234567890
- * }
- *
- * @param wallet        Wallet to save
- * @param name          Wallet name
- * @param wallet_dir    Directory to save to
- * @return              0 on success, -1 on error
- */
-int eth_wallet_save(
-    const eth_wallet_t *wallet,
-    const char *name,
-    const char *wallet_dir
-);
-
-/**
- * Load wallet from JSON keystore file
- *
- * @param file_path     Path to wallet file
- * @param wallet_out    Output: loaded wallet
- * @return              0 on success, -1 on error
- */
-int eth_wallet_load(
-    const char *file_path,
-    eth_wallet_t *wallet_out
-);
-
-/**
- * Get address from wallet file without loading private key
- *
- * @param file_path     Path to wallet file
- * @param address_out   Output: address string
- * @param address_size  Size of address_out buffer
- * @return              0 on success, -1 on error
- */
-int eth_wallet_get_address(
-    const char *file_path,
-    char *address_out,
-    size_t address_size
-);
 
 /* ============================================================================
  * ADDRESS UTILITIES

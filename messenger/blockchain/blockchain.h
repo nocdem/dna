@@ -100,18 +100,6 @@ struct blockchain_ops {
         size_t txhash_out_size
     );
 
-    /* Send transaction (with wallet file path) */
-    int (*send_from_wallet)(
-        const char *wallet_path,      /* Path to wallet file */
-        const char *to_address,
-        const char *amount,           /* Decimal string */
-        const char *token,            /* NULL for native token */
-        const char *network,          /* Network name (e.g., "Backbone") */
-        blockchain_fee_speed_t fee_speed,
-        char *txhash_out,
-        size_t txhash_out_size
-    );
-
     /* Transaction status */
     int (*get_tx_status)(
         const char *txhash,
