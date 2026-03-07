@@ -96,10 +96,6 @@ extern "C" {
 #define NODUS_TCP_KEEPINTVL      10
 #define NODUS_TCP_KEEPCNT        3
 
-/* Client application-level ping (keeps connection alive through NAT/Android Doze) */
-#define NODUS_CLIENT_PING_INTERVAL_MS  60000   /* Send ping every 60s */
-#define NODUS_CLIENT_PING_TIMEOUT_MS   10000   /* Force disconnect if no pong within 10s */
-
 /* ── Core types ──────────────────────────────────────────────────── */
 
 /** 512-bit key (SHA3-512) — used for node IDs, DHT keys, fingerprints */

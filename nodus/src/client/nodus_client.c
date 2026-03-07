@@ -68,80 +68,6 @@ static void sleep_ms(int ms) {
 
 /* ── Internal read thread ──────────────────────────────────────── */
 
-/**
- * Send application-level ping if interval elapsed.
- * If a previous ping is outstanding and timed out, force disconnect.
- */
-static void maybe_send_ping(nodus_client_t *client) {
-    if (client->state != NODUS_CLIENT_READY || !client->conn)
-        return;
-
-    uint64_t now = now_ms();
-
-    /* Check for pong timeout on outstanding ping */
-    if (client->ping_txn != 0) {
-        if (now - client->last_ping_sent >= NODUS_CLIENT_PING_TIMEOUT_MS) {
-            QGP_LOG_WARN(LOG_TAG, "Ping timeout (%dms) — forcing disconnect",
-                         NODUS_CLIENT_PING_TIMEOUT_MS);
-            /* Force TCP close — on_disconnect callback will trigger reconnect */
-            nodus_tcp_t *tcp = (nodus_tcp_t *)client->tcp;
-            if (client->conn) {
-                nodus_tcp_disconnect(tcp, (nodus_tcp_conn_t *)client->conn);
-                client->conn = NULL;
-            }
-            client->ping_txn = 0;
-            return;
-        }
-        return;  /* Still waiting for pong — don't send another ping */
-    }
-
-    /* Send ping if interval elapsed */
-    if (now - client->last_pong_received < NODUS_CLIENT_PING_INTERVAL_MS)
-        return;
-
-    uint8_t buf[256];
-    size_t len = 0;
-    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
-    nodus_pending_t *req = alloc_pending(client, txn);
-    if (!req) return;
-
-    nodus_t2_ping(txn, client->token, buf, sizeof(buf), &len);
-    if (send_request(client, buf, len) != 0) {
-        free_pending(client, req);
-        return;
-    }
-
-    client->ping_txn = txn;
-    client->last_ping_sent = now;
-    QGP_LOG_DEBUG(LOG_TAG, "Ping sent (txn=%u)", txn);
-}
-
-/**
- * Check if outstanding ping got a pong response (non-blocking).
- */
-static void check_pong(nodus_client_t *client) {
-    if (client->ping_txn == 0) return;
-
-    pthread_mutex_lock(&client->pending_mutex);
-    for (int i = 0; i < NODUS_MAX_PENDING; i++) {
-        if (client->pending[i].in_use &&
-            client->pending[i].txn == client->ping_txn &&
-            atomic_load(&client->pending[i].ready)) {
-            /* Pong received */
-            client->last_pong_received = now_ms();
-            client->pending[i].in_use = false;
-            free(client->pending[i].raw_response);
-            client->pending[i].raw_response = NULL;
-            nodus_t2_msg_free((nodus_tier2_msg_t *)client->pending[i].response);
-            client->ping_txn = 0;
-            QGP_LOG_DEBUG(LOG_TAG, "Pong received");
-            pthread_mutex_unlock(&client->pending_mutex);
-            return;
-        }
-    }
-    pthread_mutex_unlock(&client->pending_mutex);
-}
-
 static void *read_thread_fn(void *arg) {
     nodus_client_t *client = (nodus_client_t *)arg;
     QGP_LOG_INFO(LOG_TAG, "Read thread started");
@@ -168,10 +94,6 @@ static void *read_thread_fn(void *arg) {
 
         nodus_tcp_t *tcp = (nodus_tcp_t *)client->tcp;
         int rc = nodus_tcp_poll(tcp, 100);
-
-        /* Application-level keepalive: ping/pong */
-        check_pong(client);
-        maybe_send_ping(client);
 
         pthread_mutex_unlock(&client->poll_mutex);
 
@@ -512,11 +434,6 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
 
     set_state(client, NODUS_CLIENT_READY);
 
-    /* Reset ping state — connection is fresh */
-    client->last_pong_received = now_ms();
-    client->last_ping_sent = 0;
-    client->ping_txn = 0;
-
     /* Re-subscribe after reconnect */
     resubscribe_all(client);
     return 0;
@@ -719,7 +636,6 @@ void nodus_client_force_disconnect(nodus_client_t *client) {
         client->conn = NULL;
     }
     client->state = NODUS_CLIENT_DISCONNECTED;
-    client->ping_txn = 0;
     /* Now join the read thread (it should exit fast since socket is closed) */
     stop_read_thread(client);
 }
