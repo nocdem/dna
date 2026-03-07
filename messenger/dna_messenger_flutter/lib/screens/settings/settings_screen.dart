@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../ffi/dna_engine.dart' as engine;
@@ -245,13 +246,87 @@ class _AppearanceSection extends ConsumerWidget {
   }
 }
 
-/// Notifications section - removed in v0.9.7 (service/notification system removed)
-class _NotificationsSection extends StatelessWidget {
+/// Battery optimization section - Android only
+/// Lets user request exemption from Doze mode via system dialog
+class _NotificationsSection extends StatefulWidget {
   const _NotificationsSection();
 
   @override
+  State<_NotificationsSection> createState() => _NotificationsSectionState();
+}
+
+class _NotificationsSectionState extends State<_NotificationsSection>
+    with WidgetsBindingObserver {
+  bool? _isExempt;
+
+  @override
+  void initState() {
+    super.initState();
+    if (Platform.isAndroid) {
+      WidgetsBinding.instance.addObserver(this);
+      _checkStatus();
+    }
+  }
+
+  @override
+  void dispose() {
+    if (Platform.isAndroid) {
+      WidgetsBinding.instance.removeObserver(this);
+    }
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Re-check when user returns from system settings dialog
+    if (state == AppLifecycleState.resumed && Platform.isAndroid) {
+      _checkStatus();
+    }
+  }
+
+  Future<void> _checkStatus() async {
+    final status = await Permission.ignoreBatteryOptimizations.isGranted;
+    if (mounted) setState(() => _isExempt = status);
+  }
+
+  Future<void> _requestExemption() async {
+    await Permission.ignoreBatteryOptimizations.request();
+    await _checkStatus();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return const SizedBox.shrink();
+    if (!Platform.isAndroid) return const SizedBox.shrink();
+
+    final isExempt = _isExempt;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader('Battery'),
+        ListTile(
+          leading: FaIcon(
+            FontAwesomeIcons.batteryFull,
+            color: isExempt == true
+                ? Theme.of(context).colorScheme.primary
+                : null,
+          ),
+          title: const Text('Disable Battery Optimization'),
+          subtitle: Text(
+            isExempt == null
+                ? 'Checking...'
+                : isExempt
+                    ? 'Disabled — app can run in background'
+                    : 'Tap to keep app alive in background',
+          ),
+          trailing: isExempt == true
+              ? FaIcon(FontAwesomeIcons.circleCheck,
+                  color: Theme.of(context).colorScheme.primary)
+              : const FaIcon(FontAwesomeIcons.chevronRight),
+          onTap: isExempt == true ? null : _requestExemption,
+        ),
+      ],
+    );
   }
 }
 
