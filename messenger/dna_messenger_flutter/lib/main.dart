@@ -105,6 +105,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
 
   /// Try to auto-load identity if one exists on disk (runs once at startup)
   /// v0.100.94: Added try/catch to prevent permanent loading screen on errors.
+  /// v0.101.36: If engine is reused (Activity recreation), restore state without re-loading.
   Future<void> _tryAutoLoadIdentity(dynamic engine) async {
     if (_autoLoadStarted) return;
     if (engine == null) return;
@@ -112,22 +113,34 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     _autoLoadStarted = true;
 
     try {
-      // v0.3.0: Check if identity exists and auto-load
-      final hasIdentity = engine.hasIdentity();
-      engine.debugLog('STARTUP', 'v0.3.0: hasIdentity=$hasIdentity');
-
-      if (hasIdentity) {
-        // Pre-warm: Set DHT state to "connecting" immediately for UI feedback
-        // This shows "Connecting to network..." banner while DHT bootstraps
+      // v0.101.36: Check if engine already has identity loaded (Activity recreation).
+      // The cached engine survives Activity recreation with identity + lock intact.
+      // Skip loadIdentity() to avoid re-acquiring the lock and re-initializing.
+      if (engine.isIdentityLoaded()) {
+        final fp = engine.fingerprint;
+        engine.debugLog('STARTUP', 'Engine reused: identity already loaded fp=${fp?.substring(0, 16)}...');
+        ref.read(currentFingerprintProvider.notifier).state = fp;
+        ref.read(identityReadyProvider.notifier).state = true;
         ref.read(dhtConnectionStateProvider.notifier).state =
-            DhtConnectionState.connecting;
-        engine.debugLog('STARTUP', 'v0.3.0: DHT pre-warm - state set to connecting');
-
-        engine.debugLog('STARTUP', 'v0.3.0: Identity exists, auto-loading...');
-        await ref.read(identitiesProvider.notifier).loadIdentity();
-        engine.debugLog('STARTUP', 'v0.3.0: Identity auto-loaded');
+            engine.isDhtConnected() ? DhtConnectionState.connected : DhtConnectionState.connecting;
       } else {
-        engine.debugLog('STARTUP', 'v0.3.0: No identity, showing onboarding');
+        // v0.3.0: Check if identity exists and auto-load
+        final hasIdentity = engine.hasIdentity();
+        engine.debugLog('STARTUP', 'v0.3.0: hasIdentity=$hasIdentity');
+
+        if (hasIdentity) {
+          // Pre-warm: Set DHT state to "connecting" immediately for UI feedback
+          // This shows "Connecting to network..." banner while DHT bootstraps
+          ref.read(dhtConnectionStateProvider.notifier).state =
+              DhtConnectionState.connecting;
+          engine.debugLog('STARTUP', 'v0.3.0: DHT pre-warm - state set to connecting');
+
+          engine.debugLog('STARTUP', 'v0.3.0: Identity exists, auto-loading...');
+          await ref.read(identitiesProvider.notifier).loadIdentity();
+          engine.debugLog('STARTUP', 'v0.3.0: Identity auto-loaded');
+        } else {
+          engine.debugLog('STARTUP', 'v0.3.0: No identity, showing onboarding');
+        }
       }
     } catch (e) {
       // v0.100.94: Don't get stuck on loading screen forever.

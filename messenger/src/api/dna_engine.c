@@ -1149,6 +1149,21 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
  * ============================================================================ */
 
 dna_engine_t* dna_engine_create(const char *data_dir) {
+    /* Safety net: if an old engine was leaked (e.g. Dart isolate killed without
+     * cleanup on Android Activity recreation), destroy it first to release the
+     * identity file lock. Without this, the new engine's loadIdentity() would
+     * fail with IDENTITY_LOCKED (-117) because flock() is per-fd, not per-process. */
+    pthread_mutex_lock(&g_engine_global_mutex);
+    if (g_dht_callback_engine != NULL) {
+        QGP_LOG_WARN(LOG_TAG, "Leaked engine detected (%p) - destroying before creating new one",
+                     (void*)g_dht_callback_engine);
+        dna_engine_t *leaked = g_dht_callback_engine;
+        pthread_mutex_unlock(&g_engine_global_mutex);
+        dna_engine_destroy(leaked);
+    } else {
+        pthread_mutex_unlock(&g_engine_global_mutex);
+    }
+
     dna_engine_t *engine = calloc(1, sizeof(dna_engine_t));
     if (!engine) {
         return NULL;

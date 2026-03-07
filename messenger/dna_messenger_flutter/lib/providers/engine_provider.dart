@@ -14,8 +14,25 @@ final engineProvider = AsyncNotifierProvider<EngineNotifier, DnaEngine>(
 );
 
 class EngineNotifier extends AsyncNotifier<DnaEngine> {
+  /// Cached engine instance that survives Android Activity recreation.
+  /// When Android destroys and recreates the Activity without killing the process,
+  /// the old C engine still holds the identity file lock (flock per-fd).
+  /// Creating a new engine would fail to acquire the lock → identity load fails
+  /// → user sees "Create Account" screen instead of their chats.
+  static DnaEngine? _cachedEngine;
+
   @override
   Future<DnaEngine> build() async {
+    // Android: reuse existing engine across Activity recreations.
+    // The C engine and its flock are per-process, not per-Activity.
+    if (Platform.isAndroid && _cachedEngine != null && !_cachedEngine!.isDisposed) {
+      final engine = _cachedEngine!;
+      logSetEngine(engine);
+      engine.debugLog('STARTUP', 'Reusing cached engine (Activity recreation)');
+      // Do NOT register onDispose — engine outlives the ProviderScope
+      return engine;
+    }
+
     // Desktop: use ~/.dna as the standard data directory
     // Mobile: use app-specific files directory
     final String dataDir;
@@ -57,9 +74,15 @@ class EngineNotifier extends AsyncNotifier<DnaEngine> {
     final packageInfo = await PackageInfo.fromPlatform();
     engine.debugLog('STARTUP', 'Lib v${engine.version} | App v${packageInfo.version}');
 
-    ref.onDispose(() {
-      engine.dispose();
-    });
+    if (Platform.isAndroid) {
+      // Cache for Activity recreation. Do NOT dispose on provider teardown —
+      // the OS cleans up when the process dies.
+      _cachedEngine = engine;
+    } else {
+      ref.onDispose(() {
+        engine.dispose();
+      });
+    }
 
     return engine;
   }
