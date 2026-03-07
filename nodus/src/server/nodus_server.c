@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/epoll.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -180,12 +181,10 @@ static int send_frame_to_peer(const char *peer_ip, uint16_t peer_tcp_port,
         return -1;
     }
 
-    /* Wait for connect (2s timeout) */
-    fd_set wfds;
-    FD_ZERO(&wfds);
-    FD_SET(fd, &wfds);
-    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
-    rc = select(fd + 1, NULL, &wfds, NULL, &tv);
+    /* Wait for connect (2s timeout) — use poll() instead of select()
+     * because select() crashes when fd >= FD_SETSIZE (1024) */
+    struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+    rc = poll(&pfd, 1, 2000);
     if (rc <= 0) {
         fprintf(stderr, "DHT-REPL: connect timeout %s:%d\n", peer_ip, peer_tcp_port);
         close(fd);

@@ -15,12 +15,12 @@
 #include <string.h>
 #include <stdio.h>
 
-static uint8_t auth_buf[8192];
-
 int nodus_auth_handle_hello(nodus_server_t *srv, nodus_session_t *sess,
                              const nodus_pubkey_t *pk, const nodus_key_t *fp,
                              uint32_t txn_id) {
     if (!srv || !sess || !pk || !fp) return -1;
+
+    uint8_t buf[8192];
 
     /* Verify: fingerprint == SHA3-512(public_key) */
     nodus_key_t computed_fp;
@@ -28,8 +28,8 @@ int nodus_auth_handle_hello(nodus_server_t *srv, nodus_session_t *sess,
     if (nodus_key_cmp(&computed_fp, fp) != 0) {
         size_t len = 0;
         nodus_t2_error(txn_id, NODUS_ERR_INVALID_SIGNATURE,
-                        "fingerprint mismatch", auth_buf, sizeof(auth_buf), &len);
-        nodus_tcp_send(sess->conn, auth_buf, len);
+                        "fingerprint mismatch", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
         return -1;
     }
 
@@ -44,8 +44,8 @@ int nodus_auth_handle_hello(nodus_server_t *srv, nodus_session_t *sess,
     /* Send CHALLENGE */
     size_t len = 0;
     nodus_t2_challenge(txn_id, sess->nonce,
-                        auth_buf, sizeof(auth_buf), &len);
-    nodus_tcp_send(sess->conn, auth_buf, len);
+                        buf, sizeof(buf), &len);
+    nodus_tcp_send(sess->conn, buf, len);
 
     return 0;
 }
@@ -54,11 +54,13 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
                             const nodus_sig_t *sig, uint32_t txn_id) {
     if (!srv || !sess || !sig) return -1;
 
+    uint8_t buf[8192];
+
     if (!sess->nonce_pending) {
         size_t len = 0;
         nodus_t2_error(txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                        "no pending challenge", auth_buf, sizeof(auth_buf), &len);
-        nodus_tcp_send(sess->conn, auth_buf, len);
+                        "no pending challenge", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
         return -1;
     }
 
@@ -67,8 +69,8 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
     if (rc != 0) {
         size_t len = 0;
         nodus_t2_error(txn_id, NODUS_ERR_INVALID_SIGNATURE,
-                        "auth signature invalid", auth_buf, sizeof(auth_buf), &len);
-        nodus_tcp_send(sess->conn, auth_buf, len);
+                        "auth signature invalid", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
         sess->nonce_pending = false;
         return -1;
     }
@@ -96,8 +98,8 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
     /* Send AUTH_OK with session token */
     size_t len = 0;
     nodus_t2_auth_ok(txn_id, sess->token,
-                      auth_buf, sizeof(auth_buf), &len);
-    nodus_tcp_send(sess->conn, auth_buf, len);
+                      buf, sizeof(buf), &len);
+    nodus_tcp_send(sess->conn, buf, len);
 
     return 0;
 }
