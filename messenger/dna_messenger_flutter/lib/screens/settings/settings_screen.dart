@@ -316,14 +316,16 @@ class _NotificationsSectionState extends State<_NotificationsSection>
             isExempt == null
                 ? 'Checking...'
                 : isExempt
-                    ? 'Disabled — app can run in background'
+                    ? 'Disabled — tap to open system settings'
                     : 'Tap to keep app alive in background',
           ),
           trailing: isExempt == true
               ? FaIcon(FontAwesomeIcons.circleCheck,
                   color: Theme.of(context).colorScheme.primary)
               : const FaIcon(FontAwesomeIcons.chevronRight),
-          onTap: isExempt == true ? null : _requestExemption,
+          onTap: isExempt == true
+              ? () => openAppSettings()
+              : _requestExemption,
         ),
       ],
     );
