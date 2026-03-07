@@ -738,37 +738,37 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Widget _buildInputArea(BuildContext context, Contact contact) {
     final theme = Theme.of(context);
     final dhtState = ref.watch(dhtConnectionStateProvider);
-    final isDisconnected = dhtState == DhtConnectionState.disconnected;
-
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // DHT Status Banner - only shows when fully disconnected
-        if (isDisconnected)
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: DnaColors.error.withAlpha(30),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                FaIcon(
-                  FontAwesomeIcons.cloudBolt,
-                  size: 14,
-                  color: DnaColors.error,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  'Disconnected - messages will queue',
-                  style: TextStyle(
-                    color: DnaColors.error,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
+        // DHT Status Banner
+        if (dhtState != DhtConnectionState.connected)
+          Builder(builder: (_) {
+            final isConnecting = dhtState == DhtConnectionState.connecting;
+            final color = isConnecting ? Colors.orange : DnaColors.error;
+            final icon = isConnecting ? FontAwesomeIcons.cloudArrowUp : FontAwesomeIcons.cloudBolt;
+            final text = isConnecting ? 'Connecting...' : 'Disconnected - messages will queue';
+            return Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              color: color.withAlpha(30),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  FaIcon(icon, size: 14, color: color),
+                  const SizedBox(width: 8),
+                  Text(
+                    text,
+                    style: TextStyle(
+                      color: color,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
-                ),
-              ],
-            ),
-          ),
+                ],
+              ),
+            );
+          }),
         // Reply preview banner
         if (_replyingTo != null)
           Container(
