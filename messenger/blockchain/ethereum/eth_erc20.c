@@ -239,6 +239,7 @@ static int hex_to_uint256(const char *hex, uint8_t out[32]) {
 static int uint256_to_decimal_string(const uint8_t value[32], uint8_t decimals,
                                       char *out, size_t out_size) {
     if (!value || !out || out_size < 32) return -1;
+    if (decimals > 19) return -1;  /* uint64_t overflow protection (audit M24) */
 
     /* For simplicity, handle up to uint64 range */
     /* This covers most practical token balances */

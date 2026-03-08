@@ -248,11 +248,11 @@ int cellframe_wallet_derive_keys(
 cleanup:
     /* Securely clear any remaining buffers */
     if (serialized_privkey) {
-        memset(serialized_privkey, 0, serialized_privkey_size);
+        qgp_secure_memzero(serialized_privkey, serialized_privkey_size);
         free(serialized_privkey);
     }
     if (serialized_pubkey) {
-        memset(serialized_pubkey, 0, serialized_pubkey_size);
+        qgp_secure_memzero(serialized_pubkey, serialized_pubkey_size);
         free(serialized_pubkey);
     }
 

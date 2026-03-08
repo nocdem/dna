@@ -92,7 +92,7 @@ void eth_wallet_clear(eth_wallet_t *wallet) {
 ---
 
 ### C3. Cellframe Wallet Uses `memset()` for Dilithium Key Material
-**Status:** VERIFIED (2 passes)
+**Status:** FIXED (2026-03-08 — replaced with `qgp_secure_memzero()`)
 **Severity:** CRITICAL
 **File:** `blockchain/cellframe/cellframe_wallet_create.c:304-308`
 
@@ -499,7 +499,7 @@ Profile data is deserialized and used without signature verification.
 ---
 
 ### M24. ERC-20 Token Decimals Not Validated — Integer Overflow
-**Status:** VERIFIED (2 passes)
+**Status:** FIXED (2026-03-08 — `if (decimals > 19) return -1;` added to both `uint256_to_decimal_string` and `decimal_to_uint256`)
 **File:** `blockchain/ethereum/eth_erc20.c:271-274`
 
 **Description:** `uint8_t decimals` (0-255) used in `for` loop: `divisor *= 10;`. `uint64_t` overflows at `decimals > 19` (10^20 > UINT64_MAX).
@@ -637,7 +637,7 @@ for (int i = 0; i < decimals; i++) {
 ### Immediate (CRITICAL — fix before next release)
 1. **C4:** Validate `sign_pubkey_size` in `keygen.c` — heap buffer over-read
 2. ~~**C1:** Replace `double` arithmetic with string-based decimal parsing~~ **PARTIALLY FIXED** (2026-03-08: Solana + TRON TRC-20 fixed; ETH/ERC-20/TRX native patterns no longer in codebase; Cellframe DATOSHI macro low-risk)
-3. ~~**C2/C3:** Replace `memset()` with `qgp_secure_memzero()` in all wallet `_clear()` functions~~ **C2 FIXED** (2026-03-08). **C3 OPEN** — Cellframe `cellframe_wallet_create.c` still uses `memset()` for Dilithium key material.
+3. ~~**C2/C3:** Replace `memset()` with `qgp_secure_memzero()` in all wallet `_clear()` functions~~ **C2+C3 FIXED** (2026-03-08).
 
 ### Short-Term (HIGH — fix within next few releases)
 4. **H8:** CURL write callback multiplication overflow check
