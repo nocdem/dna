@@ -240,32 +240,55 @@ void nodus_presence_tick(struct nodus_server *srv) {
         }
     }
 
-    /* Send to all peers in routing table */
+    /* Send to all peers in routing table using persistent connections.
+     * Non-blocking connect: data is buffered in write buffer and flushed
+     * by the event loop once the connection completes (handle_connect_complete
+     * sets EPOLLOUT when wlen > wpos). Connection stays in pool for reuse. */
     int sent = 0;
     for (int i = 0; i < peer_count; i++) {
         nodus_peer_t *peer = &peers[i];
         if (peer->tcp_port == 0) continue;
 
-        /* Try to reuse an existing TCP connection first */
+        /* Reuse existing persistent connection */
         nodus_tcp_conn_t *pconn = nodus_tcp_find_by_addr(
             (nodus_tcp_t *)&srv->tcp, peer->ip, peer->tcp_port);
         if (pconn) {
             nodus_tcp_send(pconn, sync_buf, sync_len);
             sent++;
-            continue;  /* Do NOT disconnect — not our connection */
+            continue;
         }
 
-        /* Fallback: open new connection, send, close */
+        /* Open new persistent connection — do NOT disconnect.
+         * Event loop flushes buffered data once connect completes. */
         pconn = nodus_tcp_connect(
             (nodus_tcp_t *)&srv->tcp, peer->ip, peer->tcp_port);
-        if (pconn) {
-            nodus_tcp_send(pconn, sync_buf, sync_len);
-            nodus_tcp_disconnect((nodus_tcp_t *)&srv->tcp, pconn);
-            sent++;
-        }
+        if (!pconn) continue;
+        pconn->is_nodus = true;  /* Mark as inter-node connection */
+        nodus_tcp_send(pconn, sync_buf, sync_len);
+        sent++;
     }
 
     if (sent > 0 || peer_count > 0)
         fprintf(stderr, "P_SYNC: broadcast %d local fps to %d/%d routing peers\n",
                 local_count, sent, peer_count);
+
+    /* Clean up stale outgoing p_sync connections: disconnect any is_nodus
+     * connection whose IP:port is no longer in the routing table. */
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = srv->tcp.pool[i];
+        if (!c || !c->is_nodus) continue;
+
+        bool found = false;
+        for (int p = 0; p < peer_count; p++) {
+            if (strcmp(peers[p].ip, c->ip) == 0 && peers[p].tcp_port == c->port) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            fprintf(stderr, "P_SYNC: closing stale connection to %s:%d\n",
+                    c->ip, c->port);
+            nodus_tcp_disconnect((nodus_tcp_t *)&srv->tcp, c);
+        }
+    }
 }
