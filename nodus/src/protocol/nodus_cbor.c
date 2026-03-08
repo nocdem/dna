@@ -163,6 +163,7 @@ void cbor_decoder_init(cbor_decoder_t *dec, const uint8_t *buf, size_t len) {
     dec->buf = buf;
     dec->len = len;
     dec->pos = 0;
+    dec->depth = 0;
     dec->error = false;
 }
 
@@ -278,11 +279,17 @@ void cbor_decode_skip(cbor_decoder_t *dec) {
 
     /* For containers, recursively skip children */
     if (item.type == CBOR_ITEM_MAP) {
+        if (dec->depth >= CBOR_MAX_DEPTH) { dec->error = true; return; }
+        dec->depth++;
         for (size_t i = 0; i < item.count * 2 && !dec->error; i++)
             cbor_decode_skip(dec);
+        dec->depth--;
     } else if (item.type == CBOR_ITEM_ARRAY) {
+        if (dec->depth >= CBOR_MAX_DEPTH) { dec->error = true; return; }
+        dec->depth++;
         for (size_t i = 0; i < item.count && !dec->error; i++)
             cbor_decode_skip(dec);
+        dec->depth--;
     }
     /* Scalars (uint, bstr, tstr, bool, null) are already consumed */
 }

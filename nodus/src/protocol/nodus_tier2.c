@@ -813,13 +813,15 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "fps", 3) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
                     if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
-                        msg->pq_fps = calloc(arr.count, sizeof(nodus_key_t));
+                        size_t cap = arr.count > NODUS_MAX_WIRE_FPS ? NODUS_MAX_WIRE_FPS : arr.count;
+                        msg->pq_fps = calloc(cap, sizeof(nodus_key_t));
                         if (msg->pq_fps) {
                             msg->pq_count = 0;
                             for (size_t k = 0; k < arr.count; k++) {
                                 cbor_item_t vi = cbor_decode_next(&dec);
                                 if (vi.type == CBOR_ITEM_BSTR &&
-                                    vi.bstr.len == NODUS_KEY_BYTES) {
+                                    vi.bstr.len == NODUS_KEY_BYTES &&
+                                    (size_t)msg->pq_count < cap) {
                                     memcpy(msg->pq_fps[msg->pq_count].bytes,
                                            vi.bstr.ptr, NODUS_KEY_BYTES);
                                     msg->pq_count++;
@@ -868,12 +870,13 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (rkey.tstr.len == 4 && memcmp(rkey.tstr.ptr, "vals", 4) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
                     if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
-                        msg->values = calloc(arr.count, sizeof(nodus_value_t *));
+                        size_t cap = arr.count > NODUS_MAX_WIRE_VALUES ? NODUS_MAX_WIRE_VALUES : arr.count;
+                        msg->values = calloc(cap, sizeof(nodus_value_t *));
                         if (msg->values) {
                             msg->value_count = 0;
                             for (size_t k = 0; k < arr.count; k++) {
                                 cbor_item_t vi = cbor_decode_next(&dec);
-                                if (vi.type == CBOR_ITEM_BSTR) {
+                                if (vi.type == CBOR_ITEM_BSTR && msg->value_count < cap) {
                                     nodus_value_t *v = NULL;
                                     if (nodus_value_deserialize(vi.bstr.ptr, vi.bstr.len, &v) == 0)
                                         msg->values[msg->value_count++] = v;
@@ -892,12 +895,20 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (rkey.tstr.len == 5 && memcmp(rkey.tstr.ptr, "posts", 5) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
                     if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
-                        msg->ch_posts = calloc(arr.count, sizeof(nodus_channel_post_t));
+                        size_t cap = arr.count > NODUS_MAX_WIRE_POSTS ? NODUS_MAX_WIRE_POSTS : arr.count;
+                        msg->ch_posts = calloc(cap, sizeof(nodus_channel_post_t));
                         if (msg->ch_posts) {
                             msg->ch_post_count = 0;
                             for (size_t k = 0; k < arr.count; k++) {
                                 cbor_item_t pmap = cbor_decode_next(&dec);
                                 if (pmap.type != CBOR_ITEM_MAP) continue;
+                                if ((size_t)msg->ch_post_count >= cap) {
+                                    for (size_t m = 0; m < pmap.count; m++) {
+                                        cbor_decode_skip(&dec);
+                                        cbor_decode_skip(&dec);
+                                    }
+                                    continue;
+                                }
                                 nodus_channel_post_t *p = &msg->ch_posts[msg->ch_post_count];
                                 memset(p, 0, sizeof(*p));
                                 for (size_t m = 0; m < pmap.count; m++) {
@@ -949,15 +960,24 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "ps", 2) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
                     if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
-                        msg->pq_fps = calloc(arr.count, sizeof(nodus_key_t));
-                        msg->pq_online = calloc(arr.count, sizeof(bool));
-                        msg->pq_peers = calloc(arr.count, sizeof(uint8_t));
-                        msg->pq_last_seen = calloc(arr.count, sizeof(uint64_t));
+                        size_t cap = arr.count > NODUS_MAX_WIRE_FPS ? NODUS_MAX_WIRE_FPS : arr.count;
+                        msg->pq_fps = calloc(cap, sizeof(nodus_key_t));
+                        msg->pq_online = calloc(cap, sizeof(bool));
+                        msg->pq_peers = calloc(cap, sizeof(uint8_t));
+                        msg->pq_last_seen = calloc(cap, sizeof(uint64_t));
                         if (msg->pq_fps && msg->pq_online && msg->pq_peers) {
                             msg->pq_count = 0;
                             for (size_t k = 0; k < arr.count; k++) {
                                 cbor_item_t emap = cbor_decode_next(&dec);
                                 if (emap.type != CBOR_ITEM_MAP) continue;
+                                if ((size_t)msg->pq_count >= cap) {
+                                    /* Skip remaining entries beyond cap */
+                                    for (size_t m = 0; m < emap.count; m++) {
+                                        cbor_decode_skip(&dec);
+                                        cbor_decode_skip(&dec);
+                                    }
+                                    continue;
+                                }
                                 int ci = msg->pq_count;
                                 msg->pq_online[ci] = true;
                                 for (size_t m = 0; m < emap.count; m++) {
@@ -992,13 +1012,21 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "os", 2) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
                     if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
-                        msg->os_fps = calloc(arr.count, sizeof(nodus_key_t));
-                        msg->os_last_seen = calloc(arr.count, sizeof(uint64_t));
+                        size_t cap = arr.count > NODUS_MAX_WIRE_FPS ? NODUS_MAX_WIRE_FPS : arr.count;
+                        msg->os_fps = calloc(cap, sizeof(nodus_key_t));
+                        msg->os_last_seen = calloc(cap, sizeof(uint64_t));
                         if (msg->os_fps && msg->os_last_seen) {
                             msg->os_count = 0;
                             for (size_t k = 0; k < arr.count; k++) {
                                 cbor_item_t emap = cbor_decode_next(&dec);
                                 if (emap.type != CBOR_ITEM_MAP) continue;
+                                if ((size_t)msg->os_count >= cap) {
+                                    for (size_t m = 0; m < emap.count; m++) {
+                                        cbor_decode_skip(&dec);
+                                        cbor_decode_skip(&dec);
+                                    }
+                                    continue;
+                                }
                                 int ci = msg->os_count;
                                 for (size_t m = 0; m < emap.count; m++) {
                                     cbor_item_t ek = cbor_decode_next(&dec);

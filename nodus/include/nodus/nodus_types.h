@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  6
-#define NODUS_VERSION_PATCH  2
-#define NODUS_VERSION_STRING "0.6.2"
+#define NODUS_VERSION_PATCH  3
+#define NODUS_VERSION_STRING "0.6.3"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -89,6 +89,11 @@ extern "C" {
 #define NODUS_FV_FD_TABLE_SIZE     4096    /* fd->lookup mapping table size */
 #define NODUS_FV_MAX_PER_SEC       100     /* Rate limit inter-node FIND_VALUE */
 #define NODUS_SV_MAX_PER_SEC       200     /* Rate limit inter-node STORE_VALUE */
+
+/* Wire array count caps (HIGH-13: prevent OOM from untrusted CBOR counts) */
+#define NODUS_MAX_WIRE_FPS         1000    /* Max fingerprints per message */
+#define NODUS_MAX_WIRE_VALUES      10000   /* Max values per message */
+#define NODUS_MAX_WIRE_POSTS       10000   /* Max channel posts per message */
 
 /* Tier 3: Witness/BFT consensus (DNAC) */
 #define NODUS_T3_MAX_WITNESSES      16

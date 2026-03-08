@@ -47,7 +47,11 @@ static void session_clear(nodus_session_t *sess) {
 
 static bool session_check_token(nodus_session_t *sess, const uint8_t *token) {
     if (!sess->authenticated || !token) return false;
-    return memcmp(sess->token, token, NODUS_SESSION_TOKEN_LEN) == 0;
+    /* Constant-time comparison to prevent timing side-channel (HIGH-11) */
+    volatile uint8_t diff = 0;
+    for (size_t i = 0; i < NODUS_SESSION_TOKEN_LEN; i++)
+        diff |= sess->token[i] ^ token[i];
+    return diff == 0;
 }
 
 /* ── Rate limiting ───────────────────────────────────────────────── */
@@ -1491,7 +1495,7 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
     }
 
     /* Post-auth: verify session token */
-    if (msg.has_token && !session_check_token(sess, msg.token)) {
+    if (!msg.has_token || !session_check_token(sess, msg.token)) {
         size_t rlen = 0;
         nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
                         "invalid token", resp_buf, sizeof(resp_buf), &rlen);

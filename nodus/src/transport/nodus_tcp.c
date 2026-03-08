@@ -170,6 +170,14 @@ static void try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             return;
         }
 
+        /* Validate frame size (HIGH-1: TCP path was missing this check) */
+        if (!nodus_frame_validate(&frame, false)) {
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(conn, tcp->cb_ctx);
+            conn_free(tcp, conn);
+            return;
+        }
+
         /* Valid frame */
         size_t consumed = (size_t)rc;
         if (tcp->on_frame)
@@ -621,8 +629,15 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
             continue;
         }
 
+        int slot = conn->slot;  /* Save before handle_write may free conn */
+
         if (events[i].events & EPOLLOUT)
             handle_write(tcp, conn);
+
+        /* handle_write() may have freed conn on write error.
+         * Check the pool slot before touching conn again. */
+        if (tcp->pool[slot] == NULL)
+            continue;
 
         /* Read data before handling HUP — sender may close immediately
          * after sending, producing EPOLLIN|EPOLLHUP in the same event. */

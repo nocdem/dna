@@ -107,12 +107,16 @@ typedef struct {
     };
 } cbor_item_t;
 
+/** Maximum nesting depth for CBOR containers (CRIT-1: prevents stack exhaustion) */
+#define CBOR_MAX_DEPTH  32
+
 /** CBOR decoder state */
 typedef struct {
     const uint8_t *buf;     /* Input buffer */
     size_t         len;     /* Total length */
     size_t         pos;     /* Current read position */
     bool           error;
+    uint8_t        depth;   /* Current nesting depth (skip recursion) */
 } cbor_decoder_t;
 
 /** Initialize decoder */
