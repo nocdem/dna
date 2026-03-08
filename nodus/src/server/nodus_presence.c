@@ -10,7 +10,7 @@
 #include "server/nodus_presence.h"
 #include "server/nodus_server.h"
 #include "protocol/nodus_tier2.h"
-#include "consensus/nodus_pbft.h"
+#include "core/nodus_routing.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -200,6 +200,9 @@ int nodus_presence_get_local(struct nodus_server *srv, nodus_key_t *fps_out,
  * We cap at 256 fps per sync = ~16KB. */
 #define PRESENCE_SYNC_MAX_FPS  256
 
+/* Max routing table peers: 512 buckets × K entries */
+#define PRESENCE_MAX_PEERS     (NODUS_BUCKETS * NODUS_K)
+
 void nodus_presence_tick(struct nodus_server *srv) {
     if (!srv) return;
 
@@ -226,16 +229,43 @@ void nodus_presence_tick(struct nodus_server *srv) {
                                  sync_buf, sizeof(sync_buf), &sync_len) != 0)
         return;
 
-    /* Send to all alive PBFT peers */
-    for (int i = 0; i < srv->pbft.peer_count; i++) {
-        nodus_cluster_peer_t *peer = &srv->pbft.peers[i];
-        if (peer->state != NODUS_NODE_ALIVE) continue;
+    /* Collect all peers from routing table */
+    nodus_peer_t peers[PRESENCE_MAX_PEERS];
+    int peer_count = 0;
+    for (int b = 0; b < NODUS_BUCKETS && peer_count < PRESENCE_MAX_PEERS; b++) {
+        const nodus_bucket_t *bkt = &srv->routing.buckets[b];
+        for (int e = 0; e < bkt->count && peer_count < PRESENCE_MAX_PEERS; e++) {
+            if (bkt->entries[e].active)
+                peers[peer_count++] = bkt->entries[e].peer;
+        }
+    }
 
-        nodus_tcp_conn_t *pconn = nodus_tcp_connect(
+    /* Send to all peers in routing table */
+    int sent = 0;
+    for (int i = 0; i < peer_count; i++) {
+        nodus_peer_t *peer = &peers[i];
+        if (peer->tcp_port == 0) continue;
+
+        /* Try to reuse an existing TCP connection first */
+        nodus_tcp_conn_t *pconn = nodus_tcp_find_by_addr(
+            (nodus_tcp_t *)&srv->tcp, peer->ip, peer->tcp_port);
+        if (pconn) {
+            nodus_tcp_send(pconn, sync_buf, sync_len);
+            sent++;
+            continue;  /* Do NOT disconnect — not our connection */
+        }
+
+        /* Fallback: open new connection, send, close */
+        pconn = nodus_tcp_connect(
             (nodus_tcp_t *)&srv->tcp, peer->ip, peer->tcp_port);
         if (pconn) {
             nodus_tcp_send(pconn, sync_buf, sync_len);
             nodus_tcp_disconnect((nodus_tcp_t *)&srv->tcp, pconn);
+            sent++;
         }
     }
+
+    if (sent > 0 || peer_count > 0)
+        fprintf(stderr, "P_SYNC: broadcast %d local fps to %d/%d routing peers\n",
+                local_count, sent, peer_count);
 }

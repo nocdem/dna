@@ -1430,13 +1430,20 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             return;
         } else if (strcmp(msg.method, "p_sync") == 0) {
             /* Inter-nodus presence sync (no auth required) */
-            if (msg.pq_fps && msg.pq_count > 0) {
-                /* Determine peer_index from source IP */
+            if (msg.pq_fps && msg.pq_count > 0 && sess->conn) {
+                /* Verify sender is in routing table + compute stable peer_index
+                 * from IP hash. peer_index must be non-zero (0 = local). */
                 uint8_t pi = 0;
-                if (sess->conn) {
-                    for (int p = 0; p < srv->pbft.peer_count; p++) {
-                        if (strcmp(srv->pbft.peers[p].ip, sess->conn->ip) == 0) {
-                            pi = (uint8_t)(p + 1);
+                for (int b = 0; b < NODUS_BUCKETS && pi == 0; b++) {
+                    const nodus_bucket_t *bkt = &srv->routing.buckets[b];
+                    for (int e = 0; e < bkt->count; e++) {
+                        if (bkt->entries[e].active &&
+                            strcmp(bkt->entries[e].peer.ip, sess->conn->ip) == 0) {
+                            /* hash(IP) % 254 + 1 → stable value 1..254 */
+                            uint32_t h = 5381;
+                            for (const char *c = sess->conn->ip; *c; c++)
+                                h = h * 33 + (uint8_t)*c;
+                            pi = (uint8_t)(h % 254 + 1);
                             break;
                         }
                     }
