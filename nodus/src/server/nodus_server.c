@@ -627,9 +627,10 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
-    /* Store (seq check — skip if existing value has higher seq) */
-    rc = nodus_storage_put_if_newer(&srv->storage, val);
-    if (rc < 0) {
+    /* Store — client owns this key (signature verified), always overwrite.
+     * put_if_newer is only for inter-node replication paths. */
+    rc = nodus_storage_put(&srv->storage, val);
+    if (rc != 0) {
         nodus_value_free(val);
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
