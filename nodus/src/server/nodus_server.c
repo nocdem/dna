@@ -236,16 +236,22 @@ static void replicate_value(nodus_server_t *srv, const nodus_value_t *val) {
     free(cbor_buf);
     if (flen == 0) { free(frame); return; }
 
-    for (int i = 0; i < srv->pbft.peer_count; i++) {
-        nodus_cluster_peer_t *peer = &srv->pbft.peers[i];
-        if (peer->state != NODUS_NODE_ALIVE)
+    /* Replicate to K-closest nodes via Kademlia routing table */
+    nodus_peer_t closest[NODUS_K];
+    int count = nodus_routing_find_closest(&srv->routing, &val->key_hash,
+                                            closest, NODUS_K);
+
+    for (int i = 0; i < count; i++) {
+        /* Skip self */
+        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0)
             continue;
 
-        int rc = send_frame_to_peer(peer->ip, peer->tcp_port, frame, flen);
+        int rc = send_frame_to_peer(closest[i].ip, closest[i].tcp_port, frame, flen);
         if (rc != 0) {
-            /* Queue to hinted handoff for retry */
+            /* Queue to hinted handoff for retry (keyed by node_id) */
             nodus_storage_hinted_insert(&srv->storage,
-                                         peer->ip, peer->tcp_port,
+                                         &closest[i].node_id,
+                                         closest[i].ip, closest[i].tcp_port,
                                          frame, flen);
         }
     }
@@ -268,21 +274,43 @@ static void dht_hinted_retry(nodus_server_t *srv) {
     /* Cleanup expired entries first */
     nodus_storage_hinted_cleanup(&srv->storage);
 
-    /* Try to deliver pending hints to each ALIVE peer */
-    for (int i = 0; i < srv->pbft.peer_count; i++) {
-        nodus_cluster_peer_t *peer = &srv->pbft.peers[i];
-        if (peer->state != NODUS_NODE_ALIVE)
+    /* Query distinct node_ids with pending hints */
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(srv->storage.db,
+            "SELECT DISTINCT node_id FROM dht_hinted_handoff WHERE expires_at > ?",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return;
+
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)now);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(stmt, 0);
+        int blob_len = sqlite3_column_bytes(stmt, 0);
+        if (!blob || blob_len != NODUS_KEY_BYTES) continue;
+
+        nodus_key_t node_id;
+        memcpy(node_id.bytes, blob, NODUS_KEY_BYTES);
+
+        /* Look up current IP:Port in routing table (node may have migrated) */
+        nodus_peer_t peer;
+        const char *ip;
+        uint16_t tcp_port;
+        if (nodus_routing_lookup(&srv->routing, &node_id, &peer) == 0) {
+            ip = peer.ip;
+            tcp_port = peer.tcp_port;
+        } else {
+            /* Not in routing table — skip until rediscovered */
             continue;
+        }
 
         nodus_dht_hint_t *entries = NULL;
         size_t count = 0;
-        if (nodus_storage_hinted_get(&srv->storage,
-                                       peer->ip, peer->tcp_port,
+        if (nodus_storage_hinted_get(&srv->storage, &node_id,
                                        100, &entries, &count) != 0 || count == 0)
             continue;
 
         for (size_t j = 0; j < count; j++) {
-            int rc = send_frame_to_peer(peer->ip, peer->tcp_port,
+            int rc = send_frame_to_peer(ip, tcp_port,
                                          entries[j].frame_data,
                                          entries[j].frame_len);
             if (rc == 0) {
@@ -291,6 +319,272 @@ static void dht_hinted_retry(nodus_server_t *srv) {
         }
 
         nodus_storage_hinted_free(entries, count);
+    }
+
+    sqlite3_finalize(stmt);
+}
+
+/* ── Kademlia bucket refresh ──────────────────────────────────────── */
+
+static void dht_bucket_refresh(nodus_server_t *srv) {
+    static uint64_t last_refresh = 0;
+    uint64_t now = nodus_time_now();
+    if (now - last_refresh < NODUS_BUCKET_REFRESH_SEC) return;
+    last_refresh = now;
+
+    for (int b = 0; b < NODUS_BUCKETS; b++) {
+        const nodus_bucket_t *bucket = &srv->routing.buckets[b];
+        if (bucket->count == 0) continue;
+
+        /* Skip recently active buckets */
+        bool fresh = false;
+        for (int e = 0; e < bucket->count && !fresh; e++) {
+            if (bucket->entries[e].active &&
+                bucket->entries[e].peer.last_seen > 0 &&
+                now - bucket->entries[e].peer.last_seen < NODUS_BUCKET_REFRESH_SEC)
+                fresh = true;
+        }
+        if (fresh) continue;
+
+        /* Find first active entry to query */
+        const nodus_peer_t *target = NULL;
+        for (int e = 0; e < bucket->count; e++) {
+            if (bucket->entries[e].active) {
+                target = &bucket->entries[e].peer;
+                break;
+            }
+        }
+        if (!target) continue;
+
+        /* Generate random key in this bucket's range and send FIND_NODE */
+        nodus_key_t random_key;
+        nodus_key_random_in_bucket(&random_key, &srv->identity.node_id, b);
+
+        uint8_t buf[512];
+        size_t len = 0;
+        nodus_t1_find_node(0, &random_key, buf, sizeof(buf), &len);
+        uint8_t frame[512 + 16];
+        size_t flen = nodus_frame_encode(frame, sizeof(frame), buf, (uint32_t)len);
+        if (flen > 0)
+            nodus_udp_send(&srv->udp, frame, flen, target->ip, target->udp_port);
+    }
+}
+
+/* ── Storage cleanup timer ───────────────────────────────────────── */
+
+static void dht_storage_cleanup(nodus_server_t *srv) {
+    static uint64_t last_cleanup = 0;
+    uint64_t now = nodus_time_now();
+    if (now - last_cleanup < NODUS_CLEANUP_SEC) return;
+    last_cleanup = now;
+
+    int cleaned = nodus_storage_cleanup(&srv->storage);
+    if (cleaned > 0)
+        fprintf(stderr, "DHT-CLEANUP: removed %d expired values\n", cleaned);
+}
+
+/* ── Periodic republish (non-blocking) ───────────────────────────── */
+
+/** Clean up a single republish connection */
+static void rp_conn_cleanup(nodus_server_t *srv, dht_republish_conn_t *rc) {
+    if (!rc->active) return;
+    if (rc->fd >= 0) {
+        epoll_ctl(srv->rp_epoll_fd, EPOLL_CTL_DEL, rc->fd, NULL);
+        close(rc->fd);
+        rc->fd = -1;
+    }
+    free(rc->frame);
+    rc->frame = NULL;
+    rc->active = false;
+    srv->republish.pending_fds--;
+}
+
+/** Handle epoll events for republish connections */
+static void dht_republish_handle_events(nodus_server_t *srv) {
+    if (srv->rp_epoll_fd < 0) return;
+
+    struct epoll_event events[32];
+    int n = epoll_wait(srv->rp_epoll_fd, events, 32, 0);
+
+    for (int i = 0; i < n; i++) {
+        int fd = events[i].data.fd;
+        /* Find the connection entry */
+        dht_republish_conn_t *rc = NULL;
+        for (int j = 0; j < NODUS_REPUBLISH_MAX_FDS; j++) {
+            if (srv->republish.conns[j].active && srv->republish.conns[j].fd == fd) {
+                rc = &srv->republish.conns[j];
+                break;
+            }
+        }
+        if (!rc) continue;
+
+        if (events[i].events & (EPOLLERR | EPOLLHUP)) {
+            rp_conn_cleanup(srv, rc);
+            continue;
+        }
+
+        if (events[i].events & EPOLLOUT) {
+            if (!rc->connected) {
+                /* Check connect result */
+                int err = 0;
+                socklen_t elen = sizeof(err);
+                getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen);
+                if (err != 0) {
+                    rp_conn_cleanup(srv, rc);
+                    continue;
+                }
+                rc->connected = true;
+            }
+
+            /* Send remaining data */
+            while (rc->send_pos < rc->frame_len) {
+                ssize_t sent = send(fd, rc->frame + rc->send_pos,
+                                     rc->frame_len - rc->send_pos, MSG_NOSIGNAL);
+                if (sent < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                    rp_conn_cleanup(srv, rc);
+                    goto next_event;
+                }
+                rc->send_pos += (size_t)sent;
+            }
+
+            if (rc->send_pos >= rc->frame_len) {
+                /* Send complete — fire and forget */
+                rp_conn_cleanup(srv, rc);
+            }
+        }
+        next_event:;
+    }
+}
+
+/** Check for timed-out republish connections (2s timeout) */
+static void dht_republish_timeout_check(nodus_server_t *srv) {
+    uint64_t now_ms = nodus_time_now_ms();
+    for (int i = 0; i < NODUS_REPUBLISH_MAX_FDS; i++) {
+        dht_republish_conn_t *rc = &srv->republish.conns[i];
+        if (rc->active && now_ms - rc->started_at > 2000)
+            rp_conn_cleanup(srv, rc);
+    }
+}
+
+/** Start a non-blocking fire-and-forget send to a peer */
+static void dht_republish_send_async(nodus_server_t *srv, const char *ip,
+                                       uint16_t port, const uint8_t *frame,
+                                       size_t flen) {
+    /* Find free connection slot */
+    dht_republish_conn_t *rc = NULL;
+    for (int i = 0; i < NODUS_REPUBLISH_MAX_FDS; i++) {
+        if (!srv->republish.conns[i].active) {
+            rc = &srv->republish.conns[i];
+            break;
+        }
+    }
+    if (!rc) return;  /* All slots full */
+
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (fd < 0) return;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    inet_pton(AF_INET, ip, &addr.sin_addr);
+
+    int ret = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+    if (ret == 0) {
+        /* Immediate connect (localhost) — send and close */
+        send(fd, frame, flen, MSG_NOSIGNAL);
+        close(fd);
+        return;
+    }
+    if (errno != EINPROGRESS) {
+        close(fd);
+        return;
+    }
+
+    /* Set up connection tracking */
+    memset(rc, 0, sizeof(*rc));
+    rc->fd = fd;
+    rc->frame = malloc(flen);
+    if (!rc->frame) { close(fd); return; }
+    memcpy(rc->frame, frame, flen);
+    rc->frame_len = flen;
+    rc->send_pos = 0;
+    rc->started_at = nodus_time_now_ms();
+    rc->active = true;
+    rc->connected = false;
+    srv->republish.pending_fds++;
+
+    /* Register with republish epoll */
+    struct epoll_event ev;
+    ev.events = EPOLLOUT | EPOLLET;
+    ev.data.fd = fd;
+    epoll_ctl(srv->rp_epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+}
+
+/** Main republish tick — fetch batch, send to K-closest, manage connections */
+static void dht_republish(nodus_server_t *srv) {
+    dht_republish_state_t *rs = &srv->republish;
+    uint64_t now = nodus_time_now();
+
+    /* Handle in-flight connections */
+    dht_republish_handle_events(srv);
+    dht_republish_timeout_check(srv);
+
+    if (!rs->active) {
+        /* Start new cycle every NODUS_REPUBLISH_SEC */
+        if (now - rs->cycle_start < NODUS_REPUBLISH_SEC) return;
+        memset(&rs->last_key, 0, sizeof(rs->last_key));
+        rs->active = true;
+        rs->first_batch = true;
+        rs->cycle_start = now;
+    }
+
+    /* Don't fetch more if too many sends in flight */
+    if (rs->pending_fds >= NODUS_REPUBLISH_MAX_FDS) return;
+
+    /* Fetch BATCH values using bookmark pagination */
+    nodus_value_t *batch[NODUS_REPUBLISH_BATCH];
+    int fetched = nodus_storage_fetch_batch(&srv->storage,
+                                             rs->first_batch ? NULL : &rs->last_key,
+                                             batch, NODUS_REPUBLISH_BATCH);
+    rs->first_batch = false;
+
+    for (int i = 0; i < fetched; i++) {
+        nodus_value_t *val = batch[i];
+
+        /* Encode frame once for all peers */
+        uint8_t *cbor_buf = malloc(RESP_BUF_SIZE);
+        if (!cbor_buf) { nodus_value_free(val); continue; }
+        size_t clen = 0;
+        if (nodus_t1_store_value(0, val, cbor_buf, RESP_BUF_SIZE, &clen) != 0) {
+            free(cbor_buf); nodus_value_free(val); continue;
+        }
+        uint8_t *frame = malloc(clen + 16);
+        if (!frame) { free(cbor_buf); nodus_value_free(val); continue; }
+        size_t flen = nodus_frame_encode(frame, clen + 16, cbor_buf, (uint32_t)clen);
+        free(cbor_buf);
+
+        if (flen == 0) { free(frame); nodus_value_free(val); continue; }
+
+        nodus_peer_t closest[NODUS_K];
+        int n = nodus_routing_find_closest(&srv->routing, &val->key_hash, closest, NODUS_K);
+
+        for (int j = 0; j < n; j++) {
+            if (nodus_key_cmp(&closest[j].node_id, &srv->identity.node_id) == 0) continue;
+            if (rs->pending_fds >= NODUS_REPUBLISH_MAX_FDS) break;
+            dht_republish_send_async(srv, closest[j].ip, closest[j].tcp_port, frame, flen);
+        }
+
+        rs->last_key = val->key_hash;
+        free(frame);
+        nodus_value_free(val);
+    }
+
+    /* Cycle complete if fewer rows than batch size */
+    if (fetched < NODUS_REPUBLISH_BATCH) {
+        rs->active = false;
+        rs->cycle_start = nodus_time_now();
     }
 }
 
@@ -333,9 +627,9 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
-    /* Store */
-    rc = nodus_storage_put(&srv->storage, val);
-    if (rc != 0) {
+    /* Store (seq check — skip if existing value has higher seq) */
+    rc = nodus_storage_put_if_newer(&srv->storage, val);
+    if (rc < 0) {
         nodus_value_free(val);
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
@@ -358,6 +652,414 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
     nodus_value_free(val);
 }
 
+/* ── FIND_VALUE async state machine ──────────────────────────────── */
+
+/** Check if a node_id has already been visited in this lookup */
+static bool fv_is_visited(dht_fv_lookup_t *lookup, const nodus_key_t *node_id) {
+    for (int i = 0; i < lookup->visited_count; i++) {
+        if (nodus_key_cmp(&lookup->visited[i], node_id) == 0)
+            return true;
+    }
+    return false;
+}
+
+/** Add a node_id to the visited set */
+static void fv_mark_visited(dht_fv_lookup_t *lookup, const nodus_key_t *node_id) {
+    if (lookup->visited_count < NODUS_K * 4)
+        lookup->visited[lookup->visited_count++] = *node_id;
+}
+
+/** Clean up a single FV query: close fd, free buffers, clear fd table */
+static void fv_query_cleanup(nodus_server_t *srv, dht_fv_lookup_t *lookup, int qi) {
+    dht_fv_query_t *q = &lookup->queries[qi];
+    if (q->fd >= 0) {
+        epoll_ctl(srv->fv_epoll_fd, EPOLL_CTL_DEL, q->fd, NULL);
+        close(q->fd);
+        if (q->fd < NODUS_FV_FD_TABLE_SIZE) {
+            srv->fv_fd_table[q->fd].lookup_idx = -1;
+            srv->fv_fd_table[q->fd].query_idx = -1;
+        }
+        q->fd = -1;
+    }
+    free(q->send_buf);
+    q->send_buf = NULL;
+    free(q->recv_buf);
+    q->recv_buf = NULL;
+}
+
+/** Clean up an entire FV lookup */
+static void fv_lookup_cleanup(nodus_server_t *srv, dht_fv_lookup_t *lookup) {
+    for (int q = 0; q < NODUS_ALPHA; q++)
+        fv_query_cleanup(srv, lookup, q);
+    free(lookup->result_buf);
+    lookup->result_buf = NULL;
+    lookup->active = false;
+}
+
+/** Send the FV lookup result (or empty) back to the client */
+static void fv_send_result(nodus_server_t *srv, dht_fv_lookup_t *lookup) {
+    nodus_session_t *sess = &srv->sessions[lookup->session_slot];
+    if (!sess->conn) return;  /* Client disconnected */
+
+    if (lookup->found && lookup->result_buf && lookup->result_len > 0) {
+        nodus_tcp_send(sess->conn, lookup->result_buf, lookup->result_len);
+    } else {
+        size_t len = 0;
+        nodus_t2_result_empty(lookup->txn_id, resp_buf, sizeof(resp_buf), &len);
+        nodus_tcp_send(sess->conn, resp_buf, len);
+    }
+}
+
+/** Start a single outgoing FV query to a peer */
+static int fv_query_start(nodus_server_t *srv, dht_fv_lookup_t *lookup,
+                           int qi, const nodus_peer_t *peer) {
+    dht_fv_query_t *q = &lookup->queries[qi];
+    memset(q, 0, sizeof(*q));
+    q->fd = -1;
+
+    /* Create non-blocking socket */
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (fd < 0) return -1;
+    if (fd >= NODUS_FV_FD_TABLE_SIZE) {
+        close(fd);
+        return -1;
+    }
+
+    /* Build fv request frame */
+    uint8_t cbor_buf[256];
+    size_t cbor_len = 0;
+    if (nodus_t1_find_value(0, &lookup->key_hash, cbor_buf, sizeof(cbor_buf), &cbor_len) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    uint8_t frame_buf[256 + 16];
+    size_t flen = nodus_frame_encode(frame_buf, sizeof(frame_buf),
+                                      cbor_buf, (uint32_t)cbor_len);
+    if (flen == 0) {
+        close(fd);
+        return -1;
+    }
+
+    q->send_buf = malloc(flen);
+    if (!q->send_buf) { close(fd); return -1; }
+    memcpy(q->send_buf, frame_buf, flen);
+    q->send_len = flen;
+    q->send_pos = 0;
+
+    q->recv_cap = NODUS_MAX_VALUE_SIZE + 65536;
+    q->recv_buf = malloc(q->recv_cap);
+    if (!q->recv_buf) { free(q->send_buf); q->send_buf = NULL; close(fd); return -1; }
+    q->recv_len = 0;
+
+    /* Connect (non-blocking) */
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(peer->tcp_port);
+    inet_pton(AF_INET, peer->ip, &addr.sin_addr);
+
+    int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+    if (rc < 0 && errno != EINPROGRESS) {
+        free(q->send_buf); q->send_buf = NULL;
+        free(q->recv_buf); q->recv_buf = NULL;
+        close(fd);
+        return -1;
+    }
+
+    q->fd = fd;
+    q->state = FV_QUERY_CONNECTING;
+    q->node_id = peer->node_id;
+    snprintf(q->ip, sizeof(q->ip), "%s", peer->ip);
+    q->tcp_port = peer->tcp_port;
+    q->started_at = nodus_time_now_ms();
+
+    /* Register with FV epoll */
+    struct epoll_event ev;
+    ev.events = EPOLLOUT | EPOLLET;
+    ev.data.fd = fd;
+    epoll_ctl(srv->fv_epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+
+    /* Register in fd table */
+    int li = (int)(lookup - srv->fv_state.lookups);
+    srv->fv_fd_table[fd].lookup_idx = li;
+    srv->fv_fd_table[fd].query_idx = qi;
+
+    /* Mark visited */
+    fv_mark_visited(lookup, &peer->node_id);
+
+    lookup->queries_pending++;
+    return 0;
+}
+
+/** Start up to NODUS_ALPHA queries for the current round */
+static void fv_start_round(nodus_server_t *srv, dht_fv_lookup_t *lookup) {
+    int started = 0;
+    for (int c = 0; c < lookup->candidate_count && started < NODUS_ALPHA; c++) {
+        if (fv_is_visited(lookup, &lookup->candidates[c].node_id))
+            continue;
+
+        /* Find free query slot */
+        int qi = -1;
+        for (int q = 0; q < NODUS_ALPHA; q++) {
+            if (lookup->queries[q].fd < 0 &&
+                lookup->queries[q].state == FV_QUERY_DONE) {
+                qi = q;
+                break;
+            }
+        }
+        /* Try uninitialized slots (fd == 0 from memset but state == 0 == CONNECTING) */
+        if (qi < 0) {
+            for (int q = 0; q < NODUS_ALPHA; q++) {
+                if (lookup->queries[q].fd <= 0 && lookup->queries[q].send_buf == NULL) {
+                    qi = q;
+                    break;
+                }
+            }
+        }
+        if (qi < 0) break;
+
+        if (fv_query_start(srv, lookup, qi, &lookup->candidates[c]) == 0)
+            started++;
+    }
+}
+
+/**
+ * Start a FIND_VALUE lookup for a key not found locally.
+ * Returns 0 if lookup started, -1 if no slots available.
+ */
+static int dht_find_value_start(nodus_server_t *srv, nodus_session_t *sess,
+                                 uint32_t txn_id, const nodus_key_t *key) {
+    /* Find free slot */
+    int slot = -1;
+    for (int i = 0; i < NODUS_FV_MAX_INFLIGHT; i++) {
+        if (!srv->fv_state.lookups[i].active) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return -1;
+
+    dht_fv_lookup_t *lookup = &srv->fv_state.lookups[slot];
+    memset(lookup, 0, sizeof(*lookup));
+    lookup->active = true;
+    lookup->key_hash = *key;
+    lookup->txn_id = txn_id;
+    lookup->session_slot = (int)(sess - srv->sessions);
+    lookup->started_at = nodus_time_now_ms();
+    lookup->round = 0;
+
+    /* Initialize query fds to -1 */
+    for (int q = 0; q < NODUS_ALPHA; q++)
+        lookup->queries[q].fd = -1;
+
+    /* Seed candidates from routing table */
+    lookup->candidate_count = nodus_routing_find_closest(
+        &srv->routing, key, lookup->candidates, NODUS_K * 4);
+
+    if (lookup->candidate_count == 0) {
+        lookup->active = false;
+        return -1;  /* No peers known */
+    }
+
+    /* Start first round of queries */
+    fv_start_round(srv, lookup);
+
+    if (lookup->queries_pending == 0) {
+        lookup->active = false;
+        return -1;  /* No queries could be started */
+    }
+
+    return 0;
+}
+
+/** Handle epoll events for FV query fds */
+static void dht_find_value_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
+    if (fd < 0 || fd >= NODUS_FV_FD_TABLE_SIZE) return;
+    int li = srv->fv_fd_table[fd].lookup_idx;
+    int qi = srv->fv_fd_table[fd].query_idx;
+    if (li < 0 || li >= NODUS_FV_MAX_INFLIGHT) return;
+    if (qi < 0 || qi >= NODUS_ALPHA) return;
+
+    dht_fv_lookup_t *lookup = &srv->fv_state.lookups[li];
+    if (!lookup->active) return;
+    dht_fv_query_t *q = &lookup->queries[qi];
+
+    if (events & (EPOLLERR | EPOLLHUP)) {
+        q->state = FV_QUERY_DONE;
+        fv_query_cleanup(srv, lookup, qi);
+        lookup->queries_pending--;
+        return;
+    }
+
+    if (events & EPOLLOUT) {
+        if (q->state == FV_QUERY_CONNECTING) {
+            /* Check connect result */
+            int err = 0;
+            socklen_t len = sizeof(err);
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
+            if (err != 0) {
+                q->state = FV_QUERY_DONE;
+                fv_query_cleanup(srv, lookup, qi);
+                lookup->queries_pending--;
+                return;
+            }
+            q->state = FV_QUERY_SENDING;
+        }
+
+        if (q->state == FV_QUERY_SENDING) {
+            while (q->send_pos < q->send_len) {
+                ssize_t sent = send(fd, q->send_buf + q->send_pos,
+                                     q->send_len - q->send_pos, MSG_NOSIGNAL);
+                if (sent < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                    q->state = FV_QUERY_DONE;
+                    fv_query_cleanup(srv, lookup, qi);
+                    lookup->queries_pending--;
+                    return;
+                }
+                q->send_pos += (size_t)sent;
+            }
+
+            if (q->send_pos >= q->send_len) {
+                /* Sending complete, switch to receiving */
+                q->state = FV_QUERY_RECEIVING;
+                struct epoll_event ev;
+                ev.events = EPOLLIN | EPOLLET;
+                ev.data.fd = fd;
+                epoll_ctl(srv->fv_epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+            }
+        }
+    }
+
+    if (events & EPOLLIN) {
+        if (q->state == FV_QUERY_RECEIVING) {
+            while (q->recv_len < q->recv_cap) {
+                ssize_t got = recv(fd, q->recv_buf + q->recv_len,
+                                    q->recv_cap - q->recv_len, 0);
+                if (got < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                    q->state = FV_QUERY_DONE;
+                    fv_query_cleanup(srv, lookup, qi);
+                    lookup->queries_pending--;
+                    return;
+                }
+                if (got == 0) break;  /* Peer closed */
+                q->recv_len += (size_t)got;
+            }
+
+            /* Try to decode a frame */
+            nodus_frame_t frame;
+            int frc = nodus_frame_decode(q->recv_buf, q->recv_len, &frame);
+            if (frc > 0) {
+                /* Got complete frame — decode T1 response */
+                nodus_tier1_msg_t t1msg;
+                memset(&t1msg, 0, sizeof(t1msg));
+                if (nodus_t1_decode(frame.payload, frame.payload_len, &t1msg) == 0) {
+                    if (t1msg.has_value && t1msg.value) {
+                        /* Value found! Encode T2 result for client */
+                        lookup->found = true;
+                        lookup->result_buf = malloc(RESP_BUF_SIZE);
+                        if (lookup->result_buf) {
+                            size_t rlen = 0;
+                            if (nodus_t2_result(lookup->txn_id, t1msg.value,
+                                                 lookup->result_buf, RESP_BUF_SIZE, &rlen) == 0) {
+                                lookup->result_len = rlen;
+                            } else {
+                                lookup->found = false;
+                                free(lookup->result_buf);
+                                lookup->result_buf = NULL;
+                            }
+                        }
+                        /* Cache locally */
+                        if (t1msg.value)
+                            nodus_storage_put_if_newer(&srv->storage, t1msg.value);
+                    } else {
+                        /* No value — add returned closer nodes to candidates */
+                        for (int p = 0; p < t1msg.peer_count; p++) {
+                            if (fv_is_visited(lookup, &t1msg.peers[p].node_id))
+                                continue;
+                            if (lookup->candidate_count < NODUS_K * 4)
+                                lookup->candidates[lookup->candidate_count++] = t1msg.peers[p];
+                        }
+                    }
+                }
+                nodus_t1_msg_free(&t1msg);
+
+                q->state = FV_QUERY_DONE;
+                fv_query_cleanup(srv, lookup, qi);
+                lookup->queries_pending--;
+            }
+        }
+    }
+}
+
+/** Poll FV epoll and advance state machines (called from main loop) */
+static void dht_find_value_tick(nodus_server_t *srv) {
+    if (srv->fv_epoll_fd < 0) return;
+
+    /* Poll FV epoll with 0 timeout (non-blocking) */
+    struct epoll_event events[32];
+    int n = epoll_wait(srv->fv_epoll_fd, events, 32, 0);
+    for (int i = 0; i < n; i++)
+        dht_find_value_handle_event(srv, events[i].data.fd, events[i].events);
+
+    uint64_t now_ms = nodus_time_now_ms();
+
+    /* Check all active lookups */
+    for (int li = 0; li < NODUS_FV_MAX_INFLIGHT; li++) {
+        dht_fv_lookup_t *lookup = &srv->fv_state.lookups[li];
+        if (!lookup->active) continue;
+
+        /* Check client disconnect */
+        nodus_session_t *sess = &srv->sessions[lookup->session_slot];
+        if (!sess->conn) {
+            fv_lookup_cleanup(srv, lookup);
+            continue;
+        }
+
+        /* Overall timeout */
+        if (now_ms - lookup->started_at > NODUS_FV_TIMEOUT_MS) {
+            fv_send_result(srv, lookup);
+            fv_lookup_cleanup(srv, lookup);
+            continue;
+        }
+
+        /* Per-query timeouts */
+        for (int qi = 0; qi < NODUS_ALPHA; qi++) {
+            dht_fv_query_t *q = &lookup->queries[qi];
+            if (q->fd >= 0 && q->state != FV_QUERY_DONE) {
+                if (now_ms - q->started_at > NODUS_FV_QUERY_TIMEOUT_MS) {
+                    q->state = FV_QUERY_DONE;
+                    fv_query_cleanup(srv, lookup, qi);
+                    lookup->queries_pending--;
+                }
+            }
+        }
+
+        /* Check if value found */
+        if (lookup->found) {
+            fv_send_result(srv, lookup);
+            fv_lookup_cleanup(srv, lookup);
+            continue;
+        }
+
+        /* If all queries done, try next round */
+        if (lookup->queries_pending == 0) {
+            lookup->round++;
+            if (lookup->round < 3) {
+                fv_start_round(srv, lookup);
+                if (lookup->queries_pending > 0)
+                    continue;  /* New round started */
+            }
+
+            /* Exhausted — send empty */
+            fv_send_result(srv, lookup);
+            fv_lookup_cleanup(srv, lookup);
+        }
+    }
+}
+
 static void handle_t2_get(nodus_server_t *srv, nodus_session_t *sess,
                            nodus_tier2_msg_t *msg) {
     nodus_value_t *val = NULL;
@@ -375,9 +1077,14 @@ static void handle_t2_get(nodus_server_t *srv, nodus_session_t *sess,
         }
         nodus_value_free(val);
     } else {
-        size_t len = 0;
-        nodus_t2_result_empty(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        /* Value not found locally — start async FIND_VALUE lookup */
+        if (dht_find_value_start(srv, sess, msg->txn_id, &msg->key) != 0) {
+            /* No slots or no peers — return empty immediately */
+            size_t len = 0;
+            nodus_t2_result_empty(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
+            nodus_tcp_send(sess->conn, resp_buf, len);
+        }
+        /* Response sent later by dht_find_value_tick() */
     }
 }
 
@@ -638,8 +1345,8 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         if (nodus_t1_decode(payload, len, &t1msg) == 0 &&
             strcmp(t1msg.method, "sv") == 0 && t1msg.value) {
             if (nodus_value_verify(t1msg.value) == 0) {
-                nodus_storage_put(&srv->storage, t1msg.value);
-                notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
+                if (nodus_storage_put_if_newer(&srv->storage, t1msg.value) == 0)
+                    notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
             }
         }
         nodus_t1_msg_free(&t1msg);
@@ -660,14 +1367,62 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         } else if (strcmp(msg.method, "auth") == 0) {
             nodus_auth_handle_auth(srv, sess, &msg.sig, msg.txn_id);
         } else if (strcmp(msg.method, "sv") == 0) {
-            /* Inter-nodus DHT value replication (no auth required) */
+            /* Inter-nodus DHT value replication (no auth required, rate-limited) */
+            static uint64_t sv_window_start = 0;
+            static int sv_count = 0;
+            uint64_t sv_now = nodus_time_now();
+            if (sv_now != sv_window_start) { sv_window_start = sv_now; sv_count = 0; }
+            if (++sv_count > NODUS_SV_MAX_PER_SEC) {
+                nodus_t2_msg_free(&msg);
+                return;  /* Drop — rate limited */
+            }
+
             nodus_tier1_msg_t t1msg;
             memset(&t1msg, 0, sizeof(t1msg));
             if (nodus_t1_decode(payload, len, &t1msg) == 0 &&
                 t1msg.value && nodus_value_verify(t1msg.value) == 0) {
-                nodus_storage_put(&srv->storage, t1msg.value);
-                notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
-                fprintf(stderr, "REPL-RX: stored replicated value\n");
+                int put_rc = nodus_storage_put_if_newer(&srv->storage, t1msg.value);
+                if (put_rc == 0) {
+                    notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
+                    fprintf(stderr, "REPL-RX: stored replicated value\n");
+                } else if (put_rc == 1) {
+                    fprintf(stderr, "REPL-RX: skipped (existing seq >= incoming)\n");
+                }
+            }
+            nodus_t1_msg_free(&t1msg);
+            nodus_t2_msg_free(&msg);
+            return;
+        } else if (strcmp(msg.method, "fv") == 0) {
+            /* Inter-nodus FIND_VALUE (no auth required, rate-limited) */
+            static uint64_t fv_window_start = 0;
+            static int fv_count = 0;
+            uint64_t fv_now = nodus_time_now();
+            if (fv_now != fv_window_start) { fv_window_start = fv_now; fv_count = 0; }
+            if (++fv_count > NODUS_FV_MAX_PER_SEC) {
+                nodus_t2_msg_free(&msg);
+                return;  /* Drop — rate limited */
+            }
+
+            nodus_tier1_msg_t t1msg;
+            memset(&t1msg, 0, sizeof(t1msg));
+            if (nodus_t1_decode(payload, len, &t1msg) == 0) {
+                nodus_value_t *val = NULL;
+                int rc = nodus_storage_get(&srv->storage, &t1msg.target, &val);
+
+                size_t rlen = 0;
+                if (rc == 0 && val) {
+                    nodus_t1_value_found(t1msg.txn_id, val,
+                                          resp_buf, sizeof(resp_buf), &rlen);
+                    nodus_value_free(val);
+                } else {
+                    nodus_peer_t results[NODUS_K];
+                    int found = nodus_routing_find_closest(&srv->routing, &t1msg.target,
+                                                            results, NODUS_K);
+                    nodus_t1_value_not_found(t1msg.txn_id, results, found,
+                                              resp_buf, sizeof(resp_buf), &rlen);
+                }
+                if (rlen > 0)
+                    nodus_tcp_send(sess->conn, resp_buf, rlen);
             }
             nodus_t1_msg_free(&t1msg);
             nodus_t2_msg_free(&msg);
@@ -857,6 +1612,10 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
         peer.last_seen = nodus_time_now();
         nodus_routing_insert(&srv->routing, &peer);
 
+        /* FIX 0c: A received PING proves the peer is alive (same as PONG).
+         * Without this, DEAD peers can never recover — permanent deadlock. */
+        nodus_pbft_on_pong(&srv->pbft, &msg.node_id, from_ip, from_port);
+
     } else if (strcmp(msg.method, "pong") == 0) {
         /* Update routing table + PBFT health (IP-aware for seed discovery) */
         nodus_routing_touch(&srv->routing, &msg.node_id);
@@ -893,9 +1652,8 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
         /* STORE_VALUE: inter-node replication */
         if (msg.value) {
             if (nodus_value_verify(msg.value) == 0) {
-                nodus_storage_put(&srv->storage, msg.value);
-                /* Notify local listeners */
-                notify_listeners(srv, &msg.value->key_hash, msg.value);
+                if (nodus_storage_put_if_newer(&srv->storage, msg.value) == 0)
+                    notify_listeners(srv, &msg.value->key_hash, msg.value);
             }
             /* Send ACK */
             size_t rlen = 0;
@@ -965,6 +1723,26 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     if (!srv || !config) return -1;
     memset(srv, 0, sizeof(*srv));
     srv->config = *config;
+
+    /* Initialize FV fd mapping table (all entries invalid) */
+    for (int i = 0; i < NODUS_FV_FD_TABLE_SIZE; i++) {
+        srv->fv_fd_table[i].lookup_idx = -1;
+        srv->fv_fd_table[i].query_idx = -1;
+    }
+
+    /* Create FV epoll fd for FIND_VALUE async state machine */
+    srv->fv_epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (srv->fv_epoll_fd < 0) {
+        fprintf(stderr, "Failed to create FV epoll fd\n");
+        return -1;
+    }
+
+    /* Create republish epoll fd for non-blocking sends */
+    srv->rp_epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (srv->rp_epoll_fd < 0) {
+        fprintf(stderr, "Failed to create republish epoll fd\n");
+        return -1;
+    }
 
     /* Load or generate identity */
     if (config->identity_path[0]) {
@@ -1099,6 +1877,18 @@ int nodus_server_run(nodus_server_t *srv) {
 
         /* Retry DHT hinted handoff (failed replication, every 30s) */
         dht_hinted_retry(srv);
+
+        /* FIND_VALUE async state machine tick */
+        dht_find_value_tick(srv);
+
+        /* Kademlia bucket refresh (every 15 min) */
+        dht_bucket_refresh(srv);
+
+        /* Storage cleanup — remove expired values (every 1 hour) */
+        dht_storage_cleanup(srv);
+
+        /* Periodic republish — send stored values to K-closest (every 1 hour) */
+        dht_republish(srv);
     }
 
     return 0;
@@ -1110,6 +1900,26 @@ void nodus_server_stop(nodus_server_t *srv) {
 
 void nodus_server_close(nodus_server_t *srv) {
     if (!srv) return;
+
+    /* Clean up all active FV lookups */
+    for (int i = 0; i < NODUS_FV_MAX_INFLIGHT; i++) {
+        if (srv->fv_state.lookups[i].active)
+            fv_lookup_cleanup(srv, &srv->fv_state.lookups[i]);
+    }
+    if (srv->fv_epoll_fd >= 0) {
+        close(srv->fv_epoll_fd);
+        srv->fv_epoll_fd = -1;
+    }
+
+    /* Clean up republish connections */
+    for (int i = 0; i < NODUS_REPUBLISH_MAX_FDS; i++) {
+        if (srv->republish.conns[i].active)
+            rp_conn_cleanup(srv, &srv->republish.conns[i]);
+    }
+    if (srv->rp_epoll_fd >= 0) {
+        close(srv->rp_epoll_fd);
+        srv->rp_epoll_fd = -1;
+    }
 
     if (srv->witness) {
         nodus_witness_close(srv->witness);

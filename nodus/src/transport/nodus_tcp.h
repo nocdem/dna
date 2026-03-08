@@ -136,6 +136,9 @@ int nodus_tcp_epoll_fd(const nodus_tcp_t *tcp);
 /** Current unix timestamp (seconds). */
 uint64_t nodus_time_now(void);
 
+/** Current unix timestamp (milliseconds). */
+uint64_t nodus_time_now_ms(void);
+
 /** Close all connections and free resources. */
 void nodus_tcp_close(nodus_tcp_t *tcp);
 

@@ -7,6 +7,7 @@
  */
 
 #include "core/nodus_storage.h"
+#include "crypto/utils/qgp_sha3.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,11 +55,26 @@ static const char *CLEANUP_SQL =
 static const char *COUNT_SQL =
     "SELECT COUNT(*) FROM nodus_values";
 
+static const char *PUT_IF_NEWER_SQL =
+    "INSERT OR REPLACE INTO nodus_values "
+    "(key_hash, owner_fp, value_id, data, type, ttl, created_at, expires_at, seq, owner_pk, signature, data_hash) "
+    "SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12 "
+    "WHERE NOT EXISTS ("
+    "  SELECT 1 FROM nodus_values "
+    "  WHERE key_hash = ?1 AND owner_fp = ?2 AND value_id = ?3 "
+    "  AND (seq > ?9 OR (seq = ?9 AND data_hash >= ?12))"
+    ")";
+
+static const char *FETCH_BATCH_SQL =
+    "SELECT key_hash, owner_fp, value_id, data, type, ttl, created_at, expires_at, seq, owner_pk, signature "
+    "FROM nodus_values WHERE key_hash > ? ORDER BY key_hash LIMIT ?";
+
 /* ── DHT Hinted Handoff SQL ──────────────────────────────────────── */
 
 static const char *HINT_SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS dht_hinted_handoff ("
     "  id          INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  node_id     BLOB NOT NULL,"
     "  peer_ip     TEXT NOT NULL,"
     "  peer_port   INTEGER NOT NULL,"
     "  frame_data  BLOB NOT NULL,"
@@ -66,16 +82,16 @@ static const char *HINT_SCHEMA_SQL =
     "  expires_at  INTEGER NOT NULL,"
     "  retry_count INTEGER DEFAULT 0"
     ");"
-    "CREATE INDEX IF NOT EXISTS idx_dht_hint_peer ON dht_hinted_handoff(peer_ip, peer_port);"
+    "CREATE INDEX IF NOT EXISTS idx_dht_hint_node ON dht_hinted_handoff(node_id);"
     "CREATE INDEX IF NOT EXISTS idx_dht_hint_expires ON dht_hinted_handoff(expires_at);";
 
 static const char *HINT_INSERT_SQL =
-    "INSERT INTO dht_hinted_handoff (peer_ip, peer_port, frame_data, created_at, expires_at) "
-    "VALUES (?, ?, ?, ?, ?)";
+    "INSERT INTO dht_hinted_handoff (node_id, peer_ip, peer_port, frame_data, created_at, expires_at) "
+    "VALUES (?, ?, ?, ?, ?, ?)";
 
 static const char *HINT_GET_SQL =
     "SELECT id, peer_ip, peer_port, frame_data, created_at, expires_at, retry_count "
-    "FROM dht_hinted_handoff WHERE peer_ip = ? AND peer_port = ? "
+    "FROM dht_hinted_handoff WHERE node_id = ? "
     "ORDER BY created_at ASC LIMIT ?";
 
 static const char *HINT_DELETE_SQL =
@@ -87,8 +103,7 @@ static const char *HINT_CLEANUP_SQL =
 static const char *HINT_COUNT_SQL =
     "SELECT COUNT(*) FROM dht_hinted_handoff";
 
-#define DHT_HINT_TTL_SEC    (24 * 3600)   /* 24 hours */
-#define DHT_HINT_MAX_ENTRIES 1000
+#define DHT_HINT_TTL_SEC    (7 * 24 * 3600)   /* 7 days */
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
 
@@ -172,7 +187,8 @@ int nodus_storage_open(const char *path, nodus_storage_t *store) {
         return -1;
     }
 
-    /* Hinted handoff schema */
+    /* Hinted handoff schema — drop and recreate (data is transient) */
+    sqlite3_exec(store->db, "DROP TABLE IF EXISTS dht_hinted_handoff", NULL, NULL, NULL);
     rc = sqlite3_exec(store->db, HINT_SCHEMA_SQL, NULL, NULL, &err);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "nodus_storage: hint schema failed: %s\n", err);
@@ -186,6 +202,13 @@ int nodus_storage_open(const char *path, nodus_storage_t *store) {
     sqlite3_exec(store->db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
     sqlite3_exec(store->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
 
+    /* Schema migration: add data_hash column if missing.
+     * Existing rows get NULL — NULL >= X evaluates to NULL (not TRUE),
+     * so existing NULL-hash values always lose tiebreaks until re-PUT. */
+    sqlite3_exec(store->db,
+        "ALTER TABLE nodus_values ADD COLUMN data_hash BLOB",
+        NULL, NULL, NULL);  /* Silently fails if column exists */
+
     /* Prepare statements */
     if (sqlite3_prepare_v2(store->db, PUT_SQL, -1, &store->stmt_put, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, GET_SQL, -1, &store->stmt_get, NULL) != SQLITE_OK ||
@@ -193,6 +216,8 @@ int nodus_storage_open(const char *path, nodus_storage_t *store) {
         sqlite3_prepare_v2(store->db, DELETE_SQL, -1, &store->stmt_delete, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, CLEANUP_SQL, -1, &store->stmt_cleanup, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, COUNT_SQL, -1, &store->stmt_count, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(store->db, PUT_IF_NEWER_SQL, -1, &store->stmt_put_if_newer, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(store->db, FETCH_BATCH_SQL, -1, &store->stmt_fetch_batch, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, HINT_INSERT_SQL, -1, &store->stmt_hint_insert, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, HINT_GET_SQL, -1, &store->stmt_hint_get, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, HINT_DELETE_SQL, -1, &store->stmt_hint_delete, NULL) != SQLITE_OK ||
@@ -213,6 +238,8 @@ void nodus_storage_close(nodus_storage_t *store) {
     if (store->stmt_delete) sqlite3_finalize(store->stmt_delete);
     if (store->stmt_cleanup) sqlite3_finalize(store->stmt_cleanup);
     if (store->stmt_count) sqlite3_finalize(store->stmt_count);
+    if (store->stmt_put_if_newer) sqlite3_finalize(store->stmt_put_if_newer);
+    if (store->stmt_fetch_batch) sqlite3_finalize(store->stmt_fetch_batch);
     if (store->stmt_hint_insert) sqlite3_finalize(store->stmt_hint_insert);
     if (store->stmt_hint_get) sqlite3_finalize(store->stmt_hint_get);
     if (store->stmt_hint_delete) sqlite3_finalize(store->stmt_hint_delete);
@@ -353,19 +380,78 @@ int nodus_storage_count(nodus_storage_t *store) {
     return -1;
 }
 
+int nodus_storage_put_if_newer(nodus_storage_t *store, const nodus_value_t *val) {
+    if (!store || !store->db || !val) return -1;
+
+    /* Compute SHA3-256 hash of value data for equal-seq tiebreaker */
+    uint8_t data_hash[32];
+    if (!val->data || val->data_len == 0) {
+        memset(data_hash, 0, sizeof(data_hash));
+    } else {
+        if (qgp_sha3_256(val->data, val->data_len, data_hash) != 0) {
+            fprintf(stderr, "STORAGE: data_hash computation failed, rejecting PUT\n");
+            return -1;
+        }
+    }
+
+    sqlite3_stmt *s = store->stmt_put_if_newer;
+    sqlite3_reset(s);
+
+    sqlite3_bind_blob(s, 1, val->key_hash.bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 2, val->owner_fp.bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    sqlite3_bind_int64(s, 3, (sqlite3_int64)val->value_id);
+    sqlite3_bind_blob(s, 4, val->data, (int)val->data_len, SQLITE_STATIC);
+    sqlite3_bind_int(s, 5, (int)val->type);
+    sqlite3_bind_int(s, 6, (int)val->ttl);
+    sqlite3_bind_int64(s, 7, (sqlite3_int64)val->created_at);
+    sqlite3_bind_int64(s, 8, (sqlite3_int64)val->expires_at);
+    sqlite3_bind_int64(s, 9, (sqlite3_int64)val->seq);
+    sqlite3_bind_blob(s, 10, val->owner_pk.bytes, NODUS_PK_BYTES, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 11, val->signature.bytes, NODUS_SIG_BYTES, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 12, data_hash, 32, SQLITE_STATIC);
+
+    int rc = sqlite3_step(s);
+    if (rc != SQLITE_DONE) return -1;
+
+    return (sqlite3_changes(store->db) > 0) ? 0 : 1;  /* 0=stored, 1=skipped */
+}
+
+int nodus_storage_fetch_batch(nodus_storage_t *store,
+                               const nodus_key_t *after_key,
+                               nodus_value_t **batch_out,
+                               int batch_size) {
+    if (!store || !store->db || !batch_out || batch_size <= 0) return 0;
+
+    sqlite3_stmt *s = store->stmt_fetch_batch;
+    sqlite3_reset(s);
+
+    if (after_key) {
+        sqlite3_bind_blob(s, 1, after_key->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    } else {
+        /* First batch: start from beginning (all zeros) */
+        uint8_t zeros[NODUS_KEY_BYTES];
+        memset(zeros, 0, sizeof(zeros));
+        sqlite3_bind_blob(s, 1, zeros, NODUS_KEY_BYTES, SQLITE_STATIC);
+    }
+    sqlite3_bind_int(s, 2, batch_size);
+
+    int fetched = 0;
+    while (sqlite3_step(s) == SQLITE_ROW && fetched < batch_size) {
+        batch_out[fetched] = row_to_value(s);
+        if (batch_out[fetched])
+            fetched++;
+    }
+
+    return fetched;
+}
+
 /* ── DHT Hinted Handoff ─────────────────────────────────────────── */
 
 int nodus_storage_hinted_insert(nodus_storage_t *store,
+                                 const nodus_key_t *node_id,
                                  const char *peer_ip, uint16_t peer_port,
                                  const uint8_t *frame_data, size_t frame_len) {
-    if (!store || !store->db || !peer_ip || !frame_data) return -1;
-
-    /* Cap at max entries */
-    int count = nodus_storage_hinted_count(store);
-    if (count >= DHT_HINT_MAX_ENTRIES) {
-        fprintf(stderr, "DHT-HINT: max entries reached (%d), dropping\n", count);
-        return -1;
-    }
+    if (!store || !store->db || !node_id || !peer_ip || !frame_data) return -1;
 
     uint64_t now = (uint64_t)time(NULL);
     uint64_t expires = now + DHT_HINT_TTL_SEC;
@@ -373,11 +459,12 @@ int nodus_storage_hinted_insert(nodus_storage_t *store,
     sqlite3_stmt *s = store->stmt_hint_insert;
     sqlite3_reset(s);
 
-    sqlite3_bind_text(s, 1, peer_ip, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(s, 2, peer_port);
-    sqlite3_bind_blob(s, 3, frame_data, (int)frame_len, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(s, 4, (sqlite3_int64)now);
-    sqlite3_bind_int64(s, 5, (sqlite3_int64)expires);
+    sqlite3_bind_blob(s, 1, node_id->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    sqlite3_bind_text(s, 2, peer_ip, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(s, 3, peer_port);
+    sqlite3_bind_blob(s, 4, frame_data, (int)frame_len, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(s, 5, (sqlite3_int64)now);
+    sqlite3_bind_int64(s, 6, (sqlite3_int64)expires);
 
     int rc = sqlite3_step(s);
     if (rc != SQLITE_DONE) {
@@ -391,18 +478,17 @@ int nodus_storage_hinted_insert(nodus_storage_t *store,
 }
 
 int nodus_storage_hinted_get(nodus_storage_t *store,
-                              const char *peer_ip, uint16_t peer_port,
+                              const nodus_key_t *node_id,
                               int limit,
                               nodus_dht_hint_t **entries_out,
                               size_t *count_out) {
-    if (!store || !store->db || !peer_ip || !entries_out || !count_out) return -1;
+    if (!store || !store->db || !node_id || !entries_out || !count_out) return -1;
 
     sqlite3_stmt *s = store->stmt_hint_get;
     sqlite3_reset(s);
 
-    sqlite3_bind_text(s, 1, peer_ip, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(s, 2, peer_port);
-    sqlite3_bind_int(s, 3, limit);
+    sqlite3_bind_blob(s, 1, node_id->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    sqlite3_bind_int(s, 2, limit);
 
     size_t cap = 16;
     size_t count = 0;

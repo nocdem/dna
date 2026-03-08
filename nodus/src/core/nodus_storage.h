@@ -21,6 +21,7 @@ extern "C" {
 /** DHT hinted handoff entry (failed replication, pending retry) */
 typedef struct {
     int64_t     id;
+    nodus_key_t node_id;
     char        peer_ip[64];
     uint16_t    peer_port;
     uint8_t    *frame_data;
@@ -39,6 +40,8 @@ typedef struct {
     sqlite3_stmt *stmt_delete;
     sqlite3_stmt *stmt_cleanup;
     sqlite3_stmt *stmt_count;
+    sqlite3_stmt *stmt_put_if_newer;
+    sqlite3_stmt *stmt_fetch_batch;
     /* Hinted handoff for DHT replication */
     sqlite3_stmt *stmt_hint_insert;
     sqlite3_stmt *stmt_hint_get;
@@ -124,22 +127,49 @@ int nodus_storage_cleanup(nodus_storage_t *store);
  */
 int nodus_storage_count(nodus_storage_t *store);
 
+/**
+ * Store a value only if it has a higher seq than existing.
+ * On equal seq, tiebreak by SHA3-256(data) — higher hash wins.
+ * Atomic single-SQL operation (no TOCTOU race).
+ *
+ * @return 0 = stored, 1 = skipped (existing is newer/equal), -1 = error
+ */
+int nodus_storage_put_if_newer(nodus_storage_t *store, const nodus_value_t *val);
+
+/**
+ * Fetch a batch of values for republish (bookmark pagination).
+ * Returns values with key_hash > after_key, ordered by key_hash, up to batch_size.
+ * Pass NULL for after_key to start from the beginning.
+ * Finalizes statement immediately (no held cursor — safe for WAL).
+ *
+ * @param store      Storage handle
+ * @param after_key  Bookmark (last key from previous batch), or NULL for first batch
+ * @param batch_out  Output array (must hold batch_size entries, caller frees each)
+ * @param batch_size Maximum values to fetch
+ * @return Number of values fetched (< batch_size means end of data)
+ */
+int nodus_storage_fetch_batch(nodus_storage_t *store,
+                               const nodus_key_t *after_key,
+                               nodus_value_t **batch_out,
+                               int batch_size);
+
 /* ── DHT Hinted Handoff ─────────────────────────────────────────── */
 
 /**
  * Insert a hinted handoff entry (failed DHT replication).
- * Cap: 1000 entries. TTL: 24 hours.
+ * TTL: 7 days. No cap.
  */
 int nodus_storage_hinted_insert(nodus_storage_t *store,
+                                 const nodus_key_t *node_id,
                                  const char *peer_ip, uint16_t peer_port,
                                  const uint8_t *frame_data, size_t frame_len);
 
 /**
- * Get pending hints for a peer (up to limit).
+ * Get pending hints for a node (up to limit).
  * Caller must free entries with nodus_storage_hinted_free().
  */
 int nodus_storage_hinted_get(nodus_storage_t *store,
-                              const char *peer_ip, uint16_t peer_port,
+                              const nodus_key_t *node_id,
                               int limit,
                               nodus_dht_hint_t **entries_out,
                               size_t *count_out);

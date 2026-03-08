@@ -69,7 +69,8 @@ Nodus v5 is a complete, production-deployed DHT (Distributed Hash Table) impleme
 │   ├── consensus/
 │   │   └── nodus_pbft.c/h         PBFT cluster membership & leader election
 │   ├── server/
-│   │   ├── nodus_server.c         [986 lines] Main event loop, routing
+│   │   ├── nodus_server.c         Main event loop, routing, replication, FIND_VALUE state machine, republish
+│   │   ├── nodus_server.h         Server types + FV/republish state structs
 │   │   └── nodus_auth.c           Challenge-response authentication
 │   ├── witness/
 │   │   ├── nodus_witness.c        [314 lines] Witness lifecycle
@@ -212,8 +213,8 @@ typedef void (*nodus_on_state_change_fn)(nodus_client_state_t old,
 | NODUS_FRAME_MAGIC | 0x4E44 ("ND") | Wire frame magic |
 | NODUS_KEY_BYTES | 64 | SHA3-512 key size |
 | NODUS_KEYSPACE_BITS | 512 | Kademlia key space |
-| NODUS_K | 8 | Bucket size (Kademlia) |
-| NODUS_R | 3 | Replication factor |
+| NODUS_K | 8 | Bucket size + DHT replication factor |
+| NODUS_R | 3 | Channel replication factor (hashring only) |
 | NODUS_BUCKETS | 512 | Routing table buckets |
 | NODUS_ALPHA | 3 | Parallel lookups |
 | NODUS_PK_BYTES | 2592 | Dilithium5 public key |
@@ -225,6 +226,18 @@ typedef void (*nodus_on_state_change_fn)(nodus_client_state_t old,
 | NODUS_CHANNEL_RETENTION | 604800 | 7 days |
 | NODUS_PBFT_HEARTBEAT_SEC | 10 | Cluster heartbeat |
 | NODUS_PBFT_SUSPECT_SEC | 30 | Node suspect timeout |
+| NODUS_ROUTING_STALE_SEC | 3600 | Stale entry filter threshold (1h) |
+| NODUS_BUCKET_REFRESH_SEC | 900 | Bucket refresh interval (15 min) |
+| NODUS_REPUBLISH_SEC | 3600 | Periodic republish interval (1h) |
+| NODUS_REPUBLISH_BATCH | 5 | Values per main loop tick during republish |
+| NODUS_REPUBLISH_MAX_FDS | 64 | Max concurrent republish connections |
+| NODUS_CLEANUP_SEC | 3600 | Expired value cleanup interval (1h) |
+| NODUS_FV_MAX_INFLIGHT | 16 | Max concurrent FIND_VALUE lookups |
+| NODUS_FV_TIMEOUT_MS | 5000 | Per-lookup overall timeout |
+| NODUS_FV_QUERY_TIMEOUT_MS | 3000 | Per-query connect+recv timeout |
+| NODUS_FV_FD_TABLE_SIZE | 4096 | FV fd mapping table size |
+| NODUS_FV_MAX_PER_SEC | 100 | Rate limit: inter-node FIND_VALUE |
+| NODUS_SV_MAX_PER_SEC | 200 | Rate limit: inter-node STORE_VALUE |
 
 #### Core Types
 
@@ -317,14 +330,15 @@ typedef struct {
 |---------|----------|---------|
 | HELLO | T2 | Client sends identity, server returns challenge nonce |
 | AUTH | T2 | Client signs nonce, server validates, creates session token |
-| PUT | T2 | Store value, verify signature, rate limit, replicate to backup |
-| GET | T2 | Retrieve best value (highest seq) |
+| PUT | T2 | Store value via `put_if_newer()`, verify signature, rate limit, replicate to K-closest |
+| GET | T2 | Retrieve best value (highest seq); on miss, async FIND_VALUE to other nodes |
 | GET_ALL | T2 | Return all versions by owner |
 | LISTEN | T2 | Add key to session's subscription list |
 | UNLISTEN | T2 | Remove subscription |
-| PING/PONG | T1 UDP | Kademlia heartbeat for PBFT health |
+| PING/PONG | T1 UDP | Kademlia heartbeat for PBFT health + dead peer recovery |
 | FIND_NODE | T1 UDP | Kademlia peer discovery |
-| STORE_VALUE | T1 TCP | Receive replicated value from peer |
+| FIND_VALUE (fv) | T1 TCP | Inter-node value lookup (rate-limited: 100/s) |
+| STORE_VALUE (sv) | T1 TCP | Receive replicated value from peer (rate-limited: 200/s) |
 | CH_CREATE | T2 | Create channel table |
 | CH_POST | T2 | Insert post, assign seq_id, replicate |
 | CH_GET_POSTS | T2 | Fetch posts after seq_id |
@@ -338,6 +352,9 @@ typedef struct {
 - 512 k-buckets (one per bit of 512-bit key space)
 - k=8 (max 8 peers per bucket, LRU replacement)
 - Bucket index = leading zero bits in XOR(self_id, peer_id)
+- Stale entry filtering: entries older than `NODUS_ROUTING_STALE_SEC` (3600s) excluded from `find_closest()`
+- Bucket refresh: every `NODUS_BUCKET_REFRESH_SEC` (900s), stale buckets refreshed via FIND_NODE with random key
+- Dead peers removed from routing table on PBFT DEAD transition
 
 **Functions (nodus_routing.c, 371 lines):**
 ```c
@@ -352,9 +369,9 @@ int nodus_routing_count(const routing_t *rt);
 int nodus_routing_touch(routing_t *rt, const nodus_key_t *peer_id);
 ```
 
-### Storage Layer (nodus_storage.c, 316 lines)
+### Storage Layer (nodus_storage.c)
 
-SQLite 3 persistent storage with prepared statements and TTL cleanup.
+SQLite 3 persistent storage with prepared statements, TTL cleanup, and seq-checked writes.
 
 ```sql
 CREATE TABLE nodus_values (
@@ -369,9 +386,26 @@ CREATE TABLE nodus_values (
     seq INTEGER,
     owner_pk BLOB,           -- 2592 bytes
     signature BLOB,          -- 4627 bytes
+    data_hash BLOB,          -- SHA3-256 hash for seq tiebreaker
     PRIMARY KEY(key_hash, owner_fp, value_id)
 );
+
+CREATE TABLE dht_hinted_handoff (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id     BLOB NOT NULL,       -- Target node (was IP:port)
+    peer_ip     TEXT NOT NULL,
+    peer_port   INTEGER NOT NULL,
+    frame_data  BLOB NOT NULL,
+    created_at  INTEGER NOT NULL,
+    expires_at  INTEGER NOT NULL,     -- 7-day TTL (was 24h)
+    retry_count INTEGER DEFAULT 0
+);
 ```
+
+**Key storage functions:**
+- `nodus_storage_put_if_newer()` — Atomic seq check with SHA3-256 hash tiebreaker on equal seq. Used on ALL storage paths.
+- `nodus_storage_fetch_batch()` — Bookmark-paginated batch fetch for periodic republish (no held cursor).
+- `nodus_storage_cleanup()` — Removes expired ephemeral values. Called every `NODUS_CLEANUP_SEC` (3600s).
 
 ### Consistent Hash Ring (nodus_hashring.c, 152 lines)
 
@@ -520,7 +554,7 @@ ctest
 
 ## 8. Tests
 
-### 14 Test Binaries (4,646 test lines)
+### 22 Unit Tests (was 16, +6 replication tests)
 
 | Test | Lines | Coverage |
 |------|-------|----------|
@@ -538,6 +572,14 @@ ctest
 | test_channel_store | 233 | Channel post, seq_id, retention |
 | test_server | 714 | 3-node cluster, auth, PUT/GET |
 | test_client | 426 | Connect, auth, sync/async ops |
+| test_presence | - | Presence table operations |
+| test_presence_query | - | Batch presence queries |
+| test_put_if_newer | - | Atomic seq check + SHA3-256 hash tiebreaker |
+| test_routing_stale | - | Stale entry filtering in find_closest |
+| test_bucket_refresh | - | Kademlia bucket refresh key generation |
+| test_hinted_handoff | - | Node_id-keyed hinted handoff schema |
+| test_fetch_batch | - | Bookmark-paginated batch storage fetch |
+| test_storage_cleanup | - | Expired value removal |
 
 ### Integration Test (integration_test.sh)
 
@@ -645,14 +687,15 @@ ReadWritePaths=/var/lib/nodus
 - **IPv6:** Not supported (IPv4 only)
 - **TLS/encryption:** Not implemented (relies on post-quantum signatures for auth)
 - **Access control:** No ACLs (DHT is open; clients authenticate only)
-- **Sharding keyspace:** Not implemented (all values stored on all nodes)
+- **Sharding keyspace:** Not implemented (values replicated to K-closest nodes via Kademlia routing)
 
 ### Quality Assessment
 
 | Aspect | Rating | Evidence |
 |--------|--------|---------|
-| Stability | EXCELLENT | ASAN-clean, 14 test binaries pass |
+| Stability | EXCELLENT | ASAN-clean, 22 unit tests pass |
 | Protocol | COMPLETE | 3 protocol tiers fully implemented |
-| Security | STRONG | Post-quantum auth, rate limiting |
+| Replication | COMPLETE | K-closest replication, periodic republish, FIND_VALUE forwarding, hinted handoff |
+| Security | STRONG | Post-quantum auth, rate limiting, seq-checked storage |
 | Documentation | GOOD | Architecture doc + inline comments |
 | Deployment | PRODUCTION | Running 3-node cluster |

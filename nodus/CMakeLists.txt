@@ -248,6 +248,31 @@ add_executable(test_witness_verify tests/test_witness_verify.c)
 target_link_libraries(test_witness_verify nodus_lib dsa nodus_lib)
 add_test(NAME test_witness_verify COMMAND test_witness_verify)
 
+# Replication phase tests
+add_executable(test_put_if_newer tests/test_put_if_newer.c)
+target_link_libraries(test_put_if_newer nodus_lib dsa nodus_lib)
+add_test(NAME test_put_if_newer COMMAND test_put_if_newer)
+
+add_executable(test_routing_stale tests/test_routing_stale.c)
+target_link_libraries(test_routing_stale nodus_lib dsa nodus_lib)
+add_test(NAME test_routing_stale COMMAND test_routing_stale)
+
+add_executable(test_bucket_refresh tests/test_bucket_refresh.c)
+target_link_libraries(test_bucket_refresh nodus_lib dsa nodus_lib)
+add_test(NAME test_bucket_refresh COMMAND test_bucket_refresh)
+
+add_executable(test_hinted_handoff tests/test_hinted_handoff.c)
+target_link_libraries(test_hinted_handoff nodus_lib dsa nodus_lib)
+add_test(NAME test_hinted_handoff COMMAND test_hinted_handoff)
+
+add_executable(test_fetch_batch tests/test_fetch_batch.c)
+target_link_libraries(test_fetch_batch nodus_lib dsa nodus_lib)
+add_test(NAME test_fetch_batch COMMAND test_fetch_batch)
+
+add_executable(test_storage_cleanup tests/test_storage_cleanup.c)
+target_link_libraries(test_storage_cleanup nodus_lib dsa nodus_lib)
+add_test(NAME test_storage_cleanup COMMAND test_storage_cleanup)
+
 # ── Tools ────────────────────────────────────────────────────────────
 add_executable(nodus-cli tools/nodus-cli.c)
 target_link_libraries(nodus-cli nodus_lib dsa nodus_lib)

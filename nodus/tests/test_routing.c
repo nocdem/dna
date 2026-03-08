@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 
 #define TEST(name) do { printf("  %-50s", name); } while(0)
 #define PASS()     do { printf("PASS\n"); passed++; } while(0)
@@ -28,7 +29,7 @@ static nodus_peer_t make_peer(uint8_t id_fill, const char *ip, uint16_t port) {
     strncpy(p.ip, ip, sizeof(p.ip) - 1);
     p.udp_port = port;
     p.tcp_port = port + 1;
-    p.last_seen = 1000 + id_fill;
+    p.last_seen = (uint64_t)time(NULL);
     return p;
 }
 
@@ -158,6 +159,7 @@ static void test_find_closest(void) {
     nodus_routing_init(&rt, &self);
 
     /* Insert 20 peers with distinct IDs */
+    uint64_t now = (uint64_t)time(NULL);
     for (int i = 1; i <= 20; i++) {
         nodus_peer_t p;
         memset(&p, 0, sizeof(p));
@@ -167,7 +169,7 @@ static void test_find_closest(void) {
         snprintf(p.ip, sizeof(p.ip), "10.0.0.%d", i);
         p.udp_port = (uint16_t)(4000 + i);
         p.tcp_port = (uint16_t)(4001 + i);
-        p.last_seen = 1000;
+        p.last_seen = now;
         nodus_routing_insert(&rt, &p);
     }
 
@@ -195,6 +197,7 @@ static void test_bucket_overflow_lru(void) {
     /* Create k+1 peers that all land in the same bucket */
     /* All have the same high bit pattern differing from self (0x00),
        so they should all land in bucket 0 (first bit differs) */
+    uint64_t base_time = (uint64_t)time(NULL);
     for (int i = 0; i <= NODUS_K; i++) {
         nodus_peer_t p;
         memset(&p, 0, sizeof(p));
@@ -202,7 +205,7 @@ static void test_bucket_overflow_lru(void) {
         p.node_id.bytes[0] = 0x80;
         p.node_id.bytes[1] = (uint8_t)i;
         snprintf(p.ip, sizeof(p.ip), "10.0.0.%d", i);
-        p.last_seen = (uint64_t)(100 + i);  /* Increasing last_seen */
+        p.last_seen = base_time + (uint64_t)i;  /* Increasing last_seen */
         nodus_routing_insert(&rt, &p);
     }
 
@@ -229,7 +232,8 @@ static void test_touch(void) {
     nodus_routing_init(&rt, &self);
 
     nodus_peer_t p = make_peer(0x01, "10.0.0.1", 4000);
-    p.last_seen = 1000;
+    uint64_t before = (uint64_t)time(NULL) - 10;  /* 10 seconds ago */
+    p.last_seen = before;
     nodus_routing_insert(&rt, &p);
 
     nodus_routing_touch(&rt, &p.node_id);
@@ -237,7 +241,7 @@ static void test_touch(void) {
     nodus_peer_t found;
     nodus_routing_lookup(&rt, &p.node_id, &found);
 
-    if (found.last_seen > 1000)
+    if (found.last_seen > before)
         PASS();
     else
         FAIL("touch didn't update last_seen");

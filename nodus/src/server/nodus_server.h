@@ -75,6 +75,89 @@ typedef struct {
     int                 puts_in_window;
 } nodus_session_t;
 
+/* ── FIND_VALUE async state machine ──────────────────────────────── */
+
+/** Query states for outgoing FIND_VALUE TCP connections */
+typedef enum {
+    FV_QUERY_CONNECTING,    /**< Non-blocking connect in progress (EPOLLOUT) */
+    FV_QUERY_SENDING,       /**< Connected, sending request (EPOLLOUT) */
+    FV_QUERY_RECEIVING,     /**< Request sent, waiting for response (EPOLLIN) */
+    FV_QUERY_DONE,          /**< Response received or failed */
+} dht_fv_query_state_t;
+
+/** One outgoing TCP query to a peer */
+typedef struct {
+    int                     fd;           /**< Socket fd (-1 if unused) */
+    dht_fv_query_state_t    state;
+    nodus_key_t             node_id;      /**< Peer being queried */
+    char                    ip[64];
+    uint16_t                tcp_port;
+    uint64_t                started_at;   /**< For per-query timeout (ms) */
+    uint8_t                *send_buf;     /**< Encoded fv request frame */
+    size_t                  send_len;
+    size_t                  send_pos;     /**< Bytes sent so far */
+    uint8_t                *recv_buf;     /**< Dynamic: malloc on start, free on done */
+    size_t                  recv_cap;
+    size_t                  recv_len;
+} dht_fv_query_t;
+
+/** One FIND_VALUE lookup (may issue multiple queries across rounds) */
+typedef struct {
+    bool                    active;
+    nodus_key_t             key_hash;          /**< Key being looked up */
+    uint32_t                txn_id;            /**< Client's transaction ID */
+    int                     session_slot;      /**< Client session index */
+    uint64_t                started_at;        /**< For overall timeout (ms) */
+
+    /* Kademlia iterative state */
+    nodus_peer_t            candidates[NODUS_K * 4];
+    int                     candidate_count;
+    nodus_key_t             visited[NODUS_K * 4];
+    int                     visited_count;
+    int                     round;
+
+    /* Active outgoing queries for this lookup */
+    dht_fv_query_t          queries[NODUS_ALPHA];
+    int                     queries_pending;
+
+    /* Result */
+    bool                    found;
+    uint8_t                *result_buf;
+    size_t                  result_len;
+} dht_fv_lookup_t;
+
+/** All in-flight FIND_VALUE lookups */
+typedef struct {
+    dht_fv_lookup_t         lookups[NODUS_FV_MAX_INFLIGHT];
+} dht_fv_state_t;
+
+/** FV fd→lookup index mapping (indexed by fd number) */
+typedef struct {
+    int lookup_idx;   /**< Index into lookups[] (-1 = not an FV fd) */
+    int query_idx;    /**< Index into lookup->queries[] */
+} dht_fv_fd_entry_t;
+
+/** One non-blocking republish TCP connection (fire-and-forget) */
+typedef struct {
+    int      fd;
+    uint8_t *frame;       /**< malloc'd copy of frame data */
+    size_t   frame_len;
+    size_t   send_pos;    /**< Bytes sent so far */
+    uint64_t started_at;  /**< For timeout detection (ms) */
+    bool     active;
+    bool     connected;   /**< connect() completed */
+} dht_republish_conn_t;
+
+/** Republish state (persistent across ticks) */
+typedef struct {
+    nodus_key_t last_key;       /**< Bookmark: last key_hash processed */
+    bool        active;         /**< Republish cycle in progress */
+    bool        first_batch;    /**< First batch of cycle (no bookmark yet) */
+    uint64_t    cycle_start;    /**< When current cycle began */
+    int         pending_fds;    /**< Outgoing connections in flight */
+    dht_republish_conn_t conns[NODUS_REPUBLISH_MAX_FDS];
+} dht_republish_state_t;
+
 /* ── Server ──────────────────────────────────────────────────────── */
 
 typedef struct nodus_server {
@@ -106,6 +189,15 @@ typedef struct nodus_server {
 
     /* Sessions (indexed by conn->slot) */
     nodus_session_t         sessions[NODUS_MAX_SESSIONS];
+
+    /* FIND_VALUE async state machine */
+    dht_fv_state_t          fv_state;
+    dht_fv_fd_entry_t       fv_fd_table[NODUS_FV_FD_TABLE_SIZE];
+    int                     fv_epoll_fd;
+
+    /* Periodic republish */
+    dht_republish_state_t   republish;
+    int                     rp_epoll_fd;
 
     bool                    running;
 } nodus_server_t;

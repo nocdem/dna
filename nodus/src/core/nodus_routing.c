@@ -6,8 +6,11 @@
  */
 
 #include "core/nodus_routing.h"
+#include "crypto/utils/qgp_random.h"
 #include <string.h>
 #include <time.h>
+
+static uint64_t routing_time_now(void) { return (uint64_t)time(NULL); }
 
 void nodus_routing_init(nodus_routing_t *rt, const nodus_key_t *self_id) {
     if (!rt || !self_id) return;
@@ -121,6 +124,7 @@ int nodus_routing_find_closest(const nodus_routing_t *rt,
     /* Temporary array — stack allocated. Max theoretical entries = 512 * 8 = 4096 */
     /* For practical purposes, iterate buckets and use insertion sort into results */
     int found = 0;
+    uint64_t now = routing_time_now();
 
     for (int b = 0; b < NODUS_BUCKETS; b++) {
         const nodus_bucket_t *bucket = &rt->buckets[b];
@@ -129,6 +133,11 @@ int nodus_routing_find_closest(const nodus_routing_t *rt,
                 continue;
 
             const nodus_peer_t *peer = &bucket->entries[e].peer;
+
+            /* Filter stale entries — bucket refresh keeps live peers fresh */
+            if (peer->last_seen > 0 && now > peer->last_seen &&
+                now - peer->last_seen > NODUS_ROUTING_STALE_SEC)
+                continue;
 
             if (found < max_results) {
                 /* Insertion sort into results */
@@ -218,4 +227,38 @@ int nodus_routing_touch(nodus_routing_t *rt, const nodus_key_t *peer_id) {
         }
     }
     return -1;
+}
+
+void nodus_key_random_in_bucket(nodus_key_t *result,
+                                 const nodus_key_t *self_id,
+                                 int bucket) {
+    if (!result || !self_id || bucket < 0 || bucket >= NODUS_KEYSPACE_BITS) return;
+
+    /* Generate a random distance that falls in bucket `bucket`.
+     * Bucket index = number of leading zero bits in XOR distance.
+     * So: bit `bucket` must be 1, all higher bits must be 0,
+     * and lower bits are random.
+     *
+     * Distance is stored big-endian in bytes[0..63]. */
+    nodus_key_t distance;
+    memset(&distance, 0, sizeof(distance));
+
+    /* Set bit `bucket` (counting from MSB = 0) */
+    int byte_idx = bucket / 8;
+    int bit_idx = 7 - (bucket % 8);
+    distance.bytes[byte_idx] = (uint8_t)(1 << bit_idx);
+
+    /* Randomize all bits below bit `bucket` */
+    uint8_t random_byte;
+    qgp_randombytes(&random_byte, 1);
+    distance.bytes[byte_idx] |= (random_byte & (uint8_t)((1 << bit_idx) - 1));
+
+    /* Fill all lower bytes with random */
+    if (byte_idx + 1 < NODUS_KEY_BYTES) {
+        qgp_randombytes(&distance.bytes[byte_idx + 1],
+                        (size_t)(NODUS_KEY_BYTES - byte_idx - 1));
+    }
+
+    /* result = self_id XOR distance */
+    nodus_key_xor(result, self_id, &distance);
 }

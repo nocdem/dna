@@ -108,6 +108,18 @@ int nodus_routing_count(const nodus_routing_t *rt);
  */
 int nodus_routing_touch(nodus_routing_t *rt, const nodus_key_t *peer_id);
 
+/**
+ * Generate a random key whose XOR distance to self_id falls in bucket b.
+ * Used for Kademlia bucket refresh (FIND_NODE on random key per stale bucket).
+ *
+ * @param result   Output key
+ * @param self_id  This node's ID
+ * @param bucket   Bucket index (0..511)
+ */
+void nodus_key_random_in_bucket(nodus_key_t *result,
+                                 const nodus_key_t *self_id,
+                                 int bucket);
+
 #ifdef __cplusplus
 }
 #endif

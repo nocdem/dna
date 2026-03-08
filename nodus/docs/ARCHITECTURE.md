@@ -236,10 +236,10 @@ Tier 1 handles inter-node communication for Kademlia routing and value replicati
 | `pong` | response | UDP | Heartbeat response — includes responder's node_id |
 | `fn` | query | UDP | FIND_NODE — find k closest nodes to target |
 | `fn_r` | response | UDP | NODES_FOUND — returns array of peer info |
-| `sv` | query | UDP/TCP | STORE_VALUE — replicate a signed value |
+| `sv` | query | UDP/TCP | STORE_VALUE — replicate a signed value (rate-limited: 200/s) |
 | `sv_ack` | response | UDP | STORE acknowledgement |
-| `fv` | query | UDP | FIND_VALUE — retrieve value by key |
-| `fv_r` | response | UDP | VALUE_FOUND — returns value or closest nodes |
+| `fv` | query | TCP | FIND_VALUE — retrieve value by key (rate-limited: 100/s) |
+| `fv_r` | response | TCP | VALUE_FOUND — returns value or closest nodes |
 | `sub` | query | TCP | SUBSCRIBE — watch a key for changes (*) |
 | `unsub` | query | TCP | UNSUBSCRIBE — stop watching a key (*) |
 | `ntf` | query | TCP | NOTIFY — push value change to subscriber (*) |
@@ -285,11 +285,16 @@ The `val` field contains a CBOR-serialized `NodusValue` (see Section 6).
 - **Buckets:** 512 (one per bit of key space)
 - **Bucket size (k):** 8 nodes
 - **Parallel lookups (α):** 3
-- **Replication factor (R):** 3
+- **DHT replication:** K=8 closest nodes (via `nodus_routing_find_closest()`)
+- **Channel replication (R):** 3 (via consistent hash ring, separate system)
 - **Distance metric:** XOR of 64-byte node IDs
+- **Stale threshold:** `NODUS_ROUTING_STALE_SEC` (3600s) — entries older than 1h excluded from `find_closest()`
+- **Bucket refresh:** Every `NODUS_BUCKET_REFRESH_SEC` (900s), stale buckets refreshed via FIND_NODE with random key (`nodus_key_random_in_bucket()`)
 
 **Bucket index** = count of leading zero bits in `XOR(self_id, peer_id)`. Peers with a
 longer common prefix (closer in key space) go into higher-numbered buckets.
+
+**Dead peer removal:** When PBFT marks a peer DEAD (60s timeout), `nodus_routing_remove()` is called. Dead peers can recover via the PING handler calling `nodus_pbft_on_pong()`.
 
 **Eviction policy:** LRU — when a bucket is full, the least-recently-seen entry is replaced
 by the new peer.
@@ -705,11 +710,11 @@ When a node receives a channel post:
 2. Notifies all locally subscribed clients (`ch_ntf`)
 3. Serializes the post as a `ch_rep` message
 4. Sends it via short-lived TCP connections to each node in the responsible set (except self)
-5. If a send fails, the post is queued in **hinted handoff** (SQLite, 24h TTL)
+5. If a send fails, the post is queued in **hinted handoff** (SQLite, 7-day TTL, keyed by node_id)
 
-**Hinted handoff retry** runs every 30 seconds (`NODUS_HINTED_RETRY_SEC`), attempting to
-deliver queued posts to recovered peers. Successfully delivered entries are deleted; failed
-entries have their retry count incremented.
+**Hinted handoff retry** runs every 30 seconds (`NODUS_HINTED_RETRY_SEC`), querying distinct
+node_ids and looking up current IP:port via the routing table. Successfully delivered entries
+are deleted; failed entries have their retry count incremented.
 
 ---
 
@@ -726,6 +731,12 @@ while (srv->running) {
     nodus_udp_poll(&srv->udp);          // UDP datagrams (non-blocking)
     nodus_pbft_tick(&srv->pbft);        // Heartbeats + health checks
     nodus_replication_retry(&srv->replication);  // Hinted handoff retry
+    dht_find_value_tick(srv);           // Async FIND_VALUE state machines
+    dht_republish(srv);                 // Periodic value republish (batch)
+    dht_republish_tick(srv);            // Republish connection timeouts
+    dht_storage_cleanup(srv);           // Expired value removal (hourly)
+    dht_bucket_refresh(srv);            // Routing table refresh (15 min)
+    dht_hinted_retry(srv);             // DHT hinted handoff retry
 }
 ```
 
@@ -747,7 +758,8 @@ TCP frames are dispatched through `dispatch_t2()`:
 
 1. **Decode** the CBOR payload as a T2 message
 2. **Pre-auth check**: if session is not authenticated, only `hello`, `auth`, `sv`
-   (inter-node store), and `ch_rep` (channel replication) are allowed
+   (inter-node store, rate-limited: 200/s), `fv` (inter-node FIND_VALUE, rate-limited: 100/s),
+   and `ch_rep` (channel replication) are allowed
 3. **Token verification**: authenticated requests must carry a valid session token
 4. **Handler dispatch**: method name → handler function (`handle_t2_put`, `handle_t2_get`, etc.)
 

@@ -235,7 +235,7 @@ void nodus_presence_tick(struct nodus_server *srv) {
             (nodus_tcp_t *)&srv->tcp, peer->ip, peer->tcp_port);
         if (pconn) {
             nodus_tcp_send(pconn, sync_buf, sync_len);
-            /* Fire-and-forget — connection managed by TCP layer */
+            nodus_tcp_disconnect((nodus_tcp_t *)&srv->tcp, pconn);
         }
     }
 }

@@ -10,6 +10,7 @@
 #include "server/nodus_server.h"
 #include "protocol/nodus_tier1.h"
 #include "channel/nodus_hashring.h"
+#include "core/nodus_routing.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -172,6 +173,11 @@ void nodus_pbft_tick(nodus_pbft_t *pbft) {
         if (old_state != peer->state) {
             sync_ring(pbft, peer, old_state);
             state_changed = true;
+
+            /* Remove dead nodes from routing table to prevent stale replication */
+            if (peer->state == NODUS_NODE_DEAD) {
+                nodus_routing_remove(&srv->routing, &peer->node_id);
+            }
         }
     }
 

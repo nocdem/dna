@@ -21,9 +21,9 @@ extern "C" {
 /* ── Protocol constants ──────────────────────────────────────────── */
 
 #define NODUS_VERSION_MAJOR  0
-#define NODUS_VERSION_MINOR  5
-#define NODUS_VERSION_PATCH  11
-#define NODUS_VERSION_STRING "0.5.11"
+#define NODUS_VERSION_MINOR  6
+#define NODUS_VERSION_PATCH  0
+#define NODUS_VERSION_STRING "0.6.0"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -75,6 +75,20 @@ extern "C" {
 /* PBFT */
 #define NODUS_PBFT_HEARTBEAT_SEC 10
 #define NODUS_PBFT_SUSPECT_SEC   30
+
+/* DHT replication */
+#define NODUS_ROUTING_STALE_SEC    3600    /* 1 hour — filter stale entries in find_closest */
+#define NODUS_BUCKET_REFRESH_SEC   900     /* 15 min — bucket refresh via FIND_NODE */
+#define NODUS_REPUBLISH_SEC        3600    /* 60 min — periodic republish cycle */
+#define NODUS_REPUBLISH_BATCH      5       /* Values per main loop tick during republish */
+#define NODUS_REPUBLISH_MAX_FDS    64      /* Max concurrent outgoing republish connections */
+#define NODUS_CLEANUP_SEC          3600    /* 1 hour — storage cleanup interval */
+#define NODUS_FV_MAX_INFLIGHT      16      /* Max concurrent FIND_VALUE lookups */
+#define NODUS_FV_TIMEOUT_MS        5000    /* Per-lookup overall timeout */
+#define NODUS_FV_QUERY_TIMEOUT_MS  3000    /* Per-query connect+recv timeout */
+#define NODUS_FV_FD_TABLE_SIZE     4096    /* fd->lookup mapping table size */
+#define NODUS_FV_MAX_PER_SEC       100     /* Rate limit inter-node FIND_VALUE */
+#define NODUS_SV_MAX_PER_SEC       200     /* Rate limit inter-node STORE_VALUE */
 
 /* Tier 3: Witness/BFT consensus (DNAC) */
 #define NODUS_T3_MAX_WITNESSES      16
