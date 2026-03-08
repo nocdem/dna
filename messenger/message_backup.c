@@ -552,6 +552,28 @@ int message_backup_save(message_backup_context_t *ctx,
         return 1;  // Return 1 to indicate duplicate (not an error)
     }
 
+    // Fallback: catch pre-v16 rows where content_hash is NULL
+    {
+        const char *fb_sql =
+            "SELECT COUNT(*) FROM messages "
+            "WHERE content_hash IS NULL AND sender_fingerprint = ? "
+            "AND recipient = ? AND plaintext = ? AND timestamp = ?";
+        sqlite3_stmt *fb_stmt;
+        if (sqlite3_prepare_v2(ctx->db, fb_sql, -1, &fb_stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(fb_stmt, 1, sender_fingerprint ? sender_fingerprint : sender, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(fb_stmt, 2, recipient, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(fb_stmt, 3, plaintext, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(fb_stmt, 4, (sqlite3_int64)timestamp);
+            if (sqlite3_step(fb_stmt) == SQLITE_ROW && sqlite3_column_int(fb_stmt, 0) > 0) {
+                sqlite3_finalize(fb_stmt);
+                QGP_LOG_INFO(LOG_TAG, "Skipping duplicate message: %s -> %s (pre-v16 fallback)\n",
+                       sender, recipient);
+                return 1;
+            }
+            sqlite3_finalize(fb_stmt);
+        }
+    }
+
     const char *sql =
         "INSERT INTO messages (sender, recipient, plaintext, sender_fingerprint, timestamp, is_outgoing, delivered, read, status, group_id, message_type, content_hash) "
         "VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)";
