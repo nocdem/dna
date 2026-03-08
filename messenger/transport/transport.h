@@ -125,22 +125,6 @@ int transport_deliver_message(
 );
 
 // ============================================================================
-// Presence (DHT-based)
-// ============================================================================
-
-/**
- * Register my presence in DHT (timestamp only - privacy preserving)
- * Publishes: hash(my_pubkey) -> { timestamp }
- * No IP address is published to protect user privacy.
- *
- * This should be called periodically (every 5-10 minutes) to refresh presence
- *
- * @param ctx Transport context
- * @return 0 on success, -1 on failure
- */
-int transport_register_presence(transport_t *ctx);
-
-// ============================================================================
 // DHT Offline Queue (Primary messaging path)
 // ============================================================================
 

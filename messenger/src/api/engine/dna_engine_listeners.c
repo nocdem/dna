@@ -3,7 +3,6 @@
  *
  * Real-time DHT listener management:
  *   - Outbox listeners (offline message notifications)
- *   - Presence listeners (contact online status)
  *   - Contact request listeners (incoming requests)
  *   - ACK listeners (message delivery confirmation)
  *   - Wall post listeners (contact wall updates)
@@ -14,9 +13,6 @@
  *   - dna_engine_cancel_outbox_listener()          // Cancel single outbox listener
  *   - dna_engine_cancel_all_outbox_listeners()     // Cancel all outbox listeners
  *   - dna_engine_listen_all_contacts()             // Start all contact listeners
- *   - dna_engine_start_presence_listener()         // Start presence listener
- *   - dna_engine_cancel_presence_listener()        // Cancel single presence listener
- *   - dna_engine_cancel_all_presence_listeners()   // Cancel all presence listeners
  *   - dna_engine_refresh_listeners()               // Refresh all listeners
  *   - dna_engine_start_contact_request_listener()  // Start contact request listener
  *   - dna_engine_cancel_contact_request_listener() // Cancel contact request listener
@@ -590,35 +586,6 @@ void dna_engine_cancel_all_outbox_listeners(dna_engine_t *engine)
     pthread_mutex_unlock(&engine->outbox_listeners_mutex);
 }
 
-/* ============================================================================
- * PRESENCE LISTENERS — REMOVED (v0.9.0)
- *
- * Nodus-native presence: batch query replaces per-contact DHT listeners.
- * These stubs exist for callers that haven't been updated yet.
- * ============================================================================ */
-
-size_t dna_engine_start_presence_listener(
-    dna_engine_t *engine,
-    const char *contact_fingerprint)
-{
-    (void)engine;
-    (void)contact_fingerprint;
-    return 0;  /* No-op: presence handled by batch query */
-}
-
-void dna_engine_cancel_presence_listener(
-    dna_engine_t *engine,
-    const char *contact_fingerprint)
-{
-    (void)engine;
-    (void)contact_fingerprint;
-}
-
-void dna_engine_cancel_all_presence_listeners(dna_engine_t *engine)
-{
-    (void)engine;
-}
-
 /**
  * Refresh all listeners (cancel stale and restart)
  *
@@ -641,7 +608,6 @@ int dna_engine_refresh_listeners(dna_engine_t *engine)
 
     /* Cancel all engine-level listener tracking (clears arrays) */
     dna_engine_cancel_all_outbox_listeners(engine);
-    dna_engine_cancel_all_presence_listeners(engine);
     dna_engine_cancel_contact_request_listener(engine);
     dna_engine_cancel_all_wall_listeners(engine);
     dna_engine_cancel_all_channel_listeners(engine);

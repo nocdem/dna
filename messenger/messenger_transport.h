@@ -132,17 +132,6 @@ int messenger_transport_list_online_peers(
 );
 
 /**
- * Refresh presence announcement
- *
- * Re-announces identity to DHT (called periodically by GUI timer).
- * DHT announcements expire after ~10 minutes, so refresh every 5 minutes.
- *
- * @param ctx Messenger context
- * @return 0 on success, -1 on error
- */
-int messenger_transport_refresh_presence(messenger_context_t *ctx);
-
-/**
  * Lookup peer presence from DHT
  *
  * Queries DHT for peer's presence record using their fingerprint.

@@ -555,9 +555,8 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
         goto done;
     }
 
-    /* Start listeners for new contact (outbox, presence, ACK) */
+    /* Start listeners for new contact (outbox, ACK) */
     dna_engine_listen_outbox(engine, task->params.contact_request.fingerprint);
-    dna_engine_start_presence_listener(engine, task->params.contact_request.fingerprint);
     dna_engine_start_ack_listener(engine, task->params.contact_request.fingerprint);
 
     /* Read salt from the approved request (stored during receive) */

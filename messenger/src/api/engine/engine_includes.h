@@ -206,13 +206,11 @@ void* dna_engine_stabilization_retry_thread(void *arg);
 
 /* From dna_engine_p2p.c */
 void dna_engine_cancel_all_outbox_listeners(dna_engine_t *engine);
-void dna_engine_cancel_all_presence_listeners(dna_engine_t *engine);
 void dna_engine_cancel_contact_request_listener(dna_engine_t *engine);
 size_t dna_engine_start_contact_request_listener(dna_engine_t *engine);
 void dna_engine_cancel_ack_listener(dna_engine_t *engine, const char *contact_fingerprint);
 void dna_engine_cancel_all_ack_listeners(dna_engine_t *engine);
 size_t dna_engine_listen_outbox(dna_engine_t *engine, const char *contact_fingerprint);
-size_t dna_engine_start_presence_listener(dna_engine_t *engine, const char *contact_fingerprint);
 size_t dna_engine_start_ack_listener(dna_engine_t *engine, const char *contact_fingerprint);
 int dna_engine_listen_all_contacts(dna_engine_t *engine);
 int dna_engine_retry_pending_messages(dna_engine_t *engine);

@@ -81,22 +81,6 @@ struct transport {
  */
 void sha3_512_hash(const uint8_t *data, size_t len, uint8_t *hash_out);
 
-/**
- * Create presence JSON for DHT registration (timestamp only - privacy)
- * @param json_out: Output JSON string buffer
- * @param len: Buffer length
- * @return: 0 on success, -1 on failure
- */
-int create_presence_json(char *json_out, size_t len);
-
-/**
- * Parse presence JSON from DHT (timestamp only)
- * @param json_str: JSON string
- * @param last_seen_out: Output timestamp
- * @return: 0 on success, -1 on failure
- */
-int parse_presence_json(const char *json_str, uint64_t *last_seen_out);
-
 #ifdef __cplusplus
 }
 #endif

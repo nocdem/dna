@@ -7,7 +7,6 @@
 #include "messenger_transport.h"
 #include "messenger.h"
 #include "transport/transport.h"
-#include "transport/internal/transport_core.h"  // For parse_presence_json
 #include "dht/shared/dht_offline_queue.h"
 #include "dht/shared/nodus_ops.h"
 #include "dht/shared/dht_groups.h"
@@ -459,22 +458,15 @@ int messenger_transport_init(messenger_context_t *ctx, bool minimal)
 
     ctx->transport_enabled = true;
 
-    /* Minimal mode: skip presence registration (for background polling) */
+    /* Minimal mode: skip presence cache init (for background polling) */
     if (!minimal) {
-        if (transport_register_presence(ctx->transport_ctx) != 0) {
-            /* v0.6.119: Non-fatal - presence is cosmetic ("online" status).
-             * DHT may not have peers yet during async startup (v0.6.88+).
-             * Transport MUST stay alive for offline message retrieval. */
-            QGP_LOG_WARN(LOG_TAG, "Presence registration failed (DHT not ready?) - transport stays active");
-        }
-
         if (presence_cache_init() != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to initialize presence cache");
         }
 
-        QGP_LOG_INFO(LOG_TAG, "Transport initialized (full mode with presence)");
+        QGP_LOG_INFO(LOG_TAG, "Transport initialized (full mode)");
     } else {
-        QGP_LOG_INFO(LOG_TAG, "Transport initialized (minimal mode, no presence)");
+        QGP_LOG_INFO(LOG_TAG, "Transport initialized (minimal mode)");
     }
 
     return 0;
@@ -764,14 +756,6 @@ int messenger_transport_list_online_peers(
     return 0;
 }
 
-int messenger_transport_refresh_presence(messenger_context_t *ctx)
-{
-    /* v0.9.0: Nodus-native presence — no DHT PUT needed.
-     * Presence is tracked server-side when client connects.
-     * Batch queries handled by dna_presence_batch_query(). */
-    (void)ctx;
-    return 0;
-}
 
 int messenger_transport_lookup_presence(
     messenger_context_t *ctx,

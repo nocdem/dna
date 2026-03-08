@@ -4,7 +4,7 @@
  * Modular Architecture:
  * - internal/transport_core.h      Shared type definitions
  * - internal/transport_helpers.c   Helper functions (JSON, SHA3)
- * - internal/transport_discovery.c DHT presence registration
+ * - internal/transport_offline.c   DHT offline message queue
  * - internal/transport_offline.c   Spillway offline queue (sender outboxes)
  *
  * This file provides high-level initialization, lifecycle management.

@@ -16,7 +16,6 @@ set(DHT_LIB dht_lib)
 add_library(transport_lib STATIC
     transport.c
     internal/transport_helpers.c
-    internal/transport_discovery.c
     internal/transport_offline.c
 )
 

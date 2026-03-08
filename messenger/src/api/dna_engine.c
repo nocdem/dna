@@ -94,7 +94,6 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/shared/dht_groups.h"
 #include "dht/client/dna_group_outbox.h"
 #include "transport/transport.h"
-#include "transport/internal/transport_core.h"  /* For parse_presence_json */
 /* TURN credentials removed in v0.4.61 for privacy */
 #include "database/presence_cache.h"
 #include "database/keyserver_cache.h"
@@ -165,13 +164,11 @@ static inline struct tm *safe_gmtime(const time_t *timer, struct tm *result) {
 
 /* Forward declarations for listener management */
 void dna_engine_cancel_all_outbox_listeners(dna_engine_t *engine);
-void dna_engine_cancel_all_presence_listeners(dna_engine_t *engine);
 void dna_engine_cancel_contact_request_listener(dna_engine_t *engine);
 size_t dna_engine_start_contact_request_listener(dna_engine_t *engine);
 void dna_engine_cancel_ack_listener(dna_engine_t *engine, const char *contact_fingerprint);
 void dna_engine_cancel_all_ack_listeners(dna_engine_t *engine);
 size_t dna_engine_listen_outbox(dna_engine_t *engine, const char *contact_fingerprint);
-size_t dna_engine_start_presence_listener(dna_engine_t *engine, const char *contact_fingerprint);
 size_t dna_engine_start_ack_listener(dna_engine_t *engine, const char *contact_fingerprint);
 void dna_engine_cancel_all_wall_listeners(dna_engine_t *engine);
 void dna_engine_cancel_all_channel_listeners(dna_engine_t *engine);
@@ -183,7 +180,6 @@ void init_log_config(void);
 /* Core helpers moved to src/api/engine/dna_engine_helpers.c */
 
 /* is_valid_identity_name() moved to dna_engine_identity.c */
-size_t dna_engine_start_presence_listener(dna_engine_t *engine, const char *contact_fingerprint);
 
 /* Global engine pointer for DHT status callback and event dispatch from lower layers
  * Set during create, cleared during destroy. Used by messenger_transport.c to emit events.
@@ -228,7 +224,6 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
      * After network change + DHT reinit, global listeners are suspended but
      * engine-level arrays still show active=true, blocking new listener creation. */
     dna_engine_cancel_all_outbox_listeners(engine);
-    dna_engine_cancel_all_presence_listeners(engine);
     dna_engine_cancel_contact_request_listener(engine);
     dna_engine_cancel_all_wall_listeners(engine);
     dna_engine_cancel_all_channel_listeners(engine);
@@ -382,20 +377,7 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
-    /* 1. Re-register presence - initial registration during identity load often fails
-     * with nodes_tried=0 because routing table only has bootstrap nodes */
-    if (engine->messenger) {
-        int presence_rc = messenger_transport_refresh_presence(engine->messenger);
-        if (presence_rc == 0) {
-            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: presence re-registered");
-        } else {
-            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: presence registration failed: %d", presence_rc);
-        }
-    }
-
-    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
-
-    /* 1b. Sync contacts from DHT (restore on new device)
+    /* 1. Sync contacts from DHT (restore on new device)
      * v0.6.54+: Moved from blocking identity load to background thread.
      * Local SQLite cache is shown immediately, DHT sync updates in background. */
     if (engine->messenger) {
