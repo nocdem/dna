@@ -270,15 +270,3 @@ int sol_tx_send_lamports(
     QGP_LOG_INFO(LOG_TAG, "Transaction sent: %s", signature_out);
     return 0;
 }
-
-int sol_tx_send_sol(
-    const sol_wallet_t *wallet,
-    const char *to_address,
-    double amount_sol,
-    char *signature_out,
-    size_t sig_out_size
-) {
-    /* Convert SOL to lamports */
-    uint64_t lamports = (uint64_t)(amount_sol * SOL_LAMPORTS_PER_SOL);
-    return sol_tx_send_lamports(wallet, to_address, lamports, signature_out, sig_out_size);
-}

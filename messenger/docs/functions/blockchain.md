@@ -168,7 +168,6 @@ Solana blockchain with Ed25519 signatures.
 |----------|-------------|
 | `int sol_tx_build_transfer(const sol_wallet_t*, const uint8_t*, uint64_t, const uint8_t*, uint8_t*, size_t, size_t*)` | Build transfer tx |
 | `int sol_tx_send_lamports(const sol_wallet_t*, const char*, uint64_t, char*, size_t)` | Send in lamports |
-| `int sol_tx_send_sol(const sol_wallet_t*, const char*, double, char*, size_t)` | Send in SOL |
 
 ---
 

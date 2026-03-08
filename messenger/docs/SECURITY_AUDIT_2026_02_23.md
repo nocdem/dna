@@ -32,7 +32,7 @@
 ## CRITICAL Findings (4 verified)
 
 ### C1. Floating-Point Arithmetic for Financial Calculations (All Chains)
-**Status:** VERIFIED (2 passes)
+**Status:** PARTIALLY FIXED (2026-03-08)
 **Severity:** CRITICAL
 **Files:** `blockchain/ethereum/eth_tx.c:512`, `eth_erc20.c:310`, `tron/trx_tx.c:498`, `solana/sol_tx.c:282`, `solana/sol_chain.c:141`
 
@@ -61,12 +61,18 @@ double sol_amount = atof(amount);
 
 **Impact:** Precision loss for amounts requiring >15 significant digits. For example, 0.123456789012345678 ETH loses the last 2-3 digits.
 
+**Fix Status (2026-03-08):**
+- **Solana:** FIXED — `sol_chain_send()` uses string-based `sol_parse_amount_to_lamports()`. Dead code `sol_tx_send_sol(double)` removed.
+- **TRON TRC-20:** FIXED — `parse_token_amount()` in `trx_trc20.c` rewritten with string-based decimal parsing (split on `.`, integer whole/frac parts).
+- **TRON native / Ethereum / ERC-20:** Original code using `strtod` no longer found in current codebase (eth_tx.c, eth_erc20.c, trx_tx.c no longer contain these patterns).
+- **Cellframe:** `CELL_TO_DATOSHI` macro in `cellframe_minimal.h` still uses implicit double cast — LOW risk (Cellframe uses integer inputs).
+
 **Recommendation:** Use string-based decimal arithmetic. Split on `.` and handle whole/fractional parts as integers.
 
 ---
 
 ### C2. Wallet `_clear()` Functions Use `memset()` Instead of `qgp_secure_memzero()`
-**Status:** VERIFIED (2 passes)
+**Status:** FIXED (confirmed 2026-03-08 — all three `_clear()` functions now use `qgp_secure_memzero()`)
 **Severity:** CRITICAL
 **Files:** `blockchain/ethereum/eth_wallet_create.c:133`, `tron/trx_wallet_create.c:254`, `solana/sol_wallet.c:399`
 
@@ -195,7 +201,7 @@ pthread_detach(backup_thread);  // Thread is now untrackable
 ---
 
 ### H5. Solana Wallet File Read Without Size Limit
-**Status:** VERIFIED (2 passes)
+**Status:** RESOLVED (2026-03-08 — wallet file save/load code no longer exists in sol_wallet.c; wallets are derived on-demand from seed)
 **Severity:** HIGH
 **File:** `blockchain/solana/sol_wallet.c:329-339`
 
@@ -214,7 +220,7 @@ char *json_str = malloc(fsize + 1);  // No upper bound check
 ---
 
 ### H6. Solana Wallet Hex Parsing — No Input Validation
-**Status:** ADJUSTED (description corrected in Pass 2)
+**Status:** RESOLVED (2026-03-08 — hex parsing code no longer exists in sol_wallet.c; private keys derived via SLIP-10 from seed bytes)
 **Severity:** HIGH
 **File:** `blockchain/solana/sol_wallet.c:378-391`
 
@@ -630,13 +636,13 @@ for (int i = 0; i < decimals; i++) {
 
 ### Immediate (CRITICAL — fix before next release)
 1. **C4:** Validate `sign_pubkey_size` in `keygen.c` — heap buffer over-read
-2. **C1:** Replace `double` arithmetic with string-based decimal parsing
-3. **C2/C3:** Replace `memset()` with `qgp_secure_memzero()` in all wallet `_clear()` functions
+2. ~~**C1:** Replace `double` arithmetic with string-based decimal parsing~~ **PARTIALLY FIXED** (2026-03-08: Solana + TRON TRC-20 fixed; ETH/ERC-20/TRX native patterns no longer in codebase; Cellframe DATOSHI macro low-risk)
+3. ~~**C2/C3:** Replace `memset()` with `qgp_secure_memzero()` in all wallet `_clear()` functions~~ **C2 FIXED** (2026-03-08). **C3 OPEN** — Cellframe `cellframe_wallet_create.c` still uses `memset()` for Dilithium key material.
 
 ### Short-Term (HIGH — fix within next few releases)
 4. **H8:** CURL write callback multiplication overflow check
 5. **H4:** `hex_to_u64` overflow detection
-6. **H6:** Validate hex string length/NULL before Solana wallet parsing loop
+6. ~~**H6:** Validate hex string length/NULL before Solana wallet parsing loop~~ **RESOLVED** (2026-03-08: code removed)
 7. **H7:** Bounds-check `msg_offset` against buffer size
 8. **H9:** Switch Cellframe RPC to HTTPS
 9. **H11/H12:** NULL-check `sqlite3_column_text()` results

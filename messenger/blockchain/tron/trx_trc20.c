@@ -16,7 +16,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include <math.h>
 #ifdef _WIN32
 #define CURL_STATICLIB
 #endif
@@ -136,23 +135,54 @@ static int format_token_balance(const char *raw_value, uint8_t decimals,
 }
 
 /**
- * Parse decimal amount to raw value
+ * Parse decimal amount string to raw value (string-based, no floating-point).
+ * Splits on '.' and handles whole/fractional parts as integers to avoid
+ * IEEE 754 double precision loss (audit finding C1).
  */
 static int parse_token_amount(const char *amount, uint8_t decimals, char *raw_out, size_t raw_size) {
-    if (!amount || !raw_out || raw_size < 32) return -1;
+    if (!amount || !raw_out || raw_size < 32 || decimals > 19) return -1;
 
-    double value = strtod(amount, NULL);
-    if (value < 0) {
-        return -1;
+    const char *p = amount;
+    while (*p == ' ') p++;
+    if (*p == '\0' || *p == '-') return -1;
+
+    const char *dot = strchr(p, '.');
+
+    /* Parse whole part */
+    uint64_t whole = 0;
+    const char *end = dot ? dot : p + strlen(p);
+    for (const char *c = p; c < end; c++) {
+        if (*c < '0' || *c > '9') return -1;
+        uint64_t prev = whole;
+        whole = whole * 10 + (*c - '0');
+        if (whole < prev) return -1;  /* overflow */
     }
 
-    /* Multiply by 10^decimals */
-    double multiplier = 1.0;
+    /* Parse fractional part — pad or truncate to 'decimals' digits */
+    uint64_t frac = 0;
+    if (dot) {
+        const char *frac_start = dot + 1;
+        int frac_digits = 0;
+        for (const char *c = frac_start; *c && frac_digits < decimals; c++) {
+            if (*c < '0' || *c > '9') return -1;
+            frac = frac * 10 + (*c - '0');
+            frac_digits++;
+        }
+        /* Pad remaining decimal places with zeros */
+        for (int i = frac_digits; i < decimals; i++) {
+            frac *= 10;
+        }
+    }
+
+    /* Calculate multiplier for whole part */
+    uint64_t multiplier = 1;
     for (int i = 0; i < decimals; i++) {
-        multiplier *= 10.0;
+        multiplier *= 10;
     }
 
-    uint64_t raw = (uint64_t)(value * multiplier + 0.5);  /* Round */
+    /* Overflow check */
+    if (whole > UINT64_MAX / multiplier) return -1;
+    uint64_t raw = whole * multiplier + frac;
 
     snprintf(raw_out, raw_size, "%llu", (unsigned long long)raw);
     return 0;

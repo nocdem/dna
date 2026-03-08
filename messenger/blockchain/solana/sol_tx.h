@@ -68,24 +68,6 @@ int sol_tx_send_lamports(
     size_t sig_out_size
 );
 
-/**
- * Send SOL (in SOL units, not lamports)
- *
- * @param wallet            Source wallet
- * @param to_address        Destination address (base58)
- * @param amount_sol        Amount in SOL (will be converted to lamports)
- * @param signature_out     Output: transaction signature
- * @param sig_out_size      Size of signature output buffer
- * @return                  0 on success, -1 on error
- */
-int sol_tx_send_sol(
-    const sol_wallet_t *wallet,
-    const char *to_address,
-    double amount_sol,
-    char *signature_out,
-    size_t sig_out_size
-);
-
 #ifdef __cplusplus
 }
 #endif
