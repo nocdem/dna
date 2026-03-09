@@ -2420,7 +2420,8 @@ class _SwapSheet extends ConsumerStatefulWidget {
   ConsumerState<_SwapSheet> createState() => _SwapSheetState();
 }
 
-class _SwapSheetState extends ConsumerState<_SwapSheet> {
+class _SwapSheetState extends ConsumerState<_SwapSheet>
+    with SingleTickerProviderStateMixin {
   final _amountController = TextEditingController();
   String _fromToken = 'SOL';
   String _toToken = 'USDT';
@@ -2432,9 +2433,21 @@ class _SwapSheetState extends ConsumerState<_SwapSheet> {
   bool _isLoadingQuote = false;
   String? _quoteError;
 
+  late AnimationController _pulseController;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+  }
+
   @override
   void dispose() {
     _amountController.dispose();
+    _pulseController.dispose();
     super.dispose();
   }
 
@@ -2456,8 +2469,6 @@ class _SwapSheetState extends ConsumerState<_SwapSheet> {
         return ['SOL', 'USDT', 'USDC'];
       case 'ethereum':
         return ['ETH', 'USDT', 'USDC'];
-      case 'tron':
-        return ['TRX', 'USDT', 'USDC'];
       default:
         return ['SOL', 'USDT', 'USDC'];
     }
@@ -2521,6 +2532,151 @@ class _SwapSheetState extends ConsumerState<_SwapSheet> {
     }
   }
 
+  /// Build the token amount card (From or To)
+  Widget _buildTokenCard({
+    required ThemeData theme,
+    required String label,
+    required String token,
+    required List<String> tokens,
+    required ValueChanged<String> onTokenChanged,
+    Widget? amountWidget,
+    String? balance,
+  }) {
+    final iconPath = getTokenIconPath(token);
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withAlpha(100),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: theme.colorScheme.outline.withAlpha(30),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                label,
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: theme.colorScheme.onSurface.withAlpha(150),
+                  letterSpacing: 0.5,
+                ),
+              ),
+              if (balance != null)
+                GestureDetector(
+                  onTap: label == 'You pay'
+                      ? () {
+                          _amountController.text = balance;
+                          setState(() {
+                            _quotes = [];
+                            _selectedQuote = null;
+                            _quoteError = null;
+                          });
+                        }
+                      : null,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FaIcon(
+                        FontAwesomeIcons.wallet,
+                        size: 10,
+                        color: theme.colorScheme.primary.withAlpha(180),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        balance,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: label == 'You pay'
+                              ? theme.colorScheme.primary
+                              : theme.colorScheme.onSurface.withAlpha(150),
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(child: amountWidget ?? const SizedBox()),
+              const SizedBox(width: 12),
+              // Token selector pill
+              PopupMenuButton<String>(
+                onSelected: onTokenChanged,
+                itemBuilder: (context) => tokens
+                    .map((t) => PopupMenuItem(
+                          value: t,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (getTokenIconPath(t) != null)
+                                SizedBox(
+                                  width: 22,
+                                  height: 22,
+                                  child: buildCryptoIcon(getTokenIconPath(t)!),
+                                ),
+                              if (getTokenIconPath(t) != null)
+                                const SizedBox(width: 10),
+                              Text(t, style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 15,
+                              )),
+                            ],
+                          ),
+                        ))
+                    .toList(),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(
+                      color: theme.colorScheme.outline.withAlpha(40),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (iconPath != null) ...[
+                        SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: buildCryptoIcon(iconPath),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      Text(
+                        token,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      FaIcon(
+                        FontAwesomeIcons.chevronDown,
+                        size: 10,
+                        color: theme.colorScheme.onSurface.withAlpha(150),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -2532,348 +2688,457 @@ class _SwapSheetState extends ConsumerState<_SwapSheet> {
         bottom: MediaQuery.of(context).viewInsets.bottom,
       ),
       child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Header
-              Row(
-                children: [
-                  Text('Swap', style: theme.textTheme.titleLarge),
-                  const Spacer(),
-                  IconButton(
-                    icon: const FaIcon(FontAwesomeIcons.xmark, size: 18),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-
-              // Network selector
-              DropdownButtonFormField<String>(
-                value: _fromNetwork,
-                decoration: const InputDecoration(
-                  labelText: 'Network',
-                  isDense: true,
-                ),
-                items: const [
-                  DropdownMenuItem(value: 'Solana', child: Text('Solana')),
-                  DropdownMenuItem(value: 'Ethereum', child: Text('Ethereum')),
-                  DropdownMenuItem(value: 'Tron', child: Text('Tron')),
-                ],
-                onChanged: (v) {
-                  final network = v ?? 'Solana';
-                  final newTokens = _tokensForNetwork(network);
-                  setState(() {
-                    _fromNetwork = network;
-                    _fromToken = newTokens.first;
-                    _toToken = newTokens.length > 1 ? newTokens[1] : newTokens.first;
-                    _quotes = [];
-                    _selectedQuote = null;
-                    _quoteError = null;
-                  });
-                },
-              ),
-              const SizedBox(height: 16),
-
-              // FROM token box
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHighest.withAlpha(128),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('From', style: theme.textTheme.bodySmall),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _amountController,
-                            decoration: const InputDecoration(
-                              hintText: '0.00',
-                              border: InputBorder.none,
-                              isDense: true,
-                              contentPadding: EdgeInsets.zero,
-                            ),
-                            style: theme.textTheme.headlineSmall,
-                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                            onChanged: _onAmountChanged,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        _TokenSelector(
-                          token: _fromToken,
-                          tokens: tokens,
-                          onChanged: (t) => setState(() {
-                            _fromToken = t;
-                            if (_toToken == t) {
-                              _toToken = tokens.firstWhere((x) => x != t, orElse: () => t);
-                            }
-                            _quotes = [];
-                            _selectedQuote = null;
-                            _quoteError = null;
-                          }),
-                        ),
-                      ],
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Drag handle
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.onSurface.withAlpha(60),
+                      borderRadius: BorderRadius.circular(2),
                     ),
-                    if (fromBalance != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: GestureDetector(
-                          onTap: () {
-                            _amountController.text = fromBalance;
-                            setState(() {
-                              _quotes = [];
-                              _selectedQuote = null;
-                              _quoteError = null;
-                            });
-                          },
-                          child: Text(
-                            'Balance: $fromBalance',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.primary,
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
+                  ),
                 ),
-              ),
+                const SizedBox(height: 16),
 
-              // Swap direction button
-              Center(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: IconButton(
-                    onPressed: _swapDirection,
-                    icon: Container(
+                // Header with gradient icon
+                Row(
+                  children: [
+                    Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
                         gradient: DnaGradients.primary,
-                        shape: BoxShape.circle,
+                        borderRadius: BorderRadius.circular(10),
                       ),
                       child: const FaIcon(
-                        FontAwesomeIcons.arrowsUpDown,
+                        FontAwesomeIcons.rightLeft,
                         color: Colors.white,
                         size: 16,
                       ),
                     ),
+                    const SizedBox(width: 12),
+                    Text(
+                      'Swap',
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: FaIcon(
+                        FontAwesomeIcons.xmark,
+                        size: 18,
+                        color: theme.colorScheme.onSurface.withAlpha(150),
+                      ),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                // Network selector chips
+                Row(
+                  children: [
+                    _NetworkChip(
+                      label: 'Solana',
+                      token: 'SOL',
+                      selected: _fromNetwork == 'Solana',
+                      onTap: () => _selectNetwork('Solana'),
+                    ),
+                    const SizedBox(width: 8),
+                    _NetworkChip(
+                      label: 'Ethereum',
+                      token: 'ETH',
+                      selected: _fromNetwork == 'Ethereum',
+                      onTap: () => _selectNetwork('Ethereum'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                // FROM token card
+                _buildTokenCard(
+                  theme: theme,
+                  label: 'You pay',
+                  token: _fromToken,
+                  tokens: tokens,
+                  onTokenChanged: (t) => setState(() {
+                    _fromToken = t;
+                    if (_toToken == t) {
+                      _toToken = tokens.firstWhere((x) => x != t,
+                          orElse: () => t);
+                    }
+                    _quotes = [];
+                    _selectedQuote = null;
+                    _quoteError = null;
+                  }),
+                  balance: fromBalance,
+                  amountWidget: TextField(
+                    controller: _amountController,
+                    decoration: InputDecoration(
+                      hintText: '0.00',
+                      hintStyle: TextStyle(
+                        color: theme.colorScheme.onSurface.withAlpha(80),
+                        fontSize: 28,
+                        fontWeight: FontWeight.w300,
+                      ),
+                      border: InputBorder.none,
+                      isDense: true,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                    style: TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.w600,
+                      color: theme.colorScheme.onSurface,
+                    ),
+                    keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true),
+                    onChanged: _onAmountChanged,
                   ),
                 ),
-              ),
 
-              // TO token box
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHighest.withAlpha(128),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('To', style: theme.textTheme.bodySmall),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _isLoadingQuote
-                              ? const SizedBox(
-                                  height: 28,
-                                  child: LinearProgressIndicator(),
-                                )
-                              : Text(
-                                  _selectedQuote?.amountOut ?? (_quoteError ?? '-'),
-                                  style: theme.textTheme.headlineSmall?.copyWith(
-                                    color: _selectedQuote != null
-                                        ? null
-                                        : _quoteError != null
-                                            ? DnaColors.textWarning
-                                            : theme.colorScheme.onSurface.withAlpha(100),
-                                  ),
-                                ),
+                // Swap direction button (overlapping)
+                Center(
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(vertical: 2),
+                    child: Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        onTap: _swapDirection,
+                        borderRadius: BorderRadius.circular(20),
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            gradient: DnaGradients.primary,
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: DnaColors.gradientStart
+                                    .withValues(alpha: 0.3),
+                                blurRadius: 8,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: const FaIcon(
+                            FontAwesomeIcons.arrowsUpDown,
+                            color: Colors.white,
+                            size: 16,
+                          ),
                         ),
-                        const SizedBox(width: 12),
-                        _TokenSelector(
-                          token: _toToken,
-                          tokens: tokens,
-                          onChanged: (t) => setState(() {
-                            _toToken = t;
-                            if (_fromToken == t) {
-                              _fromToken = tokens.firstWhere((x) => x != t, orElse: () => t);
-                            }
-                            _quotes = [];
-                            _selectedQuote = null;
-                            _quoteError = null;
-                          }),
+                      ),
+                    ),
+                  ),
+                ),
+
+                // TO token card
+                _buildTokenCard(
+                  theme: theme,
+                  label: 'You receive',
+                  token: _toToken,
+                  tokens: tokens,
+                  onTokenChanged: (t) => setState(() {
+                    _toToken = t;
+                    if (_fromToken == t) {
+                      _fromToken = tokens.firstWhere((x) => x != t,
+                          orElse: () => t);
+                    }
+                    _quotes = [];
+                    _selectedQuote = null;
+                    _quoteError = null;
+                  }),
+                  amountWidget: _isLoadingQuote
+                      ? AnimatedBuilder(
+                          animation: _pulseController,
+                          builder: (context, child) {
+                            return Opacity(
+                              opacity: 0.3 + _pulseController.value * 0.5,
+                              child: Container(
+                                height: 32,
+                                decoration: BoxDecoration(
+                                  gradient: DnaGradients.primary,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                              ),
+                            );
+                          },
+                        )
+                      : Text(
+                          _selectedQuote?.amountOut ??
+                              (_quoteError ?? '—'),
+                          style: TextStyle(
+                            fontSize: 28,
+                            fontWeight: FontWeight.w600,
+                            color: _selectedQuote != null
+                                ? DnaColors.gradientStart
+                                : _quoteError != null
+                                    ? DnaColors.textWarning
+                                    : theme.colorScheme.onSurface
+                                        .withAlpha(80),
+                          ),
+                        ),
+                ),
+
+                // Quote details
+                if (_selectedQuote != null) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          DnaColors.gradientStart.withValues(alpha: 0.06),
+                          DnaColors.gradientEnd.withValues(alpha: 0.06),
+                        ],
+                      ),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: DnaColors.gradientStart.withValues(alpha: 0.15),
+                      ),
+                    ),
+                    child: Column(
+                      children: [
+                        _QuoteDetailRow(
+                          icon: FontAwesomeIcons.chartLine,
+                          label: 'Rate',
+                          value:
+                              '1 $_fromToken = ${_selectedQuote!.price} $_toToken',
+                        ),
+                        _QuoteDetailRow(
+                          icon: FontAwesomeIcons.gauge,
+                          label: 'Price Impact',
+                          value: '${_selectedQuote!.priceImpact}%',
+                          valueColor: _parseImpact(
+                                      _selectedQuote!.priceImpact) >
+                                  1.0
+                              ? DnaColors.textWarning
+                              : null,
+                        ),
+                        _QuoteDetailRow(
+                          icon: FontAwesomeIcons.receipt,
+                          label: 'Fee',
+                          value: _selectedQuote!.fee,
+                        ),
+                        _QuoteDetailRow(
+                          icon: FontAwesomeIcons.buildingColumns,
+                          label: 'DEX',
+                          value: _selectedQuote!.dexName,
+                          isLast: true,
                         ),
                       ],
                     ),
-                  ],
-                ),
-              ),
-
-              // Quote info area
-              if (_selectedQuote != null) ...[
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest.withAlpha(64),
-                    borderRadius: BorderRadius.circular(8),
                   ),
-                  child: Column(
-                    children: [
-                      _QuoteRow(
-                        label: 'Rate',
-                        value: '1 $_fromToken = ${_selectedQuote!.price} $_toToken',
+                ],
+
+                // Multiple quotes selector
+                if (_quotes.length > 1) ...[
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 36,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: _quotes.length,
+                      separatorBuilder: (_, __) => const SizedBox(width: 8),
+                      itemBuilder: (context, index) {
+                        final q = _quotes[index];
+                        final isSelected = q == _selectedQuote;
+                        final isBest = index == 0;
+                        return GestureDetector(
+                          onTap: () =>
+                              setState(() => _selectedQuote = q),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              gradient:
+                                  isSelected ? DnaGradients.primary : null,
+                              color: isSelected
+                                  ? null
+                                  : theme.colorScheme.surfaceContainerHighest,
+                              borderRadius: BorderRadius.circular(18),
+                              border: isSelected
+                                  ? null
+                                  : Border.all(
+                                      color: theme.colorScheme.outline
+                                          .withAlpha(40)),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (isBest) ...[
+                                  FaIcon(
+                                    FontAwesomeIcons.trophy,
+                                    size: 10,
+                                    color: isSelected
+                                        ? Colors.white
+                                        : DnaColors.gradientStart,
+                                  ),
+                                  const SizedBox(width: 4),
+                                ],
+                                Text(
+                                  q.dexName,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: isSelected
+                                        ? Colors.white
+                                        : theme.colorScheme.onSurface,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+
+                const SizedBox(height: 20),
+
+                // Action buttons
+                Row(
+                  children: [
+                    Expanded(
+                      child: _GradientButton(
+                        onPressed: _amountController.text.trim().isNotEmpty &&
+                                !_isLoadingQuote
+                            ? _fetchQuote
+                            : null,
+                        child: _isLoadingQuote
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Text(
+                                'Get Quote',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 16,
+                                ),
+                              ),
                       ),
-                      _QuoteRow(
-                        label: 'Price Impact',
-                        value: '${_selectedQuote!.priceImpact}%',
-                      ),
-                      _QuoteRow(
-                        label: 'Fee',
-                        value: _selectedQuote!.fee,
-                      ),
-                      _QuoteRow(
-                        label: 'DEX',
-                        value: '${_selectedQuote!.dexName} (${_selectedQuote!.chain})',
+                    ),
+                    if (_selectedQuote != null) ...[
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _GradientButton(
+                          onPressed: () {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Swap not implemented yet'),
+                                duration: Duration(seconds: 2),
+                              ),
+                            );
+                          },
+                          child: const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              FaIcon(FontAwesomeIcons.rightLeft,
+                                  color: Colors.white, size: 14),
+                              SizedBox(width: 8),
+                              Text(
+                                'Swap',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 16,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                     ],
-                  ),
-                ),
-              ],
-
-              // Multiple quotes selector
-              if (_quotes.length > 1) ...[
-                const SizedBox(height: 8),
-                SizedBox(
-                  height: 32,
-                  child: ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: _quotes.length,
-                    separatorBuilder: (_, __) => const SizedBox(width: 8),
-                    itemBuilder: (context, index) {
-                      final q = _quotes[index];
-                      final isSelected = q == _selectedQuote;
-                      return ChoiceChip(
-                        label: Text(q.dexName, style: const TextStyle(fontSize: 12)),
-                        selected: isSelected,
-                        onSelected: (_) => setState(() => _selectedQuote = q),
-                        visualDensity: VisualDensity.compact,
-                      );
-                    },
-                  ),
-                ),
-              ],
-
-              const SizedBox(height: 16),
-
-              // Get Quote / Swap button
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed: _amountController.text.trim().isNotEmpty
-                          ? _fetchQuote
-                          : null,
-                      child: _isLoadingQuote
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Text('Get Quote'),
-                    ),
-                  ),
-                  if (_selectedQuote != null) ...[
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Swap not implemented yet'),
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
-                        },
-                        child: const Text('Swap'),
-                      ),
-                    ),
                   ],
-                ],
-              ),
-            ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
+
+  void _selectNetwork(String network) {
+    final newTokens = _tokensForNetwork(network);
+    setState(() {
+      _fromNetwork = network;
+      _fromToken = newTokens.first;
+      _toToken = newTokens.length > 1 ? newTokens[1] : newTokens.first;
+      _quotes = [];
+      _selectedQuote = null;
+      _quoteError = null;
+    });
+  }
+
+  double _parseImpact(String impact) {
+    return double.tryParse(impact) ?? 0.0;
+  }
 }
 
-/// Token selector dropdown chip
-class _TokenSelector extends StatelessWidget {
+/// Network selector chip with token icon
+class _NetworkChip extends StatelessWidget {
+  final String label;
   final String token;
-  final List<String> tokens;
-  final ValueChanged<String> onChanged;
+  final bool selected;
+  final VoidCallback onTap;
 
-  const _TokenSelector({
+  const _NetworkChip({
+    required this.label,
     required this.token,
-    required this.tokens,
-    required this.onChanged,
+    required this.selected,
+    required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final iconPath = getTokenIconPath(token);
-    return PopupMenuButton<String>(
-      onSelected: onChanged,
-      itemBuilder: (context) => tokens
-          .map((t) => PopupMenuItem(
-                value: t,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (getTokenIconPath(t) != null)
-                      SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: buildCryptoIcon(getTokenIconPath(t)!),
-                      ),
-                    if (getTokenIconPath(t) != null) const SizedBox(width: 8),
-                    Text(t),
-                  ],
-                ),
-              ))
-          .toList(),
+    return GestureDetector(
+      onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          gradient: selected ? DnaGradients.primary : null,
+          color: selected ? null : theme.colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(20),
+          border: selected
+              ? null
+              : Border.all(color: theme.colorScheme.outline.withAlpha(40)),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             if (iconPath != null) ...[
               SizedBox(
-                width: 20,
-                height: 20,
+                width: 18,
+                height: 18,
                 child: buildCryptoIcon(iconPath),
               ),
               const SizedBox(width: 6),
             ],
-            Text(token, style: const TextStyle(fontWeight: FontWeight.w600)),
-            const SizedBox(width: 4),
-            const FaIcon(FontAwesomeIcons.chevronDown, size: 10),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: selected ? Colors.white : theme.colorScheme.onSurface,
+              ),
+            ),
           ],
         ),
       ),
@@ -2881,24 +3146,91 @@ class _TokenSelector extends StatelessWidget {
   }
 }
 
-/// Quote info row
-class _QuoteRow extends StatelessWidget {
-  final String label;
-  final String value;
+/// Gradient action button matching wallet pill style
+class _GradientButton extends StatelessWidget {
+  final VoidCallback? onPressed;
+  final Widget child;
 
-  const _QuoteRow({required this.label, required this.value});
+  const _GradientButton({required this.onPressed, required this.child});
 
   @override
   Widget build(BuildContext context) {
+    final enabled = onPressed != null;
+    return GestureDetector(
+      onTap: onPressed,
+      child: Container(
+        height: 50,
+        decoration: BoxDecoration(
+          gradient: enabled ? DnaGradients.primary : null,
+          color: enabled
+              ? null
+              : Theme.of(context)
+                  .colorScheme
+                  .surfaceContainerHighest
+                  .withAlpha(150),
+          borderRadius: BorderRadius.circular(DnaSpacing.radiusFull),
+          boxShadow: enabled
+              ? [
+                  BoxShadow(
+                    color: DnaColors.gradientStart.withValues(alpha: 0.3),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ]
+              : null,
+        ),
+        child: Center(child: child),
+      ),
+    );
+  }
+}
+
+/// Quote detail row with icon
+class _QuoteDetailRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color? valueColor;
+  final bool isLast;
+
+  const _QuoteDetailRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.valueColor,
+    this.isLast = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
+      padding: EdgeInsets.only(bottom: isLast ? 0 : 8),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: Theme.of(context).textTheme.bodySmall),
-          Text(value, style: Theme.of(context).textTheme.bodySmall?.copyWith(
-            fontWeight: FontWeight.w600,
-          )),
+          FaIcon(
+            icon,
+            size: 11,
+            color: DnaColors.gradientStart.withAlpha(180),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurface.withAlpha(150),
+            ),
+          ),
+          const Spacer(),
+          Flexible(
+            child: Text(
+              value,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: valueColor,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
         ],
       ),
     );
