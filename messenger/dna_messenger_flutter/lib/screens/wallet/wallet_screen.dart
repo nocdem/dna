@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-import '../../ffi/dna_engine.dart' show Contact, Transaction, UserProfile, Wallet;
+import '../../ffi/dna_engine.dart' show Contact, DexQuote, Transaction, UserProfile, Wallet;
 import '../../providers/addressbook_provider.dart';
 import '../../providers/providers.dart' hide UserProfile;
 import '../../design_system/design_system.dart'; // includes DnaColors, DnaGradients, DnaSpacing
@@ -2426,9 +2426,11 @@ class _SwapSheetState extends ConsumerState<_SwapSheet> {
   String _toToken = 'USDT';
   String _fromNetwork = 'Solana';
 
-  // Quote state (placeholder — no backend yet)
-  String? _quoteAmount;
+  // Quote state
+  List<DexQuote> _quotes = [];
+  DexQuote? _selectedQuote;
   bool _isLoadingQuote = false;
+  String? _quoteError;
 
   @override
   void dispose() {
@@ -2441,7 +2443,9 @@ class _SwapSheetState extends ConsumerState<_SwapSheet> {
       final tmp = _fromToken;
       _fromToken = _toToken;
       _toToken = tmp;
-      _quoteAmount = null;
+      _quotes = [];
+      _selectedQuote = null;
+      _quoteError = null;
     });
   }
 
@@ -2475,26 +2479,46 @@ class _SwapSheetState extends ConsumerState<_SwapSheet> {
   }
 
   void _onAmountChanged(String value) {
-    // Clear quote when amount changes
-    setState(() => _quoteAmount = null);
+    setState(() {
+      _quotes = [];
+      _selectedQuote = null;
+      _quoteError = null;
+    });
   }
 
-  void _fetchQuote() {
+  void _fetchQuote() async {
     final amount = double.tryParse(_amountController.text.trim());
     if (amount == null || amount <= 0) return;
 
-    setState(() => _isLoadingQuote = true);
+    setState(() {
+      _isLoadingQuote = true;
+      _quoteError = null;
+      _quotes = [];
+      _selectedQuote = null;
+    });
 
-    // TODO: On-chain quote from Raydium/Orca AMM pools
-    // For now, show placeholder
-    Future.delayed(const Duration(milliseconds: 500), () {
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final quotes = await engine.getDexQuotes(
+        fromToken: _fromToken,
+        toToken: _toToken,
+        amountIn: _amountController.text.trim(),
+      );
       if (mounted) {
         setState(() {
           _isLoadingQuote = false;
-          _quoteAmount = null; // No backend yet
+          _quotes = quotes;
+          _selectedQuote = quotes.isNotEmpty ? quotes.first : null;
         });
       }
-    });
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoadingQuote = false;
+          _quoteError = 'No quotes available';
+        });
+      }
+    }
   }
 
   @override
@@ -2546,7 +2570,9 @@ class _SwapSheetState extends ConsumerState<_SwapSheet> {
                     _fromNetwork = network;
                     _fromToken = newTokens.first;
                     _toToken = newTokens.length > 1 ? newTokens[1] : newTokens.first;
-                    _quoteAmount = null;
+                    _quotes = [];
+                    _selectedQuote = null;
+                    _quoteError = null;
                   });
                 },
               ),
@@ -2587,10 +2613,11 @@ class _SwapSheetState extends ConsumerState<_SwapSheet> {
                           onChanged: (t) => setState(() {
                             _fromToken = t;
                             if (_toToken == t) {
-                              // Pick a different to-token
                               _toToken = tokens.firstWhere((x) => x != t, orElse: () => t);
                             }
-                            _quoteAmount = null;
+                            _quotes = [];
+                            _selectedQuote = null;
+                            _quoteError = null;
                           }),
                         ),
                       ],
@@ -2601,7 +2628,11 @@ class _SwapSheetState extends ConsumerState<_SwapSheet> {
                         child: GestureDetector(
                           onTap: () {
                             _amountController.text = fromBalance;
-                            setState(() => _quoteAmount = null);
+                            setState(() {
+                              _quotes = [];
+                              _selectedQuote = null;
+                              _quoteError = null;
+                            });
                           },
                           child: Text(
                             'Balance: $fromBalance',
@@ -2658,11 +2689,13 @@ class _SwapSheetState extends ConsumerState<_SwapSheet> {
                                   child: LinearProgressIndicator(),
                                 )
                               : Text(
-                                  _quoteAmount ?? '-',
+                                  _selectedQuote?.amountOut ?? (_quoteError ?? '-'),
                                   style: theme.textTheme.headlineSmall?.copyWith(
-                                    color: _quoteAmount != null
+                                    color: _selectedQuote != null
                                         ? null
-                                        : theme.colorScheme.onSurface.withAlpha(100),
+                                        : _quoteError != null
+                                            ? DnaColors.textWarning
+                                            : theme.colorScheme.onSurface.withAlpha(100),
                                   ),
                                 ),
                         ),
@@ -2675,7 +2708,9 @@ class _SwapSheetState extends ConsumerState<_SwapSheet> {
                             if (_fromToken == t) {
                               _fromToken = tokens.firstWhere((x) => x != t, orElse: () => t);
                             }
-                            _quoteAmount = null;
+                            _quotes = [];
+                            _selectedQuote = null;
+                            _quoteError = null;
                           }),
                         ),
                       ],
@@ -2685,7 +2720,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet> {
               ),
 
               // Quote info area
-              if (_quoteAmount != null) ...[
+              if (_selectedQuote != null) ...[
                 const SizedBox(height: 12),
                 Container(
                   padding: const EdgeInsets.all(12),
@@ -2695,10 +2730,46 @@ class _SwapSheetState extends ConsumerState<_SwapSheet> {
                   ),
                   child: Column(
                     children: [
-                      _QuoteRow(label: 'Rate', value: '1 $_fromToken = ? $_toToken'),
-                      _QuoteRow(label: 'Price Impact', value: '-'),
-                      _QuoteRow(label: 'Fee', value: '-'),
+                      _QuoteRow(
+                        label: 'Rate',
+                        value: '1 $_fromToken = ${_selectedQuote!.price} $_toToken',
+                      ),
+                      _QuoteRow(
+                        label: 'Price Impact',
+                        value: '${_selectedQuote!.priceImpact}%',
+                      ),
+                      _QuoteRow(
+                        label: 'Fee',
+                        value: _selectedQuote!.fee,
+                      ),
+                      _QuoteRow(
+                        label: 'DEX',
+                        value: '${_selectedQuote!.dexName} (${_selectedQuote!.chain})',
+                      ),
                     ],
+                  ),
+                ),
+              ],
+
+              // Multiple quotes selector
+              if (_quotes.length > 1) ...[
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 32,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: _quotes.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemBuilder: (context, index) {
+                      final q = _quotes[index];
+                      final isSelected = q == _selectedQuote;
+                      return ChoiceChip(
+                        label: Text(q.dexName, style: const TextStyle(fontSize: 12)),
+                        selected: isSelected,
+                        onSelected: (_) => setState(() => _selectedQuote = q),
+                        visualDensity: VisualDensity.compact,
+                      );
+                    },
                   ),
                 ),
               ],
@@ -2722,11 +2793,18 @@ class _SwapSheetState extends ConsumerState<_SwapSheet> {
                           : const Text('Get Quote'),
                     ),
                   ),
-                  if (_quoteAmount != null) ...[
+                  if (_selectedQuote != null) ...[
                     const SizedBox(width: 12),
                     Expanded(
                       child: ElevatedButton(
-                        onPressed: null, // Swap not implemented yet
+                        onPressed: () {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Swap not implemented yet'),
+                              duration: Duration(seconds: 2),
+                            ),
+                          );
+                        },
                         child: const Text('Swap'),
                       ),
                     ),

@@ -29,7 +29,7 @@
 #define LOG_TAG "SOL_DEX"
 
 /* Jupiter public quote endpoint — no API key needed */
-#define JUPITER_QUOTE_URL "https://api.jup.ag/swap/v1/quote"
+#define JUPITER_QUOTE_URL "https://lite-api.jup.ag/swap/v1/quote"
 
 /* ============================================================================
  * TOKEN REGISTRY

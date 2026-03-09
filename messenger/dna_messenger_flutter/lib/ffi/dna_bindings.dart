@@ -264,6 +264,39 @@ final class dna_gas_estimates_t extends Struct {
   external dna_gas_estimate_t fast;
 }
 
+/// DEX quote result
+final class dna_dex_quote_t extends Struct {
+  @Array(16)
+  external Array<Char> from_token;
+
+  @Array(16)
+  external Array<Char> to_token;
+
+  @Array(64)
+  external Array<Char> amount_in;
+
+  @Array(64)
+  external Array<Char> amount_out;
+
+  @Array(64)
+  external Array<Char> price;
+
+  @Array(16)
+  external Array<Char> price_impact;
+
+  @Array(64)
+  external Array<Char> fee;
+
+  @Array(48)
+  external Array<Char> pool_address;
+
+  @Array(32)
+  external Array<Char> dex_name;
+
+  @Array(8)
+  external Array<Char> chain;
+}
+
 /// Transaction record
 final class dna_transaction_t extends Struct {
   @Array(128)
@@ -918,6 +951,16 @@ typedef DnaTransactionsCbNative = Void Function(
   Pointer<Void> user_data,
 );
 typedef DnaTransactionsCb = NativeFunction<DnaTransactionsCbNative>;
+
+/// DEX quote callback - Native
+typedef DnaDexQuoteCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_dex_quote_t> quotes,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaDexQuoteCb = NativeFunction<DnaDexQuoteCbNative>;
 
 /// Profile callback - Native
 typedef DnaProfileCbNative = Void Function(
@@ -2349,6 +2392,29 @@ class DnaBindings {
   ) {
     return _dna_engine_get_transactions(
         engine, wallet_index, network, callback, user_data);
+  }
+
+  // ---------------------------------------------------------------------------
+  // DEX
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_dex_quote = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<Utf8>, Pointer<Utf8>, Pointer<DnaDexQuoteCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<Utf8>, Pointer<Utf8>, Pointer<DnaDexQuoteCb>, Pointer<Void>)>('dna_engine_dex_quote');
+
+  int dna_engine_dex_quote(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> from_token,
+    Pointer<Utf8> to_token,
+    Pointer<Utf8> amount_in,
+    Pointer<Utf8> dex_filter,
+    Pointer<DnaDexQuoteCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dex_quote(
+        engine, from_token, to_token, amount_in, dex_filter, callback, user_data);
   }
 
   // ---------------------------------------------------------------------------

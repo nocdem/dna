@@ -531,6 +531,48 @@ class GasEstimates {
   });
 }
 
+/// DEX quote result
+class DexQuote {
+  final String fromToken;
+  final String toToken;
+  final String amountIn;
+  final String amountOut;
+  final String price;
+  final String priceImpact;
+  final String fee;
+  final String poolAddress;
+  final String dexName;
+  final String chain;
+
+  DexQuote({
+    required this.fromToken,
+    required this.toToken,
+    required this.amountIn,
+    required this.amountOut,
+    required this.price,
+    required this.priceImpact,
+    required this.fee,
+    required this.poolAddress,
+    required this.dexName,
+    required this.chain,
+  });
+
+  factory DexQuote.fromNative(dna_dex_quote_t native) {
+    return DexQuote(
+      fromToken: native.from_token.toDartString(16),
+      toToken: native.to_token.toDartString(16),
+      amountIn: native.amount_in.toDartString(64),
+      amountOut: native.amount_out.toDartString(64),
+      price: native.price.toDartString(64),
+      priceImpact: native.price_impact.toDartString(16),
+      fee: native.fee.toDartString(64),
+      poolAddress: native.pool_address.toDartString(48),
+      dexName: native.dex_name.toDartString(32),
+      chain: native.chain.toDartString(8),
+    );
+  }
+}
+
 /// Transaction record
 class Transaction {
   final String txHash;
@@ -2928,6 +2970,70 @@ class DnaEngine {
       calloc.free(networkPtr);
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
+  // DEX OPERATIONS
+  // ---------------------------------------------------------------------------
+
+  /// Get DEX swap quotes for a token pair
+  /// Returns list of quotes from all matching DEXes
+  Future<List<DexQuote>> getDexQuotes({
+    required String fromToken,
+    required String toToken,
+    required String amountIn,
+    String? dexFilter,
+  }) async {
+    final completer = Completer<List<DexQuote>>();
+    final localId = _nextLocalId++;
+
+    final fromPtr = fromToken.toNativeUtf8();
+    final toPtr = toToken.toNativeUtf8();
+    final amountPtr = amountIn.toNativeUtf8();
+    final filterPtr = dexFilter?.toNativeUtf8() ?? nullptr;
+
+    void onComplete(int requestId, int error, Pointer<dna_dex_quote_t> quotes,
+                    int count, Pointer<Void> userData) {
+      calloc.free(fromPtr);
+      calloc.free(toPtr);
+      calloc.free(amountPtr);
+      if (filterPtr != nullptr) calloc.free(filterPtr);
+
+      if (error == 0) {
+        final result = <DexQuote>[];
+        for (var i = 0; i < count; i++) {
+          result.add(DexQuote.fromNative((quotes + i).ref));
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaDexQuoteCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_dex_quote(
+      _engine,
+      fromPtr.cast(),
+      toPtr.cast(),
+      amountPtr.cast(),
+      filterPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fromPtr);
+      calloc.free(toPtr);
+      calloc.free(amountPtr);
+      if (filterPtr != nullptr) calloc.free(filterPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit DEX quote request');
     }
 
     return completer.future;
