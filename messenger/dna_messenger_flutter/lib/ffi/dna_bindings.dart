@@ -295,6 +295,9 @@ final class dna_dex_quote_t extends Struct {
 
   @Array(8)
   external Array<Char> chain;
+
+  @Array(128)
+  external Array<Char> warning;
 }
 
 /// Transaction record

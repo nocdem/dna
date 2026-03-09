@@ -305,6 +305,7 @@ removeGroupMember(uuid, fp)  // Remove member (owner only, rotates GEK)
 sendTokens(...)              // Send tokens
 getTransactions(index, net)  // Transaction history
 lookupProfile(fingerprint)   // Lookup any user's profile by fingerprint (for wallet address resolution)
+getDexQuotes(from, to, amt)  // DEX swap quotes (SOL/ETH/Cellframe)
 
 // Contacts
 removeContact(fingerprint)   // Remove contact from list
@@ -314,7 +315,7 @@ removeContact(fingerprint)   // Remove contact from list
 - `identity_selection_screen.dart`: Real BIP39 mnemonic generation/validation
 - `groups_screen.dart`: Create, accept, reject, open group chat
 - `GroupChatScreen`: New screen for group messaging
-- `wallet_screen.dart`: Send dialog with DNA fingerprint resolution + contact picker
+- `wallet_screen.dart`: Send dialog with DNA fingerprint resolution + contact picker; Swap sheet with Solana/Ethereum/Cellframe DEX quotes, stale warning banner for order book DEX
 - `settings_screen.dart`: Nickname registration, contacts management
 - `contacts_management_screen.dart`: View/remove contacts from Settings
 

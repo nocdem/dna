@@ -2156,7 +2156,8 @@ typedef struct {
     char fee[64];               /* Fee in input token */
     char pool_address[48];      /* Pool address used */
     char dex_name[32];          /* DEX name (e.g. "Raydium AMM v4", "Uniswap v2") */
-    char chain[8];              /* Chain identifier ("SOL", "ETH") */
+    char chain[8];              /* Chain identifier ("SOL", "ETH", "CELL") */
+    char warning[128];          /* Warning message (empty if none) */
 } dna_dex_quote_t;
 
 /**

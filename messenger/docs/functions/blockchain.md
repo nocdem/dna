@@ -100,6 +100,14 @@ Cellframe blockchain integration with Dilithium post-quantum signatures.
 | `int cellframe_uint256_scan_uninteger(const char*, uint256_t*)` | Parse raw datoshi |
 | `int cellframe_hex_to_bin(const char*, uint8_t*, size_t)` | Hex to binary |
 
+### 15.5 Cellframe DEX (`cellframe_dex.h`)
+
+| Function | Description |
+|----------|-------------|
+| `int cell_dex_get_quotes(const char*, const char*, const char*, const char*, cell_dex_quote_t*, int, int*)` | Get swap quote via order book simulation |
+| `int cell_dex_list_pairs(char***, int*)` | List available swap pairs |
+| `void cell_dex_free_pairs(char**, int)` | Free pairs array |
+
 ---
 
 ## 16. Blockchain - Ethereum (`blockchain/ethereum/`)

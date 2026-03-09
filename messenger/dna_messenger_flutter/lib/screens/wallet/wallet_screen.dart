@@ -2469,6 +2469,8 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
         return ['SOL', 'USDT', 'USDC'];
       case 'ethereum':
         return ['ETH', 'USDT', 'USDC'];
+      case 'cellframe':
+        return ['CELL', 'CPUNK', 'KEL', 'QEVM'];
       default:
         return ['SOL', 'USDT', 'USDC'];
     }
@@ -2759,6 +2761,13 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                       selected: _fromNetwork == 'Ethereum',
                       onTap: () => _selectNetwork('Ethereum'),
                     ),
+                    const SizedBox(width: 8),
+                    _NetworkChip(
+                      label: 'Cellframe',
+                      token: 'CELL',
+                      selected: _fromNetwork == 'Cellframe',
+                      onTap: () => _selectNetwork('Cellframe'),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 16),
@@ -2914,7 +2923,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                         ),
                         _QuoteDetailRow(
                           icon: FontAwesomeIcons.gauge,
-                          label: 'Price Impact',
+                          label: 'Slippage',
                           value: '${_selectedQuote!.priceImpact}%',
                           valueColor: _parseImpact(
                                       _selectedQuote!.priceImpact) >
@@ -2932,6 +2941,43 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                           label: 'DEX',
                           value: _selectedQuote!.dexName,
                           isLast: true,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+
+                // Stale warning banner
+                if (_selectedQuote != null &&
+                    _selectedQuote!.warning.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: DnaColors.textWarning.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: DnaColors.textWarning.withValues(alpha: 0.3),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        FaIcon(
+                          FontAwesomeIcons.triangleExclamation,
+                          size: 14,
+                          color: DnaColors.textWarning,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            _selectedQuote!.warning,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: DnaColors.textWarning,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
                         ),
                       ],
                     ),

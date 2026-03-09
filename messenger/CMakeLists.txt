@@ -222,6 +222,7 @@ if(BUILD_SHARED_LIB)
         database/group_invitations.c # Group invitation tracking database
         blockchain/cellframe/cellframe_wallet_create.c # Cellframe wallet derivation (seed-based)
         blockchain/cellframe/cellframe_rpc.c           # Blockchain RPC client
+        blockchain/cellframe/cellframe_dex.c           # DEX quote (Cellframe order book)
         blockchain/cellframe/cellframe_addr.c          # Blockchain address utilities
         blockchain/blockchain_wallet.c                 # Generic multi-chain wallet interface
         blockchain/blockchain_registry.c               # Modular blockchain registry
@@ -304,6 +305,7 @@ else()
         database/group_invitations.c # Group invitation tracking database
         blockchain/cellframe/cellframe_wallet_create.c # Cellframe wallet derivation (seed-based)
         blockchain/cellframe/cellframe_rpc.c           # Blockchain RPC client
+        blockchain/cellframe/cellframe_dex.c           # DEX quote (Cellframe order book)
         blockchain/cellframe/cellframe_addr.c          # Blockchain address utilities
         blockchain/blockchain_wallet.c                 # Generic multi-chain wallet interface
         blockchain/blockchain_registry.c               # Modular blockchain registry

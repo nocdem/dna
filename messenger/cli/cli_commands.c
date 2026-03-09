@@ -3912,9 +3912,12 @@ static void on_dex_quote(dna_request_id_t request_id, int error,
             printf("      %s %s -> %s %s\n", q->amount_in, q->from_token,
                    q->amount_out, q->to_token);
             printf("      Price:        1 %s = %s %s\n", q->from_token, q->price, q->to_token);
-            printf("      Price impact: %s%%\n", q->price_impact);
+            printf("      Slippage:     %s%%\n", q->price_impact);
             printf("      Fee:          %s %s\n", q->fee, q->from_token);
             printf("      Pool:         %s\n", q->pool_address);
+            if (q->warning[0]) {
+                printf("      WARNING:      %s\n", q->warning);
+            }
         }
         printf("\n");
     }

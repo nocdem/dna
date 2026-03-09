@@ -543,6 +543,7 @@ class DexQuote {
   final String poolAddress;
   final String dexName;
   final String chain;
+  final String warning;
 
   DexQuote({
     required this.fromToken,
@@ -555,6 +556,7 @@ class DexQuote {
     required this.poolAddress,
     required this.dexName,
     required this.chain,
+    required this.warning,
   });
 
   factory DexQuote.fromNative(dna_dex_quote_t native) {
@@ -569,6 +571,7 @@ class DexQuote {
       poolAddress: native.pool_address.toDartString(48),
       dexName: native.dex_name.toDartString(32),
       chain: native.chain.toDartString(8),
+      warning: native.warning.toDartString(128),
     );
   }
 }

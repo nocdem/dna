@@ -18,6 +18,7 @@
 #include "engine_includes.h"
 #include "blockchain/solana/sol_dex.h"
 #include "blockchain/ethereum/eth_dex.h"
+#include "blockchain/cellframe/cellframe_dex.h"
 
 /* ============================================================================
  * WALLET TASK HANDLERS
@@ -1058,6 +1059,14 @@ static const char *detect_dex_chain(const char *from_token, const char *to_token
     /* ETH-native tokens */
     if (strcasecmp(from_token, "ETH") == 0 || strcasecmp(to_token, "ETH") == 0)
         return "ETH";
+    /* Cellframe-native tokens */
+    if (strcasecmp(from_token, "CELL") == 0 || strcasecmp(to_token, "CELL") == 0 ||
+        strcasecmp(from_token, "CPUNK") == 0 || strcasecmp(to_token, "CPUNK") == 0 ||
+        strcasecmp(from_token, "KEL") == 0 || strcasecmp(to_token, "KEL") == 0 ||
+        strcasecmp(from_token, "QEVM") == 0 || strcasecmp(to_token, "QEVM") == 0 ||
+        strcasecmp(from_token, "mCELL") == 0 || strcasecmp(to_token, "mCELL") == 0 ||
+        strcasecmp(from_token, "mKEL") == 0 || strcasecmp(to_token, "mKEL") == 0)
+        return "CELL";
     /* Stablecoin pairs — try SOL first (higher liquidity) */
     return NULL;
 }
@@ -1127,6 +1136,36 @@ void dna_handle_dex_quote(dna_engine_t *engine, dna_task_t *task) {
         }
     }
 
+    /* Cellframe DEX quotes */
+    if (!chain || strcmp(chain, "CELL") == 0) {
+        cell_dex_quote_t cell_quotes[8];
+        int cell_count = 0;
+        int rc = cell_dex_get_quotes(from_token, to_token, amount_in,
+                                      dex_filter, cell_quotes, 8, &cell_count);
+        if (rc == 0) {
+            for (int i = 0; i < cell_count && total < 16; i++) {
+                dna_dex_quote_t *q = &all_quotes[total];
+                memset(q, 0, sizeof(*q));
+                strncpy(q->from_token, cell_quotes[i].from_token, sizeof(q->from_token) - 1);
+                strncpy(q->to_token, cell_quotes[i].to_token, sizeof(q->to_token) - 1);
+                strncpy(q->amount_in, cell_quotes[i].amount_in, sizeof(q->amount_in) - 1);
+                strncpy(q->amount_out, cell_quotes[i].amount_out, sizeof(q->amount_out) - 1);
+                strncpy(q->price, cell_quotes[i].price, sizeof(q->price) - 1);
+                strncpy(q->price_impact, cell_quotes[i].price_impact, sizeof(q->price_impact) - 1);
+                strncpy(q->fee, cell_quotes[i].fee, sizeof(q->fee) - 1);
+                strncpy(q->pool_address, cell_quotes[i].pool_address, sizeof(q->pool_address) - 1);
+                strncpy(q->dex_name, cell_quotes[i].dex_name, sizeof(q->dex_name) - 1);
+                strncpy(q->chain, "CELL", sizeof(q->chain) - 1);
+                if (cell_quotes[i].stale_warning) {
+                    strncpy(q->warning,
+                            "Quote based on stale orders (pending migration) - may not reflect actual prices",
+                            sizeof(q->warning) - 1);
+                }
+                total++;
+            }
+        }
+    }
+
     if (total == 0) {
         if (task->callback.dex_quote) {
             task->callback.dex_quote(task->request_id, DNA_ENGINE_ERROR_NOT_FOUND,
@@ -1186,8 +1225,32 @@ void dna_handle_dex_list_pairs(dna_engine_t *engine, dna_task_t *task) {
         idx++;
     }
 
+    /* Cellframe pairs */
+    char **cell_pairs = NULL;
+    int cell_count = 0;
+    cell_dex_list_pairs(&cell_pairs, &cell_count);
+
+    /* Re-count total with Cellframe */
+    total += cell_count;
+
+    /* Expand array if needed */
+    if (cell_count > 0) {
+        char **expanded = realloc(all_pairs, (size_t)total * sizeof(char *));
+        if (expanded) {
+            all_pairs = expanded;
+            for (int i = 0; i < cell_count; i++) {
+                all_pairs[idx] = malloc(48);
+                if (all_pairs[idx]) {
+                    snprintf(all_pairs[idx], 48, "[CELL] %s", cell_pairs[i]);
+                }
+                idx++;
+            }
+        }
+    }
+
     sol_dex_free_pairs(sol_pairs, sol_count);
     eth_dex_free_pairs(eth_pairs, eth_count);
+    cell_dex_free_pairs(cell_pairs, cell_count);
 
     if (task->callback.dex_pairs) {
         task->callback.dex_pairs(task->request_id, DNA_OK, (const char **)all_pairs, total, task->user_data);
