@@ -338,6 +338,8 @@ void cmd_help(void) {
     printf("WALLET:\n");
     printf("  wallets                    List wallets\n");
     printf("  balance <index>            Show wallet balances\n");
+    printf("  dex-quote <from> <to> <amt> [dex]  Get DEX swap quotes\n");
+    printf("  dex-pairs                  List available trading pairs\n");
     printf("\n");
 
     printf("NETWORK:\n");
@@ -3946,18 +3948,23 @@ int cmd_sign(dna_engine_t *engine, const char *data) {
  * ============================================================================ */
 
 static void on_dex_quote(dna_request_id_t request_id, int error,
-                          const dna_dex_quote_t *quote, void *user_data) {
+                          const dna_dex_quote_t *quotes, int count,
+                          void *user_data) {
     (void)request_id;
     cli_wait_t *wait = (cli_wait_t *)user_data;
 
-    if (error == 0 && quote) {
-        printf("\nDEX Quote:\n");
-        printf("  %s %s -> %s %s\n", quote->amount_in, quote->from_token,
-               quote->amount_out, quote->to_token);
-        printf("  Price:        1 %s = %s %s\n", quote->from_token, quote->price, quote->to_token);
-        printf("  Price impact: %s%%\n", quote->price_impact);
-        printf("  Fee:          %s %s\n", quote->fee, quote->from_token);
-        printf("  Pool:         %s\n", quote->pool_address);
+    if (error == 0 && quotes && count > 0) {
+        printf("\n%d DEX quote(s) found:\n", count);
+        for (int i = 0; i < count; i++) {
+            const dna_dex_quote_t *q = &quotes[i];
+            printf("\n  [%d] %s — %s\n", i + 1, q->chain, q->dex_name);
+            printf("      %s %s -> %s %s\n", q->amount_in, q->from_token,
+                   q->amount_out, q->to_token);
+            printf("      Price:        1 %s = %s %s\n", q->from_token, q->price, q->to_token);
+            printf("      Price impact: %s%%\n", q->price_impact);
+            printf("      Fee:          %s %s\n", q->fee, q->from_token);
+            printf("      Pool:         %s\n", q->pool_address);
+        }
         printf("\n");
     }
 
@@ -3984,18 +3991,26 @@ static void on_dex_pairs(dna_request_id_t request_id, int error,
 }
 
 int cmd_dex_quote(dna_engine_t *engine, const char *from_token,
-                  const char *to_token, const char *amount) {
+                  const char *to_token, const char *amount,
+                  const char *dex_filter) {
     if (!engine) {
         printf("Error: Engine not initialized\n");
         return -1;
     }
 
-    printf("Getting quote: %s %s -> %s ...\n", amount, from_token, to_token);
+    if (dex_filter) {
+        printf("Getting quote: %s %s -> %s (filter: %s) ...\n",
+               amount, from_token, to_token, dex_filter);
+    } else {
+        printf("Getting quotes: %s %s -> %s (all DEXes) ...\n",
+               amount, from_token, to_token);
+    }
 
     cli_wait_t wait;
     cli_wait_init(&wait);
 
-    dna_engine_dex_quote(engine, from_token, to_token, amount, on_dex_quote, &wait);
+    dna_engine_dex_quote(engine, from_token, to_token, amount, dex_filter,
+                         on_dex_quote, &wait);
     int result = cli_wait_for(&wait);
 
     if (result != 0) {
@@ -4675,11 +4690,13 @@ bool execute_command(dna_engine_t *engine, const char *line) {
         char *from_tok = strtok(NULL, " \t");
         char *to_tok = strtok(NULL, " \t");
         char *amount = strtok(NULL, " \t");
+        char *dex_filt = strtok(NULL, " \t");
         if (!from_tok || !to_tok || !amount) {
-            printf("Usage: dex-quote <from> <to> <amount>\n");
-            printf("Example: dex-quote SOL USDC 1.0\n");
+            printf("Usage: dex-quote <from> <to> <amount> [dex]\n");
+            printf("Example: dex-quote ETH USDC 1.0\n");
+            printf("Example: dex-quote ETH USDC 1.0 uniswap-v3\n");
         } else {
-            cmd_dex_quote(engine, from_tok, to_tok, amount);
+            cmd_dex_quote(engine, from_tok, to_tok, amount, dex_filt);
         }
     }
     else if (strcmp(cmd, "dex-pairs") == 0) {

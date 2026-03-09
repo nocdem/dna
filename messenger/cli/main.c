@@ -177,7 +177,7 @@ static void print_usage(const char *prog_name) {
     printf("  estimate-gas <network_id>   Estimate ETH gas fees\n");
     printf("\n");
     printf("DEX COMMANDS:\n");
-    printf("  dex-quote <from> <to> <amt> Get swap quote (e.g. dex-quote SOL USDC 1.0)\n");
+    printf("  dex-quote <from> <to> <amt> [dex] Get swap quotes (e.g. dex-quote ETH USDC 1.0 uniswap-v3)\n");
     printf("  dex-pairs                   List available trading pairs\n");
     printf("\n");
     printf("CHANNEL COMMANDS:\n");
@@ -947,10 +947,13 @@ int main(int argc, char *argv[]) {
     else if (strcmp(command, "dex-quote") == 0) {
         if (optind + 3 >= argc) {
             fprintf(stderr, "Error: 'dex-quote' requires <from_token> <to_token> <amount> arguments\n");
-            fprintf(stderr, "Example: dex-quote SOL USDC 1.0\n");
+            fprintf(stderr, "Example: dex-quote ETH USDC 1.0\n");
+            fprintf(stderr, "Example: dex-quote ETH USDC 1.0 uniswap-v3\n");
             result = 1;
         } else {
-            result = cmd_dex_quote(g_engine, argv[optind + 1], argv[optind + 2], argv[optind + 3]);
+            const char *dex_filter = (optind + 4 < argc) ? argv[optind + 4] : NULL;
+            result = cmd_dex_quote(g_engine, argv[optind + 1], argv[optind + 2],
+                                   argv[optind + 3], dex_filter);
         }
     }
     else if (strcmp(command, "dex-pairs") == 0) {

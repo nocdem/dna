@@ -1,9 +1,11 @@
 /**
  * @file eth_dex.h
- * @brief Ethereum DEX Quote Interface (Uniswap v2)
+ * @brief Ethereum DEX Quote Interface (Uniswap v2/v3 + PancakeSwap v2/v3)
  *
- * On-chain quote fetching from Uniswap v2 pools via eth_call + getReserves().
- * No external API dependencies — reads pool reserves directly from chain.
+ * On-chain quote fetching via eth_call:
+ * - V2 (Uniswap/PancakeSwap): getReserves() + CPMM formula
+ * - V3 (Uniswap/PancakeSwap): QuoterV2.quoteExactInputSingle()
+ * No external API dependencies — reads pool data directly from chain.
  *
  * @author DNA Messenger Team
  * @date 2026-03-09
@@ -33,6 +35,7 @@ typedef struct {
     char price_impact[16];      /* Price impact percentage */
     char fee[64];               /* Fee amount in input token */
     char pool_address[48];      /* Pair contract address */
+    char dex_name[32];          /* DEX name (e.g. "Uniswap v2") */
     uint8_t from_decimals;      /* Input token decimals */
     uint8_t to_decimals;        /* Output token decimals */
 } eth_dex_quote_t;
@@ -42,22 +45,28 @@ typedef struct {
  * ============================================================================ */
 
 /**
- * Get swap quote from Uniswap v2 pair
+ * Get swap quotes from all matching Uniswap pools
  *
- * Reads reserves via eth_call getReserves() and calculates output
- * using constant product formula: out = (R_out * in * 997) / (R_in * 1000 + in * 997)
+ * Returns quotes from all matching DEXes (V2 + V3).
+ * If dex_filter is set, only matching DEX quotes are returned.
  *
  * @param from_token    Input token symbol (e.g., "ETH")
  * @param to_token      Output token symbol (e.g., "USDC")
  * @param amount_in     Input amount as decimal string (e.g., "1.5")
- * @param quote_out     Output: quote result
+ * @param dex_filter    DEX filter (NULL or ""=all, "uniswap-v2", "uniswap-v3")
+ * @param quotes_out    Output: array of quotes (caller provides buffer)
+ * @param max_quotes    Size of quotes_out array
+ * @param count_out     Output: number of quotes returned
  * @return              0 on success, -1 on error, -2 if pair not found
  */
-int eth_dex_get_quote(
+int eth_dex_get_quotes(
     const char *from_token,
     const char *to_token,
     const char *amount_in,
-    eth_dex_quote_t *quote_out
+    const char *dex_filter,
+    eth_dex_quote_t *quotes_out,
+    int max_quotes,
+    int *count_out
 );
 
 /**

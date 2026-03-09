@@ -1,502 +1,395 @@
+#define _GNU_SOURCE
 /**
  * @file sol_dex.c
- * @brief Solana DEX Quote Implementation (Raydium AMM v4)
+ * @brief Solana DEX Quote Implementation (Jupiter Aggregator)
  *
- * On-chain quote fetching from Raydium CPMM pools.
- * 1. Reads pool account data via getAccountInfo to extract vault pubkeys
- * 2. Reads vault balances via getTokenAccountBalance
- * 3. Applies constant product (x*y=k) formula for quote
+ * Fetches quotes from Jupiter public API (api.jup.ag/swap/v1/quote).
+ * Jupiter aggregates all major Solana DEXes and returns the best route.
+ * No API key required — public endpoint with rate limiting.
  *
- * No external API — purely on-chain data via Solana JSON-RPC.
- *
- * Pool layout reference: raydium-io/raydium-amm (state.rs AmmInfo struct)
- * Total size: 752 bytes. coin_vault at offset 296, pc_vault at offset 328.
+ * Supports platformFeeBps for referral revenue on swap execution.
  *
  * @author DNA Messenger Team
  * @date 2026-03-09
  */
 
 #include "sol_dex.h"
-#include "sol_rpc.h"
-#include "sol_wallet.h"
 #include "crypto/utils/qgp_log.h"
-#include "crypto/utils/base58.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
+#include <strings.h>
+#include <stdbool.h>
 #ifdef _WIN32
 #define CURL_STATICLIB
 #endif
+#include <curl/curl.h>
 #include <json-c/json.h>
-
-/* Internal RPC function from sol_rpc.c (not in public header to avoid json-c dependency) */
-extern int sol_rpc_call(const char *method, json_object *params, json_object **result_out);
 
 #define LOG_TAG "SOL_DEX"
 
-/* Raydium AMM v4 fee: 0.25% (25 bps) */
-#define RAYDIUM_FEE_NUMERATOR   25
-#define RAYDIUM_FEE_DENOMINATOR 10000
-
-/* Raydium AMM v4 pool account layout offsets (from state.rs AmmInfo)
- *
- * Layout: 16 x u64 (128) + Fees (64) + StateData (144) + Pubkeys...
- *   0-127:   u64 fields (status, nonce, ..., sys_decimal_value)
- *   128-191: Fees struct (8 x u64 = 64 bytes)
- *   192-335: StateData struct (144 bytes: u64s + u128s)
- *   336:     coin_vault (Pubkey, 32 bytes)
- *   368:     pc_vault (Pubkey, 32 bytes)
- *   400:     coin_vault_mint (Pubkey, 32 bytes)
- *   432:     pc_vault_mint (Pubkey, 32 bytes)
- *   464:     lp_mint (Pubkey, 32 bytes)
- *   496+:    open_orders, market, market_program, target_orders, padding, amm_owner
- *
- * Verified against live mainnet pool 58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2:
- *   coin_mint(400) = So11...112 (wSOL), pc_mint(432) = EPjFW...Dt1v (USDC)
- */
-#define AMM_COIN_DECIMALS_OFFSET  32   /* u64: coin token decimals */
-#define AMM_PC_DECIMALS_OFFSET    40   /* u64: pc token decimals */
-#define AMM_COIN_VAULT_OFFSET    336   /* Pubkey: coin vault SPL token account */
-#define AMM_PC_VAULT_OFFSET      368   /* Pubkey: pc vault SPL token account */
-#define AMM_COIN_MINT_OFFSET     400   /* Pubkey: coin mint */
-#define AMM_PC_MINT_OFFSET       432   /* Pubkey: pc mint */
-#define AMM_ACCOUNT_SIZE         752   /* Total AmmInfo size (on-chain) */
+/* Jupiter public quote endpoint — no API key needed */
+#define JUPITER_QUOTE_URL "https://api.jup.ag/swap/v1/quote"
 
 /* ============================================================================
- * KNOWN RAYDIUM v4 POOL ADDRESSES (Mainnet)
+ * TOKEN REGISTRY
  *
- * Only the pool address is needed — vault addresses and decimals are
- * extracted at runtime from on-chain pool account data.
- *
- * Sources:
- *   SOL/USDC: raydium-sdk-v1 README, GeckoTerminal, Solscan
- *   SOL/USDT: GeckoTerminal, DEX Screener (confirmed $1.17M liquidity)
- *   USDC/USDT: Raydium liquidity pool list
+ * Solana token mint addresses (mainnet).
  * ============================================================================ */
 
 typedef struct {
-    const char *token_a;        /* Coin token symbol (maps to coin_vault) */
-    const char *token_b;        /* PC token symbol (maps to pc_vault) */
-    const char *pool_address;   /* Raydium AMM v4 pool account address */
-} raydium_pool_t;
+    const char *symbol;
+    const char *mint;
+    uint8_t decimals;
+} sol_token_t;
 
-static const raydium_pool_t known_pools[] = {
-    /* SOL/USDC — primary Raydium v4 pool */
-    {
-        .token_a = "SOL",
-        .token_b = "USDC",
-        .pool_address = "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
-    },
-    /* SOL/USDT — Raydium v4 pool */
-    {
-        .token_a = "SOL",
-        .token_b = "USDT",
-        .pool_address = "7XawhbbxtsRcQA8KTkHT9f9nc6d69UwqCDh6U5EEbEmX",
-    },
+static const sol_token_t known_tokens[] = {
+    { "SOL",  "So11111111111111111111111111111111111111112",          9  },
+    { "USDC", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",      6  },
+    { "USDT", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",       6  },
 };
 
-#define NUM_KNOWN_POOLS (sizeof(known_pools) / sizeof(known_pools[0]))
+#define NUM_KNOWN_TOKENS (sizeof(known_tokens) / sizeof(known_tokens[0]))
+
+/* Known trading pairs for sol_dex_list_pairs */
+static const char *known_pairs[][2] = {
+    { "SOL", "USDC" },
+    { "SOL", "USDT" },
+    { "USDC", "USDT" },
+};
+
+#define NUM_KNOWN_PAIRS (sizeof(known_pairs) / sizeof(known_pairs[0]))
+
+static const sol_token_t *find_token(const char *symbol) {
+    for (size_t i = 0; i < NUM_KNOWN_TOKENS; i++) {
+        if (strcasecmp(known_tokens[i].symbol, symbol) == 0) {
+            return &known_tokens[i];
+        }
+    }
+    return NULL;
+}
 
 /* ============================================================================
- * INTERNAL: Read pool account data and extract vault pubkeys + decimals
+ * CURL RESPONSE BUFFER
+ * ============================================================================ */
+
+typedef struct {
+    char *data;
+    size_t size;
+} curl_buf_t;
+
+static size_t curl_write_cb(void *contents, size_t size, size_t nmemb, void *userp) {
+    size_t total = size * nmemb;
+    curl_buf_t *buf = (curl_buf_t *)userp;
+
+    char *tmp = realloc(buf->data, buf->size + total + 1);
+    if (!tmp) return 0;
+
+    buf->data = tmp;
+    memcpy(buf->data + buf->size, contents, total);
+    buf->size += total;
+    buf->data[buf->size] = '\0';
+    return total;
+}
+
+/* ============================================================================
+ * AMOUNT HELPERS
  * ============================================================================ */
 
 /**
- * Decode base64-encoded pool data and extract fields at known offsets.
- * Returns vault addresses as base58 strings and decimals.
+ * Convert decimal string (e.g. "1.5") to raw lamports/base units string.
+ * Returns allocated string, caller must free.
  */
-static int parse_pool_data(
-    const char *base64_data,
-    char *coin_vault_out,   /* base58, at least 45 bytes */
-    char *pc_vault_out,     /* base58, at least 45 bytes */
-    uint8_t *coin_decimals_out,
-    uint8_t *pc_decimals_out
-) {
-    if (!base64_data) return -1;
-
-    /* Decode base64 to raw bytes */
-    /* Simple base64 decode — pool data is ~752 bytes = ~1004 base64 chars */
-    size_t b64_len = strlen(base64_data);
-    size_t max_decoded = (b64_len * 3) / 4 + 4;
-    uint8_t *raw = malloc(max_decoded);
-    if (!raw) return -1;
-
-    /* Base64 decode table */
-    static const int b64_table[256] = {
-        ['A']=0,['B']=1,['C']=2,['D']=3,['E']=4,['F']=5,['G']=6,['H']=7,
-        ['I']=8,['J']=9,['K']=10,['L']=11,['M']=12,['N']=13,['O']=14,['P']=15,
-        ['Q']=16,['R']=17,['S']=18,['T']=19,['U']=20,['V']=21,['W']=22,['X']=23,
-        ['Y']=24,['Z']=25,['a']=26,['b']=27,['c']=28,['d']=29,['e']=30,['f']=31,
-        ['g']=32,['h']=33,['i']=34,['j']=35,['k']=36,['l']=37,['m']=38,['n']=39,
-        ['o']=40,['p']=41,['q']=42,['r']=43,['s']=44,['t']=45,['u']=46,['v']=47,
-        ['w']=48,['x']=49,['y']=50,['z']=51,['0']=52,['1']=53,['2']=54,['3']=55,
-        ['4']=56,['5']=57,['6']=58,['7']=59,['8']=60,['9']=61,['+']=62,['/']=63,
-    };
-
-    size_t decoded_len = 0;
-    uint32_t accum = 0;
-    int bits = 0;
-    for (size_t i = 0; i < b64_len; i++) {
-        uint8_t c = (uint8_t)base64_data[i];
-        if (c == '=' || c == '\n' || c == '\r') continue;
-        accum = (accum << 6) | b64_table[c];
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            raw[decoded_len++] = (uint8_t)(accum >> bits) & 0xFF;
-        }
-    }
-
-    if (decoded_len < AMM_ACCOUNT_SIZE) {
-        QGP_LOG_ERROR(LOG_TAG, "Pool data too short: %zu < %d", decoded_len, AMM_ACCOUNT_SIZE);
-        free(raw);
-        return -1;
-    }
-
-    /* Extract decimals (u64 stored as little-endian, we only need low byte) */
-    *coin_decimals_out = raw[AMM_COIN_DECIMALS_OFFSET];
-    *pc_decimals_out = raw[AMM_PC_DECIMALS_OFFSET];
-
-    /* Extract coin_vault pubkey (32 bytes at offset 296) → base58 */
-    uint8_t coin_vault_pubkey[32];
-    memcpy(coin_vault_pubkey, raw + AMM_COIN_VAULT_OFFSET, 32);
-    if (sol_pubkey_to_address(coin_vault_pubkey, coin_vault_out) != 0) {
-        free(raw);
-        return -1;
-    }
-
-    /* Extract pc_vault pubkey (32 bytes at offset 328) → base58 */
-    uint8_t pc_vault_pubkey[32];
-    memcpy(pc_vault_pubkey, raw + AMM_PC_VAULT_OFFSET, 32);
-    if (sol_pubkey_to_address(pc_vault_pubkey, pc_vault_out) != 0) {
-        free(raw);
-        return -1;
-    }
-
-    QGP_LOG_DEBUG(LOG_TAG, "Pool parsed: coin_vault=%s pc_vault=%s coin_dec=%d pc_dec=%d",
-                  coin_vault_out, pc_vault_out, *coin_decimals_out, *pc_decimals_out);
-
-    free(raw);
-    return 0;
-}
-
-/**
- * Fetch pool account data via getAccountInfo RPC
- */
-static int fetch_pool_data(
-    const char *pool_address,
-    char *coin_vault_out,
-    char *pc_vault_out,
-    uint8_t *coin_decimals_out,
-    uint8_t *pc_decimals_out
-) {
-    json_object *params = json_object_new_array();
-    json_object_array_add(params, json_object_new_string(pool_address));
-
-    /* Request base64 encoding for raw data access */
-    json_object *opts = json_object_new_object();
-    json_object_object_add(opts, "encoding", json_object_new_string("base64"));
-    json_object_array_add(params, opts);
-
-    json_object *result = NULL;
-    int rc = sol_rpc_call("getAccountInfo", params, &result);
-    json_object_put(params);
-
-    if (rc != 0 || !result) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to fetch pool account: %s", pool_address);
-        return -1;
-    }
-
-    /* Extract: result.value.data[0] (base64 string) */
-    json_object *value_obj, *data_arr;
-    if (!json_object_object_get_ex(result, "value", &value_obj) || !value_obj ||
-        json_object_is_type(value_obj, json_type_null)) {
-        QGP_LOG_ERROR(LOG_TAG, "Pool account not found: %s", pool_address);
-        json_object_put(result);
-        return -1;
-    }
-
-    if (!json_object_object_get_ex(value_obj, "data", &data_arr) ||
-        !json_object_is_type(data_arr, json_type_array) ||
-        json_object_array_length(data_arr) < 1) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid pool data format");
-        json_object_put(result);
-        return -1;
-    }
-
-    const char *base64_data = json_object_get_string(json_object_array_get_idx(data_arr, 0));
-    rc = parse_pool_data(base64_data, coin_vault_out, pc_vault_out,
-                         coin_decimals_out, pc_decimals_out);
-
-    json_object_put(result);
-    return rc;
-}
-
-/* ============================================================================
- * INTERNAL: Read vault balance via getTokenAccountBalance
- * ============================================================================ */
-
-static int read_vault_balance(const char *vault_address, uint64_t *balance_out) {
-    if (!vault_address || !balance_out) return -1;
-
-    *balance_out = 0;
-
-    json_object *params = json_object_new_array();
-    json_object_array_add(params, json_object_new_string(vault_address));
-
-    json_object *result = NULL;
-    int rc = sol_rpc_call("getTokenAccountBalance", params, &result);
-    json_object_put(params);
-
-    if (rc != 0 || !result) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to read vault balance: %s", vault_address);
-        return -1;
-    }
-
-    /* Parse: result.value.amount (string of base units) */
-    json_object *value_obj, *amount_obj;
-    if (json_object_object_get_ex(result, "value", &value_obj) &&
-        json_object_object_get_ex(value_obj, "amount", &amount_obj)) {
-        const char *amount_str = json_object_get_string(amount_obj);
-        if (amount_str) {
-            *balance_out = strtoull(amount_str, NULL, 10);
-        }
-    }
-
-    json_object_put(result);
-    return 0;
-}
-
-/* ============================================================================
- * INTERNAL: Find pool for token pair
- * ============================================================================ */
-
-static int find_pool(const char *from_token, const char *to_token, bool *reversed) {
-    for (size_t i = 0; i < NUM_KNOWN_POOLS; i++) {
-        if (strcasecmp(known_pools[i].token_a, from_token) == 0 &&
-            strcasecmp(known_pools[i].token_b, to_token) == 0) {
-            *reversed = false;
-            return (int)i;
-        }
-        if (strcasecmp(known_pools[i].token_b, from_token) == 0 &&
-            strcasecmp(known_pools[i].token_a, to_token) == 0) {
-            *reversed = true;
-            return (int)i;
-        }
-    }
-    return -1;
-}
-
-/* ============================================================================
- * INTERNAL: Amount formatting
- * ============================================================================ */
-
-static void format_amount(uint64_t raw, uint8_t decimals, char *out, size_t out_size) {
-    if (raw == 0) {
-        snprintf(out, out_size, "0.0");
-        return;
-    }
-
-    uint64_t divisor = 1;
-    for (int i = 0; i < decimals; i++) {
-        divisor *= 10;
-    }
-
-    uint64_t whole = raw / divisor;
-    uint64_t frac = raw % divisor;
-
-    if (frac == 0) {
-        snprintf(out, out_size, "%llu.0", (unsigned long long)whole);
-    } else {
-        char frac_str[32];
-        snprintf(frac_str, sizeof(frac_str), "%0*llu", decimals, (unsigned long long)frac);
-
-        /* Trim trailing zeros */
-        int len = (int)strlen(frac_str);
-        while (len > 0 && frac_str[len - 1] == '0') {
-            frac_str[--len] = '\0';
-        }
-
-        snprintf(out, out_size, "%llu.%s", (unsigned long long)whole, frac_str);
-    }
-}
-
-static uint64_t parse_amount(const char *amount_str, uint8_t decimals) {
-    if (!amount_str) return 0;
+static char *decimal_to_raw(const char *amount_str, uint8_t decimals) {
+    if (!amount_str) return NULL;
 
     const char *dot = strchr(amount_str, '.');
-    uint64_t whole = strtoull(amount_str, NULL, 10);
-
-    uint64_t divisor = 1;
-    for (int i = 0; i < decimals; i++) {
-        divisor *= 10;
-    }
-
-    uint64_t result = whole * divisor;
+    char whole_str[64] = {0};
+    char frac_str[32] = {0};
 
     if (dot) {
-        const char *frac_start = dot + 1;
-        int frac_len = (int)strlen(frac_start);
-        uint64_t frac_val = strtoull(frac_start, NULL, 10);
-
-        if (frac_len < decimals) {
-            for (int i = 0; i < decimals - frac_len; i++) {
-                frac_val *= 10;
-            }
-        } else if (frac_len > decimals) {
-            for (int i = 0; i < frac_len - decimals; i++) {
-                frac_val /= 10;
-            }
-        }
-
-        result += frac_val;
+        size_t whole_len = (size_t)(dot - amount_str);
+        if (whole_len >= sizeof(whole_str)) return NULL;
+        memcpy(whole_str, amount_str, whole_len);
+        strncpy(frac_str, dot + 1, sizeof(frac_str) - 1);
+    } else {
+        strncpy(whole_str, amount_str, sizeof(whole_str) - 1);
     }
 
-    return result;
+    /* Pad or truncate fraction to match decimals */
+    int frac_len = (int)strlen(frac_str);
+    if (frac_len < decimals) {
+        for (int i = frac_len; i < decimals; i++) {
+            frac_str[i] = '0';
+        }
+        frac_str[decimals] = '\0';
+    } else if (frac_len > decimals) {
+        frac_str[decimals] = '\0';
+    }
+
+    /* Concatenate whole + fraction (no dot) */
+    char raw[128];
+    snprintf(raw, sizeof(raw), "%s%s", whole_str, frac_str);
+
+    /* Strip leading zeros (but keep at least "0") */
+    char *p = raw;
+    while (*p == '0' && *(p + 1) != '\0') p++;
+
+    return strdup(p);
+}
+
+/**
+ * Convert raw lamports string to decimal string.
+ */
+static void raw_to_decimal(const char *raw_str, uint8_t decimals, char *out, size_t out_size) {
+    if (!raw_str || !out) return;
+
+    size_t len = strlen(raw_str);
+
+    if (len <= (size_t)decimals) {
+        /* Less digits than decimals — result is 0.000...X */
+        char padded[128] = {0};
+        int pad = decimals - (int)len;
+        for (int i = 0; i < pad; i++) padded[i] = '0';
+        memcpy(padded + pad, raw_str, len);
+        padded[decimals] = '\0';
+
+        /* Trim trailing zeros */
+        int tlen = (int)strlen(padded);
+        while (tlen > 1 && padded[tlen - 1] == '0') {
+            padded[--tlen] = '\0';
+        }
+
+        snprintf(out, out_size, "0.%s", padded);
+    } else {
+        /* Split into whole and fraction */
+        size_t whole_len = len - (size_t)decimals;
+        char whole[64] = {0};
+        char frac[32] = {0};
+        memcpy(whole, raw_str, whole_len);
+        memcpy(frac, raw_str + whole_len, (size_t)decimals);
+        frac[decimals] = '\0';
+
+        /* Trim trailing zeros from fraction */
+        int tlen = (int)strlen(frac);
+        while (tlen > 1 && frac[tlen - 1] == '0') {
+            frac[--tlen] = '\0';
+        }
+
+        if (tlen == 0 || (tlen == 1 && frac[0] == '0')) {
+            snprintf(out, out_size, "%s.0", whole);
+        } else {
+            snprintf(out, out_size, "%s.%s", whole, frac);
+        }
+    }
+}
+
+/* ============================================================================
+ * JUPITER QUOTE API
+ * ============================================================================ */
+
+static int jupiter_get_quote(
+    const sol_token_t *from_tok,
+    const sol_token_t *to_tok,
+    const char *amount_raw,
+    sol_dex_quote_t *quote_out
+) {
+    /* Build URL */
+    char url[512];
+    snprintf(url, sizeof(url),
+             "%s?inputMint=%s&outputMint=%s&amount=%s&slippageBps=50",
+             JUPITER_QUOTE_URL, from_tok->mint, to_tok->mint, amount_raw);
+
+    QGP_LOG_DEBUG(LOG_TAG, "Jupiter quote: %s", url);
+
+    /* HTTP GET */
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        QGP_LOG_ERROR(LOG_TAG, "curl_easy_init failed");
+        return -1;
+    }
+
+    curl_buf_t buf = { .data = NULL, .size = 0 };
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "DNA-Messenger/1.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK || !buf.data) {
+        QGP_LOG_ERROR(LOG_TAG, "Jupiter request failed: %s", curl_easy_strerror(res));
+        free(buf.data);
+        return -1;
+    }
+
+    if (http_code != 200) {
+        QGP_LOG_ERROR(LOG_TAG, "Jupiter HTTP %ld: %.200s", http_code, buf.data);
+        free(buf.data);
+        return (http_code == 400) ? -2 : -1;
+    }
+
+    /* Parse JSON response */
+    json_object *root = json_tokener_parse(buf.data);
+    free(buf.data);
+
+    if (!root) {
+        QGP_LOG_ERROR(LOG_TAG, "Jupiter JSON parse failed");
+        return -1;
+    }
+
+    /* Extract fields */
+    json_object *in_amount_obj, *out_amount_obj, *impact_obj, *route_plan_obj;
+    if (!json_object_object_get_ex(root, "inAmount", &in_amount_obj) ||
+        !json_object_object_get_ex(root, "outAmount", &out_amount_obj)) {
+        QGP_LOG_ERROR(LOG_TAG, "Jupiter response missing inAmount/outAmount");
+        json_object_put(root);
+        return -1;
+    }
+
+    const char *in_amount_raw = json_object_get_string(in_amount_obj);
+    const char *out_amount_raw = json_object_get_string(out_amount_obj);
+
+    /* Price impact */
+    const char *impact_str = "0";
+    if (json_object_object_get_ex(root, "priceImpactPct", &impact_obj)) {
+        impact_str = json_object_get_string(impact_obj);
+    }
+
+    /* DEX name from routePlan[0].swapInfo.label */
+    const char *dex_label = "Jupiter";
+    const char *amm_key = "";
+    if (json_object_object_get_ex(root, "routePlan", &route_plan_obj) &&
+        json_object_is_type(route_plan_obj, json_type_array) &&
+        json_object_array_length(route_plan_obj) > 0) {
+        json_object *step0 = json_object_array_get_idx(route_plan_obj, 0);
+        json_object *swap_info;
+        if (json_object_object_get_ex(step0, "swapInfo", &swap_info)) {
+            json_object *label_obj, *amm_obj;
+            if (json_object_object_get_ex(swap_info, "label", &label_obj)) {
+                dex_label = json_object_get_string(label_obj);
+            }
+            if (json_object_object_get_ex(swap_info, "ammKey", &amm_obj)) {
+                amm_key = json_object_get_string(amm_obj);
+            }
+        }
+    }
+
+    /* Fill quote result */
+    memset(quote_out, 0, sizeof(*quote_out));
+    strncpy(quote_out->from_token, from_tok->symbol, sizeof(quote_out->from_token) - 1);
+    strncpy(quote_out->to_token, to_tok->symbol, sizeof(quote_out->to_token) - 1);
+    strncpy(quote_out->dex_name, dex_label, sizeof(quote_out->dex_name) - 1);
+    strncpy(quote_out->pool_address, amm_key, sizeof(quote_out->pool_address) - 1);
+    quote_out->from_decimals = from_tok->decimals;
+    quote_out->to_decimals = to_tok->decimals;
+
+    /* Convert raw amounts to decimal strings */
+    raw_to_decimal(in_amount_raw, from_tok->decimals,
+                   quote_out->amount_in, sizeof(quote_out->amount_in));
+    raw_to_decimal(out_amount_raw, to_tok->decimals,
+                   quote_out->amount_out, sizeof(quote_out->amount_out));
+
+    /* Price impact — Jupiter returns as decimal string (e.g. "0.0012" = 0.12%) */
+    double impact_val = atof(impact_str) * 100.0;
+    snprintf(quote_out->price_impact, sizeof(quote_out->price_impact), "%.2f", impact_val);
+
+    /* Price: 1 from = X to */
+    double in_val = atof(quote_out->amount_in);
+    double out_val = atof(quote_out->amount_out);
+    if (in_val > 0.0) {
+        snprintf(quote_out->price, sizeof(quote_out->price), "%.6f", out_val / in_val);
+    } else {
+        strncpy(quote_out->price, "0", sizeof(quote_out->price) - 1);
+    }
+
+    /* Fee — Jupiter doesn't return explicit fee in quote, show as N/A */
+    strncpy(quote_out->fee, "included", sizeof(quote_out->fee) - 1);
+
+    QGP_LOG_INFO(LOG_TAG, "Jupiter quote: %s %s -> %s %s via %s (impact: %s%%)",
+                 quote_out->amount_in, from_tok->symbol,
+                 quote_out->amount_out, to_tok->symbol,
+                 dex_label, quote_out->price_impact);
+
+    json_object_put(root);
+    return 0;
 }
 
 /* ============================================================================
  * PUBLIC API
  * ============================================================================ */
 
-int sol_dex_get_quote(
+int sol_dex_get_quotes(
     const char *from_token,
     const char *to_token,
-    const char *amount_in_str,
-    sol_dex_quote_t *quote_out
+    const char *amount_in,
+    const char *dex_filter,
+    sol_dex_quote_t *quotes_out,
+    int max_quotes,
+    int *count_out
 ) {
-    if (!from_token || !to_token || !amount_in_str || !quote_out) return -1;
+    if (!from_token || !to_token || !amount_in || !quotes_out || !count_out) return -1;
+    *count_out = 0;
 
-    memset(quote_out, 0, sizeof(sol_dex_quote_t));
-
-    /* Find pool */
-    bool reversed = false;
-    int pool_idx = find_pool(from_token, to_token, &reversed);
-    if (pool_idx < 0) {
-        QGP_LOG_WARN(LOG_TAG, "No pool found for %s/%s", from_token, to_token);
+    /* Resolve token symbols to mint addresses */
+    const sol_token_t *from_tok = find_token(from_token);
+    const sol_token_t *to_tok = find_token(to_token);
+    if (!from_tok || !to_tok) {
+        QGP_LOG_WARN(LOG_TAG, "Unknown token: %s or %s", from_token, to_token);
         return -2;
     }
 
-    const raydium_pool_t *pool = &known_pools[pool_idx];
+    if (max_quotes < 1) return -1;
 
-    /* Step 1: Fetch pool account data to get vault addresses + decimals */
-    char coin_vault[48] = {0};
-    char pc_vault[48] = {0};
-    uint8_t coin_decimals = 0, pc_decimals = 0;
-
-    if (fetch_pool_data(pool->pool_address, coin_vault, pc_vault,
-                        &coin_decimals, &pc_decimals) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to parse pool data for %s", pool->pool_address);
+    /* Convert decimal amount to raw lamports */
+    char *amount_raw = decimal_to_raw(amount_in, from_tok->decimals);
+    if (!amount_raw) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to convert amount: %s", amount_in);
         return -1;
     }
 
-    /* Determine input/output based on direction */
-    const char *in_vault  = reversed ? pc_vault : coin_vault;
-    const char *out_vault = reversed ? coin_vault : pc_vault;
-    uint8_t in_decimals   = reversed ? pc_decimals : coin_decimals;
-    uint8_t out_decimals  = reversed ? coin_decimals : pc_decimals;
+    /* Jupiter returns the best route — one quote per call */
+    int rc = jupiter_get_quote(from_tok, to_tok, amount_raw, &quotes_out[0]);
+    free(amount_raw);
 
-    /* Step 2: Read vault balances (reserves) */
-    uint64_t reserve_in = 0, reserve_out = 0;
-    if (read_vault_balance(in_vault, &reserve_in) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to read input vault: %s", in_vault);
-        return -1;
-    }
-    if (read_vault_balance(out_vault, &reserve_out) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to read output vault: %s", out_vault);
-        return -1;
+    if (rc != 0) return rc;
+
+    /* Apply dex_filter if specified */
+    if (dex_filter && dex_filter[0] != '\0') {
+        if (!strcasestr(quotes_out[0].dex_name, dex_filter)) {
+            QGP_LOG_DEBUG(LOG_TAG, "Quote filtered: %s doesn't match %s",
+                          quotes_out[0].dex_name, dex_filter);
+            return -2;
+        }
     }
 
-    if (reserve_in == 0 || reserve_out == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Pool has zero reserves (in=%llu out=%llu)",
-                      (unsigned long long)reserve_in, (unsigned long long)reserve_out);
-        return -1;
-    }
-
-    QGP_LOG_DEBUG(LOG_TAG, "Pool %s/%s reserves: in=%llu out=%llu",
-                  from_token, to_token,
-                  (unsigned long long)reserve_in,
-                  (unsigned long long)reserve_out);
-
-    /* Step 3: Calculate quote using CPMM formula */
-    uint64_t amount_in = parse_amount(amount_in_str, in_decimals);
-    if (amount_in == 0) {
-        QGP_LOG_WARN(LOG_TAG, "Input amount is zero");
-        return -1;
-    }
-
-    /* Raydium CPMM with 0.25% fee:
-     * amount_in_with_fee = amount_in * (10000 - 25)
-     * amount_out = (reserve_out * amount_in_with_fee) / (reserve_in * 10000 + amount_in_with_fee)
-     *
-     * Using __uint128_t to prevent overflow with large reserves
-     */
-    __uint128_t in_with_fee = (__uint128_t)amount_in * (RAYDIUM_FEE_DENOMINATOR - RAYDIUM_FEE_NUMERATOR);
-    __uint128_t numerator   = (__uint128_t)reserve_out * in_with_fee;
-    __uint128_t denominator = (__uint128_t)reserve_in * RAYDIUM_FEE_DENOMINATOR + in_with_fee;
-
-    if (denominator == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Division by zero in quote calculation");
-        return -1;
-    }
-
-    uint64_t amount_out = (uint64_t)(numerator / denominator);
-    uint64_t fee_amount = (amount_in * RAYDIUM_FEE_NUMERATOR) / RAYDIUM_FEE_DENOMINATOR;
-
-    /* Price impact */
-    double reserve_ratio = (double)reserve_out / (double)reserve_in;
-    double ideal_out = (double)amount_in * reserve_ratio;
-    double price_impact = 0.0;
-    if (ideal_out > 0) {
-        price_impact = ((ideal_out - (double)amount_out) / ideal_out) * 100.0;
-    }
-
-    /* Spot price (1 from_token = X to_token), adjusted for decimals */
-    double in_divisor = 1.0, out_divisor = 1.0;
-    for (int i = 0; i < in_decimals; i++) in_divisor *= 10.0;
-    for (int i = 0; i < out_decimals; i++) out_divisor *= 10.0;
-    double price = ((double)reserve_out / out_divisor) / ((double)reserve_in / in_divisor);
-
-    /* Fill result */
-    strncpy(quote_out->from_token, from_token, sizeof(quote_out->from_token) - 1);
-    strncpy(quote_out->to_token, to_token, sizeof(quote_out->to_token) - 1);
-    strncpy(quote_out->amount_in, amount_in_str, sizeof(quote_out->amount_in) - 1);
-    strncpy(quote_out->pool_address, pool->pool_address, sizeof(quote_out->pool_address) - 1);
-    quote_out->from_decimals = in_decimals;
-    quote_out->to_decimals = out_decimals;
-
-    format_amount(amount_out, out_decimals, quote_out->amount_out, sizeof(quote_out->amount_out));
-    format_amount(fee_amount, in_decimals, quote_out->fee, sizeof(quote_out->fee));
-    snprintf(quote_out->price, sizeof(quote_out->price), "%.6f", price);
-    snprintf(quote_out->price_impact, sizeof(quote_out->price_impact), "%.2f", price_impact);
-
-    QGP_LOG_INFO(LOG_TAG, "Quote: %s %s -> %s %s (impact: %s%%, fee: %s)",
-                 amount_in_str, from_token,
-                 quote_out->amount_out, to_token,
-                 quote_out->price_impact, quote_out->fee);
-
+    *count_out = 1;
     return 0;
 }
 
 int sol_dex_list_pairs(char ***pairs_out, int *count_out) {
     if (!pairs_out || !count_out) return -1;
 
-    int total = NUM_KNOWN_POOLS * 2;
-    char **pairs = calloc(total, sizeof(char *));
+    int total = NUM_KNOWN_PAIRS * 2;  /* Both directions */
+    char **pairs = calloc((size_t)total, sizeof(char *));
     if (!pairs) return -1;
 
     int idx = 0;
-    for (size_t i = 0; i < NUM_KNOWN_POOLS; i++) {
+    for (size_t i = 0; i < NUM_KNOWN_PAIRS; i++) {
         pairs[idx] = malloc(32);
         if (pairs[idx]) {
-            snprintf(pairs[idx], 32, "%s/%s", known_pools[i].token_a, known_pools[i].token_b);
+            snprintf(pairs[idx], 32, "%s/%s", known_pairs[i][0], known_pairs[i][1]);
         }
         idx++;
 
         pairs[idx] = malloc(32);
         if (pairs[idx]) {
-            snprintf(pairs[idx], 32, "%s/%s", known_pools[i].token_b, known_pools[i].token_a);
+            snprintf(pairs[idx], 32, "%s/%s", known_pairs[i][1], known_pairs[i][0]);
         }
         idx++;
     }

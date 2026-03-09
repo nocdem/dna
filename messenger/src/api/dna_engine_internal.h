@@ -399,6 +399,7 @@ typedef union {
         char from_token[16];
         char to_token[16];
         char amount_in[64];
+        char dex_filter[32];    /* "" = all DEXes, e.g. "uniswap-v3" */
     } dex_quote;
 
 } dna_task_params_t;

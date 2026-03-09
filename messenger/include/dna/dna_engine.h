@@ -2155,15 +2155,20 @@ typedef struct {
     char price_impact[16];      /* Price impact percentage */
     char fee[64];               /* Fee in input token */
     char pool_address[48];      /* Pool address used */
+    char dex_name[32];          /* DEX name (e.g. "Raydium AMM v4", "Uniswap v2") */
+    char chain[8];              /* Chain identifier ("SOL", "ETH") */
 } dna_dex_quote_t;
 
 /**
  * DEX quote callback
+ *
+ * Returns an array of quotes from all matching DEXes (or filtered by dex_filter).
  */
 typedef void (*dna_dex_quote_cb)(
     dna_request_id_t request_id,
     int error,
-    const dna_dex_quote_t *quote,
+    const dna_dex_quote_t *quotes,
+    int count,
     void *user_data
 );
 
@@ -2179,17 +2184,17 @@ typedef void (*dna_dex_pairs_cb)(
 );
 
 /**
- * Get DEX swap quote
+ * Get DEX swap quotes
  *
- * Fetches on-chain pool reserves and calculates output amount
- * using constant product AMM formula. Currently supports Solana
- * (Raydium v4 CPMM pools).
+ * Fetches on-chain quotes from all matching DEXes and returns them all.
+ * If dex_filter is set, only quotes from that DEX are returned.
  *
  * @param engine       Engine instance
  * @param from_token   Input token symbol (e.g., "SOL")
  * @param to_token     Output token symbol (e.g., "USDT")
  * @param amount_in    Input amount as decimal string (e.g., "1.5")
- * @param callback     Called with quote result
+ * @param dex_filter   DEX name filter (NULL=all, e.g. "uniswap-v3", "raydium")
+ * @param callback     Called with array of quote results
  * @param user_data    User data for callback
  * @return             Request ID (0 on immediate error)
  */
@@ -2198,6 +2203,7 @@ DNA_API dna_request_id_t dna_engine_dex_quote(
     const char *from_token,
     const char *to_token,
     const char *amount_in,
+    const char *dex_filter,
     dna_dex_quote_cb callback,
     void *user_data
 );

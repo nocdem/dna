@@ -1068,53 +1068,76 @@ void dna_handle_dex_quote(dna_engine_t *engine, dna_task_t *task) {
     const char *from_token = task->params.dex_quote.from_token;
     const char *to_token   = task->params.dex_quote.to_token;
     const char *amount_in  = task->params.dex_quote.amount_in;
+    const char *dex_filter = task->params.dex_quote.dex_filter[0]
+                           ? task->params.dex_quote.dex_filter : NULL;
 
     const char *chain = detect_dex_chain(from_token, to_token);
-    int rc = -2;
-    dna_dex_quote_t quote = {0};
 
-    /* Try Solana DEX (Raydium AMM v4) */
+    /* Collect quotes from all chains into a single array */
+    dna_dex_quote_t all_quotes[16];
+    int total = 0;
+
+    /* Solana DEX quotes */
     if (!chain || strcmp(chain, "SOL") == 0) {
-        sol_dex_quote_t sol_quote = {0};
-        rc = sol_dex_get_quote(from_token, to_token, amount_in, &sol_quote);
+        sol_dex_quote_t sol_quotes[8];
+        int sol_count = 0;
+        int rc = sol_dex_get_quotes(from_token, to_token, amount_in,
+                                     dex_filter, sol_quotes, 8, &sol_count);
         if (rc == 0) {
-            strncpy(quote.from_token, sol_quote.from_token, sizeof(quote.from_token) - 1);
-            strncpy(quote.to_token, sol_quote.to_token, sizeof(quote.to_token) - 1);
-            strncpy(quote.amount_in, sol_quote.amount_in, sizeof(quote.amount_in) - 1);
-            strncpy(quote.amount_out, sol_quote.amount_out, sizeof(quote.amount_out) - 1);
-            strncpy(quote.price, sol_quote.price, sizeof(quote.price) - 1);
-            strncpy(quote.price_impact, sol_quote.price_impact, sizeof(quote.price_impact) - 1);
-            strncpy(quote.fee, sol_quote.fee, sizeof(quote.fee) - 1);
-            strncpy(quote.pool_address, sol_quote.pool_address, sizeof(quote.pool_address) - 1);
+            for (int i = 0; i < sol_count && total < 16; i++) {
+                dna_dex_quote_t *q = &all_quotes[total];
+                memset(q, 0, sizeof(*q));
+                strncpy(q->from_token, sol_quotes[i].from_token, sizeof(q->from_token) - 1);
+                strncpy(q->to_token, sol_quotes[i].to_token, sizeof(q->to_token) - 1);
+                strncpy(q->amount_in, sol_quotes[i].amount_in, sizeof(q->amount_in) - 1);
+                strncpy(q->amount_out, sol_quotes[i].amount_out, sizeof(q->amount_out) - 1);
+                strncpy(q->price, sol_quotes[i].price, sizeof(q->price) - 1);
+                strncpy(q->price_impact, sol_quotes[i].price_impact, sizeof(q->price_impact) - 1);
+                strncpy(q->fee, sol_quotes[i].fee, sizeof(q->fee) - 1);
+                strncpy(q->pool_address, sol_quotes[i].pool_address, sizeof(q->pool_address) - 1);
+                strncpy(q->dex_name, sol_quotes[i].dex_name, sizeof(q->dex_name) - 1);
+                strncpy(q->chain, "SOL", sizeof(q->chain) - 1);
+                total++;
+            }
         }
     }
 
-    /* Try Ethereum DEX (Uniswap v2) if SOL didn't match or wasn't tried */
-    if (rc != 0 && (!chain || strcmp(chain, "ETH") == 0)) {
-        eth_dex_quote_t eth_quote = {0};
-        rc = eth_dex_get_quote(from_token, to_token, amount_in, &eth_quote);
+    /* Ethereum DEX quotes */
+    if (!chain || strcmp(chain, "ETH") == 0) {
+        eth_dex_quote_t eth_quotes[8];
+        int eth_count = 0;
+        int rc = eth_dex_get_quotes(from_token, to_token, amount_in,
+                                     dex_filter, eth_quotes, 8, &eth_count);
         if (rc == 0) {
-            strncpy(quote.from_token, eth_quote.from_token, sizeof(quote.from_token) - 1);
-            strncpy(quote.to_token, eth_quote.to_token, sizeof(quote.to_token) - 1);
-            strncpy(quote.amount_in, eth_quote.amount_in, sizeof(quote.amount_in) - 1);
-            strncpy(quote.amount_out, eth_quote.amount_out, sizeof(quote.amount_out) - 1);
-            strncpy(quote.price, eth_quote.price, sizeof(quote.price) - 1);
-            strncpy(quote.price_impact, eth_quote.price_impact, sizeof(quote.price_impact) - 1);
-            strncpy(quote.fee, eth_quote.fee, sizeof(quote.fee) - 1);
-            strncpy(quote.pool_address, eth_quote.pool_address, sizeof(quote.pool_address) - 1);
+            for (int i = 0; i < eth_count && total < 16; i++) {
+                dna_dex_quote_t *q = &all_quotes[total];
+                memset(q, 0, sizeof(*q));
+                strncpy(q->from_token, eth_quotes[i].from_token, sizeof(q->from_token) - 1);
+                strncpy(q->to_token, eth_quotes[i].to_token, sizeof(q->to_token) - 1);
+                strncpy(q->amount_in, eth_quotes[i].amount_in, sizeof(q->amount_in) - 1);
+                strncpy(q->amount_out, eth_quotes[i].amount_out, sizeof(q->amount_out) - 1);
+                strncpy(q->price, eth_quotes[i].price, sizeof(q->price) - 1);
+                strncpy(q->price_impact, eth_quotes[i].price_impact, sizeof(q->price_impact) - 1);
+                strncpy(q->fee, eth_quotes[i].fee, sizeof(q->fee) - 1);
+                strncpy(q->pool_address, eth_quotes[i].pool_address, sizeof(q->pool_address) - 1);
+                strncpy(q->dex_name, eth_quotes[i].dex_name, sizeof(q->dex_name) - 1);
+                strncpy(q->chain, "ETH", sizeof(q->chain) - 1);
+                total++;
+            }
         }
     }
 
-    if (rc != 0) {
-        int error = (rc == -2) ? DNA_ENGINE_ERROR_NOT_FOUND : DNA_ENGINE_ERROR_NETWORK;
+    if (total == 0) {
         if (task->callback.dex_quote) {
-            task->callback.dex_quote(task->request_id, error, NULL, task->user_data);
+            task->callback.dex_quote(task->request_id, DNA_ENGINE_ERROR_NOT_FOUND,
+                                     NULL, 0, task->user_data);
         }
         return;
     }
 
     if (task->callback.dex_quote) {
-        task->callback.dex_quote(task->request_id, DNA_OK, &quote, task->user_data);
+        task->callback.dex_quote(task->request_id, DNA_OK, all_quotes, total,
+                                 task->user_data);
     }
 }
 
@@ -1181,6 +1204,7 @@ dna_request_id_t dna_engine_dex_quote(
     const char *from_token,
     const char *to_token,
     const char *amount_in,
+    const char *dex_filter,
     dna_dex_quote_cb callback,
     void *user_data
 ) {
@@ -1192,6 +1216,10 @@ dna_request_id_t dna_engine_dex_quote(
     strncpy(params.dex_quote.from_token, from_token, sizeof(params.dex_quote.from_token) - 1);
     strncpy(params.dex_quote.to_token, to_token, sizeof(params.dex_quote.to_token) - 1);
     strncpy(params.dex_quote.amount_in, amount_in, sizeof(params.dex_quote.amount_in) - 1);
+    if (dex_filter && dex_filter[0]) {
+        strncpy(params.dex_quote.dex_filter, dex_filter,
+                sizeof(params.dex_quote.dex_filter) - 1);
+    }
 
     dna_task_callback_t cb = { .dex_quote = callback };
     return dna_submit_task(engine, TASK_DEX_QUOTE, &params, cb, user_data);

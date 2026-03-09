@@ -1,12 +1,20 @@
+#define _GNU_SOURCE
 /**
  * @file eth_dex.c
- * @brief Ethereum DEX Quote Implementation (Uniswap v2)
+ * @brief Ethereum DEX Quote Implementation (Uniswap v2/v3 + PancakeSwap v2/v3)
  *
- * Fetches on-chain reserves from Uniswap v2 pair contracts via eth_call,
- * then calculates swap output using constant product formula.
+ * Fetches on-chain quotes from Uniswap v2 and v3:
  *
- * Uniswap v2 fee: 0.3% (997/1000)
- * Formula: amount_out = (reserve_out * amount_in * 997) / (reserve_in * 1000 + amount_in * 997)
+ * V2: getReserves() + constant product formula
+ *     Fee: 0.3% (997/1000)
+ *     Formula: out = (R_out * in * 997) / (R_in * 1000 + in * 997)
+ *
+ * V3: QuoterV2.quoteExactInputSingle() — on-chain swap simulation
+ *     Fee: per-pool (0.05%, 0.3%, 1%)
+ *     The contract simulates tick traversal and returns exact amountOut.
+ *
+ * When both V2 and V3 pools exist for a pair, V3 is tried first
+ * (better prices due to concentrated liquidity), V2 as fallback.
  *
  * @author DNA Messenger Team
  * @date 2026-03-09
@@ -30,48 +38,150 @@
 #define LOG_TAG "ETH_DEX"
 
 /* ============================================================================
- * KNOWN UNISWAP V2 PAIRS
- * ============================================================================
- * token0/token1 are sorted by address (Uniswap v2 convention).
- * getReserves() returns (reserve0, reserve1, blockTimestampLast).
+ * TOKEN ADDRESSES (Ethereum mainnet, without 0x prefix)
  * ============================================================================ */
+
+#define WETH_ADDRESS "C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+#define USDC_ADDRESS "A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+#define USDT_ADDRESS "dAC17F958D2ee523a2206206994597C13D831ec7"
+
+/* Uniswap v3 QuoterV2 contract */
+#define UNI_QUOTER_V2_ADDRESS "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
+
+/* PancakeSwap v3 QuoterV2 contract (on Ethereum mainnet) */
+#define CAKE_QUOTER_V2_ADDRESS "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997"
+
+/* quoteExactInputSingle((address,address,uint256,uint24,uint160)) — same ABI for both */
+#define QUOTER_V2_SELECTOR "c6a5026a"
+
+/* ============================================================================
+ * KNOWN DEX PAIRS
+ * ============================================================================
+ * V3 pairs listed FIRST — they are tried before V2 (better prices).
+ *
+ * Token ordering (Uniswap convention, sorted by address):
+ *   USDC (0xA0b8) < WETH (0xC02a) < USDT (0xdAC1)
+ *
+ * a_is_token0: true if token_a's contract address < token_b's contract address
+ *              (only matters for V2 getReserves interpretation)
+ * ============================================================================ */
+
+typedef enum {
+    DEX_UNISWAP_V2,
+    DEX_UNISWAP_V3,
+    DEX_PANCAKE_V2,
+    DEX_PANCAKE_V3
+} eth_dex_type_t;
 
 typedef struct {
     const char *token_a;        /* First token symbol (user-facing) */
     const char *token_b;        /* Second token symbol (user-facing) */
-    const char *pair_address;   /* Uniswap v2 pair contract */
-    uint8_t decimals_a;         /* token_a decimals */
-    uint8_t decimals_b;         /* token_b decimals */
-    bool a_is_token0;           /* true if token_a is the lower address (token0) */
-} uniswap_pair_t;
+    const char *pool_address;   /* V2: pair contract, V3: pool contract */
+    const char *addr_a;         /* token_a contract address (no 0x prefix) */
+    const char *addr_b;         /* token_b contract address (no 0x prefix) */
+    uint8_t decimals_a;
+    uint8_t decimals_b;
+    bool a_is_token0;           /* V2: needed for reserve ordering */
+    eth_dex_type_t dex_type;
+    uint32_t fee_tier;          /* V3: 500=0.05%, 3000=0.3%, 10000=1%. V2: fee in bps */
+    uint32_t fee_numerator;     /* V2 CPMM: multiply by this (e.g. 997 for 0.3%, 9975 for 0.25%) */
+    uint32_t fee_denominator;   /* V2 CPMM: divide by this (e.g. 1000 or 10000) */
+    const char *quoter_address; /* V3: QuoterV2 contract address (NULL for V2) */
+    const char *dex_name;
+} eth_dex_pair_t;
 
-/*
- * WETH: 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2
- * USDC: 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48  (6 decimals)
- * USDT: 0xdAC17F958D2ee523a2206206994597C13D831ec7  (6 decimals)
- *
- * Address ordering (determines token0/token1):
- *   USDC (0xA0b8) < WETH (0xC02a) < USDT (0xdAC1)
- *
- * ETH/USDC pair: token0=USDC, token1=WETH  → a_is_token0=false (ETH is token1)
- * ETH/USDT pair: token0=WETH, token1=USDT  → a_is_token0=true  (ETH is token0)
- */
-static const uniswap_pair_t known_pairs[] = {
+static const eth_dex_pair_t known_pairs[] = {
+    /* ── Uniswap v3 ──────────────────────────────────────────────── */
     {
-        .token_a = "ETH",
-        .token_b = "USDC",
-        .pair_address = "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc",
-        .decimals_a = 18,
-        .decimals_b = 6,
-        .a_is_token0 = false,   /* USDC < WETH, so WETH(ETH) is token1 */
+        .token_a = "ETH",  .token_b = "USDC",
+        .pool_address = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+        .addr_a = WETH_ADDRESS,  .addr_b = USDC_ADDRESS,
+        .decimals_a = 18,  .decimals_b = 6,
+        .a_is_token0 = false,       /* USDC(0xA0b8) < WETH(0xC02a) */
+        .dex_type = DEX_UNISWAP_V3, .fee_tier = 500,
+        .fee_numerator = 0, .fee_denominator = 0,
+        .quoter_address = UNI_QUOTER_V2_ADDRESS,
+        .dex_name = "Uniswap v3",
     },
     {
-        .token_a = "ETH",
-        .token_b = "USDT",
-        .pair_address = "0x0d4a11d5EEaaC28EC3F61d100daF4d40471f1852",
-        .decimals_a = 18,
-        .decimals_b = 6,
-        .a_is_token0 = true,    /* WETH < USDT, so WETH(ETH) is token0 */
+        .token_a = "ETH",  .token_b = "USDT",
+        .pool_address = "0x4e68Ccd3E89f51C3074ca5072bbAC773960dFa36",
+        .addr_a = WETH_ADDRESS,  .addr_b = USDT_ADDRESS,
+        .decimals_a = 18,  .decimals_b = 6,
+        .a_is_token0 = true,        /* WETH(0xC02a) < USDT(0xdAC1) */
+        .dex_type = DEX_UNISWAP_V3, .fee_tier = 3000,
+        .fee_numerator = 0, .fee_denominator = 0,
+        .quoter_address = UNI_QUOTER_V2_ADDRESS,
+        .dex_name = "Uniswap v3",
+    },
+    /* ── PancakeSwap v3 ──────────────────────────────────────────── */
+    {
+        .token_a = "ETH",  .token_b = "USDC",
+        .pool_address = "0x1ac1A8FEaAEa1900C4166dEeed0C11cC10669D36",
+        .addr_a = WETH_ADDRESS,  .addr_b = USDC_ADDRESS,
+        .decimals_a = 18,  .decimals_b = 6,
+        .a_is_token0 = false,
+        .dex_type = DEX_PANCAKE_V3, .fee_tier = 500,
+        .fee_numerator = 0, .fee_denominator = 0,
+        .quoter_address = CAKE_QUOTER_V2_ADDRESS,
+        .dex_name = "PancakeSwap v3",
+    },
+    {
+        .token_a = "ETH",  .token_b = "USDT",
+        .pool_address = "0x6CA298D2983aB03Aa1da7679389D955A4eFEE15C",
+        .addr_a = WETH_ADDRESS,  .addr_b = USDT_ADDRESS,
+        .decimals_a = 18,  .decimals_b = 6,
+        .a_is_token0 = true,
+        .dex_type = DEX_PANCAKE_V3, .fee_tier = 500,
+        .fee_numerator = 0, .fee_denominator = 0,
+        .quoter_address = CAKE_QUOTER_V2_ADDRESS,
+        .dex_name = "PancakeSwap v3",
+    },
+    /* ── Uniswap v2 ──────────────────────────────────────────────── */
+    {
+        .token_a = "ETH",  .token_b = "USDC",
+        .pool_address = "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc",
+        .addr_a = WETH_ADDRESS,  .addr_b = USDC_ADDRESS,
+        .decimals_a = 18,  .decimals_b = 6,
+        .a_is_token0 = false,
+        .dex_type = DEX_UNISWAP_V2, .fee_tier = 3000,
+        .fee_numerator = 997, .fee_denominator = 1000,
+        .quoter_address = NULL,
+        .dex_name = "Uniswap v2",
+    },
+    {
+        .token_a = "ETH",  .token_b = "USDT",
+        .pool_address = "0x0d4a11d5EEaaC28EC3F61d100daF4d40471f1852",
+        .addr_a = WETH_ADDRESS,  .addr_b = USDT_ADDRESS,
+        .decimals_a = 18,  .decimals_b = 6,
+        .a_is_token0 = true,
+        .dex_type = DEX_UNISWAP_V2, .fee_tier = 3000,
+        .fee_numerator = 997, .fee_denominator = 1000,
+        .quoter_address = NULL,
+        .dex_name = "Uniswap v2",
+    },
+    /* ── PancakeSwap v2 ──────────────────────────────────────────── */
+    {
+        .token_a = "ETH",  .token_b = "USDC",
+        .pool_address = "0x2E8135bE71230c6B1B4045696d41C09Db0414226",
+        .addr_a = WETH_ADDRESS,  .addr_b = USDC_ADDRESS,
+        .decimals_a = 18,  .decimals_b = 6,
+        .a_is_token0 = false,
+        .dex_type = DEX_PANCAKE_V2, .fee_tier = 2500,
+        .fee_numerator = 9975, .fee_denominator = 10000,
+        .quoter_address = NULL,
+        .dex_name = "PancakeSwap v2",
+    },
+    {
+        .token_a = "ETH",  .token_b = "USDT",
+        .pool_address = "0x17c1Ae82D99379240059940093762c5e4539aba5",
+        .addr_a = WETH_ADDRESS,  .addr_b = USDT_ADDRESS,
+        .decimals_a = 18,  .decimals_b = 6,
+        .a_is_token0 = true,
+        .dex_type = DEX_PANCAKE_V2, .fee_tier = 2500,
+        .fee_numerator = 9975, .fee_denominator = 10000,
+        .quoter_address = NULL,
+        .dex_name = "PancakeSwap v2",
     },
 };
 
@@ -81,7 +191,6 @@ static const uniswap_pair_t known_pairs[] = {
  * RPC HELPERS (with fallback)
  * ============================================================================ */
 
-/* Endpoint array matching eth_wallet.h defines */
 static const char *g_eth_dex_endpoints[] = {
     ETH_RPC_ENDPOINT_DEFAULT,
     ETH_RPC_ENDPOINT_FALLBACK1,
@@ -110,7 +219,8 @@ static size_t dex_write_callback(void *contents, size_t size, size_t nmemb, void
 }
 
 /**
- * Make eth_call to a contract on a single endpoint
+ * Make eth_call to a contract on a single endpoint.
+ * data can be up to ~400 chars for QuoterV2 calls.
  * Returns: 0=success, -1=network error (retry), -2=RPC error (don't retry)
  */
 static int eth_dex_call_single(const char *endpoint, const char *to,
@@ -119,7 +229,7 @@ static int eth_dex_call_single(const char *endpoint, const char *to,
     if (!curl) return -1;
 
     /* Build JSON-RPC request for eth_call */
-    char body[512];
+    char body[1024];
     snprintf(body, sizeof(body),
         "{\"jsonrpc\":\"2.0\",\"method\":\"eth_call\","
         "\"params\":[{\"to\":\"%s\",\"data\":\"%s\"},\"latest\"],\"id\":1}",
@@ -134,7 +244,7 @@ static int eth_dex_call_single(const char *endpoint, const char *to,
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, dex_write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
 
     const char *ca_bundle = qgp_platform_ca_bundle_path();
     if (ca_bundle) {
@@ -194,9 +304,7 @@ static int eth_dex_call_single(const char *endpoint, const char *to,
     return 0;
 }
 
-/**
- * eth_call with fallback across all endpoints
- */
+/** eth_call with fallback across all endpoints */
 static int eth_dex_call(const char *to, const char *data,
                         char *result_hex, size_t result_size) {
     int start_idx = g_eth_dex_current_idx;
@@ -213,7 +321,7 @@ static int eth_dex_call(const char *to, const char *data,
             }
             return 0;
         }
-        if (rc == -2) return -1;  /* RPC error — don't retry */
+        if (rc == -2) return -1;
 
         QGP_LOG_WARN(LOG_TAG, "Endpoint failed: %s, trying next...", endpoint);
     }
@@ -223,15 +331,11 @@ static int eth_dex_call(const char *to, const char *data,
 }
 
 /* ============================================================================
- * RESERVES PARSING + CPMM MATH
+ * MATH HELPERS
  * ============================================================================ */
 
-/**
- * Parse a uint256 from a 64-char hex slice into __uint128_t
- * Only parses the lower 128 bits (sufficient for reserves)
- */
+/** Parse a uint256 from a 64-char hex slice into __uint128_t */
 static __uint128_t parse_uint256_lower128(const char *hex64) {
-    /* Skip leading zeros, parse from the right (lower 32 hex chars = 128 bits) */
     __uint128_t val = 0;
     for (int i = 0; i < 64; i++) {
         char c = hex64[i];
@@ -245,10 +349,7 @@ static __uint128_t parse_uint256_lower128(const char *hex64) {
     return val;
 }
 
-/**
- * Parse decimal string to __uint128_t with given decimals
- * "1.5" with 18 decimals → 1500000000000000000
- */
+/** Parse decimal string to raw amount with given decimals */
 static __uint128_t parse_decimal_to_raw(const char *amount, uint8_t decimals) {
     __uint128_t whole = 0;
     __uint128_t frac = 0;
@@ -256,10 +357,7 @@ static __uint128_t parse_decimal_to_raw(const char *amount, uint8_t decimals) {
     bool in_frac = false;
 
     for (const char *p = amount; *p; p++) {
-        if (*p == '.') {
-            in_frac = true;
-            continue;
-        }
+        if (*p == '.') { in_frac = true; continue; }
         if (*p < '0' || *p > '9') break;
         if (!in_frac) {
             whole = whole * 10 + (uint8_t)(*p - '0');
@@ -269,20 +367,15 @@ static __uint128_t parse_decimal_to_raw(const char *amount, uint8_t decimals) {
         }
     }
 
-    /* Scale whole part */
     __uint128_t scale = 1;
     for (int i = 0; i < decimals; i++) scale *= 10;
-
-    /* Scale fractional part to fill remaining decimal places */
     __uint128_t frac_scale = 1;
     for (int i = 0; i < (decimals - frac_digits); i++) frac_scale *= 10;
 
     return whole * scale + frac * frac_scale;
 }
 
-/**
- * Format raw amount to decimal string
- */
+/** Format raw amount to decimal string */
 static void format_raw_to_decimal(char *buf, size_t buf_size, __uint128_t raw, uint8_t decimals) {
     __uint128_t scale = 1;
     for (int i = 0; i < decimals; i++) scale *= 10;
@@ -290,35 +383,23 @@ static void format_raw_to_decimal(char *buf, size_t buf_size, __uint128_t raw, u
     __uint128_t whole = raw / scale;
     __uint128_t frac  = raw % scale;
 
-    /* Convert whole to string */
     char whole_str[42] = "0";
     if (whole > 0) {
         char tmp[42];
         int pos = 0;
         __uint128_t v = whole;
-        while (v > 0) {
-            tmp[pos++] = '0' + (char)(v % 10);
-            v /= 10;
-        }
+        while (v > 0) { tmp[pos++] = '0' + (char)(v % 10); v /= 10; }
         for (int i = 0; i < pos; i++) whole_str[i] = tmp[pos - 1 - i];
         whole_str[pos] = '\0';
     }
 
-    /* Convert frac to zero-padded string */
     char frac_str[42];
     {
         char tmp[42];
         int pos = 0;
         __uint128_t v = frac;
-        if (v == 0) {
-            tmp[pos++] = '0';
-        } else {
-            while (v > 0) {
-                tmp[pos++] = '0' + (char)(v % 10);
-                v /= 10;
-            }
-        }
-        /* Zero-pad to 'decimals' digits */
+        if (v == 0) { tmp[pos++] = '0'; }
+        else { while (v > 0) { tmp[pos++] = '0' + (char)(v % 10); v /= 10; } }
         int pad = decimals - pos;
         int j = 0;
         for (int i = 0; i < pad; i++) frac_str[j++] = '0';
@@ -326,7 +407,6 @@ static void format_raw_to_decimal(char *buf, size_t buf_size, __uint128_t raw, u
         frac_str[j] = '\0';
     }
 
-    /* Trim trailing zeros from frac (keep at least 2) */
     int frac_len = (int)strlen(frac_str);
     while (frac_len > 2 && frac_str[frac_len - 1] == '0') {
         frac_str[--frac_len] = '\0';
@@ -335,198 +415,347 @@ static void format_raw_to_decimal(char *buf, size_t buf_size, __uint128_t raw, u
     snprintf(buf, buf_size, "%s.%s", whole_str, frac_str);
 }
 
-/* ============================================================================
- * PAIR LOOKUP
- * ============================================================================ */
-
-static int find_pair(const char *from_token, const char *to_token, bool *reversed) {
-    for (size_t i = 0; i < NUM_KNOWN_PAIRS; i++) {
-        if (strcasecmp(known_pairs[i].token_a, from_token) == 0 &&
-            strcasecmp(known_pairs[i].token_b, to_token) == 0) {
-            *reversed = false;
-            return (int)i;
-        }
-        if (strcasecmp(known_pairs[i].token_b, from_token) == 0 &&
-            strcasecmp(known_pairs[i].token_a, to_token) == 0) {
-            *reversed = true;
-            return (int)i;
-        }
+/** Format __uint128_t as 64-char zero-padded hex (for ABI encoding) */
+static void uint128_to_hex64(char *out, __uint128_t val) {
+    static const char hex_chars[] = "0123456789abcdef";
+    for (int i = 63; i >= 0; i--) {
+        out[i] = hex_chars[val & 0xF];
+        val >>= 4;
     }
-    return -1;
+    out[64] = '\0';
 }
 
 /* ============================================================================
- * PUBLIC API
+ * UNISWAP V2 QUOTE (getReserves + CPMM)
  * ============================================================================ */
 
-int eth_dex_get_quote(
-    const char *from_token,
-    const char *to_token,
-    const char *amount_in,
-    eth_dex_quote_t *quote_out
-) {
-    if (!from_token || !to_token || !amount_in || !quote_out) return -1;
-
-    bool reversed = false;
-    int pair_idx = find_pair(from_token, to_token, &reversed);
-    if (pair_idx < 0) {
-        QGP_LOG_WARN(LOG_TAG, "No Uniswap v2 pair for %s/%s", from_token, to_token);
-        return -2;
-    }
-
-    const uniswap_pair_t *pair = &known_pairs[pair_idx];
-
-    /* Determine decimals for from/to */
+static int eth_dex_quote_v2(const eth_dex_pair_t *pair, bool reversed,
+                            const char *amount_in, eth_dex_quote_t *quote_out) {
     uint8_t from_dec = reversed ? pair->decimals_b : pair->decimals_a;
     uint8_t to_dec   = reversed ? pair->decimals_a : pair->decimals_b;
 
-    /* Step 1: Call getReserves() on pair contract
-     * Selector: 0x0902f1ac (no arguments) */
+    /* getReserves() — selector 0x0902f1ac */
     char result_hex[256] = {0};
-    int rc = eth_dex_call(pair->pair_address, "0x0902f1ac", result_hex, sizeof(result_hex));
-    if (rc != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to fetch reserves for %s", pair->pair_address);
-        return -1;
-    }
+    int rc = eth_dex_call(pair->pool_address, "0x0902f1ac", result_hex, sizeof(result_hex));
+    if (rc != 0) return -1;
 
-    /* Response: 0x + 64 hex (reserve0) + 64 hex (reserve1) + 64 hex (blockTimestampLast)
-     * Total: 2 + 192 = 194 chars minimum */
     const char *hex = result_hex;
     if (hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X')) hex += 2;
-
-    if (strlen(hex) < 128) {  /* Need at least reserve0 + reserve1 */
-        QGP_LOG_ERROR(LOG_TAG, "Response too short: %zu chars", strlen(hex));
-        return -1;
-    }
+    if (strlen(hex) < 128) return -1;
 
     __uint128_t reserve0 = parse_uint256_lower128(hex);
     __uint128_t reserve1 = parse_uint256_lower128(hex + 64);
+    if (reserve0 == 0 || reserve1 == 0) return -1;
 
-    QGP_LOG_DEBUG(LOG_TAG, "Reserves fetched for %s/%s", pair->token_a, pair->token_b);
-
-    if (reserve0 == 0 || reserve1 == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Zero reserves in pool %s", pair->pair_address);
-        return -1;
-    }
-
-    /* Step 2: Determine which reserve is input/output
-     * If !reversed: from=token_a, to=token_b
-     *   if a_is_token0: reserve_in=reserve0, reserve_out=reserve1
-     *   else:           reserve_in=reserve1, reserve_out=reserve0
-     * If reversed: from=token_b, to=token_a — swap input/output */
+    /* Map reserves to input/output based on token ordering */
     __uint128_t reserve_in, reserve_out;
     if (!reversed) {
-        if (pair->a_is_token0) {
-            reserve_in  = reserve0;
-            reserve_out = reserve1;
-        } else {
-            reserve_in  = reserve1;
-            reserve_out = reserve0;
-        }
+        reserve_in  = pair->a_is_token0 ? reserve0 : reserve1;
+        reserve_out = pair->a_is_token0 ? reserve1 : reserve0;
     } else {
-        if (pair->a_is_token0) {
-            reserve_in  = reserve1;
-            reserve_out = reserve0;
-        } else {
-            reserve_in  = reserve0;
-            reserve_out = reserve1;
-        }
+        reserve_in  = pair->a_is_token0 ? reserve1 : reserve0;
+        reserve_out = pair->a_is_token0 ? reserve0 : reserve1;
     }
 
-    /* Step 3: Parse input amount */
     __uint128_t raw_in = parse_decimal_to_raw(amount_in, from_dec);
-    if (raw_in == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid input amount: %s", amount_in);
-        return -1;
-    }
+    if (raw_in == 0) return -1;
 
-    /* Step 4: CPMM formula — Uniswap v2 fee is 0.3% (997/1000)
-     * amount_out = (reserve_out * amount_in_with_fee) / (reserve_in * 1000 + amount_in_with_fee)
-     * where amount_in_with_fee = amount_in * 997 */
-    __uint128_t in_with_fee = raw_in * 997;
+    /* CPMM: out = (R_out * in * fee_num) / (R_in * fee_den + in * fee_num)
+     * Uniswap v2:    fee_num=997,  fee_den=1000  (0.3% fee)
+     * PancakeSwap v2: fee_num=9975, fee_den=10000 (0.25% fee)
+     */
+    uint32_t fee_num = pair->fee_numerator;
+    uint32_t fee_den = pair->fee_denominator;
+    __uint128_t in_with_fee = raw_in * fee_num;
     __uint128_t numerator   = reserve_out * in_with_fee;
-    __uint128_t denominator = reserve_in * 1000 + in_with_fee;
-
-    if (denominator == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Denominator overflow/zero");
-        return -1;
-    }
+    __uint128_t denominator = reserve_in * fee_den + in_with_fee;
+    if (denominator == 0) return -1;
 
     __uint128_t raw_out = numerator / denominator;
 
-    /* Step 5: Calculate price impact
-     * Spot price = reserve_out / reserve_in (adjusted for decimals)
-     * Execution price = raw_out / raw_in (adjusted for decimals)
-     * Impact = (spot - execution) / spot * 100 */
-    double spot_price = ((double)reserve_out / (double)reserve_in);
-    double exec_price = ((double)raw_out / (double)raw_in);
-    /* Adjust for decimal difference */
-    /* spot and exec use raw amounts, so decimal difference is already encoded */
+    /* Price impact */
+    double spot_price = (double)reserve_out / (double)reserve_in;
+    double exec_price = (double)raw_out / (double)raw_in;
     double impact_pct = 0.0;
     if (spot_price > 0.0) {
         impact_pct = (1.0 - exec_price / spot_price) * 100.0;
         if (impact_pct < 0.0) impact_pct = 0.0;
     }
 
-    /* Step 6: Calculate fee in input token terms */
-    __uint128_t fee_raw = raw_in * 3 / 1000;  /* 0.3% */
+    /* Fee = amount_in * (1 - fee_num/fee_den) */
+    __uint128_t fee_raw = raw_in * (fee_den - fee_num) / fee_den;
 
-    /* Step 7: Calculate unit price (1 from_token = X to_token) */
-    __uint128_t one_unit_in = 1;
-    for (int i = 0; i < from_dec; i++) one_unit_in *= 10;
-    __uint128_t one_in_fee = one_unit_in * 997;
-    __uint128_t one_num = reserve_out * one_in_fee;
-    __uint128_t one_den = reserve_in * 1000 + one_in_fee;
+    /* Unit price */
+    __uint128_t one_unit = 1;
+    for (int i = 0; i < from_dec; i++) one_unit *= 10;
+    __uint128_t one_fee = one_unit * fee_num;
+    __uint128_t one_num = reserve_out * one_fee;
+    __uint128_t one_den = reserve_in * fee_den + one_fee;
     __uint128_t one_out = (one_den > 0) ? one_num / one_den : 0;
 
-    /* Step 8: Fill output struct */
+    /* Fill output */
     memset(quote_out, 0, sizeof(*quote_out));
-    strncpy(quote_out->from_token, from_token, sizeof(quote_out->from_token) - 1);
-    strncpy(quote_out->to_token, to_token, sizeof(quote_out->to_token) - 1);
+    strncpy(quote_out->from_token, reversed ? pair->token_b : pair->token_a, sizeof(quote_out->from_token) - 1);
+    strncpy(quote_out->to_token, reversed ? pair->token_a : pair->token_b, sizeof(quote_out->to_token) - 1);
     strncpy(quote_out->amount_in, amount_in, sizeof(quote_out->amount_in) - 1);
-
     format_raw_to_decimal(quote_out->amount_out, sizeof(quote_out->amount_out), raw_out, to_dec);
     format_raw_to_decimal(quote_out->price, sizeof(quote_out->price), one_out, to_dec);
     format_raw_to_decimal(quote_out->fee, sizeof(quote_out->fee), fee_raw, from_dec);
-
     snprintf(quote_out->price_impact, sizeof(quote_out->price_impact), "%.4f", impact_pct);
-    snprintf(quote_out->pool_address, sizeof(quote_out->pool_address), "%s", pair->pair_address);
-
+    snprintf(quote_out->pool_address, sizeof(quote_out->pool_address), "%s", pair->pool_address);
+    strncpy(quote_out->dex_name, pair->dex_name, sizeof(quote_out->dex_name) - 1);
     quote_out->from_decimals = from_dec;
     quote_out->to_decimals = to_dec;
 
-    QGP_LOG_INFO(LOG_TAG, "Quote: %s %s → %s %s (impact: %s%%, pool: %s)",
+    return 0;
+}
+
+/* ============================================================================
+ * UNISWAP V3 QUOTE (QuoterV2)
+ * ============================================================================
+ * Calls QuoterV2.quoteExactInputSingle() to simulate the swap on-chain.
+ *
+ * ABI encoding (tuple of static types, no offset pointer):
+ *   selector:           c6a5026a                        (4 bytes)
+ *   tokenIn:            000...{20-byte addr}            (32 bytes)
+ *   tokenOut:           000...{20-byte addr}            (32 bytes)
+ *   amountIn:           {uint256}                       (32 bytes)
+ *   fee:                000...{uint24}                  (32 bytes)
+ *   sqrtPriceLimitX96:  000...0                         (32 bytes, 0=no limit)
+ *
+ * Response:
+ *   amountOut:                  (uint256, first 32 bytes)
+ *   sqrtPriceX96After:         (uint160, next 32 bytes)
+ *   initializedTicksCrossed:   (uint32,  next 32 bytes)
+ *   gasEstimate:               (uint256, next 32 bytes)
+ * ============================================================================ */
+
+static int eth_dex_quote_v3(const eth_dex_pair_t *pair, bool reversed,
+                            const char *amount_in, eth_dex_quote_t *quote_out) {
+    uint8_t from_dec = reversed ? pair->decimals_b : pair->decimals_a;
+    uint8_t to_dec   = reversed ? pair->decimals_a : pair->decimals_b;
+    const char *addr_in  = reversed ? pair->addr_b : pair->addr_a;
+    const char *addr_out = reversed ? pair->addr_a : pair->addr_b;
+
+    /* Parse input amount to raw */
+    __uint128_t raw_in = parse_decimal_to_raw(amount_in, from_dec);
+    if (raw_in == 0) return -1;
+
+    /* Build ABI-encoded call data for quoteExactInputSingle */
+    char amount_hex[65];
+    uint128_to_hex64(amount_hex, raw_in);
+
+    char fee_hex[65];
+    uint128_to_hex64(fee_hex, (__uint128_t)pair->fee_tier);
+
+    /* selector(4) + 5 params(32 each) = 164 bytes = 328 hex + "0x" = 330 chars */
+    char call_data[340];
+    snprintf(call_data, sizeof(call_data),
+        "0x" QUOTER_V2_SELECTOR
+        "000000000000000000000000%s"    /* tokenIn  (addr_in, 40 hex) */
+        "000000000000000000000000%s"    /* tokenOut (addr_out, 40 hex) */
+        "%s"                            /* amountIn (64 hex) */
+        "%s"                            /* fee      (64 hex) */
+        "0000000000000000000000000000000000000000000000000000000000000000",  /* sqrtPriceLimitX96 = 0 */
+        addr_in, addr_out, amount_hex, fee_hex);
+
+    /* Call QuoterV2 (Uniswap or PancakeSwap, same ABI) */
+    char result_hex[600] = {0};
+    int rc = eth_dex_call(pair->quoter_address, call_data, result_hex, sizeof(result_hex));
+    if (rc != 0) {
+        QGP_LOG_WARN(LOG_TAG, "V3 QuoterV2 call failed for %s/%s",
+                     pair->token_a, pair->token_b);
+        return -1;
+    }
+
+    /* Parse amountOut from first 32 bytes of response */
+    const char *hex = result_hex;
+    if (hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X')) hex += 2;
+    if (strlen(hex) < 64) {
+        QGP_LOG_ERROR(LOG_TAG, "V3 response too short: %zu", strlen(hex));
+        return -1;
+    }
+
+    __uint128_t raw_out = parse_uint256_lower128(hex);
+    if (raw_out == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "V3 returned zero amountOut");
+        return -1;
+    }
+
+    /* Fee in input token */
+    __uint128_t fee_raw = raw_in * pair->fee_tier / 1000000;
+    double fee_pct = (double)pair->fee_tier / 10000.0;  /* e.g. 500 → 0.05% */
+
+    /* Execution price = amountOut / amountIn (in raw, adjusted by caller) */
+    /* For unit price, compute what 1 unit of input gives */
+    __uint128_t one_unit = 1;
+    for (int i = 0; i < from_dec; i++) one_unit *= 10;
+
+    /* Estimate unit price from the quote ratio (avoids second RPC call) */
+    /* unit_out ≈ raw_out * one_unit / raw_in */
+    __uint128_t unit_out = 0;
+    if (raw_in > 0) {
+        /* Use double to avoid overflow in multiplication */
+        double ratio = (double)raw_out / (double)raw_in;
+        unit_out = (__uint128_t)(ratio * (double)one_unit);
+    }
+
+    /* Price impact: for V3, the fee IS the dominant cost for normal trades.
+     * True price impact from tick crossing is (fee_pct + slippage).
+     * We estimate slippage from the QuoterV2 sqrtPriceX96After if available. */
+    double impact_pct = fee_pct;  /* Minimum impact = fee */
+    if (strlen(hex) >= 128) {
+        /* sqrtPriceX96After is in bytes 32-63 of response */
+        __uint128_t sqrtAfter = parse_uint256_lower128(hex + 64);
+
+        /* Get current sqrtPriceX96 from pool slot0 */
+        char slot0_hex[512] = {0};
+        int slot0_rc = eth_dex_call(pair->pool_address, "0x3850c7bd", slot0_hex, sizeof(slot0_hex));
+        if (slot0_rc == 0) {
+            const char *s0 = slot0_hex;
+            if (s0[0] == '0' && (s0[1] == 'x' || s0[1] == 'X')) s0 += 2;
+            if (strlen(s0) >= 64) {
+                __uint128_t sqrtBefore = parse_uint256_lower128(s0);
+                if (sqrtBefore > 0 && sqrtAfter > 0) {
+                    double priceBefore = (double)sqrtBefore * (double)sqrtBefore;
+                    double priceAfter  = (double)sqrtAfter  * (double)sqrtAfter;
+                    double price_move = 0.0;
+                    if (priceBefore > 0.0) {
+                        if (priceAfter > priceBefore)
+                            price_move = (priceAfter / priceBefore - 1.0) * 100.0;
+                        else
+                            price_move = (1.0 - priceAfter / priceBefore) * 100.0;
+                    }
+                    impact_pct = fee_pct + price_move;
+                }
+            }
+        }
+    }
+
+    /* Fill output */
+    memset(quote_out, 0, sizeof(*quote_out));
+    strncpy(quote_out->from_token, reversed ? pair->token_b : pair->token_a, sizeof(quote_out->from_token) - 1);
+    strncpy(quote_out->to_token, reversed ? pair->token_a : pair->token_b, sizeof(quote_out->to_token) - 1);
+    strncpy(quote_out->amount_in, amount_in, sizeof(quote_out->amount_in) - 1);
+    format_raw_to_decimal(quote_out->amount_out, sizeof(quote_out->amount_out), raw_out, to_dec);
+    format_raw_to_decimal(quote_out->price, sizeof(quote_out->price), unit_out, to_dec);
+    format_raw_to_decimal(quote_out->fee, sizeof(quote_out->fee), fee_raw, from_dec);
+    snprintf(quote_out->price_impact, sizeof(quote_out->price_impact), "%.4f", impact_pct);
+    snprintf(quote_out->pool_address, sizeof(quote_out->pool_address), "%s", pair->pool_address);
+    strncpy(quote_out->dex_name, pair->dex_name, sizeof(quote_out->dex_name) - 1);
+    quote_out->from_decimals = from_dec;
+    quote_out->to_decimals = to_dec;
+
+    QGP_LOG_INFO(LOG_TAG, "V3 Quote: %s %s -> %s %s (fee: %.2f%%, pool: %s)",
                  quote_out->amount_in, quote_out->from_token,
                  quote_out->amount_out, quote_out->to_token,
-                 quote_out->price_impact, quote_out->pool_address);
+                 fee_pct, quote_out->pool_address);
 
     return 0;
+}
+
+/* ============================================================================
+ * PUBLIC API
+ * ============================================================================ */
+
+/**
+ * Check if a pair's DEX name matches the filter.
+ * Filter is case-insensitive partial match: "v3" matches "Uniswap v3".
+ */
+static bool dex_filter_matches(const char *dex_name, const char *filter) {
+    if (!filter || filter[0] == '\0') return true;  /* No filter = match all */
+    return strcasestr(dex_name, filter) != NULL;
+}
+
+int eth_dex_get_quotes(
+    const char *from_token,
+    const char *to_token,
+    const char *amount_in,
+    const char *dex_filter,
+    eth_dex_quote_t *quotes_out,
+    int max_quotes,
+    int *count_out
+) {
+    if (!from_token || !to_token || !amount_in || !quotes_out || !count_out) return -1;
+
+    *count_out = 0;
+    bool found_any = false;
+
+    for (size_t i = 0; i < NUM_KNOWN_PAIRS && *count_out < max_quotes; i++) {
+        bool reversed = false;
+        if (strcasecmp(known_pairs[i].token_a, from_token) == 0 &&
+            strcasecmp(known_pairs[i].token_b, to_token) == 0) {
+            reversed = false;
+        } else if (strcasecmp(known_pairs[i].token_b, from_token) == 0 &&
+                   strcasecmp(known_pairs[i].token_a, to_token) == 0) {
+            reversed = true;
+        } else {
+            continue;
+        }
+
+        const eth_dex_pair_t *pair = &known_pairs[i];
+
+        /* Apply DEX filter */
+        if (!dex_filter_matches(pair->dex_name, dex_filter)) continue;
+
+        found_any = true;
+        int rc;
+
+        if (pair->dex_type == DEX_UNISWAP_V3 || pair->dex_type == DEX_PANCAKE_V3) {
+            rc = eth_dex_quote_v3(pair, reversed, amount_in, &quotes_out[*count_out]);
+        } else {
+            rc = eth_dex_quote_v2(pair, reversed, amount_in, &quotes_out[*count_out]);
+        }
+
+        if (rc == 0) {
+            QGP_LOG_INFO(LOG_TAG, "Quote via %s: %s %s -> %s %s",
+                         pair->dex_name, amount_in, from_token,
+                         quotes_out[*count_out].amount_out, to_token);
+            (*count_out)++;
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "%s failed for %s/%s",
+                         pair->dex_name, from_token, to_token);
+        }
+    }
+
+    if (!found_any) {
+        QGP_LOG_WARN(LOG_TAG, "No ETH DEX pair for %s/%s", from_token, to_token);
+        return -2;
+    }
+
+    return (*count_out > 0) ? 0 : -1;
 }
 
 int eth_dex_list_pairs(char ***pairs_out, int *count_out) {
     if (!pairs_out || !count_out) return -1;
 
-    int total = (int)(NUM_KNOWN_PAIRS * 2);  /* Each pair generates A/B and B/A */
+    /* Count unique pairs (avoid duplicates from V2+V3 having same tokens) */
+    int total = (int)(NUM_KNOWN_PAIRS * 2);
     char **pairs = calloc((size_t)total, sizeof(char *));
     if (!pairs) return -1;
 
     int idx = 0;
     for (size_t i = 0; i < NUM_KNOWN_PAIRS; i++) {
-        pairs[idx] = malloc(32);
+        /* Format: "TOKEN_A/TOKEN_B (DEX_NAME)" */
+        pairs[idx] = malloc(48);
         if (pairs[idx]) {
-            snprintf(pairs[idx], 32, "%s/%s", known_pairs[i].token_a, known_pairs[i].token_b);
+            snprintf(pairs[idx], 48, "%s/%s (%s)",
+                     known_pairs[i].token_a, known_pairs[i].token_b,
+                     known_pairs[i].dex_name);
         }
         idx++;
 
-        pairs[idx] = malloc(32);
+        pairs[idx] = malloc(48);
         if (pairs[idx]) {
-            snprintf(pairs[idx], 32, "%s/%s", known_pairs[i].token_b, known_pairs[i].token_a);
+            snprintf(pairs[idx], 48, "%s/%s (%s)",
+                     known_pairs[i].token_b, known_pairs[i].token_a,
+                     known_pairs[i].dex_name);
         }
         idx++;
     }
 
     *pairs_out = pairs;
-    *count_out = total;
+    *count_out = idx;
     return 0;
 }
 
