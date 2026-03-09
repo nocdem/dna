@@ -3941,6 +3941,96 @@ int cmd_sign(dna_engine_t *engine, const char *data) {
     return 0;
 }
 
+/* ============================================================================
+ * DEX COMMANDS
+ * ============================================================================ */
+
+static void on_dex_quote(dna_request_id_t request_id, int error,
+                          const dna_dex_quote_t *quote, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    if (error == 0 && quote) {
+        printf("\nDEX Quote:\n");
+        printf("  %s %s -> %s %s\n", quote->amount_in, quote->from_token,
+               quote->amount_out, quote->to_token);
+        printf("  Price:        1 %s = %s %s\n", quote->from_token, quote->price, quote->to_token);
+        printf("  Price impact: %s%%\n", quote->price_impact);
+        printf("  Fee:          %s %s\n", quote->fee, quote->from_token);
+        printf("  Pool:         %s\n", quote->pool_address);
+        printf("\n");
+    }
+
+    cli_wait_signal(wait, error);
+}
+
+static void on_dex_pairs(dna_request_id_t request_id, int error,
+                          const char **pairs, int count, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    if (error == 0 && pairs && count > 0) {
+        printf("\nAvailable DEX pairs (%d):\n", count);
+        for (int i = 0; i < count; i++) {
+            printf("  %s\n", pairs[i]);
+        }
+        printf("\nUsage: dex-quote <from> <to> <amount>\n");
+        printf("Example: dex-quote SOL USDC 1.0\n\n");
+    } else if (error == 0) {
+        printf("No DEX pairs available.\n");
+    }
+
+    cli_wait_signal(wait, error);
+}
+
+int cmd_dex_quote(dna_engine_t *engine, const char *from_token,
+                  const char *to_token, const char *amount) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Getting quote: %s %s -> %s ...\n", amount, from_token, to_token);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_dex_quote(engine, from_token, to_token, amount, on_dex_quote, &wait);
+    int result = cli_wait_for(&wait);
+
+    if (result != 0) {
+        if (result == -2) {
+            printf("Error: No pool found for %s/%s\n", from_token, to_token);
+            printf("Use 'dex-pairs' to see available pairs.\n");
+        } else {
+            printf("Error: Failed to get quote: %s\n", dna_engine_error_string(result));
+        }
+    }
+
+    cli_wait_destroy(&wait);
+    return result;
+}
+
+int cmd_dex_pairs(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_dex_list_pairs(engine, on_dex_pairs, &wait);
+    int result = cli_wait_for(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to list pairs: %s\n", dna_engine_error_string(result));
+    }
+
+    cli_wait_destroy(&wait);
+    return result;
+}
+
 int cmd_signing_pubkey(dna_engine_t *engine) {
     if (!engine) {
         printf("Error: Engine not initialized\n");
@@ -4580,6 +4670,20 @@ bool execute_command(dna_engine_t *engine, const char *line) {
     }
     else if (strcmp(cmd, "check-version") == 0) {
         cmd_check_version(engine);
+    }
+    else if (strcmp(cmd, "dex-quote") == 0) {
+        char *from_tok = strtok(NULL, " \t");
+        char *to_tok = strtok(NULL, " \t");
+        char *amount = strtok(NULL, " \t");
+        if (!from_tok || !to_tok || !amount) {
+            printf("Usage: dex-quote <from> <to> <amount>\n");
+            printf("Example: dex-quote SOL USDC 1.0\n");
+        } else {
+            cmd_dex_quote(engine, from_tok, to_tok, amount);
+        }
+    }
+    else if (strcmp(cmd, "dex-pairs") == 0) {
+        cmd_dex_pairs(engine);
     }
     else {
         printf("Unknown command: %s\n", cmd);

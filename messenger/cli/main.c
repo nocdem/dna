@@ -176,6 +176,10 @@ static void print_usage(const char *prog_name) {
     printf("  transactions <wallet_idx>   Show transaction history\n");
     printf("  estimate-gas <network_id>   Estimate ETH gas fees\n");
     printf("\n");
+    printf("DEX COMMANDS:\n");
+    printf("  dex-quote <from> <to> <amt> Get swap quote (e.g. dex-quote SOL USDC 1.0)\n");
+    printf("  dex-pairs                   List available trading pairs\n");
+    printf("\n");
     printf("CHANNEL COMMANDS:\n");
     printf("  channel create <name> [desc]   Create a channel\n");
     printf("  channel get <uuid>             Get channel info\n");
@@ -937,6 +941,20 @@ int main(int argc, char *argv[]) {
         } else {
             result = cmd_estimate_gas(g_engine, atoi(argv[optind + 1]));
         }
+    }
+
+    /* ====== DEX COMMANDS ====== */
+    else if (strcmp(command, "dex-quote") == 0) {
+        if (optind + 3 >= argc) {
+            fprintf(stderr, "Error: 'dex-quote' requires <from_token> <to_token> <amount> arguments\n");
+            fprintf(stderr, "Example: dex-quote SOL USDC 1.0\n");
+            result = 1;
+        } else {
+            result = cmd_dex_quote(g_engine, argv[optind + 1], argv[optind + 2], argv[optind + 3]);
+        }
+    }
+    else if (strcmp(command, "dex-pairs") == 0) {
+        result = cmd_dex_pairs(g_engine);
     }
 
     /* ====== CHANNELS (RSS-like channel system) ====== */

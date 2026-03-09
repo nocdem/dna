@@ -26,8 +26,16 @@
 
 #define LOG_TAG "ETH_TX"
 
-/* External RPC endpoint from eth_rpc.c */
-extern const char* eth_rpc_get_endpoint(void);
+/* RPC endpoints with fallback (same array as eth_rpc.c) */
+static const char *g_eth_tx_endpoints[] = {
+    ETH_RPC_ENDPOINT_DEFAULT,
+    ETH_RPC_ENDPOINT_FALLBACK1,
+    ETH_RPC_ENDPOINT_FALLBACK2,
+    ETH_RPC_ENDPOINT_FALLBACK3
+};
+
+/* Sticky endpoint index for round-robin fallback */
+static int g_eth_tx_current_idx = 0;
 
 /* Curl response buffer */
 struct response_buffer {
@@ -51,31 +59,34 @@ static size_t write_callback(void *contents, size_t size, size_t nmemb, void *us
 }
 
 /**
- * Make JSON-RPC call
+ * Make JSON-RPC call to a single endpoint
+ * Returns: 0=success, -1=network error (retry), -2=RPC error (don't retry)
  */
-static int eth_rpc_call(const char *method, json_object *params, json_object **result_out) {
+static int eth_rpc_call_single(const char *endpoint, const char *method,
+                               json_object *params, json_object **result_out) {
     CURL *curl = curl_easy_init();
     if (!curl) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to initialize CURL");
         return -1;
     }
 
-    /* Build request */
+    /* Build request — json_object_object_add takes ownership of params ref,
+     * so we grab an extra ref to keep params alive across retries */
     json_object *req = json_object_new_object();
     json_object_object_add(req, "jsonrpc", json_object_new_string("2.0"));
     json_object_object_add(req, "method", json_object_new_string(method));
-    json_object_object_add(req, "params", params);
+    json_object_object_add(req, "params", json_object_get(params));
     json_object_object_add(req, "id", json_object_new_int(1));
 
     const char *json_str = json_object_to_json_string(req);
 
-    QGP_LOG_DEBUG(LOG_TAG, "RPC request: %s", json_str);
+    QGP_LOG_DEBUG(LOG_TAG, "RPC request to %s: %s", endpoint, json_str);
 
     struct response_buffer resp_buf = {0};
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    curl_easy_setopt(curl, CURLOPT_URL, eth_rpc_get_endpoint());
+    curl_easy_setopt(curl, CURLOPT_URL, endpoint);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_str);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
@@ -95,13 +106,13 @@ static int eth_rpc_call(const char *method, json_object *params, json_object **r
     json_object_put(req);
 
     if (res != CURLE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "CURL failed: %s", curl_easy_strerror(res));
+        QGP_LOG_ERROR(LOG_TAG, "CURL failed (%s): %s", endpoint, curl_easy_strerror(res));
         if (resp_buf.data) free(resp_buf.data);
         return -1;
     }
 
     if (!resp_buf.data) {
-        QGP_LOG_ERROR(LOG_TAG, "Empty response");
+        QGP_LOG_ERROR(LOG_TAG, "Empty response from %s", endpoint);
         return -1;
     }
 
@@ -111,7 +122,7 @@ static int eth_rpc_call(const char *method, json_object *params, json_object **r
     free(resp_buf.data);
 
     if (!resp) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to parse response");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse response from %s", endpoint);
         return -1;
     }
 
@@ -123,24 +134,68 @@ static int eth_rpc_call(const char *method, json_object *params, json_object **r
         if (json_object_object_get_ex(jerr, "message", &jmsg)) {
             msg = json_object_get_string(jmsg);
         }
-        QGP_LOG_ERROR(LOG_TAG, "RPC error: %s", msg);
+        QGP_LOG_ERROR(LOG_TAG, "RPC error from %s: %s", endpoint, msg);
         json_object_put(resp);
-        return -1;
+        return -2;  /* RPC error — don't retry other endpoints */
     }
 
     /* Get result */
     json_object *jresult = NULL;
     if (!json_object_object_get_ex(resp, "result", &jresult)) {
-        QGP_LOG_ERROR(LOG_TAG, "No result in response");
+        QGP_LOG_ERROR(LOG_TAG, "No result in response from %s", endpoint);
         json_object_put(resp);
         return -1;
     }
 
-    /* Return result (caller must free resp) */
+    /* Return result (caller must free) */
     *result_out = json_object_get(jresult);
     json_object_put(resp);
 
     return 0;
+}
+
+/**
+ * Make JSON-RPC call with fallback across all endpoints
+ *
+ * Tries endpoints starting from the last successful one (sticky round-robin).
+ * Network errors trigger fallback to next endpoint; RPC errors do not.
+ */
+static int eth_rpc_call(const char *method, json_object *params, json_object **result_out) {
+    int start_idx = g_eth_tx_current_idx;
+    int ret = -1;
+
+    for (int attempt = 0; attempt < ETH_RPC_ENDPOINT_COUNT; attempt++) {
+        int idx = (start_idx + attempt) % ETH_RPC_ENDPOINT_COUNT;
+        const char *endpoint = g_eth_tx_endpoints[idx];
+
+        int rc = eth_rpc_call_single(endpoint, method, params, result_out);
+
+        if (rc == 0) {
+            /* Success — remember this endpoint */
+            if (idx != g_eth_tx_current_idx) {
+                g_eth_tx_current_idx = idx;
+                QGP_LOG_INFO(LOG_TAG, "Switched to RPC endpoint: %s", endpoint);
+            }
+            ret = 0;
+            goto done;
+        }
+
+        if (rc == -2) {
+            /* RPC-level error (invalid params, etc.) — don't retry */
+            goto done;
+        }
+
+        /* Network error — try next endpoint */
+        QGP_LOG_WARN(LOG_TAG, "RPC endpoint failed: %s, trying next...", endpoint);
+    }
+
+    QGP_LOG_ERROR(LOG_TAG, "All %d ETH RPC endpoints failed for %s",
+                  ETH_RPC_ENDPOINT_COUNT, method);
+
+done:
+    /* Consume params (callers expect this — matches original contract) */
+    json_object_put(params);
+    return ret;
 }
 
 /**

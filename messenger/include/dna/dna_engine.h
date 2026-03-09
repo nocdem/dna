@@ -2140,6 +2140,83 @@ DNA_API dna_request_id_t dna_engine_get_transactions(
 );
 
 /* ============================================================================
+ * 6b. DEX (Decentralized Exchange)
+ * ============================================================================ */
+
+/**
+ * DEX quote result
+ */
+typedef struct {
+    char from_token[16];        /* Input token symbol */
+    char to_token[16];          /* Output token symbol */
+    char amount_in[64];         /* Input amount (decimal string) */
+    char amount_out[64];        /* Output amount (decimal string) */
+    char price[64];             /* Spot price (1 from = X to) */
+    char price_impact[16];      /* Price impact percentage */
+    char fee[64];               /* Fee in input token */
+    char pool_address[48];      /* Pool address used */
+} dna_dex_quote_t;
+
+/**
+ * DEX quote callback
+ */
+typedef void (*dna_dex_quote_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const dna_dex_quote_t *quote,
+    void *user_data
+);
+
+/**
+ * DEX pairs callback
+ */
+typedef void (*dna_dex_pairs_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const char **pairs,
+    int count,
+    void *user_data
+);
+
+/**
+ * Get DEX swap quote
+ *
+ * Fetches on-chain pool reserves and calculates output amount
+ * using constant product AMM formula. Currently supports Solana
+ * (Raydium v4 CPMM pools).
+ *
+ * @param engine       Engine instance
+ * @param from_token   Input token symbol (e.g., "SOL")
+ * @param to_token     Output token symbol (e.g., "USDT")
+ * @param amount_in    Input amount as decimal string (e.g., "1.5")
+ * @param callback     Called with quote result
+ * @param user_data    User data for callback
+ * @return             Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_dex_quote(
+    dna_engine_t *engine,
+    const char *from_token,
+    const char *to_token,
+    const char *amount_in,
+    dna_dex_quote_cb callback,
+    void *user_data
+);
+
+/**
+ * List available DEX swap pairs
+ *
+ * @param engine       Engine instance
+ * @param callback     Called with pairs array
+ * @param user_data    User data for callback
+ * @return             Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_dex_list_pairs(
+    dna_engine_t *engine,
+    dna_dex_pairs_cb callback,
+    void *user_data
+);
+
+/* ============================================================================
  * 7. P2P & PRESENCE (4 async functions)
  * ============================================================================ */
 

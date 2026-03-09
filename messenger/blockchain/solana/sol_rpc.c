@@ -172,7 +172,7 @@ static int sol_rpc_call_single(
 /**
  * Make JSON-RPC call to Solana with fallback endpoints
  */
-static int sol_rpc_call(
+int sol_rpc_call(
     const char *method,
     json_object *params,
     json_object **result_out

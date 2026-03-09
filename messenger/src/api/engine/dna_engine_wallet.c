@@ -3,16 +3,21 @@
  *
  * Blockchain wallet handling extracted from dna_engine.c.
  * Contains multi-chain wallet operations: ETH, SOL, TRX, Cellframe.
+ * Also DEX quote/swap operations (Raydium on Solana, Uniswap v2 on Ethereum).
  *
  * Functions:
  *   - dna_handle_list_wallets()
  *   - dna_handle_get_balances()
  *   - dna_handle_send_tokens()
  *   - dna_handle_get_transactions()
+ *   - dna_handle_dex_quote()
+ *   - dna_handle_dex_list_pairs()
  */
 
 #define DNA_ENGINE_WALLET_IMPL
 #include "engine_includes.h"
+#include "blockchain/solana/sol_dex.h"
+#include "blockchain/ethereum/eth_dex.h"
 
 /* ============================================================================
  * WALLET TASK HANDLERS
@@ -1036,4 +1041,172 @@ dna_request_id_t dna_engine_get_transactions(
 
     dna_task_callback_t cb = { .transactions = callback };
     return dna_submit_task(engine, TASK_GET_TRANSACTIONS, &params, cb, user_data);
+}
+
+/* ============================================================================
+ * DEX TASK HANDLERS
+ * ============================================================================ */
+
+/**
+ * Helper: detect chain from token symbols.
+ * Returns "SOL" for Solana pairs, "ETH" for Ethereum pairs, NULL if unknown.
+ */
+static const char *detect_dex_chain(const char *from_token, const char *to_token) {
+    /* SOL-native tokens */
+    if (strcasecmp(from_token, "SOL") == 0 || strcasecmp(to_token, "SOL") == 0)
+        return "SOL";
+    /* ETH-native tokens */
+    if (strcasecmp(from_token, "ETH") == 0 || strcasecmp(to_token, "ETH") == 0)
+        return "ETH";
+    /* Stablecoin pairs — try SOL first (higher liquidity) */
+    return NULL;
+}
+
+void dna_handle_dex_quote(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
+
+    const char *from_token = task->params.dex_quote.from_token;
+    const char *to_token   = task->params.dex_quote.to_token;
+    const char *amount_in  = task->params.dex_quote.amount_in;
+
+    const char *chain = detect_dex_chain(from_token, to_token);
+    int rc = -2;
+    dna_dex_quote_t quote = {0};
+
+    /* Try Solana DEX (Raydium AMM v4) */
+    if (!chain || strcmp(chain, "SOL") == 0) {
+        sol_dex_quote_t sol_quote = {0};
+        rc = sol_dex_get_quote(from_token, to_token, amount_in, &sol_quote);
+        if (rc == 0) {
+            strncpy(quote.from_token, sol_quote.from_token, sizeof(quote.from_token) - 1);
+            strncpy(quote.to_token, sol_quote.to_token, sizeof(quote.to_token) - 1);
+            strncpy(quote.amount_in, sol_quote.amount_in, sizeof(quote.amount_in) - 1);
+            strncpy(quote.amount_out, sol_quote.amount_out, sizeof(quote.amount_out) - 1);
+            strncpy(quote.price, sol_quote.price, sizeof(quote.price) - 1);
+            strncpy(quote.price_impact, sol_quote.price_impact, sizeof(quote.price_impact) - 1);
+            strncpy(quote.fee, sol_quote.fee, sizeof(quote.fee) - 1);
+            strncpy(quote.pool_address, sol_quote.pool_address, sizeof(quote.pool_address) - 1);
+        }
+    }
+
+    /* Try Ethereum DEX (Uniswap v2) if SOL didn't match or wasn't tried */
+    if (rc != 0 && (!chain || strcmp(chain, "ETH") == 0)) {
+        eth_dex_quote_t eth_quote = {0};
+        rc = eth_dex_get_quote(from_token, to_token, amount_in, &eth_quote);
+        if (rc == 0) {
+            strncpy(quote.from_token, eth_quote.from_token, sizeof(quote.from_token) - 1);
+            strncpy(quote.to_token, eth_quote.to_token, sizeof(quote.to_token) - 1);
+            strncpy(quote.amount_in, eth_quote.amount_in, sizeof(quote.amount_in) - 1);
+            strncpy(quote.amount_out, eth_quote.amount_out, sizeof(quote.amount_out) - 1);
+            strncpy(quote.price, eth_quote.price, sizeof(quote.price) - 1);
+            strncpy(quote.price_impact, eth_quote.price_impact, sizeof(quote.price_impact) - 1);
+            strncpy(quote.fee, eth_quote.fee, sizeof(quote.fee) - 1);
+            strncpy(quote.pool_address, eth_quote.pool_address, sizeof(quote.pool_address) - 1);
+        }
+    }
+
+    if (rc != 0) {
+        int error = (rc == -2) ? DNA_ENGINE_ERROR_NOT_FOUND : DNA_ENGINE_ERROR_NETWORK;
+        if (task->callback.dex_quote) {
+            task->callback.dex_quote(task->request_id, error, NULL, task->user_data);
+        }
+        return;
+    }
+
+    if (task->callback.dex_quote) {
+        task->callback.dex_quote(task->request_id, DNA_OK, &quote, task->user_data);
+    }
+}
+
+void dna_handle_dex_list_pairs(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
+
+    /* Collect pairs from both chains */
+    char **sol_pairs = NULL, **eth_pairs = NULL;
+    int sol_count = 0, eth_count = 0;
+
+    sol_dex_list_pairs(&sol_pairs, &sol_count);
+    eth_dex_list_pairs(&eth_pairs, &eth_count);
+
+    int total = sol_count + eth_count;
+    if (total == 0) {
+        if (task->callback.dex_pairs) {
+            task->callback.dex_pairs(task->request_id, DNA_ENGINE_ERROR_NETWORK, NULL, 0, task->user_data);
+        }
+        return;
+    }
+
+    /* Merge into single array */
+    char **all_pairs = calloc((size_t)total, sizeof(char *));
+    if (!all_pairs) {
+        sol_dex_free_pairs(sol_pairs, sol_count);
+        eth_dex_free_pairs(eth_pairs, eth_count);
+        if (task->callback.dex_pairs) {
+            task->callback.dex_pairs(task->request_id, DNA_ENGINE_ERROR_NETWORK, NULL, 0, task->user_data);
+        }
+        return;
+    }
+
+    int idx = 0;
+    for (int i = 0; i < sol_count; i++) {
+        all_pairs[idx] = malloc(48);
+        if (all_pairs[idx]) {
+            snprintf(all_pairs[idx], 48, "[SOL] %s", sol_pairs[i]);
+        }
+        idx++;
+    }
+    for (int i = 0; i < eth_count; i++) {
+        all_pairs[idx] = malloc(48);
+        if (all_pairs[idx]) {
+            snprintf(all_pairs[idx], 48, "[ETH] %s", eth_pairs[i]);
+        }
+        idx++;
+    }
+
+    sol_dex_free_pairs(sol_pairs, sol_count);
+    eth_dex_free_pairs(eth_pairs, eth_count);
+
+    if (task->callback.dex_pairs) {
+        task->callback.dex_pairs(task->request_id, DNA_OK, (const char **)all_pairs, total, task->user_data);
+    }
+
+    for (int i = 0; i < total; i++) free(all_pairs[i]);
+    free(all_pairs);
+}
+
+/* ============ DEX PUBLIC API ============ */
+
+dna_request_id_t dna_engine_dex_quote(
+    dna_engine_t *engine,
+    const char *from_token,
+    const char *to_token,
+    const char *amount_in,
+    dna_dex_quote_cb callback,
+    void *user_data
+) {
+    if (!engine || !from_token || !to_token || !amount_in || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    strncpy(params.dex_quote.from_token, from_token, sizeof(params.dex_quote.from_token) - 1);
+    strncpy(params.dex_quote.to_token, to_token, sizeof(params.dex_quote.to_token) - 1);
+    strncpy(params.dex_quote.amount_in, amount_in, sizeof(params.dex_quote.amount_in) - 1);
+
+    dna_task_callback_t cb = { .dex_quote = callback };
+    return dna_submit_task(engine, TASK_DEX_QUOTE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_dex_list_pairs(
+    dna_engine_t *engine,
+    dna_dex_pairs_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    dna_task_callback_t cb = { .dex_pairs = callback };
+    return dna_submit_task(engine, TASK_DEX_LIST_PAIRS, &params, cb, user_data);
 }

@@ -497,6 +497,13 @@ int cmd_channel_subscriptions(dna_engine_t *engine);
 int cmd_channel_sync(dna_engine_t *engine);
 
 /* ============================================================================
+ * DEX COMMANDS (2 commands)
+ * ============================================================================ */
+
+int cmd_dex_quote(dna_engine_t *engine, const char *from_token, const char *to_token, const char *amount);
+int cmd_dex_pairs(dna_engine_t *engine);
+
+/* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */
 

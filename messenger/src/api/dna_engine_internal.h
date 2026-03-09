@@ -113,6 +113,8 @@ typedef enum {
     TASK_SEND_TOKENS,
     TASK_GET_TRANSACTIONS,
     TASK_ESTIMATE_GAS,
+    TASK_DEX_QUOTE,
+    TASK_DEX_LIST_PAIRS,
 
     /* P2P & Presence */
     TASK_REFRESH_PRESENCE,
@@ -392,6 +394,13 @@ typedef union {
         char *body;              /* Heap allocated, task owns */
     } channel_post;
 
+    /* DEX: quote */
+    struct {
+        char from_token[16];
+        char to_token[16];
+        char amount_in[64];
+    } dex_quote;
+
 } dna_task_params_t;
 
 /**
@@ -427,6 +436,8 @@ typedef union {
     dna_channel_post_cb channel_post_cb;
     dna_channel_posts_cb channel_posts;
     dna_channel_subscriptions_cb channel_subscriptions;
+    dna_dex_quote_cb dex_quote;
+    dna_dex_pairs_cb dex_pairs;
 } dna_task_callback_t;
 
 /**
@@ -792,6 +803,8 @@ void dna_handle_get_cached_balances(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_estimate_gas(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dex_quote(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dex_list_pairs(dna_engine_t *engine, dna_task_t *task);
 
 /* P2P & Presence */
 void dna_handle_refresh_presence(dna_engine_t *engine, dna_task_t *task);
