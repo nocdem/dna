@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 /**
  * @file eth_dex.c
  * @brief Ethereum DEX Quote Implementation (Uniswap v2/v3 + PancakeSwap v2/v3)
@@ -27,11 +26,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <stdbool.h>
+#include <ctype.h>
 #ifdef _WIN32
 #define CURL_STATICLIB
 #endif
+
+/* Portable case-insensitive substring search (strcasestr is a GNU extension) */
+static const char *dex_strcasestr(const char *haystack, const char *needle) {
+    if (!needle[0]) return haystack;
+    for (; *haystack; haystack++) {
+        const char *h = haystack, *n = needle;
+        while (*h && *n && tolower((unsigned char)*h) == tolower((unsigned char)*n)) { h++; n++; }
+        if (!*n) return haystack;
+    }
+    return NULL;
+}
 #include <curl/curl.h>
 #include <json-c/json.h>
 
@@ -664,7 +674,7 @@ static int eth_dex_quote_v3(const eth_dex_pair_t *pair, bool reversed,
  */
 static bool dex_filter_matches(const char *dex_name, const char *filter) {
     if (!filter || filter[0] == '\0') return true;  /* No filter = match all */
-    return strcasestr(dex_name, filter) != NULL;
+    return dex_strcasestr(dex_name, filter) != NULL;
 }
 
 int eth_dex_get_quotes(

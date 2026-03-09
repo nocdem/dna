@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 /**
  * @file sol_dex.c
  * @brief Solana DEX Quote Implementation (Jupiter Aggregator)
@@ -18,11 +17,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <stdbool.h>
+#include <ctype.h>
 #ifdef _WIN32
 #define CURL_STATICLIB
 #endif
+
+/* Portable case-insensitive substring search (strcasestr is a GNU extension) */
+static const char *dex_strcasestr(const char *haystack, const char *needle) {
+    if (!needle[0]) return haystack;
+    for (; *haystack; haystack++) {
+        const char *h = haystack, *n = needle;
+        while (*h && *n && tolower((unsigned char)*h) == tolower((unsigned char)*n)) { h++; n++; }
+        if (!*n) return haystack;
+    }
+    return NULL;
+}
 #include <curl/curl.h>
 #include <json-c/json.h>
 
@@ -361,7 +371,7 @@ int sol_dex_get_quotes(
 
     /* Apply dex_filter if specified */
     if (dex_filter && dex_filter[0] != '\0') {
-        if (!strcasestr(quotes_out[0].dex_name, dex_filter)) {
+        if (!dex_strcasestr(quotes_out[0].dex_name, dex_filter)) {
             QGP_LOG_DEBUG(LOG_TAG, "Quote filtered: %s doesn't match %s",
                           quotes_out[0].dex_name, dex_filter);
             return -2;
