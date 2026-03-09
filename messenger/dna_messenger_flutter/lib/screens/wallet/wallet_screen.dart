@@ -290,7 +290,19 @@ class _ActionButtonsRow extends ConsumerWidget {
               );
             },
           ),
-          const SizedBox(width: 40),
+          const SizedBox(width: 16),
+          _PillAction(
+            icon: FontAwesomeIcons.rightLeft,
+            label: 'Swap',
+            onTap: () {
+              showModalBottomSheet(
+                context: context,
+                isScrollControlled: true,
+                builder: (context) => const _SwapSheet(),
+              );
+            },
+          ),
+          const SizedBox(width: 16),
           _PillAction(
             icon: FontAwesomeIcons.arrowDown,
             label: 'Receive',
@@ -324,7 +336,7 @@ class _PillAction extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 130,
+        width: 105,
         padding: const EdgeInsets.symmetric(vertical: 12),
         decoration: BoxDecoration(
           gradient: DnaGradients.primary,
@@ -2395,6 +2407,421 @@ class _GasSpeedChip extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Swap sheet — token-to-token swap quote UI
+class _SwapSheet extends ConsumerStatefulWidget {
+  const _SwapSheet();
+
+  @override
+  ConsumerState<_SwapSheet> createState() => _SwapSheetState();
+}
+
+class _SwapSheetState extends ConsumerState<_SwapSheet> {
+  final _amountController = TextEditingController();
+  String _fromToken = 'SOL';
+  String _toToken = 'USDT';
+  String _fromNetwork = 'Solana';
+
+  // Quote state (placeholder — no backend yet)
+  String? _quoteAmount;
+  bool _isLoadingQuote = false;
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    super.dispose();
+  }
+
+  void _swapDirection() {
+    setState(() {
+      final tmp = _fromToken;
+      _fromToken = _toToken;
+      _toToken = tmp;
+      _quoteAmount = null;
+    });
+  }
+
+  /// Available tokens for the selected network
+  List<String> _tokensForNetwork(String network) {
+    switch (network.toLowerCase()) {
+      case 'solana':
+        return ['SOL', 'USDT', 'USDC'];
+      case 'ethereum':
+        return ['ETH', 'USDT', 'USDC'];
+      case 'tron':
+        return ['TRX', 'USDT', 'USDC'];
+      default:
+        return ['SOL', 'USDT', 'USDC'];
+    }
+  }
+
+  /// Get current balance for a token
+  String? _getBalance(String token) {
+    final balancesAsync = ref.watch(balancesProvider(0));
+    return balancesAsync.whenOrNull(
+      data: (balances) {
+        for (final b in balances) {
+          if (b.token == token && b.network == _fromNetwork) {
+            return b.balance;
+          }
+        }
+        return null;
+      },
+    );
+  }
+
+  void _onAmountChanged(String value) {
+    // Clear quote when amount changes
+    setState(() => _quoteAmount = null);
+  }
+
+  void _fetchQuote() {
+    final amount = double.tryParse(_amountController.text.trim());
+    if (amount == null || amount <= 0) return;
+
+    setState(() => _isLoadingQuote = true);
+
+    // TODO: On-chain quote from Raydium/Orca AMM pools
+    // For now, show placeholder
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (mounted) {
+        setState(() {
+          _isLoadingQuote = false;
+          _quoteAmount = null; // No backend yet
+        });
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final tokens = _tokensForNetwork(_fromNetwork);
+    final fromBalance = _getBalance(_fromToken);
+
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Header
+              Row(
+                children: [
+                  Text('Swap', style: theme.textTheme.titleLarge),
+                  const Spacer(),
+                  IconButton(
+                    icon: const FaIcon(FontAwesomeIcons.xmark, size: 18),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+
+              // Network selector
+              DropdownButtonFormField<String>(
+                value: _fromNetwork,
+                decoration: const InputDecoration(
+                  labelText: 'Network',
+                  isDense: true,
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'Solana', child: Text('Solana')),
+                  DropdownMenuItem(value: 'Ethereum', child: Text('Ethereum')),
+                  DropdownMenuItem(value: 'Tron', child: Text('Tron')),
+                ],
+                onChanged: (v) {
+                  final network = v ?? 'Solana';
+                  final newTokens = _tokensForNetwork(network);
+                  setState(() {
+                    _fromNetwork = network;
+                    _fromToken = newTokens.first;
+                    _toToken = newTokens.length > 1 ? newTokens[1] : newTokens.first;
+                    _quoteAmount = null;
+                  });
+                },
+              ),
+              const SizedBox(height: 16),
+
+              // FROM token box
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest.withAlpha(128),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('From', style: theme.textTheme.bodySmall),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _amountController,
+                            decoration: const InputDecoration(
+                              hintText: '0.00',
+                              border: InputBorder.none,
+                              isDense: true,
+                              contentPadding: EdgeInsets.zero,
+                            ),
+                            style: theme.textTheme.headlineSmall,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            onChanged: _onAmountChanged,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        _TokenSelector(
+                          token: _fromToken,
+                          tokens: tokens,
+                          onChanged: (t) => setState(() {
+                            _fromToken = t;
+                            if (_toToken == t) {
+                              // Pick a different to-token
+                              _toToken = tokens.firstWhere((x) => x != t, orElse: () => t);
+                            }
+                            _quoteAmount = null;
+                          }),
+                        ),
+                      ],
+                    ),
+                    if (fromBalance != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: GestureDetector(
+                          onTap: () {
+                            _amountController.text = fromBalance;
+                            setState(() => _quoteAmount = null);
+                          },
+                          child: Text(
+                            'Balance: $fromBalance',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.primary,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+
+              // Swap direction button
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: IconButton(
+                    onPressed: _swapDirection,
+                    icon: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        gradient: DnaGradients.primary,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const FaIcon(
+                        FontAwesomeIcons.arrowsUpDown,
+                        color: Colors.white,
+                        size: 16,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+              // TO token box
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest.withAlpha(128),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('To', style: theme.textTheme.bodySmall),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _isLoadingQuote
+                              ? const SizedBox(
+                                  height: 28,
+                                  child: LinearProgressIndicator(),
+                                )
+                              : Text(
+                                  _quoteAmount ?? '-',
+                                  style: theme.textTheme.headlineSmall?.copyWith(
+                                    color: _quoteAmount != null
+                                        ? null
+                                        : theme.colorScheme.onSurface.withAlpha(100),
+                                  ),
+                                ),
+                        ),
+                        const SizedBox(width: 12),
+                        _TokenSelector(
+                          token: _toToken,
+                          tokens: tokens,
+                          onChanged: (t) => setState(() {
+                            _toToken = t;
+                            if (_fromToken == t) {
+                              _fromToken = tokens.firstWhere((x) => x != t, orElse: () => t);
+                            }
+                            _quoteAmount = null;
+                          }),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+
+              // Quote info area
+              if (_quoteAmount != null) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest.withAlpha(64),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    children: [
+                      _QuoteRow(label: 'Rate', value: '1 $_fromToken = ? $_toToken'),
+                      _QuoteRow(label: 'Price Impact', value: '-'),
+                      _QuoteRow(label: 'Fee', value: '-'),
+                    ],
+                  ),
+                ),
+              ],
+
+              const SizedBox(height: 16),
+
+              // Get Quote / Swap button
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: _amountController.text.trim().isNotEmpty
+                          ? _fetchQuote
+                          : null,
+                      child: _isLoadingQuote
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Get Quote'),
+                    ),
+                  ),
+                  if (_quoteAmount != null) ...[
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: null, // Swap not implemented yet
+                        child: const Text('Swap'),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Token selector dropdown chip
+class _TokenSelector extends StatelessWidget {
+  final String token;
+  final List<String> tokens;
+  final ValueChanged<String> onChanged;
+
+  const _TokenSelector({
+    required this.token,
+    required this.tokens,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final iconPath = getTokenIconPath(token);
+    return PopupMenuButton<String>(
+      onSelected: onChanged,
+      itemBuilder: (context) => tokens
+          .map((t) => PopupMenuItem(
+                value: t,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (getTokenIconPath(t) != null)
+                      SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: buildCryptoIcon(getTokenIconPath(t)!),
+                      ),
+                    if (getTokenIconPath(t) != null) const SizedBox(width: 8),
+                    Text(t),
+                  ],
+                ),
+              ))
+          .toList(),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (iconPath != null) ...[
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: buildCryptoIcon(iconPath),
+              ),
+              const SizedBox(width: 6),
+            ],
+            Text(token, style: const TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(width: 4),
+            const FaIcon(FontAwesomeIcons.chevronDown, size: 10),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Quote info row
+class _QuoteRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _QuoteRow({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: Theme.of(context).textTheme.bodySmall),
+          Text(value, style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            fontWeight: FontWeight.w600,
+          )),
+        ],
       ),
     );
   }
