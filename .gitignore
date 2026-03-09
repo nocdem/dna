@@ -1,0 +1,7 @@
+# Task tracking (session-local, not committed)
+tasks/
+
+# Security audit files (private, never commit)
+*SECURITY_AUDIT*
+*COMPREHENSIVE_AUDIT*
+*security_audit*

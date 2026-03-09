@@ -164,7 +164,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 | Message System | `docs/MESSAGE_SYSTEM.md` | Message format, encryption, GEK, database schema changes |
 | Mobile Porting | `docs/MOBILE_PORTING.md` | Android SDK, JNI, iOS, platform abstraction changes |
 | Transport Layer | `docs/P2P_ARCHITECTURE.md` | DHT transport, presence, peer discovery changes |
-| Security | `docs/SECURITY_AUDIT.md` | Crypto primitives, vulnerabilities, security fixes |
+| Security | `docs/MESSENGER_SECURITY_AUDIT.md` | Crypto primitives, vulnerabilities, security fixes |
 
 **Procedure:**
 1. **IDENTIFY** which documentation files are affected by the changes
@@ -630,7 +630,7 @@ Feed/channel system has been removed.
 ### 📚 Core Documentation
 - **[Architecture](docs/ARCHITECTURE_DETAILED.md)** - System architecture and directory structure
 - **[Git Workflow](docs/GIT_WORKFLOW.md)** - Commit guidelines and dual-repo push
-- **[Security Audit](docs/SECURITY_AUDIT.md)** - Security review and cryptographic analysis
+- **[Security Audit](docs/MESSENGER_SECURITY_AUDIT.md)** - Security review and cryptographic analysis
 
 ### 📋 Project Planning
 - **[ROADMAP.md](ROADMAP.md)** - Development roadmap and phase tracking

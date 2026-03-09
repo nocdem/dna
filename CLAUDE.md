@@ -4,6 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
+## PRIMARY OBJECTIVE: SECURITY
+
+When you find a security vulnerability, flag it immediately with a WARNING comment and suggest a secure alternative. Never implement insecure patterns even if asked.
+
+---
+
 ## SUBAGENT BYPASS (Task Tool)
 **If you were spawned as a subagent via the Task tool:** Skip ALL checkpoints (1-9).
 Execute the task prompt directly. You are NOT the main EXECUTOR.
@@ -162,7 +168,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 | Message System | `messenger/docs/MESSAGE_SYSTEM.md` | Message format, encryption, GEK, database schema changes |
 | Mobile Porting | `messenger/docs/MOBILE_PORTING.md` | Android SDK, JNI, iOS, platform abstraction changes |
 | Transport Layer | `messenger/docs/P2P_ARCHITECTURE.md` | DHT transport, presence, peer discovery changes |
-| Security | `messenger/docs/SECURITY_AUDIT.md` | Crypto primitives, vulnerabilities, security fixes |
+| Security | `messenger/docs/MESSENGER_SECURITY_AUDIT.md` | Crypto primitives, vulnerabilities, security fixes |
 
 **Procedure:**
 1. **IDENTIFY** which documentation files are affected by the changes
@@ -633,6 +639,7 @@ This is a multiplatform project targeting Linux, Windows, and Android (iOS plann
 2. **Simplicity** - Keep code simple and focused
 3. **Clean Code** - ALWAYS prefer modifying existing functions over adding new ones. Reuse existing code paths.
 4. **No Dead Code** - When deprecating APIs, remove the old code entirely. Dead code that compiles is dangerous.
+5. **No Audit Files in Git** - Security audit files (`*SECURITY_AUDIT*`, `*COMPREHENSIVE_AUDIT*`, `*security_audit*`) MUST NEVER be committed to git. They are in `.gitignore`. If you create an audit file, verify it's covered by `.gitignore` before proceeding.
 
 ---
 
