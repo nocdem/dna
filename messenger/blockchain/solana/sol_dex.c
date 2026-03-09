@@ -14,6 +14,7 @@
 
 #include "sol_dex.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -226,6 +227,11 @@ static int jupiter_get_quote(
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "DNA-Messenger/1.0");
+
+    const char *ca_bundle = qgp_platform_ca_bundle_path();
+    if (ca_bundle) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    }
 
     CURLcode res = curl_easy_perform(curl);
     long http_code = 0;
