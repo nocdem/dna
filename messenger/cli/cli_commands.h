@@ -79,6 +79,7 @@ int cmd_list(dna_engine_t *engine);
 int cmd_load(dna_engine_t *engine, const char *fingerprint);
 int cmd_send(dna_engine_t *engine, const char *recipient, const char *message);
 void cmd_whoami(dna_engine_t *engine);
+void cmd_change_password(dna_engine_t *engine);
 
 /* ============================================================================
  * IDENTITY COMMANDS (new)
@@ -502,6 +503,34 @@ int cmd_channel_sync(dna_engine_t *engine);
 
 int cmd_dex_quote(dna_engine_t *engine, const char *from_token, const char *to_token, const char *amount, const char *dex_filter);
 int cmd_dex_pairs(dna_engine_t *engine);
+
+/* ============================================================================
+ * GROUP DISPATCHERS — argv-based (for main.c) and REPL-based (for execute_command)
+ * ============================================================================ */
+
+int dispatch_identity(dna_engine_t *engine, int argc, char **argv, int sub);
+int dispatch_contact(dna_engine_t *engine, int argc, char **argv, int sub);
+int dispatch_message(dna_engine_t *engine, int argc, char **argv, int sub);
+int dispatch_group(dna_engine_t *engine, int argc, char **argv, int sub);
+int dispatch_channel(dna_engine_t *engine, int argc, char **argv, int sub);
+int dispatch_wallet(dna_engine_t *engine, int argc, char **argv, int sub);
+int dispatch_dex(dna_engine_t *engine, int argc, char **argv, int sub);
+int dispatch_network(dna_engine_t *engine, int argc, char **argv, int sub);
+int dispatch_version(dna_engine_t *engine, int argc, char **argv, int sub);
+int dispatch_sign(dna_engine_t *engine, int argc, char **argv, int sub);
+int dispatch_debug(dna_engine_t *engine, int argc, char **argv, int sub);
+
+int dispatch_identity_repl(dna_engine_t *engine, const char *subcmd);
+int dispatch_contact_repl(dna_engine_t *engine, const char *subcmd);
+int dispatch_message_repl(dna_engine_t *engine, const char *subcmd);
+int dispatch_group_repl(dna_engine_t *engine, const char *subcmd);
+int dispatch_channel_repl(dna_engine_t *engine, const char *subcmd);
+int dispatch_wallet_repl(dna_engine_t *engine, const char *subcmd);
+int dispatch_dex_repl(dna_engine_t *engine, const char *subcmd);
+int dispatch_network_repl(dna_engine_t *engine, const char *subcmd);
+int dispatch_version_repl(dna_engine_t *engine, const char *subcmd);
+int dispatch_sign_repl(dna_engine_t *engine, const char *subcmd);
+int dispatch_debug_repl(dna_engine_t *engine, const char *subcmd);
 
 /* ============================================================================
  * COMMAND PARSER

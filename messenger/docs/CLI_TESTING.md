@@ -1,8 +1,8 @@
 # DNA Messenger CLI Testing Guide
 
-**Version:** 2.6.0
+**Version:** 3.0.0
 **Purpose:** Command-line tool for automated testing and debugging of DNA Messenger without GUI
-**Location:** `build/cli/dna-messenger-cli`
+**Location:** `/opt/dna/messenger/build/cli/dna-messenger-cli`
 
 ---
 
@@ -10,95 +10,151 @@
 
 The `dna-messenger-cli` tool allows Claude (or any automated system) to test DNA Messenger functionality through single-command invocations. Each command initializes the engine, executes the operation, and exits cleanly.
 
-**Key Features (v2.3.0):**
+**Key Features (v3.0.0):**
+- **Grouped subcommand structure**: All commands use `<group> <subcommand>` format
 - Auto-loads identity if only one exists
 - Waits for DHT connection before network operations
 - Includes propagation delays for DHT put operations
-- `messages` command resolves names to fingerprints via DHT
+- `message list` command resolves names to fingerprints via DHT
 
 ---
 
 ## Building
 
 ```bash
-cd /opt/dna-messenger
-mkdir -p build && cd build
+cd /opt/dna/messenger/build
 cmake ..
 make dna-messenger-cli
 ```
 
-The executable will be at: `build/cli/dna-messenger-cli`
+The executable will be at: `/opt/dna/messenger/build/cli/dna-messenger-cli`
 
 ---
 
 ## Quick Reference
 
 ```bash
-CLI=/opt/dna-messenger/build/cli/dna-messenger-cli
+CLI=/opt/dna/messenger/build/cli/dna-messenger-cli
 
 # Identity
-$CLI create <name>                    # Create new identity (prompts for password)
-$CLI restore <mnemonic...>            # Restore from 24 words
-$CLI delete <fingerprint>             # Delete an identity
-$CLI list                             # List identities
-$CLI load <fingerprint>               # Load identity (prompts for password if encrypted)
-$CLI whoami                           # Show current identity
-$CLI change-password                  # Change password for current identity
-$CLI register <name>                  # Register DHT name
-$CLI name                             # Show registered name
-$CLI lookup <name>                    # Check name availability
-$CLI lookup-profile <name|fp>         # View any user's DHT profile
-$CLI profile                          # Show profile
-$CLI profile bio="Hello world"        # Update profile field
+$CLI identity create <name>                    # Create new identity (prompts for password)
+$CLI identity restore <mnemonic...>            # Restore from 24 words
+$CLI identity delete <fingerprint>             # Delete an identity
+$CLI identity list                             # List identities
+$CLI identity load <fingerprint>               # Load identity (prompts for password if encrypted)
+$CLI identity whoami                           # Show current identity
+$CLI identity change-password                  # Change password for current identity
+$CLI identity register <name>                  # Register DHT name
+$CLI identity name                             # Show registered name
+$CLI identity lookup <name>                    # Check name availability
+$CLI identity lookup-profile <name|fp>         # View any user's DHT profile
+$CLI identity profile                          # Show profile
+$CLI identity profile bio="Hello world"        # Update profile field
+$CLI identity set-nickname <fp> <n>            # Set nickname for contact
+$CLI identity get-avatar <fp>                  # Get avatar for identity
+$CLI identity get-mnemonic                     # Show mnemonic phrase
+$CLI identity refresh-profile <fp>             # Refresh profile from DHT
 
 # Contacts
-$CLI contacts                         # List contacts
-$CLI add-contact <name|fp>            # Add contact
-$CLI remove-contact <fp>              # Remove contact
-$CLI request <fp> [message]           # Send contact request
-$CLI requests                         # List pending requests
-$CLI approve <fp>                     # Approve request
+$CLI contact list                              # List contacts
+$CLI contact add <name|fp>                     # Add contact
+$CLI contact remove <fp>                       # Remove contact
+$CLI contact request <fp> [message]            # Send contact request
+$CLI contact requests                          # List pending requests
+$CLI contact request-count                     # Show pending request count
+$CLI contact approve <fp>                      # Approve request
+$CLI contact deny <fp>                         # Deny request
+$CLI contact block <id>                        # Block user
+$CLI contact unblock <fp>                      # Unblock user
+$CLI contact blocked                           # List blocked users
+$CLI contact is-blocked <fp>                   # Check if user is blocked
+$CLI contact check-inbox <id>                  # Check inbox for contact
+$CLI contact sync-up                           # Sync contacts to DHT
+$CLI contact sync-down                         # Sync contacts from DHT
 
 # Messaging
-$CLI send <name|fp> "message"         # Send message (use name or FULL fingerprint)
-$CLI messages <name|fp>               # Show conversation (resolves name to fp)
-$CLI check-offline                    # Check offline messages
+$CLI message send <name|fp> "message"          # Send message (use name or FULL fingerprint)
+$CLI message list <name|fp>                    # Show conversation (resolves name to fp)
+$CLI message page <fp> <n> <off>               # Paginated messages
+$CLI message delete <id>                       # Delete a message
+$CLI message mark-read <fp>                    # Mark conversation as read
+$CLI message unread <fp>                       # Get unread count
+$CLI message check-offline                     # Check offline messages
+$CLI message listen                            # Subscribe to push notifications
+$CLI message queue-status                      # Show message queue status
+$CLI message queue-send <fp> <msg>             # Queue message for sending
+$CLI message queue-capacity <n>                # Set queue capacity
+$CLI message retry-pending                     # Retry all pending messages
+$CLI message retry-message <id>                # Retry specific message
+$CLI message backup                            # Backup messages to DHT
+$CLI message restore                           # Restore messages from DHT
 
 # Wallet
-$CLI wallets                          # List wallets
-$CLI balance <index>                  # Show balances
+$CLI wallet list                               # List wallets
+$CLI wallet balance <index>                    # Show balances
+$CLI wallet send <w> <net> <tok> <to> <amt>    # Send tokens
+$CLI wallet transactions <idx>                 # Show transactions
+$CLI wallet estimate-gas <id>                  # Estimate gas for transaction
 
-# Network
-$CLI online <fp>                      # Check if peer online
-
-# NAT Traversal (DEPRECATED - Removed v0.4.61 for privacy)
-# $CLI stun-test                      # DEPRECATED - ICE/STUN removed
-# $CLI ice-status                     # DEPRECATED - ICE/STUN removed
-# $CLI turn-creds                     # DEPRECATED - TURN removed
-
-# Version Management
-$CLI publish-version --lib 0.4.0 --app 0.99.106 --nodus 0.4.3   # Publish version to DHT
-$CLI check-version                    # Check latest version from DHT
+# DEX
+$CLI dex quote <from> <to> <amt> [dex]         # Get DEX quote
+$CLI dex pairs                                 # List DEX pairs
 
 # Groups (GEK encrypted)
-$CLI group-list                       # List all groups
-$CLI group-create "Team Name"         # Create a new group
-$CLI group-send <uuid> "message"      # Send message to group
-$CLI group-info <uuid>                # Show group info and members
-$CLI group-invite <uuid> <fp>         # Invite member to group
-$CLI group-sync <uuid>                # Sync group from DHT to local cache
+$CLI group list                                # List all groups
+$CLI group create "Team Name"                  # Create a new group
+$CLI group send <uuid> "message"               # Send message to group
+$CLI group info <uuid>                         # Show group info and members
+$CLI group members <uuid>                      # List group members
+$CLI group invite <uuid> <fp>                  # Invite member to group
+$CLI group messages <uuid>                     # Show group messages
+$CLI group sync <uuid>                         # Sync group from DHT to local cache
+$CLI group sync-all                            # Sync all groups
+$CLI group sync-up                             # Sync groups to DHT
+$CLI group sync-down                           # Sync groups from DHT
+$CLI group publish-gek <uuid>                  # Publish GEK to DHT
+$CLI group gek-fetch <uuid>                    # Fetch GEK from DHT
+$CLI group invitations                         # List pending invitations
+$CLI group invite-accept <uuid>                # Accept group invitation
+$CLI group invite-reject <uuid>                # Reject group invitation
 
 # Channels (Topic-based public channels)
 $CLI channel create "Name" "Description"
-$CLI channel get <uuid>               # Get channel by UUID
-$CLI channel delete <uuid>            # Delete channel (author only)
-$CLI channel discover --days 7        # Discover channels
-$CLI channel post <uuid> "Message"    # Post to channel
-$CLI channel posts <uuid> [--days N]   # Get posts in channel (default 3 days, max 30)
-$CLI channel subscribe <uuid>         # Subscribe to channel
-$CLI channel unsubscribe <uuid>       # Unsubscribe from channel
-$CLI channel subscriptions            # List subscriptions
-$CLI channel sync                     # Sync subscriptions to/from DHT
+$CLI channel get <uuid>                        # Get channel by UUID
+$CLI channel delete <uuid>                     # Delete channel (author only)
+$CLI channel discover --days 7                 # Discover channels
+$CLI channel post <uuid> "Message"             # Post to channel
+$CLI channel posts <uuid> [--days N]           # Get posts in channel (default 3 days, max 30)
+$CLI channel subscribe <uuid>                  # Subscribe to channel
+$CLI channel unsubscribe <uuid>                # Unsubscribe from channel
+$CLI channel subscriptions                     # List subscriptions
+$CLI channel sync                              # Sync subscriptions to/from DHT
+
+# Network
+$CLI network online <fp>                       # Check if peer online
+$CLI network dht-status                        # Show DHT connection status
+$CLI network pause-presence                    # Pause presence heartbeat
+$CLI network resume-presence                   # Resume presence heartbeat
+$CLI network refresh-presence                  # Refresh presence
+$CLI network changed                           # Notify network changed
+$CLI network bootstrap-registry                # Show bootstrap registry
+
+# Version Management
+$CLI version publish --lib 0.4.0 --app 0.99.106 --nodus 0.4.3   # Publish version to DHT
+$CLI version check                             # Check latest version from DHT
+
+# Signing
+$CLI sign data <data>                          # Sign data
+$CLI sign pubkey                               # Show signing public key
+
+# Debug
+$CLI debug log-level [lvl]                     # Get/set log level
+$CLI debug log-tags [tags]                     # Get/set log tags
+$CLI debug log <on|off>                        # Enable/disable debug log
+$CLI debug entries [n]                         # Show debug log entries
+$CLI debug count                               # Show debug entry count
+$CLI debug clear                               # Clear debug log
+$CLI debug export <file>                       # Export debug log to file
 ```
 
 ---
@@ -117,7 +173,7 @@ $CLI channel sync                     # Sync subscriptions to/from DHT
 
 ### Auto-Load Behavior
 
-For commands that require an identity (everything except `create`, `restore`, `list`):
+For commands that require an identity (everything except `identity create`, `identity restore`, `identity list`):
 - If `-i <fingerprint>` is provided, loads that identity
 - If only ONE identity exists, auto-loads it
 - If multiple identities exist, requires `-i` flag
@@ -126,12 +182,12 @@ For commands that require an identity (everything except `create`, `restore`, `l
 
 ## Identity Commands
 
-### `create <name>` - Create New Identity
+### `identity create <name>` - Create New Identity
 
 Creates a new DNA identity with a BIP39 mnemonic phrase.
 
 ```bash
-dna-messenger-cli create alice
+dna-messenger-cli identity create alice
 ```
 
 **Output:**
@@ -153,26 +209,26 @@ dna-messenger-cli create alice
 
 ---
 
-### `restore <mnemonic...>` - Restore Identity
+### `identity restore <mnemonic...>` - Restore Identity
 
 Restores an identity from a 24-word BIP39 mnemonic.
 
 ```bash
-dna-messenger-cli restore abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual adapt
+dna-messenger-cli identity restore abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual adapt
 ```
 
 **Notes:**
-- Does NOT register name on DHT (use `register` separately)
+- Does NOT register name on DHT (use `identity register` separately)
 - Recreates exact same keys from seed
 
 ---
 
-### `list` - List Identities
+### `identity list` - List Identities
 
 Lists all available identities in the data directory.
 
 ```bash
-dna-messenger-cli list
+dna-messenger-cli identity list
 ```
 
 **Sample Output:**
@@ -184,12 +240,12 @@ Available identities (2):
 
 ---
 
-### `load <fingerprint>` - Load Identity
+### `identity load <fingerprint>` - Load Identity
 
 Loads an identity for operations.
 
 ```bash
-dna-messenger-cli load db73e609
+dna-messenger-cli identity load db73e609
 ```
 
 **Notes:**
@@ -199,20 +255,20 @@ dna-messenger-cli load db73e609
 
 ---
 
-### `whoami` - Show Current Identity
+### `identity whoami` - Show Current Identity
 
 ```bash
-dna-messenger-cli whoami
+dna-messenger-cli identity whoami
 ```
 
 ---
 
-### `change-password` - Change Identity Password
+### `identity change-password` - Change Identity Password
 
 Changes the password protecting the current identity's keys.
 
 ```bash
-dna-messenger-cli change-password
+dna-messenger-cli identity change-password
 ```
 
 **Process:**
@@ -232,12 +288,12 @@ dna-messenger-cli change-password
 
 ---
 
-### `register <name>` - Register DHT Name
+### `identity register <name>` - Register DHT Name
 
 Registers a human-readable name on the DHT.
 
 ```bash
-dna-messenger-cli register alice
+dna-messenger-cli identity register alice
 ```
 
 **Requirements:**
@@ -248,18 +304,18 @@ dna-messenger-cli register alice
 
 ---
 
-### `name` - Show Registered Name
+### `identity name` - Show Registered Name
 
 ```bash
-dna-messenger-cli name
+dna-messenger-cli identity name
 ```
 
 ---
 
-### `lookup <name>` - Check Name Availability
+### `identity lookup <name>` - Check Name Availability
 
 ```bash
-dna-messenger-cli lookup alice
+dna-messenger-cli identity lookup alice
 ```
 
 **Output:**
@@ -270,13 +326,13 @@ dna-messenger-cli lookup alice
 
 ---
 
-### `lookup-profile <name|fingerprint>` - View Any User's DHT Profile
+### `identity lookup-profile <name|fingerprint>` - View Any User's DHT Profile
 
 View complete profile data from DHT for any user (by name or fingerprint).
 
 ```bash
-dna-messenger-cli lookup-profile alice
-dna-messenger-cli lookup-profile 5a8f2c3d4e6b7a9c...
+dna-messenger-cli identity lookup-profile alice
+dna-messenger-cli identity lookup-profile 5a8f2c3d4e6b7a9c...
 ```
 
 **Sample Output:**
@@ -312,18 +368,18 @@ Bio: Post-quantum enthusiast
 
 ---
 
-### `profile [field=value]` - Get/Update Profile
+### `identity profile [field=value]` - Get/Update Profile
 
 Show profile:
 ```bash
-dna-messenger-cli profile
+dna-messenger-cli identity profile
 ```
 
 Update profile field:
 ```bash
-dna-messenger-cli profile bio="Post-quantum enthusiast"
-dna-messenger-cli profile twitter="@alice"
-dna-messenger-cli profile website="https://alice.dev"
+dna-messenger-cli identity profile bio="Post-quantum enthusiast"
+dna-messenger-cli identity profile twitter="@alice"
+dna-messenger-cli identity profile website="https://alice.dev"
 ```
 
 **Valid fields:** bio, location, website, telegram, twitter, github
@@ -332,10 +388,10 @@ dna-messenger-cli profile website="https://alice.dev"
 
 ## Contact Commands
 
-### `contacts` - List Contacts
+### `contact list` - List Contacts
 
 ```bash
-dna-messenger-cli contacts
+dna-messenger-cli contact list
 ```
 
 **Sample Output:**
@@ -351,38 +407,38 @@ Contacts (2):
 
 ---
 
-### `add-contact <name|fingerprint>` - Add Contact
+### `contact add <name|fingerprint>` - Add Contact
 
 ```bash
-dna-messenger-cli add-contact bob
-dna-messenger-cli add-contact 5a8f2c3d4e6b7a9c...
+dna-messenger-cli contact add bob
+dna-messenger-cli contact add 5a8f2c3d4e6b7a9c...
 ```
 
 ---
 
-### `remove-contact <fingerprint>` - Remove Contact
+### `contact remove <fingerprint>` - Remove Contact
 
 ```bash
-dna-messenger-cli remove-contact 5a8f2c3d
+dna-messenger-cli contact remove 5a8f2c3d
 ```
 
 ---
 
-### `request <fingerprint> [message]` - Send Contact Request
+### `contact request <fingerprint> [message]` - Send Contact Request
 
 ```bash
-dna-messenger-cli request 5a8f2c3d "Hi, let's connect!"
-dna-messenger-cli request 5a8f2c3d
+dna-messenger-cli contact request 5a8f2c3d "Hi, let's connect!"
+dna-messenger-cli contact request 5a8f2c3d
 ```
 
 **Note:** The command waits 2 seconds for DHT propagation before exiting.
 
 ---
 
-### `requests` - List Pending Requests
+### `contact requests` - List Pending Requests
 
 ```bash
-dna-messenger-cli requests
+dna-messenger-cli contact requests
 ```
 
 **Sample Output:**
@@ -392,26 +448,26 @@ Pending contact requests (1):
      Fingerprint: 7f8e9d0c1b2a3456...
      Message: Would like to chat!
 
-Use 'approve <fingerprint>' to accept a request.
+Use 'contact approve <fingerprint>' to accept a request.
 ```
 
 ---
 
-### `approve <fingerprint>` - Approve Contact Request
+### `contact approve <fingerprint>` - Approve Contact Request
 
 ```bash
-dna-messenger-cli approve 7f8e9d0c
+dna-messenger-cli contact approve 7f8e9d0c
 ```
 
 ---
 
 ## Messaging Commands
 
-### `send <name|fingerprint> <message>` - Send Message
+### `message send <name|fingerprint> <message>` - Send Message
 
 ```bash
-dna-messenger-cli send nox "Hello from CLI!"
-dna-messenger-cli send 5a8f2c3d4e6b7a9c1b2a34567890abcd... "Hello from CLI!"
+dna-messenger-cli message send nox "Hello from CLI!"
+dna-messenger-cli message send 5a8f2c3d4e6b7a9c1b2a34567890abcd... "Hello from CLI!"
 ```
 
 **IMPORTANT:** Use registered name OR full 128-char fingerprint. Partial fingerprints do NOT work for send.
@@ -423,13 +479,13 @@ dna-messenger-cli send 5a8f2c3d4e6b7a9c1b2a34567890abcd... "Hello from CLI!"
 
 ---
 
-### `messages <name|fingerprint>` - Show Conversation
+### `message list <name|fingerprint>` - Show Conversation
 
 Shows messages with a contact. If a name is provided, it resolves to fingerprint via DHT lookup.
 
 ```bash
-dna-messenger-cli messages nox          # By registered name (resolves to fp)
-dna-messenger-cli messages 5a8f2c3d...  # By full fingerprint
+dna-messenger-cli message list nox          # By registered name (resolves to fp)
+dna-messenger-cli message list 5a8f2c3d...  # By full fingerprint
 ```
 
 **Sample Output:**
@@ -445,20 +501,20 @@ Conversation with f6ddccbee2b3ee69... (3 messages):
 
 ---
 
-### `check-offline` - Check Offline Messages
+### `message check-offline` - Check Offline Messages
 
 ```bash
-dna-messenger-cli check-offline
+dna-messenger-cli message check-offline
 ```
 
 ---
 
 ## Wallet Commands
 
-### `wallets` - List Wallets
+### `wallet list` - List Wallets
 
 ```bash
-dna-messenger-cli wallets
+dna-messenger-cli wallet list
 ```
 
 **Sample Output:**
@@ -467,15 +523,15 @@ Wallets (1):
   0. alice_wallet
      Address: KbB...xyz
 
-Use 'balance <index>' to see balances.
+Use 'wallet balance <index>' to see balances.
 ```
 
 ---
 
-### `balance <index>` - Show Wallet Balances
+### `wallet balance <index>` - Show Wallet Balances
 
 ```bash
-dna-messenger-cli balance 0
+dna-messenger-cli wallet balance 0
 ```
 
 **Sample Output:**
@@ -489,10 +545,10 @@ Balances:
 
 ## Network Commands
 
-### `online <fingerprint>` - Check Peer Online Status
+### `network online <fingerprint>` - Check Peer Online Status
 
 ```bash
-dna-messenger-cli online 5a8f2c3d
+dna-messenger-cli network online 5a8f2c3d
 ```
 
 **Output:**
@@ -520,12 +576,12 @@ These commands are non-functional and return deprecation messages. They are reta
 
 ## Version Commands
 
-### `publish-version` - Publish Version Info to DHT
+### `version publish` - Publish Version Info to DHT
 
 Publishes version information to a well-known DHT key. The first publisher "owns" the key - only that identity can update it.
 
 ```bash
-dna-messenger-cli publish-version --lib 0.4.0 --app 0.99.106 --nodus 0.4.3
+dna-messenger-cli version publish --lib 0.4.0 --app 0.99.106 --nodus 0.4.3
 ```
 
 **Required Arguments:**
@@ -550,19 +606,19 @@ Waiting for DHT propagation...
 ```
 
 **Notes:**
-- Requires identity loaded (`load` command)
+- Requires identity loaded (`identity load` command)
 - First publisher owns the DHT key permanently
 - Subsequent publishes must use the same identity
 - Data is signed with Dilithium5
 
 ---
 
-### `check-version` - Check Latest Version from DHT
+### `version check` - Check Latest Version from DHT
 
 Fetches version info from DHT and compares with local library version.
 
 ```bash
-dna-messenger-cli check-version
+dna-messenger-cli version check
 ```
 
 **Sample Output:**
@@ -588,12 +644,12 @@ Version Info from DHT:
 
 Group messaging uses GEK (Group Encryption Key) for end-to-end encrypted group chats.
 
-### `group-list` - List All Groups
+### `group list` - List All Groups
 
 Lists all groups the user belongs to.
 
 ```bash
-dna-messenger-cli group-list
+dna-messenger-cli group list
 ```
 
 **Sample Output:**
@@ -611,12 +667,12 @@ Groups (2):
 
 ---
 
-### `group-create <name>` - Create New Group
+### `group create <name>` - Create New Group
 
 Creates a new group with you as the owner.
 
 ```bash
-dna-messenger-cli group-create "Project Team"
+dna-messenger-cli group create "Project Team"
 ```
 
 **Sample Output:**
@@ -633,12 +689,12 @@ UUID: a1b2c3d4-e5f6-7890-abcd-ef1234567890
 
 ---
 
-### `group-send <uuid> <message>` - Send Group Message
+### `group send <uuid> <message>` - Send Group Message
 
 Sends an encrypted message to a group.
 
 ```bash
-dna-messenger-cli group-send a1b2c3d4-e5f6-7890-abcd-ef1234567890 "Hello team!"
+dna-messenger-cli group send a1b2c3d4-e5f6-7890-abcd-ef1234567890 "Hello team!"
 ```
 
 **Sample Output:**
@@ -653,12 +709,12 @@ Sending message to group a1b2c3d4...
 
 ---
 
-### `group-info <uuid>` - Show Group Info
+### `group info <uuid>` - Show Group Info
 
 Displays group metadata and member list.
 
 ```bash
-dna-messenger-cli group-info a1b2c3d4-e5f6-7890-abcd-ef1234567890
+dna-messenger-cli group info a1b2c3d4-e5f6-7890-abcd-ef1234567890
 ```
 
 **Sample Output:**
@@ -680,12 +736,12 @@ Members (3):
 
 ---
 
-### `group-invite <uuid> <fingerprint>` - Invite Member
+### `group invite <uuid> <fingerprint>` - Invite Member
 
 Invites a user to join the group. Only the group owner can invite.
 
 ```bash
-dna-messenger-cli group-invite a1b2c3d4-e5f6-7890-abcd-ef1234567890 5a8f2c3d4e6b7a9c...
+dna-messenger-cli group invite a1b2c3d4-e5f6-7890-abcd-ef1234567890 5a8f2c3d4e6b7a9c...
 ```
 
 **Sample Output:**
@@ -702,12 +758,12 @@ GEK rotated to version 3.
 
 ---
 
-### `group-sync <uuid>` - Sync Group from DHT
+### `group sync <uuid>` - Sync Group from DHT
 
 Syncs a specific group from DHT to local cache. Useful for recovering groups after database reset when you're still a member in the DHT metadata.
 
 ```bash
-dna-messenger-cli group-sync c9291b06-6768-44f6-a08e-8f06f4ceebe9
+dna-messenger-cli group sync c9291b06-6768-44f6-a08e-8f06f4ceebe9
 ```
 
 **Sample Output:**
@@ -854,11 +910,11 @@ Comments (2):
 
 | Operation | CLI Wait | Full Propagation |
 |-----------|----------|------------------|
-| `register` | 3 seconds | ~1 minute |
-| `request` | 2 seconds | ~30 seconds |
-| `profile` updates | 2 seconds | ~1 minute |
+| `identity register` | 3 seconds | ~1 minute |
+| `contact request` | 2 seconds | ~30 seconds |
+| `identity profile` updates | 2 seconds | ~1 minute |
 
-**Best Practice:** After `register` or profile updates, wait ~1 minute before expecting other users to see the changes.
+**Best Practice:** After `identity register` or profile updates, wait ~1 minute before expecting other users to see the changes.
 
 ---
 
@@ -867,26 +923,26 @@ Comments (2):
 ### Workflow 1: Create Identity and Register Name
 
 ```bash
-CLI=/opt/dna-messenger/build/cli/dna-messenger-cli
+CLI=/opt/dna/messenger/build/cli/dna-messenger-cli
 
 # Create identity (auto-registers name)
-$CLI create alice
+$CLI identity create alice
 # Wait for DHT propagation
 sleep 60
 
 # Verify registration
-$CLI lookup alice
+$CLI identity lookup alice
 ```
 
 ### Workflow 2: Contact Request Flow
 
 ```bash
 # Lookup target user
-$CLI lookup nox
+$CLI identity lookup nox
 # Note the fingerprint from output
 
 # Send contact request
-$CLI request <NOX_FINGERPRINT> "Hello from CLI!"
+$CLI contact request <NOX_FINGERPRINT> "Hello from CLI!"
 
 # Wait for propagation
 sleep 30
@@ -899,43 +955,43 @@ sleep 30
 
 ```bash
 # User A: Create and register
-$CLI -d /tmp/user-a create user_a
+$CLI -d /tmp/user-a identity create user_a
 sleep 60
 
 # User B: Create and register
-$CLI -d /tmp/user-b create user_b
+$CLI -d /tmp/user-b identity create user_b
 sleep 60
 
 # User A: Send request to User B
-$CLI -d /tmp/user-a request <USER_B_FP> "Let's chat"
+$CLI -d /tmp/user-a contact request <USER_B_FP> "Let's chat"
 sleep 30
 
 # User B: Approve request
-$CLI -d /tmp/user-b requests
-$CLI -d /tmp/user-b approve <USER_A_FP>
+$CLI -d /tmp/user-b contact requests
+$CLI -d /tmp/user-b contact approve <USER_A_FP>
 
 # User A: Send message
-$CLI -d /tmp/user-a send <USER_B_FP> "Hello User B!"
+$CLI -d /tmp/user-a message send <USER_B_FP> "Hello User B!"
 
 # User B: Check messages
-$CLI -d /tmp/user-b messages <USER_A_FP>
+$CLI -d /tmp/user-b message list <USER_A_FP>
 ```
 
 ### Workflow 4: Quiet Mode for Clean Output
 
 ```bash
-$CLI -q list                          # Just identities, no noise
-$CLI -q contacts                      # Just contacts
-$CLI -q messages $BOB_FP              # Just conversation
+$CLI -q identity list                    # Just identities, no noise
+$CLI -q contact list                     # Just contacts
+$CLI -q message list $BOB_FP             # Just conversation
 ```
 
 ### Workflow 5: Specific Identity Selection
 
 ```bash
 # With multiple identities, use -i flag
-$CLI -i db73e609 whoami
-$CLI -i db73e609 contacts
-$CLI -i 5a8f2c3d send <FP> "Message from second identity"
+$CLI -i db73e609 identity whoami
+$CLI -i db73e609 contact list
+$CLI -i 5a8f2c3d message send <FP> "Message from second identity"
 ```
 
 ---
@@ -953,7 +1009,7 @@ $CLI -i 5a8f2c3d send <FP> "Message from second identity"
 ## Tips for Claude
 
 1. **Use `-q` flag** for cleaner output parsing
-2. **Extract fingerprints** from create/list output for subsequent commands
+2. **Extract fingerprints** from `identity create`/`identity list` output for subsequent commands
 3. **Wait for DHT propagation** (~1 minute after register, ~30s after request)
 4. **Isolate tests** with `-d /tmp/unique-test-dir`
 5. **Check exit codes** - 0 = success, non-zero = failure
@@ -978,7 +1034,7 @@ These warnings appear during normal operation and don't indicate errors:
 ## Limitations
 
 - **Single command per invocation**: Each call initializes and shuts down engine
-- **No real-time message receiving**: Use `messages` to poll conversation
+- **No real-time message receiving**: Use `message list` to poll conversation
 - **DHT propagation delay**: Network operations take time to propagate
 - **Auto-load requires single identity**: Use `-i` flag with multiple identities
 
@@ -988,7 +1044,7 @@ These warnings appear during normal operation and don't indicate errors:
 
 | Item | Path |
 |------|------|
-| Executable | `build/cli/dna-messenger-cli` |
+| Executable | `/opt/dna/messenger/build/cli/dna-messenger-cli` |
 | Source | `cli/main.c`, `cli/cli_commands.c` |
 | Default data | `~/.dna/` |
 | Identity keys | `~/.dna/<fingerprint>/keys/` |
@@ -998,6 +1054,14 @@ These warnings appear during normal operation and don't indicate errors:
 ---
 
 ## Changelog
+
+### v3.0.0
+- **BREAKING:** Refactored CLI from flat commands to grouped subcommand structure
+- All commands now use `<group> <subcommand>` format (e.g., `identity create`, `message send`, `contact list`)
+- Command groups: `identity`, `contact`, `message`, `group`, `channel`, `wallet`, `dex`, `network`, `version`, `sign`, `debug`
+- Old flat commands (e.g., `create`, `send`, `contacts`) no longer work
+- Added new commands: `contact deny`, `contact block/unblock/blocked/is-blocked`, `contact check-inbox`, `contact sync-up/sync-down`, `message page/delete/mark-read/unread/queue-send/queue-capacity/retry-pending/retry-message/backup/restore`, `group members/messages/sync-all/sync-up/sync-down/publish-gek/gek-fetch/invitations/invite-accept/invite-reject`, `wallet send/transactions/estimate-gas`, `dex quote/pairs`, `network dht-status/pause-presence/resume-presence/refresh-presence/changed/bootstrap-registry`, `sign data/pubkey`, `debug log-level/log-tags/log/entries/count/clear/export`
+- Updated CLI path to monorepo location: `/opt/dna/messenger/build/cli/dna-messenger-cli`
 
 ### v2.7.0
 - Migrated feeds to channels system:

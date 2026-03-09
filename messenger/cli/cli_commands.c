@@ -291,71 +291,22 @@ static void on_profile(dna_request_id_t request_id, int error,
  * ============================================================================ */
 
 void cmd_help(void) {
-    printf("\nDNA Messenger CLI Commands:\n\n");
-
-    printf("IDENTITY:\n");
-    printf("  create <name>              Create new identity (generates BIP39 mnemonic)\n");
-    printf("  restore <mnemonic...>      Restore identity from 24-word mnemonic\n");
-    printf("  delete <fingerprint>       Delete an identity permanently\n");
-    printf("  list                       List all available identities\n");
-    printf("  load <fingerprint>         Load an identity (can use prefix)\n");
-    printf("  whoami                     Show current identity\n");
-    printf("  change-password            Change password for current identity\n");
-    printf("  register <name>            Register a name on DHT\n");
-    printf("  name                       Show registered name\n");
-    printf("  lookup <name>              Check if name is available\n");
-    printf("  lookup-profile <name|fp>   View any user's DHT profile\n");
-    printf("  profile [field=value]      Show or update profile\n");
+    printf("\nDNA Messenger CLI - Interactive Mode\n\n");
+    printf("Command Groups:\n");
+    printf("  identity    Identity management (create, restore, load, profile, ...)\n");
+    printf("  contact     Contact management (add, remove, request, block, ...)\n");
+    printf("  message     Messaging (send, list, queue, backup, ...)\n");
+    printf("  group       Group chat (create, invite, send, sync, ...)\n");
+    printf("  channel     Channels (create, post, subscribe, ...)\n");
+    printf("  wallet      Wallet operations (balance, send, transactions, ...)\n");
+    printf("  dex         DEX trading (quote, pairs)\n");
+    printf("  network     Network & presence (online, dht-status, ...)\n");
+    printf("  version     Version management (publish, check)\n");
+    printf("  sign        Signing (data, pubkey)\n");
+    printf("  debug       Debug & logging (log-level, entries, export, ...)\n");
     printf("\n");
-
-    printf("CONTACT COMMANDS:\n");
-    printf("  contacts                    List all contacts\n");
-    printf("  add-contact <name|fp>       Add contact\n");
-    printf("  remove-contact <fp>         Remove contact\n");
-    printf("  request <name|fp> [msg]     Send contact request\n");
-    printf("  requests                    List pending requests\n");
-    printf("  approve <fp>                Approve contact request\n");
-    printf("  listen                      Subscribe to contacts and listen (stays running)\n");
-    printf("  turn-creds [--force]        Show/request TURN credentials\n");
-    printf("\n");
-
-    printf("MESSAGING:\n");
-    printf("  send <name|fp> <message>   Send message to recipient\n");
-    printf("  messages <name|fp>         Show conversation with contact\n");
-    printf("  check-offline              Check for offline messages\n");
-    printf("\n");
-
-    printf("GROUP COMMANDS:\n");
-    printf("  group-list                  List all groups\n");
-    printf("  group-create <name>         Create a new group\n");
-    printf("  group-send <name|uuid> <msg>  Send message to group\n");
-    printf("  group-info <uuid>           Show group info and members\n");
-    printf("  group-invite <uuid> <name|fp>  Invite member to group\n");
-    printf("  group-sync <uuid>           Sync group from DHT to local cache\n");
-    printf("  group-publish-gek <name|uuid>  Publish GEK to DHT (owner only)\n");
-    printf("\n");
-
-    printf("WALLET:\n");
-    printf("  wallets                    List wallets\n");
-    printf("  balance <index>            Show wallet balances\n");
-    printf("  dex-quote <from> <to> <amt> [dex]  Get DEX swap quotes\n");
-    printf("  dex-pairs                  List available trading pairs\n");
-    printf("\n");
-
-    printf("NETWORK:\n");
-    printf("  online <name|fp>           Check if peer is online\n");
-    printf("\n");
-
-    printf("VERSION:\n");
-    printf("  publish-version            Publish version info to DHT\n");
-    printf("    --lib <ver> --lib-min <ver> --app <ver> --app-min <ver> --nodus <ver> --nodus-min <ver>\n");
-    printf("  check-version              Check latest version from DHT\n");
-    printf("\n");
-
-    printf("OTHER:\n");
-    printf("  help                       Show this help message\n");
-    printf("  quit / exit                Exit the CLI\n");
-    printf("\n");
+    printf("Type '<group>' to see subcommands (e.g., 'identity' or 'wallet').\n");
+    printf("Type 'quit' to exit.\n\n");
 }
 
 int cmd_create(dna_engine_t *engine, const char *name) {
@@ -4443,6 +4394,1143 @@ int cmd_channel_sync(dna_engine_t *engine) {
 }
 
 /* ============================================================================
+ * GROUP DISPATCHERS — argv-based (for main.c single-command mode)
+ * ============================================================================ */
+
+/* ---------- identity ---------- */
+int dispatch_identity(dna_engine_t *engine, int argc, char **argv, int sub) {
+    if (sub >= argc || strcmp(argv[sub], "help") == 0) {
+        fprintf(stderr, "Usage: identity <subcommand>\n");
+        fprintf(stderr, "  identity create <name>\n");
+        fprintf(stderr, "  identity restore <mnemonic...>\n");
+        fprintf(stderr, "  identity delete <fingerprint>\n");
+        fprintf(stderr, "  identity list\n");
+        fprintf(stderr, "  identity load <fingerprint>\n");
+        fprintf(stderr, "  identity whoami\n");
+        fprintf(stderr, "  identity change-password\n");
+        fprintf(stderr, "  identity register <name>\n");
+        fprintf(stderr, "  identity name\n");
+        fprintf(stderr, "  identity lookup <name>\n");
+        fprintf(stderr, "  identity lookup-profile <name|fp>\n");
+        fprintf(stderr, "  identity profile [field=value]\n");
+        fprintf(stderr, "  identity set-nickname <fp> <nickname>\n");
+        fprintf(stderr, "  identity get-avatar <fp>\n");
+        fprintf(stderr, "  identity get-mnemonic\n");
+        fprintf(stderr, "  identity refresh-profile <fp>\n");
+        return 1;
+    }
+    const char *subcmd = argv[sub];
+    if (strcmp(subcmd, "create") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: identity create <name>\n"); return 1; }
+        return cmd_create(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "restore") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: identity restore <mnemonic...>\n"); return 1; }
+        /* Concatenate remaining args as mnemonic */
+        static char mnemonic[2048];
+        mnemonic[0] = '\0';
+        for (int i = sub + 1; i < argc; i++) {
+            if (i > sub + 1) strncat(mnemonic, " ", sizeof(mnemonic) - strlen(mnemonic) - 1);
+            strncat(mnemonic, argv[i], sizeof(mnemonic) - strlen(mnemonic) - 1);
+        }
+        return cmd_restore(engine, mnemonic);
+    } else if (strcmp(subcmd, "delete") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: identity delete <fingerprint>\n"); return 1; }
+        return cmd_delete(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "list") == 0) {
+        return cmd_list(engine);
+    } else if (strcmp(subcmd, "load") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: identity load <fingerprint>\n"); return 1; }
+        return cmd_load(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "whoami") == 0) {
+        cmd_whoami(engine); return 0;
+    } else if (strcmp(subcmd, "change-password") == 0) {
+        cmd_change_password(engine); return 0;
+    } else if (strcmp(subcmd, "register") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: identity register <name>\n"); return 1; }
+        return cmd_register(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "name") == 0) {
+        return cmd_name(engine);
+    } else if (strcmp(subcmd, "lookup") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: identity lookup <name>\n"); return 1; }
+        return cmd_lookup(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "lookup-profile") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: identity lookup-profile <name|fp>\n"); return 1; }
+        return cmd_lookup_profile(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "profile") == 0) {
+        if (sub + 1 >= argc) {
+            return cmd_profile(engine, NULL, NULL);
+        }
+        /* Parse field=value */
+        char *eq = strchr(argv[sub + 1], '=');
+        if (!eq) { fprintf(stderr, "Usage: identity profile [field=value]\n"); return 1; }
+        *eq = '\0';
+        return cmd_profile(engine, argv[sub + 1], eq + 1);
+    } else if (strcmp(subcmd, "set-nickname") == 0) {
+        if (sub + 2 >= argc) { fprintf(stderr, "Usage: identity set-nickname <fp> <nickname>\n"); return 1; }
+        return cmd_set_nickname(engine, argv[sub + 1], argv[sub + 2]);
+    } else if (strcmp(subcmd, "get-avatar") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: identity get-avatar <fp>\n"); return 1; }
+        return cmd_get_avatar(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "get-mnemonic") == 0) {
+        return cmd_get_mnemonic(engine);
+    } else if (strcmp(subcmd, "refresh-profile") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: identity refresh-profile <fp>\n"); return 1; }
+        return cmd_refresh_profile(engine, argv[sub + 1]);
+    } else {
+        fprintf(stderr, "Unknown identity subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- contact ---------- */
+int dispatch_contact(dna_engine_t *engine, int argc, char **argv, int sub) {
+    if (sub >= argc || strcmp(argv[sub], "help") == 0) {
+        fprintf(stderr, "Usage: contact <subcommand>\n");
+        fprintf(stderr, "  contact list\n");
+        fprintf(stderr, "  contact add <name|fp>\n");
+        fprintf(stderr, "  contact remove <fp>\n");
+        fprintf(stderr, "  contact request <fp> [message]\n");
+        fprintf(stderr, "  contact requests\n");
+        fprintf(stderr, "  contact request-count\n");
+        fprintf(stderr, "  contact approve <fp>\n");
+        fprintf(stderr, "  contact deny <fp>\n");
+        fprintf(stderr, "  contact block <name|fp>\n");
+        fprintf(stderr, "  contact unblock <fp>\n");
+        fprintf(stderr, "  contact blocked\n");
+        fprintf(stderr, "  contact is-blocked <fp>\n");
+        fprintf(stderr, "  contact check-inbox <name|fp>\n");
+        fprintf(stderr, "  contact sync-up\n");
+        fprintf(stderr, "  contact sync-down\n");
+        return 1;
+    }
+    const char *subcmd = argv[sub];
+    if (strcmp(subcmd, "list") == 0) {
+        return cmd_contacts(engine);
+    } else if (strcmp(subcmd, "add") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: contact add <name|fp>\n"); return 1; }
+        return cmd_add_contact(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "remove") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: contact remove <fp>\n"); return 1; }
+        return cmd_remove_contact(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "request") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: contact request <fp> [message]\n"); return 1; }
+        const char *msg = NULL;
+        if (sub + 2 < argc) {
+            /* Concatenate remaining args as message */
+            static char req_msg[2048];
+            req_msg[0] = '\0';
+            for (int i = sub + 2; i < argc; i++) {
+                if (i > sub + 2) strncat(req_msg, " ", sizeof(req_msg) - strlen(req_msg) - 1);
+                strncat(req_msg, argv[i], sizeof(req_msg) - strlen(req_msg) - 1);
+            }
+            msg = req_msg;
+        }
+        return cmd_request(engine, argv[sub + 1], msg);
+    } else if (strcmp(subcmd, "requests") == 0) {
+        return cmd_requests(engine);
+    } else if (strcmp(subcmd, "request-count") == 0) {
+        return cmd_request_count(engine);
+    } else if (strcmp(subcmd, "approve") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: contact approve <fp>\n"); return 1; }
+        return cmd_approve(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "deny") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: contact deny <fp>\n"); return 1; }
+        return cmd_deny(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "block") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: contact block <name|fp>\n"); return 1; }
+        return cmd_block(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "unblock") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: contact unblock <fp>\n"); return 1; }
+        return cmd_unblock(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "blocked") == 0) {
+        return cmd_blocked(engine);
+    } else if (strcmp(subcmd, "is-blocked") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: contact is-blocked <fp>\n"); return 1; }
+        return cmd_is_blocked(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "check-inbox") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: contact check-inbox <name|fp>\n"); return 1; }
+        return cmd_check_inbox(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "sync-up") == 0) {
+        return cmd_sync_contacts_up(engine);
+    } else if (strcmp(subcmd, "sync-down") == 0) {
+        return cmd_sync_contacts_down(engine);
+    } else {
+        fprintf(stderr, "Unknown contact subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- message ---------- */
+int dispatch_message(dna_engine_t *engine, int argc, char **argv, int sub) {
+    if (sub >= argc || strcmp(argv[sub], "help") == 0) {
+        fprintf(stderr, "Usage: message <subcommand>\n");
+        fprintf(stderr, "  message send <recipient> <message...>\n");
+        fprintf(stderr, "  message list <fp>\n");
+        fprintf(stderr, "  message page <fp> <limit> <offset>\n");
+        fprintf(stderr, "  message delete <message_id>\n");
+        fprintf(stderr, "  message mark-read <name|fp>\n");
+        fprintf(stderr, "  message unread <name|fp>\n");
+        fprintf(stderr, "  message check-offline\n");
+        fprintf(stderr, "  message listen\n");
+        fprintf(stderr, "  message queue-status\n");
+        fprintf(stderr, "  message queue-send <recipient> <message...>\n");
+        fprintf(stderr, "  message queue-capacity <n>\n");
+        fprintf(stderr, "  message retry-pending\n");
+        fprintf(stderr, "  message retry-message <message_id>\n");
+        fprintf(stderr, "  message backup\n");
+        fprintf(stderr, "  message restore\n");
+        return 1;
+    }
+    const char *subcmd = argv[sub];
+    if (strcmp(subcmd, "send") == 0) {
+        if (sub + 2 >= argc) { fprintf(stderr, "Usage: message send <recipient> <message...>\n"); return 1; }
+        /* Concatenate remaining args as message */
+        static char msg_buf[4096];
+        msg_buf[0] = '\0';
+        for (int i = sub + 2; i < argc; i++) {
+            if (i > sub + 2) strncat(msg_buf, " ", sizeof(msg_buf) - strlen(msg_buf) - 1);
+            strncat(msg_buf, argv[i], sizeof(msg_buf) - strlen(msg_buf) - 1);
+        }
+        return cmd_send(engine, argv[sub + 1], msg_buf);
+    } else if (strcmp(subcmd, "list") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: message list <fp>\n"); return 1; }
+        return cmd_messages(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "page") == 0) {
+        if (sub + 3 >= argc) { fprintf(stderr, "Usage: message page <fp> <limit> <offset>\n"); return 1; }
+        return cmd_messages_page(engine, argv[sub + 1], atoi(argv[sub + 2]), atoi(argv[sub + 3]));
+    } else if (strcmp(subcmd, "delete") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: message delete <message_id>\n"); return 1; }
+        return cmd_delete_message(engine, strtoll(argv[sub + 1], NULL, 10));
+    } else if (strcmp(subcmd, "mark-read") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: message mark-read <name|fp>\n"); return 1; }
+        return cmd_mark_read(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "unread") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: message unread <name|fp>\n"); return 1; }
+        return cmd_unread(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "check-offline") == 0) {
+        return cmd_check_offline(engine);
+    } else if (strcmp(subcmd, "listen") == 0) {
+        return cmd_listen(engine);
+    } else if (strcmp(subcmd, "queue-status") == 0) {
+        return cmd_queue_status(engine);
+    } else if (strcmp(subcmd, "queue-send") == 0) {
+        if (sub + 2 >= argc) { fprintf(stderr, "Usage: message queue-send <recipient> <message...>\n"); return 1; }
+        static char qmsg_buf[4096];
+        qmsg_buf[0] = '\0';
+        for (int i = sub + 2; i < argc; i++) {
+            if (i > sub + 2) strncat(qmsg_buf, " ", sizeof(qmsg_buf) - strlen(qmsg_buf) - 1);
+            strncat(qmsg_buf, argv[i], sizeof(qmsg_buf) - strlen(qmsg_buf) - 1);
+        }
+        return cmd_queue_send(engine, argv[sub + 1], qmsg_buf);
+    } else if (strcmp(subcmd, "queue-capacity") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: message queue-capacity <n>\n"); return 1; }
+        return cmd_set_queue_capacity(engine, atoi(argv[sub + 1]));
+    } else if (strcmp(subcmd, "retry-pending") == 0) {
+        return cmd_retry_pending(engine);
+    } else if (strcmp(subcmd, "retry-message") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: message retry-message <message_id>\n"); return 1; }
+        return cmd_retry_message(engine, strtoll(argv[sub + 1], NULL, 10));
+    } else if (strcmp(subcmd, "backup") == 0) {
+        return cmd_backup_messages(engine);
+    } else if (strcmp(subcmd, "restore") == 0) {
+        return cmd_restore_messages(engine);
+    } else {
+        fprintf(stderr, "Unknown message subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- group ---------- */
+int dispatch_group(dna_engine_t *engine, int argc, char **argv, int sub) {
+    if (sub >= argc || strcmp(argv[sub], "help") == 0) {
+        fprintf(stderr, "Usage: group <subcommand>\n");
+        fprintf(stderr, "  group list\n");
+        fprintf(stderr, "  group create <name>\n");
+        fprintf(stderr, "  group send <uuid> <message...>\n");
+        fprintf(stderr, "  group info <uuid>\n");
+        fprintf(stderr, "  group members <uuid>\n");
+        fprintf(stderr, "  group invite <uuid> <fp>\n");
+        fprintf(stderr, "  group messages <name|uuid>\n");
+        fprintf(stderr, "  group sync <uuid>\n");
+        fprintf(stderr, "  group sync-all\n");
+        fprintf(stderr, "  group sync-up\n");
+        fprintf(stderr, "  group sync-down\n");
+        fprintf(stderr, "  group publish-gek <name|uuid>\n");
+        fprintf(stderr, "  group gek-fetch <uuid>\n");
+        fprintf(stderr, "  group invitations\n");
+        fprintf(stderr, "  group invite-accept <uuid>\n");
+        fprintf(stderr, "  group invite-reject <uuid>\n");
+        return 1;
+    }
+    const char *subcmd = argv[sub];
+    if (strcmp(subcmd, "list") == 0) {
+        return cmd_group_list(engine);
+    } else if (strcmp(subcmd, "create") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: group create <name>\n"); return 1; }
+        return cmd_group_create(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "send") == 0) {
+        if (sub + 2 >= argc) { fprintf(stderr, "Usage: group send <uuid> <message...>\n"); return 1; }
+        static char gmsg_buf[4096];
+        gmsg_buf[0] = '\0';
+        for (int i = sub + 2; i < argc; i++) {
+            if (i > sub + 2) strncat(gmsg_buf, " ", sizeof(gmsg_buf) - strlen(gmsg_buf) - 1);
+            strncat(gmsg_buf, argv[i], sizeof(gmsg_buf) - strlen(gmsg_buf) - 1);
+        }
+        return cmd_group_send(engine, argv[sub + 1], gmsg_buf);
+    } else if (strcmp(subcmd, "info") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: group info <uuid>\n"); return 1; }
+        return cmd_group_info(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "members") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: group members <uuid>\n"); return 1; }
+        return cmd_group_members(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "invite") == 0) {
+        if (sub + 2 >= argc) { fprintf(stderr, "Usage: group invite <uuid> <fp>\n"); return 1; }
+        return cmd_group_invite(engine, argv[sub + 1], argv[sub + 2]);
+    } else if (strcmp(subcmd, "messages") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: group messages <name|uuid>\n"); return 1; }
+        return cmd_group_messages(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "sync") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: group sync <uuid>\n"); return 1; }
+        return cmd_group_sync(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "sync-all") == 0) {
+        return cmd_sync_groups(engine);
+    } else if (strcmp(subcmd, "sync-up") == 0) {
+        return cmd_sync_groups_up(engine);
+    } else if (strcmp(subcmd, "sync-down") == 0) {
+        return cmd_sync_groups_down(engine);
+    } else if (strcmp(subcmd, "publish-gek") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: group publish-gek <name|uuid>\n"); return 1; }
+        return cmd_group_publish_gek(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "gek-fetch") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: group gek-fetch <uuid>\n"); return 1; }
+        return cmd_gek_fetch(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "invitations") == 0) {
+        return cmd_invitations(engine);
+    } else if (strcmp(subcmd, "invite-accept") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: group invite-accept <uuid>\n"); return 1; }
+        return cmd_invite_accept(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "invite-reject") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: group invite-reject <uuid>\n"); return 1; }
+        return cmd_invite_reject(engine, argv[sub + 1]);
+    } else {
+        fprintf(stderr, "Unknown group subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- channel ---------- */
+int dispatch_channel(dna_engine_t *engine, int argc, char **argv, int sub) {
+    if (sub >= argc || strcmp(argv[sub], "help") == 0) {
+        fprintf(stderr, "Usage: channel <subcommand>\n");
+        fprintf(stderr, "  channel create <name> [description]\n");
+        fprintf(stderr, "  channel get <uuid>\n");
+        fprintf(stderr, "  channel delete <uuid>\n");
+        fprintf(stderr, "  channel discover [--days N]\n");
+        fprintf(stderr, "  channel post <uuid> <body>\n");
+        fprintf(stderr, "  channel posts <uuid> [--days N]\n");
+        fprintf(stderr, "  channel subscribe <uuid>\n");
+        fprintf(stderr, "  channel unsubscribe <uuid>\n");
+        fprintf(stderr, "  channel subscriptions\n");
+        fprintf(stderr, "  channel sync\n");
+        return 1;
+    }
+    const char *subcmd = argv[sub];
+    if (strcmp(subcmd, "create") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: channel create <name> [description]\n"); return 1; }
+        const char *desc = (sub + 2 < argc) ? argv[sub + 2] : NULL;
+        return cmd_channel_create(engine, argv[sub + 1], desc);
+    } else if (strcmp(subcmd, "get") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: channel get <uuid>\n"); return 1; }
+        return cmd_channel_get(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "delete") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: channel delete <uuid>\n"); return 1; }
+        return cmd_channel_delete(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "discover") == 0) {
+        int days = 7;
+        for (int i = sub + 1; i < argc; i++) {
+            if (strcmp(argv[i], "--days") == 0 && i + 1 < argc) {
+                days = atoi(argv[++i]);
+            }
+        }
+        return cmd_channel_discover(engine, days);
+    } else if (strcmp(subcmd, "post") == 0) {
+        if (sub + 2 >= argc) { fprintf(stderr, "Usage: channel post <uuid> <body>\n"); return 1; }
+        /* Concatenate remaining args as body */
+        static char post_buf[4096];
+        post_buf[0] = '\0';
+        for (int i = sub + 2; i < argc; i++) {
+            if (i > sub + 2) strncat(post_buf, " ", sizeof(post_buf) - strlen(post_buf) - 1);
+            strncat(post_buf, argv[i], sizeof(post_buf) - strlen(post_buf) - 1);
+        }
+        return cmd_channel_post(engine, argv[sub + 1], post_buf);
+    } else if (strcmp(subcmd, "posts") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: channel posts <uuid> [--days N]\n"); return 1; }
+        int days = 0;
+        for (int i = sub + 2; i < argc; i++) {
+            if (strcmp(argv[i], "--days") == 0 && i + 1 < argc) {
+                days = atoi(argv[++i]);
+            }
+        }
+        return cmd_channel_posts(engine, argv[sub + 1], days);
+    } else if (strcmp(subcmd, "subscribe") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: channel subscribe <uuid>\n"); return 1; }
+        return cmd_channel_subscribe(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "unsubscribe") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: channel unsubscribe <uuid>\n"); return 1; }
+        return cmd_channel_unsubscribe(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "subscriptions") == 0) {
+        return cmd_channel_subscriptions(engine);
+    } else if (strcmp(subcmd, "sync") == 0) {
+        return cmd_channel_sync(engine);
+    } else {
+        fprintf(stderr, "Unknown channel subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- wallet ---------- */
+int dispatch_wallet(dna_engine_t *engine, int argc, char **argv, int sub) {
+    if (sub >= argc || strcmp(argv[sub], "help") == 0) {
+        fprintf(stderr, "Usage: wallet <subcommand>\n");
+        fprintf(stderr, "  wallet list\n");
+        fprintf(stderr, "  wallet balance <wallet_index>\n");
+        fprintf(stderr, "  wallet send <wallet_idx> <network> <token> <to_address> <amount>\n");
+        fprintf(stderr, "  wallet transactions <wallet_index>\n");
+        fprintf(stderr, "  wallet estimate-gas <network_id>\n");
+        return 1;
+    }
+    const char *subcmd = argv[sub];
+    if (strcmp(subcmd, "list") == 0) {
+        return cmd_wallets(engine);
+    } else if (strcmp(subcmd, "balance") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: wallet balance <wallet_index>\n"); return 1; }
+        return cmd_balance(engine, atoi(argv[sub + 1]));
+    } else if (strcmp(subcmd, "send") == 0) {
+        if (sub + 5 >= argc) { fprintf(stderr, "Usage: wallet send <wallet_idx> <network> <token> <to_address> <amount>\n"); return 1; }
+        return cmd_send_tokens(engine, atoi(argv[sub + 1]), argv[sub + 2], argv[sub + 3], argv[sub + 4], argv[sub + 5]);
+    } else if (strcmp(subcmd, "transactions") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: wallet transactions <wallet_index>\n"); return 1; }
+        return cmd_transactions(engine, atoi(argv[sub + 1]));
+    } else if (strcmp(subcmd, "estimate-gas") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: wallet estimate-gas <network_id>\n"); return 1; }
+        return cmd_estimate_gas(engine, atoi(argv[sub + 1]));
+    } else {
+        fprintf(stderr, "Unknown wallet subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- dex ---------- */
+int dispatch_dex(dna_engine_t *engine, int argc, char **argv, int sub) {
+    if (sub >= argc || strcmp(argv[sub], "help") == 0) {
+        fprintf(stderr, "Usage: dex <subcommand>\n");
+        fprintf(stderr, "  dex quote <from_token> <to_token> <amount> [dex_filter]\n");
+        fprintf(stderr, "  dex pairs\n");
+        return 1;
+    }
+    const char *subcmd = argv[sub];
+    if (strcmp(subcmd, "quote") == 0) {
+        if (sub + 3 >= argc) { fprintf(stderr, "Usage: dex quote <from_token> <to_token> <amount> [dex_filter]\n"); return 1; }
+        const char *filter = (sub + 4 < argc) ? argv[sub + 4] : NULL;
+        return cmd_dex_quote(engine, argv[sub + 1], argv[sub + 2], argv[sub + 3], filter);
+    } else if (strcmp(subcmd, "pairs") == 0) {
+        return cmd_dex_pairs(engine);
+    } else {
+        fprintf(stderr, "Unknown dex subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- network ---------- */
+int dispatch_network(dna_engine_t *engine, int argc, char **argv, int sub) {
+    if (sub >= argc || strcmp(argv[sub], "help") == 0) {
+        fprintf(stderr, "Usage: network <subcommand>\n");
+        fprintf(stderr, "  network online <fp>\n");
+        fprintf(stderr, "  network dht-status\n");
+        fprintf(stderr, "  network pause-presence\n");
+        fprintf(stderr, "  network resume-presence\n");
+        fprintf(stderr, "  network refresh-presence\n");
+        fprintf(stderr, "  network changed\n");
+        fprintf(stderr, "  network bootstrap-registry\n");
+        return 1;
+    }
+    const char *subcmd = argv[sub];
+    if (strcmp(subcmd, "online") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: network online <fp>\n"); return 1; }
+        return cmd_online(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "dht-status") == 0) {
+        return cmd_dht_status(engine);
+    } else if (strcmp(subcmd, "pause-presence") == 0) {
+        return cmd_pause_presence(engine);
+    } else if (strcmp(subcmd, "resume-presence") == 0) {
+        return cmd_resume_presence(engine);
+    } else if (strcmp(subcmd, "refresh-presence") == 0) {
+        return cmd_refresh_presence(engine);
+    } else if (strcmp(subcmd, "changed") == 0) {
+        return cmd_network_changed(engine);
+    } else if (strcmp(subcmd, "bootstrap-registry") == 0) {
+        return cmd_bootstrap_registry(engine);
+    } else {
+        fprintf(stderr, "Unknown network subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- version ---------- */
+int dispatch_version(dna_engine_t *engine, int argc, char **argv, int sub) {
+    if (sub >= argc || strcmp(argv[sub], "help") == 0) {
+        fprintf(stderr, "Usage: version <subcommand>\n");
+        fprintf(stderr, "  version publish --lib <ver> --app <ver> --nodus <ver>\n");
+        fprintf(stderr, "                  [--lib-min <ver>] [--app-min <ver>] [--nodus-min <ver>]\n");
+        fprintf(stderr, "  version check\n");
+        return 1;
+    }
+    const char *subcmd = argv[sub];
+    if (strcmp(subcmd, "publish") == 0) {
+        char *lib_ver = NULL, *lib_min = NULL;
+        char *app_ver = NULL, *app_min = NULL;
+        char *nodus_ver = NULL, *nodus_min = NULL;
+        for (int i = sub + 1; i < argc; i++) {
+            if (strcmp(argv[i], "--lib") == 0 && i + 1 < argc) {
+                lib_ver = argv[++i];
+            } else if (strcmp(argv[i], "--lib-min") == 0 && i + 1 < argc) {
+                lib_min = argv[++i];
+            } else if (strcmp(argv[i], "--app") == 0 && i + 1 < argc) {
+                app_ver = argv[++i];
+            } else if (strcmp(argv[i], "--app-min") == 0 && i + 1 < argc) {
+                app_min = argv[++i];
+            } else if (strcmp(argv[i], "--nodus") == 0 && i + 1 < argc) {
+                nodus_ver = argv[++i];
+            } else if (strcmp(argv[i], "--nodus-min") == 0 && i + 1 < argc) {
+                nodus_min = argv[++i];
+            }
+        }
+        if (!lib_ver || !app_ver || !nodus_ver) {
+            fprintf(stderr, "Usage: version publish --lib <ver> --app <ver> --nodus <ver>\n");
+            fprintf(stderr, "       [--lib-min <ver>] [--app-min <ver>] [--nodus-min <ver>]\n");
+            return 1;
+        }
+        return cmd_publish_version(engine, lib_ver, lib_min, app_ver, app_min, nodus_ver, nodus_min);
+    } else if (strcmp(subcmd, "check") == 0) {
+        return cmd_check_version(engine);
+    } else {
+        fprintf(stderr, "Unknown version subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- sign ---------- */
+int dispatch_sign(dna_engine_t *engine, int argc, char **argv, int sub) {
+    if (sub >= argc || strcmp(argv[sub], "help") == 0) {
+        fprintf(stderr, "Usage: sign <subcommand>\n");
+        fprintf(stderr, "  sign data <data...>\n");
+        fprintf(stderr, "  sign pubkey\n");
+        return 1;
+    }
+    const char *subcmd = argv[sub];
+    if (strcmp(subcmd, "data") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: sign data <data...>\n"); return 1; }
+        /* Concatenate remaining args as data */
+        static char sign_buf[4096];
+        sign_buf[0] = '\0';
+        for (int i = sub + 1; i < argc; i++) {
+            if (i > sub + 1) strncat(sign_buf, " ", sizeof(sign_buf) - strlen(sign_buf) - 1);
+            strncat(sign_buf, argv[i], sizeof(sign_buf) - strlen(sign_buf) - 1);
+        }
+        return cmd_sign(engine, sign_buf);
+    } else if (strcmp(subcmd, "pubkey") == 0) {
+        return cmd_signing_pubkey(engine);
+    } else {
+        fprintf(stderr, "Unknown sign subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- debug ---------- */
+int dispatch_debug(dna_engine_t *engine, int argc, char **argv, int sub) {
+    if (sub >= argc || strcmp(argv[sub], "help") == 0) {
+        fprintf(stderr, "Usage: debug <subcommand>\n");
+        fprintf(stderr, "  debug log-level [level]\n");
+        fprintf(stderr, "  debug log-tags [tags]\n");
+        fprintf(stderr, "  debug log <on|off>\n");
+        fprintf(stderr, "  debug entries [max_entries]\n");
+        fprintf(stderr, "  debug count\n");
+        fprintf(stderr, "  debug clear\n");
+        fprintf(stderr, "  debug export <filepath>\n");
+        return 1;
+    }
+    const char *subcmd = argv[sub];
+    if (strcmp(subcmd, "log-level") == 0) {
+        const char *level = (sub + 1 < argc) ? argv[sub + 1] : NULL;
+        return cmd_log_level(engine, level);
+    } else if (strcmp(subcmd, "log-tags") == 0) {
+        const char *tags = (sub + 1 < argc) ? argv[sub + 1] : NULL;
+        return cmd_log_tags(engine, tags);
+    } else if (strcmp(subcmd, "log") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: debug log <on|off>\n"); return 1; }
+        bool enable = (strcmp(argv[sub + 1], "on") == 0);
+        return cmd_debug_log(engine, enable);
+    } else if (strcmp(subcmd, "entries") == 0) {
+        int n = (sub + 1 < argc) ? atoi(argv[sub + 1]) : 50;
+        return cmd_debug_entries(engine, n);
+    } else if (strcmp(subcmd, "count") == 0) {
+        return cmd_debug_count(engine);
+    } else if (strcmp(subcmd, "clear") == 0) {
+        return cmd_debug_clear(engine);
+    } else if (strcmp(subcmd, "export") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: debug export <filepath>\n"); return 1; }
+        return cmd_debug_export(engine, argv[sub + 1]);
+    } else {
+        fprintf(stderr, "Unknown debug subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ============================================================================
+ * GROUP DISPATCHERS — REPL-based (for execute_command)
+ * ============================================================================ */
+
+/* ---------- identity (REPL) ---------- */
+int dispatch_identity_repl(dna_engine_t *engine, const char *subcmd) {
+    if (!subcmd || strcmp(subcmd, "help") == 0) {
+        fprintf(stderr, "Usage: identity <subcommand>\n");
+        fprintf(stderr, "  create | restore | delete | list | load | whoami | change-password\n");
+        fprintf(stderr, "  register | name | lookup | lookup-profile | profile\n");
+        fprintf(stderr, "  set-nickname | get-avatar | get-mnemonic | refresh-profile\n");
+        return 1;
+    }
+    if (strcmp(subcmd, "create") == 0) {
+        char *name = strtok(NULL, " \t");
+        if (!name) { fprintf(stderr, "Usage: identity create <name>\n"); return 1; }
+        return cmd_create(engine, name);
+    } else if (strcmp(subcmd, "restore") == 0) {
+        char *mnemonic = strtok(NULL, "");
+        if (!mnemonic) { fprintf(stderr, "Usage: identity restore <mnemonic...>\n"); return 1; }
+        return cmd_restore(engine, mnemonic);
+    } else if (strcmp(subcmd, "delete") == 0) {
+        char *fp = strtok(NULL, " \t");
+        if (!fp) { fprintf(stderr, "Usage: identity delete <fingerprint>\n"); return 1; }
+        return cmd_delete(engine, fp);
+    } else if (strcmp(subcmd, "list") == 0) {
+        return cmd_list(engine);
+    } else if (strcmp(subcmd, "load") == 0) {
+        char *fp = strtok(NULL, " \t");
+        if (!fp) { fprintf(stderr, "Usage: identity load <fingerprint>\n"); return 1; }
+        return cmd_load(engine, fp);
+    } else if (strcmp(subcmd, "whoami") == 0) {
+        cmd_whoami(engine); return 0;
+    } else if (strcmp(subcmd, "change-password") == 0) {
+        cmd_change_password(engine); return 0;
+    } else if (strcmp(subcmd, "register") == 0) {
+        char *name = strtok(NULL, " \t");
+        if (!name) { fprintf(stderr, "Usage: identity register <name>\n"); return 1; }
+        return cmd_register(engine, name);
+    } else if (strcmp(subcmd, "name") == 0) {
+        return cmd_name(engine);
+    } else if (strcmp(subcmd, "lookup") == 0) {
+        char *name = strtok(NULL, " \t");
+        if (!name) { fprintf(stderr, "Usage: identity lookup <name>\n"); return 1; }
+        return cmd_lookup(engine, name);
+    } else if (strcmp(subcmd, "lookup-profile") == 0) {
+        char *id = strtok(NULL, " \t");
+        if (!id) { fprintf(stderr, "Usage: identity lookup-profile <name|fp>\n"); return 1; }
+        return cmd_lookup_profile(engine, id);
+    } else if (strcmp(subcmd, "profile") == 0) {
+        char *arg = strtok(NULL, " \t");
+        if (!arg) {
+            return cmd_profile(engine, NULL, NULL);
+        }
+        char *eq = strchr(arg, '=');
+        if (!eq) { fprintf(stderr, "Usage: identity profile [field=value]\n"); return 1; }
+        *eq = '\0';
+        return cmd_profile(engine, arg, eq + 1);
+    } else if (strcmp(subcmd, "set-nickname") == 0) {
+        char *fp = strtok(NULL, " \t");
+        char *nick = strtok(NULL, " \t");
+        if (!fp || !nick) { fprintf(stderr, "Usage: identity set-nickname <fp> <nickname>\n"); return 1; }
+        return cmd_set_nickname(engine, fp, nick);
+    } else if (strcmp(subcmd, "get-avatar") == 0) {
+        char *fp = strtok(NULL, " \t");
+        if (!fp) { fprintf(stderr, "Usage: identity get-avatar <fp>\n"); return 1; }
+        return cmd_get_avatar(engine, fp);
+    } else if (strcmp(subcmd, "get-mnemonic") == 0) {
+        return cmd_get_mnemonic(engine);
+    } else if (strcmp(subcmd, "refresh-profile") == 0) {
+        char *fp = strtok(NULL, " \t");
+        if (!fp) { fprintf(stderr, "Usage: identity refresh-profile <fp>\n"); return 1; }
+        return cmd_refresh_profile(engine, fp);
+    } else {
+        fprintf(stderr, "Unknown identity subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- contact (REPL) ---------- */
+int dispatch_contact_repl(dna_engine_t *engine, const char *subcmd) {
+    if (!subcmd || strcmp(subcmd, "help") == 0) {
+        fprintf(stderr, "Usage: contact <subcommand>\n");
+        fprintf(stderr, "  list | add | remove | request | requests | request-count\n");
+        fprintf(stderr, "  approve | deny | block | unblock | blocked | is-blocked\n");
+        fprintf(stderr, "  check-inbox | sync-up | sync-down\n");
+        return 1;
+    }
+    if (strcmp(subcmd, "list") == 0) {
+        return cmd_contacts(engine);
+    } else if (strcmp(subcmd, "add") == 0) {
+        char *id = strtok(NULL, " \t");
+        if (!id) { fprintf(stderr, "Usage: contact add <name|fp>\n"); return 1; }
+        return cmd_add_contact(engine, id);
+    } else if (strcmp(subcmd, "remove") == 0) {
+        char *fp = strtok(NULL, " \t");
+        if (!fp) { fprintf(stderr, "Usage: contact remove <fp>\n"); return 1; }
+        return cmd_remove_contact(engine, fp);
+    } else if (strcmp(subcmd, "request") == 0) {
+        char *fp = strtok(NULL, " \t");
+        if (!fp) { fprintf(stderr, "Usage: contact request <fp> [message]\n"); return 1; }
+        char *msg = strtok(NULL, "");
+        return cmd_request(engine, fp, msg);
+    } else if (strcmp(subcmd, "requests") == 0) {
+        return cmd_requests(engine);
+    } else if (strcmp(subcmd, "request-count") == 0) {
+        return cmd_request_count(engine);
+    } else if (strcmp(subcmd, "approve") == 0) {
+        char *fp = strtok(NULL, " \t");
+        if (!fp) { fprintf(stderr, "Usage: contact approve <fp>\n"); return 1; }
+        return cmd_approve(engine, fp);
+    } else if (strcmp(subcmd, "deny") == 0) {
+        char *fp = strtok(NULL, " \t");
+        if (!fp) { fprintf(stderr, "Usage: contact deny <fp>\n"); return 1; }
+        return cmd_deny(engine, fp);
+    } else if (strcmp(subcmd, "block") == 0) {
+        char *id = strtok(NULL, " \t");
+        if (!id) { fprintf(stderr, "Usage: contact block <name|fp>\n"); return 1; }
+        return cmd_block(engine, id);
+    } else if (strcmp(subcmd, "unblock") == 0) {
+        char *fp = strtok(NULL, " \t");
+        if (!fp) { fprintf(stderr, "Usage: contact unblock <fp>\n"); return 1; }
+        return cmd_unblock(engine, fp);
+    } else if (strcmp(subcmd, "blocked") == 0) {
+        return cmd_blocked(engine);
+    } else if (strcmp(subcmd, "is-blocked") == 0) {
+        char *fp = strtok(NULL, " \t");
+        if (!fp) { fprintf(stderr, "Usage: contact is-blocked <fp>\n"); return 1; }
+        return cmd_is_blocked(engine, fp);
+    } else if (strcmp(subcmd, "check-inbox") == 0) {
+        char *id = strtok(NULL, " \t");
+        if (!id) { fprintf(stderr, "Usage: contact check-inbox <name|fp>\n"); return 1; }
+        return cmd_check_inbox(engine, id);
+    } else if (strcmp(subcmd, "sync-up") == 0) {
+        return cmd_sync_contacts_up(engine);
+    } else if (strcmp(subcmd, "sync-down") == 0) {
+        return cmd_sync_contacts_down(engine);
+    } else {
+        fprintf(stderr, "Unknown contact subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- message (REPL) ---------- */
+int dispatch_message_repl(dna_engine_t *engine, const char *subcmd) {
+    if (!subcmd || strcmp(subcmd, "help") == 0) {
+        fprintf(stderr, "Usage: message <subcommand>\n");
+        fprintf(stderr, "  send | list | page | delete | mark-read | unread\n");
+        fprintf(stderr, "  check-offline | listen | queue-status | queue-send\n");
+        fprintf(stderr, "  queue-capacity | retry-pending | retry-message | backup | restore\n");
+        return 1;
+    }
+    if (strcmp(subcmd, "send") == 0) {
+        char *recipient = strtok(NULL, " \t");
+        if (!recipient) { fprintf(stderr, "Usage: message send <recipient> <message...>\n"); return 1; }
+        char *msg = strtok(NULL, "");
+        if (!msg) { fprintf(stderr, "Usage: message send <recipient> <message...>\n"); return 1; }
+        return cmd_send(engine, recipient, msg);
+    } else if (strcmp(subcmd, "list") == 0) {
+        char *fp = strtok(NULL, " \t");
+        if (!fp) { fprintf(stderr, "Usage: message list <fp>\n"); return 1; }
+        return cmd_messages(engine, fp);
+    } else if (strcmp(subcmd, "page") == 0) {
+        char *fp = strtok(NULL, " \t");
+        char *lim = strtok(NULL, " \t");
+        char *off = strtok(NULL, " \t");
+        if (!fp || !lim || !off) { fprintf(stderr, "Usage: message page <fp> <limit> <offset>\n"); return 1; }
+        return cmd_messages_page(engine, fp, atoi(lim), atoi(off));
+    } else if (strcmp(subcmd, "delete") == 0) {
+        char *id = strtok(NULL, " \t");
+        if (!id) { fprintf(stderr, "Usage: message delete <message_id>\n"); return 1; }
+        return cmd_delete_message(engine, strtoll(id, NULL, 10));
+    } else if (strcmp(subcmd, "mark-read") == 0) {
+        char *id = strtok(NULL, " \t");
+        if (!id) { fprintf(stderr, "Usage: message mark-read <name|fp>\n"); return 1; }
+        return cmd_mark_read(engine, id);
+    } else if (strcmp(subcmd, "unread") == 0) {
+        char *id = strtok(NULL, " \t");
+        if (!id) { fprintf(stderr, "Usage: message unread <name|fp>\n"); return 1; }
+        return cmd_unread(engine, id);
+    } else if (strcmp(subcmd, "check-offline") == 0) {
+        return cmd_check_offline(engine);
+    } else if (strcmp(subcmd, "listen") == 0) {
+        return cmd_listen(engine);
+    } else if (strcmp(subcmd, "queue-status") == 0) {
+        return cmd_queue_status(engine);
+    } else if (strcmp(subcmd, "queue-send") == 0) {
+        char *recipient = strtok(NULL, " \t");
+        if (!recipient) { fprintf(stderr, "Usage: message queue-send <recipient> <message...>\n"); return 1; }
+        char *msg = strtok(NULL, "");
+        if (!msg) { fprintf(stderr, "Usage: message queue-send <recipient> <message...>\n"); return 1; }
+        return cmd_queue_send(engine, recipient, msg);
+    } else if (strcmp(subcmd, "queue-capacity") == 0) {
+        char *n = strtok(NULL, " \t");
+        if (!n) { fprintf(stderr, "Usage: message queue-capacity <n>\n"); return 1; }
+        return cmd_set_queue_capacity(engine, atoi(n));
+    } else if (strcmp(subcmd, "retry-pending") == 0) {
+        return cmd_retry_pending(engine);
+    } else if (strcmp(subcmd, "retry-message") == 0) {
+        char *id = strtok(NULL, " \t");
+        if (!id) { fprintf(stderr, "Usage: message retry-message <message_id>\n"); return 1; }
+        return cmd_retry_message(engine, strtoll(id, NULL, 10));
+    } else if (strcmp(subcmd, "backup") == 0) {
+        return cmd_backup_messages(engine);
+    } else if (strcmp(subcmd, "restore") == 0) {
+        return cmd_restore_messages(engine);
+    } else {
+        fprintf(stderr, "Unknown message subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- group (REPL) ---------- */
+int dispatch_group_repl(dna_engine_t *engine, const char *subcmd) {
+    if (!subcmd || strcmp(subcmd, "help") == 0) {
+        fprintf(stderr, "Usage: group <subcommand>\n");
+        fprintf(stderr, "  list | create | send | info | members | invite | messages\n");
+        fprintf(stderr, "  sync | sync-all | sync-up | sync-down | publish-gek | gek-fetch\n");
+        fprintf(stderr, "  invitations | invite-accept | invite-reject\n");
+        return 1;
+    }
+    if (strcmp(subcmd, "list") == 0) {
+        return cmd_group_list(engine);
+    } else if (strcmp(subcmd, "create") == 0) {
+        char *name = strtok(NULL, " \t");
+        if (!name) { fprintf(stderr, "Usage: group create <name>\n"); return 1; }
+        return cmd_group_create(engine, name);
+    } else if (strcmp(subcmd, "send") == 0) {
+        char *uuid = strtok(NULL, " \t");
+        if (!uuid) { fprintf(stderr, "Usage: group send <uuid> <message...>\n"); return 1; }
+        char *msg = strtok(NULL, "");
+        if (!msg) { fprintf(stderr, "Usage: group send <uuid> <message...>\n"); return 1; }
+        return cmd_group_send(engine, uuid, msg);
+    } else if (strcmp(subcmd, "info") == 0) {
+        char *uuid = strtok(NULL, " \t");
+        if (!uuid) { fprintf(stderr, "Usage: group info <uuid>\n"); return 1; }
+        return cmd_group_info(engine, uuid);
+    } else if (strcmp(subcmd, "members") == 0) {
+        char *uuid = strtok(NULL, " \t");
+        if (!uuid) { fprintf(stderr, "Usage: group members <uuid>\n"); return 1; }
+        return cmd_group_members(engine, uuid);
+    } else if (strcmp(subcmd, "invite") == 0) {
+        char *uuid = strtok(NULL, " \t");
+        char *fp = strtok(NULL, " \t");
+        if (!uuid || !fp) { fprintf(stderr, "Usage: group invite <uuid> <fp>\n"); return 1; }
+        return cmd_group_invite(engine, uuid, fp);
+    } else if (strcmp(subcmd, "messages") == 0) {
+        char *id = strtok(NULL, " \t");
+        if (!id) { fprintf(stderr, "Usage: group messages <name|uuid>\n"); return 1; }
+        return cmd_group_messages(engine, id);
+    } else if (strcmp(subcmd, "sync") == 0) {
+        char *uuid = strtok(NULL, " \t");
+        if (!uuid) { fprintf(stderr, "Usage: group sync <uuid>\n"); return 1; }
+        return cmd_group_sync(engine, uuid);
+    } else if (strcmp(subcmd, "sync-all") == 0) {
+        return cmd_sync_groups(engine);
+    } else if (strcmp(subcmd, "sync-up") == 0) {
+        return cmd_sync_groups_up(engine);
+    } else if (strcmp(subcmd, "sync-down") == 0) {
+        return cmd_sync_groups_down(engine);
+    } else if (strcmp(subcmd, "publish-gek") == 0) {
+        char *id = strtok(NULL, " \t");
+        if (!id) { fprintf(stderr, "Usage: group publish-gek <name|uuid>\n"); return 1; }
+        return cmd_group_publish_gek(engine, id);
+    } else if (strcmp(subcmd, "gek-fetch") == 0) {
+        char *uuid = strtok(NULL, " \t");
+        if (!uuid) { fprintf(stderr, "Usage: group gek-fetch <uuid>\n"); return 1; }
+        return cmd_gek_fetch(engine, uuid);
+    } else if (strcmp(subcmd, "invitations") == 0) {
+        return cmd_invitations(engine);
+    } else if (strcmp(subcmd, "invite-accept") == 0) {
+        char *uuid = strtok(NULL, " \t");
+        if (!uuid) { fprintf(stderr, "Usage: group invite-accept <uuid>\n"); return 1; }
+        return cmd_invite_accept(engine, uuid);
+    } else if (strcmp(subcmd, "invite-reject") == 0) {
+        char *uuid = strtok(NULL, " \t");
+        if (!uuid) { fprintf(stderr, "Usage: group invite-reject <uuid>\n"); return 1; }
+        return cmd_invite_reject(engine, uuid);
+    } else {
+        fprintf(stderr, "Unknown group subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- channel (REPL) ---------- */
+int dispatch_channel_repl(dna_engine_t *engine, const char *subcmd) {
+    if (!subcmd || strcmp(subcmd, "help") == 0) {
+        fprintf(stderr, "Usage: channel <subcommand>\n");
+        fprintf(stderr, "  create | get | delete | discover | post | posts\n");
+        fprintf(stderr, "  subscribe | unsubscribe | subscriptions | sync\n");
+        return 1;
+    }
+    if (strcmp(subcmd, "create") == 0) {
+        char *name = strtok(NULL, " \t");
+        if (!name) { fprintf(stderr, "Usage: channel create <name> [description]\n"); return 1; }
+        char *desc = strtok(NULL, "");
+        return cmd_channel_create(engine, name, desc);
+    } else if (strcmp(subcmd, "get") == 0) {
+        char *uuid = strtok(NULL, " \t");
+        if (!uuid) { fprintf(stderr, "Usage: channel get <uuid>\n"); return 1; }
+        return cmd_channel_get(engine, uuid);
+    } else if (strcmp(subcmd, "delete") == 0) {
+        char *uuid = strtok(NULL, " \t");
+        if (!uuid) { fprintf(stderr, "Usage: channel delete <uuid>\n"); return 1; }
+        return cmd_channel_delete(engine, uuid);
+    } else if (strcmp(subcmd, "discover") == 0) {
+        int days = 7;
+        char *arg = strtok(NULL, " \t");
+        while (arg) {
+            if (strcmp(arg, "--days") == 0) {
+                char *val = strtok(NULL, " \t");
+                if (val) days = atoi(val);
+            }
+            arg = strtok(NULL, " \t");
+        }
+        return cmd_channel_discover(engine, days);
+    } else if (strcmp(subcmd, "post") == 0) {
+        char *uuid = strtok(NULL, " \t");
+        if (!uuid) { fprintf(stderr, "Usage: channel post <uuid> <body>\n"); return 1; }
+        char *body = strtok(NULL, "");
+        if (!body) { fprintf(stderr, "Usage: channel post <uuid> <body>\n"); return 1; }
+        return cmd_channel_post(engine, uuid, body);
+    } else if (strcmp(subcmd, "posts") == 0) {
+        char *uuid = strtok(NULL, " \t");
+        if (!uuid) { fprintf(stderr, "Usage: channel posts <uuid> [--days N]\n"); return 1; }
+        int days = 0;
+        char *arg = strtok(NULL, " \t");
+        while (arg) {
+            if (strcmp(arg, "--days") == 0) {
+                char *val = strtok(NULL, " \t");
+                if (val) days = atoi(val);
+            }
+            arg = strtok(NULL, " \t");
+        }
+        return cmd_channel_posts(engine, uuid, days);
+    } else if (strcmp(subcmd, "subscribe") == 0) {
+        char *uuid = strtok(NULL, " \t");
+        if (!uuid) { fprintf(stderr, "Usage: channel subscribe <uuid>\n"); return 1; }
+        return cmd_channel_subscribe(engine, uuid);
+    } else if (strcmp(subcmd, "unsubscribe") == 0) {
+        char *uuid = strtok(NULL, " \t");
+        if (!uuid) { fprintf(stderr, "Usage: channel unsubscribe <uuid>\n"); return 1; }
+        return cmd_channel_unsubscribe(engine, uuid);
+    } else if (strcmp(subcmd, "subscriptions") == 0) {
+        return cmd_channel_subscriptions(engine);
+    } else if (strcmp(subcmd, "sync") == 0) {
+        return cmd_channel_sync(engine);
+    } else {
+        fprintf(stderr, "Unknown channel subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- wallet (REPL) ---------- */
+int dispatch_wallet_repl(dna_engine_t *engine, const char *subcmd) {
+    if (!subcmd || strcmp(subcmd, "help") == 0) {
+        fprintf(stderr, "Usage: wallet <subcommand>\n");
+        fprintf(stderr, "  list | balance | send | transactions | estimate-gas\n");
+        return 1;
+    }
+    if (strcmp(subcmd, "list") == 0) {
+        return cmd_wallets(engine);
+    } else if (strcmp(subcmd, "balance") == 0) {
+        char *idx = strtok(NULL, " \t");
+        if (!idx) { fprintf(stderr, "Usage: wallet balance <wallet_index>\n"); return 1; }
+        return cmd_balance(engine, atoi(idx));
+    } else if (strcmp(subcmd, "send") == 0) {
+        char *idx = strtok(NULL, " \t");
+        char *net = strtok(NULL, " \t");
+        char *tok = strtok(NULL, " \t");
+        char *to = strtok(NULL, " \t");
+        char *amt = strtok(NULL, " \t");
+        if (!idx || !net || !tok || !to || !amt) {
+            fprintf(stderr, "Usage: wallet send <wallet_idx> <network> <token> <to_address> <amount>\n");
+            return 1;
+        }
+        return cmd_send_tokens(engine, atoi(idx), net, tok, to, amt);
+    } else if (strcmp(subcmd, "transactions") == 0) {
+        char *idx = strtok(NULL, " \t");
+        if (!idx) { fprintf(stderr, "Usage: wallet transactions <wallet_index>\n"); return 1; }
+        return cmd_transactions(engine, atoi(idx));
+    } else if (strcmp(subcmd, "estimate-gas") == 0) {
+        char *id = strtok(NULL, " \t");
+        if (!id) { fprintf(stderr, "Usage: wallet estimate-gas <network_id>\n"); return 1; }
+        return cmd_estimate_gas(engine, atoi(id));
+    } else {
+        fprintf(stderr, "Unknown wallet subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- dex (REPL) ---------- */
+int dispatch_dex_repl(dna_engine_t *engine, const char *subcmd) {
+    if (!subcmd || strcmp(subcmd, "help") == 0) {
+        fprintf(stderr, "Usage: dex <subcommand>\n");
+        fprintf(stderr, "  quote | pairs\n");
+        return 1;
+    }
+    if (strcmp(subcmd, "quote") == 0) {
+        char *from = strtok(NULL, " \t");
+        char *to = strtok(NULL, " \t");
+        char *amt = strtok(NULL, " \t");
+        if (!from || !to || !amt) {
+            fprintf(stderr, "Usage: dex quote <from_token> <to_token> <amount> [dex_filter]\n");
+            return 1;
+        }
+        char *filter = strtok(NULL, " \t");
+        return cmd_dex_quote(engine, from, to, amt, filter);
+    } else if (strcmp(subcmd, "pairs") == 0) {
+        return cmd_dex_pairs(engine);
+    } else {
+        fprintf(stderr, "Unknown dex subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- network (REPL) ---------- */
+int dispatch_network_repl(dna_engine_t *engine, const char *subcmd) {
+    if (!subcmd || strcmp(subcmd, "help") == 0) {
+        fprintf(stderr, "Usage: network <subcommand>\n");
+        fprintf(stderr, "  online | dht-status | pause-presence | resume-presence\n");
+        fprintf(stderr, "  refresh-presence | changed | bootstrap-registry\n");
+        return 1;
+    }
+    if (strcmp(subcmd, "online") == 0) {
+        char *fp = strtok(NULL, " \t");
+        if (!fp) { fprintf(stderr, "Usage: network online <fp>\n"); return 1; }
+        return cmd_online(engine, fp);
+    } else if (strcmp(subcmd, "dht-status") == 0) {
+        return cmd_dht_status(engine);
+    } else if (strcmp(subcmd, "pause-presence") == 0) {
+        return cmd_pause_presence(engine);
+    } else if (strcmp(subcmd, "resume-presence") == 0) {
+        return cmd_resume_presence(engine);
+    } else if (strcmp(subcmd, "refresh-presence") == 0) {
+        return cmd_refresh_presence(engine);
+    } else if (strcmp(subcmd, "changed") == 0) {
+        return cmd_network_changed(engine);
+    } else if (strcmp(subcmd, "bootstrap-registry") == 0) {
+        return cmd_bootstrap_registry(engine);
+    } else {
+        fprintf(stderr, "Unknown network subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- version (REPL) ---------- */
+int dispatch_version_repl(dna_engine_t *engine, const char *subcmd) {
+    if (!subcmd || strcmp(subcmd, "help") == 0) {
+        fprintf(stderr, "Usage: version <subcommand>\n");
+        fprintf(stderr, "  publish --lib <ver> --app <ver> --nodus <ver> [--lib-min ...] [--app-min ...] [--nodus-min ...]\n");
+        fprintf(stderr, "  check\n");
+        return 1;
+    }
+    if (strcmp(subcmd, "publish") == 0) {
+        char *lib_ver = NULL, *lib_min = NULL;
+        char *app_ver = NULL, *app_min = NULL;
+        char *nodus_ver = NULL, *nodus_min = NULL;
+        char *arg = strtok(NULL, " \t");
+        while (arg) {
+            if (strcmp(arg, "--lib") == 0) {
+                lib_ver = strtok(NULL, " \t");
+            } else if (strcmp(arg, "--lib-min") == 0) {
+                lib_min = strtok(NULL, " \t");
+            } else if (strcmp(arg, "--app") == 0) {
+                app_ver = strtok(NULL, " \t");
+            } else if (strcmp(arg, "--app-min") == 0) {
+                app_min = strtok(NULL, " \t");
+            } else if (strcmp(arg, "--nodus") == 0) {
+                nodus_ver = strtok(NULL, " \t");
+            } else if (strcmp(arg, "--nodus-min") == 0) {
+                nodus_min = strtok(NULL, " \t");
+            }
+            arg = strtok(NULL, " \t");
+        }
+        if (!lib_ver || !app_ver || !nodus_ver) {
+            fprintf(stderr, "Usage: version publish --lib <ver> --app <ver> --nodus <ver>\n");
+            fprintf(stderr, "       [--lib-min <ver>] [--app-min <ver>] [--nodus-min <ver>]\n");
+            return 1;
+        }
+        return cmd_publish_version(engine, lib_ver, lib_min, app_ver, app_min, nodus_ver, nodus_min);
+    } else if (strcmp(subcmd, "check") == 0) {
+        return cmd_check_version(engine);
+    } else {
+        fprintf(stderr, "Unknown version subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- sign (REPL) ---------- */
+int dispatch_sign_repl(dna_engine_t *engine, const char *subcmd) {
+    if (!subcmd || strcmp(subcmd, "help") == 0) {
+        fprintf(stderr, "Usage: sign <subcommand>\n");
+        fprintf(stderr, "  data <data...> | pubkey\n");
+        return 1;
+    }
+    if (strcmp(subcmd, "data") == 0) {
+        char *data = strtok(NULL, "");
+        if (!data) { fprintf(stderr, "Usage: sign data <data...>\n"); return 1; }
+        return cmd_sign(engine, data);
+    } else if (strcmp(subcmd, "pubkey") == 0) {
+        return cmd_signing_pubkey(engine);
+    } else {
+        fprintf(stderr, "Unknown sign subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ---------- debug (REPL) ---------- */
+int dispatch_debug_repl(dna_engine_t *engine, const char *subcmd) {
+    if (!subcmd || strcmp(subcmd, "help") == 0) {
+        fprintf(stderr, "Usage: debug <subcommand>\n");
+        fprintf(stderr, "  log-level | log-tags | log | entries | count | clear | export\n");
+        return 1;
+    }
+    if (strcmp(subcmd, "log-level") == 0) {
+        char *level = strtok(NULL, " \t");
+        return cmd_log_level(engine, level);
+    } else if (strcmp(subcmd, "log-tags") == 0) {
+        char *tags = strtok(NULL, " \t");
+        return cmd_log_tags(engine, tags);
+    } else if (strcmp(subcmd, "log") == 0) {
+        char *arg = strtok(NULL, " \t");
+        if (!arg) { fprintf(stderr, "Usage: debug log <on|off>\n"); return 1; }
+        bool enable = (strcmp(arg, "on") == 0);
+        return cmd_debug_log(engine, enable);
+    } else if (strcmp(subcmd, "entries") == 0) {
+        char *n = strtok(NULL, " \t");
+        int max_entries = n ? atoi(n) : 50;
+        return cmd_debug_entries(engine, max_entries);
+    } else if (strcmp(subcmd, "count") == 0) {
+        return cmd_debug_count(engine);
+    } else if (strcmp(subcmd, "clear") == 0) {
+        return cmd_debug_clear(engine);
+    } else if (strcmp(subcmd, "export") == 0) {
+        char *filepath = strtok(NULL, " \t");
+        if (!filepath) { fprintf(stderr, "Usage: debug export <filepath>\n"); return 1; }
+        return cmd_debug_export(engine, filepath);
+    } else {
+        fprintf(stderr, "Unknown debug subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */
 
@@ -4479,7 +5567,7 @@ bool execute_command(dna_engine_t *engine, const char *line) {
         *p = tolower((unsigned char)*p);
     }
 
-    /* Dispatch commands */
+    /* Dispatch to group */
     if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
         cmd_help();
     }
@@ -4487,224 +5575,53 @@ bool execute_command(dna_engine_t *engine, const char *line) {
         free(input);
         return false;
     }
-    else if (strcmp(cmd, "create") == 0) {
-        char *name = strtok(NULL, " \t");
-        if (!name) {
-            printf("Usage: create <name>\n");
-        } else {
-            cmd_create(engine, name);
-        }
+    else if (strcmp(cmd, "identity") == 0) {
+        char *subcmd = strtok(NULL, " \t");
+        dispatch_identity_repl(engine, subcmd);
     }
-    else if (strcmp(cmd, "restore") == 0) {
-        char *mnemonic = strtok(NULL, "");
-        if (!mnemonic) {
-            printf("Usage: restore <24-word mnemonic>\n");
-        } else {
-            cmd_restore(engine, trim(mnemonic));
-        }
+    else if (strcmp(cmd, "contact") == 0) {
+        char *subcmd = strtok(NULL, " \t");
+        dispatch_contact_repl(engine, subcmd);
     }
-    else if (strcmp(cmd, "list") == 0 || strcmp(cmd, "ls") == 0) {
-        cmd_list(engine);
+    else if (strcmp(cmd, "message") == 0) {
+        char *subcmd = strtok(NULL, " \t");
+        dispatch_message_repl(engine, subcmd);
     }
-    else if (strcmp(cmd, "load") == 0) {
-        char *fp = strtok(NULL, " \t");
-        if (!fp) {
-            printf("Usage: load <fingerprint>\n");
-        } else {
-            cmd_load(engine, fp);
-        }
+    else if (strcmp(cmd, "group") == 0) {
+        char *subcmd = strtok(NULL, " \t");
+        dispatch_group_repl(engine, subcmd);
     }
-    else if (strcmp(cmd, "send") == 0) {
-        char *recipient = strtok(NULL, " \t");
-        char *message = strtok(NULL, "");
-        if (!recipient || !message) {
-            printf("Usage: send <fingerprint> <message>\n");
-        } else {
-            cmd_send(engine, recipient, trim(message));
-        }
+    else if (strcmp(cmd, "channel") == 0) {
+        char *subcmd = strtok(NULL, " \t");
+        dispatch_channel_repl(engine, subcmd);
     }
-    else if (strcmp(cmd, "whoami") == 0) {
-        cmd_whoami(engine);
+    else if (strcmp(cmd, "wallet") == 0) {
+        char *subcmd = strtok(NULL, " \t");
+        dispatch_wallet_repl(engine, subcmd);
     }
-    else if (strcmp(cmd, "change-password") == 0) {
-        cmd_change_password(engine);
+    else if (strcmp(cmd, "dex") == 0) {
+        char *subcmd = strtok(NULL, " \t");
+        dispatch_dex_repl(engine, subcmd);
     }
-    else if (strcmp(cmd, "register") == 0) {
-        char *name = strtok(NULL, " \t");
-        if (!name) {
-            printf("Usage: register <name>\n");
-        } else {
-            cmd_register(engine, name);
-        }
+    else if (strcmp(cmd, "network") == 0) {
+        char *subcmd = strtok(NULL, " \t");
+        dispatch_network_repl(engine, subcmd);
     }
-    else if (strcmp(cmd, "lookup") == 0) {
-        char *name = strtok(NULL, " \t");
-        if (!name) {
-            printf("Usage: lookup <name>\n");
-        } else {
-            cmd_lookup(engine, name);
-        }
+    else if (strcmp(cmd, "version") == 0) {
+        char *subcmd = strtok(NULL, " \t");
+        dispatch_version_repl(engine, subcmd);
     }
-    else if (strcmp(cmd, "lookup-profile") == 0) {
-        char *id = strtok(NULL, " \t");
-        if (!id) {
-            printf("Usage: lookup-profile <name|fingerprint>\n");
-        } else {
-            cmd_lookup_profile(engine, id);
-        }
+    else if (strcmp(cmd, "sign") == 0) {
+        char *subcmd = strtok(NULL, " \t");
+        dispatch_sign_repl(engine, subcmd);
     }
-    else if (strcmp(cmd, "name") == 0) {
-        cmd_name(engine);
-    }
-    else if (strcmp(cmd, "profile") == 0) {
-        char *arg = strtok(NULL, "");
-        if (!arg || strlen(trim(arg)) == 0) {
-            cmd_profile(engine, NULL, NULL);
-        } else {
-            arg = trim(arg);
-            char *eq = strchr(arg, '=');
-            if (!eq) {
-                printf("Usage: profile [field=value]\n");
-                printf("Fields: bio, location, website, telegram, twitter, github\n");
-            } else {
-                *eq = '\0';
-                cmd_profile(engine, trim(arg), trim(eq + 1));
-            }
-        }
-    }
-    else if (strcmp(cmd, "contacts") == 0) {
-        cmd_contacts(engine);
-    }
-    else if (strcmp(cmd, "add-contact") == 0) {
-        char *id = strtok(NULL, " \t");
-        if (!id) {
-            printf("Usage: add-contact <name|fingerprint>\n");
-        } else {
-            cmd_add_contact(engine, id);
-        }
-    }
-    else if (strcmp(cmd, "remove-contact") == 0) {
-        char *fp = strtok(NULL, " \t");
-        if (!fp) {
-            printf("Usage: remove-contact <fingerprint>\n");
-        } else {
-            cmd_remove_contact(engine, fp);
-        }
-    }
-    else if (strcmp(cmd, "request") == 0) {
-        char *fp = strtok(NULL, " \t");
-        char *msg = strtok(NULL, "");
-        if (!fp) {
-            printf("Usage: request <fingerprint> [message]\n");
-        } else {
-            cmd_request(engine, fp, msg ? trim(msg) : NULL);
-        }
-    }
-    else if (strcmp(cmd, "requests") == 0) {
-        cmd_requests(engine);
-    }
-    else if (strcmp(cmd, "check-inbox") == 0) {
-        char *id = strtok(NULL, " \t");
-        if (!id) {
-            printf("Usage: check-inbox <name|fingerprint>\n");
-        } else {
-            cmd_check_inbox(engine, id);
-        }
-    }
-    else if (strcmp(cmd, "approve") == 0) {
-        char *fp = strtok(NULL, " \t");
-        if (!fp) {
-            printf("Usage: approve <fingerprint>\n");
-        } else {
-            cmd_approve(engine, fp);
-        }
-    }
-    else if (strcmp(cmd, "messages") == 0) {
-        char *fp = strtok(NULL, " \t");
-        if (!fp) {
-            printf("Usage: messages <fingerprint>\n");
-        } else {
-            cmd_messages(engine, fp);
-        }
-    }
-    else if (strcmp(cmd, "check-offline") == 0) {
-        cmd_check_offline(engine);
-    }
-    else if (strcmp(cmd, "listen") == 0) {
-        cmd_listen(engine);
-    }
-    else if (strcmp(cmd, "wallets") == 0) {
-        cmd_wallets(engine);
-    }
-    else if (strcmp(cmd, "balance") == 0) {
-        char *idx = strtok(NULL, " \t");
-        if (!idx) {
-            printf("Usage: balance <wallet_index>\n");
-        } else {
-            cmd_balance(engine, atoi(idx));
-        }
-    }
-    else if (strcmp(cmd, "online") == 0) {
-        char *fp = strtok(NULL, " \t");
-        if (!fp) {
-            printf("Usage: online <fingerprint>\n");
-        } else {
-            cmd_online(engine, fp);
-        }
-    }
-    /* Version Commands */
-    else if (strcmp(cmd, "publish-version") == 0) {
-        /* Parse arguments: --lib X --lib-min Y --app X --app-min Y --nodus X --nodus-min Y */
-        char *lib_ver = NULL, *lib_min = NULL;
-        char *app_ver = NULL, *app_min = NULL;
-        char *nodus_ver = NULL, *nodus_min = NULL;
-
-        char *arg;
-        while ((arg = strtok(NULL, " \t")) != NULL) {
-            if (strcmp(arg, "--lib") == 0) {
-                lib_ver = strtok(NULL, " \t");
-            } else if (strcmp(arg, "--lib-min") == 0) {
-                lib_min = strtok(NULL, " \t");
-            } else if (strcmp(arg, "--app") == 0) {
-                app_ver = strtok(NULL, " \t");
-            } else if (strcmp(arg, "--app-min") == 0) {
-                app_min = strtok(NULL, " \t");
-            } else if (strcmp(arg, "--nodus") == 0) {
-                nodus_ver = strtok(NULL, " \t");
-            } else if (strcmp(arg, "--nodus-min") == 0) {
-                nodus_min = strtok(NULL, " \t");
-            }
-        }
-
-        if (!lib_ver || !app_ver || !nodus_ver) {
-            printf("Usage: publish-version --lib <ver> --app <ver> --nodus <ver>\n");
-            printf("       [--lib-min <ver>] [--app-min <ver>] [--nodus-min <ver>]\n");
-        } else {
-            cmd_publish_version(engine, lib_ver, lib_min, app_ver, app_min, nodus_ver, nodus_min);
-        }
-    }
-    else if (strcmp(cmd, "check-version") == 0) {
-        cmd_check_version(engine);
-    }
-    else if (strcmp(cmd, "dex-quote") == 0) {
-        char *from_tok = strtok(NULL, " \t");
-        char *to_tok = strtok(NULL, " \t");
-        char *amount = strtok(NULL, " \t");
-        char *dex_filt = strtok(NULL, " \t");
-        if (!from_tok || !to_tok || !amount) {
-            printf("Usage: dex-quote <from> <to> <amount> [dex]\n");
-            printf("Example: dex-quote ETH USDC 1.0\n");
-            printf("Example: dex-quote ETH USDC 1.0 uniswap-v3\n");
-        } else {
-            cmd_dex_quote(engine, from_tok, to_tok, amount, dex_filt);
-        }
-    }
-    else if (strcmp(cmd, "dex-pairs") == 0) {
-        cmd_dex_pairs(engine);
+    else if (strcmp(cmd, "debug") == 0) {
+        char *subcmd = strtok(NULL, " \t");
+        dispatch_debug_repl(engine, subcmd);
     }
     else {
-        printf("Unknown command: %s\n", cmd);
-        printf("Type 'help' for available commands.\n");
+        printf("Unknown command group: %s\n", cmd);
+        printf("Type 'help' for available groups.\n");
     }
 
     free(input);

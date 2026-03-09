@@ -1,8 +1,8 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-02-26 | **Status:** BETA | **Phase:** 7 (Flutter UI)
+**Last Updated:** 2026-03-09 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.7.10 | Flutter v0.101.24 | Nodus v0.5.0
+**Versions:** Library v0.9.24 | Flutter v0.101.24 | Nodus v0.5.0
 
 ---
 
