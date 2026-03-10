@@ -184,12 +184,15 @@ size_t base58_decode(const char *a_in, void *a_out) {
     unsigned char *l_out = a_out;
     memset(l_out, 0, zerocount);
 
-    // shift result to beginning of the string
+    // shift result to beginning of the output buffer
     for (j = 0; j < l_out_size; j++) {
         l_out[j + zerocount] = l_out_u8[j + i];
     }
 
-    l_out[j + zerocount] = 0;
+    /* NOTE: Do NOT null-terminate — this is binary data, not a string.
+     * Writing a null terminator past the decoded data caused a stack
+     * buffer overflow when the output buffer was exactly the decoded
+     * size (e.g., 32-byte Solana pubkeys/blockhashes). */
     l_out_size += zerocount;
 
     free(l_out_u80);

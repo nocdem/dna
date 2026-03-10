@@ -1437,6 +1437,17 @@ int cmd_listen(dna_engine_t *engine) {
  * WALLET COMMANDS
  * ============================================================================ */
 
+/* Ensure wallets are loaded (required before balance/send/transactions) */
+static int ensure_wallets_loaded(dna_engine_t *engine) {
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+    dna_engine_list_wallets(engine, on_wallets_listed, &wait);
+    int result = cli_wait_for(&wait);
+    if (wait.wallets) free(wait.wallets);
+    cli_wait_destroy(&wait);
+    return result;
+}
+
 int cmd_wallets(dna_engine_t *engine) {
     if (!engine) {
         printf("Error: Engine not initialized\n");
@@ -1481,6 +1492,9 @@ int cmd_balance(dna_engine_t *engine, int wallet_index) {
         printf("Error: Invalid wallet index\n");
         return -1;
     }
+
+    /* Ensure wallets are loaded (sets wallets_loaded in engine) */
+    ensure_wallets_loaded(engine);
 
     printf("Getting balances for wallet %d...\n", wallet_index);
 
@@ -3682,6 +3696,9 @@ int cmd_send_tokens(dna_engine_t *engine, int wallet_idx, const char *network,
         return -1;
     }
 
+    /* Ensure wallets are loaded (sets wallets_loaded in engine) */
+    ensure_wallets_loaded(engine);
+
     printf("Sending %s %s to %s on %s...\n", amount, token, to_address, network);
 
     cli_wait_t wait;
@@ -3744,6 +3761,9 @@ int cmd_transactions(dna_engine_t *engine, int wallet_idx) {
         printf("Error: Engine not initialized\n");
         return -1;
     }
+
+    /* Ensure wallets are loaded (sets wallets_loaded in engine) */
+    ensure_wallets_loaded(engine);
 
     printf("Getting transactions for wallet %d...\n", wallet_idx);
 

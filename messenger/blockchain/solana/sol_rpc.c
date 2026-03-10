@@ -196,12 +196,14 @@ int sol_rpc_call(
                 g_sol_rpc_current_idx = idx;
                 QGP_LOG_INFO(LOG_TAG, "Switched to RPC endpoint: %s", endpoint);
             }
+            if (params) json_object_put(params);
             return 0;
         }
 
         if (result == -2) {
             /* RPC error - don't retry other endpoints */
             QGP_LOG_ERROR(LOG_TAG, "RPC error from %s", endpoint);
+            if (params) json_object_put(params);
             return -1;
         }
 
@@ -210,6 +212,7 @@ int sol_rpc_call(
     }
 
     QGP_LOG_ERROR(LOG_TAG, "All SOL RPC endpoints failed");
+    if (params) json_object_put(params);
     return -1;
 }
 
@@ -408,14 +411,18 @@ int sol_rpc_get_recent_blockhash(uint8_t blockhash_out[32]) {
 
     const char *blockhash_b58 = json_object_get_string(blockhash_obj);
 
-    /* Decode base58 blockhash */
-    size_t decoded_len = base58_decode(blockhash_b58, blockhash_out);
+    /* Decode base58 blockhash into temp buffer (base58_decode writes a null
+     * terminator past the decoded data, so we need extra space to avoid
+     * overflowing the caller's 32-byte buffer) */
+    uint8_t decoded[64];
+    size_t decoded_len = base58_decode(blockhash_b58, decoded);
     json_object_put(result);
 
     if (decoded_len != 32) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid blockhash length: %zu", decoded_len);
         return -1;
     }
+    memcpy(blockhash_out, decoded, 32);
 
     return 0;
 }
