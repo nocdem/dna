@@ -331,6 +331,9 @@ int cellframe_rpc_submit_tx(const char *net, const char *chain, const char *tx_j
         return -1;
     }
 
+    QGP_LOG_INFO(LOG_TAG, "Submitting TX to %s/%s, JSON length: %zu", net, chain, strlen(tx_json));
+    QGP_LOG_DEBUG(LOG_TAG, "TX JSON: %.500s...", tx_json);
+
     json_object *args = json_object_new_object();
     json_object_object_add(args, "net", json_object_new_string(net));
     json_object_object_add(args, "chain", json_object_new_string(chain));
@@ -345,6 +348,14 @@ int cellframe_rpc_submit_tx(const char *net, const char *chain, const char *tx_j
 
     int ret = cellframe_rpc_call(&req, response_out);
     json_object_put(args);
+
+    /* Log the full RPC response for debugging */
+    if (ret == 0 && *response_out && (*response_out)->result) {
+        const char *result_str = json_object_to_json_string((*response_out)->result);
+        QGP_LOG_INFO(LOG_TAG, "TX submit response: %s", result_str);
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "TX submit failed, ret=%d", ret);
+    }
 
     return ret;
 }
