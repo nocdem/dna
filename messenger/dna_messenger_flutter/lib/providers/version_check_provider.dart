@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../ffi/dna_engine.dart';
 import 'engine_provider.dart';
+import 'event_handler.dart';
 
 /// Compare two semantic version strings (e.g., "0.99.100" vs "0.99.104")
 /// Returns: positive if a > b, negative if a < b, 0 if equal
@@ -59,9 +60,15 @@ class VersionCheckResultWithAppCompare {
 }
 
 /// Version check result provider
-/// Checks DHT for latest version info and compares with current version.
-/// Returns null if check fails (no DHT connection, no version published).
+/// Watches dhtConnectedAtProvider so it re-runs when DHT connects.
+/// Returns null if DHT not connected or check fails.
 final versionCheckProvider = FutureProvider<VersionCheckResultWithAppCompare?>((ref) async {
+  // Watch DHT connection state — re-runs when DHT connects
+  final dhtConnectedAt = ref.watch(dhtConnectedAtProvider);
+  if (dhtConnectedAt == null) {
+    return null; // DHT not connected yet, will re-run when it connects
+  }
+
   final engine = await ref.watch(engineProvider.future);
   final nativeResult = engine.checkVersionDht();
 
