@@ -148,6 +148,11 @@ class EventHandler {
       Future.microtask(() {
         _ref.read(dhtConnectionStateProvider.notifier).state =
             DhtConnectionState.connected;
+        // Sync dhtConnectedAtProvider so version check and other providers
+        // that depend on it can run (DHT may have connected before event handler started)
+        if (_ref.read(dhtConnectedAtProvider) == null) {
+          _ref.read(dhtConnectedAtProvider.notifier).state = DateTime.now();
+        }
         // DHT listeners are started by C engine on DHT connect (dna_engine.c:195)
 
         // Refresh identity profiles (display names/avatars) now that DHT is connected
