@@ -176,6 +176,30 @@ Solana blockchain with Ed25519 signatures.
 |----------|-------------|
 | `int sol_tx_build_transfer(const sol_wallet_t*, const uint8_t*, uint64_t, const uint8_t*, uint8_t*, size_t, size_t*)` | Build transfer tx |
 | `int sol_tx_send_lamports(const sol_wallet_t*, const char*, uint64_t, char*, size_t)` | Send in lamports |
+| `size_t sol_base64_encode(const uint8_t*, size_t, char*)` | Base64 encode binary data |
+
+### 17.3 Solana DEX (`sol_dex.h`)
+
+| Function | Description |
+|----------|-------------|
+| `int sol_dex_get_quotes(const char*, const char*, const char*, const char*, sol_dex_quote_t*, int, int*)` | Get Jupiter DEX quotes |
+| `int sol_dex_list_pairs(char***, int*)` | List available swap pairs |
+| `void sol_dex_free_pairs(char**, int)` | Free pairs array |
+| `int sol_dex_execute_swap(const sol_wallet_t*, const char*, const char*, const char*, sol_dex_swap_result_t*)` | Execute DEX swap via Jupiter |
+
+### 17.4 SPL Token (`sol_spl.h`)
+
+| Function | Description |
+|----------|-------------|
+| `int sol_spl_get_token(const char*, sol_spl_token_t*)` | Get token info by symbol |
+| `bool sol_spl_is_supported(const char*)` | Check if token symbol is supported |
+| `int sol_spl_get_balance(const char*, const char*, uint8_t, char*, size_t)` | Get SPL token balance |
+| `int sol_spl_get_balance_by_symbol(const char*, const char*, char*, size_t)` | Get SPL token balance by symbol |
+| `int sol_spl_derive_ata(const uint8_t*, const uint8_t*, uint8_t*)` | Derive Associated Token Account (PDA) |
+| `int sol_spl_check_ata(const char*, bool*)` | Check if ATA exists on-chain |
+| `int sol_spl_send(const sol_wallet_t*, const char*, const char*, const char*, uint8_t, char*, size_t)` | Send SPL tokens (with auto ATA creation) |
+| `int sol_spl_send_by_symbol(const sol_wallet_t*, const char*, const char*, const char*, char*, size_t)` | Send SPL tokens by symbol |
+| `int sol_spl_estimate_fee(const char*, const char*, const char*, uint64_t*, bool*)` | Estimate SPL transfer fee |
 
 ---
 

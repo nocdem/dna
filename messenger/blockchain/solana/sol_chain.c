@@ -10,6 +10,7 @@
 #include "sol_wallet.h"
 #include "sol_rpc.h"
 #include "sol_tx.h"
+#include "sol_spl.h"
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>
@@ -99,10 +100,9 @@ static int sol_chain_get_balance(
         return -1;
     }
 
-    /* Only native SOL supported */
     if (!is_native_sol(token)) {
-        QGP_LOG_ERROR(LOG_TAG, "SPL tokens not yet supported: %s", token);
-        return -1;
+        /* SPL token balance */
+        return sol_spl_get_balance_by_symbol(address, token, balance_out, balance_out_size);
     }
 
     uint64_t lamports;
@@ -160,37 +160,35 @@ static int sol_chain_send(
         return -1;
     }
 
-    /* Only native SOL supported */
-    if (!is_native_sol(token)) {
-        QGP_LOG_ERROR(LOG_TAG, "SPL tokens not yet supported: %s", token);
-        return -1;
-    }
-
     /* Create wallet from private key */
     sol_wallet_t wallet;
     memset(&wallet, 0, sizeof(wallet));
     memcpy(wallet.private_key, private_key, SOL_PRIVATE_KEY_SIZE);
 
-    /* Derive public key from private key */
-    /* Note: This requires regenerating the public key from the seed */
-    /* For now, we derive from the from_address */
+    /* Derive public key from the from_address */
     if (sol_address_to_pubkey(from_address, wallet.public_key) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid from_address");
         return -1;
     }
     strncpy(wallet.address, from_address, SOL_ADDRESS_SIZE);
 
-    /* Parse amount (in SOL) to lamports — string-based, no float */
-    uint64_t lamports;
-    if (sol_parse_amount_to_lamports(amount, &lamports) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid SOL amount: %s", amount);
-        sol_wallet_clear(&wallet);
-        return -1;
-    }
+    int ret;
 
-    /* Send transaction */
-    int ret = sol_tx_send_lamports(&wallet, to_address, lamports,
+    if (!is_native_sol(token)) {
+        /* SPL token transfer */
+        ret = sol_spl_send_by_symbol(&wallet, to_address, token, amount,
+                                      txhash_out, txhash_out_size);
+    } else {
+        /* Native SOL transfer — string-based conversion, no float */
+        uint64_t lamports;
+        if (sol_parse_amount_to_lamports(amount, &lamports) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Invalid SOL amount: %s", amount);
+            sol_wallet_clear(&wallet);
+            return -1;
+        }
+        ret = sol_tx_send_lamports(&wallet, to_address, lamports,
                                     txhash_out, txhash_out_size);
+    }
 
     /* Clear wallet */
     sol_wallet_clear(&wallet);
@@ -238,10 +236,22 @@ static int sol_chain_get_transactions(
     *txs_out = NULL;
     *count_out = 0;
 
-    /* Only native SOL supported */
-    if (token != NULL && strlen(token) > 0) {
-        QGP_LOG_ERROR(LOG_TAG, "SPL token history not yet supported");
-        return -1;
+    /* Determine if we're filtering by a specific SPL token */
+    bool filter_spl = (token != NULL && token[0] != '\0' &&
+                       strcasecmp(token, "SOL") != 0);
+    /* Resolve filter token mint if filtering */
+    char filter_mint[48] = {0};
+    if (filter_spl) {
+        sol_spl_token_t filter_token;
+        if (sol_spl_get_token(token, &filter_token) == 0) {
+            strncpy(filter_mint, filter_token.mint, sizeof(filter_mint) - 1);
+        } else if (strlen(token) >= 32) {
+            /* Treat as raw mint address */
+            strncpy(filter_mint, token, sizeof(filter_mint) - 1);
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "Unknown SPL token for filter: %s", token);
+            return -1;
+        }
     }
 
     sol_transaction_t *sol_txs = NULL;
@@ -255,44 +265,117 @@ static int sol_chain_get_transactions(
         return 0;
     }
 
-    /* Convert to blockchain_tx_t */
+    /* Convert to blockchain_tx_t — allocate max, trim later */
     blockchain_tx_t *txs = calloc(sol_count, sizeof(blockchain_tx_t));
     if (!txs) {
         sol_rpc_free_transactions(sol_txs, sol_count);
         return -1;
     }
 
+    int out_idx = 0;
     for (int i = 0; i < sol_count; i++) {
-        strncpy(txs[i].tx_hash, sol_txs[i].signature, sizeof(txs[i].tx_hash) - 1);
+        if (sol_txs[i].is_token_transfer) {
+            /* SPL token transaction */
+            /* If filtering by native SOL, skip token transfers */
+            if (token != NULL && token[0] != '\0' && strcasecmp(token, "SOL") == 0) {
+                continue;
+            }
+            /* If filtering by specific SPL token, check mint match */
+            if (filter_spl && strcmp(sol_txs[i].token_mint, filter_mint) != 0) {
+                continue;
+            }
 
-        /* Convert lamports to SOL */
-        double sol = (double)sol_txs[i].lamports / SOL_LAMPORTS_PER_SOL;
-        snprintf(txs[i].amount, sizeof(txs[i].amount), "%.9f", sol);
+            /* Look up token symbol from mint */
+            sol_spl_token_t tok_info;
+            const char *symbol = NULL;
+            uint8_t decimals = 9;
+            /* Try USDT */
+            if (strcmp(sol_txs[i].token_mint, SOL_USDT_MINT) == 0) {
+                symbol = "USDT";
+                decimals = SOL_USDT_DECIMALS;
+            } else if (strcmp(sol_txs[i].token_mint, SOL_USDC_MINT) == 0) {
+                symbol = "USDC";
+                decimals = SOL_USDC_DECIMALS;
+            } else {
+                /* Unknown token — use first 8 chars of mint as symbol */
+                symbol = NULL;
+                decimals = 9; /* fallback */
+            }
 
-        txs[i].token[0] = '\0'; /* Native SOL */
+            strncpy(txs[out_idx].tx_hash, sol_txs[i].signature,
+                    sizeof(txs[out_idx].tx_hash) - 1);
 
-        snprintf(txs[i].timestamp, sizeof(txs[i].timestamp),
-                 "%lld", (long long)sol_txs[i].block_time);
+            /* Format amount using token decimals */
+            if (decimals == 0) {
+                snprintf(txs[out_idx].amount, sizeof(txs[out_idx].amount),
+                         "%llu", (unsigned long long)sol_txs[i].lamports);
+            } else {
+                uint64_t divisor = 1;
+                for (uint8_t d = 0; d < decimals; d++) divisor *= 10;
+                uint64_t whole = sol_txs[i].lamports / divisor;
+                uint64_t frac = sol_txs[i].lamports % divisor;
+                snprintf(txs[out_idx].amount, sizeof(txs[out_idx].amount),
+                         "%llu.%0*llu", (unsigned long long)whole,
+                         (int)decimals, (unsigned long long)frac);
+            }
 
-        txs[i].is_outgoing = sol_txs[i].is_outgoing;
+            if (symbol) {
+                strncpy(txs[out_idx].token, symbol,
+                        sizeof(txs[out_idx].token) - 1);
+            } else {
+                /* Fallback: first 8 chars of mint */
+                strncpy(txs[out_idx].token, sol_txs[i].token_mint, 8);
+                txs[out_idx].token[8] = '\0';
+            }
 
-        if (sol_txs[i].is_outgoing) {
-            strncpy(txs[i].other_address, sol_txs[i].to,
-                    sizeof(txs[i].other_address) - 1);
+            (void)tok_info; /* suppress unused warning */
         } else {
-            strncpy(txs[i].other_address, sol_txs[i].from,
-                    sizeof(txs[i].other_address) - 1);
+            /* Native SOL transaction */
+            /* If filtering by specific SPL token, skip native */
+            if (filter_spl) {
+                continue;
+            }
+
+            strncpy(txs[out_idx].tx_hash, sol_txs[i].signature,
+                    sizeof(txs[out_idx].tx_hash) - 1);
+
+            /* Convert lamports to SOL */
+            double sol = (double)sol_txs[i].lamports / SOL_LAMPORTS_PER_SOL;
+            snprintf(txs[out_idx].amount, sizeof(txs[out_idx].amount),
+                     "%.9f", sol);
+
+            txs[out_idx].token[0] = '\0'; /* Native SOL */
         }
 
-        strncpy(txs[i].status,
+        snprintf(txs[out_idx].timestamp, sizeof(txs[out_idx].timestamp),
+                 "%lld", (long long)sol_txs[i].block_time);
+
+        txs[out_idx].is_outgoing = sol_txs[i].is_outgoing;
+
+        if (sol_txs[i].is_outgoing) {
+            strncpy(txs[out_idx].other_address, sol_txs[i].to,
+                    sizeof(txs[out_idx].other_address) - 1);
+        } else {
+            strncpy(txs[out_idx].other_address, sol_txs[i].from,
+                    sizeof(txs[out_idx].other_address) - 1);
+        }
+
+        strncpy(txs[out_idx].status,
                 sol_txs[i].success ? "CONFIRMED" : "FAILED",
-                sizeof(txs[i].status) - 1);
+                sizeof(txs[out_idx].status) - 1);
+
+        out_idx++;
     }
 
     sol_rpc_free_transactions(sol_txs, sol_count);
 
+    if (out_idx == 0) {
+        free(txs);
+        return 0;
+    }
+
     *txs_out = txs;
-    *count_out = sol_count;
+    *count_out = out_idx;
     return 0;
 }
 

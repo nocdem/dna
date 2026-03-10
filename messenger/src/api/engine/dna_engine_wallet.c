@@ -12,6 +12,7 @@
  *   - dna_handle_get_transactions()
  *   - dna_handle_dex_quote()
  *   - dna_handle_dex_list_pairs()
+ *   - dna_handle_dex_swap()
  */
 
 #define DNA_ENGINE_WALLET_IMPL
@@ -121,13 +122,13 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
 
     /* Handle non-Cellframe blockchains via modular interface */
     if (wallet_info->type == BLOCKCHAIN_ETHEREUM) {
-        /* Ethereum: ETH + USDT (ERC-20) */
-        balances = calloc(2, sizeof(dna_balance_t));
+        /* Ethereum: ETH + USDT + USDC (ERC-20) */
+        balances = calloc(3, sizeof(dna_balance_t));
         if (!balances) {
             error = DNA_ERROR_INTERNAL;
             goto done;
         }
-        count = 2;
+        count = 3;
 
         /* Native ETH balance */
         strncpy(balances[0].token, "ETH", sizeof(balances[0].token) - 1);
@@ -149,17 +150,27 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
             strncpy(balances[1].balance, usdt_balance, sizeof(balances[1].balance) - 1);
         }
 
+        /* USDC (ERC-20) balance */
+        strncpy(balances[2].token, "USDC", sizeof(balances[2].token) - 1);
+        strncpy(balances[2].network, "Ethereum", sizeof(balances[2].network) - 1);
+        strcpy(balances[2].balance, "0");
+
+        char usdc_balance_eth[64] = {0};
+        if (eth_erc20_get_balance_by_symbol(wallet_info->address, "USDC", usdc_balance_eth, sizeof(usdc_balance_eth)) == 0) {
+            strncpy(balances[2].balance, usdc_balance_eth, sizeof(balances[2].balance) - 1);
+        }
+
         goto done;
     }
 
     if (wallet_info->type == BLOCKCHAIN_TRON) {
-        /* TRON: TRX + USDT (TRC-20) */
-        balances = calloc(2, sizeof(dna_balance_t));
+        /* TRON: TRX + USDT + USDC (TRC-20) */
+        balances = calloc(3, sizeof(dna_balance_t));
         if (!balances) {
             error = DNA_ERROR_INTERNAL;
             goto done;
         }
-        count = 2;
+        count = 3;
 
         /* Native TRX balance */
         strncpy(balances[0].token, "TRX", sizeof(balances[0].token) - 1);
@@ -181,17 +192,27 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
             strncpy(balances[1].balance, usdt_balance, sizeof(balances[1].balance) - 1);
         }
 
+        /* USDC (TRC-20) balance */
+        strncpy(balances[2].token, "USDC", sizeof(balances[2].token) - 1);
+        strncpy(balances[2].network, "Tron", sizeof(balances[2].network) - 1);
+        strcpy(balances[2].balance, "0");
+
+        char usdc_balance_trx[64] = {0};
+        if (trx_trc20_get_balance_by_symbol(wallet_info->address, "USDC", usdc_balance_trx, sizeof(usdc_balance_trx)) == 0) {
+            strncpy(balances[2].balance, usdc_balance_trx, sizeof(balances[2].balance) - 1);
+        }
+
         goto done;
     }
 
     if (wallet_info->type == BLOCKCHAIN_SOLANA) {
-        /* Solana: SOL + USDT (SPL) */
-        balances = calloc(2, sizeof(dna_balance_t));
+        /* Solana: SOL + USDT + USDC (SPL) */
+        balances = calloc(3, sizeof(dna_balance_t));
         if (!balances) {
             error = DNA_ERROR_INTERNAL;
             goto done;
         }
-        count = 2;
+        count = 3;
 
         /* Native SOL balance */
         strncpy(balances[0].token, "SOL", sizeof(balances[0].token) - 1);
@@ -211,6 +232,16 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         char usdt_balance[64] = {0};
         if (sol_spl_get_balance_by_symbol(wallet_info->address, "USDT", usdt_balance, sizeof(usdt_balance)) == 0) {
             strncpy(balances[1].balance, usdt_balance, sizeof(balances[1].balance) - 1);
+        }
+
+        /* USDC (SPL) balance */
+        strncpy(balances[2].token, "USDC", sizeof(balances[2].token) - 1);
+        strncpy(balances[2].network, "Solana", sizeof(balances[2].network) - 1);
+        strcpy(balances[2].balance, "0");
+
+        char usdc_balance_sol[64] = {0};
+        if (sol_spl_get_balance_by_symbol(wallet_info->address, "USDC", usdc_balance_sol, sizeof(usdc_balance_sol)) == 0) {
+            strncpy(balances[2].balance, usdc_balance_sol, sizeof(balances[2].balance) - 1);
         }
 
         goto done;
@@ -1303,4 +1334,97 @@ dna_request_id_t dna_engine_dex_list_pairs(
     dna_task_params_t params = {0};
     dna_task_callback_t cb = { .dex_pairs = callback };
     return dna_submit_task(engine, TASK_DEX_LIST_PAIRS, &params, cb, user_data);
+}
+
+/* ============ DEX SWAP ============ */
+
+void dna_handle_dex_swap(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+    dna_dex_swap_result_t result = {0};
+
+    const char *from_token = task->params.dex_swap.from_token;
+    const char *to_token   = task->params.dex_swap.to_token;
+    const char *amount_in  = task->params.dex_swap.amount_in;
+
+    QGP_LOG_INFO(LOG_TAG, "DEX swap: %s %s -> %s", amount_in, from_token, to_token);
+
+    /* Derive Solana wallet from mnemonic */
+    char mnemonic[512] = {0};
+    if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) != DNA_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get mnemonic for DEX swap");
+        error = DNA_ERROR_CRYPTO;
+        goto done;
+    }
+
+    uint8_t master_seed[64];
+    if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to derive master seed for DEX swap");
+        qgp_secure_memzero(mnemonic, sizeof(mnemonic));
+        error = DNA_ERROR_CRYPTO;
+        goto done;
+    }
+    qgp_secure_memzero(mnemonic, sizeof(mnemonic));
+
+    {
+        sol_wallet_t sol_wallet;
+        if (sol_wallet_generate(master_seed, 64, &sol_wallet) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to generate Solana wallet for DEX swap");
+            qgp_secure_memzero(master_seed, sizeof(master_seed));
+            error = DNA_ERROR_CRYPTO;
+            goto done;
+        }
+        qgp_secure_memzero(master_seed, sizeof(master_seed));
+
+        sol_dex_swap_result_t sol_result = {0};
+        int rc = sol_dex_execute_swap(&sol_wallet, from_token, to_token, amount_in, &sol_result);
+        sol_wallet_clear(&sol_wallet);
+
+        if (rc != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "DEX swap failed, rc=%d", rc);
+            if (rc == -2) {
+                error = DNA_ERROR_INVALID_ARG;  /* Token pair not found */
+            } else {
+                error = DNA_ENGINE_ERROR_NETWORK;
+            }
+            goto done;
+        }
+
+        /* Copy sol_dex_swap_result_t -> dna_dex_swap_result_t */
+        strncpy(result.tx_signature, sol_result.tx_signature, sizeof(result.tx_signature) - 1);
+        strncpy(result.amount_in, sol_result.amount_in, sizeof(result.amount_in) - 1);
+        strncpy(result.amount_out, sol_result.amount_out, sizeof(result.amount_out) - 1);
+        strncpy(result.from_token, sol_result.from_token, sizeof(result.from_token) - 1);
+        strncpy(result.to_token, sol_result.to_token, sizeof(result.to_token) - 1);
+        strncpy(result.dex_name, sol_result.dex_name, sizeof(result.dex_name) - 1);
+        strncpy(result.price_impact, sol_result.price_impact, sizeof(result.price_impact) - 1);
+    }
+
+done:
+    if (task->callback.dex_swap) {
+        dna_dex_swap_result_t *result_ptr = (error == DNA_OK) ? &result : NULL;
+        task->callback.dex_swap(task->request_id, error, result_ptr, task->user_data);
+    }
+}
+
+dna_request_id_t dna_engine_dex_swap(
+    dna_engine_t *engine,
+    int wallet_index,
+    const char *from_token,
+    const char *to_token,
+    const char *amount_in,
+    dna_dex_swap_cb callback,
+    void *user_data
+) {
+    if (!engine || !from_token || !to_token || !amount_in || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    params.dex_swap.wallet_index = wallet_index;
+    strncpy(params.dex_swap.from_token, from_token, sizeof(params.dex_swap.from_token) - 1);
+    strncpy(params.dex_swap.to_token, to_token, sizeof(params.dex_swap.to_token) - 1);
+    strncpy(params.dex_swap.amount_in, amount_in, sizeof(params.dex_swap.amount_in) - 1);
+
+    dna_task_callback_t cb = { .dex_swap = callback };
+    return dna_submit_task(engine, TASK_DEX_SWAP, &params, cb, user_data);
 }

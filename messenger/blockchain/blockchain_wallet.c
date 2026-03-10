@@ -17,6 +17,7 @@
 #include "solana/sol_wallet.h"
 #include "solana/sol_rpc.h"
 #include "solana/sol_tx.h"
+#include "solana/sol_spl.h"
 #include "tron/trx_wallet.h"
 #include "tron/trx_rpc.h"
 #include "tron/trx_tx.h"
@@ -425,14 +426,20 @@ int blockchain_send_tokens_with_seed(
                 return -1;
             }
 
-            /* Native SOL transfer — string-based conversion, no float */
-            uint64_t lamports;
-            if (sol_str_to_lamports(amount, &lamports) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "Invalid SOL amount: %s", amount);
-                sol_wallet_clear(&sol_wallet);
-                return -1;
+            if (token != NULL && token[0] != '\0' && strcasecmp(token, "SOL") != 0) {
+                /* SPL token transfer */
+                ret = sol_spl_send_by_symbol(&sol_wallet, to_address, token, amount,
+                                              tx_hash_out, 128);
+            } else {
+                /* Native SOL transfer — string-based conversion, no float */
+                uint64_t lamports;
+                if (sol_str_to_lamports(amount, &lamports) != 0) {
+                    QGP_LOG_ERROR(LOG_TAG, "Invalid SOL amount: %s", amount);
+                    sol_wallet_clear(&sol_wallet);
+                    return -1;
+                }
+                ret = sol_tx_send_lamports(&sol_wallet, to_address, lamports, tx_hash_out, 128);
             }
-            ret = sol_tx_send_lamports(&sol_wallet, to_address, lamports, tx_hash_out, 128);
 
             /* Securely clear private key */
             sol_wallet_clear(&sol_wallet);
