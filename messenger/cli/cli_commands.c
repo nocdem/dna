@@ -1469,13 +1469,40 @@ int cmd_wallets(dna_engine_t *engine) {
     if (wait.wallet_count == 0) {
         printf("No wallets found.\n");
     } else {
-        printf("\nWallets (%d):\n", wait.wallet_count);
         for (int i = 0; i < wait.wallet_count; i++) {
-            printf("  %d. %s\n", i, wait.wallets[i].name);
-            printf("     Address: %s\n", wait.wallets[i].address);
+            /* Map sig_type to network name */
+            const char *network;
+            switch (wait.wallets[i].sig_type) {
+                case 100: network = "Ethereum"; break;
+                case 101: network = "Solana";   break;
+                case 102: network = "Tron";     break;
+                default:  network = "Cellframe"; break;
+            }
+
+            printf("\n%d. %s\n", i, network);
+            printf("   Address: %s\n", wait.wallets[i].address);
+
+            /* Auto-fetch balances for this wallet */
+            cli_wait_t bwait;
+            cli_wait_init(&bwait);
+            dna_engine_get_balances(engine, i, on_balances_listed, &bwait);
+            int brc = cli_wait_for(&bwait);
+
+            if (brc == 0 && bwait.balance_count > 0) {
+                printf("   Balance: ");
+                for (int j = 0; j < bwait.balance_count; j++) {
+                    if (j > 0) printf(", ");
+                    printf("%s %s", bwait.balances[j].balance, bwait.balances[j].token);
+                }
+                printf("\n");
+                free(bwait.balances);
+            } else {
+                printf("   Balance: (unavailable)\n");
+            }
+            cli_wait_destroy(&bwait);
         }
         free(wait.wallets);
-        printf("\nUse 'balance <index>' to see balances.\n\n");
+        printf("\n");
     }
 
     cli_wait_destroy(&wait);
