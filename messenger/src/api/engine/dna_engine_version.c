@@ -224,8 +224,16 @@ int dna_engine_check_version_dht(
         result_out->library_update_available = true;
     }
 
-    /* App and nodus comparisons would need their versions passed in or queried differently */
-    /* For now, caller can compare manually using the info struct */
+    /* Check if local library version is below required minimum (BLOCKS APP) */
+    if (result_out->info.library_minimum[0] != '\0' &&
+        compare_versions(local_lib_version, result_out->info.library_minimum) < 0) {
+        result_out->library_below_minimum = true;
+        QGP_LOG_WARN(LOG_TAG, "Library version %s is below minimum %s — update required!",
+                     local_lib_version, result_out->info.library_minimum);
+    }
+
+    /* App minimum check is done by Flutter (C lib doesn't know the app version) */
+    /* Flutter sets app_below_minimum based on its own version vs info.app_minimum */
 
     QGP_LOG_INFO(LOG_TAG, "Version check: lib=%s (local=%s) app=%s nodus=%s",
                  result_out->info.library_current, local_lib_version,

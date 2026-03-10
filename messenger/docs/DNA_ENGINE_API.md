@@ -5,6 +5,7 @@
 **Location:** `include/dna/dna_engine.h`
 
 **Changelog:**
+- v1.15.0 (2026-03-10): Added mandatory version enforcement — `dna_version_check_result_t` now includes `library_below_minimum` and `app_below_minimum` flags. When local version is below DHT-published minimum, Flutter app blocks usage with UpdateRequiredScreen.
 - v1.14.0 (2026-02-25): Added Wall API (section 5b) - user wall posts with images, comments, and timeline. New functions: `dna_engine_wall_post`, `dna_engine_wall_post_with_image`, `dna_engine_wall_delete`, `dna_engine_wall_load`, `dna_engine_wall_timeline`, `dna_engine_wall_add_comment`, `dna_engine_wall_get_comments`. New types: `dna_wall_post_info_t` (includes `image_json` field), `dna_wall_comment_info_t`, `dna_wall_post_cb`, `dna_wall_posts_cb`, `dna_wall_comment_cb`, `dna_wall_comments_cb`. Free functions: `dna_free_wall_posts`, `dna_free_wall_comments`.
 - v1.13.0 (2026-01-31): Added threaded comment replies - `dna_engine_feed_add_comment` now accepts `parent_comment_uuid` parameter for single-level threading. Comments can reply to other comments (not reply-to-reply). Added `parent_comment_uuid` field to `dna_feed_comment_info_t` struct.
 - v1.12.0 (2026-01-30): Added Feeds v2 API - topic-based public feeds with categories, tags, comments (replaces v1 channel/post system). 7 new functions: `dna_engine_feed_create_topic`, `dna_engine_feed_get_topic`, `dna_engine_feed_delete_topic`, `dna_engine_feed_add_comment`, `dna_engine_feed_get_comments`, `dna_engine_feed_get_category`, `dna_engine_feed_get_all`

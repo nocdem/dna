@@ -865,6 +865,8 @@ class VersionCheckResult {
   final bool libraryUpdateAvailable;
   final bool appUpdateAvailable;
   final bool nodusUpdateAvailable;
+  final bool libraryBelowMinimum;
+  final bool appBelowMinimum;
   final String libraryCurrent;
   final String libraryMinimum;
   final String appCurrent;
@@ -878,6 +880,8 @@ class VersionCheckResult {
     required this.libraryUpdateAvailable,
     required this.appUpdateAvailable,
     required this.nodusUpdateAvailable,
+    required this.libraryBelowMinimum,
+    required this.appBelowMinimum,
     required this.libraryCurrent,
     required this.libraryMinimum,
     required this.appCurrent,
@@ -893,6 +897,8 @@ class VersionCheckResult {
       libraryUpdateAvailable: native.library_update_available,
       appUpdateAvailable: native.app_update_available,
       nodusUpdateAvailable: native.nodus_update_available,
+      libraryBelowMinimum: native.library_below_minimum,
+      appBelowMinimum: native.app_below_minimum,
       libraryCurrent: native.info.library_current.toDartString(32),
       libraryMinimum: native.info.library_minimum.toDartString(32),
       appCurrent: native.info.app_current.toDartString(32),

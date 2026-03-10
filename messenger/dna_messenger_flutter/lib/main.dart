@@ -8,8 +8,10 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'providers/providers.dart';
+import 'providers/version_check_provider.dart';
 import 'screens/screens.dart';
 import 'screens/lock/lock_screen.dart';
+import 'screens/update_required_screen.dart';
 import 'design_system/theme/dna_colors.dart';
 import 'design_system/theme/dna_theme.dart';
 import 'services/cache_database.dart';
@@ -218,6 +220,17 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           if (!hasName && _registrationIncomplete) {
             // Keys exist but no registered name — send back to registration
             return IdentitySelectionScreen(resumeFingerprint: currentFingerprint);
+          }
+
+          // v0.9.27: Check if app/library version is below DHT minimum — block if so
+          final versionCheck = ref.watch(versionCheckProvider);
+          final versionResult = versionCheck.valueOrNull;
+          if (versionResult != null && versionResult.isBelowMinimum) {
+            return UpdateRequiredScreen(
+              libraryMinimum: versionResult.libraryMinimum,
+              appMinimum: versionResult.appMinimum,
+              localLibraryVersion: eng.version,
+            );
           }
 
           // Trigger contacts provider to start presence lookups in background

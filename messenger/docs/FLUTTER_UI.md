@@ -317,6 +317,7 @@ removeContact(fingerprint)   // Remove contact from list
 - `GroupChatScreen`: New screen for group messaging
 - `wallet_screen.dart`: Send dialog with DNA fingerprint resolution + contact picker; Swap sheet with Solana/Ethereum/Cellframe DEX quotes, stale warning banner for order book DEX
 - `settings_screen.dart`: Nickname registration, contacts management
+- `update_required_screen.dart`: Full-screen blocker shown when app/library version is below DHT-published minimum — prevents app usage until updated
 - `contacts_management_screen.dart`: View/remove contacts from Settings
 
 **Send to DNA Identity Feature:**

@@ -30,15 +30,18 @@ int _compareVersions(String a, String b) {
 class VersionCheckResultWithAppCompare {
   final VersionCheckResult native;
   final bool appUpdateAvailable;
+  final bool appBelowMinimum;
 
   VersionCheckResultWithAppCompare({
     required this.native,
     required this.appUpdateAvailable,
+    required this.appBelowMinimum,
   });
 
   // Delegate to native result
   bool get libraryUpdateAvailable => native.libraryUpdateAvailable;
   bool get nodusUpdateAvailable => native.nodusUpdateAvailable;
+  bool get libraryBelowMinimum => native.libraryBelowMinimum;
   String get libraryCurrent => native.libraryCurrent;
   String get libraryMinimum => native.libraryMinimum;
   String get appCurrent => native.appCurrent;
@@ -50,6 +53,9 @@ class VersionCheckResultWithAppCompare {
 
   /// Check if any update is available (with corrected app check)
   bool get hasUpdate => libraryUpdateAvailable || appUpdateAvailable || nodusUpdateAvailable;
+
+  /// Check if app is below required minimum — BLOCKS APP USAGE
+  bool get isBelowMinimum => libraryBelowMinimum || appBelowMinimum;
 }
 
 /// Version check result provider
@@ -68,13 +74,19 @@ final versionCheckProvider = FutureProvider<VersionCheckResultWithAppCompare?>((
   final packageInfo = await PackageInfo.fromPlatform();
   final localAppVersion = packageInfo.version;
   final dhtAppVersion = nativeResult.appCurrent;
+  final dhtAppMinimum = nativeResult.appMinimum;
 
   // Compare: if DHT version > local version, update is available
   final appUpdateAvailable = dhtAppVersion.isNotEmpty &&
       _compareVersions(dhtAppVersion, localAppVersion) > 0;
 
+  // Compare: if local version < DHT minimum, app is blocked
+  final appBelowMin = dhtAppMinimum.isNotEmpty &&
+      _compareVersions(localAppVersion, dhtAppMinimum) < 0;
+
   return VersionCheckResultWithAppCompare(
     native: nativeResult,
     appUpdateAvailable: appUpdateAvailable,
+    appBelowMinimum: appBelowMin,
   );
 });

@@ -3059,6 +3059,8 @@ typedef struct {
     bool library_update_available;  /* true if library_current > local version */
     bool app_update_available;      /* true if app_current > local version */
     bool nodus_update_available;    /* true if nodus_current > local version */
+    bool library_below_minimum;     /* true if local version < library_minimum (BLOCKS APP) */
+    bool app_below_minimum;         /* true if local app version < app_minimum (BLOCKS APP) */
     dna_version_info_t info;        /* Version info from DHT */
 } dna_version_check_result_t;
 

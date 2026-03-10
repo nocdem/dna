@@ -295,7 +295,7 @@ Named channels with flat text posts. Open posting, day-bucket discovery.
 
 **Structures:**
 - `dna_version_info_t` - Version info from DHT (library/app/nodus current+minimum, publisher, timestamp)
-- `dna_version_check_result_t` - Check result with update_available flags
+- `dna_version_check_result_t` - Check result with update_available flags + below_minimum flags (`library_below_minimum`, `app_below_minimum` — blocks app when true)
 
 ## 1.19 Signing API (for QR Auth)
 
