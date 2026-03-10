@@ -1058,7 +1058,7 @@ int sol_rpc_get_transactions(
     json_object_array_add(params, json_object_new_string(address));
 
     json_object *opts = json_object_new_object();
-    json_object_object_add(opts, "limit", json_object_new_int(20));
+    json_object_object_add(opts, "limit", json_object_new_int(100));
     json_object_object_add(opts, "commitment", json_object_new_string("confirmed"));
     json_object_array_add(params, opts);
 
