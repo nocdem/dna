@@ -268,10 +268,10 @@ Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
 4. **PUBLISH** version to DHT:
    **IMPORTANT:** MUST use the release identity (`-d /home/nocdem/.dna-release-identity`) — this is the original DHT key owner (`3cbba8d8...`). The default identity on this machine does NOT own the version DHT key and publishes will be rejected.
    ```bash
-   cd /opt/dna-messenger/build
-   ./cli/dna-messenger-cli -d /home/nocdem/.dna-release-identity publish-version \
-       --lib 0.7.0 --app 0.101.0 --nodus 0.4.5 \
-       --lib-min 0.7.0 --app-min 0.101.0 --nodus-min 0.4.0
+   cd /opt/dna/messenger/build
+   ./cli/dna-messenger-cli -d /home/nocdem/.dna-release-identity version publish \
+       --lib 0.9.36 --app 0.101.47 --nodus 0.6.3 \
+       --lib-min 0.9.0 --app-min 0.101.0 --nodus-min 0.6.0
    ```
 
    **MINIMUM VERSION RULE:** Minimums MUST match major.minor of current versions:
@@ -281,7 +281,7 @@ Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
 
 5. **VERIFY** DHT publication:
    ```bash
-   ./cli/dna-messenger-cli -d /home/nocdem/.dna-release-identity check-version
+   ./cli/dna-messenger-cli -d /home/nocdem/.dna-release-identity version check
    ```
 
 6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published"

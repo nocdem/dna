@@ -242,7 +242,7 @@ Release v<LIB_VERSION> / v<APP_VERSION> [BUILD] [RELEASE]
 2. **COMMIT** with BOTH `[BUILD]` AND `[RELEASE]` tags (both required for CI)
 3. **PUSH** to both repos: `git push gitlab main && git push origin main`
 4. **PUBLISH** version to DHT using release identity (`-d /home/nocdem/.dna-release-identity`)
-5. **VERIFY** DHT publication with `check-version`
+5. **VERIFY** DHT publication with `version check`
 6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published"
 
 **DHT Notes:**
