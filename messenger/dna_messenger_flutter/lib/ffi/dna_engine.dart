@@ -576,6 +576,39 @@ class DexQuote {
   }
 }
 
+/// DEX swap result
+class DexSwapResult {
+  final String txSignature;
+  final String amountIn;
+  final String amountOut;
+  final String fromToken;
+  final String toToken;
+  final String dexName;
+  final String priceImpact;
+
+  DexSwapResult({
+    required this.txSignature,
+    required this.amountIn,
+    required this.amountOut,
+    required this.fromToken,
+    required this.toToken,
+    required this.dexName,
+    required this.priceImpact,
+  });
+
+  factory DexSwapResult.fromNative(dna_dex_swap_result_t native) {
+    return DexSwapResult(
+      txSignature: native.tx_signature.toDartString(128),
+      amountIn: native.amount_in.toDartString(64),
+      amountOut: native.amount_out.toDartString(64),
+      fromToken: native.from_token.toDartString(16),
+      toToken: native.to_token.toDartString(16),
+      dexName: native.dex_name.toDartString(32),
+      priceImpact: native.price_impact.toDartString(16),
+    );
+  }
+}
+
 /// Transaction record
 class Transaction {
   final String txHash;
@@ -3043,6 +3076,61 @@ class DnaEngine {
       if (filterPtr != nullptr) calloc.free(filterPtr);
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit DEX quote request');
+    }
+
+    return completer.future;
+  }
+
+  /// Execute DEX swap (Solana only)
+  ///
+  /// Fetches quote, builds swap TX via Jupiter, signs locally, submits to Solana.
+  Future<DexSwapResult> executeDexSwap({
+    required String fromToken,
+    required String toToken,
+    required String amountIn,
+    int walletIndex = 0,
+  }) async {
+    final completer = Completer<DexSwapResult>();
+    final localId = _nextLocalId++;
+
+    final fromPtr = fromToken.toNativeUtf8();
+    final toPtr = toToken.toNativeUtf8();
+    final amountPtr = amountIn.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+                    Pointer<dna_dex_swap_result_t> result,
+                    Pointer<Void> userData) {
+      calloc.free(fromPtr);
+      calloc.free(toPtr);
+      calloc.free(amountPtr);
+
+      if (error == 0 && result != nullptr) {
+        completer.complete(DexSwapResult.fromNative(result.ref));
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaDexSwapCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_dex_swap(
+      _engine,
+      walletIndex,
+      fromPtr.cast(),
+      toPtr.cast(),
+      amountPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fromPtr);
+      calloc.free(toPtr);
+      calloc.free(amountPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit DEX swap request');
     }
 
     return completer.future;

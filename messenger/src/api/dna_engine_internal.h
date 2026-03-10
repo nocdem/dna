@@ -115,6 +115,7 @@ typedef enum {
     TASK_ESTIMATE_GAS,
     TASK_DEX_QUOTE,
     TASK_DEX_LIST_PAIRS,
+    TASK_DEX_SWAP,
 
     /* P2P & Presence */
     TASK_REFRESH_PRESENCE,
@@ -402,6 +403,14 @@ typedef union {
         char dex_filter[32];    /* "" = all DEXes, e.g. "uniswap-v3" */
     } dex_quote;
 
+    /* DEX: swap */
+    struct {
+        int wallet_index;
+        char from_token[16];
+        char to_token[16];
+        char amount_in[64];
+    } dex_swap;
+
 } dna_task_params_t;
 
 /**
@@ -439,6 +448,7 @@ typedef union {
     dna_channel_subscriptions_cb channel_subscriptions;
     dna_dex_quote_cb dex_quote;
     dna_dex_pairs_cb dex_pairs;
+    dna_dex_swap_cb dex_swap;
 } dna_task_callback_t;
 
 /**
@@ -806,6 +816,7 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_estimate_gas(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dex_quote(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dex_list_pairs(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dex_swap(dna_engine_t *engine, dna_task_t *task);
 
 /* P2P & Presence */
 void dna_handle_refresh_presence(dna_engine_t *engine, dna_task_t *task);

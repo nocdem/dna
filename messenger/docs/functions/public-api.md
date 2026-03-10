@@ -115,6 +115,9 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `int dna_engine_estimate_eth_gas(int, dna_gas_estimate_t*)` | Get gas fee estimate for ETH transaction |
 | `dna_request_id_t dna_engine_send_tokens(...)` | Send tokens (build tx, sign, submit) |
 | `dna_request_id_t dna_engine_get_transactions(...)` | Get transaction history |
+| `dna_request_id_t dna_engine_dex_quote(engine, from, to, amount, filter, cb, ud)` | Get DEX swap quotes (Jupiter/Uniswap/Cellframe) |
+| `dna_request_id_t dna_engine_dex_list_pairs(engine, cb, ud)` | List available DEX swap pairs |
+| `dna_request_id_t dna_engine_dex_swap(engine, wallet_idx, from, to, amount, cb, ud)` | Execute DEX swap (Solana via Jupiter) |
 
 ## 1.8 P2P & Presence
 

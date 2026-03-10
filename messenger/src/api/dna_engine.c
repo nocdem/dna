@@ -1011,6 +1011,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_DEX_LIST_PAIRS:
             dna_handle_dex_list_pairs(engine, task);
             break;
+        case TASK_DEX_SWAP:
+            dna_handle_dex_swap(engine, task);
+            break;
 
         /* P2P & Presence */
         case TASK_REFRESH_PRESENCE:

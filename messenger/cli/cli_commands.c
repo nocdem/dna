@@ -4047,6 +4047,55 @@ int cmd_dex_pairs(dna_engine_t *engine) {
     return result;
 }
 
+static void on_dex_swap(dna_request_id_t request_id, int error,
+                         const dna_dex_swap_result_t *result, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    if (error == 0 && result) {
+        printf("\nSwap executed successfully!\n");
+        printf("  %s %s -> %s %s via %s\n",
+               result->amount_in, result->from_token,
+               result->amount_out, result->to_token,
+               result->dex_name);
+        printf("  Price impact: %s%%\n", result->price_impact);
+        printf("  TX: %s\n", result->tx_signature);
+        printf("  View: https://solscan.io/tx/%s\n\n", result->tx_signature);
+    }
+
+    cli_wait_signal(wait, error);
+}
+
+int cmd_dex_swap(dna_engine_t *engine, int wallet_idx,
+                  const char *from_token, const char *to_token,
+                  const char *amount) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    printf("Executing swap: %s %s -> %s ...\n", amount, from_token, to_token);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_dex_swap(engine, wallet_idx, from_token, to_token, amount,
+                        on_dex_swap, &wait);
+    int result = cli_wait_for(&wait);
+
+    if (result != 0) {
+        if (result == DNA_ERROR_INVALID_ARG) {
+            printf("Error: No pool found for %s/%s\n", from_token, to_token);
+            printf("Use 'dex pairs' to see available pairs.\n");
+        } else {
+            printf("Error: Swap failed: %s\n", dna_engine_error_string(result));
+        }
+    }
+
+    cli_wait_destroy(&wait);
+    return result;
+}
+
 int cmd_signing_pubkey(dna_engine_t *engine) {
     if (!engine) {
         printf("Error: Engine not initialized\n");
@@ -4875,6 +4924,7 @@ int dispatch_dex(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
         fprintf(stderr, "Usage: dex <subcommand>\n");
         fprintf(stderr, "  dex quote <from_token> <to_token> <amount> [dex_filter]\n");
+        fprintf(stderr, "  dex swap <wallet_idx> <from_token> <to_token> <amount>\n");
         fprintf(stderr, "  dex pairs\n");
         return 1;
     }
@@ -4883,6 +4933,10 @@ int dispatch_dex(dna_engine_t *engine, int argc, char **argv, int sub) {
         if (sub + 3 >= argc) { fprintf(stderr, "Usage: dex quote <from_token> <to_token> <amount> [dex_filter]\n"); return 1; }
         const char *filter = (sub + 4 < argc) ? argv[sub + 4] : NULL;
         return cmd_dex_quote(engine, argv[sub + 1], argv[sub + 2], argv[sub + 3], filter);
+    } else if (strcmp(subcmd, "swap") == 0) {
+        if (sub + 4 >= argc) { fprintf(stderr, "Usage: dex swap <wallet_idx> <from_token> <to_token> <amount>\n"); return 1; }
+        int wallet_idx = atoi(argv[sub + 1]);
+        return cmd_dex_swap(engine, wallet_idx, argv[sub + 2], argv[sub + 3], argv[sub + 4]);
     } else if (strcmp(subcmd, "pairs") == 0) {
         return cmd_dex_pairs(engine);
     } else {
@@ -5431,7 +5485,7 @@ int dispatch_wallet_repl(dna_engine_t *engine, const char *subcmd) {
 int dispatch_dex_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
         fprintf(stderr, "Usage: dex <subcommand>\n");
-        fprintf(stderr, "  quote | pairs\n");
+        fprintf(stderr, "  quote | swap | pairs\n");
         return 1;
     }
     if (strcmp(subcmd, "quote") == 0) {
@@ -5444,6 +5498,17 @@ int dispatch_dex_repl(dna_engine_t *engine, const char *subcmd) {
         }
         char *filter = strtok(NULL, " \t");
         return cmd_dex_quote(engine, from, to, amt, filter);
+    } else if (strcmp(subcmd, "swap") == 0) {
+        char *idx_str = strtok(NULL, " \t");
+        char *from = strtok(NULL, " \t");
+        char *to = strtok(NULL, " \t");
+        char *amt = strtok(NULL, " \t");
+        if (!idx_str || !from || !to || !amt) {
+            fprintf(stderr, "Usage: dex swap <wallet_idx> <from_token> <to_token> <amount>\n");
+            return 1;
+        }
+        int wallet_idx = atoi(idx_str);
+        return cmd_dex_swap(engine, wallet_idx, from, to, amt);
     } else if (strcmp(subcmd, "pairs") == 0) {
         return cmd_dex_pairs(engine);
     } else {

@@ -13,6 +13,9 @@
  */
 
 #include "sol_dex.h"
+#include "sol_wallet.h"
+#include "sol_tx.h"
+#include "sol_rpc.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 #include <stdio.h>
@@ -39,8 +42,9 @@ static const char *dex_strcasestr(const char *haystack, const char *needle) {
 
 #define LOG_TAG "SOL_DEX"
 
-/* Jupiter public quote endpoint — no API key needed */
+/* Jupiter public endpoints — no API key needed */
 #define JUPITER_QUOTE_URL "https://lite-api.jup.ag/swap/v1/quote"
+#define JUPITER_SWAP_URL  "https://lite-api.jup.ag/swap/v1/swap"
 
 /* ============================================================================
  * TOKEN REGISTRY
@@ -333,6 +337,456 @@ static int jupiter_get_quote(
                  dex_label, quote_out->price_impact);
 
     json_object_put(root);
+    return 0;
+}
+
+/* ============================================================================
+ * JUPITER SWAP API
+ * ============================================================================ */
+
+/**
+ * Base64 decode table and function (for decoding Jupiter swap transaction)
+ */
+static const uint8_t b64_decode_table[256] = {
+    ['A']=0,['B']=1,['C']=2,['D']=3,['E']=4,['F']=5,['G']=6,['H']=7,
+    ['I']=8,['J']=9,['K']=10,['L']=11,['M']=12,['N']=13,['O']=14,['P']=15,
+    ['Q']=16,['R']=17,['S']=18,['T']=19,['U']=20,['V']=21,['W']=22,['X']=23,
+    ['Y']=24,['Z']=25,['a']=26,['b']=27,['c']=28,['d']=29,['e']=30,['f']=31,
+    ['g']=32,['h']=33,['i']=34,['j']=35,['k']=36,['l']=37,['m']=38,['n']=39,
+    ['o']=40,['p']=41,['q']=42,['r']=43,['s']=44,['t']=45,['u']=46,['v']=47,
+    ['w']=48,['x']=49,['y']=50,['z']=51,['0']=52,['1']=53,['2']=54,['3']=55,
+    ['4']=56,['5']=57,['6']=58,['7']=59,['8']=60,['9']=61,['+']=62,['/']=63
+};
+
+static size_t base64_decode(const char *in, size_t in_len, uint8_t *out) {
+    size_t out_len = 0;
+    uint32_t accum = 0;
+    int bits = 0;
+
+    for (size_t i = 0; i < in_len; i++) {
+        char c = in[i];
+        if (c == '=' || c == '\0') break;
+        if (c == '\n' || c == '\r' || c == ' ') continue;
+
+        accum = (accum << 6) | b64_decode_table[(unsigned char)c];
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out[out_len++] = (uint8_t)((accum >> bits) & 0xFF);
+        }
+    }
+    return out_len;
+}
+
+/**
+ * Decode Solana compact-u16 encoding from a byte buffer.
+ * Returns number of bytes consumed, writes decoded value to *value_out.
+ */
+static size_t decode_compact_u16(const uint8_t *data, size_t data_len, uint16_t *value_out) {
+    if (data_len < 1) return 0;
+
+    uint16_t val = data[0] & 0x7F;
+    if (!(data[0] & 0x80)) {
+        *value_out = val;
+        return 1;
+    }
+    if (data_len < 2) return 0;
+
+    val |= (uint16_t)(data[1] & 0x7F) << 7;
+    if (!(data[1] & 0x80)) {
+        *value_out = val;
+        return 2;
+    }
+    if (data_len < 3) return 0;
+
+    val |= (uint16_t)(data[2] & 0x03) << 14;
+    *value_out = val;
+    return 3;
+}
+
+/**
+ * Get Jupiter quote and return both parsed quote + raw JSON string.
+ * raw_json_out is allocated by this function, caller must free.
+ */
+static int jupiter_get_quote_raw(
+    const sol_token_t *from_tok,
+    const sol_token_t *to_tok,
+    const char *amount_raw,
+    sol_dex_quote_t *quote_out,
+    char **raw_json_out
+) {
+    char url[512];
+    snprintf(url, sizeof(url),
+             "%s?inputMint=%s&outputMint=%s&amount=%s&slippageBps=50",
+             JUPITER_QUOTE_URL, from_tok->mint, to_tok->mint, amount_raw);
+
+    QGP_LOG_DEBUG(LOG_TAG, "Jupiter quote (raw): %s", url);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        QGP_LOG_ERROR(LOG_TAG, "curl_easy_init failed");
+        return -1;
+    }
+
+    curl_buf_t buf = { .data = NULL, .size = 0 };
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "DNA-Messenger/1.0");
+
+    const char *ca_bundle = qgp_platform_ca_bundle_path();
+    if (ca_bundle) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    }
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK || !buf.data) {
+        QGP_LOG_ERROR(LOG_TAG, "Jupiter request failed: %s", curl_easy_strerror(res));
+        free(buf.data);
+        return -1;
+    }
+
+    if (http_code != 200) {
+        QGP_LOG_ERROR(LOG_TAG, "Jupiter HTTP %ld: %.200s", http_code, buf.data);
+        free(buf.data);
+        return (http_code == 400) ? -2 : -1;
+    }
+
+    /* Save raw JSON for /swap endpoint */
+    *raw_json_out = buf.data;  /* Transfer ownership */
+
+    /* Parse for quote_out fields */
+    json_object *root = json_tokener_parse(buf.data);
+    if (!root) {
+        QGP_LOG_ERROR(LOG_TAG, "Jupiter JSON parse failed");
+        free(*raw_json_out);
+        *raw_json_out = NULL;
+        return -1;
+    }
+
+    json_object *in_amount_obj, *out_amount_obj, *impact_obj, *route_plan_obj;
+    if (!json_object_object_get_ex(root, "inAmount", &in_amount_obj) ||
+        !json_object_object_get_ex(root, "outAmount", &out_amount_obj)) {
+        QGP_LOG_ERROR(LOG_TAG, "Jupiter response missing inAmount/outAmount");
+        json_object_put(root);
+        free(*raw_json_out);
+        *raw_json_out = NULL;
+        return -1;
+    }
+
+    const char *in_amount_raw = json_object_get_string(in_amount_obj);
+    const char *out_amount_raw = json_object_get_string(out_amount_obj);
+
+    const char *impact_str = "0";
+    if (json_object_object_get_ex(root, "priceImpactPct", &impact_obj)) {
+        impact_str = json_object_get_string(impact_obj);
+    }
+
+    const char *dex_label = "Jupiter";
+    if (json_object_object_get_ex(root, "routePlan", &route_plan_obj) &&
+        json_object_is_type(route_plan_obj, json_type_array) &&
+        json_object_array_length(route_plan_obj) > 0) {
+        json_object *step0 = json_object_array_get_idx(route_plan_obj, 0);
+        json_object *swap_info;
+        if (json_object_object_get_ex(step0, "swapInfo", &swap_info)) {
+            json_object *label_obj;
+            if (json_object_object_get_ex(swap_info, "label", &label_obj)) {
+                dex_label = json_object_get_string(label_obj);
+            }
+        }
+    }
+
+    memset(quote_out, 0, sizeof(*quote_out));
+    strncpy(quote_out->from_token, from_tok->symbol, sizeof(quote_out->from_token) - 1);
+    strncpy(quote_out->to_token, to_tok->symbol, sizeof(quote_out->to_token) - 1);
+    strncpy(quote_out->dex_name, dex_label, sizeof(quote_out->dex_name) - 1);
+    quote_out->from_decimals = from_tok->decimals;
+    quote_out->to_decimals = to_tok->decimals;
+
+    raw_to_decimal(in_amount_raw, from_tok->decimals,
+                   quote_out->amount_in, sizeof(quote_out->amount_in));
+    raw_to_decimal(out_amount_raw, to_tok->decimals,
+                   quote_out->amount_out, sizeof(quote_out->amount_out));
+
+    double impact_val = atof(impact_str) * 100.0;
+    snprintf(quote_out->price_impact, sizeof(quote_out->price_impact), "%.2f", impact_val);
+
+    double in_val = atof(quote_out->amount_in);
+    double out_val = atof(quote_out->amount_out);
+    if (in_val > 0.0) {
+        snprintf(quote_out->price, sizeof(quote_out->price), "%.6f", out_val / in_val);
+    }
+
+    strncpy(quote_out->fee, "included", sizeof(quote_out->fee) - 1);
+
+    QGP_LOG_INFO(LOG_TAG, "Jupiter quote (raw): %s %s -> %s %s via %s",
+                 quote_out->amount_in, from_tok->symbol,
+                 quote_out->amount_out, to_tok->symbol, dex_label);
+
+    json_object_put(root);
+    return 0;
+}
+
+/**
+ * POST to Jupiter /swap endpoint.
+ * Returns allocated base64 transaction string, caller must free.
+ */
+static char *jupiter_post_swap(const char *quote_json, const char *user_pubkey) {
+    /* Build JSON body: { "quoteResponse": <raw>, "userPublicKey": "<addr>" } */
+    /* We embed the raw quote JSON directly to avoid re-serialization issues */
+    size_t body_len = strlen(quote_json) + strlen(user_pubkey) + 128;
+    char *body = malloc(body_len);
+    if (!body) return NULL;
+
+    snprintf(body, body_len,
+             "{\"quoteResponse\":%s,\"userPublicKey\":\"%s\",\"dynamicComputeUnitLimit\":true,\"prioritizationFeeLamports\":\"auto\"}",
+             quote_json, user_pubkey);
+
+    QGP_LOG_DEBUG(LOG_TAG, "Jupiter swap POST: %.200s...", body);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        free(body);
+        return NULL;
+    }
+
+    curl_buf_t buf = { .data = NULL, .size = 0 };
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, "Accept: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, JUPITER_SWAP_URL);
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "DNA-Messenger/1.0");
+
+    const char *ca_bundle = qgp_platform_ca_bundle_path();
+    if (ca_bundle) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    }
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    free(body);
+
+    if (res != CURLE_OK || !buf.data) {
+        QGP_LOG_ERROR(LOG_TAG, "Jupiter swap request failed: %s", curl_easy_strerror(res));
+        free(buf.data);
+        return NULL;
+    }
+
+    if (http_code != 200) {
+        QGP_LOG_ERROR(LOG_TAG, "Jupiter swap HTTP %ld: %.200s", http_code, buf.data);
+        free(buf.data);
+        return NULL;
+    }
+
+    /* Parse response: { "swapTransaction": "<base64>" } */
+    json_object *root = json_tokener_parse(buf.data);
+    free(buf.data);
+
+    if (!root) {
+        QGP_LOG_ERROR(LOG_TAG, "Jupiter swap JSON parse failed");
+        return NULL;
+    }
+
+    json_object *tx_obj;
+    if (!json_object_object_get_ex(root, "swapTransaction", &tx_obj)) {
+        QGP_LOG_ERROR(LOG_TAG, "Jupiter swap response missing swapTransaction");
+        json_object_put(root);
+        return NULL;
+    }
+
+    const char *tx_b64 = json_object_get_string(tx_obj);
+    char *result = strdup(tx_b64);
+    json_object_put(root);
+
+    QGP_LOG_INFO(LOG_TAG, "Jupiter swap TX received (%zu bytes base64)",
+                 result ? strlen(result) : 0);
+    return result;
+}
+
+/**
+ * Sign a Jupiter swap transaction.
+ *
+ * Jupiter returns a versioned transaction (prefix byte 0x80).
+ * Layout: [compact-u16 num_sigs][64-byte sig slots...][message bytes]
+ * We sign the message bytes and place our signature in slot 0.
+ *
+ * Returns allocated base64 string of signed TX, caller must free.
+ */
+static char *sign_swap_transaction(const char *tx_base64, const sol_wallet_t *wallet) {
+    size_t b64_len = strlen(tx_base64);
+
+    /* Allocate buffer for decoded TX (base64 → binary is ~75% of input) */
+    size_t max_decoded = (b64_len * 3) / 4 + 4;
+    uint8_t *tx_data = malloc(max_decoded);
+    if (!tx_data) return NULL;
+
+    size_t tx_len = base64_decode(tx_base64, b64_len, tx_data);
+    if (tx_len < 3) {
+        QGP_LOG_ERROR(LOG_TAG, "Decoded TX too short: %zu bytes", tx_len);
+        free(tx_data);
+        return NULL;
+    }
+
+    /* Parse compact-u16 num_signatures */
+    uint16_t num_sigs = 0;
+    size_t offset = 0;
+    size_t consumed = decode_compact_u16(tx_data + offset, tx_len - offset, &num_sigs);
+    if (consumed == 0 || num_sigs < 1) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid num_signatures: %u (consumed=%zu)", num_sigs, consumed);
+        free(tx_data);
+        return NULL;
+    }
+    offset += consumed;
+
+    /* Signature slots: num_sigs * 64 bytes */
+    size_t sig_slots_size = (size_t)num_sigs * 64;
+    if (offset + sig_slots_size >= tx_len) {
+        QGP_LOG_ERROR(LOG_TAG, "TX too short for %u signature slots", num_sigs);
+        free(tx_data);
+        return NULL;
+    }
+
+    size_t sig_slot_0_offset = offset;  /* First sig slot */
+    size_t message_offset = offset + sig_slots_size;
+    size_t message_len = tx_len - message_offset;
+
+    if (message_len < 4) {
+        QGP_LOG_ERROR(LOG_TAG, "Message too short: %zu bytes", message_len);
+        free(tx_data);
+        return NULL;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "TX: %zu bytes, %u sigs, message at offset %zu (%zu bytes)",
+                  tx_len, num_sigs, message_offset, message_len);
+
+    /* Sign the message portion */
+    uint8_t signature[64];
+    if (sol_sign_message(tx_data + message_offset, message_len,
+                         wallet->private_key, wallet->public_key,
+                         signature) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign swap transaction");
+        free(tx_data);
+        return NULL;
+    }
+
+    /* Place signature in slot 0 */
+    memcpy(tx_data + sig_slot_0_offset, signature, 64);
+
+    /* Re-encode as base64 */
+    size_t out_b64_max = (tx_len * 4) / 3 + 8;
+    char *signed_b64 = malloc(out_b64_max);
+    if (!signed_b64) {
+        free(tx_data);
+        return NULL;
+    }
+
+    sol_base64_encode(tx_data, tx_len, signed_b64);
+    free(tx_data);
+
+    QGP_LOG_INFO(LOG_TAG, "Swap TX signed successfully");
+    return signed_b64;
+}
+
+/* ============================================================================
+ * DEX SWAP — PUBLIC
+ * ============================================================================ */
+
+int sol_dex_execute_swap(
+    const sol_wallet_t *wallet,
+    const char *from_token,
+    const char *to_token,
+    const char *amount_in,
+    sol_dex_swap_result_t *result_out
+) {
+    if (!wallet || !from_token || !to_token || !amount_in || !result_out) return -1;
+    memset(result_out, 0, sizeof(*result_out));
+
+    /* Resolve tokens */
+    const sol_token_t *from_tok = find_token(from_token);
+    const sol_token_t *to_tok = find_token(to_token);
+    if (!from_tok || !to_tok) {
+        QGP_LOG_WARN(LOG_TAG, "Unknown token: %s or %s", from_token, to_token);
+        return -2;
+    }
+
+    /* Convert decimal amount to raw */
+    char *amount_raw = decimal_to_raw(amount_in, from_tok->decimals);
+    if (!amount_raw) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to convert amount: %s", amount_in);
+        return -1;
+    }
+
+    /* Step 1: Get quote + raw JSON */
+    sol_dex_quote_t quote;
+    char *quote_json = NULL;
+    int rc = jupiter_get_quote_raw(from_tok, to_tok, amount_raw, &quote, &quote_json);
+    free(amount_raw);
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get quote for swap");
+        return rc;
+    }
+
+    /* Step 2: POST /swap with quote + wallet address */
+    char *tx_base64 = jupiter_post_swap(quote_json, wallet->address);
+    free(quote_json);
+
+    if (!tx_base64) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get swap transaction from Jupiter");
+        return -1;
+    }
+
+    /* Step 3: Sign the transaction */
+    char *signed_tx = sign_swap_transaction(tx_base64, wallet);
+    free(tx_base64);
+
+    if (!signed_tx) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign swap transaction");
+        return -1;
+    }
+
+    /* Step 4: Submit to Solana */
+    char tx_signature[128] = {0};
+    rc = sol_rpc_send_transaction(signed_tx, tx_signature, sizeof(tx_signature));
+    free(signed_tx);
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to submit swap transaction");
+        return -1;
+    }
+
+    /* Fill result */
+    strncpy(result_out->tx_signature, tx_signature, sizeof(result_out->tx_signature) - 1);
+    strncpy(result_out->amount_in, quote.amount_in, sizeof(result_out->amount_in) - 1);
+    strncpy(result_out->amount_out, quote.amount_out, sizeof(result_out->amount_out) - 1);
+    strncpy(result_out->from_token, quote.from_token, sizeof(result_out->from_token) - 1);
+    strncpy(result_out->to_token, quote.to_token, sizeof(result_out->to_token) - 1);
+    strncpy(result_out->dex_name, quote.dex_name, sizeof(result_out->dex_name) - 1);
+    strncpy(result_out->price_impact, quote.price_impact, sizeof(result_out->price_impact) - 1);
+
+    QGP_LOG_INFO(LOG_TAG, "Swap executed: %s %s -> %s %s via %s, tx=%s",
+                 result_out->amount_in, from_token,
+                 result_out->amount_out, to_token,
+                 result_out->dex_name, tx_signature);
+
     return 0;
 }
 

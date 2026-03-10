@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-import '../../ffi/dna_engine.dart' show Contact, DexQuote, Transaction, UserProfile, Wallet;
+import '../../ffi/dna_engine.dart' show Contact, DexQuote, DexSwapResult, Transaction, UserProfile, Wallet;
 import '../../providers/addressbook_provider.dart';
 import '../../providers/providers.dart' hide UserProfile;
 import '../../design_system/design_system.dart'; // includes DnaColors, DnaGradients, DnaSpacing
@@ -1687,18 +1687,21 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       return const [
         DropdownMenuItem(value: 'ETH', child: Text('ETH')),
         DropdownMenuItem(value: 'USDT', child: Text('USDT')),
+        DropdownMenuItem(value: 'USDC', child: Text('USDC')),
       ];
     }
     if (network == 'solana') {
       return const [
         DropdownMenuItem(value: 'SOL', child: Text('SOL')),
         DropdownMenuItem(value: 'USDT', child: Text('USDT')),
+        DropdownMenuItem(value: 'USDC', child: Text('USDC')),
       ];
     }
     if (network == 'tron') {
       return const [
         DropdownMenuItem(value: 'TRX', child: Text('TRX')),
         DropdownMenuItem(value: 'USDT', child: Text('USDT')),
+        DropdownMenuItem(value: 'USDC', child: Text('USDC')),
       ];
     }
     // Backbone (Cellframe)
@@ -2432,6 +2435,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
   DexQuote? _selectedQuote;
   bool _isLoadingQuote = false;
   String? _quoteError;
+  bool _isSwapping = false;
 
   late AnimationController _pulseController;
 
@@ -2530,6 +2534,80 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
           _isLoadingQuote = false;
           _quoteError = 'No quotes available';
         });
+      }
+    }
+  }
+
+  void _executeSwap() async {
+    final quote = _selectedQuote;
+    if (quote == null) return;
+
+    // Confirmation dialog
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirm Swap'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Swap ${quote.amountIn} ${quote.fromToken}'
+                 ' for ~${quote.amountOut} ${quote.toToken}'),
+            const SizedBox(height: 8),
+            Text('DEX: ${quote.dexName}',
+                 style: const TextStyle(fontSize: 13, color: Colors.grey)),
+            if (quote.priceImpact.isNotEmpty)
+              Text('Price impact: ${quote.priceImpact}%',
+                   style: const TextStyle(fontSize: 13, color: Colors.grey)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isSwapping = true);
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final result = await engine.executeDexSwap(
+        fromToken: _fromToken,
+        toToken: _toToken,
+        amountIn: _amountController.text.trim(),
+      );
+
+      if (mounted) {
+        setState(() => _isSwapping = false);
+        // Refresh balances
+        ref.read(allBalancesProvider.notifier).refresh();
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Swapped ${result.amountIn} ${result.fromToken}'
+                         ' → ${result.amountOut} ${result.toToken}'),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isSwapping = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Swap failed: $e'),
+            duration: const Duration(seconds: 4),
+          ),
+        );
       }
     }
   }
@@ -3082,30 +3160,32 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                       const SizedBox(width: 12),
                       Expanded(
                         child: _GradientButton(
-                          onPressed: () {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Swap not implemented yet'),
-                                duration: Duration(seconds: 2),
-                              ),
-                            );
-                          },
-                          child: const Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              FaIcon(FontAwesomeIcons.rightLeft,
-                                  color: Colors.white, size: 14),
-                              SizedBox(width: 8),
-                              Text(
-                                'Swap',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 16,
+                          onPressed: _isSwapping ? null : () => _executeSwap(),
+                          child: _isSwapping
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : const Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    FaIcon(FontAwesomeIcons.rightLeft,
+                                        color: Colors.white, size: 14),
+                                    SizedBox(width: 8),
+                                    Text(
+                                      'Swap',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 16,
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                              ),
-                            ],
-                          ),
                         ),
                       ),
                     ],

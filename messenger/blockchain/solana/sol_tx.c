@@ -171,7 +171,7 @@ int sol_tx_build_transfer(
 static const char base64_chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-static size_t base64_encode(const uint8_t *data, size_t len, char *out) {
+size_t sol_base64_encode(const uint8_t *data, size_t len, char *out) {
     size_t out_len = 0;
     size_t i;
 
@@ -259,7 +259,7 @@ int sol_tx_send_lamports(
 
     /* Encode as base64 */
     char tx_base64[2048];
-    base64_encode(tx_data, tx_len, tx_base64);
+    sol_base64_encode(tx_data, tx_len, tx_base64);
 
     /* Send transaction */
     if (sol_rpc_send_transaction(tx_base64, signature_out, sig_out_size) != 0) {

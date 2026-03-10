@@ -300,6 +300,30 @@ final class dna_dex_quote_t extends Struct {
   external Array<Char> warning;
 }
 
+/// DEX swap result
+final class dna_dex_swap_result_t extends Struct {
+  @Array(128)
+  external Array<Char> tx_signature;
+
+  @Array(64)
+  external Array<Char> amount_in;
+
+  @Array(64)
+  external Array<Char> amount_out;
+
+  @Array(16)
+  external Array<Char> from_token;
+
+  @Array(16)
+  external Array<Char> to_token;
+
+  @Array(32)
+  external Array<Char> dex_name;
+
+  @Array(16)
+  external Array<Char> price_impact;
+}
+
 /// Transaction record
 final class dna_transaction_t extends Struct {
   @Array(128)
@@ -970,6 +994,15 @@ typedef DnaDexQuoteCbNative = Void Function(
   Pointer<Void> user_data,
 );
 typedef DnaDexQuoteCb = NativeFunction<DnaDexQuoteCbNative>;
+
+/// DEX swap callback - Native
+typedef DnaDexSwapCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_dex_swap_result_t> result,
+  Pointer<Void> user_data,
+);
+typedef DnaDexSwapCb = NativeFunction<DnaDexSwapCbNative>;
 
 /// Profile callback - Native
 typedef DnaProfileCbNative = Void Function(
@@ -2424,6 +2457,25 @@ class DnaBindings {
   ) {
     return _dna_engine_dex_quote(
         engine, from_token, to_token, amount_in, dex_filter, callback, user_data);
+  }
+
+  late final _dna_engine_dex_swap = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Int32, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<Utf8>, Pointer<DnaDexSwapCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, int, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<Utf8>, Pointer<DnaDexSwapCb>, Pointer<Void>)>('dna_engine_dex_swap');
+
+  int dna_engine_dex_swap(
+    Pointer<dna_engine_t> engine,
+    int wallet_index,
+    Pointer<Utf8> from_token,
+    Pointer<Utf8> to_token,
+    Pointer<Utf8> amount_in,
+    Pointer<DnaDexSwapCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dex_swap(
+        engine, wallet_index, from_token, to_token, amount_in, callback, user_data);
   }
 
   // ---------------------------------------------------------------------------

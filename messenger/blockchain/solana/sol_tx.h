@@ -68,6 +68,16 @@ int sol_tx_send_lamports(
     size_t sig_out_size
 );
 
+/**
+ * Base64 encode binary data
+ *
+ * @param data      Input binary data
+ * @param len       Length of input data
+ * @param out       Output: base64 string (must be at least (len*4/3)+4 bytes)
+ * @return          Length of base64 string (excluding null terminator)
+ */
+size_t sol_base64_encode(const uint8_t *data, size_t len, char *out);
+
 #ifdef __cplusplus
 }
 #endif

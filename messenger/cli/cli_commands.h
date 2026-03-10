@@ -498,11 +498,12 @@ int cmd_channel_subscriptions(dna_engine_t *engine);
 int cmd_channel_sync(dna_engine_t *engine);
 
 /* ============================================================================
- * DEX COMMANDS (2 commands)
+ * DEX COMMANDS (3 commands)
  * ============================================================================ */
 
 int cmd_dex_quote(dna_engine_t *engine, const char *from_token, const char *to_token, const char *amount, const char *dex_filter);
 int cmd_dex_pairs(dna_engine_t *engine);
+int cmd_dex_swap(dna_engine_t *engine, int wallet_idx, const char *from_token, const char *to_token, const char *amount);
 
 /* ============================================================================
  * GROUP DISPATCHERS — argv-based (for main.c) and REPL-based (for execute_command)

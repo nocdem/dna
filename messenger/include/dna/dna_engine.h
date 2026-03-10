@@ -2223,6 +2223,54 @@ DNA_API dna_request_id_t dna_engine_dex_list_pairs(
     void *user_data
 );
 
+/**
+ * DEX swap result
+ */
+typedef struct {
+    char tx_signature[128];     /* Transaction signature (base58) */
+    char amount_in[64];         /* Input amount (decimal string) */
+    char amount_out[64];        /* Expected output amount (decimal string) */
+    char from_token[16];        /* Input token symbol */
+    char to_token[16];          /* Output token symbol */
+    char dex_name[32];          /* DEX name from route */
+    char price_impact[16];      /* Price impact percentage */
+} dna_dex_swap_result_t;
+
+/**
+ * DEX swap callback
+ */
+typedef void (*dna_dex_swap_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const dna_dex_swap_result_t *result,
+    void *user_data
+);
+
+/**
+ * Execute DEX swap (Solana only)
+ *
+ * Fetches quote, builds swap TX via Jupiter, signs locally, submits to Solana.
+ * Private key never leaves the device.
+ *
+ * @param engine       Engine instance
+ * @param wallet_index Wallet index (unused, Solana wallet auto-selected)
+ * @param from_token   Input token symbol (e.g., "SOL")
+ * @param to_token     Output token symbol (e.g., "USDC")
+ * @param amount_in    Input amount as decimal string (e.g., "0.01")
+ * @param callback     Called with swap result (tx signature)
+ * @param user_data    User data for callback
+ * @return             Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_dex_swap(
+    dna_engine_t *engine,
+    int wallet_index,
+    const char *from_token,
+    const char *to_token,
+    const char *amount_in,
+    dna_dex_swap_cb callback,
+    void *user_data
+);
+
 /* ============================================================================
  * 7. P2P & PRESENCE (4 async functions)
  * ============================================================================ */
