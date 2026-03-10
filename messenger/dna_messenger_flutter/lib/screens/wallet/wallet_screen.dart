@@ -1979,7 +1979,7 @@ class _TokenDetailSheet extends ConsumerWidget {
                           icon: const FaIcon(FontAwesomeIcons.arrowsRotate, color: Colors.white70),
                           onPressed: () {
                             ref.invalidate(balancesProvider(walletIndex));
-                            ref.invalidate(transactionsProvider((walletIndex: walletIndex, network: network == 'Ethereum' ? 'Ethereum' : 'Backbone')));
+                            ref.invalidate(transactionsProvider((walletIndex: walletIndex, network: network)));
                           },
                           tooltip: 'Refresh',
                         ),

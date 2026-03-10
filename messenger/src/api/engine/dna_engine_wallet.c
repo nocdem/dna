@@ -18,12 +18,23 @@
 #define DNA_ENGINE_WALLET_IMPL
 #include "engine_includes.h"
 #include "blockchain/solana/sol_dex.h"
+#include "blockchain/solana/sol_spl.h"
 #include "blockchain/ethereum/eth_dex.h"
 #include "blockchain/cellframe/cellframe_dex.h"
+#include "database/wallet_cache.h"
 
 /* ============================================================================
  * WALLET TASK HANDLERS
  * ============================================================================ */
+
+/* Lazy-init wallet cache (called on first use) */
+static void ensure_wallet_cache(void) {
+    static int initialized = 0;
+    if (!initialized) {
+        wallet_cache_init();
+        initialized = 1;
+    }
+}
 
 void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
@@ -101,6 +112,7 @@ done:
 }
 
 void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
+    ensure_wallet_cache();
     int error = DNA_OK;
     dna_balance_t *balances = NULL;
     int count = 0;
@@ -487,6 +499,7 @@ done:
 #define NETWORK_FEE_COLLECTOR "Rj7J7MiX2bWy8sNyX38bB86KTFUnSn7sdKDsTFa2RJyQTDWFaebrj6BucT7Wa5CSq77zwRAwevbiKy1sv1RBGTonM83D3xPDwoyGasZ7"
 
 void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
+    ensure_wallet_cache();
     int error = DNA_OK;
     dna_transaction_t *transactions = NULL;
     int count = 0;
@@ -497,17 +510,37 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Get wallet address */
-    int wallet_index = task->params.get_transactions.wallet_index;
+    /* Get wallet address — find wallet by network name, not by index */
     const char *network = task->params.get_transactions.network;
 
     blockchain_wallet_list_t *wallets = engine->blockchain_wallets;
-    if (wallet_index < 0 || wallet_index >= (int)wallets->count) {
+
+    /* Determine target blockchain type from network parameter */
+    blockchain_type_t target_type = BLOCKCHAIN_CELLFRAME; /* default */
+    if (strcasecmp(network, "Ethereum") == 0 || strcasecmp(network, "ETH") == 0) {
+        target_type = BLOCKCHAIN_ETHEREUM;
+    } else if (strcasecmp(network, "Solana") == 0 || strcasecmp(network, "SOL") == 0) {
+        target_type = BLOCKCHAIN_SOLANA;
+    } else if (strcasecmp(network, "Tron") == 0 || strcasecmp(network, "TRX") == 0) {
+        target_type = BLOCKCHAIN_TRON;
+    } else if (strcasecmp(network, "Cellframe") == 0 || strcasecmp(network, "CELL") == 0) {
+        target_type = BLOCKCHAIN_CELLFRAME;
+    }
+
+    /* Find wallet matching the target blockchain type */
+    blockchain_wallet_info_t *wallet_info = NULL;
+    for (int i = 0; i < (int)wallets->count; i++) {
+        if (wallets->wallets[i].type == target_type) {
+            wallet_info = &wallets->wallets[i];
+            break;
+        }
+    }
+
+    if (!wallet_info) {
+        QGP_LOG_ERROR(LOG_TAG, "No wallet found for network: %s", network);
         error = DNA_ERROR_INVALID_ARG;
         goto done;
     }
-
-    blockchain_wallet_info_t *wallet_info = &wallets->wallets[wallet_index];
 
     if (wallet_info->address[0] == '\0') {
         error = DNA_ERROR_INTERNAL;
@@ -633,13 +666,38 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
             for (int i = 0; i < sol_count; i++) {
                 strncpy(transactions[i].tx_hash, sol_txs[i].signature,
                         sizeof(transactions[i].tx_hash) - 1);
-                strncpy(transactions[i].token, "SOL", sizeof(transactions[i].token) - 1);
 
-                /* Convert lamports to SOL */
+                /* Determine token name and decimals based on SPL detection */
+                const char *token_name = "SOL";
+                int decimals = 9;
+
+                if (sol_txs[i].is_token_transfer && sol_txs[i].token_mint[0]) {
+                    if (strcmp(sol_txs[i].token_mint, SOL_USDT_MINT) == 0) {
+                        token_name = "USDT";
+                        decimals = SOL_USDT_DECIMALS;
+                    } else if (strcmp(sol_txs[i].token_mint, SOL_USDC_MINT) == 0) {
+                        token_name = "USDC";
+                        decimals = SOL_USDC_DECIMALS;
+                    } else {
+                        /* Unknown SPL token — use abbreviated mint address */
+                        static char mint_abbrev[16];
+                        snprintf(mint_abbrev, sizeof(mint_abbrev), "%.4s..%.4s",
+                                 sol_txs[i].token_mint,
+                                 sol_txs[i].token_mint + strlen(sol_txs[i].token_mint) - 4);
+                        token_name = mint_abbrev;
+                        decimals = 9; /* default; amount may be approximate */
+                    }
+                }
+
+                strncpy(transactions[i].token, token_name, sizeof(transactions[i].token) - 1);
+
+                /* Convert raw units to human-readable amount using correct decimals */
                 if (sol_txs[i].lamports > 0) {
-                    double sol_amount = (double)sol_txs[i].lamports / 1000000000.0;
+                    double amount = (double)sol_txs[i].lamports;
+                    for (int d = 0; d < decimals; d++) amount /= 10.0;
+                    /* Format with enough precision for the token's decimals */
                     snprintf(transactions[i].amount, sizeof(transactions[i].amount),
-                            "%.9f", sol_amount);
+                            "%.*f", decimals, amount);
                     /* Trim trailing zeros */
                     char *dot = strchr(transactions[i].amount, '.');
                     if (dot) {
@@ -904,6 +962,32 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
 
 done:
     if (resp) cellframe_rpc_response_free(resp);
+
+    /* Cache merge: save fresh results, then merge with previously cached tx */
+    {
+        const char *cache_network = task->params.get_transactions.network;
+        int cache_wallet = task->params.get_transactions.wallet_index;
+
+        /* Save fresh results to cache */
+        if (error == DNA_OK && transactions && count > 0) {
+            wallet_cache_save_transactions(cache_wallet, cache_network, transactions, count);
+        }
+
+        /* Load all cached transactions and merge with fresh results */
+        dna_transaction_t *cached_txs = NULL;
+        int cached_count = 0;
+        if (wallet_cache_get_transactions(cache_wallet, cache_network,
+                                          &cached_txs, &cached_count) == 0 && cached_count > 0) {
+            /* Merge: start with cached, add any fresh tx not already in cache */
+            /* Since we just saved fresh to cache, cached_txs already contains everything.
+             * Just use cached as the result — it's deduped by tx_hash PK and sorted. */
+            if (transactions) free(transactions);
+            transactions = cached_txs;
+            count = cached_count;
+            error = DNA_OK;  /* Clear network error if we have cached data */
+        }
+    }
+
     task->callback.transactions(task->request_id, error, transactions, count, task->user_data);
 }
 

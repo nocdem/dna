@@ -152,6 +152,14 @@ static int sol_rpc_call_single(
     /* Check for RPC error */
     json_object *error_obj;
     if (json_object_object_get_ex(resp, "error", &error_obj) && error_obj) {
+        /* Check if this is a 429 rate limit — retriable on another endpoint */
+        json_object *code_obj;
+        if (json_object_object_get_ex(error_obj, "code", &code_obj) &&
+            json_object_get_int(code_obj) == 429) {
+            QGP_LOG_WARN(LOG_TAG, "Rate limited (429) for %s", method);
+            json_object_put(resp);
+            return -1;  /* Retriable - try next endpoint */
+        }
         QGP_LOG_ERROR(LOG_TAG, "RPC error for %s: %s", method,
                       json_object_to_json_string(error_obj));
         json_object_put(resp);
@@ -1090,24 +1098,26 @@ int sol_rpc_get_transactions(
             txs[valid_count].success = true;
         }
 
-        /* Fetch full transaction details (rate limited via sol_rpc_call) */
+        /* Rotate endpoint before each call to spread load across providers */
+        g_sol_rpc_current_idx = (g_sol_rpc_current_idx + 1) % SOL_RPC_MAINNET_COUNT;
+
+        /* Fetch full transaction details */
         if (sol_rpc_get_tx_details(signature, address, &txs[valid_count]) != 0) {
-            /* If we can't get details, use basic info from signature list */
-            json_object *slot_obj, *time_obj;
-            if (json_object_object_get_ex(sig_info, "slot", &slot_obj)) {
-                txs[valid_count].slot = json_object_get_uint64(slot_obj);
-            }
-            if (json_object_object_get_ex(sig_info, "blockTime", &time_obj) &&
-                !json_object_is_type(time_obj, json_type_null)) {
-                txs[valid_count].block_time = json_object_get_int64(time_obj);
-            }
-            strncpy(txs[valid_count].from, address, sizeof(txs[valid_count].from) - 1);
+            /* Skip entries where getTransaction failed (rate limited) — don't fabricate data */
+            QGP_LOG_DEBUG(LOG_TAG, "Skipping tx %d (getTransaction failed): %.16s...", i, signature);
+            memset(&txs[valid_count], 0, sizeof(txs[valid_count]));
+            continue;
         }
 
         valid_count++;
     }
 
     json_object_put(result);
+
+    if (valid_count == 0) {
+        free(txs);
+        txs = NULL;
+    }
 
     *txs_out = txs;
     *count_out = valid_count;

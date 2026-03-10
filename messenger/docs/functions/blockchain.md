@@ -169,6 +169,8 @@ Solana blockchain with Ed25519 signatures.
 | `int sol_sign_message(const uint8_t*, size_t, const uint8_t*, const uint8_t*, uint8_t*)` | Sign message |
 | `void sol_rpc_set_endpoint(const char*)` | Set RPC endpoint |
 | `const char* sol_rpc_get_endpoint(void)` | Get RPC endpoint |
+| `int sol_rpc_get_transactions(const char*, sol_transaction_t**, int*)` | Get transaction history (with endpoint rotation) |
+| `void sol_rpc_free_transactions(sol_transaction_t*, int)` | Free transactions array |
 
 ### 17.2 Solana Transactions (`sol_tx.h`)
 
@@ -223,6 +225,8 @@ TRON blockchain with secp256k1 signatures.
 | `bool trx_validate_address(const char*)` | Validate address format |
 | `int trx_rpc_set_endpoint(const char*)` | Set RPC endpoint |
 | `const char* trx_rpc_get_endpoint(void)` | Get RPC endpoint |
+| `int trx_rpc_get_transactions(const char*, trx_transaction_t**, int*)` | Get transaction history |
+| `void trx_rpc_free_transactions(trx_transaction_t*, int)` | Free transactions array |
 
 ### 18.2 TRON Transactions (`trx_tx.h`)
 

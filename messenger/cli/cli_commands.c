@@ -3783,22 +3783,25 @@ static void on_transactions(dna_request_id_t request_id, int error,
     }
 }
 
-int cmd_transactions(dna_engine_t *engine, int wallet_idx) {
+int cmd_transactions(dna_engine_t *engine, int wallet_idx, const char *network) {
     if (!engine) {
         printf("Error: Engine not initialized\n");
         return -1;
     }
 
+    if (!network) {
+        network = "Backbone";
+    }
+
     /* Ensure wallets are loaded (sets wallets_loaded in engine) */
     ensure_wallets_loaded(engine);
 
-    printf("Getting transactions for wallet %d...\n", wallet_idx);
+    printf("Getting %s transactions for wallet %d...\n", network, wallet_idx);
 
     cli_wait_t wait;
     cli_wait_init(&wait);
 
-    /* API requires network parameter - use "Backbone" as default */
-    dna_engine_get_transactions(engine, wallet_idx, "Backbone", on_transactions, &wait);
+    dna_engine_get_transactions(engine, wallet_idx, network, on_transactions, &wait);
     int result = cli_wait_for(&wait);
     cli_wait_destroy(&wait);
 
@@ -4894,7 +4897,7 @@ int dispatch_wallet(dna_engine_t *engine, int argc, char **argv, int sub) {
         fprintf(stderr, "  wallet list\n");
         fprintf(stderr, "  wallet balance <wallet_index>\n");
         fprintf(stderr, "  wallet send <wallet_idx> <network> <token> <to_address> <amount>\n");
-        fprintf(stderr, "  wallet transactions <wallet_index>\n");
+        fprintf(stderr, "  wallet transactions <wallet_index> [network]  (Backbone|Solana|Ethereum|Tron)\n");
         fprintf(stderr, "  wallet estimate-gas <network_id>\n");
         return 1;
     }
@@ -4908,8 +4911,9 @@ int dispatch_wallet(dna_engine_t *engine, int argc, char **argv, int sub) {
         if (sub + 5 >= argc) { fprintf(stderr, "Usage: wallet send <wallet_idx> <network> <token> <to_address> <amount>\n"); return 1; }
         return cmd_send_tokens(engine, atoi(argv[sub + 1]), argv[sub + 2], argv[sub + 3], argv[sub + 4], argv[sub + 5]);
     } else if (strcmp(subcmd, "transactions") == 0) {
-        if (sub + 1 >= argc) { fprintf(stderr, "Usage: wallet transactions <wallet_index>\n"); return 1; }
-        return cmd_transactions(engine, atoi(argv[sub + 1]));
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: wallet transactions <wallet_index> [network]\n  Networks: Backbone (default), Solana, Ethereum, Tron\n"); return 1; }
+        const char *net = (sub + 2 < argc) ? argv[sub + 2] : NULL;
+        return cmd_transactions(engine, atoi(argv[sub + 1]), net);
     } else if (strcmp(subcmd, "estimate-gas") == 0) {
         if (sub + 1 >= argc) { fprintf(stderr, "Usage: wallet estimate-gas <network_id>\n"); return 1; }
         return cmd_estimate_gas(engine, atoi(argv[sub + 1]));
@@ -5469,8 +5473,9 @@ int dispatch_wallet_repl(dna_engine_t *engine, const char *subcmd) {
         return cmd_send_tokens(engine, atoi(idx), net, tok, to, amt);
     } else if (strcmp(subcmd, "transactions") == 0) {
         char *idx = strtok(NULL, " \t");
-        if (!idx) { fprintf(stderr, "Usage: wallet transactions <wallet_index>\n"); return 1; }
-        return cmd_transactions(engine, atoi(idx));
+        if (!idx) { fprintf(stderr, "Usage: wallet transactions <wallet_index> [network]\n  Networks: Backbone (default), Solana, Ethereum, Tron\n"); return 1; }
+        char *net = strtok(NULL, " \t");
+        return cmd_transactions(engine, atoi(idx), net);
     } else if (strcmp(subcmd, "estimate-gas") == 0) {
         char *id = strtok(NULL, " \t");
         if (!id) { fprintf(stderr, "Usage: wallet estimate-gas <network_id>\n"); return 1; }

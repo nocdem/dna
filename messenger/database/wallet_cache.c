@@ -37,7 +37,7 @@ static int get_db_path(char *path_out, size_t path_size) {
 }
 
 static int create_schema(void) {
-    const char *sql =
+    const char *balances_sql =
         "CREATE TABLE IF NOT EXISTS wallet_balances ("
         "    wallet_index INTEGER NOT NULL,"
         "    token        TEXT NOT NULL,"
@@ -47,13 +47,36 @@ static int create_schema(void) {
         "    PRIMARY KEY(wallet_index, token, network)"
         ");";
 
+    const char *transactions_sql =
+        "CREATE TABLE IF NOT EXISTS wallet_transactions ("
+        "    tx_hash       TEXT NOT NULL,"
+        "    wallet_index  INTEGER NOT NULL,"
+        "    network       TEXT NOT NULL,"
+        "    direction     TEXT NOT NULL,"
+        "    amount        TEXT NOT NULL,"
+        "    token         TEXT NOT NULL,"
+        "    other_address TEXT NOT NULL DEFAULT '',"
+        "    timestamp     TEXT NOT NULL,"
+        "    status        TEXT NOT NULL DEFAULT 'CONFIRMED',"
+        "    cached_at     INTEGER NOT NULL,"
+        "    PRIMARY KEY(tx_hash)"
+        ");";
+
     char *err_msg = NULL;
-    int rc = sqlite3_exec(g_db, sql, NULL, NULL, &err_msg);
+    int rc = sqlite3_exec(g_db, balances_sql, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to create schema: %s", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create balances schema: %s", err_msg);
         sqlite3_free(err_msg);
         return -1;
     }
+
+    rc = sqlite3_exec(g_db, transactions_sql, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create transactions schema: %s", err_msg);
+        sqlite3_free(err_msg);
+        return -1;
+    }
+
     return 0;
 }
 
@@ -219,14 +242,144 @@ int wallet_cache_get_balances(int wallet_index,
     return 0;
 }
 
+/* ── Transaction operations ─────────────────────────────────────────── */
+
+int wallet_cache_save_transactions(int wallet_index, const char *network,
+                                    const dna_transaction_t *txs, int count) {
+    if (!g_db || !txs || count <= 0 || !network) {
+        return -1;
+    }
+
+    const char *sql =
+        "INSERT OR REPLACE INTO wallet_transactions "
+        "(tx_hash, wallet_index, network, direction, amount, token, "
+        "other_address, timestamp, status, cached_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare tx save: %s", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    int64_t now = (int64_t)time(NULL);
+    int saved = 0;
+
+    for (int i = 0; i < count; i++) {
+        if (txs[i].tx_hash[0] == '\0') continue;
+
+        sqlite3_reset(stmt);
+        sqlite3_bind_text(stmt, 1, txs[i].tx_hash, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 2, wallet_index);
+        sqlite3_bind_text(stmt, 3, network, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 4, txs[i].direction, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 5, txs[i].amount, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 6, txs[i].token, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 7, txs[i].other_address, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 8, txs[i].timestamp, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 9, txs[i].status, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 10, now);
+
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to save tx %s: %s",
+                          txs[i].tx_hash, sqlite3_errmsg(g_db));
+        } else {
+            saved++;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+    QGP_LOG_DEBUG(LOG_TAG, "Cached %d/%d transactions for wallet %d/%s",
+                  saved, count, wallet_index, network);
+    return 0;
+}
+
+int wallet_cache_get_transactions(int wallet_index, const char *network,
+                                   dna_transaction_t **txs_out, int *count_out) {
+    if (!g_db || !txs_out || !count_out || !network) {
+        return -1;
+    }
+
+    *txs_out = NULL;
+    *count_out = 0;
+
+    /* Count rows */
+    const char *count_sql =
+        "SELECT COUNT(*) FROM wallet_transactions "
+        "WHERE wallet_index = ? AND network = ?;";
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, count_sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_int(stmt, 1, wallet_index);
+    sqlite3_bind_text(stmt, 2, network, -1, SQLITE_TRANSIENT);
+
+    int total = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        total = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+
+    if (total <= 0) return -2;
+
+    /* Fetch rows ordered by timestamp descending (newest first) */
+    const char *select_sql =
+        "SELECT tx_hash, direction, amount, token, other_address, timestamp, status "
+        "FROM wallet_transactions "
+        "WHERE wallet_index = ? AND network = ? "
+        "ORDER BY CAST(timestamp AS INTEGER) DESC;";
+    rc = sqlite3_prepare_v2(g_db, select_sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_int(stmt, 1, wallet_index);
+    sqlite3_bind_text(stmt, 2, network, -1, SQLITE_TRANSIENT);
+
+    dna_transaction_t *txs = calloc((size_t)total, sizeof(dna_transaction_t));
+    if (!txs) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    int idx = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && idx < total) {
+        const char *hash  = (const char *)sqlite3_column_text(stmt, 0);
+        const char *dir   = (const char *)sqlite3_column_text(stmt, 1);
+        const char *amt   = (const char *)sqlite3_column_text(stmt, 2);
+        const char *tok   = (const char *)sqlite3_column_text(stmt, 3);
+        const char *other = (const char *)sqlite3_column_text(stmt, 4);
+        const char *ts    = (const char *)sqlite3_column_text(stmt, 5);
+        const char *stat  = (const char *)sqlite3_column_text(stmt, 6);
+
+        if (hash)  strncpy(txs[idx].tx_hash,       hash,  sizeof(txs[idx].tx_hash) - 1);
+        if (dir)   strncpy(txs[idx].direction,      dir,   sizeof(txs[idx].direction) - 1);
+        if (amt)   strncpy(txs[idx].amount,         amt,   sizeof(txs[idx].amount) - 1);
+        if (tok)   strncpy(txs[idx].token,          tok,   sizeof(txs[idx].token) - 1);
+        if (other) strncpy(txs[idx].other_address,  other, sizeof(txs[idx].other_address) - 1);
+        if (ts)    strncpy(txs[idx].timestamp,       ts,    sizeof(txs[idx].timestamp) - 1);
+        if (stat)  strncpy(txs[idx].status,          stat,  sizeof(txs[idx].status) - 1);
+        idx++;
+    }
+
+    sqlite3_finalize(stmt);
+
+    *txs_out = txs;
+    *count_out = idx;
+
+    QGP_LOG_DEBUG(LOG_TAG, "Loaded %d cached transactions for wallet %d/%s",
+                  idx, wallet_index, network);
+    return 0;
+}
+
 int wallet_cache_clear(void) {
     if (!g_db) {
         return -1;
     }
 
     char *err_msg = NULL;
-    int rc = sqlite3_exec(g_db, "DELETE FROM wallet_balances;",
-                          NULL, NULL, &err_msg);
+    int rc = sqlite3_exec(g_db,
+        "DELETE FROM wallet_balances; DELETE FROM wallet_transactions;",
+        NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to clear cache: %s", err_msg);
         sqlite3_free(err_msg);

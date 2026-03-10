@@ -290,3 +290,35 @@ Per-identity SQLite database for channel subscriptions.
 | `int wall_cache_update_meta(const char*)` | Update last-fetched timestamp for a fingerprint cache key |
 | `int wall_cache_delete_meta(const char*)` | Delete staleness metadata to force DHT re-fetch (v0.7.3+) |
 | `bool wall_cache_is_stale(const char*)` | Check if post cache is stale for a fingerprint (>5 min) |
+
+---
+
+## 13.11 Wallet Cache (`database/wallet_cache.h`)
+
+**Added in v0.9.30** - Global SQLite cache for wallet balances and transaction history with stale-while-revalidate semantics.
+
+**Database:** `~/.dna/wallet_cache.db`
+
+**Tables:** wallet_balances, wallet_transactions
+
+### Lifecycle
+
+| Function | Description |
+|----------|-------------|
+| `int wallet_cache_init(void)` | Initialize wallet cache database |
+| `void wallet_cache_close(void)` | Close wallet cache database |
+
+### Balance Operations
+
+| Function | Description |
+|----------|-------------|
+| `int wallet_cache_save_balances(int, const dna_balance_t*, int)` | Save balances to cache (upsert) |
+| `int wallet_cache_get_balances(int, dna_balance_t**, int*)` | Get cached balances (caller frees) |
+
+### Transaction Operations
+
+| Function | Description |
+|----------|-------------|
+| `int wallet_cache_save_transactions(int, const char*, const dna_transaction_t*, int)` | Save transactions to cache (upsert by tx_hash) |
+| `int wallet_cache_get_transactions(int, const char*, dna_transaction_t**, int*)` | Get cached transactions (caller frees) |
+| `int wallet_cache_clear(void)` | Clear all cached data (balances + transactions) |

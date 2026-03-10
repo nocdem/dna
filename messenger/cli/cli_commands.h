@@ -465,7 +465,7 @@ int cmd_dht_status(dna_engine_t *engine);
 
 int cmd_send_tokens(dna_engine_t *engine, int wallet_idx, const char *network,
                     const char *token, const char *to_address, const char *amount);
-int cmd_transactions(dna_engine_t *engine, int wallet_idx);
+int cmd_transactions(dna_engine_t *engine, int wallet_idx, const char *network);
 int cmd_estimate_gas(dna_engine_t *engine, int network_id);
 
 /* ============================================================================

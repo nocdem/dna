@@ -75,8 +75,36 @@ int wallet_cache_save_balances(int wallet_index,
 int wallet_cache_get_balances(int wallet_index,
                               dna_balance_t **balances_out, int *count_out);
 
+/* ── Transaction operations ────────────────────────────────────────── */
+
 /**
- * Clear all cached balances
+ * Save transactions to cache (upsert by tx_hash)
+ * Called after successful RPC fetch — accumulates over time
+ *
+ * @param wallet_index Wallet index (0-based)
+ * @param network      Network name (e.g., "Solana", "Ethereum", "Backbone")
+ * @param txs          Array of transaction entries
+ * @param count        Number of entries
+ * @return 0 on success, -1 on error
+ */
+int wallet_cache_save_transactions(int wallet_index, const char *network,
+                                    const dna_transaction_t *txs, int count);
+
+/**
+ * Get cached transactions for a wallet/network (instant, no network calls)
+ * Caller must free *txs_out with free() when done
+ *
+ * @param wallet_index Wallet index (0-based)
+ * @param network      Network name
+ * @param txs_out      Output: heap-allocated array of dna_transaction_t
+ * @param count_out    Output: number of entries
+ * @return 0 on success, -1 on error, -2 if no cached data
+ */
+int wallet_cache_get_transactions(int wallet_index, const char *network,
+                                   dna_transaction_t **txs_out, int *count_out);
+
+/**
+ * Clear all cached data (balances + transactions)
  * Used on logout or identity switch
  *
  * @return 0 on success, -1 on error
