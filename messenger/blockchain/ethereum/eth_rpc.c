@@ -566,6 +566,246 @@ int eth_rpc_get_transactions(
     return 0;
 }
 
+/**
+ * Convert raw token amount to decimal string using token decimals.
+ * e.g., "1000000" with 6 decimals → "1.0"
+ */
+static void token_raw_to_decimal(const char *raw_str, uint8_t decimals,
+                                  char *out, size_t out_size) {
+    if (!raw_str || !out || out_size < 8) {
+        if (out && out_size > 0) snprintf(out, out_size, "0.0");
+        return;
+    }
+
+    /* Handle zero */
+    size_t len = strlen(raw_str);
+    if (len == 0 || strcmp(raw_str, "0") == 0) {
+        snprintf(out, out_size, "0.0");
+        return;
+    }
+
+    if (decimals == 0) {
+        snprintf(out, out_size, "%s", raw_str);
+        return;
+    }
+
+    if (len <= (size_t)decimals) {
+        /* Value is less than 1.0, need leading "0." + zeros */
+        int leading_zeros = (int)decimals - (int)len;
+        snprintf(out, out_size, "0.");
+        size_t pos = 2;
+        for (int z = 0; z < leading_zeros && pos < out_size - 1; z++) {
+            out[pos++] = '0';
+        }
+        /* Copy significant digits */
+        for (size_t s = 0; s < len && pos < out_size - 1; s++) {
+            out[pos++] = raw_str[s];
+        }
+        out[pos] = '\0';
+    } else {
+        /* Value >= 1.0, insert decimal point */
+        size_t whole_len = len - (size_t)decimals;
+        if (whole_len + 1 + decimals + 1 > out_size) {
+            snprintf(out, out_size, "999999.0");
+            return;
+        }
+        memcpy(out, raw_str, whole_len);
+        out[whole_len] = '.';
+        memcpy(out + whole_len + 1, raw_str + whole_len, decimals);
+        out[whole_len + 1 + decimals] = '\0';
+    }
+
+    /* Trim trailing zeros after decimal point, keep at least one */
+    char *dot = strchr(out, '.');
+    if (dot) {
+        char *end = out + strlen(out) - 1;
+        while (end > dot + 1 && *end == '0') {
+            *end = '\0';
+            end--;
+        }
+    }
+}
+
+int eth_rpc_get_token_transactions(
+    const char *address,
+    const char *contract_address,
+    uint8_t token_decimals,
+    eth_transaction_t **txs_out,
+    int *count_out
+) {
+    if (!address || !contract_address || !txs_out || !count_out) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to eth_rpc_get_token_transactions");
+        return -1;
+    }
+
+    *txs_out = NULL;
+    *count_out = 0;
+
+    if (!eth_validate_address(address)) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid Ethereum address: %s", address);
+        return -1;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize CURL");
+        return -1;
+    }
+
+    /* Build Blockscout API URL for ERC-20 token transfers */
+    char url[640];
+    snprintf(url, sizeof(url),
+        "%s?module=account&action=tokentx&address=%s&contractaddress=%s"
+        "&startblock=0&endblock=99999999&page=1&offset=50&sort=desc",
+        BLOCKSCOUT_API_URL, address, contract_address);
+
+    QGP_LOG_DEBUG(LOG_TAG, "Blockscout token TX request: %s", url);
+
+    struct response_buffer resp_buf = {0};
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+
+    const char *ca_bundle = qgp_platform_ca_bundle_path();
+    if (ca_bundle) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    }
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "CURL request failed: %s", curl_easy_strerror(res));
+        if (resp_buf.data) free(resp_buf.data);
+        return -1;
+    }
+
+    if (!resp_buf.data) {
+        QGP_LOG_ERROR(LOG_TAG, "Empty response from Blockscout token TX");
+        return -1;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Blockscout token TX response length: %zu", resp_buf.size);
+
+    json_object *jresp = json_tokener_parse(resp_buf.data);
+    free(resp_buf.data);
+
+    if (!jresp) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse Blockscout token TX response");
+        return -1;
+    }
+
+    /* Check status */
+    json_object *jstatus = NULL;
+    if (!json_object_object_get_ex(jresp, "status", &jstatus)) {
+        QGP_LOG_ERROR(LOG_TAG, "No status in Blockscout token TX response");
+        json_object_put(jresp);
+        return -1;
+    }
+
+    const char *status = json_object_get_string(jstatus);
+    if (!status || strcmp(status, "1") != 0) {
+        json_object *jmessage = NULL;
+        if (json_object_object_get_ex(jresp, "message", &jmessage)) {
+            const char *msg = json_object_get_string(jmessage);
+            if (msg && strcmp(msg, "No transactions found") == 0) {
+                json_object_put(jresp);
+                return 0;
+            }
+        }
+        QGP_LOG_ERROR(LOG_TAG, "Blockscout token TX API error");
+        json_object_put(jresp);
+        return -1;
+    }
+
+    json_object *jresult = NULL;
+    if (!json_object_object_get_ex(jresp, "result", &jresult) ||
+        !json_object_is_type(jresult, json_type_array)) {
+        QGP_LOG_ERROR(LOG_TAG, "No result array in Blockscout token TX response");
+        json_object_put(jresp);
+        return -1;
+    }
+
+    int array_len = json_object_array_length(jresult);
+    if (array_len == 0) {
+        json_object_put(jresp);
+        return 0;
+    }
+
+    eth_transaction_t *txs = calloc(array_len, sizeof(eth_transaction_t));
+    if (!txs) {
+        json_object_put(jresp);
+        return -1;
+    }
+
+    int count = 0;
+    for (int i = 0; i < array_len && count < array_len; i++) {
+        json_object *jtx = json_object_array_get_idx(jresult, i);
+        if (!jtx) continue;
+
+        json_object *jhash = NULL, *jfrom = NULL, *jto = NULL;
+        json_object *jvalue = NULL, *jtimestamp = NULL;
+
+        json_object_object_get_ex(jtx, "hash", &jhash);
+        json_object_object_get_ex(jtx, "from", &jfrom);
+        json_object_object_get_ex(jtx, "to", &jto);
+        json_object_object_get_ex(jtx, "value", &jvalue);
+        json_object_object_get_ex(jtx, "timeStamp", &jtimestamp);
+
+        if (jhash) {
+            strncpy(txs[count].tx_hash, json_object_get_string(jhash),
+                    sizeof(txs[count].tx_hash) - 1);
+        }
+
+        if (jfrom) {
+            strncpy(txs[count].from, json_object_get_string(jfrom),
+                    sizeof(txs[count].from) - 1);
+        }
+
+        if (jto) {
+            strncpy(txs[count].to, json_object_get_string(jto),
+                    sizeof(txs[count].to) - 1);
+        }
+
+        /* Convert raw token amount using token decimals */
+        if (jvalue) {
+            const char *raw_amount = json_object_get_string(jvalue);
+            token_raw_to_decimal(raw_amount, token_decimals,
+                                 txs[count].value, sizeof(txs[count].value));
+        }
+
+        if (jtimestamp) {
+            txs[count].timestamp = (uint64_t)json_object_get_int64(jtimestamp);
+        }
+
+        /* Determine direction */
+        if (jfrom) {
+            const char *from = json_object_get_string(jfrom);
+            if (from && strcasecmp(from, address) == 0) {
+                txs[count].is_outgoing = 1;
+            } else {
+                txs[count].is_outgoing = 0;
+            }
+        }
+
+        /* tokentx has no txreceipt_status — assume confirmed */
+        txs[count].is_confirmed = 1;
+
+        count++;
+    }
+
+    json_object_put(jresp);
+
+    *txs_out = txs;
+    *count_out = count;
+
+    QGP_LOG_DEBUG(LOG_TAG, "Fetched %d token transactions for %s", count, address);
+    return 0;
+}
+
 void eth_rpc_free_transactions(eth_transaction_t *txs, int count) {
     if (txs) {
         free(txs);

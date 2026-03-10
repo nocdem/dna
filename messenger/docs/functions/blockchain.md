@@ -130,7 +130,8 @@ Ethereum blockchain with secp256k1 ECDSA signatures.
 | `int eth_rpc_get_balance(const char*, char*, size_t)` | Get ETH balance |
 | `int eth_rpc_set_endpoint(const char*)` | Set RPC endpoint |
 | `const char* eth_rpc_get_endpoint(void)` | Get RPC endpoint |
-| `int eth_rpc_get_transactions(const char*, eth_transaction_t**, int*)` | Get transaction history |
+| `int eth_rpc_get_transactions(const char*, eth_transaction_t**, int*)` | Get native ETH transaction history |
+| `int eth_rpc_get_token_transactions(const char*, const char*, uint8_t, eth_transaction_t**, int*)` | Get ERC-20 token transaction history |
 | `void eth_rpc_free_transactions(eth_transaction_t*, int)` | Free transactions |
 
 ### 16.2 Ethereum Transactions (`eth_tx.h`)

@@ -547,51 +547,116 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* ETH transactions via Etherscan API */
+    /* ETH transactions: native ETH + ERC-20 tokens */
     if (wallet_info->type == BLOCKCHAIN_ETHEREUM) {
+        /* Fetch native ETH transactions */
         eth_transaction_t *eth_txs = NULL;
         int eth_count = 0;
+        int eth_ok = (eth_rpc_get_transactions(wallet_info->address, &eth_txs, &eth_count) == 0);
 
-        if (eth_rpc_get_transactions(wallet_info->address, &eth_txs, &eth_count) != 0) {
-            error = DNA_ENGINE_ERROR_NETWORK;
+        /* Fetch ERC-20 token transactions (USDT, USDC) */
+        static const char *erc20_tokens[] = { "USDT", "USDC", NULL };
+        eth_transaction_t *token_txs[2] = {NULL, NULL};
+        int token_counts[2] = {0, 0};
+        int total_token_count = 0;
+
+        for (int t = 0; erc20_tokens[t]; t++) {
+            eth_erc20_token_t erc20;
+            if (eth_erc20_get_token(erc20_tokens[t], &erc20) == 0) {
+                if (eth_rpc_get_token_transactions(wallet_info->address,
+                        erc20.contract, erc20.decimals,
+                        &token_txs[t], &token_counts[t]) == 0) {
+                    total_token_count += token_counts[t];
+                }
+            }
+        }
+
+        int native_count = eth_ok ? eth_count : 0;
+        int total = native_count + total_token_count;
+
+        if (total == 0) {
+            if (!eth_ok) {
+                error = DNA_ENGINE_ERROR_NETWORK;
+            }
+            if (eth_txs) eth_rpc_free_transactions(eth_txs, eth_count);
+            for (int t = 0; t < 2; t++) {
+                if (token_txs[t]) eth_rpc_free_transactions(token_txs[t], token_counts[t]);
+            }
             goto done;
         }
 
-        if (eth_count > 0 && eth_txs) {
-            transactions = calloc(eth_count, sizeof(dna_transaction_t));
-            if (!transactions) {
-                eth_rpc_free_transactions(eth_txs, eth_count);
-                error = DNA_ERROR_INTERNAL;
-                goto done;
+        transactions = calloc(total, sizeof(dna_transaction_t));
+        if (!transactions) {
+            if (eth_txs) eth_rpc_free_transactions(eth_txs, eth_count);
+            for (int t = 0; t < 2; t++) {
+                if (token_txs[t]) eth_rpc_free_transactions(token_txs[t], token_counts[t]);
+            }
+            error = DNA_ERROR_INTERNAL;
+            goto done;
+        }
+
+        /* Copy native ETH transactions */
+        for (int i = 0; i < native_count; i++) {
+            strncpy(transactions[count].tx_hash, eth_txs[i].tx_hash,
+                    sizeof(transactions[count].tx_hash) - 1);
+            strncpy(transactions[count].token, "ETH", sizeof(transactions[count].token) - 1);
+            strncpy(transactions[count].amount, eth_txs[i].value,
+                    sizeof(transactions[count].amount) - 1);
+            snprintf(transactions[count].timestamp, sizeof(transactions[count].timestamp),
+                    "%llu", (unsigned long long)eth_txs[i].timestamp);
+
+            if (eth_txs[i].is_outgoing) {
+                strncpy(transactions[count].direction, "sent",
+                        sizeof(transactions[count].direction) - 1);
+                strncpy(transactions[count].other_address, eth_txs[i].to,
+                        sizeof(transactions[count].other_address) - 1);
+            } else {
+                strncpy(transactions[count].direction, "received",
+                        sizeof(transactions[count].direction) - 1);
+                strncpy(transactions[count].other_address, eth_txs[i].from,
+                        sizeof(transactions[count].other_address) - 1);
             }
 
-            for (int i = 0; i < eth_count; i++) {
-                strncpy(transactions[i].tx_hash, eth_txs[i].tx_hash,
-                        sizeof(transactions[i].tx_hash) - 1);
-                strncpy(transactions[i].token, "ETH", sizeof(transactions[i].token) - 1);
-                strncpy(transactions[i].amount, eth_txs[i].value,
-                        sizeof(transactions[i].amount) - 1);
-                snprintf(transactions[i].timestamp, sizeof(transactions[i].timestamp),
-                        "%llu", (unsigned long long)eth_txs[i].timestamp);
+            strncpy(transactions[count].status,
+                    eth_txs[i].is_confirmed ? "CONFIRMED" : "FAILED",
+                    sizeof(transactions[count].status) - 1);
+            count++;
+        }
 
-                if (eth_txs[i].is_outgoing) {
-                    strncpy(transactions[i].direction, "sent",
-                            sizeof(transactions[i].direction) - 1);
-                    strncpy(transactions[i].other_address, eth_txs[i].to,
-                            sizeof(transactions[i].other_address) - 1);
+        /* Copy ERC-20 token transactions */
+        for (int t = 0; erc20_tokens[t]; t++) {
+            for (int i = 0; i < token_counts[t]; i++) {
+                strncpy(transactions[count].tx_hash, token_txs[t][i].tx_hash,
+                        sizeof(transactions[count].tx_hash) - 1);
+                strncpy(transactions[count].token, erc20_tokens[t],
+                        sizeof(transactions[count].token) - 1);
+                strncpy(transactions[count].amount, token_txs[t][i].value,
+                        sizeof(transactions[count].amount) - 1);
+                snprintf(transactions[count].timestamp, sizeof(transactions[count].timestamp),
+                        "%llu", (unsigned long long)token_txs[t][i].timestamp);
+
+                if (token_txs[t][i].is_outgoing) {
+                    strncpy(transactions[count].direction, "sent",
+                            sizeof(transactions[count].direction) - 1);
+                    strncpy(transactions[count].other_address, token_txs[t][i].to,
+                            sizeof(transactions[count].other_address) - 1);
                 } else {
-                    strncpy(transactions[i].direction, "received",
-                            sizeof(transactions[i].direction) - 1);
-                    strncpy(transactions[i].other_address, eth_txs[i].from,
-                            sizeof(transactions[i].other_address) - 1);
+                    strncpy(transactions[count].direction, "received",
+                            sizeof(transactions[count].direction) - 1);
+                    strncpy(transactions[count].other_address, token_txs[t][i].from,
+                            sizeof(transactions[count].other_address) - 1);
                 }
 
-                strncpy(transactions[i].status,
-                        eth_txs[i].is_confirmed ? "CONFIRMED" : "FAILED",
-                        sizeof(transactions[i].status) - 1);
+                strncpy(transactions[count].status,
+                        token_txs[t][i].is_confirmed ? "CONFIRMED" : "FAILED",
+                        sizeof(transactions[count].status) - 1);
+                count++;
             }
-            count = eth_count;
-            eth_rpc_free_transactions(eth_txs, eth_count);
+        }
+
+        if (eth_txs) eth_rpc_free_transactions(eth_txs, eth_count);
+        for (int t = 0; t < 2; t++) {
+            if (token_txs[t]) eth_rpc_free_transactions(token_txs[t], token_counts[t]);
         }
         goto done;
     }

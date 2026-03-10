@@ -207,6 +207,27 @@ int eth_rpc_get_transactions(
 );
 
 /**
+ * Get ERC-20 token transaction history via Blockscout API
+ *
+ * Uses Blockscout's tokentx endpoint (no API key required).
+ * Returns up to 50 most recent token transfers for the given contract.
+ *
+ * @param address           Ethereum address (with 0x prefix)
+ * @param contract_address  ERC-20 token contract address (with 0x prefix)
+ * @param token_decimals    Token decimal places (e.g., 6 for USDT/USDC)
+ * @param txs_out           Output: array of transactions (caller must free)
+ * @param count_out         Output: number of transactions
+ * @return                  0 on success, -1 on error
+ */
+int eth_rpc_get_token_transactions(
+    const char *address,
+    const char *contract_address,
+    uint8_t token_decimals,
+    eth_transaction_t **txs_out,
+    int *count_out
+);
+
+/**
  * Free transaction array
  */
 void eth_rpc_free_transactions(eth_transaction_t *txs, int count);

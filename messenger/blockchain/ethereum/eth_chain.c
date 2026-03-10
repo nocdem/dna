@@ -194,17 +194,26 @@ static int eth_chain_get_transactions(
     *txs_out = NULL;
     *count_out = 0;
 
-    /* Only native ETH supported for now */
-    if (token != NULL && strlen(token) > 0) {
-        QGP_LOG_ERROR(LOG_TAG, "ERC-20 transaction history not yet supported");
-        return -1;
-    }
-
     eth_transaction_t *eth_txs = NULL;
     int eth_count = 0;
 
-    if (eth_rpc_get_transactions(address, &eth_txs, &eth_count) != 0) {
-        return -1;
+    if (token != NULL && strlen(token) > 0) {
+        /* ERC-20 token transaction history */
+        eth_erc20_token_t erc20;
+        if (eth_erc20_get_token(token, &erc20) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Unknown ERC-20 token: %s", token);
+            return -1;
+        }
+        if (eth_rpc_get_token_transactions(address, erc20.contract,
+                                            erc20.decimals,
+                                            &eth_txs, &eth_count) != 0) {
+            return -1;
+        }
+    } else {
+        /* Native ETH transaction history */
+        if (eth_rpc_get_transactions(address, &eth_txs, &eth_count) != 0) {
+            return -1;
+        }
     }
 
     if (eth_count == 0 || !eth_txs) {
@@ -221,7 +230,12 @@ static int eth_chain_get_transactions(
     for (int i = 0; i < eth_count; i++) {
         strncpy(txs[i].tx_hash, eth_txs[i].tx_hash, sizeof(txs[i].tx_hash) - 1);
         strncpy(txs[i].amount, eth_txs[i].value, sizeof(txs[i].amount) - 1);
-        txs[i].token[0] = '\0'; /* Native ETH */
+
+        if (token != NULL && strlen(token) > 0) {
+            strncpy(txs[i].token, token, sizeof(txs[i].token) - 1);
+        } else {
+            txs[i].token[0] = '\0';
+        }
 
         snprintf(txs[i].timestamp, sizeof(txs[i].timestamp),
                  "%llu", (unsigned long long)eth_txs[i].timestamp);
