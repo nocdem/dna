@@ -311,23 +311,38 @@ int dna_wall_comment_add(const char *post_uuid,
     snprintf(comments_key, sizeof(comments_key), "%s%s",
              DNA_WALL_COMMENT_KEY_PREFIX, post_uuid);
 
-    /* Fetch MY existing comments using nodus_ops_get_str() */
+    /* Fetch MY existing comments from the multi-owner key.
+     * Uses get_all_with_ids and filters by our value_id. */
     dna_wall_comment_t *existing_comments = NULL;
     size_t existing_count = 0;
 
-    uint8_t *existing_data = NULL;
-    size_t existing_len = 0;
-    ret = nodus_ops_get_str(comments_key, &existing_data, &existing_len);
+    uint8_t **all_values = NULL;
+    size_t *all_lens = NULL;
+    uint64_t *all_vids = NULL;
+    size_t all_count = 0;
+    uint64_t my_vid = nodus_ops_value_id();
 
-    if (ret == 0 && existing_data && existing_len > 0) {
-        char *json_str = malloc(existing_len + 1);
-        if (json_str) {
-            memcpy(json_str, existing_data, existing_len);
-            json_str[existing_len] = '\0';
-            comments_bucket_from_json(json_str, &existing_comments, &existing_count);
-            free(json_str);
+    ret = nodus_ops_get_all_str_with_ids(comments_key, &all_values, &all_lens,
+                                          &all_vids, &all_count);
+
+    if (ret == 0 && all_count > 0) {
+        for (size_t i = 0; i < all_count; i++) {
+            if (all_vids[i] == my_vid && all_values[i] && all_lens[i] > 0) {
+                char *json_str = malloc(all_lens[i] + 1);
+                if (json_str) {
+                    memcpy(json_str, all_values[i], all_lens[i]);
+                    json_str[all_lens[i]] = '\0';
+                    comments_bucket_from_json(json_str, &existing_comments, &existing_count);
+                    free(json_str);
+                }
+                break;
+            }
         }
-        free(existing_data);
+        for (size_t i = 0; i < all_count; i++)
+            free(all_values[i]);
+        free(all_values);
+        free(all_lens);
+        free(all_vids);
     }
 
     QGP_LOG_INFO(LOG_TAG, "Found %zu existing comments from this author on post %s",

@@ -902,23 +902,41 @@ int dna_channel_post_create(const char *channel_uuid,
     char posts_key[256];
     snprintf(posts_key, sizeof(posts_key), "%s%s:%s", DNA_CHANNEL_NS_POSTS, channel_uuid, today);
 
-    /* Step 1: Fetch MY existing posts using nodus_ops_get_str() */
+    /* Step 1: Fetch MY existing posts from the multi-owner key.
+     * Uses get_all_with_ids to retrieve all owner buckets, then filters
+     * by our own value_id so we only modify our own data. */
     dna_channel_post_internal_t *existing_posts = NULL;
     size_t existing_count = 0;
 
-    uint8_t *existing_data = NULL;
-    size_t existing_len = 0;
-    ret = nodus_ops_get_str(posts_key, &existing_data, &existing_len);
+    uint8_t **all_values = NULL;
+    size_t *all_lens = NULL;
+    uint64_t *all_vids = NULL;
+    size_t all_count = 0;
+    uint64_t my_vid = nodus_ops_value_id();
 
-    if (ret == 0 && existing_data && existing_len > 0) {
-        char *json_str = malloc(existing_len + 1);
-        if (json_str) {
-            memcpy(json_str, existing_data, existing_len);
-            json_str[existing_len] = '\0';
-            posts_bucket_from_json(json_str, &existing_posts, &existing_count);
-            free(json_str);
+    ret = nodus_ops_get_all_str_with_ids(posts_key, &all_values, &all_lens,
+                                          &all_vids, &all_count);
+
+    if (ret == 0 && all_count > 0) {
+        /* Find our own bucket by value_id */
+        for (size_t i = 0; i < all_count; i++) {
+            if (all_vids[i] == my_vid && all_values[i] && all_lens[i] > 0) {
+                char *json_str = malloc(all_lens[i] + 1);
+                if (json_str) {
+                    memcpy(json_str, all_values[i], all_lens[i]);
+                    json_str[all_lens[i]] = '\0';
+                    posts_bucket_from_json(json_str, &existing_posts, &existing_count);
+                    free(json_str);
+                }
+                break;
+            }
         }
-        free(existing_data);
+        /* Free all returned values */
+        for (size_t i = 0; i < all_count; i++)
+            free(all_values[i]);
+        free(all_values);
+        free(all_lens);
+        free(all_vids);
     }
 
     QGP_LOG_INFO(LOG_TAG, "Found %zu existing posts from this author\n", existing_count);
@@ -1118,8 +1136,8 @@ int dna_channel_posts_get(const char *channel_uuid,
 
 /**
  * Helper: Publish index entries to a multi-owner index bucket.
- * Uses nodus_ops_get_str() and nodus_ops_put_str() like
- * dna_feed_index.c:publish_index_entries().
+ * Uses nodus_ops_get_all_str_with_ids() to fetch own bucket,
+ * then nodus_ops_put_str() to publish merged entries.
  */
 static int publish_channel_index_entries(const char *index_key,
                                           const dna_channel_index_entry_t *entries,
@@ -1128,24 +1146,40 @@ static int publish_channel_index_entries(const char *index_key,
 
     int ret;
 
-    /* Step 1: Fetch MY existing entries using nodus_ops_get_str() */
+    /* Step 1: Fetch MY existing entries from the multi-owner index key.
+     * Uses get_all_with_ids and filters by our value_id. */
     dna_channel_index_entry_t *my_entries = NULL;
     size_t my_count = 0;
 
-    uint8_t *existing_data = NULL;
-    size_t existing_len = 0;
+    uint8_t **all_values = NULL;
+    size_t *all_lens = NULL;
+    uint64_t *all_vids = NULL;
+    size_t all_count = 0;
+    uint64_t my_vid = nodus_ops_value_id();
 
-    ret = nodus_ops_get_str(index_key, &existing_data, &existing_len);
+    ret = nodus_ops_get_all_str_with_ids(index_key, &all_values, &all_lens,
+                                          &all_vids, &all_count);
 
-    if (ret == 0 && existing_data && existing_len > 0) {
-        char *json_str = malloc(existing_len + 1);
-        if (json_str) {
-            memcpy(json_str, existing_data, existing_len);
-            json_str[existing_len] = '\0';
-            index_bucket_from_json(json_str, &my_entries, &my_count);
-            free(json_str);
+    if (ret == 0 && all_count > 0) {
+        /* Find our own bucket by value_id */
+        for (size_t i = 0; i < all_count; i++) {
+            if (all_vids[i] == my_vid && all_values[i] && all_lens[i] > 0) {
+                char *json_str = malloc(all_lens[i] + 1);
+                if (json_str) {
+                    memcpy(json_str, all_values[i], all_lens[i]);
+                    json_str[all_lens[i]] = '\0';
+                    index_bucket_from_json(json_str, &my_entries, &my_count);
+                    free(json_str);
+                }
+                break;
+            }
         }
-        free(existing_data);
+        /* Free all returned values */
+        for (size_t i = 0; i < all_count; i++)
+            free(all_values[i]);
+        free(all_values);
+        free(all_lens);
+        free(all_vids);
     }
 
     QGP_LOG_DEBUG(LOG_TAG, "Found %zu existing entries in my bucket at %s\n",
