@@ -358,15 +358,18 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     /* Determine blockchain type from network parameter */
     blockchain_type_t bc_type;
     const char *chain_name;
-    if (strcmp(network, "Ethereum") == 0) {
+    if (strcasecmp(network, "Ethereum") == 0 || strcasecmp(network, "ETH") == 0) {
         bc_type = BLOCKCHAIN_ETHEREUM;
         chain_name = "Ethereum";
-    } else if (strcmp(network, "Solana") == 0) {
+    } else if (strcasecmp(network, "Solana") == 0 || strcasecmp(network, "SOL") == 0) {
         bc_type = BLOCKCHAIN_SOLANA;
         chain_name = "Solana";
-    } else if (strcasecmp(network, "Tron") == 0) {
+    } else if (strcasecmp(network, "Tron") == 0 || strcasecmp(network, "TRX") == 0) {
         bc_type = BLOCKCHAIN_TRON;
         chain_name = "TRON";
+    } else if (strcasecmp(network, "Cellframe") == 0 || strcasecmp(network, "CELL") == 0) {
+        bc_type = BLOCKCHAIN_CELLFRAME;
+        chain_name = "Cellframe";
     } else {
         /* Default: Backbone = Cellframe */
         bc_type = BLOCKCHAIN_CELLFRAME;

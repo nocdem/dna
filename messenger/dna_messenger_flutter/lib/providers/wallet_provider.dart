@@ -35,7 +35,7 @@ class WalletsNotifier extends AsyncNotifier<List<Wallet>> {
   }
 
   /// Send tokens from a wallet
-  /// [gasSpeed]: 0=slow (0.8x), 1=normal (1x), 2=fast (1.5x) - only for ETH
+  /// [gasSpeed]: 0=slow (1.0x), 1=normal (1.1x), 2=fast (1.5x) - only for ETH
   /// Returns the transaction hash on success
   Future<String> sendTokens({
     required int walletIndex,

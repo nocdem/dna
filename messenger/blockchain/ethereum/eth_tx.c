@@ -533,16 +533,20 @@ int eth_tx_send(const eth_signed_tx_t *signed_tx, char *tx_hash_out) {
     free(hex_tx);
 
     if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "eth_sendRawTransaction failed, ret=%d", ret);
         return -1;
     }
 
     /* Copy returned tx hash */
     const char *hash = json_object_get_string(result);
+    QGP_LOG_INFO(LOG_TAG, "eth_sendRawTransaction result: %s (type=%d)",
+                 hash ? hash : "NULL", json_object_get_type(result));
     if (hash) {
         strncpy(tx_hash_out, hash, 66);
         tx_hash_out[66] = '\0';
     } else {
         /* Use our computed hash */
+        QGP_LOG_WARN(LOG_TAG, "RPC returned no hash, using computed: %s", signed_tx->tx_hash);
         strcpy(tx_hash_out, signed_tx->tx_hash);
     }
 
@@ -735,8 +739,8 @@ int eth_send_eth(
 
 /* Gas speed multipliers (in percent) */
 static const int GAS_SPEED_MULTIPLIERS[] = {
-    80,     /* ETH_GAS_SLOW: 0.8x */
-    100,    /* ETH_GAS_NORMAL: 1.0x */
+    100,    /* ETH_GAS_SLOW: 1.0x (base fee minimum — going below drops TX) */
+    110,    /* ETH_GAS_NORMAL: 1.1x */
     150     /* ETH_GAS_FAST: 1.5x */
 };
 

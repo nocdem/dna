@@ -3732,12 +3732,12 @@ int cmd_send_tokens(dna_engine_t *engine, int wallet_idx, const char *network,
     cli_wait_init(&wait);
 
     /* API: (engine, wallet_index, recipient_address, amount, token, network, gas_speed, callback, user_data) */
-    dna_engine_send_tokens(engine, wallet_idx, to_address, amount, token, network, 0, on_send_tokens, &wait);
+    dna_engine_send_tokens(engine, wallet_idx, to_address, amount, token, network, 1 /* ETH_GAS_NORMAL */, on_send_tokens, &wait);
     int result = cli_wait_for(&wait);
     cli_wait_destroy(&wait);
 
     if (result != 0) {
-        printf("Error: Failed to send tokens: %s\n", dna_engine_error_string(result));
+        printf("Error: Failed to send tokens: %s (error code: %d)\n", dna_engine_error_string(result), result);
         return result;
     }
 

@@ -152,6 +152,8 @@ static int sol_rpc_call_single(
     /* Check for RPC error */
     json_object *error_obj;
     if (json_object_object_get_ex(resp, "error", &error_obj) && error_obj) {
+        QGP_LOG_ERROR(LOG_TAG, "RPC error for %s: %s", method,
+                      json_object_to_json_string(error_obj));
         json_object_put(resp);
         return -2;  /* RPC error - don't retry */
     }

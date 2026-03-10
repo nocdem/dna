@@ -2822,7 +2822,7 @@ class DnaEngine {
   }
 
   /// Get gas estimate for ETH transaction (DEPRECATED - use estimateEthGasAsync)
-  /// [gasSpeed]: 0=slow (0.8x), 1=normal (1x), 2=fast (1.5x)
+  /// [gasSpeed]: 0=slow (1.0x), 1=normal (1.1x), 2=fast (1.5x)
   /// Returns null if estimate fails (e.g., network error)
   GasEstimate? estimateEthGas(int gasSpeed) {
     final estimatePtr = calloc<dna_gas_estimate_t>();
@@ -2878,7 +2878,7 @@ class DnaEngine {
   }
 
   /// Send tokens
-  /// [gasSpeed]: 0=slow (0.8x), 1=normal (1x), 2=fast (1.5x)
+  /// [gasSpeed]: 0=slow (1.0x), 1=normal (1.1x), 2=fast (1.5x)
   /// Returns the transaction hash on success
   Future<String> sendTokens({
     required int walletIndex,
