@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <openssl/evp.h>
+#include <openssl/bn.h>
 #ifdef _WIN32
 #define CURL_STATICLIB
 #endif
@@ -297,16 +298,105 @@ int sol_spl_get_balance_by_symbol(
  * ============================================================================ */
 
 /**
- * Check if a 32-byte point is on the Ed25519 curve.
+ * Check if a 32-byte value is on the Ed25519 curve.
+ *
+ * Ed25519 curve equation: -x² + y² = 1 + d·x²·y²  (mod p)
+ * where p = 2^255 - 19, d = -121665/121666 mod p
+ *
+ * The 32-byte compressed encoding stores y (255 bits) + sign of x (1 bit).
+ * A point is on the curve iff y < p AND (y²-1)/(d·y²+1) is a quadratic residue mod p.
+ *
  * Returns true if on curve, false if off curve (valid PDA).
  */
 static bool is_on_ed25519_curve(const uint8_t point[32]) {
-    EVP_PKEY *pkey = EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, NULL, point, 32);
-    if (pkey) {
-        EVP_PKEY_free(pkey);
-        return true;  /* on curve */
+    BN_CTX *ctx = BN_CTX_new();
+    if (!ctx) return true; /* fail safe: assume on curve */
+
+    BIGNUM *p = BN_new();
+    BIGNUM *d = BN_new();
+    BIGNUM *y = BN_new();
+    BIGNUM *y2 = BN_new();
+    BIGNUM *u = BN_new();
+    BIGNUM *v = BN_new();
+    BIGNUM *x2 = BN_new();
+    BIGNUM *exp = BN_new();
+    BIGNUM *check = BN_new();
+    BIGNUM *one = BN_new();
+    bool on_curve = false;
+
+    /* p = 2^255 - 19 */
+    BN_set_word(p, 1);
+    BN_lshift(p, p, 255);
+    BIGNUM *nineteen = BN_new();
+    BN_set_word(nineteen, 19);
+    BN_sub(p, p, nineteen);
+    BN_free(nineteen);
+
+    /* d = -121665/121666 mod p = 37095705934669439343138083508754565189542113879843219016388785533085940283555 */
+    BN_dec2bn(&d, "37095705934669439343138083508754565189542113879843219016388785533085940283555");
+
+    /* Extract y from point (little-endian, clear top bit which is sign of x) */
+    uint8_t y_bytes[32];
+    memcpy(y_bytes, point, 32);
+    y_bytes[31] &= 0x7F;  /* clear sign bit */
+
+    /* Convert from little-endian to BIGNUM */
+    uint8_t y_be[32];
+    for (int i = 0; i < 32; i++) {
+        y_be[i] = y_bytes[31 - i];
     }
-    return false;  /* off curve = valid PDA */
+    BN_bin2bn(y_be, 32, y);
+
+    /* Check y < p */
+    if (BN_cmp(y, p) >= 0) {
+        goto cleanup;  /* y >= p means not on curve */
+    }
+
+    BN_set_word(one, 1);
+
+    /* u = y² - 1 mod p */
+    BN_mod_sqr(y2, y, p, ctx);
+    BN_mod_sub(u, y2, one, p, ctx);
+
+    /* v = d·y² + 1 mod p */
+    BN_mod_mul(v, d, y2, p, ctx);
+    BN_mod_add(v, v, one, p, ctx);
+
+    /* x² = u · v^(-1) mod p */
+    BN_mod_inverse(v, v, p, ctx);
+    if (!v) {
+        /* v has no inverse — not on curve */
+        goto cleanup;
+    }
+    BN_mod_mul(x2, u, v, p, ctx);
+
+    /* Check if x² is a quadratic residue: x²^((p-1)/2) ∈ {0, 1} mod p */
+    /* exp = (p-1)/2 */
+    BN_copy(exp, p);
+    BN_sub_word(exp, 1);
+    BN_rshift1(exp, exp);
+
+    BN_mod_exp(check, x2, exp, p, ctx);
+
+    /* QR check: result must be 0 or 1 */
+    if (BN_is_zero(check) || BN_is_one(check)) {
+        on_curve = true;
+    }
+
+cleanup:
+    BN_free(p);
+    BN_free(d);
+    BN_free(y);
+    BN_free(y2);
+    BN_free(u);
+    BN_free(v);
+    BN_free(x2);
+    BN_free(exp);
+    BN_free(check);
+    BN_free(one);
+    BN_CTX_free(ctx);
+
+    return on_curve;
 }
 
 int sol_spl_derive_ata(
