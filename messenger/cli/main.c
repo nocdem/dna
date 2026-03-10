@@ -269,9 +269,8 @@ int main(int argc, char *argv[]) {
         }
     }
     else if (strcmp(command, "version") == 0 && optind + 1 < argc) {
-        if (strcmp(argv[optind + 1], "check") == 0) {
-            needs_identity = 0;
-        }
+        /* version check needs DHT, which needs identity — keep needs_identity = 1 */
+        (void)0;
     }
     else if (strcmp(command, "debug") == 0) {
         needs_identity = 0;
