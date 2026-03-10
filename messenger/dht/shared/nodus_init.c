@@ -54,11 +54,14 @@ static void ensure_config(void) {
 
 /* Hardcoded fallback bootstrap nodes (compiled into binary) */
 static const char *g_fallback_nodes[] = {
+    "154.38.182.161:4001",
+    "164.68.105.227:4001",
+    "164.68.116.180:4001",
     "161.97.85.25:4001",
     "156.67.24.125:4001",
     "156.67.25.251:4001",
 };
-static const int g_fallback_count = 3;
+static const int g_fallback_count = 6;
 
 /**
  * Parse "ip:port" node list into nconfig server entries.
