@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 /* ── Listener tracking ─────────────────────────────────────────── */
 
@@ -61,10 +62,13 @@ static int do_put(const nodus_key_t *k,
 
     if (vid == 0) vid = nodus_identity_value_id(id);
 
-    /* Create and sign the value */
+    /* Create and sign the value.
+     * seq = current UTC timestamp so put_if_newer on replica nodes
+     * always accepts a newer PUT (fixes replication with seq=0). */
+    uint64_t seq = (uint64_t)time(NULL);
     nodus_value_t *val = NULL;
     if (nodus_value_create(k, data, data_len, type, ttl,
-                            vid, 0, &id->pk, &val) != 0)
+                            vid, seq, &id->pk, &val) != 0)
         return -1;
     if (nodus_value_sign(val, &id->sk) != 0) {
         nodus_value_free(val);
@@ -72,7 +76,7 @@ static int do_put(const nodus_key_t *k,
     }
 
     int rc = nodus_client_put(c, k, data, data_len,
-                               type, ttl, vid, 0, &val->signature);
+                               type, ttl, vid, seq, &val->signature);
     nodus_value_free(val);
     return rc;
 }
