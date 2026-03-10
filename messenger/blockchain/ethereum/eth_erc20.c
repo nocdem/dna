@@ -895,3 +895,69 @@ int eth_weth_deposit(
     QGP_LOG_INFO(LOG_TAG, "WETH deposit sent: %s ETH -> WETH, tx=%s", amount_eth, tx_hash_out);
     return 0;
 }
+
+int eth_weth_withdraw(
+    const uint8_t private_key[32],
+    const char *from_address,
+    const char *amount_weth,
+    int gas_speed,
+    char *tx_hash_out
+) {
+    if (!private_key || !from_address || !amount_weth || !tx_hash_out) return -1;
+
+    uint64_t nonce;
+    if (eth_tx_get_nonce(from_address, &nonce) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get nonce for WETH withdraw");
+        return -1;
+    }
+
+    uint64_t gas_price;
+    if (eth_tx_get_gas_price(&gas_price) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get gas price for WETH withdraw");
+        return -1;
+    }
+
+    static const int GAS_MULTIPLIERS[] = { 80, 100, 150 };
+    gas_price = (gas_price * GAS_MULTIPLIERS[gas_speed]) / 100;
+
+    uint8_t weth_bytes[20];
+    if (eth_parse_address(WETH_CONTRACT, weth_bytes) != 0) return -1;
+
+    /* Parse WETH amount to wei for withdraw(uint256) parameter */
+    uint8_t value_wei[32];
+    if (eth_parse_amount(amount_weth, value_wei) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse WETH amount: %s", amount_weth);
+        return -1;
+    }
+
+    /* withdraw(uint256) selector = 0x2e1a7d4d + 32-byte amount */
+    uint8_t call_data[36];
+    call_data[0] = 0x2e; call_data[1] = 0x1a;
+    call_data[2] = 0x7d; call_data[3] = 0x4d;
+    memcpy(call_data + 4, value_wei, 32);
+
+    eth_tx_t tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.nonce = nonce;
+    tx.gas_price = gas_price;
+    tx.gas_limit = 50000;
+    memcpy(tx.to, weth_bytes, 20);
+    /* value = 0 (no ETH sent, we're calling withdraw) */
+    tx.data = call_data;
+    tx.data_len = 36;
+    tx.chain_id = ETH_CHAIN_MAINNET;
+
+    eth_signed_tx_t signed_tx;
+    if (eth_tx_sign(&tx, private_key, &signed_tx) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign WETH withdraw TX");
+        return -1;
+    }
+
+    if (eth_tx_send(&signed_tx, tx_hash_out) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to send WETH withdraw TX");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "WETH withdraw sent: %s WETH -> ETH, tx=%s", amount_weth, tx_hash_out);
+    return 0;
+}

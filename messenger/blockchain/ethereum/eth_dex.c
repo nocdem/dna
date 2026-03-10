@@ -68,6 +68,12 @@ static const char *dex_strcasestr(const char *haystack, const char *needle) {
 /* PancakeSwap v3 QuoterV2 contract (on Ethereum mainnet) */
 #define CAKE_QUOTER_V2_ADDRESS "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997"
 
+/* Router contracts for on-chain swaps */
+#define UNI_V2_ROUTER    "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+#define UNI_V3_ROUTER    "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"
+#define CAKE_V2_ROUTER   "0xEfF92A263d31888d860bD50809A8D171709b7b1c"
+#define CAKE_V3_ROUTER   "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4"
+
 /* quoteExactInputSingle((address,address,uint256,uint24,uint160)) — same ABI for both */
 #define QUOTER_V2_SELECTOR "c6a5026a"
 
@@ -104,6 +110,7 @@ typedef struct {
     uint32_t fee_numerator;     /* V2 CPMM: multiply by this (e.g. 997 for 0.3%, 9975 for 0.25%) */
     uint32_t fee_denominator;   /* V2 CPMM: divide by this (e.g. 1000 or 10000) */
     const char *quoter_address; /* V3: QuoterV2 contract address (NULL for V2) */
+    const char *router_address; /* Router contract for on-chain swaps */
     const char *dex_name;
 } eth_dex_pair_t;
 
@@ -118,6 +125,7 @@ static const eth_dex_pair_t known_pairs[] = {
         .dex_type = DEX_UNISWAP_V3, .fee_tier = 500,
         .fee_numerator = 0, .fee_denominator = 0,
         .quoter_address = UNI_QUOTER_V2_ADDRESS,
+        .router_address = UNI_V3_ROUTER,
         .dex_name = "Uniswap v3",
     },
     {
@@ -129,6 +137,7 @@ static const eth_dex_pair_t known_pairs[] = {
         .dex_type = DEX_UNISWAP_V3, .fee_tier = 3000,
         .fee_numerator = 0, .fee_denominator = 0,
         .quoter_address = UNI_QUOTER_V2_ADDRESS,
+        .router_address = UNI_V3_ROUTER,
         .dex_name = "Uniswap v3",
     },
     /* ── PancakeSwap v3 ──────────────────────────────────────────── */
@@ -141,6 +150,7 @@ static const eth_dex_pair_t known_pairs[] = {
         .dex_type = DEX_PANCAKE_V3, .fee_tier = 500,
         .fee_numerator = 0, .fee_denominator = 0,
         .quoter_address = CAKE_QUOTER_V2_ADDRESS,
+        .router_address = CAKE_V3_ROUTER,
         .dex_name = "PancakeSwap v3",
     },
     {
@@ -152,6 +162,7 @@ static const eth_dex_pair_t known_pairs[] = {
         .dex_type = DEX_PANCAKE_V3, .fee_tier = 500,
         .fee_numerator = 0, .fee_denominator = 0,
         .quoter_address = CAKE_QUOTER_V2_ADDRESS,
+        .router_address = CAKE_V3_ROUTER,
         .dex_name = "PancakeSwap v3",
     },
     /* ── Uniswap v2 ──────────────────────────────────────────────── */
@@ -164,6 +175,7 @@ static const eth_dex_pair_t known_pairs[] = {
         .dex_type = DEX_UNISWAP_V2, .fee_tier = 3000,
         .fee_numerator = 997, .fee_denominator = 1000,
         .quoter_address = NULL,
+        .router_address = UNI_V2_ROUTER,
         .dex_name = "Uniswap v2",
     },
     {
@@ -175,6 +187,7 @@ static const eth_dex_pair_t known_pairs[] = {
         .dex_type = DEX_UNISWAP_V2, .fee_tier = 3000,
         .fee_numerator = 997, .fee_denominator = 1000,
         .quoter_address = NULL,
+        .router_address = UNI_V2_ROUTER,
         .dex_name = "Uniswap v2",
     },
     /* ── PancakeSwap v2 ──────────────────────────────────────────── */
@@ -187,6 +200,7 @@ static const eth_dex_pair_t known_pairs[] = {
         .dex_type = DEX_PANCAKE_V2, .fee_tier = 2500,
         .fee_numerator = 9975, .fee_denominator = 10000,
         .quoter_address = NULL,
+        .router_address = CAKE_V2_ROUTER,
         .dex_name = "PancakeSwap v2",
     },
     {
@@ -198,6 +212,7 @@ static const eth_dex_pair_t known_pairs[] = {
         .dex_type = DEX_PANCAKE_V2, .fee_tier = 2500,
         .fee_numerator = 9975, .fee_denominator = 10000,
         .quoter_address = NULL,
+        .router_address = CAKE_V2_ROUTER,
         .dex_name = "PancakeSwap v2",
     },
 };
@@ -1517,6 +1532,249 @@ static size_t cow_write_cb(void *contents, size_t size, size_t nmemb, void *user
     return realsize;
 }
 
+/* ============================================================================
+ * V2 ROUTER SWAP — swapExactETHForTokens
+ * Selector: 0x7ff36ab5
+ * Args: (uint256 amountOutMin, address[] path, address to, uint256 deadline)
+ * ETH is sent as msg.value — no WETH wrap needed.
+ * ============================================================================ */
+static int eth_dex_swap_v2(
+    const eth_wallet_t *wallet,
+    const eth_dex_pair_t *pair,
+    const char *amount_in,      /* decimal ETH string */
+    __uint128_t amount_out_min, /* raw minimum output (with slippage) */
+    bool selling_eth,           /* true: ETH→token, false: token→ETH */
+    char *tx_hash_out
+) {
+    uint64_t nonce;
+    if (eth_tx_get_nonce(wallet->address_hex, &nonce) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "V2 swap: failed to get nonce");
+        return -1;
+    }
+
+    uint64_t gas_price;
+    if (eth_tx_get_gas_price(&gas_price) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "V2 swap: failed to get gas price");
+        return -1;
+    }
+    gas_price = (gas_price * 150) / 100;  /* FAST = 1.5x */
+
+    uint8_t router_bytes[20];
+    if (eth_parse_address(pair->router_address, router_bytes) != 0) return -1;
+
+    if (selling_eth) {
+        /* swapExactETHForTokens(uint256 amountOutMin, address[] path, address to, uint256 deadline)
+         * path = [WETH, tokenOut]
+         * Calldata layout:
+         *   [0..3]    selector 0x7ff36ab5
+         *   [4..35]   amountOutMin (uint256)
+         *   [36..67]  offset to path array = 128 (0x80)
+         *   [68..99]  to address (recipient)
+         *   [100..131] deadline (uint256)
+         *   [132..163] path array length = 2
+         *   [164..195] path[0] = WETH
+         *   [196..227] path[1] = tokenOut
+         * Total: 228 bytes
+         */
+        uint8_t calldata[228];
+        memset(calldata, 0, sizeof(calldata));
+
+        /* Selector */
+        calldata[0] = 0x7f; calldata[1] = 0xf3; calldata[2] = 0x6a; calldata[3] = 0xb5;
+
+        /* amountOutMin — encode __uint128_t as 32-byte big-endian */
+        for (int i = 0; i < 16; i++)
+            calldata[4 + 16 + i] = (uint8_t)(amount_out_min >> (8 * (15 - i)));
+
+        /* offset to path array = 128 = 0x80 */
+        calldata[67] = 0x80;
+
+        /* to = recipient (wallet address) */
+        uint8_t to_bytes[20];
+        eth_parse_address(wallet->address_hex, to_bytes);
+        memcpy(calldata + 68 + 12, to_bytes, 20);
+
+        /* deadline = block.timestamp + 300 (5 minutes) */
+        uint64_t deadline = (uint64_t)time(NULL) + 300;
+        for (int i = 0; i < 8; i++)
+            calldata[100 + 24 + i] = (uint8_t)(deadline >> (8 * (7 - i)));
+
+        /* path length = 2 */
+        calldata[163] = 2;
+
+        /* path[0] = WETH */
+        uint8_t weth_bytes[20];
+        eth_parse_address("0x" WETH_ADDRESS, weth_bytes);
+        memcpy(calldata + 164 + 12, weth_bytes, 20);
+
+        /* path[1] = output token */
+        const char *out_addr = pair->addr_b;  /* ETH is always token_a */
+        char full_addr[44];
+        snprintf(full_addr, sizeof(full_addr), "0x%s", out_addr);
+        uint8_t out_bytes[20];
+        eth_parse_address(full_addr, out_bytes);
+        memcpy(calldata + 196 + 12, out_bytes, 20);
+
+        /* Parse ETH value */
+        uint8_t value_wei[32];
+        if (eth_parse_amount(amount_in, value_wei) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "V2 swap: failed to parse amount: %s", amount_in);
+            return -1;
+        }
+
+        eth_tx_t tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.nonce = nonce;
+        tx.gas_price = gas_price;
+        tx.gas_limit = 200000;
+        memcpy(tx.to, router_bytes, 20);
+        memcpy(tx.value, value_wei, 32);
+        tx.data = calldata;
+        tx.data_len = sizeof(calldata);
+        tx.chain_id = ETH_CHAIN_MAINNET;
+
+        eth_signed_tx_t signed_tx;
+        if (eth_tx_sign(&tx, wallet->private_key, &signed_tx) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "V2 swap: failed to sign TX");
+            return -1;
+        }
+
+        if (eth_tx_send(&signed_tx, tx_hash_out) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "V2 swap: failed to send TX");
+            return -1;
+        }
+
+        QGP_LOG_INFO(LOG_TAG, "V2 swap TX sent (%s): %s", pair->dex_name, tx_hash_out);
+        return 0;
+    }
+
+    /* TODO: token→ETH swap (swapExactTokensForETH) — not yet needed */
+    QGP_LOG_ERROR(LOG_TAG, "V2 swap: token→ETH not yet implemented");
+    return -1;
+}
+
+/* ============================================================================
+ * V3 ROUTER SWAP — exactInputSingle
+ * Selector: 0x04e45aaf
+ * Struct: (address tokenIn, address tokenOut, uint24 fee, address recipient,
+ *          uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)
+ * For ETH→token: tokenIn=WETH, send ETH as msg.value
+ * ============================================================================ */
+static int eth_dex_swap_v3(
+    const eth_wallet_t *wallet,
+    const eth_dex_pair_t *pair,
+    const char *amount_in,
+    __uint128_t raw_amount_in,
+    __uint128_t amount_out_min,
+    bool selling_eth,
+    char *tx_hash_out
+) {
+    uint64_t nonce;
+    if (eth_tx_get_nonce(wallet->address_hex, &nonce) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "V3 swap: failed to get nonce");
+        return -1;
+    }
+
+    uint64_t gas_price;
+    if (eth_tx_get_gas_price(&gas_price) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "V3 swap: failed to get gas price");
+        return -1;
+    }
+    gas_price = (gas_price * 150) / 100;  /* FAST */
+
+    uint8_t router_bytes[20];
+    if (eth_parse_address(pair->router_address, router_bytes) != 0) return -1;
+
+    if (selling_eth) {
+        /* exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))
+         * Calldata layout:
+         *   [0..3]    selector 0x04e45aaf
+         *   [4..35]   tokenIn (WETH)
+         *   [36..67]  tokenOut
+         *   [68..99]  fee (uint24, right-aligned)
+         *   [100..131] recipient
+         *   [132..163] amountIn (uint256)
+         *   [164..195] amountOutMinimum (uint256)
+         *   [196..227] sqrtPriceLimitX96 = 0 (no limit)
+         * Total: 228 bytes
+         */
+        uint8_t calldata[228];
+        memset(calldata, 0, sizeof(calldata));
+
+        /* Selector */
+        calldata[0] = 0x04; calldata[1] = 0xe4; calldata[2] = 0x5a; calldata[3] = 0xaf;
+
+        /* tokenIn = WETH */
+        uint8_t weth_bytes[20];
+        eth_parse_address("0x" WETH_ADDRESS, weth_bytes);
+        memcpy(calldata + 4 + 12, weth_bytes, 20);
+
+        /* tokenOut */
+        const char *out_addr = pair->addr_b;
+        char full_addr[44];
+        snprintf(full_addr, sizeof(full_addr), "0x%s", out_addr);
+        uint8_t out_bytes[20];
+        eth_parse_address(full_addr, out_bytes);
+        memcpy(calldata + 36 + 12, out_bytes, 20);
+
+        /* fee tier (uint24) */
+        uint32_t fee = pair->fee_tier;
+        calldata[99]  = (uint8_t)(fee & 0xFF);
+        calldata[98]  = (uint8_t)((fee >> 8) & 0xFF);
+        calldata[97]  = (uint8_t)((fee >> 16) & 0xFF);
+
+        /* recipient */
+        uint8_t to_bytes[20];
+        eth_parse_address(wallet->address_hex, to_bytes);
+        memcpy(calldata + 100 + 12, to_bytes, 20);
+
+        /* amountIn */
+        for (int i = 0; i < 16; i++)
+            calldata[132 + 16 + i] = (uint8_t)(raw_amount_in >> (8 * (15 - i)));
+
+        /* amountOutMinimum */
+        for (int i = 0; i < 16; i++)
+            calldata[164 + 16 + i] = (uint8_t)(amount_out_min >> (8 * (15 - i)));
+
+        /* sqrtPriceLimitX96 = 0 (no limit) — already zeroed */
+
+        /* Parse ETH value */
+        uint8_t value_wei[32];
+        if (eth_parse_amount(amount_in, value_wei) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "V3 swap: failed to parse amount: %s", amount_in);
+            return -1;
+        }
+
+        eth_tx_t tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.nonce = nonce;
+        tx.gas_price = gas_price;
+        tx.gas_limit = 250000;
+        memcpy(tx.to, router_bytes, 20);
+        memcpy(tx.value, value_wei, 32);
+        tx.data = calldata;
+        tx.data_len = sizeof(calldata);
+        tx.chain_id = ETH_CHAIN_MAINNET;
+
+        eth_signed_tx_t signed_tx;
+        if (eth_tx_sign(&tx, wallet->private_key, &signed_tx) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "V3 swap: failed to sign TX");
+            return -1;
+        }
+
+        if (eth_tx_send(&signed_tx, tx_hash_out) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "V3 swap: failed to send TX");
+            return -1;
+        }
+
+        QGP_LOG_INFO(LOG_TAG, "V3 swap TX sent (%s): %s", pair->dex_name, tx_hash_out);
+        return 0;
+    }
+
+    QGP_LOG_ERROR(LOG_TAG, "V3 swap: token→ETH not yet implemented");
+    return -1;
+}
+
 int eth_dex_execute_swap(
     const eth_wallet_t *wallet,
     const char *from_token,
@@ -1527,255 +1785,102 @@ int eth_dex_execute_swap(
     if (!wallet || !from_token || !to_token || !amount_in || !result_out) return -1;
     memset(result_out, 0, sizeof(*result_out));
 
-    const cow_token_t *from_tok = cow_find_token(from_token);
-    const cow_token_t *to_tok = cow_find_token(to_token);
-    if (!from_tok || !to_tok) {
-        QGP_LOG_ERROR(LOG_TAG, "Unsupported CoW token: %s or %s", from_token, to_token);
+    bool selling_eth = (strcasecmp(from_token, "ETH") == 0);
+
+    /* Step 1: Get quotes from all on-chain DEXes to find best price */
+    QGP_LOG_INFO(LOG_TAG, "DEX swap: %s %s -> %s — getting quotes from all DEXes",
+                 amount_in, from_token, to_token);
+
+    eth_dex_quote_t quotes[NUM_KNOWN_PAIRS + 1];  /* +1 for CoW */
+    int quote_count = 0;
+    eth_dex_get_quotes(from_token, to_token, amount_in, NULL,
+                       quotes, (int)(NUM_KNOWN_PAIRS + 1), &quote_count);
+
+    if (quote_count == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "No DEX quotes available for %s -> %s", from_token, to_token);
         return -2;
     }
 
-    bool selling_eth = (strcasecmp(from_token, "ETH") == 0);
-
-    /* Step 1: Get CoW quote with raw amounts */
-    QGP_LOG_INFO(LOG_TAG, "CoW swap: %s %s -> %s", amount_in, from_token, to_token);
-
-    /* Convert input amount to raw */
-    char raw_amount[64];
-    {
-        __uint128_t raw = 0;
-        const char *dot = strchr(amount_in, '.');
-        uint64_t whole = 0;
-        const char *p = amount_in;
-        while (p != dot && *p) {
-            whole = whole * 10 + (*p - '0');
-            p++;
+    /* Find the best quote (highest amount_out) — exclude CoW (off-chain, unreliable for small amounts) */
+    int best_idx = -1;
+    double best_out = 0.0;
+    for (int i = 0; i < quote_count; i++) {
+        if (strcmp(quotes[i].dex_name, "CoW Protocol") == 0) continue;  /* Skip CoW */
+        double out = atof(quotes[i].amount_out);
+        if (out > best_out) {
+            best_out = out;
+            best_idx = i;
         }
-        raw = (__uint128_t)whole;
-        for (int i = 0; i < from_tok->decimals; i++) raw *= 10;
-
-        if (dot) {
-            uint64_t frac = 0;
-            int frac_digits = 0;
-            p = dot + 1;
-            while (*p && frac_digits < from_tok->decimals) {
-                frac = frac * 10 + (*p - '0');
-                p++;
-                frac_digits++;
-            }
-            for (int i = frac_digits; i < from_tok->decimals; i++) frac *= 10;
-            raw += frac;
-        }
-
-        /* Format __uint128_t to decimal string */
-        char tmp[64];
-        int pos = 0;
-        __uint128_t v = raw;
-        if (v == 0) { tmp[pos++] = '0'; }
-        while (v > 0) { tmp[pos++] = '0' + (int)(v % 10); v /= 10; }
-        for (int i = 0; i < pos; i++) raw_amount[i] = tmp[pos - 1 - i];
-        raw_amount[pos] = '\0';
     }
 
-    /* POST /api/v1/quote */
-    CURL *curl = curl_easy_init();
-    if (!curl) return -1;
+    if (best_idx < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "No on-chain DEX quotes for %s -> %s", from_token, to_token);
+        return -2;
+    }
 
-    json_object *quote_req = json_object_new_object();
-    json_object_object_add(quote_req, "sellToken", json_object_new_string(from_tok->address));
-    json_object_object_add(quote_req, "buyToken", json_object_new_string(to_tok->address));
-    json_object_object_add(quote_req, "sellAmountBeforeFee", json_object_new_string(raw_amount));
-    json_object_object_add(quote_req, "from", json_object_new_string(wallet->address_hex));
-    json_object_object_add(quote_req, "kind", json_object_new_string("sell"));
-    json_object_object_add(quote_req, "validFor", json_object_new_int(600));
+    eth_dex_quote_t *best = &quotes[best_idx];
+    QGP_LOG_INFO(LOG_TAG, "Best quote: %s %s -> %s %s via %s",
+                 best->amount_in, from_token, best->amount_out, to_token, best->dex_name);
 
-    const char *quote_body = json_object_to_json_string(quote_req);
+    /* Find the matching pair from known_pairs for router info */
+    const eth_dex_pair_t *swap_pair = NULL;
+    for (size_t i = 0; i < NUM_KNOWN_PAIRS; i++) {
+        if (strcmp(known_pairs[i].pool_address, best->pool_address) == 0) {
+            swap_pair = &known_pairs[i];
+            break;
+        }
+    }
 
-    struct { char *data; size_t size; } resp = {0};
-    struct curl_slist *headers = curl_slist_append(NULL, "Content-Type: application/json");
-
-    curl_easy_setopt(curl, CURLOPT_URL, "https://api.cow.fi/mainnet/api/v1/quote");
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, quote_body);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cow_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "DNA-Messenger/1.0");
-
-    const char *ca_bundle = qgp_platform_ca_bundle_path();
-    if (ca_bundle) curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
-
-    CURLcode cres = curl_easy_perform(curl);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_easy_cleanup(curl);
-    curl_slist_free_all(headers);
-    json_object_put(quote_req);
-
-    if (cres != CURLE_OK || !resp.data || http_code != 200) {
-        QGP_LOG_ERROR(LOG_TAG, "CoW quote failed: HTTP %ld: %.200s",
-                      http_code, resp.data ? resp.data : "no response");
-        free(resp.data);
+    if (!swap_pair) {
+        QGP_LOG_ERROR(LOG_TAG, "Could not find pair info for pool %s", best->pool_address);
         return -1;
     }
 
-    json_object *root = json_tokener_parse(resp.data);
-    free(resp.data);
-    if (!root) return -1;
+    /* Calculate amountOutMin with 1% slippage tolerance */
+    uint8_t from_dec = selling_eth ? swap_pair->decimals_a : swap_pair->decimals_b;
+    uint8_t to_dec = selling_eth ? swap_pair->decimals_b : swap_pair->decimals_a;
+    __uint128_t raw_out = parse_decimal_to_raw(best->amount_out, to_dec);
+    __uint128_t amount_out_min = raw_out * 99 / 100;  /* 1% slippage */
+    __uint128_t raw_in = parse_decimal_to_raw(amount_in, from_dec);
 
-    /* Extract quote fields */
-    json_object *quote_obj;
-    if (!json_object_object_get_ex(root, "quote", &quote_obj)) {
-        QGP_LOG_ERROR(LOG_TAG, "CoW response missing 'quote'");
-        json_object_put(root);
-        return -1;
-    }
+    QGP_LOG_INFO(LOG_TAG, "Swap via %s (router %s), slippage 1%%",
+                 swap_pair->dex_name, swap_pair->router_address);
 
-    json_object *jsell, *jbuy, *jfee, *jvalid;
-    json_object_object_get_ex(quote_obj, "sellAmount", &jsell);
-    json_object_object_get_ex(quote_obj, "buyAmount", &jbuy);
-    json_object_object_get_ex(quote_obj, "feeAmount", &jfee);
-    json_object_object_get_ex(quote_obj, "validTo", &jvalid);
+    /* Step 2: Execute on-chain swap via router */
+    char tx_hash[68] = {0};
+    int rc;
 
-    if (!jsell || !jbuy || !jfee || !jvalid) {
-        QGP_LOG_ERROR(LOG_TAG, "CoW quote missing required fields");
-        json_object_put(root);
-        return -1;
-    }
-
-    const char *sell_raw = json_object_get_string(jsell);
-    const char *buy_raw = json_object_get_string(jbuy);
-    const char *fee_raw = json_object_get_string(jfee);
-    uint32_t valid_to = (uint32_t)json_object_get_int64(jvalid);
-
-    /* Make copies before freeing JSON */
-    char sell_str[64], buy_str[64], fee_str[64];
-    strncpy(sell_str, sell_raw, sizeof(sell_str) - 1); sell_str[63] = '\0';
-    strncpy(buy_str, buy_raw, sizeof(buy_str) - 1); buy_str[63] = '\0';
-    strncpy(fee_str, fee_raw, sizeof(fee_str) - 1); fee_str[63] = '\0';
-
-    QGP_LOG_INFO(LOG_TAG, "CoW quote: sell=%s buy=%s fee=%s validTo=%u (using sellAmount=%s feeAmount=0)",
-                 sell_str, buy_str, fee_str, valid_to, raw_amount);
-
-    json_object_put(root);
-
-    /* Step 2: Approve VaultRelayer if needed */
-    const char *approve_token = from_tok->address;
-    if (!eth_erc20_has_sufficient_allowance(wallet->address_hex,
-                                             COW_VAULT_RELAYER, approve_token)) {
-        QGP_LOG_INFO(LOG_TAG, "Approving %s for CoW VaultRelayer...", from_token);
-
-        char approve_hash[68] = {0};
-        if (eth_erc20_approve(wallet->private_key, wallet->address_hex,
-                               approve_token, COW_VAULT_RELAYER,
-                               ETH_GAS_FAST, approve_hash) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to send approve TX");
-            return -1;
-        }
-
-        /* Wait for approve TX confirmation */
-        if (cow_wait_for_tx(approve_hash, 120) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Approve TX failed or timed out");
-            return -1;
-        }
+    if (swap_pair->dex_type == DEX_UNISWAP_V2 || swap_pair->dex_type == DEX_PANCAKE_V2) {
+        rc = eth_dex_swap_v2(wallet, swap_pair, amount_in, amount_out_min,
+                             selling_eth, tx_hash);
     } else {
-        QGP_LOG_INFO(LOG_TAG, "VaultRelayer already approved for %s", from_token);
+        rc = eth_dex_swap_v3(wallet, swap_pair, amount_in, raw_in, amount_out_min,
+                             selling_eth, tx_hash);
     }
 
-    /* Step 3: Wrap ETH to WETH if selling ETH (only wrap deficit) */
-    if (selling_eth) {
-        /* Check existing WETH balance to avoid unnecessary wrapping */
-        char weth_bal[64] = {0};
-        int bal_rc = eth_erc20_get_balance(wallet->address_hex, COW_WETH_CONTRACT, 18,
-                                           weth_bal, sizeof(weth_bal));
-        double weth_have = (bal_rc == 0 && weth_bal[0]) ? atof(weth_bal) : 0.0;
-        double weth_need = atof(amount_in);
-
-        if (weth_have >= weth_need) {
-            QGP_LOG_INFO(LOG_TAG, "Sufficient WETH balance (%s >= %s), skipping wrap",
-                         weth_bal, amount_in);
-        } else {
-            /* Calculate deficit to wrap */
-            double deficit = weth_need - weth_have;
-            char wrap_amount[64];
-            snprintf(wrap_amount, sizeof(wrap_amount), "%.18f", deficit);
-            /* Trim trailing zeros */
-            char *end = wrap_amount + strlen(wrap_amount) - 1;
-            while (end > wrap_amount && *end == '0') *end-- = '\0';
-            if (*end == '.') *end = '\0';
-
-            QGP_LOG_INFO(LOG_TAG, "Wrapping %s ETH -> WETH (have %s, need %s)...",
-                         wrap_amount, weth_bal, amount_in);
-
-            char weth_hash[68] = {0};
-            if (eth_weth_deposit(wallet->private_key, wallet->address_hex,
-                                  wrap_amount, ETH_GAS_FAST, weth_hash) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "Failed to send WETH deposit TX");
-                return -1;
-            }
-
-            if (cow_wait_for_tx(weth_hash, 120) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "WETH deposit TX failed or timed out");
-                return -1;
-            }
-        }
-    }
-
-    /* Step 4: EIP-712 sign the order
-     * CoW v2 API requires feeAmount=0 — protocol handles fees internally.
-     * sellAmount = full input amount (raw_amount), NOT quote's sellAmount (which has fee deducted). */
-    uint8_t signature[65];
-    if (cow_sign_order(wallet->private_key,
-                        from_tok->address, to_tok->address,
-                        wallet->address_hex,
-                        raw_amount, buy_str, valid_to, "0",
-                        signature) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to sign CoW order");
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Router swap failed");
         return -1;
     }
 
-    /* Convert signature to hex */
-    char sig_hex[132];  /* 0x + 65*2 + null */
-    cow_bytes_to_hex(signature, 65, sig_hex);
-
-    /* Step 5: POST order to CoW API */
-    char order_uid[256] = {0};
-    if (cow_post_order(from_tok->address, to_tok->address,
-                        wallet->address_hex,
-                        raw_amount, buy_str, valid_to, "0",
-                        sig_hex, wallet->address_hex,
-                        order_uid, sizeof(order_uid)) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to submit CoW order");
+    /* Step 3: Wait for TX confirmation */
+    if (cow_wait_for_tx(tx_hash, 120) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Swap TX not confirmed after 120s: %s", tx_hash);
         return -1;
-    }
-
-    /* Step 6: Poll until fulfilled */
-    if (cow_poll_order(order_uid, 60) != 0) {
-        QGP_LOG_WARN(LOG_TAG, "CoW order not yet fulfilled, but submitted: %s", order_uid);
-        /* Still return success — order is on-chain, may fill later */
     }
 
     /* Fill result */
-    strncpy(result_out->tx_signature, order_uid, sizeof(result_out->tx_signature) - 1);
-    format_raw_to_decimal(result_out->amount_in, sizeof(result_out->amount_in),
-                          0, 0);  /* We'll set these from the strings */
-    /* Copy human-readable amounts from the raw values */
-    {
-        __uint128_t sv = 0, bv = 0;
-        for (const char *p = raw_amount; *p; p++) if (*p >= '0' && *p <= '9') sv = sv * 10 + (*p - '0');
-        for (const char *p = buy_str; *p; p++) if (*p >= '0' && *p <= '9') bv = bv * 10 + (*p - '0');
-        format_raw_to_decimal(result_out->amount_in, sizeof(result_out->amount_in),
-                              sv, from_tok->decimals);
-        format_raw_to_decimal(result_out->amount_out, sizeof(result_out->amount_out),
-                              bv, to_tok->decimals);
-    }
+    strncpy(result_out->tx_signature, tx_hash, sizeof(result_out->tx_signature) - 1);
+    strncpy(result_out->amount_in, amount_in, sizeof(result_out->amount_in) - 1);
+    strncpy(result_out->amount_out, best->amount_out, sizeof(result_out->amount_out) - 1);
     strncpy(result_out->from_token, from_token, sizeof(result_out->from_token) - 1);
     strncpy(result_out->to_token, to_token, sizeof(result_out->to_token) - 1);
-    strncpy(result_out->dex_name, "CoW Protocol", sizeof(result_out->dex_name) - 1);
-    strncpy(result_out->price_impact, "0.0", sizeof(result_out->price_impact) - 1);
+    strncpy(result_out->dex_name, swap_pair->dex_name, sizeof(result_out->dex_name) - 1);
+    strncpy(result_out->price_impact, best->price_impact, sizeof(result_out->price_impact) - 1);
 
-    QGP_LOG_INFO(LOG_TAG, "CoW swap complete: %s %s -> %s %s",
-                 result_out->amount_in, from_token,
-                 result_out->amount_out, to_token);
+    QGP_LOG_INFO(LOG_TAG, "Swap complete: %s %s -> %s %s via %s, tx=%s",
+                 amount_in, from_token, best->amount_out, to_token,
+                 swap_pair->dex_name, tx_hash);
 
     return 0;
 }

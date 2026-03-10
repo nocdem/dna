@@ -307,6 +307,24 @@ int eth_weth_deposit(
     char *tx_hash_out
 );
 
+/**
+ * Unwrap WETH to ETH via withdraw(uint256)
+ *
+ * @param private_key    32-byte sender private key
+ * @param from_address   Sender address
+ * @param amount_weth    Amount of WETH to unwrap as decimal string
+ * @param gas_speed      Gas speed
+ * @param tx_hash_out    Output: transaction hash
+ * @return               0 on success, -1 on error
+ */
+int eth_weth_withdraw(
+    const uint8_t private_key[32],
+    const char *from_address,
+    const char *amount_weth,
+    int gas_speed,
+    char *tx_hash_out
+);
+
 #ifdef __cplusplus
 }
 #endif

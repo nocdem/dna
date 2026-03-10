@@ -6,6 +6,9 @@
 
 #include "cli_commands.h"
 #include "bip39.h"
+#include "blockchain/ethereum/eth_wallet.h"
+#include "blockchain/ethereum/eth_erc20.h"
+#include "blockchain/ethereum/eth_tx.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_sha3.h"
@@ -4065,6 +4068,8 @@ static void on_dex_swap(dna_request_id_t request_id, int error,
         printf("  TX: %s\n", result->tx_signature);
         if (strncmp(result->dex_name, "CoW", 3) == 0)
             printf("  View: https://explorer.cow.fi/orders/%s\n\n", result->tx_signature);
+        else if (strstr(result->dex_name, "Uniswap") || strstr(result->dex_name, "PancakeSwap"))
+            printf("  View: https://etherscan.io/tx/%s\n\n", result->tx_signature);
         else
             printf("  View: https://solscan.io/tx/%s\n\n", result->tx_signature);
     }
@@ -4933,6 +4938,8 @@ int dispatch_dex(dna_engine_t *engine, int argc, char **argv, int sub) {
         fprintf(stderr, "  dex quote <from_token> <to_token> <amount> [dex_filter]\n");
         fprintf(stderr, "  dex swap <wallet_idx> <from_token> <to_token> <amount>\n");
         fprintf(stderr, "  dex pairs\n");
+        fprintf(stderr, "  dex weth balance\n");
+        fprintf(stderr, "  dex weth unwrap <amount>\n");
         return 1;
     }
     const char *subcmd = argv[sub];
@@ -4946,6 +4953,58 @@ int dispatch_dex(dna_engine_t *engine, int argc, char **argv, int sub) {
         return cmd_dex_swap(engine, wallet_idx, argv[sub + 2], argv[sub + 3], argv[sub + 4]);
     } else if (strcmp(subcmd, "pairs") == 0) {
         return cmd_dex_pairs(engine);
+    } else if (strcmp(subcmd, "weth") == 0) {
+        /* Forward to REPL handler via strtok simulation */
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: dex weth balance | dex weth unwrap <amount>\n"); return 1; }
+        const char *action = argv[sub + 1];
+
+        char mnemonic[512] = {0};
+        if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) != 0) {
+            fprintf(stderr, "Error: Failed to get mnemonic\n");
+            return -1;
+        }
+        uint8_t master_seed[64];
+        bip39_mnemonic_to_seed(mnemonic, "", master_seed);
+        memset(mnemonic, 0, sizeof(mnemonic));
+
+        eth_wallet_t wallet;
+        if (eth_wallet_generate(master_seed, 64, &wallet) != 0) {
+            fprintf(stderr, "Error: Failed to generate ETH wallet\n");
+            memset(master_seed, 0, sizeof(master_seed));
+            return -1;
+        }
+        memset(master_seed, 0, sizeof(master_seed));
+
+        if (strcmp(action, "balance") == 0) {
+            char weth_bal[64] = {0};
+            if (eth_erc20_get_balance(wallet.address_hex,
+                    "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", 18,
+                    weth_bal, sizeof(weth_bal)) == 0) {
+                printf("WETH balance: %s\n", weth_bal);
+            } else {
+                printf("Error: Failed to get WETH balance\n");
+            }
+            eth_wallet_clear(&wallet);
+            return 0;
+        } else if (strcmp(action, "unwrap") == 0) {
+            if (sub + 2 >= argc) { fprintf(stderr, "Usage: dex weth unwrap <amount>\n"); eth_wallet_clear(&wallet); return 1; }
+            const char *amount = argv[sub + 2];
+            printf("Unwrapping %s WETH -> ETH...\n", amount);
+            char tx_hash[68] = {0};
+            if (eth_weth_withdraw(wallet.private_key, wallet.address_hex,
+                                   amount, ETH_GAS_FAST, tx_hash) == 0) {
+                printf("WETH unwrap TX sent: %s\n", tx_hash);
+                printf("View: https://etherscan.io/tx/%s\n", tx_hash);
+            } else {
+                printf("Error: WETH unwrap failed\n");
+            }
+            eth_wallet_clear(&wallet);
+            return 0;
+        } else {
+            fprintf(stderr, "Unknown weth action: %s\n", action);
+            eth_wallet_clear(&wallet);
+            return 1;
+        }
     } else {
         fprintf(stderr, "Unknown dex subcommand: %s\n", subcmd);
         return 1;
@@ -5519,6 +5578,66 @@ int dispatch_dex_repl(dna_engine_t *engine, const char *subcmd) {
         return cmd_dex_swap(engine, wallet_idx, from, to, amt);
     } else if (strcmp(subcmd, "pairs") == 0) {
         return cmd_dex_pairs(engine);
+    } else if (strcmp(subcmd, "weth") == 0) {
+        /* dex weth balance | dex weth unwrap <amount> */
+        char *action = strtok(NULL, " \t");
+        if (!action || strcmp(action, "help") == 0) {
+            fprintf(stderr, "Usage: dex weth balance | dex weth unwrap <amount>\n");
+            return 1;
+        }
+
+        /* Derive ETH wallet from mnemonic */
+        char mnemonic[512] = {0};
+        if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) != 0) {
+            fprintf(stderr, "Error: Failed to get mnemonic\n");
+            return -1;
+        }
+        uint8_t master_seed[64];
+        bip39_mnemonic_to_seed(mnemonic, "", master_seed);
+        memset(mnemonic, 0, sizeof(mnemonic));
+
+        eth_wallet_t wallet;
+        if (eth_wallet_generate(master_seed, 64, &wallet) != 0) {
+            fprintf(stderr, "Error: Failed to generate ETH wallet\n");
+            memset(master_seed, 0, sizeof(master_seed));
+            return -1;
+        }
+        memset(master_seed, 0, sizeof(master_seed));
+
+        if (strcmp(action, "balance") == 0) {
+            char weth_bal[64] = {0};
+            if (eth_erc20_get_balance(wallet.address_hex,
+                    "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", 18,
+                    weth_bal, sizeof(weth_bal)) == 0) {
+                printf("WETH balance: %s\n", weth_bal);
+            } else {
+                printf("Error: Failed to get WETH balance\n");
+            }
+            eth_wallet_clear(&wallet);
+            return 0;
+        } else if (strcmp(action, "unwrap") == 0) {
+            char *amount = strtok(NULL, " \t");
+            if (!amount) {
+                fprintf(stderr, "Usage: dex weth unwrap <amount>\n");
+                eth_wallet_clear(&wallet);
+                return 1;
+            }
+            printf("Unwrapping %s WETH -> ETH...\n", amount);
+            char tx_hash[68] = {0};
+            if (eth_weth_withdraw(wallet.private_key, wallet.address_hex,
+                                   amount, ETH_GAS_FAST, tx_hash) == 0) {
+                printf("WETH unwrap TX sent: %s\n", tx_hash);
+                printf("View: https://etherscan.io/tx/%s\n", tx_hash);
+            } else {
+                printf("Error: WETH unwrap failed\n");
+            }
+            eth_wallet_clear(&wallet);
+            return 0;
+        } else {
+            fprintf(stderr, "Unknown weth action: %s\n", action);
+            eth_wallet_clear(&wallet);
+            return 1;
+        }
     } else {
         fprintf(stderr, "Unknown dex subcommand: %s\n", subcmd);
         return 1;
