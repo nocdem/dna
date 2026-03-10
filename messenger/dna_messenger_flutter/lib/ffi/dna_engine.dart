@@ -3017,6 +3017,53 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Get cached transactions from SQLite (instant, no network calls)
+  /// Returns empty list if no cache exists yet.
+  Future<List<Transaction>> getCachedTransactions(int walletIndex, String network) async {
+    final completer = Completer<List<Transaction>>();
+    final localId = _nextLocalId++;
+
+    final networkPtr = network.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<dna_transaction_t> transactions,
+                    int count, Pointer<Void> userData) {
+      calloc.free(networkPtr);
+
+      if (error == 0) {
+        final result = <Transaction>[];
+        for (var i = 0; i < count; i++) {
+          result.add(Transaction.fromNative((transactions + i).ref));
+        }
+        if (count > 0) {
+          _bindings.dna_free_transactions(transactions, count);
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaTransactionsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_cached_transactions(
+      _engine,
+      walletIndex,
+      networkPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(networkPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
   // ---------------------------------------------------------------------------
   // DEX OPERATIONS
   // ---------------------------------------------------------------------------

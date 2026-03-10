@@ -257,7 +257,7 @@ static int sol_chain_get_transactions(
     sol_transaction_t *sol_txs = NULL;
     int sol_count = 0;
 
-    if (sol_rpc_get_transactions(address, &sol_txs, &sol_count) != 0) {
+    if (sol_rpc_get_transactions(address, &sol_txs, &sol_count, NULL, 0) != 0) {
         return -1;
     }
 

@@ -276,15 +276,33 @@ class TransactionsNotifier
     extends FamilyAsyncNotifier<List<Transaction>, ({int walletIndex, String network})> {
   @override
   Future<List<Transaction>> build(({int walletIndex, String network}) arg) async {
+    // Cache-first: show cached transactions instantly, then refresh in background
     final engine = await ref.watch(engineProvider.future);
+    final cached = await engine.getCachedTransactions(arg.walletIndex, arg.network);
+
+    if (cached.isNotEmpty) {
+      // Schedule background refresh after returning cached data
+      Future.microtask(() => refresh());
+      return cached;
+    }
+
+    // No cache — fall back to live fetch
     return engine.getTransactions(arg.walletIndex, arg.network);
   }
 
-  /// Refresh transactions silently — keeps old data visible during fetch
+  /// Refresh transactions from live API — keeps old data visible during fetch
   Future<void> refresh() async {
-    state = await AsyncValue.guard(() async {
+    final current = state.valueOrNull;
+    final newState = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
       return engine.getTransactions(arg.walletIndex, arg.network);
     });
+
+    // Preserve cached data on network error
+    if (newState is AsyncError && current != null && current.isNotEmpty) {
+      return;
+    }
+
+    state = newState;
   }
 }

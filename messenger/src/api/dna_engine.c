@@ -1002,6 +1002,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_GET_TRANSACTIONS:
             dna_handle_get_transactions(engine, task);
             break;
+        case TASK_GET_CACHED_TRANSACTIONS:
+            dna_handle_get_cached_transactions(engine, task);
+            break;
         case TASK_ESTIMATE_GAS:
             dna_handle_estimate_gas(engine, task);
             break;

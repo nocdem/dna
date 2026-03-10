@@ -2436,6 +2436,23 @@ class DnaBindings {
         engine, wallet_index, network, callback, user_data);
   }
 
+  late final _dna_engine_get_cached_transactions = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Int32, Pointer<Utf8>,
+          Pointer<DnaTransactionsCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, int, Pointer<Utf8>,
+          Pointer<DnaTransactionsCb>, Pointer<Void>)>('dna_engine_get_cached_transactions');
+
+  int dna_engine_get_cached_transactions(
+    Pointer<dna_engine_t> engine,
+    int wallet_index,
+    Pointer<Utf8> network,
+    Pointer<DnaTransactionsCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_cached_transactions(
+        engine, wallet_index, network, callback, user_data);
+  }
+
   // ---------------------------------------------------------------------------
   // DEX
   // ---------------------------------------------------------------------------

@@ -2139,6 +2139,21 @@ DNA_API dna_request_id_t dna_engine_get_transactions(
     void *user_data
 );
 
+/**
+ * Get cached transactions from SQLite (instant, no network calls)
+ * Returns previously fetched transactions from local cache.
+ * Use for stale-while-revalidate: show cached data instantly,
+ * then call dna_engine_get_transactions() for live update.
+ * Returns empty (count=0) if no cache exists yet.
+ */
+DNA_API dna_request_id_t dna_engine_get_cached_transactions(
+    dna_engine_t *engine,
+    int wallet_index,
+    const char *network,
+    dna_transactions_cb callback,
+    void *user_data
+);
+
 /* ============================================================================
  * 6b. DEX (Decentralized Exchange)
  * ============================================================================ */

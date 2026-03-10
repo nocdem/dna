@@ -102,12 +102,16 @@ int sol_rpc_get_transaction_status(
  * @param address       Account address
  * @param txs_out       Output: array of transactions (caller must free)
  * @param count_out     Output: number of transactions
+ * @param known_hashes  Array of tx hashes already in cache (skip getTransaction for these)
+ * @param known_count   Number of known hashes (0 = fetch all)
  * @return              0 on success, -1 on error
  */
 int sol_rpc_get_transactions(
     const char *address,
     sol_transaction_t **txs_out,
-    int *count_out
+    int *count_out,
+    const char **known_hashes,
+    int known_count
 );
 
 /**

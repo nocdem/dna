@@ -650,7 +650,28 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
         sol_transaction_t *sol_txs = NULL;
         int sol_count = 0;
 
-        if (sol_rpc_get_transactions(wallet_info->address, &sol_txs, &sol_count) != 0) {
+        /* Load cached TX hashes so Solana RPC skips getTransaction for known TXs */
+        const char **known_hashes = NULL;
+        int known_count = 0;
+        dna_transaction_t *cached = NULL;
+        int cached_n = 0;
+        if (wallet_cache_get_transactions(task->params.get_transactions.wallet_index,
+                                          network, &cached, &cached_n) == 0 && cached_n > 0) {
+            known_hashes = calloc(cached_n, sizeof(char *));
+            if (known_hashes) {
+                for (int k = 0; k < cached_n; k++) {
+                    known_hashes[k] = cached[k].tx_hash;
+                }
+                known_count = cached_n;
+            }
+        }
+
+        int sol_rc = sol_rpc_get_transactions(wallet_info->address, &sol_txs, &sol_count,
+                                               known_hashes, known_count);
+        if (known_hashes) free(known_hashes);
+        if (cached) free(cached);
+
+        if (sol_rc != 0) {
             error = DNA_ENGINE_ERROR_NETWORK;
             goto done;
         }
@@ -991,6 +1012,25 @@ done:
     task->callback.transactions(task->request_id, error, transactions, count, task->user_data);
 }
 
+/* Read transactions from SQLite cache only — no network calls */
+void dna_handle_get_cached_transactions(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
+    ensure_wallet_cache();
+
+    const char *network = task->params.get_transactions.network;
+    int wallet_index = task->params.get_transactions.wallet_index;
+
+    dna_transaction_t *txs = NULL;
+    int count = 0;
+    int rc = wallet_cache_get_transactions(wallet_index, network, &txs, &count);
+
+    if (rc == 0 && txs && count > 0) {
+        task->callback.transactions(task->request_id, DNA_OK, txs, count, task->user_data);
+    } else {
+        task->callback.transactions(task->request_id, DNA_OK, NULL, 0, task->user_data);
+    }
+}
+
 /* ============================================================================
  * WALLET PUBLIC API WRAPPERS
  * ============================================================================ */
@@ -1160,6 +1200,25 @@ dna_request_id_t dna_engine_get_transactions(
 
     dna_task_callback_t cb = { .transactions = callback };
     return dna_submit_task(engine, TASK_GET_TRANSACTIONS, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_cached_transactions(
+    dna_engine_t *engine,
+    int wallet_index,
+    const char *network,
+    dna_transactions_cb callback,
+    void *user_data
+) {
+    if (!engine || !network || !callback || wallet_index < 0) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params = {0};
+    params.get_transactions.wallet_index = wallet_index;
+    strncpy(params.get_transactions.network, network, sizeof(params.get_transactions.network) - 1);
+
+    dna_task_callback_t cb = { .transactions = callback };
+    return dna_submit_task(engine, TASK_GET_CACHED_TRANSACTIONS, &params, cb, user_data);
 }
 
 /* ============================================================================

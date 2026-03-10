@@ -112,6 +112,7 @@ typedef enum {
     TASK_GET_CACHED_BALANCES,
     TASK_SEND_TOKENS,
     TASK_GET_TRANSACTIONS,
+    TASK_GET_CACHED_TRANSACTIONS,
     TASK_ESTIMATE_GAS,
     TASK_DEX_QUOTE,
     TASK_DEX_LIST_PAIRS,
@@ -813,6 +814,7 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_cached_balances(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_cached_transactions(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_estimate_gas(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dex_quote(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dex_list_pairs(dna_engine_t *engine, dna_task_t *task);

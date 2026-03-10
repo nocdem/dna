@@ -1042,7 +1042,9 @@ static int sol_rpc_get_tx_details(
 int sol_rpc_get_transactions(
     const char *address,
     sol_transaction_t **txs_out,
-    int *count_out
+    int *count_out,
+    const char **known_hashes,
+    int known_count
 ) {
     if (!address || !txs_out || !count_out) {
         return -1;
@@ -1088,6 +1090,22 @@ int sol_rpc_get_transactions(
         }
 
         const char *signature = json_object_get_string(sig_obj);
+
+        /* Skip if this signature is already in cache */
+        int already_cached = 0;
+        if (known_hashes && known_count > 0) {
+            for (int k = 0; k < known_count; k++) {
+                if (known_hashes[k] && strcmp(known_hashes[k], signature) == 0) {
+                    already_cached = 1;
+                    break;
+                }
+            }
+        }
+        if (already_cached) {
+            QGP_LOG_DEBUG(LOG_TAG, "Skipping cached tx: %.16s...", signature);
+            continue;
+        }
+
         strncpy(txs[valid_count].signature, signature,
                 sizeof(txs[valid_count].signature) - 1);
 
