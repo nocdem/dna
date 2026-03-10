@@ -149,6 +149,33 @@ Ethereum blockchain with secp256k1 ECDSA signatures.
 | `int eth_parse_amount(const char*, uint8_t*)` | Parse amount to wei |
 | `int eth_parse_address(const char*, uint8_t*)` | Parse hex address |
 
+### 16.3 ERC-20 Token (`eth_erc20.h`)
+
+| Function | Description |
+|----------|-------------|
+| `int eth_erc20_get_token(const char*, eth_erc20_token_t*)` | Get token info by symbol |
+| `bool eth_erc20_is_supported(const char*)` | Check if token symbol is supported |
+| `int eth_erc20_get_balance(const char*, const char*, uint8_t, char*, size_t)` | Get ERC-20 token balance |
+| `int eth_erc20_get_balance_by_symbol(const char*, const char*, char*, size_t)` | Get balance by symbol |
+| `int eth_erc20_encode_transfer(const char*, const char*, uint8_t, uint8_t*, size_t)` | Encode transfer call data |
+| `int eth_erc20_encode_balance_of(const char*, uint8_t*, size_t)` | Encode balanceOf call data |
+| `int eth_erc20_send(const uint8_t*, const char*, const char*, const char*, const char*, uint8_t, int, char*)` | Send ERC-20 tokens |
+| `int eth_erc20_send_by_symbol(const uint8_t*, const char*, const char*, const char*, const char*, int, char*)` | Send tokens by symbol |
+| `int eth_erc20_encode_approve(const char*, uint8_t*, size_t)` | Encode approve(MAX_UINT256) call data |
+| `int eth_erc20_get_allowance(const char*, const char*, const char*, char*, size_t)` | Get ERC-20 allowance |
+| `bool eth_erc20_has_sufficient_allowance(const char*, const char*, const char*)` | Check non-zero allowance |
+| `int eth_erc20_approve(const uint8_t*, const char*, const char*, const char*, int, char*)` | Send approve TX |
+| `int eth_weth_deposit(const uint8_t*, const char*, const char*, int, char*)` | Wrap ETH to WETH |
+
+### 16.4 Ethereum DEX (`eth_dex.h`)
+
+| Function | Description |
+|----------|-------------|
+| `int eth_dex_get_quotes(const char*, const char*, const char*, const char*, eth_dex_quote_t*, int, int*)` | Get Uniswap/PancakeSwap quotes |
+| `int eth_dex_list_pairs(char***, int*)` | List available swap pairs |
+| `void eth_dex_free_pairs(char**, int)` | Free pairs array |
+| `int eth_dex_execute_swap(const eth_wallet_t*, const char*, const char*, const char*, eth_dex_swap_result_t*)` | Execute swap via CoW Protocol |
+
 ---
 
 ## 17. Blockchain - Solana (`blockchain/solana/`)

@@ -211,6 +211,102 @@ int eth_erc20_send_by_symbol(
     char *tx_hash_out
 );
 
+/* ============================================================================
+ * APPROVE / ALLOWANCE
+ * ============================================================================ */
+
+/**
+ * Encode ERC-20 approve call data (MAX_UINT256 unlimited approval)
+ *
+ * Encodes: approve(address spender, uint256 MAX)
+ *
+ * @param spender_address  Spender address (with 0x prefix)
+ * @param data_out         Output: encoded call data (must be at least 68 bytes)
+ * @param data_size        Size of data_out buffer
+ * @return                 Length of encoded data, or -1 on error
+ */
+int eth_erc20_encode_approve(
+    const char *spender_address,
+    uint8_t *data_out,
+    size_t data_size
+);
+
+/**
+ * Get ERC-20 allowance (how much spender can spend from owner)
+ *
+ * @param owner_address      Token owner address
+ * @param spender_address    Approved spender address
+ * @param contract_address   Token contract address
+ * @param allowance_hex_out  Output: allowance as hex string (0x...)
+ * @param allowance_size     Size of output buffer (min 66)
+ * @return                   0 on success, -1 on error
+ */
+int eth_erc20_get_allowance(
+    const char *owner_address,
+    const char *spender_address,
+    const char *contract_address,
+    char *allowance_hex_out,
+    size_t allowance_size
+);
+
+/**
+ * Check if sufficient allowance exists (any non-zero amount)
+ *
+ * @param owner_address      Token owner
+ * @param spender_address    Spender to check
+ * @param contract_address   Token contract
+ * @return                   true if allowance > 0
+ */
+bool eth_erc20_has_sufficient_allowance(
+    const char *owner_address,
+    const char *spender_address,
+    const char *contract_address
+);
+
+/**
+ * Send ERC-20 approve TX (MAX_UINT256)
+ *
+ * @param private_key       32-byte sender private key
+ * @param from_address      Sender address
+ * @param contract_address  Token contract address
+ * @param spender_address   Address to approve
+ * @param gas_speed         Gas speed (ETH_GAS_SLOW/NORMAL/FAST)
+ * @param tx_hash_out       Output: transaction hash
+ * @return                  0 on success, -1 on error
+ */
+int eth_erc20_approve(
+    const uint8_t private_key[32],
+    const char *from_address,
+    const char *contract_address,
+    const char *spender_address,
+    int gas_speed,
+    char *tx_hash_out
+);
+
+/* ============================================================================
+ * WETH WRAP
+ * ============================================================================ */
+
+/**
+ * Wrap ETH to WETH via deposit()
+ *
+ * Sends ETH to WETH contract (0xC02...Cc2) calling deposit().
+ *
+ * @param private_key    32-byte sender private key
+ * @param from_address   Sender address
+ * @param amount_eth     Amount of ETH to wrap as decimal string
+ * @param gas_speed      Gas speed
+ * @param tx_hash_out    Output: transaction hash
+ * @return               0 on success, -1 on error
+ */
+int eth_weth_deposit(
+    const uint8_t private_key[32],
+    const char *from_address,
+    const char *amount_eth,
+    int gas_speed,
+    char *tx_hash_out
+);
+
 #ifdef __cplusplus
 }
 #endif

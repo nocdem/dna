@@ -634,3 +634,264 @@ int eth_erc20_send_by_symbol(
     return eth_erc20_send(private_key, from_address, to_address, amount,
                           token.contract, token.decimals, gas_speed, tx_hash_out);
 }
+
+/* ============================================================================
+ * APPROVE / ALLOWANCE
+ * ============================================================================ */
+
+/* Helper: parse hex address string to 20 bytes in ABI slot */
+static int parse_address_to_abi_slot(const char *hex_address, uint8_t slot[32]) {
+    memset(slot, 0, 32);
+    const char *p = hex_address;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    if (strlen(p) != 40) return -1;
+    for (int i = 0; i < 20; i++) {
+        unsigned int byte;
+        if (sscanf(p + i * 2, "%2x", &byte) != 1) return -1;
+        slot[12 + i] = (uint8_t)byte;
+    }
+    return 0;
+}
+
+int eth_erc20_encode_approve(
+    const char *spender_address,
+    uint8_t *data_out,
+    size_t data_size
+) {
+    if (!spender_address || !data_out || data_size < 68) return -1;
+
+    /* Function selector: approve(address,uint256) = 0x095ea7b3 */
+    data_out[0] = 0x09;
+    data_out[1] = 0x5e;
+    data_out[2] = 0xa7;
+    data_out[3] = 0xb3;
+
+    /* First parameter: spender address (32 bytes, left-padded) */
+    if (parse_address_to_abi_slot(spender_address, data_out + 4) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid spender address");
+        return -1;
+    }
+
+    /* Second parameter: MAX_UINT256 (unlimited approval) */
+    memset(data_out + 36, 0xFF, 32);
+
+    return 68;
+}
+
+int eth_erc20_get_allowance(
+    const char *owner_address,
+    const char *spender_address,
+    const char *contract_address,
+    char *allowance_hex_out,
+    size_t allowance_size
+) {
+    if (!owner_address || !spender_address || !contract_address ||
+        !allowance_hex_out || allowance_size < 66) return -1;
+
+    /* Encode: allowance(address owner, address spender) = 0xdd62ed3e */
+    uint8_t call_data[68];
+    call_data[0] = 0xdd;
+    call_data[1] = 0x62;
+    call_data[2] = 0xed;
+    call_data[3] = 0x3e;
+
+    if (parse_address_to_abi_slot(owner_address, call_data + 4) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid owner address for allowance");
+        return -1;
+    }
+    if (parse_address_to_abi_slot(spender_address, call_data + 36) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid spender address for allowance");
+        return -1;
+    }
+
+    /* Convert to hex string */
+    char data_hex[140];
+    data_hex[0] = '0'; data_hex[1] = 'x';
+    for (int i = 0; i < 68; i++) {
+        snprintf(data_hex + 2 + i * 2, 3, "%02x", call_data[i]);
+    }
+
+    /* eth_call */
+    char result[128] = {0};
+    if (eth_call(contract_address, data_hex, result, sizeof(result)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to query allowance");
+        return -1;
+    }
+
+    strncpy(allowance_hex_out, result, allowance_size - 1);
+    allowance_hex_out[allowance_size - 1] = '\0';
+
+    return 0;
+}
+
+bool eth_erc20_has_sufficient_allowance(
+    const char *owner_address,
+    const char *spender_address,
+    const char *contract_address
+) {
+    char allowance_hex[128] = {0};
+    if (eth_erc20_get_allowance(owner_address, spender_address, contract_address,
+                                 allowance_hex, sizeof(allowance_hex)) != 0) {
+        return false;
+    }
+
+    /* Check if allowance > 0. A zero allowance is 0x0000...0000 (64 hex zeros).
+     * Any non-zero value means some approval exists. For MAX_UINT256 approval,
+     * the result is 0xffff...ffff. We just check it's not all zeros. */
+    const char *p = allowance_hex;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    for (; *p; p++) {
+        if (*p != '0') return true;
+    }
+    return false;
+}
+
+int eth_erc20_approve(
+    const uint8_t private_key[32],
+    const char *from_address,
+    const char *contract_address,
+    const char *spender_address,
+    int gas_speed,
+    char *tx_hash_out
+) {
+    if (!private_key || !from_address || !contract_address ||
+        !spender_address || !tx_hash_out) return -1;
+
+    /* Get nonce */
+    uint64_t nonce;
+    if (eth_tx_get_nonce(from_address, &nonce) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get nonce for approve");
+        return -1;
+    }
+
+    /* Get gas price */
+    uint64_t gas_price;
+    if (eth_tx_get_gas_price(&gas_price) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get gas price for approve");
+        return -1;
+    }
+
+    static const int GAS_MULTIPLIERS[] = { 80, 100, 150 };
+    gas_price = (gas_price * GAS_MULTIPLIERS[gas_speed]) / 100;
+
+    /* Parse contract address */
+    uint8_t contract_bytes[20];
+    if (eth_parse_address(contract_address, contract_bytes) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid contract address for approve");
+        return -1;
+    }
+
+    /* Encode approve calldata */
+    uint8_t call_data[68];
+    int data_len = eth_erc20_encode_approve(spender_address, call_data, sizeof(call_data));
+    if (data_len < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to encode approve");
+        return -1;
+    }
+
+    /* Build transaction */
+    eth_tx_t tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.nonce = nonce;
+    tx.gas_price = gas_price;
+    tx.gas_limit = 60000;  /* approve() typically uses ~46K gas */
+    memcpy(tx.to, contract_bytes, 20);
+    memset(tx.value, 0, 32);
+    tx.data = call_data;
+    tx.data_len = (size_t)data_len;
+    tx.chain_id = ETH_CHAIN_MAINNET;
+
+    /* Sign */
+    eth_signed_tx_t signed_tx;
+    if (eth_tx_sign(&tx, private_key, &signed_tx) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign approve TX");
+        return -1;
+    }
+
+    /* Send */
+    if (eth_tx_send(&signed_tx, tx_hash_out) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to send approve TX");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "ERC-20 approve sent: %s (spender: %.10s...)", tx_hash_out, spender_address);
+    return 0;
+}
+
+/* ============================================================================
+ * WETH WRAP (DEPOSIT)
+ * ============================================================================ */
+
+#define WETH_CONTRACT "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+
+int eth_weth_deposit(
+    const uint8_t private_key[32],
+    const char *from_address,
+    const char *amount_eth,
+    int gas_speed,
+    char *tx_hash_out
+) {
+    if (!private_key || !from_address || !amount_eth || !tx_hash_out) return -1;
+
+    /* Get nonce */
+    uint64_t nonce;
+    if (eth_tx_get_nonce(from_address, &nonce) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get nonce for WETH deposit");
+        return -1;
+    }
+
+    /* Get gas price */
+    uint64_t gas_price;
+    if (eth_tx_get_gas_price(&gas_price) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get gas price for WETH deposit");
+        return -1;
+    }
+
+    static const int GAS_MULTIPLIERS[] = { 80, 100, 150 };
+    gas_price = (gas_price * GAS_MULTIPLIERS[gas_speed]) / 100;
+
+    /* Parse WETH contract address */
+    uint8_t weth_bytes[20];
+    if (eth_parse_address(WETH_CONTRACT, weth_bytes) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse WETH contract address");
+        return -1;
+    }
+
+    /* Parse ETH amount to wei */
+    uint8_t value_wei[32];
+    if (eth_parse_amount(amount_eth, value_wei) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse ETH amount: %s", amount_eth);
+        return -1;
+    }
+
+    /* deposit() selector = 0xd0e30db0 */
+    uint8_t call_data[4] = { 0xd0, 0xe3, 0x0d, 0xb0 };
+
+    /* Build transaction: send ETH value to WETH contract with deposit() */
+    eth_tx_t tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.nonce = nonce;
+    tx.gas_price = gas_price;
+    tx.gas_limit = 50000;  /* deposit() typically uses ~28K gas */
+    memcpy(tx.to, weth_bytes, 20);
+    memcpy(tx.value, value_wei, 32);
+    tx.data = call_data;
+    tx.data_len = 4;
+    tx.chain_id = ETH_CHAIN_MAINNET;
+
+    /* Sign */
+    eth_signed_tx_t signed_tx;
+    if (eth_tx_sign(&tx, private_key, &signed_tx) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign WETH deposit TX");
+        return -1;
+    }
+
+    /* Send */
+    if (eth_tx_send(&signed_tx, tx_hash_out) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to send WETH deposit TX");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "WETH deposit sent: %s ETH -> WETH, tx=%s", amount_eth, tx_hash_out);
+    return 0;
+}

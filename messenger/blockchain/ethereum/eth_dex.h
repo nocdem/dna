@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "eth_wallet.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -82,6 +83,44 @@ int eth_dex_list_pairs(char ***pairs_out, int *count_out);
  * Free pairs array from eth_dex_list_pairs
  */
 void eth_dex_free_pairs(char **pairs, int count);
+
+/* ============================================================================
+ * DEX SWAP RESULT
+ * ============================================================================ */
+
+typedef struct {
+    char tx_signature[256];     /* Order UID or TX hash */
+    char amount_in[64];         /* Input amount (decimal string) */
+    char amount_out[64];        /* Output amount (decimal string) */
+    char from_token[16];        /* Input token symbol */
+    char to_token[16];          /* Output token symbol */
+    char dex_name[32];          /* DEX name */
+    char price_impact[16];      /* Price impact percentage */
+} eth_dex_swap_result_t;
+
+/* ============================================================================
+ * SWAP FUNCTIONS
+ * ============================================================================ */
+
+/**
+ * Execute a DEX swap via CoW Protocol
+ *
+ * Full flow: quote → approve → WETH wrap (if ETH) → EIP-712 sign → post → poll
+ *
+ * @param wallet       ETH wallet (private key + address)
+ * @param from_token   Input token symbol (e.g., "ETH", "USDT")
+ * @param to_token     Output token symbol (e.g., "USDT", "ETH")
+ * @param amount_in    Input amount as decimal string (e.g., "0.001")
+ * @param result_out   Output: swap result
+ * @return             0 on success, -1 on error, -2 if pair not found
+ */
+int eth_dex_execute_swap(
+    const eth_wallet_t *wallet,
+    const char *from_token,
+    const char *to_token,
+    const char *amount_in,
+    eth_dex_swap_result_t *result_out
+);
 
 #ifdef __cplusplus
 }

@@ -1546,6 +1546,14 @@ dna_request_id_t dna_engine_dex_list_pairs(
 
 /* ============ DEX SWAP ============ */
 
+/* Check if token belongs to ETH chain (CoW Protocol supported) */
+static bool is_eth_dex_token(const char *token) {
+    return (strcasecmp(token, "ETH") == 0 ||
+            strcasecmp(token, "WETH") == 0 ||
+            strcasecmp(token, "USDT") == 0 ||
+            strcasecmp(token, "USDC") == 0);
+}
+
 void dna_handle_dex_swap(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     dna_dex_swap_result_t result = {0};
@@ -1556,7 +1564,7 @@ void dna_handle_dex_swap(dna_engine_t *engine, dna_task_t *task) {
 
     QGP_LOG_INFO(LOG_TAG, "DEX swap: %s %s -> %s", amount_in, from_token, to_token);
 
-    /* Derive Solana wallet from mnemonic */
+    /* Derive wallet from mnemonic */
     char mnemonic[512] = {0};
     if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) != DNA_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to get mnemonic for DEX swap");
@@ -1573,7 +1581,37 @@ void dna_handle_dex_swap(dna_engine_t *engine, dna_task_t *task) {
     }
     qgp_secure_memzero(mnemonic, sizeof(mnemonic));
 
-    {
+    /* Determine chain from token symbols */
+    if (is_eth_dex_token(from_token) && is_eth_dex_token(to_token)) {
+        /* ETH chain — CoW Protocol swap */
+        eth_wallet_t eth_wallet;
+        if (eth_wallet_generate(master_seed, 64, &eth_wallet) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to generate ETH wallet for DEX swap");
+            qgp_secure_memzero(master_seed, sizeof(master_seed));
+            error = DNA_ERROR_CRYPTO;
+            goto done;
+        }
+        qgp_secure_memzero(master_seed, sizeof(master_seed));
+
+        eth_dex_swap_result_t eth_result = {0};
+        int rc = eth_dex_execute_swap(&eth_wallet, from_token, to_token, amount_in, &eth_result);
+        eth_wallet_clear(&eth_wallet);
+
+        if (rc != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "ETH DEX swap failed, rc=%d", rc);
+            error = (rc == -2) ? DNA_ERROR_INVALID_ARG : DNA_ENGINE_ERROR_NETWORK;
+            goto done;
+        }
+
+        strncpy(result.tx_signature, eth_result.tx_signature, sizeof(result.tx_signature) - 1);
+        strncpy(result.amount_in, eth_result.amount_in, sizeof(result.amount_in) - 1);
+        strncpy(result.amount_out, eth_result.amount_out, sizeof(result.amount_out) - 1);
+        strncpy(result.from_token, eth_result.from_token, sizeof(result.from_token) - 1);
+        strncpy(result.to_token, eth_result.to_token, sizeof(result.to_token) - 1);
+        strncpy(result.dex_name, eth_result.dex_name, sizeof(result.dex_name) - 1);
+        strncpy(result.price_impact, eth_result.price_impact, sizeof(result.price_impact) - 1);
+    } else {
+        /* Solana chain — Jupiter swap */
         sol_wallet_t sol_wallet;
         if (sol_wallet_generate(master_seed, 64, &sol_wallet) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to generate Solana wallet for DEX swap");
@@ -1588,16 +1626,11 @@ void dna_handle_dex_swap(dna_engine_t *engine, dna_task_t *task) {
         sol_wallet_clear(&sol_wallet);
 
         if (rc != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "DEX swap failed, rc=%d", rc);
-            if (rc == -2) {
-                error = DNA_ERROR_INVALID_ARG;  /* Token pair not found */
-            } else {
-                error = DNA_ENGINE_ERROR_NETWORK;
-            }
+            QGP_LOG_ERROR(LOG_TAG, "SOL DEX swap failed, rc=%d", rc);
+            error = (rc == -2) ? DNA_ERROR_INVALID_ARG : DNA_ENGINE_ERROR_NETWORK;
             goto done;
         }
 
-        /* Copy sol_dex_swap_result_t -> dna_dex_swap_result_t */
         strncpy(result.tx_signature, sol_result.tx_signature, sizeof(result.tx_signature) - 1);
         strncpy(result.amount_in, sol_result.amount_in, sizeof(result.amount_in) - 1);
         strncpy(result.amount_out, sol_result.amount_out, sizeof(result.amount_out) - 1);
