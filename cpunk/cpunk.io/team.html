@@ -4,8 +4,7 @@
   <meta charset="UTF-8" />
   <title>Team &amp; Community – Built by the Community | CPUNK.IO</title>
 
-  <!-- Basic meta -->
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description"
     content="CPUNK is a community-driven, post-quantum identity and messaging protocol. Meet the contributors, validators, node operators and community members building the ecosystem together."
   />
@@ -18,59 +17,65 @@
 
   <!-- Open Graph / Social -->
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://cpunk.io/">
-  <meta property="og:title" content="CPUNK — Post-Quantum Identity & Communication">
-  <meta property="og:description" content="Post-quantum identity and messaging protocol. DNA-Messenger: peer-to-peer, no metadata, NIST-standardized encryption (ML-KEM-1024, ML-DSA-87). Your keys, your identity.">
+  <meta property="og:url" content="https://cpunk.io/team.html">
+  <meta property="og:title" content="CPUNK — Team &amp; Community">
+  <meta property="og:description" content="Community-driven post-quantum identity and messaging protocol. Meet the contributors, validators and builders behind CPUNK.">
   <meta property="og:image" content="https://cpunk.io/images/cpunk_card.jpg">
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:url" content="https://cpunk.io/">
-  <meta name="twitter:title" content="CPUNK — Post-Quantum Identity & Communication">
-  <meta name="twitter:description" content="Post-quantum identity and messaging protocol. DNA-Messenger: peer-to-peer, no metadata, NIST-standardized encryption. Your keys, your identity.">
+  <meta name="twitter:url" content="https://cpunk.io/team.html">
+  <meta name="twitter:title" content="CPUNK — Team &amp; Community">
+  <meta name="twitter:description" content="Community-driven post-quantum identity and messaging protocol. Meet the contributors, validators and builders behind CPUNK.">
   <meta name="twitter:image" content="https://cpunk.io/images/cpunk_card.jpg">
   <meta name="twitter:site" content="@OfficialCpunk">
 
-  <!-- Favicon -->
-  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-
-  <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&display=swap"
     rel="stylesheet"
   />
+
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="manifest" href="/site.webmanifest">
 
   <style>
     :root {
       --bg: #050712;
-      --bg-alt: #090c1a;
-      --panel: #111426;
-      --panel-alt: #171b36;
-      --accent: #00f0ff;
-      --accent-soft: rgba(0, 240, 255, 0.08);
-      --accent-strong: #ff2cd8;
-      --text-main: #f5f7ff;
-      --text-muted: #9aa4d4;
+      --bg-alt: #080c1a;
+      --panel: #0e1225;
+      --panel-alt: #131733;
+      --teal: #06c5d2;
+      --teal-soft: rgba(6, 197, 210, 0.08);
+      --teal-glow: rgba(6, 197, 210, 0.35);
+      --teal-dim: rgba(6, 197, 210, 0.15);
+      --orange: #f26229;
+      --orange-soft: rgba(242, 98, 41, 0.08);
+      --orange-glow: rgba(242, 98, 41, 0.35);
+      --orange-dim: rgba(242, 98, 41, 0.15);
+      --pink: #e040a0;
+      --green: #22c55e;
+      --green-dim: rgba(34, 197, 94, 0.15);
+      --text-main: #f0f2ff;
+      --text-muted: #8a94c0;
       --border-subtle: rgba(255, 255, 255, 0.06);
       --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.5);
-      --radius-lg: 18px;
-      --radius-xl: 26px;
+      --radius-lg: 20px;
+      --radius-xl: 28px;
       --radius-pill: 999px;
       --transition-fast: 150ms ease-out;
       --nav-height: 72px;
       --max-width: 1120px;
+      --font-display: 'Orbitron', sans-serif;
+      --font-body: 'Inter', system-ui, -apple-system, sans-serif;
     }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
-    html,
-    body {
+    html, body {
       height: 100%;
       scroll-behavior: smooth;
       max-width: 100%;
@@ -78,18 +83,12 @@
     }
 
     body {
-      font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont,
-        "Segoe UI", sans-serif;
-      background:
-        radial-gradient(circle at top left, #1a1d46 0, transparent 55%),
-        radial-gradient(circle at bottom right, #0d1025 0, #050712 55%);
+      font-family: var(--font-body);
+      background: var(--bg);
       color: var(--text-main);
     }
 
-    a {
-      color: inherit;
-      text-decoration: none;
-    }
+    a { color: inherit; text-decoration: none; }
 
     .page {
       min-height: 100vh;
@@ -104,20 +103,81 @@
       padding: 0 1.25rem;
     }
 
-    /* Header / nav */
+    /* -- Animations -- */
+
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(30px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes fadeInLeft {
+      from { opacity: 0; transform: translateX(-30px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    @keyframes fadeInRight {
+      from { opacity: 0; transform: translateX(30px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    @keyframes scaleIn {
+      from { opacity: 0; transform: scale(0.92); }
+      to   { opacity: 1; transform: scale(1); }
+    }
+
+    @keyframes pulseGlow {
+      0%, 100% { opacity: 0.4; }
+      50%      { opacity: 0.8; }
+    }
+
+    /* Scroll reveal */
+    .reveal {
+      opacity: 0;
+      transform: translateY(28px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .reveal-left {
+      opacity: 0;
+      transform: translateX(-28px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+
+    .reveal-right {
+      opacity: 0;
+      transform: translateX(28px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+
+    .reveal-left.visible,
+    .reveal-right.visible {
+      opacity: 1;
+      transform: translateX(0);
+    }
+
+    /* Staggered children */
+    .stagger > *:nth-child(1) { transition-delay: 0s; }
+    .stagger > *:nth-child(2) { transition-delay: 0.1s; }
+    .stagger > *:nth-child(3) { transition-delay: 0.15s; }
+    .stagger > *:nth-child(4) { transition-delay: 0.2s; }
+    .stagger > *:nth-child(5) { transition-delay: 0.25s; }
+    .stagger > *:nth-child(6) { transition-delay: 0.3s; }
+    .stagger > *:nth-child(7) { transition-delay: 0.35s; }
+
+    /* -- Header / Nav -- */
 
     header {
       position: sticky;
       top: 0;
       z-index: 20;
       backdrop-filter: blur(12px);
-      background: linear-gradient(
-          to bottom,
-          rgba(5, 7, 18, 0.96),
-          rgba(5, 7, 18, 0.88),
-          transparent
-        );
-      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      background: linear-gradient(to bottom, rgba(5,7,18,0.96), rgba(5,7,18,0.88), transparent);
+      border-bottom: 1px solid rgba(255,255,255,0.04);
     }
 
     .nav {
@@ -135,139 +195,33 @@
       gap: 0.75rem;
     }
 
-    /* BRAND LOGO */
-    .brand-icon.q-core {
-      width: 48px;
-      height: 28px;
-      border-radius: 12px;
-      background:
-        linear-gradient(180deg, #111, #050712),
-        repeating-linear-gradient(45deg,
-          rgba(0,240,255,.15),
-          rgba(0,240,255,.15) 3px,
-          transparent 6px
-        );
-      box-shadow:
-        inset 0 0 10px rgba(0,240,255,.4),
-        0 0 16px #00f0ff88;
-      color: #00ffd5;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 700;
-    }
-
-    .brand-text {
-      display: flex;
-      flex-direction: column;
-      line-height: 1.1;
-    }
+    .brand-text { display: flex; flex-direction: column; line-height: 1.1; }
 
     .brand-name {
+      font-family: var(--font-display);
       font-weight: 700;
-      letter-spacing: 0.06em;
-      font-size: 0.95rem;
+      letter-spacing: 0.08em;
+      font-size: 1rem;
       text-transform: uppercase;
     }
 
-    .brand-tag {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-    }
+    .brand-tag { font-size: 0.7rem; color: var(--text-muted); }
 
-    .nav-menu {
-      display: flex;
-      align-items: center;
-      gap: 1.5rem;
-    }
+    .nav-menu { display: flex; align-items: center; gap: 1.5rem; }
 
-    .nav-links {
-      display: flex;
-      align-items: center;
-      gap: 1.5rem;
-      font-size: 0.9rem;
-    }
+    .nav-links { display: flex; align-items: center; gap: 1.5rem; font-size: 0.9rem; }
 
     .nav-links a {
       color: var(--text-muted);
       padding-bottom: 2px;
       border-bottom: 1px solid transparent;
-      transition: color var(--transition-fast),
-        border-bottom-color var(--transition-fast);
+      transition: color var(--transition-fast), border-bottom-color var(--transition-fast);
     }
 
-    .nav-links a:hover {
-      color: var(--text-main);
-      border-bottom-color: rgba(0, 240, 255, 0.6);
-    }
+    .nav-links a.active { color: var(--text-main); border-bottom-color: var(--teal); }
+    .nav-links a:hover { color: var(--orange); border-bottom-color: var(--orange); }
 
-    .nav-links a.active {
-      color: var(--text-main);
-      border-bottom-color: rgba(0, 240, 255, 0.9);
-    }
-
-    .dropdown a.active {
-      background: rgba(255, 255, 255, 0.06);
-      color: var(--text-main);
-    }
-
-    .nav-item {
-      position: relative;
-    }
-
-    .nav-item-label {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.25rem;
-      cursor: pointer;
-      color: var(--text-muted);
-    }
-
-    .nav-item:hover .nav-item-label {
-      color: var(--text-main);
-    }
-
-    .caret {
-      border: 4px solid transparent;
-      border-top-color: var(--text-muted);
-      margin-top: 2px;
-    }
-
-    .dropdown {
-      position: absolute;
-      top: 110%;
-      left: 0;
-      min-width: 190px;
-      background: rgba(5, 7, 18, 0.98);
-      border-radius: 12px;
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      box-shadow: 0 14px 30px rgba(0, 0, 0, 0.6);
-      padding: 0.4rem 0;
-      display: none;
-      z-index: 30;
-    }
-
-    .dropdown a {
-      display: block;
-      padding: 0.4rem 0.9rem;
-      font-size: 0.85rem;
-      color: var(--text-muted);
-    }
-
-    .dropdown a:hover {
-      background: rgba(255, 255, 255, 0.04);
-      color: var(--text-main);
-    }
-
-    .nav-item:hover .dropdown {
-      display: block;
-    }
-
-    .nav-cta {
-      display: flex;
-      align-items: center;
-      gap: 0.8rem;
-    }
+    .nav-cta { display: flex; align-items: center; gap: 0.8rem; }
 
     .btn {
       display: inline-flex;
@@ -277,119 +231,132 @@
       padding: 0.5rem 1.2rem;
       border-radius: var(--radius-pill);
       border: 1px solid transparent;
-      font-size: 0.8rem;
+      font-size: 0.85rem;
       font-weight: 500;
       cursor: pointer;
       background: transparent;
       color: var(--text-main);
       transition: background var(--transition-fast), border var(--transition-fast),
-        transform var(--transition-fast), box-shadow var(--transition-fast),
-        color var(--transition-fast);
+        transform var(--transition-fast), box-shadow var(--transition-fast);
       text-decoration: none;
       white-space: nowrap;
     }
 
     .btn-primary {
-      background: linear-gradient(
-        135deg,
-        var(--accent),
-        var(--accent-strong)
-      );
-      border-color: rgba(0, 240, 255, 0.7);
-      box-shadow: 0 10px 28px rgba(0, 240, 255, 0.3);
-      color: #050712;
+      background: var(--orange);
+      border-color: rgba(242,98,41,0.5);
+      box-shadow: 0 8px 25px rgba(242,98,41,0.25);
+      color: #ffffff;
+      font-weight: 600;
     }
 
     .btn-primary:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 16px 38px rgba(0, 240, 255, 0.35);
+      transform: translateY(-2px);
+      box-shadow: 0 14px 35px rgba(242,98,41,0.35);
     }
 
     .btn-ghost {
-      border-color: rgba(154, 164, 212, 0.7);
-      background: rgba(10, 12, 30, 0.7);
+      border-color: rgba(138,148,192,0.5);
+      background: rgba(10,12,30,0.7);
     }
 
     .btn-ghost:hover {
-      background: rgba(20, 24, 60, 0.9);
-      border-color: rgba(0, 240, 255, 0.7);
+      background: rgba(20,24,60,0.9);
+      border-color: var(--orange);
+      color: var(--orange);
     }
 
-    .btn-plain {
-      border-color: rgba(255, 255, 255, 0.18);
-      background: rgba(7, 9, 25, 0.9);
-      font-size: 0.78rem;
-    }
-
-    .btn-plain:hover {
-      background: rgba(18, 22, 50, 0.95);
-    }
+    .btn-lg { padding: 0.7rem 1.8rem; font-size: 0.95rem; }
 
     .mobile-menu-toggle {
       display: none;
       width: 32px;
       height: 32px;
       border-radius: 50%;
-      border: 1px solid rgba(255, 255, 255, 0.18);
-      background: rgba(7, 9, 25, 0.9);
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(7,9,25,0.9);
       align-items: center;
       justify-content: center;
       cursor: pointer;
     }
 
     .mobile-menu-toggle span {
-      display: block;
-      width: 16px;
-      height: 2px;
-      border-radius: 999px;
-      background: #fff;
-      position: relative;
+      display: block; width: 16px; height: 2px;
+      border-radius: 999px; background: #fff; position: relative;
     }
 
     .mobile-menu-toggle span::before,
     .mobile-menu-toggle span::after {
-      content: "";
+      content: ""; position: absolute; left: 0;
+      width: 16px; height: 2px; border-radius: inherit; background: inherit;
+    }
+
+    .mobile-menu-toggle span::before { top: -5px; }
+    .mobile-menu-toggle span::after { top: 5px; }
+
+    /* Dropdown */
+    .nav-item { position: relative; }
+
+    .nav-item-label {
+      display: inline-flex; align-items: center; gap: 0.25rem;
+      cursor: pointer; color: var(--text-muted);
+    }
+
+    .nav-item:hover .nav-item-label { color: var(--text-main); }
+    .nav-item .caret { border: 4px solid transparent; border-top-color: var(--text-muted); margin-top: 2px; }
+
+    .dropdown {
+      position: absolute; top: 110%; left: 0; min-width: 190px;
+      background: rgba(5,7,18,0.98); border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 14px 30px rgba(0,0,0,0.6);
+      padding: 0.4rem 0; display: none; z-index: 30;
+    }
+
+    .dropdown a { display: block; padding: 0.4rem 0.9rem; font-size: 0.85rem; color: var(--text-muted); }
+    .dropdown a:hover { background: rgba(255,255,255,0.04); color: var(--orange); }
+    .dropdown a.active { background: rgba(255,255,255,0.06); color: var(--text-main); }
+    .nav-item:hover .dropdown { display: block; }
+
+    /* -- Hero (Split layout) -- */
+
+    .hero-split {
+      position: relative;
+      padding: 4rem 0 3rem;
+      overflow: hidden;
+    }
+
+    .hero-split-bg {
       position: absolute;
-      left: 0;
-      width: 16px;
-      height: 2px;
-      border-radius: inherit;
-      background: inherit;
+      inset: 0;
+      z-index: 0;
+      background:
+        radial-gradient(ellipse at 25% 50%, rgba(6,197,210,0.15) 0%, transparent 55%),
+        radial-gradient(ellipse at 75% 50%, rgba(242,98,41,0.06) 0%, transparent 55%),
+        var(--bg);
     }
 
-    .mobile-menu-toggle span::before {
-      top: -5px;
-    }
-
-    .mobile-menu-toggle span::after {
-      top: 5px;
-    }
-
-    /* Hero */
-
-    .hero {
-      padding: 3.2rem 0 2.6rem;
-    }
-
-    .hero-grid {
+    .hero-split-grid {
+      position: relative;
+      z-index: 1;
       display: grid;
-      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.1fr);
-      gap: 2.4rem;
+      grid-template-columns: 1.3fr 1fr;
+      gap: 2.5rem;
       align-items: center;
+    }
+
+    .hero-split-text {
+      animation: fadeInLeft 0.9s ease-out;
     }
 
     .eyebrow {
       display: inline-flex;
       align-items: center;
       gap: 0.55rem;
-      padding: 0.18rem 0.6rem 0.18rem 0.25rem;
+      padding: 0.2rem 0.7rem 0.2rem 0.3rem;
       border-radius: var(--radius-pill);
-      background: radial-gradient(
-        circle at left,
-        rgba(0, 240, 255, 0.4),
-        transparent
-      );
-      border: 1px solid rgba(0, 240, 255, 0.35);
+      background: radial-gradient(circle at left, rgba(6,197,210,0.25), transparent);
+      border: 1px solid rgba(6,197,210,0.3);
       margin-bottom: 1rem;
       font-size: 0.75rem;
       color: var(--text-muted);
@@ -399,39 +366,42 @@
       width: 8px;
       height: 8px;
       border-radius: 50%;
-      background: var(--accent);
-      box-shadow: 0 0 10px rgba(0, 240, 255, 0.9);
+      background: var(--teal);
+      box-shadow: 0 0 10px var(--teal-glow);
+      animation: pulseGlow 2s ease-in-out infinite;
     }
 
     .eyebrow-label {
       text-transform: uppercase;
       letter-spacing: 0.12em;
       font-weight: 600;
-      color: var(--text-main);
-      font-size: 0.74rem;
+      color: var(--teal);
+      font-family: var(--font-display);
+      font-size: 0.68rem;
     }
 
-    .hero h1 {
-      font-size: clamp(2.1rem, 3.3vw, 2.8rem);
+    .hero-split-text h1 {
+      font-family: var(--font-display);
+      font-size: clamp(2.2rem, 4vw, 3rem);
+      font-weight: 800;
       line-height: 1.1;
       margin-bottom: 0.8rem;
+      letter-spacing: 0.04em;
     }
 
-    .hero-gradient {
-      background: linear-gradient(130deg, #ffffff, #80f5ff, #ff9ce9);
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
+    .gradient-text {
+      color: #ffffff;
     }
 
-    .hero-subtitle {
-      font-size: 0.98rem;
+    .hero-split-text .subtitle {
+      font-size: 0.95rem;
       color: var(--text-muted);
-      max-width: 38rem;
-      margin-bottom: 1.5rem;
+      max-width: 36rem;
+      line-height: 1.7;
+      margin-bottom: 1.4rem;
     }
 
-    .hero-subtitle strong {
+    .hero-split-text .subtitle strong {
       color: var(--text-main);
       font-weight: 500;
     }
@@ -440,15 +410,15 @@
       display: flex;
       flex-wrap: wrap;
       gap: 0.75rem;
-      margin-bottom: 1.1rem;
+      margin-bottom: 1rem;
     }
 
     .hero-meta {
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       color: var(--text-muted);
       display: flex;
       flex-wrap: wrap;
-      gap: 1.4rem;
+      gap: 1.2rem;
     }
 
     .hero-meta span {
@@ -461,31 +431,19 @@
       width: 6px;
       height: 6px;
       border-radius: 50%;
-      background: var(--accent-strong);
+      background: var(--orange);
+      box-shadow: 0 0 6px var(--orange-glow);
     }
 
-    .hero-panel {
+    /* Hero panel (right side) */
+    .hero-split-panel {
+      animation: fadeInRight 0.9s ease-out;
       border-radius: var(--radius-xl);
-      background: radial-gradient(circle at top, #262b69 0, #080a1a 45%);
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: radial-gradient(circle at top, var(--panel-alt), var(--bg) 70%);
+      border: 1px solid var(--border-subtle);
       box-shadow: var(--shadow-soft);
-      padding: 1.3rem 1.2rem 1.4rem;
-      position: relative;
+      padding: 1.5rem 1.3rem;
       overflow: hidden;
-    }
-
-    .hero-panel::before {
-      content: "";
-      position: absolute;
-      inset: -40%;
-      opacity: 0.08;
-      background-image: radial-gradient(
-        circle at top,
-        rgba(0, 240, 255, 1),
-        transparent 60%
-      );
-      mix-blend-mode: screen;
-      pointer-events: none;
     }
 
     .hero-panel-header {
@@ -498,18 +456,18 @@
     .hero-chip {
       padding: 0.18rem 0.6rem;
       border-radius: var(--radius-pill);
-      border: 1px solid rgba(255, 255, 255, 0.18);
+      border: 1px solid rgba(255,255,255,0.18);
       font-size: 0.7rem;
       color: var(--text-muted);
       display: inline-flex;
       align-items: center;
       gap: 0.4rem;
-      background: rgba(7, 10, 28, 0.9);
+      background: rgba(7,10,28,0.9);
     }
 
     .hero-chip span {
       font-weight: 600;
-      color: var(--accent);
+      color: var(--teal);
       text-transform: uppercase;
       letter-spacing: 0.06em;
       font-size: 0.72rem;
@@ -521,57 +479,59 @@
       text-align: right;
     }
 
-    .hero-chain strong {
-      color: var(--text-main);
-    }
+    .hero-chain strong { color: var(--text-main); }
 
     .hero-panel-body {
       font-size: 0.86rem;
       color: var(--text-muted);
-      margin-bottom: 0.9rem;
+      line-height: 1.6;
     }
 
-    .hero-panel-body p + p {
-      margin-top: 0.4rem;
-    }
+    .hero-panel-body p + p { margin-top: 0.4rem; }
 
-    .hero-list {
-      margin-top: 0.6rem;
+    .stat-grid {
       display: grid;
-      gap: 0.25rem;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.75rem;
+      margin-top: 1rem;
     }
 
-    .hero-list-item {
-      display: flex;
-      align-items: center;
-      gap: 0.45rem;
-      font-size: 0.82rem;
+    .stat-item {
+      padding: 0.7rem;
+      border-radius: var(--radius-lg);
+      background: rgba(6,197,210,0.04);
+      border: 1px solid rgba(6,197,210,0.1);
+      text-align: center;
     }
 
-    .hero-bullet {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--accent);
+    .stat-value {
+      font-family: var(--font-display);
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--teal);
+      letter-spacing: 0.04em;
+    }
+
+    .stat-label {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      margin-top: 0.15rem;
     }
 
     .hero-panel-footer {
       display: flex;
-      justify-content: space-between;
       align-items: center;
       gap: 0.6rem;
       font-size: 0.76rem;
       color: var(--text-muted);
-      margin-top: 0.65rem;
-      position: relative;
-      z-index: 1;
+      margin-top: 1rem;
     }
 
     .hero-pill {
       padding: 0.25rem 0.7rem;
       border-radius: 999px;
-      background: rgba(0, 0, 0, 0.35);
-      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(0,0,0,0.35);
+      border: 1px solid rgba(255,255,255,0.16);
       display: inline-flex;
       align-items: center;
       gap: 0.3rem;
@@ -582,432 +542,497 @@
       height: 7px;
       border-radius: 50%;
       background: #40ff86;
-      box-shadow: 0 0 10px rgba(64, 255, 134, 0.8);
+      box-shadow: 0 0 10px rgba(64,255,134,0.8);
     }
 
-    /* Sections */
+    /* -- Sections -- */
 
-    section {
-      padding: 2.6rem 0;
+    .s-section {
+      padding: 5rem 0;
+      position: relative;
+      overflow: hidden;
     }
 
-    section + section {
-      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    .s-dark { background: var(--bg); }
+
+    .s-panel {
+      background: linear-gradient(180deg, var(--bg-alt) 0%, var(--bg) 100%);
+      border-top: 1px solid rgba(6,197,210,0.06);
+      border-bottom: 1px solid rgba(6,197,210,0.06);
     }
 
-    .section-header {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 1rem;
-      margin-bottom: 1.6rem;
+    .s-gradient {
+      background:
+        radial-gradient(ellipse at 20% 50%, rgba(6,197,210,0.03) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 50%, rgba(6,197,210,0.02) 0%, transparent 50%),
+        var(--bg);
     }
 
-    .section-title {
-      font-size: 1.25rem;
-      font-weight: 600;
+    .s-section::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 3px;
+      height: 100%;
+      background: linear-gradient(180deg, transparent, var(--teal-dim), var(--teal-dim), transparent);
+      opacity: 0.5;
     }
 
-    .section-kicker {
-      font-size: 0.78rem;
-      letter-spacing: 0.14em;
+    .section-label {
+      font-family: var(--font-display);
+      font-size: 0.72rem;
+      letter-spacing: 0.18em;
       text-transform: uppercase;
-      color: var(--text-muted);
-    }
-
-    .section-description {
-      font-size: 0.9rem;
-      color: var(--text-muted);
-      max-width: 34rem;
-    }
-
-    .text-block {
-      font-size: 0.9rem;
-      color: var(--text-muted);
-      max-width: 44rem;
-      line-height: 1.6;
-    }
-
-    .text-block p + p {
-      margin-top: 0.6rem;
-    }
-
-    /* Cards / grids */
-
-    .cards {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 1.1rem;
-    }
-
-    .card {
-      border-radius: var(--radius-lg);
-      background: radial-gradient(
-          circle at top,
-          rgba(0, 240, 255, 0.06),
-          transparent
-        ),
-        var(--panel);
-      border: 1px solid var(--border-subtle);
-      padding: 0.9rem;
-      font-size: 0.86rem;
-      color: var(--text-muted);
-    }
-
-    .card h3 {
-      font-size: 0.96rem;
-      margin-bottom: 0.15rem;
-      color: var(--text-main);
-    }
-
-    .card-sub {
-      font-size: 0.76rem;
-      color: rgba(154, 164, 212, 0.9);
-      margin-bottom: 0.4rem;
-    }
-
-    .card p {
-      font-size: 0.86rem;
-      line-height: 1.5;
-    }
-
-    .card-tag {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.3rem;
-      padding: 0.1rem 0.45rem;
-      border-radius: 999px;
-      border: 1px solid rgba(0, 240, 255, 0.4);
-      font-size: 0.7rem;
-      color: var(--text-muted);
-      margin-bottom: 0.4rem;
-    }
-
-    .card-tag span {
-      color: var(--accent);
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    .card-link {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.3rem;
-      margin-top: 0.6rem;
-      font-size: 0.78rem;
-      color: var(--accent);
-    }
-
-    .card-link span {
-      font-size: 0.85em;
-    }
-
-    .split {
-      display: grid;
-      grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
-      gap: 1.4rem;
-    }
-
-    .split-panel {
-      border-radius: var(--radius-xl);
-      padding: 1.1rem 1rem;
-      border: 1px solid var(--border-subtle);
-      background: radial-gradient(
-          circle at top left,
-          rgba(0, 240, 255, 0.06),
-          transparent 60%
-        ),
-        var(--panel-alt);
-      font-size: 0.86rem;
-      color: var(--text-muted);
-    }
-
-    .split-panel.secondary {
-      background: radial-gradient(
-          circle at top right,
-          rgba(255, 44, 216, 0.08),
-          transparent 60%
-        ),
-        #0b0e23;
-    }
-
-    .split-title {
-      font-size: 1rem;
-      font-weight: 600;
-      margin-bottom: 0.3rem;
-      color: var(--text-main);
-    }
-
-    .split-sub {
-      font-size: 0.8rem;
-      color: var(--text-muted);
+      color: var(--teal);
       margin-bottom: 0.5rem;
     }
 
-    .split-list {
-      list-style: none;
-      display: grid;
-      gap: 0.25rem;
-      margin-top: 0.3rem;
+    .section-title {
+      font-family: var(--font-display);
+      font-size: clamp(1.3rem, 2.5vw, 1.7rem);
+      font-weight: 700;
+      line-height: 1.2;
+      margin-bottom: 0.6rem;
+      letter-spacing: 0.02em;
     }
 
-    .split-list li::before {
-      content: "▹";
-      color: var(--accent);
-      margin-right: 0.35rem;
+    .section-desc {
+      font-size: 0.92rem;
+      color: var(--text-muted);
+      max-width: 36rem;
+      line-height: 1.6;
+    }
+
+    .section-header-center {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+
+    .section-header-center .section-label,
+    .section-header-center .section-title,
+    .section-header-center .section-desc {
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .section-header {
+      margin-bottom: 2.5rem;
+    }
+
+    /* -- Token Cards Grid -- */
+
+    .card-grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.2rem;
+    }
+
+    .card-grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1.2rem;
+    }
+
+    .token-card {
+      border-radius: var(--radius-lg);
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      padding: 1.5rem 1.2rem;
+      transition: border-color 0.4s, transform 0.4s, box-shadow 0.4s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .token-card::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(242,98,41,0.06), transparent);
+      transition: left 0.6s ease;
+    }
+
+    .token-card:hover::after { left: 100%; }
+
+    .token-card:hover {
+      border-color: rgba(242,98,41,0.4);
+      transform: translateY(-5px);
+      box-shadow: 0 12px 30px rgba(242,98,41,0.12), 0 0 0 1px rgba(242,98,41,0.1);
+    }
+
+    .token-card-icon {
+      margin-bottom: 0.8rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.4s ease;
+    }
+
+    .token-card-icon svg {
+      width: 48px;
+      height: 48px;
+      stroke: var(--orange);
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+      filter: drop-shadow(0 0 6px rgba(242,98,41,0.5)) drop-shadow(0 0 16px rgba(242,98,41,0.2));
+      transition: filter 0.4s ease;
+    }
+
+    .token-card:hover .token-card-icon svg {
+      filter: drop-shadow(0 0 10px rgba(242,98,41,0.7)) drop-shadow(0 0 28px rgba(242,98,41,0.4));
+    }
+
+    .token-card:hover .token-card-icon { transform: scale(1.15) rotate(5deg); }
+    .token-card:hover h3 { color: var(--orange); }
+
+    .token-card h3 {
+      font-family: var(--font-display);
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 0.4rem;
+      letter-spacing: 0.03em;
+      color: var(--teal);
+      position: relative;
+      z-index: 1;
+      text-align: center;
+    }
+
+    .token-card p {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      line-height: 1.55;
+      position: relative;
+      z-index: 1;
+    }
+
+    .token-card .card-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      margin-top: 0.6rem;
+      font-size: 0.78rem;
+      color: var(--orange);
+      position: relative;
+      z-index: 1;
+    }
+
+    .token-card .card-sub {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      margin-bottom: 0.35rem;
+      text-align: center;
+      position: relative;
+      z-index: 1;
+    }
+
+    .token-card .card-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      padding: 0.12rem 0.55rem;
+      border-radius: 999px;
+      border: 1px solid rgba(6,197,210,0.35);
+      font-size: 0.68rem;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    .token-card .card-tag span {
+      color: var(--teal);
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-family: var(--font-display);
+      font-size: 0.65rem;
+    }
+
+    /* -- DNA Row (split layout) -- */
+
+    .dna-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3rem;
+      align-items: center;
+    }
+
+    .dna-text h3 {
+      font-family: var(--font-display);
+      font-size: clamp(1.2rem, 2vw, 1.5rem);
+      font-weight: 700;
+      margin-bottom: 0.8rem;
+      letter-spacing: 0.03em;
+    }
+
+    .dna-text h3 .teal { color: var(--teal); }
+    .dna-text h3 .orange { color: var(--orange); }
+
+    .dna-text p {
+      font-size: 0.92rem;
+      color: var(--text-muted);
+      line-height: 1.7;
+      margin-bottom: 0.8rem;
+    }
+
+    .dna-text ul {
+      list-style: none;
+      margin-top: 0.4rem;
+      margin-bottom: 0.8rem;
+    }
+
+    .dna-text ul li {
+      margin-bottom: 0.4rem;
+      padding-left: 1.2rem;
+      position: relative;
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+
+    .dna-text ul li::before {
+      content: "\25B9";
+      position: absolute;
+      left: 0;
+      top: 0;
+      color: var(--teal);
       font-size: 0.8rem;
     }
 
-    .bullet-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.6rem 1.4rem;
-      font-size: 0.86rem;
-      color: var(--text-muted);
+    .dna-text ul li strong {
+      color: var(--text-main);
+      font-weight: 500;
     }
 
-    .bullet-item {
-      display: flex;
-      align-items: flex-start;
-      gap: 0.4rem;
-    }
-
-    .bullet-dot {
-      margin-top: 0.32rem;
-      width: 6px;
-      height: 6px;
-      border-radius: 999px;
-      background: var(--accent);
-    }
-
-    /* CTA */
-
-    .cta {
+    .dna-info-panel {
       border-radius: var(--radius-xl);
-      background: radial-gradient(circle at top, #292f7d, #050712);
-      border: 1px solid rgba(0, 240, 255, 0.25);
+      background: radial-gradient(circle at top left, rgba(6,197,210,0.06), transparent 55%), var(--panel);
+      border: 1px solid var(--border-subtle);
       padding: 1.5rem 1.3rem;
-      display: grid;
-      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
-      gap: 1.4rem;
+    }
+
+    .dna-info-title {
+      font-family: var(--font-display);
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--teal);
+      margin-bottom: 0.5rem;
+      letter-spacing: 0.04em;
+    }
+
+    .dna-info-sub {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin-bottom: 0.6rem;
+      line-height: 1.5;
+    }
+
+    .dna-info-list {
+      list-style: none;
+    }
+
+    .dna-info-list li {
+      margin-bottom: 0.35rem;
+      padding-left: 1rem;
+      position: relative;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    .dna-info-list li::before {
+      content: "\25B9";
+      position: absolute;
+      left: 0;
+      top: 0;
+      color: var(--orange);
+      font-size: 0.75rem;
+    }
+
+    .dna-info-list li strong {
+      color: var(--text-main);
+      font-weight: 500;
+    }
+
+    .dna-info-link {
+      display: inline-flex;
       align-items: center;
+      gap: 0.3rem;
+      margin-top: 0.7rem;
+      font-size: 0.8rem;
+      color: var(--orange);
+      text-decoration: underline;
+    }
+
+    /* -- CTA -- */
+
+    .cta-section { padding: 4rem 0; }
+
+    .cta-box {
+      border-radius: var(--radius-xl);
+      background:
+        radial-gradient(ellipse at 30% 50%, rgba(6,197,210,0.05) 0%, transparent 50%),
+        radial-gradient(ellipse at 70% 50%, rgba(6,197,210,0.05) 0%, transparent 50%),
+        radial-gradient(circle at top, #141840, #050712);
+      border: 1px solid rgba(6,197,210,0.15);
+      padding: 2.5rem 2rem;
+      text-align: center;
       box-shadow: var(--shadow-soft);
-      font-size: 0.9rem;
+      transition: border-color 0.4s, box-shadow 0.4s;
+    }
+
+    .cta-box:hover {
+      border-color: rgba(242,98,41,0.3);
+      box-shadow: 0 20px 50px rgba(242,98,41,0.1);
     }
 
     .cta-title {
-      font-size: 1.15rem;
-      margin-bottom: 0.4rem;
+      font-family: var(--font-display);
+      font-size: clamp(1.2rem, 2.2vw, 1.6rem);
+      font-weight: 700;
+      margin-bottom: 0.6rem;
+      letter-spacing: 0.03em;
     }
 
     .cta-text {
-      font-size: 0.87rem;
+      font-size: 0.9rem;
       color: var(--text-muted);
-      max-width: 30rem;
+      max-width: 32rem;
+      margin: 0 auto 1.5rem;
+      line-height: 1.6;
     }
 
     .cta-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.6rem;
-      justify-content: flex-end;
+      display: flex; flex-wrap: wrap; gap: 0.7rem; justify-content: center;
     }
 
-    /* Footer */
+    /* -- Footer -- */
 
     footer {
-      padding: 1.7rem 0 2.2rem;
+      padding: 1.8rem 0 2.2rem;
       font-size: 0.8rem;
       color: var(--text-muted);
     }
 
     .footer-row {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between;
-      gap: 1rem;
-      align-items: center;
+      display: flex; flex-wrap: wrap; justify-content: space-between;
+      gap: 1rem; align-items: end;
     }
 
-    .footer-links {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.9rem;
-    }
+    .footer-links { display: flex; flex-wrap: wrap; gap: 0.9rem; }
+    .footer-links a { color: var(--text-muted); font-size: 0.8rem; }
+    .footer-links a:hover { color: var(--orange); }
 
-    .footer-links a {
-      color: var(--text-muted);
-      font-size: 0.8rem;
-    }
-
-    .footer-links a:hover {
-      color: var(--accent);
-    }
-
-    /* Responsive */
+    /* -- Responsive -- */
 
     @media (max-width: 900px) {
-      .hero-grid,
-      .split,
-      .cta,
-      .bullet-grid {
-        grid-template-columns: minmax(0, 1fr);
-      }
-
-      .cta-actions {
-        justify-content: flex-start;
-      }
+      .hero-split-grid { grid-template-columns: 1fr; }
+      .hero-split-panel { order: -1; }
+      .card-grid-3,
+      .card-grid-2 { grid-template-columns: 1fr; }
+      .dna-row { grid-template-columns: 1fr; }
+      .cta-box { padding: 2rem 1.2rem; }
     }
 
     @media (max-width: 768px) {
-      .nav {
-        align-items: flex-start;
-      }
-
       .nav-menu {
-        display: none;
-        position: absolute;
-        top: var(--nav-height);
-        right: 0;
-        left: 0;
-        padding: 0.9rem 1rem 1rem;
-        border-radius: 14px;
-        background: rgba(5, 7, 18, 0.98);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 0.7rem;
-        z-index: 15;
+        display: none; position: absolute; top: var(--nav-height);
+        right: 0; left: 0; padding: 0.9rem 1rem 1rem; border-radius: 14px;
+        background: rgba(5,7,18,0.98); border: 1px solid rgba(255,255,255,0.08);
+        flex-direction: column; align-items: flex-start; gap: 0.7rem; z-index: 15;
       }
 
-      .nav-menu.active {
-        display: flex;
-      }
+      .nav-menu.active { display: flex; }
 
-      .nav-links {
-        flex-direction: column;
-        align-items: flex-start;
-        width: 100%;
-        gap: 0.75rem;
-      }
-
-      .nav-links a {
-        width: 100%;
-        padding: 0.25rem 0;
-      }
-
-      .nav-cta {
-        width: 100%;
-        justify-content: flex-start;
-        margin-top: 0.4rem;
-      }
-
-      .mobile-menu-toggle {
-        display: inline-flex;
-      }
-
-      .hero {
-        padding-top: 2.1rem;
-      }
-
-      .cards {
-        grid-template-columns: minmax(0, 1fr);
-      }
+      .nav-links { flex-direction: column; align-items: flex-start; width: 100%; gap: 0.75rem; }
+      .nav-links a { width: 100%; padding: 0.25rem 0; }
+      .nav-cta { width: 100%; justify-content: flex-start; margin-top: 0.4rem; }
+      .mobile-menu-toggle { display: inline-flex; }
 
       .dropdown {
-        position: static;
-        box-shadow: none;
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        margin-top: 0.3rem;
+        position: static; box-shadow: none; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.06); margin-top: 0.3rem;
       }
 
-      .nav-item:hover .dropdown {
-        display: none; /* On mobile we only open by click */
-      }
-
-      .nav-item.open .dropdown {
-        display: block;
-      }
+      .nav-item:hover .dropdown { display: none; }
+      .nav-item.open .dropdown { display: block; }
     }
 
     @media (max-width: 480px) {
-      .hero h1 {
-        font-size: 1.9rem;
+      .hero-split-text h1 { font-size: 1.9rem; }
+      .card-grid-3,
+      .card-grid-2 { grid-template-columns: 1fr; }
+      .stat-grid { grid-template-columns: 1fr; }
+    }
+
+    /* Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
       }
+      .reveal, .reveal-left, .reveal-right { opacity: 1; transform: none; }
     }
   </style>
 </head>
 <body>
   <div class="page">
-    <!-- Header / nav -->
+
+    <!-- Header / Nav -->
     <header>
       <div class="wrap">
         <div class="nav">
-          <!-- Brand / Logo -->
-          <a href="/index.html" class="brand">
-            <div class="brand-icon q-core">DNA</div>
+          <a href="/" class="brand">
             <div class="brand-text">
               <span class="brand-name">CPUNK.IO</span>
-              <span class="brand-tag">Post-Quantum Identity &amp; Messaging</span>
+              <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
             </div>
           </a>
 
-          <!-- Mobile menu button -->
-          <button
-            class="mobile-menu-toggle"
-            aria-label="Toggle navigation"
-          >
+          <button class="mobile-menu-toggle" aria-label="Toggle navigation">
             <span></span>
           </button>
 
-          <!-- Main navigation -->
           <div class="nav-menu">
             <nav class="nav-links">
-              <a href="/index.html">Home</a>
+              <a href="/">Home</a>
 
-              <!-- Products dropdown -->
               <div class="nav-item" data-dropdown="products">
                 <div class="nav-item-label">
                   <span>Products</span>
                   <span class="caret"></span>
                 </div>
                 <div class="dropdown">
-                  <a href="/services/dna.html">DNA Identity</a>
-                  <a href="/products/dna-messenger.html">DNA-Messenger</a>
-                  <a href="/products/dht.html">DHT &amp; Bootstrap Nodes</a>
+                  <a href="/products/dna-identity.html">DNA Identity</a>
+                  <a href="/products/dna-messenger.html">DNA Messenger</a>
+                  <a href="/products/nodus.html">Nodus</a>
+                  <a href="/products/dna-wallet.html">DNA Wallet</a>
                 </div>
               </div>
 
-              <a href="/whitepaper.html">Whitepaper</a>
-              <a href="/roadmap.html">Roadmap</a>
+              <a href="/team.html" class="active">Team</a>
 
-              <!-- About dropdown -->
-              <div class="nav-item" data-dropdown="about">
+              <div class="nav-item" data-dropdown="documents">
                 <div class="nav-item-label">
-                  <span>About</span>
+                  <span>Documents</span>
                   <span class="caret"></span>
                 </div>
                 <div class="dropdown">
-                  <a href="/about.html">About CPUNK</a>
-                  <a href="/team.html" class="active">Team</a>
-                  <a href="/contact.html">Contact</a>
-                  <a href="/legal.html">Legal</a>
+                  <a href="/doc/cpunk-litepaper.pdf" target="_blank">CPUNK Litepaper</a>
+                  <a href="/doc/cpunk-legal.pdf" target="_blank">Legal &amp; Compliance</a>
                 </div>
               </div>
             </nav>
 
-            <!-- Right-side CTA buttons -->
             <div class="nav-cta">
-              <a
-                href="https://cpunk.club"
-                target="_blank"
-                rel="noreferrer"
-                class="btn btn-primary"
-              >
-                Open CPUNK.CLUB
+              <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">
+                Trade CPUNK
               </a>
             </div>
           </div>
@@ -1016,11 +1041,13 @@
     </header>
 
     <main id="top">
-      <!-- Hero / intro -->
-      <section class="hero">
+
+      <!-- Hero -->
+      <section class="hero-split">
+        <div class="hero-split-bg"></div>
         <div class="wrap">
-          <div class="hero-grid">
-            <div>
+          <div class="hero-split-grid">
+            <div class="hero-split-text">
               <div class="eyebrow">
                 <span class="eyebrow-dot"></span>
                 <span class="eyebrow-label">Community</span>
@@ -1028,161 +1055,153 @@
               </div>
 
               <h1>
-                <span class="hero-gradient">Built by the Community, for the Community</span>
+                <span class="gradient-text">Built by the Community</span>
               </h1>
 
-              <p class="hero-subtitle">
-                CPUNK is a <strong>open, community-driven protocol</strong> for
-                post-quantum identity and messaging. There is no central company and
-                no closed team — anyone with passion for Web3 and the post-quantum
-                future can contribute.
+              <p class="subtitle">
+                CPUNK is an <strong>open, community-driven protocol</strong> for
+                post-quantum identity and messaging. No central company, no closed team &mdash;
+                anyone with passion for privacy and the post-quantum future can contribute.
               </p>
 
               <div class="hero-actions">
-                <a href="#contribute" class="btn btn-primary">
-                  How you can contribute
-                </a>
-                <a href="#contributors" class="btn btn-ghost">
-                  Meet contributors &amp; validators
-                </a>
+                <a href="#contribute" class="btn btn-primary">How you can contribute</a>
+                <a href="#contributors" class="btn btn-ghost">Meet contributors</a>
               </div>
 
               <div class="hero-meta">
                 <span>
                   <span class="hero-meta-dot"></span>
-                  No VC unlocks · No corporate owner
+                  No VC unlocks &middot; No corporate owner
                 </span>
-                <span>Driven by: <strong>Builders, node operators, and users</strong></span>
+                <span>Driven by: <strong style="color:var(--text-main);font-weight:500;">Builders, node operators, and users</strong></span>
               </div>
             </div>
 
-            <aside class="hero-panel" aria-label="Community roles">
+            <aside class="hero-split-panel" aria-label="Community snapshot">
               <div class="hero-panel-header">
                 <div class="hero-chip">
-                  <span>Community</span>
-                  Roles &amp; contributions
+                  <span>Open</span>
+                  Protocol
                 </div>
                 <div class="hero-chain">
-                  Protocol:<br />
+                  Network:<br />
                   <strong>CPUNK Protocol</strong>
                 </div>
               </div>
 
               <div class="hero-panel-body">
                 <p>
-                  CPUNK grows through small, consistent contributions from people
-                  across the world. You do not need to be a full-time developer to
-                  have impact.
-                </p>
-                <p>
-                  The project depends on a mix of <strong>code, infrastructure,
+                  The project depends on a mix of <strong style="color:var(--text-main);font-weight:500;">code, infrastructure,
                   writing, design, research, and community work</strong>.
                 </p>
+              </div>
 
-                <div class="hero-list">
-                  <div class="hero-list-item">
-                    <span class="hero-bullet"></span>
-                    <span>Develop: DNA-Messenger, tooling, libraries, integrations.</span>
-                  </div>
-                  <div class="hero-list-item">
-                    <span class="hero-bullet"></span>
-                    <span>Operate: Validators and infrastructure that secure the network.</span>
-                  </div>
-                  <div class="hero-list-item">
-                    <span class="hero-bullet"></span>
-                    <span>Explain: Documentation, articles, tutorials, translations.</span>
-                  </div>
-                  <div class="hero-list-item">
-                    <span class="hero-bullet"></span>
-                    <span>Coordinate: Governance, proposals, and community organization.</span>
-                  </div>
+              <div class="stat-grid">
+                <div class="stat-item">
+                  <div class="stat-value">6+</div>
+                  <div class="stat-label">Active Contributors</div>
+                </div>
+                <div class="stat-item">
+                  <div class="stat-value">Global</div>
+                  <div class="stat-label">Validator Network</div>
+                </div>
+                <div class="stat-item">
+                  <div class="stat-value">Open</div>
+                  <div class="stat-label">Source (GPLv3)</div>
+                </div>
+                <div class="stat-item">
+                  <div class="stat-value">PQ</div>
+                  <div class="stat-label">Post-Quantum Security</div>
                 </div>
               </div>
 
               <div class="hero-panel-footer">
                 <div class="hero-pill">
                   <span class="hero-pill-dot"></span>
-                  You don't need permission to start contributing.
+                  No permission needed to start contributing
                 </div>
-                <span style="text-align:right;">
-                  Start:&nbsp;<a href="#join">Download DNA-Messenger &amp; join Telegram</a>
-                </span>
               </div>
             </aside>
           </div>
         </div>
       </section>
 
-      <!-- How you can help -->
-      <section id="contribute">
+      <!-- Contribute -->
+      <section id="contribute" class="s-section s-dark">
         <div class="wrap">
-          <div class="section-header">
-            <div>
-              <div class="section-kicker">Everyone can contribute</div>
-              <h2 class="section-title">Your skills, your impact</h2>
-            </div>
-            <p class="section-description">
-              CPUNK isn't owned by a company or controlled by a small group. It’s a
-              protocol that moves forward when the community does.
+          <div class="section-header-center reveal">
+            <div class="section-label">Contribute</div>
+            <h2 class="section-title">Your skills, your impact</h2>
+            <p class="section-desc" style="max-width: 38rem;">
+              CPUNK moves forward when the community does. Pick the area that matches your skills
+              and start making an impact.
             </p>
           </div>
 
-          <div class="cards">
-            <article class="card">
-              <div class="card-tag"><span>Code</span> Development</div>
-              <h3>Build the protocol &amp; tools</h3>
+          <div class="card-grid-3 stagger">
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+              </span>
+              <h3>Build the Protocol &amp; Tools</h3>
               <p>
-                Contribute to open-source repositories, implement new features,
-                improve performance, harden security, and help maintain the
-                DNA-Messenger and supporting services.
+                Contribute to open-source repositories, implement features,
+                harden security, and maintain DNA Messenger and supporting services.
               </p>
             </article>
 
-            <article class="card">
-              <div class="card-tag"><span>Design</span> UX &amp; Brand</div>
-              <h3>Design the experience</h3>
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+              </span>
+              <h3>Design the Experience</h3>
               <p>
                 Work on UI/UX for apps and websites, create visuals, animations,
-                infographics, and branding elements that explain CPUNK to new
-                users.
+                infographics, and branding that explain CPUNK to new users.
               </p>
             </article>
 
-            <article class="card">
-              <div class="card-tag"><span>Write</span> Docs &amp; Content</div>
-              <h3>Explain and document</h3>
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+              </span>
+              <h3>Explain &amp; Document</h3>
               <p>
                 Write documentation, tutorials, blog posts, and translations.
-                Help others understand how CPUNK, DNA, and post-quantum
-                cryptography fit together.
+                Help others understand how DNA identity and post-quantum cryptography work together.
               </p>
             </article>
 
-            <article class="card">
-              <div class="card-tag"><span>Validate</span> Nodes</div>
-              <h3>Run validators &amp; nodes</h3>
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
+              </span>
+              <h3>Run Validators &amp; Nodes</h3>
               <p>
                 Operate nodes and validators that process transactions,
-                validate DNA registrations, and participate in consensus to secure
-                the post-quantum network.
+                validate DNA registrations, and participate in consensus to secure the network.
               </p>
             </article>
 
-            <article class="card">
-              <div class="card-tag"><span>Advocate</span> Community</div>
-              <h3>Grow the community</h3>
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              </span>
+              <h3>Grow the Community</h3>
               <p>
                 Share updates on social media, invite new contributors, organize
-                calls or local meetups, and help connect CPUNK with the broader
-                post-quantum and Web3 ecosystem.
+                calls or meetups, and connect CPUNK with the broader Web3 ecosystem.
               </p>
             </article>
 
-            <article class="card">
-              <div class="card-tag"><span>Govern</span> Direction</div>
-              <h3>Shape the roadmap</h3>
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+              </span>
+              <h3>Shape the Roadmap</h3>
               <p>
-                Participate in discussions, proposals, and community decisions.
+                Participate in discussions, proposals, and governance decisions.
                 Help align development priorities with long-term protocol goals.
               </p>
             </article>
@@ -1191,35 +1210,30 @@
       </section>
 
       <!-- Contributors -->
-      <section id="contributors">
+      <section id="contributors" class="s-section s-panel">
         <div class="wrap">
-          <div class="section-header">
-            <div>
-              <div class="section-kicker">Contributors</div>
-              <h2 class="section-title">People helping CPUNK move forward</h2>
-            </div>
-            <p class="section-description">
-              A non-exhaustive list of community members who have contributed to
+          <div class="section-header-center reveal">
+            <div class="section-label">Contributors</div>
+            <h2 class="section-title">People helping CPUNK move forward</h2>
+            <p class="section-desc" style="max-width: 38rem;">
+              A non-exhaustive list of community members who contribute to
               development, infrastructure, communication, and ecosystem growth.
             </p>
           </div>
 
-          <div class="cards">
-            <article class="card">
+          <div class="card-grid-3 stagger">
+            <article class="token-card reveal">
               <div class="card-tag"><span>DNA</span> Identity</div>
               <h3>bios</h3>
               <div class="card-sub">Protocol &amp; identity contributor</div>
               <p>
                 Works on identity flows, protocol integration, and tooling around
-                Decentralized Network Applications (DNA) within the CPUNK
-                ecosystem.
+                Decentralized Network Applications (DNA) within the CPUNK ecosystem.
               </p>
-              <a href="/bios" class="card-link">
-                <span>View DNA Profile</span> →
-              </a>
+
             </article>
 
-            <article class="card">
+            <article class="token-card reveal">
               <div class="card-tag"><span>Core</span> Dev &amp; Architect</div>
               <h3>nocdem</h3>
               <div class="card-sub">Development &amp; systems designer</div>
@@ -1227,24 +1241,18 @@
                 Contributes to code, infrastructure, and network operations that
                 keep CPUNK services and tooling online and evolving.
               </p>
-              <a href="/nocdem" class="card-link">
-                <span>View DNA Profile</span> →
-              </a>
             </article>
 
-            <article class="card">
+            <article class="token-card reveal">
               <div class="card-tag"><span>Community</span> Dev &amp; Architect</div>
               <h3>cellgainz</h3>
               <div class="card-sub">User interface &amp; application</div>
               <p>
                 Lead designer of network protocols, GUI and app design.
               </p>
-              <a href="/cellgainz" class="card-link">
-                <span>View DNA Profile</span> →
-              </a>
             </article>
 
-            <article class="card">
+            <article class="token-card reveal">
               <div class="card-tag"><span>Support</span> Ecosystem</div>
               <h3>cc</h3>
               <div class="card-sub">Ecosystem &amp; support</div>
@@ -1252,12 +1260,9 @@
                 Involved in ecosystem coordination, technical support, and helping
                 new users and contributors onboard to the CPUNK protocol.
               </p>
-              <a href="/cc" class="card-link">
-                <span>View DNA Profile</span> →
-              </a>
             </article>
 
-            <article class="card">
+            <article class="token-card reveal">
               <div class="card-tag"><span>Ops</span> Validator</div>
               <h3>mert</h3>
               <div class="card-sub">Operations &amp; node running</div>
@@ -1265,12 +1270,9 @@
                 Works on validator operations, network reliability, and practical
                 infrastructure that keeps the protocol stable and accessible.
               </p>
-              <a href="/mert" class="card-link">
-                <span>View DNA Profile</span> →
-              </a>
             </article>
 
-            <article class="card">
+            <article class="token-card reveal">
               <div class="card-tag"><span>Comms</span> Strategy</div>
               <h3>trader</h3>
               <div class="card-sub">Communication &amp; coordination</div>
@@ -1278,167 +1280,110 @@
                 Focused on community engagement, education, and awareness around
                 CPUNK and post-quantum infrastructure.
               </p>
-              <a href="/trader" class="card-link">
-                <span>View DNA Profile</span> →
-              </a>
             </article>
 
-            <article class="card">
+            <article class="token-card reveal">
               <div class="card-tag"><span>AI</span> Assistants</div>
               <h3>Claude &amp; ChatGPT</h3>
               <div class="card-sub">Tooling &amp; content assistance</div>
               <p>
                 Used by the community to draft documentation, prototype ideas,
-                improve code, and explore complex post-quantum concepts more
-                efficiently.
-              </p>
-              <p style="margin-top:0.5rem; font-size:0.8rem;">
-                These assistants are tools, not decision-makers. Humans remain in
-                control of protocol design and governance.
+                improve code, and explore complex post-quantum concepts.
+                These are tools, not decision-makers &mdash; humans remain in control.
               </p>
             </article>
           </div>
         </div>
       </section>
 
-      <!-- Validator network -->
-      <section id="validators">
+      <!-- CTA -->
+      <section class="cta-section">
         <div class="wrap">
-          <div class="section-header">
-            <div>
-              <div class="section-kicker">Validator Network</div>
-              <h2 class="section-title">Decentralized infrastructure securing CPUNK</h2>
-            </div>
-            <p class="section-description">
-              A distributed set of node operators and validators
-              maintain the CPUNK protocol, validate DNA registrations, and keep the
-              network reliable.
+          <div class="cta-box reveal">
+            <h2 class="cta-title">Join the CPUNK movement</h2>
+            <p class="cta-text">
+              Download DNA Messenger, join the conversation, and find a piece of the project
+              you want to improve. Every meaningful contributor once started as a community member.
             </p>
-          </div>
-
-          <div class="split">
-            <article class="split-panel">
-              <h3 class="split-title">Node operators &amp; validators</h3>
-              <p class="split-sub">
-                The validator network plays a critical role in securing the CPUNK
-                protocol and its identity and messaging layers.
-              </p>
-              <ul class="split-list">
-                <li>Validate DNA registrations and identity bindings</li>
-                <li>Process and verify transactions on the network</li>
-                <li>Participate in consensus and protocol upgrades</li>
-                <li>Help maintain global uptime and reliability</li>
-                <li>Support the post-quantum security model of CPUNK</li>
-              </ul>
-            </article>
-
-            <article class="split-panel secondary">
-              <h3 class="split-title">Network at a glance</h3>
-              <p class="split-sub">
-                Live statistics are available on CPUNK.CLUB and community tools.
-              </p>
-              <ul class="split-list">
-                <li>Active validator nodes: <strong>View live stats</strong></li>
-                <li>Network uptime: target <strong>99.9%+</strong></li>
-                <li>Geographic distribution: <strong>Global</strong></li>
-                <li>Consensus mechanism: <strong>Post-Quantum PoS</strong></li>
-              </ul>
-              <p class="split-sub" style="margin-top:0.7rem;">
-                Validator performance and delegation statistics are available
-                on the community platform.
-              </p>
-              <p class="split-sub" style="margin-top:0.4rem;">
-                To explore validators and network health today, visit:
-                <br />
-                <a href="https://cpunk.club" target="_blank" rel="noreferrer">
-                  cpunk.club
-                </a>
-              </p>
-            </article>
-          </div>
-        </div>
-      </section>
-
-      <!-- Join the movement -->
-      <section id="join">
-        <div class="wrap">
-          <div class="cta">
-            <div>
-              <h2 class="cta-title">Join the CPUNK movement</h2>
-              <p class="cta-text">
-                Whether you can code, design, write, run nodes, or simply care
-                about privacy and post-quantum security, there is a place for you
-                in CPUNK. Every meaningful contributor once started as a community
-                member.
-              </p>
-              <p class="cta-text" style="margin-top:0.6rem;">
-                Start by downloading DNA-Messenger, joining the conversation,
-                and finding a small piece of the project you want to improve.
-              </p>
-            </div>
             <div class="cta-actions">
-              <a href="/products/dna-messenger.html" class="btn btn-primary">
-                1. Download DNA-Messenger
-              </a>
-              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-ghost">
-                2. Join Telegram
-              </a>
-              <a href="https://gitlab.cpunk.io/cpunk/" target="_blank" rel="noreferrer" class="btn btn-ghost">
-                3. Explore code
-              </a>
+              <a href="/products/dna-messenger.html" class="btn btn-primary btn-lg">Download DNA Messenger</a>
+              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Join Telegram</a>
+              <a href="https://gitlab.cpunk.io/cpunk/" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Explore Code</a>
+              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Follow on X</a>
             </div>
           </div>
         </div>
       </section>
+
     </main>
 
     <!-- Footer -->
     <footer>
       <div class="wrap">
         <div class="footer-row">
-          <div>
-            © 2026 CPUNK Protocol – Quantum-safe, Decentralized, Community-driven.
-          </div>
+          <div>&copy; 2026 CPUNK Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
           <div class="footer-links">
             <a href="/">Home</a>
-            <a href="/whitepaper.html">Whitepaper</a>
-            <a href="/roadmap.html">Roadmap</a>
-            <a href="/legal.html">Legal &amp; Compliance</a>
+            <a href="/products/dna-identity.html">DNA Identity</a>
+            <a href="/products/dna-messenger.html">DNA Messenger</a>
+            <a href="/products/nodus.html">Nodus</a>
+            <a href="/products/dna-wallet.html">DNA Wallet</a>
             <a href="/team.html">Team</a>
-            <a href="/contact.html">Contact</a>
-            <a href="https://cpunk.club" target="_blank" rel="noreferrer">CPUNK.CLUB</a>
+            <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
+            <a href="/doc/cpunk-legal.pdf" target="_blank">Legal &amp; Compliance</a>
           </div>
         </div>
       </div>
     </footer>
   </div>
 
-  <!-- Minimal JS for mobile nav + dropdowns -->
+  <!-- JS: Mobile Nav + Scroll Reveal -->
   <script>
-    document.addEventListener('DOMContentLoaded', function () {
-      const mobileToggle = document.querySelector('.mobile-menu-toggle');
-      const navMenu = document.querySelector('.nav-menu');
+    document.addEventListener('DOMContentLoaded', function() {
+      var mobileToggle = document.querySelector('.mobile-menu-toggle');
+      var navMenu = document.querySelector('.nav-menu');
 
       if (mobileToggle && navMenu) {
-        mobileToggle.addEventListener('click', function () {
+        mobileToggle.addEventListener('click', function() {
           navMenu.classList.toggle('active');
         });
       }
 
-      // Mobile dropdown handling
-      const dropdownItems = document.querySelectorAll('.nav-item');
-
-      dropdownItems.forEach(item => {
-        const label = item.querySelector('.nav-item-label');
+      document.querySelectorAll('.nav-item').forEach(function(item) {
+        var label = item.querySelector('.nav-item-label');
         if (!label) return;
-
-        label.addEventListener('click', function (e) {
+        label.addEventListener('click', function(e) {
           if (window.innerWidth <= 768) {
             e.stopPropagation();
             item.classList.toggle('open');
           }
         });
       });
+
+      /* Scroll Reveal (IntersectionObserver) */
+      var revealElements = document.querySelectorAll('.reveal, .reveal-left, .reveal-right');
+
+      if ('IntersectionObserver' in window) {
+        var observer = new IntersectionObserver(function(entries) {
+          entries.forEach(function(entry) {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('visible');
+              observer.unobserve(entry.target);
+            }
+          });
+        }, {
+          threshold: 0.12,
+          rootMargin: '0px 0px -40px 0px'
+        });
+
+        revealElements.forEach(function(el) {
+          observer.observe(el);
+        });
+      } else {
+        revealElements.forEach(function(el) {
+          el.classList.add('visible');
+        });
+      }
     });
   </script>
 </body>

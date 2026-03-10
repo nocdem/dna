@@ -1,8 +1,8 @@
 {
-  "name": "DNA-Messenger by CPUNK",
-  "short_name": "DNA-Messenger",
-  "description": "Post-quantum peer-to-peer messenger with DNA identity and offline delivery built on Cellframe CF20.",
-  "start_url": "/products/dna-messenger.html",
+  "name": "CPUNK — Post-Quantum Identity & Messaging",
+  "short_name": "CPUNK",
+  "description": "Post-quantum identity, encrypted messaging, and multi-chain wallet. Privacy-first, decentralized, open source.",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "background_color": "#050712",

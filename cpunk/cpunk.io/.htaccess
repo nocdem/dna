@@ -1,17 +1,13 @@
-# CPUNK.IO URL Rewriting Rules
+# CPUNK.IO
 RewriteEngine On
 
-# Handle specific directories first (like /bios)
-# If the directory exists, let Apache serve it normally
+# Force HTTPS
+RewriteCond %{HTTPS} off
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
+# Trailing slash for directories
 RewriteCond %{REQUEST_FILENAME} -d
 RewriteRule ^(.+[^/])$ $1/ [R=301,L]
 
-# For non-directory URLs that don't exist as files
-# Skip common file patterns and reserved paths
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteCond %{REQUEST_FILENAME} !-d
-RewriteCond %{REQUEST_URI} !^/(css|js|images|lang|services|doc)/
-RewriteCond %{REQUEST_URI} !^/(dna-proxy\.php|register\.html|dna-lookup\.html|about\.html|contact\.html|team\.html|whitepaper\.html|index\.html|robots\.txt|sitemap\.xml|favicon\.ico|tx-test\.html)
-RewriteCond %{REQUEST_URI} !^/\.
-RewriteCond %{REQUEST_URI} ^/([a-zA-Z0-9_-]+)/?$
-RewriteRule ^/([a-zA-Z0-9_-]+)/?$ /profile.html [L]
+# Custom 404 — redirect unknown pages to homepage
+ErrorDocument 404 /index.html

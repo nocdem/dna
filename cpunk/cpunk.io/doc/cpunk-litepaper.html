@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CPUNK Litepaper — Post-Quantum Identity, Messaging & Multi-Chain Wallet</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Orbitron:wght@600;700;800&display=swap');
+
+  @page {
+    size: A4;
+    margin: 20mm 22mm 22mm 22mm;
+    @bottom-center {
+      content: "CPUNK Protocol — cpunk.io";
+      font-family: 'Inter', sans-serif;
+      font-size: 7.5pt;
+      color: #94a3b8;
+    }
+    @bottom-right {
+      content: counter(page);
+      font-family: 'Inter', sans-serif;
+      font-size: 7.5pt;
+      color: #94a3b8;
+    }
+  }
+
+  @page :first {
+    @bottom-center { content: none; }
+    @bottom-right { content: none; }
+  }
+
+  :root {
+    --bg: #ffffff;
+    --panel: #f4f5f7;
+    --teal: #0891a2;
+    --orange: #e05520;
+    --text: #1e293b;
+    --muted: #64748b;
+    --border: rgba(0,0,0,0.1);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 10pt;
+    line-height: 1.65;
+    color: var(--text);
+    background: var(--bg);
+    padding: 0;
+    margin: 0;
+  }
+
+  /* ── Cover ── */
+
+  .cover {
+    page-break-after: always;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    background:
+      radial-gradient(ellipse at 30% 40%, rgba(8,145,162,0.06) 0%, transparent 55%),
+      radial-gradient(ellipse at 70% 60%, rgba(224,85,32,0.04) 0%, transparent 55%),
+      var(--bg);
+    padding: 0 15%;
+  }
+
+  .cover-eyebrow {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 8pt;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--teal);
+    margin-bottom: 1.2rem;
+  }
+
+  .cover h1 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 28pt;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    color: #0f172a;
+    line-height: 1.15;
+    margin-bottom: 0.6rem;
+  }
+
+  .cover-sub {
+    font-size: 12pt;
+    color: var(--muted);
+    max-width: 28rem;
+    margin: 0 auto 2.5rem;
+    line-height: 1.6;
+  }
+
+  .cover-meta {
+    font-size: 8pt;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+  }
+
+  .cover-meta strong { color: #0f172a; font-weight: 500; }
+
+  .cover-line {
+    width: 60px;
+    height: 2px;
+    background: linear-gradient(90deg, var(--teal), var(--orange));
+    margin: 1.5rem auto;
+    border-radius: 2px;
+  }
+
+  /* ── Section headings ── */
+
+  h2 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 14pt;
+    font-weight: 700;
+    color: #0f172a;
+    letter-spacing: 0.04em;
+    margin: 1.8rem 0 0.6rem;
+    padding-bottom: 0.35rem;
+    border-bottom: 2px solid rgba(8,145,162,0.3);
+    page-break-after: avoid;
+    page-break-inside: avoid;
+  }
+
+  h2.break-before {
+    page-break-before: always;
+  }
+
+  h3, h4 {
+    page-break-after: avoid;
+    page-break-inside: avoid;
+  }
+
+  h2 .num {
+    color: var(--teal);
+    font-weight: 600;
+    margin-right: 0.4rem;
+  }
+
+  h3 {
+    font-family: 'Inter', sans-serif;
+    font-size: 11pt;
+    font-weight: 600;
+    color: var(--teal);
+    margin: 1.4rem 0 0.35rem;
+    letter-spacing: 0.02em;
+  }
+
+  h4 {
+    font-size: 10pt;
+    font-weight: 600;
+    color: var(--orange);
+    margin: 1rem 0 0.25rem;
+  }
+
+  /* ── Body ── */
+
+  p {
+    margin-bottom: 0.6rem;
+    color: var(--text);
+    orphans: 3;
+    widows: 3;
+  }
+
+  strong { font-weight: 600; color: #0f172a; }
+
+  ul, ol {
+    margin: 0.3rem 0 0.7rem 1.2rem;
+    color: var(--text);
+    orphans: 3;
+    widows: 3;
+  }
+
+  li { margin-bottom: 0.25rem; }
+
+  /* Keep sections together: heading + first paragraph */
+  section {
+    page-break-inside: auto;
+  }
+
+  li strong { color: var(--teal); }
+
+  /* ── Tables ── */
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.6rem 0 1rem;
+    font-size: 9pt;
+    page-break-inside: avoid;
+  }
+
+  th {
+    background: var(--panel);
+    color: var(--teal);
+    font-weight: 600;
+    text-align: left;
+    padding: 0.45rem 0.6rem;
+    border-bottom: 1px solid rgba(8,145,162,0.3);
+    font-size: 8pt;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  td {
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  tr:last-child td { border-bottom: none; }
+
+  /* ── Callout boxes ── */
+
+  .callout {
+    background: var(--panel);
+    border-left: 3px solid var(--teal);
+    border-radius: 0 8px 8px 0;
+    padding: 0.7rem 1rem;
+    margin: 0.8rem 0;
+    font-size: 9.5pt;
+    color: var(--muted);
+    page-break-inside: avoid;
+  }
+
+  .callout strong { color: #0f172a; }
+
+  .callout-orange {
+    border-left-color: var(--orange);
+  }
+
+  /* ── Architecture diagram (text) ── */
+
+  .arch-block {
+    background: var(--panel);
+    border: 1px solid rgba(0,0,0,0.12);
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    margin: 0.6rem 0 1rem;
+    font-family: 'Courier New', monospace;
+    font-size: 8.5pt;
+    line-height: 1.5;
+    color: #475569;
+    white-space: pre;
+    overflow-x: auto;
+    page-break-inside: avoid;
+  }
+
+  .arch-block .hl-teal { color: var(--teal); font-weight: 600; }
+  .arch-block .hl-orange { color: var(--orange); font-weight: 600; }
+  .arch-block .hl-white { color: #334155; font-weight: 500; }
+
+  /* ── Page breaks ── */
+
+  .page-break { page-break-before: always; }
+
+  /* ── Separator ── */
+
+  hr {
+    border: none;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(8,145,162,0.4), transparent);
+    margin: 1.5rem 0;
+  }
+
+  /* ── Footer note ── */
+  .disclaimer {
+    margin-top: 2rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid var(--border);
+    font-size: 8pt;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- COVER PAGE                                            -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<div class="cover">
+  <div class="cover-eyebrow">Litepaper v1.0</div>
+  <h1>CPUNK</h1>
+  <p class="cover-sub">
+    Post-Quantum Identity, Encrypted Messaging<br>
+    &amp; Multi-Chain Wallet
+  </p>
+  <div class="cover-line"></div>
+  <p class="cover-meta">
+    <strong>cpunk.io</strong>&ensp;|&ensp;March 2026&ensp;|&ensp;Community-Driven &amp; Open Source
+  </p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- TABLE OF CONTENTS                                     -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<h2 style="page-break-before: avoid;">Table of Contents</h2>
+<ol style="list-style: none; margin-left: 0; line-height: 2;">
+  <li><strong style="color:var(--teal);">1.</strong>&ensp;Introduction</li>
+  <li><strong style="color:var(--teal);">2.</strong>&ensp;The Problem</li>
+  <li><strong style="color:var(--teal);">3.</strong>&ensp;DNA — Decentralized Network Applications</li>
+  <li><strong style="color:var(--teal);">4.</strong>&ensp;Architecture Overview</li>
+  <li><strong style="color:var(--teal);">5.</strong>&ensp;Cryptographic Primitives</li>
+  <li><strong style="color:var(--teal);">6.</strong>&ensp;The Nodus Network</li>
+  <li><strong style="color:var(--teal);">7.</strong>&ensp;DNA Identity</li>
+  <li><strong style="color:var(--teal);">8.</strong>&ensp;DNA Messenger</li>
+  <li><strong style="color:var(--teal);">9.</strong>&ensp;DNA Wallet</li>
+  <li><strong style="color:var(--teal);">10.</strong>&ensp;CPUNK Token</li>
+  <li><strong style="color:var(--teal);">11.</strong>&ensp;Platform Availability</li>
+  <li><strong style="color:var(--teal);">12.</strong>&ensp;Roadmap</li>
+  <li><strong style="color:var(--teal);">13.</strong>&ensp;Community &amp; Governance</li>
+  <li><strong style="color:var(--teal);">14.</strong>&ensp;Disclaimer</li>
+</ol>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- 1. INTRODUCTION                                       -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<h2><span class="num">1.</span> Introduction</h2>
+
+<p>
+  CPUNK is a community-driven project building post-quantum, privacy-first infrastructure for digital identity, encrypted communication, and multi-chain asset management. The project is fully open source.
+</p>
+<p>
+  At its core is <strong>DNA</strong> (Decentralized Network Applications) — a single application that combines self-sovereign identity, end-to-end encrypted messaging, and a multi-chain cryptocurrency wallet. DNA runs on top of a custom-built, community-operated DHT network called <strong>Nodus</strong>, requiring zero centralized servers.
+</p>
+<p>
+  The <strong>CPUNK token</strong>, a CF20 token on the Cellframe blockchain, serves as the governance and utility token within the DNA ecosystem. All components are designed from the ground up to be resistant to quantum computing attacks using NIST-standardized post-quantum algorithms.
+</p>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- 2. THE PROBLEM                                        -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<h2><span class="num">2.</span> The Problem</h2>
+
+<p>
+  Modern communication and identity systems share a common set of fundamental weaknesses:
+</p>
+
+<ul>
+  <li><strong>Centralized control</strong> — Identity providers (Google, Apple, Meta) can revoke access, censor users, and mine behavioral data at will.</li>
+  <li><strong>Metadata exposure</strong> — Even "encrypted" messengers leak metadata: who talks to whom, when, how often, and from where. Metadata alone is enough to reconstruct social graphs.</li>
+  <li><strong>Quantum vulnerability</strong> — RSA and elliptic-curve cryptography, used by virtually every messaging and wallet application today, will be broken by sufficiently powerful quantum computers. NIST has already published post-quantum standards (FIPS 203, 204, 205) as a direct response.</li>
+  <li><strong>Fragmented identity</strong> — Users maintain separate accounts, separate wallets, separate keys across dozens of platforms with no sovereign control over any of them.</li>
+</ul>
+
+<div class="callout">
+  CPUNK's thesis: <strong>privacy, self-sovereignty, and quantum resistance must be built into the foundation</strong> — not bolted on later. DNA is that foundation.
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- 3. DNA                                                -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<h2><span class="num">3.</span> DNA — Decentralized Network Applications</h2>
+
+<p>
+  DNA is a single application built around three integrated pillars:
+</p>
+
+<table>
+  <tr>
+    <th>Pillar</th>
+    <th>Function</th>
+    <th>Key Property</th>
+  </tr>
+  <tr>
+    <td><strong>DNA Identity</strong></td>
+    <td>Self-sovereign, human-readable name tied to a post-quantum key pair</td>
+    <td>No phone, no email, no central authority</td>
+  </tr>
+  <tr>
+    <td><strong>DNA Messenger</strong></td>
+    <td>E2E encrypted peer-to-peer messaging with groups, channels, and feeds</td>
+    <td>Zero metadata, zero servers</td>
+  </tr>
+  <tr>
+    <td><strong>DNA Wallet</strong></td>
+    <td>Multi-chain wallet derived from the same seed as identity</td>
+    <td>One seed, four blockchains</td>
+  </tr>
+</table>
+
+<p>
+  All three pillars share a single BIP-39 seed phrase. One backup, one identity, one set of wallets — unified under one cryptographic root.
+</p>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- 4. ARCHITECTURE                                       -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<h2 class="break-before"><span class="num">4.</span> Architecture Overview</h2>
+<!-- Architecture has the large diagram, needs its own page -->
+
+<p>
+  DNA is built as a native C library with a Flutter (Dart) UI layer communicating via FFI. The transport backbone is the Nodus network — a custom Kademlia DHT.
+</p>
+
+<div class="arch-block"><span class="hl-white">┌──────────────────────────────────────────────────────┐</span>
+<span class="hl-white">│</span>  <span class="hl-orange">Flutter App (Dart)</span>                                  <span class="hl-white">│</span>
+<span class="hl-white">│</span>  UI layer — Riverpod state management                <span class="hl-white">│</span>
+<span class="hl-white">└──────────┬───────────────────────────────────────────┘</span>
+           │ dart:ffi
+<span class="hl-white">┌──────────▼───────────────────────────────────────────┐</span>
+<span class="hl-white">│</span>  <span class="hl-teal">DNA Engine (C)</span>                                      <span class="hl-white">│</span>
+<span class="hl-white">│</span>  17 modular async handlers + task queue               <span class="hl-white">│</span>
+<span class="hl-white">├──────────────────────────────────────────────────────┤</span>
+<span class="hl-white">│</span>  Identity · Messaging · Contacts · Groups · Channels <span class="hl-white">│</span>
+<span class="hl-white">│</span>  Wallet · Presence · Signing · Backup · Workers       <span class="hl-white">│</span>
+<span class="hl-white">└──────┬───────┬───────────────────────────────────────┘</span>
+       │       │
+       │  <span class="hl-white">┌────▼─────────────────────────────────┐</span>
+       │  <span class="hl-white">│</span>  <span class="hl-teal">Nodus Client SDK</span>                <span class="hl-white">│</span>
+       │  <span class="hl-white">│</span>  Kademlia DHT · PBFT consensus      <span class="hl-white">│</span>
+       │  <span class="hl-white">│</span>  TCP client ←→ Nodus server cluster  <span class="hl-white">│</span>
+       │  <span class="hl-white">└──────────────────────────────────────┘</span>
+       │
+  <span class="hl-white">┌────▼──────────────────────┐</span>
+  <span class="hl-white">│</span>  <span class="hl-orange">Shared Crypto Layer</span>       <span class="hl-white">│</span>
+  <span class="hl-white">│</span>  ML-KEM-1024 · ML-DSA-87  <span class="hl-white">│</span>
+  <span class="hl-white">│</span>  SHA3-512 · AES-256-GCM   <span class="hl-white">│</span>
+  <span class="hl-white">│</span>  BIP-39 seed derivation    <span class="hl-white">│</span>
+  <span class="hl-white">└───────────────────────────┘</span></div>
+
+<p>
+  The C engine is modular: each domain (identity, messaging, wallet, etc.) is an independent handler that processes tasks from an async queue. This design allows concurrent operations, clean separation of concerns, and easy extensibility.
+</p>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- 5. CRYPTOGRAPHIC PRIMITIVES                           -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<h2><span class="num">5.</span> Cryptographic Primitives</h2>
+
+<p>
+  All cryptographic operations use NIST-standardized post-quantum algorithms at the highest available security level (Category 5). No classical-only fallbacks are used.
+</p>
+
+<table>
+  <tr>
+    <th>Algorithm</th>
+    <th>Standard</th>
+    <th>Purpose</th>
+    <th>Key Sizes</th>
+  </tr>
+  <tr>
+    <td><strong>ML-KEM-1024</strong> (Kyber1024)</td>
+    <td>FIPS 203</td>
+    <td>Key encapsulation (E2E key exchange)</td>
+    <td>Public: 1568 B &ensp; Secret: 3168 B &ensp; Ciphertext: 1568 B</td>
+  </tr>
+  <tr>
+    <td><strong>ML-DSA-87</strong> (Dilithium5)</td>
+    <td>FIPS 204</td>
+    <td>Digital signatures (identity, message auth)</td>
+    <td>Public: 2592 B &ensp; Secret: 4896 B &ensp; Signature: 4627 B</td>
+  </tr>
+  <tr>
+    <td><strong>SHA3-512</strong></td>
+    <td>FIPS 202</td>
+    <td>Hashing (DHT keys, integrity, addressing)</td>
+    <td>512-bit digest</td>
+  </tr>
+  <tr>
+    <td><strong>AES-256-GCM</strong></td>
+    <td>FIPS 197 / SP 800-38D</td>
+    <td>Symmetric encryption (message payloads)</td>
+    <td>256-bit key</td>
+  </tr>
+  <tr>
+    <td><strong>BIP-39</strong></td>
+    <td>Bitcoin standard</td>
+    <td>Seed phrase (12–24 words) for key derivation</td>
+    <td>128–256 bits of entropy</td>
+  </tr>
+</table>
+
+<div class="callout">
+  <strong>NIST Category 5</strong> is the highest security level defined by NIST for post-quantum algorithms, providing security equivalent to AES-256 against both classical and quantum adversaries.
+</div>
+
+<h3>Key Derivation Flow</h3>
+<p>
+  A single BIP-39 mnemonic is the root of all cryptographic material:
+</p>
+<ol>
+  <li>User generates (or restores) a 12–24 word seed phrase.</li>
+  <li>The seed derives the <strong>Dilithium5 signing key pair</strong> (identity).</li>
+  <li>The seed derives the <strong>Kyber1024 key encapsulation pair</strong> (messaging).</li>
+  <li>The seed derives <strong>blockchain-specific wallet keys</strong> for CF20, ERC20, SPL, and TRC20.</li>
+</ol>
+<p>
+  One seed, one backup, full sovereignty over identity and assets.
+</p>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- 6. NODUS NETWORK                                      -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<h2 class="break-before"><span class="num">6.</span> The Nodus Network</h2>
+<!-- Nodus is a big section with tables, needs fresh page -->
+
+<p>
+  Nodus is a purpose-built, pure-C Kademlia distributed hash table (DHT) that serves as the transport and storage backbone for all DNA operations. It replaces the need for centralized servers entirely.
+</p>
+
+<h3>Design Parameters</h3>
+<table>
+  <tr>
+    <th>Parameter</th>
+    <th>Value</th>
+    <th>Rationale</th>
+  </tr>
+  <tr>
+    <td>Keyspace</td>
+    <td>512-bit (SHA3-512)</td>
+    <td>Post-quantum collision resistance</td>
+  </tr>
+  <tr>
+    <td>Replication factor (k)</td>
+    <td>8</td>
+    <td>High availability, survives node churn</td>
+  </tr>
+  <tr>
+    <td>Record TTL</td>
+    <td>7 days</td>
+    <td>Automatic garbage collection of stale data</td>
+  </tr>
+  <tr>
+    <td>Wire format</td>
+    <td>CBOR</td>
+    <td>Compact, schema-flexible binary encoding</td>
+  </tr>
+  <tr>
+    <td>Wire framing</td>
+    <td>7-byte header (magic 0x4E44 + version + length)</td>
+    <td>Fast parsing, version negotiation</td>
+  </tr>
+  <tr>
+    <td>Consensus</td>
+    <td>PBFT (Practical Byzantine Fault Tolerance)</td>
+    <td>Consistency for critical records</td>
+  </tr>
+</table>
+
+<h3>Two-Tier Protocol</h3>
+<p>
+  Nodus separates server-to-server and client-to-server communication into distinct protocol tiers:
+</p>
+<ul>
+  <li><strong>Tier 1 (UDP)</strong> — Kademlia peer discovery between Nodus servers: <code>PING</code>, <code>FIND_NODE</code>, <code>PUT</code>, <code>GET</code>.</li>
+  <li><strong>Tier 2 (TCP)</strong> — Client connections from DNA apps: <code>AUTH</code>, <code>DHT_PUT</code>, <code>DHT_GET</code>, <code>LISTEN</code>, <code>CHANNELS</code>.</li>
+</ul>
+<p>
+  Clients authenticate to the nearest Nodus node, which then handles routing, replication, and delivery across the DHT on their behalf.
+</p>
+
+<h3>Core Functions</h3>
+<ul>
+  <li><strong>Peer discovery</strong> — Clients find each other via DHT key lookups. No central directory.</li>
+  <li><strong>Offline message delivery</strong> — Encrypted messages are stored in distributed mailboxes replicated across the 8 closest nodes. Recipients retrieve them upon reconnection.</li>
+  <li><strong>Identity resolution</strong> — DNA names resolve to public keys and routing hints via DHT lookups.</li>
+  <li><strong>Real-time subscriptions</strong> — Clients subscribe to DHT key ranges for instant notification of new messages, presence changes, and group updates.</li>
+</ul>
+
+<div class="callout">
+  Nodus nodes are community-operated. They store and forward only <strong>encrypted blobs</strong> — they cannot read message contents, identity data, or transaction details. Privacy is enforced by architecture, not policy.
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- 7. DNA IDENTITY                                       -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<h2><span class="num">7.</span> DNA Identity</h2>
+
+<p>
+  A DNA identity is a human-readable name (3–20 characters) cryptographically bound to a post-quantum key pair. Registration happens entirely on the Nodus DHT — no blockchain transaction, no central registrar, no fee.
+</p>
+
+<h3>Properties</h3>
+<ul>
+  <li><strong>Self-sovereign</strong> — Ownership is defined by the private key. No entity can revoke, reassign, or censor a DNA name.</li>
+  <li><strong>Pseudonymous</strong> — No phone number, email, or real-world identity required.</li>
+  <li><strong>Permanent</strong> — Once registered, a DNA name is immutable and globally unique across the Nodus network.</li>
+  <li><strong>Ecosystem-wide</strong> — The same DNA name is used for messaging, wallet operations, governance, and all future CPUNK services.</li>
+</ul>
+
+<h3>Registration Flow</h3>
+<ol>
+  <li>User creates or restores a wallet from a BIP-39 seed phrase inside the DNA app.</li>
+  <li>User chooses a unique DNA name. The app checks availability on the DHT.</li>
+  <li>The name is bound to the user's Dilithium5 public key and published to the Nodus network.</li>
+  <li>The identity is immediately usable for messaging, wallet, and all ecosystem interactions.</li>
+</ol>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- 8. DNA MESSENGER                                      -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<h2 class="break-before"><span class="num">8.</span> DNA Messenger</h2>
+<!-- Messenger is a big section with tables, needs fresh page -->
+
+<p>
+  DNA Messenger is a fully decentralized, end-to-end encrypted messenger with no central servers, no phone number requirement, and no metadata collection. All message transport runs over the Nodus DHT.
+</p>
+
+<h3>Feature Set</h3>
+<table>
+  <tr>
+    <th>Feature</th>
+    <th>Description</th>
+  </tr>
+  <tr>
+    <td>1:1 Messages</td>
+    <td>Direct encrypted messages between two DNA identities</td>
+  </tr>
+  <tr>
+    <td>Groups</td>
+    <td>Multi-party conversations with Group Encryption Key (GEK) rotation</td>
+  </tr>
+  <tr>
+    <td>Channels</td>
+    <td>One-to-many broadcast feeds with subscriber management</td>
+  </tr>
+  <tr>
+    <td>Public Feed</td>
+    <td>Global public timeline of signed posts</td>
+  </tr>
+  <tr>
+    <td>Personal Wall</td>
+    <td>Per-user public wall (posting requires CPUNK token burn)</td>
+  </tr>
+  <tr>
+    <td>Contacts</td>
+    <td>Contact requests, blocking, address book management</td>
+  </tr>
+  <tr>
+    <td>Presence</td>
+    <td>Online/offline status via DHT heartbeats</td>
+  </tr>
+  <tr>
+    <td>In-Chat Transfers</td>
+    <td>Send CPUNK tokens directly within a conversation</td>
+  </tr>
+</table>
+
+<h3>Message Delivery</h3>
+<ul>
+  <li><strong>Both online:</strong> Messages are delivered instantly via direct TCP connections. Each client subscribes to its contacts' DHT keys for real-time push.</li>
+  <li><strong>Recipient offline:</strong> The ciphertext is written to distributed mailboxes across the 8 closest Nodus nodes. The sender can go offline immediately after — Nodus handles the rest.</li>
+  <li><strong>Recipient returns:</strong> The client queries the DHT, retrieves pending messages, and decrypts them locally.</li>
+</ul>
+
+<h3>Encryption Model</h3>
+<p>
+  Every message is encrypted with <strong>Kyber1024 + AES-256-GCM</strong>. The message envelope carries only 20 bytes of routing header — no sender identity, no timestamps, no IP addresses.
+  Group messages use a <strong>Group Encryption Key (GEK)</strong> that is rotated on membership changes and distributed to members via individual Kyber1024-encrypted channels.
+</p>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- 9. DNA WALLET                                         -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<h2><span class="num">9.</span> DNA Wallet</h2>
+
+<p>
+  DNA Wallet is a multi-chain cryptocurrency wallet built directly into the DNA app. It derives all blockchain-specific keys from the same BIP-39 seed phrase as the identity and messaging keys.
+</p>
+
+<h3>Supported Chains</h3>
+<table>
+  <tr>
+    <th>Chain</th>
+    <th>Token Standard</th>
+    <th>Capabilities</th>
+  </tr>
+  <tr>
+    <td><strong>Cellframe</strong></td>
+    <td>CF20</td>
+    <td>Native CPUNK token, delegation, DEX trading</td>
+  </tr>
+  <tr>
+    <td><strong>Ethereum</strong></td>
+    <td>ERC20</td>
+    <td>Token transfers, balance tracking, DEX quotes (Uniswap)</td>
+  </tr>
+  <tr>
+    <td><strong>Solana</strong></td>
+    <td>SPL</td>
+    <td>Token transfers, balance tracking, DEX quotes (Jupiter)</td>
+  </tr>
+  <tr>
+    <td><strong>TRON</strong></td>
+    <td>TRC20</td>
+    <td>Token transfers, balance tracking</td>
+  </tr>
+</table>
+
+<h3>Key Properties</h3>
+<ul>
+  <li><strong>One seed, all chains</strong> — A single mnemonic controls all wallets. No separate backups needed.</li>
+  <li><strong>Non-custodial</strong> — Private keys never leave the device. No server holds custody.</li>
+  <li><strong>In-chat transfers</strong> — CPUNK tokens can be sent directly within messenger conversations.</li>
+  <li><strong>Integrated DEX</strong> — Live swap quotes from Jupiter (SOL) and Uniswap (ETH) displayed natively.</li>
+</ul>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- 10. CPUNK TOKEN                                       -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<h2 class="break-before"><span class="num">10.</span> CPUNK Token</h2>
+<!-- Token + Platform + Roadmap group starts here -->
+
+<p>
+  CPUNK is a CF20 token on the Cellframe blockchain. It serves as the governance and utility token within the DNA ecosystem.
+</p>
+
+<table>
+  <tr>
+    <th>Property</th>
+    <th>Value</th>
+  </tr>
+  <tr>
+    <td>Standard</td>
+    <td>CF20 (Cellframe)</td>
+  </tr>
+  <tr>
+    <td>Total supply</td>
+    <td>1,000,000,000 (fixed, no additional minting possible)</td>
+  </tr>
+  <tr>
+    <td>Launch date</td>
+    <td>February 1, 2025</td>
+  </tr>
+  <tr>
+    <td>Distribution</td>
+    <td>100% unlocked at launch</td>
+  </tr>
+</table>
+
+<h3>Utility</h3>
+<ul>
+  <li><strong>Governance</strong> — CPUNK holders vote on protocol decisions and improvement proposals.</li>
+  <li><strong>Feed/Wall access</strong> — Posting to the public feed or personal wall requires burning CPUNK, preventing spam and giving posts economic weight.</li>
+  <li><strong>In-chat transfers</strong> — CPUNK is the only token transferable directly within messenger conversations.</li>
+  <li><strong>Ecosystem alignment</strong> — Holding CPUNK signals commitment to the privacy and decentralization values of the project.</li>
+</ul>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- 11. PLATFORM AVAILABILITY                             -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<h2><span class="num">11.</span> Platform Availability</h2>
+
+<table>
+  <tr>
+    <th>Platform</th>
+    <th>Status</th>
+    <th>Notes</th>
+  </tr>
+  <tr>
+    <td><strong>Linux</strong> (x64)</td>
+    <td>Available</td>
+    <td>Primary development platform, full feature set</td>
+  </tr>
+  <tr>
+    <td><strong>Android</strong> (arm64)</td>
+    <td>Available</td>
+    <td>APK distribution, cross-compiled native libraries</td>
+  </tr>
+  <tr>
+    <td><strong>Windows</strong> (x64)</td>
+    <td>Available</td>
+    <td>Cross-compiled builds</td>
+  </tr>
+  <tr>
+    <td><strong>iOS</strong></td>
+    <td>Planned</td>
+    <td>Architecture supports it, awaiting build pipeline</td>
+  </tr>
+</table>
+
+<p>
+  All builds are produced by CI/CD pipelines. The entire codebase — C engine, Flutter UI, Nodus server, and shared crypto layer — is <strong>open source</strong> and publicly auditable.
+</p>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- 12. ROADMAP                                           -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<h2 class="break-before"><span class="num">12.</span> Roadmap</h2>
+
+<h4>Completed</h4>
+<ul>
+  <li>Post-quantum identity system (Dilithium5 + Kyber1024)</li>
+  <li>E2E encrypted 1:1 messaging, groups, channels, and feeds</li>
+  <li>Multi-chain wallet (CF20, ERC20, SPL, TRC20)</li>
+  <li>Nodus DHT network with PBFT consensus</li>
+  <li>In-chat CPUNK transfers</li>
+  <li>DEX integration (Jupiter, Uniswap, Cellframe DEX)</li>
+  <li>Linux, Android, and Windows builds</li>
+</ul>
+
+<h4>In Progress</h4>
+<ul>
+  <li>iOS build pipeline</li>
+  <li>Enhanced group management and admin controls</li>
+  <li>DHT backup and restore for identity portability</li>
+  <li>Network monitoring and node operator tooling</li>
+</ul>
+
+<h4>Planned</h4>
+<ul>
+  <li>File and media sharing (encrypted attachments)</li>
+  <li>Voice messaging</li>
+  <li>Extended governance framework (on-chain proposals)</li>
+  <li>Node operator incentive mechanisms</li>
+  <li>Additional blockchain integrations</li>
+</ul>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- 13. COMMUNITY & GOVERNANCE                            -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<h2><span class="num">13.</span> Community &amp; Governance</h2>
+
+<p>
+  CPUNK is a community-driven project with no corporate entity behind it. Development is coordinated openly, and all code is available for public review.
+</p>
+
+<ul>
+  <li><strong>Open source</strong> — Full source code is hosted on GitLab (gitlab.cpunk.io) and mirrored on GitHub.</li>
+  <li><strong>Community governance</strong> — CPUNK holders participate in decision-making through on-chain voting.</li>
+  <li><strong>Node operators</strong> — Community members run Nodus nodes that form the network backbone.</li>
+  <li><strong>Contribution model</strong> — Anyone can contribute code, documentation, translations, or infrastructure.</li>
+</ul>
+
+<h3>Links</h3>
+<table>
+  <tr>
+    <th>Resource</th>
+    <th>URL</th>
+  </tr>
+  <tr>
+    <td>Website</td>
+    <td>cpunk.io</td>
+  </tr>
+  <tr>
+    <td>Source Code</td>
+    <td>gitlab.cpunk.io/cpunk</td>
+  </tr>
+  <tr>
+    <td>Telegram</td>
+    <td>t.me/chippunk_official</td>
+  </tr>
+  <tr>
+    <td>X (Twitter)</td>
+    <td>x.com/OfficialCpunk</td>
+  </tr>
+  <tr>
+    <td>Exchange</td>
+    <td>bitcointry.com (CPUNK/USDT)</td>
+  </tr>
+</table>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- 14. DISCLAIMER                                        -->
+<!-- ══════════════════════════════════════════════════════ -->
+
+<hr>
+
+<div class="disclaimer">
+  <strong>Disclaimer.</strong> This litepaper is provided for informational purposes only. It does not constitute financial advice, an offer of securities, or a solicitation of investment. CPUNK is a community-driven open-source project. The token has no guaranteed financial return. Software is provided as-is with no warranty. Cryptographic security depends on correct implementation and the current state of cryptanalysis — no system is unconditionally secure. The roadmap reflects current intentions and may change based on community priorities and technical constraints. Always conduct your own research.
+</div>
+
+</body>
+</html>
