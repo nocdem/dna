@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Wire Frame Protocol
+ * Nodus — Wire Frame Protocol
  *
  * 7-byte header: Magic("ND") + Version(1) + Length(4, LE32)
  */

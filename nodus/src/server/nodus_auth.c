@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Authentication Handler
+ * Nodus — Authentication Handler
  *
  * 3-way Dilithium5 challenge-response:
  *   1. Client: HELLO(pk, fp)

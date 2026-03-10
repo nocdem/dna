@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Tier 3 Protocol (Witness BFT Consensus)
+ * Nodus — Tier 3 Protocol (Witness BFT Consensus)
  *
  * CBOR encode/decode for all 11 BFT message types.
  * Sign payload = canonical CBOR of {method + header + args}.

@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — DHT Value Operations
+ * Nodus — DHT Value Operations
  *
  * Create, sign, verify, serialize/deserialize NodusValue.
  * Signature covers: key_hash + data + type + ttl + value_id + seq

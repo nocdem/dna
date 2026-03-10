@@ -18,7 +18,7 @@ DNA Messenger has been successfully ported to Android. The Android SDK provides 
 | 2 | Platform Abstraction | ✅ Complete |
 | 3 | HTTP Abstraction | ✅ Complete (CURL via NDK) |
 | 4 | Android NDK Build Config | ✅ Complete |
-| 5 | ~~OpenDHT-PQ Android Port~~ | Removed (replaced by Nodus v5 client SDK, pure C) |
+| 5 | ~~OpenDHT-PQ Android Port~~ | Removed (replaced by Nodus client SDK, pure C) |
 | 6 | JNI Bindings | ✅ Complete (26 functions) |
 | 7 | Android UI | 🚧 In Progress |
 | 8 | iOS Port | 📋 Future |
@@ -65,7 +65,7 @@ DNA Messenger has been successfully ported to Android. The Android SDK provides 
 │  └───────────┘ └───────────┘ └───────────┘ └──────────────┘│
 │  ┌───────────────────┐ ┌──────────────────┐                 │
 │  │ libtransport_lib  │ │ libnodus_client  │                 │
-│  │   (P2P + DHT)     │ │  (Nodus v5 SDK)  │                 │
+│  │   (P2P + DHT)     │ │  (Nodus SDK)  │                 │
 │  └───────────────────┘ └──────────────────┘                 │
 └─────────────────────────────────────────────────────────────┘
                             │
@@ -189,18 +189,18 @@ build-android-arm64-v8a/
 ├── libkem.a               # Kyber1024
 ├── libdsa.a               # Dilithium5
 ├── libtransport_lib.a     # P2P transport
-└── libnodus_client.a      # Nodus v5 client SDK (pure C)
+└── libnodus_client.a      # Nodus client SDK (pure C)
 ```
 
 ---
 
 ## Completed Work
 
-### Phase 5: DHT Layer (Nodus v5 Client SDK)
+### Phase 5: DHT Layer (Nodus Client SDK)
 
 **Status:** Complete (replaced OpenDHT-PQ)
 
-OpenDHT-PQ has been completely removed and replaced by the Nodus v5 client SDK, which is pure C with no C++ dependencies. This simplifies the Android build significantly:
+OpenDHT-PQ has been completely removed and replaced by the Nodus client SDK, which is pure C with no C++ dependencies. This simplifies the Android build significantly:
 - No C++ runtime needed (no `libc++_shared.so`)
 - No GnuTLS/nettle/hogweed dependencies
 - Pure C, POSIX sockets, pthreads
@@ -411,7 +411,7 @@ Flutter is the chosen UI framework (single codebase for all platforms).
 | | | iOS: Replace with URLSession or bundle |
 | CA Bundle | SSL certificates | Android: Bundle cacert.pem in assets, copy to filesDir |
 | | | iOS: Uses system certificates |
-| ~~OpenDHT-PQ~~ | ~~DHT networking~~ | Removed (replaced by Nodus v5, pure C) |
+| ~~OpenDHT-PQ~~ | ~~DHT networking~~ | Removed (replaced by Nodus, pure C) |
 
 ---
 

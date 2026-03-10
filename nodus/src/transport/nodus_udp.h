@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — UDP Transport
+ * Nodus — UDP Transport
  *
  * Non-blocking UDP for Kademlia routing messages (PING, FIND_NODE).
  * Single socket, datagram-per-frame.

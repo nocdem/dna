@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — SQLite Storage Tests
+ * Nodus — SQLite Storage Tests
  */
 
 #include "core/nodus_storage.h"

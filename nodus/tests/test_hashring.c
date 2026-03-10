@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Consistent Hash Ring Tests
+ * Nodus — Consistent Hash Ring Tests
  */
 
 #include "channel/nodus_hashring.h"

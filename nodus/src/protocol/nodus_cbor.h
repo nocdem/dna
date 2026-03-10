@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Minimal CBOR Encoder/Decoder
+ * Nodus — Minimal CBOR Encoder/Decoder
  *
  * Supports only the types we need: unsigned integers, byte strings,
  * text strings, arrays, maps. No floats, tags, or indefinite-length.

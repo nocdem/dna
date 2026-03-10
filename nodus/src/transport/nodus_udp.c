@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — UDP Transport Implementation
+ * Nodus — UDP Transport Implementation
  *
  * Non-blocking UDP for Kademlia routing signals.
  * Single socket, datagram-per-frame, integrated with epoll.

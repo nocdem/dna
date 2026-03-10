@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Identity Generation & Management
+ * Nodus — Identity Generation & Management
  *
  * Generates Dilithium5 keypairs from seed (deterministic) or randomly.
  * Seed derivation uses qgp_dsa87_keypair_derand() which produces

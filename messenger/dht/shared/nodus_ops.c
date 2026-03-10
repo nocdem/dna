@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Convenience Operations Layer Implementation
+ * Nodus — Convenience Operations Layer Implementation
  *
  * Direct wrapper around nodus_singleton for DHT operations.
  * Handles key hashing, value creation, signing, and listener dispatch.

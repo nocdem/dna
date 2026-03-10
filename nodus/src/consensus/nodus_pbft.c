@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Simplified PBFT Consensus Implementation
+ * Nodus — Simplified PBFT Consensus Implementation
  *
  * Heartbeat-based cluster management for a 3-node ring.
  * Nodes send UDP PING every 10s, suspect after 30s, dead after 60s.

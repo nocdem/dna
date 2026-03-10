@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Server Core Implementation
+ * Nodus — Server Core Implementation
  *
  * Dual-transport event loop: UDP (Kademlia) + TCP (data + clients).
  * Handles: auth, PUT, GET, GET_ALL, LISTEN, PING, and Kademlia routing.

@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Minimal CBOR Encoder/Decoder
+ * Nodus — Minimal CBOR Encoder/Decoder
  *
  * RFC 8949 compliant subset. Only encodes/decodes:
  * unsigned integers, byte strings, text strings, arrays, maps, booleans, null.

@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Witness Database Layer Implementation
+ * Nodus — Witness Database Layer Implementation
  *
  * Consolidated SQLite operations for DNAC witness state.
  * Ported from dnac/src/witness/{nullifier,ledger,utxo_set,block}.c

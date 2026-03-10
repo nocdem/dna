@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Server Entry Point
+ * Nodus — Server Entry Point
  *
  * Start a Nodus DHT server with optional config file.
  *

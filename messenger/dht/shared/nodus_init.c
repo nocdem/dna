@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Messenger Init/Lifecycle Module Implementation
+ * Nodus — Messenger Init/Lifecycle Module Implementation
  *
  * Replaces dht_singleton.c (427 lines) with a simpler, leak-free design.
  *

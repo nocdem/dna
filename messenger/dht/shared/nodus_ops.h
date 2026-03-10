@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Convenience Operations Layer
+ * Nodus — Convenience Operations Layer
  *
  * Direct wrapper around nodus_singleton + nodus_client for DHT operations.
  * Replaces the old dht_* compat shim with native Nodus types.
@@ -8,7 +8,7 @@
  * - Uses nodus types directly (nodus_key_t, nodus_value_t)
  * - Handles key hashing, signing, and value creation internally
  * - Listener dispatch with per-key callbacks (same shape as old API)
- * - No chunking abstraction (Nodus v5 supports 1MB values)
+ * - No chunking abstraction (Nodus supports 1MB values)
  *
  * @file nodus_ops.h
  */

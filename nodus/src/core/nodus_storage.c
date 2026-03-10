@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — SQLite DHT Storage
+ * Nodus — SQLite DHT Storage
  *
  * Persistent storage for DHT values with TTL cleanup.
  * PRIMARY KEY: (key_hash, owner_fp, value_id)

@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Bucket Refresh Key Generation Tests
+ * Nodus — Bucket Refresh Key Generation Tests
  *
  * Validates nodus_key_random_in_bucket() generates keys that:
  * - XOR-distance to self falls in the correct bucket

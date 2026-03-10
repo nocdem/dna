@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Channel Storage Implementation
+ * Nodus — Channel Storage Implementation
  *
  * Per-channel SQLite tables, hinted handoff queue, retention cleanup.
  */

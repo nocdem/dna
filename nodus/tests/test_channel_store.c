@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Channel Storage Tests
+ * Nodus — Channel Storage Tests
  */
 
 #include "channel/nodus_channel_store.h"

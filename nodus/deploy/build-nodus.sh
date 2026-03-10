@@ -1,12 +1,12 @@
 #!/bin/bash
-# Nodus v5 Build & Deploy Script
+# Nodus Build & Deploy Script
 #
-# Builds the Nodus v5 DHT server and installs it.
+# Builds the Nodus DHT server and installs it.
 #
 # Usage:
-#   ./build-nodus-v5.sh           # Build + install + restart service
-#   ./build-nodus-v5.sh --debug   # Build with AddressSanitizer
-#   ./build-nodus-v5.sh --help    # Show help
+#   ./build-nodus.sh           # Build + install + restart service
+#   ./build-nodus.sh --debug   # Build with AddressSanitizer
+#   ./build-nodus.sh --help    # Show help
 
 set -e
 
@@ -16,8 +16,8 @@ MONOREPO_ROOT="$(cd "$NODUS_DIR/.." && pwd)"
 
 INSTALL_DIR="/usr/local/bin"
 DATA_DIR="/var/lib/nodus"
-CONFIG_FILE="/etc/nodus-v5.conf"
-SERVICE_NAME="nodus-v5"
+CONFIG_FILE="/etc/nodus.conf"
+SERVICE_NAME="nodus"
 
 # Parse arguments
 DEBUG_BUILD=0
@@ -28,10 +28,10 @@ for arg in "$@"; do
         --debug)
             DEBUG_BUILD=1
             BUILD_TYPE="Debug"
-            SERVICE_NAME="nodus-v5-debug"
+            SERVICE_NAME="nodus-debug"
             ;;
         --help|-h)
-            echo "Nodus v5 Build & Deploy Script"
+            echo "Nodus Build & Deploy Script"
             echo ""
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -60,7 +60,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${GREEN}=== Nodus v5 Build Script (${BUILD_TYPE}) ===${NC}"
+echo -e "${GREEN}=== Nodus Build Script (${BUILD_TYPE}) ===${NC}"
 echo ""
 
 # Check dependencies
@@ -151,7 +151,7 @@ first_time_install() {
     # Install config
     if [ ! -f "$CONFIG_FILE" ]; then
         echo "Installing config to ${CONFIG_FILE}..."
-        sudo cp "$SCRIPT_DIR/nodus-v5.conf.example" "$CONFIG_FILE"
+        sudo cp "$SCRIPT_DIR/nodus.conf.example" "$CONFIG_FILE"
         echo -e "${YELLOW}NOTE: Edit ${CONFIG_FILE} to set seed_nodes for this server${NC}"
     fi
 
@@ -160,7 +160,7 @@ first_time_install() {
     if [ $DEBUG_BUILD -eq 1 ]; then
         sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null << EOF
 [Unit]
-Description=Nodus v5 - Post-Quantum DHT Server (Debug+ASAN)
+Description=Nodus - Post-Quantum DHT Server (Debug+ASAN)
 After=network-online.target
 Wants=network-online.target
 
@@ -169,14 +169,14 @@ Type=simple
 ExecStart=${INSTALL_DIR}/nodus-server-debug -c ${CONFIG_FILE}
 Restart=on-failure
 RestartSec=5
-Environment="ASAN_OPTIONS=detect_leaks=1:log_path=/var/log/nodus-v5-asan"
+Environment="ASAN_OPTIONS=detect_leaks=1:log_path=/var/log/nodus-asan"
 ReadWritePaths=${DATA_DIR}
 
 [Install]
 WantedBy=multi-user.target
 EOF
     else
-        sudo cp "$SCRIPT_DIR/nodus-v5.service" /etc/systemd/system/${SERVICE_NAME}.service
+        sudo cp "$SCRIPT_DIR/nodus.service" /etc/systemd/system/${SERVICE_NAME}.service
     fi
 
     sudo systemctl daemon-reload

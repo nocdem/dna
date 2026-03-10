@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Server-Side Presence Table
+ * Nodus — Server-Side Presence Table
  *
  * Tracks which clients are connected to this node and across the cluster.
  * Local entries (peer_index=0) are set on auth, cleared on disconnect.

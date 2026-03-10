@@ -1,5 +1,5 @@
 /*
- * nodus_republish.c - Nodus v5 migration flag management
+ * nodus_republish.c - Nodus migration flag management
  *
  * Simple file-based flag: <data_dir>/.nodus_v5_migrated
  * Presence of the file means migration is complete.

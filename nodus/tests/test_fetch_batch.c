@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Storage Fetch Batch Tests
+ * Nodus — Storage Fetch Batch Tests
  *
  * Validates bookmark pagination for republish:
  * - First batch (NULL bookmark) starts from beginning

@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Core Type Definitions
+ * Nodus — Core Type Definitions
  *
  * SHA3-512 key space (512-bit, 64 bytes).
  * Dilithium5 (ML-DSA-87) signatures throughout.

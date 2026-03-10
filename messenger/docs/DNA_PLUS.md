@@ -670,14 +670,14 @@ premium/
 5. Add local SQLite cache for certificates
 6. Add `dna_engine_is_premium()` API function
 
-### Phase 2: Bootstrap Node (Nodus v5)
+### Phase 2: Bootstrap Node (Nodus)
 
 **New Files:**
 ```
 nodus/src/premium/
 ├── premium_monitor.h/.c    # TX monitoring
 ├── premium_db.h/.c         # SQLite persistence
-└── nodus-v5.conf.example   # Premium config section
+└── nodus.conf.example      # Premium config section
 ```
 
 **Tasks:**

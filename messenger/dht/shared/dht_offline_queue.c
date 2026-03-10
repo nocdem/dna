@@ -688,7 +688,7 @@ int dht_retrieve_queued_messages_from_contacts_parallel(
         make_outbox_base_key(sender_list[i], recipient, outbox_keys[i], 512);
     }
 
-    // Step 2: Fetch all outboxes sequentially (nodus v5 client-server is fast)
+    // Step 2: Fetch all outboxes sequentially (nodus client-server is fast)
     dht_offline_message_t *all_messages = NULL;
     size_t all_count = 0;
     size_t all_capacity = 0;

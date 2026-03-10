@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Async Channel Replication
+ * Nodus — Async Channel Replication
  *
  * Replicates channel posts from Primary to Backup nodes.
  * Uses simple blocking TCP for replication sends.

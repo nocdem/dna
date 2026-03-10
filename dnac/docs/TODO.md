@@ -157,7 +157,7 @@ Some unit tests inject fake UTXOs directly via `dnac_db_store_utxo()`:
 - [x] Witness attestations permanent
 - [x] Nullifier replication permanent
 - [x] Removed unused TTL defines from config.h
-- **Note:** Originally used `dht_put_signed_permanent()`. Now uses Nodus v5 via `nodus_ops` API (OpenDHT removed).
+- **Note:** Originally used `dht_put_signed_permanent()`. Now uses Nodus via `nodus_ops` API (OpenDHT removed).
 
 ### Phase 18: BFT Consensus (v0.2.0) ✅
 - [x] PBFT-like consensus protocol

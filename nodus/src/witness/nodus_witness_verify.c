@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Witness Transaction Verification
+ * Nodus — Witness Transaction Verification
  *
  * Full transaction verification for BFT consensus PREVOTE.
  * Recomputes tx_hash, verifies sender signature, checks balance

@@ -125,7 +125,7 @@ cd dna_messenger_flutter && flutter build apk
 │  (You)      │                                     │  (Contact)  │
 └──────┬──────┘                                     └──────┬──────┘
        │                                                   │
-       │              Nodus v5 DHT Network                   │
+       │              Nodus DHT Network                   │
        │    ┌────────────────────────────────────┐        │
        │    │    P2P Distributed Hash Table      │        │
        │    │                                    │        │
@@ -144,7 +144,7 @@ cd dna_messenger_flutter && flutter build apk
 **Components:**
 - **Flutter App** — Cross-platform UI (Android, Linux, Windows)
 - **C Library** — Core crypto, DHT, database (`libdna_engine.so`)
-- **Nodus v5** — Pure C Kademlia DHT with PBFT consensus
+- **Nodus** — Pure C Kademlia DHT with PBFT consensus
 
 **Local Storage:**
 - Messages: `~/.dna/messages.db`
@@ -155,9 +155,9 @@ cd dna_messenger_flutter && flutter build apk
 
 ## Network Infrastructure
 
-### Nodus v5
+### Nodus
 
-DNA Messenger uses **Nodus v5**, a pure C Kademlia DHT with PBFT consensus:
+DNA Messenger uses **Nodus**, a pure C Kademlia DHT with PBFT consensus:
 
 - **Pure C** — No C++ dependencies, minimal footprint
 - **Dilithium5 signatures** — All DHT values cryptographically signed (FIPS 204)

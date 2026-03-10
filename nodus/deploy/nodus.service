@@ -1,5 +1,5 @@
 [Unit]
-Description=Nodus v5 - Post-Quantum DHT Server
+Description=Nodus - Post-Quantum DHT Server
 Documentation=https://github.com/nocdem/dna
 After=network-online.target
 Wants=network-online.target
@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 User=root
 Group=root
-ExecStart=/usr/local/bin/nodus-server -c /etc/nodus-v5.conf
+ExecStart=/usr/local/bin/nodus-server -c /etc/nodus.conf
 Restart=on-failure
 RestartSec=5
 
@@ -19,7 +19,7 @@ PrivateTmp=true
 ReadWritePaths=/var/lib/nodus
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=nodus-v5
+SyslogIdentifier=nodus
 LimitNOFILE=65535
 LimitNPROC=4096
 

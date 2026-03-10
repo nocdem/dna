@@ -204,7 +204,7 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 |-----------|-------------|-----------|
 | C Library | `messenger/include/dna/version.h` | Messenger C code changes |
 | Flutter App | `messenger/dna_messenger_flutter/pubspec.yaml` | Flutter/Dart changes |
-| Nodus v5 | `nodus/include/nodus/nodus_types.h` (`NODUS_VERSION_*`) | Nodus code changes |
+| Nodus | `nodus/include/nodus/nodus_types.h` (`NODUS_VERSION_*`) | Nodus code changes |
 | DNAC | `dnac/include/dnac/version.h` | DNAC changes |
 
 **IMPORTANT: Versions are INDEPENDENT**
@@ -334,7 +334,7 @@ All C projects use CMake. Build from each project's `build/` directory.
 | Project | Build | Notes |
 |---------|-------|-------|
 | Messenger (C lib) | `cd messenger/build && cmake .. && make -j$(nproc)` | Must build first (dnac depends on it) |
-| Nodus v5 | `cd nodus/build && cmake .. && make -j$(nproc)` | Independent build |
+| Nodus | `cd nodus/build && cmake .. && make -j$(nproc)` | Independent build |
 | DNAC | `cd dnac/build && cmake .. && make -j$(nproc)` | Links against `libdna_lib.so` from messenger |
 | Flutter app | `cd messenger/dna_messenger_flutter && flutter build linux` | Requires messenger C lib built |
 | Windows cross-compile | `cd messenger && ./build-cross-compile.sh windows-x64` | |
@@ -400,7 +400,7 @@ git push origin main    # GitHub second (mirror)
 /opt/dna/
 ├── shared/crypto/     # Post-quantum crypto (Kyber1024, Dilithium5, BIP39, SHA3)
 ├── messenger/         # DNA Messenger - C library + Flutter app
-├── nodus/             # Nodus v5 - DHT server + client SDK (pure C)
+├── nodus/             # Nodus - DHT server + client SDK (pure C)
 ├── dnac/              # DNA Cash - UTXO digital cash over DHT
 ├── cpunk/             # cpunk.io + cpunk.club websites + backend API
 └── docs/              # Top-level project docs (readiness reports)
@@ -423,7 +423,7 @@ git push origin main    # GitHub second (mirror)
 └──────┬───────┬───────────────────────────────────────┘
        │       │ nodus_ops.c / nodus_init.c
        │  ┌────▼─────────────────────────────────┐
-       │  │  Nodus v5 Client SDK (nodus/)        │
+       │  │  Nodus Client SDK (nodus/)        │
        │  │  Kademlia DHT + PBFT consensus       │
        │  │  TCP client ←→ Nodus server cluster  │
        │  └──────────────────────────────────────┘
@@ -513,7 +513,7 @@ Flutter connects to the C library via `dart:ffi`:
 - **Dart wrapper:** `lib/ffi/dna_engine.dart` (converts C callbacks to Dart Futures/Streams)
 - **State management:** Riverpod providers in `lib/providers/`
 
-### Nodus v5 Architecture
+### Nodus Architecture
 
 Nodus is a post-quantum Kademlia DHT with PBFT consensus. Pure C, no C++ dependencies.
 
@@ -669,19 +669,19 @@ This is a multiplatform project targeting Linux, Windows, and Android (iOS plann
 
 ## Infrastructure
 
-### Nodus v5 Test Cluster (running v0.5.6)
+### Production Nodus Servers (v0.6.3)
+| Node | IP | Ports |
+|------|-----|-------|
+| US-1 | 154.38.182.161 | UDP 4000, TCP 4001 |
+| EU-1 | 164.68.105.227 | UDP 4000, TCP 4001 |
+| EU-2 | 164.68.116.180 | UDP 4000, TCP 4001 |
+
+### Nodus Test Cluster (v0.6.2)
 | Node | IP | Ports |
 |------|-----|-------|
 | nodus-01 | 161.97.85.25 | UDP 4000, TCP 4001 |
 | nodus-02 | 156.67.24.125 | UDP 4000, TCP 4001 |
 | nodus-03 | 156.67.25.251 | UDP 4000, TCP 4001 |
-
-### Production Nodus Servers (v0.4.5)
-| Node | IP |
-|------|-----|
-| US-1 | 154.38.182.161 |
-| EU-1 | 164.68.105.227 |
-| EU-2 | 164.68.116.180 |
 
 ### Old Repos (backup, DO NOT modify)
 - `/opt/dna-messenger` — original messenger repo

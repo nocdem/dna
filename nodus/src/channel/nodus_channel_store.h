@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Channel Storage
+ * Nodus — Channel Storage
  *
  * Per-channel SQLite tables with seq_id assignment,
  * hinted handoff queue, and 7-day retention cleanup.

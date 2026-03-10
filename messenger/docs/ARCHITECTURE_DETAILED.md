@@ -39,7 +39,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 | **Digital Signatures** | Dilithium5 (ML-DSA-87) |
 | **Symmetric Encryption** | AES-256-GCM |
 | **Hash Function** | SHA3-512, Keccak-256 (ETH) |
-| **DHT Network** | Nodus v5 (post-quantum Kademlia DHT) |
+| **DHT Network** | Nodus (post-quantum Kademlia DHT) |
 | **NAT Traversal** | DHT-only (ICE/STUN removed v0.4.61) |
 | **Local Storage** | SQLite3 |
 | **GUI Framework** | Flutter (Dart FFI to C library) |
@@ -223,7 +223,7 @@ kem (STATIC)              # Kyber1024 implementation
 dsa (STATIC)              # Dilithium5 implementation
 dht_lib (STATIC)          # DHT integration
 transport_lib (STATIC)    # P2P layer
-# OpenDHT removed — Nodus v5 is the only DHT layer
+# OpenDHT removed — Nodus is the only DHT layer
 ```
 
 ### Build Options
@@ -243,7 +243,7 @@ transport_lib (STATIC)    # P2P layer
 | SQLite3 | Local storage | System |
 | json-c | JSON parsing | System |
 | ~~libjuice~~ | ~~ICE/STUN NAT traversal~~ | Removed v0.4.61 |
-| ~~OpenDHT-PQ~~ | ~~DHT with Dilithium5~~ | Removed (replaced by Nodus v5) |
+| ~~OpenDHT-PQ~~ | ~~DHT with Dilithium5~~ | Removed (replaced by Nodus) |
 
 ### Platform-Specific Notes
 
@@ -1747,9 +1747,9 @@ rm -rf build && mkdir build && cd build
 cmake -DBUILD_GUI=OFF .. && make -j$(nproc)
 ```
 
-**Note:** The legacy OpenDHT-based `dna-nodus` has been replaced by Nodus v5 (pure C, located at `/opt/dna/nodus/`). See `nodus/docs/` for deployment details.
+**Note:** The legacy OpenDHT-based `dna-nodus` has been replaced by Nodus (pure C, located at `/opt/dna/nodus/`). See `nodus/docs/` for deployment details.
 
-**Nodus v5 Test Cluster:**
+**Nodus Test Cluster:**
 | Node | IP | Ports |
 |------|-----|-------|
 | nodus-01 | 161.97.85.25 | UDP 4000, TCP 4001 |
@@ -1757,9 +1757,9 @@ cmake -DBUILD_GUI=OFF .. && make -j$(nproc)
 | nodus-03 | 156.67.25.251 | UDP 4000, TCP 4001 |
 
 **Persistence:**
-- Config: `/etc/nodus-v5.conf` (per-machine)
+- Config: `/etc/nodus.conf` (per-machine)
 - Data: `/var/lib/nodus/` (identity + SQLite storage)
-- Systemd: `nodus-v5.service`
+- Systemd: `nodus.service`
 
 ### 14.4 Configuration Files
 

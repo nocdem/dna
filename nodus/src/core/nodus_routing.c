@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Kademlia Routing Table
+ * Nodus — Kademlia Routing Table
  *
  * 512 k-buckets, k=8. XOR-distance based.
  * LRU eviction: least-recently-seen entry is replaced when bucket is full.

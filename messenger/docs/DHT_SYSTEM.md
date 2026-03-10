@@ -4,9 +4,9 @@
 **Phase:** 14 (DHT-Only Messaging)
 **Version:** 0.7.10
 
-Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) system. The DHT layer is powered by Nodus v5, a pure C Kademlia DHT with PBFT consensus. OpenDHT has been completely removed.
+Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) system. The DHT layer is powered by Nodus, a pure C Kademlia DHT with PBFT consensus. OpenDHT has been completely removed.
 
-**Migration Note:** Many API function signatures in this document still show `dht_context_t *ctx` as the first parameter. As of the Nodus v5 migration, the `dht_context_t` type no longer exists. All DHT functions now use the Nodus singleton internally (via `nodus_ops.c`) and no longer require an explicit context parameter. Consult the header files in `dht/` for current signatures.
+**Migration Note:** Many API function signatures in this document still show `dht_context_t *ctx` as the first parameter. As of the Nodus migration, the `dht_context_t` type no longer exists. All DHT functions now use the Nodus singleton internally (via `nodus_ops.c`) and no longer require an explicit context parameter. Consult the header files in `dht/` for current signatures.
 
 ---
 
@@ -29,7 +29,7 @@ Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) sy
 
 ### What is DHT in DNA Messenger?
 
-The DHT is a distributed key-value store powered by Nodus v5 (pure C, Kademlia + PBFT consensus). It provides:
+The DHT is a distributed key-value store powered by Nodus (pure C, Kademlia + PBFT consensus). It provides:
 
 - **Decentralized storage** - No central server; data replicated across nodes
 - **Post-quantum security** - Dilithium5 (ML-DSA-87) signatures, NIST Category 5
@@ -63,12 +63,12 @@ Three production bootstrap servers run `dna-nodus`:
 |  dht/shared/nodus_ops.c + nodus_init.c                      |
 |  - Convenience wrappers (nodus_ops_put, _get, _listen)      |
 |  - Lifecycle management (init, connect, cleanup)            |
-|  - Direct integration with Nodus v5 client SDK              |
+|  - Direct integration with Nodus client SDK              |
 +-------------------------------------------------------------+
                               |
                               v
 +-------------------------------------------------------------+
-|                  Nodus v5 Client SDK                         |
+|                  Nodus Client SDK                         |
 |  nodus/src/client/nodus_client.c                            |
 |  - TCP connection to Nodus server cluster                   |
 |  - CBOR wire protocol (7-byte frame header)                 |
@@ -78,7 +78,7 @@ Three production bootstrap servers run `dna-nodus`:
                               |
                               v
 +-------------------------------------------------------------+
-|                  Nodus v5 Server Cluster                     |
+|                  Nodus Server Cluster                     |
 |  nodus/src/server/nodus_server.c                            |
 |  - Test: 161.97.85.25, 156.67.24.125, 156.67.25.251       |
 |  - Kademlia DHT (UDP 4000) + Client/Replication (TCP 4001) |
@@ -98,11 +98,11 @@ Three production bootstrap servers run `dna-nodus`:
 
 ## 3. DHT Core (`dht/core/` and `dht/shared/nodus_*`)
 
-**Note:** The old `dht_context.h/cpp` (OpenDHT wrapper) and related files (`dht_listen.cpp`, `dht_stats.cpp`, `dht_identity.cpp`, `dht_value_storage.cpp`) have been removed. DHT operations now go through the Nodus v5 client SDK via `nodus_ops.c`.
+**Note:** The old `dht_context.h/cpp` (OpenDHT wrapper) and related files (`dht_listen.cpp`, `dht_stats.cpp`, `dht_identity.cpp`, `dht_value_storage.cpp`) have been removed. DHT operations now go through the Nodus client SDK via `nodus_ops.c`.
 
 ### 3.1 Nodus Operations (nodus_ops.h/c)
 
-The DHT interface layer wrapping the Nodus v5 client singleton. All functions use the nodus singleton internally — no explicit context parameter needed. The client supports concurrent requests (up to 16 in-flight), so multiple threads can call nodus_ops functions simultaneously without external locking.
+The DHT interface layer wrapping the Nodus client singleton. All functions use the nodus singleton internally — no explicit context parameter needed. The client supports concurrent requests (up to 16 in-flight), so multiple threads can call nodus_ops functions simultaneously without external locking.
 
 #### Callback Types
 
@@ -194,7 +194,7 @@ const char *nodus_ops_fingerprint(void);
 | 365 days (31536000s) | Profiles |
 | 0 (permanent) | Name registrations (v0.3.0+) |
 
-**Note:** Nodus v5 supports values up to 1MB natively. No chunking abstraction is needed at the nodus_ops level.
+**Note:** Nodus supports values up to 1MB natively. No chunking abstraction is needed at the nodus_ops level.
 
 ---
 
@@ -311,7 +311,7 @@ the same outbox key with new messages.
 
 ### 4.1 Nodus Integration (nodus_init.h/c)
 
-**Nodus v5 replaced the old `dht_singleton` / `dht_context` / `dht_identity` layer entirely.** The old files (`dht_singleton.c`, `dht_context.cpp`, `dht_identity.cpp`) have been deleted. Lifecycle is now managed through `nodus_init.c`.
+**Nodus replaced the old `dht_singleton` / `dht_context` / `dht_identity` layer entirely.** The old files (`dht_singleton.c`, `dht_context.cpp`, `dht_identity.cpp`) have been deleted. Lifecycle is now managed through `nodus_init.c`.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -335,9 +335,9 @@ the same outbox key with new messages.
     File-based mutex prevents race conditions.
 ```
 
-#### Nodus v5 Seed Nodes
+#### Nodus Seed Nodes
 
-The messenger connects to the Nodus v5 test cluster:
+The messenger connects to the Nodus test cluster:
 
 | Node | IP | TCP Port |
 |------|-----|----------|
@@ -349,7 +349,7 @@ The messenger connects to the Nodus v5 test cluster:
 
 1. Engine acquires identity lock (file-based mutex)
 2. Engine loads identity from encrypted backup
-3. Engine calls `nodus_init()` to connect to Nodus v5 cluster
+3. Engine calls `nodus_init()` to connect to Nodus cluster
 4. Nodus client authenticates via Dilithium5 challenge/response
 5. DHT operations available via `nodus_ops_*()` convenience functions
 6. On engine destroy: `nodus_cleanup()`, release lock
@@ -528,9 +528,9 @@ This ensures real-time notifications always point to the current day's posts.
 
 ### 5.1 Value Persistence
 
-**Note:** The old `dht_value_storage.h/cpp` (SQLite persistence for OpenDHT bootstrap nodes) has been removed. Value persistence is now handled natively by Nodus v5 servers (SQLite in `/var/lib/nodus/`).
+**Note:** The old `dht_value_storage.h/cpp` (SQLite persistence for OpenDHT bootstrap nodes) has been removed. Value persistence is now handled natively by Nodus servers (SQLite in `/var/lib/nodus/`).
 
-The following statistics and persistence concepts still apply at the Nodus v5 server level:
+The following statistics and persistence concepts still apply at the Nodus server level:
 
 #### Statistics Structure
 
@@ -1133,11 +1133,11 @@ int dht_keyserver_reverse_lookup(
 
 ---
 
-## 7. Nodus v5 Server
+## 7. Nodus Server
 
 ### 7.1 Overview
 
-Nodus v5 is a pure C post-quantum DHT server with PBFT consensus:
+Nodus is a pure C post-quantum DHT server with PBFT consensus:
 
 - **UDP Port**: 4000 (Kademlia peer discovery)
 - **TCP Port**: 4001 (client connections + replication)
@@ -1157,13 +1157,13 @@ Nodus v5 is a pure C post-quantum DHT server with PBFT consensus:
 
 ### 7.3 Deployment
 
-**Nodus v5 Test Cluster (3 nodes, v0.5.0):**
+**Nodus Test Cluster (3 nodes, v0.5.0):**
 
 | Node | IP | Config |
 |------|-----|--------|
-| nodus-01 | 161.97.85.25 | `/etc/nodus-v5.conf` |
-| nodus-02 | 156.67.24.125 | `/etc/nodus-v5.conf` |
-| nodus-03 | 156.67.25.251 | `/etc/nodus-v5.conf` |
+| nodus-01 | 161.97.85.25 | `/etc/nodus.conf` |
+| nodus-02 | 156.67.24.125 | `/etc/nodus.conf` |
+| nodus-03 | 156.67.25.251 | `/etc/nodus.conf` |
 
 ```bash
 # Build
@@ -1173,7 +1173,7 @@ cd /opt/dna/nodus/build && cmake .. && make -j$(nproc)
 ssh root@<IP> 'bash /tmp/nodus-redeploy.sh'
 
 # Check status
-ssh root@<IP> 'systemctl status nodus-v5'
+ssh root@<IP> 'systemctl status nodus'
 ```
 
 **Legacy Production Servers (v0.4.5, still running):**
@@ -1186,7 +1186,7 @@ ssh root@<IP> 'systemctl status nodus-v5'
 
 ### 7.4 Persistence
 
-Nodus v5 stores data in `/var/lib/nodus/`:
+Nodus stores data in `/var/lib/nodus/`:
 - Identity files (Dilithium5 keypair)
 - SQLite database for DHT values
 
@@ -1194,10 +1194,10 @@ Nodus v5 stores data in `/var/lib/nodus/`:
 
 ```bash
 # Service status
-ssh root@<IP> 'systemctl status nodus-v5'
+ssh root@<IP> 'systemctl status nodus'
 
 # Live logs
-ssh root@<IP> 'journalctl -u nodus-v5 -f'
+ssh root@<IP> 'journalctl -u nodus -f'
 ```
 
 ---
@@ -1353,8 +1353,8 @@ await engine.blockUser(fingerprint, "spam");
 
 | Directory | Key Files | Purpose |
 |-----------|-----------|---------|
-| `dht/shared/` | `nodus_ops.c`, `nodus_ops.h` | Nodus v5 convenience wrappers (put, get, listen) |
-| `dht/shared/` | `nodus_init.c`, `nodus_init.h` | Nodus v5 lifecycle (init, connect, cleanup) |
+| `dht/shared/` | `nodus_ops.c`, `nodus_ops.h` | Nodus convenience wrappers (put, get, listen) |
+| `dht/shared/` | `nodus_init.c`, `nodus_init.h` | Nodus lifecycle (init, connect, cleanup) |
 | `dht/core/` | `dht_bootstrap_registry.c`, `dht_bootstrap_registry.h` | Bootstrap discovery |
 | `dht/core/` | `dht_keyserver.c`, `dht_keyserver.h` | Keyserver operations |
 | `dht/client/` | `dht_contactlist.c`, `dht_contactlist.h` | Contact list storage |
@@ -1367,22 +1367,22 @@ await engine.blockUser(fingerprint, "spam");
 | `dht/shared/` | `dht_contact_request.c`, `dht_contact_request.h` | Contact request DHT operations |
 | `dht/shared/` | `dht_gek_storage.c`, `dht_gek_storage.h` | GEK chunked storage |
 | `dht/keyserver/` | `keyserver_*.c`, `keyserver_*.h` | Name/key resolution |
-| `nodus/` | `include/nodus/nodus.h` | Nodus v5 client SDK public API |
-| `nodus/` | `include/nodus/nodus_types.h` | Nodus v5 constants, version |
-| `nodus/` | `src/server/nodus_server.c` | Nodus v5 server (epoll event loop) |
-| `nodus/` | `src/client/nodus_client.c` | Nodus v5 client SDK |
+| `nodus/` | `include/nodus/nodus.h` | Nodus client SDK public API |
+| `nodus/` | `include/nodus/nodus_types.h` | Nodus constants, version |
+| `nodus/` | `src/server/nodus_server.c` | Nodus server (epoll event loop) |
+| `nodus/` | `src/client/nodus_client.c` | Nodus client SDK |
 
 ---
 
 ## Quick Reference
 
-### Initialize DHT (via Nodus v5)
+### Initialize DHT (via Nodus)
 
 ```c
 #include "dht/shared/nodus_init.h"
 #include "dht/shared/nodus_ops.h"
 
-// Initialize Nodus v5 connection (called by engine)
+// Initialize Nodus connection (called by engine)
 nodus_init();
 
 // DHT operations via nodus_ops convenience wrappers

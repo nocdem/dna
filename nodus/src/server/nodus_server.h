@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Server Core
+ * Nodus — Server Core
  *
  * Dual-transport event loop (UDP Kademlia + TCP data/clients).
  * Session management, authentication, message dispatch.

@@ -4,7 +4,7 @@
 Every claim verified TWICE by grepping all .c, .h, .cpp, .dart files across all source
 directories: src/, dht/, messenger/, transport/, database/, crypto/, blockchain/, cli/,
 jni/, tests/, dna_messenger_flutter/.
-(Note: `vendor/opendht-pq/tools/` was also searched at audit time but has since been removed; OpenDHT replaced by Nodus v5.)
+(Note: `vendor/opendht-pq/tools/` was also searched at audit time but has since been removed; OpenDHT replaced by Nodus.)
 
 Zero false positives remain. All items below are confirmed dead code.
 

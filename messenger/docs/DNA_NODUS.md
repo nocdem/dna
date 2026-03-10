@@ -1,6 +1,6 @@
 # DNA Nodus - Post-Quantum DHT Network
 
-**Current Version:** Nodus v5 (v0.5.6)
+**Current Version:** Nodus (v0.5.6)
 **Security:** FIPS 204 / ML-DSA-87 (Dilithium5) - NIST Category 5
 
 ## Overview
@@ -12,13 +12,13 @@ DNA Nodus is the DHT (Distributed Hash Table) infrastructure for DNA Messenger. 
 3. **Client SDK** - TCP-based client protocol for messenger integration
 4. **SQLite Persistence** - Durable storage for DHT values
 
-**Architecture:** Nodus v5 replaced the former OpenDHT-PQ (C++) backend entirely. The `vendor/opendht-pq/` directory has been deleted. All messenger DHT operations now go through the Nodus v5 client SDK directly via `nodus_ops.c` / `nodus_init.c`.
+**Architecture:** Nodus replaced the former OpenDHT-PQ (C++) backend entirely. The `vendor/opendht-pq/` directory has been deleted. All messenger DHT operations now go through the Nodus client SDK directly via `nodus_ops.c` / `nodus_init.c`.
 
 ## Architecture
 
 ```
 +-----------------------------------------------------------------+
-|                      Nodus v5 Server                            |
+|                      Nodus Server                            |
 |                   (Pure C, CBOR protocol)                       |
 +-----------------------------------------------------------------+
 |                                                                 |
@@ -61,13 +61,13 @@ DNA Engine
 nodus_ops.c / nodus_init.c  (messenger/dht/shared/)
     |
     v
-Nodus v5 Client SDK  (nodus/src/client/)
+Nodus Client SDK  (nodus/src/client/)
     |
     v  TCP connection
-Nodus v5 Server Cluster
+Nodus Server Cluster
 ```
 
-The messenger integrates directly with Nodus v5 -- no compatibility layer, no OpenDHT. Key files:
+The messenger integrates directly with Nodus -- no compatibility layer, no OpenDHT. Key files:
 - `messenger/dht/shared/nodus_ops.c` - Convenience wrappers (`nodus_ops_put`, `nodus_ops_get`, `nodus_ops_listen`)
 - `messenger/dht/shared/nodus_init.c` - Lifecycle management (init/connect/cleanup)
 - `nodus/include/nodus/nodus.h` - Client SDK public API
@@ -75,7 +75,7 @@ The messenger integrates directly with Nodus v5 -- no compatibility layer, no Op
 
 **Internal Read Thread (v0.5.6+):** The Nodus client SDK runs an internal read thread after `nodus_client_connect()` that continuously reads TCP via blocking `epoll_wait`. Push notifications (value_changed, ch_ntf, offline messages) are delivered instantly via callbacks. `nodus_client_poll()` is a no-op when the read thread is running. This replaces the old model where the heartbeat thread polled every 60s. Zero battery impact (kernel wait queue, no CPU spin).
 
-## Nodus v5 Test Cluster
+## Nodus Test Cluster
 
 Three nodes running v0.5.6 with PBFT ring formed and cross-node replication verified.
 
@@ -85,14 +85,14 @@ Three nodes running v0.5.6 with PBFT ring formed and cross-node replication veri
 | nodus-02 | 156.67.24.125 | 4000 | 4001 |
 | nodus-03 | 156.67.25.251 | 4000 | 4001 |
 
-**Configuration:** `/etc/nodus-v5.conf` (per-machine, each seeds the other 2)
+**Configuration:** `/etc/nodus.conf` (per-machine, each seeds the other 2)
 **Data directory:** `/var/lib/nodus/` (identity + SQLite storage)
-**Systemd service:** `nodus-v5.service` (enabled, auto-start)
+**Systemd service:** `nodus.service` (enabled, auto-start)
 
 ### Deployment
 
 ```bash
-# Build Nodus v5
+# Build Nodus
 cd /opt/dna/nodus/build && cmake .. && make -j$(nproc)
 
 # Redeploy to a server
@@ -101,7 +101,7 @@ ssh root@<IP> 'bash /tmp/nodus-redeploy.sh'
 
 ### Configuration (v5)
 
-Nodus v5 uses `/etc/nodus-v5.conf`:
+Nodus uses `/etc/nodus.conf`:
 
 ```json
 {
@@ -118,7 +118,7 @@ Nodus v5 uses `/etc/nodus-v5.conf`:
 
 ## Production Servers (Legacy v0.4.5)
 
-These servers still run the legacy dna-nodus v0.4.5 (OpenDHT-based) for production clients. They will be migrated to Nodus v5 during production cutover.
+These servers still run the legacy dna-nodus v0.4.5 (OpenDHT-based) for production clients. They will be migrated to Nodus during production cutover.
 
 | Server | IP | DHT Port | Location |
 |--------|-----|----------|----------|
@@ -130,23 +130,23 @@ These servers still run the legacy dna-nodus v0.4.5 (OpenDHT-based) for producti
 
 ## Building
 
-### Nodus v5 (current)
+### Nodus (current)
 
 ```bash
 cd /opt/dna/nodus/build
 cmake .. && make -j$(nproc)
 ```
 
-This produces the server binary and client SDK library. The messenger build links against the Nodus v5 client SDK automatically.
+This produces the server binary and client SDK library. The messenger build links against the Nodus client SDK automatically.
 
-### Messenger (with Nodus v5 integration)
+### Messenger (with Nodus integration)
 
 ```bash
 cd /opt/dna/messenger/build
 cmake .. && make -j$(nproc)
 ```
 
-The messenger CMake configuration links against the Nodus v5 client library. No separate build step is needed for the SDK.
+The messenger CMake configuration links against the Nodus client library. No separate build step is needed for the SDK.
 
 ## Key Source Files
 
@@ -185,14 +185,14 @@ The messenger CMake configuration links against the Nodus v5 client library. No 
 
 ## Monitoring
 
-### Nodus v5 Status
+### Nodus Status
 
 ```bash
 # Check service status
-ssh root@<IP> 'systemctl status nodus-v5'
+ssh root@<IP> 'systemctl status nodus'
 
 # View logs
-ssh root@<IP> 'journalctl -u nodus-v5 -f'
+ssh root@<IP> 'journalctl -u nodus -f'
 ```
 
 ### Legacy v0.4 Status
@@ -203,14 +203,14 @@ ssh root@<IP> 'systemctl status dna-nodus'
 
 ## Version History
 
-### Nodus v5 (Pure C rewrite)
+### Nodus (Pure C rewrite)
 - **v0.5.6** - Internal read thread for instant push notification delivery
   - Client SDK spawns read thread after connect (blocking epoll_wait, zero CPU)
   - Push notifications (value_changed, ch_ntf) delivered instantly via callbacks
   - `nodus_client_poll()` is no-op when read thread is running
   - `nodus_pending_t.ready` changed to `_Atomic bool` for cross-thread visibility
   - Thread safety: poll_mutex (reads), send_mutex (writes), pending_mutex (slots)
-- **v0.5.0** - Production-ready Nodus v5: Kademlia DHT + PBFT consensus + TCP client SDK
+- **v0.5.0** - Production-ready Nodus: Kademlia DHT + PBFT consensus + TCP client SDK
   - Pure C implementation (no C++ dependencies)
   - CBOR wire protocol with 7-byte frame header
   - Two-tier protocol (Kademlia + Client)

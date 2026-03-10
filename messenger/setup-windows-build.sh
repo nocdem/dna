@@ -313,7 +313,7 @@ else
     echo -e "${GREEN}✓${NC} libidn2 already installed"
 fi
 
-# 10. Build GnuTLS (TLS library - required by Nodus v5)
+# 10. Build GnuTLS (TLS library - required by Nodus)
 echo -e "${BLUE}[10/16] Building GnuTLS...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libgnutls.a" ]; then
     if [ ! -d "gnutls-3.8.3" ]; then

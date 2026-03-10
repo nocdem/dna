@@ -46,8 +46,8 @@ if(WIN32)
     # Windows system libraries required by dna_lib (for target_link_libraries)
     # These are linked in CMakeLists.txt after dna_lib is defined
     set(WINDOWS_SYSTEM_LIBS
-        # GnuTLS and its dependencies (required by Nodus v5 for TLS)
-        gnutls      # TLS library for Nodus v5
+        # GnuTLS and its dependencies (required by Nodus for TLS)
+        gnutls      # TLS library for Nodus
         tasn1       # ASN.1 library (required by GnuTLS)
         unistring   # Unicode string library (required by GnuTLS)
         intl        # Internationalization (required by GnuTLS)

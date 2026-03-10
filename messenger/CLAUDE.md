@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-03-09 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.9.24 | Flutter v0.101.24 | Nodus v0.5.0
+**Versions:** Library v0.9.24 | Flutter v0.101.24 | Nodus v0.6.3
 
 ---
 
@@ -199,13 +199,13 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 |-----------|--------------|---------|-----------|
 | C Library | `include/dna/version.h` | v0.7.10 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
 | Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.101.24+10324 | Flutter/Dart code changes (lib/, assets/) |
-| Nodus v5 | `../nodus/include/nodus/nodus_types.h` | v0.5.0 | Nodus code changes (../nodus/) |
+| Nodus | `../nodus/include/nodus/nodus_types.h` | v0.6.3 | Nodus code changes (../nodus/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
 - Each component has its **own version number** - they do NOT need to match
 - **C Library changes** → bump `version.h` only
 - **Flutter/Dart changes** → bump `pubspec.yaml` only
-- **Nodus v5 changes** → bump `nodus_types.h` (`NODUS_VERSION_*`) only
+- **Nodus changes** → bump `nodus_types.h` (`NODUS_VERSION_*`) only
 - **Build scripts, CI, docs** → no version bump needed
 - Flutter app displays **both versions** in Settings:
   - App version: from `pubspec.yaml`
@@ -792,31 +792,31 @@ Details: what/why/breaking
 
 ## DNA Nodus Deployment
 
-**Nodus v5 is the DHT layer.** OpenDHT has been completely removed. Messenger integrates directly via `nodus_ops.c` / `nodus_init.c`.
+**Nodus is the DHT layer.** OpenDHT has been completely removed. Messenger integrates directly via `nodus_ops.c` / `nodus_init.c`.
 
-**Nodus v5 Test Cluster (running v0.5.0):**
+**Production Nodus Servers (v0.6.3):**
+| Server | IP | UDP Port | TCP Port |
+|--------|-----|----------|----------|
+| US-1 | 154.38.182.161 | 4000 | 4001 |
+| EU-1 | 164.68.105.227 | 4000 | 4001 |
+| EU-2 | 164.68.116.180 | 4000 | 4001 |
+
+**Nodus Test Cluster (v0.6.2):**
 | Server | IP | UDP Port | TCP Port |
 |--------|-----|----------|----------|
 | nodus-01 | 161.97.85.25 | 4000 | 4001 |
 | nodus-02 | 156.67.24.125 | 4000 | 4001 |
 | nodus-03 | 156.67.25.251 | 4000 | 4001 |
 
-**Production Bootstrap Servers (legacy dna-nodus v0.4.5, still running):**
-| Server | IP | DHT Port |
-|--------|-----|----------|
-| US-1 | 154.38.182.161 | 4000 |
-| EU-1 | 164.68.105.227 | 4000 |
-| EU-2 | 164.68.116.180 | 4000 |
-
-**Nodus v5 Build:**
+**Nodus Build:**
 ```bash
 cd /opt/dna/nodus/build && cmake .. && make -j$(nproc)
 ```
 
-**Nodus v5 Configuration:**
-- Config file: `/etc/nodus-v5.conf` (per-machine, each seeds the other 2)
+**Nodus Configuration:**
+- Config file: `/etc/nodus.conf` (per-machine, each seeds the other 2)
 - Data: `/var/lib/nodus/` (identity + SQLite storage)
-- Systemd: `nodus-v5.service` (enabled, auto-start)
+- Systemd: `nodus.service` (enabled, auto-start)
 
 **Services:**
 - Kademlia (peer discovery): UDP port 4000

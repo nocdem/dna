@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Presence Table + Protocol Tests
+ * Nodus — Presence Table + Protocol Tests
  *
  * Tests:
  *   1. Presence table: add/remove/query/expire/merge

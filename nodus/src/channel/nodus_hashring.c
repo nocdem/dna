@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Consistent Hash Ring
+ * Nodus — Consistent Hash Ring
  *
  * Sorted ring of Nodus IDs. Channel assignment by clockwise walk.
  * Deterministic: same members + same channel UUID = same responsible set.

@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Kademlia Routing Table
+ * Nodus — Kademlia Routing Table
  *
  * 512 k-buckets (one per bit of the SHA3-512 key space).
  * Each bucket holds up to k=8 peers, ordered by last_seen (LRU).

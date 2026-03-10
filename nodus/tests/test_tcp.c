@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — TCP Transport Tests
+ * Nodus — TCP Transport Tests
  *
  * Tests loopback connect, frame send/receive, disconnect.
  */

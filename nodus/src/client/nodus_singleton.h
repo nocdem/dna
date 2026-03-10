@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Singleton Client Instance
+ * Nodus — Singleton Client Instance
  *
  * Global client for use by the messenger engine.
  * Thread-safe init/connect/poll/close lifecycle.

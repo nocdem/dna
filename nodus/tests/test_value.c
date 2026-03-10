@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — NodusValue Tests
+ * Nodus — NodusValue Tests
  *
  * Tests create, sign, verify, serialize/deserialize roundtrip.
  */

@@ -1,4 +1,4 @@
-# Nodus v5 — Critical Replication Issues
+# Nodus — Critical Replication Issues
 
 **Date:** 2026-03-08 | **Status:** RESOLVED (2026-03-08) | **Severity:** Was CRITICAL
 
@@ -8,7 +8,7 @@
 
 ## Summary
 
-Nodus v5 DHT value replication has fundamental architectural issues. The system uses PBFT consensus peer list for replication instead of Kademlia routing. Tier 1 Kademlia infrastructure (FIND_VALUE, STORE, routing table) exists and works but is not connected to the Tier 2 client-facing operations.
+Nodus DHT value replication has fundamental architectural issues. The system uses PBFT consensus peer list for replication instead of Kademlia routing. Tier 1 Kademlia infrastructure (FIND_VALUE, STORE, routing table) exists and works but is not connected to the Tier 2 client-facing operations.
 
 ---
 

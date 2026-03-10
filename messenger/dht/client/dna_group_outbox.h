@@ -5,7 +5,7 @@
  * Single-key group messaging with multi-writer DHT storage:
  * - Message encrypted once with GEK (AES-256-GCM)
  * - All members write to SAME key (different value_id per sender)
- * - Storage via Nodus v5 DHT (up to 1MB per value)
+ * - Storage via Nodus DHT (up to 1MB per value)
  * - Real-time notifications via single nodus_ops_listen() per group
  * - Day-based buckets (7 days retention)
  *

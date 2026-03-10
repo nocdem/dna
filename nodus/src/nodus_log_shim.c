@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Minimal log shim
+ * Nodus — Minimal log shim
  *
  * Provides qgp_log_should_log(), qgp_log_ring_add(), qgp_log_file_write()
  * stubs required by qgp_platform_linux.c and other shared crypto code.

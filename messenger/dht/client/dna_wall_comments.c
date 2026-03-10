@@ -8,7 +8,7 @@
  * Storage Model (same as feed comments):
  * - Comments: "dna:wall:comments:<post_uuid>" (multi-owner)
  * - Each author stores their comments in their own value_id slot
- * - Uses nodus_ops_* functions (Nodus v5 native)
+ * - Uses nodus_ops_* functions (Nodus native)
  *
  * v0.7.0: Initial implementation
  */

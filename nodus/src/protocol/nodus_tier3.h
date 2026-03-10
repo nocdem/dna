@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Tier 3 Protocol (Witness BFT Consensus)
+ * Nodus — Tier 3 Protocol (Witness BFT Consensus)
  *
  * CBOR encode/decode for witness-to-witness BFT messages.
  * All messages use "w_" prefixed methods, self-authenticated via

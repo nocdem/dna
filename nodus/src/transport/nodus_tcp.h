@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — TCP Transport
+ * Nodus — TCP Transport
  *
  * Cross-platform non-blocking TCP with connection pool and frame-based I/O.
  * Linux/Android: uses epoll for server (high-perf multi-connection).

@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Client SDK Implementation
+ * Nodus — Client SDK Implementation
  *
  * Provides connect/auth/DHT/channel operations with multi-server
  * failover and auto-reconnect (exponential backoff 1s-30s).

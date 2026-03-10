@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Witness Module (DNAC BFT Consensus)
+ * Nodus — Witness Module (DNAC BFT Consensus)
  *
  * Optional module that embeds DNAC witness functionality into nodus-server.
  * When enabled via config ("witness_enabled": true), provides:

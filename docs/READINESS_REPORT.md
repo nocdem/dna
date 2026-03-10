@@ -10,14 +10,14 @@
 
 | Project | Build | Tests | API Complete | Docs | Production Ready |
 |---------|-------|-------|-------------|------|-----------------|
-| **Nodus v5** | PASS | 14/14 PASS | YES | YES | YES |
+| **Nodus** | PASS | 14/14 PASS | YES | YES | YES |
 | **Messenger** | PASS | Not in ctest | YES | YES | BETA |
 | **DNAC** | PASS | 1/2 (network) | YES | YES | BETA |
 | **Shared Crypto** | PASS | (via projects) | YES | YES | YES |
 
 ---
 
-## Nodus v5 - PRODUCTION READY
+## Nodus - PRODUCTION READY
 
 ### Build Status: PASS
 ```
@@ -119,7 +119,7 @@ Targets: libdna_lib.so (shared), dna-messenger-cli
 | Post-Quantum Crypto (Kyber1024 + Dilithium5) | COMPLETE |
 | 1:1 Messaging (encrypt, send, offline queue, ACK) | COMPLETE |
 | Group Messaging (GEK rotation, invitations) | COMPLETE |
-| Nodus v5 DHT Integration | COMPLETE |
+| Nodus DHT Integration | COMPLETE |
 | Multi-Chain Wallet (4 networks, 9+ tokens) | COMPLETE |
 | User Profiles (avatar, bio, socials, wallets) | COMPLETE |
 | Social Wall + Timeline (posts, comments) | COMPLETE |

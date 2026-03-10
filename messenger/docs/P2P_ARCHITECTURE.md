@@ -4,7 +4,7 @@
 
 ## Overview
 
-DNA Messenger uses a DHT-only transport layer built on the Nodus v5 client SDK. All messaging goes through the Nodus DHT network -- there are no direct peer-to-peer TCP connections between clients.
+DNA Messenger uses a DHT-only transport layer built on the Nodus client SDK. All messaging goes through the Nodus DHT network -- there are no direct peer-to-peer TCP connections between clients.
 
 **Key properties:**
 - DHT-only messaging via Spillway format (no direct P2P since v0.3.154)
@@ -27,13 +27,13 @@ messenger_transport.c  --  transport.c
 nodus_ops.c / nodus_init.c
     |
     v
-Nodus v5 Client SDK (nodus_client.c)
+Nodus Client SDK (nodus_client.c)
     |
     |  Internal read thread (epoll_wait)
     |  Push notifications delivered instantly via callbacks
     |
     v  TCP 4001
-Nodus v5 Server Cluster
+Nodus Server Cluster
 ```
 
 ### Nodus Client SDK Internal Read Thread (v0.5.6+)
@@ -97,5 +97,5 @@ With the internal read thread, push notifications for new offline messages arriv
 |-----------|-----------|--------|
 | Direct P2P TCP messaging | v0.3.154 | DHT-only for privacy |
 | ICE/STUN/TURN | v0.4.61 | Privacy (no IP disclosure) |
-| OpenDHT-PQ | v0.8.0 | Replaced by Nodus v5 |
+| OpenDHT-PQ | v0.8.0 | Replaced by Nodus |
 | Manual `nodus_client_poll()` cycling | v0.5.6 | Replaced by internal read thread |

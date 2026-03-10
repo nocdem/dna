@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Simplified PBFT Consensus
+ * Nodus — Simplified PBFT Consensus
  *
  * For a 3-node cluster (f=0):
  * - Heartbeat-based failure detection via UDP PING/PONG

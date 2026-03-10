@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Dilithium5 Crypto Wrapper
+ * Nodus — Dilithium5 Crypto Wrapper
  *
  * Thin wrapper around shared/crypto qgp_dsa87_* functions.
  * Provides Nodus-typed API for sign/verify/hash operations.

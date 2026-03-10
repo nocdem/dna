@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Singleton Client Implementation
+ * Nodus — Singleton Client Implementation
  *
  * @file nodus_singleton.c
  */

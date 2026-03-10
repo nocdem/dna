@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Server-Side Presence Table
+ * Nodus — Server-Side Presence Table
  *
  * Tracks connected clients locally and across the cluster via p_sync.
  * Single-threaded (called from server event loop only).

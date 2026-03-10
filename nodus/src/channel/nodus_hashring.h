@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Consistent Hash Ring for Channel Sharding
+ * Nodus — Consistent Hash Ring for Channel Sharding
  *
  * Each Nodus has a position: nodus_id (SHA3-512 of pubkey).
  * Each channel has a position: SHA3-512(channel_uuid).

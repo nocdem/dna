@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Hinted Handoff Tests
+ * Nodus — Hinted Handoff Tests
  *
  * Validates:
  * - node_id-based schema (not IP:port)

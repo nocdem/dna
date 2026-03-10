@@ -9,7 +9,7 @@
 #include "dht/shared/dht_groups.h"
 #include "dht/shared/dht_gek_storage.h"  // GEK fetch from DHT
 #include "crypto/utils/qgp_sha3.h"  // For fingerprint calculation
-#include "dht/shared/nodus_ops.h"      // Nodus v5 operations layer
+#include "dht/shared/nodus_ops.h"      // Nodus operations layer
 #include "dht/client/dna_group_outbox.h"  // Group outbox (feed pattern)
 #include "dht/client/dht_grouplist.h"  // Group list DHT sync (v0.5.26+)
 #include "messenger/groups.h"  // For groups_leave() cleanup (v0.6.83: removed groups_export_all)

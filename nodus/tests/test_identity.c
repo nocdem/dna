@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Identity Tests
+ * Nodus — Identity Tests
  *
  * Tests keypair generation, deterministic seed derivation,
  * sign/verify, and save/load roundtrip.

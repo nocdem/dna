@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Tier 3 Protocol Unit Test
+ * Nodus — Tier 3 Protocol Unit Test
  *
  * Round-trip encode/decode test for all 11 BFT message types.
  * Tests: encode → decode → verify field equality.

@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — CBOR Encoder/Decoder Tests
+ * Nodus — CBOR Encoder/Decoder Tests
  */
 
 #include "protocol/nodus_cbor.h"

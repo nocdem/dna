@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Storage Cleanup Tests
+ * Nodus — Storage Cleanup Tests
  *
  * Validates:
  * - Expired ephemeral values are cleaned up

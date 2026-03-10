@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Witness Peer Mesh Implementation
+ * Nodus — Witness Peer Mesh Implementation
  *
  * Manages TCP connections to peer witnesses. Ported from
  * dnac/src/bft/peer.c (552 lines) and dnac/src/bft/roster.c (526 lines).

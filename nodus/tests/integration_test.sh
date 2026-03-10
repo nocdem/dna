@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Nodus v5 — Integration Test Suite
+# Nodus — Integration Test Suite
 #
 # Tests the 3-node test cluster (nodus-01, nodus-02, nodus-03).
 # Run from any machine with SSH access to all 3 nodes.
@@ -53,11 +53,11 @@ section "Test 1: Bootstrap & Service Health"
 
 for NODE_IP in "$NODE1_IP" "$NODE2_IP" "$NODE3_IP"; do
     STATUS=$(ssh -o ConnectTimeout=5 "root@${NODE_IP}" \
-        'systemctl is-active nodus-v5' 2>&1 || true)
+        'systemctl is-active nodus' 2>&1 || true)
     if [ "$STATUS" = "active" ]; then
-        pass "nodus-v5 active on ${NODE_IP}"
+        pass "nodus active on ${NODE_IP}"
     else
-        fail "nodus-v5 not active on ${NODE_IP} (status: ${STATUS})"
+        fail "nodus not active on ${NODE_IP} (status: ${STATUS})"
     fi
 done
 
@@ -93,7 +93,7 @@ section "Test 4: PBFT Ring Formation"
 
 for NODE_IP in "$NODE1_IP" "$NODE2_IP" "$NODE3_IP"; do
     PEERS=$(ssh -o ConnectTimeout=5 "root@${NODE_IP}" \
-        'journalctl -u nodus-v5 --no-pager -n 50 2>&1 | grep -c "PBFT: discovered real node_id"' 2>&1 || echo "0")
+        'journalctl -u nodus --no-pager -n 50 2>&1 | grep -c "PBFT: discovered real node_id"' 2>&1 || echo "0")
     if [ "$PEERS" -ge 2 ]; then
         pass "PBFT discovered 2 peers on ${NODE_IP}"
     elif [ "$PEERS" -ge 1 ]; then
@@ -211,7 +211,7 @@ cli "$NODE1_IP" "put ${KEY} 'before_failover'" > /dev/null
 sleep 1
 
 # Stop node3
-ssh -o ConnectTimeout=5 "root@${NODE3_IP}" 'systemctl stop nodus-v5' 2>/dev/null
+ssh -o ConnectTimeout=5 "root@${NODE3_IP}" 'systemctl stop nodus' 2>/dev/null
 
 sleep 2
 
@@ -248,7 +248,7 @@ fi
 section "Test 10: Rejoin"
 
 # Restart node3
-ssh -o ConnectTimeout=5 "root@${NODE3_IP}" 'systemctl start nodus-v5' 2>/dev/null
+ssh -o ConnectTimeout=5 "root@${NODE3_IP}" 'systemctl start nodus' 2>/dev/null
 sleep 15  # Wait for PBFT rediscovery
 
 PING3=$(cli "$NODE3_IP" ping)

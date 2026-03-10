@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — SQLite DHT Storage
+ * Nodus — SQLite DHT Storage
  *
  * Persistent storage for DHT values with TTL cleanup.
  * Schema matches the design doc's nodus_values table.

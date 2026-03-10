@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Identity Generation & Management
+ * Nodus — Identity Generation & Management
  *
  * Generates Dilithium5 identity from seed or randomly.
  * CRITICAL: seed derivation MUST match dht_identity_generate_from_seed()

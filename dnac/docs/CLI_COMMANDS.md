@@ -265,17 +265,17 @@ Name-to-fingerprint resolution uses `dna_engine_lookup_name()`:
 3. Callback receives fingerprint (or empty string if name available)
 4. **Important:** Callback must `free()` the returned fingerprint string
 
-### DHT Integration (Nodus v5)
+### DHT Integration (Nodus)
 
-All commands interact with the Nodus v5 DHT network via the `nodus_ops` API (OpenDHT has been completely removed):
+All commands interact with the Nodus DHT network via the `nodus_ops` API (OpenDHT has been completely removed):
 - Identity loaded from local storage
 - Balance/UTXOs stored in local SQLite database
-- Transactions broadcast via Nodus v5 DHT
+- Transactions broadcast via Nodus DHT
 - Name lookups query DHT name registry
 
 ### Permanent Storage (v0.1.29+)
 
-All DHT data is stored permanently on the Nodus v5 network via the `nodus_ops` API:
+All DHT data is stored permanently on the Nodus network via the `nodus_ops` API:
 - **Payments**: Never expire (cash doesn't expire)
 - **Witness attestations**: Permanent record of double-spend prevention
 - **Witness announcements**: Permanent identity publication

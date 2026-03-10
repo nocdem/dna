@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Client SDK
+ * Nodus — Client SDK
  *
  * Public API for applications connecting to Nodus servers.
  * Supports DHT operations, channel messaging, multi-server failover,

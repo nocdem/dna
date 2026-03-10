@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — put_if_newer() Tests
+ * Nodus — put_if_newer() Tests
  *
  * Validates atomic seq check with SHA3-256 hash tiebreaker.
  */

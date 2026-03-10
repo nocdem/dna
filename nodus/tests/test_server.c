@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Server Integration Test
+ * Nodus — Server Integration Test
  *
  * Starts a server, connects a client, authenticates,
  * then tests PUT/GET/LISTEN round-trips.

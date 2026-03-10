@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Tier 2 Protocol (Client-Nodus)
+ * Nodus — Tier 2 Protocol (Client-Nodus)
  *
  * CBOR encode/decode for client↔server messages.
  * Auth: hello, challenge, auth, auth_ok

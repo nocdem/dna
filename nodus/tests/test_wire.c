@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Wire Frame Protocol Tests
+ * Nodus — Wire Frame Protocol Tests
  */
 
 #include "protocol/nodus_wire.h"

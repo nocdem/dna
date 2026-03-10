@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Tier 1 Protocol (Nodus-Nodus)
+ * Nodus — Tier 1 Protocol (Nodus-Nodus)
  *
  * CBOR encode/decode for inter-node messages.
  * UDP: ping, pong, find_node, nodes_found

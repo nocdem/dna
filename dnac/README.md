@@ -8,7 +8,7 @@ DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger]
 
 - **UTXO Model** - Unspent Transaction Output model for privacy
 - **Dilithium5 Signatures** - Post-quantum digital signatures (NIST Category 5)
-- **Nodus v5 DHT Transport** - Payments delivered via Nodus v5 DHT network (nodus_ops API)
+- **Nodus DHT Transport** - Payments delivered via Nodus DHT network (nodus_ops API)
 - **Permanent Storage** - All data stored permanently on DHT
 - **BFT Consensus** - Byzantine Fault Tolerant witness consensus (PBFT-like)
 - **2-of-3 Witnessing** - Transactions require 2 witness attestations
@@ -222,13 +222,13 @@ PROPOSE → PREVOTE → PRECOMMIT → COMMIT
 
 ### Features
 
-- **Embedded in Nodus v5** - Witness logic runs inside nodus-server process
+- **Embedded in Nodus** - Witness logic runs inside nodus-server process
 - **Nullifier Database** - SQLite-based persistent storage
 - **Request Forwarding** - Non-leaders forward to current leader
 
-### DHT Storage via Nodus v5
+### DHT Storage via Nodus
 
-All DHT data is stored via Nodus v5 (the `nodus_ops` convenience API). OpenDHT has been completely removed from the codebase. Data is stored permanently on the Nodus network:
+All DHT data is stored via Nodus (the `nodus_ops` convenience API). OpenDHT has been completely removed from the codebase. Data is stored permanently on the Nodus network:
 - **Payments**
 - **Witness attestations**
 - **Nullifier replication**
@@ -257,7 +257,7 @@ All DHT data is stored via Nodus v5 (the `nodus_ops` convenience API). OpenDHT h
 
 - [x] Core wallet functionality (UTXO management, balance tracking)
 - [x] Send/receive transactions via DHT
-- [x] BFT consensus protocol (PBFT-like, embedded in Nodus v5)
+- [x] BFT consensus protocol (PBFT-like, embedded in Nodus)
 - [x] 3-node witness cluster
 - [x] Leader election and request forwarding
 - [x] Double-spend prevention via nullifiers
@@ -307,4 +307,4 @@ MIT
 ## Related Projects
 
 - [DNA Messenger](https://github.com/nocdem/dna-messenger) - Post-quantum encrypted messenger (monorepo: `/opt/dna/messenger/`)
-- [Nodus v5](../nodus/) - Post-quantum Kademlia DHT with PBFT consensus (monorepo: `/opt/dna/nodus/`)
+- [Nodus](../nodus/) - Post-quantum Kademlia DHT with PBFT consensus (monorepo: `/opt/dna/nodus/`)

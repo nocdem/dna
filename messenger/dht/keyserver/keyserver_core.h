@@ -37,7 +37,7 @@
 
 // External dependencies
 #include "../core/dht_keyserver.h"  // Includes size constants and dna_unified_identity_t
-#include "dht/shared/nodus_ops.h"   // Nodus v5 DHT operations
+#include "dht/shared/nodus_ops.h"   // Nodus DHT operations
 #include "../client/dna_profile.h"
 #include "crypto/utils/qgp_dilithium.h"
 #include "crypto/utils/qgp_sha3.h"

@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Client SDK Test
+ * Nodus — Client SDK Test
  *
  * Tests the public nodus_client API against a local test server.
  * Exercises connect, auth, DHT put/get/listen, channel create/post/get/subscribe.

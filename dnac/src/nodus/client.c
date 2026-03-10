@@ -1,6 +1,6 @@
 /**
  * @file client.c
- * @brief Witness client — Nodus v5 SDK based
+ * @brief Witness client — Nodus SDK based
  *
  * All witness operations go through the Nodus client SDK
  * (nodus_client_dnac_*) which communicates with witnesses

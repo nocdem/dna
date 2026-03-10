@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Tier 2 Protocol Tests
+ * Nodus — Tier 2 Protocol Tests
  *
  * Tests encode/decode roundtrips for Client-Nodus messages.
  */

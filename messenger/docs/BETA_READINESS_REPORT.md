@@ -487,7 +487,7 @@ Main Thread
     ├── dna_engine_worker_thread (task processing)
     │       └── Processes dna_task_t from queue
     │
-    ├── DHT Thread (Nodus v5)
+    ├── DHT Thread (Nodus)
     │
     └── P2P Listener Thread (optional)
 ```

@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Witness Transaction Verification Tests
+ * Nodus — Witness Transaction Verification Tests
  *
  * Tests the nodus_witness_verify module with real crypto:
  *   - Valid spend TX (correct hash + signature + UTXO balance)

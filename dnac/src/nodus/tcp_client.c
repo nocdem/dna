@@ -1,6 +1,6 @@
 /**
  * @file tcp_client.c
- * @brief DNAC witness client functions — Nodus v5 SDK based
+ * @brief DNAC witness client functions — Nodus SDK based
  *
  * All functions that previously used direct TCP connections to witnesses
  * now use the Nodus client SDK (nodus_client_dnac_*) which routes through

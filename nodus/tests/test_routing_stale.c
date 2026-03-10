@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Routing Table Stale Entry + Dead Node Tests
+ * Nodus — Routing Table Stale Entry + Dead Node Tests
  *
  * Validates:
  * - Stale entries filtered from find_closest results

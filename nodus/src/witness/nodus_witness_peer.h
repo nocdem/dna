@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Witness Peer Mesh
+ * Nodus — Witness Peer Mesh
  *
  * Manages TCP connections to peer witnesses for BFT consensus.
  * Handles identification exchange, reconnection with exponential

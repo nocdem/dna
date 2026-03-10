@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — CLI Tool
+ * Nodus — CLI Tool
  *
  * Connect to a Nodus server, authenticate, perform DHT operations.
  *

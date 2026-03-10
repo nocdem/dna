@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Messenger Init/Lifecycle Module
+ * Nodus — Messenger Init/Lifecycle Module
  *
  * Replaces dht_singleton.c. Manages the Nodus singleton lifecycle
  * for the messenger: init, connect, reinit, close.

@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Witness Module Implementation
+ * Nodus — Witness Module Implementation
  *
  * Skeleton init/shutdown + lifecycle hooks.
  * BFT consensus, peer mesh, and handlers are in separate files.

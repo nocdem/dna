@@ -1,4 +1,4 @@
-# Nodus v5 — Replication Design (Target Architecture)
+# Nodus — Replication Design (Target Architecture)
 
 **Date:** 2026-03-08 (revised r2 — review fixes) | **Status:** IMPLEMENTED (2026-03-08) | **Related:** REPLICATION_ISSUES.md
 

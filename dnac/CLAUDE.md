@@ -91,7 +91,7 @@ DNAC is a **Post-Quantum Zero-Knowledge Cash** system built on top of DNA Messen
 |-----------|------------|
 | Token Model | UTXO |
 | Signatures | Dilithium5 (Post-Quantum) |
-| Transport | DHT via Nodus v5 (nodus_ops API) |
+| Transport | DHT via Nodus (nodus_ops API) |
 | Double-Spend Prevention | Nodus 2-of-3 Witnessing |
 | Database | SQLite |
 | ZK (v2 future) | STARKs (Post-Quantum) |
@@ -269,11 +269,11 @@ ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/dnac-asan" ./dnac-witness -p 4200
 
 ### Dependencies
 - **libdna** - DNA Messenger library (must be built first at /opt/dna/messenger/build)
-- **Nodus v5** - DHT transport via nodus_ops API (built as part of messenger)
+- **Nodus** - DHT transport via nodus_ops API (built as part of messenger)
 - **OpenSSL** - Cryptographic operations
 - **SQLite3** - Database storage
 
-**Note:** OpenDHT has been completely removed from the codebase. All DHT operations use Nodus v5 via the `nodus_ops` convenience API.
+**Note:** OpenDHT has been completely removed from the codebase. All DHT operations use Nodus via the `nodus_ops` convenience API.
 
 ### Directory Structure
 ```
@@ -353,7 +353,7 @@ git push origin main
 
 ---
 
-## Witness System (Embedded in Nodus v5)
+## Witness System (Embedded in Nodus)
 
 The old standalone `dnac-witness` binary was removed in v0.10.3. Witness logic now runs inside `nodus-server` via the embedded witness module (`nodus/src/witness/`).
 

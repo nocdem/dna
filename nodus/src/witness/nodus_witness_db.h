@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Witness Database Layer
+ * Nodus — Witness Database Layer
  *
  * SQLite operations for DNAC witness state: nullifiers, ledger,
  * UTXO set, blocks, genesis, supply tracking.

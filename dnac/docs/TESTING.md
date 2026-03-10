@@ -262,7 +262,7 @@ Tests updated in v0.10.2 to use computed sender fingerprints (via `nodus_fingerp
 ### Network
 
 - All nodes can reach each other on port 4200/TCP
-- Nodus v5 DHT cluster accessible (OpenDHT has been removed)
+- Nodus DHT cluster accessible (OpenDHT has been removed)
 
 ---
 

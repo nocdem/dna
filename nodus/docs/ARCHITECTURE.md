@@ -1,4 +1,4 @@
-# Nodus v5 — Architecture Documentation
+# Nodus — Architecture Documentation
 
 **Version:** 0.5.0 | **Language:** C (pure) | **License:** Proprietary
 
@@ -6,7 +6,7 @@
 
 ## 1. Overview & Motivation
 
-Nodus v5 is a complete rewrite of the DNA Messenger's DHT (Distributed Hash Table) layer. It
+Nodus is a complete rewrite of the DNA Messenger's DHT (Distributed Hash Table) layer. It
 replaces OpenDHT-PQ — a C++ library with post-quantum patches — with a pure C implementation
 built from the ground up for post-quantum security.
 
@@ -21,7 +21,7 @@ built from the ground up for post-quantum security.
 - **Opaque failure modes** — debugging C++ template errors across OpenDHT internals was
   impractical for a small team
 
-**What Nodus v5 provides:**
+**What Nodus provides:**
 
 - Pure C implementation — zero C++ dependencies, compiles with any C11 compiler
 - Kademlia DHT with 512-bit key space (SHA3-512)
@@ -301,7 +301,7 @@ by the new peer.
 
 ### Node Discovery Flow
 
-1. Server starts with seed nodes configured in `/etc/nodus-v5.conf`
+1. Server starts with seed nodes configured in `/etc/nodus.conf`
 2. Sends UDP PING to each seed node
 3. On PONG, learns the seed's real node_id (replaces IP-hash placeholder)
 4. Inserts seed into routing table
@@ -768,7 +768,7 @@ messages that arrive on the TCP port.
 
 ### Configuration
 
-Server configuration via JSON file (default: `/etc/nodus-v5.conf`):
+Server configuration via JSON file (default: `/etc/nodus.conf`):
 
 ```json
 {
@@ -900,7 +900,7 @@ startup sync operations (previously 9-31s delay on Android).
 
 ## 12. Messenger Integration
 
-The DNA Messenger integrates Nodus v5 through two convenience layers that bridge the
+The DNA Messenger integrates Nodus through two convenience layers that bridge the
 messenger's application-level concepts to the raw client SDK.
 
 ### nodus_ops — Operations Layer
@@ -982,7 +982,7 @@ by a flag file and runs in the engine's stabilization thread.
 
 ### Test Cluster
 
-Three dedicated servers running Nodus v5:
+Three dedicated servers running Nodus:
 
 | Node | IP | Specs |
 |------|-----|-------|
@@ -994,11 +994,11 @@ Three dedicated servers running Nodus v5:
 
 ```ini
 [Unit]
-Description=Nodus v5 DHT Server
+Description=Nodus DHT Server
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/nodus-v5 --config /etc/nodus-v5.conf
+ExecStart=/usr/local/bin/nodus-server -c /etc/nodus.conf
 Restart=always
 RestartSec=5
 

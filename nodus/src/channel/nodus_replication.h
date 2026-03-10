@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Async Channel Replication
+ * Nodus — Async Channel Replication
  *
  * After a Primary stores a channel post, replicate to Backup nodes.
  * Uses hinted handoff when backups are unreachable.

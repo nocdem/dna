@@ -323,9 +323,9 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
 
     QGP_LOG_INFO(LOG_TAG, "[RETRY] Stabilization complete, starting retries...");
 
-    /* 0. Nodus v5 migration: republish local data to new DHT on first connect.
+    /* 0. Nodus migration: republish local data to new DHT on first connect.
      * Old DHT data expires naturally (7-day TTL for contacts/GEKs, 365-day for profile).
-     * This pushes local cache → Nodus v5 DHT so data is available on the new network. */
+     * This pushes local cache → Nodus DHT so data is available on the new network. */
     if (engine->messenger) {
         const char *data_dir = qgp_platform_app_data_dir();
         /* One-time fix: previous builds marked migration done even when DHT was
@@ -337,7 +337,7 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
         }
 
         if (data_dir && !nodus_republish_check_migrated(data_dir)) {
-            QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Nodus v5: republishing local data to new DHT...");
+            QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Nodus: republishing local data to new DHT...");
 
             /* Only mark migration done if DHT is actually connected */
             if (!nodus_messenger_is_ready()) {
@@ -370,7 +370,7 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
                 /* GEKs: handled by existing bidirectional sync below (step 1c) */
 
                 nodus_republish_mark_done(data_dir);
-                QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Nodus v5 migration complete");
+                QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Nodus migration complete");
             }
         }
     }

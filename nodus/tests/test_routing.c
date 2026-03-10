@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — Kademlia Routing Table Tests
+ * Nodus — Kademlia Routing Table Tests
  */
 
 #include "core/nodus_routing.h"

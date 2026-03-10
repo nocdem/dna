@@ -1,5 +1,5 @@
 /**
- * Nodus v5 — DNAC Client Handlers
+ * Nodus — DNAC Client Handlers
  *
  * Handles post-auth "dnac_*" Tier 2 methods:
  *   dnac_spend        — Submit TX for BFT consensus
