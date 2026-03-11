@@ -4066,9 +4066,7 @@ static void on_dex_swap(dna_request_id_t request_id, int error,
                result->dex_name);
         printf("  Price impact: %s%%\n", result->price_impact);
         printf("  TX: %s\n", result->tx_signature);
-        if (strncmp(result->dex_name, "CoW", 3) == 0)
-            printf("  View: https://explorer.cow.fi/orders/%s\n\n", result->tx_signature);
-        else if (strstr(result->dex_name, "Uniswap") || strstr(result->dex_name, "PancakeSwap"))
+        if (strstr(result->dex_name, "Uniswap") || strstr(result->dex_name, "PancakeSwap"))
             printf("  View: https://etherscan.io/tx/%s\n\n", result->tx_signature);
         else
             printf("  View: https://solscan.io/tx/%s\n\n", result->tx_signature);

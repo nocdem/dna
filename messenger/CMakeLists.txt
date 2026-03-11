@@ -238,7 +238,8 @@ if(BUILD_SHARED_LIB)
         blockchain/solana/sol_tx.c                     # Solana transaction building/signing
         blockchain/solana/sol_spl.c                    # SPL token support (USDT, USDC)
         blockchain/solana/sol_dex.c                    # DEX quote (Raydium AMM on-chain)
-        blockchain/ethereum/eth_dex.c                  # DEX quote (Uniswap v2 on-chain)
+        blockchain/ethereum/eth_dex.c                  # DEX quote (Uniswap v2/v3 on-chain)
+        blockchain/ethereum/eth_eip712.c               # EIP-712 typed data signing
         blockchain/ethereum/eth_erc20.c                # ERC-20 token support (USDT, USDC)
         blockchain/tron/trx_base58.c                   # TRON Base58Check encoding
         blockchain/tron/trx_wallet_create.c            # TRON wallet creation (BIP-44)
@@ -321,7 +322,8 @@ else()
         blockchain/solana/sol_tx.c                     # Solana transaction building/signing
         blockchain/solana/sol_spl.c                    # SPL token support (USDT, USDC)
         blockchain/solana/sol_dex.c                    # DEX quote (Raydium AMM on-chain)
-        blockchain/ethereum/eth_dex.c                  # DEX quote (Uniswap v2 on-chain)
+        blockchain/ethereum/eth_dex.c                  # DEX quote (Uniswap v2/v3 on-chain)
+        blockchain/ethereum/eth_eip712.c               # EIP-712 typed data signing
         blockchain/ethereum/eth_erc20.c                # ERC-20 token support (USDT, USDC)
         blockchain/tron/trx_base58.c                   # TRON Base58Check encoding
         blockchain/tron/trx_wallet_create.c            # TRON wallet creation (BIP-44)

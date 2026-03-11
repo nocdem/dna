@@ -26,8 +26,7 @@
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/keccak256.h"
-#include <secp256k1.h>
-#include <secp256k1_recovery.h>
+/* secp256k1 no longer needed here — EIP-712 signing moved to eth_eip712.c */
 #include <time.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -687,226 +686,12 @@ static int eth_dex_quote_v3(const eth_dex_pair_t *pair, bool reversed,
 }
 
 /* ============================================================================
- * COW PROTOCOL QUOTE (api.cow.fi)
- * ============================================================================
- * CoW Protocol is an intent-based DEX aggregator with built-in MEV protection.
- * Orders are signed off-chain and executed by bonded solvers via batch auctions.
- * No API key required — public REST endpoint.
- *
- * Quote flow: POST /api/v1/quote → returns buyAmount + feeAmount
- * Token addresses must be 0x-prefixed, checksummed or lowercase.
+ * SHARED UTILITIES (write callback, TX confirmation)
  * ============================================================================ */
 
-#define COW_QUOTE_URL "https://api.cow.fi/mainnet/api/v1/quote"
-
-/* CoW-supported token pairs (symbol → 0x-prefixed address) */
-typedef struct {
-    const char *symbol;
-    const char *address;     /* 0x-prefixed, checksummed */
-    uint8_t decimals;
-} cow_token_t;
-
-static const cow_token_t cow_tokens[] = {
-    { "ETH",  "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", 18 },  /* CoW uses WETH for ETH */
-    { "WETH", "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", 18 },
-    { "USDC", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",  6 },
-    { "USDT", "0xdAC17F958D2ee523a2206206994597C13D831ec7",  6 },
-};
-
-#define NUM_COW_TOKENS (sizeof(cow_tokens) / sizeof(cow_tokens[0]))
-
-static const cow_token_t *cow_find_token(const char *symbol) {
-    for (size_t i = 0; i < NUM_COW_TOKENS; i++) {
-        if (strcasecmp(cow_tokens[i].symbol, symbol) == 0)
-            return &cow_tokens[i];
-    }
-    return NULL;
-}
-
-/**
- * Parse decimal string to raw amount string (for CoW API).
- * E.g. "1.5" with 18 decimals → "1500000000000000000"
- * Returns allocated string, caller must free.
- */
-static char *cow_decimal_to_raw(const char *amount_str, uint8_t decimals) {
-    __uint128_t raw = parse_decimal_to_raw(amount_str, decimals);
-    if (raw == 0) return NULL;
-
-    /* Convert __uint128_t to decimal string */
-    char tmp[64];
-    int pos = 0;
-    __uint128_t v = raw;
-    if (v == 0) { tmp[pos++] = '0'; }
-    else { while (v > 0) { tmp[pos++] = '0' + (char)(v % 10); v /= 10; } }
-
-    char *result = malloc((size_t)pos + 1);
-    if (!result) return NULL;
-    for (int i = 0; i < pos; i++) result[i] = tmp[pos - 1 - i];
-    result[pos] = '\0';
-    return result;
-}
-
-/**
- * Get a swap quote from CoW Protocol.
- *
- * POST https://api.cow.fi/mainnet/api/v1/quote
- * Body: { sellToken, buyToken, sellAmountBeforeFee, kind: "sell",
- *         from: "0x0000...", validFor: 600 }
- * Response: { quote: { sellAmount, buyAmount, feeAmount, ... } }
- */
-static int cow_get_quote(const char *from_symbol, const char *to_symbol,
-                         const char *amount_in, eth_dex_quote_t *quote_out) {
-
-    const cow_token_t *from_tok = cow_find_token(from_symbol);
-    const cow_token_t *to_tok   = cow_find_token(to_symbol);
-    if (!from_tok || !to_tok) return -2;
-
-    /* Convert amount to raw */
-    char *raw_amount = cow_decimal_to_raw(amount_in, from_tok->decimals);
-    if (!raw_amount) {
-        QGP_LOG_ERROR(LOG_TAG, "CoW: failed to convert amount: %s", amount_in);
-        return -1;
-    }
-
-    /* Build JSON body */
-    char body[1024];
-    snprintf(body, sizeof(body),
-        "{\"sellToken\":\"%s\","
-        "\"buyToken\":\"%s\","
-        "\"sellAmountBeforeFee\":\"%s\","
-        "\"from\":\"0x0000000000000000000000000000000000000000\","
-        "\"kind\":\"sell\","
-        "\"validFor\":600}",
-        from_tok->address, to_tok->address, raw_amount);
-    free(raw_amount);
-
-    QGP_LOG_DEBUG(LOG_TAG, "CoW quote request: %.200s", body);
-
-    /* POST request */
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        QGP_LOG_ERROR(LOG_TAG, "CoW: curl_easy_init failed");
-        return -1;
-    }
-
-    struct dex_response_buffer resp = {0};
-    struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, "Accept: application/json");
-
-    curl_easy_setopt(curl, CURLOPT_URL, COW_QUOTE_URL);
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, dex_write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "DNA-Messenger/1.0");
-
-    const char *ca_bundle = qgp_platform_ca_bundle_path();
-    if (ca_bundle) {
-        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
-    }
-
-    CURLcode res = curl_easy_perform(curl);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_easy_cleanup(curl);
-    curl_slist_free_all(headers);
-
-    if (res != CURLE_OK || !resp.data) {
-        QGP_LOG_ERROR(LOG_TAG, "CoW: request failed: %s", curl_easy_strerror(res));
-        free(resp.data);
-        return -1;
-    }
-
-    if (http_code != 200) {
-        QGP_LOG_WARN(LOG_TAG, "CoW: HTTP %ld: %.200s", http_code, resp.data);
-        free(resp.data);
-        return (http_code == 400 || http_code == 404) ? -2 : -1;
-    }
-
-    /* Parse JSON response */
-    json_object *root = json_tokener_parse(resp.data);
-    free(resp.data);
-
-    if (!root) {
-        QGP_LOG_ERROR(LOG_TAG, "CoW: JSON parse failed");
-        return -1;
-    }
-
-    /* Response: { "quote": { "sellAmount": "...", "buyAmount": "...", "feeAmount": "..." } } */
-    json_object *quote_obj;
-    if (!json_object_object_get_ex(root, "quote", &quote_obj)) {
-        QGP_LOG_ERROR(LOG_TAG, "CoW: response missing 'quote' field");
-        json_object_put(root);
-        return -1;
-    }
-
-    json_object *sell_obj, *buy_obj, *fee_obj;
-    if (!json_object_object_get_ex(quote_obj, "sellAmount", &sell_obj) ||
-        !json_object_object_get_ex(quote_obj, "buyAmount", &buy_obj) ||
-        !json_object_object_get_ex(quote_obj, "feeAmount", &fee_obj)) {
-        QGP_LOG_ERROR(LOG_TAG, "CoW: quote missing sellAmount/buyAmount/feeAmount");
-        json_object_put(root);
-        return -1;
-    }
-
-    const char *sell_raw = json_object_get_string(sell_obj);
-    const char *buy_raw  = json_object_get_string(buy_obj);
-    const char *fee_raw  = json_object_get_string(fee_obj);
-
-    /* Parse raw amounts to __uint128_t for formatting */
-    __uint128_t sell_val = 0, buy_val = 0, fee_val = 0;
-    for (const char *p = sell_raw; *p; p++) { if (*p >= '0' && *p <= '9') sell_val = sell_val * 10 + (uint8_t)(*p - '0'); }
-    for (const char *p = buy_raw;  *p; p++) { if (*p >= '0' && *p <= '9') buy_val  = buy_val  * 10 + (uint8_t)(*p - '0'); }
-    for (const char *p = fee_raw;  *p; p++) { if (*p >= '0' && *p <= '9') fee_val  = fee_val  * 10 + (uint8_t)(*p - '0'); }
-
-    /* Unit price: 1 from = X to */
-    __uint128_t one_unit = 1;
-    for (int i = 0; i < from_tok->decimals; i++) one_unit *= 10;
-    __uint128_t unit_out = 0;
-    if (sell_val > 0) {
-        double ratio = (double)buy_val / (double)sell_val;
-        unit_out = (__uint128_t)(ratio * (double)one_unit);
-    }
-
-    /* Price impact: CoW uses batch auctions so real price impact is near-zero.
-     * The fee is NOT price impact — it's the solver/protocol fee.
-     * Report 0 since CoW doesn't expose actual market impact. */
-    double impact_pct = 0.0;
-    (void)fee_val; /* fee is shown separately in the fee field */
-
-    /* Fill output */
-    memset(quote_out, 0, sizeof(*quote_out));
-    strncpy(quote_out->from_token, from_symbol, sizeof(quote_out->from_token) - 1);
-    strncpy(quote_out->to_token, to_symbol, sizeof(quote_out->to_token) - 1);
-
-    /* amount_in = sellAmount (after fee deduction) */
-    format_raw_to_decimal(quote_out->amount_in, sizeof(quote_out->amount_in),
-                          sell_val, from_tok->decimals);
-    format_raw_to_decimal(quote_out->amount_out, sizeof(quote_out->amount_out),
-                          buy_val, to_tok->decimals);
-    format_raw_to_decimal(quote_out->price, sizeof(quote_out->price),
-                          unit_out, to_tok->decimals);
-    format_raw_to_decimal(quote_out->fee, sizeof(quote_out->fee),
-                          fee_val, from_tok->decimals);
-
-    snprintf(quote_out->price_impact, sizeof(quote_out->price_impact), "%.4f", impact_pct);
-    strncpy(quote_out->pool_address, "CoW Settlement", sizeof(quote_out->pool_address) - 1);
-    strncpy(quote_out->dex_name, "CoW Protocol", sizeof(quote_out->dex_name) - 1);
-    quote_out->from_decimals = from_tok->decimals;
-    quote_out->to_decimals = to_tok->decimals;
-
-    QGP_LOG_INFO(LOG_TAG, "CoW quote: %s %s -> %s %s (fee: %s %s)",
-                 quote_out->amount_in, from_symbol,
-                 quote_out->amount_out, to_symbol,
-                 quote_out->fee, from_symbol);
-
-    json_object_put(root);
-    return 0;
-}
+/* Forward declarations */
+static size_t dex_write_cb(void *contents, size_t size, size_t nmemb, void *userp);
+static int dex_wait_for_tx(const char *tx_hash, int max_seconds);
 
 /* ============================================================================
  * PUBLIC API
@@ -972,25 +757,6 @@ int eth_dex_get_quotes(
         }
     }
 
-    /* CoW Protocol quote (MEV-protected aggregator) */
-    if (*count_out < max_quotes && dex_filter_matches("CoW Protocol", dex_filter)) {
-        /* CoW supports ETH/WETH, USDC, USDT pairs */
-        if (cow_find_token(from_token) && cow_find_token(to_token)) {
-            found_any = true;
-            int rc = cow_get_quote(from_token, to_token, amount_in,
-                                   &quotes_out[*count_out]);
-            if (rc == 0) {
-                QGP_LOG_INFO(LOG_TAG, "Quote via CoW Protocol: %s %s -> %s %s",
-                             amount_in, from_token,
-                             quotes_out[*count_out].amount_out, to_token);
-                (*count_out)++;
-            } else {
-                QGP_LOG_WARN(LOG_TAG, "CoW Protocol failed for %s/%s (rc=%d)",
-                             from_token, to_token, rc);
-            }
-        }
-    }
-
     if (!found_any) {
         QGP_LOG_WARN(LOG_TAG, "No ETH DEX pair for %s/%s", from_token, to_token);
         return -2;
@@ -999,28 +765,15 @@ int eth_dex_get_quotes(
     return (*count_out > 0) ? 0 : -1;
 }
 
-/* CoW Protocol supported pairs for list_pairs */
-static const char *cow_pair_list[][2] = {
-    { "ETH",  "USDC" },
-    { "ETH",  "USDT" },
-    { "USDC", "USDT" },
-};
-
-#define NUM_COW_PAIRS (sizeof(cow_pair_list) / sizeof(cow_pair_list[0]))
-
 int eth_dex_list_pairs(char ***pairs_out, int *count_out) {
     if (!pairs_out || !count_out) return -1;
 
-    /* On-chain pairs (both directions) + CoW pairs (both directions) */
-    int total = (int)(NUM_KNOWN_PAIRS * 2 + NUM_COW_PAIRS * 2);
+    int total = (int)(NUM_KNOWN_PAIRS * 2);
     char **pairs = calloc((size_t)total, sizeof(char *));
     if (!pairs) return -1;
 
     int idx = 0;
-
-    /* On-chain pairs (Uniswap/PancakeSwap) */
     for (size_t i = 0; i < NUM_KNOWN_PAIRS; i++) {
-        /* Format: "TOKEN_A/TOKEN_B (DEX_NAME)" */
         pairs[idx] = malloc(48);
         if (pairs[idx]) {
             snprintf(pairs[idx], 48, "%s/%s (%s)",
@@ -1038,23 +791,6 @@ int eth_dex_list_pairs(char ***pairs_out, int *count_out) {
         idx++;
     }
 
-    /* CoW Protocol pairs */
-    for (size_t i = 0; i < NUM_COW_PAIRS; i++) {
-        pairs[idx] = malloc(48);
-        if (pairs[idx]) {
-            snprintf(pairs[idx], 48, "%s/%s (CoW Protocol)",
-                     cow_pair_list[i][0], cow_pair_list[i][1]);
-        }
-        idx++;
-
-        pairs[idx] = malloc(48);
-        if (pairs[idx]) {
-            snprintf(pairs[idx], 48, "%s/%s (CoW Protocol)",
-                     cow_pair_list[i][1], cow_pair_list[i][0]);
-        }
-        idx++;
-    }
-
     *pairs_out = pairs;
     *count_out = idx;
     return 0;
@@ -1068,229 +804,26 @@ void eth_dex_free_pairs(char **pairs, int count) {
     free(pairs);
 }
 
-/* ============================================================================
- * COW PROTOCOL SWAP EXECUTION
- * ============================================================================ */
-
-/* Forward declaration */
-static size_t cow_write_cb(void *contents, size_t size, size_t nmemb, void *userp);
-
-/* CoW Protocol settlement contract (GPv2Settlement) */
-#define COW_SETTLEMENT_CONTRACT "0x9008D19f58AAbD9eD0D60971565AA8510560ab41"
-
-/* CoW VaultRelayer — needs ERC-20 approve */
-#define COW_VAULT_RELAYER "0xC92E8bdf79f0507f65a392b0ab4667716BFE0110"
-
-/* WETH contract */
-#define COW_WETH_CONTRACT "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
-
-/* Helper: parse hex string to bytes */
-static int cow_hex_to_bytes(const char *hex, uint8_t *out, size_t out_len) {
-    const char *p = hex;
-    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
-    size_t hex_len = strlen(p);
-    if (hex_len != out_len * 2) return -1;
-    for (size_t i = 0; i < out_len; i++) {
-        unsigned int byte;
-        if (sscanf(p + i * 2, "%2x", &byte) != 1) return -1;
-        out[i] = (uint8_t)byte;
-    }
-    return 0;
-}
-
-/* EIP-712 domain separator for CoW Protocol (mainnet) */
-static void cow_compute_domain_separator(uint8_t domain_hash[32]) {
-    /*
-     * EIP-712 domain:
-     *   name = "Gnosis Protocol"
-     *   version = "v2"
-     *   chainId = 1
-     *   verifyingContract = 0x9008D19f58AAbD9eD0D60971565AA8510560ab41
-     *
-     * domainSeparator = keccak256(
-     *   keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
-     *   || keccak256("Gnosis Protocol")
-     *   || keccak256("v2")
-     *   || uint256(1)
-     *   || uint256(0x9008D19f58AAbD9eD0D60971565AA8510560ab41)
-     * )
-     */
-    uint8_t buf[5 * 32];  /* 5 fields × 32 bytes */
-
-    /* Type hash */
-    const char *type_str = "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)";
-    keccak256((const uint8_t *)type_str, strlen(type_str), buf);
-
-    /* keccak256("Gnosis Protocol") */
-    const char *name = "Gnosis Protocol";
-    keccak256((const uint8_t *)name, strlen(name), buf + 32);
-
-    /* keccak256("v2") */
-    const char *version = "v2";
-    keccak256((const uint8_t *)version, strlen(version), buf + 64);
-
-    /* chainId = 1 */
-    memset(buf + 96, 0, 32);
-    buf[127] = 1;
-
-    /* verifyingContract */
-    memset(buf + 128, 0, 32);
-    cow_hex_to_bytes(COW_SETTLEMENT_CONTRACT, buf + 128 + 12, 20);
-
-    keccak256(buf, sizeof(buf), domain_hash);
-}
-
-/* CoW order type hash */
-static void cow_order_type_hash(uint8_t hash[32]) {
-    const char *type_str =
-        "Order("
-        "address sellToken,"
-        "address buyToken,"
-        "address receiver,"
-        "uint256 sellAmount,"
-        "uint256 buyAmount,"
-        "uint32 validTo,"
-        "bytes32 appData,"
-        "uint256 feeAmount,"
-        "string kind,"
-        "bool partiallyFillable,"
-        "string sellTokenBalance,"
-        "string buyTokenBalance"
-        ")";
-    keccak256((const uint8_t *)type_str, strlen(type_str), hash);
-}
-
-/* Helper: write a raw decimal string as uint256 big-endian */
-static void cow_decimal_str_to_uint256(const char *str, uint8_t out[32]) {
-    memset(out, 0, 32);
-    __uint128_t val = 0;
-    for (const char *p = str; *p; p++) {
-        if (*p >= '0' && *p <= '9') val = val * 10 + (uint8_t)(*p - '0');
-    }
-    /* Store in last 16 bytes (128-bit max) */
-    for (int i = 0; i < 16; i++) {
-        out[31 - i] = (uint8_t)(val & 0xFF);
-        val >>= 8;
-    }
-}
-
-/* Sign a CoW order with EIP-712 */
-static int cow_sign_order(
-    const uint8_t private_key[32],
-    const char *sell_token,     /* contract address with 0x */
-    const char *buy_token,      /* contract address with 0x */
-    const char *receiver,       /* receiver address with 0x */
-    const char *sell_amount,    /* raw decimal string */
-    const char *buy_amount,     /* raw decimal string */
-    uint32_t valid_to,          /* unix timestamp */
-    const char *fee_amount,     /* raw decimal string */
-    uint8_t sig_out[65]         /* r(32) + s(32) + v(1) */
-) {
-    /* Compute domain separator */
-    uint8_t domain_sep[32];
-    cow_compute_domain_separator(domain_sep);
-
-    /* Compute struct hash */
-    /* 13 fields × 32 bytes = 416 bytes */
-    uint8_t struct_data[13 * 32];
-    memset(struct_data, 0, sizeof(struct_data));
-
-    /* [0] Order type hash */
-    cow_order_type_hash(struct_data);
-
-    /* [1] sellToken (address, left-padded) */
-    cow_hex_to_bytes(sell_token, struct_data + 32 + 12, 20);
-
-    /* [2] buyToken */
-    cow_hex_to_bytes(buy_token, struct_data + 64 + 12, 20);
-
-    /* [3] receiver */
-    cow_hex_to_bytes(receiver, struct_data + 96 + 12, 20);
-
-    /* [4] sellAmount */
-    cow_decimal_str_to_uint256(sell_amount, struct_data + 128);
-
-    /* [5] buyAmount */
-    cow_decimal_str_to_uint256(buy_amount, struct_data + 160);
-
-    /* [6] validTo (uint32, right-aligned in 32 bytes) */
-    struct_data[192 + 28] = (uint8_t)((valid_to >> 24) & 0xFF);
-    struct_data[192 + 29] = (uint8_t)((valid_to >> 16) & 0xFF);
-    struct_data[192 + 30] = (uint8_t)((valid_to >> 8) & 0xFF);
-    struct_data[192 + 31] = (uint8_t)(valid_to & 0xFF);
-
-    /* [7] appData (bytes32 — zero for now, can add referral later) */
-    /* Already zero */
-
-    /* [8] feeAmount — offset 8*32=256 */
-    cow_decimal_str_to_uint256(fee_amount, struct_data + 256);
-
-    /* [9] kind: keccak256("sell") — offset 9*32=288 */
-    keccak256((const uint8_t *)"sell", 4, struct_data + 288);
-
-    /* [10] partiallyFillable: false = 0 — offset 10*32=320, already zero */
-
-    /* [11] sellTokenBalance: keccak256("erc20") — offset 11*32=352 */
-    keccak256((const uint8_t *)"erc20", 5, struct_data + 352);
-
-    /* [12] buyTokenBalance: keccak256("erc20") — offset 12*32=384 */
-    keccak256((const uint8_t *)"erc20", 5, struct_data + 384);
-
-    uint8_t struct_hash[32];
-    keccak256(struct_data, sizeof(struct_data), struct_hash);
-
-    /* EIP-712 message: "\x19\x01" || domainSeparator || structHash */
-    uint8_t msg[66];
-    msg[0] = 0x19;
-    msg[1] = 0x01;
-    memcpy(msg + 2, domain_sep, 32);
-    memcpy(msg + 34, struct_hash, 32);
-
-    uint8_t msg_hash[32];
-    keccak256(msg, 66, msg_hash);
-
-    /* Sign with secp256k1 */
-    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-    if (!ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to create secp256k1 context");
-        return -1;
-    }
-
-    secp256k1_ecdsa_recoverable_signature sig;
-    if (secp256k1_ecdsa_sign_recoverable(ctx, &sig, msg_hash, private_key, NULL, NULL) != 1) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to sign CoW order");
-        secp256k1_context_destroy(ctx);
-        return -1;
-    }
-
-    uint8_t sig_data[64];
-    int recovery_id;
-    secp256k1_ecdsa_recoverable_signature_serialize_compact(ctx, sig_data, &recovery_id, &sig);
-    secp256k1_context_destroy(ctx);
-
-    /* r + s + v (v = 27 + recovery_id for EIP-712) */
-    memcpy(sig_out, sig_data, 64);
-    sig_out[64] = (uint8_t)(27 + recovery_id);
-
-    return 0;
-}
-
-/* Helper: bytes to hex string */
-static void cow_bytes_to_hex(const uint8_t *data, size_t len, char *hex_out) {
-    hex_out[0] = '0'; hex_out[1] = 'x';
-    for (size_t i = 0; i < len; i++) {
-        snprintf(hex_out + 2 + i * 2, 3, "%02x", data[i]);
-    }
+/* CURL write callback for DEX HTTP requests */
+static size_t dex_write_cb(void *contents, size_t size, size_t nmemb, void *userp) {
+    size_t realsize = size * nmemb;
+    struct { char *data; size_t size; } *buf = userp;
+    char *ptr = realloc(buf->data, buf->size + realsize + 1);
+    if (!ptr) return 0;
+    buf->data = ptr;
+    memcpy(buf->data + buf->size, contents, realsize);
+    buf->size += realsize;
+    buf->data[buf->size] = 0;
+    return realsize;
 }
 
 /* Wait for TX confirmation by polling eth_getTransactionReceipt */
-static int cow_wait_for_tx(const char *tx_hash, int max_seconds) {
+static int dex_wait_for_tx(const char *tx_hash, int max_seconds) {
     QGP_LOG_INFO(LOG_TAG, "Waiting for TX confirmation: %s", tx_hash);
 
     for (int elapsed = 0; elapsed < max_seconds; elapsed += 5) {
         sleep(5);
 
-        /* Check via eth_getTransactionReceipt */
         CURL *curl = curl_easy_init();
         if (!curl) continue;
 
@@ -1305,7 +838,7 @@ static int cow_wait_for_tx(const char *tx_hash, int max_seconds) {
         curl_easy_setopt(curl, CURLOPT_URL, eth_rpc_get_endpoint());
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cow_write_cb);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, dex_write_cb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
 
@@ -1328,7 +861,6 @@ static int cow_wait_for_tx(const char *tx_hash, int max_seconds) {
         json_object *jresult;
         if (json_object_object_get_ex(jresp, "result", &jresult) &&
             !json_object_is_type(jresult, json_type_null)) {
-            /* Receipt exists — TX is mined */
             json_object *jstatus;
             if (json_object_object_get_ex(jresult, "status", &jstatus)) {
                 const char *st = json_object_get_string(jstatus);
@@ -1343,7 +875,7 @@ static int cow_wait_for_tx(const char *tx_hash, int max_seconds) {
                 }
             }
             json_object_put(jresp);
-            return 0;  /* Receipt exists, assume success */
+            return 0;
         }
         json_object_put(jresp);
 
@@ -1352,184 +884,6 @@ static int cow_wait_for_tx(const char *tx_hash, int max_seconds) {
 
     QGP_LOG_ERROR(LOG_TAG, "TX confirmation timeout after %ds: %s", max_seconds, tx_hash);
     return -1;
-}
-
-/* Post order to CoW API */
-static int cow_post_order(
-    const char *sell_token,
-    const char *buy_token,
-    const char *receiver,
-    const char *sell_amount,
-    const char *buy_amount,
-    uint32_t valid_to,
-    const char *fee_amount,
-    const char *sig_hex,       /* 0x + 130 hex chars */
-    const char *from_address,
-    char *order_uid_out,       /* Output: order UID */
-    size_t uid_size
-) {
-    CURL *curl = curl_easy_init();
-    if (!curl) return -1;
-
-    /* Build JSON order body */
-    json_object *order = json_object_new_object();
-    json_object_object_add(order, "sellToken", json_object_new_string(sell_token));
-    json_object_object_add(order, "buyToken", json_object_new_string(buy_token));
-    json_object_object_add(order, "receiver", json_object_new_string(receiver));
-    json_object_object_add(order, "sellAmount", json_object_new_string(sell_amount));
-    json_object_object_add(order, "buyAmount", json_object_new_string(buy_amount));
-    json_object_object_add(order, "validTo", json_object_new_int64((int64_t)valid_to));
-    json_object_object_add(order, "feeAmount", json_object_new_string(fee_amount));
-    json_object_object_add(order, "kind", json_object_new_string("sell"));
-    json_object_object_add(order, "partiallyFillable", json_object_new_boolean(0));
-    json_object_object_add(order, "sellTokenBalance", json_object_new_string("erc20"));
-    json_object_object_add(order, "buyTokenBalance", json_object_new_string("erc20"));
-
-    /* appData: zero hash for now */
-    json_object_object_add(order, "appData",
-        json_object_new_string("0x0000000000000000000000000000000000000000000000000000000000000000"));
-
-    json_object_object_add(order, "signature", json_object_new_string(sig_hex));
-    json_object_object_add(order, "signingScheme", json_object_new_string("eip712"));
-    json_object_object_add(order, "from", json_object_new_string(from_address));
-
-    const char *body = json_object_to_json_string(order);
-    QGP_LOG_INFO(LOG_TAG, "CoW POST /orders body length: %zu", strlen(body));
-
-    struct { char *data; size_t size; } resp = {0};
-    struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-
-    char url[128];
-    snprintf(url, sizeof(url), "https://api.cow.fi/mainnet/api/v1/orders");
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cow_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "DNA-Messenger/1.0");
-
-    const char *ca_bundle = qgp_platform_ca_bundle_path();
-    if (ca_bundle) curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
-
-    CURLcode res = curl_easy_perform(curl);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_easy_cleanup(curl);
-    curl_slist_free_all(headers);
-    json_object_put(order);
-
-    if (res != CURLE_OK || !resp.data) {
-        QGP_LOG_ERROR(LOG_TAG, "CoW POST /orders failed: %s",
-                      res != CURLE_OK ? curl_easy_strerror(res) : "no data");
-        free(resp.data);
-        return -1;
-    }
-
-    if (http_code != 201) {
-        QGP_LOG_ERROR(LOG_TAG, "CoW POST /orders HTTP %ld: %.500s", http_code, resp.data);
-        free(resp.data);
-        return -1;
-    }
-
-    /* Response is a JSON string: the order UID in quotes */
-    /* e.g., "\"0xabcdef...\"" — parse as JSON string */
-    json_object *juid = json_tokener_parse(resp.data);
-    if (juid && json_object_is_type(juid, json_type_string)) {
-        strncpy(order_uid_out, json_object_get_string(juid), uid_size - 1);
-        order_uid_out[uid_size - 1] = '\0';
-        json_object_put(juid);
-    } else {
-        /* Try raw — might just be a plain string */
-        strncpy(order_uid_out, resp.data, uid_size - 1);
-        order_uid_out[uid_size - 1] = '\0';
-        /* Strip surrounding quotes if present */
-        size_t len = strlen(order_uid_out);
-        if (len > 2 && order_uid_out[0] == '"' && order_uid_out[len-1] == '"') {
-            memmove(order_uid_out, order_uid_out + 1, len - 2);
-            order_uid_out[len - 2] = '\0';
-        }
-        if (juid) json_object_put(juid);
-    }
-
-    free(resp.data);
-    QGP_LOG_INFO(LOG_TAG, "CoW order submitted: %s", order_uid_out);
-    return 0;
-}
-
-/* Poll CoW order status until fulfilled or timeout */
-static int cow_poll_order(const char *order_uid, int max_seconds) {
-    QGP_LOG_INFO(LOG_TAG, "Polling CoW order status...");
-
-    char url[256];
-    snprintf(url, sizeof(url), "https://api.cow.fi/mainnet/api/v1/orders/%s", order_uid);
-
-    for (int elapsed = 0; elapsed < max_seconds; elapsed += 5) {
-        sleep(5);
-
-        CURL *curl = curl_easy_init();
-        if (!curl) continue;
-
-        struct { char *data; size_t size; } resp = {0};
-
-        curl_easy_setopt(curl, CURLOPT_URL, url);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cow_write_cb);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "DNA-Messenger/1.0");
-
-        const char *ca_bundle = qgp_platform_ca_bundle_path();
-        if (ca_bundle) curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
-
-        CURLcode res = curl_easy_perform(curl);
-        curl_easy_cleanup(curl);
-
-        if (res != CURLE_OK || !resp.data) {
-            free(resp.data);
-            continue;
-        }
-
-        json_object *jresp = json_tokener_parse(resp.data);
-        free(resp.data);
-        if (!jresp) continue;
-
-        json_object *jstatus;
-        if (json_object_object_get_ex(jresp, "status", &jstatus)) {
-            const char *status = json_object_get_string(jstatus);
-            if (status) {
-                if (strcmp(status, "fulfilled") == 0) {
-                    QGP_LOG_INFO(LOG_TAG, "CoW order fulfilled!");
-                    json_object_put(jresp);
-                    return 0;
-                } else if (strcmp(status, "cancelled") == 0 ||
-                           strcmp(status, "expired") == 0) {
-                    QGP_LOG_ERROR(LOG_TAG, "CoW order %s", status);
-                    json_object_put(jresp);
-                    return -1;
-                }
-                QGP_LOG_DEBUG(LOG_TAG, "CoW order status: %s (%ds)", status, elapsed + 5);
-            }
-        }
-        json_object_put(jresp);
-    }
-
-    QGP_LOG_ERROR(LOG_TAG, "CoW order poll timeout after %ds", max_seconds);
-    return -1;
-}
-
-/* CURL write callback for swap functions */
-static size_t cow_write_cb(void *contents, size_t size, size_t nmemb, void *userp) {
-    size_t realsize = size * nmemb;
-    struct { char *data; size_t size; } *buf = userp;
-    char *ptr = realloc(buf->data, buf->size + realsize + 1);
-    if (!ptr) return 0;
-    buf->data = ptr;
-    memcpy(buf->data + buf->size, contents, realsize);
-    buf->size += realsize;
-    buf->data[buf->size] = 0;
-    return realsize;
 }
 
 /* ============================================================================
@@ -1791,21 +1145,20 @@ int eth_dex_execute_swap(
     QGP_LOG_INFO(LOG_TAG, "DEX swap: %s %s -> %s — getting quotes from all DEXes",
                  amount_in, from_token, to_token);
 
-    eth_dex_quote_t quotes[NUM_KNOWN_PAIRS + 1];  /* +1 for CoW */
+    eth_dex_quote_t quotes[NUM_KNOWN_PAIRS];
     int quote_count = 0;
     eth_dex_get_quotes(from_token, to_token, amount_in, NULL,
-                       quotes, (int)(NUM_KNOWN_PAIRS + 1), &quote_count);
+                       quotes, NUM_KNOWN_PAIRS, &quote_count);
 
     if (quote_count == 0) {
         QGP_LOG_ERROR(LOG_TAG, "No DEX quotes available for %s -> %s", from_token, to_token);
         return -2;
     }
 
-    /* Find the best quote (highest amount_out) — exclude CoW (off-chain, unreliable for small amounts) */
+    /* Find the best quote (highest amount_out) */
     int best_idx = -1;
     double best_out = 0.0;
     for (int i = 0; i < quote_count; i++) {
-        if (strcmp(quotes[i].dex_name, "CoW Protocol") == 0) continue;  /* Skip CoW */
         double out = atof(quotes[i].amount_out);
         if (out > best_out) {
             best_out = out;
@@ -1864,7 +1217,7 @@ int eth_dex_execute_swap(
     }
 
     /* Step 3: Wait for TX confirmation */
-    if (cow_wait_for_tx(tx_hash, 120) != 0) {
+    if (dex_wait_for_tx(tx_hash, 120) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Swap TX not confirmed after 120s: %s", tx_hash);
         return -1;
     }

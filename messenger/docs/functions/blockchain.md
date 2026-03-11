@@ -174,7 +174,16 @@ Ethereum blockchain with secp256k1 ECDSA signatures.
 | `int eth_dex_get_quotes(const char*, const char*, const char*, const char*, eth_dex_quote_t*, int, int*)` | Get Uniswap/PancakeSwap quotes |
 | `int eth_dex_list_pairs(char***, int*)` | List available swap pairs |
 | `void eth_dex_free_pairs(char**, int)` | Free pairs array |
-| `int eth_dex_execute_swap(const eth_wallet_t*, const char*, const char*, const char*, eth_dex_swap_result_t*)` | Execute swap via CoW Protocol |
+| `int eth_dex_execute_swap(const eth_wallet_t*, const char*, const char*, const char*, eth_dex_swap_result_t*)` | Execute best-price swap via Uniswap/PancakeSwap router |
+
+### 16.5 EIP-712 Typed Data Signing (`eth_eip712.h`)
+
+| Function | Description |
+|----------|-------------|
+| `int eip712_compute_domain_separator(const char*, const char*, uint64_t, const char*, uint8_t[32])` | Compute EIP-712 domain separator hash |
+| `int eip712_sign_typed_data(const uint8_t[32], const uint8_t[32], const uint8_t[32], uint8_t[65])` | Sign EIP-712 typed data with secp256k1 |
+| `int eth_hex_to_bytes(const char*, uint8_t*, size_t)` | Parse hex string to bytes |
+| `void eth_decimal_to_uint256(const char*, uint8_t[32])` | Convert decimal string to uint256 big-endian |
 
 ---
 
