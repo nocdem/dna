@@ -278,23 +278,23 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
 
     /* Initialize with defaults */
     strncpy(balances[0].token, "CPUNK", sizeof(balances[0].token) - 1);
-    strncpy(balances[0].network, "Backbone", sizeof(balances[0].network) - 1);
+    strncpy(balances[0].network, "Cellframe", sizeof(balances[0].network) - 1);
     strcpy(balances[0].balance, "0.0");
 
     strncpy(balances[1].token, "CELL", sizeof(balances[1].token) - 1);
-    strncpy(balances[1].network, "Backbone", sizeof(balances[1].network) - 1);
+    strncpy(balances[1].network, "Cellframe", sizeof(balances[1].network) - 1);
     strcpy(balances[1].balance, "0.0");
 
     strncpy(balances[2].token, "NYS", sizeof(balances[2].token) - 1);
-    strncpy(balances[2].network, "Backbone", sizeof(balances[2].network) - 1);
+    strncpy(balances[2].network, "Cellframe", sizeof(balances[2].network) - 1);
     strcpy(balances[2].balance, "0.0");
 
     strncpy(balances[3].token, "KEL", sizeof(balances[3].token) - 1);
-    strncpy(balances[3].network, "Backbone", sizeof(balances[3].network) - 1);
+    strncpy(balances[3].network, "Cellframe", sizeof(balances[3].network) - 1);
     strcpy(balances[3].balance, "0.0");
 
     strncpy(balances[4].token, "QEVM", sizeof(balances[4].token) - 1);
-    strncpy(balances[4].network, "Backbone", sizeof(balances[4].network) - 1);
+    strncpy(balances[4].network, "Cellframe", sizeof(balances[4].network) - 1);
     strcpy(balances[4].balance, "0.0");
 
     count = 5;
@@ -420,7 +420,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         bc_type = BLOCKCHAIN_CELLFRAME;
         chain_name = "Cellframe";
     } else {
-        /* Default: Backbone = Cellframe */
+        /* Default: Cellframe */
         bc_type = BLOCKCHAIN_CELLFRAME;
         chain_name = "Cellframe";
     }
