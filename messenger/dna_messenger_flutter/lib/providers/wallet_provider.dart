@@ -6,6 +6,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../ffi/dna_engine.dart';
 import '../utils/logger.dart';
+import 'addressbook_provider.dart';
+import 'contact_profile_cache_provider.dart';
+import 'contacts_provider.dart';
 import 'engine_provider.dart';
 
 /// Wallets list provider
@@ -276,18 +279,26 @@ class TransactionsNotifier
     extends FamilyAsyncNotifier<List<Transaction>, ({int walletIndex, String network})> {
   @override
   Future<List<Transaction>> build(({int walletIndex, String network}) arg) async {
+    // Watch contacts + address book so we re-resolve when they change
+    ref.watch(contactsProvider);
+    ref.watch(contactProfileCacheProvider);
+    ref.watch(addressBookProvider);
+
     // Cache-first: show cached transactions instantly, then refresh in background
     final engine = await ref.watch(engineProvider.future);
     final cached = await engine.getCachedTransactions(arg.walletIndex, arg.network);
 
     if (cached.isNotEmpty) {
+      _resolveNames(cached, arg.network);
       // Schedule background refresh after returning cached data
       Future.microtask(() => refresh());
       return cached;
     }
 
     // No cache — fall back to live fetch
-    return engine.getTransactions(arg.walletIndex, arg.network);
+    final txs = await engine.getTransactions(arg.walletIndex, arg.network);
+    _resolveNames(txs, arg.network);
+    return txs;
   }
 
   /// Refresh transactions from live API — keeps old data visible during fetch
@@ -295,7 +306,9 @@ class TransactionsNotifier
     final current = state.valueOrNull;
     final newState = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
-      return engine.getTransactions(arg.walletIndex, arg.network);
+      final txs = await engine.getTransactions(arg.walletIndex, arg.network);
+      _resolveNames(txs, arg.network);
+      return txs;
     });
 
     // Preserve cached data on network error
@@ -304,5 +317,58 @@ class TransactionsNotifier
     }
 
     state = newState;
+  }
+
+  /// Resolve otherAddress to contact name or address book label
+  void _resolveNames(List<Transaction> txs, String network) {
+    // Build lookup map: address -> name from contact profiles
+    final profileCache = ref.read(contactProfileCacheProvider);
+    final contacts = ref.read(contactsProvider).valueOrNull ?? [];
+    final addressToContact = <String, String>{};
+
+    for (final contact in contacts) {
+      final profile = profileCache[contact.fingerprint];
+      if (profile == null) continue;
+
+      final address = _getProfileAddress(profile, network);
+      if (address.isNotEmpty) {
+        addressToContact[address.toLowerCase()] = contact.effectiveName;
+      }
+    }
+
+    // Resolve each transaction
+    for (final tx in txs) {
+      if (tx.otherAddress.isEmpty) continue;
+
+      // 1. Check contact profiles
+      final contactName = addressToContact[tx.otherAddress.toLowerCase()];
+      if (contactName != null) {
+        tx.resolvedName = contactName;
+        continue;
+      }
+
+      // 2. Check address book
+      final entry = ref.read(lookupAddressProvider((tx.otherAddress, network)));
+      if (entry != null) {
+        tx.resolvedName = entry.label;
+      }
+    }
+  }
+
+  /// Get the wallet address from a profile for a given network
+  String _getProfileAddress(UserProfile profile, String network) {
+    switch (network.toLowerCase()) {
+      case 'backbone':
+      case 'cellframe':
+        return profile.backbone;
+      case 'ethereum':
+        return profile.eth;
+      case 'solana':
+        return profile.sol;
+      case 'tron':
+        return profile.trx;
+      default:
+        return '';
+    }
   }
 }

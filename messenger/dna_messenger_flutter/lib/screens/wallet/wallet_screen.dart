@@ -2189,7 +2189,11 @@ class _TransactionTile extends StatelessWidget {
               children: [
                 Text('${transaction.amount} ${transaction.token}', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 2),
-                Text(_formatAddress(transaction.otherAddress), style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace')),
+                if (transaction.resolvedName != null) ...[
+                  Text(transaction.resolvedName!, style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600)),
+                  Text(_formatAddress(transaction.otherAddress), style: theme.textTheme.labelSmall?.copyWith(fontFamily: 'monospace', color: theme.colorScheme.outline)),
+                ] else
+                  Text(_formatAddress(transaction.otherAddress), style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace')),
                 Text(_formatTimestamp(transaction.timestamp), style: theme.textTheme.labelSmall),
               ],
             ),
@@ -2234,7 +2238,10 @@ class _TransactionTile extends StatelessWidget {
               _DetailRow('Status', transaction.status),
               _DetailRow('Direction', isReceived ? 'Received' : 'Sent'),
               _DetailRow('Amount', '${transaction.amount} ${transaction.token}'),
-              _DetailRow(isReceived ? 'From' : 'To', transaction.otherAddress),
+              _DetailRow(isReceived ? 'From' : 'To',
+                  transaction.resolvedName != null
+                      ? '${transaction.resolvedName!}\n${transaction.otherAddress}'
+                      : transaction.otherAddress),
               _DetailRow('Time', _formatTimestamp(transaction.timestamp)),
             ],
           ),

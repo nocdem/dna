@@ -618,6 +618,7 @@ class Transaction {
   final String otherAddress;
   final String timestamp;
   final String status;
+  String? resolvedName;
 
   Transaction({
     required this.txHash,
@@ -627,6 +628,7 @@ class Transaction {
     required this.otherAddress,
     required this.timestamp,
     required this.status,
+    this.resolvedName,
   });
 
   factory Transaction.fromNative(dna_transaction_t native) {
