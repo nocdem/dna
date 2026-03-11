@@ -2522,6 +2522,12 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
         amountIn: _amountController.text.trim(),
       );
       if (mounted) {
+        // Sort by amount_out descending — best price first
+        quotes.sort((a, b) {
+          final aOut = double.tryParse(a.amountOut) ?? 0.0;
+          final bOut = double.tryParse(b.amountOut) ?? 0.0;
+          return bOut.compareTo(aOut);
+        });
         setState(() {
           _isLoadingQuote = false;
           _quotes = quotes;
@@ -2545,39 +2551,142 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
     // Confirmation dialog
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Confirm Swap'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Swap ${quote.amountIn} ${quote.fromToken}'
-                 ' for ~${quote.amountOut} ${quote.toToken}'),
-            const SizedBox(height: 8),
-            Text('DEX: ${quote.dexName}',
-                 style: const TextStyle(fontSize: 13, color: Colors.grey)),
-            if (quote.priceImpact.isNotEmpty)
-              Text('Price impact: ${quote.priceImpact}%',
-                   style: const TextStyle(fontSize: 13, color: Colors.grey)),
-            if (quote.fromToken == 'ETH' || quote.toToken == 'ETH')
-              const Padding(
-                padding: EdgeInsets.only(top: 4),
-                child: Text('🛡️ MEV protected (Flashbots)',
-                     style: TextStyle(fontSize: 12, color: Colors.green)),
-              ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
+      builder: (context) {
+        final theme = Theme.of(context);
+        final subtitleColor = theme.colorScheme.onSurface.withAlpha(150);
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(DnaSpacing.radiusLg),
           ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Confirm'),
+          child: Padding(
+            padding: const EdgeInsets.all(DnaSpacing.xl),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Header icon
+                Container(
+                  width: 56,
+                  height: 56,
+                  decoration: BoxDecoration(
+                    gradient: DnaGradients.primary,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Center(
+                    child: FaIcon(FontAwesomeIcons.arrowRightArrowLeft,
+                        size: 22, color: Colors.white),
+                  ),
+                ),
+                const SizedBox(height: DnaSpacing.lg),
+                Text('Confirm Swap',
+                    style: theme.textTheme.titleLarge
+                        ?.copyWith(fontWeight: FontWeight.w700)),
+                const SizedBox(height: DnaSpacing.xl),
+
+                // From → To summary
+                Container(
+                  padding: const EdgeInsets.all(DnaSpacing.lg),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest
+                        .withAlpha(80),
+                    borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
+                  ),
+                  child: Column(
+                    children: [
+                      // "You pay" row
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('You pay', style: TextStyle(
+                              fontSize: 13, color: subtitleColor)),
+                          Text('${quote.amountIn} ${quote.fromToken}',
+                              style: const TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.w600)),
+                        ],
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                            vertical: DnaSpacing.sm),
+                        child: Row(
+                          children: [
+                            Expanded(child: Divider(
+                                color: theme.dividerColor.withAlpha(40))),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: DnaSpacing.sm),
+                              child: FaIcon(FontAwesomeIcons.arrowDown,
+                                  size: 12,
+                                  color: DnaColors.gradientStart.withAlpha(180)),
+                            ),
+                            Expanded(child: Divider(
+                                color: theme.dividerColor.withAlpha(40))),
+                          ],
+                        ),
+                      ),
+                      // "You receive" row
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('You receive', style: TextStyle(
+                              fontSize: 13, color: subtitleColor)),
+                          Text('~${quote.amountOut} ${quote.toToken}',
+                              style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                  color: DnaColors.success)),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: DnaSpacing.md),
+
+                // Via DEX
+                Text('via ${quote.dexName}',
+                    style: TextStyle(fontSize: 13, color: subtitleColor)),
+
+                // Price impact & fee (small, bottom)
+                if (quote.priceImpact.isNotEmpty || quote.fee.isNotEmpty) ...[
+                  const SizedBox(height: DnaSpacing.sm),
+                  Text(
+                    [
+                      if (quote.priceImpact.isNotEmpty)
+                        'Impact: ${quote.priceImpact}%',
+                      if (quote.fee.isNotEmpty)
+                        'Fee: ${quote.fee}',
+                    ].join('  ·  '),
+                    style: TextStyle(fontSize: 11, color: subtitleColor.withAlpha(120)),
+                  ),
+                ],
+                const SizedBox(height: DnaSpacing.xl),
+
+                // Buttons
+                Row(
+                  children: [
+                    Expanded(
+                      child: DnaButton(
+                        label: 'Cancel',
+                        variant: DnaButtonVariant.ghost,
+                        expand: true,
+                        onPressed: () => Navigator.of(context).pop(false),
+                      ),
+                    ),
+                    const SizedBox(width: DnaSpacing.md),
+                    Expanded(
+                      child: DnaButton(
+                        label: 'Swap',
+                        variant: DnaButtonVariant.primary,
+                        icon: FontAwesomeIcons.arrowRightArrowLeft,
+                        expand: true,
+                        onPressed: () => Navigator.of(context).pop(true),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
-        ],
-      ),
+        );
+      },
     );
 
     if (confirmed != true || !mounted) return;
@@ -2938,6 +3047,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                   label: 'You receive',
                   token: _toToken,
                   tokens: tokens,
+                  balance: _getBalance(_toToken),
                   onTokenChanged: (t) => setState(() {
                     _toToken = t;
                     if (_fromToken == t) {
@@ -3069,67 +3179,23 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                   ),
                 ],
 
-                // Multiple quotes selector
-                if (_quotes.length > 1) ...[
+                // Best price badge
+                if (_selectedQuote != null && _quotes.length > 1) ...[
                   const SizedBox(height: 10),
-                  SizedBox(
-                    height: 36,
-                    child: ListView.separated(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: _quotes.length,
-                      separatorBuilder: (_, __) => const SizedBox(width: 8),
-                      itemBuilder: (context, index) {
-                        final q = _quotes[index];
-                        final isSelected = q == _selectedQuote;
-                        final isBest = index == 0;
-                        return GestureDetector(
-                          onTap: () =>
-                              setState(() => _selectedQuote = q),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
-                            decoration: BoxDecoration(
-                              gradient:
-                                  isSelected ? DnaGradients.primary : null,
-                              color: isSelected
-                                  ? null
-                                  : theme.colorScheme.surfaceContainerHighest,
-                              borderRadius: BorderRadius.circular(18),
-                              border: isSelected
-                                  ? null
-                                  : Border.all(
-                                      color: theme.colorScheme.outline
-                                          .withAlpha(40)),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (isBest) ...[
-                                  FaIcon(
-                                    FontAwesomeIcons.trophy,
-                                    size: 10,
-                                    color: isSelected
-                                        ? Colors.white
-                                        : DnaColors.gradientStart,
-                                  ),
-                                  const SizedBox(width: 4),
-                                ],
-                                Text(
-                                  q.dexName,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                    color: isSelected
-                                        ? Colors.white
-                                        : theme.colorScheme.onSurface,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      FaIcon(FontAwesomeIcons.trophy,
+                          size: 10, color: DnaColors.gradientStart),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Best price from ${_quotes.length} exchanges',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: theme.colorScheme.onSurface.withAlpha(140),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
 
