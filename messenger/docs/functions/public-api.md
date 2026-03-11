@@ -116,7 +116,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_list_wallets(...)` | List Cellframe wallets |
 | `dna_request_id_t dna_engine_get_balances(...)` | Get token balances for wallet |
 | `int dna_engine_estimate_eth_gas(int, dna_gas_estimate_t*)` | Get gas fee estimate for ETH transaction |
-| `dna_request_id_t dna_engine_send_tokens(...)` | Send tokens (build tx, sign, submit) |
+| `dna_request_id_t dna_engine_send_tokens(...)` | Send tokens (build tx, sign, submit). Network param: "Cellframe" is canonical (was "Backbone"); "Backbone" still accepted via strcasecmp fallback |
 | `dna_request_id_t dna_engine_get_tx_status(engine, tx_hash, chain, cb, user_data)` | Get TX verification status from blockchain (cached) |
 | `dna_request_id_t dna_engine_get_transactions(...)` | Get transaction history |
 | `dna_request_id_t dna_engine_dex_quote(engine, from, to, amount, filter, cb, ud)` | Get DEX swap quotes (Jupiter/Uniswap/Cellframe) |

@@ -93,7 +93,7 @@ Internal DNA engine implementation with async task queue.
 |----------|-------------|
 | `void dna_handle_list_wallets(dna_engine_t*, dna_task_t*)` | Handle list wallets |
 | `void dna_handle_get_balances(dna_engine_t*, dna_task_t*)` | Handle get balances |
-| `void dna_handle_send_tokens(dna_engine_t*, dna_task_t*)` | Handle send tokens |
+| `void dna_handle_send_tokens(dna_engine_t*, dna_task_t*)` | Handle send tokens (network param: "Cellframe" canonical, "Backbone" accepted via strcasecmp fallback) |
 | `void dna_handle_get_transactions(dna_engine_t*, dna_task_t*)` | Handle get transactions |
 | `void dna_handle_dex_quote(dna_engine_t*, dna_task_t*)` | Handle DEX quote request |
 | `void dna_handle_dex_list_pairs(dna_engine_t*, dna_task_t*)` | Handle DEX list pairs |

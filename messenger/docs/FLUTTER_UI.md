@@ -260,18 +260,21 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
 
 3. **Wallet:**
    - Send tokens with recipient, amount selection
-   - Supported tokens: **CPUNK, CELL only** (Backbone network)
+   - Supported tokens across 4 chains: **Cellframe** (CELL, CPUNK, USDC), **Ethereum** (ETH, USDT, USDC), **Solana** (SOL, USDT, USDC), **TRON** (TRX, USDT, USDC)
    - Transaction history UI with address resolution:
      - Resolves `otherAddress` to contact name (via profile wallet fields) or address book label
      - Resolution runs once per fetch, re-resolves reactively when contacts or address book change
      - Transaction detail bottom sheet with gradient header, tap-to-copy fields
      - "Add to Address Book" button in detail sheet (hidden if already saved)
    - Balances display per wallet (fetched via Cellframe RPC)
-   - **Send CPUNK via chat:** Transfer CPUNK directly from chat conversation
-     - App bar button in chat header
-     - Auto-resolve contact fingerprint → backbone wallet address
+   - **Multi-token send via chat:** Transfer tokens directly from chat conversation
+     - "$" button in chat input bar opens multi-token send bottom sheet
+     - Token dropdown with 12 options across 4 chains (Cellframe, Ethereum, Solana, TRON)
+     - Only tokens for chains where the contact has a registered wallet address are shown
+     - Transaction speed selector (slow/normal/fast) only shown for Cellframe chain
+     - Transfer message JSON includes `token`, `network`, and `chain` fields
      - Transfer bubble with gradient styling and blockchain verification (orange/green/red border)
-     - Transaction speed selector (slow/normal/fast)
+   - **Note:** "Backbone" network name has been renamed to "Cellframe" throughout the codebase
 
 4. **Profile/Identity:**
    - Nickname registration on DHT
@@ -487,7 +490,7 @@ UI in `ChannelDetailScreen`:
 - Message status indicators: pending (spinner), sent (checkmark), failed (red X)
 - Enter sends message, Shift+Enter adds newline
 - Emoji picker with shortcode support (:smile: etc.)
-- **Token transfer via chat:** Send tokens (CPUNK) directly from conversation with verified transfer bubble (orange=pending, green=verified, red=failed). Message type: `token_transfer`. Both sides verify independently via blockchain RPC.
+- **Multi-token transfer via chat:** Send tokens from any supported chain directly from conversation via "$" button. Token dropdown shows 12 options across 4 chains (Cellframe, Ethereum, Solana, TRON), filtered by contact's available wallet addresses. Verified transfer bubble (orange=pending, green=verified, red=failed). Message type: `token_transfer`. Both sides verify independently via blockchain RPC.
 
 **Background Tasks:**
 - Initial DHT offline message poll on login (15 second delay)
