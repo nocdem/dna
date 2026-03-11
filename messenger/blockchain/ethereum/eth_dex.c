@@ -1639,12 +1639,12 @@ static int eth_dex_swap_v2(
             return -1;
         }
 
-        if (eth_tx_send(&signed_tx, tx_hash_out) != 0) {
+        if (eth_tx_send_private(&signed_tx, tx_hash_out) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "V2 swap: failed to send TX");
             return -1;
         }
 
-        QGP_LOG_INFO(LOG_TAG, "V2 swap TX sent (%s): %s", pair->dex_name, tx_hash_out);
+        QGP_LOG_INFO(LOG_TAG, "V2 swap TX sent via Flashbots (%s): %s", pair->dex_name, tx_hash_out);
         return 0;
     }
 
@@ -1762,12 +1762,12 @@ static int eth_dex_swap_v3(
             return -1;
         }
 
-        if (eth_tx_send(&signed_tx, tx_hash_out) != 0) {
+        if (eth_tx_send_private(&signed_tx, tx_hash_out) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "V3 swap: failed to send TX");
             return -1;
         }
 
-        QGP_LOG_INFO(LOG_TAG, "V3 swap TX sent (%s): %s", pair->dex_name, tx_hash_out);
+        QGP_LOG_INFO(LOG_TAG, "V3 swap TX sent via Flashbots (%s): %s", pair->dex_name, tx_hash_out);
         return 0;
     }
 

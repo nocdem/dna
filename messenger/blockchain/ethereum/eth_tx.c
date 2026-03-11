@@ -556,6 +556,69 @@ int eth_tx_send(const eth_signed_tx_t *signed_tx, char *tx_hash_out) {
     return 0;
 }
 
+/**
+ * Send a signed transaction via Flashbots Protect (MEV/sandwich protection).
+ *
+ * Sends to Flashbots private mempool first. If Flashbots fails (network error,
+ * rate limit, etc.), falls back to standard public RPC via eth_tx_send().
+ *
+ * Flashbots Protect: https://docs.flashbots.net/flashbots-protect/overview
+ * - TX is NOT visible in the public mempool
+ * - Sandwich bots cannot front-run or back-run
+ * - If TX is not included after ~6 minutes, it's dropped (no stuck TX)
+ */
+#define FLASHBOTS_RPC "https://rpc.flashbots.net"
+
+int eth_tx_send_private(const eth_signed_tx_t *signed_tx, char *tx_hash_out) {
+    if (!signed_tx || !tx_hash_out) {
+        return -1;
+    }
+
+    /* Convert raw tx to hex */
+    char *hex_tx = malloc(signed_tx->raw_tx_len * 2 + 3);
+    if (!hex_tx) {
+        return -1;
+    }
+
+    hex_tx[0] = '0';
+    hex_tx[1] = 'x';
+    for (size_t i = 0; i < signed_tx->raw_tx_len; i++) {
+        snprintf(hex_tx + 2 + i * 2, 3, "%02x", signed_tx->raw_tx[i]);
+    }
+
+    /* Try Flashbots Protect first */
+    json_object *params = json_object_new_array();
+    json_object_array_add(params, json_object_new_string(hex_tx));
+
+    json_object *result = NULL;
+    int rc = eth_rpc_call_single(FLASHBOTS_RPC, "eth_sendRawTransaction",
+                                  params, &result);
+
+    if (rc == 0) {
+        const char *hash = json_object_get_string(result);
+        QGP_LOG_INFO(LOG_TAG, "Flashbots Protect TX sent: %s", hash ? hash : "NULL");
+        if (hash) {
+            strncpy(tx_hash_out, hash, 66);
+            tx_hash_out[66] = '\0';
+        } else {
+            strcpy(tx_hash_out, signed_tx->tx_hash);
+        }
+        json_object_put(result);
+        json_object_put(params);
+        free(hex_tx);
+        QGP_LOG_INFO(LOG_TAG, "MEV-protected TX: %s", tx_hash_out);
+        return 0;
+    }
+
+    /* Flashbots failed — fall back to public RPC */
+    QGP_LOG_WARN(LOG_TAG, "Flashbots Protect failed (rc=%d), falling back to public RPC", rc);
+    json_object_put(params);
+    if (result) json_object_put(result);
+    free(hex_tx);
+
+    return eth_tx_send(signed_tx, tx_hash_out);
+}
+
 /* ============================================================================
  * CONVENIENCE FUNCTIONS
  * ============================================================================ */

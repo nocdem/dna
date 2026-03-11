@@ -146,6 +146,18 @@ int eth_tx_sign(
  */
 int eth_tx_send(const eth_signed_tx_t *signed_tx, char *tx_hash_out);
 
+/**
+ * Send signed transaction via Flashbots Protect (MEV/sandwich protection).
+ *
+ * TX goes to private mempool — invisible to sandwich bots.
+ * Falls back to public RPC if Flashbots is unreachable.
+ *
+ * @param signed_tx     Signed transaction from eth_tx_sign
+ * @param tx_hash_out   Output: transaction hash (67 bytes min)
+ * @return              0 on success, -1 on error
+ */
+int eth_tx_send_private(const eth_signed_tx_t *signed_tx, char *tx_hash_out);
+
 /* ============================================================================
  * CONVENIENCE FUNCTIONS
  * ============================================================================ */
