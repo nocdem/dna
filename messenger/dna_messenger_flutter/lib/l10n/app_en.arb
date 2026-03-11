@@ -485,6 +485,9 @@
   "updateTitle": "Update Required",
   "updateMessage": "A newer version is required to continue using DNA Messenger.",
   "updateDownload": "Download Update",
+  "updateAvailableTitle": "New Version Available",
+  "updateAvailableMessage": "A new version of DNA Messenger is available. Update now for the latest features and improvements.",
+  "updateLater": "Later",
 
   "cancel": "Cancel",
   "save": "Save",

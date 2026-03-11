@@ -358,6 +358,9 @@
   "updateTitle": "Güncelleme Gerekli",
   "updateMessage": "DNA Messenger'ı kullanmaya devam etmek için daha yeni bir sürüm gereklidir.",
   "updateDownload": "Güncellemeyi İndir",
+  "updateAvailableTitle": "Yeni Sürüm Mevcut",
+  "updateAvailableMessage": "DNA Messenger'ın yeni bir sürümü mevcut. En son özellikler ve iyileştirmeler için şimdi güncelleyin.",
+  "updateLater": "Sonra",
 
   "cancel": "İptal",
   "save": "Kaydet",

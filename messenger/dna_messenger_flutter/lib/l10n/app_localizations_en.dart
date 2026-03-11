@@ -1050,6 +1050,16 @@ class AppLocalizationsEn extends AppLocalizations {
   String get updateDownload => 'Download Update';
 
   @override
+  String get updateAvailableTitle => 'New Version Available';
+
+  @override
+  String get updateAvailableMessage =>
+      'A new version of DNA Messenger is available. Update now for the latest features and improvements.';
+
+  @override
+  String get updateLater => 'Later';
+
+  @override
   String get cancel => 'Cancel';
 
   @override

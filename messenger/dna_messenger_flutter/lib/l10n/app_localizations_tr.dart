@@ -1060,6 +1060,16 @@ class AppLocalizationsTr extends AppLocalizations {
   String get updateDownload => 'Güncellemeyi İndir';
 
   @override
+  String get updateAvailableTitle => 'Yeni Sürüm Mevcut';
+
+  @override
+  String get updateAvailableMessage =>
+      'DNA Messenger\'ın yeni bir sürümü mevcut. En son özellikler ve iyileştirmeler için şimdi güncelleyin.';
+
+  @override
+  String get updateLater => 'Sonra';
+
+  @override
   String get cancel => 'İptal';
 
   @override

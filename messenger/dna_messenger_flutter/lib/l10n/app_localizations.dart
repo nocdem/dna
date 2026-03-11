@@ -2048,6 +2048,24 @@ abstract class AppLocalizations {
   /// **'Download Update'**
   String get updateDownload;
 
+  /// No description provided for @updateAvailableTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'New Version Available'**
+  String get updateAvailableTitle;
+
+  /// No description provided for @updateAvailableMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'A new version of DNA Messenger is available. Update now for the latest features and improvements.'**
+  String get updateAvailableMessage;
+
+  /// No description provided for @updateLater.
+  ///
+  /// In en, this message translates to:
+  /// **'Later'**
+  String get updateLater;
+
   /// No description provided for @cancel.
   ///
   /// In en, this message translates to:

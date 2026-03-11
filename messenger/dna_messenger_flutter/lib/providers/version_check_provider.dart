@@ -59,6 +59,10 @@ class VersionCheckResultWithAppCompare {
   bool get isBelowMinimum => libraryBelowMinimum || appBelowMinimum;
 }
 
+/// Whether the user dismissed the update-available dialog this session.
+/// Resets on app restart. When true, the dialog won't show again.
+final updateDismissedProvider = StateProvider<bool>((ref) => false);
+
 /// Version check result provider
 /// Watches dhtConnectedAtProvider so it re-runs when DHT connects.
 /// Returns null if DHT not connected or check fails.

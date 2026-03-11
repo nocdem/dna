@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'l10n/app_localizations.dart';
 import 'providers/providers.dart';
@@ -93,6 +94,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
   bool _autoLoadStarted = false;
   bool _autoLoadComplete = false;
   bool _registrationIncomplete = false;
+  bool _updateDialogShown = false;
 
   @override
   void initState() {
@@ -290,6 +292,18 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           // Only activate providers AFTER identity is loaded
           ref.watch(eventHandlerActiveProvider);
           ref.watch(backgroundTasksActiveProvider);
+
+          // Show update-available dialog once per session when DHT reports a newer version
+          if (versionResult != null && versionResult.hasUpdate && !_updateDialogShown) {
+            final dismissed = ref.watch(updateDismissedProvider);
+            if (!dismissed) {
+              _updateDialogShown = true;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) _showUpdateAvailableDialog(context, ref);
+              });
+            }
+          }
+
           return const HomeScreen();
         } else {
           return const IdentitySelectionScreen();
@@ -297,6 +311,85 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
       },
       loading: () => const _LoadingScreen(),
       error: (error, stack) => _ErrorScreen(error: error),
+    );
+  }
+
+  void _showUpdateAvailableDialog(BuildContext context, WidgetRef ref) {
+    final l10n = AppLocalizations.of(context);
+    final theme = Theme.of(context);
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: theme.colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Drag handle
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                FaIcon(
+                  FontAwesomeIcons.circleArrowUp,
+                  size: 48,
+                  color: DnaColors.primary,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  l10n.updateAvailableTitle,
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  l10n.updateAvailableMessage,
+                  style: theme.textTheme.bodyMedium,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () {
+                      Navigator.of(ctx).pop();
+                      launchUrl(
+                        Uri.parse('https://cpunk.io/products/dna-messenger.html'),
+                        mode: LaunchMode.externalApplication,
+                      );
+                    },
+                    icon: const FaIcon(FontAwesomeIcons.download, size: 16),
+                    label: Text(l10n.updateDownload),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: TextButton(
+                    onPressed: () {
+                      ref.read(updateDismissedProvider.notifier).state = true;
+                      Navigator.of(ctx).pop();
+                    },
+                    child: Text(l10n.updateLater),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
