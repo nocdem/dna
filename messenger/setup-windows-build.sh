@@ -349,11 +349,11 @@ fi
 # 11. Build zlib (compression library)
 echo -e "${BLUE}[11/16] Building zlib...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libz.a" ]; then
-    if [ ! -d "zlib-1.3.1" ]; then
-        wget https://zlib.net/zlib-1.3.1.tar.gz
-        tar -xzf zlib-1.3.1.tar.gz
+    if [ ! -d "zlib-1.3.2" ]; then
+        wget https://zlib.net/zlib-1.3.2.tar.gz
+        tar -xzf zlib-1.3.2.tar.gz
     fi
-    cd zlib-1.3.1
+    cd zlib-1.3.2
 
     # zlib has custom configure script
     CC="${MINGW_TARGET}-gcc" \
