@@ -2251,7 +2251,36 @@ class _TransactionDetailSheet extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final isReceived = transaction.direction.toLowerCase() == 'received';
+    final isDenied = ['FAILED', 'REJECTED', 'DENIED'].contains(transaction.status.toUpperCase());
     final addressInBook = ref.watch(addressExistsProvider((transaction.otherAddress, network)));
+
+    // Direction-based gradient: blue=send, green=receive, orange=denied
+    final LinearGradient headerGradient;
+    if (isDenied) {
+      headerGradient = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0xFFE8871E), Color(0xFFD45B0A)],
+      );
+    } else if (isReceived) {
+      headerGradient = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0xFF00B87A), Color(0xFF00875A)],
+      );
+    } else {
+      headerGradient = DnaGradients.primaryVertical;
+    }
+
+    // Human-readable description
+    final String headerText;
+    if (isDenied) {
+      headerText = 'This transaction has been denied';
+    } else if (isReceived) {
+      headerText = 'You have received ${transaction.amount} ${transaction.token}';
+    } else {
+      headerText = 'You have sent ${transaction.amount} ${transaction.token}';
+    }
 
     return Container(
       decoration: BoxDecoration(
@@ -2272,35 +2301,36 @@ class _TransactionDetailSheet extends ConsumerWidget {
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
-            // Gradient header
+            // Gradient header — color varies by direction/status
             Container(
               width: double.infinity,
               margin: const EdgeInsets.all(DnaSpacing.lg),
               padding: const EdgeInsets.all(DnaSpacing.xl),
               decoration: BoxDecoration(
-                gradient: DnaGradients.primaryVertical,
+                gradient: headerGradient,
                 borderRadius: BorderRadius.circular(DnaSpacing.radiusLg),
               ),
               child: Column(
                 children: [
-                  CircleAvatar(
-                    radius: 24,
-                    backgroundColor: Colors.white.withValues(alpha: 0.2),
-                    child: FaIcon(
-                      isReceived ? FontAwesomeIcons.arrowDown : FontAwesomeIcons.arrowUp,
-                      color: Colors.white,
-                      size: 20,
-                    ),
-                  ),
-                  const SizedBox(height: DnaSpacing.md),
                   Text(
-                    '${isReceived ? '+' : '-'}${transaction.amount} ${transaction.token}',
+                    headerText,
                     style: const TextStyle(
                       color: Colors.white,
-                      fontSize: 24,
+                      fontSize: 20,
                       fontWeight: FontWeight.bold,
                     ),
+                    textAlign: TextAlign.center,
                   ),
+                  if (isDenied) ...[
+                    const SizedBox(height: DnaSpacing.sm),
+                    Text(
+                      '${transaction.amount} ${transaction.token}',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.85),
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: DnaSpacing.xs),
                   _StatusChip(status: transaction.status),
                 ],
