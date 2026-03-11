@@ -1145,10 +1145,10 @@ void dna_handle_get_tx_status(dna_engine_t *engine, dna_task_t *task) {
             status = TX_STATUS_VERIFIED;
             break;
         case 2: /* BLOCKCHAIN_TX_FAILED */
-        case 3: /* BLOCKCHAIN_TX_NOT_FOUND */
             status = TX_STATUS_DENIED;
             break;
         case 0: /* BLOCKCHAIN_TX_PENDING */
+        case 3: /* BLOCKCHAIN_TX_NOT_FOUND — tx may be in mempool, not yet in block */
         default:
             status = TX_STATUS_PENDING;
             break;

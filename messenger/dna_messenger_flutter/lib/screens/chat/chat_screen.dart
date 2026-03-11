@@ -2853,11 +2853,28 @@ class _TransferBubbleState extends State<_TransferBubble> {
   /// 0=pending, 1=verified, 2=denied
   int _verificationStatus = 0;
   bool _isVerifying = false;
+  Timer? _retryTimer;
+  int _retryCount = 0;
+  static const int _maxRetries = 6;
+  static const Duration _retryInterval = Duration(seconds: 10);
+  static const Duration _initialDelay = Duration(seconds: 5);
 
   @override
   void initState() {
     super.initState();
-    _verifyTransaction();
+    // Outgoing transfers: delay first check to give blockchain time to process
+    // Incoming transfers: verify immediately
+    if (widget.message.isOutgoing) {
+      _retryTimer = Timer(_initialDelay, _verifyTransaction);
+    } else {
+      _verifyTransaction();
+    }
+  }
+
+  @override
+  void dispose() {
+    _retryTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _verifyTransaction() async {
@@ -2883,6 +2900,13 @@ class _TransferBubbleState extends State<_TransferBubble> {
           _verificationStatus = status;
           _isVerifying = false;
         });
+
+        // Auto-retry if still pending
+        if (status == 0 && _retryCount < _maxRetries) {
+          _retryCount++;
+          _retryTimer?.cancel();
+          _retryTimer = Timer(_retryInterval, _verifyTransaction);
+        }
       }
     } catch (e) {
       logError('TRANSFER', e);
@@ -2916,6 +2940,95 @@ class _TransferBubbleState extends State<_TransferBubble> {
     }
   }
 
+  void _showTransferInfo() async {
+    await _verifyTransaction();
+    if (!mounted) return;
+
+    final theme = Theme.of(context);
+    final amount = widget.transferData['amount'] ?? '?';
+    final token = widget.transferData['token'] ?? 'CPUNK';
+    final network = widget.transferData['network'] ?? 'Backbone';
+    final txHash = widget.transferData['txHash'] as String?;
+    final recipientName = widget.transferData['recipientName'] as String?;
+    final isOutgoing = widget.message.isOutgoing;
+    final fullTimestamp = DateFormat('MMMM d, y \'at\' HH:mm:ss').format(widget.message.timestamp);
+
+    final statusText = _getStatusText();
+    final statusIcon = _getStatusIcon();
+    final statusColor = _getBorderColor();
+
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  FaIcon(FontAwesomeIcons.arrowRightArrowLeft, size: 18, color: theme.colorScheme.primary),
+                  const SizedBox(width: 8),
+                  Text('Token Transfer', style: theme.textTheme.titleMedium),
+                ],
+              ),
+              const Divider(height: 24),
+              _transferInfoRow(theme, FontAwesomeIcons.coins, 'Amount', '$amount $token'),
+              const SizedBox(height: 12),
+              _transferInfoRow(theme, FontAwesomeIcons.networkWired, 'Network', network),
+              const SizedBox(height: 12),
+              _transferInfoRow(
+                theme,
+                isOutgoing ? FontAwesomeIcons.arrowUp : FontAwesomeIcons.arrowDown,
+                'Direction',
+                isOutgoing ? 'Sent${recipientName != null ? ' to $recipientName' : ''}' : 'Received',
+              ),
+              const SizedBox(height: 12),
+              _transferInfoRow(theme, FontAwesomeIcons.clock, 'Time', fullTimestamp),
+              const SizedBox(height: 12),
+              _transferInfoRow(theme, statusIcon, 'Blockchain Status', statusText, iconColor: statusColor),
+              if (txHash != null && txHash.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                GestureDetector(
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: txHash));
+                    ScaffoldMessenger.of(ctx).showSnackBar(
+                      SnackBar(content: Text('Copied: $txHash'), backgroundColor: DnaColors.snackbarSuccess, duration: const Duration(seconds: 3)),
+                    );
+                  },
+                  child: _transferInfoRow(theme, FontAwesomeIcons.fingerprint, 'Tx Hash', txHash, mono: true),
+                ),
+              ],
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _transferInfoRow(ThemeData theme, IconData icon, String label, String value, {Color? iconColor, bool mono = false}) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(width: 24, child: FaIcon(icon, size: 14, color: iconColor ?? theme.textTheme.bodySmall?.color)),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: theme.textTheme.bodySmall),
+              Text(value, style: mono
+                  ? theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace', fontSize: 11)
+                  : theme.textTheme.bodyMedium),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -2937,7 +3050,7 @@ class _TransferBubbleState extends State<_TransferBubble> {
     return Align(
       alignment: isOutgoing ? Alignment.centerRight : Alignment.centerLeft,
       child: GestureDetector(
-        onTap: _verifyTransaction,
+        onTap: _showTransferInfo,
         child: Container(
           margin: EdgeInsets.only(
             top: 4,

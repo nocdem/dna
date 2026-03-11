@@ -602,7 +602,39 @@ static int cell_chain_get_tx_status(
         return 0;
     }
 
-    *status_out = BLOCKCHAIN_TX_SUCCESS;
+    /* Parse response to check actual confirmation status.
+     * cellframe_rpc_get_tx returns: result: [ {status, confirmations, hash, ...} ]
+     * status: "ACCEPTED" = confirmed, "DECLINED" = failed */
+    *status_out = BLOCKCHAIN_TX_NOT_FOUND;
+
+    if (resp->result && json_object_is_type(resp->result, json_type_array)) {
+        int array_len = json_object_array_length(resp->result);
+        if (array_len > 0) {
+            json_object *tx_obj = json_object_array_get_idx(resp->result, 0);
+            if (tx_obj) {
+                /* Check for error response */
+                json_object *jerrors = NULL;
+                if (json_object_object_get_ex(tx_obj, "errors", &jerrors)) {
+                    /* RPC returned error — tx not found */
+                    *status_out = BLOCKCHAIN_TX_NOT_FOUND;
+                } else {
+                    json_object *jstatus = NULL;
+                    json_object_object_get_ex(tx_obj, "status", &jstatus);
+                    if (jstatus) {
+                        const char *status_str = json_object_get_string(jstatus);
+                        if (status_str && strcasecmp(status_str, "ACCEPTED") == 0) {
+                            *status_out = BLOCKCHAIN_TX_SUCCESS;
+                        } else if (status_str && strcasecmp(status_str, "DECLINED") == 0) {
+                            *status_out = BLOCKCHAIN_TX_FAILED;
+                        } else {
+                            *status_out = BLOCKCHAIN_TX_PENDING;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     cellframe_rpc_response_free(resp);
     return 0;
 }
