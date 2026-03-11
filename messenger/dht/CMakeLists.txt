@@ -32,6 +32,7 @@ set(DHT_COMMON_SOURCES
     client/dna_group_outbox.c   # Group message outbox (feed pattern)
     client/dna_wall.c           # Personal wall posts (DHT)
     client/dna_wall_comments.c  # Wall post comments (v0.7.0+)
+    client/dna_wall_likes.c     # Wall post likes (v0.9.52+)
     # Keyserver modules
     keyserver/keyserver_helpers.c
     keyserver/keyserver_publish.c

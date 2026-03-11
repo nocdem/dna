@@ -391,6 +391,8 @@
   "wallCopy": "Copy",
   "wallReply": "Reply",
   "wallDelete": "Delete",
+  "wallLike": "Like",
+  "wallLiked": "Liked",
 
   "walletTitle": "Wallet",
   "walletTotalBalance": "Total Balance",

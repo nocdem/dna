@@ -1165,6 +1165,30 @@ class WallComment {
   }
 }
 
+/// Wall like (v0.9.52+)
+class WallLike {
+  final String authorFingerprint;
+  final String authorName;
+  final DateTime timestamp;
+  final bool verified;
+
+  WallLike({
+    required this.authorFingerprint,
+    required this.authorName,
+    required this.timestamp,
+    required this.verified,
+  });
+
+  factory WallLike.fromNative(dna_wall_like_info_t native) {
+    return WallLike(
+      authorFingerprint: native.author_fingerprint.toDartString(129),
+      authorName: native.author_name.toDartString(65),
+      timestamp: DateTime.fromMillisecondsSinceEpoch(native.timestamp * 1000),
+      verified: native.verified,
+    );
+  }
+}
+
 /// Wall new post event (contact posted to their wall)
 class WallNewPostEvent extends DnaEvent {
   final String authorFingerprint;
@@ -6049,6 +6073,106 @@ class DnaEngine {
       calloc.free(postUuidPtr);
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit wall get comments');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
+  // WALL LIKES (v0.9.52+)
+  // ---------------------------------------------------------------------------
+
+  /// Like a wall post
+  Future<List<WallLike>> wallLike(String postUuid) async {
+    final completer = Completer<List<WallLike>>();
+    final localId = _nextLocalId++;
+    final postUuidPtr = postUuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_wall_like_info_t> likes, int count,
+        Pointer<Void> userData) {
+      calloc.free(postUuidPtr);
+      if (error == 0) {
+        final result = <WallLike>[];
+        for (var i = 0; i < count; i++) {
+          result.add(WallLike.fromNative(likes[i]));
+        }
+        if (likes != nullptr && count > 0) {
+          _bindings.dna_free_wall_likes(likes, count);
+        }
+        completer.complete(result);
+      } else {
+        if (likes != nullptr && count > 0) {
+          _bindings.dna_free_wall_likes(likes, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallLikesCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_like(
+      _engine,
+      postUuidPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(postUuidPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit wall like');
+    }
+
+    return completer.future;
+  }
+
+  /// Get likes for a wall post
+  Future<List<WallLike>> wallGetLikes(String postUuid) async {
+    final completer = Completer<List<WallLike>>();
+    final localId = _nextLocalId++;
+    final postUuidPtr = postUuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_wall_like_info_t> likes, int count,
+        Pointer<Void> userData) {
+      calloc.free(postUuidPtr);
+      if (error == 0) {
+        final result = <WallLike>[];
+        for (var i = 0; i < count; i++) {
+          result.add(WallLike.fromNative(likes[i]));
+        }
+        if (likes != nullptr && count > 0) {
+          _bindings.dna_free_wall_likes(likes, count);
+        }
+        completer.complete(result);
+      } else {
+        if (likes != nullptr && count > 0) {
+          _bindings.dna_free_wall_likes(likes, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallLikesCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_get_likes(
+      _engine,
+      postUuidPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(postUuidPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit wall get likes');
     }
 
     return completer.future;

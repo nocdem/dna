@@ -81,6 +81,7 @@ typedef uint64_t dna_request_id_t;
 #define DNA_ENGINE_ERROR_RENT_MINIMUM (-115)  /* Solana: amount below rent-exempt minimum for new account */
 #define DNA_ENGINE_ERROR_KEY_UNAVAILABLE (-116)  /* Recipient public key not cached and DHT lookup failed */
 #define DNA_ENGINE_ERROR_IDENTITY_LOCKED (-117)  /* v0.6.0+: Identity lock held by another process (Flutter/Service) */
+#define DNA_ENGINE_ERROR_LIMIT_REACHED (-118)   /* v0.9.52+: Maximum limit reached (e.g., max likes per post) */
 
 /**
  * Get human-readable error message for engine errors
@@ -254,6 +255,16 @@ typedef struct {
     uint64_t created_at;            /* Unix timestamp */
     bool verified;                  /* Signature verified */
 } dna_wall_comment_info_t;
+
+/**
+ * Wall: Like information (v0.9.52+)
+ */
+typedef struct {
+    char author_fingerprint[129];   /* Liker's SHA3-512 fingerprint */
+    char author_name[65];           /* Resolved display name */
+    uint64_t timestamp;             /* Unix timestamp (seconds) */
+    bool verified;                  /* Signature verified */
+} dna_wall_like_info_t;
 
 /* =====================================================
  * Channel System (RSS-like channels)
@@ -618,6 +629,18 @@ typedef void (*dna_wall_comments_cb)(
     dna_request_id_t request_id,
     int error,
     dna_wall_comment_info_t *comments,
+    int count,
+    void *user_data
+);
+
+/**
+ * Wall: Likes list callback (v0.9.52+)
+ * Caller takes ownership - free with dna_free_wall_likes(likes, count)
+ */
+typedef void (*dna_wall_likes_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_wall_like_info_t *likes,
     int count,
     void *user_data
 );
@@ -3359,6 +3382,48 @@ DNA_API dna_request_id_t dna_engine_wall_get_comments(
  * Free wall comments array returned by callbacks
  */
 DNA_API void dna_free_wall_comments(dna_wall_comment_info_t *comments, int count);
+
+/* ── Wall Likes (v0.9.52+) ── */
+
+/**
+ * Like a wall post
+ *
+ * Signs post_uuid with Dilithium5 and publishes to DHT.
+ * Returns error -3 if already liked, -4 if max likes reached.
+ *
+ * @param engine     Engine instance
+ * @param post_uuid  UUID of the post to like
+ * @param callback   Likes list callback (returns updated likes)
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_wall_like(
+    dna_engine_t *engine,
+    const char *post_uuid,
+    dna_wall_likes_cb callback,
+    void *user_data
+);
+
+/**
+ * Get likes for a wall post
+ *
+ * @param engine     Engine instance
+ * @param post_uuid  UUID of the post
+ * @param callback   Likes list callback
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_wall_get_likes(
+    dna_engine_t *engine,
+    const char *post_uuid,
+    dna_wall_likes_cb callback,
+    void *user_data
+);
+
+/**
+ * Free wall likes array returned by callbacks
+ */
+DNA_API void dna_free_wall_likes(dna_wall_like_info_t *likes, int count);
 
 /* ============================================================================
  * CHANNELS (RSS-like public channels via DHT)

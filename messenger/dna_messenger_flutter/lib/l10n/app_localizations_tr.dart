@@ -853,6 +853,12 @@ class AppLocalizationsTr extends AppLocalizations {
   String get wallDelete => 'Sil';
 
   @override
+  String get wallLike => 'Beğen';
+
+  @override
+  String get wallLiked => 'Beğenildi';
+
+  @override
   String get walletTitle => 'Cüzdan';
 
   @override

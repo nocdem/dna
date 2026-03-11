@@ -284,6 +284,8 @@
   "wallCopy": "Kopyala",
   "wallReply": "Yanıtla",
   "wallDelete": "Sil",
+  "wallLike": "Beğen",
+  "wallLiked": "Beğenildi",
 
   "walletTitle": "Cüzdan",
   "walletTotalBalance": "Toplam Bakiye",

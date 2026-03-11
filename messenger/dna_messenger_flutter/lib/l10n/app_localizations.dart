@@ -1652,6 +1652,18 @@ abstract class AppLocalizations {
   /// **'Delete'**
   String get wallDelete;
 
+  /// No description provided for @wallLike.
+  ///
+  /// In en, this message translates to:
+  /// **'Like'**
+  String get wallLike;
+
+  /// No description provided for @wallLiked.
+  ///
+  /// In en, this message translates to:
+  /// **'Liked'**
+  String get wallLiked;
+
   /// No description provided for @walletTitle.
   ///
   /// In en, this message translates to:

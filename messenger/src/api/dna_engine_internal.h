@@ -145,6 +145,10 @@ typedef enum {
     TASK_WALL_ADD_COMMENT,
     TASK_WALL_GET_COMMENTS,
 
+    /* Wall Likes (v0.9.52+) */
+    TASK_WALL_LIKE,
+    TASK_WALL_GET_LIKES,
+
     /* Channel system (RSS-like channels) */
     TASK_CHANNEL_CREATE,
     TASK_CHANNEL_GET,
@@ -396,6 +400,16 @@ typedef union {
         char post_uuid[37];             /* Post UUID */
     } wall_get_comments;
 
+    /* Wall: Like a post (v0.9.52+) */
+    struct {
+        char post_uuid[37];             /* Post UUID to like */
+    } wall_like;
+
+    /* Wall: Get likes (v0.9.52+) */
+    struct {
+        char post_uuid[37];             /* Post UUID */
+    } wall_get_likes;
+
     /* Channel: create */
     struct {
         char name[101];
@@ -471,6 +485,7 @@ typedef union {
     dna_wall_posts_cb wall_posts;
     dna_wall_comment_cb wall_comment;
     dna_wall_comments_cb wall_comments;
+    dna_wall_likes_cb wall_likes;
     dna_channel_cb channel;
     dna_channels_cb channels;
     dna_channel_post_cb channel_post_cb;
@@ -874,6 +889,10 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task);
 /* Wall Comments (v0.7.0+) */
 void dna_handle_wall_add_comment(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_wall_get_comments(dna_engine_t *engine, dna_task_t *task);
+
+/* Wall Likes (v0.9.52+) */
+void dna_handle_wall_like(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_wall_get_likes(dna_engine_t *engine, dna_task_t *task);
 
 /* Channel handlers (dna_engine_channels.c) */
 void dna_handle_channel_create(dna_engine_t *engine, dna_task_t *task);

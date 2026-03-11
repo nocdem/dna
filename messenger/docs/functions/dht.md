@@ -474,6 +474,15 @@ Each commenter stores their own value_id slot, allowing concurrent writers witho
 | `int dna_wall_comment_verify(const dna_wall_comment_t *comment, const uint8_t *public_key)` | Verify comment Dilithium5 signature (0=valid) |
 | `void dna_wall_comments_free(dna_wall_comment_t *comments, size_t count)` | Free comments array returned by dna_wall_comments_get |
 
+#### Wall Likes (v0.9.52+) — `dna_wall.h`
+
+| Function | Description |
+|----------|-------------|
+| `int dna_wall_like_add(const char *post_uuid, const char *author_fingerprint, const uint8_t *private_key)` | Add a like to a wall post; returns -3 if already liked, -4 if max (100) reached |
+| `int dna_wall_likes_get(const char *post_uuid, dna_wall_like_t **likes_out, size_t *count_out)` | Fetch all likes for a wall post from DHT; returns 0 on success, -2 if none found |
+| `int dna_wall_like_verify(const dna_wall_like_t *like, const char *post_uuid, const uint8_t *public_key)` | Verify like Dilithium5 signature (0=valid) |
+| `void dna_wall_likes_free(dna_wall_like_t *likes, size_t count)` | Free likes array returned by dna_wall_likes_get |
+
 ### 11.8 Group Outbox (`dna_group_outbox.h`)
 
 #### Send/Receive API

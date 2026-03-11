@@ -13,6 +13,11 @@
  *   - dna_engine_wall_load()
  *   - dna_engine_wall_timeline()
  *   - dna_free_wall_posts()
+ *   - dna_handle_wall_like()
+ *   - dna_handle_wall_get_likes()
+ *   - dna_engine_wall_like()
+ *   - dna_engine_wall_get_likes()
+ *   - dna_free_wall_likes()
  *
  * STATUS: v0.6.135+ - MVP text-only wall posts
  */
@@ -782,4 +787,160 @@ dna_request_id_t dna_engine_wall_get_comments(
 void dna_free_wall_comments(dna_wall_comment_info_t *comments, int count) {
     (void)count;  /* dna_wall_comment_info_t has no heap members */
     if (comments) free(comments);
+}
+
+/* ============================================================================
+ * WALL LIKES - Task Handlers (v0.9.52+)
+ * ============================================================================ */
+
+void dna_handle_wall_like(dna_engine_t *engine, dna_task_t *task) {
+    qgp_key_t *key = dna_load_private_key(engine);
+
+    if (!key) {
+        task->callback.wall_likes(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY,
+                                   NULL, 0, task->user_data);
+        return;
+    }
+
+    int ret = dna_wall_like_add(
+        task->params.wall_like.post_uuid,
+        engine->fingerprint,
+        key->private_key
+    );
+    qgp_key_free(key);
+
+    if (ret != 0) {
+        int error = DNA_ERROR_INTERNAL;
+        if (ret == -3) error = DNA_ENGINE_ERROR_ALREADY_EXISTS;
+        if (ret == -4) error = DNA_ENGINE_ERROR_LIMIT_REACHED;
+        QGP_LOG_ERROR(LOG_TAG, "Failed to like post %s: %d",
+                      task->params.wall_like.post_uuid, ret);
+        task->callback.wall_likes(task->request_id, error,
+                                   NULL, 0, task->user_data);
+        return;
+    }
+
+    /* Fetch updated likes to return */
+    dna_wall_like_t *likes = NULL;
+    size_t count = 0;
+    ret = dna_wall_likes_get(task->params.wall_like.post_uuid, &likes, &count);
+
+    if (ret != 0 || count == 0) {
+        /* Like succeeded but couldn't fetch - return success with empty list */
+        QGP_LOG_INFO(LOG_TAG, "Like added for post %s (fetch failed: %d)",
+                     task->params.wall_like.post_uuid, ret);
+        task->callback.wall_likes(task->request_id, DNA_OK,
+                                   NULL, 0, task->user_data);
+        if (likes) dna_wall_likes_free(likes, count);
+        return;
+    }
+
+    /* Convert to public API format */
+    dna_wall_like_info_t *info = calloc(count, sizeof(dna_wall_like_info_t));
+    if (!info) {
+        dna_wall_likes_free(likes, count);
+        task->callback.wall_likes(task->request_id, DNA_ERROR_INTERNAL,
+                                   NULL, 0, task->user_data);
+        return;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        strncpy(info[i].author_fingerprint, likes[i].author_fingerprint, 128);
+        info[i].timestamp = likes[i].timestamp;
+        info[i].verified = (likes[i].signature_len > 0);
+        resolve_author_name(likes[i].author_fingerprint,
+                           info[i].author_name, sizeof(info[i].author_name));
+    }
+
+    dna_wall_likes_free(likes, count);
+
+    QGP_LOG_INFO(LOG_TAG, "Like added for post %s, total: %zu",
+                 task->params.wall_like.post_uuid, count);
+    task->callback.wall_likes(task->request_id, DNA_OK,
+                               info, (int)count, task->user_data);
+}
+
+void dna_handle_wall_get_likes(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
+
+    dna_wall_like_t *likes = NULL;
+    size_t count = 0;
+    int ret = dna_wall_likes_get(task->params.wall_get_likes.post_uuid, &likes, &count);
+
+    if (ret == -2 || count == 0) {
+        /* No likes */
+        task->callback.wall_likes(task->request_id, DNA_OK,
+                                   NULL, 0, task->user_data);
+        if (likes) dna_wall_likes_free(likes, count);
+        return;
+    }
+
+    if (ret != 0) {
+        task->callback.wall_likes(task->request_id, DNA_ERROR_INTERNAL,
+                                   NULL, 0, task->user_data);
+        return;
+    }
+
+    /* Convert to public API format */
+    dna_wall_like_info_t *info = calloc(count, sizeof(dna_wall_like_info_t));
+    if (!info) {
+        dna_wall_likes_free(likes, count);
+        task->callback.wall_likes(task->request_id, DNA_ERROR_INTERNAL,
+                                   NULL, 0, task->user_data);
+        return;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        strncpy(info[i].author_fingerprint, likes[i].author_fingerprint, 128);
+        info[i].timestamp = likes[i].timestamp;
+        info[i].verified = (likes[i].signature_len > 0);
+        resolve_author_name(likes[i].author_fingerprint,
+                           info[i].author_name, sizeof(info[i].author_name));
+    }
+
+    dna_wall_likes_free(likes, count);
+
+    QGP_LOG_INFO(LOG_TAG, "Fetched %zu likes for post %s",
+                 count, task->params.wall_get_likes.post_uuid);
+    task->callback.wall_likes(task->request_id, DNA_OK,
+                               info, (int)count, task->user_data);
+}
+
+/* ── Wall Likes Public API ── */
+
+dna_request_id_t dna_engine_wall_like(
+    dna_engine_t *engine,
+    const char *post_uuid,
+    dna_wall_likes_cb callback,
+    void *user_data
+) {
+    if (!engine || !post_uuid || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.wall_like.post_uuid, post_uuid, 36);
+
+    dna_task_callback_t cb = {0};
+    cb.wall_likes = callback;
+    return dna_submit_task(engine, TASK_WALL_LIKE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_wall_get_likes(
+    dna_engine_t *engine,
+    const char *post_uuid,
+    dna_wall_likes_cb callback,
+    void *user_data
+) {
+    if (!engine || !post_uuid || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.wall_get_likes.post_uuid, post_uuid, 36);
+
+    dna_task_callback_t cb = {0};
+    cb.wall_likes = callback;
+    return dna_submit_task(engine, TASK_WALL_GET_LIKES, &params, cb, user_data);
+}
+
+void dna_free_wall_likes(dna_wall_like_info_t *likes, int count) {
+    (void)count;  /* dna_wall_like_info_t has no heap members */
+    if (likes) free(likes);
 }

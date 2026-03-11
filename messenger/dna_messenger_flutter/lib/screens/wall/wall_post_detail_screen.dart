@@ -37,6 +37,9 @@ class _WallPostDetailScreenState extends ConsumerState<WallPostDetailScreen> {
     final theme = Theme.of(context);
     final fingerprint = ref.watch(currentFingerprintProvider) ?? '';
     final commentsAsync = ref.watch(wallCommentsProvider(widget.post.uuid));
+    final likesAsync = ref.watch(wallLikesProvider(widget.post.uuid));
+    final likes = likesAsync.valueOrNull ?? [];
+    final isLiked = likes.any((l) => l.authorFingerprint == fingerprint);
 
     return Scaffold(
       appBar: DnaAppBar(
@@ -61,6 +64,11 @@ class _WallPostDetailScreenState extends ConsumerState<WallPostDetailScreen> {
                   child: WallPostTile(
                     post: widget.post,
                     myFingerprint: fingerprint,
+                    likeCount: likes.length,
+                    isLikedByMe: isLiked,
+                    onLike: () {
+                      ref.read(wallLikesProvider(widget.post.uuid).notifier).like();
+                    },
                   ),
                 ),
                 // Comments header

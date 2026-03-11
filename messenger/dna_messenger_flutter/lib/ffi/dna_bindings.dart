@@ -623,6 +623,22 @@ final class dna_wall_comment_info_t extends Struct {
   external bool verified;
 }
 
+/// Wall like information (v0.9.52+)
+/// Matches dna_wall_like_info_t from dna_engine.h
+final class dna_wall_like_info_t extends Struct {
+  @Array(129)
+  external Array<Char> author_fingerprint;
+
+  @Array(65)
+  external Array<Char> author_name;
+
+  @Uint64()
+  external int timestamp;
+
+  @Bool()
+  external bool verified;
+}
+
 // =============================================================================
 // EVENT TYPES
 // =============================================================================
@@ -1154,6 +1170,16 @@ typedef DnaWallCommentsCbNative = Void Function(
 );
 typedef DnaWallCommentsCb = NativeFunction<DnaWallCommentsCbNative>;
 
+/// Wall: Likes list callback - Native (v0.9.52+)
+typedef DnaWallLikesCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_wall_like_info_t> likes,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaWallLikesCb = NativeFunction<DnaWallLikesCbNative>;
+
 /// Event callback - Native
 typedef DnaEventCbNative = Void Function(
   Pointer<dna_event_t> event,
@@ -1379,6 +1405,14 @@ typedef DnaWallCommentsCbDart = void Function(
   int requestId,
   int error,
   Pointer<dna_wall_comment_info_t> comments,
+  int count,
+  Pointer<Void> userData,
+);
+
+typedef DnaWallLikesCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_wall_like_info_t> likes,
   int count,
   Pointer<Void> userData,
 );
@@ -3864,6 +3898,49 @@ class DnaBindings {
   void dna_free_wall_comments(
       Pointer<dna_wall_comment_info_t> comments, int count) {
     _dna_free_wall_comments(comments, count);
+  }
+
+  // ── Wall Likes (v0.9.52+) ──
+
+  late final _dna_engine_wall_like = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaWallLikesCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaWallLikesCb>, Pointer<Void>)>('dna_engine_wall_like');
+
+  int dna_engine_wall_like(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> postUuid,
+    Pointer<DnaWallLikesCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_like(engine, postUuid, callback, userData);
+  }
+
+  late final _dna_engine_wall_get_likes = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaWallLikesCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaWallLikesCb>, Pointer<Void>)>(
+      'dna_engine_wall_get_likes');
+
+  int dna_engine_wall_get_likes(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> postUuid,
+    Pointer<DnaWallLikesCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_get_likes(engine, postUuid, callback, userData);
+  }
+
+  late final _dna_free_wall_likes = _lib.lookupFunction<
+      Void Function(Pointer<dna_wall_like_info_t>, Int32),
+      void Function(
+          Pointer<dna_wall_like_info_t>, int)>('dna_free_wall_likes');
+
+  void dna_free_wall_likes(
+      Pointer<dna_wall_like_info_t> likes, int count) {
+    _dna_free_wall_likes(likes, count);
   }
 }
 

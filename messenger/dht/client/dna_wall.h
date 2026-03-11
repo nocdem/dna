@@ -221,6 +221,73 @@ int dna_wall_comment_verify(const dna_wall_comment_t *comment,
  */
 void dna_wall_comments_free(dna_wall_comment_t *comments, size_t count);
 
+/* ============================================================================
+ * WALL LIKES (v0.9.52+)
+ * ============================================================================ */
+
+/* Like Constants */
+#define DNA_WALL_LIKE_KEY_PREFIX     "dna:wall:likes:"
+#define DNA_WALL_LIKE_MAX            100
+#define DNA_WALL_LIKE_TTL_SECONDS    2592000   /* 30 days */
+
+/**
+ * Single wall like (DHT/internal format)
+ *
+ * Each like is a fingerprint + Dilithium5 signature over the post_uuid.
+ * Stored under multi-owner DHT key: SHA3-512("dna:wall:likes:<post_uuid>")
+ */
+typedef struct {
+    char author_fingerprint[129];       /* Liker's SHA3-512 fingerprint */
+    uint64_t timestamp;                 /* Unix epoch seconds */
+    uint8_t signature[4627];            /* Dilithium5 signature */
+    size_t signature_len;
+} dna_wall_like_t;
+
+/**
+ * Add a like to a wall post (multi-owner DHT)
+ *
+ * Signs the post_uuid with Dilithium5 and stores on DHT.
+ * Client-side enforces max DNA_WALL_LIKE_MAX likes per post.
+ * Duplicate likes (same fingerprint) are rejected.
+ *
+ * @param post_uuid            UUID of the wall post to like
+ * @param author_fingerprint   Liker's SHA3-512 fingerprint
+ * @param private_key          Liker's Dilithium5 private key
+ * @return 0 on success, -1 on error, -3 if already liked, -4 if max likes reached
+ */
+int dna_wall_like_add(const char *post_uuid,
+                       const char *author_fingerprint,
+                       const uint8_t *private_key);
+
+/**
+ * Fetch all likes for a wall post from DHT
+ *
+ * @param post_uuid    UUID of the wall post
+ * @param likes_out    Output: heap-allocated array (caller frees with dna_wall_likes_free)
+ * @param count_out    Output: number of likes
+ * @return 0 on success, -1 on error, -2 if no likes found
+ */
+int dna_wall_likes_get(const char *post_uuid,
+                        dna_wall_like_t **likes_out,
+                        size_t *count_out);
+
+/**
+ * Verify a wall like's Dilithium5 signature
+ *
+ * @param like       Like to verify
+ * @param post_uuid  The post UUID that was signed
+ * @param public_key Author's Dilithium5 public key (2592 bytes)
+ * @return 0 if valid, -1 if invalid
+ */
+int dna_wall_like_verify(const dna_wall_like_t *like,
+                          const char *post_uuid,
+                          const uint8_t *public_key);
+
+/**
+ * Free a wall likes array
+ */
+void dna_wall_likes_free(dna_wall_like_t *likes, size_t count);
+
 #ifdef __cplusplus
 }
 #endif

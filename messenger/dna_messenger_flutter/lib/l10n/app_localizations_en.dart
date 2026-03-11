@@ -843,6 +843,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get wallDelete => 'Delete';
 
   @override
+  String get wallLike => 'Like';
+
+  @override
+  String get wallLiked => 'Liked';
+
+  @override
   String get walletTitle => 'Wallet';
 
   @override

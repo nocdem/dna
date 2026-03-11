@@ -361,6 +361,9 @@ class _WallPostWithComments extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final commentsAsync = ref.watch(wallCommentsProvider(post.uuid));
     final comments = commentsAsync.valueOrNull;
+    final likesAsync = ref.watch(wallLikesProvider(post.uuid));
+    final likes = likesAsync.valueOrNull ?? [];
+    final isLiked = likes.any((l) => l.authorFingerprint == myFingerprint);
 
     return WallPostTile(
       post: post,
@@ -370,6 +373,11 @@ class _WallPostWithComments extends ConsumerWidget {
       onViewAllComments: onReply,
       onDelete: onDelete,
       onShare: onShare,
+      likeCount: likes.length,
+      isLikedByMe: isLiked,
+      onLike: () {
+        ref.read(wallLikesProvider(post.uuid).notifier).like();
+      },
     );
   }
 }

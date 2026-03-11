@@ -19,6 +19,9 @@ class WallPostTile extends ConsumerWidget {
   final VoidCallback? onReply;
   final List<WallComment>? comments;
   final VoidCallback? onViewAllComments;
+  final int likeCount;
+  final bool isLikedByMe;
+  final VoidCallback? onLike;
 
   const WallPostTile({
     super.key,
@@ -30,6 +33,9 @@ class WallPostTile extends ConsumerWidget {
     this.onReply,
     this.comments,
     this.onViewAllComments,
+    this.likeCount = 0,
+    this.isLikedByMe = false,
+    this.onLike,
   });
 
   @override
@@ -132,6 +138,18 @@ class WallPostTile extends ConsumerWidget {
           ),
           Row(
             children: [
+              _ActionButton(
+                icon: isLikedByMe
+                    ? FontAwesomeIcons.solidHeart
+                    : FontAwesomeIcons.heart,
+                label: likeCount > 0
+                    ? '${isLikedByMe ? AppLocalizations.of(context).wallLiked : AppLocalizations.of(context).wallLike} ($likeCount)'
+                    : isLikedByMe
+                        ? AppLocalizations.of(context).wallLiked
+                        : AppLocalizations.of(context).wallLike,
+                onTap: isLikedByMe ? null : onLike,
+                color: isLikedByMe ? DnaColors.error : null,
+              ),
               _ActionButton(
                 icon: FontAwesomeIcons.copy,
                 label: AppLocalizations.of(context).wallCopy,

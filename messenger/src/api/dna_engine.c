@@ -1081,6 +1081,14 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             dna_handle_wall_get_comments(engine, task);
             break;
 
+        /* Wall Likes (v0.9.52+) */
+        case TASK_WALL_LIKE:
+            dna_handle_wall_like(engine, task);
+            break;
+        case TASK_WALL_GET_LIKES:
+            dna_handle_wall_get_likes(engine, task);
+            break;
+
         /* Channel system (RSS-like channels) */
         case TASK_CHANNEL_CREATE:
             dna_handle_channel_create(engine, task);
