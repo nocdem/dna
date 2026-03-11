@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-03-11 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.9.49 | Flutter v1.0.0-rc13 | Nodus v0.6.3
+**Versions:** Library v0.9.49 | Flutter v1.0.0-rc14 | Nodus v0.6.3
 
 ---
 
@@ -198,7 +198,7 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
 | C Library | `include/dna/version.h` | v0.9.49 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc13+10363 | Flutter/Dart code changes (lib/, assets/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc14+10364 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus | `../nodus/include/nodus/nodus_types.h` | v0.6.3 | Nodus code changes (../nodus/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
