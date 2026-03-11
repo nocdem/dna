@@ -2095,7 +2095,7 @@ class _TokenDetailSheet extends ConsumerWidget {
                       itemCount: filtered.length,
                       itemBuilder: (context, index) {
                         final tx = filtered[index];
-                        return _TransactionTile(transaction: tx);
+                        return _TransactionTile(transaction: tx, network: network);
                       },
                     );
                   },
@@ -2157,8 +2157,9 @@ class _TokenDetailSheet extends ConsumerWidget {
 
 class _TransactionTile extends StatelessWidget {
   final Transaction transaction;
+  final String network;
 
-  const _TransactionTile({required this.transaction});
+  const _TransactionTile({required this.transaction, required this.network});
 
   @override
   Widget build(BuildContext context) {
@@ -2224,81 +2225,289 @@ class _TransactionTile extends StatelessWidget {
   }
 
   void _showDetails(BuildContext context) {
-    final isReceived = transaction.direction.toLowerCase() == 'received';
-    showDialog(
+    showModalBottomSheet(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Transaction Details'),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _DetailRow('Hash', transaction.txHash),
-              _DetailRow('Status', transaction.status),
-              _DetailRow('Direction', isReceived ? 'Received' : 'Sent'),
-              _DetailRow('Amount', '${transaction.amount} ${transaction.token}'),
-              _DetailRow(isReceived ? 'From' : 'To',
-                  transaction.resolvedName != null
-                      ? '${transaction.resolvedName!}\n${transaction.otherAddress}'
-                      : transaction.otherAddress),
-              _DetailRow('Time', _formatTimestamp(transaction.timestamp)),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: transaction.txHash));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Transaction hash copied')),
-              );
-            },
-            child: const Text('Copy Hash'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _TransactionDetailSheet(
+        transaction: transaction,
+        network: network,
       ),
     );
   }
 }
 
-class _DetailRow extends StatelessWidget {
-  final String label;
-  final String value;
+/// Modern transaction detail bottom sheet
+class _TransactionDetailSheet extends ConsumerWidget {
+  final Transaction transaction;
+  final String network;
 
-  const _DetailRow(this.label, this.value);
+  const _TransactionDetailSheet({
+    required this.transaction,
+    required this.network,
+  });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final isReceived = transaction.direction.toLowerCase() == 'received';
+    final addressInBook = ref.watch(addressExistsProvider((transaction.otherAddress, network)));
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: theme.textTheme.labelSmall?.copyWith(
-              color: theme.colorScheme.primary,
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(DnaSpacing.radiusXl)),
+      ),
+      child: SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Handle bar
+            Container(
+              margin: const EdgeInsets.only(top: DnaSpacing.sm),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: theme.dividerColor,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
-          ),
-          const SizedBox(height: 2),
-          SelectableText(
-            value.isNotEmpty ? value : '-',
-            style: theme.textTheme.bodySmall?.copyWith(
-              fontFamily: label == 'Hash' || label == 'From' || label == 'To'
-                  ? 'monospace'
-                  : null,
+            // Gradient header
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.all(DnaSpacing.lg),
+              padding: const EdgeInsets.all(DnaSpacing.xl),
+              decoration: BoxDecoration(
+                gradient: DnaGradients.primaryVertical,
+                borderRadius: BorderRadius.circular(DnaSpacing.radiusLg),
+              ),
+              child: Column(
+                children: [
+                  CircleAvatar(
+                    radius: 24,
+                    backgroundColor: Colors.white.withValues(alpha: 0.2),
+                    child: FaIcon(
+                      isReceived ? FontAwesomeIcons.arrowDown : FontAwesomeIcons.arrowUp,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(height: DnaSpacing.md),
+                  Text(
+                    '${isReceived ? '+' : '-'}${transaction.amount} ${transaction.token}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: DnaSpacing.xs),
+                  _StatusChip(status: transaction.status),
+                ],
+              ),
             ),
-          ),
-        ],
+            // Detail rows
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: DnaSpacing.lg),
+              child: Column(
+                children: [
+                  _buildDetailRow(
+                    context,
+                    icon: FontAwesomeIcons.user,
+                    label: isReceived ? 'From' : 'To',
+                    value: transaction.resolvedName ?? _formatAddress(transaction.otherAddress),
+                    subtitle: transaction.resolvedName != null ? transaction.otherAddress : null,
+                    monospace: transaction.resolvedName == null,
+                    onTap: () => _copyAndNotify(context, transaction.otherAddress, 'Address copied'),
+                  ),
+                  _buildDivider(theme),
+                  _buildDetailRow(
+                    context,
+                    icon: FontAwesomeIcons.hashtag,
+                    label: 'Transaction Hash',
+                    value: _formatHash(transaction.txHash),
+                    monospace: true,
+                    onTap: () => _copyAndNotify(context, transaction.txHash, 'Hash copied'),
+                  ),
+                  _buildDivider(theme),
+                  _buildDetailRow(
+                    context,
+                    icon: FontAwesomeIcons.clock,
+                    label: 'Time',
+                    value: _formatTimestamp(transaction.timestamp),
+                  ),
+                  _buildDivider(theme),
+                  _buildDetailRow(
+                    context,
+                    icon: FontAwesomeIcons.networkWired,
+                    label: 'Network',
+                    value: getNetworkDisplayLabel(network),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: DnaSpacing.xl),
+            // Action buttons
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: DnaSpacing.lg),
+              child: Column(
+                children: [
+                  // Add to Address Book button (only if not already in book and address is not ours)
+                  if (!addressInBook && transaction.otherAddress.isNotEmpty)
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: () => _addToAddressBook(context, ref),
+                        icon: const FaIcon(FontAwesomeIcons.addressBook, size: 16),
+                        label: const Text('Add to Address Book'),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: DnaSpacing.md),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (!addressInBook && transaction.otherAddress.isNotEmpty)
+                    const SizedBox(height: DnaSpacing.sm),
+                  SizedBox(
+                    width: double.infinity,
+                    child: TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Close'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: DnaSpacing.lg),
+          ],
+        ),
       ),
     );
+  }
+
+  Widget _buildDetailRow(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required String value,
+    String? subtitle,
+    bool monospace = false,
+    VoidCallback? onTap,
+  }) {
+    final theme = Theme.of(context);
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(DnaSpacing.radiusSm),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: DnaSpacing.md),
+        child: Row(
+          children: [
+            FaIcon(icon, size: 14, color: theme.colorScheme.primary),
+            const SizedBox(width: DnaSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.outline,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    value,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontFamily: monospace ? 'monospace' : null,
+                      fontWeight: subtitle != null ? FontWeight.w600 : null,
+                    ),
+                  ),
+                  if (subtitle != null)
+                    Text(
+                      _formatAddress(subtitle),
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        fontFamily: 'monospace',
+                        color: theme.colorScheme.outline,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            if (onTap != null)
+              FaIcon(FontAwesomeIcons.copy, size: 12, color: theme.colorScheme.outline),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDivider(ThemeData theme) {
+    return Divider(height: 1, color: theme.dividerColor);
+  }
+
+  String _formatAddress(String address) {
+    if (address.isEmpty) return '-';
+    if (address.length <= 20) return address;
+    return '${address.substring(0, 10)}...${address.substring(address.length - 8)}';
+  }
+
+  String _formatHash(String hash) {
+    if (hash.isEmpty) return '-';
+    if (hash.length <= 20) return hash;
+    return '${hash.substring(0, 10)}...${hash.substring(hash.length - 8)}';
+  }
+
+  String _formatTimestamp(String timestamp) {
+    if (timestamp.isEmpty) return '-';
+    final ts = int.tryParse(timestamp);
+    if (ts != null && ts > 0) {
+      final date = DateTime.fromMillisecondsSinceEpoch(ts * 1000);
+      return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')} '
+             '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+    }
+    return timestamp;
+  }
+
+  void _copyAndNotify(BuildContext context, String text, String message) {
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  void _addToAddressBook(BuildContext context, WidgetRef ref) async {
+    final result = await showDialog<AddressDialogResult>(
+      context: context,
+      builder: (context) => AddressDialog.prefilled(
+        address: transaction.otherAddress,
+        network: network,
+      ),
+    );
+
+    if (result != null && context.mounted) {
+      try {
+        await ref.read(addressBookProvider.notifier).addAddress(
+              address: result.address,
+              label: result.label,
+              network: result.network,
+              notes: result.notes,
+            );
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Added "${result.label}" to address book')),
+          );
+        }
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to add: $e'), backgroundColor: Colors.red),
+          );
+        }
+      }
+    }
   }
 }
 

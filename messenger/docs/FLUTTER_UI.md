@@ -261,7 +261,11 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
 3. **Wallet:**
    - Send tokens with recipient, amount selection
    - Supported tokens: **CPUNK, CELL only** (Backbone network)
-   - Transaction history UI with full details dialog
+   - Transaction history UI with address resolution:
+     - Resolves `otherAddress` to contact name (via profile wallet fields) or address book label
+     - Resolution runs once per fetch, re-resolves reactively when contacts or address book change
+     - Transaction detail bottom sheet with gradient header, tap-to-copy fields
+     - "Add to Address Book" button in detail sheet (hidden if already saved)
    - Balances display per wallet (fetched via Cellframe RPC)
    - **Send CPUNK via chat:** Transfer CPUNK directly from chat conversation
      - App bar button in chat header
@@ -315,7 +319,7 @@ removeContact(fingerprint)   // Remove contact from list
 - `identity_selection_screen.dart`: Real BIP39 mnemonic generation/validation
 - `groups_screen.dart`: Create, accept, reject, open group chat
 - `GroupChatScreen`: New screen for group messaging
-- `wallet_screen.dart`: Send dialog with DNA fingerprint resolution + contact picker; Swap sheet with Solana/Ethereum/Cellframe DEX quotes, stale warning banner for order book DEX
+- `wallet_screen.dart`: Send dialog with DNA fingerprint resolution + contact picker; Swap sheet with Solana/Ethereum/Cellframe DEX quotes, stale warning banner for order book DEX; Transaction detail bottom sheet with address resolution + Add to Address Book
 - `settings_screen.dart`: Nickname registration, contacts management
 - `update_required_screen.dart`: Full-screen blocker shown when app/library version is below DHT-published minimum — prevents app usage until updated
 - `contacts_management_screen.dart`: View/remove contacts from Settings
